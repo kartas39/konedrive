@@ -1,0 +1,23 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- KOneDrive account: sign-in state and account info. Tokens are never exposed. -->
+  <interface name="org.konedrive.Account1">
+    <method name="SetClientId">
+      <arg name="id" type="s" direction="in"/>
+    </method>
+    <method name="BeginSignIn">
+      <arg name="url" type="s" direction="out"/>
+    </method>
+    <method name="CancelSignIn"/>
+    <method name="SignOut"/>
+    <method name="RefreshAccountInfo"/>
+    <property name="State" type="s" access="read"/>
+    <property name="LastError" type="s" access="read"/>
+    <property name="ClientId" type="s" access="read"/>
+    <property name="DisplayName" type="s" access="read"/>
+    <property name="Email" type="s" access="read"/>
+    <property name="QuotaUsed" type="t" access="read"/>
+    <property name="QuotaTotal" type="t" access="read"/>
+  </interface>
+</node>

@@ -1,0 +1,14 @@
+[package]
+name = "konedrive-fs"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+libc.workspace = true
+nix = { workspace = true, features = ["fs", "user"] }
+thiserror.workspace = true
+xattr.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

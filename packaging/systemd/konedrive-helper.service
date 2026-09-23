@@ -1,0 +1,42 @@
+[Unit]
+Description=KOneDrive privileged helper (file interception)
+Before=display-manager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/libexec/konedrive-helper
+Restart=always
+RestartSec=1
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_SYS_ADMIN CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+PrivateNetwork=yes
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+# Read-only view of /home in the helper's own mount namespace. The helper
+# only ever *reads* xattrs itself; the hydration write is the daemon's, through
+# the event fd the helper hands it, and the kernel opens that fd against the
+# *opener's* mount, not this one. Verified by the VM suite ("the event fd is
+# writable through a read-only mount of the same tree", on Btrfs, ext4 and
+# XFS): with the helper started, by unshare rather than systemd, in a private
+# mount namespace where the whole filesystem is a read-only bind mount (which
+# is what this line makes of /home), a hydration still wrote through the event
+# fd and the reader got the real content. The helper's own write probe at
+# registration can be refused under this line; check_filesystem in main.rs
+# treats that as "nothing learned" and relies on fstatfs and the daemon's own
+# probe instead.
+ProtectHome=read-only
+ReadWritePaths=/var/lib/konedrive /run/konedrive
+RuntimeDirectory=konedrive
+StateDirectory=konedrive
+# A suspended open costs ~1.3 descriptors (measured: 400 of them took the helper
+# from 16 to 538), so 65536 carries roughly 50 000 at once — an order of
+# magnitude over Task 9's several-thousand burst, with thousands spare for daemon
+# connections at 4 each. systemd's default of 1024 capped us at about 750, and
+# running out is the one resource failure that must never kill this process:
+# closing the fanotify group allows every suspended open (fanotify(7)), which
+# hands applications zeros in silence.
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

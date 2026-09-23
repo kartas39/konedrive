@@ -1,0 +1,20 @@
+[package]
+name = "konedrivectl"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+konedrive-dbus = { path = "../konedrive-dbus" }
+tokio = { workspace = true, features = ["signal"] }
+zbus.workspace = true
+
+[dev-dependencies]
+konedrived = { path = "../konedrived" }
+konedrive-fs = { path = "../konedrive-fs" }
+konedrive-proto = { path = "../konedrive-proto" }
+nix = { workspace = true, features = ["socket"] }
+tempfile.workspace = true
+xattr.workspace = true

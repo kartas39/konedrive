@@ -1,0 +1,43 @@
+[package]
+name = "konedrived"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[features]
+# Test-only, like the helper's feature of the same name (Ruling H121): one
+# stall the VM suite arms to widen a race window too narrow to hit by chance
+# (startup recovery between its `ClearIgnore` and its lease, Ruling H147). Off
+# by default; never enable it in a build that ships. `tests/vm/Cargo.toml`
+# turns it on for the suite's own build of this crate.
+fault-injection = []
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+base64.workspace = true
+dirs.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+konedrive-dbus = { path = "../konedrive-dbus" }
+konedrive-fs = { path = "../konedrive-fs" }
+konedrive-proto = { path = "../konedrive-proto" }
+libc.workspace = true
+nix = { workspace = true, features = ["fs", "mount", "socket"] }
+oo7.workspace = true
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["fs"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+url.workspace = true
+xattr.workspace = true
+zbus.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+wiremock.workspace = true

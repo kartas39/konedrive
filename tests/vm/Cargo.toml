@@ -1,0 +1,41 @@
+# Standalone: deliberately not a member of the repository workspace, so the
+# privileged proof of concept never builds as part of `cargo build` at the root.
+[workspace]
+
+[package]
+name = "poc-marks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "poc-marks"
+path = "poc_marks.rs"
+
+# Asserts that the ignore mark the helper actually ships really lands, by
+# linking `konedrive_helper::marks` rather than re-issuing the syscalls. The
+# syscall's return value is known to lie about exactly this call (M3), so the
+# only check worth having is one that runs the shipped code and then reads
+# /proc/self/fdinfo.
+[[bin]]
+name = "vm-ignore-mark"
+path = "ignore_mark.rs"
+
+# The end-to-end suite: the real helper binary in one process, the daemon's own
+# `sync` module in another, and opens driven from child processes so that the
+# helper's daemon-pid exemption does not swallow them. This is the only place
+# the whole mechanism runs for real.
+[[bin]]
+name = "vm-scenarios"
+path = "scenarios.rs"
+
+[dependencies]
+async-trait = "0.1"
+konedrive-fs = { path = "../../crates/konedrive-fs" }
+konedrive-helper = { path = "../../crates/konedrive-helper" }
+konedrived = { path = "../../crates/konedrived", features = ["fault-injection"] }
+konedrive-proto = { path = "../../crates/konedrive-proto" }
+libc = "0.2"
+nix = { version = "0.31", features = ["fanotify", "fs", "mount", "user", "signal", "resource"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+xattr = "1"

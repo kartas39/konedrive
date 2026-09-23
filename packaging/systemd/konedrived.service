@@ -1,0 +1,19 @@
+[Unit]
+Description=KOneDrive daemon
+
+[Service]
+Type=dbus
+BusName=org.konedrive.Daemon
+ExecStart=%h/.local/bin/konedrived
+Restart=on-failure
+# Startup recovery (spec §4.4) walks every registered root holding one file
+# descriptor at a time plus one per directory level, so the daemon's real need
+# is the tree's depth plus its four concurrent hydrations, the helper socket
+# and D-Bus -- but running out is the failure that cost us 991 files left
+# `hydrating` with untrusted content and no error, so this is deliberately an
+# order of magnitude clear of anything the daemon can plausibly need rather
+# than inheriting systemd's default of 1024.
+LimitNOFILE=16384
+
+[Install]
+WantedBy=default.target

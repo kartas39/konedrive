@@ -1,0 +1,49 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- KOneDrive sync folder: registration and per-file hydration. -->
+  <interface name="org.konedrive.Sync1">
+    <method name="RegisterRoot">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <!-- Registers a folder with nothing intercepting opens inside it: files
+         in it read as zeros until they are explicitly hydrated. RootState
+         then reports "no-interception" and LastError says so. -->
+    <method name="RegisterRootWithoutInterception">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <!-- Forgets the folder; its files are left as they are. A folder
+         registered with interception is forgotten through the helper or
+         not at all: with no helper connected this is refused NoHelper. -->
+    <method name="UnregisterRoot"/>
+    <method name="PopulateFromDirectory">
+      <arg name="source_dir" type="s" direction="in"/>
+      <arg name="created" type="t" direction="out"/>
+    </method>
+    <!-- Downloads one file now. A file already downloaded is left as it is.
+         A file in any state but online-only may still carry the helper's
+         ignore mark, which has to be cleared before a download that could
+         fail empties the file: in a folder registered with interception and
+         no helper connected, or in any folder while a helper runs that the
+         daemon is not connected to, that is refused NoHelper. -->
+    <method name="Hydrate">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <!-- Frees up one downloaded file's space. The helper's ignore mark on it
+         is cleared first, in either registration mode: refused NoHelper in a
+         folder registered with interception and no helper connected, and in
+         any folder while a helper runs that the daemon is not connected to;
+         with no helper running at all, a folder registered without
+         interception frees it up anyway. -->
+    <method name="Dehydrate">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <method name="ItemState">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="state" type="s" direction="out"/>
+    </method>
+    <property name="RootPath" type="s" access="read"/>
+    <property name="RootState" type="s" access="read"/>
+    <property name="LastError" type="s" access="read"/>
+  </interface>
+</node>

@@ -1,0 +1,8 @@
+[package]
+name = "konedrive-dbus"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+zbus.workspace = true

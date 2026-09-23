@@ -1,0 +1,33 @@
+[workspace]
+resolver = "2"
+members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-helper", "crates/konedrive-proto"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+base64 = "0.22"
+clap = { version = "4", features = ["derive"] }
+dirs = "6"
+futures-util = "0.3"
+getrandom = "0.2"
+libc = "0.2"
+nix = { version = "0.31", default-features = false }
+oo7 = { version = "0.6", features = ["unstable"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time", "sync"] }
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+wiremock = "0.6"
+xattr = "1"
+zbus = { version = "5", default-features = false, features = ["tokio"] }

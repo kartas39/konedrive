@@ -1,0 +1,14 @@
+[package]
+name = "konedrive-proto"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[dependencies]
+libc.workspace = true
+nix = { workspace = true, features = ["socket", "uio"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
