@@ -1,0 +1,10 @@
+{
+    "KPlugin": {
+        "Description": "Download a OneDrive file, or free up the space it takes, from the context menu",
+        "Icon": "cloud-download",
+        "MimeTypes": [
+            "application/octet-stream"
+        ],
+        "Name": "KOneDrive: Download and Free up space"
+    }
+}

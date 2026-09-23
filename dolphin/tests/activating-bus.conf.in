@@ -1,0 +1,17 @@
+<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<!-- Like session-bus.conf, but org.konedrive.Daemon is activatable, through
+     a service file whose program fails at once. -->
+<busconfig>
+  <type>session</type>
+  <listen>unix:tmpdir=/tmp</listen>
+  <auth>EXTERNAL</auth>
+  <!-- As the stock session.conf has it; dbus-daemon's own default is 128. -->
+  <limit name="max_replies_per_connection">50000</limit>
+  <servicedir>@KONEDRIVE_TEST_SERVICE_DIR@</servicedir>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/>
+    <allow eavesdrop="true"/>
+    <allow own="*"/>
+  </policy>
+</busconfig>

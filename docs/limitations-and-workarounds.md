@@ -315,6 +315,51 @@ application must never read zeros where real content should be.
 
 ---
 
+## 7. Dolphin integration
+
+The two plugins in `dolphin/`: emblems for each file's state, and "Download" / "Free up space" in the
+context menu. They read a file's state from its extended attribute and never open it.
+
+- **K1. Dolphin opens some files itself, and that downloads them.** LIMIT · measured in KIO,
+  reasoned for Dolphin · planned (read phase, with thumbnails). To draw a preview, and to detect the
+  type of a file whose name has no extension or an unclear one, Dolphin opens it — measured for
+  `data.bin` and `noextension`, not for `.pdf` or `.txt`. Such files download just by being shown.
+- **K2. No emblems in search results or Recent Files.** LIMIT · reasoned. Those views do not use
+  `file://` URLs, and the emblem plugin is given only the URL. The menu actions still work there.
+- **K3. Live updates cover the 256 most recently shown folders.** FRAGILE · bound measured. A folder
+  shown earlier stops updating until Dolphin asks about it again. With inotify unavailable there is no
+  cache at all and every file walks up its ancestors; with inotify watches exhausted, emblems still show
+  but stop updating, and a warning is logged once.
+- **K4. Unverified: an emblem after a download triggered by opening a file.** Reasoned. The daemon then
+  writes the state through the helper's descriptor, and it is not yet confirmed that inotify reports that
+  to the plugin. Needs root, so it belongs in the VM suite. If not, only those emblems stay stale until
+  Dolphin refreshes.
+- **K5. Reading state on Dolphin's UI thread.** Measured: 6.7 µs per file inside a sync folder, 0.55 µs
+  outside. On a hung network mount it blocks exactly as a `stat` would.
+- **K6. At most 1000 calls wait at once, per window.** DEBT · measured. A file already waiting is never
+  sent twice, and a selection of more than 1000 files takes several clicks. A never-answering daemon costs
+  up to ~3 MB of Dolphin memory per window, and on `dbus-daemon` buses (not Fedora's `dbus-broker`) those
+  calls use Dolphin's own reply budget. The waiting set is per window, so two windows can each send the
+  same file once. A batch method on the daemon would remove all of this.
+- **K7. A root mark set or removed by hand.** Reasoned. The stale "not in a root" answer lasts until the
+  folder is evicted from the cache or Dolphin restarts, including when the mark is on an unwatched
+  ancestor; after a mark is removed and restored, emblems come back only when Dolphin asks again.
+  Registering through the daemon is unaffected.
+- **K8. Messages can be lost.** Reasoned, and confirmed in source for the desktop. A failure message is
+  dropped if Dolphin rebuilds the plugin before the daemon answers (the work still happens), and the
+  Plasma desktop, which also hosts the menu plugin, never shows its messages at all.
+- **K9. A renamed folder that Dolphin immediately asks about stops updating live.** Reasoned.
+- **K10. An unrecognised state value** shows no emblem and no actions. Reasoned.
+- **K11. After a failed on-demand start** the message tells the user to start the daemon by hand.
+- **K12. Cosmetic:** the "already waiting" and "too many" notes appear in Dolphin's red error bar.
+- **K13. Build assumptions:** the README's `QT_PLUGIN_PATH` line assumes `lib64`; the minimum KF/Qt 6.8
+  matches `app/`, but only KF 6.30 with Qt 6.11 was built and tested; the plugin tests' private buses use
+  the stock 50 000 pending-reply limit rather than `dbus-daemon`'s bare default of 128.
+- **K14. Memory:** about 100–150 bytes per remembered file, ~10–15 MB for a 100 000-file folder.
+  Reasoned.
+
+---
+
 ## Closed
 
 Kept briefly so the history of a weak spot is findable; details are in the commits.

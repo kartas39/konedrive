@@ -116,6 +116,59 @@ rather than repeating the daemon's D-Bus error. It tells the refusals apart
 by their D-Bus error names (`org.konedrive.Error.ModifiedLocally`,
 `.NotHydrated`, `.NoHelper`, …), which is also what a script should match on.
 
+## Dolphin integration
+
+`dolphin/` holds two Dolphin plugins. Files in the sync folder get an emblem — a
+cloud when online-only, sync arrows while downloading or freeing up, a check
+mark when downloaded — and their context menu offers **Download** (online-only
+files) and **Free up space** (downloaded ones). Emblems come from each file's
+`user.konedrive.state` and work with the daemon stopped; the menu actions ask
+the daemon, and say plainly when it is not running. Neither plugin ever
+opens a file in the sync folder. Dolphin itself still opens some — to draw
+previews, and to tell the type of a file whose name has no known extension —
+and that downloads them: turn previews off in that folder (View → Show
+Previews) until a later part fills them from OneDrive.
+
+Build and test (needs `kf6-kio-devel` besides the packages above; the tests
+run on private D-Bus buses, and one of them takes 30 seconds):
+
+```
+cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure
+```
+
+**Install for your user** (no root). This puts two files under
+`~/.local/lib64/plugins/kf6/` (the install output shows the exact paths):
+
+```
+cmake -S dolphin -B build/dolphin-user -DCMAKE_INSTALL_PREFIX="$HOME/.local" -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=OFF
+cmake --build build/dolphin-user && cmake --install build/dolphin-user
+```
+
+Qt does not look there by itself. Tell Plasma to, then log out and back in:
+
+```
+mkdir -p ~/.config/plasma-workspace/env
+echo 'export QT_PLUGIN_PATH="$HOME/.local/lib64/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"' > ~/.config/plasma-workspace/env/konedrive-dolphin.sh
+```
+
+To try it before logging out, start a separate Dolphin with the variable set:
+`QT_PLUGIN_PATH="$HOME/.local/lib64/plugins" dolphin --new-window`. To remove it,
+delete the files listed in `build/dolphin-user/install_manifest.txt` and the
+`konedrive-dolphin.sh` above.
+
+**Install for the whole system** — Qt finds the plugins there with no
+environment; restart Dolphin afterwards:
+
+```
+cmake -S dolphin -B build/dolphin-system -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=RelWithDebInfo -DBUILD_TESTING=OFF
+cmake --build build/dolphin-system && sudo cmake --install build/dolphin-system
+```
+
+This installs into `/usr/lib64/qt6/plugins/kf6/overlayicon/` and
+`.../kf6/kfileitemaction/`; `sudo xargs rm < build/dolphin-system/install_manifest.txt`
+removes it. The menu actions can be switched off in Dolphin under Configure
+Dolphin → Context Menu ("KOneDrive: Download and Free up space").
+
 ## Tests
 
 ```
