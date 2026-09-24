@@ -7,6 +7,8 @@
 #include "downloadprogresscontroller.h"
 #include "downloadprogresssettings.h"
 #include "notifier.h"
+#include "placescontroller.h"
+#include "placessettings.h"
 #include "synccontroller.h"
 #include "transfermodel.h"
 #include "trayicon.h"
@@ -66,6 +68,8 @@ int main(int argc, char *argv[])
     Autostart autostart;
     autostart.applyFirstRunDefault();
     DownloadProgressSettings downloadProgressSettings;
+    PlacesSettings placesSettings;
+    PlacesController placesController(&sync, &placesSettings);
     KUiServerDownloadJobTracker downloadJobTracker;
     DownloadProgressController downloadProgress(&sync, &downloadJobTracker, &downloadProgressSettings);
 
@@ -74,6 +78,7 @@ int main(int argc, char *argv[])
     qmlRegisterSingletonInstance("org.konedrive.app", 1, 0, "Status", &status);
     qmlRegisterSingletonInstance("org.konedrive.app", 1, 0, "Autostart", &autostart);
     qmlRegisterSingletonInstance("org.konedrive.app", 1, 0, "DownloadProgress", &downloadProgressSettings);
+    qmlRegisterSingletonInstance("org.konedrive.app", 1, 0, "Places", &placesSettings);
     qmlRegisterUncreatableType<TransferModel>("org.konedrive.app", 1, 0, "TransferModel", QStringLiteral("owned by Sync"));
     qmlRegisterUncreatableType<ActivityModel>("org.konedrive.app", 1, 0, "ActivityModel", QStringLiteral("owned by Sync"));
     qmlRegisterUncreatableType<ConflictModel>("org.konedrive.app", 1, 0, "ConflictModel", QStringLiteral("owned by Sync"));

@@ -36,12 +36,14 @@ add_library(konedrive_core STATIC
     downloadjob.cpp
     downloadjobtracker.cpp
     downloadprogresssettings.cpp
+    placessettings.cpp
+    placescontroller.cpp
     downloadprogresscontroller.cpp
     ${konedrive_dbus_SRCS})
 target_include_directories(konedrive_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
 target_link_libraries(konedrive_core PUBLIC
     Qt6::Core Qt6::Gui Qt6::DBus Qt6::Widgets
-    KF6::I18n KF6::ConfigCore KF6::Notifications KF6::StatusNotifierItem KF6::KIOGui KF6::WindowSystem KF6::JobWidgets)
+    KF6::I18n KF6::ConfigCore KF6::Notifications KF6::StatusNotifierItem KF6::KIOGui KF6::KIOFileWidgets KF6::WindowSystem KF6::JobWidgets)
 # What the autostart entry runs: the installed program, as the launcher's entry does.
 target_compile_definitions(konedrive_core PRIVATE KONEDRIVE_INSTALLED_PROGRAM="${KDE_INSTALL_FULL_BINDIR}/konedrive")
 
@@ -99,6 +101,7 @@ if(BUILD_TESTING)
     konedrive_test(notifiertest)
     konedrive_test(autostarttest)
     konedrive_test(downloadprogresssettingstest)
+    konedrive_test(placescontrollertest)
     konedrive_test(downloadprogresscontrollertest)
 
     # Starts the real program twice on the private bus.

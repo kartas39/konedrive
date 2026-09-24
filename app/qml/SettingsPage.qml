@@ -146,6 +146,15 @@ FormCard.FormCardPage {
             checked: DownloadProgress.enabled
             onToggled: DownloadProgress.enabled = checked
         }
+        FormCard.FormDelegateSeparator {}
+        FormCard.FormSwitchDelegate {
+            id: showInPlaces
+            objectName: "showInPlaces"
+            text: i18n("Show in Places")
+            description: i18n("Your OneDrive folder gets an entry in Dolphin's Places panel and in file dialogs.")
+            checked: Places.enabled
+            onToggled: Places.enabled = checked
+        }
     }
 
     // Advanced

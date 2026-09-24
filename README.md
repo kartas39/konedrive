@@ -198,7 +198,9 @@ removes it all again, apart from the helper.
   the same instruction as the `Helper:` line of `konedrivectl sync status` (below). A tray icon
   mirrors the folder's state — synced, syncing, needs attention, signed out — and keeps
   KOneDrive running in the background so notifications still reach you with the window closed;
-  "Start at login" is on by default after the first run.
+  "Start at login" is on by default after the first run. While a folder is registered, it also
+  gets a "OneDrive" entry in Dolphin's Places panel and in file dialogs ("Show in Places" in
+  Settings, on by default).
 
 - **The helper.** A small privileged service that makes a placeholder download the moment a
   program opens it, instead of that program reading zeros. The `konedrive` package installs and

@@ -1043,6 +1043,28 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   (`serviceAvailable` false) finishes every visible and overflow job, and any held in the grace
   window, with an error ("the KOneDrive service stopped") at once, rather than leaving them frozen
   (measured, `aDaemonRestartFinishesVisibleAndOverflowJobsWithAnError`).
+- **A12. Places: a folder registered only through `konedrivectl` while the app is not
+  running gets its entry when the app next starts.** LIMIT · by design (`app/placescontroller.cpp`,
+  `app/tests/placescontrollertest.cpp`). `PlacesController` reconciles Dolphin's Places panel entry
+  on construction and on every `Sync.syncChanged`/`PlacesSettings::enabledChanged`, which only ever
+  fires inside the app process: `konedrivectl` registering or forgetting the root while the app is
+  not running does not touch the Places panel until the app is started again, at which point its
+  constructor-time `reconcile()` catches up. The entry is found again by a bookmark metadata tag
+  (`konedrive` = `1`, set with `KFilePlacesModel::bookmarkForIndex`/`KBookmark::setMetaDataItem`,
+  then `editPlace`/`refresh` to make sure the tag reaches disk and not just this process' copy of
+  the bookmark file), not by url, so a folder change updates the same entry in place instead of
+  leaving a stale one behind. WORKAROUND: adding a fresh entry takes the *last* row matching the new
+  url rather than the first, since `addPlace` does not hand back the row it created and a user could
+  already have an unrelated place at that exact url; this narrows, but does not close, the window
+  where such a pre-existing entry could be mistaken for konedrive's own on that one add. The icon is
+  `folder-cloud` only when the current icon theme reports having it (`QIcon::hasThemeIcon`), else
+  `cloudstatus`, which every Breeze release carries. "Show in Places" (`ShowInPlaces` in
+  konedriverc's `[General]` group, on by default, the same way `StartAtLogin` is stored) removes the
+  entry without touching anything else in the file. Tests (`addsTheEntryForARegisteredFolder`,
+  `updatesTheUrlWhenTheFolderChanges`, `removesTheEntryWhenTheFolderIsForgotten`,
+  `turningTheSwitchOffRemovesTheEntry`, `aUsersOwnEntryIsLeftAlone`) run against a real
+  `KFilePlacesModel` with `XDG_DATA_HOME`/`XDG_CONFIG_HOME` pointed at a wiped temporary directory,
+  never the user's own `user-places.xbel` or `konedriverc`.
 
 ---
 
