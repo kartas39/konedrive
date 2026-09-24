@@ -17,6 +17,7 @@ someone who wants to understand, review or change the system.
 | This page | The overview: the processes, the path of an open, the invariants everything else serves |
 | [hydration.md](hydration.md) | Placeholders and their extended attributes, the helper and its fanotify marks, filling and freeing up files, startup recovery, the helper–daemon protocol |
 | [sync.md](sync.md) | Listing the drive and following its changes, the tree store, reconciling the folder, the first listing, replacing changed files, rescues and conflicts, the read-only lock, the account |
+| [pinning.md](pinning.md) | "Always keep on this device": the pin attribute, what a pin downloads and keeps, freeing up around pins, the sweep |
 | [desktop.md](desktop.md) | The D-Bus API, `konedrivectl`, the window and tray icon, notifications, download progress, thumbnails, Baloo, the Dolphin plugins |
 | [decisions.md](decisions.md) | The notable decisions, each with its reason and its cost |
 | [packaging.md](packaging.md) | The RPM packages: what goes where, why two, the helper enabled on install, upgrades, and the switch from the developer install |
@@ -33,7 +34,7 @@ Related documents elsewhere in the repository:
 - [`../acceptance-check.md`](../acceptance-check.md) — a manual check of a build against a real
   account.
 - [original-proposal.md](original-proposal.md) — the original proposal for
-  the whole client, including the parts not built yet (uploads, pinning, write-side conflicts).
+  the whole client, including the parts not built yet (uploads and write-side conflicts).
   Where it and these documents differ, these documents describe what the code does, and
   [decisions.md](decisions.md) says what changed and why.
 
@@ -44,7 +45,8 @@ changes made in the cloud, downloads on open and frees up space on request. It w
 OneDrive: the OAuth scope is `Files.Read`, so Microsoft itself refuses any write made with its
 token. So that nothing local can diverge from the cloud, the folder is read-only (files `0444`,
 directories `0555`); a local change forced past that lock is moved aside, never overwritten.
-Uploads, pinning and multiple accounts come later.
+"Always keep on this device" (pinning) is built — see [pinning.md](pinning.md). Uploads and
+multiple accounts come later.
 
 Supported: one personal Microsoft account; a sync folder on Btrfs, ext4 or XFS; KDE Plasma 6.
 The kernel needs fanotify pre-content permission events with evictable ignore marks (Linux 6.0)
@@ -68,7 +70,7 @@ and, for a denied open to carry a meaningful errno, Linux 6.14; the design was m
 | `konedrived` | the user; systemd user service, D-Bus activated | Everything else: sign-in and tokens, listing the drive, the tree store, placing and updating placeholders, filling and freeing up files, recovery, rescues, thumbnails, the D-Bus API | Run with any privilege |
 | `konedrive` (KOneDrive) | the user | The window and tray icon: shows what the daemon publishes and calls its methods | Touch the sync folder itself |
 | `konedrivectl` | the user | The command line for every feature of the window, plus developer commands | — |
-| Dolphin plugins | inside Dolphin | Emblems from each file's state attribute; "Download" and "Free up space" in the context menu | Open a file in the sync folder |
+| Dolphin plugins | inside Dolphin | Emblems from each file's state and pin attributes; "Always keep on this device" and "Free up space" in the context menu | Open a file in the sync folder |
 
 The helper exists because only a fanotify group of class `FAN_CLASS_PRE_CONTENT` can hold an open
 until the file has content, and creating one needs `CAP_SYS_ADMIN`. Everything that does not need

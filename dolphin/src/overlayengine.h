@@ -4,9 +4,19 @@
 //
 // Live updates come from inotify. A change to a child's extended attribute is
 // reported as IN_ATTRIB on a watch of its directory, and a change to the
-// directory's own attributes (its root mark) as IN_ATTRIB with no name; so one
-// watch per directory Dolphin has asked about keeps both the emblems and the
-// cached root answer current. inotify reports without opening anything.
+// directory's own attributes (its root mark, or its pin) as IN_ATTRIB with no
+// name; so one watch per directory Dolphin has asked about keeps both the
+// emblems and the cached root answer current. inotify reports without
+// opening anything.
+//
+// A pin is read fresh on every call to overlays() -- it is never cached the
+// way the root answer is -- so it is always correct even for an ancestor
+// directory nothing here watches. Only the *live update* (overlaysChanged
+// without Dolphin asking again) needs a watch: pinning or unpinning a
+// directory Dolphin has browsed (so it is cached here, as the directory
+// itself or as a root) reaches every file cached under it; a pin set on an
+// ancestor Dolphin has only passed through, never watched on its own, is
+// picked up the next time Dolphin asks (docs/limitations-and-workarounds.md).
 //
 // The cache holds an answer only while a watch backs it: a directory's entry
 // and its watch are created, evicted and dropped together, and the sync root
@@ -36,7 +46,7 @@ class OverlayEngine : public QObject
 public:
     static constexpr int DefaultDirectoryLimit = 256;
 
-    explicit OverlayEngine(QObject *parent = nullptr, int directoryLimit = DefaultDirectoryLimit, RootMarkReader hasMark = hasRootMark);
+    explicit OverlayEngine(QObject *parent = nullptr, int directoryLimit = DefaultDirectoryLimit, RootMarkReader hasMark = hasRootMark, PinMarkReader hasPin = hasPinMark);
     ~OverlayEngine() override;
 
     /// The overlay icon names for `url`. Called on Dolphin's UI thread for
@@ -80,6 +90,7 @@ private:
 
     const int m_directoryLimit;
     const RootMarkReader m_hasMark;
+    const PinMarkReader m_hasPin;
     int m_inotify = -1;
     bool m_inotifyUnavailable = false;
     bool m_warnedOutOfWatches = false;

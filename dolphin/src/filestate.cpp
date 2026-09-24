@@ -55,6 +55,12 @@ bool hasRootMark(const QString &dir)
     return ::lgetxattr(native.constData(), RootAttribute, nullptr, 0) >= 0;
 }
 
+bool hasPinMark(const QString &path)
+{
+    const QByteArray native = QFile::encodeName(path);
+    return ::lgetxattr(native.constData(), PinAttribute, nullptr, 0) >= 0;
+}
+
 std::optional<QString> findRoot(const QString &dir, const RootMarkReader &hasMark)
 {
     for (QString current = dir; !current.isEmpty(); current = parentDirectory(current)) {
@@ -121,16 +127,51 @@ std::optional<QString> rootOf(const QString &dir, const RootMarkReader &hasMark)
     return findRoot(physical, hasMark);
 }
 
-Emblem emblemFor(FileState state)
+std::optional<QString> pinnedAbove(const QString &path, const QString &root, const PinMarkReader &hasPin)
+{
+    // Physical from here on -- the same resolution `root` itself was found
+    // with (rootOf), so a directory reached through a symbolic link is
+    // compared correctly against it.
+    QString dir = physicalDirectory(parentDirectory(path));
+    while (!dir.isEmpty()) {
+        if (hasPin(dir)) {
+            return dir;
+        }
+        if (dir == root) {
+            break;
+        }
+        dir = parentDirectory(dir);
+    }
+    return std::nullopt;
+}
+
+std::optional<QString> pinnedBy(const QString &path, const QString &root, const PinMarkReader &hasPin)
+{
+    // The item itself, as Dolphin spelled it: a placeholder is never a
+    // symbolic link, so this is also its physical path.
+    if (hasPin(path)) {
+        return path;
+    }
+    return pinnedAbove(path, root, hasPin);
+}
+
+bool isEffectivelyPinned(const QString &path, const QString &root, const PinMarkReader &hasPin)
+{
+    return pinnedBy(path, root, hasPin).has_value();
+}
+
+Emblem emblemFor(FileState state, bool pinned)
 {
     switch (state) {
     case FileState::OnlineOnly:
-        return Emblem::Cloud;
+        // The sweep queues a pinned online-only file for hydration; until
+        // that finishes it looks exactly like a file already downloading.
+        return pinned ? Emblem::Syncing : Emblem::Cloud;
     case FileState::Hydrating:
     case FileState::Dehydrating:
         return Emblem::Syncing;
     case FileState::Hydrated:
-        return Emblem::Downloaded;
+        return pinned ? Emblem::CheckFilled : Emblem::CheckOutline;
     case FileState::Unmanaged:
     case FileState::Unrecognised:
     case FileState::NotAFile:
@@ -142,13 +183,27 @@ Emblem emblemFor(FileState state)
 QStringList overlayNames(Emblem emblem)
 {
     // Breeze names, checked against /usr/share/icons/breeze{,-dark}:
-    // status/*/cloudstatus.svg, status/*/state-sync.svg, emblems/*/emblem-checked.svg.
+    //   - status/*/cloudstatus.svg (online-only);
+    //   - status/*/state-sync.svg (hydrating, dehydrating, or pinned and
+    //     still online-only -- the sweep is filling it);
+    //   - actions/*/dialog-ok.svg, a bare check with no fill behind it, for
+    //     a hydrated file nobody asked to keep (the OUTLINE case). Not
+    //     actions/*/checkmark.svg: emblems/*/checkmark.svg is a symlink to
+    //     emblem-checked.svg, so that name is ambiguous between the two
+    //     directories and could resolve to the filled icon instead;
+    //     dialog-ok.svg is the same bare glyph under a name that exists
+    //     nowhere else in the theme;
+    //   - emblems/*/emblem-checked.svg, the same check filled solid, for one
+    //     that is effectively pinned (the FILLED case) -- this is the icon
+    //     "hydrated" alone used before pinning existed.
     switch (emblem) {
     case Emblem::Cloud:
         return {QStringLiteral("cloudstatus")};
     case Emblem::Syncing:
         return {QStringLiteral("state-sync")};
-    case Emblem::Downloaded:
+    case Emblem::CheckOutline:
+        return {QStringLiteral("dialog-ok")};
+    case Emblem::CheckFilled:
         return {QStringLiteral("emblem-checked")};
     case Emblem::None:
         break;
@@ -195,34 +250,114 @@ QString joinPath(const QString &dir, const QString &name)
     return dir.endsWith(QLatin1Char('/')) ? QString(dir + name) : QString(dir + QLatin1Char('/') + name);
 }
 
-ActionTargets actionTargets(const QStringList &paths, const RootMarkReader &hasMark)
+bool isFileOrDirectory(const QString &path)
 {
-    ActionTargets targets;
-    QHash<QString, bool> inRoot;
+    const QByteArray native = QFile::encodeName(path);
+    struct stat info {
+    };
+    return ::lstat(native.constData(), &info) == 0 && (S_ISREG(info.st_mode) || S_ISDIR(info.st_mode));
+}
+
+bool isDirectory(const QString &path)
+{
+    const QByteArray native = QFile::encodeName(path);
+    struct stat info {
+    };
+    return ::lstat(native.constData(), &info) == 0 && S_ISDIR(info.st_mode);
+}
+
+Emblem emblemForItem(FileState state, bool isDir, bool pinned)
+{
+    if (isDir) {
+        return pinned ? Emblem::CheckFilled : Emblem::None;
+    }
+    return emblemFor(state, pinned);
+}
+
+namespace
+{
+/// Names konedrive keeps for itself (crates/konedrived/src/sync/root.rs);
+/// never offered, so one of them can't make Pin/Unpin/FreeUp refuse the
+/// whole batch it is part of.
+bool isReservedName(const QString &path)
+{
+    return fileName(path).startsWith(QLatin1String(".konedrive-"));
+}
+} // namespace
+
+MenuState menuState(const QStringList &paths, const RootMarkReader &hasRoot, const PinMarkReader &hasPin)
+{
+    MenuState result;
+    QHash<QString, std::optional<QString>> rootByDir;
+
+    bool anyConsidered = false;
+    bool allEffectivelyPinned = true;
+    bool anyPinnedAbove = false;
+    bool anyFolder = false;
+    bool anyHydratedOrExplicit = false;
+
     for (const QString &path : paths) {
         const QString dir = parentDirectory(path);
-        if (dir.isEmpty()) {
+        if (dir.isEmpty() || !isFileOrDirectory(path) || isReservedName(path)) {
             continue;
         }
-        auto known = inRoot.constFind(dir);
-        if (known == inRoot.constEnd()) {
-            known = inRoot.insert(dir, rootOf(dir, hasMark).has_value());
+        auto known = rootByDir.find(dir);
+        if (known == rootByDir.end()) {
+            known = rootByDir.insert(dir, rootOf(dir, hasRoot));
         }
-        if (!known.value()) {
+        if (!known.value().has_value()) {
             continue;
         }
-        switch (readFileState(path)) {
-        case FileState::OnlineOnly:
-            targets.download.append(path);
-            break;
-        case FileState::Hydrated:
-            targets.freeUpSpace.append(path);
-            break;
-        default:
-            break;
+        const QString &root = *known.value();
+        const bool isDir = isDirectory(path);
+        const FileState state = isDir ? FileState::NotAFile : readFileState(path);
+        // Unmanaged and unrecognised files are not offered anything either:
+        // Pin/Unpin/FreeUp would have nothing to do with them, and sending
+        // one along would only risk refusing the rest of the batch with it.
+        if (!isDir && (state == FileState::Unmanaged || state == FileState::Unrecognised)) {
+            continue;
+        }
+
+        anyConsidered = true;
+        result.inRoot.append(path);
+        anyFolder = anyFolder || isDir;
+
+        // "Pinned above" is independent of the item's own pin: the daemon
+        // still refuses Unpin/FreeUp for it even when it is also explicitly
+        // pinned, since it would stay pinned by that ancestor either way
+        // (pinning.md §5) -- pinnedBy's short-circuit on the item itself
+        // would hide that.
+        const std::optional<QString> above = pinnedAbove(path, root, hasPin);
+        const bool explicitPin = hasPin(path);
+        const bool effectivePinned = explicitPin || above.has_value();
+        const bool hydrated = state == FileState::Hydrated;
+
+        allEffectivelyPinned = allEffectivelyPinned && effectivePinned;
+        if (above) {
+            anyPinnedAbove = true;
+            if (result.blockingFolder.isEmpty()) {
+                result.blockingFolder = fileName(*above);
+            }
+        }
+        if (hydrated || explicitPin) {
+            anyHydratedOrExplicit = true;
         }
     }
-    return targets;
+
+    if (!anyConsidered) {
+        return result;
+    }
+
+    result.showAlwaysKeep = true;
+    result.alwaysKeepChecked = allEffectivelyPinned;
+    // Unchecked, toggling it (Pin()) is always safe; checked, unchecking it
+    // (Unpin()) refuses the whole call if anything is pinned above.
+    result.alwaysKeepEnabled = !allEffectivelyPinned || !anyPinnedAbove;
+    // Windows-like: any folder in the root offers "Free up space", not only
+    // one that is downloaded or pinned.
+    result.showFreeUp = anyHydratedOrExplicit || anyFolder;
+    result.freeUpEnabled = !anyPinnedAbove;
+    return result;
 }
 
 } // namespace konedrive

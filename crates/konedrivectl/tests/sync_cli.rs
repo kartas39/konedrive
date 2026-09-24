@@ -634,7 +634,7 @@ async fn binary_register_without_a_helper_says_how_to_start_it() {
 
     let status = out_text(&run(addr, &["sync", "status"]));
     let helper = status.lines().find(|l| l.starts_with("Helper:")).unwrap_or_else(|| panic!("{status}"));
-    assert_eq!(helper, "Helper:           unknown — the konedrive helper is not connected", "{status}");
+    assert_eq!(helper, "Helper:                 unknown — the konedrive helper is not connected", "{status}");
 }
 
 /// `NoHelper` from `dehydrate`: a root registered *with* interception whose
@@ -949,7 +949,7 @@ async fn binary_status_of_a_onedrive_folder_counts_its_items_and_says_it_is_read
         "{text}"
     );
     assert!(
-        text.lines().any(|l| l == "Skipped:          1 (see `konedrivectl sync skipped`)"),
+        text.lines().any(|l| l == "Skipped:                1 (see `konedrivectl sync skipped`)"),
         "{text}"
     );
     assert!(text.lines().any(|l| l.starts_with("Editing:") && l.contains("read-only")), "{text}");
@@ -1055,7 +1055,7 @@ async fn binary_conflicts_are_listed_and_dismissed() {
 
     let status = out_text(&run(addr, &["sync", "status"]));
     assert!(
-        status.lines().any(|l| l == "Conflicts:        1 (see `konedrivectl sync conflicts`)"),
+        status.lines().any(|l| l == "Conflicts:              1 (see `konedrivectl sync conflicts`)"),
         "{status}"
     );
     let text = out_text(&run_utc(addr, &["sync", "conflicts"]));
@@ -1089,6 +1089,81 @@ async fn binary_free_up_space_says_what_it_freed_and_what_was_in_use() {
         out_text(&out).trim(),
         format!("Freed 1 file ({}). 1 file was in use and kept.", konedrivectl::human_bytes(freed))
     );
+}
+
+/// `sync pin` keeps a folder on this device, and everything in it
+/// downloads; `sync status` counts it; `sync free` of a file the folder keeps
+/// is refused, naming the folder; `sync free` of the folder stops keeping it
+/// and frees up what is in it.
+/// A folder registered without interception, with no helper, holding
+/// `docs/a.bin` and `docs/b.bin`, 64 KiB each, neither downloaded: the paths
+/// of `docs`, `a.bin` and `b.bin`.
+async fn docs_to_pin(f: &Harness) -> (PathBuf, PathBuf, PathBuf) {
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    let root = root.canonicalize().unwrap();
+    let source = f.dir.path().join("source");
+    std::fs::create_dir_all(source.join("docs")).unwrap();
+    for name in ["docs/a.bin", "docs/b.bin"] {
+        std::fs::write(source.join(name), vec![4u8; 64 * 1024]).unwrap();
+    }
+    f.proxy.register_root_without_interception(root.to_str().unwrap()).await.unwrap();
+    f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+    (root.join("docs"), root.join("docs/a.bin"), root.join("docs/b.bin"))
+}
+
+/// A file's `user.konedrive.state`, read by name.
+fn state(path: &PathBuf) -> Vec<u8> {
+    xattr::get(path, "user.konedrive.state").unwrap().unwrap_or_default()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_pin_keeps_a_folder_here_and_free_lets_it_go() {
+    let f = harness_with_helper(false).await;
+    let addr = f._bus.address();
+    let (docs, a, b) = docs_to_pin(&f).await;
+
+    let out = run(addr, &["sync", "pin", docs.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out_text(&out).trim(), "Kept on this device. 2 files are downloading (`konedrivectl sync transfers`).");
+    wait_for(|| state(&a) == b"hydrated" && state(&b) == b"hydrated").await;
+    let status = out_text(&run(addr, &["sync", "status"]));
+    assert!(status.lines().any(|l| l == "Always on this device:  1"), "{status}");
+
+    let told = refused(addr, &["sync", "free", a.to_str().unwrap()]);
+    assert!(told.contains(&format!("because the folder {} is", docs.display())), "{told}");
+    assert_eq!(state(&a), b"hydrated");
+
+    let out = run(addr, &["sync", "free", docs.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).starts_with("Freed 2 files ("), "{}", out_text(&out));
+    assert_eq!((state(&a), state(&b)), (b"online-only".to_vec(), b"online-only".to_vec()));
+    let status = out_text(&run(addr, &["sync", "status"]));
+    assert!(status.lines().any(|l| l == "Always on this device:  0"), "{status}");
+}
+
+/// `sync unpin` takes a folder's pin off and leaves its files downloaded.
+/// Asked of files the folder keeps, it is refused, naming the first such
+/// file alone and the folder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_unpin_stops_keeping_a_folder_and_leaves_its_files() {
+    let f = harness_with_helper(false).await;
+    let addr = f._bus.address();
+    let (docs, a, b) = docs_to_pin(&f).await;
+    f.proxy.pin(&[docs.to_str().unwrap()]).await.unwrap();
+    wait_for(|| state(&a) == b"hydrated" && state(&b) == b"hydrated").await;
+
+    let told = refused(addr, &["sync", "unpin", b.to_str().unwrap(), a.to_str().unwrap()]);
+    let expected = format!("{} is kept on this device because the folder {} is", b.display(), docs.display());
+    assert!(told.contains(&expected), "{told}");
+    assert!(told.contains(&format!("`konedrivectl sync unpin {}`", docs.display())), "{told}");
+
+    let out = run(addr, &["sync", "unpin", docs.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).starts_with("No longer kept on this device."), "{}", out_text(&out));
+    assert_eq!(xattr::get(&docs, "user.konedrive.pin").unwrap(), None);
+    assert_eq!((state(&a), state(&b)), (b"hydrated".to_vec(), b"hydrated".to_vec()), "the files stay");
+    assert_eq!(f.proxy.pinned_count().await.unwrap(), 0);
 }
 
 /// `sync status` says when the folder was last checked with OneDrive, and

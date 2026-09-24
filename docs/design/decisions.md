@@ -629,18 +629,35 @@ the desktop; short downloads would only flicker.
 **Trade-off.** The daemon's order of "transfer gone" and "transfer failed" is not fixed, so a job is
 held 1.5 s before it is called a success (limitations log A11).
 
-### Dolphin: "Download" starts the daemon; the plugins never open a file
+### Dolphin: a menu action starts the daemon; the plugins never open a file
 
 **Decision.** The context-menu action starts a stopped daemon through D-Bus activation. Neither
-plugin opens a file in the sync folder; emblems come from `lgetxattr`. At most 1000 calls wait at
-once per window.
+plugin opens a file in the sync folder; emblems come from `lgetxattr`. At most 1000 paths wait at
+once per window, one `Pin`/`Unpin`/`FreeUp` call per action chosen (not one call per path).
 
-**Why.** A user clicking "Download" expects a download, as with any KDE service. An open inside
+**Why.** A user clicking "Always keep on this device" expects a download, as with any KDE
+service. An open inside
 Dolphin would download whatever is shown. The cap bounds Dolphin's memory and its D-Bus reply budget
 against a daemon that never answers.
 
-**Trade-off.** Very large selections take several clicks until a batch method exists (limitations
-log K6).
+**Trade-off.** A selection of more than 1000 paths still takes several clicks, and the dedupe is
+by path alone, so choosing one action right after another on an overlapping selection, before the
+first answers, sends only the first (limitations log K6).
+
+### Pinning: unchecking only unpins; "Free up space" works on any folder
+
+**Decision (D-A).** Unchecking "Always keep on this device" only removes the pin -- files already
+downloaded stay downloaded, exactly as on Windows. It calls the daemon's `Unpin`, never `FreeUp`;
+only "Free up space" frees anything. **Decision (D-B).** "Free up space" is offered for any folder
+inside the root, not only a pinned or already-downloaded one, again as on Windows -- `FreeUp`
+already recurses into a folder regardless.
+
+**Why.** Matches what a Windows user already expects of "Always keep on this device", and keeps
+the two actions' jobs separate: one manages the pin, the other frees space.
+
+**Trade-off.** Pin and Unpin are refused as one call for the whole selection if any path in it is
+pinned only by an ancestor, so the checkbox is disabled in that case rather than partly acting on a
+selection (`dolphin/src/filestate.cpp`, `menuState`).
 
 ## Testing
 

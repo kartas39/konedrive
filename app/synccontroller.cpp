@@ -139,6 +139,9 @@ void SyncController::applyProperties(const QVariantMap &p)
     if (const auto it = p.constFind(QLatin1String("ConflictCount")); it != p.constEnd()) {
         m_conflictCount = it->toUInt();
     }
+    if (const auto it = p.constFind(QLatin1String("PinnedCount")); it != p.constEnd()) {
+        m_pinnedCount = it->toUInt();
+    }
     if (const auto it = p.constFind(QLatin1String("Transfers")); it != p.constEnd()) {
         // A structured value inside a{sv} arrives as a QDBusArgument.
         m_transfers->setTransfers(it->canConvert<QDBusArgument>() ? qdbus_cast<KonedriveTransferList>(it->value<QDBusArgument>())

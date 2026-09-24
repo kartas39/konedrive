@@ -9,6 +9,7 @@
 #        tests/vm/run.sh full [args...]      # the suite, three VMs in parallel
 #        tests/vm/run.sh scenarios [args...] # the suite, all three FS, one VM
 #        tests/vm/run.sh measure [args...]   # the measurement mode
+#        tests/vm/run.sh unit                # the shipped systemd unit, under systemd
 #
 # `quick` is the normal run, every time: one filesystem (the user's own,
 # btrfs), one VM, so the loop is short. `full` runs only when the user asks for
@@ -152,6 +153,52 @@ build_scenarios() {
 
 mode=${1:-}
 case $mode in
+    unit)
+        # The helper as a real machine runs it: systemd as PID 1 starts it
+        # from packaging/systemd/konedrive-helper.service, and a daemon then
+        # works through its socket (tests/vm/helper_unit_test.sh). Separate
+        # from `quick`, which starts the helper itself as plain root.
+        #
+        # A release helper WITHOUT fault-injection — what ships — in a target
+        # directory of its own, so it neither replaces nor is replaced by the
+        # suite's hooked build in $here/target/release.
+        cargo build --release --manifest-path "$repo/Cargo.toml" -p konedrive-helper \
+            --target-dir "$here/target/unit"
+        cargo build --release --manifest-path "$here/Cargo.toml" --bin vm-scenarios
+        # Not under /tmp: systemd mounts a fresh tmpfs there in the guest.
+        work=$(mktemp -d "$here/target/unit-run.XXXXXX")
+        trap 'rm -rf "$work"' EXIT
+        {
+            echo '#!/bin/sh'
+            printf 'sh %s %s %s %s\n' "$(shquote "$here/helper_unit_test.sh")" \
+                "$(shquote "$here/target/unit/release/konedrive-helper")" \
+                "$(shquote "$here/target/release/vm-scenarios")" \
+                "$(shquote "$repo/packaging/systemd/konedrive-helper.service")"
+            echo 'echo "inner-exit=$?"'
+        } > "$work/inner.sh"
+        chmod +x "$work/inner.sh"
+        # No --rw: the guest sees the host's root read-only, and vng puts
+        # tmpfs-backed overlays over /etc, /usr and /var, so the unit and the
+        # binary are installed in the guest alone (the script checks this
+        # before writing anything). selinux=0: with the host's policy
+        # enforcing over an unlabelled virtiofs root, systemd cannot mount
+        # /run and freezes. --disable-microvm: the microvm machine
+        # hangs at "ACPI: Core revision" under the 7.2.7 host kernel
+        # (2026-09-25); the standard machine boots. Piped through cat: vng
+        # opens the same output file from several chardevs, which overwrite
+        # one another in a regular file.
+        vng --run --systemd --disable-microvm --memory "$memory" --user root \
+            --append selinux=0 \
+            --exec "$work/inner.sh" < /dev/null 2>&1 | cat > "$work/out.txt"
+        tr -d '\r' < "$work/out.txt" | sed -n '/^==== guest ====$/,$p'
+        rc=$(tr -d '\r' < "$work/out.txt" | sed -n 's/^inner-exit=\([0-9]\{1,\}\)$/\1/p' | tail -1)
+        if [ -z "$rc" ]; then
+            tr -d '\r' < "$work/out.txt" | tail -40
+            echo "run.sh: the guest never reported an exit status" >&2
+            exit 125
+        fi
+        exit "$rc"
+        ;;
     quick)
         shift
         build_scenarios

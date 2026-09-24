@@ -130,7 +130,19 @@ Expected: every downloaded file that is not open right now goes back to `online-
 (files freed, bytes freed, files skipped as busy) matches what "On this computer" showed before and
 after. A file you have open in another program is skipped and counted busy, not freed.
 
-## 10. The Baloo exclusion
+## 10. Pinning: Always keep on this device
+In Dolphin, right-click a folder inside the scratch folder that has at least one file not yet
+downloaded, and choose **Always keep on this device**.
+Expected: it downloads everything under it (`konedrivectl sync status` shows "Always on this
+device: 1"); the folder and every file under it get the filled check emblem; the window's Status
+page shows "Always on this device: 1 item".
+
+Right-click the same folder again and uncheck **Always keep on this device**.
+Expected: the files stay downloaded — the emblem changes to the outline check, nothing is freed,
+and "Always on this device" is gone from the Status page. Now choose **Free up space** on the
+folder: the files go back to `online-only`.
+
+## 11. The Baloo exclusion
     balooctl6 config list excludeFolders
     grep 'exclude folders' ~/.config/baloofilerc
 Expected: the scratch folder's path is listed (by the second command at least: `balooctl6 config
@@ -139,7 +151,7 @@ it (opening every file to index it would download the whole drive). If you had e
 folder yourself before this run, it is still listed too; registering or forgetting the OneDrive
 folder never touches an exclusion you did not add.
 
-## 11. Without the helper: what you are told (needs sudo)
+## 12. Without the helper: what you are told (needs sudo)
 Close any program that has a file in the folder open first: stopping the helper hands a file that
 is still downloading to its program empty (limitations log Z1). Do not open files in the folder
 while the helper is stopped: nothing intercepts the open, and a file that is not downloaded reads
@@ -154,7 +166,7 @@ shows the same instruction on a card.
     konedrivectl sync status        # repeat
 Expected: within half a minute, `Helper: connected` and `State: ready`; the card is gone.
 
-## 12. Tray states and a notification
+## 13. Tray states and a notification
 With the helper installed (step 2), watch the tray icon while a cycle runs:
 - synced ("state-ok", a checkmark) once a cycle finishes with nothing to do;
 - syncing ("state-sync") while `sync status` reads `listing` or a download is under way;

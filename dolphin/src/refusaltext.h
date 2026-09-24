@@ -13,7 +13,12 @@ namespace konedrive
 {
 
 enum class Operation {
-    Download,
+    /// "Always keep on this device", checking it: calls Pin(paths).
+    AlwaysKeep,
+    /// "Always keep on this device", unchecking it: calls Unpin(paths).
+    /// Windows-like -- this only unpins, and never frees space on its own.
+    Unpin,
+    /// "Free up space": calls FreeUp(paths).
     FreeUpSpace,
 };
 

@@ -1,10 +1,11 @@
 {
     "KPlugin": {
-        "Description": "Download a OneDrive file, or free up the space it takes, from the context menu",
-        "Icon": "cloud-download",
+        "Description": "Always keep a OneDrive file on this device, or free up the space it takes, from the context menu",
+        "Icon": "window-pin",
         "MimeTypes": [
-            "application/octet-stream"
+            "application/octet-stream",
+            "inode/directory"
         ],
-        "Name": "KOneDrive: Download and Free up space"
+        "Name": "KOneDrive: Always Keep on This Device and Free up space"
     }
 }

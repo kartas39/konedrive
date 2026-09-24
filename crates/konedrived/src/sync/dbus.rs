@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,6 +64,10 @@ pub enum SyncFault {
     /// `DismissConflict` of a path that names no conflict; the message
     /// names the path.
     NoConflict(String),
+    /// A free-up of something "Always keep on this device" keeps here:
+    /// `FreeUp` of a path a folder above it pins, or `Dehydrate` of a pinned
+    /// file. The message is "<path> is pinned by <folder>: unpin it first".
+    NotAllowed(String),
     /// Everything with no name of its own: an I/O failure, mostly.
     Failed(String),
 }
@@ -147,6 +151,31 @@ impl Sync1 {
         self.service.dismiss_conflict(rescued_path).await.map_err(to_fault)
     }
 
+    /// "Always keep on this device" for each path; how many files were
+    /// queued for download.
+    #[zbus(out_args("queued"))]
+    async fn pin(&self, paths: Vec<String>) -> Result<u32> {
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        self.service.pin(&paths).await.map_err(to_fault)
+    }
+
+    /// Unchecking "Always keep on this device": each path's own pin comes
+    /// off, and its files stay; how many pins came off.
+    #[zbus(out_args("unpinned"))]
+    async fn unpin(&self, paths: Vec<String>) -> Result<u32> {
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        self.service.unpin(&paths).await.map_err(to_fault)
+    }
+
+    /// "Free up space" for each path, taking its own pin off first. `busy`
+    /// counts the files kept because they were in use or changed here.
+    #[zbus(out_args("files", "bytes", "busy", "skipped_pinned"))]
+    async fn free_up(&self, paths: Vec<String>) -> Result<(u32, u64, u32, u32)> {
+        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
+        let freed = self.service.free_up(&paths).await.map_err(to_fault)?;
+        Ok((freed.files, freed.bytes, freed.busy + freed.modified, freed.pinned))
+    }
+
     #[zbus(out_args("files", "bytes", "busy"))]
     async fn free_up_space(&self) -> Result<(u32, u64, u32)> {
         let freed = self.service.free_up_space().await.map_err(to_fault)?;
@@ -206,6 +235,12 @@ impl Sync1 {
         self.service.status().2
     }
 
+    /// Files and folders with a pin of their own.
+    #[zbus(property)]
+    async fn pinned_count(&self) -> u32 {
+        self.service.pinned_count()
+    }
+
     #[zbus(property)]
     async fn transfers(&self) -> Vec<(String, u64, u64)> {
         self.service.transfers()
@@ -237,6 +272,7 @@ fn to_fault(error: SyncError) -> SyncFault {
         SyncError::NotSignedIn => SyncFault::NotSignedIn(message),
         SyncError::NoSource => SyncFault::NoSource(message),
         SyncError::NoConflict(_) => SyncFault::NoConflict(message),
+        SyncError::NotAllowed(_) => SyncFault::NotAllowed(message),
         SyncError::Io(_) => SyncFault::Failed(message),
     }
 }
@@ -335,6 +371,7 @@ pub(crate) struct Coalesced {
     last_checked: i64,
     local_bytes: u64,
     conflict_count: u32,
+    pinned_count: u32,
     transfers: Vec<(String, u64, u64)>,
 }
 
@@ -347,6 +384,7 @@ impl Coalesced {
             last_checked: s.last_checked,
             local_bytes: s.local_bytes,
             conflict_count: s.conflict_count,
+            pinned_count: s.pinned_count,
             transfers: transfers.values().map(|t| (t.path.clone(), t.done, t.total)).collect(),
         }
     }
@@ -371,6 +409,9 @@ impl Coalesced {
         }
         if old.conflict_count != self.conflict_count {
             changed.insert("ConflictCount", self.conflict_count.into());
+        }
+        if old.pinned_count != self.pinned_count {
+            changed.insert("PinnedCount", self.pinned_count.into());
         }
         if old.transfers != self.transfers {
             changed.insert("Transfers", self.transfers.clone().into());
@@ -445,7 +486,7 @@ async fn emit_changes(
 
 /// As [`emit_changes`], for the counters (`ItemsListed`, `ItemsPlaced`,
 /// `SkippedCount`) and the status properties (`LastChecked`, `LocalBytes`,
-/// `ConflictCount`, `Transfers`) only — kept separate so their own
+/// `ConflictCount`, `PinnedCount`, `Transfers`) only — kept separate so their own
 /// coalescing ([`coalesce`]: at most four `PropertiesChanged` a second,
 /// since a listing changes the counters with every page and a download its
 /// transfer with every read) never holds up `RootState`, `RootPath` or
@@ -455,7 +496,7 @@ async fn emit_changes(
 /// changed since the last tick, through `fdo::Properties::properties_changed`
 /// directly rather than the per-property `*_changed` helpers each
 /// property's own `#[zbus(property)]` generates: calling those separately
-/// would put up to seven signals on the bus per tick — seven times the ≤4-a-
+/// would put up to eight signals on the bus per tick — eight times the ≤4-a-
 /// second asks for, not one within it.
 async fn emit_coalesced(iface: &InterfaceRef<Sync1>, old: &Coalesced, new: &Coalesced) -> zbus::Result<()> {
     let changed = new.changed_since(old);

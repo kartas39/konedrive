@@ -354,8 +354,9 @@ systemd unit narrows that down.
 
 `dolphin/` holds two Dolphin plugins. Files in the sync folder get an emblem — a
 cloud when online-only, sync arrows while downloading or freeing up, a check
-mark when downloaded — and their context menu offers **Download** (online-only
-files) and **Free up space** (downloaded ones). Emblems come from each file's
+mark when downloaded, a filled check when kept on this device — and their context
+menu offers **Always keep on this device** and **Free up space**, for files and
+folders. Emblems come from each file's
 `user.konedrive.state` and work with the daemon stopped; the menu actions ask
 the daemon, and say plainly when it is not running. Neither plugin ever
 opens a file in the sync folder. Dolphin itself still opens some, and that
@@ -406,7 +407,7 @@ cmake --build build/dolphin-system && sudo cmake --install build/dolphin-system
 This installs into `/usr/lib64/qt6/plugins/kf6/overlayicon/` and
 `.../kf6/kfileitemaction/`; `sudo xargs rm < build/dolphin-system/install_manifest.txt`
 removes it. The menu actions can be switched off in Dolphin under Configure
-Dolphin → Context Menu ("KOneDrive: Download and Free up space").
+Dolphin → Context Menu ("KOneDrive: Always Keep on This Device and Free up space").
 
 ## For developers
 

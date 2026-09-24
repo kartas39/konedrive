@@ -1,20 +1,26 @@
-// Asks konedrived to download or free up files, without ever waiting for it.
+// Asks konedrived to keep files on this device or free up their space,
+// without ever waiting for it.
 //
-// Every call is asynchronous and made with no reply timeout: a download can
+// Pin, Unpin and FreeUp each take the whole selection in one D-Bus call
+// (Sync1's `Pin(as) -> u`, `Unpin(as) -> u` and `FreeUp(as) -> (u,t,u,u)`),
+// unlike the old per-file Hydrate/Dehydrate this replaced: one call, one
+// aggregate answer. The call
+// is asynchronous and made with no reply timeout: freeing up a big folder can
 // take far longer than D-Bus's default 25 seconds, and a call that timed out
-// would report a failure while the download went on. A call to a daemon that
-// is not running is answered by the bus at once; one that stops while a call
+// would report a failure while the work went on. A call to a daemon that is
+// not running is answered by the bus at once; one that stops while a call
 // waits is answered NoReply.
 //
 // The daemon is started on demand if it can be (it is D-Bus activatable):
-// choosing "Download" is an explicit request for it.
+// choosing "Always keep on this device" is an explicit request for it.
 //
 // A daemon that never answers must not cost Dolphin without bound: each
 // waiting call holds a few KB, and on a dbus-daemon bus the calls count
-// against the pending-reply budget of Dolphin's own connection. So a file
-// that is still waiting is not asked for again, and no more than
-// MaxCallsInFlight calls wait at once; the files left out are named in the
-// message.
+// against the pending-reply budget of Dolphin's own connection. So a path
+// that is still waiting (in an earlier call not yet answered) is not sent
+// again, and no more than MaxCallsInFlight paths wait at once; the paths left
+// out are named in the message. Paths not already waiting and under the cap
+// are still sent together, in the one call this operation makes.
 
 #pragma once
 
@@ -48,15 +54,20 @@ public:
 
     explicit SyncClient(const QDBusConnection &bus, QObject *parent = nullptr);
 
-    /// One call per file, all sent at once; the daemon schedules them.
-    /// Files already waiting for an answer, and files past the cap, are not
-    /// sent; they are reported along with the refusals.
+    /// One Pin(paths) or FreeUp(paths) call for every path not already
+    /// waiting and not past the cap; those are reported along with whatever
+    /// refusal the call itself comes back with.
     void start(Operation operation, const QStringList &paths);
 
 Q_SIGNALS:
     /// A message for the user about files the daemon did not do what was
     /// asked for. Nothing is emitted for files it did.
     void failed(const QString &message);
+    /// FreeUp succeeded, and `busy` of the paths it was given were in use or
+    /// changed here (not uploaded yet) and so were kept, not freed --
+    /// FreeUp's own `busy` count, which folds in both. Not emitted when it
+    /// is 0.
+    void freeUpKeptBusy(uint busy);
 
 private:
     QDBusConnection m_bus;

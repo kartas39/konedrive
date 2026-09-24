@@ -60,6 +60,10 @@ pub struct Applied {
     /// §16.1). A Full scope leaves it empty: it is one `listed` event, not
     /// one per item.
     pub changes: Vec<Changed>,
+    /// Files made, and files or folders moved, inside a folder a pin keeps
+    /// on this device, relative to the root: what the sync queues for
+    /// download once the reconcile is done.
+    pub pinned: Vec<PathBuf>,
 }
 
 /// A local version a reconcile moved out of the way (§16.3: "the
@@ -131,6 +135,9 @@ struct Run {
     scope: Option<HashSet<String>>,
     /// The holding directory has been marked by this run (invariant M1).
     holding_marked: bool,
+    /// Whether a pin keeps the directory at each path on this device, as far
+    /// as this run has asked: a directory's answer is read once.
+    pinned_dirs: HashMap<PathBuf, bool>,
 }
 
 impl Run {
@@ -376,6 +383,7 @@ impl Materializer {
                     run.out.moved += 1;
                     let from = run.moved_from.get(&row.id).cloned();
                     run.note(EventKind::Moved, &rel, from);
+                    self.note_if_pinned(&rel, run);
                     if !is_folder {
                         self.check_file(&dir, name, row, &rel, run)?;
                     }
@@ -406,10 +414,38 @@ impl Materializer {
                     mode: if self.disk.locked() { LOCKED_FILE_MODE } else { OPEN_FILE_MODE },
                 };
                 self.disk.writable(dir, || placeholder::create_placeholder_with(dir, &row.name, &spec))?;
+                self.note_if_pinned(rel, run);
             }
         }
         run.out.created += 1;
         Ok(())
+    }
+
+    /// Notes `rel` in [`Applied::pinned`] when the folder it is in is
+    /// pinned — by its own pin or one above it. A pin that cannot be read is
+    /// logged and not followed: the next sweep finds the file.
+    fn note_if_pinned(&self, rel: &Path, run: &mut Run) {
+        let parent = rel.parent().unwrap_or(Path::new(""));
+        match self.dir_pinned(parent, run) {
+            Ok(true) => run.out.pinned.push(rel.to_path_buf()),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("cannot tell whether {} is kept on this device: {e}", parent.display()),
+        }
+    }
+
+    /// Whether a pin keeps the directory at `rel` on this device: its own,
+    /// or one on a directory above it up to the root.
+    fn dir_pinned(&self, rel: &Path, run: &mut Run) -> std::io::Result<bool> {
+        if let Some(&pinned) = run.pinned_dirs.get(rel) {
+            return Ok(pinned);
+        }
+        let pinned = placeholder::read_pin(&self.disk.dir(rel)?)?
+            || match rel.parent() {
+                Some(above) => self.dir_pinned(above, run)?,
+                None => false,
+            };
+        run.pinned_dirs.insert(rel.to_path_buf(), pinned);
+        Ok(pinned)
     }
 
     /// A new folder under its temporary name `temp`, labelled with its id.
@@ -896,6 +932,13 @@ async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSour
     };
     if !same_file {
         return Ok(ReplaceOutcome::Current);
+    }
+    // A pin of the file's own goes with it to the new version, which is
+    // another inode.
+    if let Some(now) = &now {
+        if placeholder::read_pin(now)? {
+            placeholder::write_pin(&new)?;
+        }
     }
     let temp = format!("{NEW_PREFIX}{}", r.id);
     clear_leftover_link(disk, &dir, OsStr::new(&temp), &r.id)?;

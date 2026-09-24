@@ -295,32 +295,49 @@ a poisoned allocator so that a use of freed memory cannot hide.
 
 ### 10.1 Emblems
 
-The overlay plugin gives each file an emblem from its `user.konedrive.state`, read with `lstat` and
-`lgetxattr`:
+The overlay plugin gives each file (and, for the pinned case, each folder) an emblem from its
+`user.konedrive.state` and `user.konedrive.pin`, read with `lstat` and `lgetxattr`:
 
-| State | Emblem |
-|---|---|
-| `online-only` | `cloudstatus` (a cloud) |
-| `hydrating`, `dehydrating` | `state-sync` |
-| `hydrated` | `emblem-checked` |
-| outside a root, or an unrecognised state | none |
+| State | Pinned? | Emblem |
+|---|---|---|
+| `online-only` | no | `cloudstatus` (a cloud) |
+| `online-only` | yes (a pin the sweep has not filled yet) | `state-sync` |
+| `hydrating`, `dehydrating` | either | `state-sync` |
+| `hydrated` | no | `dialog-ok` (an outline check) |
+| `hydrated` | yes | `emblem-checked` (a filled check) |
+| a folder | yes (effectively) | `emblem-checked` |
+| a folder | no | none |
+| outside a root, or an unrecognised state | -- | none |
 
-A file is inside a root when an ancestor directory carries `user.konedrive.root`; ancestors are
-resolved with `lstat` and `readlink` per component, never by opening, so a symlink out of the root
-does not count as inside. The answer is cached per directory while an inotify watch on that
-directory stays in place, for the 256 most recently shown directories. `IN_ATTRIB` on the directory
-reports a child's state change, so emblems update live. Emblems need no daemon: they work with it
-stopped. Reading the attributes on Dolphin's UI thread costs about 7 µs per file inside the folder.
+"Pinned" means effectively pinned: the item itself, or any ancestor up to the root, carries
+`user.konedrive.pin`. A file is inside a root when an ancestor directory carries
+`user.konedrive.root`; ancestors are resolved with `lstat` and `readlink` per component, never by
+opening, so a symlink out of the root does not count as inside, and the same resolution is used to
+walk up for a pin. The root answer is cached per directory while an inotify watch on that directory
+stays in place, for the 256 most recently shown directories; the pin is read fresh on every call
+instead, since a directory Dolphin has only passed through, not browsed on its own, never gets a
+watch of its own (limitations log K22). `IN_ATTRIB` on the directory reports a child's state or pin
+change, so emblems update live for a watched directory. Emblems need no daemon: they work with it
+stopped. Reading the attributes on Dolphin's UI thread costs about 7 µs per file inside the folder;
+the pin's ancestor walk is not cached (K5), and a directory's own pin bit is not cached either (K15).
 
 ### 10.2 The context menu
 
-The action plugin adds **Download** for `online-only` files and **Free up space** for `hydrated`
-ones, for any selection; an action that does not apply is hidden. Each file is one asynchronous
-D-Bus call (`Hydrate` or `Dehydrate`) with no reply timeout, since a download can take minutes. A
-click on "Download" starts a stopped daemon through D-Bus activation, as any KDE service would,
-rather than reporting that it is not running. A file already waiting is never sent twice, and at
-most 1000 calls wait at once per window (limitations log K6). Refusals are explained by their error
-name. The actions can be switched off in Dolphin's context-menu settings.
+The action plugin adds **Always keep on this device**, a checkable action, and **Free up space**,
+for files and folders and any selection (see [pinning.md](pinning.md)). "Always keep" is checked
+when the selection is effectively pinned; while checked, it is disabled if anything in the
+selection is pinned only by a folder above it (unchecking it then would refuse the whole call).
+Checking it calls `Pin`; unchecking it calls `Unpin`, which only removes the pin -- files stay
+downloaded, as on Windows (D-A). "Free up space" is shown for any folder in the root, or a file
+that is downloaded or explicitly pinned, and disabled for a selection with anything pinned only by
+a folder above it; it calls `FreeUp` (D-B). A selection is one asynchronous D-Bus call (`Pin`,
+`Unpin` or `FreeUp`) with no reply timeout, since downloads can take minutes. A click starts a
+stopped daemon through D-Bus activation, as any KDE service would, rather than reporting that it is
+not running. A path already waiting (in an earlier call not yet answered, whichever of the three it
+was for) is never sent again, and at most 1000 paths wait at once per window (limitations log K6).
+Refusals are explained by their error name; a batch refused because one path is pinned only by an
+ancestor is explained with the daemon's own words, which name that path and folder, not the first
+path of the selection. The actions can be switched off in Dolphin's context-menu settings.
 
 ## 11. Known limits
 

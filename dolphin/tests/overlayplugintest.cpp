@@ -22,7 +22,8 @@ namespace
 {
 const QStringList Cloud{QStringLiteral("cloudstatus")};
 const QStringList Syncing{QStringLiteral("state-sync")};
-const QStringList Downloaded{QStringLiteral("emblem-checked")};
+const QStringList CheckOutline{QStringLiteral("dialog-ok")};
+const QStringList CheckFilled{QStringLiteral("emblem-checked")};
 } // namespace
 
 class OverlayPluginTest : public QObject
@@ -64,22 +65,32 @@ private Q_SLOTS:
     void emblemForEachState_data()
     {
         QTest::addColumn<QByteArray>("state");
+        QTest::addColumn<QString>("pin"); // "none", "explicit", "ancestor"
         QTest::addColumn<QStringList>("expected");
-        QTest::newRow("online-only: cloud") << QByteArray("online-only") << Cloud;
-        QTest::newRow("hydrating: syncing") << QByteArray("hydrating") << Syncing;
-        QTest::newRow("dehydrating: syncing") << QByteArray("dehydrating") << Syncing;
-        QTest::newRow("hydrated: check mark") << QByteArray("hydrated") << Downloaded;
-        QTest::newRow("no attribute: none") << QByteArray() << QStringList();
-        QTest::newRow("a value we do not know: none") << QByteArray("downloaded") << QStringList();
+        QTest::newRow("online-only, not pinned: cloud") << QByteArray("online-only") << QStringLiteral("none") << Cloud;
+        QTest::newRow("online-only, pinned: syncing (the sweep will fill it)") << QByteArray("online-only") << QStringLiteral("explicit") << Syncing;
+        QTest::newRow("hydrating: syncing") << QByteArray("hydrating") << QStringLiteral("none") << Syncing;
+        QTest::newRow("dehydrating: syncing") << QByteArray("dehydrating") << QStringLiteral("none") << Syncing;
+        QTest::newRow("hydrated, not pinned: outline check") << QByteArray("hydrated") << QStringLiteral("none") << CheckOutline;
+        QTest::newRow("hydrated, explicitly pinned: filled check") << QByteArray("hydrated") << QStringLiteral("explicit") << CheckFilled;
+        QTest::newRow("hydrated, pinned by the root folder: filled check") << QByteArray("hydrated") << QStringLiteral("ancestor") << CheckFilled;
+        QTest::newRow("no attribute: none") << QByteArray() << QStringLiteral("none") << QStringList();
+        QTest::newRow("a value we do not know: none") << QByteArray("downloaded") << QStringLiteral("none") << QStringList();
     }
 
     void emblemForEachState()
     {
         QFETCH(QByteArray, state);
+        QFETCH(QString, pin);
         QFETCH(QStringList, expected);
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), state));
+        if (pin == QLatin1String("explicit")) {
+            QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/doc.bin"))));
+        } else if (pin == QLatin1String("ancestor")) {
+            QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive"))));
+        }
         QCOMPARE(overlays(tree.path(QStringLiteral("OneDrive/doc.bin"))), expected);
     }
 
@@ -112,7 +123,7 @@ private Q_SLOTS:
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "hydrated"));
         QVERIFY(tree.file(QStringLiteral("OneDrive/a/b/c/doc.bin"), "hydrated"));
         QVERIFY(tree.symlink(QStringLiteral("OneDrive"), QStringLiteral("link")));
-        QCOMPARE(overlays(tree.path(shownAs)), Downloaded);
+        QCOMPARE(overlays(tree.path(shownAs)), CheckOutline);
     }
 
     void linkOutOfTheRootLeadsOutside_data()
@@ -137,9 +148,10 @@ private Q_SLOTS:
         QCOMPARE(overlays(tree.path(QStringLiteral("OneDrive/inside.bin"))), Cloud);
     }
 
-    /// Folders get no emblem in this sub-project, and a symbolic link does
-    /// not borrow the state of the placeholder it points to.
-    void noEmblemOnFolderOrSymlink()
+    /// An unpinned folder gets no emblem, and a symbolic link never does --
+    /// it does not borrow the state or the pin of the placeholder it points
+    /// to.
+    void noEmblemOnUnpinnedFolderOrSymlink()
     {
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
@@ -150,6 +162,21 @@ private Q_SLOTS:
         QCOMPARE(overlays(tree.path(QStringLiteral("OneDrive/folder"))), QStringList());
         QCOMPARE(overlays(tree.path(QStringLiteral("OneDrive/link.bin"))), QStringList());
         QCOMPARE(overlays(tree.path(QStringLiteral("OneDrive/doc.bin"))), Cloud);
+    }
+
+    /// A folder that is effectively pinned -- itself, or through an
+    /// ancestor -- gets the filled check, same as a pinned hydrated file
+    /// (review #5).
+    void pinnedFolderGetsTheFilledCheck()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.dir(QStringLiteral("OneDrive/explicit")));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/explicit"))));
+        QVERIFY(tree.dir(QStringLiteral("OneDrive/byAncestor/sub")));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/byAncestor"))));
+        QCOMPARE(overlays(tree.path(QStringLiteral("OneDrive/explicit"))), CheckFilled);
+        QCOMPARE(overlays(tree.path(QStringLiteral("OneDrive/byAncestor/sub"))), CheckFilled);
     }
 
     /// Emblems come from the file's attribute, not from the daemon: with no
@@ -186,7 +213,7 @@ private Q_SLOTS:
         QCOMPARE(::fsetxattr(fd, "user.konedrive.state", "hydrated", 8, 0), 0);
         ::close(fd);
         QTRY_COMPARE(changed.count(), 2);
-        QCOMPARE(changed.at(1).at(1).toStringList(), Downloaded);
+        QCOMPARE(changed.at(1).at(1).toStringList(), CheckOutline);
 
         QVERIFY(removeAttribute(doc, "user.konedrive.state"));
         QTRY_COMPARE(changed.count(), 3);

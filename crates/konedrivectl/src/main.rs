@@ -93,6 +93,24 @@ enum SyncCmd {
     },
     /// Free up the space of every downloaded file that is not in use
     FreeUpSpace,
+    /// Always keep files or folders on this device: everything in them is
+    /// downloaded now, and whatever comes into a folder later
+    Pin {
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Stop always keeping files or folders on this device; what is
+    /// downloaded stays downloaded
+    Unpin {
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Free up space for files or folders: a file or folder you pinned stops
+    /// being kept on this device, and everything in it is freed up
+    Free {
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
 }
 
 #[tokio::main]
@@ -268,9 +286,52 @@ async fn sync(connection: &zbus::Connection, command: SyncCmd) -> anyhow::Result
             let (files, bytes, busy) =
                 explained(&proxy, SyncAction::FreeUpSpace, proxy.free_up_space().await).await?;
             println!("{}", konedrivectl::free_up_text(files, bytes, busy));
+            if proxy.pinned_count().await? > 0 {
+                println!("Files kept on this device (`konedrivectl sync pin`) were left as they are.");
+            }
+        }
+        SyncCmd::Pin { paths } => {
+            let absolute = absolute_all(&paths)?;
+            let named = absolute.join(", ");
+            let refs: Vec<&str> = absolute.iter().map(String::as_str).collect();
+            let queued = explained(&proxy, SyncAction::Pin(&named), proxy.pin(&refs).await).await?;
+            println!("{}", konedrivectl::pin_text(queued));
+            fail_if_root_unhealthy(&proxy).await?;
+        }
+        SyncCmd::Unpin { paths } => {
+            let absolute = absolute_all(&paths)?;
+            let refs: Vec<&str> = absolute.iter().map(String::as_str).collect();
+            let result = proxy.unpin(&refs).await;
+            let named = named_in_refusal(&result, &absolute);
+            let unpinned = explained(&proxy, SyncAction::Unpin(&named), result).await?;
+            println!("{}", konedrivectl::unpin_text(unpinned));
+            fail_if_root_unhealthy(&proxy).await?;
+        }
+        SyncCmd::Free { paths } => {
+            let absolute = absolute_all(&paths)?;
+            let refs: Vec<&str> = absolute.iter().map(String::as_str).collect();
+            let result = proxy.free_up(&refs).await;
+            let named = named_in_refusal(&result, &absolute);
+            let (files, bytes, busy, pinned) = explained(&proxy, SyncAction::Free(&named), result).await?;
+            println!("{}", konedrivectl::free_text(files, bytes, busy, pinned));
+            fail_if_root_unhealthy(&proxy).await?;
         }
     }
     Ok(())
+}
+
+/// [`absolute_str`] for each of `paths`.
+fn absolute_all(paths: &[String]) -> anyhow::Result<Vec<String>> {
+    paths.iter().map(|path| absolute_str(path)).collect()
+}
+
+/// What a refusal of a call on several `paths` is said about: the one path
+/// a `NotAllowed` names, or all of them.
+fn named_in_refusal<T>(result: &zbus::Result<T>, paths: &[String]) -> String {
+    match result.as_ref().err().and_then(konedrivectl::refused_path) {
+        Some(path) => path.to_owned(),
+        None => paths.join(", "),
+    }
 }
 
 /// Passes a `Sync1` call's result through, turning a refusal into what the

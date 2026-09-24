@@ -59,12 +59,13 @@ then relies on its filesystem type check, and on the same probe, which the daemo
 ## What the unit's hardening prevents
 
 `packaging/systemd/konedrive-helper.service` narrows what the helper can do. `systemd-analyze
-security` rates it 2.2 ("OK"). Everything in this section is read from `systemd.exec(5)`: no test
-runs the unit under systemd; only the manual [acceptance check](docs/acceptance-check.md) does, on
-a real machine (`docs/limitations-and-workarounds.md`, W16).
+security` rates it 2.4 ("OK"). `tests/vm/run.sh unit` boots a VM with systemd, installs this unit
+and checks, through it, that a folder is registered, marked and intercepted and that no system call
+is denied (`docs/limitations-and-workarounds.md`, W16).
 
-- **No new privileges.** `NoNewPrivileges=yes`, `RestrictSUIDSGID=yes`, and the two capabilities
-  above as its whole bounding set.
+- **No new privileges.** `NoNewPrivileges=yes`, and the two capabilities above as its whole
+  bounding set. (`RestrictSUIDSGID=yes` is left out: it makes every `openat2()` fail with `ENOSYS`,
+  and the helper opens registered folders only through `openat2()`.)
 - **No network.** `PrivateNetwork=yes` and `RestrictAddressFamilies=AF_UNIX`.
 - **Writes only to its own two directories.** `ProtectSystem=strict`, `ProtectHome=read-only`,
   `ReadWritePaths=/var/lib/konedrive /run/konedrive`, plus a private `/tmp` (`PrivateTmp=yes`).

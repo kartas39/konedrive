@@ -19,8 +19,8 @@ namespace konedrive
 
 namespace
 {
-// IN_ATTRIB: a child's attributes (its state) or the directory's own (its
-// root mark). IN_DELETE / IN_MOVED_FROM: a name to stop tracking.
+// IN_ATTRIB: a child's attributes (its state or its pin) or the directory's
+// own (its root mark or its pin). IN_DELETE / IN_MOVED_FROM: a name to stop tracking.
 // IN_MOVED_TO: a name replaced by a rename. The *_SELF events: this
 // directory's path no longer leads to it.
 constexpr uint32_t WatchMask = IN_ATTRIB | IN_DELETE | IN_MOVED_FROM | IN_MOVED_TO | IN_DELETE_SELF | IN_MOVE_SELF | IN_ONLYDIR | IN_EXCL_UNLINK;
@@ -31,10 +31,11 @@ bool isInside(const QString &path, const QString &dir)
 }
 } // namespace
 
-OverlayEngine::OverlayEngine(QObject *parent, int directoryLimit, RootMarkReader hasMark)
+OverlayEngine::OverlayEngine(QObject *parent, int directoryLimit, RootMarkReader hasMark, PinMarkReader hasPin)
     : QObject(parent)
     , m_directoryLimit(std::max(directoryLimit, 2))
     , m_hasMark(std::move(hasMark))
+    , m_hasPin(std::move(hasPin))
 {
 }
 
@@ -60,12 +61,12 @@ QStringList OverlayEngine::overlays(const QUrl &url)
     Directory *directory = directoryFor(dir);
     // Without a watch there is nothing to keep a cached answer true, so it is
     // worked out afresh each time instead.
-    const bool inRoot = directory ? directory->root.has_value() : rootOf(dir, m_hasMark).has_value();
-    if (!inRoot) {
+    const std::optional<QString> root = directory ? directory->root : rootOf(dir, m_hasMark);
+    if (!root) {
         return {};
     }
 
-    const Emblem emblem = emblemFor(readFileState(path));
+    const Emblem emblem = emblemForItem(readFileState(path), isDirectory(path), isEffectivelyPinned(path, *root, m_hasPin));
     if (directory) {
         directory->files.insert(name, emblem);
     }
@@ -236,11 +237,7 @@ void OverlayEngine::resolveAgain(const QStringList &dirs, Changes &changes)
             continue;
         }
         Directory &directory = it->second;
-        const std::optional<QString> before = directory.root;
         directory.root = rootOf(path, m_hasMark);
-        if (directory.root == before) {
-            continue;
-        }
         if (!directory.root) {
             for (auto file = directory.files.cbegin(); file != directory.files.cend(); ++file) {
                 if (file.value() != Emblem::None) {
@@ -253,6 +250,10 @@ void OverlayEngine::resolveAgain(const QStringList &dirs, Changes &changes)
         if (*directory.root != path) {
             roots.insert(*directory.root);
         }
+        // Every cached file here is rechecked even when `directory.root`
+        // itself did not change: a pin set or removed on `path` -- or on one
+        // of the other directories named in `dirs` -- can change what every
+        // file below it draws without ever changing who its root is.
         const QStringList names = directory.files.keys();
         for (const QString &name : names) {
             recheck(path, name, changes);
@@ -274,7 +275,7 @@ void OverlayEngine::recheck(const QString &dir, const QString &name, Changes &ch
         return;
     }
     const QString path = joinPath(dir, name);
-    const Emblem now = emblemFor(readFileState(path));
+    const Emblem now = emblemForItem(readFileState(path), isDirectory(path), isEffectivelyPinned(path, *it->second.root, m_hasPin));
     if (now == file.value()) {
         return;
     }

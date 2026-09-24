@@ -62,6 +62,18 @@ inline bool markRoot(const QString &dir)
     return setAttribute(dir, "user.konedrive.root", QByteArrayLiteral("1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d"));
 }
 
+/// "Always keep on this device", set the way the daemon's Pin() does: by
+/// path, on a file or a folder.
+inline bool pin(const QString &path)
+{
+    return setAttribute(path, "user.konedrive.pin", QByteArrayLiteral("1"));
+}
+
+inline bool unpin(const QString &path)
+{
+    return removeAttribute(path, "user.konedrive.pin");
+}
+
 inline QUrl url(const QString &path)
 {
     return QUrl::fromLocalFile(path);
@@ -121,6 +133,11 @@ private:
 
 /// Stands in for konedrived's `org.konedrive.Sync1` on the private session
 /// bus, on a connection of its own -- so calls to it really cross the bus.
+///
+/// Pin(as), Unpin(as) and FreeUp(as) each take the whole batch of paths in one call and
+/// answer with one aggregate result, not one per path, so there is one
+/// `defaultAnswer` for whatever the next call gets -- not one per path, the
+/// way the old per-file Hydrate/Dehydrate stand-in needed.
 class FakeSync : public QObject, protected QDBusContext
 {
     Q_OBJECT
@@ -131,14 +148,21 @@ public:
         QString errorName;
         QString message;
         int delayMs = 0;
+        /// Pin's `queued`.
+        uint queued = 0;
+        /// Unpin's `unpinned`.
+        uint unpinned = 0;
+        /// FreeUp's `files`, `bytes`, `busy`, `skipped_pinned`.
+        uint files = 0;
+        qulonglong bytes = 0;
+        uint busy = 0;
+        uint skippedPinned = 0;
     };
 
-    /// How to answer a call for a path; a path with no entry gets
-    /// `defaultAnswer`, which succeeds at once unless set otherwise. A
-    /// negative delay never answers at all.
-    QHash<QString, Answer> answers;
+    /// How the next call to Pin or FreeUp is answered; succeeds at once
+    /// unless set otherwise. A negative delay never answers at all.
     Answer defaultAnswer;
-    /// "Hydrate /path" or "Dehydrate /path", in the order they arrived.
+    /// "Pin a.bin,b.bin" or "FreeUp a.bin,b.bin", in the order calls arrived.
     QStringList calls;
     /// Delayed answers sent so far.
     int delayedAnswersSent = 0;
@@ -172,34 +196,40 @@ public:
     }
 
 public Q_SLOTS:
-    void Hydrate(const QString &path)
+    void Pin(const QStringList &paths, const QDBusMessage &message)
     {
-        answer(QStringLiteral("Hydrate"), path);
+        answer(QStringLiteral("Pin"), paths, message, {QVariant::fromValue(defaultAnswer.queued)});
     }
 
-    void Dehydrate(const QString &path)
+    void Unpin(const QStringList &paths, const QDBusMessage &message)
     {
-        answer(QStringLiteral("Dehydrate"), path);
+        answer(QStringLiteral("Unpin"), paths, message, {QVariant::fromValue(defaultAnswer.unpinned)});
+    }
+
+    void FreeUp(const QStringList &paths, const QDBusMessage &message)
+    {
+        answer(QStringLiteral("FreeUp"),
+               paths,
+               message,
+               {QVariant::fromValue(defaultAnswer.files), QVariant::fromValue(defaultAnswer.bytes), QVariant::fromValue(defaultAnswer.busy),
+                QVariant::fromValue(defaultAnswer.skippedPinned)});
     }
 
 private:
-    void answer(const QString &method, const QString &path)
+    void answer(const QString &method, const QStringList &paths, const QDBusMessage &message, const QVariantList &results)
     {
-        calls.append(method + QLatin1Char(' ') + path);
-        const Answer answer = answers.value(path, defaultAnswer);
-        if (answer.delayMs < 0) {
-            setDelayedReply(true);
+        calls.append(method + QLatin1Char(' ') + paths.join(QLatin1Char(',')));
+        const Answer a = defaultAnswer;
+        message.setDelayedReply(true);
+        if (a.delayMs < 0) {
             return;
         }
-        if (answer.delayMs == 0) {
-            if (!answer.errorName.isEmpty()) {
-                sendErrorReply(answer.errorName, answer.message);
-            }
+        const QDBusMessage reply = a.errorName.isEmpty() ? message.createReply(results) : message.createErrorReply(a.errorName, a.message);
+        if (a.delayMs == 0) {
+            QDBusConnection(connectionName()).send(reply);
             return;
         }
-        setDelayedReply(true);
-        const QDBusMessage reply = answer.errorName.isEmpty() ? message().createReply() : message().createErrorReply(answer.errorName, answer.message);
-        QTimer::singleShot(answer.delayMs, this, [this, reply]() {
+        QTimer::singleShot(a.delayMs, this, [this, reply]() {
             if (!m_stopped) {
                 QDBusConnection(connectionName()).send(reply);
                 ++delayedAnswersSent;

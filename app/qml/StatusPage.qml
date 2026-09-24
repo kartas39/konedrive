@@ -141,6 +141,10 @@ FormCard.FormCardPage {
         visible: page.hasFolder
 
         FormCard.FormTextDelegate {
+            visible: Sync.pinnedCount > 0
+            text: i18np("Always on this device: %1 item", "Always on this device: %1 items", Sync.pinnedCount)
+        }
+        FormCard.FormTextDelegate {
             text: i18n("On this computer: %1", Qt.locale().formattedDataSize(Sync.localBytes))
             // Without a connected helper, nothing fills a placeholder on
             // open, so freeing a file up would leave it reading as zeros

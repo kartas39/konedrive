@@ -48,5 +48,5 @@ add_test(NAME actionplugintest_activation
          COMMAND dbus-run-session --config-file=${CMAKE_CURRENT_BINARY_DIR}/activating-bus.conf -- $<TARGET_FILE:actionplugintest> daemonFailsToStart)
 set_tests_properties(actionplugintest_activation PROPERTIES ENVIRONMENT "${test_environment};KONEDRIVE_TEST_ACTIVATING_BUS=1" TIMEOUT 60)
 add_test(NAME actionplugintest_slow
-         COMMAND dbus-run-session --config-file=${CMAKE_CURRENT_BINARY_DIR}/session-bus.conf -- $<TARGET_FILE:actionplugintest> downloadLongerThanTheDefaultTimeoutIsNotAFailure)
+         COMMAND dbus-run-session --config-file=${CMAKE_CURRENT_BINARY_DIR}/session-bus.conf -- $<TARGET_FILE:actionplugintest> keepingOnThisDeviceLongerThanTheDefaultTimeoutIsNotAFailure)
 set_tests_properties(actionplugintest_slow PROPERTIES ENVIRONMENT "${test_environment};KONEDRIVE_TEST_SLOW=1" TIMEOUT 120)

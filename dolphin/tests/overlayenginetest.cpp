@@ -21,7 +21,9 @@ using namespace testsupport;
 namespace
 {
 const QStringList Cloud{QStringLiteral("cloudstatus")};
-const QStringList Downloaded{QStringLiteral("emblem-checked")};
+const QStringList Syncing{QStringLiteral("state-sync")};
+const QStringList CheckOutline{QStringLiteral("dialog-ok")};
+const QStringList CheckFilled{QStringLiteral("emblem-checked")};
 
 /// inotify watches this process holds, as the kernel counts them
 /// (/proc/self/fdinfo lists one "inotify wd:" line per watch).
@@ -139,7 +141,7 @@ private Q_SLOTS:
         QSignalSpy changed(&engine, &OverlayEngine::overlaysChanged);
         const QString last = tree.path(QStringLiteral("OneDrive/d%1/f.bin").arg(folders - 1));
         QVERIFY(setState(last, "hydrated"));
-        QTRY_COMPARE(changedOverlaysFor(changed, url(last)), Downloaded);
+        QTRY_COMPARE(changedOverlaysFor(changed, url(last)), CheckOutline);
     }
 
     /// A folder whose watch was evicted keeps no answer: asked about again,
@@ -197,8 +199,8 @@ private Q_SLOTS:
         QSignalSpy changed(&engine, &OverlayEngine::overlaysChanged);
         QVERIFY(setState(tree.path(QStringLiteral("OneDrive/doc.bin")), "hydrated"));
         QTRY_COMPARE(changed.count(), 2);
-        QCOMPARE(changedOverlaysFor(changed, direct), Downloaded);
-        QCOMPARE(changedOverlaysFor(changed, linked), Downloaded);
+        QCOMPARE(changedOverlaysFor(changed, direct), CheckOutline);
+        QCOMPARE(changedOverlaysFor(changed, linked), CheckOutline);
     }
 
     /// When the kernel's event queue overflows it drops events and says so;
@@ -228,7 +230,7 @@ private Q_SLOTS:
             QVERIFY(setState(i % 2 ? a : b, i % 4 < 2 ? "online-only" : "hydrating"));
         }
         QVERIFY(setState(doc, "hydrated"));
-        QTRY_COMPARE(changedOverlaysFor(changed, url(doc)), Downloaded);
+        QTRY_COMPARE(changedOverlaysFor(changed, url(doc)), CheckOutline);
     }
 
     void physicalDirectoryMatchesTheKernel_data()
@@ -265,7 +267,7 @@ private Q_SLOTS:
         QCOMPARE(physicalDirectory(path), expected);
     }
 
-    /// The names handed to Dolphin -- the three emblems and the two menu
+    /// The names handed to Dolphin -- the four emblems and the two menu
     /// icons -- are real icons of the installed Breeze and Breeze Dark
     /// themes, not guesses.
     void iconNamesExistInBreeze_data()
@@ -278,9 +280,9 @@ private Q_SLOTS:
     void iconNamesExistInBreeze()
     {
         QFETCH(QString, theme);
-        QStringList names = overlayNames(Emblem::Cloud) + overlayNames(Emblem::Syncing) + overlayNames(Emblem::Downloaded);
-        names << QString::fromLatin1(DownloadIcon) << QString::fromLatin1(FreeUpSpaceIcon);
-        QCOMPARE(names.size(), 5);
+        QStringList names = overlayNames(Emblem::Cloud) + overlayNames(Emblem::Syncing) + overlayNames(Emblem::CheckOutline) + overlayNames(Emblem::CheckFilled);
+        names << QString::fromLatin1(AlwaysKeepIcon) << QString::fromLatin1(FreeUpSpaceIcon);
+        QCOMPARE(names.size(), 6);
         // The installed themes (XDG_DATA_DIRS/icons), not the copy of Breeze
         // some KDE libraries compile in under :/icons.
         QIcon::setThemeSearchPaths(QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, QStringLiteral("icons"), QStandardPaths::LocateDirectory));
@@ -289,6 +291,45 @@ private Q_SLOTS:
         for (const QString &name : std::as_const(names)) {
             QVERIFY2(QIcon::hasThemeIcon(name), qPrintable(name + QStringLiteral(" is not in ") + theme));
         }
+    }
+
+    /// The outline check becomes the filled one, without asking again, when
+    /// the file itself is pinned; and a pin set on a directory Dolphin has
+    /// browsed (so it is cached here) reaches every hydrated file below it,
+    /// not just the ones directly in it.
+    void pinChangesTheCheckEmblemLiveOnTheFileAndOnAnAncestor()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/a.bin"), "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/sub/b.bin"), "hydrated"));
+        const QString a = tree.path(QStringLiteral("OneDrive/a.bin"));
+        const QString b = tree.path(QStringLiteral("OneDrive/sub/b.bin"));
+        OverlayEngine engine;
+        QCOMPARE(engine.overlays(url(a)), CheckOutline);
+        QCOMPARE(engine.overlays(url(b)), CheckOutline);
+
+        QSignalSpy changed(&engine, &OverlayEngine::overlaysChanged);
+        QVERIFY(testsupport::pin(a));
+        QTRY_COMPARE(changedOverlaysFor(changed, url(a)), CheckFilled);
+
+        // "sub" is watched too (Dolphin asked about b.bin, which is inside
+        // it), so pinning it is announced without engine.overlays(b) being
+        // called again.
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub"))));
+        QTRY_COMPARE(changedOverlaysFor(changed, url(b)), CheckFilled);
+    }
+
+    /// An online-only file the sweep has queued because it is pinned draws
+    /// the syncing emblem, the same one a file mid-hydration draws.
+    void pinnedOnlineOnlyFileIsSyncing()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/doc.bin"))));
+        OverlayEngine engine;
+        QCOMPARE(engine.overlays(url(tree.path(QStringLiteral("OneDrive/doc.bin")))), Syncing);
     }
 };
 

@@ -31,6 +31,7 @@
 //! gets back.
 
 mod graph;
+mod unit;
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -151,6 +152,9 @@ fn main() {
     let mut graph_folder: Option<String> = None;
     let mut graph_max_bytes: u64 = graph::DEFAULT_MAX_BYTES;
     let mut graph_resume_checks = false;
+    // `--unit <pid> <base> <name>`: a helper systemd already runs, from the
+    // shipped unit (`tests/vm/run.sh unit`). See unit.rs.
+    let mut unit_target: Option<(u32, PathBuf, String)> = None;
     let mut i = 1;
     while i < argv.len() {
         match argv[i] {
@@ -192,6 +196,11 @@ fn main() {
                 i += 1;
             }
             "--graph-resume-checks" => graph_resume_checks = true,
+            "--unit" => {
+                let pid = argv[i + 1].parse().unwrap();
+                unit_target = Some((pid, PathBuf::from(argv[i + 2]), argv[i + 3].to_owned()));
+                i += 3;
+            }
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(64);
@@ -222,6 +231,10 @@ fn main() {
     if let Some(token) = graph_token {
         let args = graph::Args { folder: graph_folder, max_bytes: graph_max_bytes, resume_checks: graph_resume_checks };
         std::process::exit(graph::graph_mode(&helper, &token, graph_guard.as_deref(), args));
+    }
+
+    if let Some((helper_pid, base, name)) = unit_target {
+        std::process::exit(unit::unit_mode(helper_pid, &base, &name));
     }
 
     if measure {

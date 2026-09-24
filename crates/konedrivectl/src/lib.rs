@@ -31,8 +31,8 @@ pub async fn status_text(proxy: &Account1Proxy<'_>) -> zbus::Result<String> {
     Ok(out)
 }
 
-/// The account status's layout, with a wider label column: `On this
-/// computer:` is the longest label.
+/// The account status's layout, with a wider label column: `Always on this
+/// device:` is the longest label.
 ///
 /// `RootState` is `none` on an ordinary machine that has never registered a
 /// folder — this prints as an unremarkable "(none)", not an error. `error`
@@ -55,11 +55,13 @@ pub async fn status_text(proxy: &Account1Proxy<'_>) -> zbus::Result<String> {
 ///
 /// `Last checked:` is added for a folder that shows OneDrive — "20 s
 /// ago", or "never" — and `On this computer:` for any registered folder:
-/// what its files take on this disk. `Conflicts:` says how many local
-/// versions were moved out of the way, when there are any: they are not a
-/// problem, so `LastError` does not carry them.
+/// what its files take on this disk — and `Always on this device:`, how
+/// many files and folders are pinned (`konedrivectl sync pin`).
+/// `Conflicts:` says how many local versions were moved out of the way,
+/// when there are any: they are not a problem, so `LastError` does not carry
+/// them.
 pub async fn sync_status_text(proxy: &Sync1Proxy<'_>) -> zbus::Result<String> {
-    const W: usize = 18;
+    const W: usize = 24;
     let path = proxy.root_path().await?;
     let state = proxy.root_state().await?;
     let shown = if path.is_empty() { "(none)" } else { path.as_str() };
@@ -89,6 +91,7 @@ pub async fn sync_status_text(proxy: &Sync1Proxy<'_>) -> zbus::Result<String> {
     }
     if !path.is_empty() {
         out.push_str(&format!("{:<W$}{}\n", "On this computer:", human_bytes(proxy.local_bytes().await?)));
+        out.push_str(&format!("{:<W$}{}\n", "Always on this device:", proxy.pinned_count().await?));
     }
     let conflicts = proxy.conflict_count().await?;
     if conflicts > 0 {
@@ -129,6 +132,12 @@ pub enum SyncAction<'a> {
     Conflicts,
     Dismiss(&'a str),
     FreeUpSpace,
+    /// The paths given, joined with ", ".
+    Pin(&'a str),
+    /// The path refused ([`refused_path`]), or the paths given, joined with ", ".
+    Unpin(&'a str),
+    /// The path refused ([`refused_path`]), or the paths given, joined with ", ".
+    Free(&'a str),
 }
 
 impl SyncAction<'_> {
@@ -150,6 +159,9 @@ impl SyncAction<'_> {
             Self::Conflicts => "listing the conflicts".to_owned(),
             Self::Dismiss(path) => format!("dismissing the conflict {path}"),
             Self::FreeUpSpace => "freeing up space".to_owned(),
+            Self::Pin(paths) => format!("keeping {paths} on this device"),
+            Self::Unpin(paths) => format!("no longer keeping {paths} on this device"),
+            Self::Free(paths) => format!("freeing up {paths}"),
         }
     }
 
@@ -160,7 +172,10 @@ impl SyncAction<'_> {
             | Self::PopulateFrom(path)
             | Self::Hydrate(path)
             | Self::Dehydrate(path)
-            | Self::Dismiss(path) => path,
+            | Self::Dismiss(path)
+            | Self::Pin(path)
+            | Self::Unpin(path)
+            | Self::Free(path) => path,
             Self::Forget | Self::Refresh | Self::Skipped | Self::Activity | Self::Conflicts | Self::FreeUpSpace => "",
         }
     }
@@ -271,7 +286,7 @@ pub fn refusal_text(action: SyncAction<'_>, name: Option<&str>, detail: &str, ro
         // follow-up: a file that may still carry the helper's
         // ignore mark is only downloaded again once the helper has cleared
         // it, since a download that fails empties the file.
-        (Some("NoHelper"), FreeUpSpace) => "the konedrive helper is not connected, so nothing more \
+        (Some("NoHelper"), FreeUpSpace | Free(_)) => "the konedrive helper is not connected, so nothing more \
              was freed up. Freeing up a file must first have the helper take off any mark that lets \
              the file's opens through unchecked, or the emptied file could read as zeros from then \
              on; try again once the daemon is connected to the helper again — it reconnects on its \
@@ -350,13 +365,39 @@ pub fn refusal_text(action: SyncAction<'_>, name: Option<&str>, detail: &str, ro
              populate-from <dir>` first; the daemon does not remember that directory across a \
              restart, so run it again after one (files already there are left alone)"
         ),
+        (Some("OutsideRoot"), Pin(_) | Unpin(_) | Free(_)) => format!(
+            "{path}: only files and folders inside the sync folder{folder} can be kept on this \
+             device or freed up — not symbolic links, or anything outside it"
+        ),
         (Some("OutsideRoot"), _) => format!(
             "{path} is not a regular file inside the sync folder{folder}. Only files inside it \
              can be downloaded or freed up — not folders, symbolic links, or anything outside it"
         ),
+        // A free-up of something "Always keep on this device" keeps here.
+        // The daemon names what pins it: "pinned by <path>: unpin it first".
+        (Some("NotAllowed"), _) => match (pinned_parts(detail).map(|(_, by)| by), action) {
+            (Some(by), Unpin(_)) => format!(
+                "{path} is kept on this device because the folder {by} is, so it cannot stop being \
+                 kept on its own. `konedrivectl sync unpin {by}` stops keeping the folder"
+            ),
+            (Some(by), _) if by == path => format!(
+                "{path} is kept on this device, so its space is not freed up. `konedrivectl sync \
+                 free {by}` stops keeping it and frees it up"
+            ),
+            (Some(by), _) => format!(
+                "{path} is kept on this device because the folder {by} is, so its space is not \
+                 freed up. To free it, free up the folder first: `konedrivectl sync free {by}` \
+                 stops keeping it and frees up what is in it"
+            ),
+            (None, _) => format!("{} was refused: {detail}", action.doing()),
+        },
         (Some("NotManaged"), Dehydrate(_)) => format!(
             "{path} is not a OneDrive file: it is a file of your own in the sync folder, and \
              KOneDrive never frees the space of a file it could not download again"
+        ),
+        (Some("NotManaged"), Pin(_) | Unpin(_) | Free(_)) => format!(
+            "{path}: a file of your own in the sync folder is not a OneDrive file, so there is \
+             nothing to keep on this device or to free up"
         ),
         (Some("NotManaged"), _) => format!(
             "{path} is not a OneDrive file: it is a file of your own in the sync folder, so \
@@ -578,6 +619,72 @@ pub fn free_up_text(files: u32, bytes: u64, busy: u32) -> String {
     if busy > 0 {
         let were = if busy == 1 { "file was" } else { "files were" };
         out.push_str(&format!(" {busy} {were} in use and kept."));
+    }
+    out
+}
+
+/// `sync pin`: that the paths are kept on this device, and how many of their
+/// files are downloading now.
+pub fn pin_text(queued: u32) -> String {
+    match queued {
+        0 => "Kept on this device. Everything in it is here already.".to_owned(),
+        1 => "Kept on this device. 1 file is downloading (`konedrivectl sync transfers`).".to_owned(),
+        n => format!("Kept on this device. {n} files are downloading (`konedrivectl sync transfers`)."),
+    }
+}
+
+/// The path a `NotAllowed` refusal is about, and what pins it: the daemon
+/// says exactly "<path> is pinned by <folder>: unpin it first", and the
+/// folder is the path or one above it — which tells the two apart even when
+/// a name holds " is pinned by " itself.
+fn pinned_parts(detail: &str) -> Option<(&str, &str)> {
+    const BY: &str = " is pinned by ";
+    let both = detail.strip_suffix(": unpin it first")?;
+    both.match_indices(BY)
+        .map(|(at, _)| (&both[..at], &both[at + BY.len()..]))
+        .find(|(path, by)| std::path::Path::new(path).starts_with(by))
+}
+
+/// The one path a `NotAllowed` refusal of a call on several is about.
+/// `None` for any other error.
+pub fn refused_path(error: &zbus::Error) -> Option<&str> {
+    let zbus::Error::MethodError(name, Some(detail), _) = error else { return None };
+    if name.as_str().strip_prefix(ERROR_PREFIX) != Some(".NotAllowed") {
+        return None;
+    }
+    pinned_parts(detail).map(|(path, _)| path)
+}
+
+/// `sync unpin`: how many pins came off; the files stay.
+pub fn unpin_text(unpinned: u32) -> String {
+    match unpinned {
+        0 => "Nothing here had a pin of its own, so nothing changed.".to_owned(),
+        1 => "No longer kept on this device. What is downloaded stays; `konedrivectl sync free` frees it.".to_owned(),
+        n => format!(
+            "{n} items are no longer kept on this device. What is downloaded stays; `konedrivectl sync free` frees it."
+        ),
+    }
+}
+
+/// `sync free`: what was freed, what was kept because it was in use or
+/// changed here (FreeUp's `busy` counts both), and the downloaded files a pin
+/// of their own — or of a folder below the one freed — kept.
+pub fn free_text(files: u32, bytes: u64, busy: u32, pinned: u32) -> String {
+    if files == 0 && busy == 0 && pinned == 0 {
+        return "Nothing here was downloaded, so there was nothing to free up.".to_owned();
+    }
+    let mut out = if files == 0 {
+        "Nothing was freed up.".to_owned()
+    } else {
+        format!("Freed {files} {} ({}).", if files == 1 { "file" } else { "files" }, human_bytes(bytes))
+    };
+    if busy > 0 {
+        let were = if busy == 1 { "file was" } else { "files were" };
+        out.push_str(&format!(" {busy} {were} in use or changed here, and kept."));
+    }
+    if pinned > 0 {
+        let were = if pinned == 1 { "file was" } else { "files were" };
+        out.push_str(&format!(" {pinned} {were} kept: a file or folder below is kept on this device."));
     }
     out
 }

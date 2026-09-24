@@ -41,8 +41,8 @@ LimitNOFILE=65536
 # everything above: remount / read-write inside this namespace, or write
 # /proc/sys/kernel/core_pattern. What follows closes those doors without
 # touching anything the helper does (fanotify, xattr reads, /proc/self/fd,
-# one AF_UNIX socket). Left out on purpose, because no test runs this unit
-# under systemd (only the acceptance checklist does, on a real machine): a
+# one AF_UNIX socket). `tests/vm/run.sh unit` runs this file under systemd and
+# works a daemon through it. Left out on purpose, not yet tried there: a
 # SystemCallFilter allow-list, PrivateDevices, and a non-root User=.
 # docs/limitations-and-workarounds.md, W16.
 ProtectKernelTunables=yes
@@ -58,7 +58,12 @@ RestrictNamespaces=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=yes
 RestrictRealtime=yes
-RestrictSUIDSGID=yes
+# Not RestrictSUIDSGID=yes: seccomp cannot look inside openat2()'s argument
+# struct, so that setting fails every openat2() with ENOSYS, and the helper
+# opens each registered folder (at registration and at every start) and walks
+# it only through openat2() with RESOLVE_BENEATH. Measured under systemd
+# (tests/vm/run.sh unit): with it, every RegisterRoot was refused and the
+# helper stayed active, marking nothing. W16.
 # A folder under /tmp or /var/tmp cannot be registered with the helper: it
 # resolves the folder's path in its own namespace, where both are private.
 PrivateTmp=yes

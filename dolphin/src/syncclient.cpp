@@ -78,31 +78,56 @@ void SyncClient::start(Operation operation, const QStringList &paths)
         request->timer->start();
     }
 
-    const QString method = operation == Operation::Download ? QStringLiteral("Hydrate") : QStringLiteral("Dehydrate");
-    for (const QString &path : std::as_const(toSend)) {
-        QDBusMessage call = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, method);
-        call << path;
-        m_waiting.insert(path);
-        auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(call, CallTimeout), this);
-        connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, request, report, path](QDBusPendingCallWatcher *finished) {
-            finished->deleteLater();
-            m_waiting.remove(path);
-            const QDBusPendingReply<> reply = *finished;
-            --request->unanswered;
-            if (reply.isError()) {
-                request->unreported.append({path, reply.error().name(), reply.error().message()});
-                // Reported soon, even while other files of the same request
-                // are still downloading -- but not one message per file.
-                if (!request->timer->isActive()) {
-                    request->timer->start();
-                }
-            }
-            if (request->unanswered == 0) {
-                report();
-                request->timer->deleteLater();
-            }
-        });
+    // One call for the whole batch: Pin(as), Unpin(as) and FreeUp(as) each
+    // answer with one aggregate result, not one per path.
+    QString method;
+    switch (operation) {
+    case Operation::AlwaysKeep:
+        method = QStringLiteral("Pin");
+        break;
+    case Operation::Unpin:
+        method = QStringLiteral("Unpin");
+        break;
+    case Operation::FreeUpSpace:
+        method = QStringLiteral("FreeUp");
+        break;
     }
+    QDBusMessage call = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, method);
+    call << toSend;
+    for (const QString &path : std::as_const(toSend)) {
+        m_waiting.insert(path);
+    }
+    auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(call, CallTimeout), this);
+    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, request, report, toSend, operation](QDBusPendingCallWatcher *finished) {
+        finished->deleteLater();
+        for (const QString &path : toSend) {
+            m_waiting.remove(path);
+        }
+        const QDBusPendingReply<> reply = *finished;
+        request->unanswered -= toSend.size();
+        if (reply.isError()) {
+            for (const QString &path : toSend) {
+                request->unreported.append({path, reply.error().name(), reply.error().message()});
+            }
+            // Reported soon -- but not before the not-sent refusals above,
+            // which is why the timer is only started if it is not already.
+            if (!request->timer->isActive()) {
+                request->timer->start();
+            }
+        } else if (operation == Operation::FreeUpSpace) {
+            // FreeUp's `busy` (files, bytes, busy, skipped_pinned) also
+            // folds in files changed here and not uploaded (review #6).
+            const QDBusPendingReply<uint, qulonglong, uint, uint> freeUpReply = *finished;
+            const uint busy = freeUpReply.argumentAt<2>();
+            if (busy > 0) {
+                Q_EMIT freeUpKeptBusy(busy);
+            }
+        }
+        if (request->unanswered == 0) {
+            report();
+            request->timer->deleteLater();
+        }
+    });
 }
 
 } // namespace konedrive

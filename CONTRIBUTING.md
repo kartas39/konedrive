@@ -52,6 +52,9 @@ change the installer or the helper's unit:
 tests/vm/run.sh tests/vm/install_helper_test.sh
 ```
 
+Whenever you change the helper's unit or the syscalls it makes, run `tests/vm/run.sh unit`: it
+boots the VM with systemd and starts the real unit.
+
 Root is never used outside that VM. If a change needs anything privileged to exercise or debug
 (mounting a filesystem, running as root to poke at fanotify directly), do it inside
 `virtme-ng`, not on your own machine — see `tests/vm/run.sh` for how the suite boots one.

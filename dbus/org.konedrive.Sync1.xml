@@ -88,6 +88,36 @@
     <method name="DismissConflict">
       <arg name="rescued_path" type="s" direction="in"/>
     </method>
+    <!-- "Always keep on this device": pins each path (a file or a folder;
+         a folder pins everything under it, now and later) and queues the
+         download of every file under it that is online-only. A path already
+         pinned by a folder above it is left as it is. Returns how many files
+         were queued. -->
+    <method name="Pin">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="queued" type="u" direction="out"/>
+    </method>
+    <!-- Unchecking "Always keep on this device": removes each path's own pin
+         and nothing else — files stay downloaded, as on Windows. A path pinned
+         only by a folder above it is refused (NotAllowed, naming that
+         folder). Returns how many pins were removed. -->
+    <method name="Unpin">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="unpinned" type="u" direction="out"/>
+    </method>
+    <!-- "Free up space" for chosen paths: an explicitly pinned path is
+         unpinned, then everything under it is freed; a path pinned only by a
+         folder above it is refused (NotAllowed, naming that folder); an
+         unpinned path is freed. Files in use are skipped and counted as busy;
+         files pinned by their own pin below a freed folder stay and are
+         counted as skipped_pinned. -->
+    <method name="FreeUp">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="files" type="u" direction="out"/>
+      <arg name="bytes" type="t" direction="out"/>
+      <arg name="busy" type="u" direction="out"/>
+      <arg name="skipped_pinned" type="u" direction="out"/>
+    </method>
     <!-- Frees every downloaded file under the folder that is not in use:
          how many files, how many bytes, how many were skipped as busy. -->
     <method name="FreeUpSpace">
@@ -117,6 +147,9 @@
          placeholder counts as what it occupies, not its size. -->
     <property name="LocalBytes" type="t" access="read"/>
     <property name="ConflictCount" type="u" access="read"/>
+    <!-- How many files and folders carry their own "Always keep on this
+         device" pin. -->
+    <property name="PinnedCount" type="u" access="read"/>
     <!-- The privileged helper, as the daemon sees it: "connected" (files
          download when opened), "not-installed" (no konedrive-helper service
          on this system), "stopped" (installed, not running: systemctl start

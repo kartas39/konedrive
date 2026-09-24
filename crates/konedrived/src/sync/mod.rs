@@ -14,6 +14,7 @@ pub mod helper_status;
 pub mod listing;
 pub mod materialize;
 pub mod network;
+pub mod pin;
 pub mod root;
 pub mod source;
 pub mod thumbs;
@@ -45,6 +46,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::state::{SignInState, StateHandle};
+
+/// Fills served on open at once ([`serve_hydrations`]); pinned downloads
+/// have as many slots again of their own ([`pin::PIN_SLOTS`]).
+pub const FILL_SLOTS: usize = 4;
 
 /// Answers hydration requests until the helper goes away. At most four run at
 /// once; everything else waits, and no request is ever dropped silently.
@@ -122,7 +127,7 @@ pub async fn serve_hydrations_reporting(
     locks: InodeLocks,
     report: Report,
 ) {
-    let permits = Arc::new(tokio::sync::Semaphore::new(4));
+    let permits = Arc::new(tokio::sync::Semaphore::new(FILL_SLOTS));
     let mut running = tokio::task::JoinSet::new();
     while let Some(HydrateRequest { req_id, fd }) = requests.recv().await {
         // Reap whatever finished while we were waiting; the set must not
@@ -478,6 +483,9 @@ pub struct SyncSnapshot {
     pub local_bytes: u64,
     /// `ConflictCount`: conflicts whose rescued file is still there.
     pub conflict_count: u32,
+    /// `PinnedCount`: files and folders with a pin of their own
+    /// ([`pin::Pins`]).
+    pub pinned_count: u32,
     /// `HelperState` (HS1).
     pub helper_state: HelperState,
     /// The registered folder needs the helper and does not have it (HS2,
@@ -502,6 +510,7 @@ impl Default for SyncSnapshot {
             last_checked: 0,
             local_bytes: 0,
             conflict_count: 0,
+            pinned_count: 0,
             helper_state: HelperState::Unknown,
             waits_for_helper: false,
         }
@@ -652,6 +661,10 @@ pub enum SyncError {
     NoSource,
     #[error("no conflict is recorded for {0}")]
     NoConflict(String),
+    /// A free-up of something a pin keeps on this device: the message is
+    /// [`pin::refusal`]'s, naming the path refused and what pins it.
+    #[error("{0}")]
+    NotAllowed(String),
     #[error("{0}")]
     Io(String),
 }
@@ -786,6 +799,10 @@ pub struct SyncService {
     /// Told whenever the link comes or goes, so [`watch_helper`] asks again
     /// at once.
     helper_changed: Arc<Notify>,
+    /// "Always keep on this device": the pins and the downloads they ask
+    /// for. Shared with a OneDrive folder's sync, which queues what it places
+    /// under a pin and sweeps after every Full reconcile.
+    pins: Arc<pin::Pins>,
 }
 
 /// A OneDrive folder's sync while it runs.
@@ -900,7 +917,10 @@ impl SyncService {
     ) -> Arc<Self> {
         let helper_state = if link.is_some() { HelperState::Connected } else { HelperState::Unknown };
         let state = SyncStateHandle::new(SyncSnapshot { helper_state, ..SyncSnapshot::default() });
-        Arc::new(Self {
+        // The pins' downloads go through this very service, which they must
+        // not keep alive: a weak reference.
+        Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
+            pins: pin::Pins::new(state.clone(), me.clone()),
             link: Arc::new(Mutex::new(link)),
             account,
             config_file,
@@ -1437,6 +1457,14 @@ impl SyncService {
         self.report.space.kick();
         if source == RootSource::OneDrive && intercepted {
             self.start_sync().await;
+        } else {
+            // The sweep at start. A OneDrive folder's sync sweeps after its
+            // first reconcile, which is Full; any other folder is swept here,
+            // in the background: the walk must not hold up the registration.
+            let (pins, root) = (Arc::clone(&self.pins), PathBuf::from(&self.state.get().root_path));
+            tokio::spawn(async move {
+                pins.sweep(root).await;
+            });
         }
     }
 
@@ -1612,6 +1640,9 @@ impl SyncService {
             s.conflict_count = 0;
             s.waits_for_helper = false;
         });
+        // The pins stay on the files; what they queued is dropped, and
+        // `PinnedCount` reads 0.
+        self.pins.clear();
         // A Forget drops the activity: a OneDrive folder's with
         // its store, which `stop_sync` has already let go of, and a local
         // folder's from memory here — after the folder stopped being the one
@@ -1712,6 +1743,7 @@ impl SyncService {
             full_threshold: listing::FULL_THRESHOLD,
             after_cycle: Some(Arc::clone(&kick)),
             report: self.report.clone(),
+            pins: Arc::clone(&self.pins),
         });
         let schedule = self.schedule.lock().unwrap().clone();
         // Checked again and kept in one critical section: a second start that
@@ -2395,6 +2427,21 @@ impl SyncService {
     /// may well have been a fill of this same inode, and it may have
     /// finished the job.
     pub async fn hydrate_now(&self, path: &Path) -> Result<(), SyncError> {
+        match self.fill_now(path).await? {
+            Answered::Failed(FillError::NotCleared(NotCleared::Unlinked)) => Err(SyncError::NoHelper),
+            Answered::Failed(FillError::NotCleared(e)) => Err(SyncError::Io(format!("nothing was filled: {e}"))),
+            Answered::Failed(FillError::Errno(errno)) => Err(SyncError::Io(format!(
+                "hydration failed: {}",
+                std::io::Error::from_raw_os_error(errno)
+            ))),
+            _ => Ok(()),
+        }
+    }
+
+    /// [`hydrate_now`](Self::hydrate_now)'s fill, and what came of it —
+    /// recorded as any fill is. A pinned download goes through here too
+    /// ([`pin::PinFill`]).
+    async fn fill_now(&self, path: &Path) -> Result<Answered, SyncError> {
         let reg = self.require_registration()?;
         let Some(source) = self.source.lock().unwrap().clone() else {
             return Err(SyncError::NoSource);
@@ -2418,7 +2465,7 @@ impl SyncService {
         .await
         .map_err(|e| SyncError::Io(format!("the hydration task failed: {e}")))?;
         let may_be_marked = match decision? {
-            Fill::AlreadyThere => return Ok(()),
+            Fill::AlreadyThere => return Ok(Answered::AlreadyThere),
             Fill::Needed { may_be_marked } => may_be_marked,
         };
         // A file that could be carrying an ignore mark has the way cleared
@@ -2452,15 +2499,7 @@ impl SyncService {
             self.report.activity.record(vec![event]).await;
             self.report.space.kick();
         }
-        match answered {
-            Answered::Failed(FillError::NotCleared(NotCleared::Unlinked)) => Err(SyncError::NoHelper),
-            Answered::Failed(FillError::NotCleared(e)) => Err(SyncError::Io(format!("nothing was filled: {e}"))),
-            Answered::Failed(FillError::Errno(errno)) => Err(SyncError::Io(format!(
-                "hydration failed: {}",
-                std::io::Error::from_raw_os_error(errno)
-            ))),
-            _ => Ok(()),
-        }
+        Ok(answered)
     }
 
     /// Frees a hydrated file's space back to a placeholder.
@@ -2473,7 +2512,21 @@ impl SyncService {
     /// punches (one open per dehydration).
     ///
     /// Recorded as a `freed` event with what it freed.
+    ///
+    /// Refused `NotAllowed` for a file a pin keeps on this device — its own,
+    /// or a folder's above it: `FreeUp` takes a pin off.
     pub async fn dehydrate(&self, path: &Path) -> Result<(), SyncError> {
+        let reg = self.require_registration()?;
+        let (root, target) = (reg.root.clone(), path.to_path_buf());
+        let pinned = tokio::task::spawn_blocking(move || {
+            let full = root.path.join(root.relative(&target).ok()?);
+            pin::pinned_by(&root.path, &full).map(|by| (full, by))
+        })
+        .await
+        .map_err(|e| SyncError::Io(format!("the dehydration task failed: {e}")))?;
+        if let Some((full, by)) = pinned {
+            return Err(SyncError::NotAllowed(pin::refusal(&full, &by)));
+        }
         let (freed, shown) = self.free_one(path, Wait::Yes).await?;
         let event = activity::event(Kind::Freed, shown, activity::human_size(freed));
         self.report.activity.record(vec![event]).await;
@@ -2498,40 +2551,30 @@ impl SyncService {
     /// intercepted root with no helper), and stopped with that refusal if it
     /// becomes true part-way. What was freed is one `freed` event for the
     /// folder, not one per file.
+    ///
+    /// A file a pin keeps on this device is left as it is, and counted in
+    /// [`FreedUp::pinned`]; the event says how many.
     pub async fn free_up_space(&self) -> Result<FreedUp, SyncError> {
         let reg = self.require_registration()?;
         if reg.intercepted {
             self.require_link()?;
         }
         let root = reg.root.path.clone();
-        let candidates = tokio::task::spawn_blocking(move || hydrated_files(&root))
+        let (candidates, pinned) = tokio::task::spawn_blocking(move || pin::downloaded_under(&root, false))
             .await
             .map_err(|e| SyncError::Io(format!("the walk of the folder failed: {e}")))?;
-        let mut freed = FreedUp::default();
-        let mut stopped = None;
-        for path in candidates {
-            match self.free_one(&path, Wait::No).await {
-                Ok((bytes, _)) => {
-                    freed.files += 1;
-                    freed.bytes += bytes;
-                }
-                Err(SyncError::InUse) => freed.busy += 1,
-                Err(e @ (SyncError::NoHelper | SyncError::NoRoot)) => {
-                    stopped = Some(e);
-                    break;
-                }
-                Err(e) => tracing::info!("{} is not freed up: {e}", path.display()),
-            }
-        }
+        let (mut freed, stopped) = self.free_each(candidates).await;
+        freed.pinned = pinned;
         if freed.files > 0 {
-            let detail = format!(
-                "{} file{}, {}",
-                freed.files,
-                if freed.files == 1 { "" } else { "s" },
-                activity::human_size(freed.bytes)
-            );
+            let mut detail = freed_detail(freed.files, freed.bytes);
+            if pinned > 0 {
+                detail.push_str(&format!("; {pinned} kept on this device"));
+            }
             let event = activity::event(Kind::Freed, reg.root.path.display().to_string(), detail);
             self.report.activity.record(vec![event]).await;
+        }
+        if pinned > 0 {
+            tracing::info!("free up space kept {pinned} file(s) that are always kept on this device");
         }
         self.report.space.kick();
         match stopped {
@@ -2542,6 +2585,213 @@ impl SyncService {
             Some(e) => Err(e),
             None => Ok(freed),
         }
+    }
+
+    /// Frees each of `files` up without waiting for any ([`free_one`](Self::free_one)
+    /// with `Wait::No`): what was freed, and the refusal — no helper, no
+    /// root — that stopped it part-way, if one did. A file in use is counted
+    /// busy, one changed here [`FreedUp::modified`]; either is left as it is.
+    async fn free_each(&self, files: Vec<PathBuf>) -> (FreedUp, Option<SyncError>) {
+        let mut freed = FreedUp::default();
+        for path in files {
+            match self.free_one(&path, Wait::No).await {
+                Ok((bytes, _)) => {
+                    freed.files += 1;
+                    freed.bytes += bytes;
+                }
+                Err(SyncError::InUse) => freed.busy += 1,
+                Err(SyncError::ModifiedLocally) => freed.modified += 1,
+                Err(e @ (SyncError::NoHelper | SyncError::NoRoot)) => return (freed, Some(e)),
+                Err(e) => tracing::info!("{} is not freed up: {e}", path.display()),
+            }
+        }
+        (freed, None)
+    }
+
+    /// Puts a pin on each of `targets`, or takes it off, through `write`
+    /// ([`pin::set_pin`]; a test's own to fail on purpose), stopping at the
+    /// first failure: the paths done, and that failure. A file's pin is
+    /// written under its per-inode lock, since a fill lifts the same write
+    /// bit around its own attribute writes; each descriptor is closed once
+    /// its write is done.
+    async fn set_pins(
+        &self,
+        targets: Vec<PinTarget>,
+        on: bool,
+        write: fn(&File, bool) -> io::Result<()>,
+    ) -> (Vec<PathBuf>, Option<SyncError>) {
+        let mut done = Vec::new();
+        for PinTarget { item, shown, is_dir, .. } in targets {
+            let guard = if is_dir {
+                None
+            } else {
+                match InodeKey::of(&item) {
+                    Ok(key) => Some(self.locks.lock(key).await),
+                    Err(e) => return (done, Some(SyncError::Io(format!("{}: {e}", shown.display())))),
+                }
+            };
+            let written = tokio::task::spawn_blocking(move || write(&item, on)).await;
+            drop(guard);
+            match written {
+                Ok(Ok(())) => done.push(shown),
+                Ok(Err(e)) => return (done, Some(SyncError::Io(format!("{}: {e}", shown.display())))),
+                Err(e) => return (done, Some(SyncError::Io(format!("the pin task failed: {e}")))),
+            }
+        }
+        (done, None)
+    }
+
+    /// Every one of `paths` opened and looked at ([`pin_targets`]), on a
+    /// blocking thread.
+    async fn pin_targets(&self, root: &SyncRoot, paths: &[PathBuf]) -> Result<Vec<PinTarget>, SyncError> {
+        let (root, paths) = (root.clone(), paths.to_vec());
+        tokio::task::spawn_blocking(move || pin_targets(&root, &paths))
+            .await
+            .map_err(|e| SyncError::Io(format!("the pin task failed: {e}")))?
+    }
+
+    /// `Pin(paths)`, "Always keep on this device": each path — a file, a
+    /// folder, or the folder itself — gets a pin, and every online-only file
+    /// under it is queued for download ([`pin::Pins`]); how many were queued
+    /// by this call.
+    ///
+    /// The pin is written first and the downloads follow, so a crash in
+    /// between loses nothing: the next sweep finds them. A path a folder
+    /// above it pins already is left as it is. Every path is checked before
+    /// any is pinned: one outside the folder, a `.konedrive-*` name, or a
+    /// file that is not ours refuses the call.
+    pub async fn pin(&self, paths: &[PathBuf]) -> Result<u32, SyncError> {
+        let reg = self.require_registration()?;
+        let targets = self.pin_targets(&reg.root, paths).await?;
+        let (mut again, mut write) = (Vec::new(), Vec::new());
+        for target in targets {
+            if !target.above.is_empty() {
+                continue;
+            }
+            if target.own {
+                again.push(target.shown);
+            } else {
+                write.push(target);
+            }
+        }
+        let (pinned, failed) = self.set_pins(write, true, pin::set_pin).await;
+        for shown in &pinned {
+            self.pins.pinned(shown.clone());
+        }
+        // What is pinned is queued, even when a later path could not be; a
+        // path pinned already is looked through again.
+        again.extend(pinned);
+        let queued = self.pins.queue_under(again).await;
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(queued),
+        }
+    }
+
+    /// `Unpin(paths)`, unchecking "Always keep on this device": each path's
+    /// own pin comes off, and nothing else changes — its files stay
+    /// downloaded. How many pins came off. A path a folder above it pins is
+    /// refused `NotAllowed`, naming the folder, as `FreeUp` refuses it
+    /// ([`kept_by_folder`]); every path is checked before any pin comes off.
+    pub async fn unpin(&self, paths: &[PathBuf]) -> Result<u32, SyncError> {
+        let reg = self.require_registration()?;
+        let targets = self.pin_targets(&reg.root, paths).await?;
+        if let Some(refusal) = kept_by_folder(&targets) {
+            return Err(refusal);
+        }
+        let own: Vec<PinTarget> = targets.into_iter().filter(|target| target.own).collect();
+        let (unpinned, failed) = self.set_pins(own, false, pin::set_pin).await;
+        for shown in &unpinned {
+            self.pins.unpinned(shown);
+        }
+        match failed {
+            Some(e) => Err(e),
+            None => Ok(unpinned.len() as u32),
+        }
+    }
+
+    /// `FreeUp(paths)`, the menu's "Free up space":
+    ///
+    /// - a path with a pin of its own loses it, and then everything under it
+    ///   is freed up;
+    /// - a path a folder above it pins is refused `NotAllowed`, naming that
+    ///   folder — unless that folder is one of `paths`, whose pin this call
+    ///   takes off ([`kept_by_folder`]); checked for every path before
+    ///   anything changes;
+    /// - any other path is freed up.
+    ///
+    /// The pins come off first. One that cannot stops the call with that
+    /// failure, before anything is freed; the pins already off stay off, and
+    /// `PinnedCount` says so.
+    ///
+    /// Each file goes through `FreeUpSpace`'s per-file path: one in use or
+    /// changed here is left and counted (`busy` and [`FreedUp::modified`]),
+    /// and one a pin of its own — or of a folder between it and the path, or
+    /// above the path by the time it is walked — keeps is left and counted in
+    /// [`FreedUp::pinned`]. One `freed` event per path that freed anything.
+    pub async fn free_up(&self, paths: &[PathBuf]) -> Result<FreedUp, SyncError> {
+        self.free_up_with(paths, pin::set_pin).await
+    }
+
+    /// [`free_up`](Self::free_up), taking pins off through `write`.
+    async fn free_up_with(&self, paths: &[PathBuf], write: fn(&File, bool) -> io::Result<()>) -> Result<FreedUp, SyncError> {
+        let reg = self.require_registration()?;
+        if reg.intercepted {
+            self.require_link()?;
+        }
+        let targets = self.pin_targets(&reg.root, paths).await?;
+        if let Some(refusal) = kept_by_folder(&targets) {
+            return Err(refusal);
+        }
+        let walks: Vec<(PathBuf, bool)> = targets.iter().map(|t| (t.shown.clone(), t.is_dir)).collect();
+        // The other descriptors close here: one of our own left open on a
+        // file would refuse the write lease its free-up takes.
+        let own: Vec<PinTarget> = targets.into_iter().filter(|target| target.own).collect();
+        let (unpinned, failed) = self.set_pins(own, false, write).await;
+        for shown in &unpinned {
+            self.pins.unpinned(shown);
+        }
+        if let Some(e) = failed {
+            return Err(e);
+        }
+        let mut total = FreedUp::default();
+        let mut stopped = None;
+        for (shown, is_dir) in walks {
+            let (root, start) = (reg.root.path.clone(), shown.clone());
+            let (candidates, pinned) = tokio::task::spawn_blocking(move || {
+                // Looked at again now: a folder above pinned since the check
+                // keeps everything under it.
+                let inherited = pin::pinned_above(&root, &start).is_some();
+                pin::downloaded_under(&start, inherited)
+            })
+            .await
+            .map_err(|e| SyncError::Io(format!("the walk of the folder failed: {e}")))?;
+            let (freed, stop) = self.free_each(candidates).await;
+            if freed.files > 0 {
+                let detail = if is_dir { freed_detail(freed.files, freed.bytes) } else { activity::human_size(freed.bytes) };
+                let event = activity::event(Kind::Freed, shown.display().to_string(), detail);
+                self.report.activity.record(vec![event]).await;
+            }
+            total.files += freed.files;
+            total.bytes += freed.bytes;
+            total.busy += freed.busy;
+            total.modified += freed.modified;
+            total.pinned += pinned;
+            if stop.is_some() {
+                stopped = stop;
+                break;
+            }
+        }
+        self.report.space.kick();
+        match stopped {
+            Some(SyncError::NoRoot) | None => Ok(total),
+            Some(e) => Err(e),
+        }
+    }
+
+    /// `PinnedCount`.
+    pub fn pinned_count(&self) -> u32 {
+        self.state.get().pinned_count
     }
 
     /// One file freed up, and how many bytes of blocks that gave back —
@@ -2705,27 +2955,66 @@ enum Wait {
     No,
 }
 
-/// What `FreeUpSpace()` did: files freed up, the bytes of
-/// blocks that gave back, and files left as they were because they were in
-/// use.
+/// What `FreeUpSpace()` and `FreeUp()` did: files freed up, the bytes of
+/// blocks that gave back, files left as they were because they were in use
+/// or changed here, and downloaded files left because a pin keeps them on
+/// this device. `FreeUp` answers `busy + modified` as its `busy`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct FreedUp {
     pub files: u32,
     pub bytes: u64,
     pub busy: u32,
+    pub modified: u32,
+    pub pinned: u32,
 }
 
-/// Every file under `root` that reads `hydrated` and holds something:
-/// what `FreeUpSpace` frees. Read by name alone (`lstat`, `lgetxattr`), never
-/// by opening a file (see `activity::walk_files`).
-fn hydrated_files(root: &Path) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    activity::walk_files(root, &mut |path, meta| {
-        if meta.len() > 0 && state_of_path(path) == Some(State::Hydrated) {
-            found.push(path.to_path_buf());
-        }
-    });
-    found
+/// A path `Pin`, `Unpin` or `FreeUp` was given, opened beneath the root
+/// (`SyncRoot::open_item`) and looked at, before anything changes.
+struct PinTarget {
+    item: File,
+    /// Its full path as the activity log names it.
+    shown: PathBuf,
+    is_dir: bool,
+    /// It carries a pin of its own.
+    own: bool,
+    /// The folders above it, up to the root, that carry a pin: nearest first.
+    above: Vec<PathBuf>,
+}
+
+/// Opens and looks at each of `paths`; one that cannot be — outside the
+/// root, a `.konedrive-*` name, a file that is not ours — refuses them all.
+/// Blocking.
+fn pin_targets(root: &SyncRoot, paths: &[PathBuf]) -> Result<Vec<PinTarget>, SyncError> {
+    paths
+        .iter()
+        .map(|path| {
+            let (item, shown) = root.open_item(path)?;
+            let io = |e: io::Error| SyncError::Io(format!("{}: {e}", shown.display()));
+            let is_dir = item.metadata().map_err(io)?.is_dir();
+            let own = konedrive_fs::placeholder::read_pin(&item).map_err(io)?;
+            let above = pin::pinned_ancestors(&root.path, &shown);
+            Ok(PinTarget { item, shown, is_dir, own, above })
+        })
+        .collect()
+}
+
+/// Why pins cannot come off `targets`: a folder above one of them pins it
+/// and stays pinned — it is not itself one of them with its own pin, which
+/// the same call takes off. A path with a pin of its own under a pinned
+/// folder is refused too: taking its pin off would leave it pinned.
+fn kept_by_folder(targets: &[PinTarget]) -> Option<SyncError> {
+    let coming_off: std::collections::HashSet<&Path> =
+        targets.iter().filter(|target| target.own).map(|target| target.shown.as_path()).collect();
+    targets
+        .iter()
+        .flat_map(|target| target.above.iter().map(move |folder| (target, folder)))
+        .find(|(_, folder)| !coming_off.contains(folder.as_path()))
+        .map(|(target, folder)| SyncError::NotAllowed(pin::refusal(&target.shown, folder)))
+}
+
+/// A `freed` event's detail for more than one file: "2 files, 1.5 MiB".
+fn freed_detail(files: u32, bytes: u64) -> String {
+    format!("{files} file{}, {}", if files == 1 { "" } else { "s" }, activity::human_size(bytes))
 }
 
 /// Whether [`SyncService::hydrate_now`] still has work to do.
@@ -2822,6 +3111,35 @@ impl ContentSource for SyncService {
             None => Err(SourceError::NotFound(format!(
                 "{item_id}: no content source is registered"
             ))),
+        }
+    }
+}
+
+/// A pinned download is an ordinary fill ([`SyncService::fill_now`]):
+/// verified, checkpointed, shown in `Transfers` and recorded as
+/// `downloaded` or `failed`. A file whose pin was taken off since it was
+/// queued, or whose folder was forgotten, is passed over.
+#[async_trait]
+impl pin::PinFill for SyncService {
+    async fn fill_pinned(&self, path: &Path) -> pin::Filled {
+        let Some(reg) = self.registration() else { return pin::Filled::Done };
+        let (root, target) = (reg.root.path.clone(), path.to_path_buf());
+        let still = tokio::task::spawn_blocking(move || pin::pinned_by(&root, &target).is_some())
+            .await
+            .unwrap_or(false);
+        if !still {
+            return pin::Filled::Done;
+        }
+        match self.fill_now(path).await {
+            Ok(Answered::Failed(FillError::Errno(errno))) if errno == libc::ENOSPC || errno == libc::EDQUOT => {
+                pin::Filled::NoSpace
+            }
+            Ok(Answered::Failed(_)) => pin::Filled::Failed,
+            Ok(_) => pin::Filled::Done,
+            Err(e) => {
+                tracing::info!("{} is kept on this device but was not downloaded: {e}", path.display());
+                pin::Filled::Failed
+            }
         }
     }
 }
@@ -4249,7 +4567,7 @@ mod tests {
 
         let freed = service.free_up_space().await.unwrap();
 
-        assert_eq!(freed, FreedUp { files: 1, bytes: (before - data_blocks(&a)) * 512, busy: 1 });
+        assert_eq!(freed, FreedUp { files: 1, bytes: (before - data_blocks(&a)) * 512, busy: 1, modified: 0, pinned: 0 });
         assert!(freed.bytes >= 64 * 1024, "{freed:?}");
         assert_eq!(service.item_state(&a).await, "online-only");
         assert_eq!(service.item_state(&b).await, "hydrated", "an open file is left as it is");
@@ -4364,7 +4682,7 @@ mod tests {
             .await
             .expect("it waited for the lock")
             .unwrap();
-        assert_eq!(freed, FreedUp { files: 0, bytes: 0, busy: 1 });
+        assert_eq!(freed, FreedUp { files: 0, bytes: 0, busy: 1, modified: 0, pinned: 0 });
         assert_eq!(service.item_state(&a).await, "hydrated");
     }
 
@@ -4376,8 +4694,167 @@ mod tests {
         let a = root_dir.path().join("a.bin");
         std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&a).unwrap(), b"mine").unwrap();
         let freed = service.free_up_space().await.unwrap();
-        assert_eq!(freed, FreedUp { files: 0, bytes: 0, busy: 0 });
+        assert_eq!(freed, FreedUp { files: 0, bytes: 0, busy: 0, modified: 1, pinned: 0 });
         assert!(std::fs::read(&a).unwrap().ends_with(b"mine"), "the change is kept");
+    }
+
+    // --- "Always keep on this device" -----------------------------------------
+
+    /// A folder registered without interception, with no helper anywhere,
+    /// filled with `docs/a.bin`, `docs/b.bin` and `c.bin`, 64 KiB each, none
+    /// of them downloaded. Returns the folder's path as registered.
+    async fn folder_to_pin() -> (Arc<SyncService>, PathBuf, tempfile::TempDir, tempfile::TempDir) {
+        let service = SyncService::new(None, None, None);
+        let dir = tempfile::tempdir().unwrap();
+        service.set_helper_socket(dir.path().join("no-helper.sock"));
+        let source = dir.path().join("source");
+        std::fs::create_dir_all(source.join("docs")).unwrap();
+        for name in ["docs/a.bin", "docs/b.bin", "c.bin"] {
+            std::fs::write(source.join(name), vec![3u8; 64 * 1024]).unwrap();
+        }
+        let root_dir = tempfile::tempdir().unwrap();
+        service.register_root_without_interception(root_dir.path()).await.unwrap();
+        service.populate_from_directory(&source).await.unwrap();
+        (service, root_dir.path().canonicalize().unwrap(), root_dir, dir)
+    }
+
+    /// Waits until nothing a pin asked for is pending or downloading: each
+    /// download recorded, since a file leaves the queue only after that.
+    async fn pinned_downloads_done(service: &SyncService) {
+        for _ in 0..1000 {
+            if service.pins.queued().is_empty() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("still queued: {:?}", service.pins.queued());
+    }
+
+    fn pin_of(path: &Path) -> Option<Vec<u8>> {
+        xattr::get(path, konedrive_fs::placeholder::XATTR_PIN).unwrap()
+    }
+
+    /// Pinning a folder queues every online-only file in it, and each is
+    /// downloaded through the ordinary fill, `downloaded` event and all.
+    /// What is outside the folder is left alone, and a file inside it is not
+    /// pinned again on its own.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pinning_a_folder_downloads_what_is_in_it() {
+        let (service, root, _root_dir, _dir) = folder_to_pin().await;
+        let (a, b, c) = (root.join("docs/a.bin"), root.join("docs/b.bin"), root.join("c.bin"));
+
+        assert_eq!(service.pin(&[root.join("docs")]).await.unwrap(), 2);
+        pinned_downloads_done(&service).await;
+
+        assert_eq!(std::fs::read(&a).unwrap(), vec![3u8; 64 * 1024]);
+        assert_eq!(service.item_state(&b).await, "hydrated");
+        assert_eq!(service.item_state(&c).await, "online-only");
+        assert_eq!(pin_of(&root.join("docs")), Some(b"1".to_vec()));
+        assert_eq!(service.pinned_count(), 1);
+        let downloaded: Vec<String> =
+            activity_of(&service).await.into_iter().filter(|(kind, ..)| kind == "downloaded").map(|(_, path, _)| path).collect();
+        assert_eq!(downloaded.len(), 2, "{downloaded:?}");
+
+        assert_eq!(service.pin(&[a.clone()]).await.unwrap(), 0);
+        assert_eq!(pin_of(&a), None, "the folder pins it already");
+        assert_eq!(service.pinned_count(), 1);
+    }
+
+    /// Free up space on a file a pinned folder keeps is refused, naming the
+    /// folder — through `FreeUp` and through `Dehydrate` alike.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn freeing_up_what_a_pinned_folder_keeps_is_refused_naming_the_folder() {
+        let (service, root, _root_dir, _dir) = folder_to_pin().await;
+        let (docs, a) = (root.join("docs"), root.join("docs/a.bin"));
+        service.pin(&[docs.clone()]).await.unwrap();
+        pinned_downloads_done(&service).await;
+
+        let refused = service.free_up(&[a.clone()]).await.unwrap_err();
+        let expected = format!("{} is pinned by {}: unpin it first", a.display(), docs.display());
+        assert!(matches!(&refused, SyncError::NotAllowed(why) if *why == expected), "{refused:?}");
+        assert!(matches!(service.dehydrate(&a).await, Err(SyncError::NotAllowed(_))));
+        assert!(matches!(service.unpin(&[a.clone()]).await, Err(SyncError::NotAllowed(_))));
+        assert_eq!(service.item_state(&a).await, "hydrated");
+        assert_eq!(pin_of(&docs), Some(b"1".to_vec()));
+
+        // With the folder in the same call, whose pin that call takes off.
+        let freed = service.free_up(&[docs.clone(), a.clone()]).await.unwrap();
+        assert_eq!((freed.files, freed.pinned), (2, 0), "{freed:?}");
+        assert_eq!((pin_of(&docs), service.pinned_count()), (None, 0));
+    }
+
+    /// Pins that came off before a later one could not stay off, and
+    /// `PinnedCount` says so; nothing is freed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_free_up_whose_later_pin_cannot_come_off_keeps_the_count_right() {
+        let (service, root, _root_dir, _dir) = folder_to_pin().await;
+        let (docs, c) = (root.join("docs"), root.join("c.bin"));
+        service.pin(&[docs.clone(), c.clone()]).await.unwrap();
+        pinned_downloads_done(&service).await;
+        fn fails_on_files(item: &File, on: bool) -> io::Result<()> {
+            if item.metadata()?.is_file() {
+                return Err(io::Error::from_raw_os_error(libc::EIO));
+            }
+            pin::set_pin(item, on)
+        }
+
+        assert!(matches!(service.free_up_with(&[docs.clone(), c.clone()], fails_on_files).await, Err(SyncError::Io(_))));
+
+        assert_eq!((pin_of(&docs), pin_of(&c)), (None, Some(b"1".to_vec())));
+        assert_eq!(service.pinned_count(), 1);
+        assert_eq!(service.item_state(&root.join("docs/a.bin")).await, "hydrated", "nothing was freed");
+    }
+
+    /// A file queued while pinned whose pin is gone by its turn is not
+    /// downloaded.
+    #[tokio::test]
+    async fn a_queued_file_no_longer_pinned_is_not_downloaded() {
+        use pin::PinFill;
+        let (service, root, _root_dir, _dir) = folder_to_pin().await;
+        let a = root.join("docs/a.bin");
+
+        assert_eq!(service.fill_pinned(&a).await, pin::Filled::Done);
+
+        assert_eq!(service.item_state(&a).await, "online-only");
+        assert!(activity_of(&service).await.is_empty(), "nothing was fetched");
+    }
+
+    /// Free up space on a pinned folder takes its pin off and frees what is
+    /// in it — but a file with a pin of its own stays, counted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn freeing_up_a_pinned_folder_unpins_it_and_frees_all_but_a_pin_below() {
+        let (service, root, _root_dir, _dir) = folder_to_pin().await;
+        let (docs, a, b) = (root.join("docs"), root.join("docs/a.bin"), root.join("docs/b.bin"));
+        service.pin(&[b.clone()]).await.unwrap();
+        service.pin(&[docs.clone()]).await.unwrap();
+        pinned_downloads_done(&service).await;
+        assert_eq!(service.pinned_count(), 2);
+
+        let freed = service.free_up(&[docs.clone()]).await.unwrap();
+
+        assert_eq!((freed.files, freed.busy, freed.pinned), (1, 0, 1), "{freed:?}");
+        assert!(freed.bytes >= 64 * 1024, "{freed:?}");
+        assert_eq!(service.item_state(&a).await, "online-only");
+        assert_eq!(service.item_state(&b).await, "hydrated", "its own pin keeps it");
+        assert_eq!((pin_of(&docs), pin_of(&b)), (None, Some(b"1".to_vec())));
+        assert_eq!(service.pinned_count(), 1);
+    }
+
+    /// `FreeUpSpace` leaves every file a pin keeps, and counts them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn free_up_space_leaves_pinned_files_and_counts_them() {
+        let (service, root, _root_dir, _dir) = folder_to_pin().await;
+        let c = root.join("c.bin");
+        service.pin(&[root.join("docs")]).await.unwrap();
+        service.hydrate_now(&c).await.unwrap();
+        pinned_downloads_done(&service).await;
+
+        let freed = service.free_up_space().await.unwrap();
+
+        assert_eq!((freed.files, freed.busy, freed.pinned), (1, 0, 2), "{freed:?}");
+        assert_eq!(service.item_state(&c).await, "online-only");
+        assert_eq!(service.item_state(&root.join("docs/a.bin")).await, "hydrated");
+        assert_eq!(service.item_state(&root.join("docs/b.bin")).await, "hydrated");
     }
 
     /// Item 8: a fill on open that fails is a `failed` event, and a full

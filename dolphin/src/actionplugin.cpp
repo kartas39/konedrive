@@ -1,4 +1,4 @@
-// "Download" and "Free up space" in Dolphin's context menu.
+// "Always keep on this device" and "Free up space" in Dolphin's context menu.
 //
 // KFileItemActions creates this once per Dolphin window and calls actions()
 // each time a context menu is built (kio src/widgets/kfileitemactions.cpp);
@@ -28,6 +28,9 @@ public:
         , m_client(new konedrive::SyncClient(QDBusConnection::sessionBus(), this))
     {
         connect(m_client, &konedrive::SyncClient::failed, this, &KAbstractFileItemActionPlugin::error);
+        connect(m_client, &konedrive::SyncClient::freeUpKeptBusy, this, [this](uint busy) {
+            Q_EMIT error(i18ncp("@info", "%1 file is in use or was changed here and was kept.", "%1 files are in use or were changed here and were kept.", busy));
+        });
     }
 
     ~KonedriveActionPlugin() override
@@ -49,45 +52,47 @@ public:
                 paths.append(path);
             }
         }
-        const konedrive::ActionTargets targets = konedrive::actionTargets(paths);
+        const konedrive::MenuState state = konedrive::menuState(paths);
 
         QList<QAction *> result;
-        if (!targets.download.isEmpty()) {
-            result.append(makeAction(QStringLiteral("konedrive_download"),
-                                     QString::fromLatin1(konedrive::DownloadIcon),
-                                     i18nc("@action:inmenu", "Download"),
-                                     konedrive::Operation::Download,
-                                     targets.download,
-                                     parentWidget));
+        if (state.showAlwaysKeep) {
+            auto *action = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::AlwaysKeepIcon)),
+                                       i18nc("@action:inmenu", "Always Keep on This Device"),
+                                       parentWidget);
+            action->setObjectName(QStringLiteral("konedrive_always_keep"));
+            action->setCheckable(true);
+            action->setChecked(state.alwaysKeepChecked);
+            action->setEnabled(state.alwaysKeepEnabled);
+            if (!state.alwaysKeepEnabled) {
+                action->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is.", state.blockingFolder));
+            }
+            const QStringList paths = state.inRoot;
+            connect(action, &QAction::triggered, this, [this, paths](bool checked) {
+                // Windows-like (D-A): unchecking it only unpins -- it never
+                // frees space on its own, "Free up space" does that.
+                m_client->start(checked ? konedrive::Operation::AlwaysKeep : konedrive::Operation::Unpin, paths);
+            });
+            m_previousActions.append(action);
+            result.append(action);
         }
-        if (!targets.freeUpSpace.isEmpty()) {
-            result.append(makeAction(QStringLiteral("konedrive_free_up_space"),
-                                     QString::fromLatin1(konedrive::FreeUpSpaceIcon),
-                                     i18nc("@action:inmenu", "Free up space"),
-                                     konedrive::Operation::FreeUpSpace,
-                                     targets.freeUpSpace,
-                                     parentWidget));
+        if (state.showFreeUp) {
+            auto *action = new QAction(QIcon::fromTheme(QString::fromLatin1(konedrive::FreeUpSpaceIcon)), i18nc("@action:inmenu", "Free Up Space"), parentWidget);
+            action->setObjectName(QStringLiteral("konedrive_free_up_space"));
+            action->setEnabled(state.freeUpEnabled);
+            if (!state.freeUpEnabled) {
+                action->setToolTip(i18nc("@info:tooltip", "Kept on this device because “%1” is; unpin it first.", state.blockingFolder));
+            }
+            const QStringList paths = state.inRoot;
+            connect(action, &QAction::triggered, this, [this, paths]() {
+                m_client->start(konedrive::Operation::FreeUpSpace, paths);
+            });
+            m_previousActions.append(action);
+            result.append(action);
         }
         return result;
     }
 
 private:
-    QAction *makeAction(const QString &objectName,
-                        const QString &icon,
-                        const QString &text,
-                        konedrive::Operation operation,
-                        const QStringList &paths,
-                        QWidget *parentWidget)
-    {
-        auto *action = new QAction(QIcon::fromTheme(icon), text, parentWidget);
-        action->setObjectName(objectName);
-        connect(action, &QAction::triggered, this, [this, operation, paths]() {
-            m_client->start(operation, paths);
-        });
-        m_previousActions.append(action);
-        return action;
-    }
-
     void discardPreviousActions()
     {
         for (const QPointer<QAction> &action : std::as_const(m_previousActions)) {

@@ -96,6 +96,18 @@ pub trait Sync1 {
     fn dismiss_conflict(&self, rescued_path: &str) -> zbus::Result<()>;
     /// (files freed, bytes freed, files kept because they were in use).
     fn free_up_space(&self) -> zbus::Result<(u32, u64, u32)>;
+    /// "Always keep on this device" for each path; how many files were
+    /// queued for download.
+    fn pin(&self, paths: &[&str]) -> zbus::Result<u32>;
+    /// Unchecking "Always keep on this device": each path's own pin comes
+    /// off, and its files stay; how many pins came off. Refused `NotAllowed`
+    /// for a path a folder above it pins.
+    fn unpin(&self, paths: &[&str]) -> zbus::Result<u32>;
+    /// "Free up space" for each path, its own pin taken off first: (files
+    /// freed, bytes freed, files kept because they were in use or changed
+    /// here, downloaded files kept by a pin below). Refused `NotAllowed` for
+    /// a path a folder above it pins.
+    fn free_up(&self, paths: &[&str]) -> zbus::Result<(u32, u64, u32, u32)>;
 
     #[zbus(signal)]
     fn activity_added(&self, time: i64, kind: String, path: String, detail: String) -> zbus::Result<()>;
@@ -122,6 +134,9 @@ pub trait Sync1 {
     fn local_bytes(&self) -> zbus::Result<u64>;
     #[zbus(property)]
     fn conflict_count(&self) -> zbus::Result<u32>;
+    /// Files and folders with an "Always keep on this device" pin of their own.
+    #[zbus(property)]
+    fn pinned_count(&self) -> zbus::Result<u32>;
     /// The privileged helper as the daemon sees it: `connected`,
     /// `not-installed`, `stopped`, `failed` or `unknown` ([`helper_advice`]).
     #[zbus(property)]

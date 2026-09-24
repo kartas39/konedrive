@@ -193,6 +193,19 @@ private Q_SLOTS:
         QCOMPARE(controller.conflictCount(), 2U);
     }
 
+    /// PinnedCount (dbus/org.konedrive.Sync1.xml) reaches the window, both
+    /// from GetAll at start and from a PropertiesChanged that follows.
+    void followsPinnedCount()
+    {
+        startFake();
+        m_fake->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(3)}});
+        SyncController controller;
+        QTRY_COMPARE(controller.pinnedCount(), 3U);
+
+        m_fake->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(5)}});
+        QTRY_COMPARE(controller.pinnedCount(), 5U);
+    }
+
     /// Transfers (a(stt)) arrives as a D-Bus structure inside PropertiesChanged
     /// and in GetAll; both land in the model, and a download that goes on is
     /// updated in place.

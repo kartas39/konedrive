@@ -19,6 +19,10 @@ namespace konedrive
 /// The attribute names, as `crates/konedrive-fs/src/placeholder.rs` defines them.
 inline constexpr char StateAttribute[] = "user.konedrive.state";
 inline constexpr char RootAttribute[] = "user.konedrive.root";
+/// "Always keep on this device": set on the pinned file or folder itself.
+/// An item is *effectively* pinned when it or any ancestor up to the sync
+/// root carries this (isEffectivelyPinned / pinnedBy below).
+inline constexpr char PinAttribute[] = "user.konedrive.pin";
 
 enum class FileState {
     /// A regular file with no `user.konedrive.state`: not a OneDrive file.
@@ -34,11 +38,16 @@ enum class FileState {
     NotAFile,
 };
 
+/// Windows-like, following the design: a cloud for online-only, an outline
+/// check for a hydrated file nobody asked to keep, a filled check for one
+/// that is effectively pinned, and the syncing glyph both for a file moving
+/// between states and for one pinned but not yet downloaded.
 enum class Emblem {
     None,
     Cloud,
     Syncing,
-    Downloaded,
+    CheckOutline,
+    CheckFilled,
 };
 
 /// `path`'s state, from lstat(2) and lgetxattr(2). Never opens `path`, and
@@ -67,13 +76,49 @@ QString physicalDirectory(const QString &dir);
 /// it does not.
 std::optional<QString> rootOf(const QString &dir, const RootMarkReader &hasMark = hasRootMark);
 
-Emblem emblemFor(FileState state);
+/// Whether `path` itself -- a file or a folder, never following a symbolic
+/// link -- carries `user.konedrive.pin`.
+bool hasPinMark(const QString &path);
+
+using PinMarkReader = std::function<bool(const QString &path)>;
+
+/// The nearest ancestor of `path`, up to and including `root`, that carries
+/// the pin -- physical ancestors (physicalDirectory, the same resolution
+/// `root` itself was found with), never `path` itself. `std::nullopt` if
+/// none of them does. Independent of whether `path` also carries its own
+/// pin: the daemon still refuses Unpin/FreeUp for a path pinned by an
+/// ancestor even when it is explicitly pinned too, since it would stay
+/// pinned by that ancestor either way (pinning.md §5) -- so this is what
+/// the menu's "pinned above" checks need, not `pinnedBy`.
+std::optional<QString> pinnedAbove(const QString &path, const QString &root, const PinMarkReader &hasPin = hasPinMark);
+
+/// The nearest item at or above `path`, up to and including `root`, that
+/// carries the pin: `path` itself first, then `pinnedAbove`. `std::nullopt`
+/// if none of them does.
+std::optional<QString> pinnedBy(const QString &path, const QString &root, const PinMarkReader &hasPin = hasPinMark);
+
+/// Whether `path` is pinned, itself or through an ancestor (pinnedBy).
+bool isEffectivelyPinned(const QString &path, const QString &root, const PinMarkReader &hasPin = hasPinMark);
+
+/// `state`'s emblem, following `pinned` (whether the item is effectively
+/// pinned) for the two hydrated cases and for an online-only file the sweep
+/// has queued.
+Emblem emblemFor(FileState state, bool pinned);
+
+/// Whether `path`, by lstat(2) without following it, is a directory.
+bool isDirectory(const QString &path);
+
+/// The emblem for an item that may be a directory: a directory shows the
+/// filled check when it is effectively pinned, and nothing otherwise (it has
+/// no `FileState` of its own); anything else follows `emblemFor`.
+Emblem emblemForItem(FileState state, bool isDir, bool pinned);
 
 /// The overlay icon names Dolphin draws for `emblem`; empty for `Emblem::None`.
 QStringList overlayNames(Emblem emblem);
 
-/// The icons of the two context menu actions.
-inline constexpr char DownloadIcon[] = "cloud-download";
+/// The icon of "Always keep on this device"; "Free up space" keeps the cloud
+/// icon it always had.
+inline constexpr char AlwaysKeepIcon[] = "window-pin";
 inline constexpr char FreeUpSpaceIcon[] = "cloudstatus";
 
 /// `/a/b` for `/a/b/c`, `/` for `/a`, empty for `/` or a relative name.
@@ -82,16 +127,49 @@ QString parentDirectory(const QString &path);
 QString fileName(const QString &path);
 QString joinPath(const QString &dir, const QString &name);
 
-/// Which of `paths` each context menu action applies to.
-struct ActionTargets {
-    QStringList download;
-    QStringList freeUpSpace;
+/// Whether `path`, by lstat(2) without following it, is a regular file or a
+/// directory -- what "Always keep on this device" and "Free up space" can
+/// apply to. A symbolic link is neither: it never borrows its target's pin.
+bool isFileOrDirectory(const QString &path);
+
+/// What the context menu offers for a selection.
+struct MenuState {
+    /// The selected paths that lie inside a sync root -- files or folders,
+    /// never a symbolic link, and never unmanaged, unrecognised or reserved
+    /// (`.konedrive-*`) -- in the order they were given, and what Pin(),
+    /// Unpin() or FreeUp() is called with: one bad item must not make the
+    /// daemon refuse the whole batch.
+    QStringList inRoot;
+    /// "Always keep on this device": offered whenever `inRoot` is not empty.
+    bool showAlwaysKeep = false;
+    /// Checked when every item of `inRoot` is effectively pinned. Unchecking
+    /// it calls Unpin(), not FreeUp() (Windows-like: unpinning never frees
+    /// space on its own).
+    bool alwaysKeepChecked = false;
+    /// While unchecked, toggling it (Pin()) is always safe -- a path already
+    /// covered by an ancestor is left as it is -- so this only matters while
+    /// checked: disabled when *any* item of `inRoot` is pinned by an
+    /// ancestor, since Unpin() refuses the whole call if any path it is
+    /// given is -- even one that is also explicitly pinned itself, which
+    /// would stay pinned by that ancestor either way (pinning.md §5).
+    bool alwaysKeepEnabled = true;
+    /// "Free up space": offered when anything in `inRoot` is a folder,
+    /// hydrated, or explicitly pinned (Windows-like: it works on any folder
+    /// in the root, not only a downloaded or pinned one).
+    bool showFreeUp = false;
+    /// Disabled when anything in `inRoot` is pinned by an ancestor (again
+    /// regardless of its own pin): FreeUp() refuses the whole call if any
+    /// path it is given is.
+    bool freeUpEnabled = true;
+    /// The ancestor folder's name, set whenever an item of `inRoot` is
+    /// pinned by an ancestor -- named in "Always keep"'s tooltip when it is
+    /// disabled, and in "Free up space"'s when it is.
+    QString blockingFolder;
 };
 
-/// "Download" fits a file that is online-only, "Free up space" one that is
-/// downloaded, and neither fits anything outside a sync root. Reads each
-/// file's attributes by path, never opening one; a root is looked up once
-/// per directory for the duration of this call only.
-ActionTargets actionTargets(const QStringList &paths, const RootMarkReader &hasMark = hasRootMark);
+/// Classifies `paths` for the context menu. Reads each item's attributes by
+/// path, never opening one; a root is looked up once per directory for the
+/// duration of this call only.
+MenuState menuState(const QStringList &paths, const RootMarkReader &hasRoot = hasRootMark, const PinMarkReader &hasPin = hasPinMark);
 
 } // namespace konedrive

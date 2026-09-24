@@ -16,6 +16,11 @@ pub const XATTR_STAMP: &str = "user.konedrive.stamp";
 pub const XATTR_ROOT: &str = "user.konedrive.root";
 pub const XATTR_CTAG: &str = "user.konedrive.ctag";
 pub const XATTR_PROGRESS: &str = "user.konedrive.progress";
+/// "Always keep on this device": `"1"` on a pinned file or folder. A folder's
+/// pin covers everything under it. The attribute is the only record of a
+/// pin, so a pin survives a rebuild of the daemon's tree store, and the
+/// Dolphin plugin reads it directly.
+pub const XATTR_PIN: &str = "user.konedrive.pin";
 
 /// A folder under the read phase's read-only lock, and one without.
 pub const LOCKED_FILE_MODE: u32 = 0o444;
@@ -294,6 +299,23 @@ pub fn write_progress(file: &File, progress: &Progress) -> io::Result<()> {
 
 pub fn remove_progress(file: &File) -> io::Result<()> {
     remove_xattr(file, XATTR_PROGRESS)
+}
+
+/// Whether the file or folder carries its own pin ([`XATTR_PIN`]). Any value
+/// counts: the attribute's presence is the pin.
+pub fn read_pin(file: &File) -> io::Result<bool> {
+    Ok(read_xattr(file, XATTR_PIN)?.is_some())
+}
+
+/// Pins the file or folder. Under the read-only lock, the owner's write bit
+/// is lifted for the moment of the write, as for every other attribute.
+pub fn write_pin(file: &File) -> io::Result<()> {
+    set_xattr(file, XATTR_PIN, b"1")
+}
+
+/// Takes the pin off; a file or folder with none is left as it is.
+pub fn remove_pin(file: &File) -> io::Result<()> {
+    remove_xattr(file, XATTR_PIN)
 }
 
 pub fn write_stamp(file: &File) -> io::Result<()> {

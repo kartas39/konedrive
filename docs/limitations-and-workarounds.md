@@ -238,6 +238,20 @@ application must never read zeros where real content should be.
   `dbus/org.konedrive.Sync1.xml`), so entries are only the top of each skipped subtree, not
   everything under it.
 
+### P10. Pinning a big folder downloads everything in it, with no prompt
+- **Kind** LIMIT (chosen) · **Evidence** reasoned · **Status** open
+- **What:** "Always keep on this device" on a folder queues every online-only file under it, and
+  everything OneDrive adds there later, and downloads them four at a time (`PIN_SLOTS`,
+  `crates/konedrived/src/sync/pin.rs`), in slots of their own beside the four fills served on
+  open. Nothing asks first, and nothing checks the free space beforehand.
+- **Why:** the product decision was no size prompt, as on Windows.
+- **Cost:** a pinned folder bigger than the free space fills the disk. The first download that
+  fails for want of space is a `failed` event reading "not enough disk space" (the window
+  notifies), and the rest of the queue is dropped until the next sweep (F38) rather than failing
+  file by file. A download that fails for another reason — no network, say — is one `failed` event
+  per file, each of which the window may notify, and the queue goes on to the next file.
+- **Where:** `docs/design/pinning.md` §4.
+
 ---
 
 ## 3. Workarounds we built
@@ -432,32 +446,64 @@ application must never read zeros where real content should be.
   remove that; it is not built. The whole-drive listing logic is covered by the mock-server suites
   (`tests/vm/scenarios.rs`), and against the real account only by G1.
 
-### W16. The helper's unit is hardened, and no test runs it under systemd
+### W16. The helper's unit is hardened, and runs under systemd only in a VM check you start by hand
 - **What:** `packaging/systemd/konedrive-helper.service` adds to its first sandbox
   (`ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateNetwork=yes`, two capabilities):
   `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`,
   `ProtectClock`, `ProtectHostname`, `RestrictNamespaces`, `LockPersonality`,
-  `MemoryDenyWriteExecute`, `RestrictRealtime`, `RestrictSUIDSGID`, `PrivateTmp`,
-  `SystemCallArchitectures=native`, and a deny-list,
+  `MemoryDenyWriteExecute`, `RestrictRealtime`, `PrivateTmp`, `SystemCallArchitectures=native`,
+  and a deny-list,
   `SystemCallFilter=~@mount @swap @reboot @raw-io @module @clock @debug @obsolete @cpu-emulation`,
   answering `EPERM`. Without `@mount` in it, the helper's `CAP_SYS_ADMIN` could remount its
-  read-only view read-write. `systemd-analyze security --offline=true` rates the unit 2.2 (OK),
-  down from 5.8 (MEDIUM); `systemd-analyze verify` passes. SECURITY.md says what this stops and
-  what it does not.
-- **Fragile:** no test runs the unit under systemd. The VM suite starts the helper binary itself,
-  as root, and `tests/vm/install_helper_test.sh` runs the installer against a fake `systemctl`.
-  The unit's settings first run on a real machine, at step 2 of `docs/acceptance-check.md`.
-  A setting that breaks the helper shows there as `Helper: failed` in `konedrivectl sync status`,
-  and `systemctl status konedrive-helper` says why.
-- **Left out for that reason:** a `SystemCallFilter` allow-list, `PrivateDevices=`, and a non-root
-  `User=`. Each would narrow the helper further, and each can break it in a way only a run under
-  systemd shows.
+  read-only view read-write. `systemd-analyze security` rates the unit 2.4 (OK), down from 5.8
+  (MEDIUM); `systemd-analyze verify` passes. SECURITY.md says what this stops and what it does
+  not.
+- **Tested under systemd:** `tests/vm/run.sh unit` (`tests/vm/helper_unit_test.sh`) boots the guest
+  with systemd as PID 1. It installs this unit file byte for byte and a release helper built
+  without `fault-injection`, in the guest only, and starts the unit. It checks that the unit is
+  active, has its seccomp filter, `no_new_privs` and exactly its two capabilities, and is still
+  the same process at the end. A uid-1000 daemon then connects to the unit's socket and
+  registers a folder on btrfs. It `MarkDir`s a `0700` subdirectory. Two `0600` placeholders,
+  opened from another process, are suspended, hydrated through the daemon, ignore-marked, and
+  not asked for again. The check then restarts the helper. The startup walk marks the earlier
+  folder again, and a new placeholder in it is intercepted. The second pass adds one drop-in,
+  `SystemCallErrorNumber=kill`. Any call the deny-list refuses would then kill the helper with
+  `SIGSYS`, and systemd would log it (a control unit shows that it does). None did. Measured
+  2026-09-25, kernel 7.2.7, systemd 259.
+- **Found by it, fixed:** `RestrictSUIDSGID=yes` stopped all interception. Seccomp cannot read
+  `openat2()`'s argument struct, so the filter systemd installs for that setting fails every
+  `openat2()` with `ENOSYS`. The helper opens registered folders, at registration and at every
+  start, and walks them only through `openat2()` with `RESOLVE_BENEATH`. So every
+  `RegisterRoot` was refused (`EINVAL`; the journal says `Function not implemented`). Every
+  startup walk would have covered nothing. All the while, `systemctl status` showed the helper
+  active and well. The acceptance check's `Helper: failed` would not have caught it. Bisected in
+  the VM: turning off any other directive alone changed nothing, and turning off this one alone
+  fixed it. The unit no longer sets it. Cost: the helper may again create setuid and setgid
+  files where it can write, as before the hardening. That means `/var/lib/konedrive` (0755) and
+  `/run/konedrive` (on a `nosuid` `/run`). `StateDirectoryMode=0700` would close the first to
+  other users; not tried.
+- **Fragile:** the check is its own mode, not part of `quick`, so nothing runs it unless someone
+  asks. Run it whenever the unit changes or the helper starts using a new syscall. The guest is
+  not a real machine:
+  - SELinux is off (`selinux=0`). With the host's enforcing policy over the unlabelled virtiofs
+    root, systemd cannot mount `/run` and freezes.
+  - There is no audit daemon, so a seccomp denial leaves no audit record. An `EPERM` denial
+    under the shipped unit leaves no trace at all, which is why the `kill` pass exists.
+  - The folder is on a loop-mounted btrfs under `/mnt`, not under `/home`. `ProtectHome=read-only`
+    is applied, but no registered folder lives beneath it.
+  - The VM uses QEMU's standard machine (`--disable-microvm`), because microvm hangs at boot
+    under the 7.2.7 host kernel.
+
+  Step 2 of `docs/acceptance-check.md` stays the run on a real machine.
+- **Left out, not yet tried under systemd:** a `SystemCallFilter` allow-list, `PrivateDevices=`,
+  and a non-root `User=`. Each would narrow the helper further, and `tests/vm/run.sh unit` is now
+  the place to try them.
 - **Cost of `PrivateTmp=yes`:** the helper has its own `/tmp` and `/var/tmp`, and it finds a
   folder by its path, at registration and at every restart. A folder under `/tmp` or `/var/tmp`
   therefore cannot be registered with the helper (`EINVAL`: the path does not lead back to the
   directory). Reasoned.
-- **Status:** open. The settings are read from `systemd.exec(5)`, not tested; the two scores and
-  `verify` are measured, offline.
+- **Status:** mitigated. The unit is measured under systemd, in a VM, when someone runs the
+  check.
 
 ---
 
@@ -736,6 +782,30 @@ application must never read zeros where real content should be.
   read the file, the other can read, modify and save it, and the first then saves over that change
   with what it read before. Both are rare and small (a client id set once; a drive id recorded once
   per fresh listing), so the window is narrow, but nothing closes it. Predates this phase. Reasoned. Open.
+- **F38. Pins: the sweep, and what waits for it** (`docs/design/pinning.md` §6) — (1) the sweep
+  walks the whole folder, reading every item's pin attribute (one `lgetxattr` each, beside the
+  `lstat`), after each Full reconcile and at start, because nothing but the attributes records
+  where the pins are; that is a second walk of the folder on top of the Full reconcile's own scan.
+  (2) A pinned file whose download failed, or was dropped for a full disk, is queued again by the
+  sweep after the next cycle that succeeds: a download that keeps failing — no network for one
+  file, say — makes every cycle walk the whole folder once more until it goes through. A folder
+  of the developer's mode has no cycles, and waits for its next start.
+  (3) Every cycle that moves or removes anything while pins exist walks the whole folder too, to
+  count the pins right again (a pinned item, or a folder with one inside, may have moved or gone). (4) A file with a pin of its own that a reconcile makes
+  again — a local change rescued, a file in an unrecognised state — comes back without its pin
+  (a replacement of a changed file keeps it, under the lock it holds for the swap). (5) Writing a
+  pin lifts the owner's write bit for the moment of the write, and so did two things running at
+  once: a pin on a file against a fill of that file, which lifts the same bit around each of its
+  attribute writes — one could put the lock back while the other wrote, failing `EACCES` (the
+  fill, or the pin); and a pin on a directory against the materializer creating, renaming or
+  removing in it — the pin could put `0555` back mid-create, failing the reconcile, or the
+  reconcile could lock the directory mid-pin, failing the pin. A file's pin is now written under
+  its per-inode lock, and every lift of a directory's write bit in the daemon — the pin's and the
+  materializer's windows and locking alike — under one lock (`disk::dir_modes`). A `chmod` from
+  outside the daemon still races with both. (6) `FreeUp` counts a file changed here, which it
+  leaves, in `busy`: the D-Bus answer is fixed at (files, bytes, busy, skipped_pinned), so "in
+  use" and "changed here" are one number. FRAGILE · reasoned; that the sweep after a restart queues a pinned online-only file is
+  measured (`sync::listing::tests::the_sweep_after_a_restart_…`). Open.
 
 ---
 
@@ -755,6 +825,7 @@ application must never read zeros where real content should be.
 | `Retry-After` wait when Graph throttles (`429`/`503`) | default 10 s, capped at 300 s, 5 attempts before giving up | **guess** (`RetryPolicy::default`) |
 | Replacements of changed files downloading at once | 2 | **guess** |
 | Fills served on open at once (`serve_hydrations`) | 4 | **guess** |
+| Pinned downloads at once (`PIN_SLOTS`), beside the fills on open | 4 | **guess**, equal to the fills on open |
 | Thumbnails filled per run / how far apart / how often regardless | 200 / 500 ms / every 10 min | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |
 | Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
 | Shortest time between two `LocalBytes` walks | 5 s | **guess** |
@@ -805,8 +876,9 @@ application must never read zeros where real content should be.
 
 ## 7. Dolphin integration
 
-The two plugins in `dolphin/`: emblems for each file's state, and "Download" / "Free up space" in the
-context menu. They read a file's state from its extended attribute and never open it.
+The two plugins in `dolphin/`: emblems for each file's state and pin, and "Always keep on this
+device" / "Free up space" in the context menu. They read a file's state and pin from its extended
+attributes and never open it.
 
 - **K1. Dolphin opens some files itself, and that downloads them.** LIMIT · measured in KIO
   (`tests/kio/kio_probe.cpp`, `docs/kio-behavior.md` §C) · partly closed (thumbnails from OneDrive).
@@ -832,12 +904,21 @@ context menu. They read a file's state from its extended attribute and never ope
   to the plugin. Needs root, so it belongs in the VM suite. If not, only those emblems stay stale until
   Dolphin refreshes.
 - **K5. Reading state on Dolphin's UI thread.** Measured: 6.7 µs per file inside a sync folder, 0.55 µs
-  outside. On a hung network mount it blocks exactly as a `stat` would.
-- **K6. At most 1000 calls wait at once, per window.** DEBT · measured. A file already waiting is never
-  sent twice, and a selection of more than 1000 files takes several clicks. A never-answering daemon costs
-  up to ~3 MB of Dolphin memory per window, and on `dbus-daemon` buses (not Fedora's `dbus-broker`) those
-  calls use Dolphin's own reply budget. The waiting set is per window, so two windows can each send the
-  same file once. A batch method on the daemon would remove all of this.
+  outside. On a hung network mount it blocks exactly as a `stat` would. The 6.7 µs figure predates
+  pinning and does not include `isEffectivelyPinned`'s own ancestor walk (a second `lgetxattr` per
+  level up to the root, not cached -- K25), which is paid on top of it for every file and folder
+  Dolphin asks about; not remeasured.
+- **K6. At most 1000 paths wait at once, per window.** DEBT · measured. `Pin`/`FreeUp` now take the
+  whole selection in one call each (`dbus/org.konedrive.Sync1.xml`), so this cap and the dedupe against
+  a path already waiting bound one batch, not one call per file as before; a selection of more than 1000
+  files still takes several clicks. A never-answering daemon still costs up to ~3 MB of Dolphin memory
+  per window (the paths, not the calls, are what is kept), and on `dbus-daemon` buses (not Fedora's
+  `dbus-broker`) the one call in flight still shares Dolphin's own reply budget. The waiting set is per
+  window, so two windows can each send the same path once. The dedupe is by path alone, not by
+  path and operation: a path still waiting on a `Pin` is not sent again on a `FreeUp` either (and
+  the reverse), so choosing one action right after the other on an overlapping selection, before
+  the first answers, sends only the first — the second reports "not yet answered" for those
+  paths. Measured in `dolphin/tests/noopentest.cpp`.
 - **K7. A root mark set or removed by hand.** Reasoned. The stale "not in a root" answer lasts until the
   folder is evicted from the cache or Dolphin restarts, including when the mark is on an unwatched
   ancestor; after a mark is removed and restored, emblems come back only when Dolphin asks again.
@@ -846,7 +927,10 @@ context menu. They read a file's state from its extended attribute and never ope
   dropped if Dolphin rebuilds the plugin before the daemon answers (the work still happens), and the
   Plasma desktop, which also hosts the menu plugin, never shows its messages at all.
 - **K9. A renamed folder that Dolphin immediately asks about stops updating live.** Reasoned.
-- **K10. An unrecognised state value** shows no emblem and no actions. Reasoned.
+- **K10. An unrecognised state value** shows no emblem and no actions. An unmanaged file (the
+  user's own, in the sync folder) and a reserved `.konedrive-*` name are also left out of what
+  `menuState` sends to `Pin`/`Unpin`/`FreeUp`, so one of them in a selection cannot make the
+  daemon refuse the whole batch over it (review #7). Reasoned.
 - **K11. After a failed on-demand start** the message tells the user to start the daemon by hand.
 - **K12. Cosmetic:** the "already waiting" and "too many" notes appear in Dolphin's red error bar.
 - **K13. Build assumptions:** the README's `QT_PLUGIN_PATH` line assumes `lib64`; the minimum KF/Qt 6.8
@@ -904,6 +988,46 @@ context menu. They read a file's state from its extended attribute and never ope
   whose files or folders get renamed or moved often re-fetches thumbnails it already had,
   proportional to how often that happens — never proportional to how many images there are.
   Interacts with K18: the old PNG left behind by the rename is never cleaned up either.
+- **K21. The outline-check icon name is one letter from picking the filled one instead.**
+  FRAGILE · measured against the installed Breeze theme. `emblems/*/checkmark.svg` is a symlink to
+  `emblem-checked.svg` (the FILLED icon), so asking the icon theme for `checkmark` is ambiguous
+  between that and the different, bare glyph at `actions/*/checkmark.svg` — the OUTLINE case would
+  risk silently drawing the same icon as the filled one. `overlayNames()` (`dolphin/src/filestate.cpp`)
+  uses `dialog-ok` instead: byte-identical artwork to `actions/*/checkmark.svg`, but a name that
+  exists nowhere else in the theme, so it cannot resolve to the wrong directory. A future Breeze
+  release that adds a `dialog-ok` icon elsewhere in the theme could reopen this; `iconNamesExistInBreeze`
+  (`dolphin/tests/overlayenginetest.cpp`) only checks the name resolves to *some* icon, not to the
+  right one.
+- **K22. A pin set or removed on a folder Dolphin has only passed through, not browsed on its
+  own, does not update emblems live.** Reasoned, by the same mechanism as K7: only a directory
+  Dolphin has directly asked about (or that turns out to be the sync root) gets an inotify watch;
+  reading a pin, unlike the cached root answer, is otherwise always fresh (`OverlayEngine::overlays`
+  reads it on every call), so the emblem is correct as soon as Dolphin asks again — it just is not
+  announced on its own in between.
+- **K23. "Always keep" and "Free up space" act on the selection as it was when the menu was
+  built, not as it is when the button is clicked.** Reasoned (TOCTOU). Both send every selected
+  path inside a root in one `Pin`/`FreeUp` call (`dolphin/src/actionplugin.cpp`); if a path's pin
+  changes in between — another window pins its ancestor, say — `FreeUp` can still refuse the whole
+  call `NotAllowed` even though the menu showed it enabled. The refusal is reported like any other
+  (K8, K12); nothing is corrupted, the click is just stale.
+- **K24. `inTheContextMenuKioBuilds` does not prove KIO's real MimeTypes-based plugin filtering.**
+  FRAGILE · reasoned. `dolphin/src/konedriveactions.json`'s `MimeTypes` had only
+  `application/octet-stream` until this round, which review #1 found meant real Dolphin never
+  shows the menu on a folder at all — `inode/directory` is now in the list too. But the test that
+  exercises the real `KFileItemActions::addActionsTo` path already passed, before the fix, for
+  selections of `text/plain`, `image/jpeg` and `application/pdf`, none of which was ever declared
+  either: whatever matching `MenuActionSource::Plugins` does in this test harness does not filter
+  by `MimeTypes` the way Dolphin's own context-menu building evidently does. The fix is right (the
+  JSON is now complete for every type the plugin cares about), but no automated test actually
+  proves the *filtering* itself works for a mixed selection in real Dolphin; only manual use does
+  (`docs/acceptance-check.md` §10).
+- **K25. A directory's own pin bit is not cached (review #15).** DEBT · by decision, not measured.
+  `OverlayEngine` caches whether a directory *is a root* per watched directory, but not whether it
+  *carries a pin* — `overlays()` and `recheck()` call `isEffectivelyPinned`, an ancestor walk to
+  the root, fresh every time (K5), for a directory item exactly as for a file. Caching each
+  watched directory's own pin bit, and rechecking a directory's descendants only when that bit or
+  the root's changed, was judged not cheap enough to add in this round; the extra UI-thread cost
+  is the same per-call ancestor walk K5 already measures for files, now paid for folders too.
 
 ---
 

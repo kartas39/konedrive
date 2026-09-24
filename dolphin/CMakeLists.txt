@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.24)
 project(konedrive-dolphin VERSION 0.1.0 LANGUAGES CXX)
 
-# Dolphin integration: an overlay emblem for each file's state, and
-# "Download" / "Free up space" in the context menu. Neither plugin ever opens
-# a file in the sync folder -- opening a placeholder downloads it.
+# Dolphin integration: an overlay emblem for each file's state and pin, and
+# "Always keep on this device" / "Free up space" in the context menu. Neither
+# plugin ever opens a file in the sync folder -- opening a placeholder
+# downloads it.
 
 set(QT_MIN_VERSION "6.8.0")
 set(KF_MIN_VERSION "6.8.0")

@@ -30,8 +30,8 @@ using namespace testsupport;
 
 namespace
 {
-const QString Download = QStringLiteral("konedrive_download");
-const QString FreeUpSpace = QStringLiteral("konedrive_free_up_space");
+const QString AlwaysKeep = QStringLiteral("konedrive_always_keep");
+const QString FreeUp = QStringLiteral("konedrive_free_up_space");
 const QString DaemonService = QStringLiteral("org.konedrive.Daemon");
 } // namespace
 
@@ -94,55 +94,214 @@ private Q_SLOTS:
         m_fake.reset();
     }
 
-    void offeredActionFollowsTheState_data()
+    /// Single-item selections: what each of the four pin states offers.
+    void menuFollowsTheState_data()
     {
         QTest::addColumn<QByteArray>("state");
+        QTest::addColumn<QString>("pin"); // "none", "explicit", "ancestor"
         QTest::addColumn<bool>("inRoot");
-        QTest::addColumn<QStringList>("expected");
-        QTest::newRow("online-only: Download") << QByteArray("online-only") << true << QStringList{Download};
-        QTest::newRow("hydrated: Free up space") << QByteArray("hydrated") << true << QStringList{FreeUpSpace};
-        QTest::newRow("hydrating: nothing") << QByteArray("hydrating") << true << QStringList();
-        QTest::newRow("dehydrating: nothing") << QByteArray("dehydrating") << true << QStringList();
-        QTest::newRow("no attribute: nothing") << QByteArray() << true << QStringList();
-        QTest::newRow("a value we do not know: nothing") << QByteArray("downloaded") << true << QStringList();
-        QTest::newRow("online-only outside a root: nothing") << QByteArray("online-only") << false << QStringList();
-        QTest::newRow("hydrated outside a root: nothing") << QByteArray("hydrated") << false << QStringList();
+        QTest::addColumn<bool>("expectAlwaysKeep");
+        QTest::addColumn<bool>("expectChecked");
+        QTest::addColumn<bool>("expectAlwaysKeepEnabled");
+        QTest::addColumn<bool>("expectFreeUp");
+        QTest::addColumn<bool>("expectFreeUpEnabled");
+
+        QTest::newRow("online-only, not pinned") << QByteArray("online-only") << QStringLiteral("none") << true << true << false << true << false << true;
+        QTest::newRow("online-only, explicitly pinned") << QByteArray("online-only") << QStringLiteral("explicit") << true << true << true << true << true << true;
+        QTest::newRow("hydrated, not pinned") << QByteArray("hydrated") << QStringLiteral("none") << true << true << false << true << true << true;
+        QTest::newRow("hydrated, explicitly pinned") << QByteArray("hydrated") << QStringLiteral("explicit") << true << true << true << true << true << true;
+        QTest::newRow("hydrated, pinned by an ancestor") << QByteArray("hydrated") << QStringLiteral("ancestor") << true << true << true << false << true << false;
+        QTest::newRow("hydrated, not in a root") << QByteArray("hydrated") << QStringLiteral("none") << false << false << false << true << false << true;
     }
 
-    void offeredActionFollowsTheState()
+    void menuFollowsTheState()
     {
         QFETCH(QByteArray, state);
+        QFETCH(QString, pin);
         QFETCH(bool, inRoot);
-        QFETCH(QStringList, expected);
-        Tree tree;
-        QVERIFY(inRoot ? tree.root(QStringLiteral("top")) : tree.dir(QStringLiteral("top")));
-        QVERIFY(tree.file(QStringLiteral("top/doc.bin"), state));
+        QFETCH(bool, expectAlwaysKeep);
+        QFETCH(bool, expectChecked);
+        QFETCH(bool, expectAlwaysKeepEnabled);
+        QFETCH(bool, expectFreeUp);
+        QFETCH(bool, expectFreeUpEnabled);
 
-        const QList<QAction *> actions = createPlugin()->actions(selection({tree.path(QStringLiteral("top/doc.bin"))}), nullptr);
-        QCOMPARE(names(actions), expected);
-        if (QAction *download = find(actions, Download)) {
-            QCOMPARE(download->text(), QStringLiteral("Download"));
+        Tree tree;
+        QVERIFY(inRoot ? tree.root(QStringLiteral("OneDrive")) : tree.dir(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), state));
+        if (pin == QLatin1String("explicit")) {
+            QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/doc.bin"))));
+        } else if (pin == QLatin1String("ancestor")) {
+            QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive"))));
         }
-        if (QAction *freeUp = find(actions, FreeUpSpace)) {
-            QCOMPARE(freeUp->text(), QStringLiteral("Free up space"));
+
+        const QList<QAction *> actions = createPlugin()->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr);
+        QAction *alwaysKeep = find(actions, AlwaysKeep);
+        QCOMPARE(alwaysKeep != nullptr, expectAlwaysKeep);
+        if (alwaysKeep) {
+            QVERIFY(alwaysKeep->isCheckable());
+            QCOMPARE(alwaysKeep->isChecked(), expectChecked);
+            QCOMPARE(alwaysKeep->isEnabled(), expectAlwaysKeepEnabled);
+            if (!expectAlwaysKeepEnabled) {
+                QVERIFY2(alwaysKeep->toolTip().contains(QStringLiteral("OneDrive")), qPrintable(alwaysKeep->toolTip()));
+            }
+        }
+        QAction *freeUp = find(actions, FreeUp);
+        QCOMPARE(freeUp != nullptr, expectFreeUp);
+        if (freeUp) {
+            QCOMPARE(freeUp->isEnabled(), expectFreeUpEnabled);
         }
     }
 
-    /// Neither a symbolic link to a placeholder nor a folder is offered
+    /// A selection with one pinned and one unpinned file: not fully checked
+    /// (it is not "the selection" that is pinned), and not disabled (some of
+    /// it can still usefully be toggled).
+    void mixedSelectionIsNeitherFullyCheckedNorDisabled()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/pinned.bin"), "hydrated"));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/pinned.bin"))));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/plain.bin"), "hydrated"));
+
+        const QList<QAction *> actions =
+            createPlugin()->actions(selection({tree.path(QStringLiteral("OneDrive/pinned.bin")), tree.path(QStringLiteral("OneDrive/plain.bin"))}), nullptr);
+        QAction *alwaysKeep = find(actions, AlwaysKeep);
+        QVERIFY(alwaysKeep);
+        QVERIFY(!alwaysKeep->isChecked());
+        QVERIFY(alwaysKeep->isEnabled());
+        QAction *freeUp = find(actions, FreeUp);
+        QVERIFY(freeUp);
+        QVERIFY(freeUp->isEnabled());
+    }
+
+    /// Every item pinned, and only by the same ancestor folder: "Always
+    /// keep" is checked (the selection is effectively pinned) but disabled
+    /// (nothing would change), and "Free up space" is disabled too.
+    void wholeSelectionPinnedByAnAncestorDisablesBothActions()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/sub/a.bin"), "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/sub/b.bin"), "hydrated"));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub"))));
+
+        const QList<QAction *> actions =
+            createPlugin()->actions(selection({tree.path(QStringLiteral("OneDrive/sub/a.bin")), tree.path(QStringLiteral("OneDrive/sub/b.bin"))}), nullptr);
+        QAction *alwaysKeep = find(actions, AlwaysKeep);
+        QVERIFY(alwaysKeep);
+        QVERIFY(alwaysKeep->isChecked());
+        QVERIFY(!alwaysKeep->isEnabled());
+        QVERIFY2(alwaysKeep->toolTip().contains(QStringLiteral("sub")), qPrintable(alwaysKeep->toolTip()));
+        QAction *freeUp = find(actions, FreeUp);
+        QVERIFY(freeUp);
+        QVERIFY(!freeUp->isEnabled());
+    }
+
+    /// One item explicitly pinned and another pinned only by an ancestor:
+    /// "Always keep" is disabled even though one of the two is explicitly
+    /// pinned -- unchecking it would still refuse the whole call, since the
+    /// ancestor-pinned one stays pinned by its ancestor either way
+    /// (pinning.md §5) -- and "Free up space" is disabled too.
+    void oneExplicitAndOneAncestorPinDisablesBothActions()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/explicit.bin"), "hydrated"));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/explicit.bin"))));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/sub/byAncestor.bin"), "hydrated"));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub"))));
+
+        const QList<QAction *> actions = createPlugin()->actions(
+            selection({tree.path(QStringLiteral("OneDrive/explicit.bin")), tree.path(QStringLiteral("OneDrive/sub/byAncestor.bin"))}), nullptr);
+        QAction *alwaysKeep = find(actions, AlwaysKeep);
+        QVERIFY(alwaysKeep);
+        QVERIFY(alwaysKeep->isChecked());
+        QVERIFY(!alwaysKeep->isEnabled());
+        QAction *freeUp = find(actions, FreeUp);
+        QVERIFY(freeUp);
+        QVERIFY(!freeUp->isEnabled());
+    }
+
+    /// A path both explicitly pinned and pinned by an ancestor: unlike the
+    /// mixed-selection case above, "Always keep" here is unchecked (not
+    /// every item is explicitly this one -- there is only one item, and it
+    /// is effectively pinned, so it IS checked) and disabled, since Unpin
+    /// would still refuse it.
+    void explicitAndAncestorPinOnTheSameItemDisablesAlwaysKeep()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/sub/both.bin"), "hydrated"));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub/both.bin"))));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub"))));
+
+        const QList<QAction *> actions = createPlugin()->actions(selection({tree.path(QStringLiteral("OneDrive/sub/both.bin"))}), nullptr);
+        QAction *alwaysKeep = find(actions, AlwaysKeep);
+        QVERIFY(alwaysKeep);
+        QVERIFY(alwaysKeep->isChecked());
+        QVERIFY(!alwaysKeep->isEnabled());
+        QAction *freeUp = find(actions, FreeUp);
+        QVERIFY(freeUp);
+        QVERIFY(!freeUp->isEnabled());
+    }
+
+    /// Folders get "Always keep" too, and "Free up space" for any folder in
+    /// the root (D-B), pinned or not.
+    void foldersGetActionsToo()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.dir(QStringLiteral("OneDrive/folder")));
+        const KFileItem folder(url(tree.path(QStringLiteral("OneDrive/folder"))), QStringLiteral("inode/directory"), S_IFDIR);
+
+        QList<QAction *> actions = createPlugin()->actions(KFileItemListProperties({folder}), nullptr);
+        QAction *alwaysKeep = find(actions, AlwaysKeep);
+        QVERIFY(alwaysKeep);
+        QVERIFY(!alwaysKeep->isChecked());
+        QVERIFY(find(actions, FreeUp));
+
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/folder"))));
+        actions = createPlugin()->actions(KFileItemListProperties({folder}), nullptr);
+        QVERIFY(find(actions, AlwaysKeep)->isChecked());
+        QVERIFY(find(actions, FreeUp));
+    }
+
+    /// Neither a symbolic link nor anything outside a root is offered
     /// anything.
-    void nothingForLinkOrFolder()
+    void nothingForALinkOrOutsideARoot()
     {
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
         QVERIFY(tree.symlink(QStringLiteral("OneDrive/doc.bin"), QStringLiteral("OneDrive/link.bin")));
-        QVERIFY(tree.dir(QStringLiteral("OneDrive/folder")));
-        QVERIFY(setState(tree.path(QStringLiteral("OneDrive/folder")), "online-only"));
+        QVERIFY(tree.file(QStringLiteral("Elsewhere/f.bin"), "online-only"));
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QCOMPARE(names(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/link.bin"))}), nullptr)), QStringList());
-        const KFileItem folder(url(tree.path(QStringLiteral("OneDrive/folder"))), QStringLiteral("inode/directory"), S_IFDIR);
-        QCOMPARE(names(plugin->actions(KFileItemListProperties({folder}), nullptr)), QStringList());
+        QCOMPARE(names(plugin->actions(selection({tree.path(QStringLiteral("Elsewhere/f.bin"))}), nullptr)), QStringList());
+    }
+
+    /// An unmanaged file (one of the user's own, in the sync folder), an
+    /// unrecognised state, and a reserved `.konedrive-*` name are all left
+    /// out of what is sent -- one of them must not make the daemon refuse
+    /// the whole batch (review #7).
+    void unmanagedUnrecognisedAndReservedAreLeftOut()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/mine.txt")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/odd.bin"), "not-a-state-we-know"));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/.konedrive-tmp")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/good.bin"), "hydrated"));
+        const auto p = [&tree](const char *name) {
+            return tree.path(QString::fromLatin1(name));
+        };
+        QVERIFY(startFake());
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        const QStringList all{p("OneDrive/mine.txt"), p("OneDrive/odd.bin"), p("OneDrive/.konedrive-tmp"), p("OneDrive/good.bin")};
+        find(plugin->actions(selection(all), nullptr), FreeUp)->trigger();
+        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("FreeUp ") + p("OneDrive/good.bin")});
     }
 
     void nothingThroughALinkOutOfTheRoot_data()
@@ -153,7 +312,7 @@ private Q_SLOTS:
     }
 
     /// A placeholder outside the sync folder, reached through a symbolic
-    /// link inside it, is not offered Download: it is not in the folder.
+    /// link inside it, is not offered anything: it is not in the folder.
     void nothingThroughALinkOutOfTheRoot()
     {
         QFETCH(QString, shownAs);
@@ -164,55 +323,23 @@ private Q_SLOTS:
         QCOMPARE(names(createPlugin()->actions(selection({tree.path(shownAs)}), nullptr)), QStringList());
     }
 
-    /// With several files selected each action applies to exactly the files
-    /// it fits, and one that fits none is not shown.
-    void severalFilesEachActionForTheFilesItFits()
-    {
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/a.bin"), "online-only"));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/b.bin"), "online-only"));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/c.bin"), "hydrated"));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/d.bin"), "hydrating"));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/e.txt")));
-        QVERIFY(tree.file(QStringLiteral("Elsewhere/f.bin"), "online-only"));
-        const auto p = [&tree](const char *name) {
-            return tree.path(QString::fromLatin1(name));
-        };
-        QVERIFY(startFake());
-
-        KAbstractFileItemActionPlugin *plugin = createPlugin();
-        const QStringList all{p("OneDrive/a.bin"), p("OneDrive/b.bin"), p("OneDrive/c.bin"), p("OneDrive/d.bin"), p("OneDrive/e.txt"), p("Elsewhere/f.bin")};
-        const QList<QAction *> both = plugin->actions(selection(all), nullptr);
-        QCOMPARE(names(both), (QStringList{Download, FreeUpSpace}));
-
-        find(both, Download)->trigger();
-        QTRY_COMPARE(m_fake->calls, (QStringList{QStringLiteral("Hydrate ") + p("OneDrive/a.bin"), QStringLiteral("Hydrate ") + p("OneDrive/b.bin")}));
-        find(both, FreeUpSpace)->trigger();
-        QTRY_COMPARE(m_fake->calls.size(), 3);
-        QCOMPARE(m_fake->calls.at(2), QStringLiteral("Dehydrate ") + p("OneDrive/c.bin"));
-
-        const QList<QAction *> downloadOnly = plugin->actions(selection({p("OneDrive/a.bin"), p("OneDrive/d.bin"), p("OneDrive/e.txt")}), nullptr);
-        QCOMPARE(names(downloadOnly), QStringList{Download});
-        const QList<QAction *> freeUpOnly = plugin->actions(selection({p("OneDrive/c.bin"), p("OneDrive/d.bin"), p("Elsewhere/f.bin")}), nullptr);
-        QCOMPARE(names(freeUpOnly), QStringList{FreeUpSpace});
-        QCOMPARE(names(plugin->actions(selection({p("OneDrive/d.bin"), p("OneDrive/e.txt"), p("Elsewhere/f.bin")}), nullptr)), QStringList());
-    }
-
-    /// The menu KFileItemActions builds -- the one Dolphin shows -- has the
-    /// actions for files of any type, and for the files of a selection that
-    /// also holds a folder.
+    /// The menu KFileItemActions builds -- the one Dolphin shows -- offers
+    /// "Always keep" for anything inside a root, and "Free up space" for a
+    /// folder in the selection (D-B), or when something in it is hydrated
+    /// or explicitly pinned.
     void inTheContextMenuKioBuilds_data()
     {
         QTest::addColumn<QStringList>("entries"); // name:mimetype:state, or name/ for a folder
         QTest::addColumn<QStringList>("expected");
-        QTest::newRow("one text file") << QStringList{QStringLiteral("notes.txt:text/plain:online-only")} << QStringList{Download};
+        QTest::newRow("one online-only file") << QStringList{QStringLiteral("notes.txt:text/plain:online-only")} << QStringList{AlwaysKeep};
         QTest::newRow("files of different types")
             << QStringList{QStringLiteral("notes.txt:text/plain:online-only"),
                            QStringLiteral("photo.jpg:image/jpeg:online-only"),
                            QStringLiteral("report.pdf:application/pdf:hydrated")}
-            << QStringList{Download, FreeUpSpace};
-        QTest::newRow("a file and a folder") << QStringList{QStringLiteral("notes.txt:text/plain:online-only"), QStringLiteral("sub/")} << QStringList{Download};
+            << QStringList{AlwaysKeep, FreeUp};
+        QTest::newRow("a file and a folder") << QStringList{QStringLiteral("notes.txt:text/plain:online-only"), QStringLiteral("sub/")} << QStringList{AlwaysKeep, FreeUp};
+        QTest::newRow("a folder alone") << QStringList{QStringLiteral("sub/")} << QStringList{AlwaysKeep, FreeUp};
+        QTest::newRow("two folders") << QStringList{QStringLiteral("sub1/"), QStringLiteral("sub2/")} << QStringList{AlwaysKeep, FreeUp};
     }
 
     void inTheContextMenuKioBuilds()
@@ -254,6 +381,73 @@ private Q_SLOTS:
         QCOMPARE(shown, expected);
     }
 
+    /// Triggering an action calls Pin or FreeUp with every selected path
+    /// that lies inside a root, whatever each one's own state is -- the
+    /// daemon sorts out what each path needs.
+    void triggeringCallsPinOrFreeUpWithTheWholeSelection()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/a.bin"), "online-only"));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/b.bin"), "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("Elsewhere/c.bin"), "online-only"));
+        const auto p = [&tree](const char *name) {
+            return tree.path(QString::fromLatin1(name));
+        };
+        QVERIFY(startFake());
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        const QStringList all{p("OneDrive/a.bin"), p("OneDrive/b.bin"), p("Elsewhere/c.bin")};
+        find(plugin->actions(selection(all), nullptr), AlwaysKeep)->trigger();
+        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("Pin ") + p("OneDrive/a.bin") + QLatin1Char(',') + p("OneDrive/b.bin")});
+
+        find(plugin->actions(selection(all), nullptr), FreeUp)->trigger();
+        QTRY_COMPARE(m_fake->calls.size(), 2);
+        QCOMPARE(m_fake->calls.at(1), QStringLiteral("FreeUp ") + p("OneDrive/a.bin") + QLatin1Char(',') + p("OneDrive/b.bin"));
+    }
+
+    /// D-A: unchecking an already-checked "Always keep on this device"
+    /// calls Unpin, never FreeUp -- the files stay downloaded, as on
+    /// Windows.
+    void uncheckingAlwaysKeepCallsUnpinNotFreeUp()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/a.bin"), "hydrated"));
+        QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/a.bin"))));
+        const QString a = tree.path(QStringLiteral("OneDrive/a.bin"));
+        QVERIFY(startFake());
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        QAction *alwaysKeep = find(plugin->actions(selection({a}), nullptr), AlwaysKeep);
+        QVERIFY(alwaysKeep);
+        QVERIFY(alwaysKeep->isChecked());
+        alwaysKeep->trigger();
+        QVERIFY(!alwaysKeep->isChecked());
+        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("Unpin ") + a});
+    }
+
+    /// FreeUp's `busy` now also counts files changed here and not uploaded,
+    /// not only files in use (review #6): a successful FreeUp with some
+    /// still says so.
+    void freeUpSuccessWithBusyFilesSaysSo()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/a.bin"), "hydrated"));
+        const QString a = tree.path(QStringLiteral("OneDrive/a.bin"));
+        QVERIFY(startFake());
+        m_fake->defaultAnswer.files = 1;
+        m_fake->defaultAnswer.busy = 2;
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
+        find(plugin->actions(selection({a}), nullptr), FreeUp)->trigger();
+        QTRY_COMPARE(errors.count(), 1);
+        QVERIFY2(errors.at(0).at(0).toString().contains(QStringLiteral("2 files are in use or were changed here and were kept")),
+                 qPrintable(errors.at(0).at(0).toString()));
+    }
+
     /// Choosing an action returns at once; the daemon's answer, however long
     /// it takes, arrives later on the event loop.
     void callsDoNotBlock()
@@ -263,20 +457,20 @@ private Q_SLOTS:
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
         const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
         QVERIFY(startFake());
-        m_fake->answers.insert(doc, {QString(), QString(), 2000});
+        m_fake->defaultAnswer.delayMs = 2000;
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        QAction *download = find(plugin->actions(selection({doc}), nullptr), Download);
-        QVERIFY(download);
+        QAction *alwaysKeep = find(plugin->actions(selection({doc}), nullptr), AlwaysKeep);
+        QVERIFY(alwaysKeep);
 
         QElapsedTimer clock;
         clock.start();
-        download->trigger();
+        alwaysKeep->trigger();
         const qint64 took = clock.elapsed();
         QVERIFY2(took < 500, qPrintable(QStringLiteral("trigger() took %1 ms").arg(took)));
 
-        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("Hydrate ") + doc});
+        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("Pin ") + doc});
         QCOMPARE(m_fake->delayedAnswersSent, 0);
         QTRY_COMPARE_WITH_TIMEOUT(m_fake->delayedAnswersSent, 1, 5000);
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
@@ -285,82 +479,92 @@ private Q_SLOTS:
 
     void refusalIsExplained_data()
     {
-        QTest::addColumn<bool>("download");
+        QTest::addColumn<bool>("alwaysKeep");
         QTest::addColumn<QString>("errorName");
         QTest::addColumn<QString>("message");
         QTest::addColumn<QString>("expected");
         QTest::addColumn<bool>("daemonWordsShown");
+        // False only for NotAllowed: the message is the daemon's own words
+        // alone, naming the actual refused path -- not a file name of ours
+        // in front of it, which could be the wrong path in the batch
+        // (review #18).
+        QTest::addColumn<bool>("fileNameShown");
 
         const QString decoy = QStringLiteral("DAEMON-OWN-WORDS");
         const auto named = [](const char *name) {
             return QStringLiteral("org.konedrive.Error.") + QLatin1String(name);
         };
-        QTest::newRow("Download: NoHelper") << true << named("NoHelper") << decoy << QStringLiteral("must first have the helper stop letting it through unchecked") << false;
-        QTest::newRow("Download: NoRoot") << true << named("NoRoot") << decoy << QStringLiteral("KOneDrive has no sync folder registered") << false;
-        QTest::newRow("Download: NoSource") << true << named("NoSource") << decoy << QStringLiteral("does not know where to download “doc.bin” from yet") << false;
-        QTest::newRow("Download: OutsideRoot") << true << named("OutsideRoot") << decoy << QStringLiteral("is not a regular file inside KOneDrive's sync folder") << false;
-        QTest::newRow("Download: NotManaged") << true << named("NotManaged") << decoy << QStringLiteral("so there is nothing to download") << false;
-        QTest::newRow("Download: ModifiedLocally") << true << named("ModifiedLocally") << decoy << QStringLiteral("downloading it again would overwrite your edits") << false;
-        QTest::newRow("Download: Failed") << true << named("Failed") << QStringLiteral("disk full") << QStringLiteral("Downloading “doc.bin” failed: disk full") << true;
-        QTest::newRow("Download: a name that is not ours")
+        QTest::newRow("Always keep: NoHelper") << true << named("NoHelper") << decoy << QStringLiteral("must first have the helper stop letting its opens through unchecked") << false << true;
+        QTest::newRow("Always keep: NoRoot") << true << named("NoRoot") << decoy << QStringLiteral("KOneDrive has no sync folder registered") << false << true;
+        QTest::newRow("Always keep: OutsideRoot") << true << named("OutsideRoot") << decoy << QStringLiteral("is not inside KOneDrive's sync folder") << false << true;
+        QTest::newRow("Always keep: NotManaged") << true << named("NotManaged") << decoy << QStringLiteral("nothing for KOneDrive to keep downloaded") << false << true;
+        QTest::newRow("Always keep: ModifiedLocally") << true << named("ModifiedLocally") << decoy << QStringLiteral("downloading it again would overwrite your edits") << false << true;
+        QTest::newRow("Always keep: Failed") << true << named("Failed") << QStringLiteral("disk full") << QStringLiteral("Keeping “doc.bin” on this device failed: disk full") << true << true;
+        QTest::newRow("Always keep: a name that is not ours")
             << true << QStringLiteral("org.freedesktop.DBus.Error.InUse") << QStringLiteral("something else entirely")
-            << QStringLiteral("Downloading “doc.bin” failed: something else entirely") << true;
-        QTest::newRow("Free up: NoHelper") << false << named("NoHelper") << decoy << QStringLiteral("must first have the helper take off any mark") << false;
-        QTest::newRow("Free up: NoRoot") << false << named("NoRoot") << decoy << QStringLiteral("KOneDrive has no sync folder registered") << false;
-        QTest::newRow("Free up: OutsideRoot") << false << named("OutsideRoot") << decoy << QStringLiteral("is not a regular file inside KOneDrive's sync folder") << false;
-        QTest::newRow("Free up: NotManaged") << false << named("NotManaged") << decoy << QStringLiteral("never frees the space of a file it could not download again") << false;
-        QTest::newRow("Free up: NotHydrated") << false << named("NotHydrated") << decoy << QStringLiteral("is not downloaded, so there is no space to free") << false;
-        QTest::newRow("Free up: ModifiedLocally") << false << named("ModifiedLocally") << decoy << QStringLiteral("freeing its space would lose your edits") << false;
-        QTest::newRow("Free up: InUse") << false << named("InUse") << decoy << QStringLiteral("is open in another program, so its space cannot be freed") << false;
-        QTest::newRow("Free up: Failed") << false << named("Failed") << QStringLiteral("disk full") << QStringLiteral("Freeing up “doc.bin” failed: disk full") << true;
+            << QStringLiteral("Keeping “doc.bin” on this device failed: something else entirely") << true << true;
+        QTest::newRow("Free up: NoHelper") << false << named("NoHelper") << decoy << QStringLiteral("must first have the helper take off any mark") << false << true;
+        QTest::newRow("Free up: NoRoot") << false << named("NoRoot") << decoy << QStringLiteral("KOneDrive has no sync folder registered") << false << true;
+        QTest::newRow("Free up: OutsideRoot") << false << named("OutsideRoot") << decoy << QStringLiteral("is not inside KOneDrive's sync folder") << false << true;
+        QTest::newRow("Free up: NotManaged") << false << named("NotManaged") << decoy << QStringLiteral("never frees the space of a file it could not download again") << false << true;
+        QTest::newRow("Free up: NotHydrated") << false << named("NotHydrated") << decoy << QStringLiteral("is not downloaded, so there is no space to free") << false << true;
+        QTest::newRow("Free up: ModifiedLocally") << false << named("ModifiedLocally") << decoy << QStringLiteral("freeing its space would lose your edits") << false << true;
+        QTest::newRow("Free up: InUse") << false << named("InUse") << decoy << QStringLiteral("is open in another program, so its space cannot be freed") << false << true;
+        // The daemon's own shape: `<path> is pinned by <folder>: unpin it
+        // first` -- the refused path first, which may not be "doc.bin".
+        QTest::newRow("Free up: NotAllowed")
+            << false << named("NotAllowed") << QStringLiteral("OneDrive/sub/byAncestor.bin is pinned by OneDrive/sub: unpin it first")
+            << QStringLiteral("Could not free up space: OneDrive/sub/byAncestor.bin is pinned by OneDrive/sub: unpin it first") << true << false;
+        QTest::newRow("Free up: Failed") << false << named("Failed") << QStringLiteral("disk full") << QStringLiteral("Freeing up “doc.bin” failed: disk full") << true << true;
     }
 
     /// Each refusal is explained by its name, in words about the user's file.
     void refusalIsExplained()
     {
-        QFETCH(bool, download);
+        QFETCH(bool, alwaysKeep);
         QFETCH(QString, errorName);
         QFETCH(QString, message);
         QFETCH(QString, expected);
         QFETCH(bool, daemonWordsShown);
+        QFETCH(bool, fileNameShown);
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), download ? "online-only" : "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), alwaysKeep ? "online-only" : "hydrated"));
         const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
         QVERIFY(startFake());
-        m_fake->answers.insert(doc, {errorName, message, 0});
+        m_fake->defaultAnswer = {errorName, message, 0, 0, 0, 0, 0, 0};
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        QAction *action = find(plugin->actions(selection({doc}), nullptr), download ? Download : FreeUpSpace);
+        QAction *action = find(plugin->actions(selection({doc}), nullptr), alwaysKeep ? AlwaysKeep : FreeUp);
         QVERIFY(action);
         action->trigger();
         QTRY_COMPARE(errors.count(), 1);
         const QString text = errors.at(0).at(0).toString();
         QVERIFY2(text.contains(expected), qPrintable(text));
-        QVERIFY2(text.contains(QStringLiteral("“doc.bin”")), qPrintable(text));
+        QCOMPARE(text.contains(QStringLiteral("“doc.bin”")), fileNameShown);
         QCOMPARE(text.contains(message), daemonWordsShown);
     }
 
     void daemonNotRunning_data()
     {
-        QTest::addColumn<bool>("download");
-        QTest::newRow("Download") << true;
+        QTest::addColumn<bool>("alwaysKeep");
+        QTest::newRow("Always keep") << true;
         QTest::newRow("Free up space") << false;
     }
 
     /// With no daemon on the bus the action says so, plainly.
     void daemonNotRunning()
     {
-        QFETCH(bool, download);
+        QFETCH(bool, alwaysKeep);
         QVERIFY(!QDBusConnection::sessionBus().interface()->isServiceRegistered(DaemonService));
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), download ? "online-only" : "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), alwaysKeep ? "online-only" : "hydrated"));
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        QAction *action = find(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr), download ? Download : FreeUpSpace);
+        QAction *action = find(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr), alwaysKeep ? AlwaysKeep : FreeUp);
         QVERIFY(action);
         action->trigger();
         QTRY_COMPARE(errors.count(), 1);
@@ -379,8 +583,8 @@ private Q_SLOTS:
         }
         QVERIFY(QDBusConnection::sessionBus().interface()->activatableServiceNames().value().contains(DaemonService));
         const QDBusMessage probe = QDBusConnection::sessionBus().call(
-            QDBusMessage::createMethodCall(DaemonService, QStringLiteral("/org/konedrive/Daemon"), QStringLiteral("org.konedrive.Sync1"), QStringLiteral("Hydrate"))
-            << QStringLiteral("/nonexistent"));
+            QDBusMessage::createMethodCall(DaemonService, QStringLiteral("/org/konedrive/Daemon"), QStringLiteral("org.konedrive.Sync1"), QStringLiteral("Pin"))
+            << QStringList{QStringLiteral("/nonexistent")});
         qInfo("the bus answers a failed start with %s", qPrintable(probe.errorName()));
 
         Tree tree;
@@ -388,13 +592,13 @@ private Q_SLOTS:
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr), Download)->trigger();
+        find(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr), AlwaysKeep)->trigger();
         QTRY_COMPARE(errors.count(), 1);
         const QString text = errors.at(0).at(0).toString();
-        QVERIFY2(text.startsWith(QStringLiteral("KOneDrive is not running, so “doc.bin” was not downloaded")), qPrintable(text));
+        QVERIFY2(text.startsWith(QStringLiteral("KOneDrive is not running, so “doc.bin” was not kept on this device")), qPrintable(text));
     }
 
-    /// The daemon leaves the bus while a download waits for it.
+    /// The daemon leaves the bus while a call waits for it.
     void daemonStopsBeforeAnswering()
     {
         Tree tree;
@@ -402,19 +606,20 @@ private Q_SLOTS:
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
         const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
         QVERIFY(startFake());
-        m_fake->answers.insert(doc, {QString(), QString(), 60000});
+        m_fake->defaultAnswer.delayMs = 60000;
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), Download)->trigger();
+        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
         QTRY_COMPARE(m_fake->calls.size(), 1);
         m_fake->stop();
         QTRY_COMPARE(errors.count(), 1);
         const QString text = errors.at(0).at(0).toString();
-        QVERIFY2(text.startsWith(QStringLiteral("KOneDrive stopped before it finished downloading “doc.bin”")), qPrintable(text));
+        QVERIFY2(text.startsWith(QStringLiteral("KOneDrive stopped before it finished downloading everything of “doc.bin”")), qPrintable(text));
     }
 
-    /// Three files refused for one reason make one message, not three.
+    /// Three files refused together (one call, one reason) make one
+    /// message, not three.
     void oneMessageForSeveralFiles()
     {
         Tree tree;
@@ -426,40 +631,13 @@ private Q_SLOTS:
         }
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection(paths), nullptr), Download)->trigger();
+        find(plugin->actions(selection(paths), nullptr), AlwaysKeep)->trigger();
         QTRY_COMPARE(errors.count(), 1);
         QTest::qWait(3 * konedrive::SyncClient::ReportDelayMs);
         QCOMPARE(errors.count(), 1);
         const QString text = errors.at(0).at(0).toString();
-        QVERIFY2(text.startsWith(QStringLiteral("KOneDrive is not running, so “a.bin” was not downloaded")), qPrintable(text));
-        QVERIFY2(text.contains(QStringLiteral("2 more files were not downloaded for the same reason.")), qPrintable(text));
-    }
-
-    /// Several files refused for different reasons: each reason once, for
-    /// the first file it happened to, with a count of the rest.
-    void eachReasonExplainedOnce()
-    {
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QStringList paths;
-        for (const char *name : {"a.bin", "b.bin", "c.bin"}) {
-            QVERIFY(tree.file(QStringLiteral("OneDrive/") + QLatin1String(name), "hydrated"));
-            paths.append(tree.path(QStringLiteral("OneDrive/") + QLatin1String(name)));
-        }
-        QVERIFY(startFake());
-        m_fake->answers.insert(paths.at(0), {QStringLiteral("org.konedrive.Error.ModifiedLocally"), QStringLiteral("modified"), 0});
-        m_fake->answers.insert(paths.at(1), {QStringLiteral("org.konedrive.Error.InUse"), QStringLiteral("in use"), 0});
-        m_fake->answers.insert(paths.at(2), {QStringLiteral("org.konedrive.Error.ModifiedLocally"), QStringLiteral("modified"), 0});
-
-        KAbstractFileItemActionPlugin *plugin = createPlugin();
-        QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection(paths), nullptr), FreeUpSpace)->trigger();
-        QTRY_COMPARE(errors.count(), 1);
-        const QString text = errors.at(0).at(0).toString();
-        QVERIFY2(text.contains(QStringLiteral("“a.bin” was changed here and has not been uploaded, so freeing its space would lose your edits.")), qPrintable(text));
-        QVERIFY2(text.contains(QStringLiteral("One more file was not freed up for the same reason.")), qPrintable(text));
-        QVERIFY2(text.contains(QStringLiteral("“b.bin” is open in another program")), qPrintable(text));
-        QVERIFY2(!text.contains(QStringLiteral("“c.bin”")), qPrintable(text));
+        QVERIFY2(text.startsWith(QStringLiteral("KOneDrive is not running, so “a.bin” was not kept on this device")), qPrintable(text));
+        QVERIFY2(text.contains(QStringLiteral("2 more files were not kept on this device for the same reason.")), qPrintable(text));
     }
 
     /// The daemon's own message rarely ends a sentence; the count that
@@ -472,47 +650,20 @@ private Q_SLOTS:
         QVERIFY(tree.file(QStringLiteral("OneDrive/b.bin"), "online-only"));
         const QStringList paths{tree.path(QStringLiteral("OneDrive/a.bin")), tree.path(QStringLiteral("OneDrive/b.bin"))};
         QVERIFY(startFake());
-        m_fake->defaultAnswer = {QStringLiteral("org.konedrive.Error.Failed"), QStringLiteral("disk full"), 0};
+        m_fake->defaultAnswer = {QStringLiteral("org.konedrive.Error.Failed"), QStringLiteral("disk full"), 0, 0, 0, 0, 0, 0};
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection(paths), nullptr), Download)->trigger();
+        find(plugin->actions(selection(paths), nullptr), AlwaysKeep)->trigger();
         QTRY_COMPARE(errors.count(), 1);
-        QCOMPARE(errors.at(0).at(0).toString(), QStringLiteral("Downloading “a.bin” failed: disk full. One more file was not downloaded for the same reason."));
+        QCOMPARE(errors.at(0).at(0).toString(),
+                 QStringLiteral("Keeping “a.bin” on this device failed: disk full. One more file was not kept on this device for the same reason."));
     }
 
-    /// A file refused at once is reported at once, not after another file
-    /// of the same request finishes downloading.
-    void refusalIsNotHeldBackBySlowDownload()
-    {
-        Tree tree;
-        QVERIFY(tree.root(QStringLiteral("OneDrive")));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/a.bin"), "online-only"));
-        QVERIFY(tree.file(QStringLiteral("OneDrive/b.bin"), "online-only"));
-        const QString a = tree.path(QStringLiteral("OneDrive/a.bin"));
-        const QString b = tree.path(QStringLiteral("OneDrive/b.bin"));
-        QVERIFY(startFake());
-        m_fake->answers.insert(a, {QStringLiteral("org.konedrive.Error.ModifiedLocally"), QStringLiteral("modified"), 0});
-        m_fake->answers.insert(b, {QString(), QString(), 5000});
-
-        KAbstractFileItemActionPlugin *plugin = createPlugin();
-        QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        QElapsedTimer clock;
-        clock.start();
-        find(plugin->actions(selection({a, b}), nullptr), Download)->trigger();
-        QTRY_COMPARE_WITH_TIMEOUT(errors.count(), 1, 2000);
-        QVERIFY2(clock.elapsed() < 2000, qPrintable(QStringLiteral("reported after %1 ms").arg(clock.elapsed())));
-        QVERIFY(errors.at(0).at(0).toString().contains(QStringLiteral("“a.bin” was changed here")));
-
-        QTRY_COMPARE_WITH_TIMEOUT(m_fake->delayedAnswersSent, 1, 7000);
-        QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
-        QCOMPARE(errors.count(), 1);
-    }
-
-    /// A file whose request the daemon has not answered yet is not asked for
+    /// A path whose call the daemon has not answered yet is not asked for
     /// again -- repeated clicks on a daemon that hangs would otherwise pile
     /// up calls in Dolphin -- and the user is told why nothing happened.
-    void fileAlreadyWaitingIsNotAskedAgain()
+    void pathAlreadyWaitingIsNotAskedAgain()
     {
         Tree tree;
         QVERIFY(tree.root(QStringLiteral("OneDrive")));
@@ -521,32 +672,34 @@ private Q_SLOTS:
         const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
         const QString fresh = tree.path(QStringLiteral("OneDrive/new.bin"));
         QVERIFY(startFake());
-        m_fake->defaultAnswer = {QString(), QString(), -1};
+        m_fake->defaultAnswer.delayMs = -1;
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), Download)->trigger();
-        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("Hydrate ") + doc});
+        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
+        QTRY_COMPARE(m_fake->calls, QStringList{QStringLiteral("Pin ") + doc});
 
-        find(plugin->actions(selection({doc}), nullptr), Download)->trigger();
+        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
         QCOMPARE(m_fake->calls.size(), 1);
         QTRY_COMPARE(errors.count(), 1);
         QVERIFY2(errors.at(0).at(0).toString().startsWith(QStringLiteral("KOneDrive has not yet answered an earlier request for “doc.bin”, so it was not asked again.")),
                  qPrintable(errors.at(0).at(0).toString()));
 
-        // With a file not asked for yet: that one is sent, the other is not.
-        find(plugin->actions(selection({doc, fresh}), nullptr), Download)->trigger();
+        // With a path not asked for yet: that one is sent, the other is not.
+        find(plugin->actions(selection({doc, fresh}), nullptr), AlwaysKeep)->trigger();
         QTRY_COMPARE(errors.count(), 2);
         QVERIFY2(!errors.at(1).at(0).toString().contains(QStringLiteral("“new.bin”")), qPrintable(errors.at(1).at(0).toString()));
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
-        QCOMPARE(m_fake->calls, (QStringList{QStringLiteral("Hydrate ") + doc, QStringLiteral("Hydrate ") + fresh}));
+        QCOMPARE(m_fake->calls.size(), 2);
+        QCOMPARE(m_fake->calls.at(1), QStringLiteral("Pin ") + fresh);
     }
 
-    /// However many files are chosen, no more than MaxCallsInFlight calls
-    /// wait for the daemon at once: they cost Dolphin memory, and on a
-    /// dbus-daemon bus they share Dolphin's own budget of pending replies.
-    /// The rest are refused with a message that says so.
+    /// However many paths are chosen, no more than MaxCallsInFlight wait for
+    /// the daemon at once: they cost Dolphin memory, and on a dbus-daemon
+    /// bus they share Dolphin's own budget of pending replies. The rest are
+    /// refused with a message that says so, and are not part of the one
+    /// call that is made.
     void callsInFlightAreCapped()
     {
         const int cap = konedrive::SyncClient::MaxCallsInFlight;
@@ -559,27 +712,27 @@ private Q_SLOTS:
             paths.append(tree.path(name));
         }
         QVERIFY(startFake());
-        m_fake->defaultAnswer = {QString(), QString(), -1};
+        m_fake->defaultAnswer.delayMs = -1;
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection(paths), nullptr), Download)->trigger();
-        QTRY_VERIFY_WITH_TIMEOUT(m_fake->calls.size() >= cap, 10000);
-        QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
-        QCOMPARE(m_fake->calls.size(), cap);
-        QVERIFY(!m_fake->calls.contains(QStringLiteral("Hydrate ") + paths.last()));
+        find(plugin->actions(selection(paths), nullptr), AlwaysKeep)->trigger();
+        QTRY_COMPARE(m_fake->calls.size(), 1);
+        const QStringList sent = m_fake->calls.first().mid(QStringLiteral("Pin ").size()).split(QLatin1Char(','));
+        QCOMPARE(sent.size(), cap);
+        QVERIFY(!sent.contains(paths.last()));
         QTRY_COMPARE(errors.count(), 1);
         const QString text = errors.at(0).at(0).toString();
         // The count is written the locale's way ("1,000" here).
         QVERIFY2(QString(text).remove(QLatin1Char(',')).startsWith(QString::number(cap) + QLatin1Char(' ')), qPrintable(text));
-        QVERIFY2(text.contains(QStringLiteral(" requests to KOneDrive are already waiting for an answer, so “f%1.bin” was not downloaded.")
+        QVERIFY2(text.contains(QStringLiteral(" requests to KOneDrive are already waiting for an answer, so “f%1.bin” was not kept on this device.")
                                    .arg(cap, 5, 10, QLatin1Char('0'))),
                  qPrintable(text));
     }
 
-    /// A download that takes longer than D-Bus's default 25-second reply
-    /// timeout is not reported as a failure.
-    void downloadLongerThanTheDefaultTimeoutIsNotAFailure()
+    /// Freeing up (or keeping) something that takes longer than D-Bus's
+    /// default 25-second reply timeout is not reported as a failure.
+    void keepingOnThisDeviceLongerThanTheDefaultTimeoutIsNotAFailure()
     {
         if (qEnvironmentVariableIsEmpty("KONEDRIVE_TEST_SLOW")) {
             QSKIP("takes 30 s; ctest runs it as actionplugintest_slow");
@@ -589,11 +742,11 @@ private Q_SLOTS:
         QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
         const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
         QVERIFY(startFake());
-        m_fake->answers.insert(doc, {QString(), QString(), 30000});
+        m_fake->defaultAnswer.delayMs = 30000;
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
-        find(plugin->actions(selection({doc}), nullptr), Download)->trigger();
+        find(plugin->actions(selection({doc}), nullptr), AlwaysKeep)->trigger();
         QTRY_COMPARE_WITH_TIMEOUT(m_fake->delayedAnswersSent, 1, 40000);
         QTest::qWait(konedrive::SyncClient::ReportDelayMs + 500);
         QVERIFY2(errors.isEmpty(), errors.isEmpty() ? "" : qPrintable(errors.at(0).at(0).toString()));

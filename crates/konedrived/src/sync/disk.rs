@@ -53,6 +53,39 @@ pub struct Disk {
     locked: bool,
 }
 
+/// Held by everything in this daemon that lifts a locked directory's write
+/// bit and puts it back: the materializer's windows ([`Disk::writable`]),
+/// its locking, and a pin written on a folder (`SyncService::pin`). Two
+/// such windows on one directory used to be able to interleave — one put
+/// the lock back while the other was still writing, which failed `EACCES`.
+///
+/// Re-entrant on one thread (windows nest: a rename opens three), and never
+/// held across an `.await`.
+static DIR_MODES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    static DIR_MODES_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// This thread's hold on [`DIR_MODES`], released when dropped. The guard is
+/// never read: it only has to live as long as this does.
+pub struct DirModes(#[allow(dead_code)] Option<std::sync::MutexGuard<'static, ()>>);
+
+/// Takes [`DIR_MODES`], or joins this thread's hold on it.
+pub fn dir_modes() -> DirModes {
+    let outermost = DIR_MODES_HELD.with(|held| {
+        held.set(held.get() + 1);
+        held.get() == 1
+    });
+    DirModes(outermost.then(|| DIR_MODES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())))
+}
+
+impl Drop for DirModes {
+    fn drop(&mut self) {
+        DIR_MODES_HELD.with(|held| held.set(held.get() - 1));
+    }
+}
+
 fn beneath() -> ResolveFlag {
     ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_SYMLINKS | ResolveFlag::RESOLVE_NO_MAGICLINKS
 }
@@ -137,6 +170,7 @@ impl Disk {
         if !self.locked {
             return op();
         }
+        let _modes = dir_modes();
         placeholder::set_mode(dir, OPEN_DIR_MODE)?;
         let result = op();
         let relocked = placeholder::set_mode(dir, LOCKED_DIR_MODE);
@@ -213,6 +247,7 @@ impl Disk {
     /// Locks a directory made this cycle, now that everything is in it.
     pub fn lock_dir(&self, dir: &File) -> io::Result<()> {
         if self.locked {
+            let _modes = dir_modes();
             placeholder::set_mode(dir, LOCKED_DIR_MODE)?;
         }
         Ok(())
@@ -239,6 +274,7 @@ impl Disk {
         }
         let opened = if is_dir { open_subdir(dir, name)? } else { self.open_file(dir, name)? };
         let Some(_claimed) = claim(&opened)? else { return Ok(()) };
+        let _modes = is_dir.then(dir_modes);
         placeholder::set_mode(&opened, want)
     }
 
@@ -321,7 +357,10 @@ impl Disk {
                 })
             };
             let moved = match &moved_dir {
-                Some(moved) => placeholder::with_owner_write(moved, rename),
+                Some(moved) => {
+                    let _modes = dir_modes();
+                    placeholder::with_owner_write(moved, rename)
+                }
                 None => rename(),
             };
             match moved {
@@ -388,6 +427,7 @@ impl Disk {
 
     /// Takes the lock off the whole folder (`UnregisterRoot`).
     pub fn unlock_tree(&self) -> io::Result<()> {
+        let _modes = dir_modes();
         let mut pending = vec![PathBuf::new()];
         while let Some(rel) = pending.pop() {
             let dir = self.dir(&rel)?;

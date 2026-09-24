@@ -662,7 +662,7 @@ async fn walker(kick: Arc<Notify>, state: SyncStateHandle, measure: Measure) {
 
 /// Whether a name is one konedrive keeps for itself (`.konedrive-holding`, a
 /// replacement's `.konedrive-new-<id>`, ...), never a user's file.
-fn reserved(name: &std::ffi::OsStr) -> bool {
+pub(super) fn reserved(name: &std::ffi::OsStr) -> bool {
     name.as_encoded_bytes().starts_with(crate::drive::item::RESERVED_PREFIX.as_bytes())
 }
 

@@ -110,6 +110,7 @@ class FakeSync1 : public QDBusAbstractAdaptor
     Q_PROPERTY(qlonglong LastChecked READ lastChecked)
     Q_PROPERTY(qulonglong LocalBytes READ localBytes)
     Q_PROPERTY(uint ConflictCount READ conflictCount)
+    Q_PROPERTY(uint PinnedCount READ pinnedCount)
     Q_PROPERTY(KonedriveTransferList Transfers READ transfers)
 
 public:
@@ -130,6 +131,7 @@ public:
     qlonglong lastChecked() const { return m_properties.value(QStringLiteral("LastChecked")).toLongLong(); }
     qulonglong localBytes() const { return m_properties.value(QStringLiteral("LocalBytes")).toULongLong(); }
     uint conflictCount() const { return m_properties.value(QStringLiteral("ConflictCount")).toUInt(); }
+    uint pinnedCount() const { return m_properties.value(QStringLiteral("PinnedCount")).toUInt(); }
     KonedriveTransferList transfers() const { return m_transfers; }
 
     void set(const QVariantMap &changes)
@@ -277,6 +279,7 @@ private:
         {QStringLiteral("LastChecked"), QVariant::fromValue<qlonglong>(0)},
         {QStringLiteral("LocalBytes"), QVariant::fromValue<qulonglong>(0)},
         {QStringLiteral("ConflictCount"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(0)},
     };
 };
 

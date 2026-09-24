@@ -36,6 +36,7 @@ use super::activity::{self, Kind, Report, Tracked};
 use super::disk::{rescue_base, rescue_stamp, Disk};
 use super::helper::HelperLink;
 use super::materialize::{replace, Applied, ApplyError, Materializer, ReplaceOutcome, Replacement, Scope};
+use super::pin::Pins;
 use super::root::SyncRoot;
 use super::source::ContentSource;
 use super::{InodeLocks, SyncStateHandle, SyncTrouble};
@@ -88,6 +89,9 @@ pub struct ListingContext {
     /// Where the cycle's activity, conflicts and downloads are reported, and
     /// the folder's space measured again: `SyncService`'s.
     pub report: Report,
+    /// `SyncService`'s pins: a cycle queues what it placed under a pin, and
+    /// a Full reconcile is followed by a sweep.
+    pub pins: Arc<Pins>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -224,7 +228,7 @@ impl Reconciled {
     fn add(&mut self, page: Reconciled) {
         // Every field named: one added to `Applied` does not compile here
         // until it is handled.
-        let Applied { created, moved, deleted, updated, deferred, rescued, replacements, changes: _ } = page.applied;
+        let Applied { created, moved, deleted, updated, deferred, rescued, replacements, changes: _, pinned } = page.applied;
         let all = &mut self.applied;
         all.created += created;
         all.moved += moved;
@@ -233,6 +237,7 @@ impl Reconciled {
         all.deferred += deferred;
         all.rescued.extend(rescued);
         all.replacements.extend(replacements);
+        all.pinned.extend(pinned);
         self.full |= page.full;
     }
 }
@@ -409,6 +414,20 @@ impl Listing {
         .await
         {
             tracing::warn!("the task looking over the conflicts failed: {e}");
+        }
+        // "Always keep on this device": the sweep finds every pinned file not
+        // downloaded yet and counts the pins again. It follows a Full
+        // reconcile; a cycle after a pinned download failed; and a cycle that
+        // moved or removed anything while pins exist, since a pinned item —
+        // or a folder with one inside — may have moved or gone with it.
+        // After any other, what it placed under a pin is queued.
+        let resweep = self.ctx.pins.take_resweep();
+        let moved_pins = (applied.moved > 0 || applied.deleted > 0) && self.ctx.pins.count() > 0;
+        if full || resweep || moved_pins {
+            self.ctx.pins.sweep(self.ctx.root.path.clone()).await;
+        } else if !applied.pinned.is_empty() {
+            let placed = applied.pinned.iter().map(|rel| self.ctx.root.path.join(rel)).collect();
+            self.ctx.pins.queue_under(placed).await;
         }
         self.spawn_replacements(applied.replacements.clone());
         Ok(CycleReport { full, changes, applied })
@@ -1104,6 +1123,9 @@ mod tests {
         /// shows OneDrive is kept in step only with one (HS2).
         link: HelperLink,
         _helper: tempfile::TempDir,
+        /// What every listing made from this setup queues for pins, and
+        /// never downloads.
+        pins: Arc<Pins>,
     }
 
     impl Drop for Setup {
@@ -1137,6 +1159,7 @@ mod tests {
         // The folder is what `SyncService` has registered: what its events are about.
         let state = SyncStateHandle::new(SyncSnapshot { root_path: folder.display().to_string(), ..SyncSnapshot::default() });
         let report = Report::new(state.clone());
+        let pins = Pins::detached(state.clone());
         report.activity.attach(store.clone(), &folder);
         let helper = tempfile::tempdir().unwrap();
         let socket_path = helper.path().join("helper.sock");
@@ -1153,6 +1176,7 @@ mod tests {
             _rescue: None,
             link,
             _helper: helper,
+            pins,
         }
     }
 
@@ -1179,6 +1203,7 @@ mod tests {
                 full_threshold: FULL_THRESHOLD,
                 after_cycle: None,
                 report: self.report.clone(),
+                pins: Arc::clone(&self.pins),
             }
         }
 
@@ -1560,6 +1585,46 @@ mod tests {
         assert!(s.root.path.join("docs/c").is_file());
     }
 
+    /// Pins the folder at `rel` in the (locked) folder, as `Pin` does.
+    fn pin_by_hand(root: &Path, rel: &str) {
+        placeholder::write_pin(&File::open(root.join(rel)).unwrap()).unwrap();
+    }
+
+    /// A file the cloud adds to a pinned folder is queued for download once
+    /// it is placed; nothing else is.
+    #[tokio::test]
+    async fn a_new_file_placed_in_a_pinned_folder_is_queued() {
+        let s = setup().await;
+        let listing = listed(&s).await;
+        pin_by_hand(&s.root.path, "docs");
+        s.feed(Some("L1"), json!([file("G", "D", "g.txt", "c1"), file("H", "R", "h.txt", "c1")]), "L2").await;
+
+        let report = listing.cycle(&CancellationToken::new()).await.unwrap();
+
+        assert!(!report.full);
+        assert_eq!(report.applied.pinned, vec![PathBuf::from("docs/g.txt")]);
+        assert_eq!(s.pins.queued(), vec![s.root.path.join("docs/g.txt")]);
+    }
+
+    /// After a restart, the first cycle's Full reconcile is followed by the
+    /// sweep: a pinned file still online-only — its download lost to the
+    /// restart — is queued again, and the pins are counted.
+    #[tokio::test]
+    async fn the_sweep_after_a_restart_queues_a_pinned_file_not_downloaded_yet() {
+        let s = setup().await;
+        listed(&s).await;
+        pin_by_hand(&s.root.path, "docs");
+        assert!(s.pins.queued().is_empty());
+        s.feed(Some("L1"), json!([]), "L2").await;
+
+        let restarted = s.listing();
+        let report = restarted.cycle(&CancellationToken::new()).await.unwrap();
+
+        assert!(report.full);
+        assert_eq!(s.pins.queued(), vec![s.root.path.join("docs/f.txt")]);
+        assert_eq!(s.state.get().pinned_count, 1);
+    }
+
     #[tokio::test]
     async fn a_new_listing_starts_with_a_full_reconcile() {
         let s = setup().await;
@@ -1759,6 +1824,28 @@ mod tests {
         listing.cycle(&CancellationToken::new()).await.unwrap();
         listing.join_replacements().await;
         assert_eq!(std::fs::read(&f_txt).unwrap(), new);
+    }
+
+    /// A pinned file replaced by its new version — another inode — is still
+    /// pinned.
+    #[tokio::test]
+    async fn a_replacement_keeps_the_files_own_pin() {
+        let s = setup().await;
+        let listing = listed(&s).await;
+        let f_txt = s.root.path.join("docs/f.txt");
+        hydrate_by_hand(&f_txt, b"old conten");
+        pin_by_hand(&s.root.path, "docs/f.txt");
+        let before = ino(&f_txt);
+        let new = b"new content".to_vec();
+        s.serve_new_version(&new, s.new_version(&new)).await;
+        s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
+
+        listing.cycle(&CancellationToken::new()).await.unwrap();
+        listing.join_replacements().await;
+
+        assert_eq!(std::fs::read(&f_txt).unwrap(), new);
+        assert_ne!(ino(&f_txt), before);
+        assert_eq!(File::open(&f_txt).unwrap().get_xattr(placeholder::XATTR_PIN).unwrap(), Some(b"1".to_vec()));
     }
 
     /// When the new version cannot be had, the old one stays, the

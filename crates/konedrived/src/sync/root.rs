@@ -518,6 +518,61 @@ impl SyncRoot {
         }
     }
 
+    /// Opens a file or a folder inside this root — or the root itself — to
+    /// read or write its pin, with its full path as the activity log names
+    /// it. Read-only and `O_NONBLOCK`, under the same resolution rules as
+    /// [`open_inside`](Self::open_inside): the root must still carry this
+    /// root's id, and neither `..`, a symbolic link nor anything else may
+    /// lead outside it. A regular file must be one of ours (it carries a
+    /// state); a folder need not carry an item id, since a folder filled with
+    /// `PopulateFromDirectory` has none. A `.konedrive-*` name anywhere on
+    /// the way is `NotManaged`; anything else is refused.
+    pub(super) fn open_item(&self, path: &Path) -> Result<(File, PathBuf), DehydrateError> {
+        let dir = self
+            .open_registered()
+            .map_err(|e| DehydrateError::Io(format!("{}: {e}", self.path.display())))?
+            .ok_or(DehydrateError::OutsideRoot)?;
+        // The root itself, named by its own path: its parent resolved, its
+        // name carried over, as `relative` does.
+        let named = match (path.parent(), path.file_name()) {
+            (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => {
+                std::fs::canonicalize(parent).ok().map(|parent| parent.join(name))
+            }
+            _ => None,
+        };
+        let root = std::fs::canonicalize(&self.path).map_err(io_error)?;
+        if named.as_deref() == Some(root.as_path()) {
+            return Ok((dir, self.path.clone()));
+        }
+        let relative = self.relative(path)?;
+        // `.konedrive-*` is the daemon's own — the holding directory, a new
+        // folder before its label, a replacement before its swap — and
+        // nothing in or under it is anyone's to pin or free up.
+        let reserved = crate::drive::item::RESERVED_PREFIX.as_bytes();
+        if relative.components().any(|part| part.as_os_str().as_encoded_bytes().starts_with(reserved)) {
+            return Err(DehydrateError::NotManaged);
+        }
+        let how = OpenHow::new()
+            .flags(OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
+            .resolve(
+                ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_SYMLINKS | ResolveFlag::RESOLVE_NO_MAGICLINKS,
+            );
+        let item = match openat2(dir.as_fd(), &relative, how) {
+            Ok(fd) => File::from(fd),
+            Err(Errno::EXDEV | Errno::ELOOP) => return Err(DehydrateError::OutsideRoot),
+            Err(e) => return Err(DehydrateError::Io(format!("{}: {e}", path.display()))),
+        };
+        let meta = item.metadata().map_err(io_error)?;
+        if meta.is_file() {
+            if read_state(&item).map_err(io_error)?.is_none() {
+                return Err(DehydrateError::NotManaged);
+            }
+        } else if !meta.is_dir() {
+            return Err(DehydrateError::OutsideRoot);
+        }
+        Ok((item, self.path.join(relative)))
+    }
+
     /// This root's directory, opened as a directory and proved to still be
     /// *this* registered root — `Ok(None)` when the folder no longer carries
     /// this root's `user.konedrive.root`.

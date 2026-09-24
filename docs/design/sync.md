@@ -16,7 +16,7 @@ This is the **read phase**. The sync reads from OneDrive and never writes to it:
   lock is rescued, never overwritten (§10).
 
 Uploads, local moves and renames propagated to the cloud, and conflicts on write belong to the
-write phase. Pinning ("always keep on this device") and multiple accounts come later.
+write phase. Multiple accounts come later; pinning is described in [pinning.md](pinning.md).
 
 ## 2. Components
 
