@@ -19,6 +19,7 @@ someone who wants to understand, review or change the system.
 | [sync.md](sync.md) | Listing the drive and following its changes, the tree store, reconciling the folder, the first listing, replacing changed files, rescues and conflicts, the read-only lock, the account |
 | [desktop.md](desktop.md) | The D-Bus API, `konedrivectl`, the window and tray icon, notifications, download progress, thumbnails, Baloo, the Dolphin plugins |
 | [decisions.md](decisions.md) | The notable decisions, each with its reason and its cost |
+| [packaging.md](packaging.md) | The RPM packages: what goes where, why two, the helper enabled on install, upgrades, and the switch from the developer install |
 
 Related documents elsewhere in the repository:
 
@@ -194,8 +195,8 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
 | `dbus/` | the D-Bus interface definitions |
 | `app/` | the KOneDrive window and tray icon (C++/QML, Kirigami) |
 | `dolphin/` | the Dolphin plugins |
-| `packaging/` | the systemd units and the D-Bus activation file |
-| `scripts/` | the per-user install and the helper installer |
+| `packaging/` | the systemd units and the D-Bus activation file; the RPM spec in `packaging/rpm/` |
+| `scripts/` | the per-user install and its removal, the helper installer, the RPM build |
 | `tests/vm/` | the privileged end-to-end suite, run in a virtme-ng VM |
 | `tests/kio/` | the KIO measurements behind `docs/kio-behavior.md` |
 

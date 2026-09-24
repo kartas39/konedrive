@@ -94,14 +94,87 @@ No API permissions need to be configured; KOneDrive asks for them when you sign 
 screen will call the app "unverified" — expected for a personal registration. The account that
 registers the app and the OneDrive account you sign in with can be different.
 
-## Install for your user
+## Install from RPM
+
+On Fedora, KOneDrive installs as two packages, built from this repository on your own machine
+(there is no package repository yet):
+
+- `konedrive` — the daemon, `konedrivectl`, the KOneDrive window, and the helper with its system
+  service, which is enabled and started when the package is installed;
+- `konedrive-kde` — the Dolphin plugins (see "Dolphin integration"). `konedrive` recommends it,
+  so `dnf` installs it too; `sudo dnf remove konedrive-kde` removes it alone.
+
+Build them as yourself, never as root. `rpm-build` and the build dependencies are needed once
+(`builddep` installs whatever of the list above, and of the spec's, is missing):
+
+```
+sudo dnf install rpm-build
+sudo dnf builddep packaging/rpm/konedrive.spec
+scripts/build-rpm.sh
+```
+
+`scripts/build-rpm.sh` packages the committed tree (`HEAD`: uncommitted changes are left out),
+with its Rust crates vendored so that the build itself is offline. Everything it makes is under
+`target/rpm/`, and it lists the RPMs at the end. Then, from the repository:
+
+```
+sudo dnf install ./target/rpm/RPMS/x86_64/konedrive-0.1.0-1.fc44.x86_64.rpm \
+                 ./target/rpm/RPMS/x86_64/konedrive-kde-0.1.0-1.fc44.x86_64.rpm
+```
+
+If the developer install below is on this machine, remove it first: see "Switching from the
+developer install". After the install, open **KOneDrive** from the launcher. The daemon connects
+to the helper within half a minute; `konedrivectl sync status` then says `Helper: connected`.
+
+- **Upgrading** is the same `dnf install` with the newer RPMs. It restarts the helper when it
+  finishes, and a program waiting for a file to download at that moment reads it as zeros
+  (`docs/limitations-and-workarounds.md`, Z1 and R1): close programs that are opening files in
+  the sync folder first. `dnf` treats a rebuild with the same version and release as the package
+  already installed; install such a rebuild with `sudo dnf reinstall` and the same paths.
+- **Removing:** run `konedrivectl sync forget` first, then `sudo dnf remove konedrive
+  konedrive-kde`. Removing the package stops the helper, and a folder still registered then reads
+  as zeros where its files are not downloaded (R3).
+
+What goes where, and why: [`docs/design/packaging.md`](docs/design/packaging.md).
+
+## Switching from the developer install
+
+The developer install (`scripts/dev-install.sh` and `scripts/install-helper.sh`) and the packages
+must not be installed together. The developer install's files take precedence over the
+package's: the daemon's unit in `~/.config`, its D-Bus activation file and programs in
+`~/.local`, and the helper's unit in `/etc/systemd/system`, which would keep the old helper
+running instead of the packaged one (R2). Build the RPMs first, then, from the repository:
+
+```
+scripts/dev-uninstall.sh
+sudo scripts/install-helper.sh --uninstall --force
+sudo dnf install ./target/rpm/RPMS/x86_64/konedrive-0.1.0-1.fc44.x86_64.rpm \
+                 ./target/rpm/RPMS/x86_64/konedrive-kde-0.1.0-1.fc44.x86_64.rpm
+```
+
+1. `scripts/dev-uninstall.sh` runs as you. It stops the daemon, removes exactly the files
+   `scripts/dev-install.sh` installed, and reloads your systemd and D-Bus. It never touches your
+   settings (`~/.config/konedrive/config.toml`), the tree store, the refresh token in KWallet or
+   the sync folder, so the packaged daemon carries on from where this one stopped. It points
+   "Start at login" at `/usr/bin/konedrive`, and it points out Dolphin plugins you installed for
+   your user by hand: remove those, and `~/.config/plasma-workspace/env/konedrive-dolphin.sh`,
+   as "Dolphin integration" says, so that Dolphin loads the packaged ones.
+2. `--force`, because your folder is registered: it stays registered, and the packaged helper
+   takes it over when it starts. Until then nothing intercepts the folder, so run the three
+   commands one after the other, with nothing opening files in the folder.
+3. The install starts the new helper. If the KOneDrive window was running, quit it from its tray
+   icon and start it again from the launcher.
+
+## Install for your user (developers)
 
 ```
 scripts/dev-install.sh
 ```
 
 This installs `konedrived`, `konedrivectl` and `konedrive` into `~/.local/bin`, the systemd
-user unit, the D-Bus activation file and the launcher entry. The daemon starts on demand.
+user unit, the D-Bus activation file and the launcher entry. The daemon starts on demand. The
+helper is installed separately ("Installing the helper", below). `scripts/dev-uninstall.sh`
+removes it all again, apart from the helper.
 
 ## Using your OneDrive
 
@@ -128,9 +201,9 @@ user unit, the D-Bus activation file and the launcher entry. The daemon starts o
   "Start at login" is on by default after the first run.
 
 - **The helper.** A small privileged service that makes a placeholder download the moment a
-  program opens it, instead of that program reading zeros — install it with
-  `sudo scripts/install-helper.sh` (see "Installing the helper" below; see also SECURITY.md for
-  what runs as root and why). Your OneDrive folder needs it: the folder is kept in step with
+  program opens it, instead of that program reading zeros. The `konedrive` package installs and
+  starts it; with the developer install, install it with `sudo scripts/install-helper.sh` (see
+  "Installing the helper" below; see also SECURITY.md for what runs as root and why). Your OneDrive folder needs it: the folder is kept in step with
   OneDrive only while the helper is connected. `konedrivectl sync status` has a `Helper:` line:
   - `connected` — files download when opened;
   - `not-installed` — no konedrive-helper service on this system: install it
@@ -226,7 +299,9 @@ by their D-Bus error names (`org.konedrive.Error.ModifiedLocally`,
 
 The helper is the privileged part of the sync folder: a small systemd service
 that makes a placeholder download the moment a program opens it, instead of
-that program reading zeros. Build it as yourself, then install it as root:
+that program reading zeros. The `konedrive` package installs it
+(`/usr/libexec/konedrive-helper`) and starts it; this section is for the
+developer install. Build it as yourself, then install it as root:
 
 ```
 cargo build --release -p konedrive-helper
@@ -403,8 +478,8 @@ filing a bug that might already be there.
 
 Read-only is the first phase. In order, what comes next:
 
-1. **RPM packaging** — a `.spec` and a Copr/COPR-style repo, so `dnf install` replaces building
-   from source.
+1. **A package repository** — the RPMs are built locally for now ("Install from RPM"); a COPR
+   repository comes next, so that `dnf install` needs no build.
 2. **Pinning** — "Always keep on this device" and a Dolphin menu entry for it, so a file can be
    told to stay downloaded rather than being freed up automatically.
 3. **Multiple accounts** — more than one Microsoft account signed in at once.

@@ -38,7 +38,8 @@ application must never read zeros where real content should be.
   §13): panics are contained on worker and connection threads, `EMFILE` is survivable, disconnects
   are handled — all proven in the VM suite.
 - **Also:** updating the helper restarts it and uninstalling it stops it —
-  `scripts/install-helper.sh` says so before it asks. `--uninstall` refuses while the helper's
+  `scripts/install-helper.sh` says so before it asks. Upgrading or removing the `konedrive`
+  package does the same, without a warning (R1, R3). `--uninstall` refuses while the helper's
   `/var/lib/konedrive/roots.json` lists a folder (run `konedrivectl sync forget` first; `--force`
   overrides): without the helper that folder's placeholders read as zeros, and its Forget is
   refused `NoHelper`.
@@ -959,9 +960,11 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   `~/.local/bin/konedrive` after `scripts/dev-install.sh`), as the launcher's own entry does, not a
   bare `konedrive`: `~/.local/bin` is not reliably on the session's `PATH`. So a build started from
   its build tree writes an entry pointing at where it *would* be installed, and moving the
-  install prefix leaves a stale entry until the switch is turned off and on. The entry is the
-  truth — removing it in System Settings turns the switch off — and the first run turns it on only
-  once (`StartAtLogin` in `konedriverc` records that a choice exists).
+  install prefix leaves a stale entry until the switch is turned off and on. Switching from the
+  developer install to the packages is the one move that is handled: `scripts/dev-uninstall.sh`
+  rewrites an entry that runs `~/.local/bin/konedrive` to run `/usr/bin/konedrive` (R2). The
+  entry is the truth — removing it in System Settings turns the switch off — and the first run
+  turns it on only once (`StartAtLogin` in `konedriverc` records that a choice exists).
 - **A5. A sign-out the user asked for elsewhere still notifies.** LIMIT · reasoned. "Sign Out" in
   the window is not announced back; `konedrivectl` sign-out is, since the app cannot tell it from
   the daemon losing the account. If the window's own sign-out call fails, the next sign-out the
@@ -1040,6 +1043,55 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   (`serviceAvailable` false) finishes every visible and overflow job, and any held in the grace
   window, with an error ("the KOneDrive service stopped") at once, rather than leaving them frozen
   (measured, `aDaemonRestartFinishesVisibleAndOverflowJobsWithAnError`).
+
+---
+
+## 9. Packaging
+
+The RPM packages, `konedrive` and `konedrive-kde`, from `packaging/rpm/konedrive.spec`
+(`docs/design/packaging.md`).
+
+- **R1. Upgrading the package restarts the helper.** LIMIT (Z1) · reasoned · open. `%postun`
+  marks `konedrive-helper.service`, and every logged-in user's `konedrived.service`, for a
+  restart, which systemd carries out when the `dnf` transaction ends. The restart is what makes
+  the new helper run; without it the old one would run until the next boot, against a daemon of
+  the new version. Cost, as Z1: a program waiting for a download at that moment reads the
+  placeholder's zeros, and that download is cut off. `scripts/install-helper.sh` warns before it
+  restarts the helper; the package cannot, since `dnf` asks once for the whole transaction. The
+  README says to upgrade when nothing is opening files in the folder. Way out: Z1's.
+- **R2. The developer install and the packages must not be installed together.** FRAGILE ·
+  reasoned · mitigated. Each developer-install file takes precedence over the package's:
+  `~/.config/systemd/user/konedrived.service`, `~/.local/share/dbus-1/services/…`,
+  `~/.local/bin` ahead of `/usr/bin` on the usual `PATH`, per-user Dolphin plugins on
+  `QT_PLUGIN_PATH`, and `/etc/systemd/system/konedrive-helper.service` over the package's unit in
+  `/usr/lib`, which would keep the old helper in `/usr/local/libexec` running instead of the
+  packaged one, through every upgrade. Mitigation: `scripts/dev-uninstall.sh` removes the
+  per-user files (and points out per-user Dolphin plugins, which are not its to remove);
+  `sudo scripts/install-helper.sh --uninstall --force` removes the old helper; the package's
+  `%post` warns when the `/etc` unit exists. The package cannot see per-user files. Between
+  removing the old helper and installing the package, the folder is not intercepted.
+- **R3. Removing the package does not refuse while a folder is registered.** LIMIT · reasoned ·
+  open. `%preun` stops the helper, so a registered folder's placeholders read as zeros, and
+  `konedrivectl`, which could forget the folder, goes with the package.
+  `scripts/install-helper.sh --uninstall` refuses in the same case; a package scriptlet that
+  failed would leave the removal half done, so the package does not. The README says to run
+  `konedrivectl sync forget` first. The helper's `/var/lib/konedrive/roots.json` stays after
+  removal.
+- **R4. The spec is for local builds, not yet for a public repository.** DEBT. Its `License:`
+  names only GPL-3.0-or-later, although the binaries link the vendored crates, each under its own
+  license; it declares no `bundled(crate(…))`; it builds no debuginfo packages; the vendor tarball
+  holds every crate in `Cargo.lock`, for every platform (about 49 MB); `%check` runs only
+  `desktop-file-validate`, not the test suites. A rebuild of the same version and release
+  installs only with `dnf reinstall`. A COPR repository needs the first two fixed.
+- **R5. Nothing tests the scriptlets.** FRAGILE · reasoned · open. No test installs the RPMs: the
+  preset, the first-install start, the restart on upgrade and the stop on removal first run when
+  the user installs. The first-install start runs in `%post`, before systemd's own reload at the
+  end of the transaction, so on first install `%post` runs `systemctl daemon-reload` itself and
+  then `systemctl start konedrive-helper.service`; the start does not depend on when that reload
+  comes. Neither call can fail the transaction (`|| :` on both). A failed start prints one line
+  to `dnf`'s output naming `systemctl status konedrive-helper`, and `konedrivectl sync status`
+  says `Helper: stopped` until `sudo systemctl start konedrive-helper` or the next boot. Checked
+  once, with a stub `systemctl` whose start fails: the scriptlet exits 0 and prints that line.
 
 ---
 
