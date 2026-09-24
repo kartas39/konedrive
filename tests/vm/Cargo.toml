@@ -29,6 +29,14 @@ path = "ignore_mark.rs"
 name = "vm-scenarios"
 path = "scenarios.rs"
 
+# The write phase's watcher probe (writes design, task W4): what an
+# unprivileged fanotify notification group may do on this kernel, and which
+# events, with which records, each kind of local change produces. Root only
+# for the helper's side; the daemon's side runs as uid 1000 in a child.
+[[bin]]
+name = "watch-probe"
+path = "watch_probe.rs"
+
 [dependencies]
 async-trait = "0.1"
 konedrive-fs = { path = "../../crates/konedrive-fs" }

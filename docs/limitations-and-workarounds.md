@@ -806,6 +806,15 @@ application must never read zeros where real content should be.
   leaves, in `busy`: the D-Bus answer is fixed at (files, bytes, busy, skipped_pinned), so "in
   use" and "changed here" are one number. FRAGILE · reasoned; that the sweep after a restart queues a pinned online-only file is
   measured (`sync::listing::tests::the_sweep_after_a_restart_…`). Open.
+- **F39. The Graph write client rests on answers only wiremock has given** (`konedrived/src/drive/write.rs`,
+  `upload.rs`) — beyond the write design's own assumptions: (1) a new version by item id is sent
+  with `conflictBehavior: replace`, because Microsoft names `fail` the default and says nothing of
+  what it means for an update by id; `If-Match` is the guard. (2) `fileSize` goes in every session
+  request, although Microsoft documents it for personal drives only; a work or school drive might
+  refuse it. (3) An empty file's time is a second request (a `PATCH` after the `PUT`); when that one
+  fails, the file is up with OneDrive's time, and a warning is logged. (4) A `401` or `403` from an
+  upload URL is read as the session having ended, like a `404`. Nothing calls the client yet.
+  FRAGILE · reasoned. Planned: the write phase's run on a test account.
 
 ---
 
@@ -823,6 +832,9 @@ application must never read zeros where real content should be.
 | Sync interval / waits after failures in a row | 60 s / 5, 15, 30 s | 60 s is the design's; the retry steps are a **guess** |
 | A fill's checkpoint, every N bytes (`CHECKPOINT_EVERY`) | 16 MiB | **guess** |
 | `Retry-After` wait when Graph throttles (`429`/`503`) | default 10 s, capped at 300 s, 5 attempts before giving up | **guess** (`RetryPolicy::default`) |
+| Upload fragment, and the most sent in one request (`CHUNK_SIZE`, `SMALL_UPLOAD_MAX`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
+| One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |
+| Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (§4.10) |
 | Replacements of changed files downloading at once | 2 | **guess** |
 | Fills served on open at once (`serve_hydrations`) | 4 | **guess** |
 | Pinned downloads at once (`PIN_SLOTS`), beside the fills on open | 4 | **guess**, equal to the fills on open |

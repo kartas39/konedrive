@@ -1,8 +1,13 @@
-//! Microsoft Graph's drive API, read only: the delta
-//! feed, one item's metadata, a file's bytes from an offset, and the `/content`
-//! redirect. Nothing here writes to the cloud; the scope is `Files.Read`.
+//! Microsoft Graph's drive API. Reads live here: the delta feed, one item's
+//! metadata, a file's bytes from an offset, and the `/content` redirect.
+//! Writes live in [`write`] (folders, rename, move, delete) and [`upload`]
+//! (upload sessions); nothing calls them until the write phase's outbox
+//! worker does, and the scope stays `Files.Read` until an account is switched
+//! to read-write.
 
 pub mod item;
+pub mod upload;
+pub mod write;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -15,6 +20,8 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use url::Url;
 
 pub use item::DriveItem;
+pub use upload::{ChunkOutcome, SessionProgress, UploadSession, UploadTarget, CHUNK_SIZE, FRAGMENT_UNIT, SMALL_UPLOAD_MAX};
+pub use write::{ItemChange, WriteError};
 
 use crate::token::{AuthError, TokenSource};
 
@@ -68,6 +75,10 @@ pub struct Download {
 /// or malicious answer.
 const MAX_THUMBNAIL_BYTES: u64 = 8 * 1024 * 1024;
 
+/// The bound on one upload request: a 10 MiB fragment in 10 minutes needs
+/// about 140 kbit/s.
+const UPLOAD_REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// How long to wait out throttling (`429`, `503`): `Retry-After` when given,
 /// capped, and how many answers of that kind to take before giving up.
 #[derive(Debug, Clone, Copy)]
@@ -91,6 +102,10 @@ pub struct DriveClient {
     /// timeout, so a stalled connection is noticed. Never follows redirects,
     /// so `/content`'s `302` can be read rather than followed with a token.
     content: reqwest::Client,
+    /// Upload fragments, up to 10 MiB each, to a session's own URL: never
+    /// the token, never a redirect. A bound on the whole request rather than
+    /// a read timeout, since nothing comes back while the body goes out.
+    upload: reqwest::Client,
     base: Url,
     tokens: Arc<dyn TokenSource>,
     retry: RetryPolicy,
@@ -125,7 +140,13 @@ impl DriveClient {
             .read_timeout(Duration::from_secs(60))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        Ok(Self { api, content, base, tokens, retry: RetryPolicy::default() })
+        let upload = reqwest::Client::builder()
+            .user_agent(agent)
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(UPLOAD_REQUEST_TIMEOUT)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()?;
+        Ok(Self { api, content, upload, base, tokens, retry: RetryPolicy::default() })
     }
 
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
@@ -159,6 +180,12 @@ impl DriveClient {
 
     pub async fn item(&self, id: &str) -> Result<DriveItem, DriveError> {
         self.get_json(self.item_url(id, None)?).await
+    }
+
+    /// The item called `name` in the folder `parent_id`: what a create that
+    /// found the name taken looks at.
+    pub async fn child(&self, parent_id: &str, name: &str) -> Result<DriveItem, DriveError> {
+        self.get_json(self.child_url(parent_id, name, None)?).await
     }
 
     /// Where `/items/{id}/content` redirects to — for an item whose metadata
@@ -362,13 +389,9 @@ impl DriveClient {
         })
     }
 
+    /// `Retry-After` in seconds or as an HTTP date, else the default; capped.
     fn wait_for(&self, response: &reqwest::Response) -> Duration {
-        response
-            .headers()
-            .get(header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.trim().parse::<u64>().ok())
-            .map(Duration::from_secs)
+        write::retry_after(response.headers(), std::time::SystemTime::now())
             .unwrap_or(self.retry.default_wait)
             .min(self.retry.max_wait)
     }
@@ -389,6 +412,24 @@ impl DriveClient {
             if let Some(tail) = tail {
                 segments.push(tail);
             }
+        }
+        Ok(url)
+    }
+
+    /// `me/drive/items/<parent>:/<name>`, an item by its name in a folder, or
+    /// with a tail `me/drive/items/<parent>:/<name>:/<tail>`; the id and the
+    /// name each one path segment whatever they hold.
+    fn child_url(&self, parent_id: &str, name: &str, tail: Option<&str>) -> Result<Url, DriveError> {
+        let mut url = self.route("me/drive/items/")?;
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|()| DriveError::Failed("the Graph base URL cannot take a path".into()))?;
+            segments.pop_if_empty().push(&format!("{parent_id}:"));
+            match tail {
+                Some(tail) => segments.push(&format!("{name}:")).push(tail),
+                None => segments.push(name),
+            };
         }
         Ok(url)
     }
@@ -567,6 +608,15 @@ mod tests {
         let item = client(&server).item("ABC!123").await.unwrap();
         assert_eq!(item.download_url.as_deref(), Some("https://dl.example/x"));
         assert_eq!(item.c_tag.as_deref(), Some("c1"));
+    }
+
+    #[tokio::test]
+    async fn a_child_is_found_by_its_name_in_its_folder() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/me/drive/items/P!1:/100%25%20%D1%84.txt"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "C", "name": "100% ф.txt"})))
+            .mount(&server).await;
+        assert_eq!(client(&server).child("P!1", "100% ф.txt").await.unwrap().id, "C");
     }
 
     #[tokio::test]
