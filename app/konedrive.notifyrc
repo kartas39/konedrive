@@ -1,0 +1,30 @@
+[Global]
+IconName=folder-cloud
+Name=KOneDrive
+Comment=OneDrive for KDE
+DesktopEntry=org.konedrive.KOneDrive
+
+[Event/signedOut]
+Name=Signed out of OneDrive
+Comment=The account was signed out or needs signing in again
+Action=Popup
+
+[Event/diskFull]
+Name=Not enough disk space
+Comment=A file could not be downloaded because the disk is full
+Action=Popup
+
+[Event/downloadFailed]
+Name=Download failed
+Comment=A file could not be downloaded
+Action=Popup
+
+[Event/updateFailed]
+Name=File not updated
+Comment=A file changed in OneDrive could not be updated on this computer
+Action=Popup
+
+[Event/conflict]
+Name=Changed version moved
+Comment=Your changed version of a file was moved out of the way
+Action=Popup

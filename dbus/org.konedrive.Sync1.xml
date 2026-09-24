@@ -6,9 +6,14 @@
     <method name="RegisterRoot">
       <arg name="path" type="s" direction="in"/>
     </method>
-    <!-- Registers a folder with nothing intercepting opens inside it: files
-         in it read as zeros until they are explicitly hydrated. RootState
-         then reports "no-interception" and LastError says so. -->
+    <!-- The developer's mode: registers a folder with nothing intercepting
+         opens inside it. The folder is always local — filled with
+         PopulateFromDirectory, never from OneDrive; a OneDrive folder needs
+         the helper. Files in it read as zeros until they are explicitly
+         hydrated. RootState then reports "no-interception" and LastError
+         says so. Made while no helper is connected, the folder switches to
+         interception by itself when the helper connects (RootState becomes
+         "ready"); made while one is connected, it stays without. -->
     <method name="RegisterRootWithoutInterception">
       <arg name="path" type="s" direction="in"/>
     </method>
@@ -42,8 +47,88 @@
       <arg name="path" type="s" direction="in"/>
       <arg name="state" type="s" direction="out"/>
     </method>
+    <!-- Asks OneDrive for changes now rather than within the minute. Refused
+         Unsupported for a folder that is not connected to OneDrive. -->
+    <method name="Refresh"/>
+    <!-- Everything in OneDrive that is not in the folder, as (full path,
+         reason): name-too-long, personal-vault, shared, onenote,
+         reserved-name, unsupported. What is inside a skipped folder is
+         covered by the folder's own entry. -->
+    <method name="Skipped">
+      <arg name="items" type="a(ss)" direction="out"/>
+      <!-- For Qt's generator (app/skippeditem.h); ignored by everything else. -->
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>
+    </method>
+    <!-- The last events, newest first, at most `limit` (the daemon keeps
+         200): (unix time, kind, full path, detail). Kinds: downloaded,
+         freed, added, updated, removed, moved, listed, conflict, failed (a download),
+         update-failed (a changed file could not be replaced here). For
+         ENOSPC the detail is exactly "not enough disk space".
+         A listing or Full reconcile is one "listed" event. -->
+    <method name="RecentActivity">
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="events" type="a(xsss)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveActivityList"/>
+    </method>
+    <!-- One per event, as it happens; the same fields as RecentActivity. -->
+    <signal name="ActivityAdded">
+      <arg name="time" type="x"/>
+      <arg name="kind" type="s"/>
+      <arg name="path" type="s"/>
+      <arg name="detail" type="s"/>
+    </signal>
+    <!-- Local versions the sync moved out of the way because the cloud
+         changed or removed the file: (unix time, original full path, full
+         path it was moved to). One whose moved file is gone is dropped. -->
+    <method name="Conflicts">
+      <arg name="conflicts" type="a(xss)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveConflictList"/>
+    </method>
+    <!-- Removes a conflict from the list; the file itself is not touched. -->
+    <method name="DismissConflict">
+      <arg name="rescued_path" type="s" direction="in"/>
+    </method>
+    <!-- Frees every downloaded file under the folder that is not in use:
+         how many files, how many bytes, how many were skipped as busy. -->
+    <method name="FreeUpSpace">
+      <arg name="files" type="u" direction="out"/>
+      <arg name="bytes" type="t" direction="out"/>
+      <arg name="busy" type="u" direction="out"/>
+    </method>
     <property name="RootPath" type="s" access="read"/>
+    <!-- none | listing | ready | no-interception | error -->
     <property name="RootState" type="s" access="read"/>
+    <!-- Every current problem, joined with ". ". While a changed file cannot
+         be replaced here, one part reads "N file(s) changed in OneDrive could
+         not be updated here yet: <reason>" — the window keys its attention
+         state on "could not be updated". -->
     <property name="LastError" type="s" access="read"/>
+    <!-- "onedrive": the folder shows the signed-in drive, read-only in this
+         phase. "local": filled with PopulateFromDirectory. Empty: none. -->
+    <property name="RootSource" type="s" access="read"/>
+    <!-- Items in OneDrive (the root not counted), items in the folder, and
+         skipped items: see Skipped(). Coalesced to a few changes a second. -->
+    <property name="ItemsListed" type="t" access="read"/>
+    <property name="ItemsPlaced" type="t" access="read"/>
+    <property name="SkippedCount" type="t" access="read"/>
+    <!-- Unix seconds of the last successful check with OneDrive; 0 = never. -->
+    <property name="LastChecked" type="x" access="read"/>
+    <!-- Bytes the folder's files take on this disk (st_blocks * 512): a
+         placeholder counts as what it occupies, not its size. -->
+    <property name="LocalBytes" type="t" access="read"/>
+    <property name="ConflictCount" type="u" access="read"/>
+    <!-- The privileged helper, as the daemon sees it: "connected" (files
+         download when opened), "not-installed" (no konedrive-helper service
+         on this system), "stopped" (installed, not running: systemctl start
+         konedrive-helper), "failed" (the service failed: systemctl status
+         konedrive-helper), "unknown" (systemd cannot be asked, or the helper
+         has started but the daemon has no link to it yet). A OneDrive
+         folder is kept in step only while this is "connected". -->
+    <property name="HelperState" type="s" access="read"/>
+    <!-- Downloads under way: (full path, bytes done, bytes total). Coalesced
+         to a few changes a second. -->
+    <property name="Transfers" type="a(stt)" access="read">
+      <annotation name="org.qtproject.QtDBus.QtTypeName" value="KonedriveTransferList"/>
+    </property>
   </interface>
 </node>

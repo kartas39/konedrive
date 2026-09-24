@@ -37,6 +37,36 @@ StateDirectory=konedrive
 # closing the fanotify group allows every suspended open (fanotify(7)), which
 # hands applications zeros in silence.
 LimitNOFILE=65536
+# The helper is root with CAP_SYS_ADMIN, and CAP_SYS_ADMIN alone could undo
+# everything above: remount / read-write inside this namespace, or write
+# /proc/sys/kernel/core_pattern. What follows closes those doors without
+# touching anything the helper does (fanotify, xattr reads, /proc/self/fd,
+# one AF_UNIX socket). Left out on purpose, because no test runs this unit
+# under systemd (only the acceptance checklist does, on a real machine): a
+# SystemCallFilter allow-list, PrivateDevices, and a non-root User=.
+# docs/limitations-and-workarounds.md, W16.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+# systemd.exec(5): this also implies DeviceAllow=char-rtc r, which gives the
+# unit a device allow-list (the RTC read-only, and the standard pseudo devices
+# such as /dev/null) — so no raw disk. Read from the manual, not tested.
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+# A folder under /tmp or /var/tmp cannot be registered with the helper: it
+# resolves the folder's path in its own namespace, where both are private.
+PrivateTmp=yes
+SystemCallArchitectures=native
+# A deny-list only: what it blocks is nothing the helper calls. @mount is the
+# one that matters most — without it, CAP_SYS_ADMIN remounts ProtectSystem away.
+SystemCallFilter=~@mount @swap @reboot @raw-io @module @clock @debug @obsolete @cpu-emulation
+SystemCallErrorNumber=EPERM
 
 [Install]
 WantedBy=multi-user.target

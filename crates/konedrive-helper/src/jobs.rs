@@ -1,7 +1,7 @@
 //! Coalescing: many processes opening the same file wait on one hydration.
 //!
 //! This module also owns the suspended openers themselves. That is deliberate
-//! (Ruling H14): while the job table and the list of descriptors to answer
+//!: while the job table and the list of descriptors to answer
 //! lived in two separate maps behind two separate locks, "claim the job" and
 //! "register as a waiter" could not be made one atomic step, and a daemon
 //! that answered quickly could run `finish` in the gap — dropping a job whose
@@ -17,7 +17,7 @@
 //! connecting and disconnecting. Ownership is checked in one place here
 //! instead of being spot-fixed at each call site.
 //!
-//! And every job is either **sent** or **queued** (Ruling H124). A connection
+//! And every job is either **sent** or **queued**. A connection
 //! has a credit of [`MAX_OUTSTANDING_HYDRATIONS`] requests handed to its
 //! daemon and not yet answered — the contract that keeps the daemon's reader
 //! from ever stopping with an `Ack` stuck behind a request (see that
@@ -34,7 +34,7 @@ use std::os::fd::OwnedFd;
 
 use konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;
 
-/// How many retired connection ids are remembered (Ruling H38).
+/// How many retired connection ids are remembered.
 ///
 /// A connection can only be enrolled against after it died by a worker that
 /// was already holding a `Daemon` clone when the cleanup ran — a window of
@@ -62,7 +62,7 @@ pub enum Enrolled {
     /// be sent now — [`Enrollment::dispatch`].
     New { req_id: u64 },
     /// This caller created the hydration beyond its connection's credit
-    /// (Ruling H124). The opener is enrolled and stays suspended; the request
+    ///. The opener is enrolled and stays suspended; the request
     /// goes to the daemon when a credit returns, handed out by
     /// [`Jobs::finish`]. Nothing to send now.
     Queued { req_id: u64 },
@@ -114,12 +114,12 @@ pub struct Finished {
     /// Every opener waiting on it, to be answered.
     pub waiters: Vec<OwnedFd>,
     /// The helper's count of root unregistrations when the open that
-    /// created this job was read (Ruling H138's second guard): a job that
+    /// created this job was read (second guard): a job that
     /// began before an unregistration may be for a file whose tree that
     /// unregistration's walk has already passed, and gets no ignore mark.
     pub since: u64,
     /// The oldest hydration that was waiting for its connection's credit, now
-    /// holding the one this returned (Ruling H124). Its request must be sent.
+    /// holding the one this returned. Its request must be sent.
     pub next: Option<Dispatch>,
 }
 
@@ -143,7 +143,7 @@ pub struct Jobs {
     next_id: u64,
     by_inode: HashMap<(u64, u64), u64>,
     jobs: HashMap<u64, Job>,
-    /// Connections whose cleanup has already run, newest last (Ruling H38).
+    /// Connections whose cleanup has already run, newest last.
     retired: HashSet<u64>,
     retired_order: VecDeque<u64>,
     /// How many of each connection's credits are taken: its sent jobs, the
@@ -152,7 +152,7 @@ pub struct Jobs {
     /// [`promote`](Self::promote) and [`remove_job`](Self::remove_job), the
     /// only places a job is sent, comes or goes.
     outstanding: HashMap<u64, usize>,
-    /// Each connection's jobs waiting for credit, oldest first (Ruling H124).
+    /// Each connection's jobs waiting for credit, oldest first.
     /// An id whose job has since gone — evicted by another uid's hydration of
     /// the same inode — is skipped when its turn comes. A connection with
     /// nothing queued holds no entry.
@@ -170,7 +170,7 @@ impl Jobs {
     /// before this returns, so a `finish` that arrives immediately afterwards
     /// always sees it.
     ///
-    /// A connection that has already been retired is refused (Ruling H38). A
+    /// A connection that has already been retired is refused. A
     /// worker that took its `Daemon` clone out of `wait_for_daemon` a moment
     /// before that connection's cleanup ran would otherwise create a job
     /// nobody is left to finish: usually the send that follows fails and
@@ -181,7 +181,7 @@ impl Jobs {
     ///
     /// A new job takes one of its connection's credits and comes back with
     /// the request to send ([`Enrolled::New`]), or, when they are all taken,
-    /// is queued behind the others ([`Enrolled::Queued`], Ruling H124).
+    /// is queued behind the others ([`Enrolled::Queued`]).
     /// Nobody is refused for want of credit; joining a job that already
     /// exists, sent or queued, asks the daemon for nothing more.
     ///
@@ -199,7 +199,7 @@ impl Jobs {
         }
         if let Some(&req_id) = self.by_inode.get(&inode) {
             // Joined whichever of the uid's connections has it in hand, not
-            // only the one this open was routed to (Ruling H125). A uid can
+            // only the one this open was routed to. A uid can
             // have several live connections, and hydrations go to the newest;
             // an older one that already holds this inode's request is still
             // going to answer it — with `HydrateDone`, or, if it is on its way
@@ -337,7 +337,7 @@ impl Jobs {
     /// sent, or somebody else's, and the caller must not act on it.
     ///
     /// The credit it held goes, in the same step, to the connection's oldest
-    /// queued hydration, which comes back as [`Finished::next`] (Ruling H124).
+    /// queued hydration, which comes back as [`Finished::next`].
     pub fn finish(&mut self, req_id: u64, owner: Owner) -> Option<Finished> {
         let job = self.jobs.get(&req_id)?;
         if job.owner != owner || !job.sent {
@@ -349,10 +349,10 @@ impl Jobs {
     }
 
     /// Retires a connection and takes everything it was going to hydrate —
-    /// sent and queued alike (Ruling H124).
+    /// sent and queued alike.
     ///
     /// The retirement happens **before** the drain and under the same lock
-    /// (Ruling H38), so there is no instant at which a worker can add a job
+    ///, so there is no instant at which a worker can add a job
     /// to a connection whose jobs have already been collected. Only that
     /// connection's jobs are taken: another user's hydrations are none of its
     /// business, which is what stopped any local user failing every hydration
@@ -436,7 +436,7 @@ mod tests {
         );
     }
 
-    /// Ruling H138's second guard needs to know when a job began: the count
+    /// second guard needs to know when a job began: the count
     /// of unregistrations when the open that *created* it was read. An opener
     /// that joins later brings a later count, which must not replace it.
     #[test]
@@ -479,7 +479,7 @@ mod tests {
         assert!(jobs.finish(req_id, mine).is_some(), "and can still be finished normally");
     }
 
-    /// Ruling H38. The window this closes: a worker holding a `Daemon` clone
+    /// The window this closes: a worker holding a `Daemon` clone
     /// from just before the cleanup ran must not be able to create a job on
     /// a connection whose jobs have already been drained — nothing would
     /// ever answer it, and there is no per-job timeout to rescue it.
@@ -535,7 +535,7 @@ mod tests {
             .collect()
     }
 
-    /// Ruling H124. Beyond its connection's credit a new hydration is
+    /// Beyond its connection's credit a new hydration is
     /// enrolled and held back — its opener suspended like any other — not
     /// refused, and nothing more is handed to the daemon than its request
     /// queue has room for (the circular wait `MAX_OUTSTANDING_HYDRATIONS`
@@ -561,7 +561,7 @@ mod tests {
         );
     }
 
-    /// Ruling H124. Every credit that comes back goes to the oldest waiting
+    /// Every credit that comes back goes to the oldest waiting
     /// hydration, in the same step, until none is left waiting — so every
     /// opener beyond the credit is eventually answered, in arrival order.
     #[test]
@@ -602,7 +602,7 @@ mod tests {
         assert_eq!(jobs.outstanding_for(1), MAX_OUTSTANDING_HYDRATIONS);
     }
 
-    /// Ruling H124, the disconnect half: a hydration waiting for credit is
+    /// The disconnect half: a hydration waiting for credit is
     /// its connection's as much as a sent one, and goes with it — its
     /// openers come back to be denied, and no credit is left to send it with.
     #[test]
@@ -682,7 +682,7 @@ mod tests {
         assert_eq!(jobs.outstanding_for(1), MAX_OUTSTANDING_HYDRATIONS);
     }
 
-    /// Ruling H125. A uid's hydrations go to its newest connection, and an
+    /// A uid's hydrations go to its newest connection, and an
     /// older one stays live underneath it. An opener routed to the newer
     /// connection, for a file the older one is already hydrating, joins that
     /// hydration: the older connection will answer it with `HydrateDone`, or,

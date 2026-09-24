@@ -1,9 +1,9 @@
 //! Root registration, dehydration and startup recovery: the daemon's side of
 //! binding an empty local folder to the signed-in drive, of freeing a
-//! hydrated file's space again (spec §8), and of cleaning up after a crash
-//! that caught a file mid-operation (spec §4.4).
+//! hydrated file's space again, and of cleaning up after a crash
+//! that caught a file mid-operation.
 //!
-//! # One descriptor, from the first open to the last write (Ruling H68)
+//! # One descriptor, from the first open to the last write
 //!
 //! Dehydration and recovery are the only things in this project that destroy
 //! a file's contents on purpose, so everything they decide and everything
@@ -41,7 +41,8 @@ use std::sync::Arc;
 
 use konedrive_fs::lease::WriteLease;
 use konedrive_fs::placeholder::{
-    punch_all, read_stamp, read_state, remove_stamp, stamp_matches, write_state, State, StateError, XATTR_ROOT,
+    punch_all, punch_from, read_progress, read_stamp, read_state, remove_progress, remove_stamp, stamp_matches,
+    write_state, State, StateError, XATTR_ROOT,
 };
 use konedrive_fs::probe::{probe_dir, ProbeError};
 use konedrive_fs::MAX_DEPTH;
@@ -114,7 +115,7 @@ fn not_a_directory(path: &Path) -> RegisterError {
 ///
 /// The write half of the probe (`probe_dir`, `konedrive_fs::probe`) is
 /// authoritative *here*, not on the helper's side. The helper runs under
-/// `ProtectHome=read-only` (spec §6.4), so its own write probe can be
+/// `ProtectHome=read-only`, so its own write probe can be
 /// refused (`EROFS`/`EACCES`/`EPERM`) against a perfectly good directory in
 /// the user's own home — that is why `check_filesystem` in
 /// `konedrive-helper/src/main.rs` treats a refused write probe as "nothing
@@ -132,7 +133,7 @@ pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
 /// person who typed a folder name, so the message is rebuilt around the path
 /// they actually gave.
 ///
-/// # Ruling H78: empty is required only for *first* registration
+/// # Empty is required only for *first* registration
 ///
 /// A folder that already carries a valid `user.konedrive.root` is not a
 /// candidate being registered for the first time — it is a root the daemon
@@ -147,7 +148,7 @@ pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
 /// has no root id of its own yet; a folder that already names itself as a
 /// root skips it.
 ///
-/// # Ruling H93: the probe runs first
+/// # The probe runs first
 ///
 /// `read_root_id` is a `getxattr` in the `user.*` namespace, which is the
 /// very thing [`probe_dir`] exists to establish is available. Asking for the
@@ -158,7 +159,22 @@ pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
 /// filesystem does not support user xattrs" against the folder they typed.
 /// The probe is also the more fundamental refusal: a folder that cannot hold
 /// a placeholder at all cannot be a sync root whether it is empty or not.
+///
+/// # A folder that already carries one of our root ids is not probed again
+///
+/// It was probed when it was first registered, and a folder that shows
+/// OneDrive is locked read-only since (W2), the folder itself included, so
+/// the probe's write is refused there: no such folder came back after a
+/// restart, in either mode — "cannot bring up the sync folder: Permission
+/// denied" — and none could be switched to interception once the helper
+/// arrived. The helper's own re-registration skips its probe for
+/// the same reason. H93 still holds: the id is only *looked
+/// for* first, and a folder where looking fails is probed, whose answer is
+/// what is reported.
 fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
+    if matches!(read_root_id(dir), Ok(Some(_))) {
+        return Ok(());
+    }
     let through_fd = proc_path(dir);
     probe_dir(&through_fd).map_err(|e| match e {
         ProbeError::Missing { feature, .. } => RegisterError::Unsupported(format!(
@@ -181,15 +197,15 @@ fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
 
 /// Binds an empty folder to the account: probe, stamp it, tell the helper.
 ///
-/// # Why the root id is read before it is minted (Ruling H70)
+/// # Why the root id is read before it is minted
 ///
 /// `user.konedrive.root` is written before the helper is told about it, and
 /// it is never overwritten. That ordering is not free to change — a crash,
 /// or a `HelperError::Timeout`, between the helper saving the root and this
 /// function returning leaves a registration the daemon cannot see — so the
 /// xattr is read *first* and reused whenever it is there. The helper treats
-/// a registration with the same uid and the same id as idempotent (Rulings
-/// H32/H40), so retrying with the id already on the folder converges.
+/// a registration with the same uid and the same id as idempotent,
+/// so retrying with the id already on the folder converges.
 ///
 /// Minting a fresh id on every attempt, as this used to, does the opposite:
 /// the retry offers root B for a directory the helper already holds as root
@@ -207,10 +223,10 @@ fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
 /// fully cover is tracked by the helper as "degraded"
 /// (`konedrive-helper/src/main.rs::record_walk`/`degraded_roots`), but that
 /// status is not yet surfaced anywhere: `RegisterRoot`'s ack carries only an
-/// errno (spec §6.1), so a degraded root still acks success here. Nothing in
+/// errno, so a degraded root still acks success here. Nothing in
 /// this crate today has anywhere to put that signal — the natural home is a
 /// later helper→daemon query (or an addition to `RootState`/`LastError` on
-/// the `org.konedrive.Sync1` D-Bus surface, spec §3.1), once one exists.
+/// the `org.konedrive.Sync1` D-Bus surface), once one exists.
 pub async fn register_root(link: &HelperLink, path: &Path) -> Result<SyncRoot, RegisterError> {
     let (dir, root) = prepare(path).await?;
     link.register_root(&dir, &root.root_id)
@@ -220,7 +236,7 @@ pub async fn register_root(link: &HelperLink, path: &Path) -> Result<SyncRoot, R
 }
 
 /// Everything [`register_root`] does before the helper is told: the folder
-/// checks, and the root id read or minted (Ruling H70). Returns the open
+/// checks, and the root id read or minted. Returns the open
 /// directory the helper is to be handed, so that the descriptor the checks
 /// ran on is the descriptor it registers.
 ///
@@ -228,7 +244,7 @@ pub async fn register_root(link: &HelperLink, path: &Path) -> Result<SyncRoot, R
 /// `config.toml` between the two halves — before the helper holds anything
 /// the daemon's next start would not know about.
 pub(super) async fn prepare(path: &Path) -> Result<(File, SyncRoot), RegisterError> {
-    // Ruling H76/I7: opening, listing, probing and stamping a directory are
+    // Opening, listing, probing and stamping a directory are
     // all blocking syscalls, and `sync/helper.rs`'s module doc treats a
     // blocking call left on a tokio worker as a first-class defect.
     let requested = path.to_path_buf();
@@ -253,7 +269,7 @@ pub(super) async fn recorded_root_id(path: &Path) -> Option<String> {
     .flatten()
 }
 
-/// [`register_root`] with nobody to intercept anything (Ruling H105): the
+/// [`register_root`] with nobody to intercept anything: the
 /// same local checks and the same root id, but no helper is told, so no
 /// directory under this root is ever marked and no open inside it is ever
 /// suspended.
@@ -265,7 +281,9 @@ pub(super) async fn recorded_root_id(path: &Path) -> Option<String> {
 /// intercepts reads as zeros, which is the one outcome this project exists
 /// to prevent. What makes the mode safe to offer at all is that it is
 /// *visible* — `RootState` reports `no-interception` and `LastError` says
-/// plainly that files here read as zeros until they are hydrated.
+/// plainly that files here read as zeros until they are hydrated. A folder
+/// registered this way while no helper was connected is switched to
+/// interception by `SyncService` once one connects.
 pub async fn register_root_unprotected(path: &Path) -> Result<SyncRoot, RegisterError> {
     let (_dir, root) = prepare(path).await?;
     Ok(root)
@@ -300,7 +318,7 @@ fn resolved_path(dir: &File, path: &Path) -> Result<PathBuf, RegisterError> {
     Ok(resolved)
 }
 
-/// The folder's own root id, minted only if it has none (Ruling H70). An
+/// The folder's own root id, minted only if it has none. An
 /// empty value is treated as none: it names no registration the helper could
 /// be holding, so there is nothing to preserve.
 fn root_id_of(dir: &File) -> Result<String, RegisterError> {
@@ -315,11 +333,11 @@ fn root_id_of(dir: &File) -> Result<String, RegisterError> {
 }
 
 /// The folder's own root id, if it already carries a valid one — `None`
-/// otherwise. Shared by [`check_root_dir`] (Ruling H78: only a folder with
-/// *no* id yet must be empty) and [`root_id_of`] (Ruling H70: an existing id
+/// otherwise. Shared by [`check_root_dir`] (only a folder with
+/// *no* id yet must be empty) and [`root_id_of`] (an existing id
 /// is reused, never overwritten).
 ///
-/// # Ruling H90: a value that is not an id of ours is not an id
+/// # A value that is not an id of ours is not an id
 ///
 /// Honouring any non-empty string here is what makes
 /// `setfattr -n user.konedrive.root -v x ~/Documents` enough to register a
@@ -338,7 +356,7 @@ fn root_id_of(dir: &File) -> Result<String, RegisterError> {
 /// then be empty to be registered, and [`root_id_of`] mints a real one over
 /// the top. Overwriting is safe precisely because the value is not one we
 /// could ever have minted, so no helper registration can be named by it
-/// (Ruling H70's "never overwrite" protects ids we *did* mint).
+/// ("never overwrite" protects ids we *did* mint).
 fn read_root_id(dir: &File) -> Result<Option<String>, RegisterError> {
     let unsupported =
         |e: io::Error| RegisterError::Unsupported(format!("cannot access {XATTR_ROOT}: {e}"));
@@ -350,7 +368,7 @@ fn read_root_id(dir: &File) -> Result<Option<String>, RegisterError> {
     Ok(looks_like_a_root_id(&id).then_some(id))
 }
 
-/// Ruling H90: the canonical form of what [`uuid_v4`] mints — 36 characters,
+/// The canonical form of what [`uuid_v4`] mints — 36 characters,
 /// `8-4-4-4-12`, lowercase-or-uppercase hex throughout, version nibble `4`.
 pub(super) fn looks_like_a_root_id(id: &str) -> bool {
     if id.len() != 36 {
@@ -389,7 +407,7 @@ pub enum DehydrateError {
     #[error("not a plain file inside this sync root")]
     OutsideRoot,
     /// A helper is running and this daemon has no link to it, so a mark its
-    /// group may hold on the file cannot be cleared (Ruling H146). Nothing
+    /// group may hold on the file cannot be cleared. Nothing
     /// was changed; try again once the link is up.
     #[error("the konedrive helper is running but not connected to this daemon")]
     HelperNotConnected,
@@ -412,7 +430,10 @@ impl From<NotCleared> for DehydrateError {
 
 impl SyncRoot {
     /// Opens `path` for dehydration: once, `O_RDWR`, and only if it really
-    /// is a plain file inside this root (Ruling H76).
+    /// is a plain file inside this root. A file the read-only
+    /// lock made `0444` refuses `O_RDWR`; it is opened read-only instead and
+    /// reopened writable on the same inode, and only when it is one of ours
+    /// (see [`open_locked`](Self::open_locked)).
     ///
     /// Three separate things are checked, because the punch that follows is
     /// irreversible:
@@ -430,10 +451,10 @@ impl SyncRoot {
     ///
     /// The helper's own check cannot stand in for this one: it is scoped to
     /// the device a root lives on, not to the root itself, and it is not
-    /// consulted here anyway. It matters as soon as Task 11 puts a path from
+    /// consulted here anyway. It matters as soon as puts a path from
     /// outside this process on the other end of a D-Bus method.
     ///
-    /// Ruling H103: this is the *only* way anything in `sync` may turn a
+    ///: this is the *only* way anything in `sync` may turn a
     /// caller's path into a descriptor it will write through.
     /// `SyncService::hydrate_now` used to open the checked string itself,
     /// with no `O_NOFOLLOW` and no `RESOLVE_BENEATH`, after awaiting an
@@ -456,8 +477,44 @@ impl SyncRoot {
             );
         match openat2(dir.as_fd(), &relative, how) {
             Ok(fd) => Ok(File::from(fd)),
+            Err(Errno::EACCES) => self.open_locked(&dir, &relative, path),
             Err(Errno::EXDEV | Errno::ELOOP | Errno::EISDIR) => Err(DehydrateError::OutsideRoot),
             Err(e) => Err(DehydrateError::Io(format!("{}: {e}", path.display()))),
+        }
+    }
+
+    /// [`open_inside`](Self::open_inside) for a file the read-only lock made
+    /// `0444`: opened for reading with the same resolution rules,
+    /// and reopened writable — on the same inode — only if it carries a
+    /// konedrive state. A file that is not ours comes back read-only and
+    /// untouched; every caller refuses such a file before it writes anything.
+    ///
+    /// `O_NONBLOCK`, because a read-only open of a FIFO waits for a writer,
+    /// and a `0444` FIFO is refused `O_RDWR` and so reaches here; the `fstat`
+    /// below then refuses it.
+    fn open_locked(&self, dir: &File, relative: &Path, shown: &Path) -> Result<File, DehydrateError> {
+        let how = OpenHow::new()
+            .flags(OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
+            .resolve(
+                ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_SYMLINKS | ResolveFlag::RESOLVE_NO_MAGICLINKS,
+            );
+        let read_only = match openat2(dir.as_fd(), relative, how) {
+            Ok(fd) => File::from(fd),
+            Err(Errno::EXDEV | Errno::ELOOP | Errno::EISDIR) => return Err(DehydrateError::OutsideRoot),
+            Err(e) => return Err(DehydrateError::Io(format!("{}: {e}", shown.display()))),
+        };
+        if !read_only.metadata().map_err(io_error)?.is_file() {
+            return Err(DehydrateError::OutsideRoot);
+        }
+        match read_state(&read_only) {
+            Ok(Some(_)) => {
+                let writable = konedrive_fs::placeholder::reopen_writable(&read_only).map_err(io_error)?;
+                // Only the writable descriptor may be left: a second one of
+                // our own would refuse the write lease a free-up takes.
+                drop(read_only);
+                Ok(writable)
+            }
+            _ => Ok(read_only),
         }
     }
 
@@ -471,7 +528,7 @@ impl SyncRoot {
     /// anything inside it. `O_DIRECTORY` so a file can never be mistaken for
     /// the root, `O_NOFOLLOW` so its last component cannot be a symlink to
     /// somewhere else entirely.
-    fn open_registered(&self) -> io::Result<Option<File>> {
+    pub(super) fn open_registered(&self) -> io::Result<Option<File>> {
         let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
         let dir = nix::fcntl::open(&self.path, flags, Mode::empty()).map(File::from)?;
         match dir.get_xattr(XATTR_ROOT)? {
@@ -484,7 +541,7 @@ impl SyncRoot {
     /// The parent is resolved first and the final component is carried over
     /// untouched, so a symlinked file is refused by the open rather than
     /// silently followed here.
-    fn relative(&self, path: &Path) -> Result<PathBuf, DehydrateError> {
+    pub(super) fn relative(&self, path: &Path) -> Result<PathBuf, DehydrateError> {
         let name = path.file_name().ok_or(DehydrateError::OutsideRoot)?;
         let parent = match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
@@ -497,9 +554,10 @@ impl SyncRoot {
     }
 }
 
-/// The guard: only a clean, fully downloaded file may be emptied (spec §8
-/// step 1). It runs on the very descriptor the punch will use, so what it
-/// decided about cannot be swapped for something else afterwards.
+/// The guard: only a clean, fully downloaded file may be emptied
+/// (dehydration's step 1). It runs on the very descriptor the punch will
+/// use, so what it decided about cannot be swapped for something else
+/// afterwards.
 pub fn check_dehydratable(file: &File) -> Result<(), DehydrateError> {
     match read_state(file).map_err(io_error)? {
         None => Err(DehydrateError::NotManaged),
@@ -516,8 +574,8 @@ pub fn check_dehydratable(file: &File) -> Result<(), DehydrateError> {
 
 /// Whether `file` is a zero-byte file as `create_placeholder` makes one:
 /// `hydrated` from birth, with no stamp, since there is nothing to download.
-/// Freeing it up has nothing to free, and succeeds without touching it (the
-/// final review's m6) — it used to fail the stamp check and answer
+/// Freeing it up has nothing to free, and succeeds without touching it
+/// — it used to fail the stamp check and answer
 /// `ModifiedLocally`, which told the user their edits would be lost. A file
 /// that *became* empty here still carries the stamp of what it held, fails
 /// that check, and is refused as modified.
@@ -530,7 +588,7 @@ fn nothing_to_free(file: &File) -> Result<bool, DehydrateError> {
 }
 
 /// The timestamps a punch would destroy, kept so they can be put back
-/// (Ruling H71).
+///.
 #[derive(Clone, Copy)]
 struct FileTimes {
     atime: libc::timespec,
@@ -561,10 +619,11 @@ impl FileTimes {
     }
 }
 
-/// Spec §8 steps 1–2, first half: check, then publish `dehydrating` and make
+/// Dehydration's (`docs/design/hydration.md` §8) steps 1–2, first half:
+/// check, then publish `dehydrating` and make
 /// it durable *before* anyone is told to stop intercepting this file.
 ///
-/// # Why this cannot be moved after `ClearIgnore` (Ruling H69)
+/// # Why this cannot be moved after `ClearIgnore`
 ///
 /// The order is the difference between failing loudly and failing silently.
 /// With the mark cleared and the state still reading `hydrated`, an open
@@ -580,7 +639,7 @@ impl FileTimes {
 /// what §8's closing paragraph promises. The `fsync` is what makes the new
 /// state survive a crash in the middle of the sequence, where startup
 /// recovery (§4.4) then finds a `dehydrating` file and cleans it up.
-/// # Ruling N2: the barrier's own failure rolls back, like the two either side
+/// # The barrier's own failure rolls back, like the two either side
 ///
 /// If the `fsync` fails, the state write before it still happened — in page
 /// cache, on a file that is otherwise exactly as hydrated as it was a moment
@@ -603,7 +662,7 @@ fn mark_dehydrating(file: &File) -> Result<FileTimes, DehydrateError> {
 }
 
 /// Undoes [`mark_dehydrating`] when the sequence stops before the punch
-/// (spec §8 steps 2 and 3 both say "roll back and report").
+/// (steps 2 and 3 both say "roll back and report").
 ///
 /// The rollback's own failure is reported, never swallowed: it leaves a file
 /// stuck in `dehydrating` with its blocks intact, which startup recovery
@@ -622,18 +681,18 @@ fn roll_back(file: &File, cause: DehydrateError) -> DehydrateError {
     }
 }
 
-/// Spec §8 steps 3–5: take the lease, punch, put the mtime back, publish
+/// Dehydration's steps 3–5: take the lease, punch, put the mtime back, publish
 /// `online-only`.
 ///
 /// The caller must have cleared the helper's ignore mark first (invariant
-/// M3) — this is private for that reason (Ruling H73): an exported function
+/// M3) — this is private for that reason: an exported function
 /// that punches with no helper involvement puts the project's one silent,
 /// unrecoverable failure behind nothing but a doc comment.
 ///
 /// Only the two refusals *before* the punch roll the state back. Once
 /// `fallocate` has run there is nothing to roll back to — the blocks are
 /// gone and the file is not `hydrated` any more — so a failure from there on
-/// leaves it `dehydrating` deliberately: startup recovery (spec §4.4) punches
+/// leaves it `dehydrating` deliberately: startup recovery punches
 /// whatever is left, sets `online-only` and removes the stamp, which is the
 /// correct end state, and the next open hydrates it again.
 fn punch_clean_file(file: &File, restore: FileTimes) -> Result<(), DehydrateError> {
@@ -659,7 +718,7 @@ enum Watch {
 /// reader has to infer from where a `drop` happens to sit. One point was not
 /// enough: a lease released between the hook and the punch, or between the
 /// punch and the state flip, both went unnoticed by a test that only asked
-/// `F_GETLEASE` at the start (Ruling R1). Production takes the empty
+/// `F_GETLEASE` at the start. Production takes the empty
 /// closure, which costs nothing.
 fn punch_clean_file_watched(
     file: &File,
@@ -686,7 +745,7 @@ fn punch_clean_file_watched(
     Ok(())
 }
 
-/// Spec §8 steps 4–5 on their own: empty the file, put the mtime back, make
+/// Dehydration's steps 4–5 on their own: empty the file, put the mtime back, make
 /// that durable, and only then say it is `online-only`.
 ///
 /// **The caller must hold the write lease across this call** and must have
@@ -698,7 +757,7 @@ fn punch_clean_file_watched(
 /// taken by the caller rather than in here.
 fn punch_and_publish(file: &File, restore: FileTimes) -> io::Result<()> {
     punch_all(file)?;
-    // Before the fsync, so the restored mtime is covered by it (Ruling H71).
+    // Before the fsync, so the restored mtime is covered by it.
     restore.restore(file)?;
     file.sync_all()?;
 
@@ -714,7 +773,7 @@ fn punch_and_publish(file: &File, restore: FileTimes) -> io::Result<()> {
     })
 }
 
-/// The full sequence, including the helper round trip (spec §8).
+/// The full sequence, including the helper round trip.
 ///
 /// `root` is the registered sync root the file must live in; see
 /// [`SyncRoot::open_inside`] for what that is worth and why the check is
@@ -752,7 +811,7 @@ fn punch_and_publish(file: &File, restore: FileTimes) -> io::Result<()> {
 /// §5.1. So any non-zero errno reaching here means something genuinely went
 /// wrong, and stopping is always the right call.
 ///
-/// # Ruling N3: cancelling this leaves the file `dehydrating`
+/// # Cancelling this leaves the file `dehydrating`
 ///
 /// Every failure *this function reports* rolls the state back or is past the
 /// point where there is anything to roll back to. Dropping the future does
@@ -761,7 +820,7 @@ fn punch_and_publish(file: &File, restore: FileTimes) -> io::Result<()> {
 /// `tokio::time::timeout`, a `select!` losing a race) leaves it that way,
 /// with its blocks intact and its ignore mark possibly already cleared.
 /// That is a safe state, not a lost one — the helper treats `dehydrating`
-/// as "hydrate it again" (spec §5.2), and [`recover`] punches and relabels
+/// as "hydrate it again", and [`recover`] punches and relabels
 /// it at the next start — but it is not a *tidy* one, so a caller that can
 /// cancel should prefer to let the sequence finish.
 pub async fn dehydrate(
@@ -769,7 +828,7 @@ pub async fn dehydrate(
     root: &SyncRoot,
     path: &Path,
 ) -> Result<(), DehydrateError> {
-    // Ruling H76/I7: the file work is blocking and belongs on a blocking
+    // The file work is blocking and belongs on a blocking
     // thread.
     let target = path.to_path_buf();
     let owned_root = root.clone();
@@ -781,14 +840,14 @@ pub async fn dehydrate(
 
 /// [`dehydrate`] from the descriptor on, so that a caller which had to open
 /// the file itself — `SyncService::dehydrate`, which needs its inode to take
-/// spec §8's per-inode lock *before* anything is marked (Ruling H101/H102) —
+/// per-inode lock *before* anything is marked —
 /// hands that same descriptor straight in rather than resolving the name a
-/// second time. Ruling H68 is thereby strengthened, not weakened: there is
+/// second time. is thereby strengthened, not weakened: there is
 /// now exactly one open per dehydration, and it is the one every step uses.
 ///
-/// # Ruling H146: what stands between the punch and a stale ignore mark
+/// # What stands between the punch and a stale ignore mark
 ///
-/// `clearance` is spec §8 step 2, decided by the local rule on
+/// `clearance` is step 2, decided by the local rule on
 /// [`Clearance`]: with a helper link, the helper clears the mark — for a
 /// folder without interception too, where it used to be skipped; with no
 /// helper bound to its socket, no mark of ours exists; with a helper bound
@@ -801,7 +860,7 @@ pub(super) async fn dehydrate_opened(
     file: File,
 ) -> Result<(), DehydrateError> {
     // Each phase hands the descriptor on to the next, so all three still
-    // operate on the single open of Ruling H68.
+    // operate on the single open of.
     let marked = tokio::task::spawn_blocking(move || {
         if nothing_to_free(&file)? {
             return Ok(None);
@@ -815,7 +874,7 @@ pub(super) async fn dehydrate_opened(
         return Ok(());
     };
 
-    // Step 2, second half: Ruling H146's local rule, here, where the file
+    // Step 2, second half: local rule, here, where the file
     // is about to be emptied, and after `dehydrating` is durable (H69) — so a
     // mark an opener places from now on is placed through a `hydrate` path
     // that reads `dehydrating` and takes it off again (H139). The descriptor
@@ -841,7 +900,7 @@ pub(super) async fn dehydrate_opened(
 }
 
 /// How much of a registered root a startup [`recover`] found, fixed, and
-/// could not reach (Ruling H88).
+/// could not reach.
 ///
 /// `{ reset, scanned }` alone could not tell "nothing needed fixing" from
 /// "every single file was refused", and the second of those leaves files in
@@ -871,16 +930,16 @@ pub struct RecoveryReport {
     /// fully recovered.
     pub skipped: usize,
     /// Interrupted files something had open, so no lease could be taken
-    /// (the final review's m11, Ruling H144). Not a failure: whatever has the
+    ///. Not a failure: whatever has the
     /// file open is, as often as not, an opener waiting for it to be filled
     /// — or, after a reconnect, a fill from the connection before, still
-    /// running (Ruling H141) — and an interrupted file is one the helper
+    /// running — and an interrupted file is one the helper
     /// fills on its next open. Left exactly as found, like a failure, for the
     /// next start if nothing fills it first. A subset of `scanned`.
     pub busy: usize,
     /// Interrupted files left exactly as found because a helper is running
     /// and this daemon has no link to it yet, so a mark its group may hold
-    /// on them cannot be cleared (Ruling H146). Not a failure: recovery runs
+    /// on them cannot be cleared. Not a failure: recovery runs
     /// again once the link is up (`SyncService::resume`). A subset of
     /// `scanned`.
     pub deferred: usize,
@@ -890,7 +949,7 @@ pub struct RecoveryReport {
 /// one unreadable directory, one file that could not be opened, one
 /// `ClearIgnore` the helper refused — is logged and counted in the
 /// [`RecoveryReport`] instead, because recovery is the one component whose
-/// entire job is coping with a messy on-disk state (Ruling H87).
+/// entire job is coping with a messy on-disk state.
 #[derive(Debug, thiserror::Error)]
 pub enum RecoveryError {
     #[error("{0} no longer carries this sync root's registration")]
@@ -907,10 +966,10 @@ pub enum RecoveryError {
 pub enum ResetError {
     #[error("the helper did not clear the ignore mark: {0}")]
     Helper(HelperError),
-    /// Ruling H146: a helper is running and there is no link to it.
+    /// A helper is running and there is no link to it.
     #[error("a konedrive helper is running and this daemon is not connected to it yet")]
     Unlinked,
-    /// Ruling H147: under the lease the file no longer reads `hydrating` or
+    /// Under the lease the file no longer reads `hydrating` or
     /// `dehydrating` — something finished it after recovery first looked.
     #[error("the file was finished meanwhile; it now reads {0:?}")]
     Finished(Option<State>),
@@ -930,24 +989,24 @@ impl From<NotCleared> for ResetError {
     }
 }
 
-/// Startup recovery, spec §4.4: after a crash or power loss, a file caught
+/// Startup recovery,: after a crash or power loss, a file caught
 /// mid-hydration or mid-dehydration holds content that must not be trusted —
 /// punch it back to `online-only` so the next open fetches it again.
 ///
-/// # Why this takes a [`Clearance`], unlike the brief's own draft
+/// # Why this takes a [`Clearance`], unlike 's own draft
 ///
 /// A file that crashed `dehydrating` can still be carrying its ignore mark:
 /// the daemon may have died between `write_state(Dehydrating)` and a
 /// successful `ClearIgnore`. That mark carries
-/// `FAN_MARK_IGNORED_SURV_MODIFY` (spec §5.1), so nothing clears it on its
-/// own any more, and punching a file that still carries it reproduces the
-/// exact defect `dehydrate` in this module exists to prevent (Ruling
-/// H69/invariant M3): the file ends up empty *and* permanently
+/// `FAN_MARK_IGNORED_SURV_MODIFY` (`docs/design/hydration.md` §4.3), so
+/// nothing clears it on its own any more, and punching a file that still
+/// carries it reproduces the exact defect `dehydrate` in this module exists
+/// to prevent (invariant M3): the file ends up empty *and* permanently
 /// un-intercepted, reading as zeros on every future open with no error
 /// anywhere to notice it. So every file this function is about to punch goes
-/// through the same local rule `dehydrate` applies (Ruling H146, on
+/// through the same local rule `dehydrate` applies (on
 /// [`Clearance`]) — on the same descriptor it is about to punch, never a
-/// path re-open (Ruling H68) — and a file the rule does not clear is left
+/// path re-open — and a file the rule does not clear is left
 /// exactly as it was found: counted `failed` when the helper refused, and
 /// `deferred` when a helper is running that this daemon has no link to,
 /// until the link is up. This needs no special case for a mark that was
@@ -956,26 +1015,26 @@ impl From<NotCleared> for ResetError {
 ///
 /// For an intercepted root the caller passes the link it has just
 /// registered the root on — callers must connect to the helper and register
-/// their roots before recovering them, not after (Ruling H80). For a root
+/// their roots before recovering them, not after. For a root
 /// registered without interception the caller passes whatever the rule has
 /// to go on: its link if it has one, the helper's socket if not.
 ///
-/// # Ruling H147: the file can be finished while recovery looks at it
+/// # The file can be finished while recovery looks at it
 ///
-/// Recovery runs on every reconnect, and since Ruling H141 the previous
-/// connection's fills keep running while it walks. It read a file's state
-/// once, when it opened it, and nothing stopped a fill from committing
+/// Recovery runs on every reconnect, and the previous connection's fills
+/// keep running while it walks. It read a file's state once, when it
+/// opened it, and nothing stopped a fill from committing
 /// `hydrated` — and an opener from having the helper ignore-mark the file —
 /// between recovery's `ClearIgnore` and its lease: recovery then punched a
 /// complete file under a fresh mark, and the next reader got 65 536 zero
-/// bytes (the final re-review's N3; measured with that gap widened). So,
+/// bytes (measured with that gap widened). So,
 /// for each interrupted file:
 ///
 /// - the per-inode lock every fill and every free-up of this daemon holds
 ///   (`locks`, `SyncService`'s own) is taken, and if it is held the file is
 ///   left as it is and counted `busy` — something is filling it or freeing
 ///   it up right now. Taken without waiting: waiting would hold the reconnect
-///   behind a download of any length, which Ruling H141 took away;
+///   behind a download of any length;
 /// - the state is read **again once the lease is held**, and the file is
 ///   punched only if it still reads `hydrating` or `dehydrating`. Under the
 ///   lease nothing else has the file open, so no fill is under way; and a
@@ -984,7 +1043,7 @@ impl From<NotCleared> for ResetError {
 ///   first (M3), and cannot be marked again while it reads them. A file that
 ///   reads anything else was finished meanwhile, and is left as it is.
 ///
-/// # Ruling H85: the walk never leaves the root, by construction
+/// # The walk never leaves the root, by construction
 ///
 /// This empties files, in bulk, across a whole tree, with no user pointing
 /// at any of them — so the containment `SyncRoot::open_inside` gives
@@ -994,10 +1053,11 @@ impl From<NotCleared> for ResetError {
 /// - the root directory must still carry *this* root's `user.konedrive.root`
 ///   before anything inside it is touched at all ([`RecoveryError::NotRegistered`]);
 /// - every step of the walk is an `openat` from a **directory descriptor**,
-///   never a path — `O_DIRECTORY | O_NOFOLLOW` for subdirectories, `O_RDWR |
-///   O_NOFOLLOW` for files — so the name that was classified is the name
-///   that is opened, out of a directory that cannot be swapped underneath
-///   the walk while it waits for the helper;
+///   never a path — `O_DIRECTORY | O_NOFOLLOW` for subdirectories, `O_RDONLY
+///   | O_NOFOLLOW` for files, reopened writable through the descriptor itself
+///   only for the one being reset — so the name that was classified is the
+///   name that is opened, out of a directory that cannot be swapped
+///   underneath the walk while it waits for the helper;
 /// - every descriptor is `fstat`ed after it is opened and refused unless it
 ///   is a regular file (or a directory) on the root's own `st_dev`.
 ///
@@ -1012,7 +1072,7 @@ impl From<NotCleared> for ResetError {
 /// back this out: its own check is "same uid, same *filesystem* as one of
 /// that uid's roots", which any file in the user's home satisfies.
 ///
-/// # Ruling H86: one file open at a time
+/// # One file open at a time
 ///
 /// The walk opens a file, decides about it, punches it and closes it before
 /// it opens the next one. The version this replaces opened *every* regular
@@ -1084,7 +1144,7 @@ pub async fn recover(
 ///
 /// Names, not descriptors: a directory of 100 000 files costs one `Vec` of
 /// its names, while opening them up front would cost 100 000 descriptors
-/// (Ruling H86). The `FileType` beside each name is the `d_type` the kernel
+///. The `FileType` beside each name is the `d_type` the kernel
 /// gave us — a hint for which of the two opens to attempt, never the
 /// authority for what was opened, which is the `fstat` in [`open_entry`].
 struct Frame {
@@ -1099,8 +1159,8 @@ struct Frame {
 }
 
 /// Lists `dir` and pushes it onto the walk. A directory that cannot be
-/// listed is counted and left behind rather than ending the walk (Ruling
-/// H87): a mode-`000` subdirectory, or one the user deleted while the daemon
+/// listed is counted and left behind rather than ending the walk: a
+/// mode-`000` subdirectory, or one the user deleted while the daemon
 /// was starting, used to make `recover` return `Err` for the *whole* root,
 /// losing the count of what it had already punched and never visiting a
 /// sibling subtree.
@@ -1171,7 +1231,7 @@ fn list_names(dir: &File) -> io::Result<(Vec<(OsString, std::fs::FileType)>, usi
 enum Entry {
     /// A directory on the root's own filesystem, to walk into.
     Directory(File),
-    /// A regular file on the root's own filesystem, open `O_RDWR`, with
+    /// A regular file on the root's own filesystem, open read-only, with
     /// whatever `user.konedrive.state` it carries — including the error of
     /// failing to make sense of it, which is emphatically not the same as
     /// carrying none (see `konedrive_fs::placeholder::StateError`).
@@ -1187,7 +1247,7 @@ enum Entry {
     /// mounted inside the sync folder. Unlike [`Entry::Elsewhere`] this is
     /// not silent: the helper's own validation is scoped to the root's
     /// device, so punching across one is exactly the escape it would not
-    /// catch (Ruling H85), and a whole subtree excluded this way could be
+    /// catch, and a whole subtree excluded this way could be
     /// hiding an interrupted file recovery never looked at — precisely what
     /// `RecoveryReport::skipped`'s doc comment says a non-zero value means.
     OtherFilesystem,
@@ -1195,17 +1255,25 @@ enum Entry {
 
 /// Opens one name **from the directory descriptor it was listed in**, with
 /// the flags its kind calls for, and then proves on the open descriptor what
-/// it is (Ruling H85).
+/// it is.
 ///
 /// `kind` is only the `d_type` from the listing: it decides which of the two
 /// opens to attempt, and is never trusted for anything after that. A name
 /// that was a regular file when it was listed and is a symlink by the time
 /// it is opened is refused by `O_NOFOLLOW` (`ELOOP`); one that has become a
 /// directory is refused by the `fstat` below; one that has become a FIFO or
-/// a device node is opened once, `O_RDWR`, and refused by the same `fstat`
-/// before anything at all is read from it or written to it. (`O_RDWR` on a
-/// FIFO does not block on Linux, and an unprivileged process cannot create
-/// a device node inside a sync root to begin with.)
+/// a device node is opened once, read-only, and refused by the same `fstat`
+/// before anything at all is read from it or written to it. (`O_NONBLOCK`
+/// keeps a read-only open of a FIFO from waiting for a writer, and an
+/// unprivileged process cannot create a device node inside a sync root to
+/// begin with.)
+///
+/// Files are opened **read-only**: under the read
+/// phase's lock every file is `0444`, and `O_RDWR` would refuse them all —
+/// every interrupted file counted `skipped` and never reset. Nothing is
+/// written through this descriptor; `reset_interrupted` reopens the one file
+/// it is about to reset writable, on the same inode, so a file that is not
+/// ours is never made writable, not even for the moment of an open.
 fn open_entry(
     dir: &File,
     name: &OsString,
@@ -1215,7 +1283,10 @@ fn open_entry(
     let flags = if kind.is_dir() {
         OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
     } else if kind.is_file() {
-        OFlag::O_RDWR | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
+        // Read-only: under the lock every file is
+        // `0444`, and the one file recovery is about to reset is reopened
+        // writable in `reset_interrupted` — never a file that is not ours.
+        OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC
     } else {
         return Ok(Entry::Elsewhere);
     };
@@ -1280,7 +1351,7 @@ async fn recover_file(
     if !matches!(state, State::Hydrating | State::Dehydrating) {
         return;
     }
-    // Ruling H147: not while this daemon fills or frees up the same file.
+    // Not while this daemon fills or frees up the same file.
     let _guard = match InodeKey::of(&file) {
         Ok(key) => match locks.try_lock(key) {
             Some(guard) => guard,
@@ -1341,17 +1412,23 @@ async fn recover_file(
 }
 
 /// Clears the ignore mark and punches one crash-interrupted file, both on
-/// the descriptor the walk opened it on — the identical sequence
-/// `dehydrate`'s `mark_dehydrating`/`punch_clean_file` pair runs on a file
-/// this process is actively working on, applied here to one a crash left
-/// mid-sequence instead. Nothing here re-opens anything by path (Ruling
-/// H68): the inode that was classified is the inode that is punched, whatever
-/// the name points at by the time the helper answers.
+/// the inode the walk opened — through one writable reopen of the
+/// descriptor the walk opened read-only (`/proc/self/fd/<n>`),
+/// made before either — the identical sequence `dehydrate`'s
+/// `mark_dehydrating`/`punch_clean_file` pair runs on a file this process is
+/// actively working on, applied here to one a crash left mid-sequence
+/// instead. Nothing here re-opens anything by path: the inode
+/// that was classified is the inode that is punched, whatever the name points
+/// at by the time the helper answers.
+///
+/// A `hydrating` file whose download left a checkpoint keeps the
+/// checkpointed prefix and the checkpoint; only what lies past it
+/// is punched, and the next open continues the download from there.
 ///
 /// Returns before punching, leaving the file untouched, if `ClearIgnore` is
 /// refused; that failure is never swallowed (see [`recover`]'s doc comment).
 ///
-/// # Ruling H89: the lease, and why recovery needs it more than `dehydrate`
+/// # The lease, and why recovery needs it more than `dehydrate`
 ///
 /// `punch_clean_file` takes an `F_SETLEASE` before it empties a file, so
 /// that an application which opens it mid-punch is suspended by the kernel
@@ -1363,7 +1440,7 @@ async fn recover_file(
 /// A refused lease means exactly that — somebody has it open — so the file
 /// is left as it was found and counted, for a start that finds it quieter.
 ///
-/// # Ruling H81: the mtime
+/// # The mtime
 ///
 /// `fallocate` moves the mtime to now, and §4.2 wants an `online-only`
 /// file's mtime to be the remote `lastModifiedDateTime`. Recovery has no
@@ -1376,41 +1453,126 @@ async fn recover_file(
 /// each is a hole full of zeros, which is an upload-over-remote hazard the
 /// moment a delta engine exists. The stamp is removed in the same sequence,
 /// so `dehydrate`'s "modified locally" guard is not what saves you.
+///
+/// In a folder that shows OneDrive, the time of a `hydrating` file kept with
+/// its checkpoint is the one thing left wrong, and not for long: every
+/// bring-up starts the folder's sync, whose first cycle is a Full reconcile,
+/// and that puts the tree's time back without touching the checkpoint
+/// (`materialize::check_file`).
 async fn reset_interrupted(clearance: &Clearance, file: File) -> Result<(), ResetError> {
-    // Invariant M3, first, on the very descriptor the punch will use — by
-    // Ruling H146's local rule (see [`Clearance`]), for a root with
-    // interception or without. It used to be skipped for a root without
-    // interception, on the strength of a chain of reasoning about where a
-    // stale mark could be; the chain was falsified three times (H132, C2,
-    // N2), and nothing here depends on it any more.
+    // Writable only now, and only this file: the walk opened
+    // every file read-only, and a file that is not ours is never made
+    // writable, even for a moment — only a file the walk read `hydrating` or
+    // `dehydrating` gets here. The reopen goes through the descriptor, so it
+    // is the inode that was classified, whatever the name leads to by now
+    //.
+    //
+    // It comes *before* the clear, and the read-only descriptor is closed at
+    // once, so that the mark is cleared on, and the lease taken on, one and
+    // the same open file. A write lease is refused while any other open file
+    // of the inode exists, and the helper link sends a *duplicate* of the
+    // descriptor it is given, which its writer thread drops only after the
+    // send — possibly after the `Ack` has already brought this function to
+    // its lease. With the read-only descriptor handed to the helper, that
+    // duplicate kept the read-only open file alive and the lease was refused:
+    // measured, every file `busy` and none reset with the writer thread
+    // delayed 50 ms after its send. A duplicate of the descriptor the lease
+    // is taken on is the same open file, and refuses nothing.
+    let file = on_blocking_thread(move || {
+        let writable = konedrive_fs::placeholder::reopen_writable(&file)?;
+        drop(file);
+        Ok::<_, io::Error>(writable)
+    })
+    .await??;
+    // Invariant M3, on the very descriptor the punch will use — by the local
+    // rule (see [`Clearance`]), for a root with interception or
+    // without. It used to be skipped for a root without interception, on the
+    // strength of a chain of reasoning about where a stale mark could be; the
+    // chain was falsified three times, and nothing here
+    // depends on it any more.
     clearance.clear(&file).await?;
     // `fault-injection` builds only: the VM suite's N3 scenario.
     fault::recovery_after_clear().await;
     on_blocking_thread(move || {
-        let Some(lease) = WriteLease::take(&file)? else {
+        let Some(lease) = lease_retrying_briefly(&file)? else {
             return Err(ResetError::InUse);
         };
-        // Ruling H147: look again, now that nothing else has the file open.
-        match read_state(&file) {
-            Ok(Some(State::Hydrating | State::Dehydrating)) => {}
+        // Look again, now that nothing else has the file open.
+        let state = match read_state(&file) {
+            Ok(Some(state @ (State::Hydrating | State::Dehydrating))) => state,
             Ok(now) => return Err(ResetError::Finished(now)),
             Err(e) => return Err(ResetError::Io(io::Error::other(e.to_string()))),
-        }
+        };
         let restore = FileTimes::of(&file)?;
-        punch_and_publish(&file, restore)?;
+        // A download's checkpoint is kept with its bytes. Only a
+        // `hydrating` file can have one; the bytes it counts were made
+        // durable before it was written, and the fill that continues from it
+        // checks them against the quickXorHash along with the rest.
+        let checkpoint = match state {
+            State::Hydrating => read_progress(&file)
+                .ok()
+                .flatten()
+                .filter(|p| p.bytes > 0 && p.bytes <= file.metadata().map(|m| m.len()).unwrap_or(0)),
+            _ => None,
+        };
+        match checkpoint {
+            Some(progress) => keep_checkpoint(&file, restore, progress.bytes)?,
+            None => {
+                // The attribute before the punch: a count of bytes must
+                // never outlive the bytes it counts, not even across a
+                // failure or a crash between the two.
+                remove_progress(&file)?;
+                punch_and_publish(&file, restore)?;
+            }
+        }
         drop(lease);
         Ok(())
     })
     .await?
 }
 
+/// The write lease recovery punches under, with a refusal retried a few
+/// times over about 75 ms before the file counts as in use.
+///
+/// `F_SETLEASE` is refused while any other open file of the inode exists
+/// anywhere, and recovery's walk makes one of its own it cannot fully control:
+/// the read-only descriptor it classified the file on, closed before the
+/// lease — but a process being spawned at that moment holds an inherited copy
+/// of it until its `exec`, and that copy alone refuses the lease. Measured on
+/// this module's tests, where one test spawns `unshare`: 2 runs in 10 left an
+/// interrupted file `busy`, none in 20 with that test skipped, and none in 30
+/// on part 1's code, whose walk and lease shared one open file. Such a copy
+/// goes within milliseconds; an application holding the file open does not,
+/// and still finds the file `busy` after the last try, as before.
+fn lease_retrying_briefly(file: &File) -> io::Result<Option<WriteLease<'_>>> {
+    for pause in [5, 20, 50] {
+        if let Some(lease) = WriteLease::take(file)? {
+            return Ok(Some(lease));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(pause));
+    }
+    WriteLease::take(file)
+}
+
+/// [`punch_and_publish`] for an interrupted download with a checkpoint: only
+/// what lies past the checkpoint is punched, and the checkpoint stays
+///. The order is otherwise the same — the punch and the mtime
+/// made durable before the file is called `online-only`.
+fn keep_checkpoint(file: &File, restore: FileTimes, bytes: u64) -> io::Result<()> {
+    punch_from(file, bytes)?;
+    restore.restore(file)?;
+    file.sync_all()?;
+    write_state(file, State::OnlineOnly)?;
+    remove_stamp(file)
+}
+
 /// A deliberate stall for a race window too narrow to hit by chance —
 /// compiled in **only** with the `fault-injection` cargo feature, like the
-/// helper's (Ruling H121). `tests/vm/Cargo.toml` builds this crate with it
+/// helper's. `tests/vm/Cargo.toml` builds this crate with it
 /// for the VM suite; the daemon that ships does not have it.
 ///
 /// Startup recovery clears a file's ignore mark and then takes its write
-/// lease (Ruling H147, the final re-review's N3). A fill from the previous
+/// lease. A fill from the previous
 /// helper connection can commit `hydrated` in between, and an opener can have
 /// the file ignore-marked, in well under a millisecond; the VM suite widens
 /// that gap to put both inside it.
@@ -1442,7 +1604,7 @@ mod fault {
     pub(super) async fn recovery_after_clear() {}
 }
 
-/// Runs one blocking step of the walk on a blocking thread (Ruling H76/I7):
+/// Runs one blocking step of the walk on a blocking thread:
 /// `openat`, `getxattr`, `fallocate` and `fsync` are all blocking syscalls,
 /// and `sync/helper.rs`'s module doc treats a blocking call left on a tokio
 /// worker as a first-class defect.
@@ -1463,7 +1625,9 @@ mod tests {
     use std::sync::Arc;
     use std::time::{Duration, SystemTime};
 
-    use konedrive_fs::placeholder::{read_state, read_stamp, write_stamp, State};
+    use konedrive_fs::placeholder::{
+        read_progress, read_stamp, read_state, write_progress, write_stamp, Progress, State,
+    };
     use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
     use nix::sys::socket::{
         accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType,
@@ -1579,14 +1743,14 @@ mod tests {
         );
     }
 
-    /// Ruling H78: the empty requirement belongs to *first* registration
+    /// The empty requirement belongs to *first* registration
     /// only. A folder that already carries a valid `user.konedrive.root`
     /// is a root being re-registered, and re-registration is expected to
     /// find it full of exactly the placeholders and hydrated files this
     /// daemon itself put there — refusing it as though it were some other,
     /// foreign non-empty folder would make every restart unregister every
     /// root.
-    /// Ruling H90. H78 waives the empty check for a folder that "already
+    ///. H78 waives the empty check for a folder that "already
     /// carries a root id", and nothing ever removes that xattr again — so if
     /// any string counts, one `setfattr -n user.konedrive.root -v x` makes a
     /// folder full of somebody's existing documents registerable, for good.
@@ -1620,7 +1784,7 @@ mod tests {
     }
 
     /// The other half of H90: a value that is not an id of ours names no
-    /// registration the helper could be holding, so Ruling H70's "never
+    /// registration the helper could be holding, so "never
     /// overwrite an existing id" does not apply to it — a real one is minted
     /// over the top rather than the junk being offered to the helper as this
     /// root's name.
@@ -1644,7 +1808,7 @@ mod tests {
         );
     }
 
-    /// Ruling H93: the probe answers first. `read_root_id` is a `getxattr` in
+    /// The probe answers first. `read_root_id` is a `getxattr` in
     /// the `user.*` namespace — the very thing the probe exists to establish
     /// is available — so asking it first replaces the probe's purpose-built
     /// message with an errno about an attribute name, on a folder it does not
@@ -1702,7 +1866,7 @@ mod tests {
         asked_to(&helper, "RegisterRoot");
     }
 
-    /// Ruling H70. The first attempt fails after the folder has been
+    /// The first attempt fails after the folder has been
     /// stamped; the second must offer the helper the *same* id, because the
     /// helper may already be holding it — a fresh one is refused as a
     /// conflicting registration of the same directory, for good.
@@ -1735,7 +1899,7 @@ mod tests {
         assert_eq!(on_disk.as_deref(), Some(first.as_slice()));
     }
 
-    /// Ruling H78, the actual startup scenario: the daemon registers a
+    /// The actual startup scenario: the daemon registers a
     /// folder, populates it (placeholders, hydrated files — anything, here
     /// just a plain file stands in), then restarts and registers the same
     /// folder again. The second call must not be refused `NotEmpty`.
@@ -1841,7 +2005,7 @@ mod tests {
         );
     }
 
-    /// Ruling H71, spec §4.2: an `online-only` file's mtime is the remote
+    /// An `online-only` file's mtime is the remote
     /// `lastModifiedDateTime`. `fallocate` bumps it to now, so dehydration
     /// has to put it back — otherwise "free up space" silently makes every
     /// file look modified today, which is precisely the signal the Sync
@@ -1890,7 +2054,7 @@ mod tests {
         assert!(blocks_of(&path) > 0, "nothing may be punched without the lease");
     }
 
-    /// Ruling R1. The lease has to still be held at the moment the blocks go
+    /// The lease has to still be held at the moment the blocks go
     /// away *and* until the file has been published `online-only` — an open
     /// that slips in after an early release is not suspended, and reads a
     /// file being emptied under it.
@@ -2079,7 +2243,7 @@ mod tests {
         .expect("the thread running the filtered work must not panic")
     }
 
-    /// Spec §8 step 4: the punch is followed by an `fsync`, and the file is
+    /// Dehydration's step 4: the punch is followed by an `fsync`, and the file is
     /// not called `online-only` until that has succeeded. A punch that is
     /// only in page cache, published as `online-only`, is a file the next
     /// boot can find with its blocks back and its state insisting they are
@@ -2137,7 +2301,7 @@ mod tests {
         }
     }
 
-    /// Ruling R2, spec §8 step 2: `state=dehydrating` is made durable
+    /// Step 2: `state=dehydrating` is made durable
     /// **before** the helper is asked to stop intercepting the file. Without
     /// that barrier a crash in the window can leave the punch durable while
     /// the state is not — an empty file that reads `hydrated` with its ignore
@@ -2185,7 +2349,7 @@ mod tests {
             "the helper was asked to clear the ignore mark although `dehydrating` was never made \
              durable: a crash in that window leaves an empty file reading `hydrated`"
         );
-        // Ruling N2: and the failure of the barrier itself rolls back, so the
+        // And the failure of the barrier itself rolls back, so the
         // file is not left announcing a dehydration that never started.
         assert_eq!(
             read_state(&File::open(&path).unwrap()).unwrap(),
@@ -2353,7 +2517,7 @@ mod tests {
         );
     }
 
-    /// Ruling H69 / spec §8 steps 1–2, in that order. By the time the helper
+    /// / steps 1–2, in that order. By the time the helper
     /// is asked to stop intercepting this file, the file must already say
     /// `dehydrating` — otherwise an open landing in the gap is answered with
     /// a *fresh* ignore mark and an allow, and the punch that follows leaves
@@ -2384,7 +2548,7 @@ mod tests {
         assert_eq!(seen.ino, expected_ino, "the helper was handed a different file");
     }
 
-    /// Ruling H68, the defect that destroyed 300 KiB of real data three runs
+    /// The defect that destroyed 300 KiB of real data three runs
     /// out of three. The file is replaced — an editor's save-and-replace, a
     /// `mv`, anything — at the one moment the daemon is not holding still:
     /// while it waits for the helper's `ClearIgnore` ack. A by-path reopen
@@ -2461,7 +2625,7 @@ mod tests {
         );
     }
 
-    /// Ruling H76. A path is only a request; being inside a registered root
+    /// A path is only a request; being inside a registered root
     /// is the authority to empty something. Neither a path outside the root,
     /// nor a symlink inside it pointing out, nor a root whose registration
     /// has gone may reach the punch.
@@ -2494,7 +2658,7 @@ mod tests {
         assert!(blocks_of(&inside) > 0, "a root that is not registered punched a file");
     }
 
-    // --- Startup recovery (spec §4.4) -------------------------------------
+    // --- Startup recovery -------------------------------------
 
     /// A file in the state a crash left it in: content on disk, the state
     /// xattr saying what was happening to it, and the stamp a finished
@@ -2518,7 +2682,7 @@ mod tests {
         std::fs::read_dir("/proc/self/fd").unwrap().count()
     }
 
-    /// The brief's own scenario, extended over a real tree: a crash
+    /// The original proposal's own scenario, extended over a real tree: a crash
     /// mid-hydration and mid-dehydration each leave a file with content that
     /// must not be trusted, at the top of the root and two levels down.
     /// Both are punched back to `online-only` and lose their stamps; a clean
@@ -2538,7 +2702,7 @@ mod tests {
         let deeper = nested.join("deeper");
         std::fs::create_dir(&deeper).unwrap();
 
-        // One directly in the root: the brief's own test put all four inside
+        // One directly in the root: 's own test put all four inside
         // `sub/`, so nothing pinned that the root's own files are walked.
         interrupted_file(&root.path, "top.bin", State::Hydrating, 8192);
         for (name, state) in [
@@ -2611,7 +2775,7 @@ mod tests {
         );
     }
 
-    /// Ruling H81, spec §4.2, the recovery half of `dehydration_keeps_the_remote_mtime`:
+    /// The recovery half of `dehydration_keeps_the_remote_mtime`:
     /// `fallocate` moves the mtime to now. A whole tree of files that
     /// recovery touched then looks locally modified — and every one of them
     /// is a hole full of zeros, which is an upload-over-remote hazard the
@@ -2641,7 +2805,86 @@ mod tests {
         );
     }
 
-    /// Ruling H85, the recovery half of
+    /// A `hydrating` file whose download left a checkpoint goes back
+    /// to `online-only` with the checkpointed prefix and the checkpoint kept;
+    /// the next open resumes. One without a checkpoint is reset as before.
+    #[tokio::test]
+    async fn recovery_keeps_a_checkpointed_prefix_and_empties_the_rest() {
+        let sockets = tempfile::tempdir().unwrap();
+        let socket_path = sockets.path().join("helper.sock");
+        let _helper = fake_helper(socket_path.clone(), 0, || {});
+        let link = connected(&socket_path).await;
+        let dir = tempfile::tempdir().unwrap();
+        let root = test_root(dir.path());
+
+        let kept = interrupted_file(&root.path, "kept.bin", State::Hydrating, 1 << 20);
+        write_progress(&open_rw(&kept), &Progress { ctag: "c1".into(), bytes: 256 * 1024 }).unwrap();
+        let reset = interrupted_file(&root.path, "reset.bin", State::Hydrating, 1 << 20);
+        let mtime_before = std::fs::metadata(&kept).unwrap().modified().unwrap();
+
+        let report = recover(&link, &root).await.unwrap();
+        assert_eq!(report.reset, 2);
+
+        let file = File::open(&kept).unwrap();
+        assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly));
+        assert_eq!(read_progress(&file).unwrap(), Some(Progress { ctag: "c1".into(), bytes: 256 * 1024 }));
+        assert_eq!(read_stamp(&file).unwrap(), None);
+        let mut content = Vec::new();
+        std::io::Read::read_to_end(&mut File::open(&kept).unwrap(), &mut content).unwrap();
+        assert!(content[..256 * 1024].iter().all(|b| *b == 3), "the prefix is kept");
+        assert!(content[256 * 1024..].iter().all(|b| *b == 0), "the rest is punched");
+        assert_eq!(std::fs::metadata(&kept).unwrap().modified().unwrap(), mtime_before);
+
+        assert_eq!(state_of(&reset), Some(State::OnlineOnly));
+        assert!(blocks_of(&reset) < 64);
+        assert_eq!(read_progress(&File::open(&reset).unwrap()).unwrap(), None);
+    }
+
+    /// Under the read-only lock every file is 0444; recovery must
+    /// still reset one, and leave it 0444.
+    #[tokio::test]
+    async fn recovery_resets_a_locked_file_and_leaves_it_locked() {
+        use std::os::unix::fs::PermissionsExt;
+        let sockets = tempfile::tempdir().unwrap();
+        let socket_path = sockets.path().join("helper.sock");
+        let _helper = fake_helper(socket_path.clone(), 0, || {});
+        let link = connected(&socket_path).await;
+        let dir = tempfile::tempdir().unwrap();
+        let root = test_root(dir.path());
+        let path = interrupted_file(&root.path, "locked.bin", State::Dehydrating, 8192);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+
+        let report = recover(&link, &root).await.unwrap();
+
+        assert_eq!((report.reset, report.skipped), (1, 0), "{report:?}");
+        assert_eq!(state_of(&path), Some(State::OnlineOnly));
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o444);
+    }
+
+    /// A file that is not ours is never made writable, not even for a moment,
+    /// just because recovery walked past it.
+    #[tokio::test]
+    async fn recovery_does_not_touch_the_mode_of_a_file_that_is_not_ours() {
+        use std::os::unix::fs::MetadataExt;
+        let sockets = tempfile::tempdir().unwrap();
+        let socket_path = sockets.path().join("helper.sock");
+        let _helper = fake_helper(socket_path.clone(), 0, || {});
+        let link = connected(&socket_path).await;
+        let dir = tempfile::tempdir().unwrap();
+        let root = test_root(dir.path());
+        let theirs = root.path.join("theirs.txt");
+        std::fs::write(&theirs, b"x").unwrap();
+        std::fs::set_permissions(&theirs, std::os::unix::fs::PermissionsExt::from_mode(0o444)).unwrap();
+        let ctime = |path: &Path| {
+            let meta = std::fs::metadata(path).unwrap();
+            (meta.ctime(), meta.ctime_nsec())
+        };
+        let ctime_before = ctime(&theirs);
+        recover(&link, &root).await.unwrap();
+        assert_eq!(ctime(&theirs), ctime_before, "a chmod changes the ctime");
+    }
+
+    /// The recovery half of
     /// `dehydrate_refuses_anything_that_is_not_a_file_inside_the_root`: a
     /// root whose registration has gone is not a root, and nothing inside it
     /// may be emptied on the strength of a path that used to be one.
@@ -2669,7 +2912,7 @@ mod tests {
         assert_eq!(recover(&link, &root).await.unwrap().reset, 1);
     }
 
-    /// Ruling H85 at the level of one name: what is opened is decided by the
+    /// at the level of one name: what is opened is decided by the
     /// `fstat` of the descriptor, not by the `d_type` the listing offered.
     /// A symlink is refused by `O_NOFOLLOW` before it resolves anywhere, a
     /// FIFO and a directory are never handed back as files, and an entry on
@@ -2724,7 +2967,7 @@ mod tests {
         }
     }
 
-    /// Ruling H68, the recovery twin of
+    /// The recovery twin of
     /// `dehydrate_punches_the_file_it_checked_even_if_the_name_is_taken_over`
     /// — the exact defect that destroyed 300 KiB of real data three runs out
     /// of three, in the one place that would reintroduce it invisibly. The
@@ -2778,7 +3021,7 @@ mod tests {
         assert_eq!(state_of(&original), Some(State::OnlineOnly));
     }
 
-    /// Ruling H85, reproduced: `sub/` is replaced by a symlink to a
+    /// Reproduced: `sub/` is replaced by a symlink to a
     /// directory outside the root while recovery waits for a `ClearIgnore`
     /// ack. A walk that re-resolves subdirectory paths follows it and empties
     /// a file that was never inside any sync root —
@@ -2826,7 +3069,7 @@ mod tests {
         );
     }
 
-    /// Ruling H87. `list_dir(dir).await?` and `entry?` used to propagate out
+    /// `list_dir(dir).await?` and `entry?` used to propagate out
     /// of `recover`, so one mode-`000` subdirectory returned `Err(EACCES)`
     /// for the whole root: the count of what had already been punched was
     /// lost and no sibling subtree was ever visited. A directory removed
@@ -2895,7 +3138,7 @@ mod tests {
         assert_eq!(report, RecoveryReport { scanned: 0, reset: 0, failed: 0, skipped: 1, busy: 0, deferred: 0 });
     }
 
-    /// Ruling H86's other half. A file that cannot be opened was `Err(_) =>
+    /// other half. A file that cannot be opened was `Err(_) =>
     /// continue`: no error, no log, no count — which is how 991 files stayed
     /// `hydrating` with untrusted content while the report said
     /// `reset: 1009, scanned: 1009`. Whatever the reason (permissions,
@@ -2924,7 +3167,7 @@ mod tests {
         assert_eq!(state_of(&locked), Some(State::Hydrating));
     }
 
-    /// Ruling H86: open, decide, punch, close — one file at a time. The
+    /// Open, decide, punch, close — one file at a time. The
     /// version this replaces opened every regular file in a directory
     /// `O_RDWR`, whatever its state, and held all of those descriptors until
     /// the directory was finished; with `RLIMIT_NOFILE` at systemd's default
@@ -3029,7 +3272,7 @@ mod tests {
         );
     }
 
-    /// Ruling H89. `punch_clean_file` takes a write lease before it empties
+    /// `punch_clean_file` takes a write lease before it empties
     /// anything, so that an application opening the file mid-punch is
     /// suspended by the kernel instead of reading blocks as they go away.
     /// The window is wider at startup, not narrower: the helper's
@@ -3071,7 +3314,36 @@ mod tests {
         assert_eq!(state_of(&path), Some(State::OnlineOnly));
     }
 
-    /// Ruling H147 (the final re-review's N3). After a reconnect the previous
+    /// An open file of the inode that is on its way out — here one closed
+    /// 30 ms after the helper is asked to clear the mark, so it is still
+    /// there when recovery first asks for the lease — does not make the file
+    /// `busy`: the refusal is retried briefly (`lease_retrying_briefly`). A
+    /// process being spawned holds exactly such a copy of the walk's own
+    /// read-only descriptor until its `exec`.
+    #[tokio::test]
+    async fn recovery_waits_out_an_open_that_is_about_to_close() {
+        let sockets = tempfile::tempdir().unwrap();
+        let socket_path = sockets.path().join("helper.sock");
+        let dir = tempfile::tempdir().unwrap();
+        let root = test_root(dir.path());
+        let path = interrupted_file(&root.path, "x.bin", State::Hydrating, 8192);
+        let opened = path.clone();
+        let _helper = fake_helper(socket_path.clone(), 0, move || {
+            let held = File::open(&opened).unwrap();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                drop(held);
+            });
+        });
+        let link = connected(&socket_path).await;
+
+        let report = recover(&link, &root).await.unwrap();
+
+        assert_eq!((report.reset, report.busy), (1, 0), "{report:?}");
+        assert_eq!(state_of(&path), Some(State::OnlineOnly));
+    }
+
+    /// After a reconnect the previous
     /// connection's fills keep running while the new connection's recovery
     /// walks, and recovery read a file's state only when it opened it. A fill
     /// that commits `hydrated` — and closes its descriptor — between
@@ -3112,12 +3384,12 @@ mod tests {
         assert_eq!(report.reset, 0, "{report:?}");
     }
 
-    /// Ruling H147, the lock: every fill and every free-up of this daemon
+    /// The lock: every fill and every free-up of this daemon
     /// holds the per-inode lock for as long as it works on the file, and a
     /// fill from the previous connection is still one of them. Recovery must
     /// not touch a file whose lock is held — it is being filled or freed up
     /// right now — and must not wait for it either, or a reconnect would wait
-    /// for a download of any length (Ruling H141). The fill here has already
+    /// for a download of any length. The fill here has already
     /// closed its descriptor, so only the lock stands between it and the
     /// punch.
     #[tokio::test]
@@ -3220,7 +3492,7 @@ mod tests {
         );
     }
 
-    /// Ruling H88/M1: a refusal has to keep its kind all the way out of
+    /// A refusal has to keep its kind all the way out of
     /// `reset_interrupted`. `Result<(), String>` flattened `Refused`,
     /// `Timeout`, `NotRunning` and `ENOSPC` into one text field, and those
     /// are four different situations with four different answers — retry
@@ -3243,7 +3515,7 @@ mod tests {
         );
     }
 
-    /// Ruling H81/I6, the recovery half of
+    /// The recovery half of
     /// `the_punch_is_made_durable_before_the_file_is_called_online_only`. A
     /// punch that is only in page cache, published as `online-only`, is a
     /// file the next boot can find with its blocks back and its state
@@ -3281,7 +3553,7 @@ mod tests {
         );
     }
 
-    /// The other failure the brief calls out: a `dehydrating` file whose
+    /// The other failure calls out: a `dehydrating` file whose
     /// `ClearIgnore` succeeds and whose punch then fails. Nothing may be
     /// published, nothing may be counted as reset, and the file waits for
     /// the next start — `fallocate` failing is `ENOSPC` on a filesystem with
@@ -3432,7 +3704,7 @@ mod tests {
         );
     }
 
-    /// Ruling H85's `st_dev` check does its job — [`open_entry`] never opens
+    /// `st_dev` check does its job — [`open_entry`] never opens
     /// across it — but until [`Entry::OtherFilesystem`] existed, the whole
     /// excluded subtree vanished into the same silent `Entry::Elsewhere` a
     /// symlink gets: `skipped == 0` while a real subtree went unrecovered,

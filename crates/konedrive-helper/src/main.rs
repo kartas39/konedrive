@@ -32,7 +32,7 @@ use outbox::{Outbox, Outgoing};
 
 /// Takes a shared lock, and keeps going when a previous holder panicked.
 ///
-/// The helper now survives a panic in a worker (Ruling H37): the worker is
+/// The helper now survives a panic in a worker: the worker is
 /// caught, its opener is answered `EIO`, and the pool stays at strength. That
 /// is only true if the *next* thread to want a lock that the panicking one
 /// held can still have it. `Mutex::lock().unwrap()` would panic instead, and
@@ -55,7 +55,7 @@ const DAEMON_WAIT: Duration = Duration::from_secs(30);
 /// be waiting for one.
 ///
 /// Both numbers are **provisional**: they were chosen to be obviously enough
-/// for interactive use and obviously bounded, not measured. Task 9's burst
+/// for interactive use and obviously bounded, not measured. burst
 /// scenario (several thousand concurrent opens) is what should settle them —
 /// it measures thread count, memory and whether any opener is lost, which is
 /// exactly the evidence these two constants need and which no unit test on the
@@ -64,7 +64,7 @@ const EVENT_WORKERS: usize = 64;
 const EVENT_QUEUE_DEPTH: usize = 1024;
 
 /// How many workers may be parked waiting for **one uid's** daemon that has
-/// not connected yet (Rulings H39 and H59).
+/// not connected yet.
 ///
 /// `wait_for_daemon` is the one place a worker sleeps for a long time, so it
 /// is the one place an unprivileged caller can aim at the pool: opening
@@ -95,7 +95,7 @@ const EVENT_QUEUE_DEPTH: usize = 1024;
 const MAX_DAEMON_WAITERS: usize = 8;
 
 /// The bound across **all** uids waiting at once, however it is spread
-/// across them (the follow-up to Ruling H59). Checked before the per-uid
+/// across them (the follow-up to). Checked before the per-uid
 /// cap in [`WaiterSlot::take`], so a caller cannot get around it by
 /// spreading the same attack across several uids it happens to control,
 /// and a machine with many legitimate uids whose daemons are briefly down
@@ -103,10 +103,10 @@ const MAX_DAEMON_WAITERS: usize = 8;
 ///
 /// Provisional, like [`MAX_DAEMON_WAITERS`] and [`EVENT_WORKERS`]: chosen
 /// to be obviously bounded relative to the 64-worker pool, not measured.
-/// Task 9's burst scenario is what should settle it.
+/// burst scenario is what should settle it.
 const GLOBAL_MAX_DAEMON_WAITERS: usize = 32;
 
-/// How many live connections one uid may hold (the final review's m4).
+/// How many live connections one uid may hold.
 ///
 /// Each costs the helper two threads and about three descriptors, and the
 /// socket is 0666: without a bound, any local user could open connections
@@ -124,7 +124,7 @@ const MAX_CONNECTIONS_PER_UID: usize = 16;
 /// anybody needed.
 const REPORT_EVERY: Duration = Duration::from_secs(5);
 
-/// How often the refusals' pending counts are looked at (Ruling H127), so
+/// How often the refusals' pending counts are looked at, so
 /// that the count for the last interval of a burst is written a moment after
 /// the interval ends, not whenever — if ever — the next refusal happens.
 const FLUSH_EVERY: Duration = Duration::from_secs(1);
@@ -158,9 +158,9 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 /// Deliberate panics, for the two unwind paths nothing input-reachable can
 /// exercise any more, and one deliberate stall, for a race window too narrow
 /// to hit by chance — compiled in **only** with the `fault-injection` cargo
-/// feature (Ruling H121).
+/// feature.
 ///
-/// Ruling H37 is about what happens *after* a panic: a worker that panicked
+/// is about what happens *after* a panic: a worker that panicked
 /// answers its opener `EIO` and the pool stays at strength, and a connection
 /// whose request loop panicked still runs its `Disconnect` guard, so its
 /// suspended openers are denied instead of being left in the kernel forever.
@@ -199,10 +199,9 @@ mod fault {
     }
 
     /// Stall a worker between reading `hydrated` and placing the ignore
-    /// mark, as a preempted thread would (the final review's I1, Ruling
-    /// H139). The natural window is well under 100 µs; this makes it as
-    /// wide as the VM suite needs to put a dehydration's `dehydrating` and
-    /// `ClearIgnore` inside it.
+    /// mark, as a preempted thread would. The natural window is well under
+    /// 100 µs; this makes it as wide as the VM suite needs to put a
+    /// dehydration's `dehydrating` and `ClearIgnore` inside it.
     pub fn delay_before_ignore_mark() {
         if let Some(ms) = std::env::var_os("KONEDRIVE_FAULT_DELAY_IGNORE_MS")
             .and_then(|v| v.to_str().and_then(|s| s.parse::<u64>().ok()))
@@ -230,20 +229,20 @@ mod fault {
 struct Daemon {
     /// Distinguishes this connection from any other, including a later one
     /// from the same uid. Everything this connection is allowed to touch is
-    /// keyed on it (Ruling H14).
+    /// keyed on it.
     conn: u64,
     uid: u32,
     /// From `SO_PEERCRED`, so kernel-supplied and unforgeable.
     pid: i32,
     /// The send half: a bounded queue drained by this connection's own
-    /// writer thread (Ruling H33). Nothing that holds a worker thread ever
+    /// writer thread. Nothing that holds a worker thread ever
     /// blocks on the socket — queueing is `try_send`, and a request never
     /// finds its room taken while the connection lives, because that room is
-    /// its credit (Rulings H124 and H126).
+    /// its credit.
     outbox: Arc<Outbox>,
 }
 
-/// Every live connection of every uid, oldest first (Ruling H125).
+/// Every live connection of every uid, oldest first.
 ///
 /// One entry per uid used to be enough to say where a uid's hydrations go,
 /// and it was not enough to say what happens when that entry goes away. A
@@ -255,8 +254,8 @@ struct Daemon {
 /// restarted. No race was needed; connect, disconnect.
 ///
 /// So every live connection is kept, in accept order ([`serve`] numbers them,
-/// Ruling H120), and the **top** — the newest — is the one that matters: a
-/// uid's hydrations go to it and only its pid is exempt (Ruling H15). Any
+///), and the **top** — the newest — is the one that matters: a
+/// uid's hydrations go to it and only its pid is exempt. Any
 /// connection leaving is removed wherever it sits, and whatever is newest
 /// among the rest is the top again. That serves both real cases: a daemon that
 /// restarts connects anew and takes over at once, and a transient connection
@@ -278,7 +277,7 @@ impl Registry {
     }
 
     /// Adds a connection in accept order, whatever order the connections'
-    /// threads get here in (Ruling H120). Returns whether it is now the top:
+    /// threads get here in. Returns whether it is now the top:
     /// an older connection that registers late goes underneath the newer one
     /// instead of taking over from it.
     fn register(&mut self, daemon: Daemon) -> bool {
@@ -289,7 +288,7 @@ impl Registry {
     }
 
     /// Whether `pid` is the process behind `uid`'s top connection — the one
-    /// pid Ruling H15 exempts for that uid's files.
+    /// pid exempts for that uid's files.
     fn is_top_pid(&self, uid: u32, pid: i32) -> bool {
         self.top(uid).is_some_and(|daemon| daemon.pid == pid)
     }
@@ -309,29 +308,29 @@ struct Shared {
     marks: marks::Marks,
     roots: Mutex<roots::Roots>,
     jobs: Mutex<jobs::Jobs>,
-    /// Every live connection, by uid (Ruling H125).
+    /// Every live connection, by uid.
     daemons: Mutex<Registry>,
     /// Signalled whenever a daemon registers, so an intercepted open that
     /// arrives before the daemon does wakes the moment it connects instead of
     /// polling for it.
     daemon_arrived: Condvar,
-    /// Roots whose startup walk could not cover everything (Ruling H19). Kept
+    /// Roots whose startup walk could not cover everything. Kept
     /// so the condition is visible rather than only logged; nothing consumes
     /// it yet.
     degraded_roots: Mutex<HashSet<String>>,
-    /// The throttled log of refused opens (Ruling H127).
+    /// The throttled log of refused opens.
     refusals: Refusals,
-    /// How many workers are currently parked in `wait_for_daemon`, per uid
-    /// (Rulings H39 and H59). A uid with nobody waiting holds no entry, so
+    /// How many workers are currently parked in `wait_for_daemon`, per uid.
+    /// A uid with nobody waiting holds no entry, so
     /// the map is the size of the set of uids currently waiting and no
     /// larger.
     daemon_waiters: Mutex<HashMap<u32, usize>>,
-    /// Live connections per uid (the final review's m4); see
+    /// Live connections per uid; see
     /// [`MAX_CONNECTIONS_PER_UID`].
     connections: Arc<Mutex<HashMap<u32, usize>>>,
     /// Every root unregistration's walk, as it begins and as it ends: what
     /// `mark_while_hydrated` looks at to leave no ignore mark behind a walk
-    /// that has already passed (Ruling H138's second guard).
+    /// that has already passed (second guard).
     unregistrations: Unregistrations,
 }
 
@@ -528,7 +527,7 @@ impl Throttle {
 }
 
 /// The refusals of an intercepted open that a burst can produce by the
-/// thousand (Ruling H127). Each is a genuinely exhausted bound or a missing
+/// thousand. Each is a genuinely exhausted bound or a missing
 /// daemon, and each was one `warn!` per open — 2400 to 2700 lines per burst
 /// in the VM suite, burying the line that said why.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -552,11 +551,11 @@ enum Refusal {
     /// The group was readable and the first read found nothing: the kernel
     /// could not create the descriptor of the event at the head of the
     /// queue and answered it itself (`EPERM`) — a leased file, most likely
-    /// (Ruling H140) — or its opener was killed before it was read.
+    /// — or its opener was killed before it was read.
     Unopenable,
     /// `read()` of the group failed with the errno of the kernel's own open
-    /// of one event's descriptor, which it then denied `EPERM` (Ruling
-    /// H145): an open through a read-only mount (`EROFS`), of an executable
+    /// of one event's descriptor, which it then denied `EPERM`: an open
+    /// through a read-only mount (`EROFS`), of an executable
     /// that is running (`ETXTBSY`), and whatever else `dentry_open` can
     /// refuse `O_RDWR` for.
     EventFdFailed,
@@ -670,7 +669,7 @@ fn main() -> anyhow::Result<()> {
     });
     // The last count of a burst of refusals is written by this thread, a
     // moment after its interval ends, since no further refusal may come to
-    // write it (Ruling H127).
+    // write it.
     let flushing = Arc::clone(&shared);
     std::thread::Builder::new().name("konedrive-log".into()).spawn(move || loop {
         std::thread::sleep(FLUSH_EVERY);
@@ -678,11 +677,11 @@ fn main() -> anyhow::Result<()> {
     })?;
 
     // Everything that can fail and end the process comes before the first
-    // mark (the final review's m3). Marking first and then failing to build
+    // mark. Marking first and then failing to build
     // the pool or bind the socket exited with the group open over marked
     // trees, and every open suspended in the meantime was released by the
-    // kernel as allowed — onto placeholders nobody had filled (§6.5, Ruling
-    // H128). The workers exist before anything can connect, so that the
+    // kernel as allowed — onto placeholders nobody had filled. The workers
+    // exist before anything can connect, so that the
     // first daemon to arrive never finds the event loop with nowhere to hand
     // work; nothing is accepted before the walk is done.
     let pool = pool::Pool::new(Arc::clone(&shared), EVENT_WORKERS, EVENT_QUEUE_DEPTH)?;
@@ -703,7 +702,7 @@ fn main() -> anyhow::Result<()> {
     let mut covered: Vec<roots::Root> = Vec::new();
     for root in &registered {
         if let Some(conflict) = overlap_with(&covered, root) {
-            // Ruling H34: the checks that ran at registration are re-run
+            // The checks that ran at registration are re-run
             // here, because the stored path is only a hint and what it leads
             // to can have changed since. Two roots that now overlap cannot
             // both be marked — an event in the shared part would belong to
@@ -748,7 +747,7 @@ fn load_roots() -> roots::Roots {
 
 /// Opens an absolute path one component at a time, from a held `/`
 /// descriptor, refusing to resolve through anything that is not a real
-/// directory entry (Ruling H34, spec §6.3).
+/// directory entry.
 ///
 /// `RESOLVE_BENEATH` cannot be handed a multi-component absolute path in one
 /// call, so the descent is explicit: each `openat2` resolves exactly one name
@@ -761,7 +760,7 @@ fn load_roots() -> roots::Roots {
 ///
 /// # Why `RESOLVE_NO_XDEV` is not here, and where it is instead
 ///
-/// Spec §6.3 lists all four flags, and `marks::walk_and_mark` uses all four —
+/// All four flags belong together, and `marks::walk_and_mark` uses all four —
 /// correctly, because below the root a mount point is a boundary the walk
 /// must not cross. Getting *to* the root is the opposite case: a sync root
 /// normally lives on a filesystem of its own. Measured on this host,
@@ -836,9 +835,10 @@ fn open_root(root: &roots::Root) -> io::Result<File> {
     Ok(dir)
 }
 
-/// Whether `root` overlaps anything already covered this startup (Ruling
-/// H34): the nesting rule §6.2 applies at every boot, not only at
-/// registration, because what a stored path leads to can change in between.
+/// Whether `root` overlaps anything already covered this startup: the
+/// nesting rule (`docs/design/hydration.md` §11) applies at every boot, not
+/// only at registration, because what a stored path leads to can change in
+/// between.
 fn overlap_with(covered: &[roots::Root], root: &roots::Root) -> Option<String> {
     let mut seen = roots::Roots::default();
     for other in covered {
@@ -860,12 +860,12 @@ fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
             return false;
         }
     };
-    // Ruling H34: the filesystem check is re-run too — a root can have been
+    // The filesystem check is re-run too — a root can have been
     // moved onto a filesystem that cannot host placeholders since it was
     // registered. Only the `fstatfs` half: the feature probe writes a file,
     // and writing into every user's sync folder on every boot is both
     // unnecessary (it was probed at registration) and, once this root is
-    // marked, exactly the self-interception hazard Ruling H40 is about.
+    // marked, exactly the self-interception hazard is about.
     if let Err(errno) = check_filesystem_type(&dir, &root.path) {
         tracing::error!(
             "root {} ({}) is on a filesystem konedrive cannot use (errno {errno}); not covering it",
@@ -879,7 +879,7 @@ fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
     true
 }
 
-/// Ruling H19: one unreadable subdirectory must never abort a root's walk, and
+/// One unreadable subdirectory must never abort a root's walk, and
 /// must never pass in silence either. Everything reachable is marked, every
 /// failure is named, and the root is flagged degraded.
 fn record_walk(shared: &Shared, root: &roots::Root, report: marks::WalkReport) {
@@ -977,7 +977,7 @@ fn take_fd(event: nix::sys::fanotify::FanotifyEvent) -> Option<OwnedFd> {
 enum ReadFailure {
     /// Everything queued has been read — or the event at the head of the
     /// queue could not be handed over and the kernel answered it itself
-    /// (Ruling H140) — go back to `poll()`, which reports whatever is still
+    /// — go back to `poll()`, which reports whatever is still
     /// queued at once.
     Drained,
     /// A signal interrupted the read; read again at once.
@@ -986,13 +986,13 @@ enum ReadFailure {
     Exhausted,
     /// The kernel could not open one event's descriptor, answered that
     /// event `FAN_DENY` itself, and handed its errno back instead of it
-    /// (Ruling H145). Read on at once: the event is gone from the queue.
+    ///. Read on at once: the event is gone from the queue.
     EventRefused,
     /// The group's own descriptor, or the buffer it is read into, is broken.
     Fatal,
 }
 
-/// Ruling H57. **The helper exiting is worse than the helper denying.**
+/// **The helper exiting is worse than the helper denying.**
 ///
 /// `fanotify(7)` is explicit that closing the group's descriptor sets every
 /// outstanding permission event to *allowed*, so a helper that dies hands
@@ -1009,7 +1009,7 @@ enum ReadFailure {
 /// copy out, so the opens caught in the window are answered rather than left
 /// hanging; the loop's job is simply to still be there afterwards.
 ///
-/// # Every other errno is one event's (Ruling H145)
+/// # Every other errno is one event's
 ///
 /// The kernel creates each permission event's descriptor inside our `read()`
 /// — `dentry_open()` with the group's `O_RDWR`, against the **opener's**
@@ -1055,7 +1055,7 @@ fn classify_read_failure(e: Errno) -> ReadFailure {
 /// wait can take up to `DAEMON_WAIT`, and blocking here would stall every
 /// other pending open in the system for that long.
 ///
-/// Nothing here waits on anything but the group (Ruling H140): the event
+/// Nothing here waits on anything but the group: the event
 /// descriptors the kernel creates inside `read_events()` are `O_NONBLOCK`, so
 /// a file somebody holds a lease on cannot stop the loop — see `Marks::new`.
 ///
@@ -1096,7 +1096,7 @@ fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Result<()> {
                     events
                 }
                 Err(e) => match classify_read_failure(e) {
-                    // Ruling H140. The event descriptors are `O_NONBLOCK`, so
+                    // The event descriptors are `O_NONBLOCK`, so
                     // an event whose file is leased cannot be handed over:
                     // the kernel answers it `FAN_DENY` itself and this read
                     // reports `EAGAIN`, as it does for an empty queue. The
@@ -1128,7 +1128,7 @@ fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Result<()> {
                         std::thread::sleep(EXHAUSTION_BACKOFF);
                         continue;
                     }
-                    // Ruling H145: the kernel has denied that one event
+                    // The kernel has denied that one event
                     // (`EPERM` at its opener) and taken it off the queue;
                     // whatever is behind it is read next. Its own line, not
                     // also an unopenable one.
@@ -1184,7 +1184,7 @@ fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Result<()> {
 
 /// Takes the event fd out of the slot the worker holds it in.
 ///
-/// The slot exists for Ruling H37. The worker keeps ownership of the
+/// The slot exists for. The worker keeps ownership of the
 /// descriptor *outside* the `catch_unwind` boundary and lends this function a
 /// `&mut Option<OwnedFd>`, so a panic anywhere below does not drop the fd
 /// while unwinding — the worker still has it and can deny `EIO` with the
@@ -1205,7 +1205,7 @@ fn claim(slot: &mut Option<OwnedFd>) -> OwnedFd {
 /// `since` is the count of root unregistrations when the event was read (see
 /// [`mark_while_hydrated`]).
 ///
-/// # No duplicate outlives the answer (the final review's m1)
+/// # No duplicate outlives the answer
 ///
 /// The file is inspected through duplicates of the event fd — kernel fact 1
 /// rules out opening it ourselves, but not `dup()`ing one we did not open —
@@ -1232,13 +1232,13 @@ fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pid: i32, sin
     let dev = meta.dev();
     let ino = meta.ino();
     // Compiled in only with `fault-injection`, armed only by the VM suite
-    // (Ruling H121); an empty function otherwise. Placed after the
+    //; an empty function otherwise. Placed after the
     // descriptor has been taken out of `slot`'s reach and before any
-    // decision, so the unwind it causes is exactly the one Ruling H37
+    // decision, so the unwind it causes is exactly the one
     // describes: the worker still owns the event fd and can answer `EIO`.
     fault::panic_on_size(meta.len());
 
-    // Rulings H6 and H15. The owning daemon's own opens bypass everything
+    // The owning daemon's own opens bypass everything
     // else: it must be able to re-open files it left `hydrating` or
     // `dehydrating` during startup recovery, and treating that open like any
     // other would mean asking the very daemon that is blocked on it to
@@ -1251,8 +1251,8 @@ fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pid: i32, sin
     // being opened belongs to that same user". A process with no root gets
     // nothing, and no daemon is ever exempted from another user's files.
     //
-    // Dehydration (spec §8, `konedrived/src/sync/root.rs::dehydrate`) used
-    // to depend on this, and deliberately no longer does (Ruling H68): it
+    // Dehydration (`konedrived/src/sync/root.rs::dehydrate`) used
+    // to depend on this, and deliberately no longer does: it
     // opened the file again, by path, after clearing the ignore mark, and
     // that open was let through only because it hit this exemption first.
     // It now does the whole sequence on the one descriptor it opened before
@@ -1270,7 +1270,7 @@ fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pid: i32, sin
     // `hydrated` any more.
     loop {
         match state {
-            // Ruling H5: the ignore mark is added only to a file whose state
+            // The ignore mark is added only to a file whose state
             // is `hydrated` — its content is actually present. A file with no
             // konedrive xattrs at all is not managed by us and is let through,
             // but it must NOT get an ignore mark, because a placeholder under
@@ -1290,7 +1290,7 @@ fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pid: i32, sin
             // far; this rule covers a build by anyone it does not.
             //
             // And the state is read once more *after* the mark is placed
-            // (Ruling H139): see `mark_while_hydrated`.
+            //: see `mark_while_hydrated`.
             Ok(Some(State::Hydrated)) => {
                 // `fault-injection` builds only: the VM suite's I1 scenario.
                 fault::delay_before_ignore_mark();
@@ -1350,11 +1350,11 @@ fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pid: i32, sin
 /// the file reads now, when that is not `hydrated`; the mark is off again by
 /// then. Every place the helper marks a file goes through here.
 ///
-/// # Why after (Ruling H139, the final review's I1)
+/// # Why after
 ///
 /// "Read `hydrated`, then mark" is two steps, and a dehydration can fall
 /// between them: it makes `dehydrating` durable and then has the helper
-/// `ClearIgnore` (spec §8 step 2). A mark placed after that `ClearIgnore`,
+/// `ClearIgnore` (step 2). A mark placed after that `ClearIgnore`,
 /// on the strength of a read made before the `dehydrating`, was outlived by
 /// the punch: measured with a 1.5 s stall injected between the two steps,
 /// the next reader got 65 536 zero bytes after no fetch, on Btrfs, ext4 and
@@ -1364,14 +1364,14 @@ fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pid: i32, sin
 /// remove. So a mark is left only on a file that read `hydrated` at a moment
 /// the mark was already in place.
 ///
-/// # Why "no unregistration since" (Ruling H138's second guard)
+/// # Why "no unregistration since" (second guard)
 ///
 /// A root's unregistration walk takes the ignore mark off every file it
 /// passes, and a hydration still in flight then — or an open read off the
 /// queue before its directory was unmarked — used to mark its file after
 /// the walk had gone by. None of that can empty a marked file any more: the
 /// daemon's local rule has every punch clear the mark first, or not punch
-/// (Ruling H146). This guard, like the registration walk's clearing
+///. This guard, like the registration walk's clearing
 /// (`marks::walk_and_mark`), is defence in depth: a mark it withholds is one
 /// nothing has to clear later. `unregistrations` is bumped
 /// before an unregistration's walk begins and again after it ends. Whatever
@@ -1407,7 +1407,7 @@ fn mark_while_hydrated(
         // through here, and a dehydration of it cannot take its lease while
         // this open's descriptor is held; a stale mark on a `hydrated` file
         // is harmless while the file holds its content, and the daemon clears
-        // it before it empties the file (Ruling H146).
+        // it before it empties the file.
         tracing::error!(
             "cannot take the ignore mark off dev={dev} ino={ino} again ({e}); it reads {now:?}"
         );
@@ -1436,17 +1436,17 @@ fn hydrate(
 ) {
     // The descriptor stays in `slot` across the wait — the step here that
     // takes locks and sleeps, and could therefore panic on somebody else's
-    // bug — so Ruling H37's guarantee still holds over it.
+    // bug — so guarantee still holds over it.
     let daemon = match wait_for_daemon(shared, owner_uid) {
         Ok(daemon) => daemon,
         Err(why) => {
-            // Ruling H59: one message per refusal. All three used to print
+            // One message per refusal. All three used to print
             // "no daemon for uid X after 30s", which was caught claiming a
             // thirty-second wait for an open that was answered in 185 µs — a
             // log line that sends whoever reads it looking for a daemon that
             // was never going to be asked for.
             //
-            // Throttled (Ruling H127): each of the three can come thousands
+            // Throttled: each of the three can come thousands
             // at a time, and the first line of an interval keeps the uid.
             match why {
                 NoDaemon::NoRoot => shared.refusals.report(Refusal::NoRoot, || {
@@ -1483,7 +1483,7 @@ fn hydrate(
     let gone = matches!(enrollment.outcome, Enrolled::ConnectionGone);
     for stranded in enrollment.evicted {
         if gone {
-            // Ruling H38: this connection's cleanup already ran, so nothing
+            // This connection's cleanup already ran, so nothing
             // would ever answer a job created on it.
             tracing::warn!("the daemon connection went away while this open was being handled");
         } else {
@@ -1496,7 +1496,7 @@ fn hydrate(
     }
     // `New` comes with its request to send. `Queued` has none yet: the
     // opener is enrolled and stays suspended until a returning credit sends
-    // it (Ruling H124). `Existing` asked for nothing, and `ConnectionGone`
+    // it. `Existing` asked for nothing, and `ConnectionGone`
     // was answered above.
     dispatch(shared, &daemon.outbox, owner, enrollment.dispatch);
 }
@@ -1505,9 +1505,9 @@ fn hydrate(
 /// cannot be sent, answers its openers and passes the credit on, for as long
 /// as the next one cannot be sent either.
 ///
-/// Queued, never written here (Ruling H33): a worker thread must not be able
+/// Queued, never written here: a worker thread must not be able
 /// to block on a socket the peer controls. The request's room in the outbox
-/// is its credit (Ruling H126), so a refusal is not a slow daemon: the
+/// is its credit, so a refusal is not a slow daemon: the
 /// connection is over — `EIO`, as its disconnect guard answers everything
 /// else it had — or a peer that answered a request before it was sent
 /// returned a credit early, and its own openers get `EAGAIN`. A descriptor
@@ -1543,11 +1543,11 @@ fn dispatch(shared: &Shared, outbox: &Outbox, owner: Owner, mut next: Option<job
     }
 }
 
-/// Ruling H15's narrow exemption. `SO_PEERCRED` supplies the pid, so the
+/// narrow exemption. `SO_PEERCRED` supplies the pid, so the
 /// caller cannot claim to be a daemon it is not; owning a registered root is
 /// what separates the user's daemon from any process that merely connected.
 ///
-/// Only the file owner's **top** connection is exempt (Ruling H125): the one
+/// Only the file owner's **top** connection is exempt: the one
 /// its hydrations go to, which is the daemon in every case but a transient
 /// same-uid connection sitting on top of it — and that one is exempt only for
 /// files of its own uid, which it can read anyway.
@@ -1559,7 +1559,7 @@ fn daemon_is_exempt(shared: &Shared, opener_pid: i32, file_owner: u32) -> bool {
 fn place_ignore_mark(shared: &Shared, fd: BorrowedFd<'_>, dev: u64, ino: u64) {
     // Not verified by reading `/proc/self/fdinfo/<group>`: that is O(marks)
     // per hydration, and the helper holds one mark per directory in every
-    // sync tree on the machine. Task 9's VM suite asserts on fdinfo instead,
+    // sync tree on the machine. VM suite asserts on fdinfo instead,
     // where the cost does not matter and the assertion is worth making — the
     // syscall's return value is known to lie about this (M3).
     if let Err(e) = shared.marks.ignore_file(fd) {
@@ -1583,7 +1583,7 @@ fn respond_deny(shared: &Shared, fd: OwnedFd, errno: i32) {
 }
 
 /// Why there is no daemon to ask. Three different facts about the system,
-/// which used to be reported as one (Ruling H59).
+/// which used to be reported as one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NoDaemon {
     /// This uid has registered no root, so no daemon of theirs could hydrate
@@ -1600,7 +1600,7 @@ enum NoDaemon {
 /// Waits for the owning user's daemon to connect, up to `DAEMON_WAIT`.
 /// Woken by `daemon_arrived` the instant one registers, rather than polling.
 ///
-/// Ruling H39 puts two limits on the waiting, because this is the only place
+/// puts two limits on the waiting, because this is the only place
 /// a worker sleeps for tens of seconds and therefore the only lever an
 /// unprivileged caller has on the pool:
 ///
@@ -1652,7 +1652,7 @@ fn wait_for_daemon(shared: &Shared, uid: u32) -> Result<Daemon, NoDaemon> {
 
 fn serve(shared: Arc<Shared>, listener: OwnedFd) {
     let mut failing = Throttle::new();
-    // Ruling H120: connections are numbered here, on the one thread that
+    // Connections are numbered here, on the one thread that
     // accepts them, in the order they were accepted — never on the
     // per-connection thread. Numbered there, two connections accepted a
     // moment apart could draw their numbers in either order, and "newer"
@@ -1674,7 +1674,7 @@ fn serve(shared: Arc<Shared>, listener: OwnedFd) {
             }
             Err(Errno::EINTR) => continue,
             Err(e) => {
-                // Ruling H59. Retrying immediately is right for a transient
+                // Retrying immediately is right for a transient
                 // error and catastrophic for a persistent one: on `EMFILE`
                 // `accept` fails as fast as the CPU can call it, so this loop
                 // pinned a core and flooded the journal at the exact moment
@@ -1692,7 +1692,7 @@ fn serve(shared: Arc<Shared>, listener: OwnedFd) {
         };
         // SAFETY: `accept` returned a freshly opened descriptor we now own.
         let stream = unsafe { UnixStream::from_raw_fd(fd) };
-        // The final review's m4: a bounded number of connections per uid,
+        // a bounded number of connections per uid,
         // counted here, before a thread is spent on one. A peer whose
         // credentials cannot be read is not served at all — `serve_one`
         // would refuse it too.
@@ -1733,7 +1733,7 @@ fn serve(shared: Arc<Shared>, listener: OwnedFd) {
 }
 
 /// Runs a connection's cleanup exactly once, however the connection ends
-/// (Ruling H37).
+///.
 ///
 /// This used to be plain statements after an immediately-invoked closure, so
 /// a panic anywhere in the request loop unwound straight past them. The
@@ -1755,7 +1755,7 @@ impl Drop for Disconnect<'_> {
         // and unblocks both of its threads.
         self.outbox.close();
 
-        // This connection only, wherever it sits (Ruling H125): an older one
+        // This connection only, wherever it sits: an older one
         // going away leaves a newer one on top, and a newer one going away
         // hands the uid back to whichever live connection is under it.
         lock(&self.shared.daemons).deregister(self.uid, self.conn);
@@ -1763,7 +1763,7 @@ impl Drop for Disconnect<'_> {
         // than hangs. Not everything in the system: the socket is 0666, and
         // draining every pending job on any disconnect let any local user
         // fail every hydration on the machine with a connect-and-close loop.
-        // `retire` marks the connection dead before it drains (Ruling H38),
+        // `retire` marks the connection dead before it drains,
         // so a worker still holding a `Daemon` clone cannot slip a new job in
         // behind the drain.
         let (stranded, still_running) = {
@@ -1791,7 +1791,7 @@ impl Drop for Disconnect<'_> {
 }
 
 /// Serves one accepted connection. `conn` was assigned by [`serve`] at accept
-/// time (Ruling H120) and is what orders this connection against any other
+/// time and is what orders this connection against any other
 /// from the same uid.
 fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<()> {
     // `std::os::unix::net::UnixStream::peer_cred` is still unstable
@@ -1814,7 +1814,7 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
     // writer thread keeps each `send` a single datagram in queue order.
     //
     // Sending is a bounded queue plus that thread, not a mutex around the
-    // socket (Ruling H33): `Channel::send` blocks, and a peer that stops
+    // socket: `Channel::send` blocks, and a peer that stops
     // reading must cost this connection, never a worker thread.
     let mut reader = Channel::new(stream.try_clone()?)?;
     let outbox =
@@ -1825,7 +1825,7 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
     let _disconnect =
         Disconnect { shared, uid, conn, outbox: Arc::clone(&outbox) };
 
-    // The helper greets unprompted, before it reads anything. Task 5's client
+    // The helper greets unprompted, before it reads anything. client
     // relies on that, and requiring a `Hello` would buy nothing: `SO_PEERCRED`
     // already tells us who the peer is, and a `Hello` carries only a version
     // number the peer could lie about.
@@ -1850,14 +1850,14 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
     loop {
         // Only a transport or deserialisation failure ends the connection.
         // Anything `apply` runs into is this request's problem and comes back
-        // as an errno on this request's `Ack` (Ruling H17).
+        // as an errno on this request's `Ack`.
         let (message, fd) = reader.recv::<ToHelper>()?;
-        // Ruling H119: any message at all is proof of life, and is what
+        // Any message at all is proof of life, and is what
         // keeps a daemon that is slow to read — rather than wedged — from
         // being disconnected by its own backpressure.
         outbox.heard_from_peer();
         let errno = apply(shared, owner, &outbox, message, fd);
-        // Into the room reserved for `Ack`s (Ruling H126). This used to end
+        // Into the room reserved for `Ack`s. This used to end
         // the connection when the outbox was full — tearing down, on
         // backpressure, a daemon that had just proved it was alive by sending
         // this request. Now an `Ack` is never refused: a peer with more
@@ -1872,7 +1872,7 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
 
 /// Applies one request, returning the errno to acknowledge with (0 = fine).
 ///
-/// Ruling H17: this never fails the connection. A `fanotify_mark` that returns
+///: this never fails the connection. A `fanotify_mark` that returns
 /// `ENOENT` because an evictable mark was already reclaimed is a routine
 /// outcome, and turning it into a teardown took every in-flight hydration down
 /// with it.
@@ -1915,11 +1915,11 @@ fn apply(
             act(shared.marks.unmark_dir(dir.as_fd()))
         }
         (ToHelper::MarkFile, Some(file)) if allowed(&file) => {
-            // `fault-injection` builds only (Ruling H121).
+            // `fault-injection` builds only.
             fault::panic_on_mark_file();
             act(shared.marks.mark_file(file.as_fd()))
         }
-        // Ruling H146: on ownership of a regular file alone. Removing an
+        // On ownership of a regular file alone. Removing an
         // ignore mark can only cost an extra interception, never zeros, and
         // every punch in the daemon now asks for it whenever it has a link —
         // in a folder registered without interception too, where the uid may
@@ -1929,7 +1929,7 @@ fn apply(
         }
         (ToHelper::HydrateDone { req_id, errno }, _) => {
             // Answers its openers, and sends the hydration its credit goes to
-            // next (Ruling H124).
+            // next.
             let next = settle(shared, req_id, owner, errno, Finish::Reported);
             dispatch(shared, outbox, owner, next);
             0
@@ -1952,7 +1952,7 @@ fn errno_of(e: &io::Error) -> i32 {
     e.raw_os_error().unwrap_or(libc::EIO)
 }
 
-/// Removes a registration **and the marks it put on the tree** (Ruling H58).
+/// Removes a registration **and the marks it put on the tree**.
 ///
 /// Removing the entry alone was worse than doing nothing. Every directory in
 /// the tree kept its `FAN_OPEN_PERM | FAN_EVENT_ON_CHILD` mark — confirmed by
@@ -1991,7 +1991,7 @@ fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> i32 {
     // tree, and every other thread that wants to know whether a uid has a root
     // would be waiting behind it.
     //
-    // Counted on both sides of the walk (Ruling H138's second guard; see
+    // Counted on both sides of the walk (second guard; see
     // `mark_while_hydrated`): whatever a worker or a finishing hydration read
     // before the walk ended, it does not mark behind it.
     shared.unregistrations.bump(root.uid);
@@ -2048,7 +2048,7 @@ fn uncover_root(shared: &Shared, root: &roots::Root) {
     }
 }
 
-/// Spec §6.2 and §10: the directory must be owned by the peer, live on a
+/// The directory must be owned by the peer, live on a
 /// filesystem that can host placeholders, and neither contain nor sit inside
 /// another registered root. Only then is it stored, marked, and walked.
 fn register_root(shared: &Shared, owner: Owner, root_id: String, dir: File) -> i32 {
@@ -2062,7 +2062,7 @@ fn register_root(shared: &Shared, owner: Owner, root_id: String, dir: File) -> i
         return libc::EPERM;
     }
 
-    // Ruling H32. `root_id` is a string the client picks, so it names an
+    // `root_id` is a string the client picks, so it names an
     // entry without owning one: before anything else, the entry it names must
     // be free or already ours. Without this, any local user could replace
     // another user's registration by reusing its id — and the victim's tree
@@ -2081,10 +2081,10 @@ fn register_root(shared: &Shared, owner: Owner, root_id: String, dir: File) -> i
         Err(errno) => return errno,
     };
 
-    // Ruling H40: re-registering a root we already hold skips the write
+    // Re-registering a root we already hold skips the write
     // probe. The directory is already marked from the first registration, so
     // creating the probe's temporary file inside it (`O_TMPFILE`, and so
-    // nameless since Ruling H75, but still an `open` in a marked directory)
+    // nameless since, but still an `open` in a marked directory)
     // can raise a permission event aimed at this very helper (kernel fact 7
     // — `docs/kernel-behavior-7.2.md` §7) while this thread is blocked
     // inside the probe. A worker answers it
@@ -2094,7 +2094,7 @@ fn register_root(shared: &Shared, owner: Owner, root_id: String, dir: File) -> i
     // filesystem was probed when the root was first registered, and the type
     // check below is re-run either way.
     //
-    // Ruling H58 closes the last two ways into the same hazard: a directory
+    // closes the last two ways into the same hazard: a directory
     // already registered under *another* id, and one lying inside somebody's
     // registered root, are both already marked, and both are about to be
     // refused `EINVAL` by the nesting check — but the probe ran first and so
@@ -2137,7 +2137,7 @@ fn register_root(shared: &Shared, owner: Owner, root_id: String, dir: File) -> i
         }
         // Our own previous entry is lifted out so the nesting check does not
         // report this root as overlapping itself; every *other* root is now
-        // compared, whatever id it carries (Ruling H32).
+        // compared, whatever id it carries.
         let displaced = roots.take(&root.root_id);
         if let Some(conflict) = roots.nesting_conflict(&root.path, root.dev, root.ino) {
             tracing::warn!("{} cannot be registered: {conflict:?}", root.path);
@@ -2209,7 +2209,7 @@ fn resolve_root_path(dir: &File, dev: u64, ino: u64) -> Result<String, i32> {
     Ok(path.to_owned())
 }
 
-/// Spec §10. Two checks, because they fail for different reasons and only one
+/// Two checks, because they fail for different reasons and only one
 /// of them works inside the helper's sandbox.
 ///
 /// The filesystem type comes from `fstatfs` on the descriptor itself and is
@@ -2260,7 +2260,7 @@ fn check_filesystem(dir: &File, path: &str) -> Result<(), i32> {
 /// `fstatfs` on the descriptor itself, so it is authoritative and cannot be
 /// defeated by the helper's own sandbox, and it raises no fanotify event —
 /// which is why this is the only half that runs at startup and on a
-/// re-registration (Ruling H40).
+/// re-registration.
 fn check_filesystem_type(dir: &File, path: &str) -> Result<(), i32> {
     // SAFETY: `dir` is an open descriptor and `buf` is a live, correctly sized
     // `statfs` that `fstatfs` fills in.
@@ -2282,7 +2282,7 @@ fn check_filesystem_type(dir: &File, path: &str) -> Result<(), i32> {
     Ok(())
 }
 
-/// Filesystems a sync root may never live on (spec §10). A denylist rather
+/// Filesystems a sync root may never live on. A denylist rather
 /// than an allowlist: the hard requirements are sparse files with hole
 /// punching and `user.*` xattrs, and `probe_dir` measures those directly on
 /// whatever filesystem is actually there, so the type check only has to catch
@@ -2302,7 +2302,7 @@ const REFUSED_FILESYSTEMS: &[(i64, &str)] = &[
 ];
 
 /// What brought us into [`finish`]. It changes nothing about what the function
-/// does and everything about what "there is no such job" means (Ruling H59).
+/// does and everything about what "there is no such job" means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Finish {
     /// The daemon sent `HydrateDone`.
@@ -2314,7 +2314,7 @@ enum Finish {
 }
 
 /// Answers every opener waiting on a finished hydration, and returns the
-/// hydration its credit now goes to (Ruling H124), whose request the caller
+/// hydration its credit now goes to, whose request the caller
 /// must send — see [`dispatch`].
 fn settle(
     shared: &Shared,
@@ -2369,7 +2369,7 @@ fn answer(shared: &Shared, req_id: u64, waiters: Vec<OwnedFd>, errno: i32, since
         return;
     }
 
-    // Ruling H5/I6: the ignore mark goes on only after the file's state has
+    // The ignore mark goes on only after the file's state has
     // been read again, from the event fd itself — the exact inode the opener
     // is about to get, with no path in between and so nothing to race. A
     // hydration that reports success but does not leave the file `hydrated`
@@ -2377,7 +2377,7 @@ fn answer(shared: &Shared, req_id: u64, waiters: Vec<OwnedFd>, errno: i32, since
     // unconditional about what happens then.
     //
     // The mark then goes through `mark_while_hydrated`, like every other
-    // (Rulings H138 and H139): a dehydration that began after the read above
+    // mark: a dehydration that began after the read above
     // takes it off again here, and a hydration that began before a root was
     // unregistered leaves no mark behind it.
     let Some(first) = waiters.first() else { return };
@@ -2474,7 +2474,7 @@ mod tests {
         daemons.top(uid).map(|d| d.conn)
     }
 
-    /// Ruling H120, the interleaving the VM suite hit. Two connections from
+    /// The interleaving the VM suite hit. Two connections from
     /// one uid: connection 1, accepted first, is a throwaway that connects
     /// and drops; connection 2, accepted second, is the live daemon. Their
     /// threads run in the opposite order, so the live daemon registers first
@@ -2525,7 +2525,7 @@ mod tests {
         assert_eq!(registered(&daemons, 1000), None, "and its own cleanup removes it");
     }
 
-    /// Ruling H125, the sequential case H120 left open. A process of the
+    /// The sequential case H120 left open. A process of the
     /// daemon's own uid connects after it — newest wins, so it takes over —
     /// and then goes away. The live daemon underneath must get the uid back:
     /// its socket is still open, so nothing will ever make it reconnect, and
@@ -2550,7 +2550,7 @@ mod tests {
         );
     }
 
-    /// Ruling H125: the exemption (Ruling H15) follows the top. One pid per
+    /// The exemption follows the top. One pid per
     /// uid is exempt at any moment — the one the uid's hydrations go to —
     /// and it passes back down when the connection above it goes. A live
     /// connection underneath is not exempt while it is not the top, and no
@@ -2608,7 +2608,7 @@ mod tests {
         assert_eq!(registered(&daemons, 1001), Some(5));
     }
 
-    /// Ruling H127. However a run of refusals is split into lines, the lines
+    /// However a run of refusals is split into lines, the lines
     /// add up to the refusals: the first is written at once, the rest of its
     /// interval only counted, and the count after the last line is written
     /// when the interval ends — by `flush`, since a burst that has stopped
@@ -2683,7 +2683,7 @@ mod tests {
         }
     }
 
-    /// Ruling H138's second guard, kept per uid: an unregistration withholds
+    /// second guard, kept per uid: an unregistration withholds
     /// ignore marks only from its own user's files, so nobody can keep other
     /// users' files unmarked by unregistering roots of their own in a loop.
     #[test]
@@ -2714,7 +2714,7 @@ mod tests {
         assert!(unregistrations.since(read, Some(1001)));
     }
 
-    /// The final review's m4: one uid's connections are bounded, another
+    /// one uid's connections are bounded, another
     /// uid's are not affected, and a place comes back when its connection
     /// goes.
     #[test]
@@ -2735,7 +2735,7 @@ mod tests {
         lock(counters).get(&uid).copied().unwrap_or(0)
     }
 
-    /// Ruling H39. `wait_for_daemon` is the only place a worker sleeps for
+    /// `wait_for_daemon` is the only place a worker sleeps for
     /// tens of seconds, so it is the only lever an unprivileged caller has on
     /// the pool. The cap is what makes "open other people's placeholders
     /// while their daemon is down" cost at most `MAX_DAEMON_WAITERS` workers
@@ -2755,7 +2755,7 @@ mod tests {
         assert!(WaiterSlot::take(&counters, 1000).is_some(), "and the next open may wait again");
     }
 
-    /// Ruling H59. The cap is one budget **per uid**, not one for the machine.
+    /// The cap is one budget **per uid**, not one for the machine.
     ///
     /// As a single counter it was itself the denial of service it was meant to
     /// prevent: a local user could hold all eight slots by opening another
@@ -2780,7 +2780,7 @@ mod tests {
         assert_eq!(waiting_for(&counters, 1001), 1, "releasing one uid's slots frees only its own");
     }
 
-    /// The follow-up to Ruling H59: the per-uid cap alone restored fairness
+    /// The follow-up to: the per-uid cap alone restored fairness
     /// between uids at the cost of the flat pool bound the machine used to
     /// have — the worst case became `MAX_DAEMON_WAITERS` times the number of
     /// uids with a registered root whose daemon is down, which is unbounded
@@ -2823,7 +2823,7 @@ mod tests {
 
     /// A slot is released however its holder leaves, including by panicking —
     /// otherwise one panicking worker would permanently shrink the number of
-    /// opens that may ever wait (Rulings H37 and H39 together).
+    /// opens that may ever wait.
     #[test]
     fn a_waiter_slot_is_released_even_if_its_holder_panics() {
         let counters = Mutex::new(HashMap::new());
@@ -2835,7 +2835,7 @@ mod tests {
         assert_eq!(waiting_for(&counters, 1000), 0);
     }
 
-    /// Ruling H57, and the governing property of this whole component: an
+    /// And the governing property of this whole component: an
     /// application must never read zeros where real content should be.
     ///
     /// `fanotify(7)` allows every outstanding permission event when the
@@ -2871,7 +2871,7 @@ mod tests {
         }
     }
 
-    /// Ruling H145 (the final re-review's N1). The kernel opens each event's
+    /// The kernel opens each event's
     /// descriptor with the group's `O_RDWR` against the **opener's** mount,
     /// and when that open fails `read()` of the group returns its errno for
     /// that one event — which the kernel has already denied. Measured:
@@ -2904,7 +2904,7 @@ mod tests {
         }
     }
 
-    /// Ruling H32, as `register_root` asks it: the id names an entry but does
+    /// As `register_root` asks it: the id names an entry but does
     /// not own one, so an entry already held by somebody else is refused and
     /// a user's own is a re-registration.
     #[test]

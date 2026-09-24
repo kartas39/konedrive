@@ -1,16 +1,79 @@
 # KOneDrive
 
-A OneDrive client for KDE Plasma. This first part signs in to a personal Microsoft account,
-keeps the session in KWallet and shows the account in a Kirigami window. File syncing comes
-in later parts (see `onedrive-linux-design.md` and `docs/superpowers/specs/`).
+KOneDrive is a OneDrive client for KDE Plasma on Linux. It reproduces Windows' "Files
+On-Demand" without FUSE: your OneDrive appears as a folder of real files at their real sizes,
+each one an empty sparse placeholder until something opens it, at which point it downloads
+transparently. A small root-owned helper does the interception; an unprivileged daemon does
+everything else; a Qt/Kirigami window and tray icon show what is going on; Dolphin plugins add
+emblems and a right-click menu.
+
+**Status: alpha, read-only phase.** Nothing is uploaded — files in the KOneDrive folder are
+`r--r--r--`, directories `r-xr-xr-x`, so nothing here can diverge from the cloud on its own.
+A local edit forced past that lock is rescued (moved aside, listed under **Conflicts**), never
+silently overwritten or lost. Built and tested on Fedora with KDE Plasma 6; one Microsoft
+account at a time.
+
+## Screenshots
+
+| Status | Activity | Settings |
+| --- | --- | --- |
+| ![Status page](docs/screenshots/status.png) | ![Activity page](docs/screenshots/activity.png) | ![Settings page](docs/screenshots/settings.png) |
+
+(Shown with example data from a test daemon, not a real OneDrive account.)
+
+## How it works
+
+```
+   fanotify pre-content events                  D-Bus (org.konedrive.*)
+┌───────────────────┐   permission events   ┌───────────────┐   status, actions   ┌──────────┐
+│ konedrive-helper   │ ───────────────────► │ konedrived     │ ──────────────────► │ KOneDrive│
+│ (root, tiny)       │ ◄─────────────────── │ (your user)    │ ◄────────────────── │ window   │
+└───────────────────┘    fill/allow/deny    └───────────────┘                     └──────────┘
+```
+
+Three processes, each with the least power it can get away with:
+
+- **The helper** (`konedrive-helper`) is the only part that runs as root, and it is kept
+  deliberately small. Intercepting an open *before* its content is read — so a program never
+  sees zeros where a real file should be — needs the kernel's fanotify **pre-content** events
+  (`FAN_CLASS_PRE_CONTENT`), and setting up that kind of event group needs `CAP_SYS_ADMIN`. The
+  helper marks directories, tells the kernel which opens to suspend, and hands each suspended
+  open to the daemon over a local socket; it makes no network connections itself
+  (`PrivateNetwork=yes` in its systemd unit) and holds no OneDrive credentials.
+- **The daemon** (`konedrived`) runs as your own user with no elevated privileges. It talks to
+  Microsoft Graph, keeps the local SQLite index, fills a placeholder when the helper asks, and
+  drives the D-Bus API the window and `konedrivectl` use.
+- **The window** (`konedrive`) is a Qt/Kirigami app with a tray icon. It only ever talks to the
+  daemon over D-Bus — closing it does not stop syncing.
+
+Every feature also has a `konedrivectl` command, so nothing here depends on clicking through the
+UI (see `konedrivectl --help`).
+
+## Requirements
+
+- **Kernel:** fanotify permission events on directories with the `FAN_MARK_IGNORE` /
+  `FAN_MARK_IGNORED_SURV_MODIFY` / `FAN_MARK_EVICTABLE` combination this project relies on need
+  Linux 6.0. Telling a program *why* a download failed (`ENOSPC`, `EIO`, … through `FAN_DENY`
+  with an errno) needs Linux 6.14; on older kernels the helper falls back to a plain deny, so the
+  program sees `EPERM`. Only 7.2.5 and 7.2.7 (Fedora 44) were measured and exercised; older
+  kernels are untested. See `docs/kernel-behavior-7.2.md` for what was actually tested and on
+  which filesystems (Btrfs, ext4, XFS).
+- **Desktop:** KDE Plasma 6, Qt 6.8+, KDE Frameworks (KF6) 6.8+.
+- **Toolchain:** a stable Rust toolchain (edition 2021), CMake 3.24+ and Extra CMake Modules.
+- **A Microsoft Entra app registration** (a "client ID") — free, and yours alone; see
+  "Registering the application" below.
 
 ## Build dependencies (Fedora)
 
 ```
 sudo dnf install rust cargo cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel \
   qt6-qtdeclarative-devel kf6-kirigami-devel kf6-kirigami-addons-devel kf6-ki18n-devel \
-  kf6-kcoreaddons-devel dbus-daemon desktop-file-utils
+  kf6-kcoreaddons-devel kf6-kconfig-devel kf6-knotifications-devel \
+  kf6-kstatusnotifieritem-devel kf6-kdbusaddons-devel kf6-kio-devel kf6-kwindowsystem-devel \
+  kf6-kjobwidgets-devel dbus-daemon desktop-file-utils
 ```
+
+These are what `app/CMakeLists.txt` and `dolphin/CMakeLists.txt` look for.
 
 ## Registering the application (once)
 
@@ -40,10 +103,10 @@ scripts/dev-install.sh
 This installs `konedrived`, `konedrivectl` and `konedrive` into `~/.local/bin`, the systemd
 user unit, the D-Bus activation file and the launcher entry. The daemon starts on demand.
 
-## Use
+## Using your OneDrive
 
-- Open **KOneDrive** from the launcher, enter the client ID under **Advanced**, press **Sign In to OneDrive**.
-- Or from a terminal:
+- **Sign in.** Open **KOneDrive** from the launcher (or `konedrive` from a terminal), enter the
+  client ID under **Advanced**, and press **Sign In to OneDrive**. Or from a terminal:
 
   ```
   konedrivectl set-client-id 00000000-0000-0000-0000-000000000000
@@ -52,31 +115,73 @@ user unit, the D-Bus activation file and the launcher entry. The daemon starts o
   konedrivectl logout
   ```
 
-## Trying the folder without OneDrive
+- **The window.** A sidebar on the left switches between six pages: **Status** (the folder, its
+  item count, "Free Up Space…", "Refresh Now", "Open in File Manager"), **Activity** (downloads
+  under way now, and the most recent of what the daemon keeps), **Conflicts** (local edits
+  rescued out of the way, with a count badge), **Not in the Folder** (what OneDrive has that was
+  skipped, and why), **Account** (sign in/out, quota) and **Settings** (the folder, "Start at
+  login", "Show download progress" — a download that takes more than 2 s shows in Plasma's
+  notifications — and the client ID). While the helper is not connected, a card says so, with
+  the same instruction as the `Helper:` line of `konedrivectl sync status` (below). A tray icon
+  mirrors the folder's state — synced, syncing, needs attention, signed out — and keeps
+  KOneDrive running in the background so notifications still reach you with the window closed;
+  "Start at login" is on by default after the first run.
 
-The sync folder can be driven entirely from the command line, with a local
-directory standing in for the cloud — no Microsoft sign-in needed. Read this
-paragraph before the first command below, not after: there are two ways to
-bind the folder, and they cost different things.
+- **The helper.** A small privileged service that makes a placeholder download the moment a
+  program opens it, instead of that program reading zeros — install it with
+  `sudo scripts/install-helper.sh` (see "Installing the helper" below; see also SECURITY.md for
+  what runs as root and why). Your OneDrive folder needs it: the folder is kept in step with
+  OneDrive only while the helper is connected. `konedrivectl sync status` has a `Helper:` line:
+  - `connected` — files download when opened;
+  - `not-installed` — no konedrive-helper service on this system: install it
+    (`sudo scripts/install-helper.sh`);
+  - `stopped` — installed, not running: `sudo systemctl start konedrive-helper`;
+  - `failed` — the service failed: `systemctl status konedrive-helper` says why;
+  - `unknown` — systemd cannot be asked, or the helper is running but the
+    daemon has no link to it yet (the first few seconds after it starts).
 
-- `konedrivectl sync register` needs the privileged helper connected, so that
-  opening a placeholder is transparently intercepted and filled. A standing
-  project ruling keeps that helper inside a VM and off your own machine, so
-  on an ordinary checkout this command fails immediately (`NotSignedIn`, or
-  `NoHelper` once you are signed in) — it is not part of this walkthrough.
-  A folder bound this way is also forgotten through the helper: without it,
-  `konedrivectl sync forget` is refused and the folder stays registered.
-- `konedrivectl sync register-without-interception` needs neither a helper
-  nor a sign-in. This is the one below, and it has a real cost that the name
-  is meant to make obvious: **nothing** fills a placeholder when something
-  opens it. A file in this folder reads as zeros — not an error, not a
-  missing file, silently the wrong bytes — until you fetch it yourself with
-  `konedrivectl sync hydrate`. `konedrivectl sync status` keeps repeating
-  that warning for as long as the folder stays registered this way, not just
-  once at registration. On a machine where a helper *is* running, freeing a
-  file up here still asks it to clear the file's mark first, and is refused
-  (`NoHelper`) while the daemon is not connected to it; with no helper at all,
-  as below, nothing is asked.
+- **Registering a folder.** `konedrivectl sync register <path>`, with the helper connected. Right
+  after the helper is installed or started, the daemon takes up to half a minute to connect to
+  it, and `register` is refused (`NoHelper`) until then: wait for `Helper: connected`.
+
+- **From the command line:**
+  - `konedrivectl sync status` — the folder, its phase and item count, and the helper.
+  - `konedrivectl sync activity [--limit N]` — what happened lately: downloads, free-ups,
+    changes from OneDrive, conflicts, failures.
+  - `konedrivectl sync transfers` — downloads under way right now.
+  - `konedrivectl sync conflicts` — local edits rescued out of the way; `konedrivectl sync
+    dismiss <path>` takes one off the list (the file itself stays where it was moved to).
+  - `konedrivectl sync free-up-space` — send every downloaded file that is not in use back to
+    online-only.
+  - `konedrivectl sync skipped` — what OneDrive has that did not make it into the folder, and
+    why (the Personal Vault, a shared folder, a OneNote notebook, a name too long for Linux).
+  - `konedrivectl sync refresh` — ask OneDrive for changes now, instead of waiting for the next
+    poll (about a minute).
+  - `konedrivectl sync hydrate <path>` — download one file now.
+
+- **Read-only, for now.** This part of KOneDrive only reads from OneDrive: files are
+  `r--r--r--`, directories `r-xr-xr-x`, so nothing here can diverge from the cloud on its own. A
+  local edit forced past that lock is rescued, not lost — moved aside and listed under
+  **Conflicts** rather than overwritten.
+
+- **Forget.** `konedrivectl sync forget` unbinds the folder and takes the read-only lock off it;
+  the files themselves are left exactly as they are.
+
+## A folder without OneDrive or the helper (developers only)
+
+This is a developer's and tester's mode, not a way to use KOneDrive: the window does not offer it.
+It drives the sync folder entirely from the command line, with a local directory standing in for
+the cloud and no helper at all.
+
+`konedrivectl sync register-without-interception` always makes a local folder, filled with
+`populate-from` — even when you are signed in, it never shows your OneDrive (that needs
+`konedrivectl sync register` and the helper). And it has a real cost that the name is meant to
+make obvious: **nothing** fills a placeholder when something opens it. A file in this folder reads
+as zeros — not an error, not a missing file, silently the wrong bytes — until you fetch it
+yourself with `konedrivectl sync hydrate`. `konedrivectl sync status` keeps repeating that warning
+for as long as the folder stays registered this way. On a machine where a helper *is* running,
+freeing a file up here still asks it to clear the file's mark first, and is refused (`NoHelper`)
+while the daemon is not connected to it; with no helper at all, as below, nothing is asked.
 
 ```
 mkdir -p ~/OneDrive-test ~/fake-cloud/sub
@@ -101,10 +206,11 @@ helper installed at all: `State: none` and `Folder: (none)` before anything
 is registered; `no-interception` for the mode above, with an `Opens:` line
 saying in plain words that a file that is not downloaded reads as zeros until
 you hydrate it — every time, success or not; `ready` once a folder is bound
-with the real, VM-only helper intercepting it (`Opens: intercepted`); or `error`
+with the real helper intercepting it (`Opens: intercepted`); or `error`
 with a `Last error:` line explaining what needs attention (for example, if
-startup recovery could not finish, or a folder bound with the helper is
-waiting for it after a restart). `error` is never printed to look like a
+startup recovery could not finish, or a OneDrive folder is waiting for the
+helper). Its `Helper:` line says what the daemon knows of the helper, with
+what to do about it. `error` is never printed to look like a
 success — and neither is `register`/`register-without-interception`
 themselves: either command exits non-zero, without its usual "Folder
 registered" line, if the root it just bound was not fully recovered.
@@ -116,6 +222,57 @@ rather than repeating the daemon's D-Bus error. It tells the refusals apart
 by their D-Bus error names (`org.konedrive.Error.ModifiedLocally`,
 `.NotHydrated`, `.NoHelper`, …), which is also what a script should match on.
 
+## Installing the helper
+
+The helper is the privileged part of the sync folder: a small systemd service
+that makes a placeholder download the moment a program opens it, instead of
+that program reading zeros. Build it as yourself, then install it as root:
+
+```
+cargo build --release -p konedrive-helper
+sudo scripts/install-helper.sh
+```
+
+`scripts/install-helper.sh` copies the built binary to
+`/usr/local/libexec/konedrive-helper` and the unit in
+`packaging/systemd/konedrive-helper.service` to `/etc/systemd/system/`, then
+reloads systemd, enables the service and starts (or restarts) it. It refuses
+to run as a plain user. It refuses a binary that is missing, a symlink or not
+a regular file, built with the VM suite's fault-injection hooks, or older than
+its sources (the Rust files of the helper and the two crates it uses, and the
+helper's `Cargo.toml`). It checks one root-owned copy of the binary and
+installs that same copy. It always says exactly what it is about to do and
+asks before doing it — pass `--yes` to skip the question. Running it again
+updates the helper in place; if it is already running, the installer restarts
+it and says so before it asks (see `docs/limitations-and-workarounds.md`, Z1:
+a program waiting for a file to download at that moment gets it as empty).
+
+If it says the binary is older than its sources right after a build, cargo
+had nothing to relink; this makes it:
+
+```
+touch crates/konedrive-helper/src/main.rs && cargo build --release -p konedrive-helper
+```
+
+The daemon connects to a newly started helper within half a minute; until
+then `konedrivectl sync status` does not say `Helper: connected`, and
+`konedrivectl sync register` is refused (`NoHelper`).
+
+```
+sudo scripts/install-helper.sh --uninstall
+```
+
+stops and disables the service and removes both installed files. It refuses
+while a folder is registered with the helper (it reads the helper's own
+`/var/lib/konedrive/roots.json`): without the helper, that folder's files that
+are not downloaded would read as zeros, and `konedrivectl sync forget` would
+then be refused (`NoHelper`). Run `konedrivectl sync forget` first; `--force`
+uninstalls anyway. Like an update, it warns first if the helper is running
+(Z1).
+
+See [SECURITY.md](SECURITY.md) for what the helper can do as root and how its
+systemd unit narrows that down.
+
 ## Dolphin integration
 
 `dolphin/` holds two Dolphin plugins. Files in the sync folder get an emblem — a
@@ -124,13 +281,18 @@ mark when downloaded — and their context menu offers **Download** (online-only
 files) and **Free up space** (downloaded ones). Emblems come from each file's
 `user.konedrive.state` and work with the daemon stopped; the menu actions ask
 the daemon, and say plainly when it is not running. Neither plugin ever
-opens a file in the sync folder. Dolphin itself still opens some — to draw
-previews, and to tell the type of a file whose name has no known extension —
-and that downloads them: turn previews off in that folder (View → Show
-Previews) until a later part fills them from OneDrive.
+opens a file in the sync folder. Dolphin itself still opens some, and that
+downloads them. For images and videos, KOneDrive fills the previews itself from
+OneDrive's own thumbnails, up to the x-large size (512 px), and Dolphin draws
+those without opening the file. They are filled in the background, two a
+second (limitations log K16). What still opens a file: an image or video shown
+before its preview is filled, a preview of any other kind of file, a preview
+at the largest zoom (xx-large; K15), and telling the type of a file whose name
+has no known extension (K1). To avoid those downloads, turn previews off in
+that folder (View → Show Previews).
 
-Build and test (needs `kf6-kio-devel` besides the packages above; the tests
-run on private D-Bus buses, and one of them takes 30 seconds):
+Build and test (the tests run on private D-Bus buses, and one of them takes 30
+seconds):
 
 ```
 cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure
@@ -169,7 +331,11 @@ This installs into `/usr/lib64/qt6/plugins/kf6/overlayicon/` and
 removes it. The menu actions can be switched off in Dolphin under Configure
 Dolphin → Context Menu ("KOneDrive: Download and Free up space").
 
-## Tests
+## For developers
+
+Install for yourself with `scripts/dev-install.sh` (see "Install for your user" above).
+
+Tests:
 
 ```
 cargo test --workspace
@@ -182,9 +348,75 @@ The Secret Service test touches your real KWallet (under a test-only attribute) 
 cargo test -p konedrived secret_service_round_trip -- --ignored
 ```
 
+The fanotify helper needs a real kernel and root, so its end-to-end suite runs inside a
+`virtme-ng` VM — no root and no privileges needed on the host, which boots the VM and does
+everything privileged inside it:
+
+```
+tests/vm/run.sh quick   # the normal run: the end-to-end suite on btrfs (one VM)
+tests/vm/run.sh full    # btrfs, ext4 and xfs, three VMs at once: slower; for changes that
+                         # may behave differently per filesystem
+```
+
+A run against your actual OneDrive account is also possible. It lists your whole drive into the
+VM, as placeholders (names and sizes, no content: the daemon cannot list just one folder), but it
+opens and downloads files only inside one folder you name, each under a size cap, and fetches no
+thumbnails:
+
+```
+konedrivectl dev export-access-token --out /tmp/konedrive-token   # about an hour of read access
+VM_NETWORK=user tests/vm/run.sh quick --graph-token /tmp/konedrive-token \
+    --graph-folder "<a folder in your OneDrive>"                  # --graph-max-bytes N: default 32 MiB
+rm /tmp/konedrive-token
+```
+
+`--graph-folder` is required with `--graph-token`. It must name a folder (an empty path or one
+with `..` is refused; a leading `/` is fine), and the run fails if nothing in the listing lies
+inside it. The dropped-connection and restart-resume checks (G3, G4) run against the real account
+only if you add `--graph-resume-checks`. The token is never the refresh token and is read only
+inside the guest. See `docs/limitations-and-workarounds.md`, W15.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full checklist before sending a change, and
+[SECURITY.md](SECURITY.md) for how to report a vulnerability privately.
+
 ## Troubleshooting
 
 - Daemon log: `journalctl --user -u konedrived -f`; more detail with
   `systemctl --user edit konedrived` → `Environment=RUST_LOG=konedrived=debug`.
 - Files: `~/.config/konedrive/config.toml` (client ID), `~/.local/state/konedrive/account.json`
-  (cached name and quota). The refresh token is in KWallet under "KOneDrive refresh token".
+  (cached name and quota). The refresh token is in KWallet under "KOneDrive refresh token" and
+  never leaves it (see SECURITY.md).
+
+## Design
+
+How the pieces fit together, the invariants they keep, and why each notable decision was made:
+[`docs/design/`](docs/design/README.md).
+
+## Limitations and known rough edges
+
+Every limitation, workaround and fragile spot this project knows about — kernel quirks, chosen
+numbers that are not yet measured, debt taken on deliberately — is tracked in one place:
+[`docs/limitations-and-workarounds.md`](docs/limitations-and-workarounds.md). Read it before
+filing a bug that might already be there.
+
+## Roadmap
+
+Read-only is the first phase. In order, what comes next:
+
+1. **RPM packaging** — a `.spec` and a Copr/COPR-style repo, so `dnf install` replaces building
+   from source.
+2. **Pinning** — "Always keep on this device" and a Dolphin menu entry for it, so a file can be
+   told to stay downloaded rather than being freed up automatically.
+3. **Multiple accounts** — more than one Microsoft account signed in at once.
+4. **Writes to the cloud** — local changes uploaded back to OneDrive, turning this from a
+   read-only mirror into a real sync client.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for what runs as root, what it can do, and how to report a
+vulnerability privately.
+
+## License
+
+KOneDrive is licensed under the GNU General Public License, version 3 or later
+(GPL-3.0-or-later). See [LICENSE](LICENSE) for the full text.

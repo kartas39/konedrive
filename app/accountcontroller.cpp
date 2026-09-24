@@ -156,6 +156,7 @@ void AccountController::cancelSignIn()
 
 void AccountController::signOut()
 {
+    Q_EMIT signOutRequested();
     call(m_iface->SignOut());
 }
 

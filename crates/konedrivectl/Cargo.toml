@@ -2,12 +2,14 @@
 name = "konedrivectl"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 konedrive-dbus = { path = "../konedrive-dbus" }
+libc.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 zbus.workspace = true
 
@@ -16,5 +18,8 @@ konedrived = { path = "../konedrived" }
 konedrive-fs = { path = "../konedrive-fs" }
 konedrive-proto = { path = "../konedrive-proto" }
 nix = { workspace = true, features = ["socket"] }
+serde_json.workspace = true
 tempfile.workspace = true
+url.workspace = true
+wiremock.workspace = true
 xattr.workspace = true

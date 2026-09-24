@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use anyhow::{bail, Context};
 use clap::{Parser, Subcommand};
-use konedrive_dbus::{Account1Proxy, Sync1Proxy};
+use konedrive_dbus::{Account1Proxy, Dev1Proxy, Sync1Proxy};
 use konedrivectl::SyncAction;
 
 #[derive(Parser)]
@@ -28,19 +28,35 @@ enum Cmd {
         #[command(subcommand)]
         command: SyncCmd,
     },
+    /// Development tools
+    Dev {
+        #[command(subcommand)]
+        command: DevCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum DevCmd {
+    /// Write the current access token — about an hour of read access, never
+    /// the refresh token — to a file only you can read, for a test run in the VM
+    ExportAccessToken {
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
 enum SyncCmd {
     /// Bind an empty folder to the signed-in account
     Register { path: String },
-    /// Bind a folder with NOTHING intercepting opens inside it: placeholders
-    /// read as zeros until you `hydrate` them by hand. Needs no privileged
-    /// helper, so this is the path that works on your own machine — the
-    /// real helper only ever runs inside a VM. Named after the D-Bus method
-    /// it calls (`RegisterRootWithoutInterception`) rather than something
-    /// shorter, on purpose: the cost this mode carries belongs in the word
-    /// you type, not just in a warning you might scroll past.
+    /// The developer's mode: bind a local folder with NOTHING intercepting
+    /// opens inside it, filled from a directory with `populate-from`. Without
+    /// the helper, files that are not downloaded read as zeros until you
+    /// `hydrate` them by hand. It never shows OneDrive: that takes `register`
+    /// and the helper. Named after the D-Bus method it calls
+    /// (`RegisterRootWithoutInterception`) rather than something shorter, on
+    /// purpose: the cost this mode carries belongs in the word you type, not
+    /// just in a warning you might scroll past.
     RegisterWithoutInterception { path: String },
     /// Forget the folder (local files are left as they are)
     Forget,
@@ -54,6 +70,29 @@ enum SyncCmd {
     State { path: String },
     /// Print the folder's state
     Status,
+    /// List what is in OneDrive but not in the folder, and why
+    Skipped,
+    /// Ask OneDrive for changes now
+    Refresh,
+    /// Show what happened lately, newest first: downloads, free-ups, changes
+    /// from OneDrive, conflicts, failures
+    Activity {
+        /// How many events to show (the daemon keeps the last 200)
+        #[arg(long, default_value_t = 20)]
+        limit: u32,
+    },
+    /// Show the downloads under way
+    Transfers,
+    /// List your changed versions that were moved out of the way because the
+    /// file changed or was removed in OneDrive
+    Conflicts,
+    /// Take a conflict off the list; the file itself stays where it is
+    Dismiss {
+        /// Where the file was moved to, as `sync conflicts` shows it
+        path: String,
+    },
+    /// Free up the space of every downloaded file that is not in use
+    FreeUpSpace,
 }
 
 #[tokio::main]
@@ -75,6 +114,31 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Status => print!("{}", konedrivectl::status_text(&proxy).await?),
         Cmd::Sync { command } => sync(&connection, command).await?,
+        Cmd::Dev { command } => dev(&connection, command).await?,
+    }
+    Ok(())
+}
+
+async fn dev(connection: &zbus::Connection, command: DevCmd) -> anyhow::Result<()> {
+    match command {
+        DevCmd::ExportAccessToken { out } => {
+            let dev = Dev1Proxy::new(connection).await?;
+            let token = dev
+                .access_token()
+                .await
+                .map_err(|e| anyhow::anyhow!("{}", konedrivectl::explain_dev_error(&e)))?;
+            // I1: `write_secret_atomically` never opens `out`
+            // itself, so a symlink there is replaced rather than followed
+            // and truncated, and anyone who already had the old file open
+            // keeps reading its old content undisturbed.
+            konedrivectl::write_secret_atomically(&out, token.as_bytes())
+                .with_context(|| format!("cannot write the access token to {}", out.display()))?;
+            println!(
+                "Wrote an access token, valid for about an hour, to {}. It is not the refresh token. \
+                 Delete the file when the test is done.",
+                out.display()
+            );
+        }
     }
     Ok(())
 }
@@ -152,6 +216,59 @@ async fn sync(connection: &zbus::Connection, command: SyncCmd) -> anyhow::Result
         }
         SyncCmd::State { path } => println!("{}", proxy.item_state(&absolute_str(&path)?).await?),
         SyncCmd::Status => print!("{}", konedrivectl::sync_status_text(&proxy).await?),
+        SyncCmd::Skipped => {
+            let root_path = proxy.root_path().await?;
+            if root_path.is_empty() {
+                println!("No folder is registered.");
+            } else if proxy.root_source().await? != "onedrive" {
+                println!("This folder is not connected to OneDrive.");
+            } else {
+                // Read before `Skipped()` itself: a listing that finishes in
+                // between just means the list this call gets back is a
+                // little more complete than the note says, never less.
+                let still_listing = proxy.root_state().await? == "listing";
+                let skipped = explained(&proxy, SyncAction::Skipped, proxy.skipped().await).await?;
+                if still_listing {
+                    println!(
+                        "The folder is still being filled from OneDrive; this list may be partial."
+                    );
+                }
+                if skipped.is_empty() {
+                    println!("Nothing is skipped.");
+                }
+                for (path, reason) in skipped {
+                    println!("{path}\n    {}", konedrivectl::skip_reason_text(&reason));
+                }
+            }
+        }
+        SyncCmd::Refresh => {
+            explained(&proxy, SyncAction::Refresh, proxy.refresh().await).await?;
+            println!("Asked OneDrive for changes.");
+        }
+        SyncCmd::Activity { limit } => {
+            let events = explained(&proxy, SyncAction::Activity, proxy.recent_activity(limit).await).await?;
+            print!("{}", konedrivectl::activity_text(&events));
+        }
+        SyncCmd::Transfers => print!("{}", konedrivectl::transfers_text(&proxy.transfers().await?)),
+        SyncCmd::Conflicts => {
+            let conflicts = explained(&proxy, SyncAction::Conflicts, proxy.conflicts().await).await?;
+            print!("{}", konedrivectl::conflicts_text(&conflicts));
+        }
+        SyncCmd::Dismiss { path } => {
+            // As the daemon recorded it: made absolute, never resolved — the
+            // file may be gone, and a link on the way to it must not change
+            // which conflict this names.
+            let absolute = std::path::absolute(&path).context("cannot make the path absolute")?;
+            let absolute = absolute.to_str().context("non-UTF-8 path")?;
+            let action = SyncAction::Dismiss(absolute);
+            explained(&proxy, action, proxy.dismiss_conflict(absolute).await).await?;
+            println!("Dismissed. The file was left where it is.");
+        }
+        SyncCmd::FreeUpSpace => {
+            let (files, bytes, busy) =
+                explained(&proxy, SyncAction::FreeUpSpace, proxy.free_up_space().await).await?;
+            println!("{}", konedrivectl::free_up_text(files, bytes, busy));
+        }
     }
     Ok(())
 }
@@ -167,10 +284,15 @@ async fn explained<T>(
     match result {
         Ok(value) => Ok(value),
         Err(error) => {
-            // Two refusals name the registered folder. If even reading it
-            // fails, they simply do not; the refusal is the thing to report.
+            // Two refusals name the registered folder, one depends on what
+            // it shows, and one ends with how to start the helper. If even
+            // reading them fails, they simply do not; the refusal is the
+            // thing to report.
             let root = proxy.root_path().await.unwrap_or_default();
-            Err(anyhow::anyhow!("{}", konedrivectl::explain_sync_error(action, &error, &root)))
+            let source = proxy.root_source().await.unwrap_or_default();
+            let helper = proxy.helper_state().await.unwrap_or_default();
+            let context = konedrivectl::Context { root: &root, source: &source, helper: &helper };
+            Err(anyhow::anyhow!("{}", konedrivectl::explain_sync_error_in(action, &error, context)))
         }
     }
 }
@@ -202,10 +324,10 @@ async fn fail_if_root_unhealthy(proxy: &Sync1Proxy<'_>) -> anyhow::Result<()> {
 
 /// The daemon only accepts absolute paths; resolve here so relative ones work.
 fn absolute_str(path: &str) -> anyhow::Result<String> {
-    // The final review's m8: the directory the name is in is resolved, the
+    // the directory the name is in is resolved, the
     // name itself is not. Canonicalising the whole path resolved a symbolic
     // link given as the last component, so `sync register <link>` silently
-    // registered the link's target, while spec §10 refuses a link as a
+    // registered the link's target, while refuses a link as a
     // root; the daemon opens every path it is handed with `O_NOFOLLOW`, and
     // it has to be handed the link to refuse it.
     let given = std::path::Path::new(path);

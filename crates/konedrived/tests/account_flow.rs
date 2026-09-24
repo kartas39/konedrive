@@ -24,7 +24,7 @@ async fn set_client_id_validates_and_persists() {
     assert_eq!(saved.client_id, CLIENT_ID);
 }
 
-/// The final review's m5, on the account side. `config.toml` also holds the
+/// on the account side. `config.toml` also holds the
 /// sync sub-project's registered root — for an intercepted root, the only
 /// record of a folder the helper still holds — and a copy that could not be
 /// read used to be written back from defaults with just the new client id,

@@ -1,6 +1,6 @@
 //! Everything the helper sends to one daemon, and the thread that sends it.
 //!
-//! # Why this is not just a mutex around the socket (Ruling H33)
+//! # Why this is not just a mutex around the socket
 //!
 //! It used to be. `hydrate` took a per-connection `Mutex<Channel>` and called
 //! `Channel::send` inside it — and `send` is a **blocking** `sendmsg` on a
@@ -8,10 +8,10 @@
 //! that never reads, `send` accepts **278** datagrams and then blocks
 //! forever. One worker thread wedged in there holds the mutex; every other
 //! worker handling an open for that uid then blocks acquiring it; the
-//! connection's own `Ack` blocks too. With a bounded worker pool (Ruling
-//! H20) that ends with all 64 workers consumed, and from that moment **every
-//! intercepted open on the machine is denied `EAGAIN`** for as long as the
-//! peer stays quiet.
+//! connection's own `Ack` blocks too. With a bounded worker pool that ends
+//! with all 64 workers consumed, and from that moment **every intercepted
+//! open on the machine is denied `EAGAIN`** for as long as the peer stays
+//! quiet.
 //!
 //! Any local user could do it: connect, register a directory they own, never
 //! read the socket, open a few hundred of their own placeholders. A
@@ -20,11 +20,11 @@
 //! controls is exactly that.
 //!
 //! So sending is moved off the worker threads entirely, mirroring the split
-//! Task 5's client already has:
+//! client already has:
 //!
 //! - callers hand a message to a **bounded queue** and return immediately —
 //!   [`Outbox::try_send`], never a blocking send, so no worker ever waits;
-//! - the queue has two compartments (Ruling H126): room for the requests the
+//! - the queue has two compartments: room for the requests the
 //!   helper starts, which the per-connection credit bounds
 //!   ([`REQUEST_CAPACITY`]), and room reserved for the `Ack`s that answer the
 //!   daemon's own calls ([`ACK_RESERVE`]), so that neither kind can ever take
@@ -35,7 +35,7 @@
 //! - and even that thread is bounded: a peer that stops reading *and* stops
 //!   talking for [`LIVENESS_WINDOW`] ends the connection instead of holding a
 //!   thread — and every opener enrolled on it — for the lifetime of the
-//!   process (Ruling H119; see [`deliver`]).
+//! process (see [`deliver`]).
 
 use std::collections::VecDeque;
 use std::io;
@@ -59,17 +59,17 @@ use konedrive_proto::{Channel, ToDaemon, MAX_OUTSTANDING_HYDRATIONS};
 /// early. Either way the refusal lands on that peer's own openers.
 ///
 /// It used to be one queue of 256 shared with `Ack`s, and that sharing is
-/// what Ruling H126 removes: a burst of requests could fill it, and then the
+/// what removes: a burst of requests could fill it, and then the
 /// `Ack` for the daemon's next call did not fit and the connection was ended
 /// for it.
 pub const REQUEST_CAPACITY: usize = MAX_OUTSTANDING_HYDRATIONS + 1;
 
 /// How many `Ack`s may wait for one daemon before the connection's reader
-/// thread waits for room (Ruling H126).
+/// thread waits for room.
 ///
 /// An `Ack` answers one of the daemon's own calls, and the daemon awaits each
 /// call before it counts as done, so the `Ack`s waiting here are at most its
-/// calls in flight: four hydration reports at once (Ruling H29's four fill
+/// calls in flight: four hydration reports at once (four fill
 /// slots), plus whatever registration, marking and dehydration calls its sync
 /// service has running, each of which awaits its calls one at a time. Nothing
 /// in the daemon caps that second number with a constant, so this is not a
@@ -89,8 +89,8 @@ pub const ACK_RESERVE: usize = 128;
 /// ask whether the daemon is still alive (`SO_SNDTIMEO`).
 ///
 /// **Not** a limit on how long a daemon may take to read, and no longer a
-/// reason to end a connection by itself (Ruling H119). It used to be both,
-/// and its doc comment said no healthy daemon could trip it; Task 9's burst
+/// reason to end a connection by itself. It used to be both,
+/// and its doc comment said no healthy daemon could trip it; burst
 /// tripped it with an ordinary burst of opens, and 662 enrolled openers were
 /// denied `EIO` for it. What decides whether the connection ends is
 /// [`LIVENESS_WINDOW`]; this is only how often that is asked.
@@ -102,8 +102,7 @@ pub const ACK_RESERVE: usize = 128;
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How long a daemon may go **without sending the helper anything at all**,
-/// while a send to it is blocked, before the connection is ended (Ruling
-/// H119).
+/// while a send to it is blocked, before the connection is ended.
 ///
 /// A blocked send is not evidence of a wedged daemon; silence is. A daemon
 /// that is working through a burst still reports each fill as it finishes
@@ -111,7 +110,7 @@ pub const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// takes. One that has stopped reading *and* stopped talking is wedged or
 /// hostile, and ending its connection is what makes its enrolled openers
 /// answered (`EIO`, by the disconnect guard) rather than suspended forever —
-/// Ruling H33's protection, which this keeps.
+/// protection, which this keeps.
 ///
 /// **Provisional**, like the pool's numbers: chosen, not measured. Since
 /// `MAX_OUTSTANDING_HYDRATIONS` a healthy daemon's reader never stops, so
@@ -287,7 +286,7 @@ impl Outbox {
             // Ends when the queue is closed (the connection is over, or every
             // handle to it is gone), when a send fails outright, or when the
             // daemon has been silent for the whole liveness window with a
-            // send blocked (Ruling H119).
+            // send blocked.
             while let Some(outgoing) = draining.next() {
                 if let Err(why) = deliver(&mut channel, &outgoing, &heard, timing) {
                     tracing::warn!("cannot write to a daemon ({why}); ending the connection");
@@ -341,7 +340,7 @@ impl Outbox {
     }
 
     /// Queues the `Ack` for one of the daemon's calls, into the room reserved
-    /// for `Ack`s (Ruling H126). Nothing the helper starts can take that room,
+    /// for `Ack`s. Nothing the helper starts can take that room,
     /// so for any daemon that awaits its calls this returns at once.
     ///
     /// A peer with more than [`ACK_RESERVE`] replies unread is made to
@@ -393,7 +392,7 @@ impl Drop for Outbox {
 }
 
 /// Sends one message, however long the daemon takes to make room for it —
-/// unless it stops talking for the whole liveness window (Ruling H119).
+/// unless it stops talking for the whole liveness window.
 ///
 /// A `SOCK_SEQPACKET` send either queues the whole datagram, descriptor
 /// included, or nothing at all, so trying the same message again after
@@ -484,7 +483,7 @@ mod tests {
         Outgoing { message: ToDaemon::HydrateRequest { req_id }, fd: None }
     }
 
-    /// The whole point of Ruling H33: a peer that never reads must not be
+    /// The whole point of: a peer that never reads must not be
     /// able to make the helper wait. Before this, the same peer blocked
     /// `Channel::send` permanently after 278 datagrams, with a worker thread
     /// and the connection's writer mutex held.
@@ -601,7 +600,7 @@ mod tests {
         received
     }
 
-    /// Ruling H119, the half Task 9's burst needed. A daemon that is slow to
+    /// The half burst needed. A daemon that is slow to
     /// read — its socket full, the helper's writer blocked in `sendmsg`
     /// through many `SO_SNDTIMEO` expiries — but that keeps reporting
     /// finished fills is busy, not wedged, and keeps its connection. Before,
@@ -629,7 +628,7 @@ mod tests {
         );
     }
 
-    /// Ruling H119, the half Ruling H33 needs kept. A daemon that neither
+    /// The half needs kept. A daemon that neither
     /// reads nor says anything for a whole window is wedged, and its
     /// connection ends — which is what gets its enrolled openers answered
     /// rather than suspended for as long as the helper runs. Not before the
@@ -664,7 +663,7 @@ mod tests {
     /// daemon's last message. An idle daemon has said nothing for as long as
     /// it has been idle; a burst that then fills its socket must not find an
     /// hour of "silence" already on the clock at the first `SO_SNDTIMEO` and
-    /// end the connection — that would be Task 9's defect again, only for
+    /// end the connection — that would be defect again, only for
     /// daemons that had been quiet first.
     #[test]
     fn a_daemon_idle_before_a_burst_is_not_disconnected_by_its_first_blocked_send() {
@@ -723,7 +722,7 @@ mod tests {
         assert!(!sender.is_finished(), "a peer that never reads must eventually make it wait");
     }
 
-    /// Ruling H126. The helper's own requests fill their compartment — the
+    /// The helper's own requests fill their compartment — the
     /// peer is slow to read, the writer is blocked in `sendmsg` — and then the
     /// daemon makes a call. Its `Ack` must be queued, at once, and the
     /// connection must stay. `serve_one` used to end the connection right
@@ -756,7 +755,7 @@ mod tests {
         );
     }
 
-    /// Ruling H126, the other half: past [`ACK_RESERVE`] replies unread, an
+    /// The other half: past [`ACK_RESERVE`] replies unread, an
     /// `Ack` waits for room — it is never refused — and when the peer reads,
     /// every one of them arrives, whole and in order, on the same connection.
     #[test]

@@ -8,7 +8,7 @@
 //! # Why the opens happen in child processes
 //!
 //! `konedrive-helper` exempts the owning daemon's **pid** from interception
-//! (Ruling H15): a process that holds a connection owning a registered root
+//!: a process that holds a connection owning a registered root
 //! may open that user's files without being suspended, because otherwise
 //! startup recovery would ask the very daemon that is blocked to unblock
 //! itself. This programme *is* the daemon — it holds the `HelperLink` — so an
@@ -29,6 +29,8 @@
 //! `/proc/<helper>/fdinfo` for whether a mark exists, block counts for
 //! whether a file holds data, and what a reader in another process actually
 //! gets back.
+
+mod graph;
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -51,7 +53,7 @@ use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION, SOCKET_PATH
 use konedrived::sync::helper::{Clearance, HelperLink};
 use konedrived::sync::root::{self, DehydrateError, SyncRoot};
 use konedrived::sync::source::{ContentSource, Fetched, LocalDir, SourceError};
-use konedrived::sync::{serve_hydrations, InodeKey, InodeLocks, SyncError, SyncService};
+use konedrived::sync::{serve_hydrations, supervise_helper, InodeKey, InodeLocks, SyncError, SyncService};
 use nix::sys::fanotify::{
     EventFFlags, Fanotify, FanotifyResponse, InitFlags, MarkFlags, MaskFlags, Response,
 };
@@ -136,6 +138,19 @@ fn main() {
     let mut measure = false;
     let mut dirs = 10_000usize;
     let mut files = 100_000usize;
+    // The real account. Set only by `--graph-token`, checked after
+    // the watchdog starts, below — everything above it (the filter, the
+    // nofile bump) applies to this mode too. `--graph-guard` (Step 4's two
+    // demonstrations, `no-hash` or `permanent-break`), `--graph-folder`
+    // (required alongside `--graph-token`, and a real folder: see
+    // `graph::Scope::of`), `--graph-max-bytes` (optional, defaults to
+    // `graph::DEFAULT_MAX_BYTES`) and `--graph-resume-checks` (G3 and G4,
+    // never run by default) only mean anything alongside `--graph-token` too.
+    let mut graph_token: Option<PathBuf> = None;
+    let mut graph_guard: Option<String> = None;
+    let mut graph_folder: Option<String> = None;
+    let mut graph_max_bytes: u64 = graph::DEFAULT_MAX_BYTES;
+    let mut graph_resume_checks = false;
     let mut i = 1;
     while i < argv.len() {
         match argv[i] {
@@ -160,6 +175,23 @@ fn main() {
                 files = argv[i + 1].parse().unwrap();
                 i += 1;
             }
+            "--graph-token" => {
+                graph_token = Some(PathBuf::from(argv[i + 1]));
+                i += 1;
+            }
+            "--graph-guard" => {
+                graph_guard = Some(argv[i + 1].to_owned());
+                i += 1;
+            }
+            "--graph-folder" => {
+                graph_folder = Some(argv[i + 1].to_owned());
+                i += 1;
+            }
+            "--graph-max-bytes" => {
+                graph_max_bytes = argv[i + 1].parse().unwrap();
+                i += 1;
+            }
+            "--graph-resume-checks" => graph_resume_checks = true,
             other => {
                 eprintln!("unknown argument {other}");
                 std::process::exit(64);
@@ -187,12 +219,18 @@ fn main() {
         }
     });
 
+    if let Some(token) = graph_token {
+        let args = graph::Args { folder: graph_folder, max_bytes: graph_max_bytes, resume_checks: graph_resume_checks };
+        std::process::exit(graph::graph_mode(&helper, &token, graph_guard.as_deref(), args));
+    }
+
     if measure {
         std::process::exit(measure_mode(&helper, dirs, files));
     }
 
     let mut failed: Vec<String> = Vec::new();
     let mut passed = 0usize;
+    let mut timings: Vec<(String, Duration)> = Vec::new();
     for (fs, magic) in FILESYSTEMS {
         if !wanted_fs(fs) {
             continue;
@@ -202,6 +240,7 @@ fn main() {
             Ok(checks) => {
                 passed += checks.passed;
                 failed.extend(checks.failed);
+                timings.extend(checks.timings);
             }
             Err(why) => {
                 println!("  FAIL  [{fs}] the suite could not start: {why}");
@@ -215,6 +254,16 @@ fn main() {
     for failure in &failed {
         println!("  {failure}");
     }
+
+    if !timings.is_empty() {
+        timings.sort_by(|a, b| b.1.cmp(&a.1));
+        println!();
+        println!("slowest {} step(s):", timings.len().min(10));
+        for (name, elapsed) in timings.iter().take(10) {
+            println!("  {:>7.2} s  {name}", elapsed.as_secs_f64());
+        }
+    }
+
     std::process::exit(if failed.is_empty() { 0 } else { 1 });
 }
 
@@ -399,7 +448,7 @@ fn child_hostile(root_id: &str) {
 
 /// Sends `count` requests before reading a single reply, then reads them all,
 /// then asks once more. What it prints is what the helper did to a peer that
-/// is slow to read its `Ack`s (Ruling H126): `ACKS <n>` is how many replies
+/// is slow to read its `Ack`s: `ACKS <n>` is how many replies
 /// arrived before the connection ended or the count was reached, and the last
 /// line says whether the connection was still there afterwards.
 ///
@@ -516,19 +565,43 @@ fn raw_connect() -> std::io::Result<Channel> {
 struct Checks {
     passed: usize,
     failed: Vec<String>,
+    /// One entry per scenario recorded through `record_timed`, so the run can
+    /// end with the slowest steps rather than only pass/fail counts. Kernel
+    /// facts and the "helper still running" check go through plain `record`
+    /// and never appear here — they are not scenarios with a wait budget of
+    /// their own.
+    timings: Vec<(String, Duration)>,
 }
 
 impl Checks {
     fn record(&mut self, fs: &str, name: &str, outcome: Result<(), String>) {
+        self.record_timed(fs, name, outcome, None);
+    }
+
+    /// Same as `record`, but appends each `ok`/`FAIL` line with how long the
+    /// step took (e.g. `ok    [btrfs] name (1.84 s)`) and, when `elapsed` is
+    /// given, remembers it for the end-of-run slowest-steps list.
+    fn record_timed(
+        &mut self,
+        fs: &str,
+        name: &str,
+        outcome: Result<(), String>,
+        elapsed: Option<Duration>,
+    ) {
+        let suffix =
+            elapsed.map(|e| format!(" ({:.2} s)", e.as_secs_f64())).unwrap_or_default();
         match outcome {
             Ok(()) => {
-                println!("  ok    [{fs}] {name}");
+                println!("  ok    [{fs}] {name}{suffix}");
                 self.passed += 1;
             }
             Err(why) => {
-                println!("  FAIL  [{fs}] {name}: {why}");
+                println!("  FAIL  [{fs}] {name}{suffix}: {why}");
                 self.failed.push(format!("[{fs}] {name}: {why}"));
             }
+        }
+        if let Some(elapsed) = elapsed {
+            self.timings.push((format!("[{fs}] {name}"), elapsed));
         }
         let _ = std::io::stdout().flush();
     }
@@ -927,7 +1000,8 @@ impl FromRawFdChecked for OwnedFd {
 /// Whether a **read-only** opener suspended in a fanotify permission wait
 /// already counts against a write lease.
 ///
-/// Spec §8 empties a file under a write lease, on the promise that the lease
+/// Dehydration (`docs/design/hydration.md` §8) empties a file under a write
+/// lease, on the promise that the lease
 /// is refused while anybody has the file open. An opener suspended in a
 /// permission wait has no descriptor yet, and one the helper lets through
 /// still has to get past `break_lease()` afterwards. If the kernel counted a
@@ -1093,7 +1167,7 @@ impl HelperProc {
     ///
     /// Waiting for `bind` and letting `connect_daemon` retry the connect is
     /// enough, and raises no connection the helper can mistake for a daemon.
-    /// (The helper half is fixed too — Ruling H120 numbers connections at
+    /// (The helper half is fixed too — numbers connections at
     /// accept time and never lets an older one replace a newer — but a
     /// harness that does not raise the question is better than one that
     /// relies on the answer.)
@@ -1155,7 +1229,7 @@ fn count_in_log(log: &Path, needle: &str) -> usize {
 }
 
 /// How many times the helper did something it reports through a throttle
-/// (Ruling H127). A throttled line stands for as many occurrences as it says
+///. A throttled line stands for as many occurrences as it says
 /// it does; any other line stands for itself, which is also what every line
 /// meant before the throttle existed — so this counts correctly against a
 /// helper from either side of that change.
@@ -1271,8 +1345,8 @@ impl ContentSource for TestSource {
 /// daemon's request queue, because that override was a forwarding task with
 /// a 64-deep channel of its own, and every hydration in the suite went
 /// through it: the 3000-open burst measured the daemon with twice its real
-/// buffering (Ruling H142). As the newest connection of the uid, this one is
-/// where the helper sends hydrations (Ruling H125); dropped, it hands them
+/// buffering. As the newest connection of the uid, this one is
+/// where the helper sends hydrations; dropped, it hands them
 /// back to the daemon underneath.
 struct Responder {
     errno: Arc<std::sync::atomic::AtomicI32>,
@@ -1657,7 +1731,7 @@ impl Ctx {
             }
         };
         // The link's own request queue, straight into the loop production
-        // runs: nothing in between may buffer (Ruling H142).
+        // runs: nothing in between may buffer.
         let serving = self.runtime.spawn(serve_hydrations(
             link.clone(),
             requests,
@@ -1695,7 +1769,7 @@ impl Ctx {
     }
 
     /// Whether an armed fault really went off. Without it, a helper built
-    /// without the `fault-injection` feature (Ruling H121) would make both
+    /// without the `fault-injection` feature would make both
     /// unwind scenarios fail with a message about the unwind path — the one
     /// thing they would not have exercised at all.
     fn fault_fired(&self, name: &str) -> Result<(), String> {
@@ -1823,6 +1897,7 @@ fn run_suite(helper_binary: &Path, fs: &'static str, magic: i64) -> Result<Check
     }
     checks.passed += facts.passed;
     checks.failed.extend(facts.failed);
+    checks.timings.extend(facts.timings);
     Ok(checks)
 }
 
@@ -1866,7 +1941,7 @@ fn run_scenarios(ctx: &Ctx, root: &Path) -> Result<Checks, String> {
         let started = Instant::now();
         let outcome = scenario(ctx, &mut checks);
         let elapsed = started.elapsed();
-        checks.record(ctx.fs, name, outcome);
+        checks.record_timed(ctx.fs, name, outcome, Some(elapsed));
         if elapsed > Duration::from_secs(30) {
             checks.note(ctx.fs, name, &format!("took {elapsed:?}"));
         }
@@ -1983,6 +2058,10 @@ fn scenarios() -> Vec<(&'static str, Scenario)> {
         (
             "a no-interception folder is populated and freed up with a helper connected",
             no_interception_with_helper_connected,
+        ),
+        (
+            "a folder registered without the helper switches to interception when the helper starts",
+            upgraded_when_the_helper_starts,
         ),
         ("directory created later is covered", new_directory_covered),
         ("file moved out keeps its individual mark", moved_out_still_covered),
@@ -2281,7 +2360,7 @@ fn daemon_death_denies(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
     let outcome = (|| -> Result<(), String> {
         ctx.wait_for_fetch(before, Duration::from_secs(20))?;
         // `kill_daemon` drops every `HelperLink` handle, which is what a
-        // daemon process dying does to its socket (Ruling H43). Whether the
+        // daemon process dying does to its socket. Whether the
         // helper *notices* is the thing under test, and it has no interface
         // but its journal.
         let log = ctx.helper.lock().unwrap().log.clone();
@@ -2344,7 +2423,7 @@ fn daemon_death_denies(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
     outcome
 }
 
-/// Ruling H124, the disconnect half. A hydration waiting for credit belongs to
+/// The disconnect half. A hydration waiting for credit belongs to
 /// its connection as much as one already sent, and goes with it. With a slow
 /// source, twice the credit's worth of openers are suspended — at most
 /// `MAX_OUTSTANDING_HYDRATIONS` of them sent to the daemon, the rest enrolled
@@ -2437,7 +2516,7 @@ fn daemon_death_denies_queued(ctx: &Ctx, checks: &mut Checks) -> Result<(), Stri
     outcome
 }
 
-/// Ruling H125. A process of the daemon's own uid — a CLI, a second instance, a
+/// A process of the daemon's own uid — a CLI, a second instance, a
 /// probe — connects after it and then goes away. The helper routes a uid's
 /// hydrations to its newest connection, so while the newer one is there it is
 /// where they go; when it leaves, the live daemon underneath must get them
@@ -2529,7 +2608,7 @@ fn transient_connection_hands_back(ctx: &Ctx, checks: &mut Checks) -> Result<(),
     outcome
 }
 
-/// Ruling H126. A peer that sends faster than it reads its replies — two
+/// A peer that sends faster than it reads its replies — two
 /// thousand requests before it reads a single `Ack` — is backpressure, not a
 /// dead peer, and keeps its connection. It used to lose it: `serve_one` ended
 /// any connection whose `Ack` did not fit in the outbox, which a peer reaches
@@ -2651,11 +2730,11 @@ fn dehydrate_in_use(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
     }
 }
 
-/// The brief's scenario, plus review item 2: after a dehydration the file must
+/// The original proposal's scenario: after a dehydration the file must
 /// carry **no** ignore mark — punched *and* still ignored, it would be empty
 /// with every later open suppressed, reading zeros for as long as the inode
 /// stays cached. The dehydration runs on the one descriptor it opened before
-/// its first check (Ruling H68), so it raises no open of its own and depends
+/// its first check, so it raises no open of its own and depends
 /// on no exemption; what this checks is that its `ClearIgnore` really took
 /// the mark off, on fdinfo, and that the next open re-fetches.
 fn dehydrate_then_open(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
@@ -2755,9 +2834,9 @@ fn clear_ignore_after_reclaim(ctx: &Ctx, checks: &mut Checks) -> Result<(), Stri
 /// its file *after* that walk has passed it — `inflight_across_forget` — and a
 /// file carried out of the folder is never passed at all —
 /// `carried_in_ignore_mark`; both are covered by the registration walk
-/// (Ruling H138).
+///.
 ///
-/// The sequence a reviewer reasoned out, driven through the daemon's own
+/// The sequence a reasoned out, driven through the daemon's own
 /// `SyncService` so that every step is the code a real daemon runs:
 ///
 /// 1. a folder registered **with** interception; a file in it hydrated by an
@@ -2767,7 +2846,7 @@ fn clear_ignore_after_reclaim(ctx: &Ctx, checks: &mut Checks) -> Result<(), Stri
 ///    **without** interception while the daemon has no helper link — the
 ///    helper is still running with the same fanotify group;
 /// 3. the file freed up: with no link while the helper runs, that is
-///    refused and nothing changes (Ruling H146's local rule — it used to be
+/// refused and nothing changes (local rule — it used to be
 ///    punched with no `ClearIgnore`, which is what made step 2 matter); with
 ///    the link back, the helper clears the mark and the file is punched;
 /// 4. the folder registered **with** interception again, the inode still in
@@ -3004,7 +3083,7 @@ fn read_for_trace(ctx: &Ctx, path: &Path, payload: &[u8]) -> Result<(String, boo
     })
 }
 
-/// Ruling H133. Small round 3 measured, with its throwaway: a Forget with no
+/// Small round 3 measured, with its throwaway: a Forget with no
 /// helper link returned `Ok` and never told the helper, so `roots.json` kept
 /// naming the folder and the folder kept its directory marks and every
 /// hydrated file's ignore mark; registered again without interception and
@@ -3203,7 +3282,7 @@ fn pending_root_steps(
     Ok(())
 }
 
-/// Ruling H134. A no-interception folder was never announced to the helper,
+/// A no-interception folder was never announced to the helper,
 /// so a Forget has nothing to tell it — and telling it anyway made the
 /// folder impossible to forget while a helper was connected: measured in
 /// small round 3, the helper answered `EPERM` (the root is not the uid's)
@@ -3243,7 +3322,7 @@ fn no_interception_forget_is_local(ctx: &Ctx, checks: &mut Checks) -> Result<(),
     result
 }
 
-/// Ruling H135: a folder registered without interception is never announced
+/// A folder registered without interception is never announced
 /// to the helper, and `PopulateFromDirectory` marks every directory it
 /// creates — which it used to do whenever a link existed, in a
 /// no-interception folder too. The helper authorises a mark by *device*, so
@@ -3251,7 +3330,7 @@ fn no_interception_forget_is_local(ctx: &Ctx, checks: &mut Checks) -> Result<(),
 /// mark lands and the directory is intercepted, in a folder the user asked
 /// to leave alone. A reader of a placeholder under the new directory must
 /// not be intercepted at all: no mark, no fetch. (What a punch there does
-/// about an ignore mark no longer depends on this: Ruling H146's local rule
+/// about an ignore mark no longer depends on this: local rule
 /// has it clear the mark whenever there is a link.)
 fn no_interception_populate_marks_nothing(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     let folder = scenario_folder(ctx, "unintercepted-populate")?;
@@ -3357,7 +3436,7 @@ impl Drop for ScratchFs {
     }
 }
 
-/// Ruling H135, where it decides whether the mode works at all. On a
+/// Where it decides whether the mode works at all. On a
 /// filesystem where the uid owns no helper root, the helper refuses a
 /// `ClearIgnore` — and a `MarkDir` — with `EPERM`. Sending either for a
 /// no-interception folder therefore failed every dehydration there, and
@@ -3415,8 +3494,125 @@ fn no_interception_with_helper_connected(ctx: &Ctx, checks: &mut Checks) -> Resu
     result
 }
 
+/// Found in real use: a folder registered while the helper
+/// was not running ("Use Without the Helper") stayed without interception
+/// once the helper was installed, and every file in it read as zeros until a
+/// Forget and a new registration. Here the helper is really stopped while the
+/// folder is registered and filled, and a reader proves the placeholder reads
+/// as zeros then. The helper is started again, and the daemon's own
+/// supervisor — on a runtime of its own, so that its connection goes with it
+/// at the end — connects, switches the folder to interception (the helper's
+/// registration walk marks its directories), and serves the fill: a reader in
+/// another process gets the file's content.
+fn upgraded_when_the_helper_starts(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
+    let folder = scenario_folder(ctx, "upgraded")?;
+    let source = scenario_folder(ctx, "upgraded-source")?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .map_err(|e| format!("cannot build a runtime: {e}"))?;
+    let service = SyncService::new(None, None, None);
+    let result = upgraded_steps(ctx, checks, &runtime, &service, &folder, &source);
+
+    // Forgotten through the helper, under whatever the daemon ended up
+    // holding it as; then this daemon's connection is closed, so that
+    // hydrations go back to the suite's own daemon.
+    if service.root().is_some() && service.link().is_some() {
+        let _ = runtime.block_on(service.unregister_root());
+    }
+    service.set_link(None);
+    runtime.shutdown_timeout(Duration::from_secs(5));
+    drop(service);
+    if !ctx.helper_alive() || !ctx.daemon_connected() {
+        let _ = ctx.restart_helper();
+    }
+    if let Ok(link) = ctx.link() {
+        release_at_the_helper(ctx, &link, &folder);
+    }
+    let _ = std::fs::remove_dir_all(&folder);
+    let _ = std::fs::remove_dir_all(&source);
+    result
+}
+
+fn upgraded_steps(
+    ctx: &Ctx,
+    checks: &mut Checks,
+    runtime: &tokio::runtime::Runtime,
+    service: &Arc<SyncService>,
+    folder: &Path,
+    source: &Path,
+) -> Result<(), String> {
+    let payload: Vec<u8> = (0..(64usize * 1024)).map(|i| (i % 229) as u8 + 1).collect();
+    std::fs::create_dir(source.join("sub")).map_err(|e| e.to_string())?;
+    std::fs::write(source.join("sub/doc.bin"), &payload).map_err(|e| e.to_string())?;
+    let file = folder.join("sub/doc.bin");
+    let mut trace: Vec<String> = Vec::new();
+
+    // The machine before the helper is installed: no helper running at all.
+    ctx.kill_daemon();
+    ctx.helper.lock().unwrap().stop();
+    runtime
+        .block_on(service.register_root_without_interception(folder))
+        .map_err(|e| format!("cannot register {folder:?} without interception: {e}"))?;
+    let placed = runtime
+        .block_on(service.populate_from_directory(source))
+        .map_err(|e| format!("cannot populate {folder:?}: {e}"))?;
+    let before = Reader::start(&ctx.exe, &file)?.get(Duration::from_secs(30))?;
+    trace.push(format!(
+        "no helper running: registered without interception, {placed} placeholder(s), RootState \
+         {}; a reader got {}",
+        service.root_state(),
+        got(&before, &payload)
+    ));
+
+    // The helper is installed and started. The suite's own daemon connects
+    // first, so that this one's connection is the newest and the fill comes
+    // here, where the payload is.
+    ctx.restart_helper()?;
+    let supervisor = runtime.spawn(supervise_helper(
+        Arc::clone(service),
+        PathBuf::from(SOCKET_PATH),
+        Duration::from_millis(50),
+    ));
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while service.root_state() != "ready" && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let sub_marked = dir_mark_present(ctx.helper_pid(), ctx.ino_of(&folder.join("sub"))?);
+    trace.push(format!(
+        "the helper started: RootState {}, LastError {:?}, sub/ directory mark {}",
+        service.root_state(),
+        service.last_error(),
+        present(sub_marked)
+    ));
+    let after = Reader::start(&ctx.exe, &file)?.get(Duration::from_secs(60))?;
+    let state = ctx.state_of(&file)?;
+    trace.push(format!("a reader got {}; the file is {state:?}", got(&after, &payload)));
+    supervisor.abort();
+    checks.note(ctx.fs, "helper arrives", &trace.join("; "));
+
+    if !all_zeros(before.as_deref().unwrap_or_default(), payload.len()) {
+        return Err(format!(
+            "{}. Before the helper ran, the placeholder must read as zeros, or this does not \
+             reproduce the defect at all",
+            trace.join("; ")
+        ));
+    }
+    if service.root_state() != "ready" || !sub_marked {
+        return Err(format!(
+            "{}. The folder was not switched to interception when the helper arrived",
+            trace.join("; ")
+        ));
+    }
+    if after.as_deref() != Ok(payload.as_slice()) || state != Some(State::Hydrated) {
+        return Err(format!("{}. The reader did not get the file's content", trace.join("; ")));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
-// the final review's probes (C1, C2, I1, I2), kept as regression scenarios
+// Probes C1, C2, I1, I2, kept as regression scenarios
 // ---------------------------------------------------------------------------
 
 /// Whether `content` is `len` bytes of nothing but zeros: what an opener let
@@ -3437,7 +3633,7 @@ fn got(result: &Result<Vec<u8>, i32>, payload: &[u8]) -> String {
     }
 }
 
-/// C1 (the final review; Ruling H137). A hydration request enrolled while X
+/// C1. A hydration request enrolled while X
 /// was `online-only` reaches a fill slot only after X was filled directly —
 /// what `Hydrate()` does — and an opener in between found X `hydrated` and
 /// had the helper ignore-mark it. Before the fix, the stale request filled X
@@ -3534,7 +3730,7 @@ fn stale_request_after_direct_fill(ctx: &Ctx, checks: &mut Checks) -> Result<(),
     Ok(())
 }
 
-/// C2 (the final review; Ruling H138). A hydration still in flight when its
+/// C2. A hydration still in flight when its
 /// folder is forgotten finishes *after* `UnregisterRoot`'s walk has passed the
 /// file, and the helper ignore-marks it then. Before the fix the mark stayed:
 /// the folder was registered without interception — which by design sends no
@@ -3542,7 +3738,7 @@ fn stale_request_after_direct_fill(ctx: &Ctx, checks: &mut Checks) -> Result<(),
 /// again, and the reader got 65 536 zero bytes after no fetch, on all three
 /// filesystems, with the helper connected throughout and nothing injected.
 ///
-/// Since Ruling H146 the free-up itself has the helper clear the mark first,
+/// Since the free-up itself has the helper clear the mark first,
 /// whatever the folder's mode, so an emptied file never carries one; the
 /// registration walk's clearing, and the helper's refusal to mark a file for
 /// a hydration that began before an unregistration, stay as defence in
@@ -3648,7 +3844,7 @@ fn inflight_across_forget_steps(
     Ok(())
 }
 
-/// Ruling H138, the registration walk on its own, with no race in it. A file
+/// The registration walk on its own, with no race in it. A file
 /// hydrated in an intercepted folder keeps its ignore mark when it is moved
 /// out of the folder — the mark is on the inode — so the unregistration walk
 /// never meets it. Moved back in after the folder was forgotten, and freed up
@@ -3728,7 +3924,7 @@ fn carried_in_steps(
     Ok(())
 }
 
-/// I1 (the final review; Ruling H139). The helper's "read `hydrated`, then
+/// I1. The helper's "read `hydrated`, then
 /// place the ignore mark" was two steps, and nothing ordered them against a
 /// dehydration's `dehydrating` + `ClearIgnore`. A worker that read `hydrated`
 /// before the dehydration began and marked after its `ClearIgnore` left a
@@ -3827,7 +4023,7 @@ fn late_ignore_mark_steps(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> 
     Ok(())
 }
 
-/// I2 (the final review; Ruling H140). fanotify creates each event's
+/// I2. fanotify creates each event's
 /// descriptor inside the listener's `read()`, and opening a file somebody
 /// holds a write lease on waits for the lease to break. Measured by the
 /// review, and here: the helper's whole event loop stops for as long as the
@@ -3918,12 +4114,12 @@ fn leased_file_does_not_stall_others(ctx: &Ctx, checks: &mut Checks) -> Result<(
 }
 
 // ---------------------------------------------------------------------------
-// the final re-review's probes (N1, N2, N3) and the rule that replaced the
-// no-interception chain (Rulings H145–H147)
+// Probes N1, N2, N3, and the rule that replaced the
+// no-interception chain
 // ---------------------------------------------------------------------------
 
 /// What the helper logs when `read()` of its group reports that the kernel
-/// could not create one event's descriptor (Ruling H145). The helper's
+/// could not create one event's descriptor. The helper's
 /// `EVENT_FD_FAILED`, in part.
 const EVENT_FD_FAILED: &str = "could not open the descriptor";
 
@@ -3962,7 +4158,7 @@ fn answered(result: &Result<Vec<u8>, i32>, after: Duration) -> String {
     }
 }
 
-/// N1 (the final re-review; Ruling H145), first trigger. The kernel opens
+/// N1, first trigger. The kernel opens
 /// each event's descriptor with the group's `O_RDWR` against the **opener's**
 /// mount; through a read-only mount that open fails `EROFS`, and `read()` of
 /// the group returns it. The helper treated anything but four errnos as
@@ -4199,7 +4395,7 @@ fn stale_marked_files(
     Ok(files)
 }
 
-/// N2 (the final re-review), and the pattern behind it (Ruling H146). A
+/// N2, and the pattern behind it. A
 /// dehydration in a folder registered without interception used to send no
 /// `ClearIgnore`, on the strength of a chain of reasoning: nothing there is
 /// intercepted, and interception resumes only through a registration walk
@@ -4305,7 +4501,7 @@ fn rename_during_registration_walk(ctx: &Ctx, checks: &mut Checks) -> Result<(),
     result
 }
 
-/// Ruling H146's local rule, at each of the three places that can empty a
+/// local rule, at each of the three places that can empty a
 /// file in a folder registered without interception — a dehydration,
 /// startup recovery of an interrupted file, and the roll-back of a fill that
 /// failed — each against a file that carries a stale ignore mark:
@@ -4469,7 +4665,7 @@ fn local_rule_steps(
     Ok(())
 }
 
-/// Ruling H146's other half, at the helper. `ClearIgnore` used to be allowed
+/// other half, at the helper. `ClearIgnore` used to be allowed
 /// only on the filesystem of one of the asking uid's registered roots, so a
 /// daemon whose folder is registered without interception could not ask at
 /// all where it holds no helper root. Removing an ignore mark can only cause
@@ -4518,8 +4714,8 @@ fn clear_ignore_by_ownership(ctx: &Ctx, checks: &mut Checks) -> Result<(), Strin
     result
 }
 
-/// N3 (the final re-review; Ruling H147). After a reconnect the previous
-/// connection's fills keep running (H141) while the new connection's
+/// N3. After a reconnect the previous
+/// connection's fills keep running while the new connection's
 /// recovery walks, and recovery took no per-inode lock and did not read the
 /// state again under its lease. A fill that committed `hydrated` between
 /// recovery's `ClearIgnore` and its lease — with an opener having the file
@@ -4930,7 +5126,7 @@ fn errno_sweep(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     }
     drop(responder);
     let _ = path;
-    // Hydrations go back to the daemon underneath (Ruling H125), which the
+    // Hydrations go back to the daemon underneath, which the
     // rest of the suite needs.
     let back = ctx.place("sweep-after.bin", "ITEM_SWEEP_AFTER", b"THE DAEMON AGAIN")?;
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -5047,12 +5243,12 @@ fn hostile_uid(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
 
 /// Review item 7, first half. `SO_PEERCRED` on a `SOCK_SEQPACKET` socket must
 /// report the pid the fanotify event reports, or the daemon's narrow exemption
-/// (Ruling H15) either does not fire — deadlocking startup recovery — or fires
+/// either does not fire — deadlocking startup recovery — or fires
 /// for the wrong process. It is observable from here precisely because the
 /// exemption is: this process holds the connection, so its own open of an
 /// `online-only` placeholder must go straight through with no fetch, while the
 /// same open from any other process must be intercepted and filled.
-/// The final review's m4 (Ruling H144). Every connection costs the helper
+///. Every connection costs the helper
 /// two threads and about three descriptors, and the socket is 0666: any
 /// local user could open connections until the helper ran out of
 /// descriptors, and from then on every intercepted open on the machine was
@@ -5345,7 +5541,7 @@ fn dt_unknown_walk(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
 
         // Registered through the helper directly rather than through
         // `root::register_root`: the daemon refuses a folder that is not
-        // empty (Ruling H78), and the tree has to be there *before* the walk
+        // empty, and the tree has to be there *before* the walk
         // runs or there is nothing to walk.
         let link = ctx.link()?;
         let root_id = "dt-unknown-root";
@@ -5412,7 +5608,7 @@ fn dt_unknown_walk(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
 }
 
 /// Review item 12, first half. Running out of descriptors is the one failure
-/// the event loop survives on purpose (Ruling H57): the helper exiting sets
+/// the event loop survives on purpose: the helper exiting sets
 /// every outstanding permission event to *allowed*, which is silent data loss,
 /// while a denial is an errno the application can see.
 fn emfile_survived(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
@@ -5465,7 +5661,7 @@ fn emfile_survived(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
 }
 
 /// Review item 11, first half. Nothing input-reachable panics in a worker any
-/// more, so the unwind path that Ruling H37 exists for has to be injected. The
+/// more, so the unwind path that exists for has to be injected. The
 /// helper is restarted with a fault armed on a distinctive file size.
 fn worker_panic_contained(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
     const MAGIC: usize = 57005;
@@ -5527,9 +5723,9 @@ fn connection_panic_contained(ctx: &Ctx, _checks: &mut Checks) -> Result<(), Str
     Ok(())
 }
 
-/// The brief's disk-full scenario and review item 13 in one: a filesystem with
+/// The original proposal's disk-full scenario: a filesystem with
 /// no room left is the only place `pwrite` and `setxattr` both fail, which is
-/// what the commit-point ordering in `source::fill` (Ruling H48) was built
+/// what the commit-point ordering in `source::fill` was built
 /// for. Whatever fails, the one thing that must never happen is a file that
 /// reads `hydrated` over a hole.
 fn disk_full(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
@@ -5970,11 +6166,11 @@ fn burst(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
         ctx.place(&format!("burst/burst-{i}"), &format!("ITEM_BURST_{i}"), &payload)?;
     }
 
-    // Each cause of a refusal, counted through the throttle (Ruling H127). The
+    // Each cause of a refusal, counted through the throttle. The
     // outbox has had two wordings: "is not draining them" while it could fill
     // with requests, "could not be queued" since its request capacity is the
     // credit; and "hydrations outstanding on its connection" is the refusal
-    // for want of credit that Ruling H124 removed. All are counted so that
+    // for want of credit that removed. All are counted so that
     // this scenario says the same thing about a helper from either side of
     // those changes.
     let causes = |log: &Path| {
@@ -6015,7 +6211,7 @@ fn burst(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
             report.ok
         ),
     );
-    // Ruling H119: a burst is backpressure, not a wedged daemon, and must not
+    // A burst is backpressure, not a wedged daemon, and must not
     // cost the connection. When it does, what the helper said about it is the
     // only account of *why* — its writer giving up for silence, its writer
     // finding the socket gone, or the daemon hanging up — so it is printed.
@@ -6084,7 +6280,7 @@ fn burst(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
             report.errors.get(&libc::EIO).copied().unwrap_or(0)
         ));
     }
-    // Ruling H124: beyond the credit an opener waits for the daemon; it is not
+    // Beyond the credit an opener waits for the daemon; it is not
     // refused. The only refusal a burst may still meet is a bound that is
     // genuinely exhausted — the worker pool's queue — so every EAGAIN must be
     // one of those, and nothing else may be refused at all.
@@ -6329,7 +6525,7 @@ fn measure_mode(helper_binary: &Path, dirs: usize, files: usize) -> i32 {
     // Registration performs the whole `openat2` walk inside the helper, which
     // is the startup walk under another name.
     // Through `HelperLink` directly, as the DT_UNKNOWN scenario does:
-    // `root::register_root` refuses a folder that is not empty (Ruling H78),
+    // `root::register_root` refuses a folder that is not empty,
     // and a tree that already exists is the whole point of timing the walk.
     let root_id = "measure-root";
     let root_handle = match File::open(&root) {

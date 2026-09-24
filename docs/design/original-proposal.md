@@ -1,5 +1,8 @@
 # Linux OneDrive Client — Design Document
 
+The original proposal.  
+What was built, and why it differs, is in README.md and decisions.md.
+
 **Status:** Proposed design  
 **Target environment:** Fedora / KDE Plasma / Dolphin, modern Linux 7.2.x+  
 **Primary goal:** Reproduce the practical Windows OneDrive *Files On-Demand* experience on Linux without FUSE, without a custom filesystem, and without a kernel module.

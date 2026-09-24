@@ -30,7 +30,7 @@ const MAX_CONTROL_FDS: u32 = 8;
 /// the daemon sends is answered with an `Ack`, and the `Ack` travels on the
 /// same socket, in order, behind whatever requests the helper had already
 /// queued. The daemon's hydration loop holds each of its four fill slots
-/// (Ruling H29) until the `Ack` for that fill's `HydrateDone` arrives, and
+/// until the `Ack` for that fill's `HydrateDone` arrives, and
 /// its reader thread stops reading when its request queue is full. With
 /// more requests in flight than that queue holds, the reader stops with
 /// requests still in the socket ahead of an `Ack`; the slot waiting for that
@@ -44,7 +44,7 @@ const MAX_CONTROL_FDS: u32 = 8;
 /// requests in flight always fit in it and the reader always gets as far as
 /// the next `Ack`. Change one side, change both.
 ///
-/// It is a **credit**, not a limit on users (Ruling H124). A new hydration
+/// It is a **credit**, not a limit on users. A new hydration
 /// beyond it is enrolled in the helper and held back — its openers stay
 /// suspended, exactly as they would behind a request already sent — and each
 /// `HydrateDone` that returns a credit sends the oldest one waiting. It used
@@ -63,7 +63,7 @@ pub const MAX_OUTSTANDING_HYDRATIONS: usize = 64;
 /// item), `ECONNRESET`, `ETIMEDOUT` and `ECANCELED` are all *expected* inputs
 /// here and all outside the set.
 ///
-/// This lives here rather than in the helper (Ruling H51) because it is a
+/// This lives here rather than in the helper because it is a
 /// fact about the `errno` that travels in [`ToHelper::HydrateDone`] and ends
 /// up in the kernel's response word: both ends of that wire need it, the
 /// daemon to produce a deliverable value and the helper to refuse an

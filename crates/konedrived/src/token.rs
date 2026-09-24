@@ -135,6 +135,53 @@ impl TokenManager {
     }
 }
 
+/// What a Graph caller needs from the account: a current access token, and a
+/// way to say the one it got was refused. `TokenManager` in the daemon; a
+/// fixed token in the VM suite and in tests.
+#[async_trait::async_trait]
+pub trait TokenSource: Send + Sync {
+    async fn access_token(&self) -> Result<String, AuthError>;
+    async fn invalidate(&self);
+}
+
+#[async_trait::async_trait]
+impl TokenSource for TokenManager {
+    async fn access_token(&self) -> Result<String, AuthError> {
+        TokenManager::access_token(self).await
+    }
+
+    async fn invalidate(&self) {
+        TokenManager::invalidate(self).await
+    }
+}
+
+/// A token handed in from outside — the short-lived read-only token the VM
+/// suite runs with. It cannot be refreshed: once refused, it is signed out.
+pub struct StaticToken {
+    token: String,
+    refused: std::sync::atomic::AtomicBool,
+}
+
+impl StaticToken {
+    pub fn new(token: impl Into<String>) -> Self {
+        Self { token: token.into(), refused: std::sync::atomic::AtomicBool::new(false) }
+    }
+}
+
+#[async_trait::async_trait]
+impl TokenSource for StaticToken {
+    async fn access_token(&self) -> Result<String, AuthError> {
+        if self.refused.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(AuthError::SignedOut);
+        }
+        Ok(self.token.clone())
+    }
+
+    async fn invalidate(&self) {
+        self.refused.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;

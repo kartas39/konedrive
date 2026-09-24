@@ -61,6 +61,8 @@ Q_SIGNALS:
     void actionErrorChanged();
     /// BeginSignIn returned the authorization URL; the UI opens it in the browser.
     void openUrlRequested(const QString &url);
+    /// The user asked to sign out from this window (the Notifier stays quiet about it).
+    void signOutRequested();
 
 private Q_SLOTS:
     void onPropertiesChanged(const QString &interfaceName, const QVariantMap &changed, const QStringList &invalidated);

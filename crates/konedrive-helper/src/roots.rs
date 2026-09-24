@@ -56,7 +56,7 @@ impl Roots {
     /// Who registered the root with this id, if anyone.
     ///
     /// `by_id` is keyed by a **client-chosen** string, which makes it the one
-    /// map in the helper whose key is not owned by anybody (Ruling H32). The
+    /// map in the helper whose key is not owned by anybody. The
     /// key alone therefore authorises nothing: `register_root` asks this
     /// first and refuses when the answer is some other uid. Without that
     /// check, any local user could connect to the 0666 socket and replace
@@ -86,7 +86,7 @@ impl Roots {
     /// The entry itself comes back, rather than a bare `bool`, because
     /// unregistering has to *undo* the registration: the caller needs the
     /// path, `(dev, ino)` and uid to find the tree again and take its marks
-    /// off (Ruling H58), and needs the whole entry to put back if the state
+    /// off, and needs the whole entry to put back if the state
     /// file cannot be written.
     ///
     /// Roots are filtered by uid rather than by connection: they outlive both
@@ -112,20 +112,20 @@ impl Roots {
             && self.by_id.values().any(|root| root.uid == peer_uid && root.dev == object_dev)
     }
 
-    /// Whether this user has registered any root at all. Ruling H15 uses it:
+    /// Whether this user has registered any root at all. uses it:
     /// the daemon's pid is exempt from interception only for a connection that
     /// owns a root, so merely connecting to the socket buys nothing.
     pub fn has_root_for(&self, uid: u32) -> bool {
         self.by_id.values().any(|root| root.uid == uid)
     }
 
-    /// Spec §6.2: a root may not be nested in, nor contain, another root.
+    /// A root may not be nested in, nor contain, another root.
     /// Overlapping roots would mean two daemons claiming the same file and two
     /// marks on the same directory, with no rule for which one an event
     /// belongs to.
     ///
     /// **Every** registered root is compared, including one that happens to
-    /// carry the same id (Ruling H32). Skipping by id was how a second user
+    /// carry the same id. Skipping by id was how a second user
     /// reusing somebody's `root_id` slipped past this check entirely: the
     /// victim's root was not even considered as an overlap. A daemon
     /// re-announcing its own root takes its previous entry out with
@@ -211,8 +211,8 @@ impl Roots {
     }
 }
 
-/// Whether `peer_uid` may have the ignore mark taken off an object (Ruling
-/// H146): a regular file it owns, wherever it lives — no registered root
+/// Whether `peer_uid` may have the ignore mark taken off an object: a
+/// regular file it owns, wherever it lives — no registered root
 /// required, which is what a daemon whose folder is registered without
 /// interception lacks.
 ///
@@ -349,14 +349,14 @@ mod tests {
 
         // Re-announcing an existing root is still allowed, but only by
         // lifting the previous entry out first — the check itself no longer
-        // trusts a matching id (Ruling H32).
+        // trusts a matching id.
         let previous = roots.take("a").expect("the entry is there");
         assert_eq!(roots.nesting_conflict("/home/u/OneDrive", 42, 7), None);
         roots.insert(previous);
         assert_eq!(roots.iter().count(), 1);
     }
 
-    /// Ruling H32. `by_id` is keyed by a string the client chooses, so the
+    /// `by_id` is keyed by a string the client chooses, so the
     /// key authorises nothing on its own; the helper must ask who owns it.
     #[test]
     fn a_root_id_belongs_to_the_user_who_registered_it() {
@@ -402,7 +402,7 @@ mod tests {
         assert_eq!(roots.nesting_conflict("/srv/other", 43, 9), None);
     }
 
-    /// Ruling H146: ownership of a regular file is the whole test, with no
+    /// Ownership of a regular file is the whole test, with no
     /// root anywhere — and not one bit less than ownership.
     #[test]
     fn clearing_an_ignore_mark_needs_only_ownership_of_a_regular_file() {

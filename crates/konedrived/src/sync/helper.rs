@@ -17,7 +17,7 @@
 //! Three things ride on top of that FIFO queue rather than being special
 //! cases of it:
 //!
-//! - **The handshake, delivered off the caller's thread (Ruling H30).** The
+//! - **The handshake, delivered off the caller's thread.** The
 //!   reader and writer threads start immediately after the socket connects,
 //!   before any handshake happens at all. The helper's unprompted `Welcome`
 //!   greeting is read by the reader thread — exactly like every other
@@ -32,7 +32,7 @@
 //!   whose entire job is to block, and which `shutdown()` already knows how
 //!   to unblock — removes it without needing `SO_RCVTIMEO` or any other
 //!   socket-level timeout.
-//! - **`Hello` (Ruling H22).** The helper greets unprompted with `Welcome`
+//! - **`Hello`.** The helper greets unprompted with `Welcome`
 //!   before reading anything, so the client's `Hello` cannot be sent to
 //!   elicit it — sent first it would just be read as the connection's first
 //!   ordinary request. So `Hello` is queued through this same
@@ -41,12 +41,12 @@
 //!   fire-and-forget: a non-zero errno on its `Ack` means the helper
 //!   rejected our protocol version, and `connect` fails the connection
 //!   rather than proceeding.
-//! - **Call timeouts (Ruling H23).** A helper that is connected but stuck —
+//! - **Call timeouts.** A helper that is connected but stuck —
 //!   not crashed, not closed — must not hang a caller forever. Every call
 //!   is bounded (30 s; 120 s for `register_root` and `unregister_root`, which
 //!   perform a full tree walk inside the call; the `Welcome`/`Hello` handshake shares the
 //!   30 s bound too, and its 30 s cap is a documented, load-bearing part of
-//!   `connect`'s contract — see Ruling H44 on `HelperLink::connect`).
+//!   `connect`'s contract on `HelperLink::connect`).
 //!   Because pairing is strict FIFO, a timed-out call cannot simply be
 //!   dropped from `pending`: the next `Ack` would then pair with the wrong
 //!   caller. So a timeout tears the whole connection down instead, which
@@ -55,7 +55,7 @@
 //!   out gets the distinct `HelperError::Timeout`.
 //!
 //! Tearing the connection down (above) is tied to `Drop`, not to any one
-//! code path (Ruling H43): `connect_with_timeout` is `async` (Ruling H30),
+//! code path: `connect_with_timeout` is `async`,
 //! which means it can be cancelled mid-handshake — an outer
 //! `tokio::time::timeout` shorter than its internal 30 s bound, a
 //! `select!`, anything that drops the future instead of letting it run to
@@ -114,19 +114,18 @@ struct Call {
 /// pops, in arrival order, and drains the rest on disconnect).
 type PendingReplies = Arc<Mutex<VecDeque<oneshot::Sender<Result<(), HelperError>>>>>;
 
-/// Bound on every ordinary call (Ruling H23), and on the `Welcome`/`Hello`
-/// handshake (Ruling H30): a helper that is connected but silent this long
+/// Bound on every ordinary call, and on the `Welcome`/`Hello`
+/// handshake: a helper that is connected but silent this long
 /// is broken.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// `register_root` and `unregister_root` perform a full walk of the whole tree
-/// inside the call — every directory, and a lookup of every file (Rulings
-/// H132, H138) — so they get a longer bound (Ruling H23; the final review's
-/// m2).
+/// inside the call — every directory, and a lookup of every file — so they
+/// get a longer bound.
 const REGISTER_ROOT_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// A duplicate of the connection's socket that shuts the whole connection
 /// down — `shutdown(Shutdown::Both)` — whenever it is dropped, not only when
-/// some code path remembers to call `shutdown()` explicitly (Ruling H43).
+/// some code path remembers to call `shutdown()` explicitly.
 ///
 /// Every duplicate of the underlying socket shares one open file
 /// description, so shutting down any one of them (this one, or the reader's
@@ -156,14 +155,14 @@ impl Drop for ShutdownOnDrop {
 pub struct HelperLink {
     calls: blocking_mpsc::Sender<Call>,
     /// A duplicate of the connection's socket, kept to `shutdown()` it
-    /// explicitly (Ruling H23's timed-out call) and, via `ShutdownOnDrop`,
+    /// explicitly (timed-out call) and, via `ShutdownOnDrop`,
     /// whenever the last handle to it goes away for any other reason
-    /// (Ruling H43). The reader and writer threads hold their own
+    ///. The reader and writer threads hold their own
     /// duplicates of the same underlying open file description, so shutting
     /// this one down unblocks them too.
     socket: Arc<ShutdownOnDrop>,
     /// Becomes `true` when the reader thread stops — the connection is over,
-    /// whoever ended it (Ruling H141). What `supervise_helper` waits on,
+    /// whoever ended it. What `supervise_helper` waits on,
     /// rather than on `serve_hydrations`, which lets the fills already
     /// running finish before it returns.
     closed: watch::Receiver<bool>,
@@ -183,17 +182,17 @@ impl HelperLink {
     /// connection is built with `nix` instead, exactly as the helper's own
     /// listener builds its side (`konedrive-helper/src/main.rs::listen`).
     ///
-    /// `async` (Ruling H30): every blocking wait this function does — for
+    /// `async`: every blocking wait this function does — for
     /// the helper's `Welcome` and for our own `Hello`'s `Ack` — is bounded
     /// and awaited, never a raw blocking call on the caller's own thread.
     ///
-    /// Ruling H44: this can legitimately take up to 30 s (`CALL_TIMEOUT`) to
+    ///: this can legitimately take up to 30 s (`CALL_TIMEOUT`) to
     /// resolve, against a helper that accepts the connection and then never
     /// speaks — the `Welcome`/`Hello` handshake shares the same bound every
-    /// other call on `HelperLink` uses (Ruling H23). Bounding this call
+    /// other call on `HelperLink` uses. Bounding this call
     /// further from outside — a shorter `tokio::time::timeout`, a
     /// `select!`, dropping it on some other signal — is safe and expected:
-    /// Ruling H43 ties the connection's teardown to `Drop` rather than to
+    /// ties the connection's teardown to `Drop` rather than to
     /// any code path inside this function, so cancelling it part-way
     /// through the handshake still shuts the connection down and leaves
     /// nothing running in the background.
@@ -202,7 +201,7 @@ impl HelperLink {
     }
 
     /// As [`connect`](Self::connect), but with the two call-timeout bounds
-    /// (Ruling H23) overridable. Production code always goes through
+    /// overridable. Production code always goes through
     /// `connect`, which pins them at their real values; the test suite calls
     /// this directly with a much shorter bound so a "helper is stuck" test
     /// does not have to sleep the real 30 s to prove the timeout fires.
@@ -214,7 +213,7 @@ impl HelperLink {
         let stream = connect_seqpacket(socket_path)?;
         let channel = Channel::new(stream)?;
 
-        // Ruling H30: the reader and writer threads start immediately, right
+        // The reader and writer threads start immediately, right
         // here — before any handshake, and before this function has read a
         // single byte itself. Every duplicate below shares one open file
         // description with every other, so a `shutdown()` on any of them
@@ -223,7 +222,7 @@ impl HelperLink {
         // is sitting in a blocking call at the time.
         let writer_stream = channel.get_ref().try_clone()?;
         let reader_stream = channel.get_ref().try_clone()?;
-        // Wrapped in `ShutdownOnDrop` (Ruling H43): if this function returns
+        // Wrapped in `ShutdownOnDrop`: if this function returns
         // early, or is cancelled from outside while awaiting below, this
         // local's destructor shuts the connection down unconditionally —
         // see the module doc comment and `ShutdownOnDrop` itself.
@@ -348,12 +347,12 @@ impl HelperLink {
             });
         }
 
-        // Both waits below share `call_timeout` (Ruling H30/H23): a helper
+        // Both waits below share `call_timeout`: a helper
         // that accepts a connection and then sends nothing is exactly as
         // broken as one that accepts a call and never answers it. Whatever
         // goes wrong (refused, timed out, or the connection simply closing)
         // leaves the two threads just spawned with nothing left to do, but
-        // no explicit cleanup is needed here any more (Ruling H43):
+        // no explicit cleanup is needed here any more:
         // `control_stream` shuts the connection down when it drops, whether
         // that is because this function returns early below or because an
         // outer `tokio::time::timeout`/`select!` drops this whole future
@@ -362,7 +361,7 @@ impl HelperLink {
             return Err(handshake_error(e));
         }
 
-        // Ruling H22: `Hello` is queued through the same `calls`/`pending`
+        // `Hello` is queued through the same `calls`/`pending`
         // machinery as every other request, only now that both threads
         // above exist to carry and pair it — never fire-and-forget before
         // them.
@@ -391,7 +390,7 @@ impl HelperLink {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(HelperError::NotRunning),
             Err(_elapsed) => {
-                // Ruling H23: pairing is strict FIFO, so leaving this entry
+                // Pairing is strict FIFO, so leaving this entry
                 // in `pending` while only this call gives up would pair the
                 // next `Ack` with the wrong caller. Tearing the connection
                 // down is the only safe recovery: it makes the reader
@@ -434,8 +433,7 @@ impl HelperLink {
 
     /// The same long bound as [`register_root`](Self::register_root): the
     /// helper walks the whole tree inside this call too, unmarking every
-    /// directory and clearing every file's ignore mark (the final review's
-    /// m2).
+    /// directory and clearing every file's ignore mark.
     pub async fn unregister_root(&self, root_id: &str) -> Result<(), HelperError> {
         self.call(
             ToHelper::UnregisterRoot { root_id: root_id.to_owned() },
@@ -471,7 +469,7 @@ fn dup(file: &File) -> Result<OwnedFd, HelperError> {
 }
 
 /// Awaits the helper's opening `Welcome`, delivered by the reader thread
-/// (Ruling H30), bounded by `timeout`.
+///, bounded by `timeout`.
 async fn await_welcome(
     welcome_rx: oneshot::Receiver<Result<(), HelperError>>,
     timeout: Duration,
@@ -483,7 +481,7 @@ async fn await_welcome(
     }
 }
 
-/// Sends `Hello` as an ordinary queued `Call` (Ruling H22) and awaits its
+/// Sends `Hello` as an ordinary queued `Call` and awaits its
 /// `Ack`, bounded by `timeout`.
 async fn send_hello(calls: &blocking_mpsc::Sender<Call>, timeout: Duration) -> Result<(), HelperError> {
     let (reply_tx, reply_rx) = oneshot::channel();
@@ -531,7 +529,7 @@ fn connect_seqpacket(path: &Path) -> io::Result<UnixStream> {
 }
 
 /// Whether anything holds a socket bound at the helper's path, and so
-/// whether a fanotify group of the helper's can exist (Ruling H146).
+/// whether a fanotify group of the helper's can exist.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HelperPresence {
     /// Nothing is bound there: no file, or a file left behind by a helper
@@ -546,7 +544,7 @@ pub enum HelperPresence {
     Unknown(String),
 }
 
-/// Looks at the helper's socket **without connecting to it** (Ruling H146).
+/// Looks at the helper's socket **without connecting to it**.
 ///
 /// A connection, even one closed at once, is a connection the helper
 /// registers as this uid's daemon: while it lived, the uid's hydrations
@@ -586,15 +584,15 @@ pub fn helper_presence(path: &Path) -> HelperPresence {
 }
 
 /// How a punch makes sure it leaves no ignore mark of ours on the file it
-/// empties — **Ruling H146's local rule**, decided at the punch and nowhere
+/// empties — **the local rule**, decided at the punch and nowhere
 /// else.
 ///
 /// An ignore mark on an emptied file lets every later open through to its
-/// zeros, silently, for as long as the mark lives (spec §5.1: it survives
+/// zeros, silently, for as long as the mark lives (it survives
 /// modification). Whether one can be there used to be argued across the
 /// whole system — "a folder without interception cannot carry a stale mark
 /// that matters" — and that argument was falsified three times, each time by
-/// a race nobody had seen (H132, the final review's C2, the re-review's N2).
+/// a race nobody had seen (H132, the 's N2).
 /// This does not argue at all. Right before a file is emptied:
 ///
 /// - **a link to the helper exists** → the helper is asked to `ClearIgnore`,
@@ -686,7 +684,7 @@ mod tests {
         unsafe { UnixStream::from_raw_fd(fd) }
     }
 
-    /// Reads and acknowledges the daemon's opening `Hello` (Ruling H22),
+    /// Reads and acknowledges the daemon's opening `Hello`,
     /// exactly as the real helper's `apply()` does — every fake helper below
     /// must do this before it can see any real request, since `connect()`
     /// now blocks on this exchange before it returns.
@@ -788,7 +786,7 @@ mod tests {
         assert_eq!(request.req_id, 7);
     }
 
-    /// The requirement the brief leaves to the implementer: a call already
+    /// The requirement leaves to the implementer: a call already
     /// sent and awaiting its `Ack` must not hang forever if the helper goes
     /// away mid-flight. The peer here accepts, greets, acknowledges the
     /// handshake, and then closes without ever acknowledging the `MarkDir`
@@ -817,7 +815,7 @@ mod tests {
         assert!(matches!(result, Err(HelperError::NotRunning)), "{result:?}");
     }
 
-    /// Fix round 1, item 1 — strengthened per Ruling H31 after the reviewer
+    /// Strengthened after a test
     /// showed the original version passed even with `pending`'s pop end
     /// mutated from front to back (a genuine cross-wiring bug): checking
     /// only receive order and that both calls returned `Ok(())` cannot
@@ -911,12 +909,12 @@ mod tests {
         assert_eq!(request.req_id, 99);
     }
 
-    /// Fix 3, item 3 (and the direct proof of Ruling H23): a helper that
+    /// Fix 3, item 3 (and the direct proof of): a helper that
     /// accepts, greets, reads a request, and then goes silent must make the
     /// call fail with `HelperError::Timeout` rather than hang. The call
     /// timeout is injected as a few milliseconds via `connect_with_timeout`
     /// so this test does not have to sleep the real 30 s bound.
-    /// The final review's m2 (Ruling H144): `UnregisterRoot` walks the whole
+    ///: `UnregisterRoot` walks the whole
     /// tree as `RegisterRoot` does — every directory, and now every file's
     /// ignore mark — so it gets the same long bound. With the ordinary one,
     /// a large tree's unregistration timed out, and a timeout ends the
@@ -984,7 +982,7 @@ mod tests {
         assert!(matches!(result, Err(HelperError::Timeout)), "{result:?}");
     }
 
-    /// Ruling H30: a helper that accepts a connection and then sends
+    /// A helper that accepts a connection and then sends
     /// nothing — never even greets — must not hang `connect()` forever
     /// either. Same short-bound injection as the call-timeout test above.
     #[tokio::test]
@@ -1015,7 +1013,7 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::TimedOut, "{error}");
     }
 
-    /// Ruling H30, the concrete failure the reviewer demonstrated: before
+    /// The concrete failure the demonstrated: before
     /// this fix, `connect()` read `Welcome` with an unbounded, raw blocking
     /// `recvmsg` directly on the calling thread. Awaited on a
     /// current-thread runtime against a helper that accepts and then sends
@@ -1059,8 +1057,8 @@ mod tests {
         assert!(seen >= 5, "the ticker made only {seen} ticks while connect() ran; the runtime was starved");
     }
 
-    /// Ruling H43, made deterministic rather than diagnosed through `/proc`
-    /// (which the reviewer used only as a diagnostic, not as something to
+    /// Made deterministic rather than diagnosed through `/proc`
+    /// (which the used only as a diagnostic, not as something to
     /// assert on in the committed suite): cancelling `connect()` from
     /// outside — here, via an outer `tokio::time::timeout` far shorter than
     /// the connection's own 30 s handshake bound — must still shut the
@@ -1111,7 +1109,7 @@ mod tests {
         assert!(saw_eof, "the helper's recv should fail with EOF, not succeed");
     }
 
-    /// Ruling H146's probe: whether a socket is bound at the helper's path,
+    /// probe: whether a socket is bound at the helper's path,
     /// told apart without ever connecting to it — a connection would be
     /// registered as this uid's daemon while it lived.
     #[test]

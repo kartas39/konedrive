@@ -44,7 +44,7 @@ pub struct AccountService {
     endpoints: Endpoints,
     http: reqwest::Client,
     secrets: Arc<dyn SecretStore>,
-    tokens: TokenManager,
+    tokens: Arc<TokenManager>,
     sign_in_timeout: Duration,
     session: Mutex<Session>,
 }
@@ -79,7 +79,7 @@ impl AccountService {
             client_id: config.client_id.clone(),
             ..AccountSnapshot::default()
         });
-        let tokens = TokenManager::new(secrets.clone(), state.clone());
+        let tokens = Arc::new(TokenManager::new(secrets.clone(), state.clone()));
         let service = Arc::new(Self {
             state,
             paths,
@@ -98,9 +98,15 @@ impl AccountService {
         &self.state
     }
 
-    /// Access tokens for Graph callers in later sub-projects.
-    pub fn tokens(&self) -> &TokenManager {
+    /// Access tokens for Graph callers.
+    pub fn tokens(&self) -> &Arc<TokenManager> {
         &self.tokens
+    }
+
+    /// A read-only Graph drive client for the sync side, on this account's
+    /// tokens.
+    pub fn drive(&self) -> anyhow::Result<crate::drive::DriveClient> {
+        crate::drive::DriveClient::new(self.endpoints.graph.clone(), Arc::clone(&self.tokens) as Arc<dyn crate::token::TokenSource>)
     }
 
     fn oauth_client(&self, client_id: &str) -> OAuthClient {
@@ -151,7 +157,7 @@ impl AccountService {
         // ever re-registers or recovers, and, for a folder registered with
         // the helper, the only record that the helper still holds it. So a
         // file that cannot be read is not written back from defaults either
-        // (the final review's m5): refused, and left exactly as it is. A
+        //: refused, and left exactly as it is. A
         // missing file is not unreadable; it is an empty configuration.
         let mut config = Config::load(&self.paths.config_file).map_err(|e| {
             AccountError::Failed(format!(

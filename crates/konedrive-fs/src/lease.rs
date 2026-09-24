@@ -28,7 +28,7 @@ impl<'a> WriteLease<'a> {
     /// the caller retries, so it is reported as a hard error rather than
     /// folded into the same "try again later" `Ok(None)` as `EAGAIN`.
     pub fn take(file: &'a File) -> io::Result<Option<Self>> {
-        // Ruling H72: before the process can ever be a lease holder, make
+        // Before the process can ever be a lease holder, make
         // sure the kernel's way of telling us so cannot kill it.
         silence_sigio();
         // SAFETY: plain fcntl on a valid descriptor.
@@ -42,7 +42,7 @@ impl<'a> WriteLease<'a> {
 }
 
 /// Makes `SIGIO` harmless for the whole process, once, before the first
-/// lease is taken (Ruling H72).
+/// lease is taken.
 ///
 /// The kernel does not ask a lease holder anything: when another process
 /// opens the file, it *signals* the holder — `SIGIO` by default (`fcntl(2)`,
@@ -53,7 +53,7 @@ impl<'a> WriteLease<'a> {
 /// no error, no unwinding and no chance to release anything — measured: a
 /// lease holder with no handler exits `128+29`. For the daemon that would
 /// mean losing every in-flight hydration because a thumbnailer looked at one
-/// file being dehydrated (spec §8 steps 3–5 hold the lease across a punch
+/// file being dehydrated (steps 3–5 hold the lease across a punch
 /// and an `fsync`).
 ///
 /// It is set to `SIG_IGN` rather than to a handler because there is nothing
@@ -117,7 +117,7 @@ mod tests {
 
     use super::*;
 
-    /// Ruling H72. The kernel breaks a lease by signalling its holder, and
+    /// The kernel breaks a lease by signalling its holder, and
     /// the signal it uses (`SIGIO`) terminates the process by default. This
     /// is the whole failure, end to end: take a lease, have another process
     /// open the file — which is what every lease this crate takes exists to
@@ -127,7 +127,7 @@ mod tests {
     /// binary*: `error: test failed ... signal: 29, SIGIO`, taking every
     /// other test in the process with it. That is exactly what would happen
     /// to the daemon, which holds this lease across the punch and the fsync
-    /// of a whole file (spec §8 steps 3–5).
+    /// of a whole file (steps 3–5).
     #[test]
     fn a_lease_break_does_not_kill_the_process() {
         let dir = tempfile::tempdir().unwrap();

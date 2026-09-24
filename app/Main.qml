@@ -2,17 +2,59 @@ import QtQuick
 import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
-import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
+import "qml"
+
+/// The window: pages chosen from a sidebar on the left, which folds into a
+/// drawer behind a menu button when the window is narrow.
 Kirigami.ApplicationWindow {
     id: root
 
+    /// The page shown: status, activity, conflicts, skipped, account or settings.
+    property string currentPage: "status"
+    /// Wide enough for the sidebar beside a page.
+    readonly property bool sidebarFits: width >= Kirigami.Units.gridUnit * 36
+
     title: i18nc("@title:window", "KOneDrive")
-    width: Kirigami.Units.gridUnit * 28
-    height: Kirigami.Units.gridUnit * 32
+    // main.cpp shows the window unless started with --background.
+    visible: false
+    width: Kirigami.Units.gridUnit * 46
+    height: Kirigami.Units.gridUnit * 34
     minimumWidth: Kirigami.Units.gridUnit * 20
     minimumHeight: Kirigami.Units.gridUnit * 20
+
+    /// Shows one of the pages, by name.
+    function showPage(name) {
+        const pages = {
+            "status": statusPage,
+            "activity": activityPage,
+            "conflicts": conflictsPage,
+            "skipped": skippedPage,
+            "account": accountPage,
+            "settings": settingsPage,
+        };
+        if (!pages[name]) {
+            return;
+        }
+        if (name !== currentPage || pageStack.depth === 0) {
+            currentPage = name;
+            pageStack.clear();
+            pageStack.push(pages[name]);
+        }
+        if (drawer.modal) {
+            drawer.close();
+        }
+    }
+
+    /// A unix time as the time of day today, or a short date and time before.
+    function when(unixSeconds) {
+        const date = new Date(unixSeconds * 1000);
+        if (date.toDateString() === new Date().toDateString()) {
+            return date.toLocaleTimeString(Qt.locale(), Locale.ShortFormat);
+        }
+        return date.toLocaleString(Qt.locale(), Locale.ShortFormat);
+    }
 
     Connections {
         target: Account
@@ -21,174 +63,102 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    pageStack.initialPage: FormCard.FormCardPage {
-        id: page
+    Component.onCompleted: pageStack.push(statusPage)
+    pageStack.globalToolBar.showNavigationButtons: Kirigami.ApplicationHeaderStyle.NoNavigationButtons
 
-        readonly property bool available: Account.serviceAvailable
-        readonly property string accountState: Account.state
-        readonly property bool signedOut: available && accountState === "signed-out"
-        readonly property bool signingIn: available && accountState === "signing-in"
-        readonly property bool signedIn: available && accountState === "signed-in"
-        readonly property string errorText: Account.actionError.length > 0 ? Account.actionError : Account.lastError
+    globalDrawer: Kirigami.GlobalDrawer {
+        id: drawer
 
-        title: i18nc("@title", "OneDrive Account")
+        objectName: "sidebar"
+        modal: !root.sidebarFits
+        handleVisible: modal
+        width: Kirigami.Units.gridUnit * 12
+        leftPadding: 0
+        rightPadding: 0
+        topPadding: Kirigami.Units.smallSpacing
+        // A sidebar is always open; a drawer opens from its button.
+        onModalChanged: drawerOpen = !modal
+        Component.onCompleted: drawerOpen = !modal
 
-        Kirigami.InlineMessage {
-            Layout.fillWidth: true
-            Layout.topMargin: Kirigami.Units.largeSpacing
-            Layout.leftMargin: Kirigami.Units.largeSpacing
-            Layout.rightMargin: Kirigami.Units.largeSpacing
-            type: Kirigami.MessageType.Error
-            text: page.errorText
-            visible: page.available && text.length > 0
-        }
+        Repeater {
+            model: [
+                { name: "status", text: i18nc("@title sidebar", "Status"), icon: Status.iconName },
+                { name: "activity", text: i18nc("@title sidebar", "Activity"), icon: "view-history" },
+                { name: "conflicts", text: i18nc("@title sidebar", "Conflicts"), icon: "document-duplicate" },
+                { name: "skipped", text: i18nc("@title sidebar", "Not in the Folder"), icon: "view-hidden" },
+                { name: "account", text: i18nc("@title sidebar", "Account"), icon: "im-user" },
+                { name: "settings", text: i18nc("@title sidebar", "Settings"), icon: "settings-configure" },
+            ]
+            delegate: QQC2.ItemDelegate {
+                id: entry
 
-        // Daemon not reachable
-        FormCard.FormCard {
-            Layout.topMargin: Kirigami.Units.largeSpacing
-            visible: !page.available
+                required property var modelData
+                readonly property int badge: modelData.name === "conflicts" ? Sync.conflictCount : 0
 
-            FormCard.FormTextDelegate {
-                text: i18n("The KOneDrive service is not running")
-                description: i18n("Install it with scripts/dev-install.sh, then try again.")
-            }
-            FormCard.FormDelegateSeparator {}
-            FormCard.FormButtonDelegate {
-                text: i18nc("@action:button", "Try Again")
-                icon.name: "view-refresh"
-                onClicked: Account.retry()
-            }
-        }
+                objectName: "sidebar-" + modelData.name
+                Layout.fillWidth: true
+                highlighted: root.currentPage === modelData.name
+                text: modelData.text
+                icon.name: modelData.icon
+                onClicked: root.showPage(modelData.name)
 
-        // Signed out
-        FormCard.FormHeader {
-            visible: page.signedOut
-            title: i18nc("@title:group", "Sign In")
-        }
-        FormCard.FormCard {
-            visible: page.signedOut
-
-            FormCard.FormTextDelegate {
-                visible: Account.clientId.length === 0
-                text: i18n("A client ID is needed first")
-                description: i18n("Register an application in Microsoft Entra and enter its Application (client) ID under Advanced. README.md explains the steps.")
-            }
-            FormCard.FormButtonDelegate {
-                text: i18nc("@action:button", "Sign In to OneDrive")
-                icon.name: "go-next"
-                enabled: Account.clientId.length > 0
-                onClicked: Account.signIn()
-            }
-        }
-
-        // Signing in
-        FormCard.FormHeader {
-            visible: page.signingIn
-            title: i18nc("@title:group", "Signing In")
-        }
-        FormCard.FormCard {
-            visible: page.signingIn
-
-            FormCard.FormTextDelegate {
-                text: i18n("Finish signing in in your browser")
-                description: Account.signInUrl
-            }
-            FormCard.FormDelegateSeparator {}
-            FormCard.FormButtonDelegate {
-                text: i18nc("@action:button", "Copy Sign-In Link")
-                icon.name: "edit-copy"
-                enabled: Account.signInUrl.length > 0
-                onClicked: Account.copySignInUrl()
-            }
-            FormCard.FormButtonDelegate {
-                text: i18nc("@action:button", "Cancel")
-                icon.name: "dialog-cancel"
-                onClicked: Account.cancelSignIn()
-            }
-        }
-
-        // Signed in
-        FormCard.FormHeader {
-            visible: page.signedIn
-            title: i18nc("@title:group", "Account")
-        }
-        FormCard.FormCard {
-            visible: page.signedIn
-
-            FormCard.FormTextDelegate {
-                text: Account.displayName.length > 0 ? Account.displayName : i18n("Loading…")
-                description: Account.email
-            }
-            FormCard.FormDelegateSeparator {}
-            FormCard.AbstractFormDelegate {
-                background: null
-                contentItem: ColumnLayout {
-                    spacing: Kirigami.Units.smallSpacing
-
+                contentItem: RowLayout {
+                    spacing: Kirigami.Units.largeSpacing
+                    Kirigami.Icon {
+                        source: entry.icon.name
+                        implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                        implicitHeight: Kirigami.Units.iconSizes.smallMedium
+                    }
                     QQC2.Label {
                         Layout.fillWidth: true
-                        text: i18n("%1 of %2 used",
-                                   Qt.locale().formattedDataSize(Account.quotaUsed),
-                                   Qt.locale().formattedDataSize(Account.quotaTotal))
+                        text: entry.text
+                        elide: Text.ElideRight
                     }
-                    QQC2.ProgressBar {
-                        Layout.fillWidth: true
-                        from: 0
-                        to: Math.max(1, Account.quotaTotal)
-                        value: Account.quotaUsed
-                    }
-                }
-            }
-            FormCard.FormDelegateSeparator {}
-            FormCard.FormButtonDelegate {
-                text: i18nc("@action:button", "Refresh")
-                icon.name: "view-refresh"
-                onClicked: Account.refreshAccountInfo()
-            }
-            FormCard.FormButtonDelegate {
-                text: i18nc("@action:button", "Sign Out")
-                icon.name: "system-log-out"
-                onClicked: Account.signOut()
-            }
-        }
-
-        // Advanced
-        FormCard.FormHeader {
-            visible: page.available
-            title: i18nc("@title:group", "Advanced")
-        }
-        FormCard.FormCard {
-            visible: page.available
-
-            FormCard.FormTextFieldDelegate {
-                id: clientIdField
-                label: i18n("Application (client) ID")
-                placeholderText: "00000000-0000-0000-0000-000000000000"
-                enabled: page.signedOut
-
-                // FormTextFieldDelegate's inner TextField writes back to its own
-                // `text` property (onTextChanged: root.text = text), which would
-                // permanently sever a plain `text: Account.clientId` binding the
-                // first time the field's text changes (including programmatically).
-                // Re-sync explicitly instead, but never while the user is typing.
-                Component.onCompleted: text = Account.clientId
-
-                Connections {
-                    target: Account
-                    function onAccountChanged() {
-                        if (!clientIdField.fieldActiveFocus) {
-                            clientIdField.text = Account.clientId;
+                    // The count of conflicts, when there are any.
+                    Rectangle {
+                        visible: entry.badge > 0
+                        radius: height / 2
+                        color: Kirigami.Theme.negativeTextColor
+                        implicitHeight: badgeLabel.implicitHeight + Kirigami.Units.smallSpacing
+                        implicitWidth: Math.max(implicitHeight, badgeLabel.implicitWidth + Kirigami.Units.largeSpacing)
+                        QQC2.Label {
+                            id: badgeLabel
+                            anchors.centerIn: parent
+                            text: entry.badge
+                            color: Kirigami.Theme.highlightedTextColor
+                            font.bold: true
                         }
                     }
                 }
             }
-            FormCard.FormDelegateSeparator {}
-            FormCard.FormButtonDelegate {
-                text: i18nc("@action:button", "Save Client ID")
-                icon.name: "document-save"
-                enabled: page.signedOut && clientIdField.text.trim() !== Account.clientId
-                onClicked: Account.setClientId(clientIdField.text)
-            }
+        }
+        Item {
+            Layout.fillHeight: true
+        }
+    }
+
+    // The pages live for the window's lifetime: the page row borrows the one
+    // shown and hands it back here (hidden) when another is chosen.
+    Item {
+        visible: false
+
+        StatusPage {
+            id: statusPage
+        }
+        ActivityPage {
+            id: activityPage
+        }
+        ConflictsPage {
+            id: conflictsPage
+        }
+        SkippedPage {
+            id: skippedPage
+        }
+        AccountPage {
+            id: accountPage
+        }
+        SettingsPage {
+            id: settingsPage
         }
     }
 }

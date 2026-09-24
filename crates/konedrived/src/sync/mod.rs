@@ -4,17 +4,26 @@
 //! around it, the same split `crate::account`/`crate::dbus` uses for
 //! `Account1`).
 
+pub mod activity;
+pub mod baloo;
 pub mod dbus;
+pub mod disk;
+pub mod graph_source;
 pub mod helper;
+pub mod helper_status;
+pub mod listing;
+pub mod materialize;
+pub mod network;
 pub mod root;
 pub mod source;
+pub mod thumbs;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs::File;
 use std::future::Future;
 use std::io;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::MetadataExt;
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
@@ -22,13 +31,17 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use activity::{Kind, Report, Tracked};
 use async_trait::async_trait;
+use baloo::Baloo;
 use futures_util::FutureExt;
 use helper::{Clearance, HelperError, HelperLink, HydrateRequest, NotCleared};
+use helper_status::{HelperState, HelperUnit};
 use konedrive_fs::placeholder::{read_stamp, read_state, stamp_matches, State, StateError, XATTR_STATE};
 use root::{DehydrateError, RecoveryError, RecoveryReport, RegisterError, SyncRoot};
-use source::{ContentSource, Fetched, FillError, LocalDir, SourceError};
-use tokio::sync::watch;
+use source::{Answered, ContentSource, Fetched, FillError, LocalDir, SourceError};
+use tokio::sync::{watch, Notify};
+use tokio_util::sync::CancellationToken;
 
 use crate::config::Config;
 use crate::state::{SignInState, StateHandle};
@@ -36,7 +49,7 @@ use crate::state::{SignInState, StateHandle};
 /// Answers hydration requests until the helper goes away. At most four run at
 /// once; everything else waits, and no request is ever dropped silently.
 ///
-/// The permit is acquired *before* spawning (Ruling H29), not inside the
+/// The permit is acquired *before* spawning, not inside the
 /// spawned task. Acquiring it inside the task would drain the bounded mpsc
 /// of hydration requests into an unbounded pile of tasks — each holding a
 /// suspended open's event descriptor — as fast as the helper could send
@@ -59,23 +72,24 @@ use crate::state::{SignInState, StateHandle};
 /// and leaving `state=hydrating` behind on disk. That drain can take as long
 /// as a download, so nothing that must react to the connection ending may
 /// wait for this to return: [`supervise_helper`] runs it as a task of its
-/// own and waits on [`HelperLink::closed`] instead (Ruling H141).
+/// own and waits on [`HelperLink::closed`] instead.
 ///
-/// # Per-inode serialization (Task 11, Ruling H101)
+/// # Per-inode serialization
 ///
-/// Spec §8 promises "the daemon serializes operations per inode, so a
+/// Dehydration (`docs/design/hydration.md` §8) promises "the daemon
+/// serializes operations per inode, so a
 /// hydration request for a file being dehydrated runs after the dehydration
 /// finishes", but nothing enforced that: `grep` finds no such lock anywhere
-/// in this crate before this task, because nothing before it ever ran
+/// in this crate before this, because nothing before it ever ran
 /// `serve_hydrations` and `root::dehydrate` at once — `main.rs` called
-/// neither. Task 11 is what wires both into the same running daemon (see
+/// neither. This is what wires both into the same running daemon (see
 /// [`SyncService::dehydrate`], which shares the same `locks` table), so this
 /// is the first point at which two fills of the *same* file — one a
 /// hydration, one a dehydration's punch — could run concurrently and tear
 /// it.
 ///
-/// `locks` is keyed by `(st_dev, st_ino)` read from the descriptor itself
-/// (Ruling H101), which is what §8 means by "per inode" and the only key the
+/// `locks` is keyed by `(st_dev, st_ino)` read from the descriptor itself,
+/// which is what "per inode" means and the only key the
 /// two sides can be made to agree on. The version this replaces keyed on a
 /// path string — `readlink("/proc/self/fd/<n>")` here, `canonicalize()` on
 /// the D-Bus side — and two names for one inode therefore did not serialize
@@ -88,9 +102,25 @@ use crate::state::{SignInState, StateHandle};
 /// sides' key computations desynchronised them.
 pub async fn serve_hydrations(
     link: HelperLink,
+    requests: tokio::sync::mpsc::Receiver<HydrateRequest>,
+    source: Arc<dyn ContentSource>,
+    locks: InodeLocks,
+) {
+    let nowhere = Report::nowhere();
+    serve_hydrations_reporting(link, requests, source, locks, nowhere).await;
+}
+
+/// [`serve_hydrations`], reporting each fill into `report`: a
+/// `Transfers` entry while it downloads, then a `downloaded` or `failed`
+/// event, and a new measurement of the folder's space. The daemon runs this
+/// one ([`supervise_helper`]); what a fill answers the opener is the same
+/// either way, and it is answered before anything is recorded.
+pub async fn serve_hydrations_reporting(
+    link: HelperLink,
     mut requests: tokio::sync::mpsc::Receiver<HydrateRequest>,
     source: Arc<dyn ContentSource>,
     locks: InodeLocks,
+    report: Report,
 ) {
     let permits = Arc::new(tokio::sync::Semaphore::new(4));
     let mut running = tokio::task::JoinSet::new();
@@ -100,7 +130,7 @@ pub async fn serve_hydrations(
         // daemon.
         while running.try_join_next().is_some() {}
         // A request that arrives, or reaches the front, after its
-        // connection ended is not filled (Ruling H141): the helper answered
+        // connection ended is not filled: the helper answered
         // its opener `EIO` when the connection went (its disconnect guard
         // takes every job the connection had), so a fill would download a
         // file for nobody — and, while four fill slots are taken, keep this
@@ -125,8 +155,9 @@ pub async fn serve_hydrations(
         let link = link.clone();
         let source = Arc::clone(&source);
         let locks = locks.clone();
+        let report = report.clone();
         running.spawn(async move {
-            let _permit = permit;
+            let permit = permit;
             // The identity the lock is taken on: `fstat` on the event fd
             // itself, read before the fd is handed to `hydrate` (which
             // consumes it). A descriptor whose identity cannot be read at
@@ -146,11 +177,15 @@ pub async fn serve_hydrations(
                     None
                 }
             };
-            let _inode_guard = match key {
+            let inode_guard = match key {
                 Some(key) => Some(locks.lock(key).await),
                 None => None,
             };
-            // Ruling H52: a panic anywhere in the fill — including inside a
+            // Only what is shown: the name the kernel has for
+            // the file right now, read before `answer_request` takes the fd.
+            let shown = fd_path(&fd);
+            let tracked = Tracked::new(Arc::clone(&source), report.transfers.clone(), shown.clone());
+            // A panic anywhere in the fill — including inside a
             // `ContentSource` we did not write — must not become an
             // unanswerable event in the kernel. Unwinding out of here would
             // close the event fd and produce no errno at all, so
@@ -160,32 +195,64 @@ pub async fn serve_hydrations(
             // Degrading it to an `EIO` denial costs the user one failed open.
             //
             // What the request finds under the lock decides what it does
-            // (Ruling H137): a file filled while the request waited is
+            //: a file filled while the request waited is
             // answered as it is — see `source::answer_request`.
-            let filled = AssertUnwindSafe(source::answer_request(fd, source.as_ref(), Some(&link)))
+            let filled = AssertUnwindSafe(source::answer_request(fd, &tracked, Some(&link)))
                 .catch_unwind()
                 .await;
-            let errno = match filled {
-                Ok(errno) => errno,
+            let size = tracked.fetched();
+            // Whatever came of it, the download is over.
+            drop(tracked);
+            let (errno, event) = match filled {
+                Ok(answered) => (answered.errno(), fill_event(&answered, &shown, size)),
                 Err(_) => {
                     tracing::error!(
                         "the hydration of request {req_id} panicked; denying that open with EIO \
                          rather than leaving it suspended forever"
                     );
-                    libc::EIO
+                    (libc::EIO, Some(activity::event(Kind::Failed, shown, activity::failure_reason(libc::EIO))))
                 }
             };
             if let Err(e) = link.hydrate_done(req_id, errno).await {
                 tracing::error!("cannot report hydration {req_id}: {e}");
+            }
+            // The slot goes back before anything is recorded: a record that
+            // waits (the log is SQLite) must not keep a fifth request from
+            // being filled.
+            drop(inode_guard);
+            drop(permit);
+            if let Some(event) = event {
+                report.activity.record(vec![event]).await;
+                report.space.kick();
             }
         });
     }
     while running.join_next().await.is_some() {}
 }
 
-/// A file's identity, the way spec §8 means "per inode": the `(st_dev,
+/// The name the kernel has for an open file, for showing it:
+/// `/proc/self/fd/<n>`, read, never followed. Empty if it cannot be read.
+fn fd_path(fd: &impl AsRawFd) -> String {
+    std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
+        .map(|path| path.display().to_string())
+        .unwrap_or_default()
+}
+
+/// What a fill of `path` records: `downloaded` with its size
+/// when something was downloaded, `failed` with why when a fill ran and
+/// failed, and nothing when there was nothing to do.
+fn fill_event(answered: &Answered, path: &str, size: Option<u64>) -> Option<activity::Event> {
+    match answered {
+        Answered::Filled => Some(activity::event(Kind::Downloaded, path, activity::human_size(size.unwrap_or(0)))),
+        Answered::Failed(FillError::Errno(errno)) => Some(activity::event(Kind::Failed, path, activity::failure_reason(*errno))),
+        Answered::Failed(FillError::NotCleared(why)) => Some(activity::event(Kind::Failed, path, why.to_string())),
+        Answered::AlreadyThere | Answered::NotOurs => None,
+    }
+}
+
+/// A file's identity, the way means "per inode": the `(st_dev,
 /// st_ino)` pair, read from an open descriptor and never spelled as a name
-/// (Ruling H101). Two links to one inode share a key; a rename changes no
+///. Two links to one inode share a key; a rename changes no
 /// key at all.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct InodeKey {
@@ -197,7 +264,7 @@ impl InodeKey {
     /// The identity of an already-open file. Both sides of the lock have a
     /// descriptor by construction: `serve_hydrations` is handed the event
     /// fd, and `SyncService` opens through `SyncRoot::open_inside` *before*
-    /// it takes the lock (Ruling H102/H103).
+    /// it takes the lock.
     pub fn of(file: &File) -> io::Result<Self> {
         let meta = file.metadata()?;
         Ok(Self { dev: meta.dev(), ino: meta.ino() })
@@ -225,7 +292,7 @@ struct Slot {
 
 type LockTable = Arc<Mutex<HashMap<InodeKey, Slot>>>;
 
-/// Serializes hydration and dehydration of the same inode: spec §8's promise
+/// Serializes hydration and dehydration of the same inode: promise
 /// that nothing enforced before this task (see [`serve_hydrations`]'s doc
 /// comment). A file being hydrated and dehydrated at the same time is a torn
 /// file.
@@ -278,9 +345,9 @@ impl InodeLocks {
 
     /// Exclusive use of `key` if nobody holds or awaits it now, and `None`
     /// otherwise — without waiting. Startup recovery takes it this way
-    /// (Ruling H147): a fill or a free-up of the same file is running in this
+    ///: a fill or a free-up of the same file is running in this
     /// daemon, and waiting for it would hold the whole reconnect behind a
-    /// download (the very thing Ruling H141 took away), while the file it is
+    /// download (the very thing took away), while the file it is
     /// busy with is one recovery leaves alone anyway.
     pub fn try_lock(&self, key: InodeKey) -> Option<InodeGuard> {
         let mutex = {
@@ -354,7 +421,7 @@ pub struct InodeGuard {
 // `crate::dbus` uses for `Account1`); everything that actually does
 // something lives here, so it can be exercised without a bus at all.
 
-/// What `RootState` (spec §3.1) reports.
+/// What `RootState` reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootState {
     /// No root is registered.
@@ -362,10 +429,12 @@ pub enum RootState {
     /// A root is registered and, as far as this daemon knows, healthy.
     Ready,
     /// A root is registered, but **nothing intercepts opens inside it**
-    /// (Ruling H105): it was registered through
+    ///: it was registered through
     /// `RegisterRootWithoutInterception`, so a placeholder nobody fills
     /// reads as zeros until it is hydrated by hand. Distinct from `ready`
-    /// precisely because a client must be able to tell the two apart.
+    /// precisely because a client must be able to tell the two apart. A
+    /// folder registered that way because no helper was connected leaves
+    /// this state when one connects (`SyncService::upgrade`).
     NoInterception,
     /// A root is registered, but something about it needs attention: startup
     /// recovery could not finish, could not even run, or the helper went
@@ -392,12 +461,138 @@ pub struct SyncSnapshot {
     pub root_path: String,
     pub root_state: RootState,
     pub last_error: String,
+    /// An initial or `410` listing of the drive is running.
+    pub listing: bool,
+    pub items_listed: u64,
+    pub items_placed: u64,
+    pub skipped_count: u64,
+    /// What the folder's sync last ran into; `None` once a cycle succeeds.
+    pub sync_trouble: Option<SyncTrouble>,
+    /// Why files changed in the cloud are not updated here yet.
+    pub replacement_note: String,
+    /// `LastChecked`: unix seconds of the last cycle that
+    /// succeeded, 0 for never.
+    pub last_checked: i64,
+    /// `LocalBytes`: what the folder's files take on disk, as last measured
+    /// (`activity::LocalSpace`).
+    pub local_bytes: u64,
+    /// `ConflictCount`: conflicts whose rescued file is still there.
+    pub conflict_count: u32,
+    /// `HelperState` (HS1).
+    pub helper_state: HelperState,
+    /// The registered folder needs the helper and does not have it (HS2,
+    /// HS3): a folder with interception whose link is down, or one that
+    /// shows OneDrive and is not intercepted yet. `RootState` reads `error`
+    /// then, and `LastError` begins with what [`HelperState::advice`] says.
+    pub waits_for_helper: bool,
 }
 
 impl Default for SyncSnapshot {
     fn default() -> Self {
-        Self { root_path: String::new(), root_state: RootState::None, last_error: String::new() }
+        Self {
+            root_path: String::new(),
+            root_state: RootState::None,
+            last_error: String::new(),
+            listing: false,
+            items_listed: 0,
+            items_placed: 0,
+            skipped_count: 0,
+            sync_trouble: None,
+            replacement_note: String::new(),
+            last_checked: 0,
+            local_bytes: 0,
+            conflict_count: 0,
+            helper_state: HelperState::Unknown,
+            waits_for_helper: false,
+        }
     }
+}
+
+/// What the folder's sync last ran into. `blocking` trouble —
+/// signed out, another account, an unusable store — makes `RootState` read
+/// `error`; the rest (no network) is said in `LastError` and retried.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SyncTrouble {
+    pub text: String,
+    pub blocking: bool,
+}
+
+/// What a registered folder shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RootSource {
+    /// Filled from a directory with `PopulateFromDirectory`, as in part 1.
+    Local,
+    /// Listed from the signed-in drive, locked, and kept in step with it.
+    OneDrive,
+}
+
+impl RootSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            RootSource::Local => "local",
+            RootSource::OneDrive => "onedrive",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        if value == "onedrive" {
+            RootSource::OneDrive
+        } else {
+            RootSource::Local
+        }
+    }
+}
+
+/// Where a OneDrive folder's own files live.
+#[derive(Debug, Clone)]
+pub struct SyncPaths {
+    pub tree_db: PathBuf,
+    pub rescue_dir: PathBuf,
+    /// The freedesktop thumbnail cache. `None` runs no thumbnail
+    /// filler at all: the VM suite's real-account run, which must not fetch
+    /// a thumbnail of every image in the drive.
+    pub thumbnails: Option<PathBuf>,
+}
+
+/// `RootState` as published: the registration's state, unless
+/// the folder waits for the helper or the sync is blocked (`error`), or an
+/// initial listing runs (`listing`).
+///
+/// `listing` stands only for `ready`: a folder
+/// without interception keeps saying `no-interception`, the one word that
+/// warns its files read as zeros. Since HS2 such a folder never lists
+/// anyway — it is local, or it shows OneDrive and waits for the helper.
+pub fn published_state(s: &SyncSnapshot) -> &'static str {
+    let blocked = s.waits_for_helper || s.sync_trouble.as_ref().is_some_and(|t| t.blocking);
+    match s.root_state {
+        RootState::Ready | RootState::NoInterception if blocked => "error",
+        RootState::Ready if s.listing => "listing",
+        other => other.as_str(),
+    }
+}
+
+/// `LastError` as published: what the helper's absence means, the
+/// registration's text, the sync's and the replacement note, in that order
+/// — problems only. Where local work was moved out of the way is a conflict
+/// (`Conflicts()`, `ConflictCount`), not a problem, and is not said here
+///: said here, it stayed until a Forget, and a folder that
+/// ever had a conflict read as trouble for good.
+///
+/// The helper's part (HS3) is worked out from `HelperState` whenever that
+/// changes, never frozen when the link dropped: "not running" becomes
+/// "failed" when systemd says so.
+pub fn published_error(s: &SyncSnapshot) -> String {
+    let helper = if s.waits_for_helper { s.helper_state.advice().unwrap_or("") } else { "" };
+    [
+        helper,
+        s.last_error.as_str(),
+        s.sync_trouble.as_ref().map_or("", |t| t.text.as_str()),
+        s.replacement_note.as_str(),
+    ]
+    .into_iter()
+    .filter(|part| !part.is_empty())
+    .collect::<Vec<_>>()
+    .join(". ")
 }
 
 /// Shared, observable sync state (see `state::StateHandle`, the same shape
@@ -455,6 +650,8 @@ pub enum SyncError {
     NotSignedIn,
     #[error("no content source is registered; call PopulateFromDirectory first")]
     NoSource,
+    #[error("no conflict is recorded for {0}")]
+    NoConflict(String),
     #[error("{0}")]
     Io(String),
 }
@@ -490,7 +687,7 @@ impl From<DehydrateError> for SyncError {
 ///
 /// # Why `hydrate_now` fills directly rather than only through interception
 ///
-/// The brief this was built from describes a helper-connected `Hydrate()`
+/// The original design describes a helper-connected `Hydrate()`
 /// as opening the file and letting the kernel's `FAN_OPEN_PERM` interception
 /// carry the request to `serve_hydrations`, the same path a real
 /// application's `open()` takes — which is the right design *when a real
@@ -512,16 +709,17 @@ impl From<DehydrateError> for SyncError {
 /// `serve_hydrations` can be started once at daemon startup, before any
 /// root exists, and pick up whatever gets registered later.
 pub struct SyncService {
-    /// Replaceable, because the helper can go away and come back (Ruling
-    /// H107): `supervise_helper` swaps it for `None` the moment the
-    /// connection drops and back to a live link when it reconnects.
-    link: Mutex<Option<HelperLink>>,
+    /// Replaceable, because the helper can go away and come back:
+    /// `supervise_helper` swaps it for `None` the moment the
+    /// connection drops and back to a live link when it reconnects. Shared
+    /// with a OneDrive folder's sync, which reads it at every reconcile.
+    link: listing::LinkCell,
     /// The account interface's own state, on the same object path. §3.1
-    /// refuses `RegisterRoot` when nobody is signed in (Ruling H110), and
+    /// refuses `RegisterRoot` when nobody is signed in, and
     /// this is what it asks. `None` only where nothing wired it up.
     account: Option<StateHandle>,
     /// Where the registered root is persisted, so it survives a restart
-    /// (§3.1, Ruling H106). `None` disables persistence entirely.
+    /// (§3.1). `None` disables persistence entirely.
     config_file: Option<PathBuf>,
     state: SyncStateHandle,
     root: Mutex<Option<Registration>>,
@@ -537,14 +735,68 @@ pub struct SyncService {
     /// the helper holding a root the daemon did not: a folder still marked,
     /// which a later registration without interception of that folder would
     /// hold with nothing intercepting opens in it.
-    lifecycle: tokio::sync::RwLock<()>,
+    ///
+    /// A OneDrive folder's sync shares this very lock (`ListingContext::
+    /// lifecycle`): a reconcile holds it for reading while it changes the
+    /// folder, so no registration changes under it.
+    lifecycle: Arc<tokio::sync::RwLock<()>>,
     source: Mutex<Option<Arc<dyn ContentSource>>>,
     locks: InodeLocks,
-    /// Where the helper's socket is, for Ruling H146's local rule: with no
+    /// Where the helper's socket is, for local rule: with no
     /// link, a punch first looks there to see whether a helper — and so a
     /// fanotify group that could hold a mark — exists at all. Set by
     /// [`supervise_helper`] to the path it connects to.
     helper_socket: Mutex<PathBuf>,
+    /// A read-only Graph client, for a folder that shows OneDrive. `None`
+    /// until `main` sets it; without it every folder is local.
+    drive: Mutex<Option<crate::drive::DriveClient>>,
+    sync_paths: Mutex<Option<SyncPaths>>,
+    schedule: Mutex<listing::Schedule>,
+    /// The running sync of a OneDrive folder. Shared with the task that
+    /// nudges it when the account signs in ([`nudge_on_sign_in`]). Started
+    /// and stopped only under `lifecycle` held for writing — except the stop
+    /// a Forget makes before it takes that lock (see `unregister_root`).
+    syncing: Arc<Mutex<Option<Syncing>>>,
+    /// Its tree store, for `Skipped()`.
+    ///
+    /// The store's files are removed (`remove_tree_store`) only with
+    /// `lifecycle` held for writing and the sync stopped, and nothing may be
+    /// reading them then. So no clone of the store outlives
+    /// [`stop_sync`](SyncService::stop_sync): the sync's own go when it
+    /// returns (`Poller::stop` waits for every task that holds one). Any
+    /// other clone is taken, and dropped, with `lifecycle` held for reading
+    /// (`skipped`).
+    store: Mutex<Option<crate::tree::Store>>,
+    /// Keeps KDE's Baloo indexer out of a fresh OneDrive folder, and lets a
+    /// forgotten one back in (`sync::baloo`). Starts as
+    /// [`Baloo::disabled`], which runs no program at all — only `main`
+    /// installs the real `balooctl6`; a test that forgets `set_baloo` must
+    /// never reach the user's own indexer settings.
+    baloo: Mutex<Arc<Baloo>>,
+    /// The activity log, the conflicts, the downloads under way and the
+    /// folder's space, shared with the hydration loop and a
+    /// OneDrive folder's sync. Its store is a clone of `store`'s, attached by
+    /// [`start_sync`](Self::start_sync) and detached by
+    /// [`stop_sync`](Self::stop_sync), after which no write holds it.
+    report: Report,
+    /// What `HelperState` asks while there is no link (HS1). Starts as
+    /// [`helper_status::NotAsked`], which asks nothing: only `main` installs
+    /// systemd, so no test reaches the system bus.
+    helper_unit: Mutex<Arc<dyn HelperUnit>>,
+    /// Told whenever the link comes or goes, so [`watch_helper`] asks again
+    /// at once.
+    helper_changed: Arc<Notify>,
+}
+
+/// A OneDrive folder's sync while it runs.
+struct Syncing {
+    poller: listing::Poller,
+    /// [`nudge_on_sign_in`], stopped with the poller.
+    sign_in_watch: Option<tokio::task::JoinHandle<()>>,
+    /// The thumbnail filler and the token that stops it: started
+    /// and stopped with the poller, so a Forget leaves no clone of the tree
+    /// store with it either. `None` when [`SyncPaths::thumbnails`] is.
+    thumbnails: Option<(tokio::task::JoinHandle<()>, CancellationToken)>,
 }
 
 /// A registered root and how — or whether — opens inside it are intercepted.
@@ -552,12 +804,33 @@ pub struct SyncService {
 struct Registration {
     root: SyncRoot,
     /// False only for a root registered through
-    /// `RegisterRootWithoutInterception` (Ruling H105).
+    /// `RegisterRootWithoutInterception`.
     intercepted: bool,
     /// Whether its last recovery left interrupted files as found because a
-    /// helper was running that this daemon had no link to (Ruling H146), so
+    /// helper was running that this daemon had no link to, so
     /// the next link runs it again ([`SyncService::resume`]).
     recovery_deferred: bool,
+    /// What it shows, decided when it was first registered and
+    /// kept with it for good.
+    source: RootSource,
+    /// Registered and recovered ([`SyncService::commit`]), so that a OneDrive
+    /// folder's sync may run. False for a root only held until its helper is
+    /// back ([`SyncService::hold`]), and for one kept after a registration
+    /// that failed ([`SyncService::abandon`]).
+    brought_up: bool,
+    /// Whether *this daemon* excluded the root from Baloo, so
+    /// [`unregister_root`](SyncService::unregister_root) knows whether to
+    /// take that exclusion back off. Always false outside
+    /// [`SyncService::commit`]: `hold` and `abandon`'s kept-registered branch
+    /// construct a `Registration` before `commit` has run, so nothing has
+    /// been added to Baloo yet either.
+    baloo_excluded: bool,
+    /// Registered without interception only because no helper was connected
+    ///, so it switches to interception when one connects
+    /// ([`SyncService::upgrade`]). False for every intercepted root, and for
+    /// one registered without interception on purpose — with a helper
+    /// connected.
+    upgrade_when_helper: bool,
 }
 
 /// A root as `config.toml` records it.
@@ -567,12 +840,40 @@ struct Persisted {
     /// Empty in a config written before the id was recorded.
     root_id: String,
     intercepted: bool,
+    source: RootSource,
+    /// Whether this daemon is the one that excluded the root from Baloo
+    ///; `false` in a config written before this existed.
+    baloo_excluded: bool,
+    /// [`Registration::upgrade_when_helper`].
+    upgrade_when_helper: bool,
 }
 
 impl Persisted {
-    fn of(root: &SyncRoot, intercepted: bool) -> Self {
-        Self { path: root.path.clone(), root_id: root.root_id.clone(), intercepted }
+    fn of(
+        root: &SyncRoot,
+        intercepted: bool,
+        source: RootSource,
+        baloo_excluded: bool,
+        upgrade_when_helper: bool,
+    ) -> Self {
+        Self {
+            path: root.path.clone(),
+            root_id: root.root_id.clone(),
+            intercepted,
+            source,
+            baloo_excluded,
+            upgrade_when_helper,
+        }
     }
+}
+
+/// How a switch to interception ([`SyncService::upgrade`]) that did not go
+/// through left the folder.
+enum NotSwitched {
+    /// As it was, without interception: the helper holds nothing of it. Why.
+    Kept(String),
+    /// Intercepted, waiting for the next connect: the helper may hold it.
+    Held,
 }
 
 /// What `LastError` says while a root is registered without interception.
@@ -583,12 +884,10 @@ pub const NO_INTERCEPTION_WARNING: &str =
     "this folder is registered WITHOUT interception: nothing fills a placeholder when it is \
      opened, so files in this folder read as zeros until they are explicitly hydrated";
 
-/// What `LastError` says while the helper is gone and a root needs it
-/// (Ruling H107). The published state must not keep saying `ready` while the
-/// sync folder is, in the only sense that matters, dead.
-pub const HELPER_LOST_WARNING: &str =
-    "the konedrive helper is not connected: opens inside the sync folder are not intercepted, \
-     so files that are not downloaded read as zeros until it comes back";
+/// What `LastError` adds when a folder registered without the helper could
+/// not be switched to interception once the helper connected.
+const SWITCH_FAILED: &str =
+    "the konedrive helper is connected, but switching this folder to interception failed";
 
 impl SyncService {
     /// `account` gates `RegisterRoot` on somebody being signed in (§3.1);
@@ -599,17 +898,94 @@ impl SyncService {
         account: Option<StateHandle>,
         config_file: Option<PathBuf>,
     ) -> Arc<Self> {
+        let helper_state = if link.is_some() { HelperState::Connected } else { HelperState::Unknown };
+        let state = SyncStateHandle::new(SyncSnapshot { helper_state, ..SyncSnapshot::default() });
         Arc::new(Self {
-            link: Mutex::new(link),
+            link: Arc::new(Mutex::new(link)),
             account,
             config_file,
-            state: SyncStateHandle::new(SyncSnapshot::default()),
+            report: Report::new(state.clone()),
+            state,
             root: Mutex::new(None),
-            lifecycle: tokio::sync::RwLock::new(()),
+            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
             source: Mutex::new(None),
             locks: InodeLocks::new(),
             helper_socket: Mutex::new(PathBuf::from(konedrive_proto::SOCKET_PATH)),
+            drive: Mutex::new(None),
+            sync_paths: Mutex::new(None),
+            schedule: Mutex::new(listing::Schedule::default()),
+            syncing: Arc::new(Mutex::new(None)),
+            store: Mutex::new(None),
+            baloo: Mutex::new(Arc::new(Baloo::disabled())),
+            helper_unit: Mutex::new(Arc::new(helper_status::NotAsked)),
+            helper_changed: Arc::new(Notify::new()),
         })
+    }
+
+    /// What `HelperState` asks while there is no link (HS1): `main`
+    /// installs systemd ([`helper_status::Systemd`]); a test, a fake.
+    pub fn set_helper_unit(&self, unit: Arc<dyn HelperUnit>) {
+        *self.helper_unit.lock().unwrap() = unit;
+        self.helper_changed.notify_one();
+    }
+
+    /// `HelperState` (HS1).
+    pub fn helper_state(&self) -> String {
+        self.state.get().helper_state.as_str().to_owned()
+    }
+
+    /// Works `HelperState` out again: `connected` while there is a link,
+    /// else what systemd says of the unit. A link that came up while systemd
+    /// was being asked wins.
+    pub async fn check_helper(&self) {
+        if self.link().is_some() {
+            self.state.update(|s| s.helper_state = HelperState::Connected);
+            return;
+        }
+        let unit = Arc::clone(&self.helper_unit.lock().unwrap());
+        let found = match unit.states().await {
+            Some((load, active)) => HelperState::of_unit(&load, &active),
+            None => HelperState::Unknown,
+        };
+        self.state.update(|s| {
+            if self.link().is_none() {
+                s.helper_state = found;
+            }
+        });
+    }
+
+    /// The drive a folder registered while signed in shows.
+    /// Without one, every folder is local.
+    pub fn set_drive(&self, drive: crate::drive::DriveClient) {
+        *self.drive.lock().unwrap() = Some(drive);
+    }
+
+    /// What keeps a fresh OneDrive folder out of KDE's Baloo indexer.
+    /// Without this call it is [`Baloo::disabled`], which runs no
+    /// program at all: `main` installs [`Baloo::default`] (`balooctl6`);
+    /// tests point this at a fake so the real indexer settings are never
+    /// touched.
+    pub fn set_baloo(&self, baloo: Baloo) {
+        *self.baloo.lock().unwrap() = Arc::new(baloo);
+    }
+
+    /// Where a OneDrive folder's tree store, rescues and thumbnails go.
+    /// Without them, every folder is local.
+    pub fn set_sync_paths(&self, paths: SyncPaths) {
+        *self.sync_paths.lock().unwrap() = Some(paths);
+    }
+
+    /// Puts `source` in place of the folder's content source — the VM suite's
+    /// real-account scenarios wrap the Graph source to record and
+    /// break fetches. Nothing in the daemon calls it.
+    pub fn replace_content_source(&self, source: Arc<dyn ContentSource>) {
+        *self.source.lock().unwrap() = Some(source);
+    }
+
+    /// How often a OneDrive folder is synced; takes effect at the next start
+    /// of its sync.
+    pub fn set_schedule(&self, schedule: listing::Schedule) {
+        *self.schedule.lock().unwrap() = schedule;
     }
 
     /// Where the helper's socket is (see `helper_socket`). Defaults to
@@ -619,7 +995,7 @@ impl SyncService {
     }
 
     /// What a punch goes by when nothing ties it to a link of its own
-    /// (Ruling H146's local rule, on [`Clearance`]): the live link if there
+    /// (local rule, on [`Clearance`]): the live link if there
     /// is one, the helper's socket if not.
     fn clearance(&self) -> Clearance {
         match self.link() {
@@ -630,6 +1006,11 @@ impl SyncService {
 
     pub fn state(&self) -> &SyncStateHandle {
         &self.state
+    }
+
+    /// Where every download, free-up and reconcile reports to.
+    pub fn report(&self) -> &Report {
+        &self.report
     }
 
     /// The lock table `serve_hydrations` must share with this service, so
@@ -644,9 +1025,14 @@ impl SyncService {
         self.link.lock().unwrap().clone()
     }
 
-    /// Publishes a new helper link, or its loss (Ruling H107).
+    /// Publishes a new helper link, or its loss — and so
+    /// `HelperState` (HS1): `connected` at once, or, on a loss, `unknown`
+    /// until [`watch_helper`] has asked systemd.
     pub fn set_link(&self, link: Option<HelperLink>) {
+        let now = if link.is_some() { HelperState::Connected } else { HelperState::Unknown };
         *self.link.lock().unwrap() = link;
+        self.state.update(|s| s.helper_state = now);
+        self.helper_changed.notify_one();
     }
 
     fn registration(&self) -> Option<Registration> {
@@ -665,27 +1051,34 @@ impl SyncService {
         self.registration().map(|r| r.root)
     }
 
+    /// `RootState` as published ([`published_state`]).
     pub fn root_state(&self) -> String {
-        self.state.get().root_state.as_str().to_owned()
+        published_state(&self.state.get()).to_owned()
     }
 
+    /// `LastError` as published ([`published_error`]).
     pub fn last_error(&self) -> String {
-        self.state.get().last_error
+        published_error(&self.state.get())
     }
 
-    /// Binds an empty (or previously-registered, Ruling H78) folder to the
-    /// account, then runs startup recovery on it (Ruling H80: recovery
+    /// `RootSource`.
+    pub fn root_source(&self) -> String {
+        self.registration().map(|r| r.source.as_str().to_owned()).unwrap_or_default()
+    }
+
+    /// Binds an empty (or previously-registered) folder to the
+    /// account, then runs startup recovery on it (recovery
     /// always runs *after* registration, on the same live helper link, so a
     /// file left `dehydrating` mid-`ClearIgnore` can still be cleaned up).
     ///
     /// Refused before anything is touched when nobody is signed in, or when
-    /// a root is already registered (§3.1, Ruling H110). The second of those
+    /// a root is already registered (§3.1). The second of those
     /// used to be accepted: a second `register_root` returned `Ok(())` and
     /// silently replaced the root, leaving the first one registered with the
     /// helper — still marked, still walked — while `ItemState` started
     /// calling its files `not-managed`.
     ///
-    /// Refused without a helper, too (Ruling H105): no helper means no
+    /// Refused without a helper, too: no helper means no
     /// interception, and a placeholder nobody intercepts reads as zeros.
     /// [`register_root_without_interception`](Self::register_root_without_interception)
     /// is the explicit way to ask for that anyway.
@@ -698,9 +1091,12 @@ impl SyncService {
         self.bind(path, true, true).await
     }
 
-    /// `RegisterRoot` for a machine with no privileged helper (Ruling H105):
-    /// the same folder checks, the same root id, the same placeholders, and
-    /// nothing intercepting anything.
+    /// The developer's mode (HS2): `RegisterRoot`'s folder
+    /// checks, root id and placeholders, and nothing intercepting anything.
+    /// The folder is always local — filled with `PopulateFromDirectory`,
+    /// never from OneDrive, whoever is signed in: a OneDrive folder is kept in
+    /// step only with the helper (HS2). Without the helper, a file that is
+    /// not downloaded reads as zeros.
     ///
     /// A separate method rather than a second argument to `RegisterRoot`:
     /// D-Bus has no optional arguments, so a flag would change the signature
@@ -712,14 +1108,25 @@ impl SyncService {
     /// # Why this one does not ask whether anybody is signed in
     ///
     /// `RegisterRoot` does, because §3.1 binds a folder "to the signed-in
-    /// drive". This method exists for the case where there is no drive and
-    /// no helper: a standing project ruling keeps the privileged helper
-    /// inside a VM, and the folder is driven from a local directory
+    /// drive". This method is the developer's, for a machine with no drive
+    /// and no helper: the folder is driven from a local directory
     /// (`PopulateFromDirectory`) rather than from OneDrive. Requiring a
     /// Microsoft sign-in here would put the one path that works without the
-    /// cloud behind the cloud, which is the whole thing Ruling H105 set out
+    /// cloud behind the cloud, which is the whole thing set out
     /// to unblock. Nothing in this mode touches the account: the content
     /// comes from a directory the caller names.
+    ///
+    /// # Made with no helper connected, it switches when one connects
+    ///
+    /// The window calls this when `RegisterRoot` was refused for want of a
+    /// helper ("Use Without the Helper"), and a helper installed later used
+    /// to change nothing: the folder read as zeros until a Forget and a new
+    /// registration. So a registration made with no helper connected is
+    /// recorded as one to switch, and [`resume`](Self::resume) switches it
+    /// to interception when the helper connects (`upgrade`). Made with a
+    /// helper connected, the mode was chosen with interception on offer, and
+    /// it stays. (A folder that shows OneDrive left without interception by
+    /// a daemon from before HS2 switches whatever it was recorded as.)
     pub async fn register_root_without_interception(
         &self,
         path: &Path,
@@ -749,13 +1156,32 @@ impl SyncService {
         Ok(())
     }
 
+    /// A folder registered while signed in, with a drive
+    /// configured, and with interception, shows OneDrive; any other is
+    /// local. Asked only of a new registration — a folder brought back keeps
+    /// what `config.toml` records, whoever is signed in by then.
+    ///
+    /// "With interception" is HS2's: a registration without it is always
+    /// the developer's local folder, filled with `PopulateFromDirectory`. A
+    /// OneDrive folder nobody intercepts would read as zeros wherever a file
+    /// is not downloaded, and is never made any more.
+    fn fresh_source(&self, intercepted: bool) -> RootSource {
+        let signed_in = self.account.as_ref().is_some_and(|a| a.get().state == SignInState::SignedIn);
+        let configured = self.drive.lock().unwrap().is_some() && self.sync_paths.lock().unwrap().is_some();
+        if signed_in && configured && intercepted {
+            RootSource::OneDrive
+        } else {
+            RootSource::Local
+        }
+    }
+
     /// Registers `path`, recovers it, and publishes the result — the half
     /// shared by a `RegisterRoot` call, a `RegisterRootWithoutInterception`
     /// call, and a root brought back up at startup or after the helper
     /// reconnected. `fresh` is true for the first two: a registration the
     /// daemon did not hold before this call.
     ///
-    /// # Ruling H110: nothing is committed until nothing can still fail
+    /// # Nothing is committed until nothing can still fail
     ///
     /// The root is stored and published only once registration *and*
     /// recovery are done. The version this replaces stored the root and
@@ -768,10 +1194,10 @@ impl SyncService {
     /// A per-file recovery failure (`report.failed > 0`) does *not* fail
     /// this call — the root itself is registered and usable — but it does
     /// flip `RootState` to `error` and fill `LastError` with what could not
-    /// be fixed: a refused `ClearIgnore` leaves a file in the state spec §8
+    /// be fixed: a refused `ClearIgnore` leaves a file in the state
     /// calls silently unrecoverable, so it must not stay silent here.
     ///
-    /// # Whatever the helper holds, the daemon holds (Ruling H135, link 2)
+    /// # Whatever the helper holds, the daemon holds (link 2)
     ///
     /// A folder the helper holds and the daemon does not is a folder the
     /// daemon will accept for `RegisterRootWithoutInterception` — and then
@@ -794,15 +1220,48 @@ impl SyncService {
     /// disk, and a failure leaves it exactly as it was.
     ///
     /// A root registered without interception is never announced to the
-    /// helper (Rulings H105, H134, H135): not registered, not marked, not
+    /// helper: not registered, not marked, not
     /// unregistered. What its recovery may still ask is `ClearIgnore`, by the
-    /// same local rule every punch follows (Ruling H146).
+    /// same local rule every punch follows.
+    ///
+    /// # What the folder shows
+    ///
+    /// A new registration shows OneDrive when it is made signed in with a
+    /// drive configured ([`fresh_source`](Self::fresh_source)); a folder
+    /// brought back shows what it showed before — the registration held, or
+    /// else what `config.toml` records — whoever is signed in by then.
     async fn bind(&self, path: &Path, intercepted: bool, fresh: bool) -> Result<(), SyncError> {
+        let source = if fresh {
+            self.fresh_source(intercepted)
+        } else {
+            self.registration()
+                .map(|reg| reg.source)
+                .or_else(|| self.persisted_root().map(|p| p.source))
+                .unwrap_or(RootSource::Local)
+        };
+        if fresh && source == RootSource::OneDrive {
+            // A tree store left by a folder forgotten earlier describes
+            // another folder.
+            self.remove_tree_store().await;
+        }
+
         if !intercepted {
+            // A new registration without interception made with no
+            // helper connected is the window's fallback, and switches to
+            // interception when one connects; made with one connected, it is
+            // a choice, and stays. A folder brought back keeps what it had.
+            let upgrade_when_helper = if fresh {
+                self.link().is_none()
+            } else {
+                self.registration()
+                    .map(|reg| reg.upgrade_when_helper)
+                    .or_else(|| self.persisted_root().map(|p| p.upgrade_when_helper))
+                    .unwrap_or(false)
+            };
             let root = root::register_root_unprotected(path).await?;
             let recovery = root::recover(&self.clearance(), &root, &self.locks).await;
             let report = self.recovered(&root, recovery)?;
-            self.commit(root, false, report);
+            self.commit(root, false, source, fresh, upgrade_when_helper, report).await;
             return Ok(());
         }
 
@@ -810,7 +1269,11 @@ impl SyncService {
         let (dir, root) = root::prepare(path).await?;
         let previous = if fresh {
             let previous = self.persisted_root();
-            self.save_root(Some(&Persisted::of(&root, true))).map_err(SyncError::Io)?;
+            // Baloo is not checked yet at this point (it runs, at most, once
+            // `commit` below has recovery's word that the registration
+            // stuck); `commit`'s own `remember` corrects this the moment it
+            // knows.
+            self.save_root(Some(&Persisted::of(&root, true, source, false, false))).map_err(SyncError::Io)?;
             Some(previous)
         } else {
             None
@@ -829,12 +1292,12 @@ impl SyncService {
         };
         match outcome {
             Ok(report) => {
-                self.commit(root, true, report);
+                self.commit(root, true, source, fresh, false, report).await;
                 Ok(())
             }
             Err(error) => {
                 if let Some(previous) = previous {
-                    self.abandon(&link, root, previous, &error).await;
+                    self.abandon(&link, root, source, previous, &error).await;
                 }
                 Err(error)
             }
@@ -860,8 +1323,16 @@ impl SyncService {
     }
 
     /// Stores, records and publishes a registration that has been made and
-    /// recovered.
-    fn commit(&self, root: SyncRoot, intercepted: bool, report: RecoveryReport) {
+    /// recovered, and starts — or nudges — a OneDrive folder's sync.
+    async fn commit(
+        &self,
+        root: SyncRoot,
+        intercepted: bool,
+        source: RootSource,
+        fresh: bool,
+        upgrade_when_helper: bool,
+        report: RecoveryReport,
+    ) {
         let mut trouble = None;
         if report.failed > 0 {
             trouble = Some(format!(
@@ -878,16 +1349,18 @@ impl SyncService {
             ));
             tracing::warn!("{}", trouble.as_deref().unwrap_or_default());
         } else if report.busy > 0 {
-            // Not an error (the final review's m11): what has such a file
-            // open is, as often as not, the very open that will fill it.
-            trouble = Some(format!(
+            // Not an error: what has such a file
+            // open is, as often as not, the very open that will fill it. So
+            // it is logged and not said in `LastError` (B-M11): said there,
+            // it stayed for the whole session, long after the file was
+            // filled.
+            tracing::info!(
                 "startup recovery left {} interrupted file(s) as they were because they were in \
                  use; each is filled when it is next opened, or reset at the next start",
                 report.busy
-            ));
-            tracing::info!("{}", trouble.as_deref().unwrap_or_default());
+            );
         } else if report.deferred > 0 {
-            // Not an error either (Ruling H146): recovery runs again the
+            // Not an error either: recovery runs again the
             // moment the link is up.
             trouble = Some(format!(
                 "startup recovery left {} interrupted file(s) as they were: a konedrive helper \
@@ -897,14 +1370,46 @@ impl SyncService {
             tracing::info!("{}", trouble.as_deref().unwrap_or_default());
         }
 
+        // A OneDrive folder is kept out of Baloo, unless it — or
+        // a directory above it — is excluded already, in which case nothing
+        // is added and nothing this daemon did not add is ever taken off
+        // (`unregister_root`). A folder brought back up that `config.toml`
+        // records as excluded by this daemon carries that forward, so a
+        // restart between a registration and its Forget still gets the
+        // Forget right. Any other is asked again at every commit, fresh or
+        // not: the exclusion of a fresh folder can
+        // have failed or timed out, been cut off by a kill before it was
+        // recorded, or been refused by a registration kept after it failed
+        // (`abandon`); or Baloo came later. It only ever adds.
+        let baloo_excluded = if source != RootSource::OneDrive {
+            false
+        } else if !fresh && self.persisted_root().is_some_and(|p| p.baloo_excluded) {
+            true
+        } else {
+            let baloo = Arc::clone(&self.baloo.lock().unwrap());
+            if baloo.is_excluded(&root.path).await {
+                false
+            } else {
+                baloo.exclude(&root.path).await
+            }
+        };
+
         // `config.toml` names what is registered now: a fresh root without
         // interception is written down here (a fresh intercepted one already
         // was, before the helper heard of it), and a root brought back up
         // under an id other than the recorded one is corrected.
-        self.remember(&Persisted::of(&root, intercepted));
+        self.remember(&Persisted::of(&root, intercepted, source, baloo_excluded, upgrade_when_helper));
         let path = root.path.display().to_string();
         let recovery_deferred = report.deferred > 0;
-        *self.root.lock().unwrap() = Some(Registration { root, intercepted, recovery_deferred });
+        *self.root.lock().unwrap() = Some(Registration {
+            root,
+            intercepted,
+            recovery_deferred,
+            source,
+            brought_up: true,
+            baloo_excluded,
+            upgrade_when_helper,
+        });
         self.state.update(|s| {
             s.root_path = path;
             // A recovery that could not reset a file outranks the mode in
@@ -923,12 +1428,21 @@ impl SyncService {
                 (false, None) => NO_INTERCEPTION_WARNING.to_owned(),
                 (false, Some(trouble)) => format!("{NO_INTERCEPTION_WARNING}. {trouble}"),
             };
+            // HS2: a folder that shows OneDrive is kept in step only with
+            // interception; one registered without it before HS waits for
+            // the helper, and switches when it connects (`resume`).
+            s.waits_for_helper = !intercepted && source == RootSource::OneDrive;
         });
+        // `LocalBytes` for the folder now registered.
+        self.report.space.kick();
+        if source == RootSource::OneDrive && intercepted {
+            self.start_sync().await;
+        }
     }
 
     /// Undoes a fresh intercepted registration that failed after the helper
     /// may have saved it: the helper is told to let go, and `config.toml` is
-    /// put back the way it was (Ruling H110, on both sides).
+    /// put back the way it was (on both sides).
     ///
     /// If the helper cannot confirm it let go — the link dropped, the call
     /// timed out, anything but an answer — the root is kept instead, as
@@ -936,16 +1450,20 @@ impl SyncService {
     /// hold must never be one the daemon holds nothing of: the next thing it
     /// would accept for that folder is a registration without interception.
     /// It leaves the way every intercepted root leaves, through the helper
-    /// (Ruling H133), and a retry is answered "already registered" until it
+    ///, and a retry is answered "already registered" until it
     /// has.
     ///
     /// `EPERM` counts as having let go: the helper answers it when it holds
     /// no root of this uid under that id, which is what a registration it
     /// refused leaves behind.
+    ///
+    /// A root kept is kept with the `source` `config.toml` now records for
+    /// it, and with no sync: that starts when the root is brought up.
     async fn abandon(
         &self,
         link: &HelperLink,
         root: SyncRoot,
+        source: RootSource,
         previous: Option<Persisted>,
         why: &SyncError,
     ) {
@@ -962,8 +1480,15 @@ impl SyncService {
                 );
                 tracing::error!("{message}");
                 let path = root.path.display().to_string();
-                *self.root.lock().unwrap() =
-                    Some(Registration { root, intercepted: true, recovery_deferred: false });
+                *self.root.lock().unwrap() = Some(Registration {
+                    root,
+                    intercepted: true,
+                    recovery_deferred: false,
+                    source,
+                    brought_up: false,
+                    baloo_excluded: false,
+                    upgrade_when_helper: false,
+                });
                 self.state.update(|s| {
                     s.root_path = path;
                     s.root_state = RootState::Error;
@@ -974,9 +1499,9 @@ impl SyncService {
     }
 
     /// Forgets the root and clears the published state. The files themselves
-    /// are left exactly as they are (spec §3.1).
+    /// are left exactly as they are.
     ///
-    /// # Ruling H133: an intercepted root is forgotten through the helper, or not at all
+    /// # An intercepted root is forgotten through the helper, or not at all
     ///
     /// The helper's `UnregisterRoot` is the one thing that takes an
     /// intercepted root's marks off — its directory marks, and the ignore
@@ -997,16 +1522,64 @@ impl SyncService {
     /// would only make it impossible to forget. Any other failure keeps it,
     /// because then the helper may well still hold it.
     ///
-    /// # Ruling H134: a root registered without interception never involves the helper
+    /// # A root registered without interception never involves the helper
     ///
     /// It was never announced to the helper, so there is nothing to tell it.
     /// Telling it anyway made such a root impossible to forget while a helper
     /// was connected: the helper refuses `EPERM` to unregister a root the uid
     /// does not hold, and the daemon kept the registration (measured).
+    ///
+    /// # A OneDrive folder
+    ///
+    /// Its sync is stopped first, the read-only lock is taken off the folder
+    /// once it is forgotten, and its tree store is dropped. A Forget that is
+    /// refused leaves it registered — so it is kept in step again.
+    ///
+    /// The sync is stopped before `lifecycle` is taken for writing: a
+    /// reconcile holds it for reading while it changes the folder, and checks
+    /// for a stop between its steps, so stopped first it lets go at its next
+    /// step rather than at the end of the whole reconcile. A helper's
+    /// reconnect that takes the lock in between brings the folder up again,
+    /// and so starts its sync again; that one is stopped under the lock, where
+    /// stopping cannot wait for a reconcile — none can hold the lock.
     pub async fn unregister_root(&self) -> Result<(), SyncError> {
+        // The tasks only, outside the lock; the activity is let go of under
+        // it (B-M1), where no reconnect can have started a sync meanwhile.
+        let was_syncing = self.stop_tasks().await;
         let _lifecycle = self.lifecycle.write().await;
+        let was_syncing = self.stop_tasks().await || was_syncing;
+        if was_syncing {
+            self.let_go_of_activity().await;
+        }
         self.restore_locked().await;
         let reg = self.require_registration()?;
+        let result = self.forget_locked(&reg).await;
+        if reg.source == RootSource::OneDrive {
+            match &result {
+                Ok(()) => {
+                    self.let_go_of_onedrive(&reg.root).await;
+                    // Only when *this daemon* is the one that
+                    // excluded the folder from Baloo — never a folder that
+                    // arrived already excluded, and this survives a restart
+                    // in between (`commit` carries `baloo_excluded` forward
+                    // from `config.toml` for a root that is brought back up,
+                    // not freshly registered).
+                    if reg.baloo_excluded {
+                        let baloo = Arc::clone(&self.baloo.lock().unwrap());
+                        baloo.include_again(&reg.root.path).await;
+                    }
+                }
+                Err(_) if was_syncing => self.start_sync().await,
+                Err(_) => {}
+            }
+        }
+        result
+    }
+
+    /// The Forget itself, under `lifecycle` held for writing: through the
+    /// helper for an intercepted root, then everything published about the
+    /// root and its sync cleared at once.
+    async fn forget_locked(&self, reg: &Registration) -> Result<(), SyncError> {
         if reg.intercepted {
             let link = self.require_link()?;
             match link.unregister_root(&reg.root.root_id).await {
@@ -1022,20 +1595,222 @@ impl SyncService {
         *self.root.lock().unwrap() = None;
         *self.source.lock().unwrap() = None;
         self.persist_or_log(None);
+        // One update, so that nothing is ever published about a folder that
+        // is no longer registered.
         self.state.update(|s| {
             s.root_path.clear();
             s.root_state = RootState::None;
             s.last_error.clear();
+            s.listing = false;
+            s.items_listed = 0;
+            s.items_placed = 0;
+            s.skipped_count = 0;
+            s.sync_trouble = None;
+            s.replacement_note.clear();
+            s.last_checked = 0;
+            s.local_bytes = 0;
+            s.conflict_count = 0;
+            s.waits_for_helper = false;
         });
+        // A Forget drops the activity: a OneDrive folder's with
+        // its store, which `stop_sync` has already let go of, and a local
+        // folder's from memory here — after the folder stopped being the one
+        // registered, so that a download still ending in it records nothing
+        // from now on. Its walker stops too.
+        self.report.space.stop();
+        let report = self.report.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || report.activity.detach()).await {
+            tracing::warn!("the task forgetting the activity failed: {e}");
+        }
         Ok(())
     }
 
-    /// §3.1: the root is "persisted, so it survives a restart" (Ruling
-    /// H106) — with its mode, and with the id the helper holds it by.
+    /// What a Forget adds for a OneDrive folder, still under
+    /// `lifecycle` held for writing: the read-only lock taken off the whole
+    /// folder — whose files stay — and its tree store dropped.
+    /// The folder still carries its root id (a Forget leaves it), which is
+    /// what proves it is still this folder before anything in it is changed.
+    async fn let_go_of_onedrive(&self, root: &SyncRoot) {
+        let root = root.clone();
+        let unlocked = tokio::task::spawn_blocking(move || {
+            disk::Disk::open(&root, false)
+                .and_then(|disk| disk.unlock_tree())
+                .map_err(|e| format!("cannot take the read-only lock off {}: {e}", root.path.display()))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("the unlock task failed: {e}")));
+        if let Err(e) = unlocked {
+            tracing::warn!("{e}");
+        }
+        self.remove_tree_store().await;
+    }
+
+    /// Starts — or, when it runs already, nudges — the sync of the OneDrive
+    /// folder that is registered now. Called with `lifecycle` held for
+    /// writing, so that no Forget can come in between.
+    async fn start_sync(&self) {
+        if let Some(syncing) = self.syncing.lock().unwrap().as_ref() {
+            syncing.poller.refresh();
+            return;
+        }
+        let Some(reg) = self.registration() else { return };
+        let configured = (self.drive.lock().unwrap().clone(), self.sync_paths.lock().unwrap().clone());
+        let (Some(drive), Some(paths)) = configured else {
+            self.sync_cannot_start(format!(
+                "{} shows OneDrive, but no drive is configured; it is not kept in step",
+                reg.root.path.display()
+            ));
+            return;
+        };
+        // Files are downloaded from the drive whether or not the folder can
+        // be kept in step.
+        let source: Arc<dyn ContentSource> = Arc::new(graph_source::GraphSource::new(drive.clone()));
+        *self.source.lock().unwrap() = Some(Arc::clone(&source));
+        let tree_db = paths.tree_db.clone();
+        let store = match tokio::task::spawn_blocking(move || crate::tree::TreeStore::open(&tree_db)).await {
+            Ok(Ok(store)) => crate::tree::Store::new(store),
+            Ok(Err(e)) => return self.sync_cannot_start(format!("the tree store cannot be opened: {e}")),
+            Err(e) => return self.sync_cannot_start(format!("the tree store cannot be opened: {e}")),
+        };
+        // The activity log and the conflicts are kept in this
+        // store from now on, and `LastChecked` is where the last run left it.
+        // Every caller holds `lifecycle` for writing, so no other start can
+        // attach a store of its own meanwhile.
+        let (report, attached, folder) = (self.report.clone(), store.clone(), reg.root.path.clone());
+        let last_checked = tokio::task::spawn_blocking(move || {
+            report.activity.attach(attached.clone(), &folder);
+            attached.with(|s| s.meta("last_checked")).ok().flatten().and_then(|v| v.parse::<i64>().ok())
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0);
+        self.state.update(|s| s.last_checked = last_checked);
+        // drive, as `config.toml` keeps it for this root (A-M5).
+        let drive_record = self.config_file.clone().map(|config_file| {
+            let recorded = Config::load(&config_file)
+                .ok()
+                .filter(|c| c.sync_root_id == reg.root.root_id && !c.sync_root_drive_id.is_empty())
+                .map(|c| c.sync_root_drive_id);
+            listing::DriveRecord { config_file, root_id: reg.root.root_id.clone(), recorded }
+        });
+        // Nudges the thumbnail filler right after a cycle, rather than making
+        // it wait out its own idle timer.
+        let kick = Arc::new(Notify::new());
+        let listing = listing::Listing::new(listing::ListingContext {
+            root: reg.root.clone(),
+            intercepted: reg.intercepted,
+            store: store.clone(),
+            drive: drive.clone(),
+            drive_record,
+            source,
+            link: Arc::clone(&self.link),
+            locks: self.locks.clone(),
+            state: self.state.clone(),
+            lifecycle: Arc::clone(&self.lifecycle),
+            rescue_dir: paths.rescue_dir.clone(),
+            full_threshold: listing::FULL_THRESHOLD,
+            after_cycle: Some(Arc::clone(&kick)),
+            report: self.report.clone(),
+        });
+        let schedule = self.schedule.lock().unwrap().clone();
+        // Checked again and kept in one critical section: a second start that
+        // passed the check at the top while the store opened must leave the
+        // first sync alone. Replacing it would drop a `Poller` that runs on
+        // with nothing left to stop it; the lifecycle lock every caller holds
+        // is what keeps two starts apart, not this.
+        let mut syncing = self.syncing.lock().unwrap();
+        if syncing.is_some() {
+            return;
+        }
+        *self.store.lock().unwrap() = Some(store.clone());
+        let poller = listing::Poller::start(listing, schedule);
+        let sign_in_watch = self
+            .account
+            .as_ref()
+            .map(|account| tokio::spawn(nudge_on_sign_in(account.subscribe(), Arc::clone(&self.syncing))));
+        // Its own task, stopped with the poller: a slow thumbnail request
+        // never holds up the reconcile. None at all without a cache to fill.
+        let thumbnails = paths.thumbnails.clone().map(|cache| {
+            let cancel = CancellationToken::new();
+            let task = thumbs::ThumbnailFiller::new(drive, store, reg.root.clone(), cache).spawn(kick, cancel.clone());
+            (task, cancel)
+        });
+        *syncing = Some(Syncing { poller, sign_in_watch, thumbnails });
+    }
+
+    /// Why a OneDrive folder is not kept in step, said as blocking trouble:
+    /// nothing retries it on its own; a `Refresh()` does, as
+    /// does bringing the folder up again.
+    fn sync_cannot_start(&self, text: String) {
+        tracing::error!("{text}");
+        self.state.update(|s| s.sync_trouble = Some(SyncTrouble { text, blocking: true }));
+    }
+
+    /// Stops the sync and waits for it: a Forget's, and tests'. (The daemon
+    /// has no orderly shutdown; nothing stops the sync when it exits.)
+    /// Whether one was running. Once this returns, no clone of the tree store
+    /// is left with the sync (see `store`).
+    pub async fn stop_sync(&self) -> bool {
+        let stopped = self.stop_tasks().await;
+        if stopped {
+            self.let_go_of_activity().await;
+        }
+        stopped
+    }
+
+    /// The first half of [`stop_sync`](Self::stop_sync): the poller, the
+    /// sign-in watch and the thumbnail filler, stopped and waited for.
+    /// Safe without the lifecycle lock (a Forget's first stop).
+    async fn stop_tasks(&self) -> bool {
+        let syncing = self.syncing.lock().unwrap().take();
+        let Some(syncing) = syncing else { return false };
+        if let Some(watch) = syncing.sign_in_watch {
+            watch.abort();
+        }
+        // Told before the poller is waited for, so that both wind down at
+        // once.
+        if let Some((_, cancel)) = &syncing.thumbnails {
+            cancel.cancel();
+        }
+        syncing.poller.stop().await;
+        if let Some((task, _)) = syncing.thumbnails {
+            let _ = task.await;
+        }
+        true
+    }
+
+    /// The second half of [`stop_sync`](Self::stop_sync): the activity
+    /// log's clone of the store goes too, once no write holds it (see
+    /// `store`), and so does the walker measuring the folder — a kick starts
+    /// it again. Only where no sync can start meanwhile — with the lifecycle
+    /// lock held for writing, or where nothing else starts one: done without
+    /// it, a Forget's first stop let go of whatever was attached by then,
+    /// the sync a reconnect had just started included.
+    async fn let_go_of_activity(&self) {
+        self.report.space.stop();
+        let report = self.report.clone();
+        if let Err(e) = tokio::task::spawn_blocking(move || report.activity.detach()).await {
+            tracing::warn!("the task letting go of the activity failed: {e}");
+        }
+    }
+
+    /// Removes the tree store: a forgotten folder's, or one left from a
+    /// folder forgotten earlier when a new one is registered.
+    async fn remove_tree_store(&self) {
+        *self.store.lock().unwrap() = None;
+        let Some(paths) = self.sync_paths.lock().unwrap().clone() else { return };
+        if let Err(e) = tokio::task::spawn_blocking(move || remove_tree_files(&paths.tree_db)).await {
+            tracing::warn!("the task removing the tree store failed: {e}");
+        }
+    }
+
+    /// The root is "persisted, so it survives a restart" — with its
+    /// mode, and with the id the helper holds it by.
     /// Read-modify-write, because this file is the account sub-project's
     /// `config.toml` and holds its `client_id` too. `Err` when the file could
     /// not be written — or could not be read: what could not be read is
-    /// never overwritten (the final review's m5). A missing file is not
+    /// never overwritten. A missing file is not
     /// unreadable; it is an empty configuration.
     fn save_root(&self, root: Option<&Persisted>) -> Result<(), String> {
         let Some(config_file) = &self.config_file else {
@@ -1050,14 +1825,27 @@ impl SyncService {
         })?;
         match root {
             Some(root) => {
+                // The drive the folder was listed from belongs to this root
+                // alone (A-M5): the listing records it, and nothing here
+                // carries it over to another.
+                if config.sync_root_id != root.root_id {
+                    config.sync_root_drive_id.clear();
+                }
                 config.sync_root = root.path.display().to_string();
                 config.sync_root_id = root.root_id.clone();
                 config.sync_root_intercepted = root.intercepted;
+                config.sync_root_source = root.source.as_str().into();
+                config.sync_root_baloo_excluded = root.baloo_excluded;
+                config.sync_root_upgrade_when_helper = Some(root.upgrade_when_helper);
             }
             None => {
                 config.sync_root.clear();
                 config.sync_root_id.clear();
                 config.sync_root_intercepted = true;
+                config.sync_root_source = RootSource::Local.as_str().into();
+                config.sync_root_baloo_excluded = false;
+                config.sync_root_upgrade_when_helper = None;
+                config.sync_root_drive_id.clear();
             }
         }
         config
@@ -1088,10 +1876,14 @@ impl SyncService {
         let config = Config::load(config_file)
             .map_err(|e| tracing::warn!("ignoring unreadable {}: {e}", config_file.display()))
             .ok()?;
+        let upgrade_when_helper = config.sync_root_upgrades_when_helper();
         (!config.sync_root.is_empty()).then(|| Persisted {
             path: PathBuf::from(&config.sync_root),
             root_id: config.sync_root_id,
             intercepted: config.sync_root_intercepted,
+            source: RootSource::parse(&config.sync_root_source),
+            baloo_excluded: config.sync_root_baloo_excluded,
+            upgrade_when_helper,
         })
     }
 
@@ -1100,9 +1892,9 @@ impl SyncService {
     /// forgotten — and re-runs §4.4's recovery walk, or, when no root is
     /// registered yet, restores the one persisted at the last start.
     ///
-    /// Called once at startup and again after every helper reconnect
-    /// (Rulings H106 and H107). Without the first of those, §4.4's walk —
-    /// which several rounds of this plan built — never ran in the shipped
+    /// Called once at startup and again after every helper reconnect.
+    /// Without the startup call, this walk
+    /// never ran in the shipped
     /// daemon at all: it only ever ran inside a `RegisterRoot` D-Bus call,
     /// so after a crash, files left `hydrating`/`dehydrating` stayed that
     /// way until a human registered the folder again.
@@ -1136,13 +1928,20 @@ impl SyncService {
         self.restore_locked().await;
         match self.registration() {
             // Registered without interception: there is no helper
-            // registration to renew, and a helper appearing later does not
-            // silently upgrade a mode the user asked for explicitly. But a
+            // registration to renew. A folder registered that way because no
+            // helper was connected switches to interception now that one is
+            //, and its switch recovers it with this link; one
+            // registered that way on purpose stays as it is — unless it shows
+            // OneDrive, which is kept in step only with interception (HS2):
+            // for such a folder no choice stands against the helper. A
             // recovery that had to leave files alone because a helper was
-            // running with no link to it (Ruling H146) runs again now that
+            // running with no link to it runs again now that
             // there is one.
             Some(reg) if !reg.intercepted => {
-                if reg.recovery_deferred && self.link().is_some() {
+                let Some(link) = self.link() else { return };
+                if reg.upgrade_when_helper || reg.source == RootSource::OneDrive {
+                    self.upgrade(reg, link).await;
+                } else if reg.recovery_deferred {
                     self.bring_up(&reg.root.path, false).await;
                 }
             }
@@ -1153,6 +1952,12 @@ impl SyncService {
             None => {
                 if let Some(persisted) = self.persisted_root().filter(|p| !p.intercepted) {
                     self.bring_up(&persisted.path, false).await;
+                    let reg = self
+                        .registration()
+                        .filter(|r| !r.intercepted && (r.upgrade_when_helper || r.source == RootSource::OneDrive));
+                    if let (Some(reg), Some(link)) = (reg, self.link()) {
+                        self.upgrade(reg, link).await;
+                    }
                 }
             }
         }
@@ -1196,6 +2001,144 @@ impl SyncService {
         }
     }
 
+    /// Switches a folder registered without interception because no helper
+    /// was connected to interception, now that one is. Called by
+    /// [`resume`](Self::resume), with `lifecycle` held for writing, so no
+    /// registration, Forget, populate or free-up runs meanwhile.
+    ///
+    /// Found in real use: a folder registered before the helper
+    /// was installed stayed without interception once it was, and every file
+    /// in it read as zeros until a Forget and a new registration.
+    ///
+    /// # In this order
+    ///
+    /// 1. The folder's sync is stopped. A running sync decided at its start
+    ///    that nothing is to be marked, and would go on placing directories
+    ///    unmarked (invariant M1).
+    /// 2. The switch is written down in `config.toml` before the helper hears
+    ///    of the folder, as a fresh intercepted registration is: a crash
+    ///    after that leaves a folder the next start holds as
+    ///    intercepted and brings up at the helper's connect.
+    /// 3. The helper registers the root. Its walk marks every directory in
+    ///    it — the very walk that brings an intercepted folder back at every
+    ///    restart, where content, too, was placed before the marks were. The
+    ///    folder is then recovered with this link.
+    /// 4. [`commit`](Self::commit) publishes it as intercepted — `ready`, and
+    ///    the no-interception warning gone — and starts its sync again,
+    ///    intercepted this time, so that everything it places from then on
+    ///    is marked first.
+    ///
+    /// # When it fails (Ruling 2 of)
+    ///
+    /// The helper is asked to let go of anything it may have saved, and
+    /// `config.toml` is put back: the folder stays exactly as it was, without
+    /// interception, its sync running again, and `LastError` says why. The
+    /// next connect tries again. The one exception is a helper that cannot
+    /// confirm it let go: the folder is then kept intercepted, waiting for
+    /// the next connect to bring it up ([`NotSwitched::Held`]).
+    async fn upgrade(&self, reg: Registration, link: HelperLink) {
+        let shown = reg.root.path.display().to_string();
+        tracing::info!("the konedrive helper is connected: switching {shown} to interception");
+        let was_syncing = self.stop_sync().await;
+        match self.switch_to_interception(&reg, &link).await {
+            Ok(()) => tracing::info!("{shown} is intercepted now"),
+            Err(NotSwitched::Held) => {}
+            Err(NotSwitched::Kept(why)) => {
+                tracing::error!("switching {shown} to interception failed, so it stays without: {why}");
+                if reg.recovery_deferred {
+                    // What `resume` runs for such a folder instead; it starts
+                    // the sync again as every bring-up does.
+                    self.bring_up(&reg.root.path, false).await;
+                } else if was_syncing {
+                    self.start_sync().await;
+                }
+                self.note_switch_failed(&why);
+            }
+        }
+    }
+
+    /// Steps 2 to 4 of [`upgrade`](Self::upgrade).
+    async fn switch_to_interception(&self, reg: &Registration, link: &HelperLink) -> Result<(), NotSwitched> {
+        let (dir, root) =
+            root::prepare(&reg.root.path).await.map_err(|e| NotSwitched::Kept(SyncError::from(e).to_string()))?;
+        let previous = self.persisted_root();
+        self.save_root(Some(&Persisted::of(&root, true, reg.source, reg.baloo_excluded, false)))
+            .map_err(NotSwitched::Kept)?;
+        let registered = link.register_root(&dir, &root.root_id).await.map_err(|e| e.to_string());
+        drop(dir);
+        let recovered = match registered {
+            Ok(()) => {
+                let clearance = Clearance::Link(link.clone());
+                root::recover(&clearance, &root, &self.locks).await.map_err(|e| e.to_string())
+            }
+            Err(why) => Err(why),
+        };
+        match recovered {
+            Ok(report) => {
+                self.commit(root, true, reg.source, false, false, report).await;
+                Ok(())
+            }
+            Err(why) => Err(self.undo_switch(link, root, reg, previous, why).await),
+        }
+    }
+
+    /// Undoes a switch that failed after `config.toml` recorded it — the way
+    /// [`abandon`](Self::abandon) undoes a fresh registration: the helper is
+    /// told to let go, and `config.toml` is put back. If the helper cannot
+    /// confirm it let go, the folder is kept intercepted instead: a folder
+    /// the helper may still hold must never be one the daemon
+    /// holds without interception. Its sync stays stopped until it is
+    /// brought up, at the next connect.
+    async fn undo_switch(
+        &self,
+        link: &HelperLink,
+        root: SyncRoot,
+        reg: &Registration,
+        previous: Option<Persisted>,
+        why: String,
+    ) -> NotSwitched {
+        match link.unregister_root(&root.root_id).await {
+            Ok(()) | Err(HelperError::Refused(libc::EPERM)) => {
+                self.persist_or_log(previous.as_ref());
+                NotSwitched::Kept(why)
+            }
+            Err(e) => {
+                let message = format!(
+                    "switching {} to interception failed ({why}), and the helper could not be told \
+                     to let go of it ({e}); it is kept with interception, and brought up the next \
+                     time the helper connects",
+                    root.path.display()
+                );
+                tracing::error!("{message}");
+                *self.root.lock().unwrap() = Some(Registration {
+                    root,
+                    intercepted: true,
+                    recovery_deferred: false,
+                    source: reg.source,
+                    brought_up: false,
+                    baloo_excluded: reg.baloo_excluded,
+                    upgrade_when_helper: false,
+                });
+                self.state.update(|s| {
+                    s.root_state = RootState::Error;
+                    s.last_error = message;
+                });
+                NotSwitched::Held
+            }
+        }
+    }
+
+    /// Adds why a switch failed to `LastError`, in place of what an earlier
+    /// failed switch said there.
+    fn note_switch_failed(&self, why: &str) {
+        let note = format!("{SWITCH_FAILED}: {why}; it is tried again the next time the helper connects");
+        self.state.update(|s| {
+            let before = s.last_error.split(SWITCH_FAILED).next().unwrap_or_default();
+            let before = before.trim_end_matches(". ");
+            s.last_error = if before.is_empty() { note } else { format!("{before}. {note}") };
+        });
+    }
+
     /// Takes an intercepted root restored from `config.toml` as this
     /// daemon's registration, before anything is asked of the helper, and
     /// publishes it as waiting for the helper.
@@ -1205,7 +2148,7 @@ impl SyncService {
     /// from a config written before the id was recorded, from the folder
     /// itself. With neither, the root is not held, and the failure is
     /// published as a startup failure always was; that leaves the one case
-    /// spec §12 lists.
+    /// lists.
     async fn hold(&self, persisted: Persisted) {
         let root_id = if root::looks_like_a_root_id(&persisted.root_id) {
             persisted.root_id
@@ -1230,32 +2173,39 @@ impl SyncService {
             root: SyncRoot { path: persisted.path, root_id },
             intercepted: true,
             recovery_deferred: false,
+            source: persisted.source,
+            brought_up: false,
+            // Held, not yet brought up: a Forget of a held root always
+            // fails before it reaches Baloo (`forget_locked` needs a link,
+            // which is exactly what held means there is none of), so what
+            // this says here is never acted on either way.
+            baloo_excluded: false,
+            upgrade_when_helper: false,
         });
         self.state.update(|s| {
             s.root_path = shown;
             s.root_state = RootState::Error;
-            s.last_error = HELPER_LOST_WARNING.to_owned();
+            s.last_error.clear();
+            s.waits_for_helper = true;
         });
     }
 
-    /// Publishes the helper's disappearance (Ruling H107): `RootState` used
+    /// Publishes the helper's disappearance: `RootState` used
     /// to stay `ready` with an empty `LastError` while the sync folder was,
     /// in the only sense that matters, dead — nothing intercepting, nothing
-    /// reconnecting, and every un-hydrated file reading as zeros.
+    /// reconnecting, and every un-hydrated file reading as zeros. Now it
+    /// reads `error`, and `LastError` says what `HelperState` says (HS3):
+    /// how to start the helper. The rest of what `LastError` said stays.
     pub fn report_helper_lost(&self) {
         let Some(reg) = self.registration() else {
             return;
         };
-        if !reg.intercepted {
-            return;
+        if reg.intercepted || reg.source == RootSource::OneDrive {
+            self.state.update(|s| s.waits_for_helper = true);
         }
-        self.state.update(|s| {
-            s.root_state = RootState::Error;
-            s.last_error = HELPER_LOST_WARNING.to_owned();
-        });
     }
 
-    /// Mirrors `source_dir` into the root as placeholders (spec §3.1): the
+    /// Mirrors `source_dir` into the root as placeholders: the
     /// offline stand-in for the real fill. Also remembers `source_dir` as
     /// this service's `ContentSource`, so `Hydrate()` (and any real
     /// interception-driven fill routed through `serve_hydrations`) has
@@ -1265,14 +2215,21 @@ impl SyncService {
         // change until this is done (see `lifecycle`).
         let _lifecycle = self.lifecycle.read().await;
         let reg = self.require_registration()?;
-        // The final review's m10: a source that overlaps the root is refused
+        if reg.source == RootSource::OneDrive {
+            return Err(SyncError::Unsupported(
+                "this folder shows your OneDrive; filling it from a directory is for a folder \
+                 registered while signed out"
+                    .into(),
+            ));
+        }
+        // a source that overlaps the root is refused
         // — one inside it is a directory of placeholders, which a fill would
         // copy as zeros into a file it then stamps `hydrated`, and one around
         // it would be mirrored into itself. Compared by resolved path, so a
         // symlink to either is seen through; a bind mount is not — but a
         // file reached through one carries konedrive's attributes, and every
         // source file is refused on those, or on leading into the folder,
-        // both when it is mirrored and when it is read (Ruling H148).
+        // both when it is mirrored and when it is read.
         let named = source_dir.to_path_buf();
         let root = reg.root.path.clone();
         let (source, root) = on_blocking_thread(move || {
@@ -1290,7 +2247,7 @@ impl SyncService {
                 root.display()
             )));
         }
-        // Ruling H135: a root registered without interception is never
+        // A root registered without interception is never
         // announced to the helper, and a `MarkDir` is an announcement. Sent
         // whenever a link merely existed, it failed the whole populate on a
         // filesystem where the uid owns no helper root (`EPERM`) and, where
@@ -1305,17 +2262,114 @@ impl SyncService {
                 Some(RefusedSource(why)) => SyncError::Unsupported(why.clone()),
                 None => SyncError::Io(format!("{}: {e}", source_dir.display())),
             })?;
-        // Ruling H148: the source refuses, when the bytes are read, any file
+        // The source refuses, when the bytes are read, any file
         // that leads into the folder by then — a symlink swapped since.
         *self.source.lock().unwrap() =
             Some(Arc::new(LocalDir::new(source).refusing_files_of(root)) as Arc<dyn ContentSource>);
         Ok(created)
     }
 
+    /// `Refresh()`: a cycle now, for a folder that shows OneDrive.
+    ///
+    /// A folder whose sync is not running — it could not start: its tree
+    /// store could not be opened (F18) — has it started again here, the way
+    /// every start is made, with `lifecycle` held for writing. `Ok` means a
+    /// sync runs; when it still cannot, the refusal says why. A folder not
+    /// brought up yet — held until its helper is back, or kept after a
+    /// registration that failed — is refused: its sync starts when it is.
+    ///
+    /// Refused `NoHelper` whenever the folder has no helper to keep it in
+    /// step with (HS2): no link, or no interception yet.
+    pub async fn refresh(&self) -> Result<(), SyncError> {
+        self.require_helper_for(&self.require_onedrive()?)?;
+        if self.nudge() {
+            return Ok(());
+        }
+        let _lifecycle = self.lifecycle.write().await;
+        // Looked at again under the lock: a Forget may have come first.
+        let reg = self.require_onedrive()?;
+        self.require_helper_for(&reg)?;
+        if !reg.brought_up {
+            return Err(SyncError::Io(format!("the folder is not up: {}", self.last_error())));
+        }
+        self.start_sync().await;
+        if self.syncing.lock().unwrap().is_some() {
+            return Ok(());
+        }
+        let why = self.state.get().sync_trouble.map(|t| t.text);
+        Err(SyncError::Io(why.unwrap_or_else(|| "the sync could not be started".into())))
+    }
+
+    /// HS2: a folder that shows OneDrive is kept in step only when it is
+    /// intercepted and the helper is connected.
+    fn require_helper_for(&self, reg: &Registration) -> Result<(), SyncError> {
+        if reg.intercepted && self.link().is_some() {
+            Ok(())
+        } else {
+            Err(SyncError::NoHelper)
+        }
+    }
+
+    fn require_onedrive(&self) -> Result<Registration, SyncError> {
+        let reg = self.require_registration()?;
+        if reg.source != RootSource::OneDrive {
+            return Err(SyncError::Unsupported("this folder is not connected to OneDrive".into()));
+        }
+        Ok(reg)
+    }
+
+    /// A cycle now, if a OneDrive folder is syncing (the network came back).
+    pub fn refresh_now(&self) {
+        self.nudge();
+    }
+
+    /// [`refresh_now`](Self::refresh_now); whether a sync was running to
+    /// nudge.
+    fn nudge(&self) -> bool {
+        match self.syncing.lock().unwrap().as_ref() {
+            Some(syncing) => {
+                syncing.poller.refresh();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// `Skipped()`: every item not in the folder whose own folder is, as a
+    /// full path and a reason.
+    ///
+    /// The store is read with `lifecycle` held for reading (see `store`), so
+    /// a Forget waits for a read under way rather than remove the files
+    /// under it. The lock goes into the blocking task with the store's clone,
+    /// so it is held as long as the clone is, even when this call is dropped
+    /// part-way.
+    pub async fn skipped(&self) -> Result<Vec<(String, String)>, SyncError> {
+        let lifecycle = Arc::clone(&self.lifecycle).read_owned().await;
+        let Some(reg) = self.registration() else { return Ok(Vec::new()) };
+        let Some(store) = self.store.lock().unwrap().clone() else { return Ok(Vec::new()) };
+        let skipped = tokio::task::spawn_blocking(move || {
+            let _lifecycle = lifecycle;
+            store.with(|s| s.skipped(crate::tree::Table::Items))
+        })
+        .await
+        .map_err(|e| SyncError::Io(format!("the store task failed: {e}")))?
+        .map_err(|e| SyncError::Io(e.to_string()))?;
+        Ok(skipped
+            .into_iter()
+            .map(|(rel, reason)| (reg.root.path.join(rel).display().to_string(), reason.as_str().to_owned()))
+            .collect())
+    }
+
+    /// `ItemsListed`, `ItemsPlaced`, `SkippedCount`.
+    pub fn items(&self) -> (u64, u64, u64) {
+        let s = self.state.get();
+        (s.items_listed, s.items_placed, s.skipped_count)
+    }
+
     /// Fills one placeholder now — see the type's own doc comment for why
     /// this fills directly rather than only through kernel interception.
     ///
-    /// # Rulings H102 and H103: open first, then lock, then look again
+    /// # Open first, then lock, then look again
     ///
     /// The order matters three times over.
     ///
@@ -1348,14 +2402,14 @@ impl SyncService {
 
         let root = reg.root.clone();
         let target = path.to_path_buf();
-        let file = tokio::task::spawn_blocking(move || root.open_inside(&target))
+        let (file, shown) = tokio::task::spawn_blocking(move || open_shown(&root, &target))
             .await
             .map_err(|e| SyncError::Io(format!("the hydration task failed: {e}")))??;
         let key = InodeKey::of(&file).map_err(|e| SyncError::Io(e.to_string()))?;
 
         // Serializes against `dehydrate()` and against `serve_hydrations`'s
         // own fills of the same inode (both share this table).
-        let _guard = self.locks.lock(key).await;
+        let guard = self.locks.lock(key).await;
 
         let (file, decision) = tokio::task::spawn_blocking(move || {
             let decision = classify_for_hydration(&file);
@@ -1369,7 +2423,7 @@ impl SyncService {
         };
         // A file that could be carrying an ignore mark has the way cleared
         // before the fill can fail and punch it (`source::hydrate_with`), by
-        // Ruling H146's local rule. An intercepted root needs its link for
+        // local rule. An intercepted root needs its link for
         // that — without one, refuse rather than fill a file a failure would
         // then empty under its mark. A root registered without interception
         // clears it the same way when there is a link, and otherwise goes by
@@ -1381,32 +2435,152 @@ impl SyncService {
         };
 
         let fd: std::os::fd::OwnedFd = file.into();
-        match source::hydrate_with(fd, source.as_ref(), clearance.as_ref()).await {
-            Ok(()) => Ok(()),
-            Err(FillError::NotCleared(NotCleared::Unlinked)) => Err(SyncError::NoHelper),
-            Err(FillError::NotCleared(e)) => Err(SyncError::Io(format!("nothing was filled: {e}"))),
-            Err(FillError::Errno(errno)) => Err(SyncError::Io(format!(
+        // Shown in `Transfers` while it downloads.
+        let tracked = Tracked::new(source, self.report.transfers.clone(), shown.clone());
+        let filled = source::hydrate_with(fd, &tracked, clearance.as_ref()).await;
+        let size = tracked.fetched();
+        drop(tracked);
+        drop(guard);
+        let answered = match filled {
+            Ok(()) => Answered::Filled,
+            Err(e) => Answered::Failed(e),
+        };
+        // A fill that never started for want of the helper is a refusal
+        // the caller is told of, not a download that failed.
+        let refused = matches!(answered, Answered::Failed(FillError::NotCleared(_)));
+        if let Some(event) = fill_event(&answered, &shown, size).filter(|_| !refused) {
+            self.report.activity.record(vec![event]).await;
+            self.report.space.kick();
+        }
+        match answered {
+            Answered::Failed(FillError::NotCleared(NotCleared::Unlinked)) => Err(SyncError::NoHelper),
+            Answered::Failed(FillError::NotCleared(e)) => Err(SyncError::Io(format!("nothing was filled: {e}"))),
+            Answered::Failed(FillError::Errno(errno)) => Err(SyncError::Io(format!(
                 "hydration failed: {}",
                 std::io::Error::from_raw_os_error(errno)
             ))),
+            _ => Ok(()),
         }
     }
 
-    /// Frees a hydrated file's space back to a placeholder (spec §8).
+    /// Frees a hydrated file's space back to a placeholder.
     ///
     /// The file is opened here, through the same `SyncRoot::open_inside`
     /// gate, so that the per-inode lock can be taken on the inode that is
     /// about to be emptied — `(st_dev, st_ino)` from that very descriptor,
-    /// never a name (Ruling H101) — and so that the descriptor the lock was
+    /// never a name — and so that the descriptor the lock was
     /// taken on is the one `root::dehydrate_opened` marks, clears and
-    /// punches (Ruling H68: one open per dehydration).
+    /// punches (one open per dehydration).
+    ///
+    /// Recorded as a `freed` event with what it freed.
     pub async fn dehydrate(&self, path: &Path) -> Result<(), SyncError> {
-        // The mode decides what the punch may go by, and the punch may wait
-        // for a fill of the same inode after that; the mode must not change in
-        // between (see `lifecycle`).
-        let _lifecycle = self.lifecycle.read().await;
+        let (freed, shown) = self.free_one(path, Wait::Yes).await?;
+        let event = activity::event(Kind::Freed, shown, activity::human_size(freed));
+        self.report.activity.record(vec![event]).await;
+        self.report.space.kick();
+        Ok(())
+    }
+
+    /// `FreeUpSpace()`: every downloaded file under the folder
+    /// freed up through the same per-file path `Dehydrate` takes — the
+    /// helper's `ClearIgnore`, the write lease, the per-inode lock — so every
+    /// rule that holds for one file holds here.
+    ///
+    /// A file that is open (its lease is refused) or that a fill or another
+    /// free-up is busy with (its per-inode lock is taken) is left as it is
+    /// and counted as busy, never waited for: a download can take any time.
+    /// A file that is not a clean download — changed here, or not ours — is
+    /// left alone as `Dehydrate` would refuse it, and counted in neither.
+    /// The walk only reads names and attributes (`lstat`, `lgetxattr`); only
+    /// a file that reads `hydrated` is opened, to be freed.
+    ///
+    /// Refused as `Dehydrate` is where no file could be freed (no root; an
+    /// intercepted root with no helper), and stopped with that refusal if it
+    /// becomes true part-way. What was freed is one `freed` event for the
+    /// folder, not one per file.
+    pub async fn free_up_space(&self) -> Result<FreedUp, SyncError> {
         let reg = self.require_registration()?;
-        // Ruling H146's local rule decides at the punch (`Clearance`,
+        if reg.intercepted {
+            self.require_link()?;
+        }
+        let root = reg.root.path.clone();
+        let candidates = tokio::task::spawn_blocking(move || hydrated_files(&root))
+            .await
+            .map_err(|e| SyncError::Io(format!("the walk of the folder failed: {e}")))?;
+        let mut freed = FreedUp::default();
+        let mut stopped = None;
+        for path in candidates {
+            match self.free_one(&path, Wait::No).await {
+                Ok((bytes, _)) => {
+                    freed.files += 1;
+                    freed.bytes += bytes;
+                }
+                Err(SyncError::InUse) => freed.busy += 1,
+                Err(e @ (SyncError::NoHelper | SyncError::NoRoot)) => {
+                    stopped = Some(e);
+                    break;
+                }
+                Err(e) => tracing::info!("{} is not freed up: {e}", path.display()),
+            }
+        }
+        if freed.files > 0 {
+            let detail = format!(
+                "{} file{}, {}",
+                freed.files,
+                if freed.files == 1 { "" } else { "s" },
+                activity::human_size(freed.bytes)
+            );
+            let event = activity::event(Kind::Freed, reg.root.path.display().to_string(), detail);
+            self.report.activity.record(vec![event]).await;
+        }
+        self.report.space.kick();
+        match stopped {
+            // Forgotten part-way: what was freed
+            // is freed, and is what the caller hears — not a refusal that
+            // drops the counts.
+            Some(SyncError::NoRoot) => Ok(freed),
+            Some(e) => Err(e),
+            None => Ok(freed),
+        }
+    }
+
+    /// One file freed up, and how many bytes of blocks that gave back —
+    /// `Dehydrate`'s whole sequence. `Wait::No` answers `InUse` rather than
+    /// wait for a fill or a free-up of the same file (`FreeUpSpace`).
+    ///
+    /// # Open, wait for the file, and only then decide
+    ///
+    /// The mode decides what the punch may go by, and it must not change
+    /// between that decision and the punch (see `lifecycle`). The version
+    /// this replaces took the lifecycle lock first and then waited for a
+    /// fill of the same inode — a download of any length — holding up every
+    /// registration and Forget meanwhile. Now the file is opened and its
+    /// inode lock taken first, and the lifecycle lock after: the
+    /// registration is looked at again under it, and a folder forgotten or
+    /// registered anew meanwhile is refused, with nothing punched.
+    async fn free_one(&self, path: &Path, wait: Wait) -> Result<(u64, String), SyncError> {
+        let reg = self.require_registration()?;
+        if reg.intercepted {
+            // Refused before a wait that could only end in the same refusal.
+            self.require_link()?;
+        }
+        let root = reg.root.clone();
+        let target = path.to_path_buf();
+        let (file, shown) = tokio::task::spawn_blocking(move || open_shown(&root, &target))
+            .await
+            .map_err(|e| SyncError::Io(format!("the dehydration task failed: {e}")))??;
+        let key = InodeKey::of(&file).map_err(|e| SyncError::Io(e.to_string()))?;
+
+        let _guard = match wait {
+            Wait::Yes => self.locks.lock(key).await,
+            Wait::No => self.locks.try_lock(key).ok_or(SyncError::InUse)?,
+        };
+        let _lifecycle = self.lifecycle.read().await;
+        let reg = match self.registration() {
+            Some(now) if now.root.path == reg.root.path && now.root.root_id == reg.root.root_id => now,
+            _ => return Err(SyncError::NoRoot),
+        };
+        // local rule decides at the punch (`Clearance`,
         // `root::dehydrate_opened`). An intercepted root is refused outright
         // without its link: freed up while nothing intercepts, the file
         // would read zeros until the helper is back. A root registered
@@ -1419,23 +2593,67 @@ impl SyncService {
         } else {
             self.clearance()
         };
+        // Measured under the lock, so no fill of the same file changes it in
+        // between, and on a second descriptor for the same inode, since the
+        // first is handed over whole.
+        let probe = file.try_clone().map_err(|e| SyncError::Io(e.to_string()))?;
+        let blocks = |file: &File| file.metadata().map(|m| m.blocks()).unwrap_or(0);
+        let before = blocks(&probe);
+        root::dehydrate_opened(&clearance, file).await.map_err(SyncError::from)?;
+        Ok((before.saturating_sub(blocks(&probe)) * 512, shown))
+    }
 
-        let root = reg.root.clone();
-        let target = path.to_path_buf();
-        let file = tokio::task::spawn_blocking(move || root.open_inside(&target))
+    /// `RecentActivity(limit)`: the newest `limit` events, newest first.
+    pub async fn recent_activity(&self, limit: u32) -> Result<Vec<activity::Event>, SyncError> {
+        let report = self.report.clone();
+        tokio::task::spawn_blocking(move || report.activity.recent(limit as usize))
             .await
-            .map_err(|e| SyncError::Io(format!("the dehydration task failed: {e}")))??;
-        let key = InodeKey::of(&file).map_err(|e| SyncError::Io(e.to_string()))?;
+            .map_err(|e| SyncError::Io(format!("the activity task failed: {e}")))?
+            .map_err(|e| SyncError::Io(e.to_string()))
+    }
 
-        let _guard = self.locks.lock(key).await;
-        root::dehydrate_opened(&clearance, file).await.map_err(SyncError::from)
+    /// `Conflicts()`: (time, original, rescued), newest first; one whose
+    /// rescued file is gone is dropped on the way.
+    pub async fn conflicts(&self) -> Result<Vec<crate::tree::ConflictRow>, SyncError> {
+        let report = self.report.clone();
+        tokio::task::spawn_blocking(move || report.activity.conflicts())
+            .await
+            .map_err(|e| SyncError::Io(format!("the conflicts task failed: {e}")))?
+            .map_err(|e| SyncError::Io(e.to_string()))
+    }
+
+    /// `DismissConflict(rescued_path)`: the conflict comes off the list, and
+    /// the file stays where it is. A path that names no conflict is refused
+    /// with that path in the refusal.
+    pub async fn dismiss_conflict(&self, rescued: &str) -> Result<(), SyncError> {
+        let (report, path) = (self.report.clone(), rescued.to_owned());
+        let removed = tokio::task::spawn_blocking(move || report.activity.dismiss(&path))
+            .await
+            .map_err(|e| SyncError::Io(format!("the conflicts task failed: {e}")))?
+            .map_err(|e| SyncError::Io(e.to_string()))?;
+        if removed {
+            Ok(())
+        } else {
+            Err(SyncError::NoConflict(rescued.to_owned()))
+        }
+    }
+
+    /// `LastChecked`, `LocalBytes`, `ConflictCount`.
+    pub fn status(&self) -> (i64, u64, u32) {
+        let s = self.state.get();
+        (s.last_checked, s.local_bytes, s.conflict_count)
+    }
+
+    /// `Transfers`: every download under way, as (path, bytes done, total).
+    pub fn transfers(&self) -> Vec<(String, u64, u64)> {
+        self.report.transfers.list().into_iter().map(|t| (t.path, t.done, t.total)).collect()
     }
 
     /// The file's own state, or `not-managed` for anything that is not a
     /// plain file this daemon actually manages inside the current root —
-    /// including a file outside the root altogether, per spec §3.1.
+    /// including a file outside the root altogether, per.
     ///
-    /// # Ruling H108: a query never opens the file
+    /// # A query never opens the file
     ///
     /// The state is read with `lgetxattr` on the path. Opening the file
     /// instead made `ItemState` a *download*: under a marked directory, the
@@ -1451,7 +2669,7 @@ impl SyncService {
             return NOT_MANAGED.into();
         };
         let path = path.to_path_buf();
-        // Ruling H76/I7: `canonicalize` and `getxattr` are blocking syscalls
+        // `canonicalize` and `getxattr` are blocking syscalls
         // and do not belong on the zbus dispatch task.
         tokio::task::spawn_blocking(move || {
             let Ok(canonical) = std::fs::canonicalize(&path) else {
@@ -1470,6 +2688,46 @@ impl SyncService {
     }
 }
 
+/// A file opened through the gate (`SyncRoot::open_inside`), and its full
+/// path as the activity log names it: inside the root as it was registered,
+/// however `path` spelled it (a link on the way, `..`) — events are kept
+/// only for paths inside the registered folder.
+fn open_shown(root: &SyncRoot, path: &Path) -> Result<(File, String), DehydrateError> {
+    let file = root.open_inside(path)?;
+    let shown = root.relative(path).map(|rel| root.path.join(rel)).unwrap_or_else(|_| path.to_path_buf());
+    Ok((file, shown.display().to_string()))
+}
+
+/// Whether a free-up waits for the per-inode lock ([`SyncService::free_one`]).
+#[derive(Clone, Copy)]
+enum Wait {
+    Yes,
+    No,
+}
+
+/// What `FreeUpSpace()` did: files freed up, the bytes of
+/// blocks that gave back, and files left as they were because they were in
+/// use.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct FreedUp {
+    pub files: u32,
+    pub bytes: u64,
+    pub busy: u32,
+}
+
+/// Every file under `root` that reads `hydrated` and holds something:
+/// what `FreeUpSpace` frees. Read by name alone (`lstat`, `lgetxattr`), never
+/// by opening a file (see `activity::walk_files`).
+fn hydrated_files(root: &Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    activity::walk_files(root, &mut |path, meta| {
+        if meta.len() > 0 && state_of_path(path) == Some(State::Hydrated) {
+            found.push(path.to_path_buf());
+        }
+    });
+    found
+}
+
 /// Whether [`SyncService::hydrate_now`] still has work to do.
 enum Fill {
     /// It does. `may_be_marked` is false only for an `online-only` file:
@@ -1481,7 +2739,7 @@ enum Fill {
 
 /// What a file's own state says about whether it needs filling.
 ///
-/// # Ruling H109: the `hydrated` label is not believed on its own
+/// # The `hydrated` label is not believed on its own
 ///
 /// `check_dehydratable` verifies the stamp before it punches; this did not,
 /// so a file whose `user.konedrive.state` says `hydrated` over a hole —
@@ -1527,7 +2785,7 @@ fn classify_for_hydration(file: &File) -> Result<Fill, SyncError> {
         // `dehydrating` is not "somebody is busy with it": under the
         // per-inode lock this call holds, no dehydration of this inode can
         // be running. It is what a crash — or a cancelled `Dehydrate`
-        // (`root::dehydrate`'s Ruling N3) — left behind, and §5.2 says
+        // (`root::dehydrate`'s) — left behind, and §5.2 says
         // exactly what to do with it: treat it as "hydrate it again".
         // Reporting success over whatever the punch got to is the one thing
         // that must not happen.
@@ -1540,7 +2798,7 @@ fn classify_for_hydration(file: &File) -> Result<Fill, SyncError> {
     }
 }
 
-/// One file's state read by name, with no open at all (Ruling H108).
+/// One file's state read by name, with no open at all.
 /// `xattr::get` is `lgetxattr`: it does not follow a final symlink, and the
 /// path it is given has already been canonicalized.
 fn state_of_path(path: &Path) -> Option<State> {
@@ -1549,7 +2807,7 @@ fn state_of_path(path: &Path) -> Option<State> {
 }
 
 /// `SyncService` is itself a valid, if initially empty, `ContentSource`:
-/// `serve_hydrations` is started once, at daemon startup (Ruling H80),
+/// `serve_hydrations` is started once, at daemon startup,
 /// before any root — let alone any source directory — necessarily exists
 /// yet. Delegating to whatever `populate_from_directory` most recently
 /// registered means `serve_hydrations` does not need to be restarted (or
@@ -1576,7 +2834,7 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// already exists. `relative` accumulates the `item_id` — the entry's path
 /// relative to the original `source_dir` — as the walk descends.
 ///
-/// This is explicitly the offline test path (spec §3.1's own description),
+/// This is explicitly the offline test path (own description),
 /// not production-hardened infrastructure: unlike `root::recover`, it walks
 /// by path rather than by directory descriptor, because its threat model is
 /// "a local directory the same user built for a test", not an adversarial
@@ -1594,19 +2852,19 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// once (the kernel bounds the rest of any chain on its own), and is a
 /// read, never a walk decision — unless it leads into the sync folder, or
 /// to one of konedrive's own files anywhere (a hardlink to a placeholder):
-/// then the whole populate is refused (Ruling H148), since a file filled
+/// then the whole populate is refused, since a file filled
 /// from it would be filled with a placeholder's zeros.
 /// What every level of [`populate_walk`] needs besides where it is: the
 /// link to mark new directories through, if any, and the resolved sync
-/// folder that no source file may lead into (Ruling H148).
+/// folder that no source file may lead into.
 #[derive(Clone, Copy)]
 struct Walk<'a> {
     link: Option<&'a HelperLink>,
     root: &'a Path,
 }
 
-/// A source file refused because it leads into the sync folder (Ruling
-/// H148): `PopulateFromDirectory` answers `Unsupported` with this text.
+/// A source file refused because it leads into the sync folder:
+/// `PopulateFromDirectory` answers `Unsupported` with this text.
 #[derive(Debug)]
 struct RefusedSource(String);
 
@@ -1672,8 +2930,8 @@ fn populate_walk<'a>(
     })
 }
 
-/// Runs one blocking step of the populate walk off the reactor (Ruling
-/// H76/I7): `read_dir`, `stat`, `create_dir`, `openat` and `linkat` are all
+/// Runs one blocking step of the populate walk off the reactor: `read_dir`,
+/// `stat`, `create_dir`, `openat` and `linkat` are all
 /// blocking syscalls, and this runs from a zbus dispatch task.
 async fn on_blocking_thread<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
@@ -1737,7 +2995,7 @@ fn make_placeholder(
     if !meta.is_file() {
         return Ok(0);
     }
-    // Ruling H148: a file that leads into the folder — a symlink to a
+    // A file that leads into the folder — a symlink to a
     // placeholder there, a hardlink to one — would be filled from that
     // placeholder's zeros. Refused before anything is created for it.
     if let Some(why) = source::refused_source_path(source_path, root)? {
@@ -1758,11 +3016,46 @@ fn make_placeholder(
     Ok(1)
 }
 
-/// Keeps a helper link alive for the life of the daemon (Ruling H107).
+/// Asks a OneDrive folder's sync for a cycle each time the account becomes
+/// signed in from any other state. A cycle that finds the account signed out
+/// fails as blocking trouble and is retried only on the poller's schedule, so
+/// without this a folder reading "signed out" would keep saying so for up to
+/// a poll interval after the sign-in. Runs as long as the sync does.
+async fn nudge_on_sign_in(
+    mut account: watch::Receiver<crate::state::AccountSnapshot>,
+    syncing: Arc<Mutex<Option<Syncing>>>,
+) {
+    let mut last = account.borrow_and_update().state;
+    while account.changed().await.is_ok() {
+        let now = account.borrow_and_update().state;
+        if now == SignInState::SignedIn && last != SignInState::SignedIn {
+            if let Some(syncing) = syncing.lock().unwrap().as_ref() {
+                syncing.poller.refresh();
+            }
+        }
+        last = now;
+    }
+}
+
+/// The tree store's files: the database and SQLite's journal beside it.
+fn remove_tree_files(tree_db: &Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = tree_db.as_os_str().to_owned();
+        name.push(suffix);
+        let file = PathBuf::from(name);
+        if let Err(e) = std::fs::remove_file(&file) {
+            if e.kind() != io::ErrorKind::NotFound {
+                tracing::warn!("cannot remove {}: {e}", file.display());
+            }
+        }
+    }
+}
+
+/// Keeps a helper link alive for the life of the daemon.
 ///
 /// Connects, brings the sync folder up on that link, serves hydration
 /// requests until the connection drops, publishes the drop at once — not
-/// once the downloads under way have finished (Ruling H141) — and tries
+/// once the downloads under way have finished — and tries
 /// again after a backoff that grows to a cap. Nothing reconnected before: when the
 /// helper went away `serve_hydrations` simply returned, `RootState` stayed
 /// `ready` with `LastError` empty, and every un-hydrated file in the folder
@@ -1789,7 +3082,7 @@ pub async fn supervise_helper(
                 service.resume().await;
                 let source = Arc::clone(&service) as Arc<dyn ContentSource>;
                 // A task of its own, and the end of the connection is
-                // waited for on the link itself (Ruling H141). Awaiting
+                // waited for on the link itself. Awaiting
                 // `serve_hydrations` here waited for every fill still
                 // running as well — a download of any length — and until
                 // then the loss was not published, the dead link was still
@@ -1797,8 +3090,13 @@ pub async fn supervise_helper(
                 // running finish in that task, their `HydrateDone` going
                 // nowhere; the per-inode locks keep each of them ahead of
                 // any fill of the same file on the next connection.
-                let serving =
-                    tokio::spawn(serve_hydrations(link.clone(), requests, source, service.locks()));
+                let serving = tokio::spawn(serve_hydrations_reporting(
+                    link.clone(),
+                    requests,
+                    source,
+                    service.locks(),
+                    service.report().clone(),
+                ));
                 link.closed().await;
                 tracing::error!("the konedrive helper connection dropped");
                 service.set_link(None);
@@ -1820,6 +3118,31 @@ pub async fn supervise_helper(
 
 /// The longest [`supervise_helper`] ever waits between attempts.
 pub const MAX_HELPER_BACKOFF: Duration = Duration::from_secs(30);
+
+/// Keeps `HelperState` current for the life of the daemon (HS1): worked out
+/// again whenever the link comes or goes, and every
+/// [`helper_status::RECHECK`] while there is none — a helper installed,
+/// started or failed meanwhile shows within that.
+pub async fn watch_helper(service: Arc<SyncService>) {
+    watch_helper_every(service, helper_status::RECHECK).await
+}
+
+/// [`watch_helper`], asking systemd again every `every` while there is no
+/// link (tests: well under a second).
+pub async fn watch_helper_every(service: Arc<SyncService>, every: Duration) {
+    let changed = Arc::clone(&service.helper_changed);
+    loop {
+        service.check_helper().await;
+        if service.link().is_some() {
+            changed.notified().await;
+        } else {
+            tokio::select! {
+                () = changed.notified() => {}
+                () = tokio::time::sleep(every) => {}
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1912,7 +3235,7 @@ mod tests {
         }
     }
 
-    /// Ruling H52. A panicking fill answers no one on its own: it closes the
+    /// A panicking fill answers no one on its own: it closes the
     /// event fd by unwinding and produces no errno, so `hydrate_done` is
     /// never called and the `open()` the kernel suspended is never responded
     /// to at all — it hangs for the life of the helper. A panic in our code
@@ -1938,7 +3261,7 @@ mod tests {
         assert_eq!(answer, (77, libc::EIO));
     }
 
-    /// Ruling H53/H29, pinned the only way it can be: the discriminator is
+    /// Pinned the only way it can be: the discriminator is
     /// not how many fills run at once — that is 4 either way — but whether
     /// the request loop stops *taking* work while they run. Acquiring the
     /// permit inside the spawned task instead drains the bounded channel as
@@ -2056,7 +3379,7 @@ mod tests {
         );
     }
 
-    // --- C1 of the final review: a request looks again (Ruling H137) -----
+    // --- C1: a request looks again -----
 
     /// What `serve_hydrations` answered for one request, through the plain
     /// fake helper, with a source that can be watched.
@@ -2074,7 +3397,7 @@ mod tests {
             .expect("the helper connection must stay up")
     }
 
-    /// C1 of the final review, on the host (Ruling H137). A request the helper
+    /// C1, on the host. A request the helper
     /// sent while the file was `online-only` waits — for a fill slot, or for
     /// credit — and the file is filled directly meanwhile. The request must
     /// find it filled and answer at once, untouched. Before the fix it filled
@@ -2250,8 +3573,7 @@ mod tests {
         assert_eq!(service.item_state(&file).await, "hydrated");
     }
 
-    /// The credit contract's true worst case (Ruling H142, the final
-    /// review's I4). Four fills have finished and sent `HydrateDone`, and
+    /// The credit contract's true worst case. Four fills have finished and sent `HydrateDone`, and
     /// hold their fill slots until the `Ack`s come back; the helper has
     /// counted those four requests answered and sent its whole credit of new
     /// requests — and the four `Ack`s are queued on the socket *behind* them.
@@ -2344,14 +3666,14 @@ mod tests {
         }
     }
 
-    // --- InodeLocks (Task 11, Ruling: spec §8's serialization) -----------
+    // --- InodeLocks (Ruling: serialization) -----------
 
     /// A file's `(dev, ino)`, the way every caller of `InodeLocks` gets one.
     fn key_of(path: &std::path::Path) -> InodeKey {
         InodeKey::of(&std::fs::File::open(path).unwrap()).unwrap()
     }
 
-    /// Ruling H101, the property a path key cannot have: two names for one
+    /// The property a path key cannot have: two names for one
     /// inode are one key, and two different files are two keys.
     #[test]
     fn a_key_names_the_inode_and_not_the_name_it_was_reached_by() {
@@ -2371,7 +3693,7 @@ mod tests {
         assert_eq!(before, key_of(&renamed), "a rename changes no inode");
     }
 
-    /// Ruling H122. The lock has two constructors for one key — `of` on the
+    /// The lock has two constructors for one key — `of` on the
     /// `SyncService` side (`hydrate_now`, `dehydrate`) and `of_fd` on the
     /// interception side (`serve_hydrations`, which must not consume the
     /// event fd) — and serialization across the two sides holds only while
@@ -2478,7 +3800,7 @@ mod tests {
         );
     }
 
-    /// `try_lock` (Ruling H147) is refused while the key is held, leaves no
+    /// `try_lock` is refused while the key is held, leaves no
     /// row behind when refused, and once granted excludes `lock` like any
     /// other holder.
     #[tokio::test]
@@ -2751,6 +4073,368 @@ mod tests {
         assert_eq!(std::fs::read(&target).unwrap(), vec![9u8; 2048]);
     }
 
+    // --- What a download or a free-up reports -----------------
+
+    /// The newest events first, as (kind, path, detail), oldest first.
+    async fn activity_of(service: &SyncService) -> Vec<(String, String, String)> {
+        let mut events = service.recent_activity(200).await.unwrap();
+        events.reverse();
+        events.into_iter().map(|e| (e.kind, e.path, e.detail)).collect()
+    }
+
+    /// `Hydrate` finishing is a `downloaded` event with the
+    /// file's size; one that fails is a `failed` event saying why.
+    #[tokio::test]
+    async fn hydrate_is_recorded_as_downloaded_and_a_failed_one_as_failed() {
+        let (service, root_dir, _source_dir, _sockets, _helper) = populated_service(&vec![9u8; 2048]).await;
+        let target = root_dir.path().join("f.bin");
+        service.hydrate_now(&target).await.unwrap();
+        // A placeholder whose item the source does not have.
+        drop(placeholder(root_dir.path(), "gone.bin", "gone.bin", 100));
+        let gone = root_dir.path().join("gone.bin");
+        assert!(service.hydrate_now(&gone).await.is_err());
+
+        let shown = |path: &Path| path.display().to_string();
+        assert_eq!(
+            activity_of(&service).await,
+            vec![
+                ("downloaded".to_owned(), shown(&target), "2.0 KiB".to_owned()),
+                ("failed".to_owned(), shown(&gone), "it could not be downloaded".to_owned()),
+            ]
+        );
+    }
+
+    /// For a fill on open: the helper's request, filled through
+    /// `serve_hydrations_reporting`, is a `downloaded` event under the name
+    /// the file has — sent after the opener is answered.
+    #[tokio::test]
+    async fn a_fill_on_open_is_recorded_as_downloaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().canonicalize().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        std::fs::write(source_dir.path().join("ITEM"), vec![3u8; 4096]).unwrap();
+        let fd = placeholder(&folder, "opened.bin", "ITEM", 4096);
+        // Events are kept only for the folder registered now.
+        let report = Report::new(SyncStateHandle::new(SyncSnapshot {
+            root_path: folder.display().to_string(),
+            ..SyncSnapshot::default()
+        }));
+        let mut added = report.activity.subscribe();
+
+        let socket_path = folder.join("helper.sock");
+        let mut seen = fake_helper(socket_path.clone());
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
+        let source: Arc<dyn ContentSource> = Arc::new(LocalDir::new(source_dir.path()));
+        tokio::spawn(serve_hydrations_reporting(link, rx, source, InodeLocks::new(), report.clone()));
+        tx.send(HydrateRequest { req_id: 9, fd }).await.unwrap();
+        let answered = tokio::time::timeout(Duration::from_secs(10), seen.recv()).await.unwrap().unwrap();
+        assert_eq!(answered, (9, 0));
+
+        let event = tokio::time::timeout(Duration::from_secs(10), added.recv()).await.unwrap().unwrap();
+        let opened = folder.join("opened.bin").display().to_string();
+        assert_eq!((event.kind.as_str(), event.path.as_str(), event.detail.as_str()), ("downloaded", opened.as_str(), "4.0 KiB"));
+    }
+
+    /// A source whose one stream is the reading end of a pipe the test
+    /// writes into: how a test holds a download half-way.
+    struct Piped {
+        reader: std::sync::Mutex<Option<tokio::io::DuplexStream>>,
+        size: u64,
+    }
+
+    #[async_trait]
+    impl ContentSource for Piped {
+        async fn fetch(&self, _item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+            let stream = self.reader.lock().unwrap().take().ok_or_else(|| SourceError::NotFound("fetched twice".into()))?;
+            Ok(Fetched {
+                served_from: from,
+                size: self.size,
+                mtime: std::time::SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000),
+                version: None,
+                stream: Box::new(stream),
+            })
+        }
+    }
+
+    /// A source that answers "not found" once it is let go.
+    struct Gated(std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>);
+
+    #[async_trait]
+    impl ContentSource for Gated {
+        async fn fetch(&self, _item_id: &str, _from: u64) -> Result<Fetched, SourceError> {
+            let gate = self.0.lock().unwrap().take();
+            if let Some(gate) = gate {
+                let _ = gate.await;
+            }
+            Err(SourceError::NotFound("not there".into()))
+        }
+    }
+
+    /// `Transfers`: a download is listed, with how far it has
+    /// got, for as long as it runs — and not a moment after, whether it
+    /// finished or failed.
+    #[tokio::test]
+    async fn a_download_shows_in_transfers_until_it_ends_however_it_ends() {
+        use tokio::io::AsyncWriteExt;
+        let (service, root_dir, _source_dir, _sockets, _helper) = populated_service(&vec![9u8; 64 * 1024]).await;
+        let mut transfers = service.report().transfers.subscribe();
+        let target = root_dir.path().join("f.bin");
+        let shown = target.display().to_string();
+        let (mut writer, reader) = tokio::io::duplex(128 * 1024);
+        install_source(&service, Arc::new(Piped { reader: std::sync::Mutex::new(Some(reader)), size: 64 * 1024 }));
+        let filling = {
+            let (service, target) = (Arc::clone(&service), target.clone());
+            tokio::spawn(async move { service.hydrate_now(&target).await })
+        };
+        writer.write_all(&[9u8; 16 * 1024]).await.unwrap();
+        let halfway = |all: &std::collections::BTreeMap<u64, activity::Transfer>| {
+            all.values().any(|t| t.path == shown && (t.done, t.total) == (16 * 1024, 64 * 1024))
+        };
+        tokio::time::timeout(Duration::from_secs(10), transfers.wait_for(halfway)).await.unwrap().unwrap();
+        writer.write_all(&[9u8; 48 * 1024]).await.unwrap();
+        drop(writer);
+        filling.await.unwrap().unwrap();
+        assert_eq!(service.transfers(), Vec::new(), "a finished download is not listed");
+
+        drop(placeholder(root_dir.path(), "g.bin", "g.bin", 100));
+        let failing_target = root_dir.path().join("g.bin");
+        let failing_shown = failing_target.display().to_string();
+        let (open, gate) = tokio::sync::oneshot::channel();
+        install_source(&service, Arc::new(Gated(std::sync::Mutex::new(Some(gate)))));
+        let failing = {
+            let service = Arc::clone(&service);
+            tokio::spawn(async move { service.hydrate_now(&failing_target).await })
+        };
+        let listed = |all: &std::collections::BTreeMap<u64, activity::Transfer>| all.values().any(|t| t.path == failing_shown);
+        tokio::time::timeout(Duration::from_secs(10), transfers.wait_for(listed)).await.unwrap().unwrap();
+        open.send(()).unwrap();
+        assert!(failing.await.unwrap().is_err());
+        assert_eq!(service.transfers(), Vec::new(), "a failed download is not listed either");
+    }
+
+    /// A service with a folder registered without interception and no
+    /// helper anywhere, filled from `files` (name, size), each downloaded
+    /// when `hydrated` says so.
+    async fn local_folder(files: &[(&str, usize, bool)]) -> (Arc<SyncService>, tempfile::TempDir, tempfile::TempDir) {
+        let service = SyncService::new(None, None, None);
+        let dir = tempfile::tempdir().unwrap();
+        service.set_helper_socket(dir.path().join("no-helper.sock"));
+        let source_dir = dir.path().join("source");
+        std::fs::create_dir(&source_dir).unwrap();
+        for (name, size, _) in files {
+            std::fs::write(source_dir.join(name), vec![5u8; *size]).unwrap();
+        }
+        let root_dir = tempfile::tempdir().unwrap();
+        service.register_root_without_interception(root_dir.path()).await.unwrap();
+        service.populate_from_directory(&source_dir).await.unwrap();
+        for (name, _, hydrated) in files {
+            if *hydrated {
+                service.hydrate_now(&root_dir.path().join(name)).await.unwrap();
+            }
+        }
+        (service, root_dir, dir)
+    }
+
+    /// `FreeUpSpace`: every downloaded file freed up through the
+    /// per-file path, except one that is open — counted as busy, left as it
+    /// is, and no error. The bytes are the blocks given back. And a Forget of
+    /// the folder takes its activity with it.
+    #[tokio::test]
+    async fn free_up_space_frees_what_is_not_in_use_and_counts_what_is() {
+        let (service, root_dir, _dir) = local_folder(&[("a.bin", 64 * 1024, true), ("b.bin", 64 * 1024, true)]).await;
+        let (a, b) = (root_dir.path().join("a.bin"), root_dir.path().join("b.bin"));
+        let before = data_blocks(&a);
+        let _in_use = std::fs::File::open(&b).unwrap();
+
+        let freed = service.free_up_space().await.unwrap();
+
+        assert_eq!(freed, FreedUp { files: 1, bytes: (before - data_blocks(&a)) * 512, busy: 1 });
+        assert!(freed.bytes >= 64 * 1024, "{freed:?}");
+        assert_eq!(service.item_state(&a).await, "online-only");
+        assert_eq!(service.item_state(&b).await, "hydrated", "an open file is left as it is");
+        let folder = root_dir.path().display().to_string();
+        assert_eq!(activity_of(&service).await.pop().unwrap(), ("freed".to_owned(), folder, "1 file, 64.0 KiB".to_owned()));
+
+        service.unregister_root().await.unwrap();
+        assert!(activity_of(&service).await.is_empty(), "a Forget drops the activity");
+    }
+
+    /// `LocalBytes`, for a folder with a placeholder and a
+    /// downloaded file: what the downloaded file takes (and the placeholder
+    /// its next to nothing), measured on its own after the download. On the
+    /// paused clock, so the five seconds between two walks cost nothing.
+    #[tokio::test(start_paused = true)]
+    async fn local_bytes_are_what_the_downloaded_file_takes() {
+        let (service, root_dir, _dir) = local_folder(&[("a.bin", 64 * 1024, true), ("b.bin", 64 * 1024, false)]).await;
+        let (a, b) = (root_dir.path().join("a.bin"), root_dir.path().join("b.bin"));
+        assert!(data_blocks(&b) < 8, "b.bin is a placeholder");
+        let expected = (data_blocks(&a) + data_blocks(&b)) * 512;
+        assert!(expected >= 64 * 1024);
+        let mut state = service.state().subscribe();
+        tokio::time::timeout(Duration::from_secs(60), state.wait_for(|s| s.local_bytes == expected))
+            .await
+            .unwrap_or_else(|_| panic!("LocalBytes stayed {}, not {expected}", service.status().1))
+            .unwrap();
+    }
+
+    // --- Activity and space accounting corner cases ---------------------------
+
+    /// Item 4: a download that ends after its folder was forgotten records
+    /// nothing in the folder registered next — `Hydrate` takes no lifecycle
+    /// lock, so a Forget does not wait for it.
+    #[tokio::test]
+    async fn a_download_that_ends_after_its_folder_is_forgotten_is_not_in_the_next_ones_activity() {
+        let (service, root_a, _dir) = local_folder(&[("a.bin", 4096, false)]).await;
+        let (open, gate) = tokio::sync::oneshot::channel();
+        install_source(&service, Arc::new(Gated(std::sync::Mutex::new(Some(gate)))));
+        let mut transfers = service.report().transfers.subscribe();
+        let filling = {
+            let (service, a) = (Arc::clone(&service), root_a.path().join("a.bin"));
+            tokio::spawn(async move { service.hydrate_now(&a).await })
+        };
+        tokio::time::timeout(Duration::from_secs(10), transfers.wait_for(|all| !all.is_empty())).await.unwrap().unwrap();
+
+        service.unregister_root().await.unwrap();
+        let root_b = tempfile::tempdir().unwrap();
+        service.register_root_without_interception(root_b.path()).await.unwrap();
+        open.send(()).unwrap();
+        assert!(filling.await.unwrap().is_err());
+
+        assert_eq!(activity_of(&service).await, Vec::new(), "folder A's download is not folder B's activity");
+    }
+
+    /// Item 5: the walker measuring `LocalBytes` ends with the service —
+    /// it held the state, so nothing waiting on it ever saw the end.
+    #[tokio::test(start_paused = true)]
+    async fn dropping_the_service_ends_its_walker() {
+        let (service, _root, _dir) = local_folder(&[("a.bin", 4096, true)]).await;
+        assert!(service.report().space.running(), "the registration started it");
+        let mut state = service.state().subscribe();
+        drop(service);
+        let ended = tokio::time::timeout(Duration::from_secs(60), async { while state.changed().await.is_ok() {} }).await;
+        assert!(ended.is_ok(), "something still holds the state: the walker");
+    }
+
+    /// Item 6: a fill gives its slot back before it records what it did. The
+    /// log is held still here, so every recording waits: with four slots
+    /// held by fills that are only recording, a fifth request was never
+    /// filled at all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_fill_lets_go_of_its_slot_before_it_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().canonicalize().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let report = Report::new(SyncStateHandle::new(SyncSnapshot {
+            root_path: folder.display().to_string(),
+            ..SyncSnapshot::default()
+        }));
+        let socket_path = folder.join("helper.sock");
+        let mut seen = fake_helper(socket_path.clone());
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        let (tx, rx) = mpsc::channel::<HydrateRequest>(8);
+        let source: Arc<dyn ContentSource> = Arc::new(LocalDir::new(source_dir.path()));
+        tokio::spawn(serve_hydrations_reporting(link, rx, source, InodeLocks::new(), report.clone()));
+
+        let held = report.activity.hold();
+        for n in 0..5u64 {
+            std::fs::write(source_dir.path().join(format!("ITEM{n}")), vec![1u8; 1024]).unwrap();
+            let fd = placeholder(&folder, &format!("f{n}.bin"), &format!("ITEM{n}"), 1024);
+            tx.send(HydrateRequest { req_id: n, fd }).await.unwrap();
+        }
+        for _ in 0..5 {
+            let answered = tokio::time::timeout(Duration::from_secs(10), seen.recv())
+                .await
+                .expect("a request waited for a slot held by a fill that was only recording");
+            assert_eq!(answered.unwrap().1, 0);
+        }
+        drop(held);
+    }
+
+    /// Item 8: a file a download or another free-up holds the per-inode lock
+    /// of is busy, not waited for.
+    #[tokio::test]
+    async fn free_up_space_counts_a_file_whose_lock_is_taken_as_busy() {
+        let (service, root_dir, _dir) = local_folder(&[("a.bin", 64 * 1024, true)]).await;
+        let a = root_dir.path().join("a.bin");
+        let key = InodeKey::of(&std::fs::File::open(&a).unwrap()).unwrap();
+        // The descriptor is closed again: only the lock stands in the way.
+        let _held = service.locks().lock(key).await;
+        let freed = tokio::time::timeout(Duration::from_secs(10), service.free_up_space())
+            .await
+            .expect("it waited for the lock")
+            .unwrap();
+        assert_eq!(freed, FreedUp { files: 0, bytes: 0, busy: 1 });
+        assert_eq!(service.item_state(&a).await, "hydrated");
+    }
+
+    /// Item 8: a downloaded file changed here is neither freed nor busy:
+    /// it is left, as `Dehydrate` would leave it.
+    #[tokio::test]
+    async fn free_up_space_counts_a_file_changed_here_in_neither() {
+        let (service, root_dir, _dir) = local_folder(&[("a.bin", 64 * 1024, true)]).await;
+        let a = root_dir.path().join("a.bin");
+        std::io::Write::write_all(&mut std::fs::OpenOptions::new().append(true).open(&a).unwrap(), b"mine").unwrap();
+        let freed = service.free_up_space().await.unwrap();
+        assert_eq!(freed, FreedUp { files: 0, bytes: 0, busy: 0 });
+        assert!(std::fs::read(&a).unwrap().ends_with(b"mine"), "the change is kept");
+    }
+
+    /// Item 8: a fill on open that fails is a `failed` event, and a full
+    /// disk reads exactly "not enough disk space" — the words the window's
+    /// notifier turns into "disk full".
+    #[tokio::test]
+    async fn a_failed_fill_on_open_is_recorded_as_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let folder = dir.path().canonicalize().unwrap();
+        let source_dir = tempfile::tempdir().unwrap();
+        let fd = placeholder(&folder, "gone.bin", "GONE", 4096);
+        let report = Report::new(SyncStateHandle::new(SyncSnapshot {
+            root_path: folder.display().to_string(),
+            ..SyncSnapshot::default()
+        }));
+        let mut added = report.activity.subscribe();
+        let socket_path = folder.join("helper.sock");
+        let mut seen = fake_helper(socket_path.clone());
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
+        let source: Arc<dyn ContentSource> = Arc::new(LocalDir::new(source_dir.path()));
+        tokio::spawn(serve_hydrations_reporting(link, rx, source, InodeLocks::new(), report.clone()));
+        tx.send(HydrateRequest { req_id: 3, fd }).await.unwrap();
+        let answered = tokio::time::timeout(Duration::from_secs(10), seen.recv()).await.unwrap().unwrap();
+        assert_eq!(answered, (3, libc::EIO));
+        let event = tokio::time::timeout(Duration::from_secs(10), added.recv()).await.unwrap().unwrap();
+        let gone = folder.join("gone.bin").display().to_string();
+        assert_eq!((event.kind.as_str(), event.path.as_str()), ("failed", gone.as_str()));
+
+        for errno in [libc::ENOSPC, libc::EDQUOT] {
+            let event = fill_event(&Answered::Failed(FillError::Errno(errno)), "/r/f.bin", None).unwrap();
+            assert_eq!((event.kind.as_str(), event.detail.as_str()), ("failed", activity::NO_DISK_SPACE));
+        }
+    }
+
+    /// Item 8: a download whose caller goes away — a D-Bus call dropped, a
+    /// replacement stopped with its poller — leaves `Transfers` with it.
+    #[tokio::test]
+    async fn a_cancelled_download_leaves_transfers() {
+        use tokio::io::AsyncWriteExt;
+        let (service, root_dir, _source_dir, _sockets, _helper) = populated_service(&vec![9u8; 64 * 1024]).await;
+        let mut transfers = service.report().transfers.subscribe();
+        let (mut writer, reader) = tokio::io::duplex(128 * 1024);
+        install_source(&service, Arc::new(Piped { reader: std::sync::Mutex::new(Some(reader)), size: 64 * 1024 }));
+        let filling = {
+            let (service, target) = (Arc::clone(&service), root_dir.path().join("f.bin"));
+            tokio::spawn(async move { service.hydrate_now(&target).await })
+        };
+        writer.write_all(&[9u8; 16 * 1024]).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), transfers.wait_for(|all| !all.is_empty())).await.unwrap().unwrap();
+        filling.abort();
+        tokio::time::timeout(Duration::from_secs(10), transfers.wait_for(|all| all.is_empty()))
+            .await
+            .expect("the cancelled download is still listed")
+            .unwrap();
+    }
+
     /// `populate_walk` walks a directory the *user* names — unlike
     /// `root::recover`'s hardened, descriptor-based walk, it is explicitly
     /// the offline test path, and its threat model does not include a
@@ -2857,10 +4541,10 @@ mod tests {
 
     #[tokio::test]
     async fn a_file_recovery_finds_in_use_does_not_make_the_root_an_error() {
-        // The final review's m11: an interrupted file that something has open
+        // an interrupted file that something has open
         // — on reconnect, the suspended opener whose request is not served
-        // yet, or a fill still running from the connection before (Ruling
-        // H141) — refused recovery's lease and published `RootState = error`
+        // yet, or a fill still running from the connection before
+        // — refused recovery's lease and published `RootState = error`
         // with "could not reset", about a file that was then filled normally.
         let (service, _sockets, _helper) = service_with_helper().await;
         let root_dir = tempfile::tempdir().unwrap();
@@ -2881,11 +4565,12 @@ mod tests {
         service.resume().await;
 
         assert_eq!(service.root_state(), "ready", "{}", service.last_error());
-        assert!(service.last_error().contains("in use"), "{}", service.last_error());
+        // logged, not a `LastError` that outlives it.
+        assert_eq!(service.last_error(), "");
         assert_eq!(service.item_state(&path).await, "hydrating", "and it is left as found");
     }
 
-    /// A `RecoveryReport` with `failed > 0` is spec §8's "silently
+    /// A `RecoveryReport` with `failed > 0` is "silently
     /// unrecoverable" case (a refused `ClearIgnore`) — it must not stay
     /// silent: `RegisterRoot` still succeeds (the root itself is usable),
     /// but `RootState`/`LastError` must say so.
@@ -2894,7 +4579,7 @@ mod tests {
         let (service, _sockets, helper) = service_with_helper().await;
         let root_dir = tempfile::tempdir().unwrap();
 
-        // Ruling H78: a folder that already carries a root id is exempt from
+        // A folder that already carries a root id is exempt from
         // the "must be empty on first registration" check, which is exactly
         // what this test needs — the interrupted file below has to exist
         // *before* `register_root` runs, since recovery runs as part of it.
@@ -2909,7 +4594,7 @@ mod tests {
 
         // A file left `dehydrating` by a "crash", whose `ClearIgnore` the
         // helper refuses. (A file merely held open used to be the way to
-        // force this; it is `busy` now, not a failure — the final review's
+        // force this; it is `busy` now, not a failure —
         // m11 — and has a test of its own above.)
         let path = root_dir.path().join("stuck.bin");
         std::fs::write(&path, vec![1u8; 4096]).unwrap();
@@ -2992,7 +4677,7 @@ mod tests {
         (service, root_dir, source_dir, sockets, helper)
     }
 
-    /// Ruling H101, the whole of C1. Two names for one inode must serialize.
+    /// The whole of C1. Two names for one inode must serialize.
     /// Measured the way the review measured it: a hard link, a source slow
     /// enough for both fills to overlap, and a count of how many were ever
     /// in flight at once. A path-keyed table gives two — and a failing
@@ -3031,7 +4716,7 @@ mod tests {
         assert_eq!(std::fs::read(&one).unwrap(), vec![9u8; 2048]);
     }
 
-    /// The other pair spec §8 names: "a hydration request for a file being
+    /// The other pair names: "a hydration request for a file being
     /// dehydrated runs after the dehydration finishes", and the reverse.
     /// The discriminator is the *outcome*, not the timing: a dehydration
     /// that runs while the fill is still in flight sees `state=hydrating`
@@ -3141,11 +4826,11 @@ mod tests {
         );
     }
 
-    // --- The gate `hydrate_now` writes through (Ruling H103) -------------
+    // --- The gate `hydrate_now` writes through -------------
 
     /// A registration that has been removed or replaced no longer authorises
-    /// writing inside that folder. `dehydrate` has checked this since Ruling
-    /// H76 — through `SyncRoot::open_inside`, which verifies the folder
+    /// writing inside that folder. `dehydrate` checks this
+    /// — through `SyncRoot::open_inside`, which verifies the folder
     /// still carries *this* root's id — and `hydrate_now` reached its target
     /// through a `starts_with` on a canonicalized string, which cannot.
     #[tokio::test]
@@ -3281,7 +4966,7 @@ mod tests {
         assert!(matches!(error, SyncError::NoSource), "expected a refusal, got {error:?}");
     }
 
-    /// Ruling H109. A file labelled `hydrated` over a hole is §9's named
+    /// A file labelled `hydrated` over a hole is §9's named
     /// failure, and a manual "download it now" is what repairs it — so
     /// `Hydrate` must not believe the label on its own.
     #[tokio::test]
@@ -3348,7 +5033,7 @@ mod tests {
         assert_eq!(service.item_state(&file).await, "hydrated");
     }
 
-    /// The final review's m6 (Ruling H144). A zero-byte file is created
+    /// A zero-byte file is created
     /// `hydrated` with no stamp (there is nothing to download), so freeing it
     /// up answered `ModifiedLocally` and the command line told the user their
     /// edits would be lost. It takes no space and there is nothing to free:
@@ -3367,6 +5052,29 @@ mod tests {
         assert!(helper.seen().is_empty(), "nothing needed the helper: {:?}", helper.seen());
     }
 
+    /// Freeing up a file under the read-only lock works and leaves it 0444.
+    /// The root is registered the way the test above has it; the file is
+    /// put in it by hand, hydrated and stamped, and then locked.
+    #[tokio::test]
+    async fn freeing_up_a_locked_file_works_and_leaves_it_locked() {
+        use std::os::unix::fs::PermissionsExt;
+        let (service, root_dir, _source_dir, _sockets, _helper) = populated_service(&[]).await;
+        let root = service.root().unwrap();
+        let path = root.path.join("locked.bin");
+        std::fs::write(&path, vec![1u8; 8192]).unwrap();
+        {
+            let file = File::options().read(true).write(true).open(&path).unwrap();
+            konedrive_fs::placeholder::write_item_id(&file, "L").unwrap();
+            konedrive_fs::placeholder::write_state(&file, State::Hydrated).unwrap();
+            konedrive_fs::placeholder::write_stamp(&file).unwrap();
+        }
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        service.dehydrate(&path).await.unwrap();
+        assert_eq!(state_of_path(&path), Some(State::OnlineOnly));
+        assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o444);
+        drop(root_dir);
+    }
+
     /// But a file that was *made* empty here is an edit like any other.
     #[tokio::test]
     async fn freeing_up_a_file_emptied_here_is_still_refused_as_modified() {
@@ -3381,7 +5089,7 @@ mod tests {
         assert!(matches!(freed, Err(SyncError::ModifiedLocally)), "{freed:?}");
     }
 
-    /// The final review's m10 (Ruling H144). A populate source inside the
+    /// A populate source inside the
     /// root is a source whose files are placeholders: `LocalDir` reads them
     /// through the daemon's own exemption, or with nothing intercepting at
     /// all, so a fill copies zeros into a file it then stamps `hydrated` —
@@ -3435,8 +5143,7 @@ mod tests {
         hydrated && !content.is_empty() && content.iter().all(|&b| b == 0)
     }
 
-    /// Ruling H148 (the final re-review found m10 only partly fixed). A
-    /// source *directory* that overlaps the root is refused, but a source
+    /// A source *directory* that overlaps the root is refused, but a source
     /// *file* can still lead into it: a symlink in the source pointing at a
     /// placeholder in the root, or a hardlink to one. `LocalDir` reads it
     /// with nothing intercepting — or through the daemon's own exemption —
@@ -3475,7 +5182,7 @@ mod tests {
         assert!(matches!(populated, Err(SyncError::Unsupported(_))), "{populated:?}");
     }
 
-    /// The same, decided again where the bytes are read (Ruling H148): a
+    /// The same, decided again where the bytes are read: a
     /// source file that pointed somewhere harmless when the folder was
     /// populated and into the root by the time it is fetched is refused
     /// there, and the file it would have filled stays `online-only`.
@@ -3518,7 +5225,7 @@ mod tests {
         assert_eq!(counted.fetches(), 0, "a complete file must not be fetched again");
     }
 
-    // --- `ItemState` is a query (Ruling H108) ----------------------------
+    // --- `ItemState` is a query ----------------------------
 
     /// `ItemState` must answer without opening the file. In production the
     /// reason is that an open of an `online-only` file under a marked
@@ -3715,7 +5422,7 @@ mod tests {
         );
     }
 
-    /// Ruling H110: a `RegisterRoot` that fails must leave nothing behind —
+    /// A `RegisterRoot` that fails must leave nothing behind —
     /// no stored root, no published `RootPath` — or, now that a second root
     /// is refused, one failed call would make every retry answer "already
     /// registered". Measured through the only window a test has: the helper
@@ -3748,7 +5455,7 @@ mod tests {
         assert_eq!(service.root_state(), "ready");
     }
 
-    // --- Registering without interception (Ruling H105) ------------------
+    // --- Registering without interception ------------------
 
     /// The default stays fail-closed, and for the reason that outranks
     /// everything else here: no helper means no interception, and a
@@ -3772,7 +5479,7 @@ mod tests {
     async fn the_whole_flow_works_without_a_helper_when_it_is_asked_for_explicitly() {
         let service = SyncService::new(None, None, None);
         // No helper anywhere — not only no link — so a free-up goes ahead
-        // (Ruling H146), whatever this machine has at the real socket path.
+        //, whatever this machine has at the real socket path.
         let no_helper = tempfile::tempdir().unwrap();
         service.set_helper_socket(no_helper.path().join("helper.sock"));
         let source_dir = tempfile::tempdir().unwrap();
@@ -3804,7 +5511,7 @@ mod tests {
         assert!(meta.blocks() < 8, "the content is gone");
     }
 
-    // --- Startup and the helper supervisor (Rulings H106, H107) ----------
+    // --- Startup and the helper supervisor ----------
 
     /// §3.1's "persisted, so it survives a restart" — and §4.4's walk, which
     /// without it never ran at a startup at all: recovery only ever ran
@@ -3812,7 +5519,7 @@ mod tests {
     /// `hydrating` stayed that way until a human registered the folder
     /// again.
     ///
-    /// Ruling H80's order is pinned here too, for the first time: the helper
+    /// order is pinned here too, for the first time: the helper
     /// records what it was asked, and the registration must come before the
     /// `ClearIgnore` recovery sends for the interrupted file. Both fake
     /// helpers used to discard everything they received, so nothing could
@@ -3903,7 +5610,7 @@ mod tests {
         );
     }
 
-    /// Ruling H107. `HelperLink` fails outstanding and later calls loudly,
+    /// `HelperLink` fails outstanding and later calls loudly,
     /// which is right — but nothing reconnected, and the published state
     /// said `ready` with an empty `LastError` the whole time the folder was
     /// dead.
@@ -3912,7 +5619,7 @@ mod tests {
         a_helper_that_goes_away_is_published_and_reconnected_to_with(false).await;
     }
 
-    /// Ruling H141, the final review's I3. The supervisor used to find out
+    /// The supervisor used to find out
     /// the helper was gone only when `serve_hydrations` returned, and that
     /// joined every fill still running first — so with one long download in
     /// flight, the loss was not published (`RootState` stayed `ready`, the
@@ -3972,11 +5679,11 @@ mod tests {
         wait_until("the folder came back", || service.root_state() == "ready").await;
     }
 
-    // --- Guards over verified-correct behaviour (Ruling H122) ------------
+    // --- Guards over verified-correct behaviour ------------
 
     /// R3. Unregistering a root must tell the helper, or the helper keeps
     /// the tree marked — and, with the uid no longer owning a root, answers
-    /// every placeholder open in it `EIO` (Ruling H58's measurement).
+    /// every placeholder open in it `EIO` (measurement).
     #[tokio::test]
     async fn unregister_root_tells_the_helper() {
         let (service, _sockets, helper) = service_with_helper().await;
@@ -4027,8 +5734,8 @@ mod tests {
     }
 
     /// N6. The persisted "intercepted" flag must survive a restart. A root
-    /// registered without interception on a machine with no helper — the
-    /// case the user's own machine is in — would otherwise be restored as an
+    /// registered without interception on a machine with no helper would
+    /// otherwise be restored as an
     /// intercepted root, which waits for a helper that never comes: the
     /// folder simply would not come back.
     #[tokio::test]
@@ -4056,30 +5763,45 @@ mod tests {
         assert_eq!(restarted.root_state(), "no-interception");
     }
 
-    /// Q3. A root registered without interception stays that way when a
-    /// helper connects later. `resume` refuses the upgrade on purpose: the
-    /// user asked for this mode by name, and quietly changing what protects
-    /// their files — in either direction — is not this daemon's call.
+    /// Q3, narrowed by. A root registered without interception
+    /// *while a helper was connected* stays that way when the helper connects
+    /// again — after a reconnect, and after a restart: the user asked for
+    /// this mode by name with interception on offer, and quietly changing
+    /// what protects their files is not this daemon's call. (One registered
+    /// that way because no helper was connected does switch; see below.)
     #[tokio::test]
-    async fn a_helper_appearing_does_not_upgrade_a_root_registered_without_interception() {
-        let sockets = tempfile::tempdir().unwrap();
+    async fn a_helper_reconnecting_does_not_upgrade_a_root_registered_without_interception_on_purpose() {
+        let (service, helper, config_file, sockets, _config_dir) =
+            service_with_config(Duration::ZERO).await;
         let socket_path = sockets.path().join("helper.sock");
-        let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
-        let service = SyncService::new(None, None, None);
         let root_dir = tempfile::tempdir().unwrap();
         service.register_root_without_interception(root_dir.path()).await.unwrap();
+        assert_eq!(
+            Config::load(&config_file).unwrap().sync_root_upgrade_when_helper,
+            Some(false),
+            "a choice made with a helper connected must be written down as one"
+        );
 
-        // What `supervise_helper` does the moment a helper answers.
+        // What `supervise_helper` does when the connection drops and the
+        // helper answers again.
+        service.set_link(None);
         let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
         helper.forget();
         service.set_link(Some(link));
         service.resume().await;
+        drop(service);
 
-        assert_eq!(service.root_state(), "no-interception");
+        // And a restart, with the helper there from the start.
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        let restarted = SyncService::new(Some(link), None, Some(config_file));
+        restarted.restore().await;
+        restarted.resume().await;
+
+        assert_eq!(restarted.root_state(), "no-interception");
         assert!(
-            service.last_error().contains("read as zeros"),
+            restarted.last_error().contains("read as zeros"),
             "the warning must still be there: {}",
-            service.last_error()
+            restarted.last_error()
         );
         assert!(
             !helper.seen().contains(&Seen::RegisterRoot),
@@ -4088,7 +5810,219 @@ mod tests {
         );
     }
 
-    // --- The mode boundary (Rulings H133, H134, H135) --------------------
+    // --- A folder registered without the helper, and the helper arriving
+
+    /// A service that persists into a config file of its own, with no link
+    /// and no helper at `helper.sock` yet — the machine before the helper is
+    /// installed — and a folder registered there without interception.
+    async fn registered_before_the_helper() -> (Arc<SyncService>, PathBuf, PathBuf, [tempfile::TempDir; 3]) {
+        let sockets = tempfile::tempdir().unwrap();
+        let socket_path = sockets.path().join("helper.sock");
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_file = config_dir.path().join("config.toml");
+        let service = SyncService::new(None, None, Some(config_file.clone()));
+        service.set_helper_socket(&socket_path);
+        let root_dir = tempfile::tempdir().unwrap();
+        service.register_root_without_interception(root_dir.path()).await.unwrap();
+        assert_eq!(service.root_state(), "no-interception");
+        (service, socket_path, config_file, [sockets, config_dir, root_dir])
+    }
+
+    /// Found in real use: a folder registered while the helper was
+    /// not installed ("Use Without the Helper") stayed that way once it was,
+    /// and every file in it read as zeros until a Forget and a new
+    /// registration. The helper connecting switches it: the root is
+    /// registered with the helper — whose walk marks every directory in it,
+    /// as at every restart — recovered, and written down as intercepted.
+    /// What is placed in it afterwards is marked first (invariant M1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_folder_registered_without_the_helper_switches_to_interception_when_the_helper_connects() {
+        let (service, socket_path, config_file, dirs) = registered_before_the_helper().await;
+        let source = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(source.path().join("a/b")).unwrap();
+        std::fs::write(source.path().join("a/b/f.bin"), [7u8; 64]).unwrap();
+        service.populate_from_directory(source.path()).await.unwrap();
+
+        // The helper is installed and started after the folder was registered.
+        let supervisor =
+            tokio::spawn(supervise_helper(Arc::clone(&service), socket_path.clone(), Duration::from_millis(10)));
+        let helper = FakeHelper::start(socket_path, Duration::ZERO);
+        wait_until("the folder switched to interception", || service.root_state() == "ready").await;
+
+        assert_eq!(
+            helper.seen().first(),
+            Some(&Seen::RegisterRoot),
+            "the root must be registered with the helper, whose walk marks every directory: {:?}",
+            helper.seen()
+        );
+        assert_eq!(service.last_error(), "", "the no-interception warning must go");
+        let config = Config::load(&config_file).unwrap();
+        assert!(config.sync_root_intercepted, "the switch must be written down, or a restart undoes it");
+        assert_eq!(config.sync_root, resolved(dirs[2].path()));
+
+        // `a/` and `a/b/` are marked again as they are passed (see
+        // `a_directory_that_already_exists_is_marked_again`); `c/` is new.
+        helper.forget();
+        std::fs::create_dir(source.path().join("c")).unwrap();
+        std::fs::write(source.path().join("c/g.bin"), [8u8; 64]).unwrap();
+        service.populate_from_directory(source.path()).await.unwrap();
+        assert!(
+            helper.seen().contains(&Seen::MarkDir { entries: 0 }),
+            "a directory placed after the switch must be marked before anything is created in \
+             it: {:?}",
+            helper.seen()
+        );
+        supervisor.abort();
+    }
+
+    /// A folder registered without interception because no helper was
+    /// connected is written down as one to switch, so that a restart before
+    /// the helper arrives still switches it when the helper does.
+    #[tokio::test]
+    async fn a_registration_made_with_no_helper_is_written_down_to_switch_and_switches_after_a_restart() {
+        let (service, socket_path, config_file, dirs) = registered_before_the_helper().await;
+        assert_eq!(Config::load(&config_file).unwrap().sync_root_upgrade_when_helper, Some(true));
+        drop(service);
+
+        let restarted = SyncService::new(None, None, Some(config_file.clone()));
+        restarted.set_helper_socket(&socket_path);
+        restarted.restore().await;
+        restarted.resume().await;
+        assert_eq!(restarted.root_state(), "no-interception");
+
+        let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        restarted.set_link(Some(link));
+        restarted.resume().await;
+
+        assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
+        assert_eq!(helper.seen().first(), Some(&Seen::RegisterRoot));
+        let config = Config::load(&config_file).unwrap();
+        assert!(config.sync_root_intercepted);
+        assert_eq!(config.sync_root_upgrade_when_helper, Some(false), "nothing is left to switch");
+        assert_eq!(config.sync_root, resolved(dirs[2].path()));
+    }
+
+    /// Ruling 4 of: a `config.toml` written before the flag existed
+    /// cannot say why its folder is without interception. It is read as a
+    /// folder to switch — the user's own registration is exactly that case,
+    /// and must switch once they restart the daemon or the helper reconnects
+    /// — while an intercepted one has nothing to switch.
+    #[tokio::test]
+    async fn a_folder_without_interception_recorded_before_the_flag_existed_switches_when_the_helper_connects() {
+        let sockets = tempfile::tempdir().unwrap();
+        let socket_path = sockets.path().join("helper.sock");
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_file = config_dir.path().join("config.toml");
+        let root_dir = tempfile::tempdir().unwrap();
+        let root_id = "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d";
+        xattr::set(root_dir.path(), "user.konedrive.root", root_id.as_bytes()).unwrap();
+        // What the daemon before wrote for such a folder.
+        std::fs::write(
+            &config_file,
+            format!(
+                "client_id = \"\"\nsync_root = \"{}\"\nsync_root_intercepted = false\n\
+                 sync_root_id = \"{root_id}\"\nsync_root_source = \"local\"\n\
+                 sync_root_baloo_excluded = false\n",
+                resolved(root_dir.path())
+            ),
+        )
+        .unwrap();
+        assert_eq!(Config::load(&config_file).unwrap().sync_root_upgrade_when_helper, None);
+
+        // The daemon restarts; the helper connects.
+        let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+        let restarted = SyncService::new(None, None, Some(config_file.clone()));
+        restarted.set_helper_socket(&socket_path);
+        restarted.restore().await;
+        restarted.resume().await;
+        assert_eq!(restarted.root_state(), "no-interception");
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        restarted.set_link(Some(link));
+        restarted.resume().await;
+
+        assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
+        assert_eq!(helper.seen().first(), Some(&Seen::RegisterRoot));
+        assert!(Config::load(&config_file).unwrap().sync_root_intercepted);
+    }
+
+    /// Ruling 2 of: a switch that fails leaves the folder exactly as
+    /// it was — without interception, written down that way — says why in
+    /// `LastError`, and is tried again the next time the helper connects.
+    #[tokio::test]
+    async fn a_switch_the_helper_refuses_leaves_the_folder_as_it_was_and_is_tried_again_at_the_next_connect() {
+        let (service, socket_path, config_file, _dirs) = registered_before_the_helper().await;
+        let before = Config::load(&config_file).unwrap();
+        let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+        helper.refuse(Seen::RegisterRoot, libc::EIO);
+
+        // What `supervise_helper` does the moment a helper answers.
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        service.set_link(Some(link));
+        service.resume().await;
+
+        assert_eq!(service.root_state(), "no-interception");
+        let said = service.last_error();
+        assert!(said.starts_with(NO_INTERCEPTION_WARNING), "the warning must stay: {said}");
+        assert!(
+            said.contains("switching this folder to interception failed") && said.contains("errno 5"),
+            "LastError must say why the folder is still without interception: {said}"
+        );
+        assert_eq!(Config::load(&config_file).unwrap(), before, "config.toml must say what it said before");
+        assert!(service.root().is_some());
+
+        // The connection drops (`supervise_helper` lets go of the link), and
+        // the helper connects again, and this time accepts.
+        service.set_link(None);
+        helper.refuse(Seen::RegisterRoot, 0);
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        service.set_link(Some(link));
+        service.resume().await;
+
+        assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+        assert_eq!(service.last_error(), "");
+        assert!(Config::load(&config_file).unwrap().sync_root_intercepted);
+    }
+
+    /// A failed switch the helper may still hold — its registration failed,
+    /// and it could not confirm it let go — is kept intercepted instead
+    ///: a folder the helper may hold must never be one the
+    /// daemon holds without interception. It is brought up at the next
+    /// connect, as every intercepted folder is.
+    #[tokio::test]
+    async fn a_failed_switch_the_helper_may_still_hold_is_kept_intercepted_and_brought_up_at_the_next_connect() {
+        let (service, socket_path, config_file, _dirs) = registered_before_the_helper().await;
+        let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+        helper.refuse(Seen::RegisterRoot, libc::EIO);
+        helper.refuse(Seen::UnregisterRoot, libc::EIO);
+
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        service.set_link(Some(link));
+        service.resume().await;
+
+        assert_eq!(service.root_state(), "error");
+        assert!(
+            service.last_error().contains("could not be told to let go"),
+            "{}",
+            service.last_error()
+        );
+        assert!(Config::load(&config_file).unwrap().sync_root_intercepted);
+        // Held as intercepted: its Forget goes through the helper, which is
+        // still refusing — a folder without interception would never ask.
+        let error = service.unregister_root().await.unwrap_err();
+        assert!(matches!(error, SyncError::Io(_)), "{error:?}");
+        assert!(service.root().is_some());
+
+        service.set_link(None);
+        helper.refuse(Seen::RegisterRoot, 0);
+        helper.refuse(Seen::UnregisterRoot, 0);
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        service.set_link(Some(link));
+        service.resume().await;
+        assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+    }
+
+    // --- The mode boundary --------------------
 
     /// A fake helper, a service connected to it that persists into a config
     /// file of its own, and everything that has to outlive the test body.
@@ -4236,13 +6170,13 @@ mod tests {
         std::fs::metadata(path).unwrap().blocks()
     }
 
-    /// Ruling H146's local rule at a dehydration in a root registered
+    /// The daemon's local rule at a dehydration in a root registered
     /// without interception, with a link: the helper is asked to clear the
     /// file's ignore mark, as in any other root, and the punch follows. It
     /// used to be skipped, on the strength of a chain of reasoning — nothing
     /// in such a folder is intercepted, and interception resumes only through
-    /// a walk that clears every mark — which the final re-review broke a
-    /// third time (N2): a stale-marked file emptied here read zeros once the
+    /// a walk that clears every mark — but that assumption failed again: a
+    /// stale-marked file emptied here read zeros once the
     /// folder was intercepted again. The helper grants the clear on ownership
     /// alone now, so the `EPERM` that made this mode skip it is gone too.
     #[tokio::test]
@@ -4271,7 +6205,7 @@ mod tests {
         assert!(data_blocks(&file) > 64, "a file whose mark was not cleared was emptied");
     }
 
-    /// Ruling H146 with no link. A helper running with no link to this
+    /// with no link. A helper running with no link to this
     /// daemon — at startup before the first connection, or between a
     /// helper's restart and the reconnect — has a group that may hold a mark
     /// on the file, and nothing here can clear it: refused `NoHelper`, the
@@ -4307,7 +6241,7 @@ mod tests {
         assert_eq!(service.item_state(&file).await, "online-only");
     }
 
-    /// Ruling H146 at the other punch site: recovery of a root registered
+    /// at the other punch site: recovery of a root registered
     /// without interception clears an interrupted file's mark through its
     /// link, like any other recovery.
     #[tokio::test]
@@ -4343,18 +6277,32 @@ mod tests {
 
     /// With no link while a helper runs, recovery of such a root leaves the
     /// interrupted file exactly as found — deferred, not failed — and runs
-    /// again, clearing the mark, once the link is up (Ruling H146). Without
+    /// again, clearing the mark, once the link is up. Without
     /// the second run the file would stay `dehydrating` until the next start.
+    ///
+    /// Here the folder is one registered without interception on purpose
+    /// (`config.toml` says so), restored at a start that finds a helper
+    /// running and no link to it yet.
     #[tokio::test]
     async fn recovery_deferred_while_an_unlinked_helper_runs_finishes_once_linked() {
         let sockets = tempfile::tempdir().unwrap();
         let socket_path = sockets.path().join("helper.sock");
         let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
-        let service = SyncService::new(None, None, None);
-        service.set_helper_socket(&socket_path);
+        let config_dir = tempfile::tempdir().unwrap();
+        let config_file = config_dir.path().join("config.toml");
         let (root_dir, stuck) = root_with_a_stuck_file();
+        Config {
+            sync_root: resolved(root_dir.path()),
+            sync_root_intercepted: false,
+            sync_root_upgrade_when_helper: Some(false),
+            ..Config::default()
+        }
+        .save(&config_file)
+        .unwrap();
+        let service = SyncService::new(None, None, Some(config_file));
+        service.set_helper_socket(&socket_path);
 
-        service.register_root_without_interception(root_dir.path()).await.unwrap();
+        service.resume().await;
 
         assert_eq!(state_of_path(&stuck), Some(State::Dehydrating), "reset with a mark unclearable");
         assert!(data_blocks(&stuck) > 64);
@@ -4368,6 +6316,32 @@ mod tests {
         assert_eq!(state_of_path(&stuck), Some(State::OnlineOnly), "the deferred reset never ran");
         assert_eq!(helper.seen(), vec![Seen::ClearIgnore]);
         assert_eq!(service.last_error(), NO_INTERCEPTION_WARNING);
+    }
+
+    /// The same deferred file in a folder registered without interception
+    /// because no helper was connected: the link's arrival switches the
+    /// folder to interception, and the switch's own recovery —
+    /// with the link, after the helper registered the root — resets it.
+    #[tokio::test]
+    async fn a_switch_to_interception_resets_what_recovery_deferred() {
+        let sockets = tempfile::tempdir().unwrap();
+        let socket_path = sockets.path().join("helper.sock");
+        let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+        let service = SyncService::new(None, None, None);
+        service.set_helper_socket(&socket_path);
+        let (root_dir, stuck) = root_with_a_stuck_file();
+
+        service.register_root_without_interception(root_dir.path()).await.unwrap();
+        assert_eq!(state_of_path(&stuck), Some(State::Dehydrating), "reset with a mark unclearable");
+
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        service.set_link(Some(link));
+        service.resume().await;
+
+        assert_eq!(state_of_path(&stuck), Some(State::OnlineOnly), "the deferred reset never ran");
+        assert_eq!(helper.seen(), vec![Seen::RegisterRoot, Seen::ClearIgnore]);
+        assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+        assert_eq!(service.last_error(), "");
     }
 
     /// The route into no-interception mode that H133 alone leaves open. A
@@ -4520,7 +6494,7 @@ mod tests {
 
     /// And a root that cannot be written down is not registered at all: the
     /// helper is never told about it.
-    /// The final review's m5 (Ruling H144). `config.toml` is the account
+    ///. `config.toml` is the account
     /// sub-project's file too — it holds the `client_id` — and a copy that
     /// could not be read used to be treated as empty and written back from
     /// defaults, erasing everything in it. What could not be read is never
@@ -4565,7 +6539,7 @@ mod tests {
         assert!(helper.seen().is_empty(), "the helper was told: {:?}", helper.seen());
     }
 
-    /// Ruling H110 on both sides: a `RegisterRoot` that fails after the
+    /// on both sides: a `RegisterRoot` that fails after the
     /// helper saved the root is undone at the helper, and in `config.toml`,
     /// so that neither is left holding a root the daemon does not.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -4676,9 +6650,12 @@ mod tests {
     /// punches. The mode must not change under it in the meantime: a root
     /// forgotten and registered again with interception while it waits
     /// could have the file ignore-marked by then, and the punch would skip
-    /// the `ClearIgnore` that is suddenly needed. A Forget waits for it.
+    /// the `ClearIgnore` that is suddenly needed.
+    /// it waits for the fill without the lifecycle lock — a Forget is not
+    /// held up by a download — and decides the mode only after, under the
+    /// lock: a folder forgotten meanwhile is refused, nothing punched.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn a_forget_waits_for_a_dehydration_that_is_already_under_way() {
+    async fn a_dehydration_waiting_for_a_fill_does_not_hold_up_a_forget() {
         let (service, _sockets, _helper) = service_with_helper().await;
         let source_dir = tempfile::tempdir().unwrap();
         std::fs::write(source_dir.path().join("b.bin"), vec![4u8; 4096]).unwrap();
@@ -4696,18 +6673,921 @@ mod tests {
             tokio::spawn(async move { service.dehydrate(&file).await })
         };
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let forgetting = {
-            let service = Arc::clone(&service);
-            tokio::spawn(async move { service.unregister_root().await })
-        };
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        tokio::time::timeout(Duration::from_secs(2), service.unregister_root())
+            .await
+            .expect("the Forget waited for a dehydration waiting for a fill")
+            .unwrap();
 
-        assert!(
-            !forgetting.is_finished(),
-            "the root was forgotten under a dehydration that had already decided its mode"
-        );
         drop(fill);
-        dehydrating.await.unwrap().unwrap();
-        forgetting.await.unwrap().unwrap();
+        let refused = dehydrating.await.unwrap();
+        assert!(matches!(refused, Err(SyncError::NoRoot)), "{refused:?}");
+        assert_eq!(std::fs::read(&file).unwrap(), vec![4u8; 4096], "nothing was punched");
+    }
+
+    // --- A folder that shows OneDrive ----------
+
+    #[test]
+    fn the_published_state_is_computed_from_the_registration_and_the_sync() {
+        let mut s = SyncSnapshot { root_state: RootState::Ready, ..SyncSnapshot::default() };
+        assert_eq!(published_state(&s), "ready");
+        s.listing = true;
+        assert_eq!(published_state(&s), "listing");
+        s.sync_trouble = Some(SyncTrouble { text: "cannot reach OneDrive".into(), blocking: false });
+        assert_eq!(published_state(&s), "listing", "no network is said, not an error");
+        s.sync_trouble = Some(SyncTrouble { text: "signed out".into(), blocking: true });
+        assert_eq!(published_state(&s), "error");
+        s.root_state = RootState::Error;
+        s.last_error = "the helper is not connected".into();
+        s.replacement_note = "1 file(s) changed in OneDrive could not be updated here yet: no space".into();
+        s.conflict_count = 1;
+        assert_eq!(
+            published_error(&s),
+            "the helper is not connected. signed out. 1 file(s) changed in OneDrive could not be updated here yet: no space",
+            "a conflict is not a problem; it is not in LastError"
+        );
+        assert_eq!(published_state(&SyncSnapshot::default()), "none");
+
+        // `listing` never hides `no-interception`.
+        let s = SyncSnapshot { root_state: RootState::NoInterception, listing: true, ..SyncSnapshot::default() };
+        assert_eq!(published_state(&s), "no-interception");
+    }
+
+    /// HS3: while a folder waits for the helper, `RootState` reads `error`
+    /// and `LastError` begins with what `HelperState` says — how to install
+    /// it, start it, or see why it failed — ahead of whatever else is said.
+    #[test]
+    fn a_folder_waiting_for_the_helper_says_how_to_start_it() {
+        let said = |helper_state| {
+            let s = SyncSnapshot {
+                root_state: RootState::Ready,
+                waits_for_helper: true,
+                helper_state,
+                last_error: "recovery left 1 file".into(),
+                ..SyncSnapshot::default()
+            };
+            (published_state(&s), published_error(&s))
+        };
+        let (state, error) = said(HelperState::NotInstalled);
+        assert_eq!(state, "error");
+        assert_eq!(
+            error,
+            "the konedrive helper is not installed: files are not kept in step and do not download when \
+             opened. Install it: sudo scripts/install-helper.sh (see README). recovery left 1 file"
+        );
+        assert!(said(HelperState::Stopped).1.starts_with(
+            "the konedrive helper is not running: start it with `sudo systemctl start konedrive-helper`. "
+        ));
+        assert!(said(HelperState::Failed).1.starts_with("the konedrive helper failed: see `systemctl status konedrive-helper`. "));
+        assert!(said(HelperState::Unknown).1.starts_with("the konedrive helper is not connected. "));
+        assert_eq!(said(HelperState::Connected).1, "recovery left 1 file", "nothing to say of a connected helper");
+
+        let s = SyncSnapshot { root_state: RootState::Ready, helper_state: HelperState::Stopped, ..SyncSnapshot::default() };
+        assert_eq!((published_state(&s), published_error(&s).as_str()), ("ready", ""), "a folder not waiting says nothing of it");
+    }
+
+    mod onedrive {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        use serde_json::json;
+        use url::Url;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        use super::super::*;
+        use super::{wait_until, FakeHelper, Seen};
+        use crate::drive::{DriveClient, RetryPolicy};
+        use crate::state::{AccountSnapshot, SignInState, StateHandle};
+        use crate::sync::listing::Schedule;
+        use crate::token::{AuthError, StaticToken, TokenSource};
+
+        struct World {
+            server: MockServer,
+            config: tempfile::TempDir,
+            folder: tempfile::TempDir,
+            /// Where the fake `balooctl6` lives: `calls` gets every
+            /// `add`/`rm` it is run with, appended one per line; its
+            /// `baloofilerc` is what is excluded already — nothing, unless a
+            /// test writes it.; `crate::sync::baloo`.
+            baloo: tempfile::TempDir,
+            /// A helper that acknowledges everything, at `sockets/helper.sock`:
+            /// a folder that shows OneDrive is kept in step only with one
+            /// (HS2). [`connected`] links a service to it.
+            helper: FakeHelper,
+            sockets: tempfile::TempDir,
+        }
+
+        impl Drop for World {
+            fn drop(&mut self) {
+                // A locked tree cannot be removed by the temporary directory.
+                let _ = std::process::Command::new("chmod")
+                    .args(["-R", "u+w"])
+                    .arg(self.folder.path())
+                    .status();
+            }
+        }
+
+        /// A drive holding `docs/f.txt`, listed in full from the start and
+        /// with no changes since from its delta link `L1`.
+        async fn world() -> World {
+            let server = MockServer::start().await;
+            Mock::given(method("GET")).and(path("/me/drive"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "D1"})))
+                .mount(&server).await;
+            Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "L1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [], "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", server.uri())})))
+                .with_priority(1)
+                .mount(&server).await;
+            Mock::given(method("GET")).and(path("/me/drive/root/delta"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "value": [
+                        {"id": "R", "root": {}, "folder": {}},
+                        {"id": "D", "name": "docs", "folder": {}, "parentReference": {"id": "R"}},
+                        {"id": "F", "name": "f.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "D"}}
+                    ],
+                    "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", server.uri())
+                })))
+                .with_priority(5)
+                .mount(&server).await;
+            let baloo = tempfile::tempdir().unwrap();
+            write_fake_balooctl6(baloo.path());
+            let sockets = tempfile::tempdir().unwrap();
+            let helper = FakeHelper::start(sockets.path().join("helper.sock"), Duration::ZERO);
+            World { server, config: tempfile::tempdir().unwrap(), folder: tempfile::tempdir().unwrap(), baloo, helper, sockets }
+        }
+
+        /// A new link to the world's helper.
+        async fn link(w: &World) -> HelperLink {
+            HelperLink::connect(&w.sockets.path().join("helper.sock")).await.unwrap().0
+        }
+
+        /// [`service`], linked to the world's helper: what a OneDrive folder
+        /// is registered and kept in step with (HS2).
+        async fn connected(w: &World, signed_in: bool) -> Arc<SyncService> {
+            service_with(w, account(signed_in), Some(link(w).await), Arc::new(StaticToken::new("T")))
+        }
+
+        /// A fake `balooctl6`, so these tests never reach the real Baloo
+        ///: `config add`/`config rm` are logged to `calls`, one
+        /// call per line. What is excluded already is read from the
+        /// `baloofilerc` beside it (`crate::sync::baloo`, B-I1b), never
+        /// `~/.config`'s.
+        fn write_fake_balooctl6(dir: &std::path::Path) {
+            let script = dir.join("balooctl6");
+            let log = dir.join("calls");
+            std::fs::write(&script, format!("#!/bin/sh\necho \"$@\" >> '{}'\n", log.display())).unwrap();
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        /// Every `add`/`rm` the fake `balooctl6` was run with, in order.
+        fn baloo_calls(w: &World) -> String {
+            std::fs::read_to_string(w.baloo.path().join("calls")).unwrap_or_default()
+        }
+
+        /// Writes the test's `baloofilerc` as if `folder` (or, passed
+        /// directly, a directory above it) were already excluded — the
+        /// user's own doing, which says a registration must never
+        /// add to or a Forget take off. In the form KConfig writes it.
+        fn mark_already_excluded(w: &World, folder: &std::path::Path) {
+            let line = format!("[General]\nexclude folders[$e]={}/\n", folder.display());
+            std::fs::write(w.baloo.path().join("baloofilerc"), line).unwrap();
+        }
+
+        fn account(signed_in: bool) -> StateHandle {
+            StateHandle::new(AccountSnapshot {
+                state: if signed_in { SignInState::SignedIn } else { SignInState::SignedOut },
+                ..AccountSnapshot::default()
+            })
+        }
+
+        fn service(w: &World, signed_in: bool) -> Arc<SyncService> {
+            service_with(w, account(signed_in), None, Arc::new(StaticToken::new("T")))
+        }
+
+        /// A service wired as `main` wires it — a drive, its paths — with an
+        /// hour between cycles, so that any cycle a test sees was asked for.
+        fn service_with(
+            w: &World,
+            account: StateHandle,
+            link: Option<HelperLink>,
+            tokens: Arc<dyn TokenSource>,
+        ) -> Arc<SyncService> {
+            let service = SyncService::new(link, Some(account), Some(w.config.path().join("config.toml")));
+            let drive = DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), tokens)
+                .unwrap()
+                .with_retry(RetryPolicy { attempts: 2, default_wait: Duration::from_millis(5), max_wait: Duration::from_millis(10) });
+            service.set_drive(drive);
+            service.set_sync_paths(SyncPaths {
+                tree_db: w.config.path().join("tree.sqlite"),
+                rescue_dir: w.config.path().join("rescued"),
+                thumbnails: Some(w.config.path().join("thumbnails")),
+            });
+            service.set_schedule(Schedule { interval: Duration::from_secs(3600), retry: vec![Duration::from_millis(50)] });
+            // No helper in these tests, and none running: a punch goes by "no helper at all".
+            service.set_helper_socket(w.config.path().join("no-helper.sock"));
+            // The fake `balooctl6` and a `baloofilerc` of the test's own
+            //: never the real ones, so these tests never touch
+            // ~/.config/baloofilerc.
+            service.set_baloo(crate::sync::baloo::Baloo {
+                program: Some(w.baloo.path().join("balooctl6")),
+                settings: Some(w.baloo.path().join("baloofilerc")),
+                ..crate::sync::baloo::Baloo::disabled()
+            });
+            service
+        }
+
+        /// Tokens while the account reads signed in, and "signed out" — as
+        /// `TokenManager` answers once the refresh token is gone — otherwise.
+        struct AccountTokens {
+            account: StateHandle,
+            refused: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl TokenSource for AccountTokens {
+            async fn access_token(&self) -> Result<String, AuthError> {
+                if self.account.get().state == SignInState::SignedIn {
+                    Ok("T".into())
+                } else {
+                    self.refused.fetch_add(1, Ordering::SeqCst);
+                    Err(AuthError::SignedOut)
+                }
+            }
+
+            async fn invalidate(&self) {}
+        }
+
+        fn config_of(w: &World) -> Config {
+            Config::load(&w.config.path().join("config.toml")).unwrap()
+        }
+
+        fn mode(path: &std::path::Path) -> u32 {
+            std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
+        }
+
+        async fn requests(w: &World) -> usize {
+            w.server.received_requests().await.unwrap().len()
+        }
+
+        async fn deltas(w: &World) -> usize {
+            w.server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/me/drive/root/delta").count()
+        }
+
+        /// Delta requests that started a listing of the whole drive.
+        async fn full_listings(w: &World) -> usize {
+            w.server
+                .received_requests()
+                .await
+                .unwrap()
+                .iter()
+                .filter(|r| r.url.path() == "/me/drive/root/delta" && r.url.query().is_none())
+                .count()
+        }
+
+        async fn wait_for_deltas(w: &World, more_than: usize) {
+            for _ in 0..300 {
+                if deltas(w).await > more_than {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            panic!("no delta request came");
+        }
+
+        /// The first cycle is over: its counts are published only once the
+        /// folder has been made to match the tree.
+        async fn listed(service: &SyncService) {
+            wait_until("the drive is listed into the folder", || service.items() == (2, 2, 0)).await;
+        }
+
+        #[tokio::test]
+        async fn a_folder_registered_while_signed_in_shows_onedrive_read_only() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let file = w.folder.path().join("docs/f.txt");
+            assert!(file.is_file());
+            assert_eq!(config_of(&w).sync_root_source, "onedrive");
+            assert_eq!((mode(&file), mode(&w.folder.path().join("docs"))), (0o444, 0o555));
+            assert_eq!(service.root_state(), "ready");
+            // A fresh OneDrive folder is excluded from KDE's
+            // Baloo indexer, so reading a placeholder to index it does not
+            // download the whole drive.
+            let folder = std::fs::canonicalize(w.folder.path()).unwrap();
+            assert_eq!(baloo_calls(&w), format!("config add excludeFolders {}\n", folder.display()));
+            assert!(config_of(&w).sync_root_baloo_excluded);
+            service.stop_sync().await;
+        }
+
+        /// A fresh OneDrive folder that is not already excluded
+        /// from Baloo is excluded, and included again on Forget — the plain
+        /// case, and the one the fake `balooctl6`'s empty `excluded` file
+        /// gives by default.
+        #[tokio::test]
+        async fn baloo_excludes_a_fresh_onedrive_folder_and_includes_it_again_on_forget() {
+            let w = world().await;
+            let folder = std::fs::canonicalize(w.folder.path()).unwrap();
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            assert_eq!(baloo_calls(&w), format!("config add excludeFolders {}\n", folder.display()));
+
+            service.unregister_root().await.unwrap();
+            assert_eq!(
+                baloo_calls(&w),
+                format!("config add excludeFolders {folder}\nconfig rm excludeFolders {folder}\n", folder = folder.display())
+            );
+        }
+
+        /// A folder the user has already excluded from Baloo —
+        /// themselves, or through a parent directory — is never added again,
+        /// and a later Forget must not remove an exclusion this daemon did
+        /// not add.
+        #[tokio::test]
+        async fn baloo_leaves_a_folder_the_user_already_excluded_alone() {
+            let w = world().await;
+            let folder = std::fs::canonicalize(w.folder.path()).unwrap();
+            mark_already_excluded(&w, &folder);
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            assert_eq!(baloo_calls(&w), "", "already excluded, so nothing is added");
+            assert!(!config_of(&w).sync_root_baloo_excluded);
+
+            service.unregister_root().await.unwrap();
+            assert_eq!(baloo_calls(&w), "", "we never added it, so Forget must not remove it");
+        }
+
+        /// Whether this daemon added the exclusion is persisted
+        /// (`sync_root_baloo_excluded` in `config.toml`), so a restart
+        /// between a registration and its Forget still gets the Forget
+        /// right — the exclusion comes off, and it is not re-checked or
+        /// re-added at the restart in between.
+        #[tokio::test]
+        async fn baloo_exclusion_survives_a_restart_and_is_still_removed_on_forget() {
+            let w = world().await;
+            let folder = std::fs::canonicalize(w.folder.path()).unwrap();
+            {
+                let first = connected(&w, true).await;
+                first.register_root(w.folder.path()).await.unwrap();
+                first.stop_sync().await;
+            }
+            let after_first = format!("config add excludeFolders {}\n", folder.display());
+            assert_eq!(baloo_calls(&w), after_first);
+            assert!(config_of(&w).sync_root_baloo_excluded);
+
+            let second = connected(&w, false).await;
+            second.restore().await;
+            second.resume().await;
+            assert_eq!(baloo_calls(&w), after_first, "not re-checked or re-added at a restart");
+            assert!(config_of(&w).sync_root_baloo_excluded, "the flag survives the restart");
+
+            second.unregister_root().await.unwrap();
+            assert_eq!(baloo_calls(&w), format!("{after_first}config rm excludeFolders {}\n", folder.display()));
+        }
+
+        /// the exclusion used to be tried only by a
+        /// fresh registration's commit. A registration kept after it failed
+        /// (the helper could not confirm it let go) commits nothing, and when
+        /// it was brought up later nothing asked Baloo again — the folder
+        /// stayed indexed, and Baloo downloaded the whole drive. Every commit
+        /// of a folder not recorded as excluded asks now.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_folder_kept_after_a_failed_registration_is_kept_out_of_baloo_when_brought_up() {
+            let w = world().await;
+            let folder = std::fs::canonicalize(w.folder.path()).unwrap();
+            let sockets = tempfile::tempdir().unwrap();
+            let socket_path = sockets.path().join("helper.sock");
+            let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+            let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+            let service = service_with(&w, account(true), Some(link), Arc::new(StaticToken::new("T")));
+            helper.refuse(Seen::RegisterRoot, libc::EIO);
+            helper.refuse(Seen::UnregisterRoot, libc::EIO);
+            service.register_root(w.folder.path()).await.unwrap_err();
+            assert!(service.root().is_some(), "kept: the helper may still hold it");
+            assert_eq!(baloo_calls(&w), "");
+
+            helper.refuse(Seen::RegisterRoot, 0);
+            service.resume().await;
+
+            assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+            assert_eq!(baloo_calls(&w), format!("config add excludeFolders {}\n", folder.display()));
+            assert!(config_of(&w).sync_root_baloo_excluded);
+            service.stop_sync().await;
+        }
+
+        /// A `SyncService` that never had `set_baloo` called on it — as a
+        /// test that forgot to, would be — starts with a `Baloo` that runs
+        /// no program at all, so it never reaches the real `balooctl6` or
+        /// `~/.config/baloofilerc`, on this host or the one running CI. This
+        /// deliberately does not go through `service`/`service_with`, which
+        /// always install the fake.
+        #[tokio::test]
+        async fn a_service_without_set_baloo_runs_no_program_on_registration() {
+            let w = world().await;
+            let account = account(true);
+            let service = SyncService::new(Some(link(&w).await), Some(account), Some(w.config.path().join("config.toml")));
+            let drive = DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), Arc::new(StaticToken::new("T")))
+                .unwrap();
+            service.set_drive(drive);
+            service.set_sync_paths(SyncPaths {
+                tree_db: w.config.path().join("tree.sqlite"),
+                rescue_dir: w.config.path().join("rescued"),
+                thumbnails: Some(w.config.path().join("thumbnails")),
+            });
+            service.set_helper_socket(w.config.path().join("no-helper.sock"));
+            // No `set_baloo`: the default `Baloo::disabled()` stands.
+
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+
+            assert!(!w.baloo.path().join("calls").exists(), "the fake was never even pointed to");
+            assert!(!config_of(&w).sync_root_baloo_excluded, "nothing ran, so nothing was excluded");
+            service.stop_sync().await;
+        }
+
+        /// A folder registered signed out is local, as in part 1 — and, since
+        /// HS2, so is every folder registered without interception, signed
+        /// in or not: that is the developer's mode, filled from a directory.
+        #[tokio::test]
+        async fn a_folder_registered_while_signed_out_or_without_interception_is_local() {
+            for signed_in in [false, true] {
+                let w = world().await;
+                let service = service(&w, signed_in);
+                service.register_root_without_interception(w.folder.path()).await.unwrap();
+                assert_eq!(config_of(&w).sync_root_source, "local", "signed in: {signed_in}");
+                let source = tempfile::tempdir().unwrap();
+                std::fs::write(source.path().join("a.txt"), b"abc").unwrap();
+                assert_eq!(service.populate_from_directory(source.path()).await.unwrap(), 1);
+                assert_eq!(mode(&w.folder.path().join("a.txt")), 0o644, "no lock on a local folder");
+                assert_eq!(requests(&w).await, 0, "a local folder never asks OneDrive");
+            }
+        }
+
+        #[tokio::test]
+        async fn populating_a_onedrive_folder_from_a_directory_is_refused() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            let source = tempfile::tempdir().unwrap();
+            let err = service.populate_from_directory(source.path()).await.unwrap_err();
+            assert!(matches!(err, SyncError::Unsupported(_)), "{err:?}");
+            service.stop_sync().await;
+        }
+
+        #[tokio::test]
+        async fn forgetting_a_onedrive_folder_stops_its_sync_unlocks_it_and_drops_its_tree() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            // A reader of the test's own — another program reading the store,
+            // `sqlite3` say — so that the daemon's connection is not the last
+            // one: SQLite then leaves its journal files when that closes, and
+            // only the Forget itself removes them.
+            let reader = rusqlite::Connection::open(w.config.path().join("tree.sqlite")).unwrap();
+            reader.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0)).unwrap();
+            for name in ["tree.sqlite-wal", "tree.sqlite-shm"] {
+                assert!(w.config.path().join(name).exists(), "no {name} to remove");
+            }
+            service.unregister_root().await.unwrap();
+            let file = w.folder.path().join("docs/f.txt");
+            assert!(file.is_file(), "the files stay (spec §3.1)");
+            assert_eq!((mode(&file), mode(&w.folder.path().join("docs"))), (0o644, 0o755));
+            for name in ["tree.sqlite", "tree.sqlite-wal", "tree.sqlite-shm"] {
+                assert!(!w.config.path().join(name).exists(), "{name} was left");
+            }
+            drop(reader);
+            assert_eq!(service.items(), (0, 0, 0));
+            assert_eq!(service.root_state(), "none");
+            assert_eq!(config_of(&w).sync_root_source, "local");
+            let before = requests(&w).await;
+            service.refresh_now();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(requests(&w).await, before, "nothing syncs any more");
+        }
+
+        /// A restart brings a OneDrive folder back syncing, and its first
+        /// cycle reconciles the whole folder: the stored link has
+        /// no changes since, so only a Full reconcile puts back the file
+        /// removed while the daemon was down.
+        ///
+        /// The restarted daemon reads "signed out" (its Graph token here is
+        /// static, so the cycle still succeeds): a restored folder keeps the
+        /// source `config.toml` records, and a restart after a sign-out must
+        /// not turn a OneDrive folder into a local one.
+        #[tokio::test]
+        async fn a_restart_brings_a_onedrive_folder_back_and_repairs_it() {
+            let w = world().await;
+            {
+                let first = connected(&w, true).await;
+                first.register_root(w.folder.path()).await.unwrap();
+                listed(&first).await;
+                first.stop_sync().await;
+            }
+            assert_eq!(config_of(&w).sync_root_source, "onedrive");
+            std::process::Command::new("chmod").args(["-R", "u+w"]).arg(w.folder.path()).status().unwrap();
+            std::fs::remove_file(w.folder.path().join("docs/f.txt")).unwrap();
+            let listings = full_listings(&w).await;
+
+            let second = connected(&w, false).await;
+            second.restore().await;
+            second.resume().await;
+            wait_until("repaired by the first cycle's Full reconcile", || {
+                w.folder.path().join("docs/f.txt").is_file()
+            })
+            .await;
+            assert_eq!(full_listings(&w).await, listings, "asked from the stored link, not listed again");
+            assert_eq!(config_of(&w).sync_root_source, "onedrive");
+            second.stop_sync().await;
+        }
+
+        #[tokio::test]
+        async fn refresh_runs_a_cycle_now() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let before = deltas(&w).await;
+            service.refresh().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(deltas(&w).await, before + 1);
+            service.stop_sync().await;
+        }
+
+        #[tokio::test]
+        async fn refresh_on_a_local_folder_is_refused() {
+            let w = world().await;
+            let service = service(&w, false);
+            service.register_root_without_interception(w.folder.path()).await.unwrap();
+            assert!(matches!(service.refresh().await, Err(SyncError::Unsupported(_))));
+        }
+
+        #[tokio::test]
+        async fn skipped_names_what_is_not_in_the_folder_by_its_full_path() {
+            let w = world().await;
+            Mock::given(method("GET")).and(path("/me/drive/root/delta"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "value": [
+                        {"id": "R", "root": {}, "folder": {}},
+                        {"id": "D", "name": "docs", "folder": {}, "parentReference": {"id": "R"}},
+                        {"id": "F", "name": "f.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "D"}},
+                        {"id": "V", "name": "Personal Vault", "folder": {}, "specialFolder": {"name": "vault"}, "parentReference": {"id": "R"}}
+                    ],
+                    "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", w.server.uri())
+                })))
+                .with_priority(4)
+                .mount(&w.server).await;
+            let service = connected(&w, true).await;
+            assert_eq!(service.skipped().await.unwrap(), Vec::<(String, String)>::new());
+            service.register_root(w.folder.path()).await.unwrap();
+            wait_until("listed", || service.items() == (3, 2, 1)).await;
+            let vault = std::fs::canonicalize(w.folder.path()).unwrap().join("Personal Vault");
+            assert_eq!(
+                service.skipped().await.unwrap(),
+                vec![(vault.display().to_string(), "personal-vault".to_owned())]
+            );
+            service.stop_sync().await;
+        }
+
+        /// A folder that reads "signed out" is brought up to date the moment
+        /// the account signs in again, not up to a poll interval later (an
+        /// hour here).
+        #[tokio::test]
+        async fn signing_in_brings_a_folder_that_reads_signed_out_up_to_date_at_once() {
+            let w = world().await;
+            let account = account(true);
+            let tokens = Arc::new(AccountTokens { account: account.clone(), refused: AtomicUsize::new(0) });
+            let service = service_with(&w, account.clone(), Some(link(&w).await), Arc::clone(&tokens) as Arc<dyn TokenSource>);
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+
+            account.update(|s| s.state = SignInState::SignedOut);
+            service.refresh_now();
+            wait_until("the folder reads signed out", || service.root_state() == "error").await;
+            assert!(service.last_error().contains("signed out"), "{}", service.last_error());
+            // The one retry the schedule has, and then the hour-long wait.
+            wait_until("the retry failed too", || tokens.refused.load(Ordering::SeqCst) >= 2).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(tokens.refused.load(Ordering::SeqCst), 2, "the poller waits out its interval now");
+
+            let before = deltas(&w).await;
+            account.update(|s| s.state = SignInState::SigningIn);
+            account.update(|s| s.state = SignInState::SignedIn);
+            wait_until("the folder is in step again", || service.root_state() == "ready").await;
+            assert_eq!(deltas(&w).await, before + 1);
+            service.stop_sync().await;
+        }
+
+        /// A Forget the helper refuses keeps the folder registered — and so
+        /// locked, and kept in step.
+        #[tokio::test]
+        async fn a_forget_the_helper_refuses_leaves_the_folder_locked_and_in_step() {
+            let w = world().await;
+            let sockets = tempfile::tempdir().unwrap();
+            let socket_path = sockets.path().join("helper.sock");
+            let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+            let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+            let service = service_with(&w, account(true), Some(link), Arc::new(StaticToken::new("T")));
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            helper.refuse(Seen::UnregisterRoot, libc::EIO);
+
+            let refused = service.unregister_root().await;
+
+            assert!(matches!(refused, Err(SyncError::Io(_))), "{refused:?}");
+            assert_eq!(mode(&w.folder.path().join("docs/f.txt")), 0o444);
+            assert!(w.config.path().join("tree.sqlite").exists());
+            assert_eq!(config_of(&w).sync_root_source, "onedrive");
+            let before = deltas(&w).await;
+            service.refresh().await.unwrap();
+            wait_for_deltas(&w, before).await;
+            service.stop_sync().await;
+        }
+
+        /// A listing's reconcile takes the very lock registrations and
+        /// Forgets take: while that is held, the listing waits. (A replacement
+        /// of a changed file does not take it — it swaps in one file under its
+        /// inode lock — so this is about the listing, not every change.)
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_listing_waits_for_the_services_lifecycle_lock() {
+            let w = world().await;
+            // The first listing answers late enough for the lock to be taken first.
+            Mock::given(method("GET")).and(path("/me/drive/root/delta"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "value": [
+                        {"id": "R", "root": {}, "folder": {}},
+                        {"id": "D", "name": "docs", "folder": {}, "parentReference": {"id": "R"}},
+                        {"id": "F", "name": "f.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "D"}}
+                    ],
+                    "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", w.server.uri())
+                })).set_delay(Duration::from_millis(300)))
+                .with_priority(4)
+                .mount(&w.server).await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+
+            let held = service.lifecycle.write().await;
+            wait_for_deltas(&w, 0).await;
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            assert!(!w.folder.path().join("docs").exists(), "the folder was changed under the lock");
+            drop(held);
+            listed(&service).await;
+            service.stop_sync().await;
+        }
+
+        /// A Forget stops the sync before it waits for the lifecycle lock, so
+        /// that no reconcile keeps it waiting; a helper's reconnect that takes
+        /// the lock first may start the sync again in between. That one is
+        /// stopped too, before the folder is let go.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_sync_started_again_while_a_forget_waits_is_stopped_too() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+
+            let held = service.lifecycle.write().await;
+            let forgetting = {
+                let service = Arc::clone(&service);
+                tokio::spawn(async move { service.unregister_root().await })
+            };
+            wait_until("the Forget stopped the sync", || service.syncing.lock().unwrap().is_none()).await;
+            // What a `resume` that has the lock does to a OneDrive folder.
+            service.start_sync().await;
+            drop(held);
+            forgetting.await.unwrap().unwrap();
+
+            let before = requests(&w).await;
+            service.refresh_now();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(requests(&w).await, before, "a sync runs on a forgotten folder");
+            assert_eq!(mode(&w.folder.path().join("docs/f.txt")), 0o644);
+        }
+
+        /// `start_sync` waits for the tree store to open before it keeps the
+        /// sync it starts. Two of them at once — which only the lifecycle lock
+        /// its callers hold keeps from happening — must still leave one sync
+        /// running, not a second one that nothing could ever stop.
+        #[tokio::test]
+        async fn two_starts_at_once_leave_one_sync() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            service.stop_sync().await;
+            let before = deltas(&w).await;
+
+            tokio::join!(service.start_sync(), service.start_sync());
+            tokio::time::sleep(Duration::from_millis(300)).await;
+
+            assert_eq!(deltas(&w).await, before + 1, "two syncs ran their first cycle");
+            service.stop_sync().await;
+        }
+
+        /// A folder whose sync could not start (F18: its tree store could not
+        /// be opened) is not reported as refreshed: `Refresh()` tries to start
+        /// it again, says why when it still cannot, and starts it once it can.
+        #[tokio::test]
+        async fn refresh_starts_a_sync_that_could_not_start_or_says_why() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            // A file where the tree store's directory has to be.
+            let blocker = w.config.path().join("state");
+            std::fs::write(&blocker, b"").unwrap();
+            service.set_sync_paths(SyncPaths {
+                tree_db: blocker.join("tree.sqlite"),
+                rescue_dir: w.config.path().join("rescued"),
+                thumbnails: Some(w.config.path().join("thumbnails")),
+            });
+            service.register_root(w.folder.path()).await.unwrap();
+            assert_eq!(service.root_state(), "error");
+
+            let refused = service.refresh().await;
+            assert!(
+                matches!(&refused, Err(SyncError::Io(why)) if why.contains("the tree store cannot be opened")),
+                "{refused:?}"
+            );
+            assert_eq!(requests(&w).await, 0, "nothing synced");
+
+            std::fs::remove_file(&blocker).unwrap();
+            service.refresh().await.unwrap();
+            listed(&service).await;
+            assert_eq!(service.root_state(), "ready");
+            service.stop_sync().await;
+        }
+
+        /// A folder held at startup until its helper is back has not been
+        /// brought up — nor recovered — yet: `Refresh()` says so rather than
+        /// start its sync ahead of that.
+        #[tokio::test]
+        async fn refresh_of_a_folder_waiting_for_its_helper_says_so() {
+            let w = world().await;
+            let sockets = tempfile::tempdir().unwrap();
+            let socket_path = sockets.path().join("helper.sock");
+            let _helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+            {
+                let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+                let first = service_with(&w, account(true), Some(link), Arc::new(StaticToken::new("T")));
+                first.register_root(w.folder.path()).await.unwrap();
+                listed(&first).await;
+                first.stop_sync().await;
+            }
+            let restarted = service(&w, true);
+            restarted.restore().await;
+            let before = requests(&w).await;
+
+            let refused = restarted.refresh().await;
+
+            assert!(matches!(refused, Err(SyncError::NoHelper)), "{refused:?}");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(requests(&w).await, before, "a sync started ahead of the bring-up");
+            restarted.stop_sync().await;
+        }
+
+        /// A OneDrive folder is locked read-only after its first listing (W2),
+        /// the folder itself too, and bringing it up again after a restart
+        /// re-checked it with a write probe — refused, so no locked folder came
+        /// back after a restart, in either mode: "cannot bring up the sync
+        /// folder: Permission denied". Found by, whose switch to
+        /// interception goes through the same check. A folder that already
+        /// carries its root id was probed when it was first registered, and is
+        /// not probed again — the helper's own re-registration skips its probe
+        /// for the same reason. The mode without interception is
+        /// a folder recorded that way before HS2 (`legacy_without_interception`):
+        /// no new OneDrive folder is made so.
+        #[tokio::test]
+        async fn a_locked_onedrive_folder_comes_back_after_a_restart_in_either_mode() {
+            for intercepted in [false, true] {
+                let w = world().await;
+                {
+                    let first = connected(&w, true).await;
+                    first.register_root(w.folder.path()).await.unwrap();
+                    listed(&first).await;
+                    first.stop_sync().await;
+                    first.set_link(None);
+                }
+                if !intercepted {
+                    legacy_without_interception(&w);
+                }
+                assert_eq!(mode(w.folder.path()), 0o555, "the folder itself is locked");
+
+                let restarted = connected(&w, true).await;
+                restarted.restore().await;
+                restarted.resume().await;
+
+                assert!(
+                    !restarted.last_error().contains("cannot bring up"),
+                    "intercepted = {intercepted}: {}",
+                    restarted.last_error()
+                );
+                assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
+                assert_eq!(mode(w.folder.path()), 0o555, "and it stays locked");
+                restarted.stop_sync().await;
+            }
+        }
+
+        /// Rewrites `config.toml` as a daemon from before HS2 left a folder
+        /// that shows OneDrive registered without interception on purpose —
+        /// with a helper connected, so not one to switch.
+        fn legacy_without_interception(w: &World) {
+            let file = w.config.path().join("config.toml");
+            let mut config = Config::load(&file).unwrap();
+            config.sync_root_intercepted = false;
+            config.sync_root_upgrade_when_helper = Some(false);
+            config.save(&file).unwrap();
+        }
+
+        /// HS2: a folder that shows OneDrive and is not intercepted — as a
+        /// daemon from before HS left one registered on purpose, with a helper
+        /// connected — is not kept in step while there is no helper: OneDrive
+        /// is not asked, `Refresh()` is refused `NoHelper`, and the folder
+        /// reads `error` with the helper's advice first in `LastError`. When
+        /// the helper connects it switches to interception whatever it was
+        /// registered as (switch; there is no "on purpose" for a
+        /// OneDrive folder any more). And, Ruling 1: the switch keeps
+        /// invariant M1 for everything its sync places afterwards — the sync
+        /// starts intercepted, so a folder that arrives from the drive later is
+        /// marked before it is filled.
+        #[tokio::test]
+        async fn a_onedrive_folder_without_interception_waits_for_the_helper_then_switches() {
+            let w = world().await;
+            {
+                let first = connected(&w, true).await;
+                first.register_root(w.folder.path()).await.unwrap();
+                listed(&first).await;
+                first.stop_sync().await;
+            }
+            legacy_without_interception(&w);
+
+            // From now on the drive holds a new folder, `new/g.txt`.
+            w.server.reset().await;
+            Mock::given(method("GET")).and(path("/me/drive"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "D1"})))
+                .mount(&w.server).await;
+            Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "L1"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "value": [
+                        {"id": "N", "name": "new", "folder": {}, "parentReference": {"id": "R"}},
+                        {"id": "G", "name": "g.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "N"}}
+                    ],
+                    "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L2", w.server.uri())
+                })))
+                .mount(&w.server).await;
+            Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "L2"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [], "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L2", w.server.uri())})))
+                .mount(&w.server).await;
+
+            // A restart with no helper.
+            let service = service(&w, true);
+            service.restore().await;
+            service.resume().await;
+            assert_eq!(service.root_state(), "error");
+            assert!(service.last_error().starts_with("the konedrive helper is not connected"), "{}", service.last_error());
+            assert!(matches!(service.refresh().await, Err(SyncError::NoHelper)));
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert_eq!(deltas(&w).await, 0, "OneDrive was asked with no helper");
+
+            // The helper starts, and connects.
+            w.helper.forget();
+            service.set_link(Some(link(&w).await));
+            service.resume().await;
+
+            wait_until("the new folder was placed", || w.folder.path().join("new/g.txt").exists()).await;
+            let seen = w.helper.seen();
+            assert_eq!(seen.first(), Some(&Seen::RegisterRoot), "{seen:?}: {}", service.last_error());
+            let marks: Vec<_> = seen.iter().filter(|s| matches!(s, Seen::MarkDir { .. })).collect();
+            assert!(!marks.is_empty(), "the sync placed a directory after the switch without marking it: {seen:?}");
+            assert!(
+                marks.iter().all(|s| matches!(s, Seen::MarkDir { entries: 0 })),
+                "a directory was filled before it was marked: {seen:?}"
+            );
+            assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+            service.stop_sync().await;
+        }
+
+        /// `Skipped()` reads the tree store under the lifecycle lock, so a
+        /// Forget — which removes the store with that lock held for writing —
+        /// waits for a read under way instead of removing the files under it.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn skipped_reads_the_tree_under_the_lifecycle_lock() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+
+            let held = service.lifecycle.write().await;
+            let reading = {
+                let service = Arc::clone(&service);
+                tokio::spawn(async move { service.skipped().await })
+            };
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            assert!(!reading.is_finished(), "Skipped() read the tree while the lock was held for writing");
+            drop(held);
+            assert_eq!(reading.await.unwrap().unwrap(), Vec::<(String, String)>::new());
+            service.stop_sync().await;
+        }
     }
 }

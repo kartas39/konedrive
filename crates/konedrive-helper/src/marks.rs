@@ -27,7 +27,7 @@ use nix::sys::fanotify::{
 };
 
 /// The kernel's accepted `FAN_DENY` errno set and the clamp onto it now live
-/// in `konedrive-proto` (Ruling H51), next to the `HydrateDone` message whose
+/// in `konedrive-proto`, next to the `HydrateDone` message whose
 /// `errno` field they constrain, so that the daemon produces only deliverable
 /// values and this helper is not the only thing standing between an
 /// undeliverable one and an opener suspended forever. Re-exported here so
@@ -67,8 +67,8 @@ impl Marks {
                 | InitFlags::FAN_UNLIMITED_QUEUE
                 | InitFlags::FAN_UNLIMITED_MARKS
                 | InitFlags::FAN_NONBLOCK,
-            // `O_NONBLOCK` on the event descriptors is load-bearing too
-            // (Ruling H140, the final review's I2). The kernel opens each
+            // `O_NONBLOCK` on the event descriptors is load-bearing too.
+            // The kernel opens each
             // event's descriptor inside our `read()`, and opening a file that
             // somebody holds a write lease on waits for the lease to break:
             // without it, one leased file in a marked directory stopped this
@@ -131,7 +131,7 @@ impl Marks {
     /// Stops asking about a file whose content is already there (invariant
     /// M3: only ever called on a file just read `hydrated`, and taken off
     /// again unless it still reads `hydrated` once the mark is in place —
-    /// `main.rs`, `mark_while_hydrated`, Rulings H5 and H139).
+    /// `main.rs`, `mark_while_hydrated`).
     ///
     /// # `FAN_MARK_IGNORED_SURV_MODIFY` is what makes this work at all
     ///
@@ -163,7 +163,7 @@ impl Marks {
     ///
     /// # What this flag took away: `ClearIgnore` is now safety-critical
     ///
-    /// **Ruling H35. Never punch a hole in a file whose `ClearIgnore` did not
+    /// **Never punch a hole in a file whose `ClearIgnore` did not
     /// succeed.**
     ///
     /// Without `SURV_MODIFY` the kernel cleared the ignored mask on *any*
@@ -176,7 +176,7 @@ impl Marks {
     /// and the application reads **zeros, silently, for as long as the mark
     /// lives**. Nothing detects it and nothing repairs it.
     ///
-    /// So the ordering in spec §8 — clear the ignore mark, take the write
+    /// So the ordering — clear the ignore mark, take the write
     /// lease, then punch — is no longer an optimisation that saves a round
     /// trip. It is the thing standing between a dehydration and data loss,
     /// and a `ClearIgnore` that returns a non-zero errno must abort the
@@ -212,7 +212,7 @@ impl Marks {
     /// clears an ignored mask that was added with `SURV_MODIFY`, and the very
     /// next open of the file raises an event again.
     ///
-    /// **Ruling H35: the caller must not punch if this fails.** Since the
+    /// **The caller must not punch if this fails.** Since the
     /// ignore mask now survives modification, a file dehydrated while still
     /// ignored reads as zeros forever, with nothing to notice it — see
     /// [`ignore_file`](Self::ignore_file). `Ok(())` here means "the file
@@ -284,7 +284,7 @@ impl Marks {
 
 /// What a startup, registration or unregistration walk managed to cover.
 ///
-/// Ruling H19: a subdirectory the helper cannot open must never abort the
+///: a subdirectory the helper cannot open must never abort the
 /// walk. Partial marking is strictly more coverage than none; the defect
 /// worth fixing is the silence, so every failure is carried back here to be
 /// logged by name and the root flagged degraded.
@@ -303,7 +303,7 @@ impl WalkReport {
 }
 
 /// Marks every directory under `root`, without ever opening a file, and
-/// takes the ignore mark off every regular file it meets (Ruling H138).
+/// takes the ignore mark off every regular file it meets.
 /// Directory opens are exempt from interception (kernel fact 2's converse),
 /// so this never risks deadlocking against our own marks; files are reached
 /// by `(dirfd, name)` only (rule 1 of the module doc).
@@ -320,12 +320,12 @@ impl WalkReport {
 ///
 /// It clears the files it *lists*, and that is all it can promise. A file
 /// renamed from a directory the walk has not reached into one it has already
-/// passed is never cleared (the final re-review's N2, measured: a
+/// passed is never cleared (measured: a
 /// stale-marked, emptied file moved up into the root during the walk kept
 /// its mark, and its reader got 65 536 zero bytes). So nothing may rest on
 /// "resuming interception is a clean slate". What keeps an emptied file
-/// from carrying a mark is the daemon's local rule at every punch (Ruling
-/// H146): with a link it has the helper clear the mark first, and with none
+/// from carrying a mark is the daemon's local rule at every punch: with a
+/// link it has the helper clear the mark first, and with none
 /// it punches only when no helper is bound to the socket at all. This walk
 /// catches what reaches it anyway — a mark carried in from somewhere the
 /// rule never saw — which is why it stays.
@@ -347,7 +347,7 @@ impl WalkReport {
 ///
 /// Every descent is an `openat2` from the descriptor of the directory being
 /// walked, with `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS
-/// | RESOLVE_NO_XDEV` (spec §6.3). That is not belt and braces: the helper
+/// | RESOLVE_NO_XDEV`. That is not belt and braces: the helper
 /// walks as root, so re-opening each child by its full path — resolved afresh,
 /// through components an unprivileged owner can replace between the check and
 /// the open — is how a user gets `FAN_OPEN_PERM` put on every directory on the
@@ -359,7 +359,7 @@ pub fn walk_and_mark(marks: &Marks, root: BorrowedFd<'_>, label: &str) -> WalkRe
 }
 
 /// Takes the permission mark off every directory under `root`, the exact
-/// inverse of [`walk_and_mark`] over the same tree (Ruling H58).
+/// inverse of [`walk_and_mark`] over the same tree.
 ///
 /// A root that is unregistered but still marked is worse than one that was
 /// never registered: its opens are still intercepted, and the helper then has
@@ -548,7 +548,7 @@ fn walk_below(
 }
 
 /// Takes the ignore mark off one non-directory, in either direction of walk
-/// (Ruling H138 for a registration, H132 for an unregistration).
+/// (for a registration, H132 for an unregistration).
 fn clear_file(marks: &Marks, dir: BorrowedFd<'_>, name: &CStr, label: &str, report: &mut WalkReport) {
     if let Err(e) = marks.clear_ignore_at(dir, name) {
         report.failures.push(format!(

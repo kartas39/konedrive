@@ -5,13 +5,12 @@
 //! `register_root` needs a helper connection to mark the root (that is what
 //! the helper is for), so — like `konedrived`'s own `tests/sync_dbus.rs` —
 //! the harness here runs a fake helper thread that just acknowledges
-//! everything, never a real fanotify group. What that fake stands in for is
-//! still the *unusual* case on a user's own machine: a standing project
-//! ruling keeps the real, privileged helper inside a VM and never installs
-//! it on the user's own system, so `status` (see the first half of the test
-//! below, before any root is registered) must also read sensibly with no
-//! helper connected at all — that is the ordinary case this CLI has to
-//! handle gracefully, not an error to shout about.
+//! everything, never a real fanotify group. `status` (see the first half of
+//! the test below, before any root is registered) must also read sensibly
+//! with no helper connected at all: on a machine without the helper it says
+//! how to install or start it, and the developer's mode without
+//! interception — a local folder whose files read as zeros until hydrated —
+//! still works there.
 
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixStream;
@@ -28,11 +27,24 @@ use konedrived::account::AccountService;
 use konedrived::config::Paths;
 use konedrived::oauth::Endpoints;
 use konedrived::secret::MemoryStore;
+use konedrived::state::SignInState;
 use konedrived::sync::helper::HelperLink;
 use konedrived::sync::SyncService;
 use nix::sys::socket::{
     accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr,
 };
+
+/// Polls `pred` every 20 ms for up to 5 s — the same shape
+/// `konedrived`'s own tests use for a background listing to catch up.
+async fn wait_for(mut pred: impl FnMut() -> bool) {
+    for _ in 0..250 {
+        if pred() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("condition was not met within 5s");
+}
 
 struct Harness {
     proxy: Sync1Proxy<'static>,
@@ -41,6 +53,9 @@ struct Harness {
     /// its helper away mid-run (`set_link(None)`), which nothing on the bus
     /// can do.
     service: Arc<SyncService>,
+    /// The account service, so the token-export test can seed an access
+    /// token directly rather than going through a real sign-in.
+    account: Arc<AccountService>,
     _server: zbus::Connection,
     _account_dir: tempfile::TempDir,
     _helper_dir: tempfile::TempDir,
@@ -81,10 +96,8 @@ async fn harness() -> Harness {
 }
 
 /// As [`harness`], but `with_helper: false` never starts the fake helper or
-/// connects to it — the shape `register-without-interception` exists for
-/// (see the module doc comment: a standing project ruling keeps the real,
-/// privileged helper inside a VM and off a user's own machine, so this is
-/// the *ordinary* case for anyone running `konedrivectl` by hand).
+/// connects to it — the shape `register-without-interception`, the
+/// developer's mode, exists for.
 async fn harness_with_helper(with_helper: bool) -> Harness {
     build_harness(with_helper, false, false).await
 }
@@ -95,6 +108,14 @@ async fn harness_refusing_clear_ignore() -> Harness {
     build_harness(true, false, true).await
 }
 
+/// As [`harness`], but signed in: the account's `StateHandle` is set to
+/// `SignedIn` before the `SyncService` is made, and the sign-in gate is on
+/// — the combination a folder registered while signed in needs,
+/// which is what [`harness_onedrive`] builds on.
+async fn build_harness_signed_in(with_helper: bool) -> Harness {
+    build_harness_full(with_helper, true, false, true).await
+}
+
 /// As [`harness`], but with `RegisterRoot`'s sign-in gate wired to an
 /// account nobody has signed in to — every other harness passes no account
 /// at all, which `SyncService` treats as "nothing to check".
@@ -103,6 +124,15 @@ async fn harness_signed_out() -> Harness {
 }
 
 async fn build_harness(with_helper: bool, gate_on_sign_in: bool, refuse_clear_ignore: bool) -> Harness {
+    build_harness_full(with_helper, gate_on_sign_in, refuse_clear_ignore, false).await
+}
+
+async fn build_harness_full(
+    with_helper: bool,
+    gate_on_sign_in: bool,
+    refuse_clear_ignore: bool,
+    signed_in: bool,
+) -> Harness {
     let bus = TestBus::start();
 
     let helper_dir = tempfile::tempdir().unwrap();
@@ -122,15 +152,19 @@ async fn build_harness(with_helper: bool, gate_on_sign_in: bool, refuse_clear_ig
         Duration::from_secs(5),
     )
     .unwrap();
+    if signed_in {
+        account_service.state().update(|s| s.state = SignInState::SignedIn);
+    }
     // A fresh account starts signed out, which is exactly what the one test
     // that asks for the gate needs.
     let account = gate_on_sign_in.then(|| account_service.state().clone());
     let sync_service = SyncService::new(link, account, None);
     // Without a helper, nothing is bound at this path: a punch with no link
-    // goes ahead (Ruling H146) whatever this machine runs at the real one.
+    // goes ahead whatever this machine runs at the real one.
     sync_service.set_helper_socket(helper_dir.path().join("helper.sock"));
 
-    let server = konedrived::dbus::serve(bus.builder(), account_service, None).await.unwrap();
+    let server =
+        konedrived::dbus::serve(bus.builder(), Arc::clone(&account_service), None).await.unwrap();
     konedrived::sync::dbus::attach(&server, Arc::clone(&sync_service)).await.unwrap();
 
     let client = bus.connect().await;
@@ -140,11 +174,53 @@ async fn build_harness(with_helper: bool, gate_on_sign_in: bool, refuse_clear_ig
         proxy,
         dir,
         service: sync_service,
+        account: account_service,
         _server: server,
         _account_dir: account_dir,
         _helper_dir: helper_dir,
         _bus: bus,
     }
+}
+
+/// A signed-in harness with a drive on a mocked Graph whose listing holds
+/// one folder, one file inside it, and the Personal Vault (skipped) — the
+/// shape `sync skipped`, `sync status`'s `Items:`/`Skipped:` lines, and
+/// `sync refresh` all need a real listing to exercise.
+async fn harness_onedrive() -> (Harness, wiremock::MockServer) {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let graph = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "D1"})))
+        .mount(&graph)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive/root/delta"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "value": [
+                {"id": "R", "root": {}, "folder": {}},
+                {"id": "D", "name": "docs", "folder": {}, "parentReference": {"id": "R"}},
+                {"id": "F", "name": "f.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "D"}},
+                {"id": "V", "name": "Personal Vault", "folder": {}, "specialFolder": {"name": "vault"}, "parentReference": {"id": "R"}}
+            ],
+            "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", graph.uri())
+        })))
+        .mount(&graph)
+        .await;
+    let f = build_harness_signed_in(true).await;
+    let drive = konedrived::drive::DriveClient::new(
+        url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
+        std::sync::Arc::new(konedrived::token::StaticToken::new("T")),
+    )
+    .unwrap();
+    f.service.set_drive(drive);
+    f.service.set_sync_paths(konedrived::sync::SyncPaths {
+        tree_db: f.dir.path().join("tree.sqlite"),
+        rescue_dir: f.dir.path().join("rescued"),
+        thumbnails: Some(f.dir.path().join("thumbnails")),
+    });
+    (f, graph)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -189,7 +265,7 @@ async fn a_refusal_surfaces_as_an_error_not_a_success() {
     assert!(format!("{error}").contains("empty"), "{error}");
 }
 
-/// Marks `root_dir` as an already-registered root — Ruling H78 exempts a
+/// Marks `root_dir` as an already-registered root — exempts a
 /// folder that already carries `user.konedrive.root` from the "must be
 /// empty" check, which is what lets a file be planted in it *before*
 /// `register_root` runs, since recovery runs as part of that call — and
@@ -202,7 +278,7 @@ async fn a_refusal_surfaces_as_an_error_not_a_success() {
 /// "the call still returns `Ok`, but the root needs attention" outcome, so
 /// it is factored out here rather than duplicated. (It used to hold the file
 /// open instead, so that recovery's lease was refused; a file in use is
-/// `busy` now, not a failure — the final review's m11.)
+/// `busy` now, not a failure —)
 fn stuck_root(root_dir: &std::path::Path) -> PathBuf {
     xattr::set(root_dir, "user.konedrive.root", b"1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d").unwrap();
     let path = root_dir.join("stuck.bin");
@@ -369,9 +445,9 @@ async fn binary_reports_a_bad_path_before_touching_the_daemon() {
     assert!(err_text(&out).contains("no such path"), "{}", err_text(&out));
 }
 
-/// The final review's m8 (Ruling H144). `absolute_str` canonicalised every
+/// `absolute_str` canonicalised every
 /// path, so `sync register <symlink>` resolved the link and registered its
-/// target — silently, while spec §10 says a symbolic link is refused as a
+/// target — silently, while says a symbolic link is refused as a
 /// root. The link's own name has to reach the daemon, which refuses it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_register_of_a_symlink_is_refused_not_resolved() {
@@ -539,22 +615,26 @@ async fn binary_dehydrate_of_an_open_file_says_to_close_it() {
     assert!(told.contains("Close it"), "{told}");
 }
 
-/// `NoHelper` from `register`: the refusal every user of this CLI on their
-/// own machine meets first, so it has to name the way forward.
+/// `NoHelper` from `register`: the refusal a user without the helper meets
+/// first, so it has to name the way forward — starting the helper, in the
+/// words `HelperState` gives (HS4). The mode without interception is named
+/// only as the developer's, with its cost: it never shows OneDrive (HS2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_register_without_a_helper_offers_the_explicit_mode_and_its_cost() {
+async fn binary_register_without_a_helper_says_how_to_start_it() {
     let f = harness_with_helper(false).await;
     let addr = f._bus.address();
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
 
     let told = refused(addr, &["sync", "register", root.to_str().unwrap()]);
-    assert!(told.contains("helper is not running"), "{told}");
-    assert!(
-        told.contains(&format!("konedrivectl sync register-without-interception {}", root.display())),
-        "{told}"
-    );
-    assert!(told.contains("zeros"), "the explicit mode's cost belongs next to the offer: {told}");
+    assert!(told.contains("was not registered"), "{told}");
+    assert!(told.contains("The konedrive helper is not connected"), "the helper's advice closes it: {told}");
+    assert!(told.contains("developer's mode"), "{told}");
+    assert!(told.contains("zeros"), "the developer's mode's cost is said with it: {told}");
+
+    let status = out_text(&run(addr, &["sync", "status"]));
+    let helper = status.lines().find(|l| l.starts_with("Helper:")).unwrap_or_else(|| panic!("{status}"));
+    assert_eq!(helper, "Helper:           unknown — the konedrive helper is not connected", "{status}");
 }
 
 /// `NoHelper` from `dehydrate`: a root registered *with* interception whose
@@ -703,8 +783,8 @@ async fn binary_an_io_failure_names_the_file_it_was_about() {
 
 // --- `sync status` and the no-interception mode ---------------------------
 //
-// A standing ruling keeps the privileged helper off the user's own machine,
-// so `no-interception` is the ordinary state there — and its cost (a file
+// On a machine without the helper, `no-interception` is the state a folder
+// registered there stays in — and its cost (a file
 // that is not downloaded reads as zeros) must be on screen every time the
 // user asks, in the CLI's own words, not left to a daemon property that
 // happens to restate it or to the user's memory.
@@ -749,4 +829,530 @@ async fn binary_status_of_an_intercepted_folder_does_not_warn_of_zeros() {
     assert!(opens.contains("intercepted"), "{text}");
     assert!(!opens.to_lowercase().contains("not intercepted"), "{text}");
     assert!(!text.contains("zeros"), "{text}");
+}
+
+// --- `sync skipped`, `sync refresh`, and OneDrive-folder `sync status` ---
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_skipped_lists_what_is_not_in_the_folder_and_why() {
+    let (f, _graph) = harness_onedrive().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/f.txt").is_file()).await;
+
+    let out = run(f._bus.address(), &["sync", "skipped"]);
+    assert!(out.status.success(), "{out:?}");
+    let text = out_text(&out);
+    assert!(text.contains(&root.join("Personal Vault").display().to_string()), "{text}");
+    assert!(text.contains("locked separately"), "says why: {text}");
+}
+
+/// `sync skipped` with no folder registered at all: there is nothing to be
+/// signed in about, and nothing OneDrive-related to say either — a plain
+/// statement of the actual reason, not the empty "Nothing is skipped."
+/// that would otherwise print (§4's "an unrecognised state shows no
+/// emblem" kind of silent-looking success).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_skipped_with_no_folder_registered_says_so() {
+    let f = harness().await;
+    let out = run(f._bus.address(), &["sync", "skipped"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out_text(&out), "No folder is registered.\n");
+}
+
+/// `sync skipped` of a folder filled with `PopulateFrom` (a local folder,
+/// `RootSource = local`): there is no OneDrive listing behind it, so
+/// nothing is "skipped" in the sense this command means, and that has to be
+/// said plainly rather than as an empty list.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_skipped_of_a_local_folder_says_it_is_not_connected_to_onedrive() {
+    let f = harness().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+
+    let out = run(f._bus.address(), &["sync", "skipped"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out_text(&out), "This folder is not connected to OneDrive.\n");
+}
+
+/// `sync skipped` asked for while the initial listing is still running: the
+/// list `Skipped()` can return at that moment is not wrong, only
+/// incomplete — pages not listed yet have not reported what they skip — so
+/// the output has to say that rather than let the (possibly empty) list
+/// read as final. The delta response is delayed well past the time the
+/// subprocess needs to start and call `sync skipped`, so `RootState` is
+/// still `listing` for the whole call.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_partial() {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let graph = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "D1"})))
+        .mount(&graph)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive/root/delta"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(2))
+                .set_body_json(serde_json::json!({
+                    "value": [{"id": "R", "root": {}, "folder": {}}],
+                    "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", graph.uri())
+                })),
+        )
+        .mount(&graph)
+        .await;
+    let f = build_harness_signed_in(true).await;
+    let drive = konedrived::drive::DriveClient::new(
+        url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
+        std::sync::Arc::new(konedrived::token::StaticToken::new("T")),
+    )
+    .unwrap();
+    f.service.set_drive(drive);
+    f.service.set_sync_paths(konedrived::sync::SyncPaths {
+        tree_db: f.dir.path().join("tree.sqlite"),
+        rescue_dir: f.dir.path().join("rescued"),
+        thumbnails: Some(f.dir.path().join("thumbnails")),
+    });
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    for _ in 0..250 {
+        if f.proxy.root_state().await.unwrap() == "listing" {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(f.proxy.root_state().await.unwrap(), "listing", "the delay must still be in effect");
+
+    let out = run(f._bus.address(), &["sync", "skipped"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).contains("may be partial"), "{}", out_text(&out));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_status_of_a_onedrive_folder_counts_its_items_and_says_it_is_read_only() {
+    let (f, _graph) = harness_onedrive().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/f.txt").is_file()).await;
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await; // counters are coalesced
+
+    let text = out_text(&run(f._bus.address(), &["sync", "status"]));
+    assert!(
+        text.lines().any(|l| l.starts_with("Items:") && l.contains("3 in OneDrive") && l.contains("2 in the folder")),
+        "{text}"
+    );
+    assert!(
+        text.lines().any(|l| l == "Skipped:          1 (see `konedrivectl sync skipped`)"),
+        "{text}"
+    );
+    assert!(text.lines().any(|l| l.starts_with("Editing:") && l.contains("read-only")), "{text}");
+}
+
+// --- Activity, transfers, conflicts, free-up, status lines -----
+
+/// The binary, with `TZ` set so the times it prints are UTC.
+fn run_utc(bus_addr: &str, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_konedrivectl"))
+        .args(args)
+        .env("DBUS_SESSION_BUS_ADDRESS", bus_addr)
+        .env("TZ", "UTC")
+        .output()
+        .expect("failed to run the konedrivectl binary")
+}
+
+/// A folder registered without interception, with no helper anywhere, and
+/// `names` in it downloaded, 64 KiB each.
+async fn downloaded_files(f: &Harness, names: &[&str]) -> PathBuf {
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    let source = f.dir.path().join("source");
+    std::fs::create_dir(&source).unwrap();
+    for name in names {
+        std::fs::write(source.join(name), vec![6u8; 64 * 1024]).unwrap();
+    }
+    f.proxy.register_root_without_interception(root.to_str().unwrap()).await.unwrap();
+    f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+    for name in names {
+        f.proxy.hydrate(root.join(name).to_str().unwrap()).await.unwrap();
+    }
+    root
+}
+
+/// `sync activity`: time, kind, path and detail, newest first, at most
+/// `--limit` of them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_activity_lists_what_happened_newest_first() {
+    let f = harness_with_helper(false).await;
+    let addr = f._bus.address();
+    let out = run_utc(addr, &["sync", "activity"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out_text(&out).trim(), "Nothing has happened yet.");
+
+    let root = downloaded_files(&f, &["a.bin"]).await;
+    let file = root.join("a.bin");
+    f.proxy.dehydrate(file.to_str().unwrap()).await.unwrap();
+
+    let out = run_utc(addr, &["sync", "activity", "--limit", "5"]);
+    assert!(out.status.success(), "{out:?}");
+    let text = out_text(&out);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 2, "{text}");
+    assert!(lines[0].contains("freed") && lines[0].contains(file.to_str().unwrap()), "newest first: {text}");
+    assert!(lines[1].contains("downloaded") && lines[1].contains("64.0 KiB"), "{text}");
+    let time = lines[1].split("  ").next().unwrap();
+    assert_eq!(time.len(), "2026-09-24 10:00:00".len(), "a time first: {text}");
+
+    let out = run_utc(addr, &["sync", "activity", "--limit", "1"]);
+    assert_eq!(out_text(&out).lines().count(), 1, "{}", out_text(&out));
+}
+
+/// `sync transfers`: each download under way with how far it has got, or
+/// that there is none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_transfers_lists_the_downloads_under_way() {
+    let f = harness().await;
+    let addr = f._bus.address();
+    let out = run(addr, &["sync", "transfers"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out_text(&out).trim(), "Nothing is downloading.");
+
+    let entry = f.service.report().transfers.start("/home/u/OneDrive/big.bin".into(), 4 << 20);
+    entry.progress(1 << 20, 4 << 20);
+    let out = run(addr, &["sync", "transfers"]);
+    let text = out_text(&out);
+    assert!(out.status.success(), "{out:?}");
+    assert!(text.contains("/home/u/OneDrive/big.bin") && text.contains("25%") && text.contains("4.0 MiB"), "{text}");
+    drop(entry);
+    assert_eq!(out_text(&run(addr, &["sync", "transfers"])).trim(), "Nothing is downloading.");
+}
+
+/// `sync conflicts` lists each local version moved out of the way — where
+/// it was, where it is, when — and `sync dismiss` takes one off the list,
+/// leaving the file; a path that is not a conflict is refused by name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_conflicts_are_listed_and_dismissed() {
+    let f = harness().await;
+    let addr = f._bus.address();
+    assert_eq!(out_text(&run_utc(addr, &["sync", "conflicts"])).trim(), "No conflicts.");
+
+    let rescued = f.dir.path().join("rescued/2023-11-14T22-13-20Z/docs/f.txt");
+    std::fs::create_dir_all(rescued.parent().unwrap()).unwrap();
+    std::fs::write(&rescued, b"mine").unwrap();
+    let activity = &f.service.report().activity;
+    activity.attach(konedrived::tree::Store::new(konedrived::tree::TreeStore::in_memory().unwrap()), f.dir.path());
+    activity.add_conflicts(vec![konedrived::tree::ConflictRow {
+        at: 1_700_000_000,
+        original: "/home/u/OneDrive/docs/f.txt".into(),
+        rescued: rescued.display().to_string(),
+    }]);
+
+    let status = out_text(&run(addr, &["sync", "status"]));
+    assert!(
+        status.lines().any(|l| l == "Conflicts:        1 (see `konedrivectl sync conflicts`)"),
+        "{status}"
+    );
+    let text = out_text(&run_utc(addr, &["sync", "conflicts"]));
+    assert!(text.contains("/home/u/OneDrive/docs/f.txt"), "{text}");
+    assert!(text.contains(rescued.to_str().unwrap()), "{text}");
+    assert!(text.contains("2023-11-14 22:13:20"), "{text}");
+
+    let out = run(addr, &["sync", "dismiss", rescued.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).contains("Dismissed"), "{out:?}");
+    assert!(rescued.exists(), "the file itself is left where it is");
+    assert_eq!(out_text(&run(addr, &["sync", "conflicts"])).trim(), "No conflicts.");
+
+    let text = refused(addr, &["sync", "dismiss", "/nowhere/f.txt"]);
+    assert!(text.contains("/nowhere/f.txt"), "{text}");
+}
+
+/// `sync free-up-space`: what it freed, and what it kept because it was in
+/// use.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_free_up_space_says_what_it_freed_and_what_was_in_use() {
+    let f = harness_with_helper(false).await;
+    let root = downloaded_files(&f, &["a.bin", "b.bin"]).await;
+    use std::os::unix::fs::MetadataExt;
+    let freed = std::fs::metadata(root.join("a.bin")).unwrap().blocks() * 512;
+    let _in_use = std::fs::File::open(root.join("b.bin")).unwrap();
+
+    let out = run(f._bus.address(), &["sync", "free-up-space"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(
+        out_text(&out).trim(),
+        format!("Freed 1 file ({}). 1 file was in use and kept.", konedrivectl::human_bytes(freed))
+    );
+}
+
+/// `sync status` says when the folder was last checked with OneDrive, and
+/// how much of this computer's disk it takes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_status_says_when_it_last_checked_and_what_the_folder_takes() {
+    let (f, _graph) = harness_onedrive().await;
+    let addr = f._bus.address();
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| f.service.status().0 > 0).await;
+
+    let text = out_text(&run(addr, &["sync", "status"]));
+    let checked = text.lines().find(|l| l.starts_with("Last checked:")).unwrap_or_else(|| panic!("{text}"));
+    assert!(checked.ends_with(" s ago"), "{text}");
+    let space = text.lines().find(|l| l.starts_with("On this computer:")).unwrap_or_else(|| panic!("{text}"));
+    assert!(space.ends_with(" B") || space.ends_with("iB"), "{text}");
+}
+
+/// A folder that shows OneDrive but was never checked says so, rather than
+/// a time.
+#[test]
+fn a_folder_never_checked_reads_never() {
+    assert_eq!(konedrivectl::checked_text(0, 1_000), "never");
+    assert_eq!(konedrivectl::checked_text(980, 1_000), "20 s ago");
+    assert_eq!(konedrivectl::checked_text(1_000 - 5 * 60, 1_000), "5 min ago");
+    assert_eq!(konedrivectl::checked_text(100_000 - 3 * 3600, 100_000), "3 h ago");
+    assert_eq!(konedrivectl::checked_text(1_000_000 - 2 * 86_400, 1_000_000), "2 d ago");
+    assert_eq!(konedrivectl::checked_text(1_010, 1_000), "just now", "a clock that went back");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_refresh_asks_onedrive_now() {
+    let (f, graph) = harness_onedrive().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/f.txt").is_file()).await;
+    let before = graph.received_requests().await.unwrap().len();
+
+    let out = run(f._bus.address(), &["sync", "refresh"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).contains("Asked OneDrive for changes"), "{out:?}");
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert!(graph.received_requests().await.unwrap().len() > before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_refresh_of_a_local_folder_says_it_is_not_connected_to_onedrive() {
+    let f = harness().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+
+    let text = refused(f._bus.address(), &["sync", "refresh"]);
+    assert!(text.contains("not connected to OneDrive"), "{text}");
+}
+
+// --- `dev export-access-token` --------------------------------------------
+
+/// I1: an existing file at `--out` is replaced by a new inode, not
+/// truncated in place. An fd opened before the export — the shape the
+/// used to reproduce the bug — proves it: it must keep reading the
+/// *old* content, byte for byte, forever, because `rename(2)` never touches
+/// the inode a still-open fd already holds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_exports_the_access_token_and_nothing_else_readable_only_by_the_user() {
+    use std::io::Read;
+    use std::os::unix::fs::PermissionsExt;
+    let f = harness().await;
+    f.account
+        .tokens()
+        .seed(&konedrived::oauth::TokenResponse {
+            access_token: "AT-EXPORT".into(),
+            expires_in: 3600,
+            refresh_token: Some("RT-NEVER".into()),
+        })
+        .await;
+    let out_file = f.dir.path().join("token");
+    std::fs::write(&out_file, b"old").unwrap();
+    std::fs::set_permissions(&out_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let mut held_open = std::fs::File::open(&out_file).unwrap();
+
+    let out = run(f._bus.address(), &["dev", "export-access-token", "--out", out_file.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(std::fs::read_to_string(&out_file).unwrap(), "AT-EXPORT");
+    assert_eq!(std::fs::metadata(&out_file).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(!out_text(&out).contains("AT-EXPORT"), "the token must never reach stdout: {}", out_text(&out));
+    assert!(!err_text(&out).contains("AT-EXPORT"), "the token must never reach stderr: {}", err_text(&out));
+    let mut still_reads = String::new();
+    held_open.read_to_string(&mut still_reads).unwrap();
+    assert_eq!(still_reads, "old", "an fd opened before the export must keep reading the old inode");
+}
+
+/// I1: `--out` naming a symlink — the 's exact reproduction — must
+/// have the link itself replaced by `rename(2)`, never the file it points
+/// to opened and truncated.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_export_access_token_replaces_a_symlink_without_touching_its_target() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = harness().await;
+    f.account
+        .tokens()
+        .seed(&konedrived::oauth::TokenResponse {
+            access_token: "AT-EXPORT".into(),
+            expires_in: 3600,
+            refresh_token: Some("RT-NEVER".into()),
+        })
+        .await;
+    let target = f.dir.path().join("someone-elses-file");
+    std::fs::write(&target, b"do not touch").unwrap();
+    std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o644)).unwrap();
+    let link = f.dir.path().join("token-link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+
+    let out = run(f._bus.address(), &["dev", "export-access-token", "--out", link.to_str().unwrap()]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(
+        !std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(),
+        "the link must be replaced by a regular file, not written through"
+    );
+    assert_eq!(std::fs::read_to_string(&link).unwrap(), "AT-EXPORT");
+    assert_eq!(std::fs::metadata(&link).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::read_to_string(&target).unwrap(), "do not touch", "the old target must be untouched");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_export_access_token_refused_while_signed_out_names_the_reason() {
+    let f = harness().await;
+    let out_file = f.dir.path().join("token");
+
+    let out = run(f._bus.address(), &["dev", "export-access-token", "--out", out_file.to_str().unwrap()]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(!out_file.exists(), "nothing must be written on a refusal: {out:?}");
+    assert!(err_text(&out).to_lowercase().contains("signed in"), "{}", err_text(&out));
+}
+
+// --- The skip-reason wording is one sentence, shared with the window -----
+
+/// Parses `whyText`'s `if (reason == QLatin1String("<reason>")) { return
+/// i18n("<sentence>"); }` branches out of `app/synccontroller.cpp`'s source,
+/// in order, as `(reason, sentence)` pairs — plus the function's final,
+/// unconditional `return i18n("<sentence>");` (the fallback for anything not
+/// named above) as the pair `("unsupported", <that sentence>)`, matching the
+/// name `skip_reason_text`'s own fallback answers to.
+fn parse_why_text_branches(cpp: &str) -> Vec<(String, String)> {
+    let start = cpp.find("QString whyText").expect("whyText(...) not found in synccontroller.cpp");
+    let end = start + cpp[start..].find("\n}\n").expect("no closing brace found for whyText");
+    let mut rest = &cpp[start..end];
+    let mut pairs = Vec::new();
+    while let Some(reason_at) = rest.find("QLatin1String(\"") {
+        let after_reason_open = &rest[reason_at + "QLatin1String(\"".len()..];
+        let reason_end = after_reason_open.find('"').expect("unterminated QLatin1String");
+        let reason = after_reason_open[..reason_end].to_owned();
+
+        let after_reason = &after_reason_open[reason_end..];
+        let sentence_at = after_reason.find("i18n(\"").expect("no i18n(...) after this QLatin1String");
+        let after_sentence_open = &after_reason[sentence_at + "i18n(\"".len()..];
+        let sentence_end = after_sentence_open.find("\");").expect("unterminated i18n(...)");
+        let sentence = after_sentence_open[..sentence_end].to_owned();
+
+        pairs.push((reason, sentence));
+        rest = &after_sentence_open[sentence_end..];
+    }
+    // What is left is the tail after the last named branch: the function's
+    // final, unconditional return — the fallback.
+    let fallback_at = rest.find("i18n(\"").expect("no fallback return i18n(...) after the named branches");
+    let after_fallback_open = &rest[fallback_at + "i18n(\"".len()..];
+    let fallback_end = after_fallback_open.find("\");").expect("unterminated fallback i18n(...)");
+    pairs.push(("unsupported".to_owned(), after_fallback_open[..fallback_end].to_owned()));
+    pairs
+}
+
+/// `konedrivectl::skip_reason_text` and the window's `whyText`
+/// (`app/synccontroller.cpp`) are meant to say exactly the same thing for
+/// each reason (see `crates/konedrivectl/src/lib.rs`'s doc comment on
+/// `skip_reason_text`), so a person reading `konedrivectl sync skipped` and
+/// a person reading the window see one explanation, not two that happen to
+/// agree today. Checking only "does the Rust sentence appear somewhere in
+/// the C++ file" (the guard's first cut) would still pass if two branches'
+/// bodies were swapped — every sentence would still be *present*, just
+/// answering the wrong reason. Parsing each branch's own (reason, sentence)
+/// pair out of the C++ source and comparing it against
+/// `skip_reason_text(reason)` directly closes that gap: it fails if a
+/// reason's C++ sentence and its Rust sentence disagree, in either
+/// direction, including a swap between two reasons that both still have
+/// *a* sentence, just not the *right* one.
+#[test]
+fn skip_reason_text_matches_every_branch_of_the_windows_whytext() {
+    let cpp = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../app/synccontroller.cpp"
+    ))
+    .unwrap();
+    let branches = parse_why_text_branches(&cpp);
+    assert_eq!(
+        branches.iter().map(|(reason, _)| reason.as_str()).collect::<Vec<_>>(),
+        vec!["name-too-long", "personal-vault", "shared", "onenote", "reserved-name", "unsupported"],
+        "whyText's branches changed shape; update this parser or the reason list"
+    );
+    for (reason, sentence) in &branches {
+        assert_eq!(
+            konedrivectl::skip_reason_text(reason),
+            sentence,
+            "app/synccontroller.cpp's whyText(\"{reason}\") and \
+             konedrivectl::skip_reason_text(\"{reason}\") must say exactly the same thing"
+        );
+    }
+}
+
+// --- The activity's words are one contract with the window --------------
+
+/// One of the window's source files: from `app/`, or from the directory
+/// `KONEDRIVE_APP_SOURCE` names — how the guard below is shown to fail on a
+/// changed copy without touching `app/` itself.
+fn app_source(name: &str) -> String {
+    let dir = std::env::var("KONEDRIVE_APP_SOURCE")
+        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/../../app").to_owned());
+    std::fs::read_to_string(format!("{dir}/{name}")).unwrap_or_else(|e| panic!("{dir}/{name}: {e}"))
+}
+
+/// Every activity kind the window branches on: each `kind ==
+/// QLatin1String("…")` in `app/activitymodel.cpp`, once.
+fn kinds_the_window_branches_on(cpp: &str) -> Vec<String> {
+    const MARK: &str = "kind == QLatin1String(\"";
+    let mut kinds = Vec::new();
+    let mut rest = cpp;
+    while let Some(at) = rest.find(MARK) {
+        let after = &rest[at + MARK.len()..];
+        let end = after.find('"').expect("unterminated QLatin1String");
+        kinds.push(after[..end].to_owned());
+        rest = &after[end..];
+    }
+    kinds.sort();
+    kinds.dedup();
+    kinds
+}
+
+/// The window turns the daemon's events into
+/// notifications by their kind and by one exact detail (A2 in the
+/// limitations log), and nothing else ties the two sides together. Every
+/// kind `app/activitymodel.cpp` branches on must be one the daemon sends
+/// (`Kind::as_str`), the ones its notifications hang on must be among them,
+/// and "not enough disk space" must be `activity::NO_DISK_SPACE` word for
+/// word — so a rename on either side fails here, not in a user's tray.
+#[test]
+fn the_window_branches_on_the_daemons_own_activity_words() {
+    use konedrived::sync::activity::{Kind, NO_DISK_SPACE};
+    let cpp = app_source("activitymodel.cpp");
+    let sent: Vec<&str> = Kind::ALL.iter().map(|kind| kind.as_str()).collect();
+    let window = kinds_the_window_branches_on(&cpp);
+    for kind in &window {
+        assert!(sent.contains(&kind.as_str()), "the window branches on {kind:?}, which the daemon never sends ({sent:?})");
+    }
+    for kind in [Kind::UpdateFailed, Kind::Failed, Kind::Conflict] {
+        assert!(
+            window.iter().any(|k| k == kind.as_str()),
+            "the window no longer branches on {:?}, which the daemon sends: {window:?}",
+            kind.as_str()
+        );
+    }
+    assert!(
+        cpp.contains(&format!("QLatin1String(\"{NO_DISK_SPACE}\")")),
+        "the window does not recognise the daemon's words for a full disk, {NO_DISK_SPACE:?}"
+    );
 }

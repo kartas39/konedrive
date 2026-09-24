@@ -79,6 +79,32 @@ fn to_fdo(error: AccountError) -> fdo::Error {
     }
 }
 
+/// `org.konedrive.Dev1`: development only.
+struct Dev1 {
+    service: Arc<AccountService>,
+}
+
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "org.konedrive.Error")]
+enum DevFault {
+    #[zbus(error)]
+    ZBus(zbus::Error),
+    NotSignedIn(String),
+    Failed(String),
+}
+
+#[zbus::interface(name = "org.konedrive.Dev1")]
+impl Dev1 {
+    /// The current access token — never the refresh token.
+    async fn access_token(&self) -> std::result::Result<String, DevFault> {
+        match self.service.tokens().access_token().await {
+            Ok(token) => Ok(token),
+            Err(crate::token::AuthError::SignedOut) => Err(DevFault::NotSignedIn("nobody is signed in".into())),
+            Err(e) => Err(DevFault::Failed(e.to_string())),
+        }
+    }
+}
+
 /// Serves both interfaces through `builder` and turns state changes into
 /// PropertiesChanged.
 ///
@@ -88,7 +114,7 @@ fn to_fdo(error: AccountError) -> fdo::Error {
 /// claimed (zbus requests the name after registering everything
 /// `serve_at` was given). A D-Bus-activated client's first call therefore
 /// cannot land on a daemon that owns the name but does not yet answer
-/// `Sync1`: Ruling H104, and the same discipline the comment below states
+/// `Sync1`, and the same discipline the comment below states
 /// for `Account1`'s restored state.
 pub async fn serve(
     builder: zbus::connection::Builder<'_>,
@@ -97,7 +123,8 @@ pub async fn serve(
 ) -> zbus::Result<Connection> {
     let mut builder = builder
         .name(SERVICE_NAME)?
-        .serve_at(OBJECT_PATH, Account1 { service: Arc::clone(&service) })?;
+        .serve_at(OBJECT_PATH, Account1 { service: Arc::clone(&service) })?
+        .serve_at(OBJECT_PATH, Dev1 { service: Arc::clone(&service) })?;
     if let Some(sync) = &sync {
         builder = crate::sync::dbus::add_to_builder(builder, Arc::clone(sync))?;
     }

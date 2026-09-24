@@ -38,4 +38,6 @@ konedrive-proto = { path = "../../crates/konedrive-proto" }
 libc = "0.2"
 nix = { version = "0.31", features = ["fanotify", "fs", "mount", "user", "signal", "resource"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }
+# --graph-token: builds the Graph base URL `DriveClient::new` takes.
+url = "2"
 xattr = "1"

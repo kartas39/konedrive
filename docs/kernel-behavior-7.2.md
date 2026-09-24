@@ -19,26 +19,24 @@ Where a statement is an inference rather than a measurement it says so.
 measured by a programme that no longer exists and so cannot be reproduced with
 one command today. Read it before relying on anything here.
 
-**§13 is the memory verdict** the design asked for: what a mark costs, what a
-drive of a given size costs, and whether marking directories holds up. §12 is
-about leases, which spec §8 depends on and which none of the programmes above
-touch.
+**§13 is the memory verdict** the design asked for: what a mark costs, what a drive
+of a given size costs, and whether marking directories holds up. §12 is about
+leases, which dehydration (`docs/design/hydration.md` §8) depends on and which none
+of the programmes above touch.
 
-§5.1 and the "ordinary `O_RDWR` descriptor" row of §2.1 used to have no
-committed programme: they came from throwaway code written during the review of
-Task 4 and recorded in
-`.superpowers/sdd/2026-09-22-hydration-kernel-core/task-4-review.md`.
-`tests/vm/scenarios.rs` now re-measures both directly, before it starts the
-helper, against a fanotify group of its own — see §11.1. The accepted-errno set
-of §5 is a different case and is still not re-measured raw; §11.2 says exactly
-what the suite establishes instead.
+§5.1 and the "ordinary `O_RDWR` descriptor" row of §2.1 used to have no committed
+programme: they came from throwaway code written during development, whose results
+were recorded but whose code was not kept. `tests/vm/scenarios.rs` now re-measures
+both directly, before it starts the helper, against a fanotify group of its own —
+see §11.1. The accepted-errno set of §5 is a different case and is still not
+re-measured raw; §11.2 says exactly what the suite establishes instead.
 
 - Kernel: `7.2.5-200.fc44.x86_64` (Fedora 44), the host's own kernel. SELinux is
   in the picture (see §8); a kernel without an LSM will show slightly smaller
   per-inode figures.
 - Group: `FAN_CLASS_PRE_CONTENT | FAN_CLOEXEC | FAN_UNLIMITED_QUEUE |
   FAN_UNLIMITED_MARKS | FAN_NONBLOCK`, event fds `O_RDWR | O_LARGEFILE | O_CLOEXEC`
-  — and, since the final review, `O_NONBLOCK` as well (§12.4). Every result
+  — and, in the current helper, `O_NONBLOCK` as well (§12.4). Every result
   measured before §12.4 was measured without it.
 - Directory marks: `FAN_MARK_ADD` with `FAN_OPEN_PERM | FAN_EVENT_ON_CHILD`, no `FAN_ONDIR`.
 - Ignore marks on files: `FAN_MARK_ADD | FAN_MARK_IGNORE | FAN_MARK_IGNORED_SURV_MODIFY | FAN_MARK_EVICTABLE`
@@ -58,13 +56,16 @@ cargo build --release --manifest-path tests/vm/Cargo.toml
 tests/vm/run.sh tests/vm/target/release/poc-marks
 tests/vm/run.sh tests/vm/target/release/poc-marks --measure 10000
 tests/vm/run.sh tests/vm/target/release/vm-ignore-mark
-tests/vm/run.sh scenarios
+tests/vm/run.sh quick        # the suite on btrfs only: the normal run
+tests/vm/run.sh full         # btrfs, ext4 and xfs in three VMs at once: the full, slower run
+tests/vm/run.sh scenarios    # all three in one VM, in sequence
 tests/vm/run.sh measure
 ```
 
-The last two build the helper and the suite themselves and hand the suite the
+The last four build the helper and the suite themselves and hand the suite the
 helper's path, because half of what it asserts is about the helper dying,
-restarting, or running out of descriptors.
+restarting, or running out of descriptors. Every step of the suite prints how
+long it took, and a run ends with its ten slowest steps.
 
 ## 1. A directory mark intercepts opens of the files inside it
 
@@ -202,9 +203,9 @@ suppressed, so the helper never sees it, never hydrates it, and the application
 reads zeros. Nothing detects this and nothing recovers from it — the mark only
 goes away when the kernel evicts the inode.
 
-So spec §8's ordering (clear the ignore mark, take the write lease, punch) is no
-longer about saving a round trip; it is the only thing between a dehydration and
-silent data loss:
+So the dehydration's ordering (`docs/design/hydration.md` §8: clear the ignore mark,
+take the write lease, punch) is no longer about saving a round trip; it is the only
+thing between a dehydration and silent data loss:
 
 > **Never punch a hole in a file whose `ClearIgnore` did not succeed.**
 
@@ -273,9 +274,9 @@ value is built by hand:
 
 ### Only some errnos are accepted, and the rest hang the opener
 
-*(Measured during the Task 4 review, on all three filesystems, by a programme
-that is no longer on disk — see the note at the top. Task 9's suite should
-re-establish it; `konedrive_helper::marks::ACCEPTED_DENY_ERRNOS` encodes the
+*(Measured on all three filesystems by a programme that is no longer on disk — see
+the note at the top. The end-to-end suite re-establishes the property that depends
+on it, not the raw set (§11.2); `konedrive_proto::ACCEPTED_DENY_ERRNOS` encodes the
 result and is unit-tested against it.)*
 
 `FAN_DENY | (errno << 24)` is accepted for
@@ -301,8 +302,8 @@ bare `FAN_DENY` if the write is refused anyway.
 
 ## 5.1 A response is matched by file descriptor *number*
 
-*(Measured during the Task 4 review, on all three filesystems, by a programme
-that is no longer on disk — see the note at the top.)*
+*(Measured on all three filesystems by a programme that is no longer on disk — see
+the note at the top; §11.1 measures it again.)*
 
 Answering a permission event with a `dup()` of its event fd fails: `write()`
 returns **`ENOENT`** and the opener stays blocked. Answering with the original fd
@@ -376,16 +377,15 @@ yet measured; `ext4_inode_cache` is 1072 B per object against `btrfs_inode`'s
 944 B, so expect a somewhat higher figure there. The conclusion — folders win on
 the count, not on the unit cost — does not turn on it.
 
-*Preliminary, and never reviewed:* before the measurements on the other two
-filesystems were stopped (a user instruction during Task 1, H9 withdrawn), one
-pair of post-reclaim runs at N = 10 000 gave ext4 1282.4 / 1284.3 B per
-directory mark and XFS 1200.6 / 1195.0 B, against Btrfs 1149.1 / 1150.9 B on
-the same runs — ext4 **~135 B** and XFS **~45 B** per mark dearer than Btrfs,
-the order the object sizes predict. File marks came out the same as directory
-marks on both. The code that produced these was discarded, so they are recorded
-from the plan's ledger, not reproducible here. XFS frees inodes from a
-background worker and needs a two-pass quiesce (`sync` + `drop_caches` twice,
-~400 ms apart) or identical runs differ by ~100 B per mark.
+*Preliminary, and never repeated:* before the measurements on the other two
+filesystems were stopped, one pair of post-reclaim runs at N = 10 000 gave ext4
+1282.4 / 1284.3 B per directory mark and XFS 1200.6 / 1195.0 B, against Btrfs 1149.1
+/ 1150.9 B on the same runs — ext4 **~135 B** and XFS **~45 B** per mark dearer than
+Btrfs, the order the object sizes predict. File marks came out the same as directory
+marks on both. The code that produced these was discarded, so they are recorded from
+the notes of that run, not reproducible here. XFS frees inodes from a background
+worker and needs a two-pass quiesce (`sync` + `drop_caches` twice, ~400 ms apart) or
+identical runs differ by ~100 B per mark.
 
 `--measure 10000` on Btrfs, marking 10 000 objects in one group. Figures are
 `/proc/slabinfo` deltas (`active_objs × objsize`, summed over every cache) across
@@ -482,6 +482,22 @@ virtiofs. Three things were not obvious and are baked into `tests/vm/run.sh`:
   test code, not just the helper: a check that marks a directory and *then*
   writes a file into it from its main thread hangs the whole VM run with no
   output. Create the files first, mark afterwards.
+- **`--network user` needs the guest's DNS pointed at QEMU's own resolver by hand.**
+  Fedora's `/etc/resolv.conf` is a symlink into `/run`, which is a fresh tmpfs on
+  every guest boot, so with `vng --network user` and nothing else, `getent hosts
+  graph.microsoft.com` fails outright (confirmed: exit 2, no address) — `ip addr` in
+  the guest shows the `10.0.2.x` user-net interface is up and has DHCP'd an address,
+  but `cat /etc/resolv.conf` is empty because nothing ever wrote the stub file it
+  points at (`/run/systemd/resolve/stub-resolv.conf`). `tests/vm/run.sh` now writes
+  that file itself — `nameserver 10.0.2.3`, QEMU user-mode networking's own resolver
+  — as the first thing `inner.sh` does when `VM_NETWORK` is set, and only then. With
+  it, `getent hosts graph.microsoft.com` resolves (three AAAA records, via
+  `graph.microsoft.com`'s traffic-manager CNAME) and an anonymous `curl` to
+  `https://graph.microsoft.com/v1.0/me` gets back a real `401 Unauthorized` from
+  Microsoft's servers, not a connection failure — so the guest's outbound TLS path
+  works end to end before any token is involved. `VM_NETWORK` is unset by default:
+  every scenario except the real-account `--graph-token` mode runs with no network
+  at all, on purpose.
 
 Also: `vng` must be given `< /dev/null` when run from a non-interactive session,
 and it does not propagate the environment into the guest, so the runner writes
@@ -503,7 +519,7 @@ guest binary's own status, or 125 if the guest never reported one.
   the clamp end to end and never hands the kernel an unacceptable value. A check
   that writes `FAN_DENY | (errno << 24)` directly, bypassing the clamp, is what
   would close this, and it has not been written. Until it is, the *set itself*
-  rests on the Task 4 review's throwaway programme — though the property that
+  rests on the throwaway programme of the note at the top — though the property that
   depends on it, "no daemon-reported errno leaves an opener suspended", is now
   measured.
 - ~~Nothing measures what happens when the helper dies.~~ **Measured** — see
@@ -530,30 +546,27 @@ guest binary's own status, or 125 if the guest never reported one.
 - The per-inode part of the cost depends on the host's **LSM policy**: 112 B of
   it is `lsm_inode_cache` (see §8), so a machine without SELinux will measure
   about that much less per mark.
-- **§8's ext4 and XFS figures are preliminary**: one pair of runs each, made by
-  code that was discarded unreviewed. They are in §8 for their order of
-  magnitude only.
-- **§12's lease results come from throwaway programmes**, none of them
-  committed: the `SIGIO` and `fork`/`posix_spawn` results from the Task 7
-  review and its re-review (C, on 7.2.5), the mapping result from the Task 10
-  reconciliation (C, on **7.2.7**, the host's kernel after a reboot; the
-  programme is reproduced in §12 so it can be run again). All three are
-  unprivileged and ran on the host, on tmpfs and Btrfs — not in the VM, and not
-  on ext4 or XFS.
+- **§8's ext4 and XFS figures are preliminary**: one pair of runs each, made by code
+  that was discarded. They are in §8 for their order of magnitude only.
+- **§12's lease results come from throwaway programmes**, none of them committed:
+  the `SIGIO` and `fork`/`posix_spawn` results (C, on 7.2.5), and the mapping result
+  (C, on **7.2.7**; the programme is reproduced in §12.1 so it can be run again).
+  All three are unprivileged and ran on the host, on tmpfs and Btrfs — not in the
+  VM, and not on ext4 or XFS.
 
 ## 11. The end-to-end suite: what running the whole mechanism showed
 
-`tests/vm/run.sh scenarios` starts the shipped `konedrive-helper` binary, a
-harness that plays the daemon with `konedrived`'s own `sync` module over a
-`LocalDir` source, and drives every intercepted open from a **child process**.
-The child process is not a detail: the helper exempts the owning daemon's pid
-from interception (Ruling H15), and the harness *is* that daemon, so an open
-from one of its own threads is allowed straight through and proves nothing.
+`tests/vm/run.sh scenarios` starts the shipped `konedrive-helper` binary, a harness
+that plays the daemon with `konedrived`'s own `sync` module over a `LocalDir`
+source, and drives every intercepted open from a **child process**. The child
+process is not a detail: the helper exempts the owning daemon's pid from
+interception (`docs/design/hydration.md` §5.1), and the harness *is* that daemon, so
+an open from one of its own threads is allowed straight through and proves nothing.
 
 **Figures are from Btrfs unless a row says otherwise.** The suite runs all three
 filesystems; the first run of 2026-09-23 completed Btrfs and ext4 and was cut
 off part-way through XFS, which had agreed with Btrfs on everything it reached.
-The residue round's runs completed all three (the watchdog now measures each
+Later runs completed all three (the watchdog now measures each
 step rather than the whole run), and §11.4's burst figures are from those.
 
 ### 11.1 Two results that had no committed programme now have one
@@ -596,13 +609,13 @@ EPERM(1), EIO(5), EAGAIN(11), EBUSY(16), ETXTBSY(26), ENOSPC(28), EDQUOT(122)
 which is `konedrive_proto::ACCEPTED_DENY_ERRNOS` minus `0`; everything else
 arrived as `EIO`.
 
-**Read this for what it is.** `Marks::deny` clamps before it writes, so the
-kernel never saw an unacceptable value: this sweep proves the property that
-matters end to end — *no errno a daemon can report leaves an opener suspended* —
-but it does **not** re-measure the kernel's raw accepted set. That set is still
-resting on the Task 4 review's throwaway programme. Re-measuring it raw needs a
-check that writes `FAN_DENY | (errno << 24)` directly, deliberately bypassing the
-clamp, and is a piece of work this suite has not done.
+**Read this for what it is.** `Marks::deny` clamps before it writes, so the kernel
+never saw an unacceptable value: this sweep proves the property that matters end to
+end — *no errno a daemon can report leaves an opener suspended* — but it does
+**not** re-measure the kernel's raw accepted set. That set is still resting on the
+throwaway programme of the note at the top. Re-measuring it raw needs a check that
+writes `FAN_DENY | (errno << 24)` directly, deliberately bypassing the clamp, and is
+a piece of work this suite has not done.
 
 ### 11.3 What the helper costs under load
 
@@ -610,16 +623,15 @@ clamp, and is a piece of work this suite has not done.
 | --- | --- |
 | 3000 concurrent opens of distinct placeholders (before §11.4's bound) | 3000 answered, 0 read zeros, **662 `EIO`**; peak **68 threads**, peak **3984 KiB RSS**, 10.3 s |
 | the same, with `MAX_OUTSTANDING_HYDRATIONS` refusing beyond it (Btrfs / ext4 / XFS) | 3000 answered, 0 read zeros, **0 `EIO`**, 307–481 filled and the rest `EAGAIN`; peak 68 threads, ~3.0–3.3 MiB RSS, 0.23–0.36 s |
-| the same, with the credit-gated queue (Ruling H124; Btrfs / ext4 / XFS) | 3000 answered, **3000 filled**, 0 read zeros, **nothing refused**; peak 69 threads, 3.6–3.8 MiB RSS, 5.6 / 4.6 / 4.6 s |
+| the same, with the credit-gated queue (Btrfs / ext4 / XFS) | 3000 answered, **3000 filled**, 0 read zeros, **nothing refused**; peak 69 threads, 3.6–3.8 MiB RSS, 5.6 / 4.6 / 4.6 s |
 | 400 concurrent opens with `RLIMIT_NOFILE=128` | 400 answered, 0 read zeros; helper survived; peak 68 threads, 3812 KiB RSS |
 | 64 opens with the daemon gone and the root still registered | 8 waited the full 30 s, 56 refused at once; peak 66 threads |
 
-The thread count is the pool (64) plus the main thread, the accept thread, the
-log flusher (Ruling H127) and a connection's reader and writer — it does **not**
-follow the number of opens in flight, which is the whole point of Ruling H20's
-bounded pool, and it is now measured rather than argued. Neither does the
-credit-gated queue add threads: a hydration waiting for credit holds only its
-suspended openers' event descriptors.
+The thread count is the pool (64) plus the main thread, the accept thread, the log
+flusher and a connection's reader and writer — it does **not** follow the number of
+opens in flight, which is the whole point of the bounded pool, and it is now
+measured rather than argued. Neither does the credit-gated queue add threads: a
+hydration waiting for credit holds only its suspended openers' event descriptors.
 
 ### 11.4 Which bound actually binds — and a circular wait that looked like a slow daemon
 
@@ -630,13 +642,12 @@ outbox**: about 2300 of the 3000 opens were denied `EAGAIN` because
 `OUTBOX_DEPTH = 256` was full. That part is designed behaviour — `EAGAIN` means
 "try that again", and a retry of a refused opener succeeded.
 
-The part that was not: the remaining **662** opens were denied **`EIO`**. The
-first diagnosis (Task 9) was that `SEND_TIMEOUT` (10 s) had given up on a daemon
-that was slow rather than wedged, and Ruling H119 replaced the timeout with a
-60 s window of *silence*. Measured after that change, identically on all three
-filesystems:
+The part that was not: the remaining **662** opens were denied **`EIO`**. The first
+diagnosis was that `SEND_TIMEOUT` (10 s) had given up on a daemon that was slow
+rather than wedged, and the timeout was replaced with a 60 s window of *silence*.
+Measured after that change, identically on all three filesystems:
 
-| | before H119 | after H119 alone |
+| | with the 10 s send timeout | with the 60 s silence window alone |
 | --- | --- | --- |
 | openers denied `EIO` | 662 | 662 |
 | run time | 10.3–10.6 s | 30.1–30.2 s |
@@ -648,7 +659,7 @@ thirty seconds to fill twenty of them. It was not slow; it had **stopped**, and
 the helper's log shows the only thing that happened afterwards was the daemon
 hanging up. The mechanism is a circular wait between the two processes:
 
-1. each of the daemon's four fill slots (Ruling H29) is held until the `Ack` for
+1. each of the daemon's four fill slots is held until the `Ack` for
    that fill's `HydrateDone` arrives;
 2. that `Ack` travels on the same socket, in order, behind every request the
    helper had already queued;
@@ -689,12 +700,11 @@ Every fill the daemon was asked to start, it completed; the outbox was never
 full once, so `OUTBOX_DEPTH` is no longer what binds — the 64-hydration bound
 is.
 
-That cured the wedge and moved the failure onto users: nine openers in ten
-refused, where a desktop thumbnailing a folder expects every file. Since Ruling
-H124 the bound is a **credit**: a hydration beyond it is enrolled and held back
-in the helper, its openers suspended like any other's, and each `HydrateDone`
-hands its credit to the oldest one waiting, in the same step. The same burst,
-full run at `3b8ae01`:
+That cured the wedge and moved the failure onto users: nine openers in ten refused,
+where a desktop thumbnailing a folder expects every file. Since then the bound is a
+**credit**: a hydration beyond it is enrolled and held back in the helper, its
+openers suspended like any other's, and each `HydrateDone` hands its credit to the
+oldest one waiting, in the same step. The same burst, full run at `3b8ae01`:
 
 | filesystem | answered | filled | refused | `EIO` | read zeros | run time | median / max wait | connection lost |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -705,7 +715,7 @@ full run at `3b8ae01`:
 The run is longer because it does all the work: 3000 fills at four at a time,
 about 650 a second from an instant local source. Nothing refused anything — not
 the worker pool, not the outbox, not the credit. Two related changes ride on the
-same socket (Ruling H126): the outbox now keeps the helper's requests (at most
+same socket: the outbox now keeps the helper's requests (at most
 the credit, plus the greeting) and the `Ack`s for the daemon's own calls in
 separate compartments, so neither can crowd out the other, and an `Ack` past its
 128-deep reserve makes the connection's reader wait rather than ending the
@@ -715,10 +725,10 @@ filesystems; before, the helper reset it after 667 with none delivered.
 
 Every burst above ran through the harness's forwarding task, which had a
 64-deep channel of its own in front of the daemon's request queue — roughly
-twice production's buffering (the final review's I4). The forwarder is gone:
+twice production's buffering. The forwarder is gone:
 the errno sweep that needed it now answers through a second connection of
 its own uid, and the daemon reads the link's own queue directly. The same
-burst at production depth, full suite run after the final review's fixes:
+burst at production depth, in a later full suite run:
 
 | filesystem | answered | filled | refused | `EIO` | read zeros | run time | median / p95 / max wait |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -757,29 +767,28 @@ file that kept its content shows its whole size.
 
 ### 11.6 Behaviour nothing had measured before
 
-- **A full disk denies `ENOSPC` and never commits.** With a 400 MiB image filled
-  to within 2 MiB and an 8 MiB placeholder, the open was denied **`ENOSPC`** and
-  the file was left `online-only`, at its true size, with **0 blocks** and no
-  stamp — the state Ruling H48's commit-point ordering exists to guarantee. It
-  filled correctly once space was freed.
+- **A full disk denies `ENOSPC` and never commits.** With a 400 MiB image filled to
+  within 2 MiB and an 8 MiB placeholder, the open was denied **`ENOSPC`** and the
+  file was left `online-only`, at its true size, with **0 blocks** and no stamp —
+  the state the commit-point ordering (`docs/design/hydration.md` §6.2) exists to
+  guarantee. It filled correctly once space was freed.
 - **The event fd is opened against the *opener's* mount.** With the helper
   restarted inside a private mount namespace in which the whole filesystem is a
   read-only bind mount — which is what `ProtectHome=read-only` is — a hydration
   through the event fd still worked. The helper's own view of the filesystem
   does not constrain what the daemon may write through the descriptor it is
   handed.
-- **Killing the helper hands every suspended open an unfilled placeholder.**
-  With 200 opens suspended on a delayed source, `SIGKILL` on the helper released
-  all 200 within 525 ms and **every one of them read zeros** — 200 filled: 0,
-  read-wrong: 200. (While §11.4's bound refused beyond 64, at most 64 opens per
-  connection were ever suspended and the same scenario showed 64 reading zeros
-  and 136 refused `EAGAIN` up front. The credit-gated queue suspends every opener
-  again, so it is back to all 200, on all three filesystems: waiting instead of
-  failing is also more applications for a helper death to hand an unfilled
-  file.) `fanotify(7)`'s *"Upon close(2), outstanding permission events
-  will be set to allowed"* is now observed rather than quoted, and it is the
-  whole reason the worker pool is bounded (Ruling H20) and a panicking worker is
-  caught rather than allowed to unwind (Ruling H37): **the helper exiting is
+- **Killing the helper hands every suspended open an unfilled placeholder.** With
+  200 opens suspended on a delayed source, `SIGKILL` on the helper released all 200
+  within 525 ms and **every one of them read zeros** — 200 filled: 0, read-wrong:
+  200. (While §11.4's bound refused beyond 64, at most 64 opens per connection were
+  ever suspended and the same scenario showed 64 reading zeros and 136 refused
+  `EAGAIN` up front. The credit-gated queue suspends every opener again, so it is
+  back to all 200, on all three filesystems: waiting instead of failing is also more
+  applications for a helper death to hand an unfilled file.) `fanotify(7)`'s *"Upon
+  close(2), outstanding permission events will be set to allowed"* is now observed
+  rather than quoted, and it is the whole reason the worker pool is bounded and a
+  panicking worker is caught rather than allowed to unwind: **the helper exiting is
   silent data loss, and the helper denying is not.** Identical on Btrfs and ext4.
 - **`SO_PEERCRED` on `SOCK_SEQPACKET` reports the pid the event reports.**
   Observable because the exemption is: the harness's own open of an
@@ -798,7 +807,7 @@ file that kept its content shows its whole size.
   concurrent opens, every opener was answered and the helper stayed up. 38 of
   them came back **`EPERM`**, which is the kernel denying the events it could not
   copy a descriptor out for — so the openers caught in that window are answered
-  rather than left hanging, exactly as Ruling H57 assumed. With the credit-gated
+  rather than left hanging, exactly as the design assumed. With the credit-gated
   queue (which keeps every enrolled opener's descriptor instead of refusing past
   64) the same run gives about 152 filled, 93 `EPERM` and 155 `EIO` on each
   filesystem, and no `EAGAIN`. Read off the helper's log on Btrfs, the 153
@@ -828,7 +837,7 @@ over every cache) after `sync` + `drop_caches`, as in §8.
 | --- | --- |
 | building the tree (100 000 `O_TMPFILE` + `linkat` placeholders) | 4.6 s |
 | **the startup walk** — `RegisterRoot` on the existing tree, `openat2` per directory | **461 ms** for 10 000 directories (~46 µs each) |
-| the same walk once it also clears each file's ignore mark by name (Ruling H138), run again after the final review's fixes, cold cache | **1.03 s** for 10 000 directories and 100 000 files — ~5.7 µs more per file |
+| the same walk once it also clears each file's ignore mark by name, run again later, cold cache | **1.03 s** for 10 000 directories and 100 000 files — ~5.7 µs more per file |
 | slab per directory mark, that run | 1686.5 B — unchanged within the noise: the file lookups pin nothing once `drop_caches` has run |
 | marks in the group afterwards (`/proc/<helper>/fdinfo`) | 10 001 (every directory plus the root) |
 | slab per directory mark, total delta | **1658 B** |
@@ -840,10 +849,10 @@ over every cache) after `sync` + `drop_caches`, as in §8.
 
 How to read it:
 
-- **The walk is cheap.** Half a second for ten thousand directories is what a
-  helper restart costs a large sync folder before interception is complete;
-  a second, now that every registration walk also takes the ignore mark off
-  each of 100 000 files (spec §6.3), a lookup of each name on a cold cache.
+- **The walk is cheap.** Half a second for ten thousand directories is what a helper
+  restart costs a large sync folder before interception is complete; a second, now
+  that every registration walk also takes the ignore mark off each of 100 000 files
+  (`docs/design/hydration.md` §12), a lookup of each name on a cold cache.
 - **The per-directory figure is higher than §8's 1148 B**, and this programme
   cannot say why: it records only the total, not §8's per-cache breakdown, and
   what it measures is the shipped walk over a tree that was just written rather
@@ -866,11 +875,12 @@ How to read it:
 
 ## 12. Leases: what a refused `F_SETLEASE` means
 
-Spec §8 empties a file only under a write lease (`F_SETLEASE`, `F_WRLCK`), on
-the strength of one kernel promise: the lease is refused while anybody else has
-the file. Three things about that promise were measured on the host, none of
-them by a committed programme (§10 says which ran where); §12.4 and §12.5, about
-how leases and the permission wait meet, are measured by the VM suite.
+Dehydration (`docs/design/hydration.md` §8) empties a file only under a write lease
+(`F_SETLEASE`, `F_WRLCK`), on the strength of one kernel promise: the lease is
+refused while anybody else has the file. Three things about that promise were
+measured on the host, none of them by a committed programme (§10 says which ran
+where); §12.4 and §12.5, about how leases and the permission wait meet, are measured
+by the VM suite.
 
 ### 12.1 A mapping counts as open, even after its descriptor is closed
 
@@ -892,11 +902,11 @@ cross-process row: 5 on each), identical every time:
 | each of the three, after `munmap` | granted |
 | another **process** holding only a `MAP_SHARED` mapping, descriptor closed | **`EAGAIN`**; granted once it exited |
 
-So "the file is not open anywhere" is exactly as strong as it reads, and a
-little stronger: a viewer that mapped a document and closed its descriptor
-makes "free up space" answer "in use" until the mapping goes. A claim that
-circulated during this plan — that `F_SETLEASE` does *not* see a mapping whose
-descriptor was closed — is false, and must not be designed around.
+So "the file is not open anywhere" is exactly as strong as it reads, and a little
+stronger: a viewer that mapped a document and closed its descriptor makes "free up
+space" answer "in use" until the mapping goes. A claim that circulated during
+development — that `F_SETLEASE` does *not* see a mapping whose descriptor was closed
+— is false, and must not be designed around.
 
 The programme, small enough to keep here since it is not committed anywhere:
 
@@ -938,49 +948,45 @@ int main(int argc, char **argv) {
 
 ### 12.2 Starting a process does not refuse a lease
 
-A `fork` duplicates the descriptor *table*, but every duplicate points at the
-same open file description, raising only its reference count (`f_count`), which
-the lease check never reads. Measured on 7.2.5 during the Task 7 re-review:
-**0 of 2000** `F_SETLEASE` calls failed after `posix_spawn`, **0 of 3000** after
-`fork` + `_exit`, **0 of 3000** after `fork` + `exec`, against a control in
-which a genuine second `open()` gave `EAGAIN` at once (Ruling H83, which
-withdrew the opposite claim). A refusal therefore always means somebody else
-really has the file — never "the daemon happened to start a process".
+A `fork` duplicates the descriptor *table*, but every duplicate points at the same
+open file description, raising only its reference count (`f_count`), which the lease
+check never reads. Measured on 7.2.5: **0 of 2000** `F_SETLEASE` calls failed after
+`posix_spawn`, **0 of 3000** after `fork` + `_exit`, **0 of 3000** after `fork` +
+`exec`, against a control in which a genuine second `open()` gave `EAGAIN` at once
+(which withdrew an earlier, opposite claim). A refusal therefore always means
+somebody else really has the file — never "the daemon happened to start a process".
 
 ### 12.3 A broken lease kills a holder that has not handled `SIGIO`
 
-The kernel tells the lease holder that somebody wants the file with `SIGIO`,
-whose default action is to terminate. Measured during the Task 7 review: a
-process holding a lease with no handler died with exit status **157**
-(128 + 29, `SIGIO`) the moment another process opened the file. The daemon
-therefore sets `SIGIO` to be ignored, once and process-wide, before its first
-lease — only if the disposition is still the default, so a process with a
-handler of its own keeps it (`konedrive_fs::lease`, Ruling H72).
+The kernel tells the lease holder that somebody wants the file with `SIGIO`, whose
+default action is to terminate. Measured: a process holding a lease with no handler
+died with exit status **157** (128 + 29, `SIGIO`) the moment another process opened
+the file. The daemon therefore sets `SIGIO` to be ignored, once and process-wide,
+before its first lease — only if the disposition is still the default, so a process
+with a handler of its own keeps it (`konedrive_fs::lease`).
 
 ### 12.4 A lease in a marked directory stops the listener's `read()` — unless the event descriptors are `O_NONBLOCK`
 
-fanotify creates an event's descriptor inside the listener's `read()`, by
-opening the file with the group's `event_f_flags`, and opening a file that
-somebody holds a write lease on breaks the lease: the open waits until the
-holder lets go, or until `lease-break-time` (45 s by default) runs out.
-Measured twice — by the final review, with a C programme run as root in the
-VM on all three filesystems (no longer on disk; its results are in
-`.superpowers/sdd/2026-09-22-hydration-kernel-core/final-review.md`, Appendix
-B), and since by the suite's "a lease on one file does not stall the opens of
-others", which takes a write lease on an `online-only` placeholder F from the
-exempt daemon, opens F from reader B, and 200 ms later opens another
-placeholder G, in the same folder, from reader C:
+fanotify creates an event's descriptor inside the listener's `read()`, by opening
+the file with the group's `event_f_flags`, and opening a file that somebody holds a
+write lease on breaks the lease: the open waits until the holder lets go, or until
+`lease-break-time` (45 s by default) runs out. Measured twice — by a standalone C
+programme run as root in the VM on all three filesystems (no longer on disk), and
+since by the suite's "a lease on one file does not stall the opens of others", which
+takes a write lease on an `online-only` placeholder F from the exempt daemon, opens
+F from reader B, and 200 ms later opens another placeholder G, in the same folder,
+from reader C:
 
 | event descriptors | the group's `read()` | B, the opener of the leased file | C, another file's opener |
 | --- | --- | --- | --- |
-| `O_RDWR \| O_LARGEFILE \| O_CLOEXEC` (the helper up to `28f43c0`) | blocked as long as the lease was held: 4.8 s for a 5 s lease; 3.0 s at `lease-break-time=3` with a holder that never let go (review) | waited, and was filled once the lease went: 2.7 s (suite) | **waited behind it: 2.5 s**, the whole time the lease was held (suite, Btrfs, ext4 and XFS) |
-| the same plus `O_NONBLOCK` | does not block (review); returned nothing once, with the group readable (suite, the helper's log) | **denied `EPERM` by the kernel, at once: 7–8 ms** (suite) | answered at once: 10 ms (suite) |
+| `O_RDWR \| O_LARGEFILE \| O_CLOEXEC` (the helper up to `28f43c0`) | blocked as long as the lease was held: 4.8 s for a 5 s lease; 3.0 s at `lease-break-time=3` with a holder that never let go (C programme) | waited, and was filled once the lease went: 2.7 s (suite) | **waited behind it: 2.5 s**, the whole time the lease was held (suite, Btrfs, ext4 and XFS) |
+| the same plus `O_NONBLOCK` | does not block (C programme); returned nothing once, with the group readable (suite, the helper's log) | **denied `EPERM` by the kernel, at once: 7–8 ms** (suite) | answered at once: 10 ms (suite) |
 
-So without `O_NONBLOCK` the helper's whole event loop — every intercepted open
-on the machine — stops for as long as any process holds a lease on any file in
-any marked directory. The helper's own dehydration holds exactly such a lease
-across its punch and `fsync` (spec §8), and any local user can take one on a
-file of their own and hold it for 45 s at a time.
+So without `O_NONBLOCK` the helper's whole event loop — every intercepted open on
+the machine — stops for as long as any process holds a lease on any file in any
+marked directory. The helper's own dehydration holds exactly such a lease across its
+punch and `fsync` (`docs/design/hydration.md` §8), and any local user can take one
+on a file of their own and hold it for 45 s at a time.
 
 **What the kernel does with an event whose descriptor cannot be created.**
 Read in `fanotify_read()` and `copy_event_to_user()` (an inference from the
@@ -1024,20 +1030,18 @@ The opener itself refuses the lease from the moment it is suspended.
 
 ### 12.6 An event whose descriptor cannot be opened `O_RDWR` at all
 
-§12.4's descriptor is opened against the **opener's** path — its mount and
-its dentry — with the group's `event_f_flags`, `O_RDWR`. Two ordinary kinds of
-open make that open fail outright, whatever `O_NONBLOCK` says. Measured by the
-final re-review with a C programme in the VM (Appendix B of
-`.superpowers/sdd/2026-09-22-hydration-kernel-core/final-re-review.md`), and
-since by two suite scenarios — "an open through a read-only mount is refused
-by the kernel, and the helper keeps running" and "a second open of a running
-executable is refused by the kernel, and the helper keeps running" — on
+§12.4's descriptor is opened against the **opener's** path — its mount and its
+dentry — with the group's `event_f_flags`, `O_RDWR`. Two ordinary kinds of open make
+that open fail outright, whatever `O_NONBLOCK` says. Measured by a standalone C
+programme in the VM, and since by two suite scenarios — "an open through a read-only
+mount is refused by the kernel, and the helper keeps running" and "a second open of
+a running executable is refused by the kernel, and the helper keeps running" — on
 Btrfs, ext4 and XFS, kernel `7.2.7-200.fc44`:
 
-| the open | the group's `read()` | its opener | the helper up to `bbbdecb` | the helper since (Ruling H145) |
+| the open | the group's `read()` | its opener | the helper up to `bbbdecb` | the helper since |
 | --- | --- | --- | --- | --- |
-| of an `online-only` placeholder through a read-only bind mount of the root | fails **`EROFS`** (review) | **`EPERM` from the kernel, 7–8 ms, nothing fetched** — not let through onto the placeholder | exited (`Error: EROFS`); a reader suspended on a slow hydration of another file got **65 536 zero bytes** | reads on, logs the event once; the suspended reader gets its file; the same placeholder through the ordinary path fills after one fetch |
-| a second open — a read, or a second `exec` — of an executable, copied into the folder, while it runs | fails **`ETXTBSY`** (review: `deny_write_access` holds `i_writecount` negative) | **`EPERM`**, 7–8 ms; a second `exec` fails `EPERM` too | exited (`Error: ETXTBSY`); the same zeros | reads on; the suspended reader gets its file |
+| of an `online-only` placeholder through a read-only bind mount of the root | fails **`EROFS`** (C programme) | **`EPERM` from the kernel, 7–8 ms, nothing fetched** — not let through onto the placeholder | exited (`Error: EROFS`); a reader suspended on a slow hydration of another file got **65 536 zero bytes** | reads on, logs the event once; the suspended reader gets its file; the same placeholder through the ordinary path fills after one fetch |
+| a second open — a read, or a second `exec` — of an executable, copied into the folder, while it runs | fails **`ETXTBSY`** (C programme:  `deny_write_access` holds `i_writecount` negative) | **`EPERM`**, 7–8 ms; a second `exec` fails `EPERM` too | exited (`Error: ETXTBSY`); the same zeros | reads on; the suspended reader gets its file |
 
 So the kernel treats these exactly like a leased file (§12.4): the event is
 finished `FAN_DENY` inside `read()`, its opener sees `EPERM`, and it is never
@@ -1057,7 +1061,7 @@ Consequences, which no listener can change while its event descriptors are
   read-only after an error. That covers a placeholder, which could not be
   filled through such an open anyway (the daemon writes through that very
   descriptor), but also a hydrated file whose ignore mark is not in place and
-  every file konedrive does not manage (never ignore-marked, H5). Only a file
+  every file konedrive does not manage (never ignore-marked). Only a file
   whose ignore mark is in place opens.
 - **While an executable in the folder runs, every open of it that reaches
   the helper is refused `EPERM`**, a second `exec` included. A managed,
@@ -1069,7 +1073,7 @@ served through a descriptor opened some other way — was not measured.
 
 ## 13. The memory verdict
 
-What the design asked this document to settle (spec §2, §11.3): what the marks
+What the design asked this document to settle: what the marks
 cost, what a whole drive costs, and whether marking **directories** holds up.
 
 | mark | measured | source |
@@ -1078,7 +1082,7 @@ cost, what a whole drive costs, and whether marking **directories** holds up.
 | directory mark, the shipped helper's walk over a realistic tree (10 000 directories, 100 000 placeholders), Btrfs | **1658 B** — ~500 B above the loop, not yet attributed | §11.7 |
 | file mark (the rejected per-file strategy) | the same as a directory mark, within noise: both are the pinned inode | §8 |
 | evictable ignore mark on a hydrated file | the mark's own 120 B while its inode is in cache anyway; **≈0 after reclaim**, since it goes with the inode — including with `SURV_MODIFY` | §8, §2.2, §11.1 |
-| ext4 / XFS, relative to Btrfs | ~+135 B / ~+45 B per mark — preliminary, never reviewed | §8 |
+| ext4 / XFS, relative to Btrfs | ~+135 B / ~+45 B per mark — preliminary, never repeated | §8 |
 | a kernel without SELinux | ~−112 B per mark | §8 |
 
 **Projection.** The design figure is the larger, measured one. A drive of *D*
@@ -1099,11 +1103,10 @@ after the first fill, every file:
 — divided by 2000.)
 
 **Verdict: confirmed.** Marking directories holds, needs no hybrid fallback, and
-does not have to change. The cost follows the number of folders at ~1.66 KB
-each, and the saving over per-file marks is the files-per-folder ratio — twenty
-times on the drive shapes above — because a mark's cost is the inode it pins,
-not the mark. Two things remain open and neither can overturn the verdict: the
-~500 B by which the realistic tree exceeds the loop is unattributed (a
-per-cache run would settle it), and the user's real drive has not been counted
-yet — it needs part 2's Graph listing (spec §11.3). At the measured figure a
-drive of 100 000 folders would pin ~166 MB.
+does not have to change. The cost follows the number of folders at ~1.66 KB each,
+and the saving over per-file marks is the files-per-folder ratio — twenty times on
+the drive shapes above — because a mark's cost is the inode it pins, not the mark.
+Two things remain open and neither can overturn the verdict: the ~500 B by which the
+realistic tree exceeds the loop is unattributed (a per-cache run would settle it),
+and no real drive's cost has been measured through the Graph listing yet. At the
+measured figure a drive of 100 000 folders would pin ~166 MB.

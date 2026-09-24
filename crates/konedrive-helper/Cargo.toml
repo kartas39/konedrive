@@ -2,10 +2,11 @@
 name = "konedrive-helper"
 version.workspace = true
 edition.workspace = true
+license.workspace = true
 publish = false
 
 [features]
-# Test-only (Ruling H121): two environment-armed panics that the VM suite uses
+# Test-only: two environment-armed panics that the VM suite uses
 # to reach the unwind paths nothing input-reachable triggers. Off by default;
 # never enable it in a build that ships. `tests/vm/run.sh` turns it on.
 fault-injection = []

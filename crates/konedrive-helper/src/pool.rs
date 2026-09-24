@@ -63,7 +63,7 @@ impl Pool {
                         // Every sender is gone: the event loop has stopped.
                         break;
                     };
-                    // Ruling H37. The descriptor stays here, outside the
+                    // The descriptor stays here, outside the
                     // unwind boundary, so a panic below cannot drop it while
                     // unwinding: this thread still owns the exact fd number
                     // the kernel handed out, and a response is matched by

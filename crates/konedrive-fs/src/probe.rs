@@ -51,7 +51,7 @@ fn classify(e: io::Error, dir: &Path, feature: &'static str) -> ProbeError {
     }
 }
 
-/// Opens the nameless file the probe works on (Ruling H75).
+/// Opens the nameless file the probe works on.
 ///
 /// `O_TMPFILE` gives a real inode on the real filesystem, with a real
 /// directory as its parent, and no directory entry anywhere — the same
@@ -87,7 +87,7 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
         errno: e.raw_os_error(),
     };
 
-    // `O_TMPFILE` is spec §10's one "also used" feature, available on every
+    // `O_TMPFILE` is one "also used" feature, available on every
     // local Linux filesystem and on all three supported ones; a filesystem
     // that genuinely lacks it says so with `EOPNOTSUPP` and is reported like
     // any other missing feature, while `EROFS`/`EACCES` here still mean what
@@ -144,7 +144,7 @@ mod tests {
         probe_dir(dir.path()).unwrap();
     }
 
-    /// Ruling H75, stated as the property rather than as its consequence:
+    /// Stated as the property rather than as its consequence:
     /// the file the probe works on has no name, so there is no window in
     /// which a crash can leave an artefact in the folder being registered.
     /// `nlink == 0` is the kernel's own answer to "is this reachable by any
@@ -165,7 +165,7 @@ mod tests {
         assert!(entries.is_empty(), "the probe put {entries:?} into the directory");
     }
 
-    /// The other half of Ruling H75: whatever is already sitting under the
+    /// The other half of: whatever is already sitting under the
     /// name the old probe used, the probe no longer cares. A directory is
     /// used here because it is the one artefact a `remove_file` cleanup
     /// cannot quietly delete — it stands in for "the folder has something
