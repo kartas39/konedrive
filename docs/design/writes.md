@@ -235,7 +235,7 @@ Each dirty directory is listed, and each entry read by name (`lstat`, `lgetxattr
    - otherwise the helper is asked whether the object still exists, by the file handle the base
      recorded (`OpenByHandle`, §8). **Gone** (`ESTALE`) is a `delete`; **alive outside the folder**
      is a `move-out`; any other answer, or no helper, decides nothing and the item is looked at
-     again later. `ESTALE` is a delete only with its evidence: nothing, or another object, stands
+     again 30 s later, and so on until it is decided. `ESTALE` is a delete only with its evidence: nothing, or another object, stands
      where the item was last proved to be, and the store's handles were taken on the filesystem the
      folder is on now (`meta.handles_root`: the root directory's own handle and, where the kernel
      gives one, the filesystem's UUID). When that record changes (the folder's home moved to a new
@@ -371,6 +371,12 @@ swap, §9):
    combination the helper refuses with `EIO`; a state without an id is simply an ordinary file.
 2. **In the store**, one transaction: the base row from Graph's answer (with `local_handle`),
    `local_seq = ++outbox_seq`, the row deleted, and the activity event.
+
+The descriptor is the one the content was read from, and a folder's is opened before its `mkdir`:
+the item is the object that was sent, wherever it went during the request — renamed, deleted, or
+with another inode at its name — and `local_handle` names it. A folder removed meanwhile takes no
+id, but is committed all the same. The examination then decides what happened since, as if it came
+just after the commit; an item committed with no object could never be proved gone (F54).
 
 A crash between the two is replayed (§10). A file freed up meanwhile stays a placeholder of the
 version just sent. While a row waits, its file carries `user.konedrive.sync` (`pending`,
@@ -663,6 +669,11 @@ every account.
   folder and into the Trash, a download that stops part-way, a helper restart.
 - **The test account**, once, through the guarded harness below: what the service does that no mock
   can say (§13).
+- **A stress run**, by hand, against a separate read-write test account: `tests/stress/` drives the
+  real daemon through `konedrivectl` and the filesystem — many files, edits, renames and moves, a
+  file moved or edited while it is mid-upload, and deletes — and checks the outbox, the item
+  counts, and, read-only against Graph itself, that every file's size and QuickXorHash in OneDrive
+  match what is on disk. See `tests/stress/README.md`.
 
 ### 12.1 Running against the test account
 

@@ -98,7 +98,8 @@ pub struct Examined {
     /// (WR4); the reconcile places them again.
     pub unproven: Vec<String>,
     /// Items whose whereabouts could not be asked or placed (no helper, a
-    /// path that says nothing): examined again when it can answer.
+    /// path that says nothing): their places are in `recheck`, and examined
+    /// again until an answer decides them.
     pub undecided: Vec<String>,
     /// Items the mass-delete guard held (0 when it did not trip).
     pub held: u64,
@@ -852,6 +853,10 @@ impl Run<'_, '_> {
                     return Ok(None);
                 }
                 Place::Unknown => {
+                    for &i in &same {
+                        let e = self.entries[i].clone();
+                        self.recheck(&e);
+                    }
                     self.hold_back(id, Settle::Wait, true);
                     return Ok(None);
                 }
@@ -1297,19 +1302,20 @@ impl Run<'_, '_> {
             // `ESTALE` is a delete only with its evidence: nothing, or another object, at its
             // place.
             Place::Gone if self.absent(rel, &handle) => self.removal(OutboxKind::Delete, id, &base, rel, None, None).map(drop),
-            Place::Gone => {
+            // Undecided: asked again at its place after [`RECHECK`], never
+            // forgotten — nothing else would bring it back to an examination.
+            Place::Gone | Place::Unknown => {
+                self.recheck_at(rel);
                 self.hold_back(id, Settle::Wait, true);
                 Ok(())
             }
             Place::Outside(to) => self.removal(OutboxKind::MoveOut, id, &base, rel, Some(object(handle)), Some(to.as_path())).map(drop),
-            // Moved within the folder, somewhere this batch did not look.
+            // Moved within the folder, somewhere this batch did not look: found
+            // there, or — gone by then — missing again from here.
             Place::Inside(now) => {
                 self.recheck_at(&now);
+                self.recheck_at(rel);
                 self.hold_back(id, Settle::Wait, false);
-                Ok(())
-            }
-            Place::Unknown => {
-                self.hold_back(id, Settle::Wait, true);
                 Ok(())
             }
         }

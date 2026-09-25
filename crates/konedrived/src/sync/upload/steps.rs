@@ -349,17 +349,20 @@ async fn mkdir(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
     let Some(found) = locate(e, disk, &row)?.filter(|f| f.is_dir) else { return Ok(Outcome::later(reason::NOT_FOUND, RECHECK)) };
     let Some(parent) = parent_of(e, disk, &row)? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
     let name = wanted_name(&row, &local);
+    // Opened before the request, as a file's content is: the commit marks the
+    // directory that was made, wherever it is by then — renamed, or removed.
+    let dir = found.open_dir()?;
     match e.cfg.drive.create_folder(&parent, &name).await {
         Ok(item) => {
             e.fault(Fault::AfterSend)?;
-            commit_dir(e, &row, &found, &item, &parent).await
+            commit_dir(e, &row, &found, dir, &item, &parent).await
         }
         Err(WriteError::NameExists) => match taken(e, &row, &parent, &name, Ours::Folder).await? {
             Taken::Free => Ok(Outcome::again()),
             Taken::Temporary(swap) => temporary(e, &row, &parent, &swap),
             // A folder of that name: adopted, and the contents merge file by
             // file (§4.2).
-            Taken::Adopt(item) => commit_dir(e, &row, &found, &item, &parent).await,
+            Taken::Adopt(item) => commit_dir(e, &row, &found, dir, &item, &parent).await,
             Taken::Copy => copy(e, disk, &row, &found, &parent, None).await,
         },
         Err(WriteError::NotFound) => {
@@ -370,10 +373,14 @@ async fn mkdir(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
     }
 }
 
-async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, item: &DriveItem, parent: &str) -> Result<Outcome, Fail> {
+/// A folder's commit, on the directory `dir` opened before the request. One
+/// removed since is committed all the same, with its handle: the item exists
+/// in OneDrive now, and only the base knowing it lets the examination delete
+/// it there (a commit that failed here left it in OneDrive for good, and the
+/// reconcile placed it back as new).
+async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::File, item: &DriveItem, parent: &str) -> Result<Outcome, Fail> {
     let answer = answer_row(item, Some(parent))?;
     let _tree = e.cfg.tree_lock.lock().await;
-    let dir = found.open_dir()?;
     let id = item.id.clone();
     blocking(move || local::commit_dir(&dir, &id)).await?;
     e.fault(Fault::AfterCommitStep1)?;

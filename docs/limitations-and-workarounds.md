@@ -596,6 +596,23 @@ application must never read zeros where real content should be.
   on a 0-byte PUT, `conflictBehavior` in a PUT's URL, and the service's own echo.
 - **Status:** open. Measured 2026-09-25 on btrfs (`tests/vm/run.sh quick --only 'writes:'`, 6/6).
 
+### W19. The upload stress tool confirms every held delete, and can miss a fast upload's "running" moment
+- **What:** `tests/stress/stress_uploads.py` drives the real daemon end to end, through
+  `konedrivectl` and the filesystem, against a read-write test account. Its drain step calls
+  `sync deletes confirm` whenever anything is held, so the outbox can finish without a human —
+  which means it releases *any* held delete on the account, not only ones this run made, and so it
+  must run only against a dedicated test account, never a real one (said in its README). Scenario
+  5 (move or edit a large file while it uploads) polls `sync outbox` every 0.2 s for that row to
+  reach `running` before touching the file again; on a fast enough link even a 60 MiB upload could
+  finish before the first poll lands, and the tool reports that as a scenario failure ("never saw
+  … reach 'running'") rather than silently skipping the case — raising `--big-file-mb` is the
+  workaround if that happens often on a given connection.
+- **Cost:** a run against the wrong account could confirm someone else's held deletes; a very fast
+  connection may need a larger `--big-file-mb` to reliably exercise scenario 5.
+- **Status:** open. Reasoned: the tool refuses to start unless `account mode` already says
+  read-write and requires an explicit `--account` (checked; see its README), but it has not yet
+  been run against a real test account by this change — the coordinator runs it separately.
+
 ---
 
 ## 4. Fragile spots
@@ -1069,9 +1086,20 @@ application must never read zeros where real content should be.
   object in a nested subvolume always gets and which is never read as gone, and no helper, which
   is what `NoLiveness` (tests) answers every time. An answer that cannot be placed for sure decides nothing either: no readable root path, a
   path that is not absolute or ends in ` (deleted)`, or a place in the folder where the object's own
-  handle is not. An item with no recorded handle (a rebuilt store, a filesystem that gives no handles,
+  handle is not. An undecided item is never forgotten: its place is examined again after `RECHECK`
+  (30 s), and so is the place an item found alive elsewhere in the folder left, until an answer
+  decides it — every 30 s for as long as the helper cannot answer, one directory read and one helper
+  round trip each time (an unreadable inode that answers `ESTALE` where it stands is asked for
+  good). An item with no recorded handle (a rebuilt store, a filesystem that gives no handles,
   items whose held deletes were restored until they are placed again) is never deleted (WR4), nor is
-  a folder with one inside it; the reconcile places it again. When a folder leaves, every item the base has inside it that is still
+  a folder with one inside it; the reconcile places it again. The outbox's commit therefore always
+  records the object it sent, wherever that went during the request: a file renamed, deleted, or
+  with another inode at its name (moved out and back in, an editor's backup-and-rewrite save) is
+  committed as the object that was read, and a folder removed while its `mkdir` was in flight is
+  committed with the handle of the directory that was made. Before, such a file was committed with
+  no local object and such a folder not at all, and a local delete that followed was lost: the item
+  stayed in OneDrive and the reconcile placed it back (the stress tool's soak, seed 1745610129).
+  When a folder leaves, every item the base has inside it that is still
   with it is asked after too, one helper round trip each (estimated at about 0.1 ms each, so about
   1 s per 10 000 items): what left
   it first leaves on its own, and while any of them is elsewhere in the folder or cannot be placed,
@@ -1089,6 +1117,8 @@ application must never read zeros where real content should be.
   (`sync::local::tests::a_missing_item_is_decided_by_its_object`, `…a_placeholder_dragged_out_…`,
   `…a_placeholder_moved_out_unseen_…`, `…a_folder_whose_item_is_elsewhere_…`,
   `…an_answer_that_cannot_be_placed_…`, `…a_rebuilt_base_never_deletes`,
+  `sync::upload::tests::a_file_replaced_while_its_create_goes_up_and_then_deleted_…`,
+  `…a_folder_removed_while_its_mkdir_goes_up_…`, `…renames_moves_and_removals_reach_onedrive_…`,
   `sync::upload::move_out_tests::the_helpers_answer_is_read_as_the_examination_needs`,
   `…restoring_a_held_move_out_tidies_what_left`) and in the VM with the real helper
   (`move-out: …`). Open.
