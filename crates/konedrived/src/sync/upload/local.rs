@@ -235,10 +235,16 @@ pub(super) fn commit_id(file: &File, id: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// A directory's commit step 1: its item id, then `fsync`.
+/// A directory's commit step 1: its item id, then `fsync`. A directory
+/// removed meanwhile has nothing to mark: what fails on it is no failure.
 pub(super) fn commit_dir(dir: &File, id: &str) -> io::Result<()> {
-    placeholder::write_item_id(dir, id)?;
-    dir.sync_all()
+    match placeholder::write_item_id(dir, id).and_then(|()| dir.sync_all()) {
+        Err(e) if dir.metadata().is_ok_and(|m| m.nlink() == 0) => {
+            tracing::debug!("a folder removed before its commit keeps no item id: {e}");
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 /// Takes konedrive's attributes off: the object is the user's own file (a

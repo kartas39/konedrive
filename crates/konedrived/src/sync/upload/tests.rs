@@ -901,3 +901,125 @@ fn the_workers_activity_words_are_the_daemons_kinds() {
         assert_eq!(word, kind.as_str());
     }
 }
+
+// Lost deletes (the stress tool's soak, seed 1745610129): a local delete must
+// reach OneDrive once the object is really gone.
+
+/// A worker draining in the background, with the first request whose path
+/// holds `fragment` held for a while: a test acts on the folder while that
+/// request is in flight, then [`finish`](InFlight::finish)es the drain.
+struct InFlight(tokio::task::JoinHandle<()>);
+
+impl InFlight {
+    fn start(w: &World, method: &str, fragment: &str) -> Self {
+        w.cloud(|c| c.delay(method, fragment, Duration::from_millis(400), 1));
+        let engine = w.h.engine();
+        let task = w.h.runtime.spawn(async move { engine.drain(&CancellationToken::new()).await });
+        let mut waited = 0;
+        while w.cloud(|c| c.count(method, fragment)) == 0 && waited < 500 {
+            std::thread::sleep(Duration::from_millis(10));
+            waited += 1;
+        }
+        assert_eq!(w.cloud(|c| c.count(method, fragment)), 1, "{method} {fragment} is in flight");
+        InFlight(task)
+    }
+
+    fn finish(self, w: &World) {
+        w.h.runtime.block_on(self.0).unwrap();
+    }
+}
+
+/// A new file renamed, then moved out of the folder and back while its
+/// create goes up (`shutil.move` across filesystems: a copy at the same name,
+/// the original unlinked), then deleted before the next examination. The
+/// item is committed as the object that was sent, so its absence is proved
+/// and it is deleted in OneDrive — not left there for the reconcile to place
+/// again as a placeholder.
+#[test]
+fn a_file_replaced_while_its_create_goes_up_and_then_deleted_is_deleted_in_onedrive() {
+    let w = World::new(&[folder("D", "R", "d")]);
+    w.write("d/n.bin", b"new content");
+    w.examine(&[("d", "n.bin")]);
+    w.rename("d/n.bin", "d/renamed-n.bin");
+    w.examine(&[("d", "n.bin"), ("d", "renamed-n.bin")]);
+    assert_eq!(w.summary(), vec![(Create, "d/renamed-n.bin".into(), OutboxState::Ready)]);
+
+    let upload = InFlight::start(&w, "POST", "renamed-n.bin");
+    let outside = w._dir.path().join("renamed-n.bin");
+    std::fs::copy(w.path("d/renamed-n.bin"), &outside).unwrap();
+    std::fs::remove_file(w.path("d/renamed-n.bin")).unwrap();
+    std::fs::copy(&outside, w.path("d/renamed-n.bin")).unwrap();
+    upload.finish(&w);
+    let id = w.id_at("d/renamed-n.bin").expect("created");
+    assert!(w.store.with(|s| s.local_handle(&id)).unwrap().is_some(), "committed with the object that was sent");
+
+    std::fs::remove_file(w.path("d/renamed-n.bin")).unwrap();
+    let out = w.examine(&[("d", "renamed-n.bin")]);
+    assert!(out.unproven.is_empty() && out.undecided.is_empty(), "{:?} {:?}", out.unproven, out.undecided);
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["d"]);
+}
+
+/// A new folder removed while its `mkdir` is in flight: the folder made in
+/// OneDrive is committed all the same, and deleted there — whether the
+/// removal is examined before the commit (a delete behind the running row)
+/// or after it. A failed commit used to leave it in OneDrive, unknown to the
+/// base, for the reconcile to bring back as new.
+#[test]
+fn a_folder_removed_while_its_mkdir_goes_up_is_deleted_in_onedrive() {
+    for examined_first in [false, true] {
+        let w = World::new(&[folder("D", "R", "d")]);
+        std::fs::create_dir(w.path("d/new")).unwrap();
+        w.examine(&[("d", "new")]);
+        let mkdir = InFlight::start(&w, "POST", "children");
+        std::fs::remove_dir(w.path("d/new")).unwrap();
+        if examined_first {
+            w.examine(&[("d", "new")]);
+        }
+        mkdir.finish(&w);
+        w.examine(&[("d", "new")]);
+        w.run();
+        assert!(w.rows().is_empty(), "examined first {examined_first}: {:?}", w.summary());
+        assert_eq!(w.cloud(|c| c.paths()), vec!["d"], "examined first {examined_first}");
+    }
+}
+
+/// The soak's sequences around the two lost deletes, with the worker before
+/// the removals or after them: a file renamed then deleted; a new folder
+/// that got a file moved in and renamed, and a new file, all removed with
+/// it; a folder made, filled and removed within one quiet spell. OneDrive
+/// ends as the disk is.
+#[test]
+fn renames_moves_and_removals_reach_onedrive_as_the_disk_is() {
+    for sent_between in [false, true] {
+        let w = World::new(&[
+            folder("A", "R", "a"),
+            file("F", "A", "f.txt", b"f"),
+            file("K", "A", "k.txt", b"k"),
+            folder("B", "R", "b"),
+            file("H", "B", "h.txt", b"h"),
+        ]);
+        w.rename("a/f.txt", "a/renamed-f.txt");
+        std::fs::create_dir(w.path("n")).unwrap();
+        w.rename("a/k.txt", "n/k.txt");
+        w.rename("n/k.txt", "n/renamed-k.txt");
+        w.write("n/new.bin", b"new");
+        w.examine(&[("a", "f.txt"), ("a", "renamed-f.txt"), ("a", "k.txt"), ("", "n")]);
+        if sent_between {
+            w.run();
+            assert_eq!(w.cloud(|c| c.paths()), vec!["a", "a/renamed-f.txt", "b", "b/h.txt", "n", "n/new.bin", "n/renamed-k.txt"]);
+        }
+
+        std::fs::remove_file(w.path("a/renamed-f.txt")).unwrap();
+        std::fs::remove_dir_all(w.path("n")).unwrap();
+        std::fs::create_dir(w.path("q")).unwrap();
+        w.write("q/y.txt", b"y");
+        std::fs::remove_dir_all(w.path("q")).unwrap();
+        let out = w.examine(&[("a", "renamed-f.txt"), ("", "n"), ("", "q")]);
+        assert!(out.unproven.is_empty() && out.undecided.is_empty(), "{:?} {:?}", out.unproven, out.undecided);
+        w.run();
+        assert!(w.rows().is_empty(), "sent between {sent_between}: {:?}", w.summary());
+        assert_eq!(w.cloud(|c| c.paths()), vec!["a", "b", "b/h.txt"], "sent between {sent_between}");
+    }
+}

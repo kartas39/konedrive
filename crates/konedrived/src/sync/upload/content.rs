@@ -481,19 +481,17 @@ impl Job<'_> {
     /// The commit (§3.5): step 1 on the file's own descriptor, under its
     /// inode lock — stamp from the snapshot, cTag, `hydrated`, `fsync`, then
     /// the item id and `fsync` — and step 2 in one store transaction.
+    ///
+    /// Wherever the file went during the upload — renamed, moved out, deleted
+    /// and held open only here, or with another inode at its name (an
+    /// editor's backup-and-rewrite save, a move out and back in) — the item is
+    /// the object that was sent, and its handle is recorded: the examination
+    /// then decides it as if the change came just after the commit. Committed
+    /// with no local object, the item could never be proved gone, and a later
+    /// delete would be lost (limitations log F54).
     async fn commit(&self, item: DriveItem) -> Result<Outcome, Fail> {
         let answer = answer_row(&item, Some(self.parent))?;
         let _tree = self.e.cfg.tree_lock.lock().await;
-        // Another inode at the name now (an editor's backup-and-rewrite save
-        // during the upload, M9): the item is committed without a local
-        // object, and the row behind this one takes the new inode.
-        let replaced = local::find(self.disk, &self.found.rel)?.is_some_and(|there| !there.inode.same_object(&self.found.inode));
-        if replaced {
-            self.e.fault(Fault::AfterCommitStep1)?;
-            let event = self.e.event(kind::UPLOADED, &self.found.rel, crate::sync::activity::human_size(self.snap.size));
-            commit_row(self.e, self.row, &answer, None, self.parent, event)?;
-            return Ok(Outcome::Done);
-        }
         {
             let _inode = self.e.cfg.locks.lock(InodeKey::of(self.file)?).await;
             let (file, snap, ctag) = (Arc::clone(self.file), self.snap, item.c_tag.clone());

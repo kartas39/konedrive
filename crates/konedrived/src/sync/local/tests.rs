@@ -503,6 +503,9 @@ fn a_missing_item_is_decided_by_its_object() {
     let out = fx.examine_with(&names(&[("", "e.txt")]), &NoLiveness);
     assert_eq!(out.undecided, vec!["E".to_owned()]);
     assert!(fx.rows().iter().all(|r| r.item_id.as_deref() != Some("E")));
+    // Undecided is not forgotten: looked at again, it is decided once it can be.
+    fx.examine(&out.recheck);
+    assert_eq!(fx.row_at("e.txt").kind, Delete);
 
     // A new file where the deleted one was.
     fx.write("a.txt", b"again");
