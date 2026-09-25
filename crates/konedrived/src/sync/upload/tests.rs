@@ -722,6 +722,65 @@ fn the_worker_runs_until_stopped() {
     assert_committed(&w, "a.txt", "a.txt");
 }
 
+/// Four independent small files run at once (`Limits::small_slots`), and a
+/// child waits for its parent's `mkdir`: the row only sends once the folder
+/// it goes into is in OneDrive.
+#[test]
+fn four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir() {
+    let w = World::new(&[]);
+    let names = ["a.txt", "b.txt", "c.txt", "d.txt"];
+    for name in names {
+        w.write(name, name.as_bytes());
+    }
+    std::fs::create_dir_all(w.path("dir")).unwrap();
+    w.write("dir/child.txt", b"child");
+    w.examine(&[("", "a.txt"), ("", "b.txt"), ("", "c.txt"), ("", "d.txt"), ("", "dir")]);
+    assert_eq!(w.rows().len(), 6, "{:?}", w.summary());
+
+    // Each small file opens an upload session first (`POST
+    // createUploadSession`); held open long enough for the poll below to
+    // catch all four at once, without holding up the mkdir or the child
+    // behind it.
+    w.cloud(|c| {
+        for name in names {
+            c.delay("POST", name, Duration::from_millis(150), 1);
+        }
+    });
+
+    let worker = OutboxWorker::new(w.h.config());
+    let peak = w.h.runtime.block_on(async {
+        worker.start();
+        worker.wake();
+        let mut peak = 0;
+        let mut waited = 0;
+        while waited < 300 {
+            peak = peak.max(worker.status().uploads.len());
+            if peak >= 4 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        waited = 0;
+        while !w.rows().is_empty() && waited < 300 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        worker.stop().await;
+        peak
+    });
+
+    assert_eq!(peak, 4, "four independent small files were in flight together");
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    for (rel, path) in [("a.txt", "a.txt"), ("b.txt", "b.txt"), ("c.txt", "c.txt"), ("d.txt", "d.txt"), ("dir", "dir"), ("dir/child.txt", "dir/child.txt")] {
+        assert_committed(&w, rel, path);
+    }
+    let position = |fragment: &str| w.cloud(|c| c.log.iter().position(|(_, p)| p.contains(fragment)));
+    let mkdir_at = position("children").expect("the mkdir request");
+    let child_at = position("child.txt").expect("the child's content request");
+    assert!(mkdir_at < child_at, "the child's row waits for its parent's mkdir: {mkdir_at} vs {child_at}");
+}
+
 // Fix round 1 (the outbox worker review): one test per Critical and Important finding.
 
 /// The base row a delta cycle would stage for what OneDrive holds as `id`.

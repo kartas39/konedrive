@@ -112,6 +112,10 @@ pub struct Cloud {
     /// Throttled requests: (method, a fragment of the path, how many to let
     /// through first, `Retry-After` seconds, how many to throttle).
     throttles: Vec<(String, String, u32, u32, u32)>,
+    /// Requests answered late, otherwise as they normally would be: (method,
+    /// a fragment of the path, how long, how many times) — proves two
+    /// requests are in flight together without changing what either answers.
+    delays: Vec<(String, String, Duration, u32)>,
 }
 
 impl Cloud {
@@ -243,6 +247,13 @@ impl Cloud {
         self.script.push((method.into(), fragment.into(), answer, times));
     }
 
+    /// The next `times` requests of `method` whose path holds `fragment`
+    /// answer after `wait`, otherwise exactly as they normally would: a way
+    /// to hold a request in flight so a test can catch several at once.
+    pub fn delay(&mut self, method: &str, fragment: &str, wait: Duration, times: u32) {
+        self.delays.push((method.into(), fragment.into(), wait, times));
+    }
+
     pub fn count(&self, method: &str, fragment: &str) -> usize {
         self.log.iter().filter(|(m, p)| m == method && p.contains(fragment)).count()
     }
@@ -351,7 +362,7 @@ impl Cloud {
         }
         let body: Value = serde_json::from_slice(&request.body).unwrap_or(Value::Null);
         let s: Vec<&str> = segments.iter().map(String::as_str).collect();
-        match (method.as_str(), s.as_slice()) {
+        let answer = match (method.as_str(), s.as_slice()) {
             ("GET", ["me", "drive", "items", parent, name]) if parent.ends_with(':') => self.child(parent.trim_end_matches(':'), name),
             ("POST", ["me", "drive", "items", parent, name, "createUploadSession"]) if parent.ends_with(':') => {
                 self.session_new(parent.trim_end_matches(':'), name.trim_end_matches(':'), &body)
@@ -402,6 +413,13 @@ impl Cloud {
                 None => error(404, "itemNotFound"),
             },
             _ => error(400, "invalidRequest"),
+        };
+        match self.delays.iter_mut().find(|(m, f, _, left)| *m == method && joined.contains(f.as_str()) && *left > 0) {
+            Some(delay) => {
+                delay.3 -= 1;
+                answer.set_delay(delay.2)
+            }
+            None => answer,
         }
     }
 
@@ -480,7 +498,12 @@ impl Cloud {
     }
 
     fn open_session(&mut self, target: Target, body: &Value) -> ResponseTemplate {
-        let size = body["item"]["fileSize"].as_u64().unwrap_or(0);
+        // As OneDrive does for a personal drive: `fileSize` is refused. The size comes
+        // from the fragments' `Content-Range` instead.
+        if body["item"].get("fileSize").is_some() {
+            return error(400, "invalidRequest");
+        }
+        let size = 0;
         let mtime = body["item"]["fileSystemInfo"]["lastModifiedDateTime"].as_str().and_then(crate::drive::item::parse_graph_time).unwrap_or(0);
         self.counter += 1;
         let sid = format!("s{}", self.counter);
@@ -553,6 +576,9 @@ impl Cloud {
         let start: u64 = range.strip_prefix("bytes ").and_then(|r| r.split('-').next()).and_then(|n| n.parse().ok()).unwrap_or(u64::MAX);
         if start != session.data.len() as u64 {
             return error(416, "invalidRange");
+        }
+        if let Some(total) = range.rsplit('/').next().and_then(|n| n.parse::<u64>().ok()) {
+            session.size = total;
         }
         session.data.extend_from_slice(body);
         if (session.data.len() as u64) < session.size {

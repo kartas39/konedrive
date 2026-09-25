@@ -39,6 +39,14 @@ FormCard.FormCardPage {
         }
     }
 
+    /// Sign In calls this once the account it just added is signed in,
+    /// named and chosen: "a sign-in exists to sync something".
+    function openFolderPicker() {
+        if (Current.item) {
+            folderDialog.openFor(Current.item);
+        }
+    }
+
     objectName: "accountPage"
     title: window ? window.accountTitle(i18nc("@title", "Account")) : i18nc("@title", "Account")
 

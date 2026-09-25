@@ -7,7 +7,7 @@ import org.konedrive.app
 
 /// The start page: how the chosen account's folder is doing, and what to do
 /// about it. With no service, no account, no sign-in or no folder, it says so
-/// and leads to what fixes it (Add Account…, or the Account page).
+/// and leads to what fixes it (Sign in…, or the Account page).
 FormCard.FormCardPage {
     id: page
 
@@ -54,15 +54,32 @@ FormCard.FormCardPage {
 
         FormCard.FormPlaceholderMessageDelegate {
             text: i18n("Connect your OneDrive")
-            explanation: i18n("Add your Microsoft account and choose a folder: your OneDrive appears in it, and files download when you open them.")
+            explanation: i18n("Sign in with your Microsoft account, then choose a folder: your OneDrive appears in it, and files download when you open them.")
             icon.name: "folder-cloud"
         }
         FormCard.FormDelegateSeparator {}
+        FormCard.FormTextDelegate {
+            visible: Accounts.addError.length > 0
+            text: Accounts.addError
+            icon.name: "dialog-error"
+        }
         FormCard.FormButtonDelegate {
             objectName: "addAccountButton"
-            text: i18nc("@action:button", "Add Account…")
+            visible: !Accounts.adding
+            text: i18nc("@action:button", "Sign in…")
             icon.name: "list-add-user"
-            onClicked: page.window.addAccount()
+            onClicked: page.window.signIn()
+        }
+        FormCard.FormTextDelegate {
+            visible: Accounts.adding
+            text: i18n("Waiting for you to sign in in the browser…")
+            icon.name: "view-refresh"
+        }
+        FormCard.FormButtonDelegate {
+            visible: Accounts.adding
+            text: i18nc("@action:button", "Cancel")
+            icon.name: "dialog-cancel"
+            onClicked: Accounts.cancelAdd()
         }
     }
 

@@ -8,6 +8,7 @@
 #include <QDBusConnection>
 #include <QList>
 #include <QObject>
+#include <QSet>
 #include <QString>
 
 #include <functional>
@@ -53,9 +54,10 @@ class AccountsModel : public QAbstractListModel
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     /// An account is signed in or signing in: the client id cannot change then.
     Q_PROPERTY(bool anySignedIn READ anySignedIn NOTIFY summaryChanged)
-    /// Add Account is under way (SetClientId, Add, BeginSignIn).
+    /// Sign In is under way: SetClientId, Add, BeginSignIn, and the draft
+    /// account's sign-in and rename, until it is shown or given up.
     Q_PROPERTY(bool adding READ adding NOTIFY addingChanged)
-    /// Why the last Add Account failed; empty when it did not.
+    /// Why the last Sign In failed; empty when it did not.
     Q_PROPERTY(QString addError READ addError NOTIFY addingChanged)
 
 public:
@@ -94,18 +96,26 @@ public:
     void onEachAccount(std::function<void(AccountItem *)> setUp);
 
     /// Why `label` cannot name an account (Accounts1.Add's rules: trimmed,
-    /// 1–40 characters, no "/", "@" or control character, not 12 hexadecimal
+    /// 1–40 characters, no "/" or control character, not 12 hexadecimal
     /// digits in any case (an account id's look), unique regardless of case
-    /// among the accounts other than `exceptPath`); empty when it can.
+    /// among the accounts other than `exceptPath`); empty when it can. "@"
+    /// is allowed: an account's label is commonly its email (A14).
     Q_INVOKABLE QString labelProblem(const QString &label, const QString &exceptPath = QString()) const;
     /// "Personal" when no account is called that, else empty.
     Q_INVOKABLE QString suggestedLabel() const;
 
-    /// The Add dialog's one step: SetClientId(clientId) when it is given and
-    /// new, then Add(label), then BeginSignIn on the new account, whose URL
-    /// comes out of openUrlRequested. accountAdded(path) once Add succeeded.
-    Q_INVOKABLE void addAccount(const QString &label, const QString &clientId = QString());
-    /// Forgets the last Add Account's failure (the dialog opens clean).
+    /// Sign In: SetClientId(clientId) when it is given and new, then
+    /// Add(a temporary label), then BeginSignIn on the new account, whose
+    /// URL comes out of openUrlRequested. The account stays out of this
+    /// model — hidden from the switcher, the tray, Places and notifications
+    /// — until it is signed in, renamed to its email (SetLabel) and shown;
+    /// accountAdded(path) then, and the window opens the folder picker.
+    /// Cancelled, refused, or already added under another account: the
+    /// draft is removed (Accounts1.Remove) and nothing is left.
+    Q_INVOKABLE void addAccount(const QString &clientId = QString());
+    /// Gives up the sign-in under way, if any: the draft is removed.
+    Q_INVOKABLE void cancelAdd();
+    /// Forgets the last Sign In's failure (the dialog opens clean).
     Q_INVOKABLE void clearAddError();
     /// Accounts1.Remove; a refusal lands in DaemonController::actionError.
     Q_INVOKABLE void removeAccount(const QString &path);
@@ -116,7 +126,8 @@ Q_SIGNALS:
     void countChanged();
     void summaryChanged();
     void addingChanged();
-    /// Add Account created this account; the window selects it.
+    /// The account Sign In added is signed in, named by its email, and
+    /// shown; the window selects it and opens the folder picker.
     void accountAdded(const QString &path);
     /// A row is gone; `item` is deleted later.
     void accountRemoved(AccountItem *item);
@@ -125,10 +136,21 @@ Q_SIGNALS:
 
 private:
     void follow(const QStringList &paths);
+    void probe(const QString &path);
+    void claimDraft(const QString &path);
+    void abandonDraft(const QString &error);
+    void handleDraftChanged();
+    bool emailAlreadyUsed(const QString &email) const;
     AccountItem *insert(int row, const QString &path);
     void removeAt(int row);
     void rowChanged(AccountItem *item);
     void finishAdding(const QString &error);
+
+    /// The label a signing-in account holds until Sign In renames it to its
+    /// email: never a real email (no "@"), so it can never collide with one.
+    /// A leftover with this label — an earlier run's draft, crashed mid
+    /// sign-in — is recognised by it and removed at the next start (A15).
+    static const QString DraftLabel;
 
     DaemonController *m_daemon;
     AccountStatus::Clock m_clock;
@@ -136,4 +158,17 @@ private:
     std::vector<std::function<void(AccountItem *)>> m_setUps;
     bool m_adding = false;
     QString m_addError;
+    /// The account Sign In is adding, from Add's answer or a probe that
+    /// found DraftLabel first, until it is renamed (or given up).
+    QString m_draftPath;
+    AccountController *m_draft = nullptr;
+    bool m_draftStartedSignIn = false;
+    bool m_renamingDraft = false;
+    bool m_cancelRequested = false;
+    /// Paths whose label is DraftLabel: excluded from the rows above.
+    QSet<QString> m_hiddenDrafts;
+    /// Paths a probe (GetAll, not a row yet) is in flight for.
+    QSet<QString> m_probing;
+    /// Paths a probe found are not a draft: shown without probing again.
+    QSet<QString> m_cleared;
 };

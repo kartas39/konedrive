@@ -276,6 +276,20 @@ impl SyncService {
                 outbox.cycle_done();
             }
         });
+        let me = self.me.clone();
+        // Off the reconcile's blocking task: it captured this runtime
+        // before entering it, as the materializer's fills do.
+        let runtime = tokio::runtime::Handle::current();
+        let dropped_removed: Arc<dyn Fn(Vec<crate::tree::outbox::OutboxRow>) + Send + Sync> = Arc::new(move |rows| {
+            let Some(service) = me.upgrade() else { return };
+            // `HeldCount`/`PendingCount` count the drop at once, not at the
+            // worker's own next wake (the outbox on the bus).
+            service.wake_outbox();
+            let Some(reg) = service.registration() else { return };
+            let store = service.store.lock().unwrap().clone();
+            let Some(store) = store else { return };
+            runtime.spawn(async move { service.tidy_dropped(&reg.root, &store, &rows).await });
+        });
         super::listing::Writes {
             tree_lock: Arc::clone(&self.tree_lock),
             machine_name: self.machine_name(),
@@ -283,6 +297,7 @@ impl SyncService {
             scanned,
             examine,
             cycled,
+            dropped_removed,
         }
     }
 

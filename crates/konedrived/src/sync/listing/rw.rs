@@ -34,9 +34,11 @@ use tokio_util::sync::CancellationToken;
 
 use super::{applying, cancellable, drive_error, record, record_drive, CycleError, Commit, Fetched, Listing, Reconciled, Said, Turn};
 use crate::drive::DriveError;
+use crate::sync::activity::{self, Kind as EventKind};
 use crate::sync::disk::{rescue_base, rescue_stamp, Disk};
 use crate::sync::local::Batch;
 use crate::sync::materialize::{Applied, ApplyError, Materializer, Rw, Scope};
+use crate::tree::outbox::OutboxRow;
 use crate::tree::{classify, Change, Table};
 
 /// A read-write folder's cycle: what it shares with the folder's outbox
@@ -59,6 +61,16 @@ pub struct Writes {
     pub examine: Arc<dyn Fn(Batch) + Send + Sync>,
     /// A cycle went through: the outbox worker may send (§4.9).
     pub cycled: Arc<dyn Fn() + Send + Sync>,
+    /// A held or pending `delete` or `move-out` row was dropped because its
+    /// item is already gone from OneDrive ([`TreeStore::outbox_drop_removed`]):
+    /// wakes the outbox worker at once, so `HeldCount`/`PendingCount` and the
+    /// bus signal count it gone without waiting for the worker's own timer,
+    /// and tidies a dropped `move-out`'s placeholder outside the folder
+    /// (`Tidy::dropped`, `sync::upload::move_out`), off the runtime the
+    /// reconcile's blocking task captured.
+    ///
+    /// [`TreeStore::outbox_drop_removed`]: crate::tree::TreeStore::outbox_drop_removed
+    pub dropped_removed: Arc<dyn Fn(Vec<OutboxRow>) + Send + Sync>,
 }
 
 impl Writes {
@@ -213,6 +225,7 @@ impl Listing {
         let drive = self.pending_drive.lock().unwrap().take();
         let writes = self.writes();
         let (machine, examine) = (writes.machine_name.clone(), Arc::clone(&writes.examine));
+        let dropped_removed = Arc::clone(&writes.dropped_removed);
         let ignore = writes.ignore.read().unwrap_or_else(|p| p.into_inner()).clone();
         tokio::task::spawn_blocking(move || {
             let _held = held;
@@ -302,6 +315,22 @@ impl Listing {
                 if let Err(e) = store.with(|s| s.outbox_detach_parents(&applied.recreated)) {
                     tracing::warn!("cannot let the outbox wait for folders made again: {e}");
                 }
+            }
+            // `items` just took this cycle's answer: a held or pending
+            // `delete`/`move-out` row whose item is not in it any more has
+            // nothing left to send (the fix for a held delete outliving the
+            // item's own removal in OneDrive).
+            match store.with(|s| s.outbox_drop_removed()) {
+                Ok(dropped) if !dropped.is_empty() => {
+                    let events = dropped
+                        .iter()
+                        .map(|row| activity::event(EventKind::Removed, root.path.join(&row.rel).display().to_string(), "already removed in OneDrive"))
+                        .collect();
+                    report.activity.record_blocking(events);
+                    dropped_removed(dropped);
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!("cannot drop held or pending removals of items already gone from OneDrive: {e}"),
             }
             record(&report, &store, &root.path, &applied, said);
             if !applied.examine.is_empty() {

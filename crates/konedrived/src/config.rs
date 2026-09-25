@@ -290,10 +290,10 @@ pub fn new_account_id<'a>(taken: impl IntoIterator<Item = &'a str> + Clone) -> S
 }
 
 /// Checks a label against the rules of `Accounts1.Add` and `Account1.SetLabel`, and returns
-/// it trimmed: 1–40 characters, no `/`, no `@` (so it is never taken for an email in
-/// `--account`), not 12 hexadecimal digits in any case (so it is never taken for an id
-/// there), no control characters, and no other account's label (`except` is the account
-/// being renamed), whatever the case. `Err` says why, for `InvalidArgs`.
+/// it trimmed: 1–40 characters, no `/`, not 12 hexadecimal digits in any case (so it is
+/// never taken for an id in `--account`), no control characters, and no other account's
+/// label (`except` is the account being renamed), whatever the case. `@` is allowed: an
+/// account's label is commonly its email. `Err` says why, for `InvalidArgs`.
 pub fn check_label(label: &str, config: &Config, except: Option<&str>) -> Result<String, String> {
     let label = label.trim();
     let length = label.chars().count();
@@ -303,7 +303,7 @@ pub fn check_label(label: &str, config: &Config, except: Option<&str>) -> Result
     if length > 40 {
         return Err(format!("the label is {length} characters long; at most 40 are allowed"));
     }
-    if let Some(c) = label.chars().find(|&c| c == '/' || c == '@' || c.is_control()) {
+    if let Some(c) = label.chars().find(|&c| c == '/' || c.is_control()) {
         return Err(format!("a label may not contain {c:?}"));
     }
     if is_valid_account_id(&label.to_ascii_lowercase()) {
@@ -521,8 +521,11 @@ impl ConfigStore {
         self.lock().config.account(id).cloned()
     }
 
+    /// The application's client ID: the one set in `config.toml`, or else konedrive's own
+    /// ([`DEFAULT_CLIENT_ID`]), so that signing in needs nothing from the user.
     pub fn client_id(&self) -> String {
-        self.lock().config.client_id.clone()
+        let set = self.lock().config.client_id.clone();
+        if set.is_empty() { DEFAULT_CLIENT_ID.to_owned() } else { set }
     }
 
     pub fn is_poisoned(&self) -> bool {
@@ -650,6 +653,20 @@ impl ConfigStore {
         })
     }
 
+    /// `config.toml` as it is *now*, read again: what a hand edit made since the daemon
+    /// started (a drive added to `write_test_drive_ids`) counts. `None` for a store that is
+    /// poisoned and a file that cannot be read now, which callers take as refusing writes.
+    pub fn current(&self) -> Option<Config> {
+        let inner = self.lock();
+        if inner.poisoned.is_some() {
+            return None;
+        }
+        match read(&self.file) {
+            Ok(Read::V2(config)) => Some(config),
+            _ => None,
+        }
+    }
+
     /// Whether account `id` may be read-write: its drive is on the gate's list
     /// ([`Config::writes_allowed`]). See [`writable_drive`](Self::writable_drive).
     pub fn writes_allowed(&self, id: &str) -> bool {
@@ -731,6 +748,11 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> anyhow::Result<()> {
 }
 
 /// Accepts the canonical GUID form `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx` (hex digits, any case).
+/// konedrive's own application registration in Microsoft Entra (personal Microsoft accounts,
+/// the loopback redirect). A public client's ID is not a secret: it is sent in every sign-in
+/// URL. `config.toml`'s `client_id` overrides it for anyone who registers their own.
+pub const DEFAULT_CLIENT_ID: &str = "384b100c-c384-4a68-99b2-17a596bb66b9";
+
 pub fn is_valid_client_id(id: &str) -> bool {
     let groups: Vec<&str> = id.split('-').collect();
     groups.len() == 5
@@ -820,8 +842,7 @@ mod tests {
         let config = Config { accounts: vec![account("3f9a1c0e5b7d", "Personal")], ..Config::default() };
         assert_eq!(check_label("  Family ", &config, None), Ok("Family".into()));
         assert!(check_label(&"é".repeat(40), &config, None).is_ok(), "40 characters, not bytes");
-        let bad_labels =
-            ["", "   ", &"x".repeat(41), "Home/Work", "ann@outlook.com", "tab\there", "PERSONAL", "8C21D07A44E1"];
+        let bad_labels = ["", "   ", &"x".repeat(41), "Home/Work", "tab\there", "PERSONAL", "8C21D07A44E1"];
         for bad in bad_labels {
             assert!(check_label(bad, &config, None).is_err(), "{bad:?} should be refused");
         }
@@ -830,6 +851,13 @@ mod tests {
             Ok("PERSONAL".into()),
             "an account may change the case of its own label"
         );
+    }
+
+    /// A label may contain "@": an account is commonly named by its email.
+    #[test]
+    fn labels_may_contain_an_at_sign() {
+        let config = Config { accounts: vec![account("3f9a1c0e5b7d", "Personal")], ..Config::default() };
+        assert_eq!(check_label("ann@outlook.com", &config, None), Ok("ann@outlook.com".into()));
     }
 
     /// §3.1: a hand-edited file whose accounts collide loads every account, holds each

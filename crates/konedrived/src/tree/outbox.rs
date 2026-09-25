@@ -483,6 +483,13 @@ fn all_rows(conn: &Connection) -> Result<Vec<OutboxRow>, TreeError> {
     rows_where(conn, "", [])
 }
 
+/// Whether `items` (the base) has no row for `id` any more. A query that
+/// fails counts as not gone: the row is kept rather than dropped on an
+/// ambiguous answer.
+fn item_gone(tx: &rusqlite::Transaction<'_>, id: &str) -> bool {
+    tx.query_row("SELECT 1 FROM items WHERE id = ?1", [id], |_| Ok(())).optional().map(|found| found.is_none()).unwrap_or(false)
+}
+
 /// The live rows of the item or local object `d` is about, oldest first.
 fn rows_for(conn: &Connection, item_id: Option<&str>, inode: Option<&Inode>) -> Result<Vec<OutboxRow>, TreeError> {
     match (item_id, inode) {
@@ -1046,6 +1053,35 @@ impl TreeStore {
         tx.execute("DELETE FROM outbox WHERE state = 'held'", [])?;
         tx.commit()?;
         Ok(held)
+    }
+
+    /// A held or pending `delete` or `move-out` row whose item the delta or
+    /// a Full reconcile just found gone from OneDrive — `items` (already
+    /// swapped in for this cycle) holds no row for it — has nothing left to
+    /// send: dropped without a request. Not a `running` row: its own commit
+    /// meets the `404` itself and drops it there ([`Committed::Gone`]).
+    /// Returns what was dropped, so that a dropped `move-out`'s placeholder
+    /// outside the folder can be tidied the way a dropped `move-out` always
+    /// is (`Tidy::dropped`, `sync::upload::move_out`), and the outbox's
+    /// counts and signals can be refreshed.
+    pub fn outbox_drop_removed(&mut self) -> Result<Vec<OutboxRow>, TreeError> {
+        let tx = self.conn.transaction()?;
+        let gone: Vec<OutboxRow> = rows_where(&tx, "WHERE kind IN ('delete', 'move-out') AND state != 'running'", [])?
+            .into_iter()
+            .filter(|row| row.item_id.as_deref().is_some_and(|id| item_gone(&tx, id)))
+            .collect();
+        for row in &gone {
+            tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+        }
+        tx.commit()?;
+        for row in &gone {
+            // Housekeeping: best effort, as `gone()`'s does (a crash leaves it
+            // for the next examination to tidy).
+            if let Err(e) = self.outbox_forget_seen(row.seq) {
+                tracing::debug!("the record of a folder delete already gone from OneDrive stays until the next examination: {e}");
+            }
+        }
+        Ok(gone)
     }
 
     /// The outbox commits so far (`meta` [`OUTBOX_SEQ`]).

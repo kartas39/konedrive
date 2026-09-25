@@ -58,16 +58,16 @@ QString CurrentAccount::path() const
 void CurrentAccount::select(const QString &path)
 {
     AccountItem *item = m_model->find(path);
-    if (!item) {
-        return;
-    }
-    if (item->id() != m_rememberedId) {
-        m_rememberedId = item->id();
+    const QString id = item ? item->id() : path.section(QLatin1Char('/'), -1);
+    if (id != m_rememberedId) {
+        m_rememberedId = id;
         KConfig config(configPath(), KConfig::SimpleConfig);
         config.group(QLatin1String(Group)).writeEntry(Key, m_rememberedId);
         config.sync();
     }
-    setItem(item);
+    if (item) {
+        setItem(item);
+    }
 }
 
 void CurrentAccount::reconsider()

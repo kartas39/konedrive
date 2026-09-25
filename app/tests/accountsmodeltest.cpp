@@ -221,8 +221,9 @@ private Q_SLOTS:
         QVERIFY(!current.othersNeedAttention());
     }
 
-    /// The Add dialog's one step: the client id when none is set, Add, the
-    /// new account chosen, and its sign-in opened in the browser.
+    /// Sign In: the client id when none is set, Add with a temporary label,
+    /// BeginSignIn opened in the browser — the draft hidden until then —
+    /// then, once it is signed in, named by its email, chosen, and shown.
     void addingSetsTheClientIdAddsChoosesAndSignsIn()
     {
         start({});
@@ -230,37 +231,42 @@ private Q_SLOTS:
         AccountsModel model(&daemon);
         CurrentAccount current(&model);
         QTRY_VERIFY(daemon.serviceAvailable());
-        QCOMPARE(model.suggestedLabel(), QStringLiteral("Personal"));
 
         QSignalSpy added(&model, &AccountsModel::accountAdded);
         QSignalSpy open(&model, &AccountsModel::openUrlRequested);
-        model.addAccount(QStringLiteral(" Personal "), ClientId);
+        model.addAccount(ClientId);
         QVERIFY(model.adding());
-        QTRY_COMPARE(added.count(), 1);
+        QTRY_COMPARE(open.count(), 1);
         const QString path = fake::FirstAccount;
+        QCOMPARE(open.at(0).at(0).toString(), QStringLiteral("https://login.example/authorize?account=") + fake::idFor(1));
+        QCOMPARE(m_daemon->manager->calls, (QStringList{QStringLiteral("SetClientId:") + ClientId, QStringLiteral("Add:Signing in…")}));
+        // Hidden while it signs in: no row for it yet.
+        QCOMPARE(model.count(), 0);
+
+        // The sign-in completes in the browser.
+        m_daemon->object(0)->account->set(
+            {{QStringLiteral("Email"), QStringLiteral("ann@example.com")}, {QStringLiteral("State"), QStringLiteral("signed-in")}});
+        QTRY_COMPARE(added.count(), 1);
         QCOMPARE(added.at(0).at(0).toString(), path);
         QVERIFY(!model.adding());
         QCOMPARE(model.addError(), QString());
-        QCOMPARE(m_daemon->manager->calls, (QStringList{QStringLiteral("SetClientId:") + ClientId, QStringLiteral("Add:Personal")}));
+        QVERIFY(m_daemon->object(0)->account->calls.contains(QStringLiteral("SetLabel:ann@example.com")));
         QCOMPARE(current.path(), path);
         QCOMPARE(remembered(), fake::idFor(1));
 
-        QTRY_COMPARE(open.count(), 1);
-        QCOMPARE(open.at(0).at(0).toString(), QStringLiteral("https://login.example/authorize?account=") + fake::idFor(1));
-        QTRY_COMPARE(current.account()->state(), QStringLiteral("signing-in"));
+        QTRY_COMPARE(model.count(), 1);
+        QTRY_COMPARE(model.at(0)->account()->label(), QStringLiteral("ann@example.com"));
         QVERIFY(model.anySignedIn());
 
-        // "Personal" is taken now: nothing is suggested.
-        QTRY_COMPARE(model.count(), 1);
-        QTRY_COMPARE(model.at(0)->account()->label(), QStringLiteral("Personal"));
-        QCOMPARE(model.suggestedLabel(), QString());
-
-        // With a client id already set, Add goes straight to Add.
+        // With a client id already set, Sign In goes straight to Add.
         m_daemon->manager->calls.clear();
-        model.addAccount(QStringLiteral("Family"), ClientId);
+        model.addAccount(QString());
+        QTRY_COMPARE(open.count(), 2);
+        m_daemon->object(1)->account->set(
+            {{QStringLiteral("Email"), QStringLiteral("bea@example.com")}, {QStringLiteral("State"), QStringLiteral("signed-in")}});
         QTRY_COMPARE(added.count(), 2);
-        QCOMPARE(m_daemon->manager->calls, (QStringList{QStringLiteral("Add:Family")}));
-        QCOMPARE(current.account()->label(), QStringLiteral("Family"));
+        QCOMPARE(m_daemon->manager->calls.first(), QStringLiteral("Add:Signing in…"));
+        QCOMPARE(current.account()->label(), QStringLiteral("bea@example.com"));
     }
 
     void aRefusedAddSaysWhy()
@@ -271,16 +277,10 @@ private Q_SLOTS:
         QTRY_VERIFY(daemon.serviceAvailable());
         QSignalSpy added(&model, &AccountsModel::accountAdded);
 
-        model.addAccount(QStringLiteral("Personal"), QStringLiteral("bad"));
+        model.addAccount(QStringLiteral("bad"));
         QTRY_VERIFY(!model.adding());
         QVERIFY2(model.addError().contains(QStringLiteral("invalid client ID")), qPrintable(model.addError()));
-        QVERIFY(!m_daemon->manager->calls.contains(QStringLiteral("Add:Personal")));
-
-        m_daemon->addAccount(QStringLiteral("Personal"));
-        QTRY_COMPARE(model.count(), 1);
-        model.addAccount(QStringLiteral("personal"));
-        QTRY_VERIFY(!model.adding());
-        QVERIFY2(model.addError().contains(QStringLiteral("taken")), qPrintable(model.addError()));
+        QVERIFY(!m_daemon->manager->calls.contains(QStringLiteral("Add:Signing in…")));
         QCOMPARE(added.count(), 0);
 
         // The dialog opens clean next time.
@@ -302,7 +302,8 @@ private Q_SLOTS:
         QVERIFY(!model.labelProblem(QStringLiteral("   ")).isEmpty());
         QVERIFY(!model.labelProblem(QString(41, QLatin1Char('a'))).isEmpty());
         QVERIFY(!model.labelProblem(QStringLiteral("a/b")).isEmpty());
-        QVERIFY(!model.labelProblem(QStringLiteral("ann@home")).isEmpty());
+        // "@" is allowed: an account's name is commonly its email (A14).
+        QCOMPARE(model.labelProblem(QStringLiteral("ann@home")), QString());
         QVERIFY(!model.labelProblem(QStringLiteral("a\tb")).isEmpty());
         // What an account id looks like, in any case, is not a name…
         QVERIFY(model.labelProblem(QStringLiteral("3f9a1c0e5b7d")).contains(QStringLiteral("hexadecimal")));

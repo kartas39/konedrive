@@ -57,6 +57,9 @@ struct World {
     examined: Arc<Mutex<Vec<Batch>>>,
     /// Cycles that went through, as the outbox worker hears of them.
     cycles: Arc<AtomicUsize>,
+    /// Rows `Writes::dropped_removed` heard were dropped: a held or pending
+    /// removal whose item was already gone from OneDrive.
+    dropped: Arc<Mutex<Vec<crate::tree::outbox::OutboxRow>>>,
 }
 
 /// A helper that acknowledges everything.
@@ -128,6 +131,7 @@ async fn world() -> World {
         liveness: Arc::new(FakeLiveness::new()),
         examined: Arc::default(),
         cycles: Arc::default(),
+        dropped: Arc::default(),
     }
 }
 
@@ -137,7 +141,7 @@ fn now() -> i64 {
 
 impl World {
     fn writes(&self, scanned: Option<tokio::sync::watch::Receiver<bool>>) -> Writes {
-        let (examined, cycles) = (Arc::clone(&self.examined), Arc::clone(&self.cycles));
+        let (examined, cycles, dropped) = (Arc::clone(&self.examined), Arc::clone(&self.cycles), Arc::clone(&self.dropped));
         Writes {
             tree_lock: Arc::clone(&self.tree_lock),
             machine_name: "fedora".into(),
@@ -147,6 +151,7 @@ impl World {
             cycled: Arc::new(move || {
                 cycles.fetch_add(1, Ordering::SeqCst);
             }),
+            dropped_removed: Arc::new(move |rows| dropped.lock().unwrap().extend(rows)),
         }
     }
 
@@ -862,6 +867,38 @@ async fn an_item_moved_in_onedrive_into_a_folder_deleted_here_is_not_moved_back(
     w.examine(batch).await;
     let rows = w.store.with(|s| s.outbox_rows()).unwrap();
     assert!(!rows.iter().any(|r| r.item_id.as_deref() == Some("T")), "a row that moves OneDrive's item back: {rows:?}");
+}
+
+/// A held delete outliving the item's own removal in OneDrive: `docs` is
+/// deleted here, the mass-delete guard holds its row, and before it is
+/// confirmed or restored, `docs` is deleted in OneDrive too (another
+/// device). The next cycle's delta reports it gone: the held row has
+/// nothing left to delete, so it is dropped without a request, `HeldCount`
+/// goes back to 0, and the worker is woken to say so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped() {
+    let w = world().await;
+    let listing = w.listed().await;
+    std::fs::remove_dir_all(w.path("docs")).unwrap();
+    let mut batch = Batch::new();
+    batch.name(Path::new(""), OsStr::new("docs"));
+    w.examine(batch).await;
+    let seq = w.store.with(|s| s.outbox_rows()).unwrap().into_iter().find(|r| r.item_id.as_deref() == Some("D")).unwrap().seq;
+    // The mass-delete guard's decision, without tripping its threshold.
+    w.store.with(|s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
+    assert_eq!(OutboxWorker::new(w.config()).counts().unwrap().held, 1);
+
+    // `docs` is deleted in OneDrive too, from another device.
+    w.graph.with(|c| c.trash("D"));
+    w.cycle(&listing).await;
+
+    let rows = w.store.with(|s| s.outbox_rows()).unwrap();
+    assert!(rows.is_empty(), "the held delete has nothing left to delete: {rows:?}");
+    assert_eq!(OutboxWorker::new(w.config()).counts().unwrap().held, 0);
+    assert_eq!(w.deletes(), 0, "never sent to OneDrive");
+    let dropped = w.dropped.lock().unwrap().clone();
+    assert_eq!(dropped.len(), 1);
+    assert_eq!(dropped[0].item_id.as_deref(), Some("D"));
 }
 
 /// §5, §6 echo, with the delta ahead of the commit: an upload landed, and the

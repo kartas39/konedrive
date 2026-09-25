@@ -30,7 +30,7 @@ account. How one folder follows its drive is in [sync.md](sync.md); how a file i
 | Field | What it is |
 |---|---|
 | Id | 12 random lowercase hexadecimal characters (48 bits), checked against the ids present and never reused. It names the account's D-Bus object, its state and rescue directories and its Places entry; nobody has to type it |
-| Label | The name people see and type ("Personal", "Family"). Trimmed; 1 to 40 characters; no `/`, no `@`, no control character; not 12 hexadecimal digits in any case; unique regardless of case. With no `@` and not shaped like an id, a label is never mistaken for an email address or an id where any of them can name an account. It can be changed at any time, and nothing on disk is named after it |
+| Label | The name people see and type. The window sets it to the account's email once it signs in ("ann@outlook.com"), and it can be renamed to anything the rules allow ("Personal", "Family"). Trimmed; 1 to 40 characters; no `/`, no control character; not 12 hexadecimal digits in any case; unique regardless of case. Not shaped like an id, a label is never mistaken for one where `--account` or an object path could take either; unlike an id, it may equal an email, which is the window's own convention. It can be changed at any time, and nothing on disk is named after it |
 | Drive | The Graph drive id of the Microsoft account: the account's identity (§6). Empty until the first sign-in or the first `GET /me/drive`, then never changed |
 | Mode | `read-only`, the default, or `read-write` (§10) |
 | Origin | `migrated` for the account carried over from a single-account installation (§8), `added` for every other. A missing or unknown value reads as `migrated` |
@@ -356,10 +356,11 @@ other, and answers its object path; the object is on the bus by the time the cal
 (`Account1.BeginSignIn`) and choosing a folder (`Sync1.RegisterRoot`) are separate calls, made on the
 account's own object as they were for the single account.
 
-The window's **Add Account** dialog makes the first three calls in a row: `SetClientId` when no
-client id is set yet, `Add`, then `BeginSignIn` on the new account, whose URL it opens in the
-browser. They are three calls, not one transaction: a failure part way keeps what succeeded
-(limitations log A15).
+The window's **Sign in…** makes several calls in a row, not one transaction: `SetClientId` when no
+client id is set yet, `Add` with a temporary label, `BeginSignIn` on the new account, whose URL it
+opens in the browser, and, once the sign-in succeeds, `SetLabel` with the account's email. The
+account is kept out of the window everywhere in between, and is removed if any of this fails, is
+cancelled, or names an email another account already has (limitations log A15).
 
 ### 7.3 Remove
 
@@ -553,6 +554,6 @@ Recorded in [`../limitations-and-workarounds.md`](../limitations-and-workarounds
 - a folder that the helper holds for an account taken out of `config.toml` by hand stays with the
   helper (Z6);
 - in the window: one account at a time (A13), label rules checked by a copy of the daemon's (A14),
-  Add Account as three calls (A15), the upload switch's own wait for its sign-in and one client id
+  Sign In as several calls (A15), the upload switch's own wait for its sign-in and one client id
   for all (A16), the tray's summary (A17), the account named in notifications and download progress
   (A18), one Places entry per account folder (A19), and the mass-delete notification (A20).

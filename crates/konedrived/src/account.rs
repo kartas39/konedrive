@@ -1102,7 +1102,12 @@ impl AccountService {
             return;
         }
         let who = self.who();
-        if let Some(why) = read_write_refusal(&self.config.snapshot(), &self.id, &identity.drive, &who) {
+        let now = self.config.current();
+        let refusal = match &now {
+            Some(config) => read_write_refusal(config, &self.id, &identity.drive, &who),
+            None => Some(format!("{}.", WRITES_NOT_ALLOWED)),
+        };
+        if let Some(why) = refusal {
             drop(session);
             return self.abort_read_write(generation, why).await;
         }

@@ -64,9 +64,11 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
     , m_outboxSoon(new QTimer(this))
 {
     registerKonedriveSyncTypes();
-    // The counts are coalesced to a few changes a second: one read a moment after.
+    // The counts are coalesced to a few changes a second (up to 4, during a
+    // bulk upload): the outbox list itself is read back at most once a
+    // second, so its refresh never piles up behind the daemon's signals.
     m_outboxSoon->setSingleShot(true);
-    m_outboxSoon->setInterval(500);
+    m_outboxSoon->setInterval(1000);
     connect(m_outboxSoon, &QTimer::timeout, this, &SyncController::loadOutbox);
     connect(m_outbox, &OutboxModel::changed, this, &SyncController::syncChanged);
     m_bus.connect(ServiceName,

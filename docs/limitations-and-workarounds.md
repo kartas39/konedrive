@@ -905,9 +905,10 @@ application must never read zeros where real content should be.
 - **F39. The Graph write client rests on answers only wiremock has given** (`konedrived/src/drive/write.rs`,
   `upload.rs`) — beyond the write design's own assumptions: (1) a new version by item id is sent
   with `conflictBehavior: replace`, because Microsoft names `fail` the default and says nothing of
-  what it means for an update by id; `If-Match` is the guard. (2) `fileSize` goes in every session
-  request, although Microsoft documents it for personal drives only; a work or school drive might
-  refuse it. (3) An empty file's time is a second request (a `PATCH` after the `PUT`); when that one
+  what it means for an update by id; `If-Match` is the guard. (2) No session request carries `fileSize`: a personal drive answers it with `400
+  invalidRequest` (measured on the test account, 2026-09-25), although Microsoft documents it. A
+  full drive therefore shows itself only when a fragment is refused. The test-account harness
+  still reads `fileSize` for its per-file cap, and needs the size from `Content-Range` instead. (3) An empty file's time is a second request (a `PATCH` after the `PUT`); when that one
   fails, the file is up with OneDrive's time, and a warning is logged. (4) A `401` or `403` from an
   upload URL is read as the session having ended, like a `404`. The outbox worker
   (`konedrived/src/sync/upload/`) is its caller.
@@ -1900,6 +1901,18 @@ application must never read zeros where real content should be.
   nothing, since the next sync would rebuild it empty anyway. LIMIT, on purpose · measured
   (`sync::tests::onedrive::a_folder_whose_changes_wait_is_not_forgotten`,
   `konedrivectl` `a_remove_or_forget_refused_while_changes_wait_says_what_to_do`). Open.
+- **F142. A held or pending removal is dropped only at the swap of a cycle that reaches one**
+  (`konedrived/src/tree/outbox.rs`, `outbox_drop_removed`; `sync/listing/rw.rs`,
+  `Writes::dropped_removed`) — when a delta or a Full reconcile finds that a held or pending
+  `delete`/`move-out` row's item is already gone from OneDrive, the row is dropped there and then,
+  without a request; the outbox is woken so `HeldCount`/`PendingCount` count it at once, and a
+  dropped `move-out`'s placeholder outside the folder is tidied as `Tidy::dropped` always tidies
+  one (F54). A `running` row is left alone: it is mid-request, so its own commit meets the `404`
+  and drops it there instead (`Committed::Gone`), one request behind rather than swept. The sweep
+  itself runs only at the swap of a read-write cycle that completes one, so a folder locked or
+  waiting on changes to upload (F140, F141) keeps such a row — pointing at nothing — until it runs
+  a cycle again, same as every other reconcile-driven change. FRAGILE · measured
+  (`sync::listing::rw::tests::a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped`). Open.
 ---
 
 ## 5. Provisional numbers
@@ -1936,7 +1949,7 @@ application must never read zeros where real content should be.
 | A `MarkDir` the helper did not answer is asked again after (`MARK_RETRY`) | 60 s, and when the helper is back | **guess** |
 | Shortest time between two walks for a directory the map lost (`UNKNOWN_WALK`) | 60 s | **guess** |
 | Mass-delete guard (`MASS_DELETE_ITEMS`, `MASS_DELETE_PERCENT`, `MASS_DELETE_FLOOR`) | more than 500 items, or more than 20 % of the folder's items once at least 10, counting removals still waiting | 500 and 20 % the write design's, the floor of 10 ours; all **guesses** |
-| Outbox rows sent at once (`upload::Limits`) | 1 metadata row (`mkdir`, `move`, `delete`); 4 files up to 10 MiB and 2 larger beside it | the write design's; **guess** |
+| Outbox rows sent at once (`upload::Limits`) — uploads at once: 4 (guess) | 1 metadata row (`mkdir`, `move`, `delete`); 4 files up to 10 MiB and 2 larger beside it | the write design's; **guess** |
 | `move-out` rows run at once (`Class::Out`) / how long the examination waits for the helper's `OpenByHandle` (`ASK_WITHIN`) / a first `ESTALE` for a row's object is asked again after (`GONE_AGAIN`) | 1, beside the others / 45 s, past the link's own 30 s / 5 s | **guess** |
 | A failed row's backoff / a throttle without `Retry-After` (`BACKOFF_FIRST`/`BACKOFF_MAX`, `THROTTLE_FIRST`) | 1 s doubling to 1 h / 10 s doubling to 1 h; `Retry-After` taken up to 1 h | the write design's; **guess** |
 | OneDrive full, tried again (`QUOTA_RETRY`) | every 30 min, or when the quota changes | the write design's |
@@ -2341,23 +2354,29 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   its own controllers, each watching the daemon's name and reading its own object, so a daemon
   start costs two `GetAll` calls per account plus one for the manager.
 - **A14. Account names are checked in the window too, by a copy of the daemon's rules.** FRAGILE ·
-  reasoned (`labelProblems`). Add Account and Rename check a name before asking the daemon —
-  trimmed, 1 to 40 characters counted as the daemon counts them (not UTF-16 units), no "/", "@" or
-  control character, not 12 hexadecimal digits in any case (that is the shape of an account id, and
-  the command line takes a name or an id in one place), unique regardless of case
-  (`AccountsModel::labelProblem`) — so the button
-  says why at once. The daemon checks again and its refusal is shown as it words it. Qt's and
-  Rust's case-insensitive comparisons can differ on rare letters; the daemon's answer is then the
-  one that counts. The name suggested for a first account is "Personal", translated like any other
-  string, and only while no account is called that.
-- **A15. Add Account is three calls in a row, not one.** WORKAROUND · measured
-  (`addingSetsTheClientIdAddsChoosesAndSignsIn`, `aRefusedAddSaysWhy`). The dialog's one step is
-  `Accounts1.SetClientId` (only when no client ID is set yet), `Accounts1.Add`, then
-  `Account1.BeginSignIn` on the new account, whose URL opens in the browser. Nothing makes the
-  three one transaction: a failure part way keeps what succeeded — a saved client ID and no
-  account, or an account whose sign-in did not start, whose Account page then shows the error and
-  "Sign In to OneDrive". The new account is chosen at once, whether the `Accounts` change
-  announcing it arrives before `Add`'s answer or after.
+  reasoned (`labelProblems`). Rename checks a name before asking the daemon — trimmed, 1 to 40
+  characters counted as the daemon counts them (not UTF-16 units), no "/" or control character, not
+  12 hexadecimal digits in any case (that is the shape of an account id, and the command line takes
+  a name or an id in one place), unique regardless of case (`AccountsModel::labelProblem`) — so the
+  dialog says why at once. "@" is allowed: an account's name is its email (Sign In sets it, A15).
+  The daemon checks again and its refusal is shown as it words it. Qt's and Rust's
+  case-insensitive comparisons can differ on rare letters; the daemon's answer is then the one that
+  counts. The name suggested for a first account is "Personal", translated like any other string,
+  and only while no account is called that (`suggestedLabel`, unused by Sign In itself now).
+- **A15. Sign In is several calls in a row, not one.** WORKAROUND · measured
+  (`addingSetsTheClientIdAddsChoosesAndSignsIn`, `aRefusedAddSaysWhy`). "Sign in…" is
+  `Accounts1.SetClientId` (only when no client ID is set yet), `Accounts1.Add` with a temporary
+  label ("Signing in…"), `Account1.BeginSignIn` on the new account, whose URL opens in the browser,
+  and, once its sign-in succeeds, `Account1.SetLabel` with the account's email. Nothing makes these
+  one transaction: a failure part way keeps what already succeeded — a saved client ID with no
+  account, for one that never reached `Add`. From `Add` on, the account is a draft
+  (`AccountsModel::m_draftPath`/`m_hiddenDrafts`): kept out of the model, so the switcher, the tray,
+  Places and notifications never see it, until it is signed in and renamed. If the sign-in is
+  cancelled, fails, or the dialog is closed, or its email is already another account's label
+  (`AccountsModel::emailAlreadyUsed`, shown as "This account is already added"), the draft is
+  removed (`Accounts1.Remove`) and nothing is left. A draft still there at the next start — an
+  earlier run crashed mid sign-in — is found by its temporary label and removed the same way
+  (`AccountsModel::probe`).
 - **A16. The upload switch keeps its own "waiting for sign-in"; the client ID is one for all.**
   FRAGILE · measured (`accountcontrollertest`: `aSwitchToReadWriteWaitsForItsSignIn`,
   `aRefusedSwitchSaysWhyInPlainWords`, `aSwitchToReadOnlyAsksBeforeDroppingUploads`;

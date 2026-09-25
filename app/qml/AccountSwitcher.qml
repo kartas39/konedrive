@@ -6,9 +6,9 @@ import org.kde.kirigamiaddons.components as Components
 import org.konedrive.app
 
 /// The top of the sidebar: the account the pages below show, and a menu to
-/// switch to another or add one. Shown with one account too — it names the
-/// account and is where "Add Account…" lives. A warning sign on it means
-/// another account needs attention.
+/// switch to another or sign in to one more. Shown with one account too — it
+/// names the account and is where "Sign in…" lives. A warning sign on it
+/// means another account needs attention.
 QQC2.ItemDelegate {
     id: switcher
 
@@ -143,7 +143,7 @@ QQC2.ItemDelegate {
         }
         QQC2.MenuItem {
             objectName: "addAccountItem"
-            text: i18nc("@action:inmenu", "Add Account…")
+            text: i18nc("@action:inmenu", "Sign in…")
             icon.name: "list-add-user"
             onTriggered: switcher.addRequested()
         }

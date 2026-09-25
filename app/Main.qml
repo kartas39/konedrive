@@ -65,8 +65,27 @@ Kirigami.ApplicationWindow {
         return title;
     }
 
-    function addAccount() {
-        addAccountDialog.open();
+    /// Straight to Microsoft's sign-in in the browser; the dialog only when no
+    /// client ID is set yet, to ask for it.
+    /// The account an added sign-in still has to choose a folder for.
+    property string folderPickerFor: ""
+
+    /// Opens the folder picker for the account just added, once the window
+    /// shows it: never for whichever account happened to be shown before.
+    function openFolderPickerWhenShown() {
+        if (folderPickerFor.length > 0 && Current.path === folderPickerFor) {
+            folderPickerFor = "";
+            showPage("account");
+            accountPage.openFolderPicker();
+        }
+    }
+
+    function signIn() {
+        if (Accounts.adding) {
+            return;
+        }
+        Accounts.clearAddError();
+        Accounts.addAccount("");
     }
 
     /// A unix time as the time of day today, or a short date and time before.
@@ -83,14 +102,18 @@ Kirigami.ApplicationWindow {
         function onOpenUrlRequested(url) {
             Qt.openUrlExternally(url);
         }
-        // An account added here: its page follows the sign-in under way.
-        function onAccountAdded() {
-            root.showPage("account");
+        // Sign In named and chose this account: its page shows it, and a
+        // sign-in exists to sync something, so the folder picker opens too.
+        function onAccountAdded(path) {
+            root.folderPickerFor = path;
+            Current.select(path);
+            root.openFolderPickerWhenShown();
         }
     }
     Connections {
         target: Current
         function onChanged() {
+            root.openFolderPickerWhenShown();
             if (!root.hasAccount && root.currentPage !== "settings") {
                 root.showPage("status");
             }
@@ -156,7 +179,7 @@ Kirigami.ApplicationWindow {
         Component.onCompleted: drawerOpen = !modal
 
         header: AccountSwitcher {
-            onAddRequested: root.addAccount()
+            onAddRequested: root.signIn()
         }
 
         // The pages of the account chosen above.
@@ -202,9 +225,6 @@ Kirigami.ApplicationWindow {
         }
     }
 
-    AddAccountDialog {
-        id: addAccountDialog
-    }
 
     // The pages live for the window's lifetime: the page row borrows the one
     // shown and hands it back here (hidden) when another is chosen.

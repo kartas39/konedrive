@@ -5,8 +5,8 @@ import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
-/// The whole app's settings: start at login, download progress, Places, the
-/// client ID every account signs in with, and Quit. Each account's own
+/// The whole app's settings: start at login, download progress, Places,
+/// and Quit. Each account's own
 /// things (its folder, its sign-in) are on its Account page.
 FormCard.FormCardPage {
     id: page
@@ -67,49 +67,6 @@ FormCard.FormCardPage {
             description: i18n("Each account's OneDrive folder gets an entry named after the account in Dolphin's Places panel and in file dialogs.")
             checked: Places.enabled
             onToggled: Places.enabled = checked
-        }
-    }
-
-    // Advanced
-    FormCard.FormHeader {
-        visible: page.available
-        title: i18nc("@title:group", "Advanced")
-    }
-    FormCard.FormCard {
-        visible: page.available
-
-        FormCard.FormTextFieldDelegate {
-            id: clientIdField
-            objectName: "clientIdField"
-            label: i18n("Application (client) ID")
-            placeholderText: "00000000-0000-0000-0000-000000000000"
-            // Every account signs in with it: it changes only while none is
-            // signed in or signing in.
-            enabled: !Accounts.anySignedIn
-            description: Accounts.anySignedIn ? i18n("Every account signs in with it: sign out of each to change it.") : ""
-
-            // FormTextFieldDelegate's inner TextField writes back to its own
-            // `text` property (onTextChanged: root.text = text), which would
-            // permanently sever a plain `text: Daemon.clientId` binding the
-            // first time the field's text changes (including programmatically).
-            // Re-sync explicitly instead, but never while the user is typing.
-            Component.onCompleted: text = Daemon.clientId
-
-            Connections {
-                target: Daemon
-                function onChanged() {
-                    if (!clientIdField.fieldActiveFocus) {
-                        clientIdField.text = Daemon.clientId;
-                    }
-                }
-            }
-        }
-        FormCard.FormDelegateSeparator {}
-        FormCard.FormButtonDelegate {
-            text: i18nc("@action:button", "Save Client ID")
-            icon.name: "document-save"
-            enabled: !Accounts.anySignedIn && clientIdField.text.trim() !== Daemon.clientId
-            onClicked: Daemon.setClientId(clientIdField.text)
         }
     }
 

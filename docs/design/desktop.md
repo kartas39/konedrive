@@ -264,8 +264,8 @@ app's:
 | **Settings** | "Start at login", "Show download and upload progress", "Show in Places", the client id every account signs in with, "Quit KOneDrive" |
 
 **The switcher** shows the chosen account's initials, label and email, and opens a menu of every
-account, each with its state's icon (the tray's four, §5), then "Add Account…". It is there with a
-single account too: it names the account, and it is where "Add Account…" lives. When an account
+account, each with its state's icon (the tray's four, §5), then "Sign in…". It is there with a
+single account too: it names the account, and it is where "Sign in…" lives. When an account
 other than the chosen one needs attention, a warning sign on the switcher says so, so trouble
 elsewhere is never hidden; another account merely signed out, or without a folder, does not count.
 The choice is remembered (`CurrentAccount=<id>` in `konedriverc`). With more than one account,
@@ -273,14 +273,19 @@ each page's title names the account ("Status · Personal"), since a narrow windo
 away (limitations log A13).
 
 **No account yet.** Only the Status page is available, and it shows "Connect your OneDrive" with
-"Add Account…".
+"Sign in…".
 
-**Add Account** asks for the client id first when none is set yet (the same field and check as in
-Settings), then for the account's name — "Personal" suggested while no account has it — and "Add
-and Sign In…" makes the account, chooses it, and opens its sign-in in the browser
-([accounts.md](accounts.md) §7.2; limitations log A15). The Account page follows the sign-in, and
-asks for the folder once the account is signed in. Names are checked as the daemon checks them
-before it is asked, so the dialog says at once why a name will not do (A14).
+**Sign in…** asks for the client id first when none is set yet (the same field and check as in
+Settings), then makes the account, signed in and named by its own doing: `Add` with a temporary
+label, `BeginSignIn`, whose URL opens in the browser, and, once the sign-in succeeds, `SetLabel`
+with the account's email ([accounts.md](accounts.md) §7.2; limitations log A15). The account stays
+out of the switcher, the tray, Places and notifications until then; if the sign-in is cancelled,
+fails, the dialog is closed, or the email is already another account's, it is removed and nothing
+is left — an "already added" account shows a message saying so, rather than being renamed. Once
+named, it is chosen and the folder picker opens at once: a sign-in exists to sync something.
+
+**Rename…**, on the Account page, checks the name as the daemon checks it before asking, so the
+dialog says at once why it will not do (A14).
 
 **Remove Account…** asks first — "Your files stay in `<folder>`. Files that were never downloaded
 are left as empty placeholders." — and then calls `Accounts1.Remove`.
@@ -529,6 +534,6 @@ The limitations log's sections 7 and 8 list them. The main ones: Dolphin still o
 itself (K1); notifications need the app running (A1); no emblems in search results or Recent Files,
 which do not use `file://` URLs (K2); and the Plasma side — how the tray, the popups and the job
 tracker actually render — is not covered by the tests, which run offscreen on private buses (A7).
-With several accounts: the window shows one at a time (A13), Add Account is three calls rather than
+With several accounts: the window shows one at a time (A13), Sign In is several calls rather than
 one transaction (A15), and a window or a Dolphin running across the upgrade to multiple accounts
 needs a restart (F46).

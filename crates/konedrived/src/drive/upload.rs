@@ -142,12 +142,14 @@ impl DriveClient {
     }
 
     /// Opens a session for `size` bytes. The session request carries the
-    /// guard, the time and the size, so a full personal drive answers `507`
-    /// before a byte is sent.
+    /// guard and the time, but not the size: a personal drive answers
+    /// `fileSize` with `400 invalidRequest` (measured on a test account,
+    /// although Microsoft's documentation lists it), so a full drive shows
+    /// itself only when a fragment is refused.
     pub async fn create_upload_session(
         &self,
         target: UploadTarget<'_>,
-        size: u64,
+        _size: u64,
         modified: i64,
     ) -> Result<UploadSession, WriteError> {
         let (url, item, if_match) = match target {
@@ -157,7 +159,6 @@ impl DriveClient {
                     "@microsoft.graph.conflictBehavior": "fail",
                     "name": name,
                     "fileSystemInfo": file_system_info(modified),
-                    "fileSize": size,
                 }),
                 None,
             ),
@@ -168,7 +169,6 @@ impl DriveClient {
                 json!({
                     "@microsoft.graph.conflictBehavior": "replace",
                     "fileSystemInfo": file_system_info(modified),
-                    "fileSize": size,
                 }),
                 Some(if_match),
             ),
@@ -357,7 +357,7 @@ mod tests {
             .and(header("authorization", "Bearer T"))
             .and(body_json(json!({"item": {
                 "@microsoft.graph.conflictBehavior": "fail", "name": "a b#.txt",
-                "fileSystemInfo": {"lastModifiedDateTime": "2024-05-01T10:00:00Z"}, "fileSize": 5
+                "fileSystemInfo": {"lastModifiedDateTime": "2024-05-01T10:00:00Z"}
             }})))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "uploadUrl": format!("{}/up/s1", up.uri()), "expirationDateTime": MAY_2_TEXT
@@ -380,7 +380,7 @@ mod tests {
         Mock::given(method("POST")).and(path("/me/drive/items/I/createUploadSession")).and(header("if-match", "e1"))
             .and(body_json(json!({"item": {
                 "@microsoft.graph.conflictBehavior": "replace",
-                "fileSystemInfo": {"lastModifiedDateTime": "2024-05-01T10:00:00Z"}, "fileSize": 20_000_000
+                "fileSystemInfo": {"lastModifiedDateTime": "2024-05-01T10:00:00Z"}
             }})))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "uploadUrl": format!("{}/up/s2", graph.uri()), "expirationDateTime": MAY_2_TEXT

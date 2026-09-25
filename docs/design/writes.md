@@ -388,8 +388,8 @@ without it.
 |---|---|---|
 | a new empty file | `PUT /items/{parent}:/{name}:/content?@microsoft.graph.conflictBehavior=fail`, then a `PATCH` of its time | `conflictBehavior=fail` in the URL: a `PUT`'s default is to replace |
 | an emptied file | `PUT /items/{id}/content`, then the `PATCH` | `If-Match: <base eTag>` |
-| a new file, 1 B – 10 MiB | `POST /items/{parent}:/{name}:/createUploadSession` with `conflictBehavior: fail`, its name, `fileSystemInfo` and `fileSize`, then one `PUT` of the whole body | `conflictBehavior: fail` |
-| a changed file, 1 B – 10 MiB | `POST /items/{id}/createUploadSession` with `fileSystemInfo` and `fileSize`, one `PUT` | `If-Match: <base eTag>` |
+| a new file, 1 B – 10 MiB | `POST /items/{parent}:/{name}:/createUploadSession` with `conflictBehavior: fail`, its name and `fileSystemInfo`, then one `PUT` of the whole body | `conflictBehavior: fail` |
+| a changed file, 1 B – 10 MiB | `POST /items/{id}/createUploadSession` with `fileSystemInfo`, one `PUT` | `If-Match: <base eTag>` |
 | over 10 MiB | the same session, in fragments of 10 MiB (32 × 320 KiB) | as above |
 | a new folder | `POST /items/{parent}/children` | `conflictBehavior: fail` |
 | a rename or move | `PATCH /items/{id}` with `name` and/or `parentReference.id` | `If-Match: <base eTag>` |
@@ -401,8 +401,9 @@ A row made against a download that was not the base's version carries only its c
 its guard. Every file but an empty one goes through a session, even a small one: the session
 request documents both guards and carries the file's time, while a plain `PUT` documents neither
 and would need a `PATCH` for the time anyway, so the session costs no extra request
-([decisions.md](decisions.md), "Small files go up in an upload session"). `fileSize` makes a full
-drive answer `507` before a byte is sent. Requests to an upload URL never carry the account's token.
+([decisions.md](decisions.md), "Small files go up in an upload session"). A session request carries no `fileSize`: a personal
+drive refuses it with `400 invalidRequest` (measured on the test account), so a full drive shows
+itself when a fragment is refused. Requests to an upload URL never carry the account's token.
 
 ### 6.2 What the answers mean
 

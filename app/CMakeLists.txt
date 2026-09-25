@@ -69,8 +69,7 @@ set(KONEDRIVE_QML
     qml/NotUploadedPage.qml
     qml/AccountPage.qml
     qml/SettingsPage.qml
-    qml/AccountSwitcher.qml
-    qml/AddAccountDialog.qml)
+    qml/AccountSwitcher.qml)
 qt_add_resources(konedrive "konedrive_qml" PREFIX "/" FILES ${KONEDRIVE_QML})
 target_link_libraries(konedrive PRIVATE
     konedrive_core

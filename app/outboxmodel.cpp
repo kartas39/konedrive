@@ -3,6 +3,9 @@
 #include <KLocalizedString>
 
 #include <QFileInfo>
+#include <QSet>
+
+#include <algorithm>
 
 QString uploadReasonText(const QString &reason)
 {
@@ -183,9 +186,70 @@ void OutboxModel::setRows(const KonedriveOutboxList &rows)
             ++held;
         }
     }
-    beginResetModel();
-    m_rows = rows.mid(0, DisplayLimit);
-    endResetModel();
+
+    // Refreshed up to once a second during a bulk upload: a full reset would
+    // rebuild every delegate in the "Waiting to upload" list each time, so
+    // rows are kept (and updated in place) by seq, as ConflictModel does by
+    // rescued path.
+    const KonedriveOutboxList wanted = rows.mid(0, DisplayLimit);
+
+    QSet<qulonglong> keys;
+    keys.reserve(wanted.size());
+    for (const KonedriveOutboxRow &row : wanted) {
+        keys.insert(row.seq);
+    }
+
+    for (int row = count() - 1; row >= 0; --row) {
+        if (!keys.contains(m_rows.at(row).seq)) {
+            beginRemoveRows(QModelIndex(), row, row);
+            m_rows.removeAt(row);
+            endRemoveRows();
+        }
+    }
+
+    // What is left should be in `wanted`'s order already (seq only grows);
+    // if it is not, start over rather than insert a row twice.
+    QSet<qulonglong> kept;
+    for (const KonedriveOutboxRow &row : std::as_const(m_rows)) {
+        kept.insert(row.seq);
+    }
+    QList<qulonglong> keptInWantedOrder;
+    for (const KonedriveOutboxRow &row : std::as_const(wanted)) {
+        if (kept.contains(row.seq)) {
+            keptInWantedOrder << row.seq;
+        }
+    }
+    bool orderMatches = keptInWantedOrder.size() == count();
+    for (int row = 0; orderMatches && row < count(); ++row) {
+        orderMatches = m_rows.at(row).seq == keptInWantedOrder.at(row);
+    }
+    if (!orderMatches) {
+        beginResetModel();
+        m_rows = wanted;
+        endResetModel();
+        m_total = int(rows.size());
+        m_held = held;
+        Q_EMIT changed();
+        return;
+    }
+
+    // Walk both, inserting what is new and updating what changed in place.
+    for (int row = 0; row < wanted.size(); ++row) {
+        const KonedriveOutboxRow &incoming = wanted.at(row);
+        if (row < count() && m_rows.at(row).seq == incoming.seq) {
+            const KonedriveOutboxRow &current = m_rows.at(row);
+            if (current.kind != incoming.kind || current.path != incoming.path || current.state != incoming.state || current.done != incoming.done
+                || current.total != incoming.total || current.reason != incoming.reason || current.nextTry != incoming.nextTry) {
+                m_rows[row] = incoming;
+                Q_EMIT dataChanged(index(row), index(row));
+            }
+            continue;
+        }
+        beginInsertRows(QModelIndex(), row, row);
+        m_rows.insert(row, incoming);
+        endInsertRows();
+    }
+
     m_total = int(rows.size());
     m_held = held;
     Q_EMIT changed();
