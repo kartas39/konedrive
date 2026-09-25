@@ -128,6 +128,17 @@ impl OAuthClient {
         self.scope
     }
 
+    /// [`authorize_url`](Self::authorize_url) with Microsoft's account picker
+    /// (`prompt=select_account`): the sign-in page lists the accounts the browser knows and
+    /// "Use another account", rather than going on silently as whoever the browser is signed in
+    /// as. Every sign-in that is not pinned uses it, so a second account can be added from a
+    /// browser already signed in to the first.
+    pub fn picker_authorize_url(&self, redirect_uri: &str, pkce: &Pkce, state: &str) -> Url {
+        let mut url = self.authorize_url(redirect_uri, pkce, state);
+        url.query_pairs_mut().append_pair("prompt", "select_account");
+        url
+    }
+
     /// [`authorize_url`](Self::authorize_url), pinned to one Microsoft account: the sign-in
     /// page asks for that account's password again (`prompt=login`) with its name filled in
     /// (`login_hint`, when it is known), rather than taking whoever the browser is signed in
@@ -265,6 +276,11 @@ mod tests {
         let unknown = client().pinned_authorize_url("http://localhost:1", &pkce, "s", Some(""));
         let q: HashMap<String, String> = unknown.query_pairs().into_owned().collect();
         assert_eq!(q["prompt"], "login");
+        assert!(!q.contains_key("login_hint"));
+
+        let picker = client().picker_authorize_url("http://localhost:1", &pkce, "s");
+        let q: HashMap<String, String> = picker.query_pairs().into_owned().collect();
+        assert_eq!(q["prompt"], "select_account");
         assert!(!q.contains_key("login_hint"));
     }
 

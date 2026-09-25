@@ -568,13 +568,14 @@ impl AccountService {
         Ok(url)
     }
 
-    /// The authorization URL of a sign-in with `oauth`: pinned to this account whenever it
+    /// The authorization URL of a sign-in with `oauth`: Microsoft's account picker for a
+    /// read-only sign-in, so that any account can be chosen; pinned to this account whenever it
     /// asks for `Files.ReadWrite` — its password asked for again, with its email
     /// filled in when it is known: from the state, `account.json`, or — after a sign-out,
     /// which forgets both — the `login_hint` `config.toml` keeps.
     fn authorize_url(&self, oauth: &OAuthClient, redirect_uri: &str, pkce: &Pkce, csrf: &str) -> String {
         if !grants_writes(oauth.scope()) {
-            return oauth.authorize_url(redirect_uri, pkce, csrf).to_string();
+            return oauth.picker_authorize_url(redirect_uri, pkce, csrf).to_string();
         }
         let email = [
             Some(self.state.get().email),
