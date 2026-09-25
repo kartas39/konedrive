@@ -163,7 +163,7 @@ pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {
 /// # A folder that already carries one of our root ids is not probed again
 ///
 /// It was probed when it was first registered, and a folder that shows
-/// OneDrive is locked read-only since (W2), the folder itself included, so
+/// OneDrive is locked read-only since, the folder itself included, so
 /// the probe's write is refused there: no such folder came back after a
 /// restart, in either mode — "cannot bring up the sync folder: Permission
 /// denied" — and none could be switched to interception once the helper

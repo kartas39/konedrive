@@ -10,7 +10,7 @@ use zbus::object_server::InterfaceRef;
 use zbus::zvariant::ObjectPath;
 use zbus::{fdo, interface, Connection};
 
-use crate::account::{AccountError, AccountService};
+use crate::account::{AccountError, AccountService, ModeError};
 use crate::state::AccountSnapshot;
 
 pub struct Account1 {
@@ -41,6 +41,13 @@ impl Account1 {
         self.service.set_label(label).map_err(to_fdo)
     }
 
+    /// Switches the account's mode (`docs/design/writes.md` §2); the URL of the sign-in the switch
+    /// needs, empty when it needs none.
+    #[zbus(out_args("sign_in_url"))]
+    async fn set_mode(&self, mode: &str, force: bool) -> Result<String, SetModeFault> {
+        self.service.set_mode(mode, force).await.map_err(SetModeFault::from)
+    }
+
     #[zbus(property)]
     async fn id(&self) -> String {
         self.service.id().to_owned()
@@ -51,6 +58,8 @@ impl Account1 {
         self.service.state().get().label
     }
 
+    /// The mode the account runs in (`docs/design/writes.md` §2), not only the one `config.toml` asks
+    /// for: `LastError` says why the two differ.
     #[zbus(property)]
     async fn mode(&self) -> String {
         self.service.mode().as_str().to_owned()
@@ -94,29 +103,110 @@ fn to_fdo(error: AccountError) -> fdo::Error {
     }
 }
 
+/// The named refusals of `SetMode` and `Dev1` (`docs/design/writes.md` §11).
+#[derive(Debug, zbus::DBusError)]
+#[zbus(prefix = "org.konedrive.Error")]
+pub enum ModeFault {
+    #[zbus(error)]
+    ZBus(zbus::Error),
+    NotSignedIn(String),
+    /// The development gate: the account's drive is not in `write_test_drive_ids`.
+    WritesNotAllowed(String),
+    /// The account's token does not carry `Files.ReadWrite`.
+    ModeNotGranted(String),
+    /// Changes wait to be uploaded, and the switch to read-only was not forced.
+    PendingUploads(String),
+    Failed(String),
+}
+
+impl From<ModeError> for ModeFault {
+    fn from(error: ModeError) -> Self {
+        match error {
+            ModeError::WritesNotAllowed(why) => ModeFault::WritesNotAllowed(why),
+            ModeError::ModeNotGranted(why) => ModeFault::ModeNotGranted(why),
+            ModeError::PendingUploads(why) => ModeFault::PendingUploads(why),
+            ModeError::NotSignedIn(why) => ModeFault::NotSignedIn(why),
+            ModeError::InvalidMode(why) | ModeError::Failed(why) => ModeFault::Failed(why),
+        }
+    }
+}
+
+/// How `SetMode` refuses: under the named errors of [`ModeFault`], and under the bus's own
+/// `InvalidArgs` for a mode that is not one, as `SetLabel` refuses a label.
+#[derive(Debug)]
+pub enum SetModeFault {
+    Named(ModeFault),
+    Fdo(fdo::Error),
+}
+
+impl From<ModeError> for SetModeFault {
+    fn from(error: ModeError) -> Self {
+        match error {
+            ModeError::InvalidMode(why) => SetModeFault::Fdo(fdo::Error::InvalidArgs(why)),
+            other => SetModeFault::Named(other.into()),
+        }
+    }
+}
+
+impl From<zbus::Error> for SetModeFault {
+    fn from(error: zbus::Error) -> Self {
+        SetModeFault::Named(ModeFault::ZBus(error))
+    }
+}
+
+impl zbus::DBusError for SetModeFault {
+    fn create_reply(&self, call: &zbus::message::Header<'_>) -> zbus::Result<zbus::message::Message> {
+        match self {
+            SetModeFault::Named(fault) => fault.create_reply(call),
+            SetModeFault::Fdo(error) => error.create_reply(call),
+        }
+    }
+
+    fn name(&self) -> zbus::names::ErrorName<'_> {
+        match self {
+            SetModeFault::Named(fault) => fault.name(),
+            SetModeFault::Fdo(error) => error.name(),
+        }
+    }
+
+    fn description(&self) -> Option<&str> {
+        match self {
+            SetModeFault::Named(fault) => fault.description(),
+            SetModeFault::Fdo(error) => error.description(),
+        }
+    }
+}
+
+impl std::fmt::Display for SetModeFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", zbus::DBusError::name(self), zbus::DBusError::description(self).unwrap_or(""))
+    }
+}
+
+impl std::error::Error for SetModeFault {}
+
 /// `org.konedrive.Dev1`: development only.
 pub struct Dev1 {
     service: Arc<AccountService>,
 }
 
-#[derive(Debug, zbus::DBusError)]
-#[zbus(prefix = "org.konedrive.Error")]
-enum DevFault {
-    #[zbus(error)]
-    ZBus(zbus::Error),
-    NotSignedIn(String),
-    Failed(String),
-}
-
 #[zbus::interface(name = "org.konedrive.Dev1")]
 impl Dev1 {
-    /// This account's current access token — never the refresh token.
-    async fn access_token(&self) -> std::result::Result<String, DevFault> {
-        match self.service.tokens().access_token().await {
+    /// An access token of this account that can change nothing, whatever its mode (write
+    /// design §10) — never the refresh token.
+    async fn access_token(&self) -> std::result::Result<String, ModeFault> {
+        match self.service.read_only_token().await {
             Ok(token) => Ok(token),
-            Err(crate::token::AuthError::SignedOut) => Err(DevFault::NotSignedIn("nobody is signed in".into())),
-            Err(e) => Err(DevFault::Failed(e.to_string())),
+            Err(crate::token::AuthError::SignedOut) => Err(ModeFault::NotSignedIn("nobody is signed in".into())),
+            Err(e) => Err(ModeFault::Failed(e.to_string())),
         }
+    }
+
+    /// The test-account harness's token, which can change files: refused `WritesNotAllowed`
+    /// for an account the gate does not let through, and `ModeNotGranted` for one that is
+    /// not read-write.
+    async fn read_write_access_token(&self) -> std::result::Result<String, ModeFault> {
+        self.service.read_write_token().await.map_err(ModeFault::from)
     }
 }
 
@@ -181,6 +271,9 @@ async fn emit_changes(
     }
     if old.quota_total != new.quota_total {
         account.quota_total_changed(emitter).await?;
+    }
+    if old.mode != new.mode {
+        account.mode_changed(emitter).await?;
     }
     Ok(())
 }

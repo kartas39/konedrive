@@ -14,7 +14,8 @@ unit's `CapabilityBoundingSet=` drops every other one.
   program reads anything. It is also one of the broadest capabilities Linux has.
 - `CAP_DAC_READ_SEARCH` lets it read files and search directories whatever their permission
   bits, so it can reach a sync folder inside a `0700` home directory and read the
-  `user.konedrive.*` attributes of the files there.
+  `user.konedrive.*` attributes of the files there. It is also what `open_by_handle_at(2)`
+  requires, which "Open by file handle" below uses.
 
 The helper never talks to Microsoft Graph, holds no OneDrive credentials, and has no network.
 
@@ -37,6 +38,47 @@ directory the request is about. A request carries a descriptor for that object, 
   uid has a registered folder. The object does not have to be inside that folder.
 - **Clear an ignore mark.** Any regular file the asking uid owns, anywhere. The worst this can do
   is make that user's own file be intercepted again.
+- **Open by file handle** (`OpenByHandle`, for the write phase). The request carries a file
+  handle (the kernel's name for an inode, at most 128 bytes) and a directory. The directory must
+  be owned by the asking uid, on a filesystem where that uid has a registered folder. The helper
+  opens the object the handle names, relative to that directory. It first looks without
+  opening, through `O_PATH`, which checks no permission, raises no fanotify event and breaks no
+  lease. It hands the object back only if all of these hold:
+  - it is a regular file or a directory;
+  - it is owned by the asking uid;
+  - it is on that directory's device (a Btrfs subvolume has a device of its own);
+  - it still has a link;
+  - it carries `user.konedrive.item-id`.
+
+  Anything else is refused (`EPERM`, or `ESTALE` for the asker's own deleted object), and nothing
+  else is ever opened for real. A file comes back read-only (`O_RDONLY | O_NONBLOCK`): under the
+  unit the helper cannot open a user's file for writing (`EACCES`, measured), and the daemon
+  reopens it itself, as its owner. A directory comes back open for listing. The daemon needs this
+  when an item has left its folder: to learn where it went, to keep intercepting a placeholder
+  that was moved out, and to download it before the item is deleted in OneDrive. File handles are
+  guessable, so these checks on the object itself are the whole authorisation.
+
+  **What it newly lets a user do.** A user can get a descriptor for an object of their own that
+  carries konedrive's item id, on a filesystem where they have a folder, even where they cannot
+  reach it by path. A handle bypasses path lookup, so a directory they cannot enter does not
+  stop it. The case that matters is another user moving one of your files into a private
+  directory of theirs: you can still read that file, and write it through your own reopen. It is
+  yours, and was marked as konedrive's. For a directory the reach is wider than one object: the
+  descriptor it returns anchors `openat()` and `fstatat()`, so it opens up the whole subtree below
+  that directory to whatever the user's own permissions allow there, including entries they could
+  not name before because a directory above was closed to them. The daemon never lists or opens
+  anything beneath such a descriptor: it reads only the directory's own attributes and where it
+  is, and hands it back to the helper (`MarkDir`, `UnmarkDir`). To walk a moved-out directory it
+  opens it again by its path, through the user's own lookups, and checks that it is the same
+  inode, so a directory the user cannot reach by path is not walked. Two smaller things are disclosed. The answer tells a
+  handle that names a live object from one that names nothing (`EPERM` against `ESTALE`), for any
+  object on that filesystem, which says that an inode exists but nothing about its name or
+  content. And a refused request is not logged. `docs/limitations-and-workarounds.md`, F90.
+- **The helper's own opens.** The object `OpenByHandle` opens may be one the helper itself
+  intercepts, and an open it had to decide on would wait for the very connection that asked. So
+  events caused by the helper's own process are let through at once. The helper opens no file
+  but those objects and, at registration, its probe's nameless file, and it reads neither
+  (`docs/limitations-and-workarounds.md`, F92).
 - **Unregister.** Only a folder the asking uid registered.
 - **Answer opens.** An intercepted open is handed, as a descriptor, to the daemon of the uid that
   owns the file, and waits for that daemon's answer. So an open of a user's placeholder waits on
@@ -75,7 +117,9 @@ is denied (`docs/limitations-and-workarounds.md`, W16).
   `ReadWritePaths=/var/lib/konedrive /run/konedrive`, plus a private `/tmp` (`PrivateTmp=yes`).
   A fill on open still works: the daemon writes through the descriptor the helper handed it, and
   the kernel opened that descriptor against the opener's mount, not the helper's. The VM suite
-  measured this (`docs/kernel-behavior-7.2.md`, §11.6).
+  measured this (`docs/kernel-behavior-7.2.md`, §11.6). The same goes for `OpenByHandle`, which
+  opens relative to the daemon's directory, on the daemon's mount (§15). Without
+  `CAP_DAC_OVERRIDE`, the helper still cannot open a user's file for writing there.
 - **No way to undo that with `CAP_SYS_ADMIN`.** Without a filter, the helper could simply remount
   its read-only view read-write. `SystemCallFilter=~@mount …` makes `mount`, `umount2`,
   `fsopen`, `fsmount`, `move_mount`, `mount_setattr`, `pivot_root` and `chroot` fail with
@@ -120,9 +164,14 @@ Treat a compromised helper as a compromised root.
 Each Microsoft account's refresh token is stored in KWallet (through the Secret Service D-Bus API),
 as an item of its own. The daemon reads it from KWallet to get a short-lived access token for that
 account, uses that access token to talk to Microsoft Graph, and never writes the refresh token to
-disk, to a log, or anywhere else. Each account's `Dev1` D-Bus interface hands out that account's
-short-lived (about one hour), read-only access token for test runs, never the refresh token; see
-`docs/limitations-and-workarounds.md`, W11. Removing an account deletes its refresh token.
+disk, to a log, or anywhere else. Each account's `Dev1` D-Bus interface hands out a short-lived
+(about one hour), read-only access token of that account for test runs, whatever the account's
+mode, never the refresh token; see `docs/limitations-and-workarounds.md`, W11. A token that can
+change files (`Dev1.ReadWriteAccessToken`) is handed out only for a test account listed in
+`write_test_drive_ids`, the write phase's development gate (F60). Removing an account deletes its
+refresh token. An upload session's URL, which lets anyone holding it write that one file until it
+expires, is kept only in the account's tree store (mode `0600`), never logged and never published
+over D-Bus, and the account's token is never sent to it.
 
 ## Reporting a vulnerability
 

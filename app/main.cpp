@@ -114,6 +114,9 @@ int main(int argc, char *argv[])
         notifier->setAccountName(name);
         auto *progress = new DownloadProgressController(item->sync(), &downloadJobTracker, &downloadProgressSettings, {}, item);
         progress->setAccountName(name);
+        // Uploads through the same tracker and switch: "Uploading to OneDrive".
+        auto *uploads = new DownloadProgressController(item->sync(), &downloadJobTracker, &downloadProgressSettings, {}, item, DownloadProgressController::Direction::Upload);
+        uploads->setAccountName(name);
     });
 
     QObject::connect(&service, &KDBusService::activateRequested, &tray, [&tray, window](const QStringList &arguments, const QString &) {

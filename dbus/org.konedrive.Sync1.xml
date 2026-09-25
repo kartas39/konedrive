@@ -27,14 +27,20 @@
     </method>
     <!-- Forgets the folder; its files are left as they are. A folder
          registered with interception is forgotten through the helper or
-         not at all: with no helper connected this is refused NoHelper. -->
+         not at all: with no helper connected this is refused NoHelper.
+         Refused PendingUploads while changes made here wait to be uploaded
+         (PendingCount, BlockedCount, HeldCount), before anything changes:
+         the folder's record holding them would go. They go once uploaded,
+         or are dropped by Account1.SetMode("read-only", true). -->
     <method name="UnregisterRoot"/>
     <method name="PopulateFromDirectory">
       <arg name="source_dir" type="s" direction="in"/>
       <arg name="created" type="t" direction="out"/>
     </method>
-    <!-- Asks OneDrive for changes now rather than within the minute. Refused
-         Unsupported for a folder that is not connected to OneDrive. -->
+    <!-- Asks OneDrive for changes now rather than within the minute, and
+         tries the changes waiting to be uploaded that are in backoff now.
+         Refused Unsupported for a folder that is not connected to OneDrive.
+         While paused, OneDrive is not asked. -->
     <method name="Refresh"/>
     <!-- Everything in OneDrive that is not in the folder, as (full path,
          reason): name-too-long, personal-vault, shared, onenote,
@@ -50,7 +56,15 @@
          freed, added, updated, removed, moved, listed, conflict, failed (a download),
          update-failed (a changed file could not be replaced here). For
          ENOSPC the detail is exactly "not enough disk space".
-         A listing or Full reconcile is one "listed" event. -->
+         A listing or Full reconcile is one "listed" event. A read-write
+         account adds: uploaded (new or changed content, or a folder made
+         here; detail: the size, or "folder"), cloud-moved (moved or renamed
+         here; detail: where it was), cloud-deleted (deleted here, to
+         OneDrive's recycle bin), upload-failed (a change that needs the user:
+         once per change and reason; detail: the reason), restored (OneDrive's
+         version kept or put back where both sides changed; detail: why).
+         A copy of a file changed on both sides is a "conflict" whose detail
+         is the copy's full path. -->
     <method name="RecentActivity">
       <arg name="limit" type="u" direction="in"/>
       <arg name="events" type="a(xsss)" direction="out"/>
@@ -63,11 +77,14 @@
       <arg name="path" type="s"/>
       <arg name="detail" type="s"/>
     </signal>
-    <!-- Local versions the sync moved out of the way because the cloud
-         changed or removed the file: (unix time, original full path, full
-         path it was moved to). One whose moved file is gone is dropped. -->
+    <!-- Local versions kept because the file changed or was removed in
+         OneDrive: (unix time, original full path, full path of the kept
+         version, how it was kept). The kind is "rescued": moved out of the
+         way, out of the folder; or "copy": in a read-write folder, a file
+         changed on both sides kept as a copy beside the original, and
+         uploaded. One whose kept file is gone is dropped. -->
     <method name="Conflicts">
-      <arg name="conflicts" type="a(xss)" direction="out"/>
+      <arg name="conflicts" type="a(xsss)" direction="out"/>
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveConflictList"/>
     </method>
     <!-- Removes a conflict from the list; the file itself is not touched. -->
@@ -75,11 +92,75 @@
       <arg name="rescued_path" type="s" direction="in"/>
     </method>
     <!-- Frees every downloaded file under the folder that is not in use:
-         how many files, how many bytes, how many were skipped as busy. -->
+         how many files, how many bytes, how many were skipped as busy. A
+         file with a change waiting to be uploaded is left, and counted as
+         busy. -->
     <method name="FreeUpSpace">
       <arg name="files" type="u" direction="out"/>
       <arg name="bytes" type="t" direction="out"/>
       <arg name="busy" type="u" direction="out"/>
+    </method>
+    <!-- The changes waiting to be uploaded, oldest first, at most `limit`
+         (0 for all): (seq, kind, full path, state, bytes sent, bytes in all,
+         reason, next try in unix seconds or 0). Kinds: create, mkdir,
+         update, move, delete, move-out. States: waiting (not quiet: open
+         for writing), ready, running, retry (in backoff until next try),
+         blocked (needs the user; the reason says why), held (a large delete
+         waiting for ConfirmDeletes or RestoreDeletes). Refused Unsupported
+         for a folder that is not connected to OneDrive, and NoRoot before its
+         sync has started; Pause, Resume, ConfirmDeletes, RestoreDeletes and
+         NotUploaded refuse the same. -->
+    <method name="Outbox">
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="rows" type="a(tsssttsx)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveOutboxList"/>
+    </method>
+    <!-- Pauses the account: nothing is uploaded, OneDrive is not asked for
+         changes (so nothing is replaced), and no thumbnail is fetched, for
+         `seconds` — or until Resume when 0. Opening a file still downloads
+         it, Hydrate still works, and changes made here are still found and
+         wait. The pause outlasts a restart of the daemon. Refused
+         Unsupported for a folder that is not connected to OneDrive. -->
+    <method name="Pause">
+      <arg name="seconds" type="u" direction="in"/>
+    </method>
+    <method name="Resume"/>
+    <!-- The names of local files that are never uploaded, as shell globs
+         matched against a name (not a path), case-sensitively; they apply
+         only to files that did not come from OneDrive. Written to
+         config.toml; a scan of the whole folder follows, so a name no longer
+         ignored is uploaded, and a directory newly ignored takes the changes
+         waiting inside it along. Refused
+         org.freedesktop.DBus.Error.InvalidArgs for an empty pattern, one
+         holding "/" or a NUL, and one longer than 255 bytes. -->
+    <method name="SetIgnorePatterns">
+      <arg name="patterns" type="as" direction="in"/>
+    </method>
+    <!-- A delete of many items (the mass-delete guard: rows held) goes
+         ahead; how many rows were released. Every removal held at the moment
+         of the call goes, one held after the caller last read HeldCount
+         included. -->
+    <method name="ConfirmDeletes">
+      <arg name="released" type="u" direction="out"/>
+    </method>
+    <!-- A delete of many items is taken back: the held rows are dropped and
+         the items placed again from OneDrive at once (a cycle with a full
+         reconcile follows); how many rows were dropped. Nothing is deleted in
+         OneDrive. -->
+    <method name="RestoreDeletes">
+      <arg name="dropped" type="u" direction="out"/>
+    </method>
+    <!-- What stays on this computer and why, as (full path, reason):
+         symlink, fifo, socket, device, other-device (on another
+         filesystem mounted inside the folder, or a nested Btrfs subvolume),
+         reserved-name, not-downloaded (a
+         file from elsewhere that is not downloaded), hard-link; and every
+         blocked change with its reason: name-characters, name-spaces,
+         name-reserved, name-not-utf8, too-large, quota-exceeded, forbidden,
+         "refused: <OneDrive's message>". -->
+    <method name="NotUploaded">
+      <arg name="items" type="a(ss)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>
     </method>
     <property name="RootPath" type="s" access="read"/>
     <!-- none | listing | ready | no-interception | error -->
@@ -91,8 +172,9 @@
          helper, it begins with the helper's advice for
          Accounts1.HelperState. -->
     <property name="LastError" type="s" access="read"/>
-    <!-- "onedrive": the folder shows this account's drive, read-only in this
-         phase. "local": filled with PopulateFromDirectory. Empty: none. -->
+    <!-- "onedrive": the folder shows this account's drive (Account1.Mode
+         says whether changes made here go up). "local": filled with
+         PopulateFromDirectory. Empty: none. -->
     <property name="RootSource" type="s" access="read"/>
     <!-- Items in OneDrive (the root not counted), items in the folder, and
          skipped items: see Skipped(). Coalesced to a few changes a second. -->
@@ -113,5 +195,31 @@
     <property name="Transfers" type="a(stt)" access="read">
       <annotation name="org.qtproject.QtDBus.QtTypeName" value="KonedriveTransferList"/>
     </property>
+    <!-- Changes waiting to be uploaded (neither blocked nor held), and the
+         size of the files they send. Coalesced to a few changes a second. -->
+    <property name="PendingCount" type="u" access="read"/>
+    <property name="PendingBytes" type="t" access="read"/>
+    <!-- Changes that need the user before they can go up (see NotUploaded). -->
+    <property name="BlockedCount" type="u" access="read"/>
+    <!-- Removals the mass-delete guard holds: a delete of many items (more
+         than 500, or more than 20 % of the folder once 10 or more) waits for
+         ConfirmDeletes or RestoreDeletes. Neither pending nor blocked.
+         Coalesced with the counts above. -->
+    <property name="HeldCount" type="u" access="read"/>
+    <!-- Uploads under way: (full path, bytes sent, bytes total). Coalesced
+         to a few changes a second. -->
+    <property name="Uploads" type="a(stt)" access="read">
+      <annotation name="org.qtproject.QtDBus.QtTypeName" value="KonedriveTransferList"/>
+    </property>
+    <property name="Paused" type="b" access="read"/>
+    <!-- Unix seconds when the pause ends by itself; 0 while paused until
+         Resume, and while not paused. -->
+    <property name="PausedUntil" type="x" access="read"/>
+    <!-- See SetIgnorePatterns; the defaults until it is called. -->
+    <property name="IgnorePatterns" type="as" access="read"/>
+    <!-- What a copy of a file changed on both sides is named after:
+         "Report-<MachineName>.docx". machine_name in config.toml, or the
+         host's name. -->
+    <property name="MachineName" type="s" access="read"/>
   </interface>
 </node>

@@ -10,6 +10,7 @@
 #include <QDBusServiceWatcher>
 #include <QDesktopServices>
 #include <QLocale>
+#include <QTimer>
 
 #include <KIO/OpenFileManagerWindowJob>
 #include <KLocalizedString>
@@ -58,8 +59,16 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
     , m_transfers(new TransferModel(this))
     , m_activity(new ActivityModel(this))
     , m_conflicts(new ConflictModel(this))
+    , m_uploads(new TransferModel(this))
+    , m_outbox(new OutboxModel(this))
+    , m_outboxSoon(new QTimer(this))
 {
     registerKonedriveSyncTypes();
+    // The counts are coalesced to a few changes a second: one read a moment after.
+    m_outboxSoon->setSingleShot(true);
+    m_outboxSoon->setInterval(500);
+    connect(m_outboxSoon, &QTimer::timeout, this, &SyncController::loadOutbox);
+    connect(m_outbox, &OutboxModel::changed, this, &SyncController::syncChanged);
     m_bus.connect(ServiceName,
                   m_path,
                   QStringLiteral("org.freedesktop.DBus.Properties"),
@@ -73,6 +82,8 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
             // M8: nothing will update these again until the daemon is back;
             // a stale row would otherwise look like a download still going.
             m_transfers->setTransfers({});
+            m_uploads->setTransfers({});
+            m_outboxKnown = false;
         } else {
             fetchAll();
         }
@@ -96,6 +107,7 @@ void SyncController::fetchAll()
         setServiceAvailable(true);
         loadActivity();
         loadConflicts();
+        loadOutbox();
     });
 }
 
@@ -141,12 +153,45 @@ void SyncController::applyProperties(const QVariantMap &p)
     if (const auto it = p.constFind(QLatin1String("PinnedCount")); it != p.constEnd()) {
         m_pinnedCount = it->toUInt();
     }
+    // A structured value inside a{sv} arrives as a QDBusArgument.
+    const auto transfers = [](const QVariant &value) {
+        return value.canConvert<QDBusArgument>() ? qdbus_cast<KonedriveTransferList>(value.value<QDBusArgument>()) : value.value<KonedriveTransferList>();
+    };
     if (const auto it = p.constFind(QLatin1String("Transfers")); it != p.constEnd()) {
-        // A structured value inside a{sv} arrives as a QDBusArgument.
-        m_transfers->setTransfers(it->canConvert<QDBusArgument>() ? qdbus_cast<KonedriveTransferList>(it->value<QDBusArgument>())
-                                                                  : it->value<KonedriveTransferList>());
+        m_transfers->setTransfers(transfers(*it));
     }
+    if (const auto it = p.constFind(QLatin1String("Uploads")); it != p.constEnd()) {
+        m_uploads->setTransfers(transfers(*it));
+    }
+    const uint previousPending = m_pendingCount;
+    const uint previousBlocked = m_blockedCount;
+    const uint previousHeld = m_heldCount;
+    if (const auto it = p.constFind(QLatin1String("PendingCount")); it != p.constEnd()) {
+        m_pendingCount = it->toUInt();
+    }
+    number("PendingBytes", m_pendingBytes);
+    if (const auto it = p.constFind(QLatin1String("BlockedCount")); it != p.constEnd()) {
+        m_blockedCount = it->toUInt();
+    }
+    if (const auto it = p.constFind(QLatin1String("HeldCount")); it != p.constEnd()) {
+        m_heldCount = it->toUInt();
+    }
+    if (const auto it = p.constFind(QLatin1String("Paused")); it != p.constEnd()) {
+        m_paused = it->toBool();
+    }
+    if (const auto it = p.constFind(QLatin1String("PausedUntil")); it != p.constEnd()) {
+        m_pausedUntil = it->toLongLong();
+    }
+    if (const auto it = p.constFind(QLatin1String("IgnorePatterns")); it != p.constEnd()) {
+        m_ignorePatterns = it->toStringList();
+    }
+    text("MachineName", m_machineName);
     Q_EMIT syncChanged();
+
+    // The list itself has no signal: it is read again when a count moves.
+    if (m_serviceAvailable && (m_pendingCount != previousPending || m_blockedCount != previousBlocked || m_heldCount != previousHeld)) {
+        m_outboxSoon->start();
+    }
 
     // GetAll's own answer loads the lists (fetchAll); a change on the way loads them again.
     if (!m_serviceAvailable) {
@@ -285,7 +330,13 @@ void SyncController::forget()
 {
     // M6: no timeout, as RegisterRoot and FreeUpSpace have.
     const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, InterfaceName, QStringLiteral("UnregisterRoot"));
-    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()));
+    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()), {}, [this](const QDBusError &error) {
+        if (error.name() != QLatin1String("org.konedrive.Error.PendingUploads")) {
+            return false;
+        }
+        setActionError(i18n("The folder was not forgotten: changes made on this computer have not been uploaded yet, and forgetting it now would lose them. Wait until they are uploaded, or turn uploading off for this account and choose not to upload them; then forget it."));
+        return true;
+    });
 }
 
 void SyncController::refresh()
@@ -419,3 +470,84 @@ void SyncController::retry()
 {
     fetchAll();
 }
+
+void SyncController::pause(uint seconds)
+{
+    call(m_iface->Pause(seconds));
+}
+
+void SyncController::resume()
+{
+    call(m_iface->Resume());
+}
+
+void SyncController::setIgnorePatterns(const QStringList &patterns)
+{
+    // It runs a scan of the whole folder before it answers: no timeout.
+    auto message = QDBusMessage::createMethodCall(ServiceName, m_path, InterfaceName, QStringLiteral("SetIgnorePatterns"));
+    message << patterns;
+    call(m_bus.asyncCall(message, std::numeric_limits<int>::max()));
+}
+
+void SyncController::addIgnorePattern(const QString &pattern)
+{
+    const QString trimmed = pattern.trimmed();
+    if (trimmed.isEmpty() || m_ignorePatterns.contains(trimmed)) {
+        return;
+    }
+    setIgnorePatterns(m_ignorePatterns + QStringList{trimmed});
+}
+
+void SyncController::removeIgnorePattern(const QString &pattern)
+{
+    QStringList patterns = m_ignorePatterns;
+    if (patterns.removeAll(pattern) > 0) {
+        setIgnorePatterns(patterns);
+    }
+}
+
+void SyncController::confirmDeletes()
+{
+    call(m_iface->ConfirmDeletes(), [this](const QDBusPendingCall &) {
+        loadOutbox();
+    });
+}
+
+void SyncController::restoreDeletes()
+{
+    call(m_iface->RestoreDeletes(), [this](const QDBusPendingCall &) {
+        loadOutbox();
+    });
+}
+
+void SyncController::loadOutbox()
+{
+    if (!m_serviceAvailable) {
+        return;
+    }
+    // Refused Unsupported for a folder not connected to OneDrive, and
+    // UnknownMethod by an older daemon: the list stays empty.
+    quietly(m_iface->Outbox(0), [this](const QDBusPendingCall &pending) {
+        const QDBusPendingReply<KonedriveOutboxList> reply = pending;
+        m_outboxKnown = true;
+        m_outbox->setRows(reply.value());
+    });
+}
+
+void SyncController::loadNotUploaded()
+{
+    quietly(m_iface->NotUploaded(), [this](const QDBusPendingCall &pending) {
+        const QDBusPendingReply<KonedriveSkippedList> reply = pending;
+        m_notUploaded.clear();
+        for (const KonedriveSkippedItem &item : reply.value()) {
+            m_notUploaded << QVariantMap{{QStringLiteral("path"), item.path}, {QStringLiteral("reason"), item.reason}, {QStringLiteral("why"), uploadReasonText(item.reason)}};
+        }
+        Q_EMIT notUploadedChanged();
+    });
+}
+
+void SyncController::showBoth(const QString &first, const QString &second)
+{
+    KIO::highlightInFileManager({QUrl::fromLocalFile(first), QUrl::fromLocalFile(second)});
+}
+

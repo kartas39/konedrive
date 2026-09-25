@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-helper", "crates/konedrive-proto"]
+members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-helper", "crates/konedrive-proto", "tests/write-account"]
+# The test-account harness is built only when asked for (`-p konedrive-write-test`, or
+# `--workspace`): a plain `cargo build --release` builds what ships (safety review m11).
+default-members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-helper", "crates/konedrive-proto"]
 
 [workspace.package]
 version = "0.1.0"
@@ -11,15 +14,20 @@ license = "GPL-3.0-or-later"
 anyhow = "1"
 async-trait = "0.1"
 base64 = "0.22"
+bytes = "1"
 clap = { version = "4", features = ["derive"] }
 dirs = "6"
 futures-util = "0.3"
 getrandom = "0.2"
+http-body-util = "0.1"
+hyper = "1"
+hyper-util = "0.1"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 libc = "0.2"
 md-5 = "0.10"
 nix = { version = "0.31", default-features = false }
 oo7 = { version = "0.6", features = ["unstable"] }
+percent-encoding = "2"
 png = "0.18"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots", "stream"] }
 rusqlite = { version = "0.40", features = ["bundled"] }

@@ -44,11 +44,13 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveA
     return argument;
 }
 
-/// One entry of Conflicts(): (unix time, original full path, full path it was moved to).
+/// One entry of Conflicts(): (unix time, original full path, full path of the kept version,
+/// how it was kept: "rescued", moved out of the way, or "copy", kept beside the original).
 struct KonedriveConflict {
     qint64 time = 0;
     QString original;
     QString rescued;
+    QString kind;
 };
 using KonedriveConflictList = QList<KonedriveConflict>;
 Q_DECLARE_METATYPE(KonedriveConflict)
@@ -56,7 +58,7 @@ Q_DECLARE_METATYPE(KonedriveConflict)
 inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveConflict &conflict)
 {
     argument.beginStructure();
-    argument << conflict.time << conflict.original << conflict.rescued;
+    argument << conflict.time << conflict.original << conflict.rescued << conflict.kind;
     argument.endStructure();
     return argument;
 }
@@ -64,7 +66,7 @@ inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveConflic
 inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveConflict &conflict)
 {
     argument.beginStructure();
-    argument >> conflict.time >> conflict.original >> conflict.rescued;
+    argument >> conflict.time >> conflict.original >> conflict.rescued >> conflict.kind;
     argument.endStructure();
     return argument;
 }
@@ -94,6 +96,37 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveT
     return argument;
 }
 
+/// One entry of Outbox(): (seq, kind, full path, state, bytes sent, bytes in all, reason,
+/// next try in unix seconds or 0). The window's use of it is W8b's.
+struct KonedriveOutboxRow {
+    qulonglong seq = 0;
+    QString kind;
+    QString path;
+    QString state;
+    qulonglong done = 0;
+    qulonglong total = 0;
+    QString reason;
+    qint64 nextTry = 0;
+};
+using KonedriveOutboxList = QList<KonedriveOutboxRow>;
+Q_DECLARE_METATYPE(KonedriveOutboxRow)
+
+inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveOutboxRow &row)
+{
+    argument.beginStructure();
+    argument << row.seq << row.kind << row.path << row.state << row.done << row.total << row.reason << row.nextTry;
+    argument.endStructure();
+    return argument;
+}
+
+inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveOutboxRow &row)
+{
+    argument.beginStructure();
+    argument >> row.seq >> row.kind >> row.path >> row.state >> row.done >> row.total >> row.reason >> row.nextTry;
+    argument.endStructure();
+    return argument;
+}
+
 /// Registers every Sync1 type with QtDBus; safe to call more than once.
 inline void registerKonedriveSyncTypes()
 {
@@ -105,4 +138,6 @@ inline void registerKonedriveSyncTypes()
     qDBusRegisterMetaType<KonedriveConflictList>();
     qDBusRegisterMetaType<KonedriveTransfer>();
     qDBusRegisterMetaType<KonedriveTransferList>();
+    qDBusRegisterMetaType<KonedriveOutboxRow>();
+    qDBusRegisterMetaType<KonedriveOutboxList>();
 }

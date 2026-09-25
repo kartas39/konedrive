@@ -1,5 +1,5 @@
-//! Cached profile and quota (`account.json`), so the page can show the account offline.
-//! Contains no secrets.
+//! Cached profile and quota (`account.json`), so the page can show the account offline, and
+//! what the account's last token was valid for. Contains no secrets.
 
 use std::path::Path;
 
@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::write_atomic;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountInfo {
     pub display_name: String,
     pub email: String,
@@ -15,6 +15,16 @@ pub struct AccountInfo {
     pub quota_total: u64,
     /// Unix time in seconds.
     pub fetched_at: u64,
+    /// The last token response's `scope` (`docs/design/writes.md` §2): what decides, at the next start,
+    /// whether a read-write account's refresh may ask for `Files.ReadWrite` again. Missing
+    /// in a file written before it existed, which reads as nothing granted: read-only.
+    #[serde(default)]
+    pub granted_scopes: String,
+    /// The drive the account's token was last seen to reach: at the next start the account is
+    /// read-write only if it is the drive `config.toml` records. Missing in an older file,
+    /// which reads as not seen: read-only until it is.
+    #[serde(default)]
+    pub drive_id: String,
 }
 
 /// Any problem reading the file means "no cache".
@@ -46,6 +56,8 @@ mod tests {
             quota_used: 1,
             quota_total: 2,
             fetched_at: 3,
+            granted_scopes: "Files.Read User.Read".into(),
+            drive_id: "D1".into(),
         }
     }
 

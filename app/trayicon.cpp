@@ -34,6 +34,7 @@ TrayIcon::TrayIcon(AppStatus *status, QObject *parent)
     , m_item(new KStatusNotifierItem(QStringLiteral("konedrive"), this))
     , m_menu(new QMenu)
     , m_folderMenu(new QMenu(i18nc("@action:inmenu", "Open Folder"), m_menu))
+    , m_pauseMenu(new QMenu(i18nc("@action:inmenu", "Pause Syncing"), m_menu))
 {
     m_item->setCategory(KStatusNotifierItem::ApplicationStatus);
     m_item->setStatus(KStatusNotifierItem::Active);
@@ -49,6 +50,33 @@ TrayIcon::TrayIcon(AppStatus *status, QObject *parent)
     m_openFolderMenuAction = m_menu->addMenu(m_folderMenu);
     m_openWindow = m_menu->addAction(QIcon::fromTheme(QStringLiteral("window")), i18nc("@action:inmenu", "Open KOneDrive"));
     m_refresh = m_menu->addAction(QIcon::fromTheme(QStringLiteral("view-refresh")), i18nc("@action:inmenu", "Refresh Now"));
+    // As Windows offers it: 2, 8 or 24 hours, and here also until resumed.
+    m_pauseMenu->setIcon(QIcon::fromTheme(QStringLiteral("media-playback-pause")));
+    const QList<QPair<QString, uint>> pauses{
+        {i18nc("@action:inmenu pause syncing", "For 2 Hours"), 2 * 3600},
+        {i18nc("@action:inmenu pause syncing", "For 8 Hours"), 8 * 3600},
+        {i18nc("@action:inmenu pause syncing", "For 24 Hours"), 24 * 3600},
+        {i18nc("@action:inmenu pause syncing", "Until Resumed"), 0},
+    };
+    for (const auto &[text, seconds] : pauses) {
+        const uint forSeconds = seconds;
+        connect(m_pauseMenu->addAction(text), &QAction::triggered, this, [this, forSeconds] {
+            for (AccountItem *item : m_status->accounts()->items()) {
+                if (!item->sync()->rootPath().isEmpty() && item->sync()->rootSource() == QLatin1String("onedrive") && !item->sync()->paused()) {
+                    item->sync()->pause(forSeconds);
+                }
+            }
+        });
+    }
+    m_pauseMenuAction = m_menu->addMenu(m_pauseMenu);
+    m_resume = m_menu->addAction(QIcon::fromTheme(QStringLiteral("media-playback-start")), i18nc("@action:inmenu", "Resume Syncing"));
+    connect(m_resume, &QAction::triggered, this, [this] {
+        for (AccountItem *item : m_status->accounts()->items()) {
+            if (item->sync()->paused()) {
+                item->sync()->resume();
+            }
+        }
+    });
     m_menu->addSeparator();
     m_quit = m_menu->addAction(QIcon::fromTheme(QStringLiteral("application-exit")), i18nc("@action:inmenu", "Quit"));
     m_item->setContextMenu(m_menu); // the item owns the menu
@@ -117,13 +145,18 @@ void TrayIcon::update()
     const QList<AccountItem *> &items = m_status->accounts()->items();
     QList<QPair<QString, QString>> folders;
     bool refreshable = false;
+    bool pausable = false;
+    bool paused = false;
     for (const AccountItem *item : items) {
+        paused = paused || item->sync()->paused();
         const QString root = item->sync()->rootPath();
         if (root.isEmpty()) {
             continue;
         }
         folders.append({item->account()->label(), root});
-        refreshable = refreshable || item->sync()->rootSource() == QLatin1String("onedrive");
+        const bool onedrive = item->sync()->rootSource() == QLatin1String("onedrive");
+        refreshable = refreshable || onedrive;
+        pausable = pausable || (onedrive && !item->sync()->paused());
     }
 
     // One account: "Open OneDrive Folder", as ever. Several: "Open Folder", a
@@ -134,6 +167,9 @@ void TrayIcon::update()
     m_openFolderMenuAction->setVisible(several);
     m_openFolderMenuAction->setEnabled(several && !folders.isEmpty());
     m_refresh->setEnabled(refreshable);
+    m_pauseMenuAction->setVisible(pausable || !paused);
+    m_pauseMenuAction->setEnabled(pausable);
+    m_resume->setVisible(paused);
 
     if (folders == m_folders) {
         return;

@@ -13,6 +13,8 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::fs::File;
+use std::os::fd::AsFd;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -25,6 +27,14 @@ use super::helper::HelperLink;
 use super::source::ContentSource;
 use super::InodeLocks;
 use crate::tree::{Kind, Placement, Row, Store, Table, TreeError};
+
+/// Read-write mode's rules (`docs/design/writes.md` §9).
+mod rw;
+pub use rw::Rw;
+
+/// Whether another account of this daemon claims an item id (`docs/design/writes.md` §8.3): an object
+/// carrying it is never removed by this folder's reconcile.
+pub type Claimed = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 pub enum Scope {
     /// Scan the folder and match it to the whole tree.
@@ -64,6 +74,36 @@ pub struct Applied {
     /// on this device, relative to the root: what the sync queues for
     /// download once the reconcile is done.
     pub pinned: Vec<PathBuf>,
+    /// Read-write mode: items this reconcile left as they are on disk — a
+    /// local change holds them, or their new version is still to land — so
+    /// the base keeps the version the disk holds, and the delta's change
+    /// waits (`docs/design/writes.md` §9).
+    pub unsettled: HashSet<String>,
+    /// Read-write mode: items placed where the tree has them whose content
+    /// the disk has not taken yet — a replacement to land, a placeholder or
+    /// a file being filled: the base takes the new place, and keeps the
+    /// content the file holds.
+    pub content_waits: HashSet<String>,
+    /// Read-write mode: local versions kept beside the cloud's (§6).
+    pub copies: Vec<Copied>,
+    /// Read-write mode: places for the examination to look at, relative to
+    /// the root (`true`: with everything below) — files and folders this
+    /// reconcile kept, copied or took its attributes off, which no event the
+    /// watcher keeps says (the daemon's own changes are dropped by pid).
+    pub examine: Vec<(PathBuf, bool)>,
+    /// Read-write mode: folders gone from OneDrive whose directory stays
+    /// here, holding local work, to be made again there (F82 (4)).
+    pub recreated: Vec<String>,
+}
+
+/// A local version kept beside the cloud's under a new name (write design
+/// §6): what read-write mode does where the read phase rescued.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Copied {
+    /// Its name before, relative to the root: now the cloud's version.
+    pub original: PathBuf,
+    /// Where it is now, relative to the root.
+    pub copy: PathBuf,
 }
 
 /// A local version a reconcile moved out of the way (§16.3: "the
@@ -120,6 +160,14 @@ pub struct Materializer {
     /// `rescued/<timestamp>` for this cycle.
     pub rescue_into: PathBuf,
     pub cancel: CancellationToken,
+    /// Read-write mode's rules (`docs/design/writes.md` §9), for a read-write
+    /// folder; `None` keeps the read phase's.
+    pub rw: Option<Rw>,
+    /// Asked before an object with an id this folder does not know is
+    /// removed: another account's is set aside instead, alive, for that
+    /// account's move out to download where it is. `None`
+    /// where no other account can be (tests).
+    pub claimed: Option<Claimed>,
 }
 
 #[derive(Default)]
@@ -138,6 +186,13 @@ struct Run {
     /// Whether a pin keeps the directory at each path on this device, as far
     /// as this run has asked: a directory's answer is read once.
     pinned_dirs: HashMap<PathBuf, bool>,
+    /// Read-write mode: items of ours not where the base has them — a local
+    /// move or copy not examined yet — left where they are, with what is
+    /// below them.
+    left: HashSet<String>,
+    /// Read-write mode, Changed scope: items not found where the base has
+    /// them (deleted or moved here, not examined yet).
+    missing: HashSet<String>,
 }
 
 impl Run {
@@ -168,12 +223,49 @@ impl Materializer {
         result.map(|()| run.out)
     }
 
-    fn apply_run(&self, scope: Scope, run: &mut Run) -> Result<(), ApplyError> {
-        match scope {
-            Scope::Full => self.full(run)?,
-            Scope::Changed(ids) => self.changed(ids, run)?,
+    /// [`apply_keeping`](Self::apply_keeping) for read-write mode: what is
+    /// done on disk whatever comes next — rescues, conflict copies, places
+    /// to examine, folders made local — is handed over too. What a failed
+    /// pass left unsettled is not: the pass after it decides that again.
+    ///
+    /// `moved_from` carries across the hand-over where each item the failed
+    /// pass moved to the holding directory came from, so that the next pass
+    /// puts back there what it does not place.
+    pub fn apply_handing_over(&self, scope: Scope, done: &mut Applied, moved_from: &mut HashMap<String, PathBuf>) -> Result<Applied, ApplyError> {
+        let mut run = Run { moved_from: std::mem::take(moved_from), ..Run::default() };
+        let result = self.apply_run(scope, &mut run);
+        if result.is_err() {
+            done.rescued.append(&mut run.out.rescued);
+            done.copies.append(&mut run.out.copies);
+            done.examine.append(&mut run.out.examine);
+            done.recreated.append(&mut run.out.recreated);
+            *moved_from = std::mem::take(&mut run.moved_from);
         }
-        self.drain_holding(run)?;
+        result.map(|()| run.out)
+    }
+
+    /// Whether deleting or replacing `file` would lose something only this
+    /// machine has ([`holds_local_work`]); in read-write mode an emptied
+    /// download counts too.
+    pub(super) fn local_work(&self, file: &File) -> bool {
+        if self.rw.is_some() {
+            holds_local_work_rw(file)
+        } else {
+            holds_local_work(file)
+        }
+    }
+
+    fn apply_run(&self, scope: Scope, run: &mut Run) -> Result<(), ApplyError> {
+        match (scope, &self.rw) {
+            (Scope::Full, None) => self.full(run)?,
+            (Scope::Changed(ids), None) => self.changed(ids, run)?,
+            (Scope::Full, Some(rw)) => self.full_rw(rw, run)?,
+            (Scope::Changed(ids), Some(rw)) => self.changed_rw(rw, ids, run)?,
+        }
+        match &self.rw {
+            None => self.drain_holding(run)?,
+            Some(rw) => self.drain_holding_rw(rw, run)?,
+        }
         for rel in run.made.iter().rev() {
             if let Ok(dir) = self.disk.dir(rel) {
                 self.disk.lock_dir(&dir)?;
@@ -225,7 +317,7 @@ impl Materializer {
                 if row.placement != Placement::Placed {
                     continue;
                 }
-                let placed = self.place(&row, &rel, run, true)?;
+                let Some(placed) = self.place(&row, &rel, run, true)? else { continue };
                 if row.kind == Kind::Folder {
                     queue.push_back((row.id.clone(), placed));
                 }
@@ -308,8 +400,7 @@ impl Materializer {
             self.check_cancel()?;
             let parent = new.rel.parent().unwrap_or(Path::new(""));
             self.check_parent(row, parent, &placed)?;
-            self.place(row, parent, run, false)?;
-            if row.kind == Kind::Folder {
+            if self.place(row, parent, run, false)?.is_some() && row.kind == Kind::Folder {
                 placed.insert(row.id.clone());
             }
         }
@@ -337,14 +428,22 @@ impl Materializer {
         }
     }
 
-    /// Makes `row` exist as `parent_rel/<name>` and returns that path.
-    fn place(&self, row: &Row, parent_rel: &Path, run: &mut Run, full: bool) -> Result<PathBuf, ApplyError> {
+    /// Makes `row` exist as `parent_rel/<name>` and returns that path;
+    /// `None` when read-write mode leaves it as it is (see [`Rw`]).
+    fn place(&self, row: &Row, parent_rel: &Path, run: &mut Run, full: bool) -> Result<Option<PathBuf>, ApplyError> {
         let rel = parent_rel.join(&row.name);
         let dir = self.disk.dir(parent_rel)?;
         let name = OsStr::new(&row.name);
         let is_folder = row.kind == Kind::Folder;
         match self.disk.probe(&dir, name)? {
             Probe::Managed { id, is_dir } if id == row.id && is_dir == is_folder => {
+                if let Some(rw) = &self.rw {
+                    // Found where it belongs: its object, if none is recorded
+                    // (a rebuilt base, a forgotten one), is this one.
+                    if rw.unplaced.contains(&row.id) {
+                        super::local::record_placed(&self.store, &dir, name, &row.id);
+                    }
+                }
                 if !is_folder {
                     self.check_file(&dir, name, row, &rel, run)?;
                 }
@@ -353,20 +452,40 @@ impl Materializer {
                     // Full reconcile.
                     self.disk.enforce_mode(&dir, name, |file| Ok(self.locks.try_lock(super::InodeKey::of(file)?)))?;
                 }
-                return Ok(rel);
+                return Ok(Some(rel));
             }
             Probe::Managed { id, .. } if id == row.id => {
                 // Its own id with the wrong kind: nothing a Graph id does.
                 // Not trusted, not thrown away.
-                self.rescue(&dir, name, &rel, run)?;
+                match &self.rw {
+                    None => self.rescue(&dir, name, &rel, run)?,
+                    Some(rw) => self.copy_aside(rw, &dir, name, &rel, run)?,
+                }
             }
             Probe::Managed { id, .. } => {
+                if let Some(rw) = &self.rw {
+                    if self.holds_the_name(rw, &id, &rel, run)? {
+                        run.out.unsettled.insert(row.id.clone());
+                        return Ok(None);
+                    }
+                }
                 if run.scope.as_ref().is_some_and(|scope| !scope.contains(&id)) {
                     return Err(ApplyError::NeedFull(format!("{id} is in the way at {}", rel.display())));
                 }
                 self.to_holding(&rel, &id, run)?;
             }
-            Probe::Unmanaged { .. } => self.rescue(&dir, name, &rel, run)?,
+            Probe::Unmanaged { is_dir } => match &self.rw {
+                None => self.rescue(&dir, name, &rel, run)?,
+                // A create or mkdir waiting here: the outbox worker settles
+                // it with the cloud's item (§6, create/create).
+                Some(rw) if rw.pending_at(&rel) || !rw.brings(&row.id) || (is_folder && is_dir) => {
+                    // A local folder where OneDrive has a new one: the two
+                    // merge, by the `mkdir`'s `409` (§6), never a copy.
+                    run.out.unsettled.insert(row.id.clone());
+                    return Ok(None);
+                }
+                Some(rw) => self.copy_aside(rw, &dir, name, &rel, run)?,
+            },
             Probe::Absent => {}
         }
         if let Some(holding) = self.holding_if_any()? {
@@ -380,6 +499,7 @@ impl Materializer {
                         self.mark(&waiting, &rel)?;
                     }
                     self.disk.rename(&holding, OsStr::new(&row.id), &dir, name)?;
+                    super::local::record_placed(&self.store, &dir, name, &row.id);
                     run.out.moved += 1;
                     let from = run.moved_from.get(&row.id).cloned();
                     run.note(EventKind::Moved, &rel, from);
@@ -387,13 +507,19 @@ impl Materializer {
                     if !is_folder {
                         self.check_file(&dir, name, row, &rel, run)?;
                     }
-                    return Ok(rel);
+                    return Ok(Some(rel));
                 }
+            }
+        }
+        if let Some(rw) = &self.rw {
+            if !self.place_again(rw, row, &rel, run)? {
+                run.out.unsettled.insert(row.id.clone());
+                return Ok(None);
             }
         }
         self.create(&dir, row, &rel, run)?;
         run.note(EventKind::Added, &rel, None);
-        Ok(rel)
+        Ok(Some(rel))
     }
 
     fn create(&self, dir: &File, row: &Row, rel: &Path, run: &mut Run) -> Result<(), ApplyError> {
@@ -403,6 +529,7 @@ impl Materializer {
                 let made = self.labelled_dir(dir, &temp, row, rel, run)?;
                 self.mark(&made, rel)?;
                 self.disk.rename(dir, OsStr::new(&temp), dir, OsStr::new(&row.name))?;
+                super::local::record_placed(&self.store, dir, OsStr::new(&row.name), &row.id);
                 run.made.push(rel.to_path_buf());
             }
             Kind::File => {
@@ -414,6 +541,7 @@ impl Materializer {
                     mode: if self.disk.locked() { LOCKED_FILE_MODE } else { OPEN_FILE_MODE },
                 };
                 self.disk.writable(dir, || placeholder::create_placeholder_with(dir, &row.name, &spec))?;
+                super::local::record_placed(&self.store, dir, OsStr::new(&row.name), &row.id);
                 self.note_if_pinned(rel, run);
             }
         }
@@ -553,6 +681,7 @@ impl Materializer {
         match self.disk.probe(dir, name)? {
             Probe::Absent => Ok(()),
             Probe::Unmanaged { .. } => self.rescue(dir, name, shown, run),
+            Probe::Managed { id, .. } if self.claimed_elsewhere(&id)? => self.set_aside(dir, name, shown, run),
             Probe::Managed { is_dir: true, .. } => {
                 let sub = self.disk.open_subdir(dir, name)?;
                 for child in self.disk.list(&sub)? {
@@ -579,6 +708,30 @@ impl Materializer {
         let dest = self.disk.rescue(dir, name, shown, &self.rescue_into)?;
         tracing::warn!(
             "{} held local work the cloud's change would have lost; it is kept at {}",
+            shown.display(),
+            dest.display()
+        );
+        run.out.rescued.push(Rescued { original: shown.to_path_buf(), rescued: dest });
+        Ok(())
+    }
+
+    /// Whether `id`, which is about to be removed, is another account's: one
+    /// this folder's tree does not know, and another account claims.
+    fn claimed_elsewhere(&self, id: &str) -> Result<bool, ApplyError> {
+        let Some(claimed) = &self.claimed else { return Ok(false) };
+        let known = self.store.with(|s| Ok(s.get(Table::Items, id)?.is_some() || s.get(Table::Staging, id)?.is_some()))?;
+        Ok(!known && claimed(id))
+    }
+
+    /// Another account's object, moved here from its folder (write design
+    /// §8.3): moved out of the folder like a rescue, but alive, attributes
+    /// and all, so that the other account's move out finds it by its handle
+    /// and downloads it where it is now. Never removed: that account's
+    /// OneDrive may be the only other place its content is.
+    fn set_aside(&self, dir: &File, name: &OsStr, shown: &Path, run: &mut Run) -> Result<(), ApplyError> {
+        let dest = self.disk.set_aside(dir, name, shown, &self.rescue_into)?;
+        tracing::warn!(
+            "{} is another account's, moved here from its folder; it is kept at {}, where that account downloads it",
             shown.display(),
             dest.display()
         );
@@ -631,6 +784,8 @@ impl Materializer {
                 if !same_content {
                     if self.update_placeholder(file, row, run)? {
                         run.note(EventKind::Updated, rel, None);
+                    } else if self.rw.is_some() {
+                        run.out.content_waits.insert(row.id.clone());
                     }
                 } else if meta.mtime() != row.mtime {
                     self.put_time_back(file, row, run)?;
@@ -641,7 +796,23 @@ impl Materializer {
                 if local_ctag.is_some() && local_ctag.as_deref() == row.ctag.as_deref() {
                     return Ok(());
                 }
-                if holds_local_work(&file) {
+                if let Some(rw) = &self.rw {
+                    // An outbox row recorded since the cycle began: the
+                    // worker's guard settles it (§3.7, excluded).
+                    if !self.store.with(|s| s.outbox_for_item(&row.id))?.is_empty() {
+                        run.out.unsettled.insert(row.id.clone());
+                        return Ok(());
+                    }
+                    // Edit × edit (§6), or a version OneDrive may have lost
+                    // (`resyncChangesUploadDifferences`): both are kept.
+                    if self.local_work(&file) || rw.upload_differences {
+                        drop(file);
+                        self.copy_aside(rw, dir, name, rel, run)?;
+                        self.create(dir, row, rel, run)?;
+                        run.note(EventKind::Updated, rel, None);
+                        return Ok(());
+                    }
+                } else if holds_local_work(&file) {
                     drop(file);
                     self.rescue(dir, name, rel, run)?;
                     self.create(dir, row, rel, run)?;
@@ -650,19 +821,31 @@ impl Materializer {
                 }
                 if let Some(ctag) = &row.ctag {
                     run.out.replacements.push(Replacement { id: row.id.clone(), rel: rel.to_path_buf(), ctag: ctag.clone(), size: row.size });
+                    // The base keeps the version on disk until the new one
+                    // is in place (the read-write reconcile must, item 4); its place is the one the
+                    // disk took.
+                    if self.rw.is_some() {
+                        run.out.content_waits.insert(row.id.clone());
+                    }
                 }
                 Ok(())
             }
             Ok(Some(State::Hydrating | State::Dehydrating)) => {
                 run.out.deferred += 1;
+                if self.rw.is_some() {
+                    run.out.content_waits.insert(row.id.clone());
+                }
                 Ok(())
             }
             // Ours by its id, in no state anyone can vouch for.
             Ok(None) | Err(_) => {
-                let work = holds_local_work(&file);
+                let work = self.local_work(&file);
                 drop(file);
                 if work {
-                    self.rescue(dir, name, rel, run)?;
+                    match &self.rw {
+                        None => self.rescue(dir, name, rel, run)?,
+                        Some(rw) => self.copy_aside(rw, dir, name, rel, run)?,
+                    }
                 } else {
                     self.disk.remove(dir, name, false)?;
                 }
@@ -767,6 +950,16 @@ pub(crate) fn holds_local_work(file: &File) -> bool {
         Ok(None) | Err(_) => blocks > 0,
     }
 }
+
+/// [`holds_local_work`] for read-write mode, where a download can be edited:
+/// one emptied here (its stamp no longer matching) holds local work too.
+/// An empty file from the cloud is stamped as it is made, so it never does.
+pub(crate) fn holds_local_work_rw(file: &File) -> bool {
+    match read_state(file) {
+        Ok(Some(State::Hydrated)) => !matches!(stamp_matches(file), Ok(true)),
+        _ => holds_local_work(file),
+    }
+}
 #[derive(Debug)]
 pub enum ReplaceOutcome {
     Replaced,
@@ -779,6 +972,18 @@ pub enum ReplaceOutcome {
     /// is; told apart so that the activity log can say exactly "not enough
     /// disk space".
     NoSpace(String),
+    /// Read-write mode: someone has the file open, so no write lease (write
+    /// design §3.7). The old version stays, and so does its base; the next
+    /// cycle tries again. Not a failure.
+    Busy,
+}
+
+/// Read-write mode's replacement (`docs/design/writes.md` §9): the swap runs
+/// under the per-root tree lock and a write lease on the old file, and the
+/// new version's deferred change becomes the base as it lands.
+pub struct Leased<'a> {
+    pub tree_lock: &'a tokio::sync::Mutex<()>,
+    pub store: &'a Store,
 }
 
 /// The margin `replace` keeps free beside the new version's own bytes when
@@ -842,7 +1047,15 @@ impl FileIdentity {
 /// written over the old one in place — a reader would see a mix. If the disk
 /// cannot hold both, the old version stays.
 pub async fn replace(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSource, r: &Replacement) -> ReplaceOutcome {
-    match replace_inner(disk, locks, source, r).await {
+    replace_leased(disk, locks, source, r, None).await
+}
+
+/// [`replace`], in read-write mode when `leased` is given ([`Leased`]): a
+/// file someone has open is not downloaded again nor swapped
+/// ([`ReplaceOutcome::Busy`]) — a writer would lose what it writes into the
+/// unlinked inode.
+pub async fn replace_leased(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSource, r: &Replacement, leased: Option<&Leased<'_>>) -> ReplaceOutcome {
+    match replace_inner(disk, locks, source, r, leased).await {
         Ok(outcome) => outcome,
         Err(e) if matches!(e.raw_os_error(), Some(libc::ENOSPC | libc::EDQUOT)) => ReplaceOutcome::NoSpace(format!(
             "not enough space to finish the new version of {}; the old version stays",
@@ -852,10 +1065,20 @@ pub async fn replace(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSource
     }
 }
 
-async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSource, r: &Replacement) -> std::io::Result<ReplaceOutcome> {
+async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSource, r: &Replacement, leased: Option<&Leased<'_>>) -> std::io::Result<ReplaceOutcome> {
     let parent = r.rel.parent().unwrap_or(Path::new(""));
     let Some(name) = r.rel.file_name() else { return Ok(ReplaceOutcome::Current) };
     let Some(dir) = replacement_dir(disk, parent)? else { return Ok(ReplaceOutcome::Current) };
+    // Read-write mode: an emptied download holds local work too.
+    let local_work = |file: &File| if leased.is_some() { holds_local_work_rw(file) } else { holds_local_work(file) };
+    // Downloaded, of another version, and holding nothing only this machine
+    // has: looked at through the file itself, so that it can be asked again
+    // under a lease, which the daemon's own open of it would break.
+    let replaceable = |old: &File| -> std::io::Result<bool> {
+        let hydrated = matches!(read_state(old), Ok(Some(State::Hydrated)));
+        let other_version = placeholder::read_ctag(old)?.as_deref() != Some(r.ctag.as_str());
+        Ok(hydrated && other_version && !local_work(old))
+    };
     let still_there = |dir: &File| -> std::io::Result<Option<File>> {
         match disk.probe(dir, name)? {
             Probe::Managed { id, is_dir: false } if id == r.id => {}
@@ -866,11 +1089,14 @@ async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSour
             Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT) | Some(libc::ENOTDIR)) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let hydrated = matches!(read_state(&old), Ok(Some(State::Hydrated)));
-        let other_version = placeholder::read_ctag(&old)?.as_deref() != Some(r.ctag.as_str());
-        Ok((hydrated && other_version && !holds_local_work(&old)).then_some(old))
+        Ok(replaceable(&old)?.then_some(old))
     };
     let Some(old) = still_there(&dir)? else { return Ok(ReplaceOutcome::Current) };
+    // Read-write mode: open somewhere now, it would be again at the swap — no
+    // download for nothing.
+    if leased.is_some() && konedrive_fs::lease::WriteLease::take(&old)?.is_none() {
+        return Ok(ReplaceOutcome::Busy);
+    }
     // Kept only as identity from here, not as a hold on the file: a Free up
     // space must be able to take the old file's write lease while the new
     // version downloads, which it could not while `old` stayed open for the
@@ -923,6 +1149,11 @@ async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSour
 
     // The swap, under the old file's lock, after looking again: a Free up
     // space, a fill or a local edit may have happened while this downloaded.
+    // Read-write mode takes the tree lock first, the worker's order.
+    let _tree = match leased {
+        Some(leased) => Some(leased.tree_lock.lock().await),
+        None => None,
+    };
     let _guard = locks.lock(old_key).await;
     let Some(dir) = replacement_dir(disk, parent)? else { return Ok(ReplaceOutcome::Current) };
     let now = still_there(&dir)?;
@@ -933,6 +1164,26 @@ async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSour
     if !same_file {
         return Ok(ReplaceOutcome::Current);
     }
+    // Read-write mode: nobody has the old file open across the rename, or
+    // what they write would land in the unlinked inode (§3.7). The lease
+    // first; then, under it, the file is looked at again — through the
+    // descriptor, and by name without opening it — so that a write that
+    // landed before the lease is a stamp mismatch, never swapped away.
+    let _lease = match (leased, &now) {
+        (Some(_), Some(now)) => match konedrive_fs::lease::WriteLease::take(now)? {
+            Some(lease) => {
+                let meta = now.metadata()?;
+                let named = nix::sys::stat::fstatat(dir.as_fd(), name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW)
+                    .is_ok_and(|at| (at.st_dev, at.st_ino) == (meta.dev(), meta.ino()));
+                if !named || FileIdentity::of(now)? != old_identity || !replaceable(now)? {
+                    return Ok(ReplaceOutcome::Current);
+                }
+                Some(lease)
+            }
+            None => return Ok(ReplaceOutcome::Busy),
+        },
+        _ => None,
+    };
     // A pin of the file's own goes with it to the new version, which is
     // another inode.
     if let Some(now) = &now {
@@ -943,6 +1194,14 @@ async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSour
     let temp = format!("{NEW_PREFIX}{}", r.id);
     clear_leftover_link(disk, &dir, OsStr::new(&temp), &r.id)?;
     disk.swap_in(&dir, &new, OsStr::new(&temp), name)?;
+    if let Some(leased) = leased {
+        // The base takes the version the file now holds (the read-write reconcile must, items 1 and 4).
+        let ctag = placeholder::read_ctag(&new).ok().flatten();
+        let handle = konedrive_fs::handle::FileHandle::of(&new).ok();
+        if let Err(e) = leased.store.with(|s| s.land_deferred(&r.id, ctag.as_deref(), handle.as_ref())) {
+            tracing::warn!("{}: the new version is in place, and its base waits for the next cycle: {e}", r.rel.display());
+        }
+    }
     Ok(ReplaceOutcome::Replaced)
 }
 
@@ -1062,6 +1321,8 @@ mod tests {
                 root_item_id: "R".into(),
                 rescue_into: self.rescue.path().join("now"),
                 cancel: CancellationToken::new(),
+                rw: None,
+                claimed: None,
             }
         }
 

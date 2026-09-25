@@ -7,7 +7,8 @@ when opened is in [hydration.md](hydration.md).
 
 ## 1. Scope
 
-This is the **read phase**. The sync reads from OneDrive and never writes to it:
+This document describes a **read-only** account's sync, which every account's is unless it is
+switched to read-write. It reads from OneDrive and never writes to it:
 
 - the OAuth scope is `Files.Read User.Read offline_access`, so Microsoft refuses any write made
   with the token — "nothing is written to the cloud" does not rest on the client's discipline;
@@ -15,8 +16,10 @@ This is the **read phase**. The sync reads from OneDrive and never writes to it:
 - the folder is read-only, so nothing local can diverge (§11), and a local change forced past the
   lock is rescued, never overwritten (§10).
 
-Uploads, local moves and renames propagated to the cloud, and conflicts on write belong to the
-write phase. Pinning is described in [pinning.md](pinning.md).
+A **read-write** account's folder is unlocked, and what is changed in it goes up: the watcher, the
+examination, the outbox, conflicts on write, and what its cycle does differently are in
+[writes.md](writes.md). In this version only a test account can be read-write
+([writes.md](writes.md) §2.3). Pinning is described in [pinning.md](pinning.md).
 
 Everything here is per account: each account has its own folder, and its folder its own tree
 store, poller, activity log and conflicts. How several accounts share one daemon — and one link to
@@ -28,7 +31,7 @@ All of this runs in the daemon, as the user, once for each account.
 
 | Component | Where | Responsibility |
 |---|---|---|
-| Graph client | `drive/` | `/me/drive/root/delta` with its pages, item metadata, content, thumbnails; `Retry-After` |
+| Graph client | `drive/` | `/me/drive/root/delta` with its pages, item metadata, content, thumbnails; `Retry-After`; for a read-write account, the guarded writes ([writes.md](writes.md) §6) |
 | Tree store | `tree.rs` | SQLite: one row per file and folder, the delta link, the activity log, the conflicts (§5) |
 | Listing and poller | `sync/listing.rs` | One folder's sync cycles: when to run, what to fetch, which scope to reconcile, when to commit (§4, §6) |
 | Materializer | `sync/materialize.rs`, `sync/disk.rs` | Makes the folder match a tree (§7), rescues local work (§10), keeps the lock (§11) |
@@ -38,6 +41,8 @@ All of this runs in the daemon, as the user, once for each account.
 | Baloo exclusion | `sync/baloo.rs` | Keeps the file indexer out of the folder ([desktop.md](desktop.md) §9) |
 | Account | `account.rs`, `oauth.rs`, `token.rs`, `secret.rs` | Sign-in, tokens, the account's name and quota (§12) |
 | Configuration | `config.rs` | `config.toml`: the client id, and each account with its folder ([accounts.md](accounts.md) §4.1) |
+| Watcher, examination, outbox worker | `sync/watcher/`, `sync/local/`, `sync/upload/` | a read-write folder's local changes, found and sent ([writes.md](writes.md) §3–§8) |
+| Read-write reconcile | `sync/listing/rw.rs`, `sync/materialize/rw.rs` | a read-write folder's cycle, keeping local work ([writes.md](writes.md) §9) |
 
 ## 3. Which folders sync
 
@@ -82,7 +87,9 @@ reason (§7.5). Graph does not promise a parent before its children, so a tree i
 The poller runs a cycle at once when the folder's sync starts, then every **60 s**; at once on
 `Refresh()`; and at once when NetworkManager reports global connectivity again (limitations log
 F21). After a failed cycle it retries after 5, 15 and 30 s, then at the ordinary interval. A cycle
-is also nudged when the account becomes signed in. Cycles of one folder never overlap.
+is also nudged when the account becomes signed in. Cycles of one folder never overlap. While the
+account is paused (`Sync1.Pause`) no cycle runs; the pause is kept in the tree store and outlasts a
+restart ([writes.md](writes.md) §11).
 
 ### 4.3 Throttling and errors
 
@@ -95,7 +102,8 @@ on the schedule above; downloads on open keep working.
 
 When Graph answers `410 Gone` (`resyncRequired`), the daemon lists the drive afresh and reconciles
 Full: anything not in the new listing is a deletion. Without this, files deleted in the cloud while
-the machine was off would stay forever.
+the machine was off would stay forever. A read-write folder tells Graph's two variants apart, and
+keeps downloaded files the new listing left out, to upload them again ([writes.md](writes.md) §9).
 
 ## 5. The tree store
 
@@ -111,18 +119,24 @@ CREATE TABLE items (                -- the tree the folder was last made to matc
   quickxor TEXT,                    -- hashes.quickXorHash, base64
   mime TEXT,                        -- thumbnails are fetched for images and videos only
   placement TEXT NOT NULL,          -- 'placed' | 'skipped:<reason>'
-  thumb_key TEXT);                  -- the cTag, path and time a cached thumbnail was made for
+  thumb_key TEXT,                   -- the cTag, path and time a cached thumbnail was made for
+  local_handle BLOB,                -- the file handle of the inode the item was placed as
+  local_seq INTEGER NOT NULL DEFAULT 0);  -- the upload that last wrote the row
 CREATE INDEX items_parent ON items(parent_id);
 CREATE TABLE staging (…same columns…);   -- the tree a cycle is building
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
-  -- schema_version, drive_id, root_item_id, delta_link, listing_next, last_checked
+  -- schema_version, drive_id, root_item_id, delta_link, listing_next, last_checked, …
 CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
                        path TEXT NOT NULL, detail TEXT NOT NULL);   -- the newest 200 events
-CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL);
+CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL,
+                        kind TEXT NOT NULL DEFAULT 'rescued');       -- 'rescued' | 'copy'
+-- and the outbox's tables, used by a read-write folder: writes.md §5.1
 ```
 
 A local path is the chain of names from the root; it is computed, never stored, so renaming a
-folder changes one row. The schema is created in one transaction.
+folder changes one row. The schema is created in one transaction. The file handle is recorded for
+what the daemon places, so that a read-write folder can tell an item's own inode from a copy of it
+([writes.md](writes.md) §4.1).
 
 ### 5.2 Where it lives
 
@@ -134,10 +148,14 @@ store, `$XDG_STATE_HOME/konedrive/tree.sqlite`, is moved there once ([accounts.m
 ### 5.3 A map, and rebuildable
 
 The extended attributes on the files are the truth about each local file; the store is a map of
-the drive. If it is missing, unreadable, or of another schema version (currently 2), it is rebuilt:
+the drive. If it is missing, unreadable, or of another schema version (currently 3), it is rebuilt:
 a full listing fills it and the folder is reconciled Full against it, finding what is already there
 by item id. Losing it costs one listing, never data — though the activity log and the conflict list
-go with it (limitations log F24). A Forget drops it, and so does removing the account.
+go with it (limitations log F24). For a read-write folder it also costs the outbox: the local
+changes are found again on disk, and uploads start again from zero, but a delete not sent yet is
+forgotten, and that item comes back ([writes.md](writes.md) §5.1). A Forget, and removing the
+account, are refused while it holds changes not sent (`PendingUploads`); a forced switch to
+read-only drops them first ([writes.md](writes.md) §2.2).
 
 ## 6. A sync cycle
 
@@ -154,6 +172,10 @@ A crash before the swap leaves `items` and the delta link as they were; the next
 same changes and reconciles again, and the reconcile is idempotent: an item already where the tree
 wants it is left alone. After the swap the cycle publishes the counts, records `last_checked`,
 drops conflicts whose rescued file is gone, and starts the replacements the reconcile queued (§9).
+
+A read-write folder's cycle holds the tree lock its uploads commit under from staging to the swap,
+reads again what an upload committed while the delta was fetched, and keeps OneDrive's change to an
+item with local work waiting until the disk takes it ([writes.md](writes.md) §9).
 
 ### 6.2 Full and Changed
 
@@ -186,7 +208,8 @@ F15).
 
 Because the folder is read-only, a local file cannot normally have changed, so every change from
 the cloud can be applied. The one guard — "is this still what we put here?" — catches the case where
-the lock was bypassed (§10).
+the lock was bypassed (§10). In a read-write folder local changes are the normal case, and the
+reconcile leaves alone whatever has one waiting to upload ([writes.md](writes.md) §9).
 
 | In the cloud | Locally |
 |---|---|
@@ -308,6 +331,9 @@ Instead:
 A program already reading the old version keeps it to the end; the next open gets the new one. The
 old file is not held open during the download, so freeing it up meanwhile still works; step 4 then
 finds it changed and gives up. At most 2 replacements download at once, in the background, reported in `Transfers` like any download.
+In a read-write folder, where a program may be writing the old file, step 4 first takes a write
+lease on it, granted only while nobody has it open; a refusal leaves the replacement for a later
+cycle (limitations log F110).
 A replacement that finds nothing left to do — the file moved, was freed up, changed locally, or is
 already this version — ends quietly, and the next cycle looks again. One that fails (not enough
 disk space to hold both versions, a network error) leaves the old version in place, is recorded as
@@ -332,6 +358,12 @@ something only this machine has:
 Such a file is **rescued**; anything else of ours is simply replaced or removed. An `online-only`
 placeholder, or one mid-fill or mid-free-up, holds nothing only this machine has, and is never
 rescued.
+
+A read-write folder moves nothing it could upload out of the folder: where this section moves a
+file out of the folder, the reconcile renames it to a conflict copy beside the original and
+uploads it, and a folder OneDrive removed that holds local work stays where it is
+([writes.md](writes.md) §7, §9). Only konedrive's own temporary names (a leftover
+`.konedrive-new-<id>` that holds local work) are still rescued as §10.2 says.
 
 ### 10.2 How a rescue works
 
@@ -365,10 +397,10 @@ log F28).
 
 ## 11. The read-only lock
 
-A OneDrive folder is locked: files `r--r--r--` (`0444`), directories `r-xr-xr-x` (`0555`).
-Directories are locked too, because editors save by writing a new file and renaming it over the old
-one, which needs write permission on the directory, not the file. The window and the README say the
-folder is read-only in this phase.
+A read-only account's OneDrive folder is locked: files `r--r--r--` (`0444`), directories
+`r-xr-xr-x` (`0555`). Directories are locked too, because editors save by writing a new file and
+renaming it over the old one, which needs write permission on the directory, not the file. The
+window and the README say the folder is read-only.
 
 The daemon lifts write permission only for the moment of its own operation. File content needs no
 window: it is written through the event descriptor the kernel opened for the helper, and the owner's
@@ -388,8 +420,10 @@ applied to a file, the daemon verifies the file is still the one it placed or do
 and rescues it if not. No local byte is discarded.
 
 A Forget takes the lock off the whole folder (files `0644`, directories `0755`); what the unlock
-walk cannot reach is logged (limitations log F19). A local folder is never locked. When the write
-phase lands, the lock goes.
+walk cannot reach is logged (limitations log F19). A local folder is never locked. Neither is a
+read-write account's folder: the switch to read-write takes the lock off with the same walk, once
+the watcher has marked every directory, and the switch back puts it on again (limitations log F62;
+[writes.md](writes.md) §2.2).
 
 ## 12. The account
 
@@ -407,9 +441,11 @@ answers anything else with 404, is single use, and closes after five minutes. Ea
 their own Entra application and gives its client id to the daemon (`Accounts1.SetClientId`); every
 account signs in with it, and the README has the steps.
 
-The scope is the account's mode's: for a read-only account, the only kind in this phase,
-`Files.Read User.Read offline_access`, asked for at the authorization, the code exchange and every
-refresh alike ([accounts.md](accounts.md) §10).
+The scope is the account's mode's: `Files.Read User.Read offline_access` for a read-only account,
+`Files.ReadWrite User.Read offline_access` for a read-write one, asked for at the authorization, the
+code exchange and every refresh alike ([accounts.md](accounts.md) §10). A refresh never asks for
+more than the last token was granted: a read-write account whose token lost `Files.ReadWrite` asks
+for `Files.Read`, and runs read-only until it signs in with that permission again.
 
 Before the refresh token is stored, the daemon asks `GET /me/drive` with the new access token, and
 refuses the sign-in if that drive is not this account's, or is already another account's
@@ -428,11 +464,15 @@ refuses the sign-in if that drive is not this account's, or is already another a
   `invalid_grant` (consent revoked, session expired) deletes the account's refresh token and signs
   it out: `LastError` says to sign in again, a download on open in its folder fails `EIO`, and the
   folder reports that it is signed out.
-- **For test runs only**, each account's `org.konedrive.Dev1.AccessToken()` hands out that account's
-  current access token — about an hour of `Files.Read` — never the refresh token;
+- **For test runs only**, each account's `org.konedrive.Dev1.AccessToken()` hands out an access
+  token of that account — about an hour of `Files.Read`, whatever its mode: a read-write account's
+  comes from a refresh that asks for `Files.Read` only — never the refresh token;
   `konedrivectl dev export-access-token` writes the chosen account's (`--account`) atomically to a
   `0600` file. Any process of the same user on the session bus can obtain that hour of read access, which
-  is no more than it has by opening files in the folder (limitations log W11).
+  is no more than it has by opening files in the folder (limitations log W11). With `--read-write`
+  (`Dev1.ReadWriteAccessToken()`) it hands out a token that can write, for the test-account harness
+  only, and only for a read-write account the write gate lets through ([writes.md](writes.md)
+  §12.1).
 
 At startup, a refresh token found by attribute search (which does not unlock the wallet) means
 signed in; the cached name and quota are shown at once and refreshed in the background.
@@ -467,6 +507,7 @@ Signing in again nudges a cycle at once, which brings the folder up to date.
 | A replacement | at most a leftover `.konedrive-new-<id>` link; the old version in place | clears the link; the next cycle queues the replacement again |
 | A rescue | the file in the folder or in the rescue directory — one rename | nothing to finish |
 | A fill or free-up | a file in `hydrating` or `dehydrating` | recovery ([hydration.md](hydration.md) §9) |
+| An upload, in a read-write folder | the outbox row, perhaps a session | a replay that settles by content hash ([writes.md](writes.md) §10) |
 
 ## 14. Known limits
 

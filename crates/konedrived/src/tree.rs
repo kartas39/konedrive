@@ -21,10 +21,16 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::drive::item::{DriveItem, NAME_MAX, RESERVED_PREFIX};
 
-/// Version 2 added `activity` and `conflicts`. A store of any
+pub mod outbox;
+pub mod reconcile;
+
+/// Version 2 added `activity` and `conflicts`; version 3 the write phase's
+/// `outbox`, `local_skipped`, `items.local_handle`, `items.local_seq` and
+/// `conflicts.kind` (`docs/design/writes.md` §5). A store of any
 /// other version is rebuilt from a full listing, so a
-/// version 1 store is rebuilt once, and loses nothing but a listing.
-pub const SCHEMA_VERSION: &str = "2";
+/// version 1 or 2 store is rebuilt once, and loses nothing but a listing: a
+/// version 2 folder was read-only and has nothing waiting to upload.
+pub const SCHEMA_VERSION: &str = "3";
 
 /// How many activity events the store keeps: the oldest go.
 pub const ACTIVITY_KEPT: usize = 200;
@@ -35,7 +41,9 @@ const MAX_CHAIN: usize = konedrive_fs::MAX_DEPTH + 2;
 /// The `meta` key of a first listing's resume point.
 pub const LISTING_NEXT: &str = "listing_next";
 
-const COLUMNS: &str = "id, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, thumb_key";
+/// Every column, for copies between `items` and `staging`: the local ones
+/// (`thumb_key`, `local_handle`, `local_seq`) travel with the row.
+const COLUMNS: &str = "id, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, thumb_key, local_handle, local_seq";
 const ROW_COLUMNS: &str = "id, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement";
 
 #[derive(Debug, thiserror::Error)]
@@ -197,7 +205,8 @@ pub struct ActivityRow {
     pub detail: String,
 }
 
-/// A local version a reconcile moved out of the way.
+/// A local version kept because the file changed or was removed in
+/// OneDrive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConflictRow {
     pub at: i64,
@@ -205,6 +214,34 @@ pub struct ConflictRow {
     pub original: String,
     /// Where it is now, as a full path.
     pub rescued: String,
+    pub kind: ConflictKind,
+}
+
+/// How a local version was kept (`Conflicts()`'s fourth field).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictKind {
+    /// Moved out of the way, out of the folder (the read phase's rescue).
+    Rescued,
+    /// Kept as a copy beside the original, in a read-write folder, and
+    /// uploaded (`docs/design/writes.md` §7).
+    Copy,
+}
+
+impl ConflictKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rescued => "rescued",
+            Self::Copy => "copy",
+        }
+    }
+
+    fn parse(value: &str) -> Self {
+        if value == "copy" {
+            Self::Copy
+        } else {
+            Self::Rescued
+        }
+    }
 }
 
 /// What a Graph item becomes in the tree.
@@ -349,22 +386,30 @@ impl TreeStore {
         if tables == 0 {
             let mut schema = String::from("BEGIN IMMEDIATE;");
             for table in ["items", "staging"] {
+                // `local_handle`: the file handle of the inode the item was
+                // placed or adopted as; `local_seq`: the outbox commit that
+                // last wrote the row (`docs/design/writes.md` §5).
                 schema.push_str(&format!(
                     "CREATE TABLE {table} (
                         id TEXT PRIMARY KEY, parent_id TEXT, name TEXT NOT NULL, kind TEXT NOT NULL,
                         size INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0,
                         etag TEXT, ctag TEXT, quickxor TEXT, mime TEXT,
-                        placement TEXT NOT NULL, thumb_key TEXT);
-                     CREATE INDEX {table}_parent ON {table}(parent_id);"
+                        placement TEXT NOT NULL, thumb_key TEXT,
+                        local_handle BLOB, local_seq INTEGER NOT NULL DEFAULT 0);
+                     CREATE INDEX {table}_parent ON {table}(parent_id);
+                     CREATE INDEX {table}_handle ON {table}(local_handle);"
                 ));
             }
             schema.push_str(&format!(
                 "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
                  CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
                                         path TEXT NOT NULL, detail TEXT NOT NULL);
-                 CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL);
+                 CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL,
+                                         kind TEXT NOT NULL DEFAULT 'rescued');
+                 {}
                  INSERT INTO meta (key, value) VALUES ('schema_version', '{SCHEMA_VERSION}');
-                 COMMIT;"
+                 COMMIT;",
+                outbox::SCHEMA
             ));
             if let Err(e) = conn.execute_batch(&schema) {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -382,6 +427,9 @@ impl TreeStore {
         if version.as_deref() != Some(SCHEMA_VERSION) {
             return Err(TreeError::Schema(version));
         }
+        // The read-write cycle's own tables, added to schema 3 without a
+        // rebuild: a store made before them gains them here.
+        conn.execute_batch(reconcile::TABLES)?;
         Ok(Self { conn })
     }
 
@@ -524,6 +572,17 @@ impl TreeStore {
               WHERE thumb_key IS NULL",
             [],
         )?;
+        // So do the local inode and the last outbox commit, which a full
+        // listing (staged from nothing) does not carry.
+        tx.execute(
+            "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id)
+              WHERE local_handle IS NULL",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE staging SET local_seq = MAX(local_seq, COALESCE((SELECT i.local_seq FROM items i WHERE i.id = staging.id), 0))",
+            [],
+        )?;
         tx.execute("DELETE FROM items", [])?;
         tx.execute(&format!("INSERT INTO items ({COLUMNS}) SELECT {COLUMNS} FROM staging"), [])?;
         tx.execute("DELETE FROM staging", [])?;
@@ -548,6 +607,14 @@ impl TreeStore {
     pub fn commit_page(&mut self, changes: &[Change], next: &str) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         apply(&tx, Table::Items, changes)?;
+        // The handles the placement recorded in `staging` for items that
+        // were not in `items` yet.
+        tx.execute(
+            "UPDATE items SET local_handle = (SELECT s.local_handle FROM staging s WHERE s.id = items.id)
+              WHERE local_handle IS NULL
+                AND EXISTS (SELECT 1 FROM staging s WHERE s.id = items.id AND s.local_handle IS NOT NULL)",
+            [],
+        )?;
         tx.execute(
             "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![LISTING_NEXT, next],
@@ -652,16 +719,15 @@ impl TreeStore {
         Ok(rows)
     }
 
-    /// Records local versions a reconcile moved out of the way:
-    /// `(at, original, rescued)`, full paths. A path rescued to again replaces
-    /// its row.
+    /// Records local versions a reconcile kept: `(at, original, rescued,
+    /// kind)`, full paths. A path kept at again replaces its row.
     pub fn add_conflicts(&mut self, conflicts: &[ConflictRow]) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         for c in conflicts {
             tx.execute(
-                "INSERT INTO conflicts (rescued, at, original) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(rescued) DO UPDATE SET at = excluded.at, original = excluded.original",
-                params![c.rescued, c.at, c.original],
+                "INSERT INTO conflicts (rescued, at, original, kind) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(rescued) DO UPDATE SET at = excluded.at, original = excluded.original, kind = excluded.kind",
+                params![c.rescued, c.at, c.original, c.kind.as_str()],
             )?;
         }
         tx.commit()?;
@@ -671,9 +737,16 @@ impl TreeStore {
     /// Every recorded conflict, newest first.
     pub fn conflicts(&self) -> Result<Vec<ConflictRow>, TreeError> {
         let mut statement =
-            self.conn.prepare("SELECT at, original, rescued FROM conflicts ORDER BY at DESC, rescued")?;
+            self.conn.prepare("SELECT at, original, rescued, kind FROM conflicts ORDER BY at DESC, rescued")?;
         let rows = statement
-            .query_map([], |row| Ok(ConflictRow { at: row.get(0)?, original: row.get(1)?, rescued: row.get(2)? }))?
+            .query_map([], |row| {
+                Ok(ConflictRow {
+                    at: row.get(0)?,
+                    original: row.get(1)?,
+                    rescued: row.get(2)?,
+                    kind: ConflictKind::parse(&row.get::<_, String>(3)?),
+                })
+            })?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
@@ -1188,6 +1261,56 @@ mod tests {
         assert_eq!(store.recent_activity(10).unwrap(), vec![event]);
     }
 
+    /// Version 3 added the outbox: a version 2 store — a read-only
+    /// folder's, with nothing waiting to upload — is rebuilt once, from a
+    /// full listing, and comes back with the new tables.
+    #[test]
+    fn a_version_2_store_is_rebuilt_once_with_the_outbox() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tree.sqlite");
+        {
+            let mut store = TreeStore::open(&path).unwrap();
+            store.begin_staging(false).unwrap();
+            store.stage(&[root(), file("A", "R", "a")]).unwrap();
+            store.commit_staging("link-1").unwrap();
+            store.conn.execute_batch("DROP TABLE outbox; DROP TABLE local_skipped;").unwrap();
+            store.set_meta("schema_version", Some("2")).unwrap();
+        }
+        let store = TreeStore::open(&path).unwrap();
+        assert_eq!(store.delta_link().unwrap(), None, "rebuilt: the next cycle lists in full");
+        assert!(store.get(Table::Items, "A").unwrap().is_none());
+        assert!(store.outbox_rows().unwrap().is_empty(), "the outbox is there, empty");
+        assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some("3"));
+    }
+
+    /// The inode an item was placed as survives the swap that ends a cycle,
+    /// a full listing's included (it stages from nothing), and a first
+    /// listing's page commit.
+    #[test]
+    fn the_local_handle_travels_with_its_row() {
+        let handle = konedrive_fs::handle::FileHandle { kind: 1, bytes: vec![1, 2, 3] };
+        let mut store = committed(&[root(), file("A", "R", "a")]);
+        store.set_local_handle("A", Some(&handle)).unwrap();
+        store.begin_staging(false).unwrap();
+        store.stage(&[root(), file("A", "R", "renamed")]).unwrap();
+        store.commit_staging("link-2").unwrap();
+        assert_eq!(store.local_handle("A").unwrap(), Some(handle.clone()), "a full listing");
+        store.begin_staging(true).unwrap();
+        store.stage(&[file("A", "R", "again")]).unwrap();
+        store.commit_staging("link-3").unwrap();
+        assert_eq!(store.local_handle("A").unwrap(), Some(handle.clone()), "a delta");
+        assert_eq!(store.item_by_handle(&handle).unwrap().map(|r| r.id), Some("A".into()));
+
+        // A page placed: the handle was recorded in `staging` before the
+        // item was in `items`.
+        let mut store = TreeStore::in_memory().unwrap();
+        store.begin_staging(true).unwrap();
+        store.stage(&[root(), file("B", "R", "b")]).unwrap();
+        store.set_local_handle("B", Some(&handle)).unwrap();
+        store.commit_page(&[root(), file("B", "R", "b")], "next-2").unwrap();
+        assert_eq!(store.local_handle("B").unwrap(), Some(handle));
+    }
+
     /// The last 200 events are kept; the oldest go.
     #[test]
     fn the_activity_log_keeps_the_newest_two_hundred() {
@@ -1206,7 +1329,7 @@ mod tests {
     #[test]
     fn a_conflict_is_listed_until_it_is_removed() {
         let mut store = TreeStore::in_memory().unwrap();
-        let row = ConflictRow { at: 7, original: "/root/a.txt".into(), rescued: "/rescued/now/a.txt".into() };
+        let row = ConflictRow { at: 7, original: "/root/a.txt".into(), rescued: "/rescued/now/a.txt".into(), kind: ConflictKind::Copy };
         store.add_conflicts(std::slice::from_ref(&row)).unwrap();
         assert_eq!(store.conflicts().unwrap(), vec![row]);
         assert!(!store.remove_conflict("/elsewhere").unwrap());

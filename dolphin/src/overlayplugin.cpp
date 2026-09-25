@@ -1,5 +1,6 @@
 // Overlay emblems in Dolphin: a cloud on an online-only file, a check mark on
-// a downloaded one, sync arrows on one being downloaded or freed up.
+// a downloaded one, sync arrows on one being downloaded, freed up or waiting
+// to be uploaded, and an error sign on one whose upload is blocked.
 //
 // Dolphin loads this with QPluginLoader::instance(), once per process, and
 // asks every view's roles updater to call getOverlays() for each file it

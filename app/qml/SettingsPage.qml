@@ -54,8 +54,8 @@ FormCard.FormCardPage {
         FormCard.FormSwitchDelegate {
             id: showDownloadProgress
             objectName: "showDownloadProgress"
-            text: i18n("Show download progress")
-            description: i18n("A long download shows its progress in Plasma, the same way Dolphin's copying does.")
+            text: i18n("Show download and upload progress")
+            description: i18n("A long download or upload shows its progress in Plasma, the same way Dolphin's copying does.")
             checked: DownloadProgress.enabled
             onToggled: DownloadProgress.enabled = checked
         }

@@ -1,11 +1,16 @@
 #include "activitymodel.h"
 
+#include "outboxmodel.h"
+
 #include <KLocalizedString>
 
 #include <QFileInfo>
 
 ActivityFailure classifyFailure(const QString &kind, const QString &detail)
 {
+    if (kind == QLatin1String("upload-failed")) {
+        return ActivityFailure::Upload;
+    }
     const bool download = kind == QLatin1String("failed");
     const bool update = kind == QLatin1String("update-failed");
     if (!download && !update) {
@@ -16,6 +21,11 @@ ActivityFailure classifyFailure(const QString &kind, const QString &detail)
         return ActivityFailure::DiskFull;
     }
     return update ? ActivityFailure::Update : ActivityFailure::Download;
+}
+
+bool isConflictCopy(const QString &original, const QString &other)
+{
+    return !original.isEmpty() && !other.isEmpty() && QFileInfo(original).path() == QFileInfo(other).path();
 }
 
 ActivityModel::ActivityModel(QObject *parent)
@@ -53,7 +63,23 @@ QString ActivityModel::describe(const QString &kind, const QString &detail)
         return i18nc("@info activity", "Listed");
     }
     if (kind == QLatin1String("conflict")) {
+        // A rescue; a copy (TextRole, isConflictCopy) has its own words.
         return i18nc("@info activity", "Your changed version was moved");
+    }
+    if (kind == QLatin1String("uploaded")) {
+        return i18nc("@info activity", "Uploaded");
+    }
+    if (kind == QLatin1String("cloud-moved")) {
+        return i18nc("@info activity", "Moved in OneDrive too");
+    }
+    if (kind == QLatin1String("cloud-deleted")) {
+        return i18nc("@info activity", "Moved to OneDrive's recycle bin");
+    }
+    if (kind == QLatin1String("upload-failed")) {
+        return i18nc("@info activity", "Could not be uploaded");
+    }
+    if (kind == QLatin1String("restored")) {
+        return i18nc("@info activity", "Restored");
     }
     if (kind == QLatin1String("failed")) {
         return i18nc("@info activity", "Could not be downloaded");
@@ -87,10 +113,32 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
     case DetailRole:
         return row.detail;
     case TextRole:
+        if (row.kind == QLatin1String("conflict") && isConflictCopy(row.path, row.detail)) {
+            return i18nc("@info activity", "Changed on both sides: both versions kept");
+        }
         return describe(row.kind, row.detail);
+    case DetailTextRole:
+        if (row.kind == QLatin1String("cloud-moved") && !row.detail.isEmpty()) {
+            // Its detail is where it was.
+            return i18nc("@info activity detail: where a moved file was", "was %1", row.detail);
+        }
+        return row.kind == QLatin1String("upload-failed") ? uploadReasonText(row.detail) : row.detail;
     case IconRole:
-        if (row.kind == QLatin1String("failed") || row.kind == QLatin1String("update-failed") || row.kind == QLatin1String("conflict")) {
+        if (row.kind == QLatin1String("conflict") && isConflictCopy(row.path, row.detail)) {
+            return QStringLiteral("document-duplicate");
+        }
+        if (row.kind == QLatin1String("failed") || row.kind == QLatin1String("update-failed") || row.kind == QLatin1String("conflict")
+            || row.kind == QLatin1String("upload-failed")) {
             return QStringLiteral("dialog-warning");
+        }
+        if (row.kind == QLatin1String("uploaded") || row.kind == QLatin1String("cloud-moved")) {
+            return QStringLiteral("cloud-upload");
+        }
+        if (row.kind == QLatin1String("cloud-deleted")) {
+            return QStringLiteral("edit-delete");
+        }
+        if (row.kind == QLatin1String("restored")) {
+            return QStringLiteral("edit-undo");
         }
         if (row.kind == QLatin1String("freed")) {
             return QStringLiteral("edit-clear");
@@ -117,6 +165,7 @@ QHash<int, QByteArray> ActivityModel::roleNames() const
         {DetailRole, "detail"},
         {TextRole, "what"}, // not "text": a delegate's own property
         {IconRole, "iconName"},
+        {DetailTextRole, "detailText"},
     };
 }
 

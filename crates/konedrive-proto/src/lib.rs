@@ -10,7 +10,10 @@ use std::os::unix::net::UnixStream;
 use nix::sys::socket::{sockopt, ControlMessage, MsgFlags, SockType};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Both ends refuse any other (the helper's `Hello` check, the daemon's
+/// `Welcome` check). 2: `OpenByHandle`, and an `Ack` that may carry a
+/// descriptor.
+pub const PROTOCOL_VERSION: u32 = 2;
 pub const SOCKET_PATH: &str = "/run/konedrive/helper.sock";
 
 /// Room for several descriptors in the control buffer, not just the one
@@ -113,13 +116,23 @@ pub enum ToHelper {
     /// The attached fd is a file whose ignore mark must go (before dehydration).
     ClearIgnore,
     HydrateDone { req_id: u64, errno: i32 },
+    /// A descriptor for the object this file handle names (writes design
+    /// §4.6): one of the peer's own, gone from its folder. The attached fd is
+    /// a directory of the peer's on the same filesystem, the one the handle
+    /// is opened relative to. `handle_type` and `handle` are what
+    /// `name_to_handle_at` gave: at most 128 bytes (`MAX_HANDLE_SZ`). The
+    /// answer is an `Ack`, carrying the object's descriptor when its errno
+    /// is 0: `EPERM` when the object is not the peer's to have, `ESTALE`
+    /// when it is gone.
+    OpenByHandle { handle_type: i32, handle: Vec<u8> },
 }
 
 /// The helper's half.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ToDaemon {
     Welcome { version: u32 },
-    /// `errno` is 0 on success.
+    /// `errno` is 0 on success. Only the answer to `OpenByHandle` carries a
+    /// descriptor, and only on success.
     Ack { errno: i32 },
     /// The attached fd is the event fd of a suspended open.
     HydrateRequest { req_id: u64 },
@@ -313,8 +326,17 @@ mod tests {
         std::fs::read_dir("/proc/self/fd").unwrap().count()
     }
 
+    /// Held by every test here for its whole run. `too_many_descriptors_does_
+    /// not_leak_fds` counts the process's descriptors, and every other test
+    /// opens and closes some while it runs, in parallel by default.
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     #[test]
     fn messages_round_trip() {
+        let _serial = serial();
         let (mut client, mut server) = pair();
         client
             .send(&ToHelper::Hello { version: PROTOCOL_VERSION }, None)
@@ -326,6 +348,7 @@ mod tests {
 
     #[test]
     fn a_descriptor_travels_with_its_message() {
+        let _serial = serial();
         use std::io::{Read, Seek, Write};
 
         let (mut client, mut server) = pair();
@@ -347,16 +370,54 @@ mod tests {
 
     #[test]
     fn a_closed_peer_is_reported_as_eof() {
+        let _serial = serial();
         let (client, mut server) = pair();
         drop(client);
         let error = server.recv::<ToHelper>().unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof, "{error:?}");
     }
 
+    /// `OpenByHandle` carries its handle as given and the directory as a
+    /// descriptor; its answer is an `Ack` with the object's descriptor.
+    #[test]
+    fn open_by_handle_and_its_answer_carry_their_descriptors() {
+        let _serial = serial();
+        use std::io::{Read, Seek, Write};
+
+        let (mut daemon, mut helper) = pair();
+        let dir = tempfile::tempdir().unwrap();
+        let anchor = std::fs::File::open(dir.path()).unwrap();
+        let handle = vec![0xab; 128];
+        daemon
+            .send(
+                &ToHelper::OpenByHandle { handle_type: 0x4d, handle: handle.clone() },
+                Some(std::os::fd::AsFd::as_fd(&anchor)),
+            )
+            .unwrap();
+        let (message, fd) = helper.recv::<ToHelper>().unwrap();
+        assert!(
+            matches!(&message, ToHelper::OpenByHandle { handle_type: 0x4d, handle: got } if *got == handle),
+            "{message:?}"
+        );
+        assert!(fd.is_some(), "the directory travels as a descriptor");
+
+        let mut object = tempfile::tempfile().unwrap();
+        object.write_all(b"object").unwrap();
+        helper.send(&ToDaemon::Ack { errno: 0 }, Some(std::os::fd::AsFd::as_fd(&object))).unwrap();
+        let (answer, fd) = daemon.recv::<ToDaemon>().unwrap();
+        assert!(matches!(answer, ToDaemon::Ack { errno: 0 }), "{answer:?}");
+        let mut received = std::fs::File::from(fd.expect("the object's descriptor"));
+        received.rewind().unwrap();
+        let mut content = String::new();
+        received.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "object");
+    }
+
     /// The wrong socket type is rejected at construction rather than
     /// producing silent corruption later.
     #[test]
     fn new_rejects_a_stream_socket() {
+        let _serial = serial();
         let (a, _b) = UnixStream::pair().unwrap();
         let error = Channel::new(a).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput, "{error:?}");
@@ -372,6 +433,7 @@ mod tests {
     /// original test suite never covered.
     #[test]
     fn two_messages_sent_back_to_back() {
+        let _serial = serial();
         let (mut client, mut server) = pair();
         client.send(&ToHelper::MarkDir, None).unwrap();
         client.send(&ToHelper::UnmarkDir, None).unwrap();
@@ -396,6 +458,7 @@ mod tests {
     /// open descriptors than before the call.
     #[test]
     fn too_many_descriptors_does_not_leak_fds() {
+        let _serial = serial();
         use std::os::fd::AsFd;
 
         let (client, mut server) = pair();

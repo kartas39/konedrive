@@ -18,6 +18,7 @@ someone who wants to understand, review or change the system.
 | [hydration.md](hydration.md) | Placeholders and their extended attributes, the helper and its fanotify marks, filling and freeing up files, startup recovery, the helper–daemon protocol |
 | [sync.md](sync.md) | Listing the drive and following its changes, the tree store, reconciling the folder, the first listing, replacing changed files, rescues and conflicts, the read-only lock, the account |
 | [pinning.md](pinning.md) | "Always keep on this device": the pin attribute, what a pin downloads and keeps, freeing up around pins, the sweep |
+| [writes.md](writes.md) | Uploads from a read-write account's folder: the mode and the write gate, the watcher of local changes, the examination, the outbox and its requests, conflicts on write, moves out of the folder, the reconcile in read-write mode, and the guarded run against a test account |
 | [accounts.md](accounts.md) | Several accounts, each with its own folder: what an account is, one daemon and one helper link for all of them, which account an open or a path belongs to, the configuration and each account's files, keeping accounts apart, adding and removing, the move from a single-account installation |
 | [desktop.md](desktop.md) | The D-Bus API, `konedrivectl`, the window and tray icon, notifications, download progress, thumbnails, Baloo, the Dolphin plugins |
 | [decisions.md](decisions.md) | The notable decisions, each with its reason and its cost |
@@ -35,19 +36,24 @@ Related documents elsewhere in the repository:
 - [`../acceptance-check.md`](../acceptance-check.md) — a manual check of a build against a real
   account.
 - [original-proposal.md](original-proposal.md) — the original proposal for
-  the whole client, including the parts not built yet (uploads and write-side conflicts).
-  Where it and these documents differ, these documents describe what the code does, and
-  [decisions.md](decisions.md) says what changed and why.
+  the whole client. Where it and these documents differ, these documents describe what the code
+  does, and [decisions.md](decisions.md) says what changed and why.
 
 ## Status
 
-The client is in its **read phase**. It lists the whole drive, keeps the folder in step with
-changes made in the cloud, downloads on open and frees up space on request. It writes nothing to
-OneDrive: the OAuth scope is `Files.Read`, so Microsoft itself refuses any write made with its
-token. So that nothing local can diverge from the cloud, the folder is read-only (files `0444`,
-directories `0555`); a local change forced past that lock is moved aside, never overwritten.
-"Always keep on this device" (pinning) is built — see [pinning.md](pinning.md) — and so are
-multiple accounts, each with its own folder — see [accounts.md](accounts.md). Uploads come later.
+The client lists the whole drive, keeps the folder in step with changes made in the cloud,
+downloads on open and frees up space on request. "Always keep on this device" (pinning) is built —
+see [pinning.md](pinning.md) — and so are multiple accounts, each with its own folder — see
+[accounts.md](accounts.md).
+
+Every account is **read-only** unless it is switched to read-write. A read-only account writes
+nothing to OneDrive: its OAuth scope is `Files.Read`, so Microsoft itself refuses any write made
+with its token. So that nothing local can diverge from the cloud, its folder is read-only (files
+`0444`, directories `0555`); a local change forced past that lock is moved aside, never
+overwritten. A **read-write** account's folder is unlocked, and what is changed in it is uploaded
+([writes.md](writes.md)). Uploading is built, but **gated** in this version: only an account whose
+drive is on a test allow-list can be switched to read-write, until the uploads have been run
+against a test account and released.
 
 Supported: any number of personal Microsoft accounts, each with its own sync folder on Btrfs, ext4
 or XFS; KDE Plasma 6.
@@ -57,7 +63,7 @@ and, for a denied open to carry a meaningful errno, Linux 6.14; the design was m
 ## The processes
 
 ```text
-                            Microsoft Graph (HTTPS, GET only)
+               Microsoft Graph (HTTPS: reads, and a read-write account's uploads)
                                         ▲
                                         │
  kernel ──FAN_OPEN_PERM──▶ konedrive-helper ──unix socket──▶ konedrived ◀──D-Bus──┬── KOneDrive window + tray
@@ -68,8 +74,8 @@ and, for a denied open to carry a meaningful errno, Linux 6.14; the design was m
 
 | Process | Runs as | Does | Never does |
 |---|---|---|---|
-| `konedrive-helper` | root, system service, `CAP_SYS_ADMIN` and `CAP_DAC_READ_SEARCH` only | Owns the fanotify permission group. Marks the folder's directories, suspends opens of files that are not downloaded, hands each one to the owning user's daemon, and answers the kernel | Use the network, hold credentials, read or write file content, decide anything that needs more than an `fstat`, an `fgetxattr` and a table lookup |
-| `konedrived` | the user; systemd user service, D-Bus activated | Everything else, for each of the user's accounts: sign-in and tokens, listing the drive, the tree store, placing and updating placeholders, filling and freeing up files, recovery, rescues, thumbnails, the D-Bus API | Run with any privilege |
+| `konedrive-helper` | root, system service, `CAP_SYS_ADMIN` and `CAP_DAC_READ_SEARCH` only | Owns the fanotify permission group. Marks the folder's directories, suspends opens of files that are not downloaded, hands each one to the owning user's daemon, and answers the kernel; opens by file handle a user's own object that left the folder ([writes.md](writes.md) §8.2) | Use the network, hold credentials, read or write file content, decide anything that needs more than an `fstat`, an `fgetxattr` and a table lookup |
+| `konedrived` | the user; systemd user service, D-Bus activated | Everything else, for each of the user's accounts: sign-in and tokens, listing the drive, the tree store, placing and updating placeholders, filling and freeing up files, recovery, rescues, thumbnails, the D-Bus API; for a read-write account, watching the folder and uploading its changes | Run with any privilege |
 | `konedrive` (KOneDrive) | the user | The window and tray icon: shows what the daemon publishes and calls its methods | Touch the sync folder itself |
 | `konedrivectl` | the user | The command line for every feature of the window, plus developer commands | — |
 | Dolphin plugins | inside Dolphin | Emblems from each file's state and pin attributes; "Always keep on this device" and "Free up space" in the context menu | Open a file in the sync folder |
@@ -149,7 +155,9 @@ that the file is still exactly what it placed or downloaded (the *stamp*: size a
 download completed). A file that holds local work is moved out of the way with a single rename —
 never copied, never deleted — into the rescue directory, and listed as a conflict. A rename cannot
 lose bytes, and a rescue that cannot be a rename fails without changing anything.
-([sync.md](sync.md) §10.)
+([sync.md](sync.md) §10.) A read-write folder keeps both versions in the folder instead: the local
+one is renamed beside the other and uploaded. Nothing is deleted in OneDrive while its content
+exists only there and the user still holds the file ([writes.md](writes.md) §7, §8.4).
 
 **The sync cycle is crash safe.** A crash at any point leaves a state the next run recognises and
 finishes:
@@ -179,7 +187,7 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
 | The sync folders | one per account, anywhere the user owns, on Btrfs, ext4 or XFS; chosen at registration; never one inside another |
 | Per-file state | extended attributes `user.konedrive.*` on the files and directories themselves; a OneDrive folder's root also carries its account's drive |
 | Daemon configuration | `~/.config/konedrive/config.toml`: the client id, and each account with its label, mode, drive and folder ([accounts.md](accounts.md) §4.1); `config.toml.v1` after a single-account configuration was migrated |
-| Tree store, activity log, conflicts | `$XDG_STATE_HOME/konedrive/accounts/<account id>/tree.sqlite` |
+| Tree store, activity log, conflicts, the outbox of changes to upload | `$XDG_STATE_HOME/konedrive/accounts/<account id>/tree.sqlite` |
 | Cached account name and quota | `$XDG_STATE_HOME/konedrive/accounts/<account id>/account.json` |
 | Refresh tokens | the Secret Service (KWallet), one item per account; never written anywhere else |
 | Rescued local changes | `$XDG_DATA_HOME/konedrive/rescued/<account id>/<time>/…`, or beside the folder when that is on another filesystem |
@@ -203,6 +211,7 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
 | `packaging/` | the systemd units and the D-Bus activation file; the RPM spec in `packaging/rpm/` |
 | `scripts/` | the per-user install and its removal, the helper installer, the RPM build |
 | `tests/vm/` | the privileged end-to-end suite, run in a virtme-ng VM |
+| `tests/write-account/` | the guarded harness that checks the uploads against a real test account ([writes.md](writes.md) §12.1) |
 | `tests/kio/` | the KIO measurements behind `docs/kio-behavior.md` |
 
 ## Glossary
@@ -228,3 +237,12 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
   changed locally.
 - **Rescue** — moving a file that holds local work out of the folder before a cloud change would
   replace or remove it. Each rescued file is listed as a **conflict**.
+- **Read-only, read-write** — an account's mode: whether what is changed in its folder is uploaded
+  ([writes.md](writes.md) §2).
+- **Base** — the tree store's record of the last state a read-write folder and OneDrive agreed on;
+  a local change is the disk differing from it.
+- **Examination** — comparing a read-write folder's changed directories with the base, which turns
+  each change into an outbox row.
+- **Outbox** — the table of changes waiting to be uploaded, one row per item, with its state.
+- **Conflict copy** — the local version of a file changed on both sides, renamed
+  `<name>-<machine>.<ext>` beside the other and uploaded as a new file.

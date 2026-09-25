@@ -14,12 +14,17 @@ pub mod helper;
 pub mod helper_status;
 pub mod hub;
 pub mod listing;
+pub mod local;
 pub mod materialize;
 pub mod network;
+pub mod outbox_api;
 pub mod pin;
 pub mod root;
 pub mod source;
 pub mod thumbs;
+pub mod upload;
+pub mod watcher;
+pub mod write_mode;
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -46,7 +51,7 @@ use source::{Answered, ContentSource, Fetched, FillError, LocalDir, SourceError}
 use tokio::sync::{watch, Notify};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{ConfigStore, RootConfig};
+use crate::config::{ConfigStore, Mode, RootConfig};
 use crate::state::{SignInState, StateHandle};
 
 /// Fills served on open at once ([`serve_hydrations`]); pinned downloads
@@ -540,6 +545,33 @@ pub struct SyncSnapshot {
     /// shows OneDrive and is not intercepted yet. `RootState` reads `error`
     /// then, and `LastError` begins with what [`HelperState::advice`] says.
     pub waits_for_helper: bool,
+    /// What the watcher of a read-write folder says while it runs: that part
+    /// of the folder is found only by a periodic scan, or that new folders
+    /// wait for the helper's mark (`watcher::WatchStatus::note`). Empty
+    /// otherwise. The folder moved or deleted is said in `last_error`, since
+    /// it outlasts the watcher.
+    pub watch_note: String,
+    /// The folder's filesystem changed since its file handles were recorded,
+    /// and they were taken again: said until the next Full local scan
+    /// that finds them current. Empty otherwise.
+    pub handles_note: String,
+    /// What keeps the outbox's changes from going: the write gate
+    /// closed under a read-write folder, or a read-only one whose sync holds its cycles while
+    /// changes wait. Empty otherwise.
+    pub outbox_note: String,
+    /// `PendingCount`, `PendingBytes`, `BlockedCount`: the outbox as its
+    /// worker last saw it.
+    pub pending_count: u32,
+    pub pending_bytes: u64,
+    pub blocked_count: u32,
+    /// `HeldCount`: removals the mass-delete guard holds for `ConfirmDeletes`
+    /// or `RestoreDeletes` (the outbox on the bus).
+    pub held_count: u32,
+    /// `Paused` and `PausedUntil`: `Some(until)` while paused, unix seconds,
+    /// 0 meaning until resumed (`outbox_api`).
+    pub paused_until: Option<i64>,
+    /// `Uploads`: (full path, bytes sent, bytes in all), as `Transfers`.
+    pub uploads: Vec<(String, u64, u64)>,
 }
 
 impl Default for SyncSnapshot {
@@ -560,6 +592,15 @@ impl Default for SyncSnapshot {
             pinned_count: 0,
             helper_state: HelperState::Unknown,
             waits_for_helper: false,
+            watch_note: String::new(),
+            handles_note: String::new(),
+            outbox_note: String::new(),
+            pending_count: 0,
+            pending_bytes: 0,
+            blocked_count: 0,
+            held_count: 0,
+            paused_until: None,
+            uploads: Vec::new(),
         }
     }
 }
@@ -654,6 +695,9 @@ pub fn published_error(s: &SyncSnapshot) -> String {
         s.last_error.as_str(),
         s.sync_trouble.as_ref().map_or("", |t| t.text.as_str()),
         s.replacement_note.as_str(),
+        s.watch_note.as_str(),
+        s.handles_note.as_str(),
+        s.outbox_note.as_str(),
     ]
     .into_iter()
     .filter(|part| !part.is_empty())
@@ -730,8 +774,31 @@ pub enum SyncError {
     /// [`pin::refusal`]'s, naming the path refused and what pins it.
     #[error("{0}")]
     NotAllowed(String),
+    /// A free-up of a file with a change waiting to be uploaded (write design
+    /// §3.8): the message names it.
+    #[error("{0} is not uploaded yet, so freeing it up would lose the changes made here")]
+    NotUploaded(String),
+    /// An argument no value of which makes sense (`SetIgnorePatterns`).
+    #[error("{0}")]
+    InvalidArgs(String),
+    /// A Forget, or `Accounts1.Remove`, while changes wait to be uploaded:
+    /// the tree store holding them would go. The message says how many, and what to do.
+    #[error("{0}")]
+    PendingUploads(String),
     #[error("{0}")]
     Io(String),
+}
+
+/// A Forget's refusal while `waiting` changes wait to be uploaded.
+fn refuse_waiting(waiting: u64) -> Result<(), SyncError> {
+    match waiting {
+        0 => Ok(()),
+        n => Err(SyncError::PendingUploads(format!(
+            "{n} change(s) made here have not been uploaded yet, and would be lost with the folder's \
+             record; wait until they are uploaded, or drop them with a forced switch of the account \
+             to read-only (the files stay here as they are), then try again"
+        ))),
+    }
 }
 
 impl From<RegisterError> for SyncError {
@@ -865,6 +932,36 @@ pub struct SyncService {
     /// for. Shared with a OneDrive folder's sync, which queues what it places
     /// under a pin and sweeps after every Full reconcile.
     pins: Arc<pin::Pins>,
+    /// The account's mode as the folder follows it (`docs/design/writes.md` §2, §2.2):
+    /// read-only keeps a OneDrive folder under the lock, read-write lifts it.
+    /// Changed only by [`write_mode`]'s switch, with `lifecycle` held for
+    /// writing and the sync stopped, so a running sync never sees it change.
+    mode: Mutex<Mode>,
+    /// This service, for the watcher's status hook, which may have to stop
+    /// the sync from the watcher's thread (the folder moved or deleted).
+    me: std::sync::Weak<SyncService>,
+    /// The per-root tree lock (`docs/design/writes.md` §9): the outbox worker holds it
+    /// across each commit that touches `items`, and a cycle must hold it from
+    /// staging to swap, or the swap reverts the commit.
+    tree_lock: Arc<tokio::sync::Mutex<()>>,
+    /// The account's ignore list (`docs/design/writes.md` §4.4), from `config.toml`: the
+    /// watcher's examination reads it, `SetIgnorePatterns` changes it.
+    ignore: local::ignore::SharedIgnore,
+    /// The one timer that ends a timed pause on the bus (`outbox_api`).
+    pause_timer: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// How many times the pause was shown: the timer ends it on the bus only
+    /// if no `Pause` or `Resume` came after it read the store (the outbox on the bus).
+    pause_shown: std::sync::atomic::AtomicU64,
+    /// Set by a forced switch's drop of the outbox (`PendingUploads::drop_pending_uploads`):
+    /// the folder's turn to read-only drops what its watcher recorded since, and only then
+    /// does a turn to read-only drop anything.
+    drop_at_read_only: std::sync::atomic::AtomicBool,
+    /// Works the account's mode out again when the write gate closes under the outbox worker
+    /// ([`set_mode_check`](Self::set_mode_check)). None in tests.
+    mode_check: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    /// Told the drive the account's token reaches when a cycle finds it is not the folder's:
+    /// the account's own, set where the account is wired up.
+    drive_seen: Mutex<Option<listing::DriveSeen>>,
 }
 
 /// A OneDrive folder's sync while it runs.
@@ -876,6 +973,15 @@ struct Syncing {
     /// and stopped with the poller, so a Forget leaves no clone of the tree
     /// store with it either. `None` when [`SyncPaths::thumbnails`] is.
     thumbnails: Option<(tokio::task::JoinHandle<()>, CancellationToken)>,
+    /// A read-write folder's watcher: started in the same critical
+    /// section that publishes this `Syncing`, and stopped by whoever takes it,
+    /// so it lives exactly as long as the sync. `None` for a
+    /// read-only folder.
+    watcher: Option<write_mode::Watcher>,
+    /// A read-write folder's outbox worker, which sends the rows the
+    /// watcher's examination records: started and stopped with the watcher,
+    /// in the same places. `None` for a read-only folder.
+    outbox: Option<upload::OutboxWorker>,
 }
 
 /// A registered root and how — or whether — opens inside it are intercepted.
@@ -997,6 +1103,11 @@ impl SyncService {
                 hub: Arc::clone(hub),
                 link: hub.link_cell(),
                 account,
+                ignore: outbox_api::configured_ignore(persist.as_ref()),
+                pause_timer: Mutex::new(None),
+                pause_shown: std::sync::atomic::AtomicU64::new(0),
+                drop_at_read_only: std::sync::atomic::AtomicBool::new(false),
+                mode_check: Mutex::new(None),
                 persist,
                 report: Report::new(state.clone()),
                 state,
@@ -1011,6 +1122,10 @@ impl SyncService {
                 store: Mutex::new(None),
                 baloo: Mutex::new(Arc::new(Baloo::disabled())),
                 held: Mutex::new(None),
+                mode: Mutex::new(Mode::ReadOnly),
+                me: me.clone(),
+                tree_lock: Arc::new(tokio::sync::Mutex::new(())),
+                drive_seen: Mutex::new(None),
             })
         })
     }
@@ -1039,6 +1154,26 @@ impl SyncService {
     /// Without one, every folder is local.
     pub fn set_drive(&self, drive: crate::drive::DriveClient) {
         *self.drive.lock().unwrap() = Some(drive);
+    }
+
+    /// What a cycle tells when the account's token reaches another drive than the folder's:
+    /// the account records it and works its mode out again.
+    pub fn set_drive_seen(&self, seen: listing::DriveSeen) {
+        *self.drive_seen.lock().unwrap() = Some(seen);
+    }
+
+    /// What this folder's cycles ask of, or tell, the rest of the daemon.
+    fn neighbours(&self) -> listing::Neighbours {
+        let me = self.me.clone();
+        listing::Neighbours {
+            claimed: self.claims(),
+            drive_seen: Arc::new(move |drive| {
+                let seen = me.upgrade().and_then(|service| service.drive_seen.lock().unwrap().clone());
+                if let Some(seen) = seen {
+                    seen(drive);
+                }
+            }),
+        }
     }
 
     /// What keeps a fresh OneDrive folder out of KDE's Baloo indexer.
@@ -1806,7 +1941,15 @@ impl SyncService {
     }
 
     /// [`unregister_root`](Self::unregister_root) and [`retire`](Self::retire).
+    ///
+    /// Refused `PendingUploads` while changes wait to be uploaded: the tree
+    /// store that holds them goes with the folder. Asked before anything changes — the watcher
+    /// hands over what it holds first — and again once the sync has stopped.
     async fn forget(&self, retire: bool) -> Result<(), SyncError> {
+        // Without the lifecycle lock: a reconcile, or a switch waiting for it, must not keep
+        // the Forget from stopping the sync first.
+        self.flush_watcher().await;
+        refuse_waiting(self.changes_in_store().await?)?;
         // The tasks only, outside the lock; the activity is let go of under
         // it (B-M1), where no reconnect can have started a sync meanwhile.
         let was_syncing = self.stop_tasks().await;
@@ -1814,6 +1957,12 @@ impl SyncService {
         let was_syncing = self.stop_tasks().await || was_syncing;
         if was_syncing {
             self.let_go_of_activity().await;
+        }
+        if let Err(refused) = self.changes_in_store().await.and_then(refuse_waiting) {
+            if was_syncing {
+                self.start_sync().await;
+            }
+            return Err(refused);
         }
         self.restore_locked().await;
         // A held-back account never brings its folder up, but a folder the
@@ -1830,6 +1979,12 @@ impl SyncService {
                 None => return Err(SyncError::NoRoot),
             },
         };
+        // A move out of the folder still in its store goes with it (the count above leaves none):
+        // what it left outside is tidied first, while the helper still holds the folder, and the
+        // hub stops routing its ids.
+        if reg.source == RootSource::OneDrive {
+            self.drop_moved_out(&reg.root).await;
+        }
         let result = self.forget_locked(&reg).await;
         if result.is_ok() {
             if retire {
@@ -1891,6 +2046,7 @@ impl SyncService {
             s.skipped_count = 0;
             s.sync_trouble = None;
             s.replacement_note.clear();
+            s.outbox_note.clear();
             s.last_checked = 0;
             s.local_bytes = 0;
             s.conflict_count = 0;
@@ -1943,12 +2099,19 @@ impl SyncService {
         let Some(reg) = self.registration() else { return };
         let configured = (self.drive.lock().unwrap().clone(), self.sync_paths.lock().unwrap().clone());
         let (Some(drive), Some(paths)) = configured else {
-            self.sync_cannot_start(format!(
-                "{} shows OneDrive, but no drive is configured; it is not kept in step",
-                reg.root.path.display()
-            ));
-            return;
+            let text = format!("{} shows OneDrive, but no drive is configured; it is not kept in step", reg.root.path.display());
+            return self.cannot_start(&reg.root, text).await;
         };
+        // The lock as the mode wants it (`docs/design/writes.md` §2.2): a walk a switch did not finish —
+        // the daemon stopped, or the folder was not up — is finished here. A read-only folder
+        // is locked before anything else, never left writable until a Full reconcile, which
+        // needs Graph. A read-write one is unlocked below, once its watcher has
+        // marked every directory, and before this sync's first cycle can change the folder:
+        // the cycle takes `lifecycle`, which the caller holds (the watcher).
+        let mut writable = self.mode() == Mode::ReadWrite;
+        if !writable {
+            self.ensure_locked(&reg.root).await;
+        }
         // Files are downloaded from the drive whether or not the folder can
         // be kept in step.
         let source: Arc<dyn ContentSource> = Arc::new(graph_source::GraphSource::new(drive.clone()));
@@ -1956,9 +2119,22 @@ impl SyncService {
         let tree_db = paths.tree_db.clone();
         let store = match tokio::task::spawn_blocking(move || crate::tree::TreeStore::open(&tree_db)).await {
             Ok(Ok(store)) => crate::tree::Store::new(store),
-            Ok(Err(e)) => return self.sync_cannot_start(format!("the tree store cannot be opened: {e}")),
-            Err(e) => return self.sync_cannot_start(format!("the tree store cannot be opened: {e}")),
+            Ok(Err(e)) => return self.cannot_start(&reg.root, format!("the tree store cannot be opened: {e}")).await,
+            Err(e) => return self.cannot_start(&reg.root, format!("the tree store cannot be opened: {e}")).await,
         };
+        // A read-only folder that still holds changes waiting to upload (a switch nobody
+        // forced) runs no cycle while they wait: what a read-write cycle
+        // deferred stays deferred for the read-write cycle that sends them.
+        let waiting = !writable && store.run(|s| s.outbox_rows()).await.map_or(true, |rows| !rows.is_empty());
+        if !writable && !waiting {
+            // Changes a read-write cycle deferred are the base's now: a read-only cycle knows
+            // none. Nothing at all for a folder that never was read-write.
+            match store.run(|s| s.apply_deferred()).await {
+                Ok(0) => {}
+                Ok(n) => tracing::info!("{n} change(s) from OneDrive that waited for local changes are applied now"),
+                Err(e) => tracing::warn!("cannot apply the changes from OneDrive that waited: {e}"),
+            }
+        }
         // The activity log and the conflicts are kept in this
         // store from now on, and `LastChecked` is where the last run left it.
         // Every caller holds `lifecycle` for writing, so no other start can
@@ -1973,6 +2149,21 @@ impl SyncService {
         .flatten()
         .unwrap_or(0);
         self.state.update(|s| s.last_checked = last_checked);
+        // Local changes are looked for in a read-write folder only (`docs/design/writes.md` §3.1): from
+        // now on by the watcher, and once in full, for what changed while nothing watched —
+        // at every bring-up, and after a switch to read-write; the watcher's walk ends in that
+        // Full local scan. Started before the sync is published, and kept in it: whoever
+        // stops the sync stops it. A read-write folder whose watcher cannot start
+        // runs this sync locked, as a read-only one: no directory is ever made in it unwatched
+        // (the watcher).
+        // Its first examination is the Full local scan, which the folder's first delta cycle
+        // waits for (`docs/design/writes.md` §3).
+        let (scanned, first_scan) = tokio::sync::watch::channel(false);
+        let watcher = if writable { self.start_watcher_scanned(&reg.root, &store, Some(scanned)) } else { None };
+        if writable && watcher.is_none() {
+            writable = false;
+            self.ensure_locked(&reg.root).await;
+        }
         // The account's drive, as `config.toml` keeps it (A-M5, design §8.1):
         // the same-account check then survives a tree store rebuilt empty.
         let drive_record = self.persist.clone().map(|persist| {
@@ -1982,6 +2173,9 @@ impl SyncService {
         // Nudges the thumbnail filler right after a cycle, rather than making
         // it wait out its own idle timer.
         let kick = Arc::new(Notify::new());
+        // A read-write folder's cycle shares the tree lock with its outbox worker, and its
+        // first one waits for the watcher's Full local scan (`docs/design/writes.md` §3, §9).
+        let writes = writable.then(|| self.cycle_writes(Some(first_scan)));
         let listing = listing::Listing::new(listing::ListingContext {
             root: reg.root.clone(),
             intercepted: reg.intercepted,
@@ -1998,6 +2192,11 @@ impl SyncService {
             after_cycle: Some(Arc::clone(&kick)),
             report: self.report.clone(),
             pins: Arc::clone(&self.pins),
+            locked: !writable,
+            writes,
+            // Another account's objects are never removed here, and the
+            // account hears of a drive that is not the folder's (m2).
+            neighbours: Some(self.neighbours()),
         });
         let schedule = self.schedule.lock().unwrap().clone();
         // Checked again and kept in one critical section: a second start that
@@ -2005,29 +2204,60 @@ impl SyncService {
         // first sync alone. Replacing it would drop a `Poller` that runs on
         // with nothing left to stop it; the lifecycle lock every caller holds
         // is what keeps two starts apart, not this.
-        let mut syncing = self.syncing.lock().unwrap();
-        if syncing.is_some() {
-            return;
+        let published = {
+            let mut syncing = self.syncing.lock().unwrap();
+            if syncing.is_some() {
+                Err(watcher)
+            } else {
+                *self.store.lock().unwrap() = Some(store.clone());
+                let poller = listing::Poller::start(listing, schedule);
+                let sign_in_watch = self
+                    .account
+                    .as_ref()
+                    .map(|account| tokio::spawn(nudge_on_sign_in(account.subscribe(), Arc::clone(&self.syncing))));
+                // The outbox worker: it sends the rows the watcher's
+                // examination records, and looks at those already there as it
+                // starts.
+                let outbox = if writable { self.start_outbox(&reg.root, &store, &drive) } else { None };
+                // Its own task, stopped with the poller: a slow thumbnail request
+                // never holds up the reconcile. None at all without a cache to fill.
+                let thumbnails = paths.thumbnails.clone().map(|cache| {
+                    let cancel = CancellationToken::new();
+                    let task = thumbs::ThumbnailFiller::new(drive, store, reg.root.clone(), cache).spawn(kick, cancel.clone());
+                    (task, cancel)
+                });
+                let walked = watcher.as_ref().map(write_mode::Watcher::walked);
+                *syncing = Some(Syncing { poller, sign_in_watch, thumbnails, watcher, outbox });
+                Ok(walked)
+            }
+        };
+        // `Paused` as the store keeps it, and a timer for a pause that ends.
+        self.show_pause();
+        match published {
+            // No directory is made in the folder before it is watched (write design Z2).
+            Ok(Some(walked)) => self.ensure_unlocked(&reg.root, walked).await,
+            Ok(None) => {}
+            // Another start won: this one's watcher goes.
+            Err(watcher) => {
+                if let Some(watcher) = watcher {
+                    self.stop_watcher(watcher).await;
+                }
+            }
         }
-        *self.store.lock().unwrap() = Some(store.clone());
-        let poller = listing::Poller::start(listing, schedule);
-        let sign_in_watch = self
-            .account
-            .as_ref()
-            .map(|account| tokio::spawn(nudge_on_sign_in(account.subscribe(), Arc::clone(&self.syncing))));
-        // Its own task, stopped with the poller: a slow thumbnail request
-        // never holds up the reconcile. None at all without a cache to fill.
-        let thumbnails = paths.thumbnails.clone().map(|cache| {
-            let cancel = CancellationToken::new();
-            let task = thumbs::ThumbnailFiller::new(drive, store, reg.root.clone(), cache).spawn(kick, cancel.clone());
-            (task, cancel)
-        });
-        *syncing = Some(Syncing { poller, sign_in_watch, thumbnails });
     }
 
     /// Why a OneDrive folder is not kept in step, said as blocking trouble:
     /// nothing retries it on its own; a `Refresh()` does, as
     /// does bringing the folder up again.
+    /// [`sync_cannot_start`](Self::sync_cannot_start), and the lock put back on
+    /// the folder, whatever its mode: with no sync, no watcher looks at it, so
+    /// a read-write folder a run left unlocked must not stay so (the watcher re-review
+    /// R2-1), and a read-only one never is.
+    async fn cannot_start(&self, root: &SyncRoot, text: String) {
+        self.sync_cannot_start(text);
+        self.ensure_locked(root).await;
+    }
+
     fn sync_cannot_start(&self, text: String) {
         tracing::error!("{text}");
         self.state.update(|s| s.sync_trouble = Some(SyncTrouble { text, blocking: true }));
@@ -2051,15 +2281,32 @@ impl SyncService {
     async fn stop_tasks(&self) -> bool {
         let syncing = self.syncing.lock().unwrap().take();
         let Some(syncing) = syncing else { return false };
-        if let Some(watch) = syncing.sign_in_watch {
-            watch.abort();
-        }
         // Told before the poller is waited for, so that both wind down at
         // once.
         if let Some((_, cancel)) = &syncing.thumbnails {
             cancel.cancel();
         }
+        // The poller first (the read-write reconcile): a cycle may hold the tree lock while it waits for
+        // `lifecycle`, which the caller may hold for writing, and the watcher's examination
+        // waits for that tree lock — stopping the poller ends that cycle, and its lock with it.
         syncing.poller.stop().await;
+        // Its outbox worker next: a request under way is cut off, and its row replayed when
+        // the worker starts again (`docs/design/writes.md` §10) — and a commit it holds the tree lock for,
+        // waiting on a file a fill holds, does not keep the examination below waiting for as
+        // long as that download (the read-write reconcile).
+        if let Some(outbox) = syncing.outbox {
+            outbox.stop().await;
+            // Its counts go with it (the outbox on the bus); the next worker counts again.
+            self.clear_outbox_counts();
+        }
+        // A read-write folder's watcher goes with its sync (`docs/design/writes.md` §3): this call took
+        // the sync, so it stops the watcher that came with it, and no other call can.
+        if let Some(watcher) = syncing.watcher {
+            self.stop_watcher(watcher).await;
+        }
+        if let Some(watch) = syncing.sign_in_watch {
+            watch.abort();
+        }
         if let Some((task, _)) = syncing.thumbnails {
             let _ = task.await;
         }
@@ -2085,6 +2332,8 @@ impl SyncService {
     /// folder forgotten earlier when a new one is registered.
     async fn remove_tree_store(&self) {
         *self.store.lock().unwrap() = None;
+        // Its pause went with it (the outbox on the bus).
+        self.forget_pause();
         let Some(paths) = self.sync_paths.lock().unwrap().clone() else { return };
         if let Err(e) = tokio::task::spawn_blocking(move || remove_tree_files(&paths.tree_db)).await {
             tracing::warn!("the task removing the tree store failed: {e}");
@@ -2224,6 +2473,10 @@ impl SyncService {
                 }
             }
         }
+        // What left the folder is marked again first (`docs/design/writes.md` §10), then the helper marked
+        // nothing new while it was away (§3.3).
+        self.outbox_helper_back();
+        self.watcher_helper_back();
     }
 
     /// Holds the intercepted root `config.toml` records, if the daemon does
@@ -2547,6 +2800,8 @@ impl SyncService {
     /// step with (HS2): no link, or no interception yet.
     pub async fn refresh(&self) -> Result<(), SyncError> {
         self.require_helper_for(&self.require_onedrive()?)?;
+        // The outbox too (`docs/design/writes.md` §11): rows in backoff go now.
+        self.retry_outbox();
         if self.nudge() {
             return Ok(());
         }
@@ -2583,8 +2838,10 @@ impl SyncService {
         Ok(reg)
     }
 
-    /// A cycle now, if a OneDrive folder is syncing (the network came back).
+    /// A cycle now, if a OneDrive folder is syncing (the network came back). A read-write
+    /// folder's outbox waits for that cycle (`docs/design/writes.md` §9).
     pub fn refresh_now(&self) {
+        self.outbox_after_network();
         self.nudge();
     }
 
@@ -2594,6 +2851,18 @@ impl SyncService {
         match self.syncing.lock().unwrap().as_ref() {
             Some(syncing) => {
                 syncing.poller.refresh();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A cycle now with a Full reconcile, which places again what is missing
+    /// here (`RestoreDeletes`, a forgotten local object). Whether a sync runs.
+    fn nudge_full(&self) -> bool {
+        match self.syncing.lock().unwrap().as_ref() {
+            Some(syncing) => {
+                syncing.poller.refresh_full();
                 true
             }
             None => false,
@@ -2834,6 +3103,8 @@ impl SyncService {
                 }
                 Err(SyncError::InUse) => freed.busy += 1,
                 Err(SyncError::ModifiedLocally) => freed.modified += 1,
+                // Counted as busy, as `FreeUpSpace` says: it waits to go up.
+                Err(SyncError::NotUploaded(_)) => freed.busy += 1,
                 Err(e @ (SyncError::NoHelper | SyncError::NoRoot)) => return (freed, Some(e)),
                 Err(e) => tracing::info!("{} is not freed up: {e}", path.display()),
             }
@@ -2947,10 +3218,18 @@ impl SyncService {
     /// [`check_unpinnable`](Self::check_unpinnable)'s rules, and a folder
     /// with interception has its helper (`NoHelper`).
     pub async fn check_free_up(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        if self.require_registration()?.intercepted {
+        let reg = self.require_registration()?;
+        if reg.intercepted {
             self.require_link()?;
         }
-        self.check_unpinnable(paths).await
+        self.check_unpinnable(paths).await?;
+        // A file named itself with a change waiting to go up refuses the whole
+        // call, before any account frees anything (the outbox on the bus).
+        let targets = self.pin_targets(&reg.root, paths).await?;
+        for target in targets.iter().filter(|t| !t.is_dir) {
+            self.refuse_unuploaded(&target.item, &target.shown.display().to_string())?;
+        }
+        Ok(())
     }
 
     /// `Unpin(paths)`, unchecking "Always keep on this device": each path's
@@ -3007,6 +3286,11 @@ impl SyncService {
         let targets = self.pin_targets(&reg.root, paths).await?;
         if let Some(refusal) = kept_by_folder(&targets) {
             return Err(refusal);
+        }
+        // A file named itself, whose change waits to be uploaded, is refused as
+        // a whole (`docs/design/writes.md` §11); inside a folder it is left and counted.
+        for target in targets.iter().filter(|t| !t.is_dir) {
+            self.refuse_unuploaded(&target.item, &target.shown.display().to_string())?;
         }
         let walks: Vec<(PathBuf, bool)> = targets.iter().map(|t| (t.shown.clone(), t.is_dir)).collect();
         // The other descriptors close here: one of our own left open on a
@@ -3090,6 +3374,9 @@ impl SyncService {
             Wait::Yes => self.locks.lock(key).await,
             Wait::No => self.locks.try_lock(key).ok_or(SyncError::InUse)?,
         };
+        // A change waiting to be uploaded is only here (`docs/design/writes.md` §11):
+        // looked at under the inode lock, and refused when it cannot be told.
+        self.refuse_unuploaded(&file, &shown)?;
         let _lifecycle = self.lifecycle.read().await;
         let reg = match self.registration() {
             Some(now) if now.root.path == reg.root.path && now.root.root_id == reg.root.root_id => now,
@@ -4555,7 +4842,7 @@ mod tests {
                     }
                     while let Ok((message, fd)) = channel.recv::<ToHelper>() {
                         let note = match &message {
-                            ToHelper::Hello { .. } | ToHelper::UnmarkDir => None,
+                            ToHelper::Hello { .. } | ToHelper::UnmarkDir | ToHelper::OpenByHandle { .. } => None,
                             ToHelper::RegisterRoot { .. } => Some(Seen::RegisterRoot),
                             ToHelper::UnregisterRoot { .. } => Some(Seen::UnregisterRoot),
                             ToHelper::MarkDir => {
@@ -7596,6 +7883,29 @@ mod tests {
             service_with(w, account(signed_in), Some(link(w).await), Arc::new(StaticToken::new("T")))
         }
 
+        /// The world's account as the write gate lets it change OneDrive:
+        /// `config.toml` says read-write and lists its drive, its token can write and was seen
+        /// to reach that drive, and the account runs read-write.
+        fn let_write(service: &SyncService) {
+            use crate::config::{ConfigError, Mode};
+            let persist = service.persist.as_ref().unwrap();
+            persist
+                .store
+                .update(|c| {
+                    c.write_test_drive_ids = vec!["D1".into()];
+                    let account = c.accounts.iter_mut().find(|a| a.id == persist.account).unwrap();
+                    account.mode = Mode::ReadWrite;
+                    account.drive_id = "D1".into();
+                    Ok::<_, ConfigError>(())
+                })
+                .unwrap();
+            service.account.as_ref().unwrap().update(|s| {
+                s.mode = Mode::ReadWrite;
+                s.granted_scopes = "Files.ReadWrite offline_access".into();
+                s.live_drive = "D1".into();
+            });
+        }
+
         /// A fake `balooctl6`, so these tests never reach the real Baloo
         ///: `config add`/`config rm` are logged to `calls`, one
         /// call per line. What is excluded already is read from the
@@ -8262,7 +8572,7 @@ mod tests {
             restarted.stop_sync().await;
         }
 
-        /// A OneDrive folder is locked read-only after its first listing (W2),
+        /// A OneDrive folder is locked read-only after its first listing,
         /// the folder itself too, and bringing it up again after a restart
         /// re-checked it with a write probe — refused, so no locked folder came
         /// back after a restart, in either mode: "cannot bring up the sync
@@ -8302,6 +8612,689 @@ mod tests {
                 assert_eq!(mode(w.folder.path()), 0o555, "and it stays locked");
                 restarted.stop_sync().await;
             }
+        }
+
+        /// Write design §3.9: the account turning read-write takes the read-only lock off
+        /// its folder — files `0644`, directories `0755`, the folder itself last — and the
+        /// sync that starts again leaves it off through a Full reconcile; turning read-only
+        /// puts it back on at once. A folder brought up read-write with the lock still on — a
+        /// switch cut short — loses it as it comes up.
+        #[tokio::test]
+        async fn the_lock_comes_off_and_goes_back_on_with_the_mode() {
+            use crate::config::Mode;
+            let w = world().await;
+            let modes = || {
+                let folder = w.folder.path();
+                (mode(&folder.join("docs/f.txt")), mode(&folder.join("docs")), mode(folder))
+            };
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            assert_eq!(modes(), (0o444, 0o555, 0o555));
+
+            let before = deltas(&w).await;
+            service.follow_mode(Mode::ReadWrite).await;
+            assert_eq!(modes(), (0o644, 0o755, 0o755));
+            // The sync runs again: its first cycle, a Full reconcile, is over once a second
+            // cycle has asked for changes.
+            wait_for_deltas(&w, before).await;
+            service.refresh().await.unwrap();
+            wait_for_deltas(&w, before + 1).await;
+            assert_eq!(modes(), (0o644, 0o755, 0o755), "a read-write folder's reconcile leaves the lock off");
+
+            service.follow_mode(Mode::ReadOnly).await;
+            assert_eq!(modes(), (0o444, 0o555, 0o555));
+            service.stop_sync().await;
+            service.set_link(None);
+
+            // Read-write in config.toml again, but the walk never ran: the next bring-up runs it.
+            let restarted = connected(&w, true).await;
+            restarted.start_in_mode(Mode::ReadWrite);
+            restarted.restore().await;
+            restarted.resume().await;
+            assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
+            assert_eq!(modes(), (0o644, 0o755, 0o755));
+            restarted.stop_sync().await;
+            restarted.set_link(None);
+
+            // Read-only again, and the lock walk never ran — the daemon stopped
+            // first. The bring-up puts the lock back at once, with no Full reconcile to do it:
+            // this one cannot reach OneDrive.
+            let offline = Arc::new(StaticToken::new("T"));
+            offline.invalidate().await;
+            let read_only = service_with(&w, account(true), Some(link(&w).await), offline);
+            read_only.restore().await;
+            read_only.resume().await;
+            assert_eq!(read_only.mode(), Mode::ReadOnly);
+            assert_eq!(modes(), (0o444, 0o555, 0o555), "never writable while the account is read-only");
+            read_only.stop_sync().await;
+        }
+
+        /// the watcher on the mode switch's hooks: a read-write folder's sync runs the watcher (the lock came off
+        /// once it had walked the folder), and a file another process makes in the folder is
+        /// counted as waiting to be uploaded the moment the switch to read-only asks, quiet
+        /// spell or not (the watcher); a read-only folder has no watcher.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_file_made_in_a_read_write_folder_waits_to_be_uploaded() {
+            use crate::account::PendingUploads;
+            use crate::config::Mode;
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let watching = |service: &SyncService| service.syncing.lock().unwrap().as_ref().is_some_and(|s| s.watcher.is_some());
+            assert!(!watching(&service), "read-only");
+
+            service.follow_mode(Mode::ReadWrite).await;
+            assert!(watching(&service));
+            assert_eq!(mode(&w.folder.path().join("docs")), 0o755);
+            let made = std::process::Command::new("sh")
+                .args(["-c", "echo new > docs/new.txt"])
+                .current_dir(w.folder.path())
+                .status()
+                .unwrap();
+            assert!(made.success());
+            assert_eq!(service.pending_uploads().await, 1);
+            // `PendingCount` as the worker counts it.
+            wait_until("the worker counted the change", || service.state().get().pending_count == 1).await;
+
+            // A forced switch (only that drops them): the drop, then the
+            // folder follows.
+            service.drop_pending_uploads().await;
+            service.follow_mode(Mode::ReadOnly).await;
+            assert!(!watching(&service), "stopped with the sync");
+            // A read-only folder uploads nothing; its rows are dropped, the file stays.
+            assert_eq!(service.pending_uploads().await, 0);
+            // the outbox on the bus: and the bus says so.
+            assert_eq!(service.state().get().pending_count, 0);
+            assert!(w.folder.path().join("docs/new.txt").exists());
+            service.stop_sync().await;
+        }
+
+        /// the outbox worker on the mode switch's and the watcher's hooks: a read-write folder's sync runs the outbox worker beside
+        /// the watcher; a file made in the folder is examined, the worker is woken, and the
+        /// file goes up and is committed — its item id on it, nothing left waiting.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_file_made_in_a_read_write_folder_is_uploaded() {
+            use crate::account::PendingUploads;
+            use crate::config::Mode;
+            use wiremock::matchers::path_regex;
+            let w = world().await;
+            let mut hasher = crate::quickxor::QuickXor::new();
+            hasher.update(b"new\n");
+            Mock::given(method("POST"))
+                .and(path_regex("/me/drive/items/D:/new.txt:/createUploadSession$"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "uploadUrl": format!("{}/upload/s1", w.server.uri()),
+                    "expirationDateTime": "2099-01-01T00:00:00Z"
+                })))
+                .mount(&w.server)
+                .await;
+            Mock::given(method("PUT"))
+                .and(path("/upload/s1"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                    "id": "N1", "name": "new.txt", "size": 4, "eTag": "e-N1", "cTag": "c-N1",
+                    "parentReference": {"id": "D"},
+                    "file": {"hashes": {"quickXorHash": hasher.finish_base64()}}
+                })))
+                .mount(&w.server)
+                .await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let_write(&service);
+            service.follow_mode(Mode::ReadWrite).await;
+            assert!(service.syncing.lock().unwrap().as_ref().is_some_and(|s| s.outbox.is_some()), "beside the watcher");
+            let mut announced = service.report().activity.subscribe();
+            let made = std::process::Command::new("sh")
+                .args(["-c", "echo new > docs/new.txt"])
+                .current_dir(w.folder.path())
+                .status()
+                .unwrap();
+            assert!(made.success());
+            let file = w.folder.path().join("docs/new.txt");
+            let committed = || xattr::get(&file, konedrive_fs::placeholder::XATTR_ITEM_ID).ok().flatten();
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while committed().is_none() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert_eq!(committed().as_deref(), Some(&b"N1"[..]), "uploaded and committed");
+            assert_eq!(service.pending_uploads().await, 0);
+            // The live signal, and the counts the bus publishes.
+            let event = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let event = announced.recv().await.unwrap();
+                    if event.kind == "uploaded" {
+                        return event;
+                    }
+                }
+            })
+            .await
+            .expect("ActivityAdded for the upload");
+            assert_eq!(event.path, file.display().to_string());
+            wait_until("the outbox counted empty", || service.state().get().pending_count == 0).await;
+            assert!(service.state().get().uploads.is_empty());
+
+            service.follow_mode(Mode::ReadOnly).await;
+            assert!(service.syncing.lock().unwrap().as_ref().is_some_and(|s| s.outbox.is_none()), "stopped with the sync");
+            service.stop_sync().await;
+        }
+
+        /// the outbox on the bus, `Pause`: a paused account asks OneDrive for nothing — not on
+        /// `Refresh`, not after a restart, since the pause is kept in the tree
+        /// store — until `Resume`; a timed pause ends by itself.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            service.pause_syncing(0).await.unwrap();
+            assert_eq!(service.state().get().paused_until, Some(0));
+            let before = deltas(&w).await;
+            service.refresh().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(deltas(&w).await, before, "a paused account asks OneDrive for nothing");
+            service.stop_sync().await;
+            service.set_link(None);
+
+            let restarted = connected(&w, true).await;
+            restarted.restore().await;
+            restarted.resume().await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(restarted.state().get().paused_until, Some(0), "the pause outlasts a restart");
+            assert_eq!(deltas(&w).await, before);
+            restarted.resume_syncing().await.unwrap();
+            wait_for_deltas(&w, before).await;
+            assert_eq!(restarted.state().get().paused_until, None);
+
+            restarted.pause_syncing(1).await.unwrap();
+            assert!(restarted.state().get().paused_until.is_some_and(|until| until > 0));
+            wait_until("the timed pause ends by itself", || restarted.state().get().paused_until.is_none()).await;
+            restarted.stop_sync().await;
+        }
+
+        /// the outbox on the bus: the outbox as the bus shows it — `Outbox()`, `NotUploaded()`, the
+        /// mass-delete guard's two answers — and a free-up of a file whose change
+        /// waits to be uploaded, refused `NotUploaded`.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up() {
+            use crate::tree::outbox::{Base, Detection, OutboxKind, OutboxState};
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let store = service.store.lock().unwrap().clone().unwrap();
+            let file = w.folder.path().join("docs/f.txt");
+            let base = Base { etag: None, ctag: Some("c1".into()), parent: Some("D".into()), name: Some("f.txt".into()) };
+            let change = Detection {
+                kind: OutboxKind::Update,
+                item_id: Some("F".into()),
+                inode: None,
+                rel: "docs/f.txt".into(),
+                base: Some(base.clone()),
+                target_parent: Some("D".into()),
+                target_name: Some("f.txt".into()),
+                same_content: false,
+                state: OutboxState::Ready,
+                reason: None,
+                next_try: None,
+            };
+            store.with(|s| s.outbox_record(&change)).unwrap();
+
+            let rows = service.outbox(0).await.unwrap();
+            assert_eq!(rows.len(), 1);
+            let (_, kind, path, state, _, _, _, _) = &rows[0];
+            assert_eq!((kind.as_str(), path.as_str(), state.as_str()), ("update", file.to_str().unwrap(), "ready"));
+            // A placeholder has nothing to lose: its own refusal.
+            assert!(matches!(service.dehydrate(&file).await, Err(SyncError::NotHydrated)));
+            // Downloaded (by hand: the world serves no content), it is refused
+            // NotUploaded, whole calls included, and stays downloaded.
+            let mode = std::fs::metadata(&file).unwrap().permissions().mode();
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+            {
+                let opened = std::fs::OpenOptions::new().write(true).open(&file).unwrap();
+                use std::io::Write as _;
+                (&opened).write_all(b"abc").unwrap();
+                konedrive_fs::placeholder::write_state(&opened, konedrive_fs::placeholder::State::Hydrated).unwrap();
+                konedrive_fs::placeholder::write_stamp(&opened).unwrap();
+            }
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(mode)).unwrap();
+            let refused = service.dehydrate(&file).await.unwrap_err();
+            assert!(matches!(refused, SyncError::NotUploaded(_)), "{refused:?}");
+            assert!(matches!(service.check_free_up(std::slice::from_ref(&file)).await, Err(SyncError::NotUploaded(_))), "before anything changes");
+            assert!(matches!(service.free_up(std::slice::from_ref(&file)).await, Err(SyncError::NotUploaded(_))));
+            assert_eq!(std::fs::read(&file).unwrap(), b"abc", "still downloaded");
+
+            let seq = rows[0].0 as i64;
+            store.with(|s| s.outbox_set_state(seq, OutboxState::Blocked, Some("name-characters"), None)).unwrap();
+            assert_eq!(service.not_uploaded().await.unwrap(), vec![(file.display().to_string(), "name-characters".to_owned())]);
+
+            store.with(|s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
+            assert_eq!(service.confirm_deletes().await.unwrap(), 1);
+            assert_eq!(service.outbox(0).await.unwrap()[0].3, "ready");
+            store.with(|s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
+            assert_eq!(service.restore_deletes().await.unwrap(), 1);
+            assert!(service.outbox(0).await.unwrap().is_empty());
+            service.stop_sync().await;
+        }
+
+        /// the outbox on the bus: deletes held by the mass-delete guard are counted
+        /// on the bus (`HeldCount`), and `RestoreDeletes` brings the files back
+        /// at once — a Full reconcile, though OneDrive did not change them — and
+        /// deletes nothing in OneDrive.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn restoring_held_deletes_brings_the_files_back_at_once() {
+            use crate::tree::outbox::{Base, Detection, OutboxKind, OutboxState};
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            service.follow_mode(Mode::ReadWrite).await;
+            let file = w.folder.path().join("docs/f.txt");
+            std::fs::remove_file(&file).unwrap();
+            let store = service.store.lock().unwrap().clone().unwrap();
+            let held = Detection {
+                kind: OutboxKind::Delete,
+                item_id: Some("F".into()),
+                inode: None,
+                rel: "docs/f.txt".into(),
+                base: Some(Base { etag: None, ctag: Some("c1".into()), parent: Some("D".into()), name: Some("f.txt".into()) }),
+                target_parent: None,
+                target_name: None,
+                same_content: false,
+                state: OutboxState::Held,
+                reason: Some("mass-delete".into()),
+                next_try: None,
+            };
+            store.with(|s| s.outbox_record(&held)).unwrap();
+            service.wake_outbox();
+            wait_until("HeldCount counts it", || service.state().get().held_count == 1).await;
+
+            assert_eq!(service.restore_deletes().await.unwrap(), 1);
+            wait_until("the file is placed again at once", || file.exists()).await;
+            wait_until("HeldCount is 0 again", || service.state().get().held_count == 0).await;
+            let deleted = w.server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() == "DELETE").count();
+            assert_eq!(deleted, 0, "nothing is deleted in OneDrive");
+            service.stop_sync().await;
+        }
+
+        /// the outbox on the bus: a free-up of a downloaded file in a OneDrive folder whose
+        /// outbox cannot be read is refused, not let through; the file stays.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_free_up_that_cannot_tell_whether_a_change_waits_refuses() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            service.follow_mode(Mode::ReadWrite).await;
+            let file = w.folder.path().join("docs/f.txt");
+            {
+                let opened = std::fs::OpenOptions::new().write(true).open(&file).unwrap();
+                use std::io::Write as _;
+                (&opened).write_all(b"abc").unwrap();
+                konedrive_fs::placeholder::write_state(&opened, konedrive_fs::placeholder::State::Hydrated).unwrap();
+                konedrive_fs::placeholder::write_stamp(&opened).unwrap();
+            }
+            service.stop_sync().await;
+            *service.store.lock().unwrap() = None;
+            let refused = service.dehydrate(&file).await.unwrap_err();
+            assert!(matches!(&refused, SyncError::Io(why) if why.contains("cannot tell")), "{refused:?}");
+            assert_eq!(std::fs::read(&file).unwrap(), b"abc", "still downloaded");
+        }
+
+        /// the outbox on the bus: a directory of the user's own that is newly ignored
+        /// takes the changes waiting inside it along — the outbox empties — and
+        /// nothing in it is uploaded, then or later.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn an_ignored_directory_keeps_everything_in_it_local() {
+            use crate::account::PendingUploads;
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            service.follow_mode(Mode::ReadWrite).await;
+            service.pause_syncing(0).await.unwrap();
+            let made = std::process::Command::new("sh")
+                .args(["-c", "mkdir -p build/obj && echo a > build/a.o && echo b > build/obj/b.o"])
+                .current_dir(w.folder.path())
+                .status()
+                .unwrap();
+            assert!(made.success());
+            assert_eq!(service.pending_uploads().await, 4, "the folders and the files wait");
+
+            let mut patterns = service.ignore_patterns();
+            patterns.push("build".into());
+            service.set_ignore_patterns(patterns).await.unwrap();
+            let mut left = u64::MAX;
+            for _ in 0..200 {
+                left = service.pending_uploads().await;
+                if left == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+            assert_eq!(left, 0, "the outbox empties");
+            std::fs::write(w.folder.path().join("build/c.o"), b"c").unwrap();
+            assert_eq!(service.pending_uploads().await, 0, "and stays empty");
+
+            service.resume_syncing().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            let uploads = w.server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() != "GET").count();
+            assert_eq!(uploads, 0, "nothing in it is sent");
+            service.stop_sync().await;
+        }
+
+        /// the outbox on the bus: a new file whose folder OneDrive no longer has asks
+        /// for a cycle, not a Full reconcile — which, before the read-write reconcile, put a rename
+        /// still waiting to go up back where the base has it (F63, closed). The
+        /// rename waiting beside it stands.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_missing_folder_asks_for_a_cycle_that_leaves_waiting_renames_alone() {
+            use crate::config::Mode;
+            let w = world().await;
+            // The rename cannot reach OneDrive yet; the new file's folder is
+            // gone there (nothing mocked for it: 404).
+            Mock::given(method("PATCH"))
+                .and(path("/me/drive/items/F"))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&w.server)
+                .await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let_write(&service);
+            let before = deltas(&w).await;
+            service.follow_mode(Mode::ReadWrite).await;
+            // The switch's own Full cycle is over once a later one has begun.
+            wait_for_deltas(&w, before).await;
+            service.refresh().await.unwrap();
+            wait_for_deltas(&w, before + 1).await;
+
+            let made = std::process::Command::new("sh")
+                .args(["-c", "mv docs/f.txt docs/g.txt && echo new > docs/new.txt"])
+                .current_dir(w.folder.path())
+                .status()
+                .unwrap();
+            assert!(made.success());
+            async fn asked(w: &World) -> usize {
+                w.server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() == "POST" && r.url.path().ends_with("createUploadSession")).count()
+            }
+            for _ in 0..300 {
+                if asked(&w).await > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(asked(&w).await > 0, "the new file was sent");
+            // The cycle the missing folder asked for is over once a later one
+            // has begun.
+            let seen = deltas(&w).await;
+            wait_for_deltas(&w, seen).await;
+            service.refresh().await.unwrap();
+            wait_for_deltas(&w, seen + 1).await;
+            let docs = w.folder.path().join("docs");
+            assert!(docs.join("g.txt").exists() && !docs.join("f.txt").exists(), "the rename waiting to go up stands");
+            assert!(docs.join("new.txt").exists());
+            service.stop_sync().await;
+        }
+
+        /// the outbox on the bus: a `Pause` that lands after the timer read the
+        /// store's pause as over is not undone on the bus: the timer looks
+        /// again.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_pause_that_lands_as_the_last_one_ends_stands() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            service.pause_syncing(3600).await.unwrap();
+            // The timer has read the store's pause as over…
+            let seen = service.pause_shown.load(std::sync::atomic::Ordering::SeqCst);
+            // …when a new `Pause` lands.
+            service.pause_syncing(7200).await.unwrap();
+            assert!(!service.pause_timer_done(seen, true), "the timer looks again");
+            assert!(service.state().get().paused_until.is_some_and(|until| until > 0), "still paused on the bus");
+            service.stop_sync().await;
+        }
+
+        /// The outbox worker asks the write gate before each row. A drive
+        /// taken off `write_test_drive_ids` while it runs sends nothing more: the change waits,
+        /// and the folder's `LastError` says why.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_drive_taken_off_the_list_while_the_worker_runs_sends_nothing_more() {
+            use crate::account::PendingUploads;
+            use crate::config::{ConfigError, Mode};
+            use wiremock::matchers::path_regex;
+            let w = world().await;
+            let mut hasher = crate::quickxor::QuickXor::new();
+            hasher.update(b"new\n");
+            Mock::given(method("POST"))
+                .and(path_regex("createUploadSession$"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "uploadUrl": format!("{}/upload/s1", w.server.uri()),
+                    "expirationDateTime": "2099-01-01T00:00:00Z"
+                })))
+                .mount(&w.server)
+                .await;
+            Mock::given(method("PUT"))
+                .and(path("/upload/s1"))
+                .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                    "id": "N1", "name": "new.txt", "size": 4, "eTag": "e-N1", "cTag": "c-N1",
+                    "parentReference": {"id": "D"},
+                    "file": {"hashes": {"quickXorHash": hasher.finish_base64()}}
+                })))
+                .mount(&w.server)
+                .await;
+            async fn sent(w: &World) -> usize {
+                w.server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() != "GET").count()
+            }
+            let make = |script: &str| {
+                let made = std::process::Command::new("sh").args(["-c", script]).current_dir(w.folder.path()).status().unwrap();
+                assert!(made.success());
+            };
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let_write(&service);
+            service.follow_mode(Mode::ReadWrite).await;
+            make("echo new > docs/new.txt");
+            let first = w.folder.path().join("docs/new.txt");
+            wait_until("the first change goes up", || {
+                xattr::get(&first, konedrive_fs::placeholder::XATTR_ITEM_ID).ok().flatten().is_some()
+            })
+            .await;
+            let before = sent(&w).await;
+
+            let persist = service.persist.as_ref().unwrap();
+            persist
+                .store
+                .update(|c| {
+                    c.write_test_drive_ids.clear();
+                    Ok::<_, ConfigError>(())
+                })
+                .unwrap();
+            make("echo second > docs/second.txt");
+            assert_eq!(service.pending_uploads().await, 1, "the change is recorded");
+            wait_until("the folder says why nothing goes", || {
+                crate::sync::published_error(&service.state().get()).contains("write_test_drive_ids")
+            })
+            .await;
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert_eq!(sent(&w).await, before, "nothing more is sent");
+            assert_eq!(service.pending_uploads().await, 1, "the change waits");
+            service.stop_sync().await;
+        }
+
+        /// A switch to read-only nobody forced keeps the changes waiting to
+        /// upload, the folder is locked, and its sync holds its cycles while they wait: no
+        /// read-only reconcile puts back what they describe. `expired`: the sign-in expired
+        /// (`invalid_grant`, as the token manager records it); otherwise a sign-out.
+        async fn a_switch_nobody_forced_keeps_the_changes(expired: bool) {
+            use crate::account::PendingUploads;
+            use crate::config::Mode;
+            let w = world().await;
+            // The rename cannot reach OneDrive yet.
+            Mock::given(method("PATCH"))
+                .and(path("/me/drive/items/F"))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&w.server)
+                .await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let_write(&service);
+            let account = service.account.clone().unwrap();
+            let follower = tokio::spawn(crate::sync::write_mode::follow(account.subscribe(), Arc::downgrade(&service)));
+            let docs = w.folder.path().join("docs");
+            wait_until("the folder is read-write", || service.mode() == Mode::ReadWrite && mode(&docs) == 0o755).await;
+            let made = std::process::Command::new("sh").args(["-c", "mv docs/f.txt docs/g.txt"]).current_dir(w.folder.path()).status().unwrap();
+            assert!(made.success());
+            assert_eq!(service.pending_uploads().await, 1);
+
+            account.update(|s| {
+                s.state = SignInState::SignedOut;
+                if expired {
+                    s.last_error = crate::token::SESSION_EXPIRED.into();
+                }
+                s.clear_account();
+            });
+            wait_until("the folder holds its cycles", || {
+                crate::sync::published_error(&service.state().get()).contains("wait to be uploaded")
+            })
+            .await;
+            assert_eq!(service.mode(), Mode::ReadOnly);
+            let before = deltas(&w).await;
+            service.nudge();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert_eq!(deltas(&w).await, before, "no cycle while the change waits");
+            assert!(docs.join("g.txt").exists() && !docs.join("f.txt").exists(), "nothing local is put back");
+            assert_eq!(mode(&docs), 0o555, "the folder is locked");
+            assert_eq!(service.pending_uploads().await, 1, "the change still waits");
+            follower.abort();
+            service.stop_sync().await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_sign_out_keeps_the_changes_waiting_to_upload() {
+            a_switch_nobody_forced_keeps_the_changes(false).await;
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn an_expired_sign_in_keeps_the_changes_waiting_to_upload() {
+            a_switch_nobody_forced_keeps_the_changes(true).await;
+        }
+
+        /// A Forget — and so `Accounts1.Remove`, which forgets first — is
+        /// refused `PendingUploads` while changes wait to be uploaded, and changes nothing; once
+        /// a forced switch to read-only has dropped them, it goes through.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_folder_whose_changes_wait_is_not_forgotten() {
+            use crate::account::PendingUploads;
+            use crate::config::Mode;
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            // The gate stays closed: the rename waits.
+            service.follow_mode(Mode::ReadWrite).await;
+            let made = std::process::Command::new("sh").args(["-c", "mv docs/f.txt docs/g.txt"]).current_dir(w.folder.path()).status().unwrap();
+            assert!(made.success());
+            assert_eq!(service.pending_uploads().await, 1);
+
+            let refused = service.unregister_root().await.unwrap_err();
+            assert!(matches!(&refused, SyncError::PendingUploads(why) if why.starts_with("1 change")), "{refused:?}");
+            assert!(matches!(crate::sync::dbus::to_fault(refused), crate::sync::dbus::SyncFault::PendingUploads(_)));
+            assert!(matches!(service.retire().await, Err(SyncError::PendingUploads(_))), "Remove's first step too");
+            assert!(service.registration().is_some(), "still registered");
+            assert_eq!(service.pending_uploads().await, 1, "the change still waits");
+            assert!(w.folder.path().join("docs/g.txt").exists());
+
+            // A forced switch drops them: the drop, then the folder follows.
+            service.drop_pending_uploads().await;
+            service.follow_mode(Mode::ReadOnly).await;
+            service.unregister_root().await.unwrap();
+        }
+
+        /// the outbox on the bus: a forgotten folder is no longer paused on the bus.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_forgotten_folder_is_not_paused() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            service.pause_syncing(3600).await.unwrap();
+            assert!(service.state().get().paused_until.is_some());
+            service.unregister_root().await.unwrap();
+            assert_eq!(service.state().get().paused_until, None);
+        }
+
+        /// the outbox on the bus, `SetIgnorePatterns`: the list is written to `config.toml`, read
+        /// back by the next start, and a pattern that cannot match a name is
+        /// refused.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_ignore_list_is_kept_in_config_toml() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            assert!(service.ignore_patterns().contains(&"*.swp".to_owned()), "the defaults");
+            service.set_ignore_patterns(vec!["*.bak".into(), "*.bak".into(), "build-*".into()]).await.unwrap();
+            assert_eq!(service.ignore_patterns(), vec!["*.bak".to_owned(), "build-*".to_owned()]);
+            let persist = persist(&w.config.path().join("config.toml"));
+            assert_eq!(persist.store.account(&persist.account).unwrap().ignore, Some(vec!["*.bak".to_owned(), "build-*".to_owned()]));
+            assert!(matches!(service.set_ignore_patterns(vec!["a/b".into()]).await, Err(SyncError::InvalidArgs(_))));
+            service.stop_sync().await;
+            service.set_link(None);
+            let restarted = connected(&w, true).await;
+            assert_eq!(restarted.ignore_patterns(), vec!["*.bak".to_owned(), "build-*".to_owned()]);
+            assert!(!restarted.machine_name().is_empty());
+        }
+
+        /// the watcher: a folder turning read-write whose watcher cannot start stays locked,
+        /// and says why; nothing is ever made in it unwatched.
+        #[tokio::test]
+        async fn a_read_write_folder_whose_watcher_cannot_start_stays_locked() {
+            use crate::config::Mode;
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            write_mode::FAIL_WATCHER.with(|fail| fail.set(true));
+            service.follow_mode(Mode::ReadWrite).await;
+            write_mode::FAIL_WATCHER.with(|fail| fail.set(false));
+            assert_eq!((mode(w.folder.path()), mode(&w.folder.path().join("docs"))), (0o555, 0o555));
+            assert!(service.last_error().contains("stays read-only"), "{}", service.last_error());
+            service.stop_sync().await;
+        }
+
+        /// the watcher: a read-write folder an earlier run left unlocked, whose sync
+        /// cannot start now, is locked again: no watcher looks at it.
+        #[tokio::test]
+        async fn a_read_write_folder_whose_sync_cannot_start_is_locked_again() {
+            use crate::config::Mode;
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            service.follow_mode(Mode::ReadWrite).await;
+            assert_eq!(mode(w.folder.path()), 0o755);
+            service.stop_sync().await;
+            service.set_link(None);
+
+            // The next run cannot open its tree store.
+            let tree = w.config.path().join("tree.sqlite");
+            for suffix in ["", "-wal", "-shm"] {
+                let _ = std::fs::remove_file(format!("{}{suffix}", tree.display()));
+            }
+            std::fs::create_dir(&tree).unwrap();
+            let restarted = connected(&w, true).await;
+            restarted.start_in_mode(Mode::ReadWrite);
+            restarted.restore().await;
+            restarted.resume().await;
+            assert!(restarted.last_error().contains("tree store"), "{}", restarted.last_error());
+            assert_eq!((mode(w.folder.path()), mode(&w.folder.path().join("docs"))), (0o555, 0o555));
+            restarted.stop_sync().await;
         }
 
         /// Rewrites `config.toml` as a daemon from before HS2 left a folder

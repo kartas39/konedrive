@@ -87,7 +87,8 @@ private Q_SLOTS:
     {
         start();
         for (const QString &kind : {QStringLiteral("downloaded"), QStringLiteral("freed"), QStringLiteral("added"), QStringLiteral("updated"),
-                                    QStringLiteral("removed"), QStringLiteral("moved"), QStringLiteral("listed")}) {
+                                    QStringLiteral("removed"), QStringLiteral("moved"), QStringLiteral("listed"), QStringLiteral("uploaded"),
+                                    QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored")}) {
             report(kind, QStringLiteral("a.txt"), QString());
         }
         QCOMPARE(m_sink.sent.size(), 0);
@@ -152,6 +153,69 @@ private Q_SLOTS:
         QCOMPARE(notice.event, QStringLiteral("conflict"));
         QCOMPARE(notice.text, QStringLiteral("Your changed version of doc.odt was moved to ") + rescued);
         QCOMPARE(notice.showPath, rescued);
+    }
+
+    /// A file changed on both sides keeps a copy beside it: its own words,
+    /// and "Show in Folder" on the copy.
+    void aCopyNotifiesThatBothAreKept()
+    {
+        start();
+        report(QStringLiteral("conflict"), QStringLiteral("Report.docx"), Root + QStringLiteral("/Report-fedora.docx"));
+        QCOMPARE(m_sink.sent.size(), 1);
+        const Notice &notice = m_sink.sent.first();
+        QCOMPARE(notice.title, QStringLiteral("Changed on both sides"));
+        QCOMPARE(notice.text, QStringLiteral("Report.docx changed here and in OneDrive. Both are kept: your version as Report-fedora.docx."));
+        QCOMPARE(notice.showPath, Root + QStringLiteral("/Report-fedora.docx"));
+    }
+
+    /// A change that cannot go up notifies with the reason in words; a full
+    /// OneDrive says so in its title.
+    void aChangeThatCannotBeUploadedNotifies()
+    {
+        start();
+        report(QStringLiteral("upload-failed"), QStringLiteral("a:b.txt"), QStringLiteral("name-characters"));
+        QCOMPARE(m_sink.sent.size(), 1);
+        QCOMPARE(m_sink.sent.at(0).event, QStringLiteral("uploadFailed"));
+        QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("Upload failed"));
+        QVERIFY2(m_sink.sent.at(0).text.contains(QStringLiteral("a:b.txt cannot be uploaded. A name OneDrive refuses")), qPrintable(m_sink.sent.at(0).text));
+        QCOMPARE(m_sink.sent.at(0).showPath, Root + QStringLiteral("/a:b.txt"));
+
+        m_nowMs += Notifier::WindowMs + 1;
+        m_notifier->flushDue();
+        report(QStringLiteral("upload-failed"), QStringLiteral("big.iso"), QStringLiteral("quota-exceeded"));
+        QCOMPARE(m_sink.sent.size(), 2);
+        QCOMPARE(m_sink.sent.at(1).title, QStringLiteral("OneDrive is full"));
+        QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("big.iso cannot be uploaded until there is space in OneDrive."));
+    }
+
+    /// Removals the mass-delete guard holds notify once when they appear
+    /// (not those already held when the window first looked), with Restore
+    /// first and as what a click on the notification does.
+    void heldDeletesNotifyWithRestoreAsTheDefault()
+    {
+        start();
+        QCOMPARE(m_sink.sent.size(), 0);
+
+        m_daemon->sync->holdDeletes(Root + QStringLiteral("/old"), 2);
+        QTRY_COMPARE(m_sink.sent.size(), 1);
+        const Notice notice = m_sink.sent.first();
+        QCOMPARE(notice.event, QStringLiteral("massDelete"));
+        QCOMPARE(notice.text, QStringLiteral("2 items deleted in /home/u/OneDrive are not deleted in OneDrive yet. Restore them here, or delete them in OneDrive too?"));
+        QCOMPARE(notice.actions.size(), 2);
+        QCOMPARE(notice.actions.at(0).label, QStringLiteral("Restore Them"));
+        QCOMPARE(notice.actions.at(1).label, QStringLiteral("Delete in OneDrive"));
+        QVERIFY(notice.defaultAction);
+
+        // More held while some already are: nothing new.
+        m_daemon->sync->holdDeletes(Root + QStringLiteral("/older"), 1);
+        QTRY_COMPARE(m_sync->heldCount(), 3u);
+        QCOMPARE(m_sink.sent.size(), 1);
+
+        notice.defaultAction();
+        QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("RestoreDeletes")));
+        QVERIFY(!m_daemon->sync->calls.contains(QStringLiteral("ConfirmDeletes")));
+        notice.actions.at(1).run();
+        QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("ConfirmDeletes")));
     }
 
     /// M3: past the cap, the daemon's own "and N more" conflict event (path

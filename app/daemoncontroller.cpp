@@ -185,6 +185,7 @@ void DaemonController::remove(const QString &path)
     m_removeFailedPath.clear();
     m_removeError.clear();
     m_removeNeedsHelper = false;
+    m_removeWaitsForUploads = false;
     Q_EMIT removeChanged();
 
     auto message = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, QStringLiteral("Remove"));
@@ -197,6 +198,7 @@ void DaemonController::remove(const QString &path)
             m_removeFailedPath = path;
             m_removeError = w->error().message();
             m_removeNeedsHelper = w->error().name() == QLatin1String("org.konedrive.Error.NoHelper");
+            m_removeWaitsForUploads = w->error().name() == QLatin1String("org.konedrive.Error.PendingUploads");
         }
         Q_EMIT removeChanged();
     });

@@ -4,6 +4,8 @@ use std::sync::Arc;
 
 use tokio::sync::watch;
 
+use crate::config::Mode;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SignInState {
     SignedOut,
@@ -32,6 +34,23 @@ pub struct AccountSnapshot {
     pub email: String,
     pub quota_used: u64,
     pub quota_total: u64,
+    /// `Account1.Mode`: the mode the account runs in (`docs/design/writes.md` §2) — read-write only
+    /// while `config.toml` says so, the gate lets its drive through, and `granted_scopes`
+    /// carries `Files.ReadWrite`. The account's folder follows it
+    /// (`crate::sync::write_mode::follow`).
+    pub mode: Mode,
+    /// What the account's last token may be used for: the token response's `scope` (or what
+    /// was asked for, when it said nothing), never more than was asked for — see
+    /// `wider_grant`. Empty until one came, and after a sign-out.
+    pub granted_scopes: String,
+    /// What the last token was valid for when that was more than a read-only request asked
+    /// for: consent Microsoft still holds (limitations log F66). Such a token is used to read
+    /// only, `Dev1` hands it out to nobody, and `LastError` says so. Empty otherwise.
+    pub wider_grant: String,
+    /// The drive the account's token was last seen to reach (`GET /me/drive` at a sign-in,
+    /// at `RefreshAccountInfo`, or for `Dev1.ReadWriteAccessToken`). The account is
+    /// read-write only while it is the drive `config.toml` records.
+    pub live_drive: String,
 }
 
 impl Default for AccountSnapshot {
@@ -45,16 +64,26 @@ impl Default for AccountSnapshot {
             email: String::new(),
             quota_used: 0,
             quota_total: 0,
+            mode: Mode::ReadOnly,
+            granted_scopes: String::new(),
+            wider_grant: String::new(),
+            live_drive: String::new(),
         }
     }
 }
 
 impl AccountSnapshot {
+    /// What goes when the account is no longer signed in: its name and quota, and with its
+    /// token what the token allowed — so it runs read-only until it signs in again.
     pub fn clear_account(&mut self) {
         self.display_name.clear();
         self.email.clear();
         self.quota_used = 0;
         self.quota_total = 0;
+        self.granted_scopes.clear();
+        self.wider_grant.clear();
+        self.live_drive.clear();
+        self.mode = Mode::ReadOnly;
     }
 }
 

@@ -54,6 +54,56 @@ private Q_SLOTS:
         QCOMPARE(controller.rootSource(), QStringLiteral("onedrive"));
     }
 
+    /// What waits to go up, and the controls over it: the counts, the outbox
+    /// and what is held in it, pause and resume, the ignore list, the
+    /// mass-delete guard's two answers, and what is not uploaded.
+    void theOutboxAndItsControls()
+    {
+        startFake();
+        const QString root = QStringLiteral("/home/u/OneDrive");
+        m_fake->outboxRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
+                              {2, QStringLiteral("create"), root + QStringLiteral("/a:b"), QStringLiteral("blocked"), 0, 3, QStringLiteral("name-characters"), 0}};
+        m_fake->holdDeletes(root + QStringLiteral("/old"), 1);
+        m_fake->notUploadedList = {{root + QStringLiteral("/link"), QStringLiteral("symlink")}};
+        SyncController controller(fake::FirstAccount);
+        QTRY_VERIFY(controller.outboxKnown());
+        QCOMPARE(controller.machineName(), QStringLiteral("fedora"));
+        QCOMPARE(controller.ignorePatterns(), (QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}));
+        QAbstractItemModelTester tester(controller.outbox(), QAbstractItemModelTester::FailureReportingMode::QtTest);
+        QCOMPARE(controller.outbox()->count(), 3);
+        QCOMPARE(controller.heldCount(), 1u);
+        QCOMPARE(text(controller.outbox(), 1, OutboxModel::StateTextRole), QStringLiteral("New · cannot be uploaded"));
+        QVERIFY(text(controller.outbox(), 1, OutboxModel::WhyRole).startsWith(QStringLiteral("A name OneDrive refuses")));
+
+        m_fake->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(1)},
+                     {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(10)},
+                     {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(1)}});
+        QTRY_COMPARE(controller.blockedCount(), 1u);
+        QCOMPARE(controller.pendingCount(), 1u);
+        QCOMPARE(controller.pendingBytes(), 10ULL);
+
+        controller.pause(7200);
+        QTRY_VERIFY(controller.paused());
+        QCOMPARE(controller.pausedUntil(), m_fake->pauseNow + 7200);
+        controller.resume();
+        QTRY_VERIFY(!controller.paused());
+
+        controller.addIgnorePattern(QStringLiteral(" *.bak "));
+        QTRY_COMPARE(controller.ignorePatterns(), (QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*"), QStringLiteral("*.bak")}));
+        controller.removeIgnorePattern(QStringLiteral("~*"));
+        QTRY_COMPARE(controller.ignorePatterns(), (QStringList{QStringLiteral("*.tmp"), QStringLiteral("*.bak")}));
+        controller.addIgnorePattern(QStringLiteral("a/b"));
+        QTRY_VERIFY(controller.actionError().contains(QStringLiteral("not a pattern")));
+
+        controller.restoreDeletes();
+        QTRY_COMPARE(controller.heldCount(), 0u);
+        QVERIFY(m_fake->calls.contains(QStringLiteral("RestoreDeletes")));
+
+        controller.loadNotUploaded();
+        QTRY_COMPARE(controller.notUploaded().size(), 1);
+        QCOMPARE(controller.notUploaded().first().toMap().value(QStringLiteral("why")).toString(), QStringLiteral("A symbolic link: never uploaded."));
+    }
+
     /// M8: nothing will update Transfers again once the daemon is gone, so a
     /// stale row must not linger looking like a download still going.
     void theServiceGoingAwayClearsTransfers()

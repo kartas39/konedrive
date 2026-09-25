@@ -80,6 +80,7 @@ use std::sync::mpsc as blocking_mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use konedrive_fs::handle::FileHandle;
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use nix::sys::socket::{connect, socket, AddressFamily, SockFlag, SockType, UnixAddr};
 use tokio::sync::{mpsc, oneshot, watch};
@@ -102,17 +103,21 @@ pub struct HydrateRequest {
     pub fd: OwnedFd,
 }
 
+/// What an `Ack` answers a call with: the descriptor it carries, if any
+/// (only `OpenByHandle`'s does).
+type Reply = Result<Option<OwnedFd>, HelperError>;
+
 /// One outgoing request, plus where to deliver the eventual answer.
 struct Call {
     message: ToHelper,
     fd: Option<OwnedFd>,
-    reply: oneshot::Sender<Result<(), HelperError>>,
+    reply: oneshot::Sender<Reply>,
 }
 
 /// Callers waiting on the next `Ack`, oldest first. Shared between the
 /// writer thread (which pushes, in send order) and the reader thread (which
 /// pops, in arrival order, and drains the rest on disconnect).
-type PendingReplies = Arc<Mutex<VecDeque<oneshot::Sender<Result<(), HelperError>>>>>;
+type PendingReplies = Arc<Mutex<VecDeque<oneshot::Sender<Reply>>>>;
 
 /// Bound on every ordinary call, and on the `Welcome`/`Hello`
 /// handshake: a helper that is connected but silent this long
@@ -309,12 +314,12 @@ impl HelperLink {
                             };
                             let _ = tx.send(result);
                         }
-                        Ok((ToDaemon::Ack { errno }, _)) => {
+                        Ok((ToDaemon::Ack { errno }, fd)) => {
                             let Some(reply) = pending.lock().unwrap().pop_front() else {
                                 continue;
                             };
                             let result =
-                                if errno == 0 { Ok(()) } else { Err(HelperError::Refused(errno)) };
+                                if errno == 0 { Ok(fd) } else { Err(HelperError::Refused(errno)) };
                             let _ = reply.send(result);
                         }
                         Ok((ToDaemon::HydrateRequest { req_id }, Some(fd))) => {
@@ -382,6 +387,11 @@ impl HelperLink {
     }
 
     async fn call(&self, message: ToHelper, fd: Option<OwnedFd>, timeout: Duration) -> Result<(), HelperError> {
+        // A descriptor on an `Ack` nobody asked for is closed here.
+        self.call_for_reply(message, fd, timeout).await.map(drop)
+    }
+
+    async fn call_for_reply(&self, message: ToHelper, fd: Option<OwnedFd>, timeout: Duration) -> Reply {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.calls
             .send(Call { message, fd, reply: reply_tx })
@@ -462,6 +472,62 @@ impl HelperLink {
     pub async fn hydrate_done(&self, req_id: u64, errno: i32) -> Result<(), HelperError> {
         self.call(ToHelper::HydrateDone { req_id, errno }, None, self.call_timeout).await
     }
+
+    /// A descriptor for the object `handle` names (`OpenByHandle`, writes
+    /// design §4.6): only the helper can open a file handle. `dir` is any
+    /// directory of this user's on the object's filesystem — the folder's
+    /// root does — and on a device the helper has a root of this user's on.
+    ///
+    /// - `Ok`: a directory comes back `O_RDONLY | O_DIRECTORY`; a regular
+    ///   file `O_RDONLY | O_NONBLOCK`, as the helper cannot open a user's
+    ///   file for writing (`docs/kernel-behavior-7.2.md` §15) —
+    ///   [`reopen_for_writing`] gets a writable one. Where it is now is
+    ///   `/proc/self/fd/<fd>`.
+    /// - `Refused(ESTALE)`: the object is gone — the handle names nothing,
+    ///   or an object with no link left.
+    /// - `Refused(EPERM)`: not this user's to have: another user's, not a
+    ///   file or directory, without `user.konedrive.item-id`, on another
+    ///   device than `dir`, or `dir` itself not on one of this user's roots.
+    /// - `Refused(EINVAL)`: not a handle the kernel gives (over 128 bytes,
+    ///   empty, a negative type).
+    /// - `Refused(EAGAIN)`: somebody holds a lease on the file; ask again.
+    /// - `Refused(_)` otherwise: what the kernel said.
+    ///
+    /// The helper's own open is exempt from its interception, so asking for
+    /// a placeholder, marked or not, neither fills it nor waits for a fill.
+    pub async fn open_by_handle(&self, dir: &File, handle: &FileHandle) -> Result<OwnedFd, HelperError> {
+        let message = ToHelper::OpenByHandle { handle_type: handle.kind, handle: handle.bytes.clone() };
+        match self.call_for_reply(message, Some(dup(dir)?), self.call_timeout).await? {
+            Some(object) => Ok(object),
+            None => Err(HelperError::Io("the helper answered OpenByHandle without a descriptor".into())),
+        }
+    }
+}
+
+/// A descriptor for writing to the same file as `object`, opened by this
+/// process, as the file's owner, through `/proc/self/fd`: the file's own
+/// permissions are checked, not any directory's, so it works wherever the file
+/// has gone. For a descriptor [`HelperLink::open_by_handle`] returned, which is
+/// read-only. The same inode or an error.
+///
+/// An open of the file like any other: if it is intercepted — it has its own
+/// mark (`MarkFile`), or sits in a marked directory — the helper lets it
+/// through as this daemon's own open, and fills nothing.
+pub fn reopen_for_writing(object: &OwnedFd) -> io::Result<File> {
+    use std::os::unix::fs::MetadataExt;
+    let before = File::from(object.try_clone()?).metadata()?;
+    if !before.is_file() {
+        return Err(io::Error::from_raw_os_error(libc::EISDIR));
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(format!("/proc/self/fd/{}", object.as_raw_fd()))?;
+    let after = file.metadata()?;
+    if (after.dev(), after.ino()) != (before.dev(), before.ino()) {
+        return Err(io::Error::other("the reopened descriptor is not the same file"));
+    }
+    Ok(file)
 }
 
 fn dup(file: &File) -> Result<OwnedFd, HelperError> {
@@ -489,7 +555,7 @@ async fn send_hello(calls: &blocking_mpsc::Sender<Call>, timeout: Duration) -> R
         .send(Call { message: ToHelper::Hello { version: PROTOCOL_VERSION }, fd: None, reply: reply_tx })
         .map_err(|_| HelperError::NotRunning)?;
     match tokio::time::timeout(timeout, reply_rx).await {
-        Ok(Ok(result)) => result,
+        Ok(Ok(result)) => result.map(drop),
         Ok(Err(_)) => Err(HelperError::NotRunning),
         Err(_elapsed) => Err(HelperError::Timeout),
     }
@@ -734,6 +800,70 @@ mod tests {
         let line = seen.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert!(line.starts_with("MarkDir"), "{line}");
         assert!(line.ends_with("fd=true"), "the directory must travel as a descriptor: {line}");
+    }
+
+    /// `OpenByHandle` sends the handle as given with the directory's
+    /// descriptor, and gets the object's descriptor back on the `Ack`; a
+    /// refusal is `Refused(errno)`; and a descriptor on an `Ack` that answers
+    /// an ordinary call does not disturb the pairing of the calls after it.
+    #[tokio::test]
+    async fn open_by_handle_returns_the_descriptor_the_ack_carries() {
+        use std::io::{Read, Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let socket = dir.path().join("helper.sock");
+        let listener = seqpacket_listener(&socket);
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let stream = seqpacket_accept(&listener);
+            let mut channel = Channel::new(stream).unwrap();
+            channel.send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None).unwrap();
+            ack_hello(&mut channel);
+            let mut object = tempfile::tempfile().unwrap();
+            object.write_all(b"moved out").unwrap();
+            for answer in [0, libc::ESTALE, 0] {
+                let (message, fd) = channel.recv::<ToHelper>().unwrap();
+                tx.send(format!("{message:?} fd={}", fd.is_some())).unwrap();
+                let attach = (answer == 0).then(|| std::os::fd::AsFd::as_fd(&object));
+                channel.send(&ToDaemon::Ack { errno: answer }, attach).unwrap();
+            }
+        });
+        let (link, _requests) = HelperLink::connect(&socket).await.unwrap();
+        let root = File::open(dir.path()).unwrap();
+        let handle = FileHandle { kind: 0x4d, bytes: vec![1, 2, 3] };
+
+        let object = link.open_by_handle(&root, &handle).await.unwrap();
+        let mut content = String::new();
+        let mut file = File::from(object);
+        std::io::Seek::rewind(&mut file).unwrap();
+        file.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "moved out");
+        let asked = rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(asked, "OpenByHandle { handle_type: 77, handle: [1, 2, 3] } fd=true");
+
+        let gone = link.open_by_handle(&root, &handle).await.unwrap_err();
+        assert!(matches!(gone, HelperError::Refused(e) if e == libc::ESTALE), "{gone:?}");
+        // An ordinary call whose Ack carries a descriptor still just succeeds.
+        link.mark_dir(&root).await.unwrap();
+    }
+
+    /// The helper's descriptor is read-only; the owner reopens it for writing
+    /// through `/proc/self/fd`, and gets the same file, wherever it lives.
+    #[test]
+    fn a_read_only_descriptor_is_reopened_for_writing_on_the_same_file() {
+        use std::io::{Read, Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, b"old").unwrap();
+        let read_only: OwnedFd = File::open(&path).unwrap().into();
+        let mut writable = reopen_for_writing(&read_only).unwrap();
+        writable.write_all(b"new").unwrap();
+        let mut content = String::new();
+        File::open(&path).unwrap().read_to_string(&mut content).unwrap();
+        assert_eq!(content, "new");
+        let not_a_file: OwnedFd = File::open(dir.path()).unwrap().into();
+        assert!(reopen_for_writing(&not_a_file).is_err());
     }
 
     #[tokio::test]

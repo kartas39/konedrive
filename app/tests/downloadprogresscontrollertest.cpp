@@ -238,6 +238,46 @@ private Q_SLOTS:
         QCOMPARE(tracker.unregistered.size(), 1);
     }
 
+    /// Uploads are the same, from Uploads: "Uploading to OneDrive", failed by
+    /// an `upload-failed` event; downloads are not theirs.
+    void uploadsShowAsUploadingToOneDrive()
+    {
+        start();
+        RecordingJobTracker tracker;
+        DownloadProgressController controller(
+            m_sync.get(),
+            &tracker,
+            nullptr,
+            [this] {
+                return m_nowMs;
+            },
+            nullptr,
+            DownloadProgressController::Direction::Upload);
+        const QString path = Root + QStringLiteral("/report.odt");
+
+        m_daemon->sync->setTransfers({{Root + QStringLiteral("/down.iso"), 1, 10}});
+        m_daemon->sync->setUploads({{path, 1000, 5000}});
+        QTRY_COMPARE(m_sync->uploads()->count(), 1);
+        QTRY_COMPARE(m_sync->transfers()->count(), 1);
+        m_nowMs += 2000;
+        controller.checkNow();
+        QCOMPARE(tracker.registered.size(), 1);
+        auto *job = qobject_cast<DownloadJob *>(tracker.registered.first());
+        QVERIFY(job);
+        QCOMPARE(job->title(), QStringLiteral("Uploading to OneDrive"));
+        QCOMPARE(job->detailText(), QStringLiteral("report.odt"));
+
+        // A download's failure is not an upload's.
+        QSignalSpy arrived(m_sync.get(), &SyncController::activityAdded);
+        m_daemon->sync->activity(1758700000, QStringLiteral("failed"), path, QStringLiteral("x"));
+        QVERIFY(arrived.wait(5000));
+        QCOMPARE(tracker.unregistered.size(), 0);
+        m_daemon->sync->activity(1758700001, QStringLiteral("upload-failed"), path, QStringLiteral("quota-exceeded"));
+        QVERIFY(arrived.wait(5000));
+        QCOMPARE(tracker.unregistered.size(), 1);
+        QCOMPARE(tracker.unregistered.first().errorText, QStringLiteral("OneDrive is full: free some space in OneDrive."));
+    }
+
     /// Ruling 4: total 0 (unknown) shows the job without a percentage.
     void anUnknownTotalShowsNoPercentage()
     {

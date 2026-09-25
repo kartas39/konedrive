@@ -2,6 +2,7 @@
 
 #include "accountcontroller.h"
 #include "activitymodel.h"
+#include "outboxmodel.h"
 #include "synccontroller.h"
 
 #include <KIO/OpenFileManagerWindowJob>
@@ -11,6 +12,7 @@
 
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QPointer>
 #include <QRegularExpression>
 #include <QTimer>
 #include <QUrl>
@@ -29,6 +31,12 @@ QString fileName(const QString &path)
 /// A capped cycle's own summary event (activity::capped,
 /// crates/konedrived/src/sync/listing.rs ~901): "and N more", nothing else.
 const QRegularExpression cappedMore(QStringLiteral("^and (\\d+) more$"));
+
+/// The title of a conflict that kept a copy beside the file.
+QString copyTitle()
+{
+    return i18nc("@title notification", "Changed on both sides");
+}
 }
 
 KNotificationSink::KNotificationSink(std::function<void(const QString &account)> openWindow)
@@ -42,6 +50,15 @@ void KNotificationSink::send(const Notice &notice)
     notification->setComponentName(QStringLiteral("konedrive"));
     notification->setTitle(notice.title);
     notification->setText(notice.text);
+    for (const NoticeAction &button : notice.actions) {
+        KNotificationAction *action = notification->addAction(button.label);
+        const std::function<void()> run = button.run;
+        QObject::connect(action, &KNotificationAction::activated, notification, [run] {
+            if (run) {
+                run();
+            }
+        });
+    }
     if (!notice.showPath.isEmpty()) {
         const QString path = notice.showPath;
         KNotificationAction *show = notification->addAction(i18nc("@action:button", "Show in Folder"));
@@ -50,7 +67,14 @@ void KNotificationSink::send(const Notice &notice)
             KIO::highlightInFileManager({QUrl::fromLocalFile(path)}, notification->xdgActivationToken().toUtf8());
         });
     }
-    if (m_openWindow) {
+    if (notice.defaultAction) {
+        // A click on the notification itself takes the safe choice.
+        KNotificationAction *safe = notification->addDefaultAction(notice.actions.isEmpty() ? QString() : notice.actions.constFirst().label);
+        const std::function<void()> run = notice.defaultAction;
+        QObject::connect(safe, &KNotificationAction::activated, notification, [run] {
+            run();
+        });
+    } else if (m_openWindow) {
         KNotificationAction *open = notification->addDefaultAction(i18nc("@action", "Open KOneDrive"));
         const std::function<void(const QString &)> openWindow = m_openWindow;
         const QString account = notice.account;
@@ -87,6 +111,13 @@ Notifier::Notifier(AccountController *account, SyncController *sync, Notificatio
     m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, &Notifier::flushDue);
     connect(m_sync, &SyncController::activityAdded, this, &Notifier::onActivity);
+    connect(m_sync, &SyncController::syncChanged, this, &Notifier::onSyncChanged);
+    connect(m_sync, &SyncController::serviceAvailableChanged, this, [this] {
+        m_held = m_sync->serviceAvailable() ? int(m_sync->heldCount()) : -1;
+    });
+    if (m_sync->serviceAvailable()) {
+        m_held = int(m_sync->heldCount());
+    }
     connect(m_account, &AccountController::accountChanged, this, &Notifier::onAccountChanged);
     connect(m_account, &AccountController::signOutRequested, this, [this] {
         m_signOutAsked = true;
@@ -107,6 +138,11 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
                 return;
             }
         }
+        // A copy kept beside the file (a file changed on both sides).
+        if (isConflictCopy(path, detail)) {
+            post({QStringLiteral("conflict"), copyTitle(), i18n("%1 changed here and in OneDrive. Both are kept: your version as %2.", name, fileName(detail)), detail});
+            return;
+        }
         // The daemon's detail is where the local version went.
         post({QStringLiteral("conflict"),
               i18nc("@title notification", "Your changed version was moved"),
@@ -126,6 +162,17 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
               i18n("%1 changed in OneDrive but could not be updated here: %2", name, detail),
               {}});
         return;
+    case ActivityFailure::Upload:
+        // Blocked names and a full OneDrive are the usual ones; the detail is a reason code.
+        if (detail == QLatin1String("quota-exceeded")) {
+            post({QStringLiteral("uploadFailed"),
+                  i18nc("@title notification", "OneDrive is full"),
+                  i18n("%1 cannot be uploaded until there is space in OneDrive.", name),
+                  path});
+            return;
+        }
+        post({QStringLiteral("uploadFailed"), i18nc("@title notification", "Upload failed"), i18n("%1 cannot be uploaded. %2", name, uploadReasonText(detail)), path});
+        return;
     case ActivityFailure::Download:
         post({QStringLiteral("downloadFailed"),
               i18nc("@title notification", "Download failed"),
@@ -133,6 +180,44 @@ void Notifier::onActivity(qint64, const QString &kind, const QString &path, cons
               {}});
         return;
     }
+}
+
+void Notifier::onSyncChanged()
+{
+    if (m_held < 0) {
+        // The daemon's first answer sets the baseline (serviceAvailableChanged).
+        return;
+    }
+    const int held = int(m_sync->heldCount());
+    const int before = m_held;
+    m_held = held;
+    if (before != 0 || held == 0) {
+        // A count still held says nothing new.
+        return;
+    }
+    const QPointer<SyncController> sync = m_sync;
+    const auto restore = [sync] {
+        if (sync) {
+            sync->restoreDeletes();
+        }
+    };
+    const auto confirm = [sync] {
+        if (sync) {
+            sync->confirmDeletes();
+        }
+    };
+    Notice notice{QStringLiteral("massDelete"),
+                  i18nc("@title notification", "Many files deleted here"),
+                  i18np("1 item deleted in %2 is not deleted in OneDrive yet. Restore it here, or delete it in OneDrive too?",
+                        "%1 items deleted in %2 are not deleted in OneDrive yet. Restore them here, or delete them in OneDrive too?",
+                        held,
+                        m_sync->rootPath()),
+                  {}};
+    notice.actions = {{i18nc("@action:button", "Restore Them"), restore}, {i18nc("@action:button", "Delete in OneDrive"), confirm}};
+    // Restoring loses nothing, so it is what a click on the notification does;
+    // deleting in OneDrive is only ever its own button.
+    notice.defaultAction = restore;
+    post(notice);
 }
 
 void Notifier::onAccountChanged()
@@ -210,9 +295,15 @@ Notice Notifier::summary(const Window &window) const
         notice.text = i18np("1 more file could not be downloaded.", "%1 more files could not be downloaded.", n);
     } else if (notice.event == QLatin1String("updateFailed")) {
         notice.text = i18np("1 more file changed in OneDrive could not be updated here.", "%1 more files changed in OneDrive could not be updated here.", n);
+    } else if (notice.event == QLatin1String("conflict") && window.last.title.startsWith(copyTitle())) {
+        notice.text = i18np("1 more file changed here and in OneDrive; both versions are kept.", "%1 more files changed here and in OneDrive; both versions are kept.", n);
     } else if (notice.event == QLatin1String("conflict")) {
         // "Show in Folder" stays on the last one moved.
         notice.text = i18np("1 more of your changed files was moved out of the way.", "%1 more of your changed files were moved out of the way.", n);
+    } else if (notice.event == QLatin1String("uploadFailed")) {
+        notice.text = i18np("1 more change could not be uploaded.", "%1 more changes could not be uploaded.", n);
+    } else if (notice.event == QLatin1String("massDelete")) {
+        notice.text = i18n("More items deleted here are not deleted in OneDrive yet.");
     }
     return notice;
 }

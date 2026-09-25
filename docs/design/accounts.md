@@ -13,7 +13,8 @@ account. How one folder follows its drive is in [sync.md](sync.md); how a file i
 - Any number of personal Microsoft accounts, each with its own folder, Places entry, activity,
   conflicts and "Not in the Folder" list. Work or school accounts are not supported yet
   (limitations log F49).
-- Every account is read-only in this version, as the single account was ([sync.md](sync.md) §11).
+- Every account is read-only unless it is switched to read-write, which only a test account can be
+  while uploads are being developed (§10).
 - The window shows one account at a time, chosen in a switcher at the top of its sidebar; the tray
   icon sums them all up ([desktop.md](desktop.md) §4, §5).
 - A Microsoft account can be connected once. An account signed in again as a different Microsoft
@@ -31,7 +32,7 @@ account. How one folder follows its drive is in [sync.md](sync.md); how a file i
 | Id | 12 random lowercase hexadecimal characters (48 bits), checked against the ids present and never reused. It names the account's D-Bus object, its state and rescue directories and its Places entry; nobody has to type it |
 | Label | The name people see and type ("Personal", "Family"). Trimmed; 1 to 40 characters; no `/`, no `@`, no control character; not 12 hexadecimal digits in any case; unique regardless of case. With no `@` and not shaped like an id, a label is never mistaken for an email address or an id where any of them can name an account. It can be changed at any time, and nothing on disk is named after it |
 | Drive | The Graph drive id of the Microsoft account: the account's identity (§6). Empty until the first sign-in or the first `GET /me/drive`, then never changed |
-| Mode | `read-only`, the only mode in this version (§10) |
+| Mode | `read-only`, the default, or `read-write` (§10) |
 | Origin | `migrated` for the account carried over from a single-account installation (§8), `added` for every other. A missing or unknown value reads as `migrated` |
 | Folder | At most one registered folder, with its source (`onedrive` or `local`) and its registration mode ([sync.md](sync.md) §3, [hydration.md](hydration.md) §14) |
 
@@ -223,8 +224,12 @@ start with the file fixed loads it — or migrates it — then.
   earlier account's — a folder that is, is inside, or contains an earlier one — is loaded and shown
   but *held back*: its folder is not brought up, its `RootState` is `error`, its `LastError` names
   the collision, and a registration is refused (limitations log F48);
-- a `mode` other than `read-only` loads as `read-only`, is logged, and is written back as
-  `read-only` with the next change.
+- a `mode` other than `read-only` or `read-write` loads as `read-only`, is logged, and is written
+  back as `read-only` with the next change; a `read-write` the write gate does not let through
+  loads as written, and the account runs read-only (§10).
+
+`write_test_drive_ids`, at the top of the file, is the write gate's list (§10): absent, as it is
+unless the developer install writes it by hand, no account can be read-write.
 
 ### 4.2 Where each account's data lives
 
@@ -492,16 +497,35 @@ $ konedrivectl --account family login
 
 ## 10. The mode
 
-Every account has a mode, stored in `config.toml` and published as `Account1.Mode`. In this version
-it is always `read-only`: there is no call to change it, the window shows it as a line with no
-switch, and any other value in the file loads as `read-only`. A switch that did nothing would read
-as "my changes are uploaded", and a choice stored now would silently turn uploads on for that
-account the day they exist.
+Every account has a mode, `read-only` or `read-write`, stored in `config.toml`; a new account is
+read-only. [writes.md](writes.md) §2 has what the mode changes in the folder; in short:
 
-The mode already decides the OAuth scope: an account signs in, exchanges its code and refreshes its
-token with its mode's scope, which for `read-only` is `Files.Read User.Read offline_access`
-([sync.md](sync.md) §12.1). A read-only account keeps asking for `Files.Read` at every refresh, so
-its access tokens cannot write even if its grant were ever wider.
+- **The mode it runs in.** `Account1.Mode` is `read-write` only while `config.toml` says so, the
+  write gate lets the account's drive through, the drive its token was last seen to reach is that
+  drive, and the scopes its last token response granted — the scopes and the drive kept in
+  `account.json` — include `Files.ReadWrite`. Otherwise it is `read-only`, and when `config.toml`
+  says read-write, `LastError` says why (limitations log F61).
+- **The scope follows it.** Read-only asks for `Files.Read User.Read offline_access`, read-write
+  for `Files.ReadWrite User.Read offline_access`, at the sign-in and at every refresh
+  ([sync.md](sync.md) §12.1). A read-only account keeps asking for `Files.Read`, a subset of any
+  grant, so Microsoft keeps refusing its writes even when its grant is wider.
+- **To read-write**, `Account1.SetMode("read-write", false)` answers a sign-in URL, and the sign-in
+  asks for `Files.ReadWrite`, pinned to the account (its password asked for again, its email filled
+  in). Only when its token response grants that, for this account's own drive, are the new refresh
+  token stored and `mode = "read-write"` written; a cancelled, refused or foreign sign-in changes
+  nothing. Consent given in the browser stays with Microsoft (limitations log F66). **To read-only**, no sign-in: the mode is written, and the
+  next refresh asks for `Files.Read`. It is refused `PendingUploads` while changes wait to be
+  uploaded, unless forced.
+- **The folder follows the mode.** A read-write folder is kept without the read-only lock; the
+  switch takes it off, or puts it back, with a walk of the folder (limitations log F62, F65).
+- **The write gate.** While uploads are being developed, only an account whose drive id is in
+  `write_test_drive_ids` can be read-write: `SetMode("read-write")` is refused `WritesNotAllowed`
+  for any other (limitations log F60). The release removes the gate.
+
+`konedrivectl account mode [read-only|read-write] [--force]` shows or switches the mode. In the
+window it is the Account page's switch "Upload changes made on this computer", which explains the
+sign-in before it starts it and asks before it drops changes waiting to upload
+([desktop.md](desktop.md) §4; limitations log A16).
 
 ## 11. Costs and limits
 
@@ -521,9 +545,14 @@ Recorded in [`../limitations-and-workarounds.md`](../limitations-and-workarounds
   by account id, not label (F47);
 - an account that collides with an earlier one in a hand-edited `config.toml` is held back (F48);
 - personal Microsoft accounts only (F49);
+- only a test account can be read-write while uploads are being developed (F60); an account is
+  read-write only while its token carries `Files.ReadWrite` (F61); the lock walks of a switch
+  (F62), what a read-write folder's cycle keeps waiting for local changes (F112), the switch's
+  outcome read from `Mode` and `LastError` (F64), file modes lost across a round trip (F65), and
+  consent to write that stays with Microsoft (F66);
 - a folder that the helper holds for an account taken out of `config.toml` by hand stays with the
   helper (Z6);
 - in the window: one account at a time (A13), label rules checked by a copy of the daemon's (A14),
-  Add Account as three calls (A15), the mode shown but not switchable and one client id for all
-  (A16), the tray's summary (A17), the account named in notifications and download progress (A18),
-  and one Places entry per account folder (A19).
+  Add Account as three calls (A15), the upload switch's own wait for its sign-in and one client id
+  for all (A16), the tray's summary (A17), the account named in notifications and download progress
+  (A18), one Places entry per account folder (A19), and the mass-delete notification (A20).

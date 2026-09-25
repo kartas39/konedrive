@@ -24,6 +24,7 @@ const QStringList Cloud{QStringLiteral("cloudstatus")};
 const QStringList Syncing{QStringLiteral("state-sync")};
 const QStringList CheckOutline{QStringLiteral("dialog-ok")};
 const QStringList CheckFilled{QStringLiteral("emblem-checked")};
+const QStringList Error{QStringLiteral("state-error")};
 
 /// inotify watches this process holds, as the kernel counts them
 /// (/proc/self/fdinfo lists one "inotify wd:" line per watch).
@@ -280,9 +281,10 @@ private Q_SLOTS:
     void iconNamesExistInBreeze()
     {
         QFETCH(QString, theme);
-        QStringList names = overlayNames(Emblem::Cloud) + overlayNames(Emblem::Syncing) + overlayNames(Emblem::CheckOutline) + overlayNames(Emblem::CheckFilled);
+        QStringList names = overlayNames(Emblem::Cloud) + overlayNames(Emblem::Syncing) + overlayNames(Emblem::CheckOutline) + overlayNames(Emblem::CheckFilled)
+            + overlayNames(Emblem::Error);
         names << QString::fromLatin1(AlwaysKeepIcon) << QString::fromLatin1(FreeUpSpaceIcon);
-        QCOMPARE(names.size(), 6);
+        QCOMPARE(names.size(), 7);
         // The installed themes (XDG_DATA_DIRS/icons), not the copy of Breeze
         // some KDE libraries compile in under :/icons.
         QIcon::setThemeSearchPaths(QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, QStringLiteral("icons"), QStandardPaths::LocateDirectory));
@@ -318,6 +320,28 @@ private Q_SLOTS:
         // called again.
         QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive/sub"))));
         QTRY_COMPARE(changedOverlaysFor(changed, url(b)), CheckFilled);
+    }
+
+    /// The upload state the daemon writes, and its removal at the commit,
+    /// are followed live, as a state change is.
+    void uploadStateIsFollowedLive()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "hydrated"));
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        OverlayEngine engine;
+        QCOMPARE(engine.overlays(url(doc)), CheckOutline);
+
+        QSignalSpy changed(&engine, &OverlayEngine::overlaysChanged);
+        QVERIFY(setUploadState(doc, "pending"));
+        QTRY_COMPARE(changedOverlaysFor(changed, url(doc)), Syncing);
+        changed.clear();
+        QVERIFY(setUploadState(doc, "blocked"));
+        QTRY_COMPARE(changedOverlaysFor(changed, url(doc)), Error);
+        changed.clear();
+        QVERIFY(removeAttribute(doc, "user.konedrive.sync"));
+        QTRY_COMPARE(changedOverlaysFor(changed, url(doc)), CheckOutline);
     }
 
     /// An online-only file the sweep has queued because it is pinned draws

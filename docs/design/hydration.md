@@ -60,10 +60,12 @@ All values are plain ASCII, readable with `getfattr -d`.
 | `user.konedrive.ctag` | files | the Graph cTag of the version the file represents |
 | `user.konedrive.stamp` | downloaded files | `<size> <mtime_sec>.<mtime_nsec>`, recorded when the download completed |
 | `user.konedrive.progress` | files part-way through a download | `<ctag> <bytes durably written>` (§7.4) |
+| `user.konedrive.sync` | files with a change waiting to upload, in a read-write folder | `pending`, `uploading` or `blocked`; removed when the change is committed ([writes.md](writes.md) §5.4) |
 
 The stamp is how the daemon recognises its own work: a `hydrated` file whose size or time no longer
 matches its stamp has been changed locally, and that change may be the only copy (§8,
-[sync.md](sync.md) §10).
+[sync.md](sync.md) §10). After an upload the stamp is the size and time of the content sent, so it
+means "what the version its cTag names holds" either way ([writes.md](writes.md) §5.4).
 
 ### 2.4 Building a placeholder
 
@@ -72,7 +74,8 @@ one:
 
 1. `open(dir, O_TMPFILE | O_RDWR)` — a nameless inode in the target directory;
 2. `ftruncate(size)`, set `item-id`, `ctag` and `state=online-only`, `futimens(mtime)`, and the
-   file's mode (`0444` in a OneDrive folder, [sync.md](sync.md) §11);
+   file's mode (`0444` in a read-only account's folder, [sync.md](sync.md) §11; `0644` in a
+   read-write one);
 3. `linkat(fd, "", dirfd, name, AT_EMPTY_PATH)` — the file gets its name, already covered by its
    directory's mark.
 
@@ -88,9 +91,11 @@ These four hold for everything below. They are referred to by name elsewhere.
 **M1 — every directory under a registered root carries the permission mark, and a new directory is
 marked before anything is created inside it.** The helper's registration and startup walks mark
 each directory before descending into it. The daemon creates a new directory under a temporary
-name, has the helper mark it, and only then renames it into place ([sync.md](sync.md) §7.3).
-*Gap:* a directory made by some other program is not marked until the helper's next walk, because
-the notification watcher that would notice it is not built (§16).
+name, has the helper mark it, and only then renames it into place ([sync.md](sync.md) §7.3). In a
+read-only account's folder no other program can make a directory (they are `0555`). In a
+read-write one the daemon's notification watcher sends `MarkDir` for a directory any program makes,
+before anything inside it is looked at, within milliseconds ([writes.md](writes.md) §3.5); a
+placeholder moved into it and opened in between is not covered (limitations log Z2).
 
 **M2 — a file's state lives only in its extended attributes.** The kernel knows nothing about it,
 and neither does any database: losing every mark costs coverage, never data, and the tree store
@@ -124,8 +129,12 @@ that user's folders was unregistered. The local rule does not depend on either.
 
 **M4 — a managed file that leaves the root carries an individual inode mark, so it is still filled
 where it now is.** The protocol has `MarkFile` for this, and it works: a placeholder given
-`MarkFile` and then renamed out of the tree is intercepted and filled (*kernel* §1). *Not upheld
-yet:* nothing sends it on its own until the notification watcher exists (§16).
+`MarkFile` and then renamed out of the tree is intercepted and filled (*kernel* §1). In a read-only
+account's folder nothing can be moved out (its directories are `0555`). In a read-write one the
+daemon finds what left by its file handle and sends `MarkFile` for it (a directory: `MarkDir` for
+it and everything below), after the watcher's quiet spell, and again after every restart of the
+daemon or the helper ([writes.md](writes.md) §8.3); until then it is not covered (limitations log
+Z3, F120).
 
 ## 4. What the kernel watches
 
@@ -245,6 +254,13 @@ is an `fstat`, an `fgetxattr` and a hash lookup; the download happens in the dae
 no time limit on it — large files legitimately take minutes. Measured: 3000 concurrent opens on
 each filesystem, 3000 filled, none refused, a peak of 69 threads and under 4 MiB of memory
 (*kernel* §11.3, §11.4).
+
+**An open for writing** is decided the same way: the event carries no open flags. In a read-only
+account's folder it never reaches the helper, because the `0444` mode refuses it first. In a
+read-write one it does, and the placeholder is filled before the open returns: a write to a
+placeholder downloads it first. `open(O_TRUNC)` of a placeholder therefore downloads the whole
+file, which the kernel then truncates (limitations log P6); `truncate(2)` by path opens nothing,
+fills nothing, and the daemon puts the size back ([writes.md](writes.md) §4.3).
 
 ### 5.2 Waiting for a daemon that is not there
 
@@ -435,7 +451,9 @@ content by cTag and size, not by its time, which a fill's writes change ([sync.m
    A zero-byte file has nothing to free: the call succeeds and changes nothing. Otherwise require
    `state=hydrated` and a stamp matching the current size and time, or refuse: no konedrive state →
    `NotManaged`; another state → `NotHydrated`; a stamp mismatch → `ModifiedLocally` (a local edit
-   is the only copy in this phase). Record the file's times, because the punch will change them.
+   not uploaded is the only copy). In a read-write folder a file with a change waiting to upload
+   is refused `NotUploaded`, and one whose outbox cannot be asked is refused too
+   ([writes.md](writes.md) §11). Record the file's times, because the punch will change them.
 2. Set `state=dehydrating`, `fsync`, and clear the way by M3's local rule: with a link, the helper
    `ClearIgnore`s the file — from now on every open reaches the helper again. **Any failure stops
    here**: the state goes back to `hydrated` and the call fails. With no link, go on only if no
@@ -514,8 +532,10 @@ alike. `failed > 0` publishes `RootState = error`; the other counters put a note
 
 | Direction | Message |
 |---|---|
-| daemon → helper | `Hello{version}` (its first call); `RegisterRoot{root_id}` + directory descriptor; `UnregisterRoot{root_id}`; `MarkDir` / `UnmarkDir` + directory descriptor; `MarkFile` + file descriptor; `ClearIgnore` + file descriptor; `HydrateDone{req_id, errno}` |
-| helper → daemon | `Welcome{version}` (unprompted, on accept); `Ack{errno}` — exactly one per daemon message, in order; `HydrateRequest{req_id}` + the event descriptor |
+| daemon → helper | `Hello{version}` (its first call); `RegisterRoot{root_id}` + directory descriptor; `UnregisterRoot{root_id}`; `MarkDir` / `UnmarkDir` + directory descriptor; `MarkFile` + file descriptor; `ClearIgnore` + file descriptor; `HydrateDone{req_id, errno}`; `OpenByHandle{handle_type, handle}` + directory descriptor (uploads, [writes.md](writes.md) §8.2) |
+| helper → daemon | `Welcome{version}` (unprompted, on accept); `Ack{errno}` — exactly one per daemon message, in order, carrying the object's descriptor when it answers an `OpenByHandle` with 0; `HydrateRequest{req_id}` + the event descriptor |
+
+The version is 2 since `OpenByHandle`.
 
 ### 10.2 Connections
 
@@ -583,8 +603,18 @@ descriptor, not a path.
   opens of files they can read but do not own (say `/etc/passwd`) and stall system processes. The
   check is scoped to the device, not the root: keeping every operation inside the root is the
   daemon's job, and the helper is a coarse backstop.
+- **`OpenByHandle`** (uploads, for an object that left its folder: [writes.md](writes.md) §8) — the directory is the
+  peer's own, on the device of one of its roots. The object the handle names is looked at through
+  `O_PATH` first, and handed back only if it is the peer's own regular file or directory, on that
+  directory's device, still linked, and carrying `user.konedrive.item-id`: `EPERM` otherwise,
+  `ESTALE` for the peer's own deleted object. A file comes back `O_RDONLY | O_NONBLOCK`, since
+  under the unit the helper cannot open a user's file for writing; the daemon reopens it
+  (*kernel* §15; limitations log F90, F91).
 - **The pid exemption** (§5.1) — only to a connection that owns a registered root, only for files
-  of that uid, and only to that uid's top connection.
+  of that uid, and only to that uid's top connection. Besides it, the helper's own opens (of an
+  `OpenByHandle` object in a marked directory, or with a mark of its own) are let through in the
+  event loop at once: decided like any other, a placeholder's would wait for a fill whose report
+  the waiting connection thread itself would have to read (limitations log F92).
 - **`HydrateRequest`** descriptors go only to the daemon of the file's owner, so the `O_RDWR`
   descriptor grants nothing that user could not already open.
 
@@ -745,18 +775,17 @@ tree store, and removes the Baloo exclusion the daemon added ([desktop.md](deskt
 | The disk fills up during a fill | `ENOSPC` | rolled back; fills normally once there is room |
 | A managed file with an unreadable or unknown state | `EIO`, logged | by hand |
 | The file is renamed or deleted during a fill | unaffected (work goes through the descriptor) | a deleted file's download completes into the unlinked inode |
-| A placeholder moved out of the folder | reads zeros (M4 is not upheld yet) | — |
+| A placeholder moved out of a read-write folder | reads zeros until the daemon marks it again (M4) | marked, downloaded where it went, then deleted in OneDrive ([writes.md](writes.md) §8) |
 | The waiting program is killed | its open is abandoned | the fill continues; other waiters are unaffected |
 
 ## 16. Known gaps
 
-- **The notification watcher is not built.** The design gives the daemon a second, unprivileged
-  fanotify group (`FAN_CLASS_NOTIF | FAN_REPORT_DFID_NAME | FAN_REPORT_TARGET_FID`, watching
-  `FAN_CREATE | FAN_MOVED_TO | FAN_MOVED_FROM`) so that a directory created by any program is marked
-  at once and a file moved out of the root gets its `MarkFile`. Until it exists, M1 holds only for
-  directories the daemon and the helper's walks create or reach, and M4 does not hold: a placeholder
-  moved into a directory some other program just made, or out of the folder, reads zeros
-  (limitations log Z2, Z3). It belongs to the write phase, which needs change tracking anyway.
+- **Moves into a new directory and out of the folder are covered after the fact.** In a read-write
+  folder the daemon's own unprivileged fanotify group ([writes.md](writes.md) §3) has a new
+  directory marked within milliseconds, and a placeholder that left the folder marked again after
+  a quiet spell of 2 s; opened in between, it reads zeros (limitations log Z2, Z3, F120). A read-only
+  account's folder needs no watcher: its directories are `0555`, so nothing can be made in it or
+  moved out of it.
 - **Fail-open windows.** The helper not yet running, and the moment it dies (Z1). The blast radius
   is the sync folder only.
 - **Eager hydration.** Anything that opens a placeholder downloads it — thumbnailers, indexers,

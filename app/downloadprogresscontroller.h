@@ -11,6 +11,7 @@ class DownloadJob;
 class DownloadJobTracker;
 class DownloadProgressSettings;
 class SyncController;
+class TransferModel;
 class QTimer;
 
 /// Reports long downloads to Plasma as KJobs, the same way Dolphin's copy
@@ -31,11 +32,20 @@ class QTimer;
 /// and overflow job with an error at once, rather than leaving them frozen.
 /// Nothing is reported while `settings` says not to (a null `settings` means
 /// always on).
+///
+/// Uploads are reported the same way, by a second controller per account
+/// made with Direction::Upload: it watches Uploads, titles its jobs
+/// "Uploading to OneDrive", and an `upload-failed` event fails a job.
 class DownloadProgressController : public QObject
 {
     Q_OBJECT
 
 public:
+    enum class Direction {
+        Download,
+        Upload,
+    };
+
     /// Milliseconds, monotonic.
     using Clock = std::function<qint64()>;
     static constexpr qint64 PromoteAfterMs = 2000;
@@ -46,7 +56,8 @@ public:
                                 DownloadJobTracker *tracker,
                                 DownloadProgressSettings *settings = nullptr,
                                 Clock clock = {},
-                                QObject *parent = nullptr);
+                                QObject *parent = nullptr,
+                                Direction direction = Direction::Download);
     ~DownloadProgressController() override;
 
     /// The timer that promotes and rechecks jobs (tests check that it is armed).
@@ -87,6 +98,8 @@ private:
     };
 
     bool enabled() const;
+    /// Transfers or Uploads.
+    TransferModel *model() const;
     /// A new job, registered, titled for the account.
     DownloadJob *newJob(const QString &name);
     void reconcile();
@@ -102,6 +115,7 @@ private:
     DownloadJobTracker *m_tracker;
     DownloadProgressSettings *m_settings;
     Clock m_clock;
+    Direction m_direction;
     std::function<QString()> m_accountName;
     QTimer *m_timer;
     QHash<QString, Entry> m_entries;

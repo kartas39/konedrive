@@ -160,6 +160,32 @@ run_pass() {
     check "[$name] no seccomp denial, and nothing refused with EPERM, EACCES or ENOSYS" "[ ! -s /run/denied.txt ]"
 }
 
+# --- measure: open_by_handle_at inside the helper's sandbox ------------------
+# docs/kernel-behavior-7.2.md §15. A copy of the shipped unit, with every line of
+# its sandbox, runs the probe (tests/vm/open_by_handle.rs) instead of the
+# helper; it is handed a directory descriptor from outside the sandbox, as the
+# helper is by a daemon, and reports what open_by_handle_at gives relative to
+# it. Only ExecStart, Restart and the runtime directory's name differ, so its
+# stop cannot remove the helper's /run/konedrive.
+section "measure: open_by_handle_at inside the helper's sandbox"
+probe_unit=konedrive-obh-probe.service
+probe_bin=/usr/local/libexec/konedrive-obh-probe
+install -m 0755 "$scenarios_bin" "$probe_bin"
+sed -e "s|^ExecStart=.*|ExecStart=$probe_bin --obh-serve /run/konedrive-obh/probe.sock|" \
+    -e 's|^Restart=.*|Restart=no|' \
+    -e 's|^RuntimeDirectory=.*|RuntimeDirectory=konedrive-obh|' \
+    "$unit_src" > "/etc/systemd/system/$probe_unit"
+# ReadWritePaths= names it, and without the helper's RuntimeDirectory= nothing
+# else creates it before the namespace is set up.
+mkdir -p /run/konedrive
+systemctl daemon-reload
+systemctl start "$probe_unit"
+"$scenarios_bin" --obh-measure /mnt/btrfs/obh /run/konedrive-obh/probe.sock
+rc=$?
+check "[measure] the probe ran inside the helper's sandbox and reported" "[ $rc -eq 0 ]"
+systemctl stop "$probe_unit" 2>/dev/null
+journalctl -b --no-pager -u "$probe_unit" | grep -v 'Started\|Stopped\|Deactivated' | tail -5
+
 run_pass as-shipped
 shipped_action=$(show SystemCallErrorNumber)
 

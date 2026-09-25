@@ -860,6 +860,32 @@ async fn binary_skipped_lists_what_is_not_in_the_folder_and_why() {
     assert!(text.contains("locked separately"), "says why: {text}");
 }
 
+/// The daemon's own wiring (`accounts.rs`, `sync::write_mode::follow`) makes a
+/// registered OneDrive folder follow `Account1.Mode`: read-write takes the read-only lock off,
+/// read-only puts it back. (How `SetMode` turns `Mode` is `konedrived`'s `tests/mode.rs`.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_folder_follows_the_accounts_mode() {
+    use std::os::unix::fs::PermissionsExt;
+    use konedrived::config::Mode;
+    let (f, _graph) = harness_onedrive().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    let file = root.join("docs/f.txt");
+    let modes = || {
+        let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
+        (mode(&file), mode(&root.join("docs")), mode(&root))
+    };
+    wait_for(|| file.is_file() && modes() == (0o444, 0o555, 0o555)).await;
+
+    f.account.state().update(|s| s.mode = Mode::ReadWrite);
+    wait_for(|| modes() == (0o644, 0o755, 0o755)).await;
+    assert_eq!(f.service.mode(), Mode::ReadWrite);
+    f.account.state().update(|s| s.mode = Mode::ReadOnly);
+    wait_for(|| modes() == (0o444, 0o555, 0o555)).await;
+    assert_eq!(f.service.mode(), Mode::ReadOnly);
+}
+
 /// `sync skipped` with no folder registered at all: there is nothing to be
 /// signed in about, and nothing OneDrive-related to say either — a plain
 /// statement of the actual reason, not the empty "Nothing is skipped."
@@ -964,7 +990,8 @@ async fn binary_status_of_a_onedrive_folder_counts_its_items_and_says_it_is_read
         text.lines().any(|l| l == "Skipped:                1 (see `konedrivectl sync skipped`)"),
         "{text}"
     );
-    assert!(text.lines().any(|l| l.starts_with("Editing:") && l.contains("read-only")), "{text}");
+    assert!(text.lines().any(|l| l.starts_with("Mode:") && l.contains("read-only")), "{text}");
+    assert!(!text.lines().any(|l| l.starts_with("Waiting to upload:")), "nothing uploads from a read-only folder: {text}");
 }
 
 // --- Activity, transfers, conflicts, free-up, status lines -----
@@ -1028,16 +1055,16 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let addr = f._bus.address();
     let out = run(addr, &["sync", "transfers"]);
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(out_text(&out).trim(), "Nothing is downloading.");
+    assert_eq!(out_text(&out).trim(), "Nothing is downloading or uploading.");
 
     let entry = f.service.report().transfers.start("/home/u/OneDrive/big.bin".into(), 4 << 20);
     entry.progress(1 << 20, 4 << 20);
     let out = run(addr, &["sync", "transfers"]);
     let text = out_text(&out);
     assert!(out.status.success(), "{out:?}");
-    assert!(text.contains("/home/u/OneDrive/big.bin") && text.contains("25%") && text.contains("4.0 MiB"), "{text}");
+    assert!(text.starts_with("down ") && text.contains("/home/u/OneDrive/big.bin") && text.contains("25%") && text.contains("4.0 MiB"), "{text}");
     drop(entry);
-    assert_eq!(out_text(&run(addr, &["sync", "transfers"])).trim(), "Nothing is downloading.");
+    assert_eq!(out_text(&run(addr, &["sync", "transfers"])).trim(), "Nothing is downloading or uploading.");
 }
 
 /// `sync conflicts` lists each local version moved out of the way — where
@@ -1058,6 +1085,7 @@ async fn binary_conflicts_are_listed_and_dismissed() {
         at: 1_700_000_000,
         original: "/home/u/OneDrive/docs/f.txt".into(),
         rescued: rescued.display().to_string(),
+        kind: konedrived::tree::ConflictKind::Rescued,
     }]);
 
     let status = out_text(&run(addr, &["sync", "status"]));
@@ -1098,6 +1126,7 @@ async fn binary_remove_says_where_the_listed_rescues_are() {
         at: 1_700_000_000,
         original: root.join("docs/f.txt").display().to_string(),
         rescued: rescued.display().to_string(),
+        kind: konedrived::tree::ConflictKind::Rescued,
     }]);
 
     let out = run(f._bus.address(), &["account", "remove", "Personal"]);
@@ -1277,6 +1306,7 @@ async fn binary_exports_the_access_token_and_nothing_else_readable_only_by_the_u
             access_token: "AT-EXPORT".into(),
             expires_in: 3600,
             refresh_token: Some("RT-NEVER".into()),
+            scope: Some("Files.Read User.Read".into()),
         })
         .await;
     let out_file = f.dir.path().join("token");
@@ -1308,6 +1338,7 @@ async fn binary_export_access_token_replaces_a_symlink_without_touching_its_targ
             access_token: "AT-EXPORT".into(),
             expires_in: 3600,
             refresh_token: Some("RT-NEVER".into()),
+            scope: Some("Files.Read User.Read".into()),
         })
         .await;
     let target = f.dir.path().join("someone-elses-file");
@@ -1466,4 +1497,69 @@ fn the_window_branches_on_the_daemons_own_activity_words() {
         cpp.contains(&format!("QLatin1String(\"{NO_DISK_SPACE}\")")),
         "the window does not recognise the daemon's words for a full disk, {NO_DISK_SPACE:?}"
     );
+}
+
+// --- the outbox on the bus: the outbox on the command line -----
+
+/// `sync pause`, `sync resume`, `sync ignore`, `sync outbox`, `sync not-uploaded`
+/// and `sync deletes`, end to end through the binary on a OneDrive folder; and a
+/// duration that is none is a usage error (exit status 2).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
+    let (f, _graph) = harness_onedrive().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/f.txt").is_file()).await;
+    let addr = f._bus.address();
+
+    let out = run(addr, &["sync", "pause", "--for", "2h"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).starts_with("Paused until "), "{}", out_text(&out));
+    // The proxy's cache follows the coalesced PropertiesChanged.
+    let paused_is = |wanted: bool| {
+        let proxy = &f.proxy;
+        async move {
+            for _ in 0..100 {
+                if proxy.paused().await.unwrap() == wanted {
+                    return true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            false
+        }
+    };
+    assert!(paused_is(true).await);
+    let status = out_text(&run(addr, &["sync", "status"]));
+    assert!(status.lines().any(|l| l.starts_with("Paused until:")), "{status}");
+    let out = run(addr, &["sync", "pause", "--for", "soon"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    let out = run(addr, &["sync", "resume"]);
+    assert_eq!(out_text(&out).trim(), "Resumed.");
+    // Right after the pause, within one coalescing window: still signalled.
+    assert!(paused_is(false).await);
+
+    let out = run(addr, &["sync", "ignore", "add", "*.bak"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&run(addr, &["sync", "ignore"])).lines().any(|l| l == "*.bak"));
+    assert!(run(addr, &["sync", "ignore", "remove", "*.bak"]).status.success());
+    assert!(!f.proxy.ignore_patterns().await.unwrap().contains(&"*.bak".to_owned()));
+    assert_eq!(run(addr, &["sync", "ignore", "remove", "*.bak"]).status.code(), Some(2));
+
+    assert_eq!(out_text(&run(addr, &["sync", "outbox"])).trim(), "Nothing is waiting to upload.");
+    assert_eq!(out_text(&run(addr, &["sync", "not-uploaded"])).trim(), "Everything here is uploaded or waits to be.");
+    assert_eq!(out_text(&run(addr, &["sync", "deletes", "confirm"])).trim(), "No delete is waiting for confirmation.");
+}
+
+/// A folder not connected to OneDrive uploads nothing: the outbox commands say
+/// so, by the refusal's name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_outbox_of_a_local_folder_says_nothing_is_uploaded_from_it() {
+    let f = harness().await;
+    let root = f.dir.path().join("local");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    let out = run(f._bus.address(), &["sync", "outbox"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(err_text(&out).contains("not connected to OneDrive, so nothing is uploaded from it"), "{}", err_text(&out));
 }

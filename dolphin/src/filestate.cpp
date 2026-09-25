@@ -49,6 +49,29 @@ FileState readFileState(const QString &path)
     return FileState::Unrecognised;
 }
 
+UploadState readUploadState(const QString &path)
+{
+    const QByteArray native = QFile::encodeName(path);
+    // The longest value is "uploading"; anything that does not fit is not
+    // one this plugin knows.
+    char value[16];
+    const ssize_t size = ::lgetxattr(native.constData(), SyncAttribute, value, sizeof value);
+    if (size < 0) {
+        return UploadState::None;
+    }
+    const std::string_view state(value, static_cast<size_t>(size));
+    if (state == "pending") {
+        return UploadState::Pending;
+    }
+    if (state == "uploading") {
+        return UploadState::Uploading;
+    }
+    if (state == "blocked") {
+        return UploadState::Blocked;
+    }
+    return UploadState::None;
+}
+
 bool hasRootMark(const QString &dir)
 {
     const QByteArray native = QFile::encodeName(dir);
@@ -195,7 +218,9 @@ QStringList overlayNames(Emblem emblem)
     //     nowhere else in the theme;
     //   - emblems/*/emblem-checked.svg, the same check filled solid, for one
     //     that is effectively pinned (the FILLED case) -- this is the icon
-    //     "hydrated" alone used before pinning existed.
+    //     "hydrated" alone used before pinning existed;
+    //   - status/*/state-error.svg, for an item whose upload is blocked
+    //     (state-sync, above, serves one waiting to be uploaded too).
     switch (emblem) {
     case Emblem::Cloud:
         return {QStringLiteral("cloudstatus")};
@@ -205,6 +230,8 @@ QStringList overlayNames(Emblem emblem)
         return {QStringLiteral("dialog-ok")};
     case Emblem::CheckFilled:
         return {QStringLiteral("emblem-checked")};
+    case Emblem::Error:
+        return {QStringLiteral("state-error")};
     case Emblem::None:
         break;
     }
@@ -266,12 +293,31 @@ bool isDirectory(const QString &path)
     return ::lstat(native.constData(), &info) == 0 && S_ISDIR(info.st_mode);
 }
 
-Emblem emblemForItem(FileState state, bool isDir, bool pinned)
+Emblem emblemForItem(FileState state, bool isDir, bool pinned, UploadState upload)
 {
+    switch (upload) {
+    case UploadState::Pending:
+    case UploadState::Uploading:
+        return Emblem::Syncing;
+    case UploadState::Blocked:
+        return Emblem::Error;
+    case UploadState::None:
+        break;
+    }
     if (isDir) {
         return pinned ? Emblem::CheckFilled : Emblem::None;
     }
     return emblemFor(state, pinned);
+}
+
+Emblem itemEmblem(const QString &path, const QString &root, const PinMarkReader &hasPin)
+{
+    // An item with changes waiting to be uploaded needs nothing else read.
+    const UploadState upload = readUploadState(path);
+    if (upload != UploadState::None) {
+        return emblemForItem(FileState::NotAFile, false, false, upload);
+    }
+    return emblemForItem(readFileState(path), isDirectory(path), isEffectivelyPinned(path, root, hasPin));
 }
 
 namespace

@@ -9,6 +9,7 @@
 //! that the shipped `Marks::ignore_file` works is to run *it* and look at
 //! `/proc/self/fdinfo/<group>`.
 
+pub mod by_handle;
 pub mod jobs;
 pub mod marks;
 pub mod outbox;

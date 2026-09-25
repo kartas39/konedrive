@@ -31,7 +31,11 @@
 //! gets back.
 
 mod graph;
+mod move_out;
+mod open_by_handle;
 mod unit;
+mod watch;
+mod writes;
 
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -139,6 +143,10 @@ fn main() {
         Some("--hostile") => return child_hostile(argv[2]),
         Some("--pipeline") => return child_pipeline(argv[2].parse().unwrap()),
         Some("--connections") => return child_connections(argv[2].parse().unwrap()),
+        Some("--obh-serve") => std::process::exit(open_by_handle::probe_serve(Path::new(argv[2]))),
+        Some("--obh-measure") => {
+            std::process::exit(open_by_handle::probe_measure(Path::new(argv[2]), Path::new(argv[3])))
+        }
         _ => {}
     }
 
@@ -2090,11 +2098,82 @@ fn scenarios() -> Vec<(&'static str, Scenario)> {
             two_accounts_one_link,
         ),
         ("directory created later is covered", new_directory_covered),
+        (
+            "watcher: a directory made after the helper's walk is marked by the watcher's",
+            watch::bring_up_marks_what_the_helper_missed,
+        ),
+        (
+            "watcher: a directory made and at once given a placeholder is marked within milliseconds, and the open \
+             is filled",
+            watch::new_directory_marked,
+        ),
+        (
+            "watcher: a tree moved into the folder is marked all the way down before its files are opened",
+            watch::tree_moved_in_marked,
+        ),
+        ("watcher: the daemon's own placement and fill are not handed over", watch::own_fill_is_silent),
+        ("watcher: a nested btrfs subvolume is neither watched nor uploaded", watch::other_device_not_uploaded),
         ("file moved out keeps its individual mark", moved_out_still_covered),
         ("a hardlink in an unmarked directory, and a second mount", hardlink_and_second_mount),
         ("zero-byte file needs no fetch", zero_byte_file),
         ("the whole errno space is answered, and nobody is left hanging", errno_sweep),
         ("a hostile uid cannot touch another user's hydrations", hostile_uid),
+        (
+            "OpenByHandle: a placeholder moved out of the folder is found by its handle, re-marked, filled \
+             on open, and ESTALE once deleted",
+            open_by_handle::moved_out_placeholder,
+        ),
+        (
+            "OpenByHandle: a directory moved out of the folder is found, and UnmarkDir takes off the mark \
+             it took along",
+            open_by_handle::moved_out_directory,
+        ),
+        (
+            "OpenByHandle refuses another uid's object, one without the attribute, another device or \
+             filesystem, and malformed handles",
+            open_by_handle::refusals,
+        ),
+        (
+            "OpenByHandle of a placeholder under the helper's own marks returns at once and fills nothing",
+            open_by_handle::own_open_exempt,
+        ),
+        (
+            "move-out: a placeholder moved out of the folder is marked again first, never reads zeros, and is deleted \
+             in OneDrive only once it is local",
+            move_out::placeholder_moved_out,
+        ),
+        (
+            "move-out: a directory moved out is downloaded where it went, unmarked, and only then deleted in OneDrive",
+            move_out::directory_moved_out,
+        ),
+        (
+            "move-out: a placeholder sent to the Trash is removed from it with its .trashinfo, without a download",
+            move_out::placeholder_to_the_trash,
+        ),
+        (
+            "move-out: a download that stops part-way deletes nothing; after a restart it is marked again first, then \
+             finished",
+            move_out::crash_mid_download_then_restart,
+        ),
+        (
+            "writes: a write open of a placeholder fills it first, and the upload carries what was written",
+            writes::write_open_fills_then_uploads,
+        ),
+        (
+            "writes: a directory made and at once given a placeholder is marked before the open, and both go up",
+            writes::new_directory_marked_then_uploaded,
+        ),
+        ("writes: a tree moved into the folder is marked all the way down and uploaded", writes::tree_moved_in_marked_and_uploaded),
+        ("writes: an upload session left half sent resumes when the daemon starts again", writes::stopped_mid_session_resumes),
+        (
+            "writes: after a helper restart a Full local scan finds a change no event reported",
+            writes::helper_restart_full_scan_finds_a_change,
+        ),
+        (
+            "writes: create, edit, rename, move and delete reach OneDrive, which then matches the folder, and the \
+             echo changes nothing",
+            writes::round_trip,
+        ),
         ("one uid cannot hold the helper's connections without bound", connections_per_uid_are_capped),
         ("SO_PEERCRED's pid is the pid the event reports", peercred_pid_matches_event_pid),
         (

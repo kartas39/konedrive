@@ -10,8 +10,10 @@ publish = false
 # stall the VM suite arms to widen a race window too narrow to hit by chance
 # (startup recovery between its `ClearIgnore` and its lease). Off
 # by default; never enable it in a build that ships. `tests/vm/Cargo.toml`
-# turns it on for the suite's own build of this crate.
-fault-injection = []
+# turns it on for the suite's own build of this crate. It also builds the fake
+# OneDrive (`sync::upload::fake`, on wiremock), which the suite's write scenarios
+# run the daemon against inside the VM.
+fault-injection = ["dep:wiremock"]
 
 [dependencies]
 anyhow.workspace = true
@@ -43,6 +45,8 @@ tracing-subscriber.workspace = true
 url.workspace = true
 xattr.workspace = true
 zbus.workspace = true
+# Only with `fault-injection`: the fake OneDrive of the VM suite.
+wiremock = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile.workspace = true

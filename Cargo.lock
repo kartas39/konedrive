@@ -1102,6 +1102,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "konedrive-write-test"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "clap",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "konedrived",
+ "libc",
+ "percent-encoding",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "konedrivectl"
 version = "0.1.0"
 dependencies = [

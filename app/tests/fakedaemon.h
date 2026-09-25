@@ -98,7 +98,14 @@ public:
         fake::propertiesChanged(m_bus, m_path, AccountController::InterfaceName, changes);
     }
 
+    /// The sign-in a switch to read-write waits for, granted.
+    void grantReadWrite() { set({{QStringLiteral("Mode"), QStringLiteral("read-write")}}); }
+
     QStringList calls;
+    /// SetMode("read-write") gets through the development gate, which refuses by default.
+    bool gateOpen = false;
+    /// Changes waiting to be uploaded, for SetMode("read-only").
+    uint pendingUploads = 0;
 
 public Q_SLOTS:
     QString BeginSignIn()
@@ -110,7 +117,10 @@ public Q_SLOTS:
     void CancelSignIn()
     {
         calls << QStringLiteral("CancelSignIn");
-        set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
+        // A switch to read-write's sign-in is given up with the account still signed in.
+        if (state() == QLatin1String("signing-in")) {
+            set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
+        }
     }
     void SignOut()
     {
@@ -127,6 +137,38 @@ public Q_SLOTS:
             return;
         }
         set({{QStringLiteral("Label"), label.trimmed()}});
+    }
+    /// As the daemon's: the gate first, then the sign-in state, for read-write, which
+    /// answers a sign-in URL (grantReadWrite() then ends it); PendingUploads for
+    /// read-only while `pendingUploads` is not 0, unless forced, which drops them.
+    QString SetMode(const QString &mode, bool force, const QDBusMessage &message)
+    {
+        calls << QStringLiteral("SetMode:%1:%2").arg(mode, force ? QStringLiteral("force") : QStringLiteral("no-force"));
+        const auto refuse = [&](const QString &name, const QString &why) {
+            message.setDelayedReply(true);
+            m_bus.send(message.createErrorReply(name, why));
+            return QString();
+        };
+        if (mode == QLatin1String("read-write")) {
+            if (!gateOpen) {
+                return refuse(QStringLiteral("org.konedrive.Error.WritesNotAllowed"), QStringLiteral("DAEMON-GATE-WORDS"));
+            }
+            if (state() != QLatin1String("signed-in")) {
+                return refuse(QStringLiteral("org.konedrive.Error.NotSignedIn"), QStringLiteral("sign in first; then switch the account to read-write"));
+            }
+            set({{QStringLiteral("LastError"), QString()}});
+            return QStringLiteral("https://login.example/authorize?scope=Files.ReadWrite&account=") + id();
+        }
+        if (mode == QLatin1String("read-only")) {
+            if (pendingUploads > 0 && !force) {
+                return refuse(QStringLiteral("org.konedrive.Error.PendingUploads"),
+                              QStringLiteral("%1 changes made here have not been uploaded yet").arg(pendingUploads));
+            }
+            pendingUploads = 0;
+            set({{QStringLiteral("Mode"), QStringLiteral("read-only")}});
+            return QString();
+        }
+        return refuse(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("unknown mode ") + mode);
     }
 
 private:
@@ -159,6 +201,15 @@ class FakeSync1 : public QDBusAbstractAdaptor
     Q_PROPERTY(uint ConflictCount READ conflictCount)
     Q_PROPERTY(uint PinnedCount READ pinnedCount)
     Q_PROPERTY(KonedriveTransferList Transfers READ transfers)
+    Q_PROPERTY(uint PendingCount READ pendingCount)
+    Q_PROPERTY(qulonglong PendingBytes READ pendingBytes)
+    Q_PROPERTY(uint BlockedCount READ blockedCount)
+    Q_PROPERTY(uint HeldCount READ heldCount)
+    Q_PROPERTY(KonedriveTransferList Uploads READ uploads)
+    Q_PROPERTY(bool Paused READ paused)
+    Q_PROPERTY(qlonglong PausedUntil READ pausedUntil)
+    Q_PROPERTY(QStringList IgnorePatterns READ ignorePatterns)
+    Q_PROPERTY(QString MachineName READ machineName)
 
 public:
     FakeSync1(QObject *parent, const QDBusConnection &bus, const QString &path)
@@ -180,6 +231,15 @@ public:
     uint conflictCount() const { return m_properties.value(QStringLiteral("ConflictCount")).toUInt(); }
     uint pinnedCount() const { return m_properties.value(QStringLiteral("PinnedCount")).toUInt(); }
     KonedriveTransferList transfers() const { return m_transfers; }
+    uint pendingCount() const { return m_properties.value(QStringLiteral("PendingCount")).toUInt(); }
+    qulonglong pendingBytes() const { return m_properties.value(QStringLiteral("PendingBytes")).toULongLong(); }
+    uint blockedCount() const { return m_properties.value(QStringLiteral("BlockedCount")).toUInt(); }
+    uint heldCount() const { return m_properties.value(QStringLiteral("HeldCount")).toUInt(); }
+    KonedriveTransferList uploads() const { return m_uploads; }
+    bool paused() const { return m_properties.value(QStringLiteral("Paused")).toBool(); }
+    qlonglong pausedUntil() const { return m_properties.value(QStringLiteral("PausedUntil")).toLongLong(); }
+    QStringList ignorePatterns() const { return m_properties.value(QStringLiteral("IgnorePatterns")).toStringList(); }
+    QString machineName() const { return m_properties.value(QStringLiteral("MachineName")).toString(); }
 
     void set(const QVariantMap &changes)
     {
@@ -193,6 +253,22 @@ public:
     {
         m_transfers = transfers;
         fake::propertiesChanged(m_bus, m_path, SyncController::InterfaceName, {{QStringLiteral("Transfers"), QVariant::fromValue(transfers)}});
+    }
+
+    /// The mass-delete guard trips: `count` removals of `path`'s kind are
+    /// held, in the outbox and in HeldCount.
+    void holdDeletes(const QString &path, uint count)
+    {
+        for (uint i = 0; i < count; ++i) {
+            outboxRows << KonedriveOutboxRow{100 + i, QStringLiteral("delete"), path + QString::number(i), QStringLiteral("held"), 0, 0, QStringLiteral("mass-delete"), 0};
+        }
+        set({{QStringLiteral("HeldCount"), QVariant::fromValue<uint>(heldCount() + count)}});
+    }
+
+    void setUploads(const KonedriveTransferList &uploads)
+    {
+        m_uploads = uploads;
+        fake::propertiesChanged(m_bus, m_path, SyncController::InterfaceName, {{QStringLiteral("Uploads"), QVariant::fromValue(uploads)}});
     }
 
     /// Records an event in RecentActivity() and emits ActivityAdded, as the daemon does.
@@ -237,6 +313,13 @@ public:
     uint freedFiles = 0;
     qulonglong freedBytes = 0;
     uint busyFiles = 0;
+    /// Outbox(), oldest first; Confirm/RestoreDeletes act on its "held" rows
+    /// and set HeldCount to 0. holdDeletes() holds some, as the guard does.
+    KonedriveOutboxList outboxRows;
+    /// NotUploaded().
+    KonedriveSkippedList notUploadedList;
+    /// Pause(seconds) ends at pauseNow + seconds.
+    qint64 pauseNow = 1758700000;
 
 public Q_SLOTS:
     void RegisterRoot(const QString &path, const QDBusMessage &message)
@@ -297,6 +380,61 @@ public Q_SLOTS:
             m_bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("no conflict at ") + rescued));
         }
     }
+    KonedriveOutboxList Outbox(uint limit)
+    {
+        calls << QStringLiteral("Outbox");
+        return limit == 0 ? outboxRows : outboxRows.mid(0, int(limit));
+    }
+    void Pause(uint seconds)
+    {
+        calls << QStringLiteral("Pause:") + QString::number(seconds);
+        set({{QStringLiteral("Paused"), true}, {QStringLiteral("PausedUntil"), QVariant::fromValue<qlonglong>(seconds == 0 ? 0 : pauseNow + seconds)}});
+    }
+    void Resume()
+    {
+        calls << QStringLiteral("Resume");
+        set({{QStringLiteral("Paused"), false}, {QStringLiteral("PausedUntil"), QVariant::fromValue<qlonglong>(0)}});
+    }
+    void SetIgnorePatterns(const QStringList &patterns, const QDBusMessage &message)
+    {
+        calls << QStringLiteral("SetIgnorePatterns:") + patterns.join(QLatin1Char(','));
+        for (const QString &pattern : patterns) {
+            if (pattern.isEmpty() || pattern.contains(QLatin1Char('/'))) {
+                message.setDelayedReply(true);
+                m_bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("not a pattern: ") + pattern));
+                return;
+            }
+        }
+        set({{QStringLiteral("IgnorePatterns"), patterns}});
+    }
+    uint ConfirmDeletes()
+    {
+        calls << QStringLiteral("ConfirmDeletes");
+        uint released = 0;
+        for (KonedriveOutboxRow &row : outboxRows) {
+            if (row.state == QLatin1String("held")) {
+                row.state = QStringLiteral("ready");
+                row.reason.clear();
+                ++released;
+            }
+        }
+        set({{QStringLiteral("HeldCount"), QVariant::fromValue<uint>(0)}});
+        return released;
+    }
+    uint RestoreDeletes()
+    {
+        calls << QStringLiteral("RestoreDeletes");
+        const auto dropped = outboxRows.removeIf([](const KonedriveOutboxRow &row) {
+            return row.state == QLatin1String("held");
+        });
+        set({{QStringLiteral("HeldCount"), QVariant::fromValue<uint>(0)}});
+        return uint(dropped);
+    }
+    KonedriveSkippedList NotUploaded()
+    {
+        calls << QStringLiteral("NotUploaded");
+        return notUploadedList;
+    }
     /// Answers (u files, t bytes, u busy) by hand, so that it can be held.
     void FreeUpSpace(const QDBusMessage &message)
     {
@@ -312,6 +450,7 @@ private:
     QDBusConnection m_bus;
     QString m_path;
     KonedriveTransferList m_transfers;
+    KonedriveTransferList m_uploads;
     QDBusMessage m_heldActivity;
     uint m_heldLimit = 0;
     QDBusMessage m_heldFreeUp;
@@ -327,6 +466,14 @@ private:
         {QStringLiteral("LocalBytes"), QVariant::fromValue<qulonglong>(0)},
         {QStringLiteral("ConflictCount"), QVariant::fromValue<uint>(0)},
         {QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("PendingCount"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("HeldCount"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("Paused"), false},
+        {QStringLiteral("PausedUntil"), QVariant::fromValue<qlonglong>(0)},
+        {QStringLiteral("IgnorePatterns"), QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}},
+        {QStringLiteral("MachineName"), QStringLiteral("fedora")},
     };
 };
 

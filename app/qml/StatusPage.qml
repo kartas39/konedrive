@@ -21,6 +21,9 @@ FormCard.FormCardPage {
     readonly property bool available: account !== null && sync !== null && account.serviceAvailable && sync.serviceAvailable
     readonly property bool signedIn: available && account.state === "signed-in"
     readonly property bool hasFolder: available && sync !== null && status !== null && sync.rootPath.length > 0
+    /// A folder that shows OneDrive: the one kind that uploads, and can pause.
+    readonly property bool oneDrive: hasFolder && sync.rootSource === "onedrive"
+    readonly property bool uploading: account !== null && account.mode === "read-write"
     // A no-interception folder is one Free Up Space warning; a folder that
     // shows OneDrive but whose helper is not connected (including a legacy
     // folder still waiting to switch, which publishes RootState "error", not
@@ -284,10 +287,109 @@ FormCard.FormCardPage {
         Layout.topMargin: Kirigami.Units.largeSpacing
         visible: page.hasFolder
 
+        // The mode, and what waits to go up.
         FormCard.FormTextDelegate {
-            visible: page.sync !== null && page.sync.rootSource === "onedrive"
-            text: i18n("Read-only for now")
-            description: i18n("Files in this folder cannot be changed yet, and nothing is sent to OneDrive.")
+            objectName: "modeLine"
+            visible: page.oneDrive
+            text: page.uploading ? i18n("Changes upload") : i18n("Read-only")
+            description: page.uploading ? i18n("What you add, change, move or delete in the folder is uploaded to OneDrive.")
+                                        : i18n("Files in this folder cannot be changed here, and nothing is uploaded. Uploading can be turned on on the Account page.")
+            leading: Kirigami.Icon {
+                source: page.uploading ? "cloud-upload" : "object-locked"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
+            }
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "pendingLine"
+            visible: page.oneDrive && page.sync.pendingCount > 0
+            text: page.sync ? i18np("1 change waiting to upload", "%1 changes waiting to upload", page.sync.pendingCount) : ""
+            description: page.sync && page.sync.pendingBytes > 0 ? i18n("%1 to send", Qt.locale().formattedDataSize(page.sync.pendingBytes)) : ""
+            icon.name: "cloud-upload"
+            onClicked: page.window.showPage("activity")
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "blockedLine"
+            visible: page.oneDrive && page.sync.blockedCount > 0
+            text: page.sync ? i18np("1 change cannot be uploaded", "%1 changes cannot be uploaded", page.sync.blockedCount) : ""
+            description: i18n("The Not Uploaded page says why, and what to do.")
+            icon.name: "dialog-warning"
+            onClicked: page.window.showPage("notUploaded")
+        }
+        // The mass-delete guard: held until the user decides, here, in the
+        // notification, or with konedrivectl sync deletes.
+        FormCard.FormTextDelegate {
+            objectName: "heldLine"
+            visible: page.oneDrive && page.sync.heldCount > 0
+            text: page.sync ? i18np("1 item deleted here waits for you", "%1 items deleted here wait for you", page.sync.heldCount) : ""
+            description: i18n("So many deletions at once are held: nothing is deleted in OneDrive until you say so. Restoring puts the files back here; deleting in OneDrive moves them to its recycle bin.")
+            leading: Kirigami.Icon {
+                source: "dialog-warning"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
+            }
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "restoreDeletes"
+            visible: page.oneDrive && page.sync.heldCount > 0
+            text: i18nc("@action:button", "Restore Them")
+            icon.name: "edit-undo"
+            onClicked: page.sync.restoreDeletes()
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "confirmDeletes"
+            visible: page.oneDrive && page.sync.heldCount > 0
+            text: i18nc("@action:button", "Delete in OneDrive Too")
+            icon.name: "edit-delete"
+            onClicked: page.sync.confirmDeletes()
+        }
+        // Pause and resume, as Windows offers them.
+        FormCard.FormTextDelegate {
+            objectName: "pausedLine"
+            visible: page.oneDrive && page.sync.paused
+            text: page.sync && page.status && page.sync.pausedUntil > 0 ? i18n("Paused until %1", page.status.until(page.sync.pausedUntil)) : i18n("Paused until you resume")
+            description: i18n("Nothing is uploaded, and OneDrive is not asked for changes. Files still download when you open them, and changes made here wait.")
+            leading: Kirigami.Icon {
+                source: "media-playback-pause"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
+            }
+            trailing: QQC2.Button {
+                objectName: "resumeButton"
+                text: i18nc("@action:button", "Resume")
+                icon.name: "media-playback-start"
+                onClicked: page.sync.resume()
+            }
+        }
+        FormCard.FormButtonDelegate {
+            id: pauseButton
+            objectName: "pauseButton"
+            visible: page.oneDrive && !page.sync.paused
+            text: i18nc("@action:button", "Pause Syncing…")
+            icon.name: "media-playback-pause"
+            onClicked: pauseMenu.popup()
+
+            QQC2.Menu {
+                id: pauseMenu
+                objectName: "pauseMenu"
+
+                QQC2.MenuItem {
+                    text: i18nc("@action:inmenu pause syncing", "For 2 Hours")
+                    onTriggered: page.sync.pause(2 * 3600)
+                }
+                QQC2.MenuItem {
+                    text: i18nc("@action:inmenu pause syncing", "For 8 Hours")
+                    onTriggered: page.sync.pause(8 * 3600)
+                }
+                QQC2.MenuItem {
+                    text: i18nc("@action:inmenu pause syncing", "For 24 Hours")
+                    onTriggered: page.sync.pause(24 * 3600)
+                }
+                QQC2.MenuItem {
+                    text: i18nc("@action:inmenu pause syncing", "Until Resumed")
+                    onTriggered: page.sync.pause(0)
+                }
+            }
         }
         FormCard.FormTextDelegate {
             visible: page.sync !== null && page.sync.rootState === "no-interception"

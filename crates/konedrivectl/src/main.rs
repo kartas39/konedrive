@@ -100,15 +100,35 @@ enum AccountCmd {
         #[arg(value_name = "ACCOUNT", allow_hyphen_values = true)]
         named: String,
     },
+    /// Show the account's mode, or switch it to read-only or read-write
+    ///
+    /// read-write signs in again, in the browser as `login` does, asking Microsoft for
+    /// permission to change the account's files, and waits; nothing changes until that
+    /// permission is granted. While uploads are being developed, only the test accounts listed
+    /// in write_test_drive_ids in config.toml can be read-write. read-only needs no sign-in,
+    /// and is refused while changes wait to be uploaded, unless --force.
+    Mode {
+        /// read-only or read-write; without it, the mode is shown
+        #[arg(value_parser = ["read-only", "read-write"])]
+        mode: Option<String>,
+        /// Switch to read-only even while changes wait to be uploaded: they stay here, and
+        /// are not uploaded
+        #[arg(long, requires = "mode")]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand)]
 enum DevCmd {
-    /// Write the account's current access token — about an hour of read access, never
-    /// the refresh token — to a file only you can read, for a test run in the VM
+    /// Write an access token of the account — about an hour of read access, never the
+    /// refresh token — to a file only you can read, for a test run in the VM
     ExportAccessToken {
         #[arg(long)]
         out: std::path::PathBuf,
+        /// A token that can change the account's files, for the test-account harness: only
+        /// for a read-write account listed in write_test_drive_ids in config.toml
+        #[arg(long)]
+        read_write: bool,
     },
 }
 
@@ -150,14 +170,42 @@ enum SyncCmd {
         #[arg(long, default_value_t = 20)]
         limit: u32,
     },
-    /// Show the downloads under way
+    /// Show the downloads and uploads under way
     Transfers,
-    /// List your changed versions that were moved out of the way because the
-    /// file changed or was removed in OneDrive
+    /// Show the changes waiting to be uploaded, and why each waits
+    Outbox {
+        /// Show every change, not only the first 50
+        #[arg(long)]
+        all: bool,
+    },
+    /// Pause syncing: nothing is uploaded and OneDrive is not asked for changes.
+    /// Opening a file still downloads it
+    Pause {
+        /// How long: `30m`, `2h`, `1d`, `1h30m`; until `sync resume` without it
+        #[arg(long = "for", value_name = "DURATION")]
+        duration: Option<String>,
+    },
+    /// Resume syncing now
+    Resume,
+    /// Show or change the names of local files that are never uploaded (shell
+    /// globs, matched against a name)
+    Ignore {
+        #[command(subcommand)]
+        action: Option<IgnoreCmd>,
+    },
+    /// List what stays on this computer, and why
+    NotUploaded,
+    /// Decide on a large delete held for confirmation
+    Deletes {
+        #[command(subcommand)]
+        action: DeletesCmd,
+    },
+    /// List your changed versions that were kept when the file changed or was
+    /// removed in OneDrive: moved out of the way, or kept as a copy beside it
     Conflicts,
     /// Take a conflict off the list; the file itself stays where it is
     Dismiss {
-        /// Where the file was moved to, as `sync conflicts` shows it
+        /// Where your version is kept, as `sync conflicts` shows it
         path: String,
     },
     /// Free up the space of every downloaded file in the account's folder that is not in use
@@ -182,6 +230,24 @@ enum SyncCmd {
         #[arg(required = true)]
         paths: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum IgnoreCmd {
+    /// Print the list
+    List,
+    /// Add a pattern, such as `*.bak`
+    Add { pattern: String },
+    /// Remove a pattern
+    Remove { pattern: String },
+}
+
+#[derive(Subcommand)]
+enum DeletesCmd {
+    /// Delete them in OneDrive too
+    Confirm,
+    /// Keep them in OneDrive: they come back here
+    Restore,
 }
 
 /// A command line that has to change: exits with status 2, as clap's own usage errors do.
@@ -246,7 +312,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let daemon = Daemon::connect().await?;
     let option = cli.account.as_deref();
     match cli.command {
-        Cmd::Account { command } => account(&daemon, command).await,
+        Cmd::Account { command } => account(&daemon, option, command).await,
         Cmd::SetClientId { id } => set_client_id(&daemon, &id).await,
         Cmd::Login => login(&daemon, option).await,
         Cmd::Logout => {
@@ -418,8 +484,9 @@ fn holder<'f>(folders: &'f [Folder], path: &str) -> Option<&'f Folder> {
     folders.iter().find(|f| Path::new(path).starts_with(&f.root))
 }
 
-async fn account(daemon: &Daemon, command: AccountCmd) -> anyhow::Result<()> {
+async fn account(daemon: &Daemon, option: Option<&str>, command: AccountCmd) -> anyhow::Result<()> {
     match command {
+        AccountCmd::Mode { mode, force } => return account_mode(daemon, option, mode.as_deref(), force).await,
         AccountCmd::List => {
             let mut rows = Vec::new();
             for path in daemon.manager.accounts().await? {
@@ -486,6 +553,55 @@ async fn account(daemon: &Daemon, command: AccountCmd) -> anyhow::Result<()> {
             print!("{}", konedrivectl::removed_text(&target.label, &folder, &conflicts));
         }
     }
+    Ok(())
+}
+
+/// `account mode` (`docs/design/writes.md` §11): the chosen account's mode, or a switch. A switch to
+/// read-write opens the sign-in the daemon answers with, as `login` does, and waits until the
+/// account is read-write or says why it is not.
+async fn account_mode(daemon: &Daemon, option: Option<&str>, mode: Option<&str>, force: bool) -> anyhow::Result<()> {
+    let chosen = daemon.chosen(option).await?;
+    let (label, tag, prefix) = (chosen.account.label.clone(), chosen.tag(), chosen.prefix());
+    let proxy = daemon.account(&chosen.account.path).await?;
+    let Some(mode) = mode else {
+        println!("{tag}{}", proxy.mode().await?);
+        let last_error = proxy.last_error().await?;
+        if !last_error.is_empty() {
+            println!("{:<12}{last_error}", "Last error:");
+        }
+        return Ok(());
+    };
+    let result = proxy.set_mode(mode, force).await;
+    let url = result.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::SetMode(&label, mode, &prefix), &e)))?;
+    if mode == "read-only" {
+        println!("{tag}Read-only: the folder's files are read-only again, and nothing changed in it is uploaded.");
+        return Ok(());
+    }
+    if url.is_empty() {
+        println!("{tag}Already read-write.");
+        return Ok(());
+    }
+    println!(
+        "Opening the Microsoft sign-in page in your browser, to allow konedrive to change the files \
+         of {label} in OneDrive. If it does not open, visit:\n\n  {url}\n"
+    );
+    let _ = Command::new("xdg-open").arg(&url).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    // Uncached, as `login`'s: the wait polls `Mode` directly.
+    let wait_proxy = Account1Proxy::builder(&daemon.connection)
+        .path(chosen.account.path.clone())?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await?;
+    tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(6 * 60), konedrivectl::wait_for_read_write(&wait_proxy)) => {
+            result.context("timed out")??;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            proxy.cancel_sign_in().await?;
+            bail!("cancelled; {label} stays read-only");
+        }
+    }
+    println!("{tag}Read-write: the folder's files can be changed.");
     Ok(())
 }
 
@@ -569,22 +685,23 @@ async fn sync_status(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()
 
 async fn dev(daemon: &Daemon, option: Option<&str>, command: DevCmd) -> anyhow::Result<()> {
     match command {
-        DevCmd::ExportAccessToken { out } => {
+        DevCmd::ExportAccessToken { out, read_write } => {
             let chosen = daemon.chosen(option).await?;
             let dev = Dev1Proxy::new(&daemon.connection, chosen.account.path.clone()).await?;
-            let token = dev
-                .access_token()
-                .await
-                .map_err(|e| anyhow!("{}", konedrivectl::explain_dev_error(&e, &chosen.prefix())))?;
+            // Read-only unless asked; the daemon refuses a read-write token for any account
+            // the development gate does not let through (`docs/design/writes.md` §8.2; SECURITY.md).
+            let token = if read_write { dev.read_write_access_token().await } else { dev.access_token().await };
+            let token = token.map_err(|e| anyhow!("{}", konedrivectl::explain_dev_error(&e, &chosen.prefix())))?;
             // I1: `write_secret_atomically` never opens `out`
             // itself, so a symlink there is replaced rather than followed
             // and truncated, and anyone who already had the old file open
             // keeps reading its old content undisturbed.
             konedrivectl::write_secret_atomically(&out, token.as_bytes())
                 .with_context(|| format!("cannot write the access token to {}", out.display()))?;
+            let what = if read_write { "that can CHANGE its files in OneDrive" } else { "that can only read" };
             println!(
-                "Wrote an access token of {}, valid for about an hour, to {}. It is not the refresh token. \
-                 Delete the file when the test is done.",
+                "Wrote an access token of {} {what}, valid for about an hour, to {}. It is not the \
+                 refresh token. Delete the file when the test is done.",
                 chosen.account.label,
                 out.display()
             );
@@ -755,7 +872,83 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &Sync1Proxy<'_>
             let events = explained(daemon, chosen, proxy, SyncAction::Activity, proxy.recent_activity(limit).await).await?;
             print!("{}", konedrivectl::activity_text(&events));
         }
-        SyncCmd::Transfers => print!("{}", konedrivectl::transfers_text(&proxy.transfers().await?)),
+        SyncCmd::Transfers => print!("{}", konedrivectl::transfers_text(&proxy.transfers().await?, &proxy.uploads().await?)),
+        SyncCmd::Outbox { all } => {
+            const SHOWN: u32 = 50;
+            let limit = if all { 0 } else { SHOWN + 1 };
+            let mut rows = explained(daemon, chosen, proxy, SyncAction::Outbox, proxy.outbox(limit).await).await?;
+            let more = !all && rows.len() > SHOWN as usize;
+            rows.truncate(if all { rows.len() } else { SHOWN as usize });
+            print!("{}", konedrivectl::outbox_text(&rows, more, &chosen.prefix()));
+        }
+        SyncCmd::Pause { duration } => {
+            let seconds = match duration.as_deref() {
+                None => 0,
+                Some(text) => konedrivectl::parse_duration(text)
+                    .ok_or_else(|| Usage(format!("`{text}` is not a duration: write it as 30m, 2h, 1d or 1h30m")))?,
+            };
+            explained(daemon, chosen, proxy, SyncAction::Pause, proxy.pause(seconds).await).await?;
+            match seconds {
+                0 => println!("{tag}Paused until `{} sync resume`.", chosen.prefix()),
+                _ => println!("{tag}Paused until {}.", konedrivectl::local_time(proxy.paused_until().await?)),
+            }
+        }
+        SyncCmd::Resume => {
+            explained(daemon, chosen, proxy, SyncAction::Resume, proxy.resume().await).await?;
+            println!("{tag}Resumed.");
+        }
+        SyncCmd::Ignore { action } => {
+            let patterns = proxy.ignore_patterns().await?;
+            let changed = match action {
+                None | Some(IgnoreCmd::List) => {
+                    for pattern in &patterns {
+                        println!("{pattern}");
+                    }
+                    None
+                }
+                Some(IgnoreCmd::Add { pattern }) if patterns.contains(&pattern) => {
+                    println!("{tag}`{pattern}` is on the list already.");
+                    None
+                }
+                Some(IgnoreCmd::Add { pattern }) => {
+                    let mut new = patterns.clone();
+                    new.push(pattern.clone());
+                    Some((new, format!("{tag}Added `{pattern}`: local files named so are not uploaded.")))
+                }
+                Some(IgnoreCmd::Remove { pattern }) => {
+                    if !patterns.contains(&pattern) {
+                        return Err(Usage(format!("`{pattern}` is not on the list (`{} sync ignore list`)", chosen.prefix())).into());
+                    }
+                    let new: Vec<String> = patterns.iter().filter(|p| **p != pattern).cloned().collect();
+                    Some((new, format!("{tag}Removed `{pattern}`: local files named so are uploaded from now on.")))
+                }
+            };
+            if let Some((new, said)) = changed {
+                let refs: Vec<&str> = new.iter().map(String::as_str).collect();
+                explained(daemon, chosen, proxy, SyncAction::Ignore, proxy.set_ignore_patterns(&refs).await).await?;
+                println!("{said}");
+            }
+        }
+        SyncCmd::NotUploaded => {
+            let items = explained(daemon, chosen, proxy, SyncAction::NotUploaded, proxy.not_uploaded().await).await?;
+            print!("{}", konedrivectl::not_uploaded_text(&items));
+        }
+        SyncCmd::Deletes { action } => match action {
+            DeletesCmd::Confirm => {
+                let n = explained(daemon, chosen, proxy, SyncAction::Deletes, proxy.confirm_deletes().await).await?;
+                match n {
+                    0 => println!("{tag}No delete is waiting for confirmation."),
+                    n => println!("{tag}Confirmed: {n} change(s) go to OneDrive's recycle bin."),
+                }
+            }
+            DeletesCmd::Restore => {
+                let n = explained(daemon, chosen, proxy, SyncAction::Deletes, proxy.restore_deletes().await).await?;
+                match n {
+                    0 => println!("{tag}No delete is waiting for confirmation."),
+                    n => println!("{tag}Restored: {n} change(s) dropped; the items come back from OneDrive."),
+                }
+            }
+        },
         SyncCmd::Conflicts => {
             let conflicts = explained(daemon, chosen, proxy, SyncAction::Conflicts, proxy.conflicts().await).await?;
             print!("{}", konedrivectl::conflicts_text(&conflicts));

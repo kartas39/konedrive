@@ -157,14 +157,17 @@ async fn to_v2(v1: V1Config, paths: &Paths, legacy_token: impl Future<Output = b
             mode: Mode::ReadOnly,
             origin: Origin::Migrated,
             drive_id: v1.sync_root_drive_id,
+            login_hint: String::new(),
             legacy_token: true,
             migrate_files: true,
             root,
+            ignore: None,
+            machine_name: String::new(),
         }]
     } else {
         Vec::new()
     };
-    Config { config_version: CONFIG_VERSION, client_id: v1.client_id, accounts }
+    Config { config_version: CONFIG_VERSION, client_id: v1.client_id, accounts, ..Config::default() }
 }
 
 /// §7.2 step 4: `text` (the version-1 file) is copied to `config.toml.v1`, then version 2 is
@@ -443,6 +446,7 @@ mod tests {
                 mode: Mode::ReadOnly,
                 origin: Origin::Migrated,
                 drive_id: "D1A2B3C4".into(),
+                login_hint: String::new(),
                 legacy_token: true,
                 migrate_files: true,
                 root: Some(RootConfig {
@@ -453,6 +457,8 @@ mod tests {
                     baloo_excluded: true,
                     upgrade_when_helper: None,
                 }),
+                ignore: None,
+                machine_name: String::new(),
             }
         );
         assert_eq!(store.last_error(), "");

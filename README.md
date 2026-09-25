@@ -7,10 +7,11 @@ transparently. A small root-owned helper does the interception; an unprivileged 
 everything else; a Qt/Kirigami window and tray icon show what is going on; Dolphin plugins add
 emblems and a right-click menu.
 
-**Status: alpha, read-only phase.** Nothing is uploaded — files in the KOneDrive folder are
+**Status: alpha, read-only.** Nothing is uploaded — files in the KOneDrive folder are
 `r--r--r--`, directories `r-xr-xr-x`, so nothing here can diverge from the cloud on its own.
 A local edit forced past that lock is rescued (moved aside, listed under **Conflicts**), never
-silently overwritten or lost. Built and tested on Fedora with KDE Plasma 6. Any number of
+silently overwritten or lost. Uploading local changes is built, but held back in this version
+(see "Uploading changes" below). Built and tested on Fedora with KDE Plasma 6. Any number of
 personal Microsoft accounts can be connected at once, each with its own folder.
 
 ## Screenshots
@@ -210,7 +211,8 @@ removes it all again, apart from the helper.
   and **Remove Account…** are on the **Account** page. Removing an account signs it out and
   forgets it on this computer: its folder's files stay where they are (files that were never
   downloaded stay as empty placeholders), and nothing in OneDrive is deleted. Every account is
-  read-only in this version. How it works:
+  read-only in this version (a developer's test account aside: see "Uploading changes"). How it
+  works:
   [`docs/design/accounts.md`](docs/design/accounts.md).
 
   From a terminal, `konedrivectl account list` shows every account, and each command that acts on
@@ -272,7 +274,7 @@ removes it all again, apart from the helper.
   - `konedrivectl sync status` — the folder, its phase and item count, and the helper.
   - `konedrivectl sync activity [--limit N]` — what happened lately: downloads, free-ups,
     changes from OneDrive, conflicts, failures.
-  - `konedrivectl sync transfers` — downloads under way right now.
+  - `konedrivectl sync transfers` — downloads and uploads under way right now.
   - `konedrivectl sync conflicts` — local edits rescued out of the way; `konedrivectl sync
     dismiss <path>` takes one off the list (the file itself stays where it was moved to).
   - `konedrivectl sync free-up-space` — send every downloaded file that is not in use back to
@@ -282,15 +284,53 @@ removes it all again, apart from the helper.
   - `konedrivectl sync refresh` — ask OneDrive for changes now, instead of waiting for the next
     poll (about a minute).
   - `konedrivectl sync hydrate <path>` — download one file now.
+  - For an account that uploads (`konedrivectl account mode read-write`):
+    - `konedrivectl sync outbox [--all]` — the changes waiting to go up, and why each waits;
+    - `konedrivectl sync pause [--for 2h]` and `konedrivectl sync resume` — nothing is uploaded
+      and OneDrive is not asked for changes meanwhile; opening a file still downloads it;
+    - `konedrivectl sync ignore [list | add <pattern> | remove <pattern>]` — names of local files
+      that are never uploaded (editors' swap and temporary files by default);
+    - `konedrivectl sync not-uploaded` — what stays on this computer, and why;
+    - `konedrivectl sync deletes confirm | restore` — decide on a large delete held back for
+      confirmation.
 
-- **Read-only, for now.** This part of KOneDrive only reads from OneDrive: files are
-  `r--r--r--`, directories `r-xr-xr-x`, so nothing here can diverge from the cloud on its own. A
-  local edit forced past that lock is rescued, not lost — moved aside and listed under
+- **Read-only, for now.** An account only reads from OneDrive unless it uploads (below): files
+  are `r--r--r--`, directories `r-xr-xr-x`, so nothing here can diverge from the cloud on its own.
+  A local edit forced past that lock is rescued, not lost — moved aside and listed under
   **Conflicts** rather than overwritten.
 
 - **Forget.** **Forget Folder** on the **Account** page, or `konedrivectl sync forget`, unbinds
   the account's folder and takes the read-only lock off it; the files themselves are left exactly
   as they are.
+
+## Uploading changes
+
+**Held back in this version.** KOneDrive can send what you change in the folder back to OneDrive,
+but only for a test account a developer has listed by hand in `write_test_drive_ids` in
+`~/.config/konedrive/config.toml`, until uploads have been checked against a real test account
+and released. For any other account, switching is refused and the account stays read-only.
+
+When it is allowed, it works like this:
+
+- **Turn it on per account**: **Upload changes made on this computer** on the **Account** page, or
+  `konedrivectl account mode read-write`. It signs in again, in the browser, for permission to
+  change your files; then the folder's read-only lock comes off.
+- **What goes up**: new files and folders, edits, renames, moves and deletes, a couple of seconds
+  after the last change, once no program has the file open for writing. The **Status** page counts
+  the changes waiting; **Activity** lists them; Dolphin shows an emblem on each.
+- **Changed on both sides**: both are kept. OneDrive's version keeps the name, and yours goes up
+  beside it as `Report-<computer name>.docx`, listed under **Conflicts**.
+- **What stays on this computer**, listed under **Not Uploaded**: names OneDrive refuses (rename
+  them to upload them), links, and anything on another filesystem inside the folder. Editors'
+  temporary files stay too, unlisted (`konedrivectl sync ignore` edits that list).
+- **Moving a file out of the folder** deletes it in OneDrive, but only after it is downloaded where
+  you moved it. Deleting to the Trash just deletes it; OneDrive keeps it in its recycle bin.
+- **A large delete** is held until you choose **Delete in OneDrive Too** or **Restore Them**.
+- **Pause Syncing…** on the **Status** page or in the tray, or `konedrivectl sync pause`.
+- **Turning it off** (`konedrivectl account mode read-only`) asks first if changes are still
+  waiting; the files stay as they are, and the folder is locked again.
+
+How it works: [`docs/design/writes.md`](docs/design/writes.md).
 
 ## A folder without OneDrive or the helper (developers only)
 
@@ -509,6 +549,11 @@ inside it. The dropped-connection and restart-resume checks (G3, G4) run against
 only if you add `--graph-resume-checks`. The token is never the refresh token and is read only
 inside the guest. See `docs/limitations-and-workarounds.md`, W15.
 
+Uploads are checked against a real account only on a separate test account, by hand, with
+`konedrive-write-test` (`tests/write-account/`): it refuses to start unless the drive is the test
+account's, is on the write allow-list, and looks like a test account, and it writes only inside a
+folder of its own. How to run it: [`docs/design/writes.md`](docs/design/writes.md) §12.1.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full checklist before sending a change, and
 [SECURITY.md](SECURITY.md) for how to report a vulnerability privately.
 
@@ -545,7 +590,8 @@ keep on this device") and multiple accounts. In order, what comes next:
 1. **A package repository** — the RPMs are built locally for now ("Install from RPM"); a COPR
    repository comes next, so that `dnf install` needs no build.
 2. **Writes to the cloud** — local changes uploaded back to OneDrive, turning this from a
-   read-only mirror into a real sync client.
+   read-only mirror into a real sync client. Built, and held back for test accounts ("Uploading
+   changes"); released once checked against a real test account.
 
 Work or school accounts (Microsoft 365, OneDrive for Business) come later, in a phase of their own
 (`docs/limitations-and-workarounds.md`, F49).

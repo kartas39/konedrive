@@ -18,8 +18,8 @@ class QWindow;
 /// The tray icon: its icon is the worst state across the accounts and its
 /// tooltip has a line per account (AppStatus); a click shows or hides the
 /// window — on the one account needing attention, when exactly one does —
-/// and its menu opens a folder or the window, refreshes every account, or
-/// quits.
+/// and its menu opens a folder or the window, refreshes, pauses or resumes
+/// every account, or quits.
 class TrayIcon : public QObject
 {
     Q_OBJECT
@@ -43,6 +43,12 @@ public:
     QAction *openWindowAction() const { return m_openWindow; }
     /// "Refresh Now": every account whose folder shows OneDrive.
     QAction *refreshAction() const { return m_refresh; }
+    /// "Pause Syncing": a submenu that pauses every account whose folder shows
+    /// OneDrive and is not paused, for 2, 8 or 24 hours or until resumed.
+    QAction *pauseMenuAction() const { return m_pauseMenuAction; }
+    QMenu *pauseMenu() const { return m_pauseMenu; }
+    /// "Resume Syncing": shown while any account is paused; resumes each of them.
+    QAction *resumeAction() const { return m_resume; }
     QAction *quitAction() const { return m_quit; }
 
 public Q_SLOTS:
@@ -82,6 +88,9 @@ private:
     QAction *m_openFolderMenuAction;
     QAction *m_openWindow;
     QAction *m_refresh;
+    QMenu *m_pauseMenu;
+    QAction *m_pauseMenuAction;
+    QAction *m_resume;
     QAction *m_quit;
     /// (label, folder) of each account that has a folder, in account order.
     QList<QPair<QString, QString>> m_folders;

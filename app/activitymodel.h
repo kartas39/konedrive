@@ -10,13 +10,21 @@ enum class ActivityFailure {
     DiskFull,
     Download,
     Update,
+    /// A change made here that needs the user before it can go up.
+    Upload,
 };
 
 /// Reads a Sync1 activity event by its kind: `failed` (a download) is
 /// Download, `update-failed` (the replacement of a file changed in OneDrive)
 /// is Update, and either with the exact detail "not enough disk space" is
-/// DiskFull. Every other kind is None.
+/// DiskFull; `upload-failed` is Upload. Every other kind is None.
 ActivityFailure classifyFailure(const QString &kind, const QString &detail);
+
+/// Whether a conflict's other file is a copy kept beside the original (a file
+/// changed on both sides, `docs/design/writes.md` §7) rather than a local version moved
+/// out of the folder (a rescue, which goes to its own directory). Conflicts()
+/// and the `conflict` event carry no kind, so the folder tells them apart.
+bool isConflictCopy(const QString &original, const QString &other);
 
 /// The window's "Recent" list: RecentActivity() plus every ActivityAdded
 /// since, newest first, at most Capacity rows.
@@ -37,6 +45,9 @@ public:
         DetailRole,
         TextRole,
         IconRole,
+        /// The detail as shown: a reason in words for `upload-failed`, the
+        /// detail itself otherwise.
+        DetailTextRole,
     };
     Q_ENUM(Role)
 

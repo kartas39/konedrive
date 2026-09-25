@@ -3,6 +3,7 @@
 #include "downloadjob.h"
 #include "downloadjobtracker.h"
 #include "downloadprogresssettings.h"
+#include "outboxmodel.h"
 #include "synccontroller.h"
 #include "transfermodel.h"
 
@@ -23,12 +24,14 @@ DownloadProgressController::DownloadProgressController(SyncController *sync,
                                                          DownloadJobTracker *tracker,
                                                          DownloadProgressSettings *settings,
                                                          Clock clock,
-                                                         QObject *parent)
+                                                         QObject *parent,
+                                                         Direction direction)
     : QObject(parent)
     , m_sync(sync)
     , m_tracker(tracker)
     , m_settings(settings)
     , m_clock(std::move(clock))
+    , m_direction(direction)
     , m_timer(new QTimer(this))
 {
     if (!m_clock) {
@@ -41,7 +44,7 @@ DownloadProgressController::DownloadProgressController(SyncController *sync,
     m_timer->setSingleShot(true);
     connect(m_timer, &QTimer::timeout, this, &DownloadProgressController::checkNow);
 
-    auto *model = m_sync->transfers();
+    auto *model = this->model();
     connect(model, &QAbstractItemModel::rowsInserted, this, &DownloadProgressController::onTransfersChanged);
     connect(model, &QAbstractItemModel::rowsRemoved, this, &DownloadProgressController::onTransfersChanged);
     connect(model, &QAbstractItemModel::dataChanged, this, &DownloadProgressController::onTransfersChanged);
@@ -64,6 +67,11 @@ bool DownloadProgressController::enabled() const
     return !m_settings || m_settings->enabled();
 }
 
+TransferModel *DownloadProgressController::model() const
+{
+    return m_direction == Direction::Upload ? m_sync->uploads() : m_sync->transfers();
+}
+
 void DownloadProgressController::setAccountName(std::function<QString()> name)
 {
     m_accountName = std::move(name);
@@ -73,7 +81,11 @@ DownloadJob *DownloadProgressController::newJob(const QString &name)
 {
     auto *job = new DownloadJob(this);
     job->setObjectName(name);
-    if (const QString account = m_accountName ? m_accountName() : QString(); !account.isEmpty()) {
+    const QString account = m_accountName ? m_accountName() : QString();
+    if (m_direction == Direction::Upload) {
+        job->setTitle(account.isEmpty() ? i18nc("@title job", "Uploading to OneDrive")
+                                        : i18nc("@title job, %1 is the account's name", "Uploading to OneDrive — %1", account));
+    } else if (!account.isEmpty()) {
         job->setTitle(i18nc("@title job, %1 is the account's name", "Downloading from OneDrive — %1", account));
     }
     // Registered before the description/progress go out: KUiServerV2JobTracker
@@ -112,14 +124,17 @@ void DownloadProgressController::onActivityAdded(qlonglong, const QString &kind,
     if (!enabled()) {
         return;
     }
-    if (kind != QLatin1String("failed") && kind != QLatin1String("update-failed")) {
+    const bool failure = m_direction == Direction::Upload ? kind == QLatin1String("upload-failed")
+                                                          : kind == QLatin1String("failed") || kind == QLatin1String("update-failed");
+    if (!failure) {
         return;
     }
     // Whichever of the two arrives first wins: an ActivityAdded that names a
     // tracked path finishes it with an error right away; a Transfers update
     // that removes an untouched path finishes it as a plain success. A
     // failure that arrives after its path is already gone is a no-op.
-    finishPath(path, true, detail);
+    // An upload's detail is a reason code: the job says it in words.
+    finishPath(path, true, m_direction == Direction::Upload ? uploadReasonText(detail) : detail);
 }
 
 void DownloadProgressController::reconcile()
@@ -128,7 +143,7 @@ void DownloadProgressController::reconcile()
         return;
     }
     const qint64 now = m_clock();
-    auto *model = m_sync->transfers();
+    auto *model = this->model();
 
     // Model row order (Transfers' own order), so a path's `seq` reflects
     // when it was first seen relative to the others: deterministic, unlike

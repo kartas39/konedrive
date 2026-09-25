@@ -41,6 +41,35 @@ impl<'a> WriteLease<'a> {
     }
 }
 
+/// Whether any process has the file `file` is open on open for writing: a
+/// read lease (`F_RDLCK`) is refused `EAGAIN` exactly while the inode has a
+/// writer (`check_conflicting_open` in `fs/locks.c` compares the inode's write
+/// count; measured in this module's tests). `file` must be open read-only, as a
+/// read lease requires, and one of this process's own read-only descriptors
+/// does not count. The lease is released before this returns: it is a probe,
+/// never held across anything slow.
+///
+/// A writable shared mapping counts as a writer for as long as it exists. A
+/// file owned by another uid fails `EACCES`, as for a write lease.
+pub fn open_for_writing(file: &File) -> io::Result<bool> {
+    silence_sigio();
+    // SAFETY: plain fcntl on a valid descriptor.
+    let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLEASE, libc::F_RDLCK) };
+    if rc == 0 {
+        // SAFETY: as above; releasing a lease this descriptor holds.
+        unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLEASE, libc::F_UNLCK) };
+        return Ok(false);
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::EAGAIN) => Ok(true),
+        _ => {
+            interpret_setlease_failure(error)?;
+            Ok(true)
+        }
+    }
+}
+
 /// Makes `SIGIO` harmless for the whole process, once, before the first
 /// lease is taken.
 ///
@@ -213,6 +242,31 @@ mod tests {
         let file = File::options().read(true).write(true).open(&path).unwrap();
         let _other = File::open(&path).unwrap();
         assert!(WriteLease::take(&file).unwrap().is_none(), "expected refusal");
+    }
+
+    /// The write design assumed (§15) that a read lease is refused while
+    /// anyone has the file open for writing, from the kernel source rather
+    /// than the man page. Measured here: a writer refuses it, a second reader
+    /// does not, and the refusal ends when the writer closes.
+    #[test]
+    fn a_read_lease_is_refused_only_while_someone_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f.bin");
+        std::fs::write(&path, b"data").unwrap();
+        let probe = File::open(&path).unwrap();
+        assert!(!open_for_writing(&probe).unwrap(), "nobody writes");
+        let reader = File::open(&path).unwrap();
+        assert!(!open_for_writing(&probe).unwrap(), "a second reader is no writer");
+        let writer = File::options().append(true).open(&path).unwrap();
+        assert!(open_for_writing(&probe).unwrap(), "a writer refuses the lease");
+        drop(writer);
+        assert!(!open_for_writing(&probe).unwrap(), "the refusal ends with the writer");
+        drop(reader);
+        // The probe released its lease: an open for writing does not wait
+        // for a lease break.
+        let started = std::time::Instant::now();
+        drop(File::options().write(true).open(&path).unwrap());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
     // `EACCES` (file owned by another uid) only comes out of a real

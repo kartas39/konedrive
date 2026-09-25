@@ -1,4 +1,4 @@
-//! Probe for the write phase's watcher (`writes/design.md` §3.3, task W4):
+//! Probe for the write phase's watcher (`docs/design/writes.md` §3):
 //! what an **unprivileged** fanotify notification group can do on this
 //! kernel, and exactly which events arrive, with which information records,
 //! for each kind of local change.

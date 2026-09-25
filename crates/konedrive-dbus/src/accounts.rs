@@ -98,13 +98,18 @@ pub trait Account1 {
     fn refresh_account_info(&self) -> zbus::Result<()>;
     /// Same rules as [`Accounts1Proxy::add`].
     fn set_label(&self, label: &str) -> zbus::Result<()>;
+    /// Switches the mode to `read-only` or `read-write`; the URL of the
+    /// sign-in the switch needs, empty when it needs none. Refused
+    /// `WritesNotAllowed` (the development gate), `NotSignedIn`, or
+    /// `PendingUploads` unless `force` (`dbus/org.konedrive.Account1.xml`).
+    fn set_mode(&self, mode: &str, force: bool) -> zbus::Result<String>;
 
     /// The last element of the object path.
     #[zbus(property)]
     fn id(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn label(&self) -> zbus::Result<String>;
-    /// `read-only`; `read-write` arrives with the write phase.
+    /// The mode the account runs in: `read-only` or `read-write`.
     #[zbus(property)]
     fn mode(&self) -> zbus::Result<String>;
     /// `signed-out`, `signing-in` or `signed-in`.
@@ -140,10 +145,28 @@ pub trait Sync1 {
     /// (unix time, kind, full path, detail), newest first.
     fn recent_activity(&self, limit: u32) -> zbus::Result<Vec<(i64, String, String, String)>>;
     /// (unix time, original full path, full path it was moved to).
-    fn conflicts(&self) -> zbus::Result<Vec<(i64, String, String)>>;
+    fn conflicts(&self) -> zbus::Result<Vec<(i64, String, String, String)>>;
     fn dismiss_conflict(&self, rescued_path: &str) -> zbus::Result<()>;
     /// (files freed, bytes freed, files kept because they were in use).
     fn free_up_space(&self) -> zbus::Result<(u32, u64, u32)>;
+    /// The changes waiting to be uploaded, oldest first, at most `limit` (0
+    /// for all): (seq, kind, full path, state, bytes sent, bytes in all,
+    /// reason, next try).
+    #[allow(clippy::type_complexity)]
+    fn outbox(&self, limit: u32) -> zbus::Result<Vec<(u64, String, String, String, u64, u64, String, i64)>>;
+    /// Nothing is uploaded, and OneDrive is not asked, for `seconds` — or
+    /// until [`resume`](Self::resume) when 0.
+    fn pause(&self, seconds: u32) -> zbus::Result<()>;
+    fn resume(&self) -> zbus::Result<()>;
+    /// Refused `org.freedesktop.DBus.Error.InvalidArgs` for a pattern that
+    /// cannot match a name.
+    fn set_ignore_patterns(&self, patterns: &[&str]) -> zbus::Result<()>;
+    /// The held removals go ahead; how many.
+    fn confirm_deletes(&self) -> zbus::Result<u32>;
+    /// The held removals are dropped and their items placed again; how many.
+    fn restore_deletes(&self) -> zbus::Result<u32>;
+    /// What stays on this computer and why: (full path, reason).
+    fn not_uploaded(&self) -> zbus::Result<Vec<(String, String)>>;
 
     #[zbus(signal)]
     fn activity_added(&self, time: i64, kind: String, path: String, detail: String) -> zbus::Result<()>;
@@ -176,6 +199,30 @@ pub trait Sync1 {
     /// Downloads under way: (full path, bytes done, bytes total).
     #[zbus(property)]
     fn transfers(&self) -> zbus::Result<Vec<(String, u64, u64)>>;
+    /// Changes waiting to be uploaded, and the size of what they send.
+    #[zbus(property)]
+    fn pending_count(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn pending_bytes(&self) -> zbus::Result<u64>;
+    /// Changes that need the user before they can go up.
+    #[zbus(property)]
+    fn blocked_count(&self) -> zbus::Result<u32>;
+    /// Removals held by the mass-delete guard: `confirm_deletes` or
+    /// `restore_deletes` decides them.
+    #[zbus(property)]
+    fn held_count(&self) -> zbus::Result<u32>;
+    /// Uploads under way: (full path, bytes sent, bytes total).
+    #[zbus(property)]
+    fn uploads(&self) -> zbus::Result<Vec<(String, u64, u64)>>;
+    #[zbus(property)]
+    fn paused(&self) -> zbus::Result<bool>;
+    /// Unix seconds when the pause ends by itself; 0 until resumed, or not paused.
+    #[zbus(property)]
+    fn paused_until(&self) -> zbus::Result<i64>;
+    #[zbus(property)]
+    fn ignore_patterns(&self) -> zbus::Result<Vec<String>>;
+    #[zbus(property)]
+    fn machine_name(&self) -> zbus::Result<String>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: development only.
@@ -185,9 +232,13 @@ pub trait Sync1 {
     gen_blocking = false
 )]
 pub trait Dev1 {
-    /// This account's current access token. Refused `NotSignedIn` when
-    /// there is none.
+    /// An access token of this account that can change nothing, whatever
+    /// its mode. Refused `NotSignedIn` when there is none.
     fn access_token(&self) -> zbus::Result<String>;
+    /// The test-account harness's token, which can change files. Refused
+    /// `WritesNotAllowed` for an account the development gate does not let
+    /// through, `ModeNotGranted` for one that is not read-write.
+    fn read_write_access_token(&self) -> zbus::Result<String>;
 }
 
 #[cfg(test)]

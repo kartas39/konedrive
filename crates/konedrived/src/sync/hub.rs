@@ -8,6 +8,7 @@
 //! nothing about accounts: the [router](HelperHub::route) finds the account whose folder
 //! the file is in.
 
+use std::collections::HashSet;
 use std::fs::File;
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
@@ -15,12 +16,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
+use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 use tokio::sync::{watch, Notify};
 use xattr::FileExt;
 
-use super::helper::{Clearance, HelperLink, HydrateRequest};
+use super::helper::{Clearance, HelperError, HelperLink, HydrateRequest};
 use super::helper_status::{self, HelperState, HelperUnit};
 use super::listing::LinkCell;
 use super::source::ContentSource;
@@ -61,6 +63,12 @@ pub struct HelperHub {
     /// overlap check to its end: two accounts cannot both pass the check
     /// with folders that nest (design §8.3).
     pub(super) registering: tokio::sync::Mutex<()>,
+    /// The item ids of what left each account's folder and waits in its
+    /// outbox (`move-out` rows, and what the base has inside a moved-out
+    /// folder): a fill of one of these is that account's, wherever the object
+    /// is now — outside every folder, or inside another account's (write
+    /// design §4.6, §8.5).
+    moved_out: Mutex<Vec<(Weak<SyncService>, HashSet<String>)>>,
 }
 
 impl HelperHub {
@@ -81,7 +89,55 @@ impl HelperHub {
             publishing: Mutex::new(()),
             accounts: Mutex::new(Vec::new()),
             registering: tokio::sync::Mutex::new(()),
+            moved_out: Mutex::new(Vec::new()),
         })
+    }
+
+    /// The item ids whose fills are `account`'s wherever the objects are now:
+    /// what its outbox's `move-out` rows name (`docs/design/writes.md` §8). Replaces
+    /// what it said before.
+    pub(super) fn set_moved_out(&self, account: &Weak<SyncService>, ids: HashSet<String>) {
+        let mut moved_out = self.moved_out.lock().unwrap();
+        moved_out.retain(|(a, _)| a.strong_count() > 0 && !a.ptr_eq(account));
+        if !ids.is_empty() {
+            moved_out.push((account.clone(), ids));
+        }
+    }
+
+    /// Whether an account other than `me` claims item `id` (write design
+    /// §8.3): its outbox waits to fetch it wherever it is
+    /// (`move-out`), its tree store knows it, or the drive the id names
+    /// (`<drive>!<n>`, a personal account's) is that account's. A store that
+    /// cannot be read claims it. An account with no store open says nothing:
+    /// what it would miss, its own move-out keeps (`move_out::kept`).
+    /// Blocking: a reconcile asks from its own thread.
+    pub(super) fn claimed_elsewhere(&self, me: &Weak<SyncService>, id: &str) -> bool {
+        let others = |a: &Weak<SyncService>| !a.ptr_eq(me);
+        if self.moved_out.lock().unwrap().iter().any(|(a, ids)| others(a) && ids.contains(id)) {
+            return true;
+        }
+        let drive = id.split_once('!').map(|(drive, _)| drive.to_owned());
+        self.accounts().into_iter().filter(|a| !std::ptr::eq(Arc::as_ptr(a), me.as_ptr())).any(|other| {
+            let Some(store) = other.store.lock().unwrap().clone() else { return false };
+            store
+                .with(|s| {
+                    let known = s.get(crate::tree::Table::Items, id)?.is_some() || s.get(crate::tree::Table::Staging, id)?.is_some();
+                    let ours = drive.as_deref().is_some_and(|d| s.meta("drive_id").ok().flatten().is_some_and(|m| m.eq_ignore_ascii_case(d)));
+                    Ok(known || ours)
+                })
+                .unwrap_or(true)
+        })
+    }
+
+    /// The account whose moved-out objects include the file behind `fd`, by
+    /// the item id it carries. Nothing is read while no account has any.
+    fn by_moved_out(&self, fd: &OwnedFd) -> Option<Arc<SyncService>> {
+        if self.moved_out.lock().unwrap().is_empty() {
+            return None;
+        }
+        let file = File::from(fd.try_clone().ok()?);
+        let id = String::from_utf8(file.get_xattr(XATTR_ITEM_ID).ok()??).ok()?;
+        self.moved_out.lock().unwrap().iter().find(|(_, ids)| ids.contains(&id)).and_then(|(a, _)| a.upgrade())
     }
 
     /// The live helper link, if there is one right now.
@@ -219,6 +275,11 @@ impl HelperHub {
     /// renamed or unlinked while its open was suspended. `None` otherwise:
     /// routing never guesses.
     pub(super) async fn route(&self, fd: &OwnedFd) -> Option<Arc<SyncService>> {
+        // An object that left an account's folder is that account's, by its
+        // item id, whatever folder its path is in now (`docs/design/writes.md` §8, §8.3).
+        if let Some(account) = self.by_moved_out(fd) {
+            return Some(account);
+        }
         let key = InodeKey::of_fd(fd).ok()?;
         let accounts = self.accounts();
         // A folder whose device is not known — held back, or written down by
@@ -234,6 +295,27 @@ impl HelperHub {
             return Some(found);
         }
         by_item_id(candidates, fd).await
+    }
+
+    /// A descriptor for the object `handle` names, from the helper
+    /// (`OpenByHandle`, `docs/design/writes.md` §8.2): for an item gone from its folder,
+    /// to learn where it went and to keep and fill a placeholder that left.
+    /// `dir` is a directory of this user's on the object's filesystem, such as
+    /// the folder's root. See [`HelperLink::open_by_handle`] for what comes
+    /// back; `NotRunning` while there is no link.
+    pub async fn open_by_handle(&self, dir: &File, handle: &FileHandle) -> Result<OwnedFd, HelperError> {
+        let link = self.link().ok_or(HelperError::NotRunning)?;
+        link.open_by_handle(dir, handle).await
+    }
+
+    /// Takes the helper's mark off a directory (`UnmarkDir`): one moved out of
+    /// the folder, whose marks travelled with it (design §4.6), once what it
+    /// held is downloaded. Any directory of this user's on a device the helper
+    /// has a root of theirs on, wherever it is now; `NotRunning` while there
+    /// is no link.
+    pub async fn unmark_dir(&self, dir: &File) -> Result<(), HelperError> {
+        let link = self.link().ok_or(HelperError::NotRunning)?;
+        link.unmark_dir(dir).await
     }
 }
 
@@ -480,6 +562,65 @@ mod tests {
 
         let nowhere = opened(dir.path(), "stray", "ITEM-X");
         assert!(hub.route(&nowhere).await.is_none(), "routing never guesses");
+    }
+
+    /// Write design §4.6, §8.5: the fill of an object that left an account's folder goes to that
+    /// account, by its item id — even from inside another account's folder, which its path says.
+    #[tokio::test]
+    async fn a_moved_out_object_is_routed_by_its_item_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let (in_a, in_b) = (dir.path().join("A"), dir.path().join("B"));
+        let hub = HelperHub::new();
+        let a = account_at(&hub, &in_a).await;
+        let b = account_at(&hub, &in_b).await;
+        let moved = opened(&in_b, "came-from-a", "ITEM-A");
+        assert!(same(&hub.route(&moved).await, &b), "by its path while nothing says otherwise");
+        hub.set_moved_out(&Arc::downgrade(&a), HashSet::from(["ITEM-A".to_owned()]));
+        assert!(same(&hub.route(&moved).await, &a), "by its item id");
+        assert!(same(&hub.route(&opened(&in_b, "theirs", "ITEM-B")).await, &b));
+        hub.set_moved_out(&Arc::downgrade(&a), HashSet::new());
+        assert!(same(&hub.route(&moved).await, &b), "the row went");
+    }
+
+    /// An item id is another account's while that account's outbox waits to
+    /// fetch it, its tree store knows it, or the id names its drive; never an account's own.
+    #[tokio::test]
+    async fn another_accounts_item_ids_are_claimed() {
+        let dir = tempfile::tempdir().unwrap();
+        let hub = HelperHub::new();
+        let a = account_at(&hub, &dir.path().join("A")).await;
+        let b = account_at(&hub, &dir.path().join("B")).await;
+        let (of_a, of_b) = (Arc::downgrade(&a), Arc::downgrade(&b));
+        assert!(!hub.claimed_elsewhere(&of_b, "ITEM-A"), "nothing says so yet");
+        hub.set_moved_out(&of_a, HashSet::from(["ITEM-A".to_owned()]));
+        assert!(hub.claimed_elsewhere(&of_b, "ITEM-A"), "A's move out waits for it");
+        assert!(!hub.claimed_elsewhere(&of_a, "ITEM-A"), "never one's own");
+
+        let row = Row {
+            id: "ITEM-S".into(),
+            parent_id: Some("ROOT".into()),
+            name: "s".into(),
+            kind: Kind::File,
+            size: 0,
+            mtime: 0,
+            etag: None,
+            ctag: None,
+            quickxor: None,
+            mime: None,
+            placement: Placement::Placed,
+        };
+        let store = Store::new(TreeStore::in_memory().unwrap());
+        store
+            .with(|s| {
+                s.commit_page(&[Change::Upsert(row)], "next")?;
+                s.set_meta("drive_id", Some("abc123"))
+            })
+            .unwrap();
+        *a.store.lock().unwrap() = Some(store);
+        assert!(hub.claimed_elsewhere(&of_b, "ITEM-S"), "A's tree knows it");
+        assert!(hub.claimed_elsewhere(&of_b, "ABC123!42"), "the id names A's drive");
+        assert!(!hub.claimed_elsewhere(&of_b, "DEF456!42"));
+        assert!(!hub.claimed_elsewhere(&of_a, "ITEM-S"));
     }
 
     /// Review M3: one candidate by device is the answer only while every other account's

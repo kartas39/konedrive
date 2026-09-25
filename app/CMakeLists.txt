@@ -35,6 +35,7 @@ add_library(konedrive_core STATIC
     transfermodel.cpp
     activitymodel.cpp
     conflictmodel.cpp
+    outboxmodel.cpp
     accountstatus.cpp
     appstatus.cpp
     notifier.cpp
@@ -65,6 +66,7 @@ set(KONEDRIVE_QML
     qml/ActivityPage.qml
     qml/ConflictsPage.qml
     qml/SkippedPage.qml
+    qml/NotUploadedPage.qml
     qml/AccountPage.qml
     qml/SettingsPage.qml
     qml/AccountSwitcher.qml

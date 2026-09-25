@@ -24,7 +24,9 @@
          folder registered with interception and no helper connected, and in
          any folder while a helper runs that the daemon is not connected to;
          with no helper running at all, a folder registered without
-         interception frees it up anyway. -->
+         interception frees it up anyway. A file with a change waiting to be
+         uploaded is refused NotUploaded: freeing it up would lose the
+         change. -->
     <method name="Dehydrate">
       <arg name="path" type="s" direction="in"/>
     </method>
@@ -58,7 +60,9 @@
          folder above it is refused (NotAllowed, naming that folder); an
          unpinned path is freed. Files in use are skipped and counted as busy;
          files pinned by their own pin below a freed folder stay and are
-         counted as skipped_pinned. Routed as Pin, and every path checked for
+         counted as skipped_pinned. A file named itself that has a change
+         waiting to be uploaded refuses the call NotUploaded; one inside a
+         folder is left and counted as busy. Routed as Pin, and every path checked for
          a pin by a folder above it before anything is freed. Counts are
          summed over the accounts. -->
     <method name="FreeUp">

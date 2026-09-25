@@ -28,3 +28,13 @@ Action=Popup
 Name=Changed version moved
 Comment=Your changed version of a file was moved out of the way
 Action=Popup
+
+[Event/uploadFailed]
+Name=Upload failed
+Comment=A change made on this computer cannot be uploaded: a name OneDrive refuses, a full OneDrive, a sign-in without the permission
+Action=Popup
+
+[Event/massDelete]
+Name=Many files deleted
+Comment=Many items deleted on this computer wait for you to restore them or delete them in OneDrive too
+Action=Popup

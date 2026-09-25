@@ -19,7 +19,7 @@ namespace konedrive
 
 namespace
 {
-// IN_ATTRIB: a child's attributes (its state or its pin) or the directory's
+// IN_ATTRIB: a child's attributes (its state, its pin or its upload state) or the directory's
 // own (its root mark or its pin). IN_DELETE / IN_MOVED_FROM: a name to stop tracking.
 // IN_MOVED_TO: a name replaced by a rename. The *_SELF events: this
 // directory's path no longer leads to it.
@@ -66,7 +66,7 @@ QStringList OverlayEngine::overlays(const QUrl &url)
         return {};
     }
 
-    const Emblem emblem = emblemForItem(readFileState(path), isDirectory(path), isEffectivelyPinned(path, *root, m_hasPin));
+    const Emblem emblem = itemEmblem(path, *root, m_hasPin);
     if (directory) {
         directory->files.insert(name, emblem);
     }
@@ -275,7 +275,7 @@ void OverlayEngine::recheck(const QString &dir, const QString &name, Changes &ch
         return;
     }
     const QString path = joinPath(dir, name);
-    const Emblem now = emblemForItem(readFileState(path), isDirectory(path), isEffectivelyPinned(path, *it->second.root, m_hasPin));
+    const Emblem now = itemEmblem(path, *it->second.root, m_hasPin);
     if (now == file.value()) {
         return;
     }

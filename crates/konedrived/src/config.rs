@@ -103,6 +103,13 @@ pub struct Config {
     /// The Entra application every account signs in with.
     #[serde(default)]
     pub client_id: String,
+    /// The development gate of the write phase (`docs/design/writes.md` §2.3): the drive ids of the test
+    /// accounts that may be read-write. Every other account stays read-only, whatever its
+    /// `mode` says. Empty — the default — lets no account through: the developer install
+    /// sets it to the test account's drive by hand, and nothing in the daemon writes it. The
+    /// release removes the gate in a commit of its own (limitations log F60).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub write_test_drive_ids: Vec<String>,
     /// Every account, in the order it was added.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountConfig>,
@@ -110,7 +117,12 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Self { config_version: CONFIG_VERSION, client_id: String::new(), accounts: Vec::new() }
+        Self {
+            config_version: CONFIG_VERSION,
+            client_id: String::new(),
+            write_test_drive_ids: Vec::new(),
+            accounts: Vec::new(),
+        }
     }
 }
 
@@ -129,6 +141,12 @@ pub struct AccountConfig {
     /// first `GET /me/drive`, and never changed. Empty until then.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub drive_id: String,
+    /// The Microsoft account's email as its last sign-in found it: the `login_hint` of a
+    /// sign-in that asks for `Files.ReadWrite`. Kept across a sign-out, which
+    /// forgets the cached name and email, so a read-write account signing in again is still
+    /// pinned to its own account.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub login_hint: String,
     /// Set only until the refresh token of version 1 is moved to this account's own
     /// Secret Service item (design §7.4).
     #[serde(default, skip_serializing_if = "is_false")]
@@ -140,6 +158,14 @@ pub struct AccountConfig {
     /// The account's registered folder; `None` when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<RootConfig>,
+    /// Names of local files that are never uploaded (`docs/design/writes.md` §4.4), shell globs;
+    /// `None` for the defaults (`sync::local::ignore::DEFAULT_PATTERNS`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignore: Option<Vec<String>>,
+    /// The name a conflict copy carries (`docs/design/writes.md` §7); empty for the host's
+    /// (`sync::upload::default_machine_name`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub machine_name: String,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -191,20 +217,30 @@ impl RootConfig {
     }
 }
 
-/// An account's mode. Only read-only exists in this phase: any other value in the file
-/// loads as read-only, is logged, and is written back as read-only.
+/// An account's mode (`docs/design/writes.md` §2): read-only, the default, or read-write. The mode in
+/// `config.toml` is the one the user chose; the account runs read-write only while the gate
+/// lets its drive through ([`Config::writes_allowed`]) and its token carries
+/// `Files.ReadWrite` (`AccountService::mode`). A value this version does not know loads as
+/// read-only, is logged, and is written back as read-only.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Mode {
     #[default]
     ReadOnly,
+    ReadWrite,
 }
 
 impl Mode {
-    /// As `config.toml` and `Account1.Mode` spell it.
+    /// As `config.toml`, `Account1.Mode` and `Account1.SetMode` spell it.
     pub fn as_str(self) -> &'static str {
         match self {
             Mode::ReadOnly => "read-only",
+            Mode::ReadWrite => "read-write",
         }
+    }
+
+    /// The mode `text` spells, if it spells one.
+    pub fn parse(text: &str) -> Option<Mode> {
+        [Mode::ReadOnly, Mode::ReadWrite].into_iter().find(|mode| mode.as_str() == text)
     }
 }
 
@@ -216,11 +252,11 @@ impl Serialize for Mode {
 
 impl<'de> Deserialize<'de> for Mode {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let mode = String::deserialize(deserializer)?;
-        if mode != Mode::ReadOnly.as_str() {
-            tracing::warn!("config.toml: mode {mode:?} is not available in this version; the account is read-only");
-        }
-        Ok(Mode::ReadOnly)
+        let text = String::deserialize(deserializer)?;
+        Ok(Mode::parse(&text).unwrap_or_else(|| {
+            tracing::warn!("config.toml: mode {text:?} is not one this version knows; the account is read-only");
+            Mode::ReadOnly
+        }))
     }
 }
 
@@ -287,6 +323,14 @@ impl Config {
 
     pub fn account_mut(&mut self, id: &str) -> Option<&mut AccountConfig> {
         self.accounts.iter_mut().find(|a| a.id == id)
+    }
+
+    /// The development gate (`docs/design/writes.md` §2.3): whether the account of `drive_id` may be
+    /// read-write. Only a drive listed in `write_test_drive_ids` may. An empty drive id — an
+    /// account never signed in — never may, and nothing may while the list is empty, as it is
+    /// by default.
+    pub fn writes_allowed(&self, drive_id: &str) -> bool {
+        !drive_id.is_empty() && self.write_test_drive_ids.iter().any(|allowed| allowed == drive_id)
     }
 
     /// The validation at load (design §3.1): one entry per account, in file order, `Some`
@@ -566,9 +610,12 @@ impl ConfigStore {
                 mode: Mode::ReadOnly,
                 origin: Origin::Added,
                 drive_id: String::new(),
+                login_hint: String::new(),
                 legacy_token: false,
                 migrate_files: false,
                 root: None,
+                ignore: None,
+                machine_name: String::new(),
             };
             config.accounts.push(account.clone());
             Ok(account)
@@ -601,6 +648,36 @@ impl ConfigStore {
             account.root = root;
             Ok(())
         })
+    }
+
+    /// Whether account `id` may be read-write: its drive is on the gate's list
+    /// ([`Config::writes_allowed`]). See [`writable_drive`](Self::writable_drive).
+    pub fn writes_allowed(&self, id: &str) -> bool {
+        self.writable_drive(id).is_some()
+    }
+
+    /// The drive of account `id` when the gate lets it through, as `config.toml` says *now*:
+    /// the file is read again, so an edit of the list — a drive taken off it — counts at once,
+    /// not at the next write. `None` for an account that is not there, a drive not listed, a
+    /// store that is poisoned, and a file that cannot be read now: the gate fails closed.
+    pub fn writable_drive(&self, id: &str) -> Option<String> {
+        self.write_standing(id).and_then(|(_, drive)| drive)
+    }
+
+    /// What `config.toml` says *now* about account `id`'s writes, from one reading of the
+    /// file: its mode, and its drive when the gate lets it through (the mode and
+    /// the list it is gated by are never read at different times). `None` for a store that
+    /// is poisoned, a file that cannot be read now, and an account that is not there:
+    /// callers take that as read-only.
+    pub fn write_standing(&self, id: &str) -> Option<(Mode, Option<String>)> {
+        let inner = self.lock();
+        if inner.poisoned.is_some() {
+            return None;
+        }
+        let Ok(Read::V2(config)) = read(&self.file) else { return None };
+        let account = config.account(id)?;
+        let drive = config.writes_allowed(&account.drive_id).then(|| account.drive_id.clone());
+        Some((account.mode, drive))
     }
 
     /// Records `drive_id` as the account's drive when it has none yet, and returns the
@@ -680,9 +757,12 @@ mod tests {
             mode: Mode::ReadOnly,
             origin: Origin::Added,
             drive_id: String::new(),
+            login_hint: String::new(),
             legacy_token: false,
             migrate_files: false,
             root: None,
+            ignore: None,
+            machine_name: String::new(),
         }
     }
 
@@ -825,23 +905,85 @@ id = "R7"
         assert_eq!(store.last_error(), "");
     }
 
-    /// Read-write is hidden in this phase: a hand-edited mode loads as read-only, and the
+    /// Both modes load as written; one this version does not know loads as read-only, and the
     /// next write says so. An unknown origin reads as the protected one.
     #[tokio::test]
-    async fn any_mode_loads_as_read_only() {
+    async fn an_unknown_mode_loads_as_read_only() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::in_dir(dir.path());
         std::fs::write(
             &paths.config_file,
-            "config_version = 2\n[[accounts]]\nid = \"3f9a1c0e5b7d\"\nlabel = \"Personal\"\nmode = \"read-write\"\norigin = \"imported\"\n",
+            "config_version = 2\n\
+             [[accounts]]\nid = \"3f9a1c0e5b7d\"\nlabel = \"Personal\"\nmode = \"read-write-all\"\norigin = \"imported\"\n\
+             [[accounts]]\nid = \"8c21d07a44e1\"\nlabel = \"Test\"\nmode = \"read-write\"\norigin = \"added\"\n",
         )
         .unwrap();
         let store = open(&paths).await;
         let loaded = store.account("3f9a1c0e5b7d").unwrap();
         assert_eq!((loaded.mode, loaded.origin), (Mode::ReadOnly, Origin::Migrated));
+        assert_eq!(store.account("8c21d07a44e1").unwrap().mode, Mode::ReadWrite);
         store.set_label("3f9a1c0e5b7d", "Home").unwrap();
         let text = std::fs::read_to_string(&paths.config_file).unwrap();
         assert!(text.contains("mode = \"read-only\"") && text.contains("origin = \"migrated\""), "{text}");
+        assert!(text.contains("mode = \"read-write\""), "{text}");
+        assert_eq!(Mode::parse("rw"), None);
+    }
+
+    /// The write design's development gate (§7) refuses every drive by default — the list is
+    /// empty — and an account never signed in (no drive) even when the list is not. Only a
+    /// listed drive passes, and only the file itself lists one.
+    #[tokio::test]
+    async fn the_write_gate_refuses_every_drive_by_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open(&Paths::in_dir(dir.path())).await;
+        let real = store.add_account("Personal").unwrap().id;
+        let test = store.add_account("Test").unwrap().id;
+        let fresh = store.add_account("New").unwrap().id;
+        store.record_drive(&real, "REAL").unwrap();
+        store.record_drive(&test, "TEST").unwrap();
+        assert!(store.snapshot().write_test_drive_ids.is_empty(), "empty by default");
+        for id in [&real, &test, &fresh] {
+            assert!(!store.writes_allowed(id), "{id}: nothing is writable while the list is empty");
+        }
+        assert!(!Config::default().writes_allowed(""));
+        store
+            .update(|config| {
+                config.write_test_drive_ids = vec!["TEST".into(), String::new()];
+                Ok::<_, ConfigError>(())
+            })
+            .unwrap();
+        assert!(store.writes_allowed(&test));
+        assert!(!store.writes_allowed(&real), "a drive not listed stays read-only");
+        assert!(!store.writes_allowed(&fresh), "an empty entry lets no account without a drive through");
+        assert!(!store.writes_allowed("000000000000"), "no such account");
+        let text = std::fs::read_to_string(store.file()).unwrap();
+        assert!(text.contains("write_test_drive_ids = [\"TEST\", \"\"]"), "{text}");
+
+        // A hand edit of the list counts at once, and a file that cannot be read lets nothing
+        // through.
+        std::fs::write(store.file(), text.replace("[\"TEST\", \"\"]", "[]")).unwrap();
+        assert!(!store.writes_allowed(&test), "the drive taken off the list by hand");
+        std::fs::write(store.file(), &text).unwrap();
+        assert!(store.writes_allowed(&test));
+        std::fs::write(store.file(), "config_version = 2\nthis is not [toml\n").unwrap();
+        assert!(!store.writes_allowed(&test), "an unreadable file fails closed");
+    }
+
+    /// A list that is not a list makes the whole file unreadable: the store is poisoned, no
+    /// account loads, and nothing is writable.
+    #[tokio::test]
+    async fn a_malformed_write_list_lets_nothing_through() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dir(dir.path());
+        std::fs::write(
+            &paths.config_file,
+            "config_version = 2\nwrite_test_drive_ids = \"D1\"\n\n[[accounts]]\nid = \"3f9a1c0e5b7d\"\nlabel = \"Test\"\nmode = \"read-write\"\ndrive_id = \"D1\"\n",
+        )
+        .unwrap();
+        let store = open(&paths).await;
+        assert!(store.is_poisoned());
+        assert!(store.snapshot().accounts.is_empty(), "no account loads");
+        assert!(!store.writes_allowed("3f9a1c0e5b7d"));
     }
 
     /// A drive is one account, however it comes to be recorded (design §8.2, review M1): a

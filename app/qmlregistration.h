@@ -12,6 +12,7 @@
 #include "currentaccount.h"
 #include "daemoncontroller.h"
 #include "downloadprogresssettings.h"
+#include "outboxmodel.h"
 #include "placessettings.h"
 #include "transfermodel.h"
 
@@ -38,4 +39,5 @@ inline void registerKonedriveQml(DaemonController *daemon,
     qmlRegisterUncreatableType<TransferModel>(uri, 1, 0, "TransferModel", QStringLiteral("owned by a SyncController"));
     qmlRegisterUncreatableType<ActivityModel>(uri, 1, 0, "ActivityModel", QStringLiteral("owned by a SyncController"));
     qmlRegisterUncreatableType<ConflictModel>(uri, 1, 0, "ConflictModel", QStringLiteral("owned by a SyncController"));
+    qmlRegisterUncreatableType<OutboxModel>(uri, 1, 0, "OutboxModel", QStringLiteral("owned by a SyncController"));
 }

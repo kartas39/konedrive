@@ -24,7 +24,9 @@
          changes), cancels a sign-in under way, deletes its refresh token, its
          cached name and quota and its tree store, then removes the object.
          The folder's files and the rescued files are kept. NoAccount for a
-         path that names no account. -->
+         path that names no account. Refused PendingUploads, as
+         Sync1.UnregisterRoot is, while changes made here wait to be
+         uploaded. -->
     <method name="Remove">
       <arg name="account" type="o" direction="in"/>
     </method>

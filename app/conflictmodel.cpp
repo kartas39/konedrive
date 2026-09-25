@@ -35,6 +35,10 @@ QVariant ConflictModel::data(const QModelIndex &index, int role) const
         return QFileInfo(row.original).path();
     case RescuedFolderRole:
         return QFileInfo(row.rescued).path();
+    case IsCopyRole:
+        return row.kind == QLatin1String("copy");
+    case RescuedNameRole:
+        return QFileInfo(row.rescued).fileName();
     }
     return {};
 }
@@ -48,6 +52,8 @@ QHash<int, QByteArray> ConflictModel::roleNames() const
         {NameRole, "name"},
         {OriginalFolderRole, "originalFolder"},
         {RescuedFolderRole, "rescuedFolder"},
+        {IsCopyRole, "isCopy"},
+        {RescuedNameRole, "rescuedName"},
     };
 }
 
@@ -106,7 +112,7 @@ void ConflictModel::setConflicts(const KonedriveConflictList &conflicts)
     for (int row = 0; row < wanted.size(); ++row) {
         const KonedriveConflict &conflict = wanted.at(row);
         if (row < count() && m_rows.at(row).rescued == conflict.rescued) {
-            if (m_rows.at(row).time != conflict.time || m_rows.at(row).original != conflict.original) {
+            if (m_rows.at(row).time != conflict.time || m_rows.at(row).original != conflict.original || m_rows.at(row).kind != conflict.kind) {
                 m_rows[row] = conflict;
                 Q_EMIT dataChanged(index(row), index(row));
             }

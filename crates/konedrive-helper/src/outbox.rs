@@ -351,6 +351,12 @@ impl Outbox {
     /// here: the writer thread closes the queue when it stops, including when
     /// [`LIVENESS_WINDOW`] ends a peer that neither reads nor talks.
     pub fn send_ack(&self, errno: i32) -> Result<(), Closed> {
+        self.send_ack_with(errno, None)
+    }
+
+    /// [`send_ack`](Self::send_ack), with a descriptor attached: the answer to
+    /// an `OpenByHandle`.
+    pub fn send_ack_with(&self, errno: i32, fd: Option<OwnedFd>) -> Result<(), Closed> {
         let mut queue = self.pending.lock();
         loop {
             if queue.closed {
@@ -363,7 +369,7 @@ impl Outbox {
                 self.pending.room.wait(queue).unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         queue.acks += 1;
-        queue.items.push_back(Outgoing { message: ToDaemon::Ack { errno }, fd: None });
+        queue.items.push_back(Outgoing { message: ToDaemon::Ack { errno }, fd });
         drop(queue);
         self.pending.queued.notify_one();
         Ok(())

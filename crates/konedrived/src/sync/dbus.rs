@@ -78,6 +78,12 @@ pub enum SyncFault {
     Overlaps(String),
     /// `Accounts1.Remove` of a path that names no account.
     NoAccount(String),
+    /// A free-up of a file whose change waits to be uploaded (write design
+    /// §3.8): freeing it up would lose that change. The message names it.
+    NotUploaded(String),
+    /// `UnregisterRoot`, or `Accounts1.Remove`, while changes wait to be uploaded: the folder's
+    /// record holding them would go. The message says how many.
+    PendingUploads(String),
     /// Everything with no name of its own: an I/O failure, mostly.
     Failed(String),
 }
@@ -138,11 +144,12 @@ impl Sync1 {
         detail: &str,
     ) -> zbus::Result<()>;
 
-    /// (unix time, original full path, full path it was moved to), newest
-    /// first; one whose moved file is gone is dropped.
-    async fn conflicts(&self) -> Result<Vec<(i64, String, String)>> {
+    /// (unix time, original full path, full path of the kept version, how it
+    /// was kept: `rescued` or `copy`), newest first; one whose kept file is
+    /// gone is dropped.
+    async fn conflicts(&self) -> Result<Vec<(i64, String, String, String)>> {
         let rows = self.service.conflicts().await.map_err(to_fault)?;
-        Ok(rows.into_iter().map(|c| (c.at, c.original, c.rescued)).collect())
+        Ok(rows.into_iter().map(|c| (c.at, c.original, c.rescued, c.kind.as_str().to_owned())).collect())
     }
 
     async fn dismiss_conflict(&self, rescued_path: &str) -> Result<()> {
@@ -153,6 +160,49 @@ impl Sync1 {
     async fn free_up_space(&self) -> Result<(u32, u64, u32)> {
         let freed = self.service.free_up_space().await.map_err(to_fault)?;
         Ok((freed.files, freed.bytes, freed.busy))
+    }
+
+    /// The changes waiting to be uploaded, oldest first, at most `limit` (0 for
+    /// all): (seq, kind, full path, state, bytes sent, bytes in all, reason,
+    /// next try).
+    async fn outbox(&self, limit: u32) -> Result<Vec<(u64, String, String, String, u64, u64, String, i64)>> {
+        self.service.outbox(limit).await.map_err(to_fault)
+    }
+
+    /// Nothing is uploaded, and OneDrive is not asked for changes, for
+    /// `seconds` — or until `Resume()` when 0.
+    async fn pause(&self, seconds: u32) -> Result<()> {
+        self.service.pause_syncing(seconds).await.map_err(to_fault)
+    }
+
+    async fn resume(&self) -> Result<()> {
+        self.service.resume_syncing().await.map_err(to_fault)
+    }
+
+    /// The account's ignore list from now on; a Full local scan follows.
+    async fn set_ignore_patterns(
+        &self,
+        patterns: Vec<String>,
+        #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
+    ) -> Result<()> {
+        self.service.set_ignore_patterns(patterns).await.map_err(to_fault)?;
+        self.ignore_patterns_changed(&emitter).await.map_err(SyncFault::ZBus)
+    }
+
+    /// The removals the mass-delete guard held go ahead; how many.
+    async fn confirm_deletes(&self) -> Result<u32> {
+        self.service.confirm_deletes().await.map_err(to_fault)
+    }
+
+    /// The removals the mass-delete guard held are dropped, and their items
+    /// placed again; how many.
+    async fn restore_deletes(&self) -> Result<u32> {
+        self.service.restore_deletes().await.map_err(to_fault)
+    }
+
+    /// What stays on this computer and why: (full path, reason).
+    async fn not_uploaded(&self) -> Result<Vec<(String, String)>> {
+        self.service.not_uploaded().await.map_err(to_fault)
     }
 
     #[zbus(property)]
@@ -218,6 +268,58 @@ impl Sync1 {
     async fn transfers(&self) -> Vec<(String, u64, u64)> {
         self.service.transfers()
     }
+
+    /// Changes waiting to be uploaded (not blocked, not held).
+    #[zbus(property)]
+    async fn pending_count(&self) -> u32 {
+        self.service.state().get().pending_count
+    }
+
+    /// The size of the files those changes send.
+    #[zbus(property)]
+    async fn pending_bytes(&self) -> u64 {
+        self.service.state().get().pending_bytes
+    }
+
+    /// Changes that need the user to go up.
+    #[zbus(property)]
+    async fn blocked_count(&self) -> u32 {
+        self.service.state().get().blocked_count
+    }
+
+    /// Removals the mass-delete guard holds for `ConfirmDeletes` or
+    /// `RestoreDeletes`.
+    #[zbus(property)]
+    async fn held_count(&self) -> u32 {
+        self.service.state().get().held_count
+    }
+
+    /// Uploads under way, shaped as `Transfers`.
+    #[zbus(property)]
+    async fn uploads(&self) -> Vec<(String, u64, u64)> {
+        self.service.state().get().uploads
+    }
+
+    #[zbus(property)]
+    async fn paused(&self) -> bool {
+        self.service.state().get().paused_until.is_some()
+    }
+
+    /// Unix seconds; 0 while paused until resumed, and while not paused.
+    #[zbus(property)]
+    async fn paused_until(&self) -> i64 {
+        self.service.state().get().paused_until.unwrap_or(0)
+    }
+
+    #[zbus(property)]
+    async fn ignore_patterns(&self) -> Vec<String> {
+        self.service.ignore_patterns()
+    }
+
+    #[zbus(property)]
+    async fn machine_name(&self) -> String {
+        self.service.machine_name()
+    }
 }
 
 /// Every refusal keeps its own name; only the ones with nothing a caller
@@ -241,6 +343,9 @@ pub(crate) fn to_fault(error: SyncError) -> SyncFault {
         SyncError::NoSource => SyncFault::NoSource(message),
         SyncError::NoConflict(_) => SyncFault::NoConflict(message),
         SyncError::NotAllowed(_) => SyncFault::NotAllowed(message),
+        SyncError::NotUploaded(_) => SyncFault::NotUploaded(message),
+        SyncError::PendingUploads(_) => SyncFault::PendingUploads(message),
+        SyncError::InvalidArgs(_) => SyncFault::ZBus(zbus::Error::FDO(Box::new(zbus::fdo::Error::InvalidArgs(message)))),
         SyncError::Io(_) => SyncFault::Failed(message),
     }
 }
@@ -348,6 +453,11 @@ pub(crate) struct Coalesced {
     conflict_count: u32,
     pinned_count: u32,
     transfers: Vec<(String, u64, u64)>,
+    pending_count: u32,
+    pending_bytes: u64,
+    blocked_count: u32,
+    held_count: u32,
+    uploads: Vec<(String, u64, u64)>,
 }
 
 impl Coalesced {
@@ -361,6 +471,11 @@ impl Coalesced {
             conflict_count: s.conflict_count,
             pinned_count: s.pinned_count,
             transfers: transfers.values().map(|t| (t.path.clone(), t.done, t.total)).collect(),
+            pending_count: s.pending_count,
+            pending_bytes: s.pending_bytes,
+            blocked_count: s.blocked_count,
+            held_count: s.held_count,
+            uploads: s.uploads.clone(),
         }
     }
 
@@ -390,6 +505,21 @@ impl Coalesced {
         }
         if old.transfers != self.transfers {
             changed.insert("Transfers", self.transfers.clone().into());
+        }
+        if old.pending_count != self.pending_count {
+            changed.insert("PendingCount", self.pending_count.into());
+        }
+        if old.pending_bytes != self.pending_bytes {
+            changed.insert("PendingBytes", self.pending_bytes.into());
+        }
+        if old.blocked_count != self.blocked_count {
+            changed.insert("BlockedCount", self.blocked_count.into());
+        }
+        if old.held_count != self.held_count {
+            changed.insert("HeldCount", self.held_count.into());
+        }
+        if old.uploads != self.uploads {
+            changed.insert("Uploads", self.uploads.clone().into());
         }
         changed
     }
@@ -443,6 +573,12 @@ async fn emit_changes(
     }
     if published_error(old) != published_error(new) {
         sync1.last_error_changed(emitter).await?;
+    }
+    // Not coalesced: a pause and a resume within one coalescing window would
+    // leave a client that read in between with the pause for good.
+    if old.paused_until != new.paused_until {
+        sync1.paused_changed(emitter).await?;
+        sync1.paused_until_changed(emitter).await?;
     }
     // `HelperState` itself is `Accounts1`'s now; a change of it shows here
     // only as the `LastError` it changes (the comparison above).

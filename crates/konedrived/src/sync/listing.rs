@@ -35,13 +35,18 @@ use tokio_util::sync::CancellationToken;
 use super::activity::{self, Kind, Report, Tracked};
 use super::disk::{rescue_base, rescue_stamp, Disk};
 use super::helper::HelperLink;
-use super::materialize::{replace, Applied, ApplyError, Materializer, ReplaceOutcome, Replacement, Scope};
+use super::materialize::{replace, replace_leased, Applied, ApplyError, Claimed, Leased, Materializer, ReplaceOutcome, Replacement, Scope};
 use super::pin::Pins;
 use super::root::SyncRoot;
 use super::source::ContentSource;
 use super::{InodeLocks, SyncStateHandle, SyncTrouble};
 use crate::drive::{DeltaFrom, DeltaNext, DriveClient, DriveError};
-use crate::tree::{classify, Change, ConflictRow, Store, Table, TreeError, TreeStore};
+use crate::tree::{classify, Change, ConflictKind, ConflictRow, Store, Table, TreeError, TreeStore};
+
+/// A read-write folder's cycle (`docs/design/writes.md` §9).
+mod rw;
+use rw::RwCycle;
+pub use rw::Writes;
 
 /// A delta with more changes than this is reconciled in full.
 pub const FULL_THRESHOLD: usize = 5000;
@@ -91,7 +96,31 @@ pub struct ListingContext {
     /// `SyncService`'s pins: a cycle queues what it placed under a pin, and
     /// a Full reconcile is followed by a sweep.
     pub pins: Arc<Pins>,
+    /// Whether the folder is kept under the read-only lock: the account is
+    /// read-only (`docs/design/writes.md` §2.2). A switch of mode stops the sync and
+    /// starts a new one, so this never changes under a running sync.
+    pub locked: bool,
+    /// A read-write folder's: its cycle's part in uploading. `None`
+    /// for a read-only folder, whose cycle is the read phase's.
+    pub writes: Option<Writes>,
+    /// The daemon's other parts a cycle asks or tells; `None` in tests.
+    pub neighbours: Option<Neighbours>,
 }
+
+/// What a cycle asks of, or tells, the rest of the daemon.
+#[derive(Clone)]
+pub struct Neighbours {
+    /// Whether another account claims an item id: an object carrying it is
+    /// never removed here (`docs/design/writes.md` §8.3).
+    pub claimed: Claimed,
+    /// The drive the account's token reaches, when a cycle finds it is not
+    /// the folder's: the account records it and works its
+    /// mode out again, so that a read-write account turns read-only.
+    pub drive_seen: DriveSeen,
+}
+
+/// Told the drive an account's token reaches.
+pub type DriveSeen = Arc<dyn Fn(&str) + Send + Sync>;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CycleError {
@@ -197,6 +226,10 @@ pub struct Listing {
     replacement_slots: Semaphore,
     replacements: std::sync::Mutex<JoinSet<()>>,
     cancel_replacements: CancellationToken,
+    /// Read-write mode: the outbox commit count the last cycle's fetch
+    /// started at; items the outbox committed after it are looked at again
+    /// by the next cycle.
+    revisit_from: std::sync::atomic::AtomicI64,
 }
 
 /// A replacement under way: the version it fetches, and a newer version of
@@ -238,7 +271,22 @@ impl Reconciled {
     fn add(&mut self, page: Reconciled) {
         // Every field named: one added to `Applied` does not compile here
         // until it is handled.
-        let Applied { created, moved, deleted, updated, deferred, rescued, replacements, changes: _, pinned } = page.applied;
+        let Applied {
+            created,
+            moved,
+            deleted,
+            updated,
+            deferred,
+            rescued,
+            replacements,
+            changes: _,
+            pinned,
+            unsettled,
+            content_waits,
+            copies,
+            examine,
+            recreated,
+        } = page.applied;
         let all = &mut self.applied;
         all.created += created;
         all.moved += moved;
@@ -248,16 +296,28 @@ impl Reconciled {
         all.rescued.extend(rescued);
         all.replacements.extend(replacements);
         all.pinned.extend(pinned);
+        all.unsettled.extend(unsettled);
+        all.content_waits.extend(content_waits);
+        all.copies.extend(copies);
+        all.examine.extend(examine);
+        all.recreated.extend(recreated);
         self.full |= page.full;
     }
 }
 
 /// What the feed said since the stored link.
+// Made once per cycle and taken apart at once: not worth a box.
+#[allow(clippy::large_enum_variant)]
 enum Fetched {
     /// A full listing is in `staging`: the first into a folder that shows
     /// the drive already, one after `410`, or one after a first listing's
     /// resume link was refused.
-    Listed { link: String },
+    Listed {
+        link: String,
+        /// `410` with `resyncChangesUploadDifferences`: a read-write
+        /// folder uploads what the listing left out.
+        upload_differences: bool,
+    },
     Changes { changes: Vec<Change>, link: String },
     /// A first listing, placed page by page and committed with its link
     ///.
@@ -292,7 +352,7 @@ enum Said {
 /// token it no longer takes — rather than could not be reached or refused
 /// the account.
 fn refused(e: &DriveError) -> bool {
-    matches!(e, DriveError::ResyncRequired | DriveError::NotFound | DriveError::Failed(_))
+    matches!(e, DriveError::ResyncRequired | DriveError::ResyncUpload | DriveError::NotFound | DriveError::Failed(_))
 }
 
 impl Listing {
@@ -308,6 +368,7 @@ impl Listing {
             replacement_slots: Semaphore::new(REPLACEMENT_SLOTS),
             replacements: std::sync::Mutex::new(JoinSet::new()),
             cancel_replacements: CancellationToken::new(),
+            revisit_from: std::sync::atomic::AtomicI64::new(0),
         })
     }
 
@@ -356,6 +417,15 @@ impl Listing {
             return Err(CycleError::NoHelper);
         }
         self.check_account(turn, cancel).await?;
+        // Read-write mode: the first cycle waits for the watcher's Full local scan (write
+        // design §3.3), and the stale-delta guard starts from the outbox's commits so far.
+        let fetch_seq = match &self.ctx.writes {
+            Some(writes) => {
+                writes.scanned(cancel).await?;
+                Some(self.on_store(turn, |s| s.outbox_seq()).await?)
+            }
+            None => None,
+        };
         let (stored, resume_at) = self.on_store(turn, |s| Ok((s.delta_link()?, s.listing_next()?))).await?;
         let fetched = match (stored, resume_at) {
             (Some(link), _) => self.fetch_changes(turn, link, cancel).await?,
@@ -370,10 +440,15 @@ impl Listing {
             }
             (None, None) => self.list_all(turn, cancel).await?,
         };
-        let (reconciled, changes) = match fetched {
-            Fetched::Placed(placed) => (placed, 0),
-            Fetched::Listed { link } => (self.reconcile(turn, Scope::Full, Commit::Swap { link, listing: false }, cancel).await?, 0),
-            Fetched::Changes { changes, link } => {
+        let (reconciled, changes) = match (fetched, fetch_seq) {
+            (Fetched::Placed(placed), _) => (placed, 0),
+            (fetched, Some(seq)) => {
+                let done = self.reconcile_rw_fetched(turn, fetched, seq, full_requested, cancel).await?;
+                self.revisit_from.store(seq, Ordering::SeqCst);
+                done
+            }
+            (Fetched::Listed { link, .. }, None) => (self.reconcile(turn, Scope::Full, Commit::Swap { link, listing: false }, cancel).await?, 0),
+            (Fetched::Changes { changes, link }, None) => {
                 let count = changes.len();
                 if count > 0 || full_requested {
                     self.on_store(turn, move |s| {
@@ -439,7 +514,19 @@ impl Listing {
             let placed = applied.pinned.iter().map(|rel| self.ctx.root.path.join(rel)).collect();
             self.ctx.pins.queue_under(placed).await;
         }
-        self.spawn_replacements(applied.replacements.clone());
+        // Paused (`docs/design/writes.md` §11): no replacement starts; the next cycle after
+        // the pause is Full, and finds them again.
+        let store = self.ctx.store.clone();
+        let paused = tokio::task::spawn_blocking(move || crate::sync::upload::paused(&store).is_some()).await.unwrap_or(false);
+        if paused && !applied.replacements.is_empty() {
+            self.needs_full.store(true, Ordering::SeqCst);
+        } else {
+            self.spawn_replacements(applied.replacements.clone());
+        }
+        if let Some(writes) = &self.ctx.writes {
+            // The base caught up: the outbox sends (`docs/design/writes.md` §9).
+            (writes.cycled)();
+        }
         Ok(CycleReport { full, changes, applied })
     }
 
@@ -469,6 +556,10 @@ impl Listing {
         let stored = self.on_store(turn, |s| s.meta("drive_id")).await?;
         let kept = self.ctx.drive_record.as_ref().and_then(|r| r.recorded.clone());
         if let Some(recorded) = stored.clone().or(kept.clone()).filter(|recorded| *recorded != id) {
+            // The account learns which drive its token reaches now.
+            if let Some(neighbours) = &self.ctx.neighbours {
+                (neighbours.drive_seen)(&id);
+            }
             return Err(CycleError::OtherAccount(recorded));
         }
         // A drive is one account (§8.2): one another account has recorded is not
@@ -516,7 +607,7 @@ impl Listing {
             self.ctx.state.update(|s| s.items_listed = listed);
             match page.next {
                 DeltaNext::Page(next) => from = DeltaFrom::Link(next),
-                DeltaNext::Done(link) => return Ok(Fetched::Listed { link }),
+                DeltaNext::Done(link) => return Ok(Fetched::Listed { link, upload_differences: false }),
             }
         }
     }
@@ -583,7 +674,14 @@ impl Listing {
         self.ctx.state.update(|s| s.listing = true);
         // However the listing ends — also when its future is dropped.
         let _said = OnDrop(Some(|| self.ctx.state.update(|s| s.listing = false)));
-        self.on_store(turn, |s| s.begin_staging(true)).await?;
+        // Read-write mode: the outbox's commit count when `staging` was last made from `items`.
+        let mut staged_at = Some(
+            self.on_store(turn, |s| {
+                s.begin_staging(true)?;
+                s.outbox_seq()
+            })
+            .await?,
+        );
         self.publish_counts(turn).await?;
         let mut placed = Reconciled::default();
         let mut full = true;
@@ -608,6 +706,24 @@ impl Listing {
             resuming = false;
             let changes: Vec<Change> = page.items.iter().map(classify).collect();
             let staged = changes.clone();
+            // Read-write mode: the tree lock from this page's staging to its commit,
+            // and `staging` made again from `items` under it when an outbox commit wrote
+            // `items` since the last page — between pages the two are the same otherwise,
+            // and the swap would revert that commit. Only then: a copy per page
+            // would grow with the square of a large listing. An examination
+            // writes nothing before the listing is complete (`NoBase`).
+            let tree = match &self.ctx.writes {
+                Some(_) => {
+                    let tree = self.tree_lock(cancel).await?;
+                    let seq = self.on_store(turn, |s| s.outbox_seq()).await?;
+                    if staged_at.is_some_and(|at| at != seq) {
+                        self.on_store(turn, |s| s.begin_staging(true)).await?;
+                    }
+                    staged_at = Some(seq);
+                    Some(tree)
+                }
+                None => None,
+            };
             self.on_store(turn, move |s| s.stage(&staged)).await?;
             let scope = if full { Scope::Full } else { Scope::Changed(changes.iter().map(|c| c.id().to_owned()).collect()) };
             let (commit, next) = match page.next {
@@ -615,7 +731,14 @@ impl Listing {
                 DeltaNext::Done(link) => (Commit::Swap { link, listing: true }, None),
             };
             let changed = !full;
-            let done = self.reconcile(turn, scope, commit, cancel).await?;
+            let done = match tree {
+                None => self.reconcile(turn, scope, commit, cancel).await?,
+                Some(tree) => {
+                    let fetch_seq = self.on_store(turn, |s| s.outbox_seq()).await?;
+                    let rw = RwCycle { tree, fetch_seq, consumed: Vec::new(), upload_differences: false };
+                    self.reconcile_rw(turn, scope, commit, rw, cancel).await?
+                }
+            };
             // A later page that had to hand over to Full found the folder
             // not matching `items` part-way — a name two pages give to two
             // items, say — and a later Changed page cannot see all it moved
@@ -658,6 +781,14 @@ impl Listing {
                     tracing::info!("the change feed has expired; listing the drive again");
                     return self.list_all(turn, cancel).await;
                 }
+                // Read-only, the two resyncs are one.
+                Err(DriveError::ResyncUpload) => {
+                    tracing::info!("the change feed has expired; listing the drive again, keeping what it no longer has");
+                    return match self.list_all(turn, cancel).await? {
+                        Fetched::Listed { link, .. } => Ok(Fetched::Listed { link, upload_differences: true }),
+                        other => Ok(other),
+                    };
+                }
                 Err(e) => return Err(drive_error(e)),
             }
         }
@@ -688,8 +819,9 @@ impl Listing {
         }
         let held = (Arc::clone(turn), lifecycle);
         let (root, preferred, store) = (self.ctx.root.clone(), self.ctx.rescue_dir.clone(), self.ctx.store.clone());
-        let (locks, cancel) = (self.ctx.locks.clone(), cancel.clone());
+        let (locks, cancel, locked) = (self.ctx.locks.clone(), cancel.clone(), self.ctx.locked);
         let report = self.ctx.report.clone();
+        let claimed = self.ctx.neighbours.as_ref().map(|n| Arc::clone(&n.claimed));
         let runtime = tokio::runtime::Handle::current();
         let drive = self.pending_drive.lock().unwrap().take();
         tokio::task::spawn_blocking(move || {
@@ -714,7 +846,7 @@ impl Listing {
                 };
             };
             let materializer = Materializer {
-                disk: Disk::open(&root, true).map_err(|e| applying(e.into()))?,
+                disk: Disk::open(&root, locked).map_err(|e| applying(e.into()))?,
                 store: store.clone(),
                 link,
                 runtime,
@@ -724,6 +856,8 @@ impl Listing {
                 // filesystem: a rescue is one rename, never a copy.
                 rescue_into: rescue_base(&root.path, &preferred).join(rescue_stamp(SystemTime::now())),
                 cancel,
+                rw: None,
+                claimed,
             };
             let changed = matches!(scope, Scope::Changed(_));
             // What a Changed pass rescued before it handed over is rescued
@@ -865,7 +999,7 @@ impl Listing {
             ReplaceOutcome::Replaced => Some(activity::event(Kind::Updated, shown, activity::human_size(size))),
             ReplaceOutcome::Failed(why) => Some(activity::event(Kind::UpdateFailed, shown, why.clone())),
             ReplaceOutcome::NoSpace(_) => Some(activity::event(Kind::UpdateFailed, shown, activity::NO_DISK_SPACE)),
-            ReplaceOutcome::Current => None,
+            ReplaceOutcome::Current | ReplaceOutcome::Busy => None,
         };
         (outcome, event)
     }
@@ -874,13 +1008,26 @@ impl Listing {
         let _slot = self.replacement_slots.acquire().await;
         // Opening reads the root's attribute to prove it is still this root:
         // on a blocking thread, like every open (part 1's).
-        let root = self.ctx.root.clone();
-        let disk = match tokio::task::spawn_blocking(move || Disk::open(&root, true)).await {
+        let (root, locked) = (self.ctx.root.clone(), self.ctx.locked);
+        let disk = match tokio::task::spawn_blocking(move || Disk::open(&root, locked)).await {
             Ok(Ok(disk)) => disk,
             Ok(Err(e)) => return ReplaceOutcome::Failed(e.to_string()),
             Err(e) => return ReplaceOutcome::Failed(format!("the replacement task failed: {e}")),
         };
-        replace(&disk, &self.ctx.locks, source, replacement).await
+        // Read-write mode: the swap under a write lease and the tree lock, and the new
+        // version's deferred change into the base as it lands.
+        let outcome = match &self.ctx.writes {
+            None => replace(&disk, &self.ctx.locks, source, replacement).await,
+            Some(writes) => {
+                let leased = Leased { tree_lock: &writes.tree_lock, store: &self.ctx.store };
+                replace_leased(&disk, &self.ctx.locks, source, replacement, Some(&leased)).await
+            }
+        };
+        if matches!(outcome, ReplaceOutcome::Replaced) {
+            // A new version is a new inode: the item's recorded one now.
+            super::local::record_replaced(&disk, &self.ctx.store, &replacement.id, &replacement.rel);
+        }
+        outcome
     }
 
     /// What a replacement came to. One that ended with nothing to do asks for
@@ -900,7 +1047,7 @@ impl Listing {
         let mut failed = self.failed_replacements.lock().unwrap();
         let news = match &outcome {
             ReplaceOutcome::Replaced => true,
-            ReplaceOutcome::Current => false,
+            ReplaceOutcome::Current | ReplaceOutcome::Busy => false,
             ReplaceOutcome::Failed(why) | ReplaceOutcome::NoSpace(why) => !matches!(
                 failed.get(&replacement.id),
                 Some((before, said)) if before.ctag == replacement.ctag && said == why
@@ -913,6 +1060,10 @@ impl Listing {
             ReplaceOutcome::Current => {
                 failed.remove(&replacement.id);
                 self.needs_full.store(true, Ordering::SeqCst);
+            }
+            // Open somewhere: its deferred change brings it back at the next cycle.
+            ReplaceOutcome::Busy => {
+                failed.remove(&replacement.id);
             }
             ReplaceOutcome::Failed(why) | ReplaceOutcome::NoSpace(why) => {
                 if news {
@@ -977,7 +1128,7 @@ fn record_drive(record: &DriveRecord, id: &str) {
 /// item, at most [`activity::PER_KIND`] of each kind plus one "and N more",
 /// or nothing but the conflicts for a page of a first listing.
 fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Applied, said: Said) {
-    if said == Said::Nothing && applied.rescued.is_empty() {
+    if said == Said::Nothing && applied.rescued.is_empty() && applied.copies.is_empty() {
         return;
     }
     let shown = |rel: &std::path::Path| root.join(rel).display().to_string();
@@ -1010,7 +1161,10 @@ fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Appl
     let conflicts: Vec<ConflictRow> = applied
         .rescued
         .iter()
-        .map(|r| ConflictRow { at, original: shown(&r.original), rescued: r.rescued.display().to_string() })
+        .map(|r| ConflictRow { at, original: shown(&r.original), rescued: r.rescued.display().to_string(), kind: ConflictKind::Rescued })
+        // Read-write mode's copies (`docs/design/writes.md` §7): conflicts of kind `copy`, both
+        // versions in the folder.
+        .chain(applied.copies.iter().map(|c| ConflictRow { at, original: shown(&c.original), rescued: shown(&c.copy), kind: ConflictKind::Copy }))
         .collect();
     // Capped like every other kind; every conflict is
     // still a row.
@@ -1056,6 +1210,14 @@ impl Poller {
         self.refresh.notify_one();
     }
 
+    /// A cycle now whose reconcile is Full: it places again what is missing
+    /// here though OneDrive did not change it (`RestoreDeletes`, an item whose
+    /// local object was forgotten).
+    pub fn refresh_full(&self) {
+        self.listing.needs_full.store(true, Ordering::SeqCst);
+        self.refresh.notify_one();
+    }
+
     /// Stops the poller and every replacement under way, and waits for them.
     pub async fn stop(self) {
         self.cancel.cancel();
@@ -1065,9 +1227,59 @@ impl Poller {
     }
 }
 
+/// Whether a read-only folder holds changes waiting to upload: its cycles wait meanwhile,
+/// and its `LastError` says why ([`run`]). A store that cannot be read holds them back too.
+/// What it said goes once none wait.
+async fn held_back(listing: &Listing) -> bool {
+    if !listing.ctx.locked {
+        return false;
+    }
+    let store = listing.ctx.store.clone();
+    let waiting = tokio::task::spawn_blocking(move || store.with(|s| s.outbox_rows()).map(|rows| rows.len())).await.ok().and_then(Result::ok);
+    let note = match waiting {
+        Some(0) => String::new(),
+        Some(n) => format!(
+            "{n} change(s) made here wait to be uploaded, so the folder is not kept in step with \
+             OneDrive: they go once the account is read-write again, or are dropped by a forced \
+             switch to read-only"
+        ),
+        None => "the changes waiting to be uploaded cannot be read, so the folder is not kept in step with OneDrive".into(),
+    };
+    if listing.ctx.state.get().outbox_note != note {
+        listing.ctx.state.update(|s| s.outbox_note = note);
+    }
+    waiting != Some(0)
+}
+
 async fn run(listing: Arc<Listing>, schedule: Schedule, refresh: Arc<Notify>, cancel: CancellationToken) {
     let mut failures = 0usize;
     loop {
+        // Paused (`docs/design/writes.md` §11): OneDrive is not asked, so nothing is
+        // replaced either, until the pause ends or `Resume()` nudges.
+        let store = listing.ctx.store.clone();
+        let paused = tokio::task::spawn_blocking(move || crate::sync::upload::paused(&store)).await.ok().flatten();
+        if let Some(until) = paused {
+            let left = if until == 0 { schedule.interval } else { Duration::from_secs((until - crate::sync::activity::unix_now()).max(1) as u64) };
+            tokio::select! {
+                () = tokio::time::sleep(left.min(schedule.interval)) => {}
+                () = refresh.notified() => {}
+                () = cancel.cancelled() => return,
+            }
+            continue;
+        }
+        // A read-only folder that holds changes waiting to upload — a switch to read-only
+        // nobody forced: a sign-out, the gate, `config.toml` — runs no
+        // cycle: the read phase's reconcile would put back the moves and deletes they
+        // describe. It waits for read-write again, which sends them, or for the forced switch
+        // that drops them; `LastError` says so meanwhile.
+        if held_back(&listing).await {
+            tokio::select! {
+                () = tokio::time::sleep(schedule.interval) => {}
+                () = refresh.notified() => {}
+                () = cancel.cancelled() => return,
+            }
+            continue;
+        }
         let result = listing.cycle(&cancel).await;
         let wait = match &result {
             Ok(_) => {
@@ -1217,6 +1429,9 @@ mod tests {
                 after_cycle: None,
                 report: self.report.clone(),
                 pins: Arc::clone(&self.pins),
+                locked: true,
+                writes: None,
+                neighbours: None,
             }
         }
 
@@ -1656,11 +1871,22 @@ mod tests {
         let s = setup().await;
         s.store.run(|t| t.set_meta("drive_id", Some("D0"))).await.unwrap();
         s.feed(None, json!([root_item(), folder("D", "R", "docs")]), "L1").await;
-        let err = s.listing().cycle(&CancellationToken::new()).await.unwrap_err();
+        // The account hears which drive its token reaches.
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let neighbours = Neighbours {
+            claimed: Arc::new(|_| false),
+            drive_seen: Arc::new({
+                let seen = Arc::clone(&seen);
+                move |drive| seen.lock().unwrap().push(drive.to_owned())
+            }),
+        };
+        let listing = Listing::new(ListingContext { neighbours: Some(neighbours), ..s.context() });
+        let err = listing.cycle(&CancellationToken::new()).await.unwrap_err();
         assert!(matches!(err, CycleError::OtherAccount(_)), "{err:?}");
         assert!(err.blocking());
         assert!(!s.root.path.join("docs").exists());
         assert_eq!(s.state.get().sync_trouble, Some(SyncTrouble { text: err.to_string(), blocking: true }));
+        assert_eq!(*seen.lock().unwrap(), vec!["D1".to_owned()]);
     }
 
     #[tokio::test]

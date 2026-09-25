@@ -24,6 +24,7 @@ const QStringList Cloud{QStringLiteral("cloudstatus")};
 const QStringList Syncing{QStringLiteral("state-sync")};
 const QStringList CheckOutline{QStringLiteral("dialog-ok")};
 const QStringList CheckFilled{QStringLiteral("emblem-checked")};
+const QStringList Error{QStringLiteral("state-error")};
 } // namespace
 
 class OverlayPluginTest : public QObject
@@ -92,6 +93,35 @@ private Q_SLOTS:
             QVERIFY(testsupport::pin(tree.path(QStringLiteral("OneDrive"))));
         }
         QCOMPARE(overlays(tree.path(QStringLiteral("OneDrive/doc.bin"))), expected);
+    }
+
+    void emblemWhileWaitingToUpload_data()
+    {
+        QTest::addColumn<QByteArray>("state"); // "folder" makes a folder
+        QTest::addColumn<QByteArray>("upload");
+        QTest::addColumn<QStringList>("expected");
+        QTest::newRow("changed here, pending: syncing") << QByteArray("hydrated") << QByteArray("pending") << Syncing;
+        QTest::newRow("changed here, uploading: syncing") << QByteArray("hydrated") << QByteArray("uploading") << Syncing;
+        QTest::newRow("changed here, blocked: error") << QByteArray("hydrated") << QByteArray("blocked") << Error;
+        QTest::newRow("new here, no state yet, pending: syncing") << QByteArray() << QByteArray("pending") << Syncing;
+        QTest::newRow("a new folder, pending: syncing") << QByteArray("folder") << QByteArray("pending") << Syncing;
+        QTest::newRow("an upload value we do not know: the state's emblem") << QByteArray("hydrated") << QByteArray("later") << CheckFilled;
+    }
+
+    /// `user.konedrive.sync` wins over the state and the pin (every item
+    /// here is pinned) while it is there.
+    void emblemWhileWaitingToUpload()
+    {
+        QFETCH(QByteArray, state);
+        QFETCH(QByteArray, upload);
+        QFETCH(QStringList, expected);
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        const QString item = tree.path(QStringLiteral("OneDrive/item"));
+        QVERIFY(state == "folder" ? tree.dir(QStringLiteral("OneDrive/item")) : tree.file(QStringLiteral("OneDrive/item"), state));
+        QVERIFY(testsupport::pin(item));
+        QVERIFY(setUploadState(item, upload));
+        QCOMPARE(overlays(item), expected);
     }
 
     /// A placeholder carried out of the sync folder keeps its attribute, and

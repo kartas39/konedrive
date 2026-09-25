@@ -112,6 +112,74 @@ private Q_SLOTS:
 
         fake.stop();
     }
+
+    /// "Upload changes made on this computer" follows Mode. Turned on, it
+    /// explains before the daemon is asked anything; turned off while
+    /// changes wait to be uploaded, it asks before it drops them.
+    void theUploadSwitch()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->set({{QStringLiteral("RootPath"), QStringLiteral("/home/u/OneDrive")},
+                        {QStringLiteral("RootState"), QStringLiteral("ready")},
+                        {QStringLiteral("RootSource"), QStringLiteral("onedrive")}});
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("account")));
+        QObject *page = window->findChild<QObject *>(QStringLiteral("accountPage"));
+        QObject *uploadSwitch = window->findChild<QObject *>(QStringLiteral("uploadSwitch"));
+        QObject *explain = window->findChild<QObject *>(QStringLiteral("uploadDialog"));
+        QObject *drop = window->findChild<QObject *>(QStringLiteral("dropUploadsDialog"));
+        QVERIFY(page && uploadSwitch && explain && drop);
+        QTRY_VERIFY(uploadSwitch->property("enabled").toBool());
+        QVERIFY(!uploadSwitch->property("checked").toBool());
+
+        // On: explained first. The fake's development gate refuses it, as
+        // the daemon's does by default, so no browser opens here.
+        QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, true));
+        QTRY_VERIFY(shown(explain));
+        QVERIFY(!fake.account->calls.join(QLatin1Char(' ')).contains(QStringLiteral("SetMode")));
+        QVERIFY(explain->property("subtitle").toString().contains(QStringLiteral("/home/u/OneDrive")));
+        QMetaObject::invokeMethod(explain, "confirm");
+        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-write:no-force")));
+        QTRY_VERIFY(accounts.at(0)->account()->actionError().startsWith(QStringLiteral("Uploading is not available")));
+        QVERIFY(!uploadSwitch->property("checked").toBool());
+
+        // It follows the mode the account runs in.
+        fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        QTRY_VERIFY(uploadSwitch->property("checked").toBool());
+
+        // Off, with changes waiting: asked first, then forced.
+        fake.account->pendingUploads = 2;
+        QMetaObject::invokeMethod(page, "setUploads", Q_ARG(QVariant, false));
+        QTRY_VERIFY(shown(drop));
+        QVERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:no-force")));
+        QTRY_VERIFY(uploadSwitch->property("checked").toBool());
+        QMetaObject::invokeMethod(drop, "confirm");
+        QTRY_VERIFY(fake.account->calls.contains(QStringLiteral("SetMode:read-only:force")));
+        QTRY_COMPARE(accounts.at(0)->account()->mode(), QStringLiteral("read-only"));
+        QTRY_VERIFY(accounts.at(0)->account()->switchingTo().isEmpty());
+        QVERIFY(!uploadSwitch->property("checked").toBool());
+
+        fake.stop();
+    }
 };
 
 QTEST_MAIN(DialogsTest)

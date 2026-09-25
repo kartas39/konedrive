@@ -57,6 +57,13 @@ inline bool setState(const QString &path, const QByteArray &state)
     return setAttribute(path, "user.konedrive.state", state);
 }
 
+/// `user.konedrive.sync`, as the daemon writes it on an item with changes
+/// waiting to be uploaded; by path, opening nothing.
+inline bool setUploadState(const QString &path, const QByteArray &value)
+{
+    return setAttribute(path, "user.konedrive.sync", value);
+}
+
 inline bool markRoot(const QString &dir)
 {
     return setAttribute(dir, "user.konedrive.root", QByteArrayLiteral("1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d"));

@@ -73,12 +73,26 @@ pub enum Kind {
     /// §7.3); the old version stays. Detail: why — exactly "not enough disk
     /// space" when the disk cannot hold both versions.
     UpdateFailed,
+    /// Content made or changed here went up to OneDrive (a folder made
+    /// here too). Detail: its size, or "folder".
+    Uploaded,
+    /// Moved or renamed here, and so in OneDrive. Detail: where it was.
+    CloudMoved,
+    /// Deleted here, and so in OneDrive, to its recycle bin.
+    CloudDeleted,
+    /// A change made here that cannot go up until the user acts (a name
+    /// OneDrive refuses, OneDrive full, a sign-in without write access):
+    /// once per change and reason. Detail: the reason.
+    UploadFailed,
+    /// OneDrive's version was kept, or put back, where both sides changed
+    /// one item (`docs/design/writes.md` §7). Detail: why.
+    Restored,
 }
 
 impl Kind {
     /// Every kind there is, for whatever has to agree with them all (the
     /// window's guard in `konedrivectl`'s tests).
-    pub const ALL: [Kind; 10] = [
+    pub const ALL: [Kind; 15] = [
         Kind::Downloaded,
         Kind::Freed,
         Kind::Added,
@@ -89,6 +103,11 @@ impl Kind {
         Kind::Conflict,
         Kind::Failed,
         Kind::UpdateFailed,
+        Kind::Uploaded,
+        Kind::CloudMoved,
+        Kind::CloudDeleted,
+        Kind::UploadFailed,
+        Kind::Restored,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -103,6 +122,11 @@ impl Kind {
             Kind::Conflict => "conflict",
             Kind::Failed => "failed",
             Kind::UpdateFailed => "update-failed",
+            Kind::Uploaded => "uploaded",
+            Kind::CloudMoved => "cloud-moved",
+            Kind::CloudDeleted => "cloud-deleted",
+            Kind::UploadFailed => "upload-failed",
+            Kind::Restored => "restored",
         }
     }
 }
@@ -305,6 +329,17 @@ impl Activity {
         };
         for event in kept {
             // Nobody listening is not an error: a daemon with no bus, a test.
+            let _ = self.added.send(event);
+        }
+    }
+
+    /// Announces `event` (`ActivityAdded`) without recording it: the outbox
+    /// worker writes its events into the store in the same transaction as
+    /// the commit they belong to. Dropped when it is not inside the folder
+    /// registered now.
+    pub fn announce(&self, event: Event) {
+        if inside(&self.state.get().root_path, &event.path) {
+            // Nobody listening is not an error.
             let _ = self.added.send(event);
         }
     }

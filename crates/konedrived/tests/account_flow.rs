@@ -233,7 +233,7 @@ async fn graph_401_invalidates_the_cached_token_and_retries_once() {
     svc.set_client_id(CLIENT_ID).unwrap();
     svc.state().update(|s| s.state = SignInState::SignedIn);
     svc.tokens()
-        .seed(&TokenResponse { access_token: "AT-STALE".into(), expires_in: 3600, refresh_token: None })
+        .seed(&TokenResponse { access_token: "AT-STALE".into(), expires_in: 3600, refresh_token: None, scope: None })
         .await;
 
     svc.refresh_account_info().await;
@@ -335,6 +335,8 @@ async fn startup_restores_session_from_wallet_and_cache() {
             quota_used: 1,
             quota_total: 2,
             fetched_at: 0,
+            granted_scopes: String::new(),
+            drive_id: String::new(),
         },
     )
     .unwrap();

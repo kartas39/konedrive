@@ -197,6 +197,13 @@ impl ThumbnailFiller {
                     () = tokio::time::sleep(Duration::from_secs(600)) => {}
                     () = cancel.cancelled() => return,
                 }
+                // Paused (`docs/design/writes.md` §11): no thumbnails either; the next kick
+                // after the pause ends drains what waits.
+                let store = self.store.clone();
+                let paused = tokio::task::spawn_blocking(move || crate::sync::upload::paused(&store).is_some()).await.unwrap_or(false);
+                if paused {
+                    continue;
+                }
                 self.drain(&cancel, 200).await;
             }
         })

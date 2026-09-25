@@ -154,6 +154,8 @@ impl AccountManager {
             match self.build(entry, held.as_deref()) {
                 Ok(account) => {
                     account.account.startup().await;
+                    // The folder starts in the mode the account does, before it is restored.
+                    follow_mode(&account);
                     account.sync.restore().await;
                     self.accounts.lock().unwrap().push(account);
                 }
@@ -186,6 +188,25 @@ impl AccountManager {
         self.siblings.add(&account);
         let persist = Persist { store: Arc::clone(&self.config), account: entry.id.clone() };
         let sync = SyncService::on_hub(&self.hub, Some(account.state().clone()), Some(persist));
+        // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2).
+        let uploads: std::sync::Weak<SyncService> = Arc::downgrade(&sync);
+        account.set_uploads(uploads);
+        // The folder's outbox worker, finding the write gate closed, has the mode worked out
+        // again.
+        let checked = Arc::downgrade(&account);
+        sync.set_mode_check(Arc::new(move || {
+            if let Some(account) = checked.upgrade() {
+                account.recheck_mode();
+            }
+        }));
+        // A cycle that finds the token reaching another drive than the folder's tells the
+        // account, which records it and works its mode out again.
+        let seen = Arc::downgrade(&account);
+        sync.set_drive_seen(Arc::new(move |drive| {
+            if let Some(account) = seen.upgrade() {
+                account.drive_seen(drive);
+            }
+        }));
         // Before anything is restored or registered: a folder registered while signed in
         // shows OneDrive only with a drive to show, and a restored one starts syncing as it
         // is brought up.
@@ -242,6 +263,7 @@ impl AccountManager {
             }
         };
         account.account.startup().await;
+        follow_mode(&account);
         self.export(connection, &account).await.map_err(|e| ManagerError::Failed(e.to_string()))?;
         self.accounts.lock().unwrap().push(Arc::clone(&account));
         tracing::info!("added the account {:?} ({})", entry.label, entry.id);
@@ -340,6 +362,16 @@ impl AccountManager {
             account.sync.resume().await;
         }
     }
+}
+
+/// Makes `account`'s folder follow the mode the account runs in (`docs/design/writes.md` §2): it starts
+/// in the account's mode now, and a task switches it whenever `Account1.Mode` changes. The
+/// task goes with the account's other tasks when it is removed.
+fn follow_mode(account: &Account) {
+    let changes = account.account.state().subscribe();
+    account.sync.start_in_mode(changes.borrow().mode);
+    let follower = tokio::spawn(crate::sync::write_mode::follow(changes, Arc::downgrade(&account.sync)));
+    account.signals.lock().unwrap().push(follower);
 }
 
 /// `path` with its directory part resolved and its last component kept as it is — the file

@@ -199,6 +199,14 @@ QString refusalText(Operation operation, const Failure &failure)
                           file);
         }
     }
+    // Free up refused for a file with changes waiting to be uploaded (write
+    // design §9). The name is matched ahead of the daemon's side, which W5b adds.
+    if (refusal == QLatin1String("NotUploaded") && operation == Operation::FreeUpSpace) {
+        return i18nc("@info",
+                      "“%1” is not uploaded yet, so freeing it up would lose the changes made here. "
+                      "It was left exactly as it is.",
+                      file);
+    }
     if (refusal == QLatin1String("InUse")) {
         return i18nc("@info",
                       "“%1” is open in another program, so its space cannot be freed right now. Close it "

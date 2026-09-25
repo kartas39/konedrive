@@ -2,6 +2,7 @@
 
 #include "activitymodel.h"
 #include "conflictmodel.h"
+#include "outboxmodel.h"
 #include "synctypes.h"
 #include "transfermodel.h"
 
@@ -17,6 +18,7 @@
 
 class OrgKonedriveSync1Interface;
 class QDBusServiceWatcher;
+class QTimer;
 
 /// Presents one account's org.konedrive.Sync1 (at /org/konedrive/Accounts/<id>)
 /// to QML: that account's folder. The helper, which serves every account, is
@@ -49,6 +51,26 @@ class SyncController : public QObject
     /// What the last Free Up Space did, for an inline message; empty when there is nothing to say.
     Q_PROPERTY(QString freeUpResult READ freeUpResult NOTIFY freeUpResultChanged)
     Q_PROPERTY(bool freeingUp READ freeingUp NOTIFY freeUpResultChanged)
+    /// Changes waiting to be uploaded (neither blocked nor held), and the size they send.
+    Q_PROPERTY(uint pendingCount READ pendingCount NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong pendingBytes READ pendingBytes NOTIFY syncChanged)
+    /// Changes that need the user before they can go up (see notUploaded).
+    Q_PROPERTY(uint blockedCount READ blockedCount NOTIFY syncChanged)
+    /// Removals the mass-delete guard holds (HeldCount), waiting for
+    /// confirmDeletes() or restoreDeletes().
+    Q_PROPERTY(uint heldCount READ heldCount NOTIFY syncChanged)
+    Q_PROPERTY(bool paused READ paused NOTIFY syncChanged)
+    /// Unix seconds when the pause ends by itself; 0 while paused until resumed.
+    Q_PROPERTY(qlonglong pausedUntil READ pausedUntil NOTIFY syncChanged)
+    Q_PROPERTY(QStringList ignorePatterns READ ignorePatterns NOTIFY syncChanged)
+    /// What a copy of a file changed on both sides is named after: "Report-<machine>.docx".
+    Q_PROPERTY(QString machineName READ machineName NOTIFY syncChanged)
+    /// Uploads under way (Sync1's Uploads).
+    Q_PROPERTY(TransferModel *uploads READ uploads CONSTANT)
+    /// The changes waiting to be uploaded (Outbox()).
+    Q_PROPERTY(OutboxModel *outbox READ outbox CONSTANT)
+    /// What stays on this computer, and why: {path, reason, why} (NotUploaded()).
+    Q_PROPERTY(QVariantList notUploaded READ notUploaded NOTIFY notUploadedChanged)
 
 public:
     static const QString ServiceName;
@@ -78,6 +100,19 @@ public:
     ConflictModel *conflicts() const { return m_conflicts; }
     QString freeUpResult() const { return m_freeUpResult; }
     bool freeingUp() const { return m_freeingUp; }
+    uint pendingCount() const { return m_pendingCount; }
+    qulonglong pendingBytes() const { return m_pendingBytes; }
+    uint blockedCount() const { return m_blockedCount; }
+    uint heldCount() const { return m_heldCount; }
+    bool paused() const { return m_paused; }
+    qlonglong pausedUntil() const { return m_pausedUntil; }
+    QStringList ignorePatterns() const { return m_ignorePatterns; }
+    QString machineName() const { return m_machineName; }
+    TransferModel *uploads() const { return m_uploads; }
+    OutboxModel *outbox() const { return m_outbox; }
+    QVariantList notUploaded() const { return m_notUploaded; }
+    /// Whether the outbox has been read at least once since the daemon appeared.
+    bool outboxKnown() const { return m_outboxKnown; }
 
     /// RegisterRoot; a NoHelper refusal is kept as `pendingFolder` for the
     /// window to prompt about — never registered without interception, since
@@ -106,6 +141,25 @@ public:
     /// card calls this alongside AccountController::retry.
     Q_INVOKABLE void retry();
 
+    /// Pause(seconds): 0 pauses until resume().
+    Q_INVOKABLE void pause(uint seconds);
+    Q_INVOKABLE void resume();
+    /// SetIgnorePatterns; a refusal lands in actionError.
+    Q_INVOKABLE void setIgnorePatterns(const QStringList &patterns);
+    /// The list with `pattern` (trimmed) added, if it is not there yet.
+    Q_INVOKABLE void addIgnorePattern(const QString &pattern);
+    Q_INVOKABLE void removeIgnorePattern(const QString &pattern);
+    /// The mass-delete guard: the held removals go ahead, or are taken back.
+    Q_INVOKABLE void confirmDeletes();
+    Q_INVOKABLE void restoreDeletes();
+    /// Outbox(0) into `outbox`, quietly.
+    Q_INVOKABLE void loadOutbox();
+    /// NotUploaded() into `notUploaded`, quietly.
+    Q_INVOKABLE void loadNotUploaded();
+    /// Opens the file manager with both files selected: a copy beside its original.
+    Q_INVOKABLE void showBoth(const QString &first, const QString &second);
+
+
     /// How long an ordinary call waits for the daemon, in ms (default: D-Bus's
     /// 25 s). FreeUpSpace, which can run for minutes, never gives up.
     void setCallTimeout(int ms);
@@ -117,6 +171,7 @@ Q_SIGNALS:
     void actionErrorChanged();
     void pendingFolderChanged();
     void freeUpResultChanged();
+    void notUploadedChanged();
     /// One ActivityAdded from the daemon, as it happens.
     void activityAdded(qlonglong time, const QString &kind, const QString &path, const QString &detail);
 
@@ -164,6 +219,20 @@ private:
     ConflictModel *m_conflicts;
     QString m_freeUpResult;
     bool m_freeingUp = false;
+    uint m_pendingCount = 0;
+    qulonglong m_pendingBytes = 0;
+    uint m_blockedCount = 0;
+    uint m_heldCount = 0;
+    bool m_paused = false;
+    qlonglong m_pausedUntil = 0;
+    QStringList m_ignorePatterns;
+    QString m_machineName;
+    TransferModel *m_uploads;
+    OutboxModel *m_outbox;
+    bool m_outboxKnown = false;
+    QVariantList m_notUploaded;
+    /// Reads the outbox again a moment after its counts change.
+    QTimer *m_outboxSoon;
     /// RecentActivity() calls on their way, and the live events since the first of them.
     int m_activityLoads = 0;
     KonedriveActivityList m_liveDuringLoad;

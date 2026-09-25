@@ -6,7 +6,7 @@ the entry says what the earlier approach was and why it did not hold, because th
 best argument for the current one.
 
 Entries are grouped: [architecture](#architecture), [interception and hydration](#interception-and-hydration),
-[the sync](#the-sync), [account and security](#account-and-security),
+[the sync](#the-sync), [uploads](#uploads), [account and security](#account-and-security),
 [the desktop](#the-desktop), [testing](#testing).
 
 ## Architecture
@@ -86,13 +86,14 @@ are lost with it.
 
 ### Read before write
 
-**Decision.** The work is split into a read phase (this one), Dolphin integration, and a write
-phase. Nothing is written to the cloud until the write phase.
+**Decision.** The work was split into a read phase, Dolphin integration, and a write phase, and
+reading is still the default: a new account is read-only, and uploads happen only for an account
+switched to read-write ([writes.md](writes.md)).
 
 **Why.** Writing depends on the real item ids that only reading provides, and a read-only client is
 safe to run against a live account from the first day: a bug cannot damage the cloud copy.
 
-**Trade-off.** The folder must be read-only in the meantime (below), and local edits are not
+**Trade-off.** A read-only account's folder must be locked (below), and its local edits are not
 uploaded.
 
 ### Several accounts in one daemon, sharing one helper link
@@ -448,7 +449,7 @@ partial download away at the Full reconcile every restart begins with.
 
 **Trade-off.** None.
 
-### The folder is read-only in this phase; the guarantee is the stamp check
+### A read-only account's folder is locked; the guarantee is the stamp check
 
 **Decision.** Files `0444`, directories `0555`. The daemon lifts the owner's write bit only for the
 moment of its own attribute writes and directory changes. Before any change from the cloud is
@@ -459,8 +460,8 @@ locked too, because editors save by writing a new file and renaming it. `user.*`
 need inode write permission even for the owner, hence the per-operation window.
 
 **Trade-off.** A program that opens a file for writing inside a window keeps a writable descriptor,
-so the lock is the rule a person sees, not the guarantee (limitations log W2). The lock comes off
-when uploads arrive.
+so the lock is the rule a person sees, not the guarantee (limitations log W2). A read-write
+account's folder has no lock: its changes are uploaded instead ([writes.md](writes.md) §2.2).
 
 ### A rescue is one rename, never a copy
 
@@ -567,6 +568,173 @@ the drive root; one delta link per sync root.
 **Trade-off.** A real-account test run lists the whole drive even though it downloads only in one
 named folder (limitations log W15).
 
+## Uploads
+
+These describe a read-write account's folder ([writes.md](writes.md)). Where Windows' OneDrive
+client has an answer a user already knows, it is followed.
+
+### Local changes come from a second fanotify group, in the daemon
+
+**Decision.** A read-write folder's directories carry a second fanotify mark, in an unprivileged
+notification group the daemon owns (`FAN_REPORT_DFID_NAME_TARGET`: creations, deletions, renames,
+closes after writing, attribute changes). Events only mark directories dirty; a quiet batch is then
+examined against the base. A Full local scan at bring-up and after anything that can lose events
+is the safety net.
+
+**Why.** The kernel refuses file-handle reporting, which directory-entry events need, in the
+helper's pre-content group, so the helper's marks cannot carry them. A group of the daemon's own
+needs no privilege and keeps the helper exactly as it was. Events as hints, with the disk as the
+answer, make a merged, lost or overflowed event cost a scan, never a missed change.
+
+**Trade-off.** A second mark per directory, from a per-user budget every account shares, and a
+queue that a large unpack can overflow (limitations log F70, F71). An edit that kept both size and
+time while nothing watched is not found (F52).
+
+### An item is its id and its inode, never its path
+
+**Decision.** A file on disk is matched to its item by the `user.konedrive.item-id` it carries; two
+inodes with one id are told apart by the file handle recorded when the item was placed. A rename is
+an id under a new name; an editor's save by rename is a new inode taking over an id, so the item
+keeps its version history and sharing links.
+
+**Why.** Paths are what changes; ids travel with the inode through every rename, and a handle is
+unique per filesystem. Guessing identity from names would turn every save into a delete and a
+create.
+
+**Trade-off.** A copy that kept the attributes needs the recorded handle to be told from the
+original; a rebuilt store has none, and falls back to the item's place (limitations log F53).
+
+### The disk is the truth about local changes; the outbox is only intent
+
+**Decision.** The outbox, one row per item in the tree store, records what is to be sent and how
+far it got. Every row can be found again by comparing the disk with the base, and a rebuilt base
+produces no deletes.
+
+**Why.** A lost or corrupted store then costs a listing and restarted uploads, never a local byte
+and never a wrong delete in OneDrive.
+
+**Trade-off.** A delete not sent before the store was lost is forgotten, and the item comes back
+from OneDrive.
+
+### Small files go up in an upload session
+
+**Decision.** Every non-empty file is uploaded through an upload session, one request's body up to
+10 MiB and 10 MiB fragments above that. Only an empty file, which a session cannot carry, uses the
+plain `PUT`.
+
+**Why.** Microsoft documents `If-Match` and `conflictBehavior` for the session, and it carries the
+file's time (`fileSystemInfo`) and its size, so a full drive refuses before a byte is sent. For the
+plain `PUT` its current page documents neither guard, and the time would take a second request
+anyway: the session costs nothing extra. 10 MiB is Microsoft's own boundary for resumable
+transfers.
+
+**Trade-off.** Two requests for every small file, and a guard on the empty `PUT` that is assumed
+until the test-account run ([writes.md](writes.md) §13).
+
+### Every write is guarded, and a failed guard is settled by reading again
+
+**Decision.** `If-Match` on every change, `conflictBehavior=fail` on everything new, the folder's
+cTag on a folder's delete. A `412` or `409` is followed by reading the item and deciding: the same
+hash is adopted, a change of metadata only is sent again with the fresh tag, anything else is a
+conflict. Nothing is ever sent without its guard.
+
+**Why.** It is the only way two writers cannot overwrite each other, and it makes every step
+replayable after a crash: "did my request land?" is answered by the content hash.
+
+**Trade-off.** An extra read on every refused guard; and a session checks `If-Match` when it is
+created, not when it completes, which leaves a window of one fragment (limitations log F80).
+
+### Changed on both sides: keep both, named after the machine
+
+**Decision.** The version in OneDrive keeps the name; this computer's is renamed beside it to
+`<name>-<machine>.<ext>` and uploaded as a new file, and the pair is listed as a conflict. A delete
+here of something edited in OneDrive is undone, and so is a delete in OneDrive of something edited
+here. For renames, the first to reach OneDrive wins.
+
+**Why.** It is what Windows does, so the result is what a user expects, and neither side's work is
+lost. The machine name says where the copy came from.
+
+**Trade-off.** Copies accumulate until the user merges them; a rename made here can be undone by
+one made first in OneDrive.
+
+### Names OneDrive refuses are listed, not substituted
+
+**Decision.** A file whose name OneDrive refuses (`" * : < > ? \ |`, a leading or trailing space, a
+reserved name) is not uploaded: its change is blocked and listed under "Not Uploaded", with the
+reason, until the user renames it. No look-alike character is put in its place.
+
+**Why.** Windows does the same. A substituted name would differ between the folder and OneDrive
+for good, and every other device would see a name nobody chose.
+
+**Trade-off.** A `:` or `?` in a Linux file name is common, and each such file stays local until
+renamed by hand.
+
+### A move out of the folder downloads first
+
+**Decision.** A file or folder moved out of the folder is deleted in OneDrive only once its content
+is on this computer: a placeholder that left is marked again, downloaded where it went, stripped of
+konedrive's attributes, and only then deleted. Sent to the desktop Trash instead, a placeholder is
+removed without a download.
+
+**Why.** Windows does the same. A move out is a delete for OneDrive, and the user still holds the
+file; deleting it first would leave them an empty placeholder where they expect their file. The
+Trash is the exception because the user asked for a delete, and OneDrive keeps the item in its
+recycle bin.
+
+**Trade-off.** A large cloud-only folder moved out is a large download, with no prompt; until it
+is done the item stays in OneDrive, and other devices still see it (limitations log F121).
+
+### Deleted or moved out: the object decides, by its file handle
+
+**Decision.** An item missing from the folder is asked after by the file handle recorded for it,
+through the helper's `OpenByHandle`: gone is a delete, alive elsewhere is a move out, and any other
+answer decides nothing.
+
+**Why.** Events cannot tell: one can be lost, and a move made while the daemon was not running
+raises none that it sees. The object can. An unprivileged daemon cannot open a handle, and the
+helper already holds the capability for its walks, so the helper gained one narrow message rather
+than the daemon a privilege.
+
+**Trade-off.** New root code reachable by every local user, answering only for the user's own
+object carrying konedrive's attribute (SECURITY.md; limitations log F90). A delete waits while the
+helper is not connected (F54).
+
+### Nested subvolumes and other devices are not uploaded
+
+**Decision.** Anything on another device than the folder's root — a nested Btrfs subvolume, a
+filesystem mounted inside the folder — is neither watched nor uploaded, and is listed under "Not
+Uploaded" as `other-device`.
+
+**Why.** The helper cannot mark a directory on a device where the user holds no folder, so a
+placeholder there could never be protected. Windows treats a mount point inside OneDrive the same
+way.
+
+**Trade-off.** Files in such a place stay on this computer only (limitations log F72).
+
+### A large delete waits for the user
+
+**Decision.** A batch of removals of more than 500 items, or 20 % of the folder, is held until the
+user confirms it or asks for the items back.
+
+**Why.** Windows asks too. `rm -rf` of the wrong directory, or a folder swapped for an empty one,
+should not empty OneDrive before anyone looks.
+
+**Trade-off.** Nothing of such a delete reaches OneDrive until someone answers; the thresholds are
+provisional.
+
+### A stale change from OneDrive is read again, not dropped
+
+**Decision.** A change the delta feed fetched before an upload committed, about the item it
+committed, is not trusted unless it is the commit itself: the item is read again, under the tree
+lock. OneDrive's change to an item with local work waiting is kept in the store until the disk takes
+it.
+
+**Why.** Dropping the stale entry would lose a change OneDrive made just after the commit, which
+the delta feed never sends twice; applying it would undo the upload.
+
+**Trade-off.** One `GET` for each such entry, and a failed `GET` fails the cycle (limitations log
+F112, F113).
+
 ## Account and security
 
 ### Sign-in in the system browser, with PKCE and a loopback redirect
@@ -594,25 +762,28 @@ error.
 
 ### Scope `Files.Read`
 
-**Decision.** The daemon asks for `Files.Read User.Read offline_access`: the scope of an account's
-mode, which for every account in this phase is `read-only`. It asks for it at the authorization, the
-code exchange and every refresh alike.
+**Decision.** The daemon asks for `Files.Read User.Read offline_access`: the scope of a read-only
+account, which every account is unless it is switched to read-write (below). It asks for it at the
+authorization, the code exchange and every refresh alike.
 
 **Why.** Microsoft refuses any write made with that token, so "nothing is written to the cloud" is
 enforced by the server, not by the client's discipline. Asking for the read-only scope at every
 refresh keeps a read-only account's tokens unable to write even if its grant were ever wider.
 
-**Trade-off.** The write phase will need incremental consent for `Files.ReadWrite`.
+**Trade-off.** Switching to read-write needs a sign-in of its own, for `Files.ReadWrite`.
 
 ### An access-token export for test runs, in every build
 
-**Decision.** `Dev1.AccessToken()` and `konedrivectl dev export-access-token` hand out the current
-access token (about an hour of read access), never the refresh token, written atomically to a
-`0600` file.
+**Decision.** `Dev1.AccessToken()` and `konedrivectl dev export-access-token` hand out an access
+token (about an hour of read access), never the refresh token, written atomically to a `0600`
+file. It is read-only whatever the account's mode: a read-write account's comes from a refresh that
+asks for `Files.Read` only. `--read-write` (`Dev1.ReadWriteAccessToken()`) hands out one that can
+write, for the test-account harness, and only for an account the write gate lets through.
 
 **Why.** A test run in the VM needs to speak to Graph without a sign-in of its own, and the refresh
 token must never leave the Secret Service. A per-user development install needs it, so it is not
-gated behind a build flag.
+gated behind a build flag. A read-write account's token can change the whole drive, so the export
+never grants write access unless asked, and never for an account that is not a test account.
 
 **Trade-off.** Any process of the same user on the session bus can obtain an hour of read access —
 no more than it has by opening files in the folder; a Flatpak app is filtered by its bus proxy
@@ -680,17 +851,29 @@ mean reading attributes that a locked wallet may not show.
 **Trade-off.** While a migrated account's old item has not moved yet, both kinds are looked for and
 both are deleted at sign-out.
 
-### The mode exists, and is always read-only
+### The mode, and the write gate
 
-**Decision.** Every account has a mode, stored in `config.toml` and published as `Account1.Mode`,
-and it is always `read-only` in this version: there is no setter and no switch in the window, and
-any other value in the file loads as `read-only`. The OAuth scope follows the mode (above).
+**Decision.** Every account has a mode, `read-only` or `read-write`, stored in `config.toml`, a new
+account read-only. `Account1.Mode` publishes the mode it *runs* in: read-write only while
+`config.toml` says so, the write gate lets its drive through, and its last token was granted
+`Files.ReadWrite`. `Account1.SetMode` switches it, and writes read-write only once a sign-in has
+granted that. While uploads are being developed, the gate — `write_test_drive_ids` in
+`config.toml`, empty by default — refuses read-write for every account but the test account's. It
+refuses `SetMode("read-write")` and the export of a token that can write, and it decides the mode
+an account runs in, so a hand edit of `mode` cannot get past it; the file is read again each time,
+so taking a drive off the list counts at once. Nothing in konedrive writes the list. The OAuth scope
+follows the mode (above), and the folder follows it too: read-write lifts the lock. The window's
+switch is "Upload changes made on this computer" on the Account page.
 
-**Why.** A switch that did nothing would read as "my changes are uploaded", and a choice stored now
-would silently turn uploads on for that account the day they exist.
+**Why.** Microsoft, not the client, then decides whether a write can happen: a token can write only
+after a sign-in that asked for it. Publishing the mode run in, not the one asked for, keeps
+"read-write" from meaning anything a token cannot do. The gate makes it impossible for an agent, a
+script or a stray click to make the user's real account writable before uploads have been run
+against a test account and released; the release removes it in a change of its own.
 
-**Trade-off.** None until uploads exist; the window shows the mode as a line of text (limitations
-log A16).
+**Trade-off.** Nobody but a developer with a test account can upload in this version. A read-write
+account that loses its grant turns read-only until it signs in for it again, and the first switch
+to read-write takes a sign-in of its own (limitations log F60, F61).
 
 ### Removing an account keeps the user's files
 
@@ -901,3 +1084,19 @@ only on request.
 far more of a real drive than a test needs.
 
 **Trade-off.** The listing still covers the whole drive (above).
+
+### Writes against a real account: only a test account, through a guard at the wire
+
+**Decision.** Uploads are tested against mock servers everywhere, and against a real account only
+in one harness (`tests/write-account/`), only for a separate test account. It refuses to start
+unless the drive both tokens reach is the one named and is on the write gate's list, and looks like
+a test account (under 1 GiB used, under 1000 items). Every request, konedrive's own client's
+included, goes through a proxy whose guard admits a write only inside the run's own folder and
+within fixed caps, and stops the run at its first refusal ([writes.md](writes.md) §12.1).
+
+**Why.** Some of what uploads rely on is what the service does, which no mock can say. A guard at
+the wire sees every request whatever code made it, so a bug in a check cannot write elsewhere, and
+the look of the drive refuses a real account even if its id were listed by mistake.
+
+**Trade-off.** It runs by hand, with two exported tokens, and has not run yet: until it does, the
+behaviour it checks is assumed (limitations log F130, F131).

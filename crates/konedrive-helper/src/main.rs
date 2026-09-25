@@ -2,7 +2,7 @@
 
 mod pool;
 
-use konedrive_helper::{jobs, marks, outbox, roots};
+use konedrive_helper::{by_handle, jobs, marks, outbox, roots};
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{read_item_id, read_state, State, StateError};
 use konedrive_fs::probe::{probe_dir, ProbeError};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION, SOCKET_PATH};
@@ -1070,6 +1071,7 @@ fn classify_read_failure(e: Errno) -> ReadFailure {
 /// system service.
 fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Result<()> {
     let mut exhaustion = Throttle::new();
+    let own_pid = std::process::id() as i32;
     loop {
         let mut fds = [PollFd::new(shared.marks.group().as_fd(), PollFlags::POLLIN)];
         match poll(&mut fds, PollTimeout::NONE) {
@@ -1163,6 +1165,24 @@ fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Result<()> {
                     tracing::warn!("a permission event arrived with no descriptor");
                     continue;
                 };
+                // The helper's own opens: an `OpenByHandle` object in a
+                // marked directory, or with a mark of its own, raises
+                // an event aimed at this very group, while the connection
+                // thread that opened it waits in `open_by_handle_at` and
+                // reads nothing more from its daemon — so a hydration asked
+                // of that daemon could never be reported back. Allowed here,
+                // on this thread, before the pool: no worker, no daemon, and
+                // not behind a full queue. The event's pid is the process's,
+                // whichever thread opened (no FAN_REPORT_TID; pinned by
+                // marks.rs's INIT_FLAGS and its test). The only files
+                // the helper opens are those objects, handed straight to
+                // their owner's daemon, and the feature probe's nameless
+                // file at registration (`docs/design/writes.md` §8.2; SECURITY.md); measured in
+                // docs/kernel-behavior-7.2.md §15.
+                if pid == own_pid {
+                    respond_allow(shared, fd);
+                    continue;
+                }
                 if let Err(rejected) = pool.submit(pool::OpenEvent { fd, pid, since }) {
                     // Saturation, not failure: EAGAIN tells the application to
                     // try the open again, which is true and is an answer. The
@@ -1856,7 +1876,8 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
         // keeps a daemon that is slow to read — rather than wedged — from
         // being disconnected by its own backpressure.
         outbox.heard_from_peer();
-        let errno = apply(shared, owner, &outbox, message, fd);
+        let mut reply = None;
+        let errno = apply(shared, owner, &outbox, message, fd, &mut reply);
         // Into the room reserved for `Ack`s. This used to end
         // the connection when the outbox was full — tearing down, on
         // backpressure, a daemon that had just proved it was alive by sending
@@ -1864,13 +1885,14 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
         // replies unread than any daemon has calls in flight is made to wait
         // here, and this thread reads nothing more from it until it catches
         // up. Only a connection that is already over refuses one.
-        if outbox.send_ack(errno).is_err() {
+        if outbox.send_ack_with(errno, reply).is_err() {
             anyhow::bail!("the connection ended while acknowledging a request");
         }
     }
 }
 
-/// Applies one request, returning the errno to acknowledge with (0 = fine).
+/// Applies one request, returning the errno to acknowledge with (0 = fine),
+/// and in `reply` the descriptor the `Ack` carries, if any (`OpenByHandle`).
 ///
 ///: this never fails the connection. A `fanotify_mark` that returns
 /// `ENOENT` because an evictable mark was already reclaimed is a routine
@@ -1882,6 +1904,7 @@ fn apply(
     outbox: &Outbox,
     message: ToHelper,
     fd: Option<OwnedFd>,
+    reply: &mut Option<OwnedFd>,
 ) -> i32 {
     let uid = owner.uid;
     let object = fd.map(File::from);
@@ -1933,6 +1956,20 @@ fn apply(
             let next = settle(shared, req_id, owner, errno, Finish::Reported);
             dispatch(shared, outbox, owner, next);
             0
+        }
+        // Authorised on the object it finds, not on the handle: see
+        // `by_handle`. Refusals are not logged — they are the daemon's
+        // answer, and any local user can ask.
+        (ToHelper::OpenByHandle { handle_type, handle }, Some(dir)) => {
+            let handle = FileHandle { kind: handle_type, bytes: handle };
+            let on_a_root = |dev| lock(&shared.roots).may_act_on(uid, dev, uid);
+            match by_handle::open(uid, &dir, &handle, on_a_root) {
+                Ok(opened) => {
+                    *reply = Some(opened);
+                    0
+                }
+                Err(errno) => errno,
+            }
         }
         _ => libc::EPERM,
     }

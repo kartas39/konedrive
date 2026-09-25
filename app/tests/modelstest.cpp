@@ -1,5 +1,6 @@
 #include "activitymodel.h"
 #include "conflictmodel.h"
+#include "outboxmodel.h"
 #include "transfermodel.h"
 
 #include <QAbstractItemModelTester>
@@ -57,6 +58,33 @@ private Q_SLOTS:
         // A file of unknown size shows no progress rather than dividing by zero.
         model.setTransfers({{QStringLiteral("/d/c"), 5, 0}});
         QCOMPARE(at(model, 0, TransferModel::FractionRole).toDouble(), 0.0);
+    }
+
+    /// The write phase's kinds have words and icons; a failed upload's reason
+    /// is shown in words; a conflict the daemon calls a copy is a copy.
+    void uploadKindsAndCopies()
+    {
+        const QString root = QStringLiteral("/home/u/OneDrive");
+        ActivityModel activity;
+        activity.setEvents({{3, QStringLiteral("upload-failed"), root + QStringLiteral("/big.iso"), QStringLiteral("quota-exceeded")},
+                            {2, QStringLiteral("conflict"), root + QStringLiteral("/Report.docx"), root + QStringLiteral("/Report-fedora.docx")},
+                            {1, QStringLiteral("cloud-deleted"), root + QStringLiteral("/old.txt"), QStringLiteral("deleted in OneDrive; the placeholder here went too")}});
+        QCOMPARE(at(activity, 0, ActivityModel::TextRole).toString(), QStringLiteral("Could not be uploaded"));
+        QCOMPARE(at(activity, 0, ActivityModel::DetailTextRole).toString(), QStringLiteral("OneDrive is full: free some space in OneDrive."));
+        QCOMPARE(at(activity, 0, ActivityModel::IconRole).toString(), QStringLiteral("dialog-warning"));
+        QCOMPARE(at(activity, 1, ActivityModel::TextRole).toString(), QStringLiteral("Changed on both sides: both versions kept"));
+        QCOMPARE(at(activity, 1, ActivityModel::IconRole).toString(), QStringLiteral("document-duplicate"));
+        QCOMPARE(at(activity, 2, ActivityModel::IconRole).toString(), QStringLiteral("edit-delete"));
+        QCOMPARE(uploadReasonText(QStringLiteral("other-device")), QStringLiteral("On another filesystem mounted inside the folder: never uploaded."));
+        for (const QString &kind : {QStringLiteral("uploaded"), QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored")}) {
+            QVERIFY2(ActivityModel::describe(kind, QString()) != kind, qPrintable(kind));
+        }
+
+        ConflictModel conflicts;
+        conflicts.setConflicts({{2, root + QStringLiteral("/Report.docx"), root + QStringLiteral("/Report-fedora.docx"), QStringLiteral("copy")},
+                                {1, root + QStringLiteral("/a.txt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/1/a.txt"), QStringLiteral("rescued")}});
+        QVERIFY(at(conflicts, 0, ConflictModel::IsCopyRole).toBool());
+        QVERIFY(!at(conflicts, 1, ConflictModel::IsCopyRole).toBool());
     }
 
     /// Live events go on top; past 50 rows the oldest is removed.

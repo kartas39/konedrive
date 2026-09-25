@@ -167,6 +167,35 @@ private Q_SLOTS:
         QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
     }
 
+    /// Changes waiting or going up are syncing; blocked ones and held
+    /// removals need attention; a pause is its own state.
+    void uploadsBlockedHeldAndPaused()
+    {
+        startSynced();
+        m_daemon->sync->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(3)}});
+        QTRY_COMPARE(m_status->state(), QStringLiteral("syncing"));
+        QCOMPARE(m_status->text(), QStringLiteral("3 changes waiting to upload · checked 20 s ago"));
+        m_daemon->sync->setUploads({{Root + QStringLiteral("/a.odt"), 1, 10}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("Uploading 1 file · checked 20 s ago"));
+
+        m_daemon->sync->set({{QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(2)}});
+        QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
+        QCOMPARE(m_status->attention(), QStringLiteral("2 changes cannot be uploaded"));
+
+        m_daemon->sync->holdDeletes(Root + QStringLiteral("/old"), 1);
+        QTRY_COMPARE(m_status->attention(), QStringLiteral("1 item deleted here waits for you: delete it in OneDrive too, or restore it"));
+
+        m_daemon->sync->RestoreDeletes();
+        m_daemon->sync->set({{QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(0)}, {QStringLiteral("PendingCount"), QVariant::fromValue<uint>(0)}});
+        m_daemon->sync->setUploads({});
+        m_daemon->sync->Pause(0);
+        QTRY_COMPARE(m_status->state(), QStringLiteral("paused"));
+        QCOMPARE(m_status->iconName(), QStringLiteral("media-playback-pause"));
+        QCOMPARE(m_status->text(), QStringLiteral("Paused · checked 20 s ago"));
+        QVERIFY(AppStatus::rank(QStringLiteral("paused")) < AppStatus::rank(QStringLiteral("syncing")));
+        QVERIFY(AppStatus::rank(QStringLiteral("offline")) < AppStatus::rank(QStringLiteral("paused")));
+    }
+
     void aSyncErrorNeedsAttention()
     {
         startSynced();
@@ -393,7 +422,7 @@ private Q_SLOTS:
         QWindow window;
         tray.setWindow(&window);
 
-        QCOMPARE(menuTexts(tray), (QStringList{QStringLiteral("Open OneDrive Folder"), QStringLiteral("Open KOneDrive"), QStringLiteral("Refresh Now"), QStringLiteral("Quit")}));
+        QCOMPARE(menuTexts(tray), (QStringList{QStringLiteral("Open OneDrive Folder"), QStringLiteral("Open KOneDrive"), QStringLiteral("Refresh Now"), QStringLiteral("Pause Syncing"), QStringLiteral("Quit")}));
 
         QVERIFY(tray.openFolderAction()->isEnabled());
         tray.refreshAction()->trigger();
@@ -463,6 +492,30 @@ private Q_SLOTS:
         QTRY_VERIFY(tray.item()->toolTipSubTitle().endsWith(QStringLiteral("\nHome — Signed out of OneDrive")));
     }
 
+    /// "Pause Syncing" pauses every OneDrive folder; the tray shows the pause,
+    /// and "Resume Syncing" ends it for each.
+    void theTrayPausesAndResumesEveryAccount()
+    {
+        startSynced();
+        FakeAccountObject *family = addFamily();
+        QTRY_COMPARE(m_accounts->count(), 2);
+        TrayIcon tray(m_app.get());
+        QVERIFY(!tray.resumeAction()->isVisible());
+        QCOMPARE(tray.pauseMenu()->actions().size(), 4);
+
+        tray.pauseMenu()->actions().at(0)->trigger(); // for 2 hours
+        QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("Pause:7200")));
+        QTRY_VERIFY(family->sync->calls.contains(QStringLiteral("Pause:7200")));
+        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("media-playback-pause"));
+        QTRY_VERIFY(tray.resumeAction()->isVisible());
+        QVERIFY(!tray.pauseMenuAction()->isVisible());
+
+        tray.resumeAction()->trigger();
+        QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("Resume")));
+        QTRY_VERIFY(family->sync->calls.contains(QStringLiteral("Resume")));
+        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-ok"));
+    }
+
     /// Several accounts: "Open Folder" lists the folders; Refresh Now asks every OneDrive folder.
     void theTrayMenuWithSeveralAccounts()
     {
@@ -471,7 +524,7 @@ private Q_SLOTS:
         FakeAccountObject *work = m_daemon->addAccount(QStringLiteral("Work"));
         QTRY_COMPARE(m_accounts->count(), 3);
         TrayIcon tray(m_app.get());
-        QTRY_COMPARE(menuTexts(tray), (QStringList{QStringLiteral("Open Folder"), QStringLiteral("Open KOneDrive"), QStringLiteral("Refresh Now"), QStringLiteral("Quit")}));
+        QTRY_COMPARE(menuTexts(tray), (QStringList{QStringLiteral("Open Folder"), QStringLiteral("Open KOneDrive"), QStringLiteral("Refresh Now"), QStringLiteral("Pause Syncing"), QStringLiteral("Quit")}));
         QVERIFY(!tray.openFolderAction()->isVisible());
 
         // Work has no folder: no entry.
@@ -492,7 +545,7 @@ private Q_SLOTS:
         // Back to one account: "Open OneDrive Folder" again.
         m_daemon->removeAccount(family->path);
         m_daemon->removeAccount(work->path);
-        QTRY_COMPARE(menuTexts(tray), (QStringList{QStringLiteral("Open OneDrive Folder"), QStringLiteral("Open KOneDrive"), QStringLiteral("Refresh Now"), QStringLiteral("Quit")}));
+        QTRY_COMPARE(menuTexts(tray), (QStringList{QStringLiteral("Open OneDrive Folder"), QStringLiteral("Open KOneDrive"), QStringLiteral("Refresh Now"), QStringLiteral("Pause Syncing"), QStringLiteral("Quit")}));
         QVERIFY(tray.openFolderAction()->isEnabled());
     }
 

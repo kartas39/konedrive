@@ -26,11 +26,14 @@ int AppStatus::rank(const QString &state)
     if (state == QLatin1String("warning")) {
         return 0;
     }
-    if (state == QLatin1String("syncing")) {
+    if (state == QLatin1String("paused")) {
         return 2;
     }
-    if (state == QLatin1String("ok")) {
+    if (state == QLatin1String("syncing")) {
         return 3;
+    }
+    if (state == QLatin1String("ok")) {
+        return 4;
     }
     return 1;
 }

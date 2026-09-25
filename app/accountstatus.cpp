@@ -8,6 +8,7 @@
 #include <KLocalizedString>
 
 #include <QDateTime>
+#include <QLocale>
 #include <QRegularExpression>
 #include <QTimer>
 
@@ -101,6 +102,7 @@ AccountStatus::AccountStatus(AccountController *account, SyncController *sync, D
     connect(m_sync, &SyncController::serviceAvailableChanged, this, &AccountStatus::update);
     connect(m_sync, &SyncController::syncChanged, this, &AccountStatus::update);
     connect(m_sync->transfers(), &TransferModel::countChanged, this, &AccountStatus::update);
+    connect(m_sync->uploads(), &TransferModel::countChanged, this, &AccountStatus::update);
     connect(m_daemon, &DaemonController::changed, this, &AccountStatus::update);
     update();
 }
@@ -121,7 +123,19 @@ QString AccountStatus::iconFor(const QString &state)
     if (state == QLatin1String("warning")) {
         return QStringLiteral("state-warning");
     }
+    if (state == QLatin1String("paused")) {
+        return QStringLiteral("media-playback-pause");
+    }
     return QStringLiteral("state-offline");
+}
+
+QString AccountStatus::until(qint64 unixSeconds) const
+{
+    const QDateTime when = QDateTime::fromSecsSinceEpoch(unixSeconds);
+    if (when.date() == QDateTime::fromSecsSinceEpoch(m_clock()).date()) {
+        return QLocale().toString(when.time(), QLocale::ShortFormat);
+    }
+    return QLocale().toString(when, QLocale::ShortFormat);
 }
 
 QString AccountStatus::ago(qint64 unixSeconds) const
@@ -190,12 +204,26 @@ void AccountStatus::update()
         // registered without interception, where nothing downloads on open
         // whatever the helper does.
         const bool helperTrouble = m_daemon->helperTrouble() && rootState != QLatin1String("no-interception");
+        const int uploads = m_sync->uploads()->count();
+        const uint pending = m_sync->pendingCount();
+        const bool paused = m_sync->paused();
         if (rootState == QLatin1String("listing")) {
             text = i18n("Listing your OneDrive: %1 items so far", m_sync->itemsListed());
         } else if (!trouble.isEmpty()) {
             text = trouble;
+        } else if (paused) {
+            text = m_sync->pausedUntil() > 0 ? i18n("Paused until %1", until(m_sync->pausedUntil())) : i18n("Paused");
+        } else if (downloads > 0 && uploads > 0) {
+            text = i18nc("@info status: downloading N files, uploading M files",
+                         "Downloading %1, uploading %2",
+                         i18np("1 file", "%1 files", downloads),
+                         i18np("1 file", "%1 files", uploads));
         } else if (downloads > 0) {
             text = i18np("Downloading 1 file", "Downloading %1 files", downloads);
+        } else if (uploads > 0) {
+            text = i18np("Uploading 1 file", "Uploading %1 files", uploads);
+        } else if (pending > 0) {
+            text = i18np("1 change waiting to upload", "%1 changes waiting to upload", pending);
         } else {
             text = i18n("Up to date");
         }
@@ -204,9 +232,18 @@ void AccountStatus::update()
             ages = true;
         }
 
-        if (m_sync->conflictCount() > 0) {
+        if (m_sync->heldCount() > 0) {
+            // The mass-delete guard: nothing more urgent, since only the user can decide.
+            state = QStringLiteral("warning");
+            attention = i18np("1 item deleted here waits for you: delete it in OneDrive too, or restore it",
+                              "%1 items deleted here wait for you: delete them in OneDrive too, or restore them",
+                              m_sync->heldCount());
+        } else if (m_sync->conflictCount() > 0) {
             state = QStringLiteral("warning");
             attention = i18np("1 changed file was moved out of the way", "%1 changed files were moved out of the way", m_sync->conflictCount());
+        } else if (m_sync->blockedCount() > 0) {
+            state = QStringLiteral("warning");
+            attention = i18np("1 change cannot be uploaded", "%1 changes cannot be uploaded", m_sync->blockedCount());
         } else if (!note.isEmpty()) {
             state = QStringLiteral("warning");
             attention = note;
@@ -215,11 +252,13 @@ void AccountStatus::update()
             // may be fine, only the helper (and so hydration on open) is not.
             state = QStringLiteral("warning");
             attention = i18n("The konedrive helper is not available: files are not kept in step, and nothing downloads when it is opened.");
+        } else if (paused) {
+            state = QStringLiteral("paused");
         } else if (!trouble.isEmpty()) {
             // M4: only "cannot reach OneDrive" looks offline; any other
             // trouble that does not stop the folder is a warning instead.
             state = trouble.startsWith(QLatin1String("cannot reach onedrive"), Qt::CaseInsensitive) ? QStringLiteral("offline") : QStringLiteral("warning");
-        } else if (rootState == QLatin1String("listing") || downloads > 0) {
+        } else if (rootState == QLatin1String("listing") || downloads > 0 || uploads > 0 || pending > 0) {
             state = QStringLiteral("syncing");
         } else {
             state = QStringLiteral("ok");

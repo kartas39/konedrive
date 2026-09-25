@@ -336,6 +336,30 @@ impl Disk {
     /// earlier, or by one that appeared a moment ago — sends it on to
     /// `<shown>.1`, `<shown>.2`, ...
     pub fn rescue(&self, dir: &File, name: &OsStr, shown: &Path, into: &Path) -> io::Result<PathBuf> {
+        let (target_dir, target_name, dest) = self.move_to(dir, name, shown, into)?;
+        // Out of the folder and safe; what is left is cosmetic, and the rescue must still be
+        // reported.
+        if let Err(e) = self.release(&target_dir, &target_name, false) {
+            tracing::warn!("{} is rescued, but konedrive's marks could not all be taken off it: {e}", dest.display());
+        }
+        Ok(dest)
+    }
+
+    /// Moves `name` out of the folder to `into/<shown>` as [`rescue`](Self::rescue) does, but
+    /// keeps it as it is, attributes and all: another account's object, which that account's move
+    /// out finds there by its handle (`docs/design/writes.md` §8.3). Only its modes become ordinary ones,
+    /// which a read-only folder's lock had changed.
+    pub fn set_aside(&self, dir: &File, name: &OsStr, shown: &Path, into: &Path) -> io::Result<PathBuf> {
+        let (target_dir, target_name, dest) = self.move_to(dir, name, shown, into)?;
+        if let Err(e) = self.open_modes(&target_dir, &target_name) {
+            tracing::warn!("{} is set aside, but keeps some read-only modes: {e}", dest.display());
+        }
+        Ok(dest)
+    }
+
+    /// The one rename of [`rescue`](Self::rescue) and [`set_aside`](Self::set_aside): the
+    /// directory it went to, its name there, and its path.
+    fn move_to(&self, dir: &File, name: &OsStr, shown: &Path, into: &Path) -> io::Result<(File, std::ffi::OsString, PathBuf)> {
         let first = into.join(shown);
         let parent = first.parent().expect("a rescue path has a parent");
         std::fs::create_dir_all(parent)?;
@@ -364,14 +388,7 @@ impl Disk {
                 None => rename(),
             };
             match moved {
-                Ok(()) => {
-                    // Out of the folder and safe; what is left is cosmetic, and
-                    // the rescue must still be reported.
-                    if let Err(e) = self.release(&target_dir, &target_name, false) {
-                        tracing::warn!("{} is rescued, but konedrive's marks could not all be taken off it: {e}", dest.display());
-                    }
-                    return Ok(dest);
-                }
+                Ok(()) => return Ok((target_dir, target_name, dest)),
                 Err(e) if e.raw_os_error() == Some(libc::EEXIST) => n += 1,
                 Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
                     let source = std::fs::read_link(proc_path(dir)).map(|d| d.join(name)).unwrap_or_else(|_| shown.to_path_buf());
@@ -386,6 +403,26 @@ impl Disk {
                 }
                 Err(e) => return Err(e),
             }
+        }
+    }
+
+    /// Ordinary modes for `name` and, for a directory, everything in it;
+    /// nothing else is changed. Never through a symlink.
+    fn open_modes(&self, dir: &File, name: &OsStr) -> io::Result<()> {
+        match self.probe(dir, name)? {
+            Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true } => {
+                let sub = open_subdir(dir, name)?;
+                placeholder::set_mode(&sub, OPEN_DIR_MODE)?;
+                for child in self.list(&sub)? {
+                    self.open_modes(&sub, &child)?;
+                }
+                Ok(())
+            }
+            Probe::Managed { is_dir: false, .. } | Probe::Unmanaged { is_dir: false } => match self.open_file(dir, name) {
+                Ok(file) => placeholder::set_mode(&file, OPEN_FILE_MODE),
+                Err(_) => Ok(()),
+            },
+            Probe::Absent => Ok(()),
         }
     }
 
@@ -425,26 +462,89 @@ impl Disk {
         }
     }
 
-    /// Takes the lock off the whole folder (`UnregisterRoot`).
+    /// Takes the lock off the whole folder: `UnregisterRoot`, and a switch to read-write
+    /// (`docs/design/writes.md` §2.2). An entry that cannot be changed — a file root owns, a directory
+    /// set to `000` by hand — is logged and passed over, never the end of the walk (review
+    /// M3). The root comes last, and only when every entry went through: a root still locked
+    /// means a walk that did not finish (`SyncService::ensure_unlocked`), and the walk then
+    /// says how many entries it could not change.
     pub fn unlock_tree(&self) -> io::Result<()> {
         let _modes = dir_modes();
+        let mut failed = 0usize;
         let mut pending = vec![PathBuf::new()];
         while let Some(rel) = pending.pop() {
-            let dir = self.dir(&rel)?;
-            placeholder::set_mode(&dir, OPEN_DIR_MODE)?;
-            for name in self.list(&dir)? {
-                match nix::sys::stat::fstatat(dir.as_fd(), name.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW)?.st_mode & libc::S_IFMT {
-                    libc::S_IFDIR => pending.push(rel.join(&name)),
-                    libc::S_IFREG => {
-                        if let Ok(file) = self.open_file(&dir, &name) {
-                            placeholder::set_mode(&file, OPEN_FILE_MODE)?;
+            let listed = self.dir(&rel).and_then(|dir| {
+                if !rel.as_os_str().is_empty() {
+                    placeholder::set_mode(&dir, OPEN_DIR_MODE)?;
+                }
+                let names = self.list(&dir)?;
+                Ok((dir, names))
+            });
+            let (dir, names) = match listed {
+                Ok(listed) => listed,
+                Err(e) => {
+                    tracing::warn!("cannot unlock {}: {e}", rel.display());
+                    failed += 1;
+                    continue;
+                }
+            };
+            for name in names {
+                let unlocked = nix::sys::stat::fstatat(dir.as_fd(), name.as_os_str(), AtFlags::AT_SYMLINK_NOFOLLOW)
+                    .map_err(io::Error::from)
+                    .and_then(|stat| match stat.st_mode & libc::S_IFMT {
+                        libc::S_IFDIR => {
+                            pending.push(rel.join(&name));
+                            Ok(())
                         }
-                    }
-                    _ => {}
+                        libc::S_IFREG => match self.open_file(&dir, &name) {
+                            Ok(file) => placeholder::set_mode(&file, OPEN_FILE_MODE),
+                            Err(_) => Ok(()),
+                        },
+                        _ => Ok(()),
+                    });
+                if let Err(e) = unlocked {
+                    tracing::warn!("cannot unlock {}: {e}", rel.join(&name).display());
+                    failed += 1;
                 }
             }
         }
-        Ok(())
+        if failed > 0 {
+            return Err(io::Error::other(format!("{failed} entries could not be unlocked; the folder itself stays locked")));
+        }
+        placeholder::set_mode(&self.root, OPEN_DIR_MODE)
+    }
+
+    /// Puts the lock back on the folder (`docs/design/writes.md` §2.2, a switch to read-only): every file
+    /// and directory that carries an item id gets the lock's mode, and the root last. What
+    /// carries none is left as it is — the next Full reconcile rescues it, as the read phase
+    /// does — and so is a file `claim` says is busy (a fill lifts its write bit around each
+    /// attribute write, [`enforce_mode`](Self::enforce_mode)); that reconcile locks it. One
+    /// entry that cannot be locked is logged and passed over. Only on a locked `Disk`.
+    pub fn lock_tree<G>(&self, claim: impl Fn(&File) -> io::Result<Option<G>>) -> io::Result<()> {
+        if !self.locked {
+            return Ok(());
+        }
+        let _modes = dir_modes();
+        let mut pending = vec![PathBuf::new()];
+        while let Some(rel) = pending.pop() {
+            let dir = match self.dir(&rel) {
+                Ok(dir) => dir,
+                Err(e) => {
+                    tracing::warn!("cannot lock {}: {e}", rel.display());
+                    continue;
+                }
+            };
+            for name in self.list(&dir)? {
+                let Ok(Probe::Managed { is_dir, .. }) = self.probe(&dir, &name) else { continue };
+                if is_dir {
+                    pending.push(rel.join(&name));
+                }
+                if let Err(e) = self.enforce_mode(&dir, &name, &claim) {
+                    tracing::warn!("cannot lock {}: {e}", rel.join(&name).display());
+                }
+            }
+        }
+        self.lock_dir(&self.root)
     }
 }
 

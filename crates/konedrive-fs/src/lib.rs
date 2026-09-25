@@ -1,6 +1,7 @@
 //! Local filesystem primitives for placeholders: xattr state, sparse files,
-//! hole punching, write leases and the feature probe.
+//! hole punching, write leases, file handles and the feature probe.
 
+pub mod handle;
 pub mod lease;
 pub mod placeholder;
 pub mod probe;

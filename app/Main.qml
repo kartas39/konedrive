@@ -13,7 +13,7 @@ import "qml"
 Kirigami.ApplicationWindow {
     id: root
 
-    /// The page shown: status, activity, conflicts, skipped, account or settings.
+    /// The page shown: status, activity, conflicts, skipped, notUploaded, account or settings.
     property string currentPage: "status"
     /// Wide enough for the sidebar beside a page.
     readonly property bool sidebarFits: width >= Kirigami.Units.gridUnit * 36
@@ -36,6 +36,7 @@ Kirigami.ApplicationWindow {
             "activity": activityPage,
             "conflicts": conflictsPage,
             "skipped": skippedPage,
+            "notUploaded": notUploadedPage,
             "account": accountPage,
             "settings": settingsPage,
         };
@@ -122,7 +123,7 @@ Kirigami.ApplicationWindow {
                 text: entry.text
                 elide: Text.ElideRight
             }
-            // The count of conflicts, when there are any.
+            // The count of conflicts, or of changes that cannot be uploaded, when there are any.
             Rectangle {
                 visible: entry.badge > 0
                 radius: height / 2
@@ -165,6 +166,7 @@ Kirigami.ApplicationWindow {
                 { name: "activity", text: i18nc("@title sidebar", "Activity"), icon: "view-history" },
                 { name: "conflicts", text: i18nc("@title sidebar", "Conflicts"), icon: "document-duplicate" },
                 { name: "skipped", text: i18nc("@title sidebar", "Not in the Folder"), icon: "view-hidden" },
+                { name: "notUploaded", text: i18nc("@title sidebar", "Not Uploaded"), icon: "cloud-upload" },
                 { name: "account", text: i18nc("@title sidebar", "Account"), icon: "im-user" },
             ]
             delegate: SidebarEntry {
@@ -173,7 +175,15 @@ Kirigami.ApplicationWindow {
                 text: modelData.text
                 icon.name: modelData.icon
                 enabled: root.hasAccount || modelData.name === "status"
-                badge: modelData.name === "conflicts" && Current.sync ? Current.sync.conflictCount : 0
+                badge: {
+                    if (!Current.sync) {
+                        return 0;
+                    }
+                    if (modelData.name === "conflicts") {
+                        return Current.sync.conflictCount;
+                    }
+                    return modelData.name === "notUploaded" ? Current.sync.blockedCount : 0;
+                }
             }
         }
         Kirigami.Separator {
@@ -212,6 +222,9 @@ Kirigami.ApplicationWindow {
         }
         SkippedPage {
             id: skippedPage
+        }
+        NotUploadedPage {
+            id: notUploadedPage
         }
         AccountPage {
             id: accountPage

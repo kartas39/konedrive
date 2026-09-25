@@ -44,7 +44,7 @@ to §2.7.
 |---|---|
 | `Id` (`s`) | the account's id, the last element of its object path: 12 lowercase hexadecimal characters |
 | `Label` (`s`) | the account's name ([accounts.md](accounts.md) §2) |
-| `Mode` (`s`) | `read-only`, the only mode in this version ([accounts.md](accounts.md) §10) |
+| `Mode` (`s`) | the mode the account runs in, `read-only` or `read-write`: read-write only while `config.toml` says so, the write gate lets it through and its token carries `Files.ReadWrite` ([accounts.md](accounts.md) §10) |
 | `State` (`s`) | `signed-out`, `signing-in` or `signed-in` |
 | `LastError` (`s`) | the reason for the most recent failure, a sign-in refused as another account's included ([accounts.md](accounts.md) §6.2); empty when none |
 | `DisplayName`, `Email` (`s`) | from `GET /me` |
@@ -52,6 +52,7 @@ to §2.7.
 | `BeginSignIn() → s url` | starts the loopback listener and returns the authorization URL; the caller opens it ([sync.md](sync.md) §12.1) |
 | `CancelSignIn()`, `SignOut()`, `RefreshAccountInfo()` | as named; `SignOut` deletes the refresh token |
 | `SetLabel(s)` | renames the account; `InvalidArgs` for a label the rules refuse |
+| `SetMode(s mode, b force) → s sign_in_url` | switches to `read-only` or `read-write` ([accounts.md](accounts.md) §10); the URL of the sign-in a switch to read-write needs, empty when none is needed. Refused `WritesNotAllowed` by the write gate, `NotSignedIn`, `PendingUploads` unless `force`, `InvalidArgs` for another mode. A switch to read-write ends in `Mode` turning `read-write`, or in `LastError` saying why not (limitations log F64) |
 
 Neither the refresh token nor the access token is ever exposed through `Account1`.
 
@@ -68,7 +69,12 @@ Neither the refresh token nor the access token is ever exposed through `Account1
 | `RecentActivity(u limit) → a(xsss)` | (time, kind, path, detail), newest first |
 | `Conflicts() → a(xss)` | (time, original path, rescued path) ([sync.md](sync.md) §10.3) |
 | `DismissConflict(s rescued_path)` | takes one conflict off the list; the file stays where it is |
-| `FreeUpSpace() → (u files, t bytes, u busy)` | frees up every downloaded file that is not in use; files open somewhere or busy with a download are skipped and counted, never waited for |
+| `FreeUpSpace() → (u files, t bytes, u busy)` | frees up every downloaded file that is not in use; files open somewhere or busy with a download are skipped and counted, never waited for; a file whose change waits to be uploaded is left, and counted as busy |
+| `Outbox(u limit) → a(tsssttsx)` | the changes waiting to be uploaded, oldest first (0: all): seq, kind (`create`, `mkdir`, `update`, `move`, `delete`, `move-out`), path, state (`waiting`, `ready`, `running`, `retry`, `blocked`, `held`), bytes sent, bytes in all, reason, next try; `Unsupported` for a folder not connected to OneDrive |
+| `Pause(u seconds)`, `Resume()` | pause the account — no upload, no poll, no thumbnails; fills on open, `Hydrate` and detection go on — for `seconds`, or until `Resume` when 0; the pause outlasts a daemon restart |
+| `SetIgnorePatterns(as)` | the names of the user's own files that are never uploaded (shell globs on a name); written to `config.toml`, then the whole folder is scanned again; `InvalidArgs` for an empty pattern or one holding "/" |
+| `ConfirmDeletes() → u`, `RestoreDeletes() → u` | the mass-delete guard's two answers: the held removals go ahead, or are dropped and the items placed again; how many rows |
+| `NotUploaded() → a(ss)` | (path, reason) for what stays on this computer: what is never uploaded (`symlink`, `hard-link`, `not-downloaded`, …) and every blocked change (`name-characters`, `quota-exceeded`, `forbidden`, …) |
 
 ### 2.4 `Sync1` properties and signals, per account
 
@@ -84,11 +90,20 @@ Neither the refresh token nor the access token is ever exposed through `Account1
 | `ConflictCount` (`u`) | how many conflicts are listed |
 | `PinnedCount` (`u`) | how many files and folders carry a pin of their own ([pinning.md](pinning.md) §7) |
 | `Transfers` (`a(stt)`) | each download under way as (path, bytes done, bytes total): fills on open, `Hydrate`, pinned downloads and replacements; not thumbnails |
+| `Uploads` (`a(stt)`) | each upload under way, the same way |
+| `PendingCount` (`u`), `PendingBytes` (`t`) | the changes waiting to be uploaded, neither blocked nor held, and the size of what they send |
+| `BlockedCount` (`u`) | the changes that need the user before they can go up (see `NotUploaded`); removals the mass-delete guard holds are not counted |
+| `HeldCount` (`u`) | the removals the mass-delete guard holds, waiting for `ConfirmDeletes` or `RestoreDeletes`; `held` rows in `Outbox()` |
+| `Paused` (`b`), `PausedUntil` (`x`) | whether the account is paused, and when the pause ends by itself (0: until `Resume`) |
+| `IgnorePatterns` (`as`), `MachineName` (`s`) | the ignore list, and the name copies of files changed on both sides are named after ("Report-`<MachineName>`.docx"): `machine_name` in `config.toml`, or the host's name; read-only |
 
 The signal `ActivityAdded(x time, s kind, s path, s detail)` announces each event as it is recorded.
 The kinds are `downloaded`, `freed`, `added`, `updated`, `removed`, `moved`, `listed`, `conflict`,
 `failed` (a download) and `update-failed` (a changed file could not be replaced here). For a full
-disk, the detail is exactly "not enough disk space" in either failure kind.
+disk, the detail is exactly "not enough disk space" in either failure kind. A read-write account
+adds `uploaded`, `cloud-moved` (detail: where it was), `cloud-deleted` (to OneDrive's recycle bin),
+`upload-failed` (detail: the reason's code, once per change and reason) and `restored`; a copy of a
+file changed on both sides is a `conflict` whose detail is the copy, beside the file.
 
 The daemon keeps the newest **200** events in the tree store; a Forget or a rebuild drops them. The
 log is a summary, not a record of every file: a first listing or a Full reconcile is one `listed`
@@ -125,7 +140,9 @@ Every refusal is an error name under `org.konedrive.Error`: `NotSignedIn`, `Alre
 `NotHydrated`, `ModifiedLocally`, `InUse`, `NoConflict`, `NotAllowed` (a free-up of something a pin
 keeps, [pinning.md](pinning.md) §5), `Overlaps` (a folder that is, is inside, or contains another
 account's; the message names that account), `NoAccount` (`Remove` of a path that names no account),
-and `Failed` for everything without a name of its own (an I/O failure). Registration refusals come
+`WritesNotAllowed` (the write gate refuses read-write for this account), `ModeNotGranted` (the
+account's token does not carry `Files.ReadWrite`), `PendingUploads` (a switch to read-only while
+changes wait to be uploaded), and `Failed` for everything without a name of its own (an I/O failure). Registration refusals come
 in the order `NotSignedIn`, `AlreadyRegistered`, `NoHelper`, `Overlaps`, then the folder checks.
 `Add`, `SetLabel` and `SetClientId` refuse a label or an id with the bus's own `InvalidArgs`, and
 `Accounts1` refuses with the bus's `Failed` a call that is not possible now — a client id changed
@@ -134,8 +151,11 @@ tell those reasons apart.
 
 ### 2.7 `Dev1`, per account
 
-`AccessToken() → s` returns the account's current access token for a test run in the VM — about an
-hour of `Files.Read` on that account's drive, never the refresh token ([sync.md](sync.md) §12.2).
+`AccessToken() → s` returns an access token of the account for a test run in the VM — about an
+hour of `Files.Read` on that account's drive, whatever its mode, never the refresh token
+([sync.md](sync.md) §12.2). `ReadWriteAccessToken() → s`, for the test-account harness only, returns
+one that can change files: refused `WritesNotAllowed` for an account the write gate does not let
+through, `ModeNotGranted` for one that is not read-write.
 
 ### 2.8 `Accounts1`
 
@@ -193,10 +213,11 @@ F51).
 | `account add <label>` | — | `Accounts1.Add`: a signed-out account with no folder; prints its id |
 | `account rename <account> <label>` | the argument | `Account1.SetLabel` |
 | `account remove <account>` | the argument | `Accounts1.Remove`, without asking; then says what was deleted and what was kept |
+| `account mode [read-only\|read-write] [--force]` | chosen | shows the mode (and `LastError`), or switches it with `Account1.SetMode`: read-write opens the browser like `login` and waits until `Mode` is `read-write` or `LastError` says why not; read-only is refused while changes wait to be uploaded, unless `--force` |
 | `set-client-id <id>` | — | `Accounts1.SetClientId`, one client id for every account; a refusal names the accounts still signed in |
 | `login` | chosen | `BeginSignIn`, opens the browser and waits. With no account at all and none named, it first adds one called `Personal`; with no client id yet, it stops and says to set one |
 | `logout` | chosen | signs the account out and deletes its token |
-| `status` | chosen, or all | the account's sign-in state; with several accounts and none named, every account under its label, the `Client ID:` line once above them |
+| `status` | chosen, or all | the account's sign-in state and mode; with several accounts and none named, every account under its label, the `Client ID:` line once above them |
 | `sync register <path>` | chosen | registers a OneDrive folder (needs the helper) |
 | `sync register-without-interception <path>` | chosen | the developer's local folder, named after its cost on purpose |
 | `sync forget` | chosen | Forget |
@@ -206,10 +227,15 @@ F51).
 | `sync status` | chosen, or all | the folder, its state, source and counts, "Last checked", "On this computer", whether opens are intercepted; with several accounts and none named, every account's folder under its label. The `Helper:` line, with what to do, is printed once, above them |
 | `sync skipped` | chosen | what is not in the folder, and why |
 | `sync refresh` | chosen | a cycle now |
-| `sync activity [--limit N]`, `sync transfers` | chosen | recent events; downloads under way |
+| `sync activity [--limit N]`, `sync transfers` | chosen | recent events; downloads and uploads under way |
 | `sync conflicts`, `sync dismiss <rescued path>` | chosen | the conflicts |
 | `sync free-up-space` | chosen | frees up every downloaded file not in use |
-| `dev export-access-token --out <file>` | chosen | writes the account's access token to a `0600` file, atomically, never through a symlink |
+| `sync outbox [--all]` | chosen | `Outbox`: the changes waiting to be uploaded, each with its state and why it waits; the first 50 without `--all` |
+| `sync pause [--for <duration>]`, `sync resume` | chosen | `Pause` for `30m`, `2h`, `1d`, `1h30m`…, or until `sync resume`; `Resume` |
+| `sync ignore [list\|add <pattern>\|remove <pattern>]` | chosen | shows the ignore list (`IgnorePatterns`), or changes it with `SetIgnorePatterns` |
+| `sync not-uploaded` | chosen | `NotUploaded`: what stays on this computer, and why |
+| `sync deletes confirm\|restore` | chosen | `ConfirmDeletes` or `RestoreDeletes`: the mass-delete guard's two answers |
+| `dev export-access-token --out <file> [--read-write]` | chosen | writes an access token of the account to a `0600` file, atomically, never through a symlink: a read-only one, or with `--read-write` one that can change files, which only a test account the write gate lets through gets |
 
 The path commands go through `Files1`, so the path decides the account. When one is refused
 `OutsideRoot`, the CLI reads every account's folder to say where the path is not, which is its own
@@ -224,17 +250,18 @@ the daemon as a symlink and is refused.
 ## 4. The window
 
 KOneDrive is a Kirigami application. Its sidebar is headed by an **account switcher**, below which
-are five pages about the account chosen there and, after a separator, Settings, which is the whole
+are six pages about the account chosen there and, after a separator, Settings, which is the whole
 app's:
 
 | Page | Shows |
 |---|---|
-| **Status** | the status line, the folder and its item count, "On this computer: …", "Free Up Space…", "Refresh Now", "Open in File Manager", and a card with the helper's instruction while it is not `connected` |
-| **Activity** | "Downloading now" (each file with a progress bar and its size) and "Recent" (the newest 50 events; clicking one shows the file in Dolphin) |
-| **Conflicts** | each rescued file: the file, where it was, where it is now, when; "Show in Folder" and "Dismiss". Always present, with a count badge (the chosen account's) while there are conflicts, and "No conflicts" otherwise |
+| **Status** | the status line, the folder and its item count, "On this computer: …", "Free Up Space…", "Refresh Now", "Open in File Manager", and a card with the helper's instruction while it is not `connected`. For a OneDrive folder: the mode ("Read-only" or "Changes upload"), "N changes waiting to upload" with the size to send (to the Activity page), "N changes cannot be uploaded" while any are blocked (to Not Uploaded), removals the mass-delete guard holds with "Restore Them" and "Delete in OneDrive Too", and "Pause Syncing…" (for 2, 8 or 24 hours, or until resumed) or, while paused, "Paused until 14:00" with "Resume" |
+| **Activity** | "Downloading now" and "Uploading now" (each file with a progress bar and its size), "Waiting to upload" (the outbox: each change with what it is, where it stands and why, the first 100 and "and N more"; clicking one shows it in Dolphin), and "Recent" (the newest 50 events; clicking one shows the file in Dolphin) |
+| **Conflicts** | each rescued file: the file, where it was, where it is now, when; "Show in Folder" and "Dismiss". A file changed on both sides kept a copy beside it instead: which name is whose, "Show Both" (both files selected in Dolphin) and "Dismiss". Always present, with a count badge (the chosen account's) while there are conflicts, and "No conflicts" otherwise |
 | **Not in the Folder** | the skipped items and why, in the same words as `sync skipped` (a test keeps the two in step) |
-| **Account** | the account's name with "Rename…"; the mode, as the line "Read-only — Changes made here are not uploaded in this version.", with no switch; sign in or out, the Microsoft account's name, email and quota; the folder, with "Choose Folder…" and "Forget Folder"; and "Remove Account…" |
-| **Settings** | "Start at login", "Show download progress", "Show in Places", the client id every account signs in with, "Quit KOneDrive" |
+| **Not Uploaded** | what stays on this computer and why (`NotUploaded()`): the blocked changes and what is never uploaded, each reason in words; clicking one shows it in Dolphin. A count badge while changes are blocked |
+| **Account** | the account's name with "Rename…"; the switch "Upload changes made on this computer" (below); sign in or out, the Microsoft account's name, email and quota; the folder, with "Choose Folder…" and "Forget Folder"; for a OneDrive folder, "Uploading": this computer's name for copies (`MachineName`, read-only: `machine_name` in `config.toml`) and the ignore list, with "Add" and a remove button per pattern (`SetIgnorePatterns`); and "Remove Account…" |
+| **Settings** | "Start at login", "Show download and upload progress", "Show in Places", the client id every account signs in with, "Quit KOneDrive" |
 
 **The switcher** shows the chosen account's initials, label and email, and opens a menu of every
 account, each with its state's icon (the tray's four, §5), then "Add Account…". It is there with a
@@ -261,9 +288,24 @@ are left as empty placeholders." — and then calls `Accounts1.Remove`.
 **The helper** serves every account, so its card shows on the Status page of whichever account is
 chosen. Trouble that belongs to no account (`Accounts1.LastError`) shows above it.
 
+**Upload changes made on this computer** is the account's mode: on is read-write, and it shows
+`Account1.Mode`, the mode the account runs in. Turned on, a dialog first says that the browser opens
+for a sign-in allowing KOneDrive to change files, and what uploading means (new files, edits,
+renames, moves and deletions go up; deleted files go to OneDrive's recycle bin); then
+`SetMode("read-write", false)`, whose sign-in URL opens as Sign In's does. While that sign-in waits,
+the switch says so, with "Copy Sign-In Link" and "Cancel". Turned off, `SetMode("read-only", false)`;
+if changes still wait to be uploaded, a dialog asks whether to turn off without uploading them (the
+files stay), and then forces it. Refusals are told by name: uploading is not available for this
+account in this version (the write gate), sign in first, sign in again (limitations log A16).
+
+**Held removals.** The mass-delete guard holds a large delete until the user decides. The window
+follows `HeldCount` for the Status page, the tray and the `massDelete` notification, and reads
+`Outbox()` for the list when a count changes or the Activity page is shown (limitations log A20).
+
 The **status line** reads, for example, "Up to date · checked 20 s ago", "Listing your OneDrive:
-N items so far", "Downloading 3 files", "1 changed file was moved out of the way", "Signed out of
-OneDrive", "No OneDrive folder yet", or the error, refreshed every 10 s. The window does not offer
+N items so far", "Downloading 3 files", "Uploading 1 file", "3 changes waiting to upload", "Paused
+until 14:00", "1 changed file was moved out of the way", "Signed out of OneDrive", "No OneDrive
+folder yet", or the error, refreshed every 10 s. The window does not offer
 the no-interception mode: a folder is registered only through `RegisterRoot`.
 
 **Places.** Each account's folder has an entry in Dolphin's Places panel and in file dialogs, named
@@ -286,14 +328,15 @@ tray, closing the window hides it; without one, closing quits, so no process lin
 
 ## 5. The tray icon
 
-Each account has one of four states, and the icon shows the **worst** of them across the accounts,
+Each account has one of five states, and the icon shows the **worst** of them across the accounts,
 in this order:
 
 | State | Icon | An account is in it when |
 |---|---|---|
-| needs attention | `state-warning` | a sync error, a conflict, a failed update, trouble that does not stop the folder |
+| needs attention | `state-warning` | a sync error, a conflict, a failed update, a change that cannot be uploaded, removals the mass-delete guard holds, trouble that does not stop the folder |
 | signed out | `state-offline` | signed out, OneDrive unreachable, or no folder yet |
-| syncing | `state-sync` | a listing or a download is under way |
+| paused | `media-playback-pause` | the account is paused (`Paused`) |
+| syncing | `state-sync` | a listing, a download or an upload is under way, or changes wait to be uploaded |
 | synced | `state-ok` | the folder is up to date |
 
 With no account at all, the icon is `state-offline`. The helper's trouble counts against every
@@ -304,7 +347,8 @@ account with an intercepted folder.
   account that needs attention shows why in place of its status line.
 - **Menu.** "Open OneDrive Folder" with one account; with several, an "Open Folder" submenu of the
   accounts that have a folder. Then "Open KOneDrive", "Refresh Now" — every account whose folder
-  shows OneDrive — and "Quit".
+  shows OneDrive — "Pause Syncing" (for 2, 8 or 24 hours, or until resumed: every such account not
+  paused yet), "Resume Syncing" while any account is paused, and "Quit".
 - **Click.** Opens the window; on the account that needs attention when exactly one does, and
   otherwise on the account the window last showed.
 
@@ -323,7 +367,9 @@ in `konedrive.notifyrc` so that each can be configured in System Settings:
 | `diskFull` | a download or an update failed for want of disk space |
 | `downloadFailed` | a download failed |
 | `updateFailed` | a file changed in OneDrive could not be updated here |
-| `conflict` | "your changed version was moved to …", with "Show in Folder" |
+| `uploadFailed` | a change made here cannot be uploaded (`upload-failed`): the reason in words — a name OneDrive refuses, a sign-in without the permission — and, for a full OneDrive, the title "OneDrive is full"; with "Show in Folder" |
+| `conflict` | "your changed version was moved to …", or for a file changed on both sides "Both are kept: your version as …", with "Show in Folder" |
+| `massDelete` | removals the mass-delete guard holds appeared: "N items deleted in … are not deleted in OneDrive yet", with "Restore Them" (`RestoreDeletes`, also what a click on the notification does) and "Delete in OneDrive" (`ConfirmDeletes`) |
 
 Ordinary downloads notify nothing. The first event of a kind notifies at once; more of the same kind
 within 10 s are sent as one summary ("2 more files could not be downloaded"). A notification is
@@ -338,7 +384,7 @@ The cost of sending them from the app: with the app quit, nothing notifies, and 
 meanwhile are never announced later; the window's lists still show everything (limitations log
 A1). The app runs at login in the tray, so that is the exception.
 
-## 7. Download progress in Plasma
+## 7. Download and upload progress in Plasma
 
 The app watches `Transfers`. A transfer still running **2 s** after it first appears is reported to
 Plasma as a `KJob` through `KUiServerV2JobTracker` — the mechanism Dolphin's own copy progress
@@ -352,8 +398,13 @@ The daemon removes a transfer from `Transfers` before it signals the transfer's 
 coalesced property can also arrive after the failure. So a job whose transfer leaves `Transfers` is
 held for a **1.5 s** grace window: a `failed` or `update-failed` event naming the same path inside
 it fails the job with the reason, and otherwise the job finishes as a success (limitations log A11).
-A daemon restart ends every job with an error. The "Show download progress" switch in Settings is
-on by default.
+A daemon restart ends every job with an error. The "Show download and upload progress" switch in
+Settings is on by default.
+
+**Uploads** are reported the same way, by a second watcher per account on `Uploads`: "Uploading to
+OneDrive" (with the account's name when there are several), the same 2 s, cap of 5 and grace
+window, and an `upload-failed` event naming the file fails its job with the reason in words
+(limitations log A21).
 
 ## 8. Thumbnails
 

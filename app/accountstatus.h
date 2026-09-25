@@ -17,9 +17,9 @@ class QTimer;
 class AccountStatus : public QObject
 {
     Q_OBJECT
-    /// "offline", "warning", "syncing" or "ok".
+    /// "offline", "warning", "paused", "syncing" or "ok".
     Q_PROPERTY(QString state READ state NOTIFY changed)
-    /// The icon for the state: state-offline, state-warning, state-sync, state-ok.
+    /// The icon for the state: state-offline, state-warning, media-playback-pause, state-sync, state-ok.
     Q_PROPERTY(QString iconName READ iconName NOTIFY changed)
     /// The status line: "Up to date · checked 20 s ago", "Listing your OneDrive: N items so far", the error…
     Q_PROPERTY(QString text READ text NOTIFY changed)
@@ -44,6 +44,8 @@ public:
 
     /// "20 s ago", "3 min ago"… for a unix time, against the clock.
     Q_INVOKABLE QString ago(qint64 unixSeconds) const;
+    /// A unix time to come: the time of day when it is today by the clock, else a short date and time.
+    Q_INVOKABLE QString until(qint64 unixSeconds) const;
 
 public Q_SLOTS:
     /// Re-reads the clock; the 10 s timer calls it.

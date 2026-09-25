@@ -5,6 +5,7 @@
 //! worker does, and the scope stays `Files.Read` until an account is switched
 //! to read-write.
 
+mod children;
 pub mod item;
 pub mod upload;
 pub mod write;
@@ -33,6 +34,11 @@ pub enum DriveError {
     NotFound,
     #[error("the change feed has expired and the drive must be listed again")]
     ResyncRequired,
+    /// `410` with `resyncChangesUploadDifferences` (`docs/design/writes.md` §9): listed
+    /// again, and what the new listing leaves out is uploaded rather than
+    /// removed. Only a read-write folder tells it from [`Self::ResyncRequired`].
+    #[error("the change feed has expired and the drive must be listed again, keeping what it no longer has")]
+    ResyncUpload,
     #[error("the download link has expired")]
     UrlExpired,
     #[error("{0}")]
@@ -319,7 +325,7 @@ impl DriveClient {
                 .await
                 .map_err(|e| DriveError::Transient(format!("an unreadable answer from Graph: {e}"))),
             StatusCode::NOT_FOUND => Err(DriveError::NotFound),
-            StatusCode::GONE => Err(DriveError::ResyncRequired),
+            StatusCode::GONE => Err(resync(response).await),
             status if status.is_server_error() => Err(DriveError::Transient(format!("Graph returned {status}"))),
             status => Err(DriveError::Failed(format!("Graph returned {status}"))),
         }
@@ -455,6 +461,18 @@ fn content_range_start(headers: &header::HeaderMap) -> Option<u64> {
     let value = headers.get(header::CONTENT_RANGE)?.to_str().ok()?;
     let range = value.strip_prefix("bytes ")?;
     range.split('-').next()?.trim().parse().ok()
+}
+
+/// Which `410` Graph answered (`docs/design/writes.md` §9): the two resync codes
+/// Microsoft names are told apart by the body; anything else is the plain
+/// resync.
+async fn resync(response: reqwest::Response) -> DriveError {
+    let body = response.text().await.unwrap_or_default();
+    if body.contains("resyncChangesUploadDifferences") {
+        DriveError::ResyncUpload
+    } else {
+        DriveError::ResyncRequired
+    }
 }
 
 #[cfg(test)]

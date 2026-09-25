@@ -52,21 +52,30 @@ pub struct Marks {
     group: Fanotify,
 }
 
+/// The group's flags.
+///
+/// FAN_NONBLOCK is load-bearing: without it `read_events()` blocks forever
+/// instead of returning EAGAIN once the queue is drained (kernel fact 3;
+/// confirmed by the proof of concept's own `group()` helper). main.rs's
+/// event_loop needs that: it waits for readability with `poll()` and then
+/// drains with `read_events()` until EAGAIN, which only works if EAGAIN is
+/// ever actually returned.
+///
+/// FAN_REPORT_TID must stay off. The event loop allows the helper's own opens
+/// (`OpenByHandle`) by comparing the event's pid with its own; with
+/// FAN_REPORT_TID the event would carry the opening thread's id instead, the
+/// comparison would never match, and the helper's own open would wait on
+/// itself. `init_flags_report_pids_not_thread_ids` pins it.
+const INIT_FLAGS: InitFlags = InitFlags::FAN_CLASS_PRE_CONTENT
+    .union(InitFlags::FAN_CLOEXEC)
+    .union(InitFlags::FAN_UNLIMITED_QUEUE)
+    .union(InitFlags::FAN_UNLIMITED_MARKS)
+    .union(InitFlags::FAN_NONBLOCK);
+
 impl Marks {
     pub fn new() -> io::Result<Self> {
         let group = Fanotify::init(
-            // FAN_NONBLOCK is load-bearing: without it `read_events()` blocks
-            // forever instead of returning EAGAIN once the queue is drained
-            // (kernel fact 3; confirmed by the proof of concept's own
-            // `group()` helper). main.rs's event_loop needs that: it waits
-            // for readability with `poll()` and then drains with
-            // `read_events()` until EAGAIN, which only works if EAGAIN is
-            // ever actually returned.
-            InitFlags::FAN_CLASS_PRE_CONTENT
-                | InitFlags::FAN_CLOEXEC
-                | InitFlags::FAN_UNLIMITED_QUEUE
-                | InitFlags::FAN_UNLIMITED_MARKS
-                | InitFlags::FAN_NONBLOCK,
+            INIT_FLAGS,
             // `O_NONBLOCK` on the event descriptors is load-bearing too.
             // The kernel opens each
             // event's descriptor inside our `read()`, and opening a file that
@@ -561,6 +570,13 @@ fn clear_file(marks: &Marks, dir: BorrowedFd<'_>, name: &CStr, label: &str, repo
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The self-exemption in main.rs's event loop compares pids (see
+    /// `INIT_FLAGS`).
+    #[test]
+    fn init_flags_report_pids_not_thread_ids() {
+        assert!(!INIT_FLAGS.contains(InitFlags::FAN_REPORT_TID));
+    }
 
     /// M2's set, and the errnos the daemon will actually report that are not
     /// in it. A value outside the set is not a curiosity: `ENOENT` is what a

@@ -199,7 +199,8 @@ impl Unit<'_> {
         );
 
         self.open_fills(folder, "report.pdf", "ITEM1", checks)?;
-        self.open_fills(&sub, "notes.txt", "ITEM2", checks)
+        self.open_fills(&sub, "notes.txt", "ITEM2", checks)?;
+        crate::open_by_handle::unit_check(self.runtime, self.link, self.helper_pid, folder, checks)
     }
 
     fn earlier_folder(&self, folder: &Path, checks: &mut Checks) -> Result<(), String> {
@@ -349,7 +350,7 @@ fn ino_of(path: &Path) -> Result<u64, String> {
 }
 
 /// Runs `read` with root's effective ids, then goes back to the user's.
-fn as_root<T>(read: impl FnOnce() -> T) -> T {
+pub(crate) fn as_root<T>(read: impl FnOnce() -> T) -> T {
     set_effective(0, 0);
     let out = read();
     set_effective(USER, USER);

@@ -42,6 +42,8 @@ class DaemonController : public QObject
     Q_PROPERTY(QString removeError READ removeError NOTIFY removeChanged)
     /// That refusal was NoHelper: the folder can be forgotten only through the helper.
     Q_PROPERTY(bool removeNeedsHelper READ removeNeedsHelper NOTIFY removeChanged)
+    /// That refusal was PendingUploads: changes made here would be lost with the account.
+    Q_PROPERTY(bool removeWaitsForUploads READ removeWaitsForUploads NOTIFY removeChanged)
 
 public:
     static const QString ServiceName;
@@ -64,6 +66,7 @@ public:
     QString removeFailedPath() const { return m_removeFailedPath; }
     QString removeError() const { return m_removeError; }
     bool removeNeedsHelper() const { return m_removeNeedsHelper; }
+    bool removeWaitsForUploads() const { return m_removeWaitsForUploads; }
 
     /// Re-reads every Accounts1 property (GetAll).
     Q_INVOKABLE void retry();
@@ -107,4 +110,5 @@ private:
     QString m_removeFailedPath;
     QString m_removeError;
     bool m_removeNeedsHelper = false;
+    bool m_removeWaitsForUploads = false;
 };

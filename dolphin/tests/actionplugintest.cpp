@@ -510,6 +510,7 @@ private Q_SLOTS:
         QTest::newRow("Free up: NotHydrated") << false << named("NotHydrated") << decoy << QStringLiteral("is not downloaded, so there is no space to free") << false << true;
         QTest::newRow("Free up: ModifiedLocally") << false << named("ModifiedLocally") << decoy << QStringLiteral("freeing its space would lose your edits") << false << true;
         QTest::newRow("Free up: InUse") << false << named("InUse") << decoy << QStringLiteral("is open in another program, so its space cannot be freed") << false << true;
+        QTest::newRow("Free up: NotUploaded") << false << named("NotUploaded") << decoy << QStringLiteral("is not uploaded yet, so freeing it up would lose the changes made here") << false << true;
         // The daemon's own shape: `<path> is pinned by <folder>: unpin it
         // first` -- the refused path first, which may not be "doc.bin".
         QTest::newRow("Free up: NotAllowed")

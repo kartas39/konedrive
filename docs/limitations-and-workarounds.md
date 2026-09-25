@@ -4,7 +4,7 @@ One place for everything in konedrive that is limited, worked around, fragile, o
 below the quality we want. It is kept current: an entry is added whenever a decision accepts
 a limitation, builds a workaround, picks a number without measuring it, or parks a finding.
 Detail lives elsewhere (`docs/design/`, `docs/kernel-behavior-7.2.md`, the code); this log is the
-index of what is weak and why.
+index of what is weak and why. "The write design" is `docs/design/writes.md`.
 
 **Kinds.** LIMIT — imposed by the kernel or the platform; we cannot change it, only live with
 it. WORKAROUND — something built to route around a limit. FRAGILE — works, but rests on
@@ -49,38 +49,81 @@ application must never read zeros where real content should be.
 - **Where:** `docs/design/hydration.md` §13, §16; `docs/kernel-behavior-7.2.md` §11.6.
 
 ### Z2. A placeholder moved into a directory the user just created is not covered
-- **Kind** LIMIT · **Evidence** reasoned · **Status** planned (write phase, with the watcher)
+- **Kind** LIMIT · **Evidence** measured (VM, Btrfs) · **Status** mitigated in read-write folders
+  (the watcher); open in read-only ones, where the user cannot make a directory
 - **What:** `mkdir ~/OneDrive/new && mv placeholder new/ && cat new/placeholder` can open the
-  file before the helper marks `new/`, and read zeros. Today nothing marks user-made
-  directories at all; the watcher will, but a race window remains.
+  file before the helper marks `new/`, and read zeros. In a read-write folder the watcher
+  (`konedrived/src/sync/watcher/`) asks the helper to mark (`MarkDir`) every directory its
+  bring-up walk visits, since the helper's own walk may have passed a parent before a directory
+  was made in it, and then every directory someone else makes or moves in, as soon as its
+  `FAN_CREATE`/`FAN_RENAME` is read and before it looks inside. The window is the event's latency
+  plus one helper round trip: 20–26 ms from the start of a `sh -c 'mkdir …'` to the mark,
+  measured. A `MarkDir` the helper does not answer is asked again every minute and when the
+  helper is back, and `LastError` says how many directories wait for it. Wider windows remain:
+  (0) while the daemon is not running (stopped, or crashed), a read-write folder keeps the lock off
+  from its last run, since nothing locks it at exit: a directory made then is marked only by the
+  next start's registration walk and the watcher's walk, and a placeholder moved into it before
+  that reads zeros; (1) while the helper is away, a new directory is marked only by the helper's
+  walk once it is back; (2) inside a directory the watcher cannot watch (F71), a new directory
+  raises no event and is marked by the watcher's periodic walk, every 10 minutes. On another device
+  than the folder's (a nested Btrfs subvolume, a mount), where the helper marks nothing, there is no
+  window: a move onto it is a copy (`rename(2)` and `link(2)` fail `EXDEV`), whose read of the
+  source is intercepted and filled, and nothing from OneDrive is placed there (F72). A folder
+  turning read-write is unlocked only once its watcher has walked it, and one whose watcher cannot
+  start, or whose sync cannot start, is locked (F62 (6)).
 - **Why:** fanotify only offers permission events for open and access. Directory creation and
   rename are reported after the fact, so they cannot be held until the mark is placed.
 - **Cost:** zeros, if a program opens the file inside that window. A person will not hit it; a
   script can.
-- **Way out:** the watcher narrows it to the helper's event latency. Closing it fully needs a
-  permission event for rename or create; whether kernel 7.x has one is unchecked.
-- **Where:** `docs/design/hydration.md` §3 (M1, M4), §16.
+- **Way out:** closing it fully needs a permission event for rename or create; whether kernel
+  7.x has one is unchecked.
+- **Where:** `docs/design/hydration.md` §3 (M1, M4), §16; write design §3.5; the VM scenarios
+  `watcher: a directory made after the helper's walk is marked by the watcher's`, `watcher: a
+  directory made and at once given a placeholder is marked within milliseconds, and the open is
+  filled` and `watcher: a tree moved into the folder is marked all the way down before its files
+  are opened`.
 
 ### Z3. A hardlink, or a file moved out of the folder, escapes interception
-- **Kind** LIMIT · **Evidence** measured · **Status** planned (watcher)
+- **Kind** LIMIT · **Evidence** measured · **Status** mitigated in read-write folders (moves out
+  re-marked, F120); open for hardlinks
 - **What:** coverage follows names through marked directories. A hardlink to a placeholder in
   an unmarked directory, or a placeholder renamed out of the folder, is opened without
   interception and reads zeros. A second (bind) mount of the same filesystem *is* covered.
 - **Why:** marks are placed per directory; the kernel has no subtree marks.
-- **Way out:** the watcher should see the link count change (`FAN_ATTRIB` through the source
-  directory's mark — reasoned, not verified) and put an individual mark on that one file.
-  Files with more than one link are rare, so the memory cost is negligible.
-- **Where:** `docs/design/hydration.md` §16; `docs/kernel-behavior-7.2.md` §1.
+- **Where it stands:**
+  - **A read-only folder.** Its directories are `0555`, so its user cannot move anything out
+    of it (W2); only root can.
+  - **A read-write folder.** The watcher sees a move out (`FAN_RENAME` with no new side;
+    write design §3.1), and the examination asks the helper where the object went by its file
+    handle (`OpenByHandle`, F90): alive outside the folder is a `move-out` row. The outbox
+    worker re-marks what every such row names before it runs anything else, whatever the rows'
+    states (held, paused, offline): `MarkFile` for a placeholder, `MarkDir` for a directory and
+    every directory below it. So an open is intercepted again (M4) and filled. The row then
+    downloads the object where it went, takes konedrive's attributes off, and only then deletes the
+    item in OneDrive (F121). A move out still reads zeros between the move and the re-mark:
+    the watcher's quiet spell (2 s) and one examination, and after a reboot or a helper restart
+    until the worker's first look (F120). A directory moved out keeps its own marks meanwhile
+    (marks are on inodes), so only files moved out on their own have that window, and only until
+    the helper restarts for directories. A row dropped unfinished tidies what it left (F123).
+    Measured in the VM: `move-out: …`
+    (`tests/vm/move_out.rs`).
+  - **A hardlink** is not a move: no event names it (F73), and it still reads zeros.
+- **Way out, for hardlinks:** the watcher should see the link count change (`FAN_ATTRIB`
+  through the source directory's mark — reasoned, not verified) and put an individual mark on
+  that one file. Files with more than one link are rare, so the memory cost is negligible.
+- **Where:** `docs/design/hydration.md` §16; write design §8; `docs/kernel-behavior-7.2.md` §1,
+  §15.
 
 ### Z4. A tool that re-sparsifies a downloaded file behind our back
-- **Kind** LIMIT · **Evidence** reasoned · **Status** planned (write phase)
+- **Kind** LIMIT · **Evidence** reasoned · **Status** open
 - **What:** a downloaded file carries an ignore mark with `FAN_MARK_IGNORED_SURV_MODIFY`, so the
   helper does not see its opens. If an external tool punches holes in it
   (`fallocate --dig-holes`, some deduplication tools), it reads zeros.
 - **Why:** without `SURV_MODIFY` the ignore mark cannot be placed at all while the daemon holds
   the file open for writing (measured, kernel document §2.1).
 - **Way out:** watch `FAN_MODIFY` on the directory marks and re-check a downloaded file that
-  suddenly lost its blocks. The write phase needs modification tracking anyway.
+  suddenly lost its blocks. The write phase's watcher does not subscribe to `FAN_MODIFY` (F75), so
+  this stays open.
 
 ### Z5. Punching a file that still carries an ignore mark
 - **Kind** FRAGILE · **Evidence** measured · **Status** mitigated (commit `7457294`)
@@ -297,7 +340,9 @@ application must never read zeros where real content should be.
   restores it; a file that must be opened writable (dehydration, recovery, a content replacement) is
   opened read-only and reopened through `/proc/self/fd/<n>` with the bit lifted for that one open;
   directories get the same per-operation window (`docs/design/sync.md` §11). Applies to a folder
-  that shows OneDrive; a local folder (F20) is not locked. Forget takes the lock off (F19).
+  that shows OneDrive; a local folder (F20) is not locked. Forget takes the lock off (F19), and so
+  does a switch of the account to read-write, which puts it back on when it turns read-only again
+  (write design §2.2; F62, F65).
 - **Weak spot:** a program that opens a file for writing inside such a window keeps a writable
   descriptor until the next Full reconcile after a crash. The lock is the rule the user sees; data
   safety actually rests on the stamp check (`docs/design/sync.md` §10) before every cloud change is
@@ -346,8 +391,14 @@ application must never read zeros where real content should be.
 
 ### W11. `Dev1.AccessToken` and `konedrivectl dev export-access-token`
 - **What:** for a VM test run that needs to speak Graph itself without a full sign-in of its own.
-  `Dev1` hands out the daemon's current *access* token — about an hour of `Files.Read` — never the
-  refresh token, which never leaves the daemon/KWallet. **`Dev1` is served in every build**, not
+  `Dev1` hands out an *access* token — about an hour of `Files.Read` — never the refresh token,
+  which never leaves the daemon/KWallet. It is read-only whatever the account's mode: for a
+  read-write account it comes from a refresh that asks for `Files.Read` only (write design §2.1),
+  and one Microsoft answered with more is not handed out. `Dev1.ReadWriteAccessToken`
+  (`export-access-token --read-write`), a token that can change files, is for the test-account
+  harness only, and refused for any account the write gate does not let through (F60); the commit
+  that removes the gate before the release must remove it too, or keep it behind the list.
+  **`Dev1` is served in every build**, not
   only a development one: a per-user install (`scripts/dev-install.sh`) needs it for real-account
   test runs. The CLI writes the token through a temporary file in the same directory as `--out`,
   created with `O_CREAT | O_EXCL | O_NOFOLLOW` at mode 0600 from the instant it exists, then
@@ -473,7 +524,11 @@ application must never read zeros where real content should be.
   folder again, and a new placeholder in it is intercepted. The second pass adds one drop-in,
   `SystemCallErrorNumber=kill`. Any call the deny-list refuses would then kill the helper with
   `SIGSYS`, and systemd would log it (a control unit shows that it does). None did. Measured
-  2026-09-25, kernel 7.2.7, systemd 259.
+  2026-09-25, kernel 7.2.7, systemd 259. The same run also measures `open_by_handle_at` inside a
+  copy of the unit (only `ExecStart=`, `Restart=` and the runtime directory differ;
+  `docs/kernel-behavior-7.2.md` §15). The unit's own helper then hands a placeholder, moved into
+  a directory its owner cannot enter, back to the daemon (`OpenByHandle`, read-only), which
+  re-marks it and reopens it for writing, and the helper refuses another uid's object (F90).
 - **Found by it, fixed:** `RestrictSUIDSGID=yes` stopped all interception. Seccomp cannot read
   `openat2()`'s argument struct, so the filter systemd installs for that setting fails every
   `openat2()` with `ENOSYS`. The helper opens registered folders, at registration and at every
@@ -510,7 +565,7 @@ application must never read zeros where real content should be.
   check.
 
 ### W17. The VM's two-account scenario uses two local folders, signed in by hand
-- **What:** scenario 15 of `tests/vm/scenarios.rs` (`two_accounts_one_link`, multiple-accounts
+- **What:** the scenario `two_accounts_one_link` of `tests/vm/scenarios.rs` (multiple-accounts
   design test 15) starts the account manager as `main.rs` does, on a private `dbus-daemon` in the
   guest. It adds two accounts and marks both signed in by hand, with no drive. Their folders are
   therefore local folders. The real helper intercepts them through the hub's one link, and each is
@@ -522,6 +577,25 @@ application must never read zeros where real content should be.
   measures routing by filesystem and by path proved by inode, and `Remove`'s Forget through the
   shared link. The scenario also needs the host's `dbus-daemon` in the guest.
 - **Status:** open. Measured 2026-09-25 on btrfs (`tests/vm/run.sh quick`).
+
+### W18. The VM's write scenarios run the daemon against a fake OneDrive in the guest
+- **What:** `tests/vm/writes.rs` brings a read-write folder up with the daemon's own `SyncService`:
+  the real helper, the watcher, the examination and the outbox worker. The OneDrive it talks to is
+  the fake the worker's host tests use (`sync::upload::fake`, on wiremock, on the guest's
+  loopback). Building it takes konedrived's `fault-injection` feature, which the suite's build
+  enables, so wiremock ships in no build but the tests'. Three shortcuts:
+  - the folder shares the suite's helper connection, so an intercepted open is filled from the
+    suite's own content source (`source/<item id>`), not from the fake's content;
+  - "the daemon killed mid-session" stops the folder's sync and starts it again in the same
+    process. The worker's state goes and the row's persisted session stays, as after a kill; a
+    real process exit is not run. The session is held half sent by throttling its second fragment
+    (`Cloud::throttle`);
+  - the helper-restart check makes the one change no event reports: a write through a hard link
+    outside the folder (F73). What only a Full local scan can find is thereby found by one.
+- **Cost:** what the fake cannot tell is left to the test-account run (F131): `If-Match`
+  on a 0-byte PUT, `conflictBehavior` in a PUT's URL, a folder's cTag guarding its delete, and the
+  service's own echo.
+- **Status:** open. Measured 2026-09-25 on btrfs (`tests/vm/run.sh quick --only 'writes:'`, 6/6).
 
 ---
 
@@ -799,7 +873,7 @@ application must never read zeros where real content should be.
   each do their own read-modify-write of `config.toml`, with no lock shared between them: one can
   read the file, the other can read, modify and save it, and the first then saves over that change
   with what it read before. Both are rare and small (a client id set once; a drive id recorded once
-  per fresh listing), so the window is narrow, but nothing closes it. Predates this phase. Reasoned.
+  per fresh listing), so the window is narrow, but nothing closes it. Predates the multiple-accounts phase. Reasoned.
   Closed with multiple accounts: `ConfigStore` (`konedrived/src/config.rs`) is the only writer —
   the client id, labels, drives, the migration's flags and every account's folder go through it —
   and it re-reads, changes and writes the file under one lock
@@ -835,8 +909,9 @@ application must never read zeros where real content should be.
   request, although Microsoft documents it for personal drives only; a work or school drive might
   refuse it. (3) An empty file's time is a second request (a `PATCH` after the `PUT`); when that one
   fails, the file is up with OneDrive's time, and a warning is logged. (4) A `401` or `403` from an
-  upload URL is read as the session having ended, like a `404`. Nothing calls the client yet.
-  FRAGILE · reasoned. Planned: the write phase's run on a test account.
+  upload URL is read as the session having ended, like a `404`. The outbox worker
+  (`konedrived/src/sync/upload/`) is its caller.
+  FRAGILE · reasoned. Open until the test-account run (F130, F131).
 - **F40. Moving version 1's tree store into its account can give up** (`konedrived/src/migrate.rs`,
   `finish_file_moves`) — with multiple accounts, `tree.sqlite` moves into `accounts/<id>/`. Before
   the move it is opened and closed once, so that its write-ahead log is folded into it and removed.
@@ -896,7 +971,7 @@ application must never read zeros where real content should be.
   (`user.konedrive.drive`). The drive is written at registration, or at the first bring-up of an
   older folder, once the account's drive is known. A registration of a folder that carries another
   drive is refused `NotEmpty`, unless the folder is empty: its stale drive is then taken off. A
-  folder forgotten before this phase carries no drive, so any account can register it again, as
+  folder forgotten before the multiple-accounts phase carries no drive, so any account can register it again, as
   before, and its sync then makes the folder match that account's drive. LIMIT · measured
   (`sync::tests::onedrive::a_onedrive_folder_remembers_its_drive_and_is_refused_to_another_account`,
   `sync::tests::an_empty_folder_that_carries_another_drive_is_taken_and_a_full_one_is_not`). Open.
@@ -904,7 +979,7 @@ application must never read zeros where real content should be.
   §4.1) — the daemon serves `/org/konedrive/Accounts` and one object per account, and keeps no
   alias for the single-account object. A window or a Dolphin that was running across the upgrade
   calls a path that is gone until it is restarted. `konedrivectl` moved to the new contract in the
-  same phase (task C1), and the deprecated single-account proxies are gone from `konedrive-dbus`.
+  same phase, and the deprecated single-account proxies are gone from `konedrive-dbus`.
   LIMIT · reasoned. Open.
 - **F47. What removing an account keeps** (`konedrived/src/accounts.rs`, `AccountManager::remove`)
   — `Accounts1.Remove` forgets the folder as a Forget does, then deletes the refresh token and
@@ -957,7 +1032,874 @@ application must never read zeros where real content should be.
   daemon refuses a label shaped like an id, so only a hand-edited `config.toml` makes one; the
   window's copy of the label rules (A14) does not know that rule yet and leaves it to the daemon.
   LIMIT · measured (`konedrivectl/tests/accounts_cli.rs`, `tests/sync_cli.rs`). Open.
+- **F52. An edit that kept both size and time, made while nothing watched, is not found**
+  (`konedrived/src/sync/local/examine.rs`) — the examination finds a local edit by its stamp (size or
+  time differ from the version the file was downloaded or last uploaded as) or by a `FAN_CLOSE_WRITE`.
+  One made while the daemon or its watcher was not running that kept both the size and the
+  modification time (a tool that puts the time back, `touch -r`) is not found by the Full local scan:
+  OneDrive keeps the old version until the file changes again. Also, a same-size save that moves the
+  time is read once in full to be hashed (quickXorHash) before the upload reads it again, so a large
+  file saved in place costs two reads. LIMIT · measured
+  (`sync::local::tests::an_edit_is_an_update_and_a_touch_uploads_nothing`). Open.
+- **F53. A copy and a move are told apart by the file handle the store recorded**
+  (`konedrived/src/sync/local/examine.rs`) — (1) an item's inode (`items.local_handle`) is recorded
+  when the reconcile places it, when a replacement swaps a new version in (`record_replaced`), and
+  whenever an examination finds the item. (2) When several inodes carry an item's id, the recorded
+  one is the item and the others are copies; when the recorded one is not among them, the one where
+  the item should be is taken (an editor's new inode that copied the attributes); when none is there,
+  the helper is asked where the recorded one is (F54), and while it cannot answer the item is left
+  undecided. (3) Rename-to-a-backup saves (vim's `file~`) are recognised only when the backup's name
+  is on the ignore list; under any other name the original is a move and the new file a create.
+  (4) A copy, or a file from elsewhere (an item id the base does not know), is uploaded only if it is
+  downloaded and has no other link; a placeholder cannot be read here, and a file with other links
+  (perhaps in another account's folder) would lose konedrive's attributes on every name, so both are
+  listed instead. FRAGILE · measured (`sync::local::tests::save_by_rename_in_editors_patterns_…`,
+  `…copies_that_kept_their_attributes_…`, `…a_copy_does_not_take_the_item_when_its_original_left_…`,
+  `…a_replaced_file_moved_out_is_a_move_out`, `…a_file_from_elsewhere_…`). Open.
+- **F54. A missing item is deleted in OneDrive only on the helper's word**
+  (`konedrived/src/sync/local/liveness.rs`, `examine.rs`) — a base item missing from where it was is
+  asked after by its recorded file handle: gone is a delete, alive outside the folder a move out,
+  alive inside it is looked for again. Only the helper can open a handle, so the daemon asks its
+  `OpenByHandle` (F90; `HelperLiveness`), from the examination's own thread, which waits
+  for the answer: `ESTALE` is gone, but only for handles taken on the filesystem the folder is on
+  now (F121 (9)), and only when nothing, or another object, stands at the item's place (an inode
+  that cannot be read answers `ESTALE` too); a descriptor says where the object is, once that path, opened again, is the same
+  inode (a disconnected file reads as `/`, which decides nothing). Anything else decides
+  nothing, and the item is reported undecided and stays in OneDrive: `EPERM` above all, which an
+  object in a nested subvolume always gets and which is never read as gone, and no helper, which
+  is what `NoLiveness` (tests) answers every time. An answer that cannot be placed for sure decides nothing either: no readable root path, a
+  path that is not absolute or ends in ` (deleted)`, or a place in the folder where the object's own
+  handle is not. An item with no recorded handle (a rebuilt store, a filesystem that gives no handles,
+  items whose held deletes were restored until they are placed again) is never deleted (WR4), nor is
+  a folder with one inside it; the reconcile places it again. When a folder leaves, every item the base has inside it that is still
+  with it is asked after too, one helper round trip each (estimated at about 0.1 ms each, so about
+  1 s per 10 000 items): what left
+  it first leaves on its own, and while any of them is elsewhere in the folder or cannot be placed,
+  or left the folder but is held back itself, the folder waits. Restoring held removals (`RestoreDeletes`) drops their rows, move-outs included,
+  and the item is placed again in the folder. What a dropped `move-out` named outside is tidied as
+  the Trash case without the delete (`OutboxWorker::tidy_restored`, through
+  `OpenByHandle`): a placeholder is removed (it holds nothing, and its item is back in the folder),
+  a downloaded file is stripped (the user's own copy), a directory of the item is stripped,
+  unmarked and removed if left empty. Left as it was: an object back beneath a folder, one whose
+  place cannot be proved, a placeholder with another link, one being filled, and anything while no
+  worker runs (a paused worker runs this). Such a placeholder, with no row left to re-mark it,
+  reads zeros once the helper restarts (Z3). The examination's tests answer from a table
+  (`FakeLiveness`, test builds only); the helper's answer is read by
+  `sync::local::liveness::answered`. LIMIT · measured with the fake
+  (`sync::local::tests::a_missing_item_is_decided_by_its_object`, `…a_placeholder_dragged_out_…`,
+  `…a_placeholder_moved_out_unseen_…`, `…a_folder_whose_item_is_elsewhere_…`,
+  `…an_answer_that_cannot_be_placed_…`, `…a_rebuilt_base_never_deletes`,
+  `sync::upload::move_out_tests::the_helpers_answer_is_read_as_the_examination_needs`,
+  `…restoring_a_held_move_out_tidies_what_left`) and in the VM with the real helper
+  (`move-out: …`). Open.
+- **F55. The examination's shortcuts** (`konedrived/src/sync/local/`, `konedrived/src/tree/outbox.rs`) —
+  (1) there is no examination until a listing has completed (a new folder, a store rebuilt): a batch
+  then fails `NoBase`, and changes made meanwhile wait for the Full local scan the watcher runs after
+  the first completed cycle. (2) The name pre-check blocks only what Microsoft's page names, as exact
+  names (`CON`, not `CON.txt`); the service's `400` decides the rest. (3) The mass-delete guard counts
+  the items a batch removes (deletes and moves out, the Trash included) with those of the removals still
+  waiting in the outbox, each item once, so a trickle adds up while the worker is offline or paused;
+  removals already sent, or confirmed by the user, do not count, so a trickle the worker keeps up with
+  never holds. (4) A downloaded file whose cTag is not the
+  base's (a new version not yet downloaded over it) and that was edited here is queued with its own
+  cTag and no eTag: its upload's guard fails and the conflict rules decide. The worker guards such
+  a row with the cTag. (5) From schema 3 on, a rebuilt store (an unknown version, corruption) forgets
+  pending deletes, whose items come back from the cloud, and upload progress; later schema changes
+  should migrate rather than rebuild. (6) A directory the daemon may not read (`chmod 000`) is passed
+  over and reported: nothing in it is examined or taken for missing. (7) A row that takes a name in
+  OneDrive waits for the row that frees it, whatever their order. Where that closes a circle with the
+  other waits (a swap; a folder replaced by its own subfolder, `mv F/sub F.tmp && rm -rf F && mv F.tmp
+  F`; a folder wrapped in a new one of its name, `mkdir t && mv d t/ && mv t d`; a folder replaced
+  offline by a new one holding one of its files, `mkdir X.new; mv X/keep X.new/; …; rm -rf X; mv X.new
+  X`), its waits inside the circle are dropped, so the taking row meets the name still taken (`409`)
+  and only the outbox worker keeps the content safe. The outbox worker handles it: (a) on a `409` for any taking row (a
+  `mkdir`, a `create`, a move to a new place), it GETs the item that holds that (parent, name); if its id
+  is the `item_id` of a live row whose `outbox::frees` is that place (names without case, in any state:
+  ready, waiting, retry, blocked, held or running), the name is only taken for now, and it neither
+  adopts it (write design §6.2, and a replay, §10), nor makes a create/create copy (§7),
+  nor retries at that name; comparing ids, not names, lets a replay still adopt our own
+  folder; (b) it takes the row to `.konedrive-swap-<id>` in the target parent instead (POST for a `mkdir`
+  or `create`, PATCH for a move), saving that name in the row before sending (WR7) so that a replay
+  looks for it there; (c) it commits the temporary place to `items`, with a live `move` row for the final
+  name, in the same step-2 transaction: a taking row left live until its final name deadlocks the
+  subfolder case at run time, and without the new row nothing renames the item, which stays
+  `.konedrive-swap-*` in OneDrive until a Full scan. Rules 2 and 3 are never
+  dropped, so no folder is removed before what left it. FRAGILE · reasoned; (1), (3), (6) and (7)
+  measured (`sync::local::tests::an_unfinished_listing_…`, `…removals_that_trickle_in_add_up_…`,
+  `…confirmed_removals_…`, `…each_removed_item_counts_once_…`, `…an_unreadable_directory_…`,
+  `…a_folder_replaced_by_its_own_subfolder_…`, `…a_folder_wrapped_in_a_new_one_…`,
+  `…w5_fixture_folder_replaced_offline_keeping_one_file`, which drives the worker too, with
+  the freer in every state and the name's case varied; the subfolder, the wrap and a swap in
+  `sync::upload::tests::swaps_and_folders_replaced_in_place_…`). Open.
+- **F60. The write gate: only test accounts can be read-write, until the release**
+  (`konedrived/src/config.rs`, `Config::writes_allowed`; write design §2) — while uploads are being
+  developed, `Account1.SetMode("read-write")` is refused `WritesNotAllowed`, and
+  `Dev1.ReadWriteAccessToken` too, for any account whose drive id is not in `write_test_drive_ids`
+  in `config.toml`; the list is empty by default, and nothing in the daemon writes it (the developer
+  install sets it to the test account's drive by hand). An account `config.toml` sets to read-write
+  by hand whose drive is not listed loads, runs read-only, asks for `Files.Read` at every refresh,
+  and its `LastError` says why. No script or stray click can make the user's real account
+  writable. The outbox worker asks the gate again before each row it takes and between an
+  upload's fragments (`SyncService::write_gate`): the folder and the account
+  read-write, `config.toml` read again saying read-write and listing the drive, the drive the
+  account's token was last seen to reach being that one, the token able to write, and the folder's
+  sync not stopped by another account's drive or a sign-out. Closed, nothing more is sent, the
+  rows wait, the folder's `LastError` says why, and the account's mode is worked out again, which
+  turns it read-only (F140) — so an edit of `config.toml` counts at the next row, not at the next
+  token refresh. Writes are still addressed to `/me/drive/items/…`, not to the recorded drive:
+  what holds them to that drive is the gate's comparison with the drive last seen, and the
+  sync's own same-drive check at every cycle. The release removes the gate in a commit of its own,
+  a user decision; that commit removes `Dev1.ReadWriteAccessToken` too, or keeps it behind the
+  list (W11). LIMIT, on purpose · measured (`config::tests::the_write_gate_refuses_every_drive_by_default`,
+  `konedrived/tests/mode.rs::the_gate_refuses_read_write_by_default`, `konedrivectl/tests/mode_cli.rs`,
+  `sync::tests::onedrive::a_drive_taken_off_the_list_while_the_worker_runs_sends_nothing_more`).
+  Open until the release.
+- **F61. A read-write account is read-write only while its last token carried `Files.ReadWrite`**
+  (`konedrived/src/account.rs`, `recompute_mode`; write design §2) — the mode the account runs in
+  (`Account1.Mode`) is read-write only when `config.toml` says so and the gate lets its drive
+  through (F60) — both from one reading of the file, taken again each time the mode is worked out,
+  and a file that cannot be read then counts as read-only, with `LastError` saying so; a token used
+  meanwhile is refreshed down, so the way back is a new switch — the drive the account's token was last seen to reach
+  (`GET /me/drive` at a sign-in, at `RefreshAccountInfo`, by `Dev1.ReadWriteAccessToken` with
+  the very token it hands out, and by a sync cycle that finds it is not the drive the folder was
+  listed from, which the account then records) is the one `config.toml` records, and the scopes its last token
+  response granted include `Files.ReadWrite`. The scopes and the drive seen are kept in
+  `account.json`, so a restart keeps the mode; a missing or older `account.json` reads as nothing
+  granted and no drive seen, and so does a sign-out. A cached token asked for with another scope
+  than the one installed now is not used: after a switch or a downgrade to read-only, the next call
+  refreshes down to `Files.Read`. Every refresh asks for the scope of the mode the account
+  runs in, never for more than was granted: asking a refresh for more fails `invalid_grant`, which
+  would sign the account out. So a read-write account that lost its grant — `account.json` deleted,
+  signed out and in again read-only, a token Microsoft answered with less — runs read-only, its
+  folder goes back under the lock (the switch to read-only runs, but its waiting uploads are not
+  dropped: F140), and `LastError` says to switch it to read-write again, which signs in for the permission.
+  A signed-out account is refused `NotSignedIn`: the first switch to read-write takes two browser
+  trips, the sign-in and then the permission; a read-write account that signs in again asks for
+  `Files.ReadWrite` at once. LIMIT · measured
+  (`konedrived/tests/mode.rs::a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate`,
+  `…a_token_reaching_another_drive_than_the_recorded_one_is_never_read_write`,
+  `…a_drive_taken_off_the_list_while_running_is_read_only_at_once`). Open.
+- **F62. The lock walks of a mode switch** (`konedrived/src/sync/write_mode.rs`, `disk.rs`
+  `unlock_tree`, `lock_tree`; write design §2.2) — a switch stops the folder's sync and walks the
+  whole folder under the lifecycle lock, but fills on open and free-ups go on. (1) The walk that
+  takes the lock off (Forget's) takes no inode lock: a fill that lifted a file's write bit for an
+  attribute write at that very moment puts `0444` back after it, and nothing puts `0644` on in
+  read-write mode, so that file stays read-only until the user changes its mode; the window is one
+  `fchmod`–`setxattr`–`fchmod`. (2) The walk that puts the lock back skips a file a fill or a free-up
+  holds (locking it in its attribute window would fail the fill `EACCES`); the first Full
+  reconcile after the switch locks it. (3) A crash part way, or a switch made while the folder was
+  not up: each walk changes the root last, so a folder whose root does not match the mode when its
+  sync starts is walked again then — a read-write one unlocked (`ensure_unlocked`), a read-only one
+  locked (`ensure_locked`), without Graph. (4) A walk of a large folder delays the sync's restart,
+  not the D-Bus call, since the folder follows `Mode` in a task of its own. (5) An entry the unlock
+  walk cannot change — a file root owns, a directory set to `000` — is logged and passed over, and
+  the root then stays locked, so every start walks again and fails again; only the log says so, not
+  the folder's `LastError`, and the read-write sync fails `EACCES` where that entry is. (6) In
+  read-write mode the lock comes off as the sync starts, and only once the watcher's own walk has
+  marked every directory (Z2), so no directory is made before it is watched; both walks run under
+  the lifecycle lock. A folder whose watcher cannot start, or whose walk is cut short, stays locked
+  and runs that sync as a read-only one, and `LastError` says why; one whose sync cannot start at
+  all (no drive configured, a tree store that cannot be opened) is locked, in either mode; a switch
+  to read-write while the folder's sync does not run leaves it locked until the sync starts. A root that is unlocked already
+  (a daemon start) does not wait for the walk, so fills are not held up behind it. FRAGILE ·
+  reasoned; the walks, (3) and (6) measured
+  (`sync::tests::onedrive::the_lock_comes_off_and_goes_back_on_with_the_mode`,
+  `…a_read_write_folder_whose_watcher_cannot_start_stays_locked`,
+  `…a_read_write_folder_whose_sync_cannot_start_is_locked_again`,
+  `konedrivectl/tests/sync_cli.rs::the_folder_follows_the_accounts_mode`). Open.
+- **F64. The switch to read-write ends in `Mode` or `LastError`, and nothing says it is under way**
+  (`konedrived/src/account.rs`, `set_mode`; `konedrivectl/src/lib.rs`, `wait_for_read_write`) —
+  `SetMode("read-write")` answers the sign-in URL at once, and the account stays `signed-in`
+  throughout, so a client learns the outcome by watching `Mode` turn `read-write`, or `LastError`
+  say why not (`SetMode` clears it before it answers; a cancel says nothing). `account mode
+  read-write` polls both: a `LastError` set meanwhile for another reason — account info that could
+  not be loaded — ends its wait with that message, though the switch may still go through. A second
+  `SetMode("read-write")` gives up the first one's sign-in. FRAGILE · reasoned. Open; the window
+  keeps the wait itself (A16).
+- **F65. A mode the user gave a file does not survive a round trip through read-only**
+  (`konedrived/src/sync/disk.rs`, `lock_tree`, `unlock_tree`; write design §2.2) — the switch to
+  read-only puts `0444`/`0555` on every file and directory that is konedrive's, and the switch back
+  puts `0644`/`0755` on everything, so an executable bit or a private `0600` given in read-write mode
+  is gone after it. LIMIT · reasoned. Open.
+- **F66. Consent to write stays with Microsoft, and a read-only request may be answered with it**
+  (`konedrived/src/oauth.rs`, `pinned_authorize_url`; `account.rs`, `record_granted`; write design
+  §2.2) — the consent a sign-in gives for `Files.ReadWrite` is kept by Microsoft for the Microsoft
+  account that gave it, whatever konedrive does with the token; only
+  https://account.live.com/consent/Manage takes it back. Every sign-in that asks for
+  `Files.ReadWrite` is pinned to the account being switched — the password asked for again
+  (`prompt=login`), its email filled in (`login_hint`) — so a browser signed in to the user's real
+  account cannot consent for it with one stray click, and a sign-in that reaches another drive is
+  refused before anything is stored. Consent given anyway stays. That a read-only refresh then
+  answers with a `Files.Read` token is assumed, not measured: should Microsoft answer with more, the
+  token is used to read only, what is recorded as granted is never more than was asked for (so it
+  can never make the account read-write), `Dev1.AccessToken` refuses to hand it out, and
+  `LastError` says so and names the page. The test-account run (F130) checks it: the token exported
+  after the switch back to read-only must be refused a write. LIMIT · reasoned; the handling
+  measured with a fake endpoint
+  (`konedrived/tests/mode.rs::a_read_only_request_answered_with_write_access_stays_read_only`). Open until
+  that run (F131).
 
+- **F70. A full notification queue costs a Full local scan** (`konedrived/src/sync/watcher/`) —
+  an unprivileged group keeps 16 384 events (`fs.fanotify.max_queued_events`), then one
+  `FAN_Q_OVERFLOW` that says nothing of what was lost (kernel §14.2). Unpacking a big archive into
+  the folder can do it. The watcher then examines the whole folder and walks it again, which marks
+  (and asks the helper to mark) any directory whose event was lost. It costs a scan, never a missed
+  change, except F52's. LIMIT · measured
+  (`sync::watcher::tests::an_overflow_is_a_full_scan_and_a_walk_that_marks_what_was_missed`). Open.
+- **F71. The watcher's marks come from a budget every account shares** (`konedrived/src/sync/watcher/`) —
+  an unprivileged group may not ask for unlimited marks. `fs.fanotify.max_user_marks` counts per
+  uid, across every group of that user (every account's folder, every subvolume's group, any other
+  program of the user that uses fanotify), and scales with memory: 597 240 on the host, 36 399 in a
+  4 GiB VM. A mark refused `ENOSPC` puts the folder in a degraded mode: the directories marked so far
+  keep their events, the rest are found by a Full local scan and a walk of the folder every 10
+  minutes (`DEGRADED_SCAN`), and `LastError` says so. The 128 groups a uid may hold
+  (`fs.fanotify.max_user_groups`, `EMFILE`) are the same kind of limit: a folder or a subvolume
+  that gets no group is scan-only. LIMIT · measured (the kernel's numbers, kernel §14.2; the degraded
+  mode with a lowered test budget,
+  `sync::watcher::tests::past_the_mark_budget_the_folder_is_scanned_on_a_timer`). Open.
+- **F72. Nothing on another device than the folder is uploaded** (`konedrived/src/sync/local/examine.rs`,
+  rule 2b; `sync/watcher/reader.rs`, `elsewhere`; `konedrive-helper/src/roots.rs`, `may_act_on`) — a
+  nested Btrfs subvolume has its own filesystem id and device number, and so has a filesystem mounted
+  inside the folder. The helper marks (`MarkDir`) only directories on its root's device (`EPERM`
+  otherwise, measured), so a directory made there has no permission mark until the helper's next
+  registration walk, and a placeholder placed or moved into it could read empty. So nothing on another
+  device is uploaded: the examination lists it once in `local_skipped` as `other-device` and makes no
+  row for it or anything below it, so it never gets an item id and nothing from OneDrive is ever placed
+  in it; the watcher neither watches it (no notification group) nor asks the helper to mark it, counts
+  it (`WatchStatus::other_device`), and `LastError` says so. No placeholder reaches it either: a move
+  onto another device is a copy (`rename(2)` and `link(2)` fail `EXDEV`), whose read of the source is
+  intercepted and filled. Another filesystem mounted over a directory that is already synced hides
+  the directory's entry, and its base item then looks missing: the helper finds the hidden
+  directory, but its path opened again is the mount's root, another inode, so nothing is decided
+  and the item stays in OneDrive (F54). Such a base item should count as present and not be
+  examined; it does not yet. LIMIT · measured (VM
+  scenario `watcher: a nested btrfs subvolume is neither watched nor uploaded`, which also records the
+  helper's answer). Way out: the helper accepts a directory beneath a root of the uid on another device
+  (for instance by walking `..` from the passed descriptor up to the root's device and inode); then
+  such a folder can be watched and uploaded like the rest. Open.
+- **F73. A write through a hard link outside the folder raises no event** — marks are on
+  directories, and a write through a name in an unwatched directory is not reported through the
+  folder's (kernel §14.3), nor is making such a link. The change is found by the next Full local
+  scan (a daemon start, a helper reconnect, an overflow), and not at all if it kept size and time
+  (F52). LIMIT · measured (the kernel probe). Open.
+- **F74. The watcher's shortcuts** (`konedrived/src/sync/watcher/`) — (1) a directory that leaves the
+  folder keeps the watcher's mark, and its share of F71's budget, until it is deleted or the watcher
+  stops: only the kernel can take a mark off a directory the daemon can no longer open. Its events
+  are passed over, for up to 65 536 such directories; past that an event from one costs a walk of the
+  folder, at most once a minute (`UNKNOWN_WALK`), as does an event from any directory the map does
+  not know. (2) A directory the daemon may not open (`chmod 000`) when the watcher meets it is kept
+  in the map unwatched, with what the map had below it; the next event on the directory itself (a
+  `chmod` back) adopts it with everything below it, and a directory that could not be looked into is
+  walked again at most once a minute. (3) The daemon's own changes are told apart by pid alone, so
+  every change the daemon makes in a read-write folder, a fill's commit included, must be made by
+  the daemon process itself (any thread), never by a child process or by the helper (write design
+  §3.2). The daemon's own changes are never examined through their events either: a conflict copy
+  the reconcile makes, and what it keeps or makes local, is handed to the examiner by the cycle
+  itself (F114). A folder the reconcile makes
+  is examined once, whole, in case someone put something in it before it was marked. (4) The
+  examination runs on the watcher's own thread, and only the first cycle waits for it (F117):
+  otherwise it relies on the examination's rules for an item only in `staging` or placed mid-cycle. (5) An
+  ignore-list change applies from the watcher's next examination, followed by a Full local scan
+  (F102). (6) What the watcher gathered and had not handed over when it stops is dropped
+  unless `flush()` ran first (a switch to read-only flushes before it asks `PendingUploads`); the
+  next start's Full local scan finds it (except F52's). A change made between that flush and the
+  switch's stop is dropped with the rows when the switch is forced, as the switch to read-only does
+  (write design §2.2) (F140).
+  A flush that meets a watcher
+  stopping ends at once, unanswered. (7) The folder moved or deleted stops its
+  sync and the watcher and reads `error`; nothing starts them again until the daemon brings the
+  folder up again (a restart), and nothing is deleted in OneDrive because it went. A slow `rm -rf`
+  of the folder itself can hand over batches of deletes before the root's own event arrives; only
+  the mass-delete guard stands before them; the deletes queued in the last
+  `CEILING` before the root's event are not held back. (8) A filesystem mounted inside the folder is another device, as
+  a subvolume is (F72): neither watched nor uploaded. (9) A stop waits for the examination under way (not interruptible) and for a
+  walk up to its next directory; a helper that stops answering costs one `MarkDir` timeout (30 s)
+  per walk, after which the walk stops asking and leaves the rest to the retry. (10) The unlock walk
+  of a switch to read-write runs right after the watcher's walk, and raises one `FAN_ATTRIB` per entry:
+  the daemon's own, dropped, but on a large folder they can overflow the queue, which costs a second
+  Full local scan and walk. (11) A watcher that ends after its walk with nobody asking it to (a bug)
+  says so in `LastError`, but leaves the lock off: the folder is not locked again, and nothing more
+  is looked for until its sync starts again. FRAGILE · measured
+  for (1), (2), (3), (6) and (7) (`sync::watcher::tests::a_move_across_the_border_…`,
+  `…a_directory_closed_at_the_walk_is_watched_all_the_way_down_once_opened`,
+  `…the_daemons_own_changes_and_a_fill_raise_nothing_to_examine`, `…a_flush_examines_what_is_pending_at_once`,
+  VM `watcher: the daemon's own placement and fill are not handed over`,
+  `…the_folder_moved_away_stops_the_watcher_and_says_so`,
+  `…a_read_write_folder_gets_a_watcher_and_a_folder_moved_away_says_so`); reasoned for the rest.
+  Open.
+- **F75. A size change by path, and a write through a mapping, raise nothing the watcher reads**
+  (`konedrived/src/sync/watcher/fan.rs`, `DIR_MASK`) — `truncate(2)` by path opens nothing, so it
+  raises `FAN_MODIFY` only (kernel §14.3), and the watcher does not subscribe to `FAN_MODIFY`: it
+  would wake on every `write(2)` of every file being written, and a file written for a long time would
+  hold off every batch until `CEILING`. A write through a shared mapping after the descriptor is
+  closed raises no event at all. Either change is found by the next Full local scan (a daemon start,
+  a helper reconnect, an overflow). Tools that open the file to truncate it (coreutils `truncate`, an
+  editor) close it for writing, and are seen (`FAN_CLOSE_WRITE`). LIMIT · reasoned from the probe's
+  record (the truncate by path: measured, kernel §14.3). Open.
+- **F80. The last fragment of a large upload can supersede an edit made in OneDrive meanwhile**
+  (`konedrived/src/sync/upload/content.rs`, write design §6.3) — `If-Match` is checked when an upload
+  session is created, not when it completes. Before the last fragment the worker probes the file for a
+  writer, compares it with its snapshot and reads the item's eTag again; an edit made in OneDrive
+  between that read and the last fragment is overwritten by the upload. OneDrive keeps it in the
+  item's version history, so nothing is lost, but it is not "keep both" either. LIMIT · reasoned (the
+  test-account run observes it, F131). Open.
+- **F81. A file kept open for writing is not uploaded until it is closed**
+  (`konedrived/src/sync/upload/content.rs`, `sync/local/examine.rs`, write design §4.3) — a log, a
+  database or a running VM image held open for writing keeps its row `waiting` (`open-for-writing`),
+  probed again every 30 s, and it goes up once the writer closes it. Windows behaves the same. LIMIT ·
+  measured (`sync::upload::tests::pause_offline_sign_in_and_blocked_rows`). Open.
+- **F82. The outbox worker's shortcuts** (`konedrived/src/sync/upload/`,
+  `konedrived/src/tree/outbox/worker.rs`) — (1) `move-out` rows run only in a worker
+  given the helper and the fills they need (`MoveOuts`, F121; the daemon's always is); in any
+  other they wait, and a folder's delete that waits for one waits with it. (2) `user.konedrive.sync`
+  is kept for the rows this run of the daemon has seen: a row that went while the daemon was not
+  running (dropped by an examination) leaves its mark on the file until that file's next commit; the
+  rows a forced switch to read-only drops have their marks taken off. A row that goes while the daemon runs has its mark cleared where the
+  row last saw the file and where the base has the item. Directories get no mark. (3) Commit step 1 finds the local object
+  where its row saw it, or where a row behind it saw it since. A create whose file was moved while the
+  daemon was down, after its upload landed and before its replay, is uploaded again as new: a duplicate
+  in OneDrive, nothing lost. (4) A create, `mkdir` or move whose folder is gone from OneDrive backs off
+  (`parent-not-in-onedrive`) and asks for a cycle; the reconcile keeps the folder with the local work
+  in it, made local, and the examination's `mkdir` makes it again (F116). (5) An item taken
+  through a temporary name is committed to the base under `.konedrive-swap-*`, as placed, although a listing skips that name (reserved); other
+  devices see that name until the final `move` runs. A store rebuilt in between forgets the final
+  `move`: the item stays under the temporary name in OneDrive, and the local folder's id then names an
+  item the listing skips — nothing is deleted: the read-write reconcile leaves the local object where
+  it is (it is not the tree's), and the examination takes it for a move back to its name.
+  A row on its way through a temporary name keeps it across an examination's merge while the object
+  stays where it was; if the object moved on, the row goes to its new place, and an item already
+  under the temporary name is moved from there (a `mkdir`'s or a create's leaves an empty folder or a
+  duplicate under that name). (6) Rename × rename, and an edit of an item renamed in OneDrive: the
+  worker renames the local object to OneDrive's place itself — the reconcile's job, done at once
+  because the base takes OneDrive's place at once. Where that is impossible (OneDrive's folder is not
+  placed here, the name is taken here, or it is a name no listing places, `.konedrive-*` included)
+  the local place stands and is sent again against the fresh eTag, so the second rename wins after
+  all. (7) A move adopted on a `412` (its earlier PATCH landed, or OneDrive's place won) commits
+  OneDrive's answer as it is, a newer cTag included; the file keeps its own `user.konedrive.ctag`, and
+  the next cycle looks again at every item the outbox committed since the last one and replaces such
+  a file (F117 for the time in between). (8) Where OneDrive's version wins or both are kept
+  (delete × edit, edit × edit, a folder deleted in part), the item's recorded handle is forgotten, so
+  that its empty name is placed again rather than taken for a delete; the next cycle places it
+  (items with no local object on record are looked at again). (9) A conflict copy is a rename, then the
+  attributes taken off, then one store transaction. A crash between the rename and the transaction
+  leaves the renamed file carrying the item's id: the next examination takes it for a move (or an
+  update) of the item, which a replay turns into a second copy, or which PATCHes OneDrive's version to
+  the copy's name, or which stays `not-found` and keeps the item from being placed again at its name
+  until a Full scan. No byte is lost. (10) A folder's delete is compared with what the base held
+  below the folder when the delete was decided (`outbox_seen`, remembered in the examination's
+  transaction), never with a base a cycle changed since: anything added there since, moved in, never
+  placed here (a OneNote notebook, a skipped name, a folder not yet placed) or whose content moved
+  since stays, with the folder. The folder goes whole only when everything below it was seen here,
+  guarded by the cTag it had when the delete was decided (never one a commit wrote into the row
+  since); a `412` lists its descendants in OneDrive page by page. A rename inside does not count as a
+  change, and a folder of more than 100 000 children deletes nothing and is placed again. A folder
+  removal with no record (a row from before the record) deletes nothing and is placed again. The
+  record trusts the base's cTag of a placed file as the version the file holds: the read-write cycle
+  keeps it so (F112) — a replacement keeps its base until it lands, and a change the disk does not
+  take waits (F117 for what is left).
+  A record stays until its row is committed or the next examination tidies it. (11) The worker chooses the next rows by recomputing the outbox's dependencies after
+  every row it finishes: a large first upload costs CPU growing with the square of the outbox. (12) A
+  row rewritten and sent again at once (a temporary name, a copy, a fresh guard) more than 20 times
+  backs off like a failure. (13) An answer whose content hash is not the one sent is never committed:
+  a changed file is sent again from zero against the version the bad upload made; a new file's bad
+  item is deleted first, and if that fails its id is kept in the row's reason
+  (`hash-mismatch:<id>`), so the next run deletes it before sending again (or adopts it, should it hold
+  this content after all). (14) The worker's own
+  reads (the item after a `412`, the name's holder after a `409`, a folder's children) wait out a
+  throttle in place, as the cycle's reads do, and then back off that row: they do not pause the whole
+  worker (write design §6.2 asks it only of writes). (15) Commit step 1 is skipped when another inode stands at
+  the file's name by then (an editor's backup-and-rewrite save during the upload): the item is
+  committed without a local object, and the row behind it uploads the new inode. (16) Edit × edit on
+  an item whose swap PATCH had landed: the local version becomes a copy, and OneDrive's version stays
+  under `.konedrive-swap-*`, which no listing places and no row renames, until the user renames it in
+  OneDrive. FRAGILE · measured
+  for (3)'s replay, (6), (8) and (10) with a fake OneDrive (`sync::upload::tests::every_crash_point_…`,
+  `…conflicts_keep_both_…`, `…a_folder_changed_in_onedrive_…`, `…a_folder_delete_never_takes_…`,
+  `…a_folder_holding_what_was_never_placed_…`, `…a_row_through_a_temporary_name_…`); reasoned for the
+  rest. Open.
+- **F90. `OpenByHandle` gives a user their own object wherever it went** (`konedrive-helper/src/by_handle.rs`,
+  write design §8.2; SECURITY.md) — the helper opens a file handle for any local user. It opens it
+  relative to a directory that user owns on a filesystem where they have a registered folder,
+  and hands the object back if it is:
+  - their own regular file or directory;
+  - on that directory's device;
+  - still linked;
+  - carrying `user.konedrive.item-id`.
+
+  Anything else is `EPERM`; the asker's own deleted object is `ESTALE`. A handle bypasses path
+  lookup. So a user can reach such an object of theirs in a directory they cannot enter, for
+  instance one another user moved it into. It is theirs and konedrive's, which is the accepted
+  residual (SECURITY.md). For a directory the descriptor anchors `*at()` calls, so it reaches the
+  whole subtree below it as far as the user's own permissions go, not only the one inode; the
+  daemon never lists or opens anything beneath it, and walks a moved-out directory only after
+  opening it again by its path (F121 (5)). The answer also tells a handle that names an existing inode from one
+  that names nothing (`EPERM` against `ESTALE`), for any inode on that filesystem. Handles are
+  guessable, so this says that an inode exists, never its name or content. Refusals are not
+  logged: any user can ask, and the asker gets the errno. The protocol went to version 2 with
+  this message. A helper and a daemon from either side of the change refuse each other (F11),
+  so the two are upgraded together. An object in a nested Btrfs subvolume (F72) is on a device
+  where the helper holds no root of the user's, so it is refused `EPERM` whatever directory is
+  passed: `EPERM` must never be read as "gone" (F54, F121). LIMIT · measured (VM `OpenByHandle refuses another uid's
+  object, …`; the unit check, a placeholder in a root-owned `0700` directory handed to its
+  owner). Open, accepted.
+- **F91. A moved-out file is handed over read-only, and the daemon reopens it for writing itself**
+  (`konedrived/src/sync/helper.rs`, `reopen_for_writing`) — the design asked the helper for
+  `O_RDWR`. Under the unit the helper is root without `CAP_DAC_OVERRIDE`, so a user's `0644` or
+  `0600` file is `EACCES` for writing (measured, kernel §15). Adding that capability would let the
+  one root process every local user talks to write any file. So the helper opens a regular file
+  `O_RDONLY | O_NONBLOCK`, and the daemon, its owner, reopens `/proc/self/fd/<fd>` read-write,
+  which checks the file's own permissions and no directory's. What that costs:
+  - a file its user made read-only (`0444`) needs the daemon's write window (`with_owner_write`,
+    a `fchmod` as owner through the read-only descriptor) before the reopen;
+  - the reopen is an open like any other. On a file with a mark it is intercepted, and let
+    through at once only as this daemon's own open (the uid's newest connection, holding a
+    root); otherwise it waits for a fill like any opener;
+  - `O_NONBLOCK` makes a file under someone's write lease answer `EAGAIN` rather than hold the
+    connection's thread for up to 45 s (kernel §12.4). A `move-out` row tries it again after
+    `RECHECK` (30 s).
+
+  WORKAROUND · measured (the unit check: the reopen of a placeholder in a directory its owner
+  cannot enter, and the write; `sync::helper::tests::a_read_only_descriptor_is_reopened_…`).
+  Open.
+- **F92. The helper lets its own opens through without deciding them** (`konedrive-helper/src/main.rs`,
+  `event_loop`) — an `OpenByHandle` object can sit in a marked directory or carry a mark of its
+  own, and the helper's open of it raises `FAN_OPEN_PERM` in its own group, with its own pid
+  (measured, kernel §15). Decided like any other, a placeholder would become a `HydrateRequest`
+  to the very daemon whose connection thread is waiting in that open. Its `HydrateDone` would
+  never be read, so the open would never return: the daemon's call timeout ends the socket, not
+  the open. So every event with the helper's pid is allowed in the event loop, before the worker
+  pool. It then reads whatever the file holds, zeros for a placeholder, which is safe only
+  because the helper reads no file content and hands the object straight to its owner's daemon.
+  The only other file it opens is its feature probe's nameless file. A change that makes the
+  helper read a file it opened would read zeros in silence. WORKAROUND · measured (VM
+  `OpenByHandle of a placeholder under the helper's own marks returns at once and fills nothing`:
+  0.01 s, no fetch, no ignore mark). Open.
+- **F100. The pause is the tree store's** (`konedrived/src/sync/outbox_api.rs`, `upload::paused`; write
+  design §11) — `Pause`/`Resume` write `meta.paused_until` in the account's tree store, not
+  `config.toml`: a store that is rebuilt (an unknown version, corruption) forgets the pause, and a
+  folder with no store — a local one, or a OneDrive folder whose sync has not started — cannot be
+  paused (`Unsupported`, `NoRoot`). While paused, the poll asks OneDrive for nothing, and the first
+  cycle after a restart waits too; `Refresh()` asks for nothing either. A cycle already running when
+  the pause comes starts no replacement (the next cycle after the pause is Full and finds them
+  again), and an upload in fragments stops at its next fragment and resumes its session after the
+  pause; a one-request upload or a metadata request already sent finishes. A timed pause is looked
+  at by the wall clock at least every minute, so a suspend does not stretch it; its timer ends it on
+  the bus only if no `Pause` or `Resume` came after it read the store; a forgotten folder is no
+  longer paused. The tray's "pause every account" is one `Pause` per account (A23).
+  LIMIT · measured (`sync::tests::onedrive::a_pause_holds_the_poll_outlasts_a_restart_…`,
+  `…a_forgotten_folder_is_not_paused`, `…a_pause_that_lands_as_the_last_one_ends_stands`). Open.
+- **F101. A coalesced property that changes and changes back is not signalled**
+  (`konedrived/src/sync/dbus.rs`, `coalesce`) — the counters, `Transfers`, and
+  `PendingCount`, `PendingBytes`, `BlockedCount`, `HeldCount` and `Uploads` are sent at most four
+  times a second, compared with what was sent last. A value that changes and changes back within
+  one 250 ms window (a small file queued and uploaded at once) sends nothing, and a client that read
+  the property in between (a `GetAll` at that moment) keeps the passing value until the next
+  change. `Paused` and `PausedUntil`, which a quick pause and resume would otherwise leave stale,
+  are signalled at once instead. FRAGILE · measured for the pause (the flip was lost before the
+  change: `konedrivectl` `binary_pauses_resumes_and_keeps_the_ignore_list`). Open.
+- **F102. The outbox on the bus: what it simplifies** (`konedrived/src/sync/dbus.rs`, `outbox_api.rs`;
+  `konedrivectl sync …`) — (1) `SetIgnorePatterns` refuses only an empty pattern, one holding `/`
+  or a NUL, and one longer than a name; a pattern that matches nothing is kept. Once set, the list
+  is written in full to `config.toml`, so a later change of the built-in defaults does not reach
+  that account. It applies to the watcher's next examination, and a Full local scan follows: a
+  name no longer ignored is uploaded; a file newly ignored loses its create row (a row for an item
+  already in OneDrive stays: it syncs whatever its name); a directory of the user's own newly
+  ignored stays local with everything in it, and the new things waiting inside it lose their rows —
+  unless the worker is making that directory in OneDrive right now: it is an item then, and what is
+  in it goes up.
+  A OneDrive file moved into such a directory is not seen there: its move waits until the helper can
+  say where it went (F54). `config.toml` and the list the watcher reads change together, under one
+  lock; `sync ignore add`/`remove` read, change and set the whole list, so two of them at once can
+  lose one change. (2) `MachineName` is read-only on the bus: `machine_name` in `config.toml` sets
+  it. (3) `ConfirmDeletes` and `RestoreDeletes` answer how many rows they released or dropped, and
+  `HeldCount` (`u`, coalesced) counts what waits for
+  them. `ConfirmDeletes` releases every removal held at the moment of the call, one held after the
+  caller last looked included. `RestoreDeletes` forgets the items' local objects in both the base
+  and a cycle's staging, under the tree lock, and asks for a cycle with a Full reconcile at once,
+  which places them again (items with no local object on record, F115); it deletes nothing in OneDrive.
+  (4) `BlockedCount` does not count held removals: `HeldCount` does. (5) `Outbox()` reads a waiting
+  file's size with `lstat` for each call, off the runtime; `sync outbox` shows the first 50 rows
+  unless `--all`. (6) A free-up of a downloaded file named on its own whose change waits to be
+  uploaded is refused `NotUploaded`, before any account frees anything; inside a folder, such a file
+  is left and counted as busy. The check goes by the file's item id and its object, under the file's
+  inode lock, and fails closed: a OneDrive folder whose outbox cannot be read (its sync not started,
+  a store error), or a file whose state cannot be read, refuses the free-up. A file not downloaded is refused `NotHydrated` as before, row
+  or not. (7) When the outbox worker stops, or its rows are dropped, its counts on the bus read 0;
+  the next worker counts again. (8) `NotUploaded` and the `Transfers` direction column are all the
+  CLI shows of the blocked and running rows; the mass-delete guard writes no activity event of its
+  own: the window learns of it from `HeldCount`. LIMIT · measured
+  (`sync::tests::onedrive::the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up`,
+  `…restoring_held_deletes_brings_the_files_back_at_once`, `…an_ignored_directory_keeps_everything_in_it_local`,
+  `…a_free_up_that_cannot_tell_whether_a_change_waits_refuses`, `…the_ignore_list_is_kept_in_config_toml`,
+  `tree::outbox::tests::dropping_held_rows_survives_a_cycles_swap`,
+  `sync::local::tests::ignoring_a_directory_being_made_keeps_what_is_inside_it`). Open.
+- **F110. A replacement waits while the file is open anywhere** (`konedrived/src/sync/materialize.rs`,
+  `replace_leased`; write design §9) — in a read-write folder a downloaded file is replaced by
+  OneDrive's new version only under a write lease, taken before the download (so nothing is fetched
+  for nothing) and again at the swap, with the tree lock: a program writing into it across the rename
+  would write into the unlinked old inode. At the swap the lease comes first, and the file is looked
+  at again under it (through its descriptor, and by name without opening it), so a write that landed
+  just before is a stamp mismatch, never swapped away; a download emptied here counts as changed too.
+  While anything has it open the replacement is `Busy`, not a
+  failure: nothing is said, the base keeps the version on disk, and every cycle tries again. A file held
+  open for long (a mailbox, a database) keeps its old version as long; a lease refused between the
+  probe and the swap costs one download. Without `CONFIG_IMA` the kernel does not count readers, so
+  the lease sees writers only. Read-only folders are unchanged. LIMIT · measured
+  (`sync::listing::rw::tests::a_replacement_waits_for_a_file_open_for_writing`). Open.
+- **F111. The `410` upload variant removes placeholders the service lost** (`konedrived/src/sync/listing.rs`,
+  `fetch_changes`; `drive/mod.rs`, `resync`; write design §9) — Graph's `410` names
+  `resyncChangesApplyDifferences` or `resyncChangesUploadDifferences`, told apart by the body. After
+  the first the drive is listed again and the folder made to match, keeping local work as every
+  read-write reconcile does. After the second, what the new listing left out is not removed where it
+  was downloaded: the file stays, stripped, and the examination uploads it as new (a new id); a
+  downloaded file whose version differs from the listing's is kept beside it as a conflict copy; a
+  placeholder, which holds nothing here, is removed, and that is only logged. A read-only folder takes
+  both as the first, as before. LIMIT · measured
+  (`sync::listing::rw::tests::the_two_resyncs_differ_in_what_the_listing_left_out`). Open.
+- **F112. What waits for a local change is staged again at every cycle** (`konedrived/src/tree/reconcile.rs`,
+  `sync/listing/rw.rs`; write design §9) — an item the read-write reconcile leaves as it is on disk
+  (a live outbox row in any state; below a folder a `move` row takes; a local move or copy not
+  examined yet, with what is below it; a replacement not landed; a file being filled) keeps its base
+  row, and the delta's entry waits in the store's `deferred` table, dated by the outbox commit count its
+  fetch started at, or by the item's last commit when that is later (what the stale-delta guard read
+  again is newer than that commit, F113). Where the disk took OneDrive's move and only the content
+  waits (a replacement, a fill), only the content does: the base takes the new place. A local move or
+  delete not examined yet waits too when OneDrive removes the item, so that the outbox meets OneDrive's
+  side (§7) — a delete then costs one `DELETE` answered `404`. Every cycle stages what waits before its
+  own delta — a cycle with anything waiting
+  that is not held by a live row therefore copies `items` to `staging` even when the delta is empty —
+  until the disk takes it; an outbox commit after its fetch supersedes it. Below a folder a `delete` or
+  `move-out` row removes, the delta goes to the base at once and nothing is placed.
+  A read-only start applies what waits to the base at once, for its first Full reconcile to place: a
+  read-only cycle knows no deferred change. Items with no local object on record, and those the outbox
+  committed since the last cycle, are looked at at every cycle too; on a filesystem that gives no file
+  handles every placed item is one, which costs a lookup each per cycle (such a folder cannot be watched
+  anyway, F72). DEBT · measured
+  (`sync::materialize::rw::tests::rows_keep_the_reconcile_off_their_items_…`, `…a_local_move_not_examined_yet_…`,
+  `sync::listing::rw::tests::a_change_that_waited_for_a_row_is_applied_once_the_row_is_gone`,
+  `…a_change_read_again_survives_a_replacement_that_waits`, `tree::reconcile::tests`; the fake
+  OneDrive's delta is a cursor, as Graph's is). Open.
+- **F113. The stale-delta guard reads again, under the tree lock, what the outbox committed during a
+  fetch** (`konedrived/src/sync/listing/rw.rs`, `guard_delta`; write design §9) — the design drops a
+  delta entry for an item committed after the fetch began; one that is not the commit itself (another
+  eTag), a delete of it, or an entry for an item the outbox deleted (by its tombstone, `outbox_gone`) is
+  read again with `GET /items/{id}` instead, and that answer staged: it is newer than both, so a change
+  OneDrive made just after the commit is not lost. A full listing reads again every item committed while
+  it was listed. The reads hold the tree lock, so an outbox commit waits for them; a read that fails
+  fails the cycle (the next one is Full). WORKAROUND · measured
+  (`sync::listing::rw::tests::a_delta_fetched_before_a_commit_does_not_undo_it`). Open.
+- **F114. The reconcile's conflict copies go up through the examination** (`konedrived/src/sync/materialize/rw.rs`,
+  `copy_aside`; write design §7) — where the read phase rescued, a read-write reconcile renames the
+  local object in its directory to `name-<machine>.ext` (never over anything), takes konedrive's
+  attributes off and records a conflict of kind `copy`; its upload is the examination's, which the cycle
+  asks for by handing the watcher the copy's place (the daemon's own renames raise no event it keeps).
+  Without a running watcher the copy waits for the next Full local scan; a copy whose name the ignore
+  list matches is not uploaded, as its original was not. A new file where a new remote item arrives is
+  copied even when its content is the same: only the outbox worker, meeting `409` on a `create` row,
+  adopts by hash — so a local file already examined (a live `create`) is left to it, and the remote item
+  waits. A file that replaced an item OneDrive did not change (a save by rename not examined yet) is
+  the user's, never copied; a folder made here where OneDrive has a new one of that name is never
+  copied either: the two merge by the `mkdir`'s `409`, and OneDrive's side waits for it. FRAGILE ·
+  measured
+  (`sync::materialize::rw::tests::a_local_file_in_the_way_…`, `…an_edit_here_and_in_onedrive_keeps_both`). Open.
+- **F115. A missing item is placed again only with something to place** (`konedrived/src/sync/materialize/rw.rs`,
+  `place_again`; write design §9, §7) — a tree item missing from its place in a read-write folder is a
+  delete or a move the examination has still to see, and is left, unless it is new or has no local
+  object on record; a folder is placed again when something below it is. One whose local object is on
+  record is never placed again by the reconcile, even when OneDrive changed it: the object may be
+  alive elsewhere in the folder, or out of it (a placeholder moved out, which only a `move-out`
+  row marks and downloads — placed again, it would read zeros for good). Its base place goes to the
+  examination, which decides by the object; the outbox then meets OneDrive's change (a delete or a
+  move out answered `412` is dropped and its object forgotten — delete × edit: OneDrive wins), and
+  the next cycle places the item again. Until then the item stays away, and without an examination
+  (no watcher) until the next Full local scan. An object carrying an id the base does not
+  have is never removed by the reconcile — it may be another account's, whose outbox has still to
+  fetch it (§9) — so after the tree store was lost, what OneDrive removed meanwhile stays here too:
+  downloaded, the examination uploads it again as new; a placeholder is listed as not downloaded. And
+  local moves made while the store was lost are undone by the Full reconcile after the new listing:
+  with no base, nothing tells them from OneDrive's. LIMIT · measured
+  (`sync::materialize::rw::tests::a_missing_item_is_placed_again_…`, `…what_onedrive_removed_goes_…`,
+  `sync::listing::rw::tests::a_placeholder_moved_out_and_changed_in_onedrive_is_downloaded_where_it_went`).
+  Open.
+- **F116. A folder removed in OneDrive that holds local work is made again as a new one**
+  (`konedrived/src/sync/materialize/rw.rs`, `remove_in_place`; write design §9, §7 folders) — a
+  read-write reconcile removes what OneDrive removed in place: a clean placeholder goes, a downloaded
+  file only under a write lease, a changed file stays (stripped: uploaded again as new), and a folder
+  that keeps local work — something the examination will upload, or a local change a row or an
+  unexamined move holds — stays, its attributes off. A folder that keeps only what is not local work
+  — a file open somewhere or being filled, an ignored name, a symlink, an object from elsewhere —
+  keeps its id and base instead, and its removal waits (a folder of only such things waits for as long
+  as they stay); nothing is made again in OneDrive for them. Where a folder keeps both, a clean file
+  that was open goes up again with the local work, as a new item. Rows that were to go into it wait for its `mkdir`,
+  which the examination records when the cycle hands it the folder, and the outbox makes the folder
+  again — a new item: the old one's history and sharing links stay with it in the recycle bin. Without a
+  running watcher that waits for the next Full local scan. LIMIT · measured
+  (`sync::listing::rw::tests::a_folder_removed_in_onedrive_with_local_work_in_it_is_made_again`,
+  `sync::materialize::rw::tests::what_onedrive_removed_goes_unless_it_holds_local_work`,
+  `…a_folder_removed_in_onedrive_waits_for_what_is_in_use_…`). Open.
+- **F117. The order of a read-write folder's cycle, and what it cannot close** (`konedrived/src/sync/listing/rw.rs`,
+  `sync/upload/engine.rs`; write design §2.2, §3, §9) — the first cycle of a read-write folder waits
+  for the watcher's first examination (its Full local scan, or its `NoBase` answer on a new folder), so
+  that changes made while the daemon was down are rows before the Full reconcile; the outbox worker
+  sends nothing until a cycle has gone through, at start and again after the network came back. A
+  cycle that keeps failing (the helper away, OneDrive unreachable) holds uploads as long. A Full
+  reconcile comes at bring-up, after a helper reconnect, after a switch, after `RestoreDeletes`,
+  after a delete that OneDrive's change undid (the item must be placed again), on the first cycle
+  after a pause that held back a replacement, and when a Changed cycle finds something new to place
+  in a folder that is not where the tree has it; a pause lets changes wait for hours, so the first
+  cycle after it meets more of them. The examination holds the tree lock too, so a reconcile and an
+  examination never see each other's changes half made; a stop ends the cycle, then the outbox
+  worker, then the watcher, so that none waits for another. What remains are stalls: a Full local
+  scan (hashing, helper round trips) holds up cycles and commits, a cycle's re-reads from Graph hold
+  up the examination, and an outbox commit waiting for a file a fill holds keeps both waiting as
+  long as that download. What a reconcile moved to the holding directory never leaves the
+  folder: a stop or a crash in between leaves it for the next Full reconcile, which places it or puts
+  it back where the base has it — under a copy name beside its place, or in the root, when that is
+  taken — so it is never taken for a move out. A put-back under a copy name reads to the examination
+  as a move: where OneDrive moved the item, the move's guard fails and OneDrive's place wins; where a
+  local file took the name, the item is renamed in OneDrive to the copy name — only a name changes. A
+  new folder a stop left under its temporary name whose item OneDrive removed meanwhile goes, and
+  whatever someone put in it is put back where it stood. A first listing placed page by page makes
+  `staging` again from `items` under the lock at a page when an outbox commit wrote `items` since the
+  last one; what a page's reconcile leaves unsettled still goes
+  into `items` with the page (a first listing has no local changes to keep, but a file being filled).
+  For a moment the base can still run ahead of a file: an outbox commit that adopts OneDrive's newer
+  version (F82 (7)) until the next cycle's replacement lands. FRAGILE · measured
+  (`sync::listing::rw::tests::the_first_cycle_waits_for_the_scan_and_the_outbox_for_the_cycle`,
+  `…the_cycle_holds_the_tree_lock_from_staging_to_the_swap`, `…a_changed_pass_handing_over_with_something_in_holding_…`,
+  `…what_a_stop_left_in_the_holding_directory_…`,
+  `sync::materialize::rw::tests::a_new_folder_a_stop_left_under_its_temporary_name_…`); reasoned for
+  the rest. Open.
+- **F120. A placeholder moved out of the folder reads zeros until the daemon marks it again**
+  (`konedrived/src/sync/upload/move_out.rs`, `Engine::protect`; write design §8.3) — a file
+  moved out on its own leaves every marked directory, and nothing intercepts an open of it until
+  the worker sends `MarkFile` for it: after the watcher's quiet spell (2 s) and one examination
+  while the daemon runs, and after a reboot, a daemon restart or a helper restart, until the
+  worker's next look. It looks before any row runs and again at every wake, rows in flight or
+  not: every pending `move-out` row's object is marked, paused, held, offline or
+  waiting rows included, except one already local (`moved-out:local`). A directory moved out keeps
+  its own marks, and so its placeholders' interception, until the helper restarts, and is then
+  re-marked (`MarkDir` for it and every directory below it) the same way. A refusal that may
+  change (`EAGAIN`, a lease) is asked again at the next look. Not covered: a move out while the
+  daemon is not running, until the daemon runs and its Full local scan finds it; a directory made
+  inside a moved-out tree after its re-mark, until the next helper connection; a moved-out object
+  whose row was dropped and that could not be tidied then (F123); one whose row waits in a folder
+  turned read-only by a switch nobody forced, which runs no worker, until the
+  folder is read-write again or the switch is forced; and, after a reboot, a moved-out file whose place the kernel cannot give
+  (F121 (4)) is marked all the same (the mark needs no path). LIMIT · measured in the VM
+  (`move-out: a placeholder moved out …` — re-marked by a paused worker, then read whole; `move-out:
+  a download that stops part-way …` — the mark gone with a restarted helper, back before anything
+  runs) and on the host (`…what_left_is_marked_again_while_other_rows_run`). Open.
+- **F121. Moves out of the folder: downloaded first, and only then deleted in OneDrive**
+  (`konedrived/src/sync/upload/move_out.rs`; write design §8, §10) — a `move-out` row reaches its
+  object by handle (`OpenByHandle`) and never by a remembered path. Anywhere but the Trash, a
+  placeholder is downloaded where it went, through its own descriptor (the ordinary fill, under the
+  per-inode lock, resuming a checkpoint), and a folder's every placeholder of the item with it; a
+  cloud-only folder moved out is downloaded in full, with no prompt (as Windows does;
+  `docs/design/decisions.md`, "A move out of the folder downloads first"). A writer from before the re-mark is probed for first (a read lease): while one has
+  it open, nothing is filled. Only once each reads `hydrated` (the fill's commit point, after the
+  whole content and its hash), the row is still the item's newest (a row the examination recorded
+  behind it — the object came back — supersedes it) and the object is still proved to be outside
+  the folder (its `/proc/self/fd` path opened again on the same inode), is the row
+  marked (`moved-out:local` in its `snapshot`), konedrive's attributes taken off (the item id
+  first), the directories unmarked (never one beneath any account's folder, M1), and the item
+  deleted as a delete is (the folder against what the base held below it, F82 (10)). An object
+  moved into another account's folder is stripped and deleted all the same (write design §9), and
+  its directories stay marked; F124 has what differs there. In the Trash nothing is downloaded: a placeholder is removed with
+  its `.trashinfo` (`moved-out:trash` first), and the item goes to OneDrive's recycle bin only
+  once the placeholder is proved gone (no link left); downloaded content stays as the
+  user's own. The Trash is the user's own (`$XDG_DATA_HOME/Trash`, else `~/.local/share/Trash`) or
+  a `.Trash-<uid>` or sticky `.Trash/<uid>` directly at the top of a mount (`/proc/self/mountinfo`),
+  and the entry's `.trashinfo` must be there; anything else that looks like one, and a
+  placeholder with another link, is downloaded first. Doubt keeps the row, and the item in
+  OneDrive: `EPERM` (another owner, a nested subvolume, the attribute gone), no helper, a download
+  that stopped, a place that cannot be proved, an object back in the folder (the examination's),
+  anything a folder held that is alive but elsewhere in the folder or unreachable. `ESTALE` is the
+  user's delete only with its evidence: the handles the store recorded belong to the filesystem
+  the folder is on now (`meta.handles_root`: the root directory's own handle and, where the kernel
+  gives one, the filesystem's UUID, which survive a reboot, a remount and a renumbered device, as
+  `f_fsid` does not on XFS and F2FS), and where the object was last proved
+  to be there is nothing, or another object: an inode that cannot be read answers
+  `ESTALE` every time and still stands there, and is never gone. That place is where the
+  examination found it went, then wherever the row last reached it (kept in the row's
+  `target_name`); for what a folder held, its place in the folder where the folder is now; for the
+  examination's own deletes, its place in the folder. The row's own object must also say `ESTALE`
+  twice, 5 s apart.
+  The shortcuts: (1) after a marker, `EPERM` is read as this row's own strip, for the object and
+  for what it held (a strip that stopped part-way converges); an object that went
+  somewhere unreachable between the marker and the strip keeps konedrive's attributes, its content
+  having been local; (2) a crash in the middle of the strip leaves attributes other than the item
+  id on the user's file (an ordinary file all the same); (3) a file keeps the mark `MarkFile` put
+  on it (there is no `UnmarkFile`): each open of it costs one helper round trip, let through at
+  once, until the helper restarts; a directory holding another item's placeholder keeps its mark;
+  (4) a file whose place the kernel cannot give (its dentry disconnected after a reboot reads as
+  `/`) is downloaded, but not stripped or deleted until its place is proved: the row waits
+  (`moved-out-place-unknown`) until something looks the file up by its name; (5) a directory is
+  walked by its path, reopened through the user's own lookups and checked to be the same inode,
+  never beneath the descriptor `OpenByHandle` gave (SECURITY.md, F90): one the user cannot reach by
+  path waits; (6) what left a moved-out folder since is asked after by its handle, one round trip
+  per placed file the base still has below it, and made local where it went (the Trash included);
+  (7) move-outs run one at a time, beside the other rows, so a big folder's download holds the
+  other move-outs back; (8) a download's progress shows in `Transfers` under the moved-out path,
+  and the rows' reasons (`waiting-for-the-helper`, `moved-out-unreachable`,
+  `moved-out-place-unknown`, `back-in-the-folder`, `download-failed`, `gone-once`,
+  `handle-from-another-filesystem`, `gone-unproved`, `lease-probe-failed`) in `sync outbox`;
+  (9) after the folder's filesystem changes (a home moved to a new disk with its store, a Btrfs
+  snapshot rolled back), the next examination takes every handle again: a Full local scan records
+  each item found where it is, an item missing then is placed again from OneDrive rather than
+  deleted (WR4: the user's deletes made meanwhile are undone), and a `move-out` takes the handle of
+  what stands where it went if that carries its item id, or is dropped (the item stays in OneDrive
+  and is placed again). `LastError` says so until a Full local scan finds the handles current.
+  Until that examination, nothing is deleted on `ESTALE`. The filesystem is recorded at the first
+  examination, not with each handle: a store from before this record trusts handles it may have carried
+  from elsewhere; (10) account A strips a placeholder that now sits in account
+  B's folder as the daemon's own change, which B's watcher drops: B uploads it at its next Full
+  local scan; (11) when the OneDrive folder is itself a mount, the desktop's Trash for
+  it (`<folder>/.Trash-<uid>`) is inside the folder, and a Delete there is a move within the
+  folder, which the examination sends to OneDrive as a move into `.Trash-<uid>/files`;
+  (12) the place is checked before the marker, not again before the `DELETE`: a folder moved
+  back into the folder while its files are being stripped is deleted in OneDrive all the same, its
+  content local and stripped, uploaded again as new (its items' ids and history are lost, not a
+  byte); M1 holds, since nothing beneath a folder is unmarked; (13) with leases off
+  (`fs.leases-enable=0`) or not supported, no writer can be ruled out, and no moved-out placeholder
+  is downloaded: those rows wait as `lease-probe-failed`; (14) a folder in the Trash
+  loses its placeholders before its downloaded files are stripped, so a removal that fails part-way
+  leaves nothing stripped, and a marker is never taken off an object back in the
+  folder. FRAGILE · measured with a fake helper and a fake OneDrive (`sync::upload::move_out_tests`:
+  a placeholder, a folder, one file of a folder that cannot be downloaded, the Trash for a file
+  and a folder, a lookalike Trash and a linked placeholder, a download that stops part-way,
+  `EPERM`/`ESTALE`/no helper, a handle of another filesystem, a crash between the strip and the
+  delete and between two strips of a folder, what left a moved-out folder since, an object back in
+  the folder before and during its download, re-marking while another row runs, a restored held
+  move-out, a changed filesystem's handles taken again, `ESTALE` with the object still in its
+  place, a Trash removal that fails part-way) and in the VM with the real helper (`move-out: …`, four scenarios, the item deleted
+  only when the content was there at the moment of the `DELETE`). Open.
+- **F122. Fills of moved-out objects are routed by item id** (`konedrived/src/sync/hub.rs`,
+  `HelperHub::set_moved_out`; write design §8.3) — an open of a moved-out placeholder is filled
+  by the account whose `move-out` row names it (or names the folder the base has it inside), found
+  by the item id the file carries, before the device and the path are looked at: a placeholder
+  moved from one account's folder into another's on the same filesystem is the first account's,
+  though its path says the second. Each account's worker hands its ids over when they change; while
+  any account has some, every fill request reads the file's item id first (one `fgetxattr`).
+  WORKAROUND · measured (`sync::hub::tests::a_moved_out_object_is_routed_by_its_item_id`). The
+  routes go when the rows do: a forced switch to read-only and a Forget clear the account's;
+  `RestoreDeletes` leaves the rest to the worker's next look. Open.
+- **F123. Dropped moves out are tidied, never finished** (`konedrived/src/sync/upload/move_out.rs`,
+  `Tidy::dropped`, `drop_rows`; write design §8.3) — `move-out` rows go without
+  their download or their delete when `RestoreDeletes` restores them, or a forced switch to
+  read-only drops the outbox: the way out a Forget and a Remove point to, which are refused while
+  rows wait; one that goes ahead drops what is left with the tree store, tidied
+  the same way. Nothing would then download what they left
+  outside the folder, and after a helper restart nothing would mark it: an application would read
+  zeros (Z3). So each dropped row's object, reached by its handle while the helper still holds the
+  folder (a Forget tidies before it lets go of it), is tidied as the Trash case without the delete,
+  if it is proved to be outside every folder: a placeholder that holds nothing whole (never filled,
+  or a fill or a free-up cut short) is removed, a downloaded file stays as the user's own, stripped,
+  and the item's directories are unmarked, stripped and removed if left empty. Nothing is sent: the
+  item stays in OneDrive, and forgets its local object in the same step that drops the row, so
+  that a read-write folder's reconcile places it again (a read-only one does anyway). The shortcuts:
+  (1) the rows are dropped before the objects are tidied, never after: a row kept over a
+  placeholder already removed would read as the user's delete; so a crash in between leaves the
+  object as it was, with no row to mark it again (Z3); (2) an object the helper cannot reach at that
+  moment (no helper, `EAGAIN`), one being filled, a placeholder with another link, and one whose
+  place cannot be proved are left as they are; (3) a Forget whose store cannot be read counts no
+  rows, and drops them with the store, untidied; so does a held-back account's, whose store is not
+  open; (4) `RestoreDeletes` tidies before it answers, one helper round trip per row and a walk per
+  folder; (5) a row whose item the base has under a temporary name (`.konedrive-swap-`) is not
+  dropped, as no other row of such an item is. LIMIT · measured (`sync::upload::move_out_tests::dropped_move_outs_leave_no_placeholder_outside`,
+  `…restoring_a_held_move_out_tidies_what_left`). Open.
+- **F124. A move between two accounts keeps the file** (`konedrived/src/sync/materialize.rs`,
+  `set_aside`; `hub.rs`, `claimed_elsewhere`; `upload/move_out.rs`, `kept`; write design §8.3)
+  — an object moved from account A's folder into account B's is, for A, a move out
+  (downloaded where it is, then deleted in A's OneDrive); for B, read-write, a new file, uploaded once
+  A has stripped it (F121 (10)). Three things keep it from ending up only in A's recycle bin: (1)
+  B's read-only reconcile never removes an object whose id B's tree does not know and another account
+  claims — A's outbox waits to fetch it, A's tree store knows it, or the id names A's drive
+  (`<drive>!<n>`, a personal account's); a store that cannot be read claims it. The object is set
+  aside instead: renamed into B's rescue directory alive, attributes and all, its modes made
+  ordinary, and shown as a rescue; A's move out finds it there by its handle and downloads it
+  there. (2) A never takes `ESTALE` for the user's delete when the object was last proved to be
+  inside another account's folder: the row goes without a delete, the item forgets its local
+  object, and A places it again. A delete the user made in B's folder is so undone in A: the file
+  comes back there. (3) `EPERM` is never "gone", but when the object still stands where it was last
+  proved to be inside another account's folder, with the same handle and no item id, B's
+  examination took it for its own (it strips a downloaded file it does not know, and uploads it):
+  A's row goes the same way, and the file is in both accounts. Before, that row waited for ever
+  as `moved-out-unreachable`. The shortcuts: an account whose store is not open (not
+  brought up yet at a daemon start, held back) claims nothing, so B may remove such an object then,
+  and only (2) keeps it; if its last proved place was outside every folder before it went into
+  B's (moved twice between A's looks), A deletes it on `ESTALE` as the user's delete; a set-aside
+  placeholder stays one, with A's attributes, in B's rescue directory until A's move out runs, or
+  until A drops the row and tidies it (F123). LIMIT · measured
+  (`sync::upload::move_out_tests::a_placeholder_moved_into_a_read_only_account_ends_up_on_disk`,
+  `…a_move_out_gone_inside_another_accounts_folder_deletes_nothing`,
+  `…a_file_another_account_took_for_its_own_is_kept_here_too`,
+  `sync::hub::tests::another_accounts_item_ids_are_claimed`). Open.
+- **F130. The test-account harness guards every request, and leaves a few things to be done by
+  hand** (`tests/write-account/`; `docs/design/writes.md` §12.1) — `konedrive-write-test` sends
+  every request, konedrive's own `DriveClient`'s included, through a proxy on `127.0.0.1`. Its
+  guard admits a write only once the drive both tokens reach is the one named, is on the gate's
+  list, has less than 1 GiB in use and fewer than 1000 items; then only a write naming an item
+  inside `/konedrive-write-test/<run id>/` (learnt from OneDrive's own answers) or making that
+  folder, within 64 MiB per file, 200 MiB and 500 requests per run. After its first refusal it
+  admits nothing but the cleanup. What it leaves: (1) reads are not confined: the preflight lists
+  the drive to count its items, and stops at 1000; (2) the top folder `/konedrive-write-test` stays,
+  empty, after a run; (3) a run cut short from outside (Ctrl-C, a lost network, the machine off)
+  leaves its run folder in OneDrive, to be deleted by hand; the cleanup keeps 10 of the 500 requests
+  for itself; (4) the harness cannot tell where a token came from: that the write token is the test
+  account's rests on the drive-id checks, the look of the drive, and the daemon handing out
+  `--read-write` tokens only for drives on the list; the token files are deleted by hand; (5) Graph
+  restores an item from the recycle bin only with `Files.ReadWrite.All`, which konedrive does not
+  ask for, so unless the restore is allowed the recycle-bin check ends `LOOK`, to be confirmed on
+  onedrive.live.com; (6) the delta check waits up to a minute for OneDrive's feed to catch up, and a
+  slower feed fails it. WORKAROUND · measured (`konedrive-write-test`'s tests, on wiremock and on
+  the guard itself: a drive not on the list, another drive for either token, the same token twice,
+  1 GiB in use, a use it cannot read, 1000 items; every kind of write outside the run folder, each
+  refused for its own reason; a file over 64 MiB, the byte and request caps, the cleanup's reserve;
+  a missing flag, a token file that is not `0600`; a write outside the run folder that never reaches
+  the mock server, and an upload that reaches it without the token). Open.
+- **F131. What the uploads assume of OneDrive, until the test-account run**
+  (`docs/design/writes.md` §13; `tests/write-account/src/checks.rs`) — the harness is built and its
+  guards are tested, but it has not run: there is no test account yet. Until it runs, these stay
+  assumed, each handled safely either way: `If-Match` honoured on a 0-byte `PUT`;
+  `conflictBehavior=fail` honoured in a `PUT`'s URL; a folder's cTag changing with what is inside it
+  and guarding its delete; `409` on a rename to a taken name; names colliding without regard to
+  case; the delta feed returning the daemon's own changes with the eTags their writes were
+  answered with; 10 MiB fragments and a resume from the session's status; deletes going to the
+  recycle bin; an edit made during a session superseded by its last fragment (F80); and a
+  read-only refresh after a switch back answering a token that cannot write (F66). LIMIT ·
+  reasoned. Open until the run.
+- **F140. A read-only folder that holds changes waiting to upload is not kept in step with OneDrive**
+  (`konedrived/src/sync/write_mode.rs`, `follow_mode`, `drop_pending_uploads`;
+  `sync/listing.rs`, `held_back`) — only a forced switch drops the outbox's rows:
+  `SetMode("read-only", force)`, whether the account is read-write or read-only already. Any other
+  way to read-only — a sign-out, an expired sign-in (`invalid_grant`), the gate or `mode` edited in
+  `config.toml`, a file that cannot be read, a narrower grant, another drive seen, a watcher that
+  could not start — keeps them: the folder is locked, and its sync runs no cycle while they wait,
+  since the read phase's reconcile would put back the moves and renames they describe and place
+  deleted items again. What a read-write cycle deferred stays deferred. Files are still downloaded
+  on open. `LastError` says why; the changes go once the account is read-write again. The cost:
+  OneDrive's changes do not reach such a folder meanwhile. A forced drop keeps a rename half-done in
+  OneDrive under a `.konedrive-swap-*` name — dropped, the item would stay under that name,
+  which no listing places, and its local object would go — so such a folder stays held until the
+  account is read-write again. The window offers the forced switch only as it turns uploading off:
+  for an account that turned read-only by itself, `konedrivectl account mode read-only --force` is
+  the way. The replay of a stale `running` delete after a restart read-only cannot undo a
+  re-placed item any more: no read-only reconcile places it while its row waits. LIMIT ·
+  measured (`sync::tests::onedrive::a_sign_out_keeps_the_changes_waiting_to_upload`,
+  `…an_expired_sign_in_keeps_the_changes_waiting_to_upload`,
+  `tree::outbox::tests::a_forced_drop_keeps_a_rename_half_done`,
+  `konedrived/tests/mode.rs::a_forced_switch_drops_what_a_read_only_account_kept`). Open.
+- **F141. A Forget and `Accounts1.Remove` are refused while changes wait to be uploaded**
+  (`konedrived/src/sync/mod.rs`, `forget`; `write_mode.rs`, `changes_in_store`) —
+  the folder's tree store, which holds the outbox, goes with a Forget and with the account, so both
+  are refused `PendingUploads` while it holds any row — waiting, blocked or held by the mass-delete
+  guard — asked before anything changes (the watcher hands over first) and again once the sync
+  has stopped. The way out is to wait, or a forced switch to read-only (F140), which drops them.
+  With no sync running, the store on disk is read; one that cannot be opened counts as holding
+  nothing, since the next sync would rebuild it empty anyway. LIMIT, on purpose · measured
+  (`sync::tests::onedrive::a_folder_whose_changes_wait_is_not_forgotten`,
+  `konedrivectl` `a_remove_or_forget_refused_while_changes_wait_says_what_to_do`). Open.
 ---
 
 ## 5. Provisional numbers
@@ -976,7 +1918,7 @@ application must never read zeros where real content should be.
 | `Retry-After` wait when Graph throttles (`429`/`503`) | default 10 s, capped at 300 s, 5 attempts before giving up | **guess** (`RetryPolicy::default`) |
 | Upload fragment, and the most sent in one request (`CHUNK_SIZE`, `SMALL_UPLOAD_MAX`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
 | One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |
-| Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (§4.10) |
+| Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (write design §6.2) |
 | Replacements of changed files downloading at once | 2 | **guess** |
 | Fills served on open at once (`serve_hydrations`) | 4 | **guess** |
 | Pinned downloads at once (`PIN_SLOTS`), beside the fills on open | 4 | **guess**, equal to the fills on open |
@@ -987,6 +1929,18 @@ application must never read zeros where real content should be.
 | Notifications per event kind (A3) | one per 10 s, the rest as one summary | **guess** |
 | Window's "checked N s ago" refresh | every 10 s, from the clock | **guess** |
 | Window's "Recent" list | 50 rows | **guess**; the daemon keeps 200 |
+| Quiet spell before a batch of local changes is examined, and its ceiling during continuous activity (`QUIET`, `CEILING`) | 2 s / 30 s | the write design's; **guess** |
+| A busy file (open for writing, being filled or freed) examined again after (`RECHECK`) | 30 s | **guess** |
+| A folder the watcher cannot watch in full is scanned and walked every (`DEGRADED_SCAN`) | 10 min | the write design's; **guess** |
+| A batch the examination could not take yet is offered again after (`watcher::RETRY`) | 5 s with no completed listing; after an error 5 s doubled at each error in a row, up to 10 min | **guess** |
+| A `MarkDir` the helper did not answer is asked again after (`MARK_RETRY`) | 60 s, and when the helper is back | **guess** |
+| Shortest time between two walks for a directory the map lost (`UNKNOWN_WALK`) | 60 s | **guess** |
+| Mass-delete guard (`MASS_DELETE_ITEMS`, `MASS_DELETE_PERCENT`, `MASS_DELETE_FLOOR`) | more than 500 items, or more than 20 % of the folder's items once at least 10, counting removals still waiting | 500 and 20 % the write design's, the floor of 10 ours; all **guesses** |
+| Outbox rows sent at once (`upload::Limits`) | 1 metadata row (`mkdir`, `move`, `delete`); 4 files up to 10 MiB and 2 larger beside it | the write design's; **guess** |
+| `move-out` rows run at once (`Class::Out`) / how long the examination waits for the helper's `OpenByHandle` (`ASK_WITHIN`) / a first `ESTALE` for a row's object is asked again after (`GONE_AGAIN`) | 1, beside the others / 45 s, past the link's own 30 s / 5 s | **guess** |
+| A failed row's backoff / a throttle without `Retry-After` (`BACKOFF_FIRST`/`BACKOFF_MAX`, `THROTTLE_FIRST`) | 1 s doubling to 1 h / 10 s doubling to 1 h; `Retry-After` taken up to 1 h | the write design's; **guess** |
+| OneDrive full, tried again (`QUOTA_RETRY`) | every 30 min, or when the quota changes | the write design's |
+| A row rewritten and sent again at once before it backs off (`AGAIN_LIMIT`) / the worker's idle look at the outbox | 20 / every 300 s | **guess** |
 
 ---
 
@@ -1005,8 +1959,8 @@ application must never read zeros where real content should be.
 - **D6.** Two daemons writing one file after a `chown` in the middle of a download have no
   shared lock. Needs root to trigger.
 - **D7.** The crash consistency of placeholder creation has not been reviewed.
-- **D9.** The notification watcher of `docs/design/hydration.md` §16 was never built; planned for
-  the write phase.
+- **D9.** The notification watcher `docs/design/hydration.md` §16 called for exists for read-write
+  folders only (`konedrived/src/sync/watcher/`, Z2); a read-only folder needs none.
 - **D10.** One unsuitable file in a populate source fails the whole populate, with a message naming
   it, rather than skipping that file.
 - **D11.** A delta is held in memory whole before it is staged (a full listing is staged page by
@@ -1025,6 +1979,15 @@ application must never read zeros where real content should be.
   not connected yet; try again in a moment" (`refusal_text_in`, `konedrivectl/src/lib.rs`). Neither
   line says that the helper is connected and only this folder is stuck waiting for the next
   reconnect.
+- **D15.** `konedrived/tests/accounts.rs::a_version_1_onedrive_folder_is_held_then_brought_up_at_the_first_connect`
+  can fail when `TMPDIR` is on xfs (`/var/tmp`) and passes on the default tmpfs `/tmp`: its last
+  assertion reads `LastError` once, right after the folder carries its drive, which the bring-up writes
+  before the sync's first cycle has failed on the unmocked listing. It is a race in the test (the
+  assertion wants an `eventually`), not in the daemon. Seen once; not chased.
+- **D16.** `konedrivectl/tests/sync_cli.rs::binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_partial`
+  failed once in a full `cargo test --workspace` while other builds loaded the machine (load 6), and
+  passes alone: it waits at most 2.5 s for `RootState` to read `listing`, behind a delta answer held
+  for 2 s, so a slow bring-up misses the window. A read-only folder's path; seen once; not chased.
 
 ---
 
@@ -1084,7 +2047,7 @@ attributes and never open it.
 - **K10. An unrecognised state value** shows no emblem and no actions. An unmanaged file (the
   user's own, in the sync folder) and a reserved `.konedrive-*` name are also left out of what
   `menuState` sends to `Pin`/`Unpin`/`FreeUp`, so one of them in a selection cannot make the
-  daemon refuse the whole batch over it (review #7). Reasoned.
+  daemon refuse the whole batch over it. Reasoned.
 - **K11. After a failed on-demand start** the message tells the user to start the daemon by hand.
 - **K12. Cosmetic:** the "already waiting" and "too many" notes appear in Dolphin's red error bar.
 - **K13. Build assumptions:** the README's `QT_PLUGIN_PATH` line assumes `lib64`; the minimum KF/Qt 6.8
@@ -1166,7 +2129,7 @@ attributes and never open it.
   (K8, K12); nothing is corrupted, the click is just stale.
 - **K24. `inTheContextMenuKioBuilds` does not prove KIO's real MimeTypes-based plugin filtering.**
   FRAGILE · reasoned. `dolphin/src/konedriveactions.json`'s `MimeTypes` had only
-  `application/octet-stream` until this round, which review #1 found meant real Dolphin never
+  `application/octet-stream` until this round, which meant real Dolphin never
   shows the menu on a folder at all — `inode/directory` is now in the list too. But the test that
   exercises the real `KFileItemActions::addActionsTo` path already passed, before the fix, for
   selections of `text/plain`, `image/jpeg` and `application/pdf`, none of which was ever declared
@@ -1175,13 +2138,29 @@ attributes and never open it.
   JSON is now complete for every type the plugin cares about), but no automated test actually
   proves the *filtering* itself works for a mixed selection in real Dolphin; only manual use does
   (`docs/acceptance-check.md` §10).
-- **K25. A directory's own pin bit is not cached (review #15).** DEBT · by decision, not measured.
+- **K25. A directory's own pin bit is not cached.** DEBT · by decision, not measured.
   `OverlayEngine` caches whether a directory *is a root* per watched directory, but not whether it
   *carries a pin* — `overlays()` and `recheck()` call `isEffectivelyPinned`, an ancestor walk to
   the root, fresh every time (K5), for a directory item exactly as for a file. Caching each
   watched directory's own pin bit, and rechecking a directory's descendants only when that bit or
   the root's changed, was judged not cheap enough to add in this round; the extra UI-thread cost
   is the same per-call ancestor walk K5 already measures for files, now paid for folders too.
+- **K26. Upload emblems read an attribute kept in step with the daemon by hand.** Reasoned; measured against
+  attributes set by hand (`overlayplugintest::emblemWhileWaitingToUpload`,
+  `overlayenginetest::uploadStateIsFollowedLive`, `noopentest`,
+  `actionplugintest::refusalIsExplained`). The overlay reads `user.konedrive.sync` by path with
+  `lgetxattr`, first, on every file and folder Dolphin asks about (one more read on top of K5's,
+  not remeasured): `pending` and `uploading` show `state-sync`, `blocked` shows `state-error`, and
+  either wins over the state and the pin, so a file new here with no state yet gets it too. A value
+  the plugin does not know falls back to the item's other emblems (unlike K10's unknown state),
+  since the file itself is still what its state says. Folders are read as well, although the write
+  design names only files, so a folder the daemon marks needs no change here. The daemon's outbox
+  worker writes the attribute (`konedrived/src/sync/upload/local.rs`), and "Free up space"'s
+  refusal `org.konedrive.Error.NotUploaded` ("not uploaded yet, so freeing it up would lose the
+  changes made here") is matched by name. No test runs the plugin against the daemon, so a value or
+  name spelled differently on one side shows no upload emblem, or the generic "Freeing up … failed"
+  with the daemon's message. The context menu itself is unchanged: a new file with no state still gets
+  no actions. FRAGILE · open.
 
 ---
 
@@ -1357,7 +2336,7 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   "needs attention"): another account signed out, or without a folder, does not. The folder moved
   from Settings to the Account page and is asked for only once the account is signed in (a folder
   already there shows whatever the sign-in); the window still never registers without
-  interception (I3). While the daemon is away the window keeps its last list of accounts, each
+  interception. While the daemon is away the window keeps its last list of accounts, each
   saying the service is not running, and follows the new list when it is back. Every account has
   its own controllers, each watching the daemon's name and reading its own object, so a daemon
   start costs two `GetAll` calls per account plus one for the manager.
@@ -1379,12 +2358,35 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   account, or an account whose sign-in did not start, whose Account page then shows the error and
   "Sign In to OneDrive". The new account is chosen at once, whether the `Accounts` change
   announcing it arrives before `Add`'s answer or after.
-- **A16. The mode is shown, not switchable; the client ID is one for all.** Decision · reasoned.
-  The Account page shows "Read-only — changes made here are not uploaded in this version" while
-  `Account1.Mode` is `read-only`, which is all this phase publishes; there is no switch, and any
-  other value shows no line until the write phase adds its own. The client ID stays in Settings,
-  shared by every account (`Accounts1.ClientId`), and can be changed only while no account is
-  signed in or signing in, the daemon's own rule; the field says so.
+- **A16. The upload switch keeps its own "waiting for sign-in"; the client ID is one for all.**
+  FRAGILE · measured (`accountcontrollertest`: `aSwitchToReadWriteWaitsForItsSignIn`,
+  `aRefusedSwitchSaysWhyInPlainWords`, `aSwitchToReadOnlyAsksBeforeDroppingUploads`;
+  `dialogstest::theUploadSwitch`). The Account page's "Upload changes made on this computer" shows
+  `Account1.Mode`, the mode the account runs in: on is read-write, so a read-write account whose
+  token lost `Files.ReadWrite` shows off, with `LastError` saying why (F61). Turned on, it first
+  explains that a sign-in follows and what uploading means, then calls `SetMode("read-write",
+  false)` and opens the URL it answers, as Sign In does. `Account1` says nothing while that sign-in
+  waits (F64), so the window keeps the wait itself (`AccountController::modeSignInPending`, with
+  "Copy Sign-In Link" and "Cancel", which calls `CancelSignIn`) and ends it as `konedrivectl account
+  mode` does: `Mode` turning read-write, a `LastError` arriving (`SetMode` cleared it before it
+  answered, and the window reads the properties again after the answer instead of trusting the
+  order of the signals), the account leaving `signed-in`, or the daemon going away. So (1) a window
+  restarted while the browser is open forgets the wait: the switch shows off, and finishing the
+  sign-in still turns it on; (2) a `LastError` set meanwhile for another reason ends the wait,
+  though the sign-in may still go through and turn the switch on; (3) a sign-in left open in the
+  browser waits until "Cancel", or until the daemon gives it up. Turned off, it calls
+  `SetMode("read-only", false)`; a `PendingUploads` refusal asks whether to turn off without
+  uploading, then calls it again with `force`. The question gives `PendingCount` as its count,
+  which the daemon counts a moment apart from its refusal, and a refusal that arrives after another
+  account was chosen asks nothing (the switch just shows on again). Refusals are told by their names, never the daemon's words:
+  `WritesNotAllowed` says uploading is not available for this account in this version (the gate,
+  F60, never the user's doing), `NotSignedIn` says to sign in first, `ModeNotGranted` to sign in
+  again, and any other error keeps the daemon's message. The switch is disabled while the account
+  is not signed in and while a switch is under way. WORKAROUND: Kirigami Addons'
+  `FormSwitchDelegate` writes `checked` back from its inner switch, which ends a binding on it, so
+  the page writes the mode again on every change (`onUploadingChanged`). The client ID stays in
+  Settings, shared by every account (`Accounts1.ClientId`), and can be changed only while no
+  account is signed in or signing in, the daemon's own rule; the field says so. Open.
 - **A17. The tray sums up every account.** Decision · measured (`app/tests/appstatustest.cpp`:
   `theTrayShowsTheWorstStateAndALinePerAccount`, `theTrayMenuWithSeveralAccounts`,
   `aClickShowsTheOneAccountNeedingAttention`, `noAccountIsOffline`). The icon is the worst state
@@ -1424,6 +2426,51 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   where its entry was removed before the daemon had answered and added back at the bottom of the
   panel. The name and icon are konedrive's: renaming an entry in Dolphin, or giving it another
   icon, is undone at the next change; a second entry carrying one account's tag is removed.
+- **A20. Held removals: the notification's baseline and its default.** Decision · measured
+  against the fake daemon (`appstatustest::uploadsBlockedHeldAndPaused`,
+  `notifiertest::heldDeletesNotifyWithRestoreAsTheDefault`, `synccontrollertest::theOutboxAndItsControls`).
+  The window follows `Sync1.HeldCount` for the tray's "needs attention", the Status page's "Restore
+  Them" and "Delete in OneDrive Too", and the `massDelete` notification; `Outbox()` is read only for
+  the Activity page's list (when a count changes, or the page is shown), which shows the first 100
+  rows and "and N more". The notification fires when `HeldCount` rises from 0: the daemon's first
+  answer after the app or the daemon starts only sets the baseline, so removals already held then
+  show in the tray and on the Status page, not as a new popup, and more held while some already are
+  add no second one. Its default action — a click on the notification itself — is
+  `RestoreDeletes`, the choice that loses nothing; `ConfirmDeletes` is only ever its own button.
+  Closed as a workaround: until `HeldCount` (1e7ac4f) the window found held rows by reading the
+  whole outbox every 15 s; the rest stays as decided.
+- **A21. Upload progress reuses the download jobs' rules, and a retry looks finished.** LIMIT ·
+  measured (`downloadprogresscontrollertest::uploadsShowAsUploadingToOneDrive`). A second
+  `DownloadProgressController` per account watches `Uploads` (`Direction::Upload`): the same 2 s
+  before a job shows, the cap of 5 and "and N more", the 1.5 s grace window (A11), the same
+  "Show download and upload progress" switch, titled "Uploading to OneDrive". Only an
+  `upload-failed` event fails a job, and the daemon sends it only for a change that needs the user
+  (`blocked`); an upload that stops for a reason expected to pass — offline, throttled, locked,
+  changed while sending — leaves `Uploads`, goes to `retry`, and its job finishes as a success;
+  when it is tried again a new job appears. The job's error is the reason in the window's words
+  (A22). Plasma's side is unverified, as A7 says. Open.
+- **A22. The reasons, the kinds and copies are read by their codes, in words kept apart from
+  `konedrivectl`'s.** FRAGILE · reasoned (`modelstest::uploadKindsAndCopies`). `uploadReasonText`
+  (`app/outboxmodel.cpp`) turns an outbox row's reason, an `upload-failed` detail and a
+  `NotUploaded()` reason into the window's words, with the same meanings as `konedrivectl`'s
+  `upload_reason_text` but pointing at the window instead of commands; no test keeps the two in
+  step (unlike W12's skip reasons), and a code neither knows is shown as the daemon wrote it. The
+  worker's own retry reasons (`changed-while-sending`, `parent-not-in-onedrive`, …) are shown as
+  codes, as the command line shows them. `Conflicts()` carries each entry's kind (`rescued` or
+  `copy`), and the window and `sync conflicts` word them by it; the `conflict` event carries none,
+  so there a copy of a file changed on both sides is told from a rescue by where its other file is:
+  beside the original (a copy) or anywhere else (a rescue). A rescue into the same folder, which the
+  daemon never makes, would read as a copy in the Activity list. Open.
+- **A23. Pausing from the tray pauses every account that can be paused.** Decision · measured
+  (`appstatustest::theTrayPausesAndResumesEveryAccount`). "Pause Syncing" in the tray calls
+  `Pause` on every account whose folder shows OneDrive and is not paused yet, with 2, 8 or 24 hours
+  (Windows' three) or until resumed; "Resume Syncing", shown while any account is paused, resumes
+  each paused one. A local folder is never asked (the daemon refuses it `Unsupported`), and
+  accounts paused at different times keep their own ends. "Paused" is a state of its own, after
+  "signed out" and before "syncing" (`AppStatus::rank`), with Breeze's `media-playback-pause`; an
+  account that also needs attention shows the warning instead. The Status page pauses and resumes
+  the account it shows, and says "Paused until 14:00" from `PausedUntil`, the time of day when it is
+  today, or a date. Open.
 
 ---
 
@@ -1487,3 +2534,6 @@ Kept briefly so the history of a weak spot is findable; details are in the commi
 - **The helper exiting on an event the kernel could not hand over** — fixed in commit
   `28ff3e6`; what remains is P1 and P8.
 - **The kernel document's header named only kernel 7.2.5** — corrected with this log's first commit.
+- **F63. A read-write folder reconciled by the read phase's rules** — a Full reconcile
+  rescued new local files out of the folder, put back local moves and rescued local edits before a
+  remote change. Closed by the read-write reconcile (F110–F117, commit `60be43d`).

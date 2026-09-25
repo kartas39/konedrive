@@ -23,6 +23,10 @@ inline constexpr char RootAttribute[] = "user.konedrive.root";
 /// An item is *effectively* pinned when it or any ancestor up to the sync
 /// root carries this (isEffectivelyPinned / pinnedBy below).
 inline constexpr char PinAttribute[] = "user.konedrive.pin";
+/// Written by the daemon on an item with changes waiting to be uploaded
+/// (an outbox row, `docs/design/writes.md` §11): "pending", "uploading" or "blocked";
+/// removed once the upload is committed.
+inline constexpr char SyncAttribute[] = "user.konedrive.sync";
 
 enum class FileState {
     /// A regular file with no `user.konedrive.state`: not a OneDrive file.
@@ -38,21 +42,39 @@ enum class FileState {
     NotAFile,
 };
 
+/// What `user.konedrive.sync` says.
+enum class UploadState {
+    /// No attribute, or a value this plugin does not know: the item's other
+    /// attributes decide its emblem.
+    None,
+    Pending,
+    Uploading,
+    /// The upload cannot go on until something changes (a name OneDrive
+    /// refuses, a full OneDrive, ...).
+    Blocked,
+};
+
 /// Windows-like, following the design: a cloud for online-only, an outline
 /// check for a hydrated file nobody asked to keep, a filled check for one
-/// that is effectively pinned, and the syncing glyph both for a file moving
-/// between states and for one pinned but not yet downloaded.
+/// that is effectively pinned, and the syncing glyph for a file moving
+/// between states, for one pinned but not yet downloaded, and for one
+/// waiting to be uploaded; an error sign for one whose upload is blocked.
 enum class Emblem {
     None,
     Cloud,
     Syncing,
     CheckOutline,
     CheckFilled,
+    Error,
 };
 
 /// `path`'s state, from lstat(2) and lgetxattr(2). Never opens `path`, and
 /// never follows a symbolic link: a link does not borrow its target's state.
 FileState readFileState(const QString &path);
+
+/// `path`'s upload state, from lgetxattr(2) alone: never opens `path`, and
+/// never follows a symbolic link. Read on files and folders alike.
+UploadState readUploadState(const QString &path);
 
 /// Whether `dir` itself carries `user.konedrive.root`. Does not follow a
 /// symbolic link: links are resolved beforehand (physicalDirectory), so a
@@ -108,10 +130,16 @@ Emblem emblemFor(FileState state, bool pinned);
 /// Whether `path`, by lstat(2) without following it, is a directory.
 bool isDirectory(const QString &path);
 
-/// The emblem for an item that may be a directory: a directory shows the
-/// filled check when it is effectively pinned, and nothing otherwise (it has
-/// no `FileState` of its own); anything else follows `emblemFor`.
-Emblem emblemForItem(FileState state, bool isDir, bool pinned);
+/// The emblem for an item that may be a directory. An upload waiting or
+/// under way shows the syncing glyph and a blocked one the error sign,
+/// whatever else holds. Otherwise a directory shows the filled check when it
+/// is effectively pinned, and nothing else (it has no `FileState` of its
+/// own); anything else follows `emblemFor`.
+Emblem emblemForItem(FileState state, bool isDir, bool pinned, UploadState upload = UploadState::None);
+
+/// `path`'s emblem inside `root`, from its attributes alone: its upload
+/// state first, and only without one its state and pin.
+Emblem itemEmblem(const QString &path, const QString &root, const PinMarkReader &hasPin = hasPinMark);
 
 /// The overlay icon names Dolphin draws for `emblem`; empty for `Emblem::None`.
 QStringList overlayNames(Emblem emblem);

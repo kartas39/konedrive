@@ -18,11 +18,39 @@
     <method name="SetLabel">
       <arg name="label" type="s" direction="in"/>
     </method>
+    <!-- Switches the mode: "read-only" or "read-write" (InvalidArgs
+         otherwise). Answers the URL of the sign-in the switch needs, empty
+         when it needs none; the caller opens it, as for BeginSignIn.
+         To read-write: refused WritesNotAllowed unless this account's drive
+         is in write_test_drive_ids in config.toml (the development gate),
+         then NotSignedIn unless it is signed in. The sign-in asks for
+         Files.ReadWrite; only once its token response grants that, for this
+         account's own drive, does Mode become "read-write". A cancelled
+         (CancelSignIn), refused or failed sign-in changes nothing but
+         LastError; State stays "signed-in" throughout.
+         To read-only: refused PendingUploads while changes wait to be
+         uploaded, unless force, which drops them (the files stay; a rename
+         half-done in OneDrive under a temporary name stays until the
+         account is read-write again). No sign-in: the next token refresh
+         asks for Files.Read. Any other way to read-only (a sign-out, the
+         write gate, config.toml) keeps the changes: the folder is locked
+         and not kept in step with OneDrive while they wait, and its
+         LastError says so; they go once the account is read-write again,
+         and force drops them then too, read-only already or not. -->
+    <method name="SetMode">
+      <arg name="mode" type="s" direction="in"/>
+      <arg name="force" type="b" direction="in"/>
+      <arg name="sign_in_url" type="s" direction="out"/>
+    </method>
     <!-- The last element of this object's path: 12 lowercase hex
          characters, never reused. -->
     <property name="Id" type="s" access="read"/>
     <property name="Label" type="s" access="read"/>
-    <!-- "read-only". "read-write" arrives with the write phase. -->
+    <!-- The mode the account runs in: "read-only" | "read-write". It is
+         "read-write" only while config.toml says so, the development gate
+         lets the account's drive through, and its token carries
+         Files.ReadWrite; otherwise "read-only", with LastError saying why
+         when config.toml says read-write. -->
     <property name="Mode" type="s" access="read"/>
     <!-- signed-out | signing-in | signed-in -->
     <property name="State" type="s" access="read"/>

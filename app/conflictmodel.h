@@ -21,6 +21,9 @@ public:
         NameRole,
         OriginalFolderRole,
         RescuedFolderRole,
+        /// A copy kept beside the original (the daemon's kind "copy"), not a rescue.
+        IsCopyRole,
+        RescuedNameRole,
     };
     Q_ENUM(Role)
 

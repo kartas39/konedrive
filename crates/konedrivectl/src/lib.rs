@@ -258,6 +258,7 @@ pub async fn status_text(proxy: &Account1Proxy<'_>, client_id: Option<&str>) -> 
     } else {
         out.push_str(&format!("{:<12}{state}\n", "State:"));
     }
+    out.push_str(&format!("{:<12}{}\n", "Mode:", proxy.mode().await?));
     if state == "signed-in" {
         out.push_str(&format!(
             "{:<12}{} <{}>\n",
@@ -336,10 +337,26 @@ pub async fn sync_status_text(proxy: &Sync1Proxy<'_>, helper: Option<&str>, pref
         }
         let checked = checked_text(proxy.last_checked().await?, unix_now());
         out.push_str(&format!("{:<W$}{checked}\n", "Last checked:"));
-        out.push_str(&format!(
-            "{:<W$}not in this phase: the folder is read-only, and nothing is sent to OneDrive\n",
-            "Editing:"
-        ));
+        let mode = account_mode(proxy).await;
+        out.push_str(&format!("{:<W$}{}\n", "Mode:", mode_text(&mode)));
+        let (pending, bytes, blocked) = (proxy.pending_count().await?, proxy.pending_bytes().await?, proxy.blocked_count().await?);
+        if mode == "read-write" || pending > 0 || blocked > 0 {
+            out.push_str(&format!("{:<W$}{}\n", "Waiting to upload:", waiting_text(pending, bytes)));
+        }
+        if blocked > 0 {
+            out.push_str(&format!("{:<W$}{blocked} (see `{prefix} sync not-uploaded`)\n", "Blocked:"));
+        }
+        let held = proxy.held_count().await?;
+        if held > 0 {
+            out.push_str(&format!(
+                "{:<W$}{held} deletions (`{prefix} sync deletes confirm` or `{prefix} sync deletes restore`)\n",
+                "Held for confirmation:"
+            ));
+        }
+        if proxy.paused().await? {
+            let until = proxy.paused_until().await?;
+            out.push_str(&format!("{:<W$}{}\n", "Paused until:", paused_text(until, prefix)));
+        }
     }
     if !path.is_empty() {
         out.push_str(&format!("{:<W$}{}\n", "On this computer:", human_bytes(proxy.local_bytes().await?)));
@@ -355,6 +372,151 @@ pub async fn sync_status_text(proxy: &Sync1Proxy<'_>, helper: Option<&str>, pref
 /// The width of `sync status`'s label column: `Always on this device:` is the
 /// longest label.
 const SYNC_STATUS_WIDTH: usize = 24;
+
+/// `Account1.Mode` of the account whose `Sync1` is `proxy` (the same object);
+/// empty when it cannot be read.
+async fn account_mode(proxy: &Sync1Proxy<'_>) -> String {
+    let inner = proxy.inner();
+    let account = async {
+        konedrive_dbus::accounts::Account1Proxy::builder(inner.connection())
+            .path(inner.path().to_owned())?
+            .build()
+            .await?
+            .mode()
+            .await
+    };
+    account.await.unwrap_or_default()
+}
+
+/// `sync status`'s `Mode:` line.
+pub fn mode_text(mode: &str) -> String {
+    match mode {
+        "read-write" => "read-write: changes made here are uploaded".to_owned(),
+        "read-only" => "read-only: nothing made or changed here is uploaded".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+/// `sync status`'s `Waiting to upload:` line: `3 files (1.5 MiB)`.
+pub fn waiting_text(count: u32, bytes: u64) -> String {
+    match count {
+        0 => "nothing".to_owned(),
+        1 => format!("1 change ({})", human_bytes(bytes)),
+        n => format!("{n} changes ({})", human_bytes(bytes)),
+    }
+}
+
+/// `sync status`'s `Paused until:` line.
+pub fn paused_text(until: i64, prefix: &str) -> String {
+    if until == 0 {
+        format!("resumed (`{prefix} sync resume`)")
+    } else {
+        format!("{} (`{prefix} sync resume` ends it now)", local_time(until))
+    }
+}
+
+/// A duration as `sync pause --for` takes it: `90s`, `30m`, `2h`, `1d`, or
+/// several at once (`1h30m`); a bare number is seconds. `None` for anything
+/// else, for zero, and for more than a `u32` of seconds.
+pub fn parse_duration(text: &str) -> Option<u32> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if let Ok(seconds) = text.parse::<u64>() {
+        return u32::try_from(seconds).ok().filter(|&s| s > 0);
+    }
+    let (mut total, mut number) = (0u64, String::new());
+    for c in text.chars() {
+        if c.is_ascii_digit() {
+            number.push(c);
+            continue;
+        }
+        let unit = match c {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86_400,
+            _ => return None,
+        };
+        let value: u64 = std::mem::take(&mut number).parse().ok()?;
+        total = total.checked_add(value.checked_mul(unit)?)?;
+    }
+    if !number.is_empty() {
+        return None;
+    }
+    u32::try_from(total).ok().filter(|&s| s > 0)
+}
+
+/// What a row's reason, or a `NotUploaded()` reason, means to a person.
+pub fn upload_reason_text(reason: &str) -> String {
+    let rename = "rename it to upload it";
+    match reason {
+        "name-characters" => format!("a name OneDrive refuses (one of \" * : < > ? \\ |): {rename}"),
+        "name-spaces" => format!("a name that starts or ends with a space, which OneDrive refuses: {rename}"),
+        "name-reserved" => format!("a name OneDrive reserves: {rename}"),
+        "name-not-utf8" => format!("a name that is not valid UTF-8: {rename}"),
+        "too-large" => "larger than OneDrive takes (250 GB)".to_owned(),
+        "quota-exceeded" => "OneDrive is full: free some space in OneDrive".to_owned(),
+        "forbidden" => "this sign-in does not allow uploads: sign in again".to_owned(),
+        "open-for-writing" => "open for writing in another program: it goes up once closed".to_owned(),
+        "mass-delete" => "part of a large delete: confirm it (`sync deletes confirm`) or undo it (`sync deletes restore`)".to_owned(),
+        "symlink" => "a symbolic link: never uploaded".to_owned(),
+        "fifo" | "socket" | "device" => "not a file or a folder: never uploaded".to_owned(),
+        "reserved-name" => "a .konedrive- name, which the daemon keeps for itself: never uploaded".to_owned(),
+        "not-downloaded" => "a file from another OneDrive folder that is not downloaded here".to_owned(),
+        "other-device" => "on another filesystem mounted inside the folder: never uploaded".to_owned(),
+        "hard-link" => "a file with other hard links: not uploaded".to_owned(),
+        "locked" => "locked in OneDrive (open for co-authoring): tried again later".to_owned(),
+        other => match other.strip_prefix("refused: ") {
+            Some(message) => format!("OneDrive refused it: {message}"),
+            None => other.to_owned(),
+        },
+    }
+}
+
+/// One row of `Sync1.Outbox()`: (seq, kind, full path, state, bytes sent, bytes
+/// in all, reason, next try).
+pub type OutboxRow = (u64, String, String, String, u64, u64, String, i64);
+
+/// `sync outbox`: one line per change waiting to go up — its state, kind and
+/// path, how far an upload has got, and why it waits.
+pub fn outbox_text(rows: &[OutboxRow], more: bool, prefix: &str) -> String {
+    if rows.is_empty() {
+        return "Nothing is waiting to upload.\n".to_owned();
+    }
+    let mut out = String::new();
+    for (_, kind, path, state, done, total, reason, next_try) in rows {
+        out.push_str(&format!("{state:<8} {kind:<8} {path}"));
+        if state == "running" && *total > 0 {
+            let percent = done.saturating_mul(100) / total;
+            out.push_str(&format!("  {percent}% of {}", human_bytes(*total)));
+        }
+        if !reason.is_empty() {
+            out.push_str(&format!("  ({})", upload_reason_text(reason)));
+        }
+        if state == "retry" && *next_try > 0 {
+            out.push_str(&format!("  next try {}", local_time(*next_try)));
+        }
+        out.push('\n');
+    }
+    if more {
+        out.push_str(&format!("… and more: `{prefix} sync outbox --all` shows them all\n"));
+    }
+    out
+}
+
+/// `sync not-uploaded`: what stays on this computer, and why.
+pub fn not_uploaded_text(items: &[(String, String)]) -> String {
+    if items.is_empty() {
+        return "Everything here is uploaded or waits to be.\n".to_owned();
+    }
+    let mut out = String::new();
+    for (path, reason) in items {
+        out.push_str(&format!("{path}\n    {}\n", upload_reason_text(reason)));
+    }
+    out
+}
 
 /// `sync status`'s `Helper:` line ([`helper_text`]).
 pub fn helper_line(helper: &str) -> String {
@@ -402,6 +564,12 @@ pub enum SyncAction<'a> {
     /// `account remove`, with the account's label: `Accounts1.Remove` forgets the
     /// folder as `Forget` does, and is refused under the same names.
     Remove(&'a str),
+    Outbox,
+    Pause,
+    Resume,
+    Ignore,
+    NotUploaded,
+    Deletes,
 }
 
 impl SyncAction<'_> {
@@ -427,6 +595,12 @@ impl SyncAction<'_> {
             Self::Unpin(paths) => format!("no longer keeping {paths} on this device"),
             Self::Free(paths) => format!("freeing up {paths}"),
             Self::Remove(label) => format!("removing the account {label}"),
+            Self::Outbox => "listing the changes waiting to upload".to_owned(),
+            Self::Pause => "pausing the sync".to_owned(),
+            Self::Resume => "resuming the sync".to_owned(),
+            Self::Ignore => "changing the ignore list".to_owned(),
+            Self::NotUploaded => "listing what is not uploaded".to_owned(),
+            Self::Deletes => "deciding on the large delete".to_owned(),
         }
     }
 
@@ -447,7 +621,13 @@ impl SyncAction<'_> {
             | Self::Activity
             | Self::Conflicts
             | Self::FreeUpSpace
-            | Self::Remove(_) => "",
+            | Self::Remove(_)
+            | Self::Outbox
+            | Self::Pause
+            | Self::Resume
+            | Self::Ignore
+            | Self::NotUploaded
+            | Self::Deletes => "",
         }
     }
 }
@@ -628,6 +808,22 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
              a file freed up there later could read as zeros from then on. Try again once the \
              helper is back (`konedrivectl sync status` shows when it is)"
         ),
+        // The changes waiting to upload would go with the account's folder.
+        (Some("PendingUploads"), Remove(label)) => {
+            let prefix = format!("konedrivectl --account {}", shell_word(label));
+            format!(
+                "the account {label} was not removed, and nothing was changed: {detail}. `{prefix} sync \
+                 outbox` lists what waits; `{prefix} account mode read-only --force` drops it — the \
+                 files stay here as they are, and OneDrive does not get the changes — and the account \
+                 can be removed then"
+            )
+        }
+        (Some("PendingUploads"), _) => format!(
+            "the sync folder{folder} is still registered, and nothing was changed: {detail}. `{prefix} \
+             sync outbox` lists what waits; `{prefix} account mode read-only --force` drops it — the \
+             files stay here as they are, and OneDrive does not get the changes — and the folder can \
+             be forgotten then"
+        ),
         (Some("NoAccount"), Remove(label)) => format!(
             "there is no account {label} any more, so nothing was removed. `konedrivectl account \
              list` shows the accounts there are"
@@ -662,7 +858,7 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
             .to_owned(),
         (Some("NoConflict"), _) => format!(
             "{path} is not in the list of conflicts, so there was nothing to dismiss. `{prefix} \
-             sync conflicts` lists them, each under the path it was moved to"
+             sync conflicts` lists them, each under the path where your version is kept"
         ),
         (Some("NoHelper"), Hydrate(_)) => format!(
             "the konedrive helper is not connected, so nothing was changed. {path} was left \
@@ -718,6 +914,12 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
             "this folder is not connected to OneDrive, so there is nothing to ask for: it was \
              registered while signed out and is filled with `{prefix} sync populate-from`"
         ),
+        (Some("Unsupported"), Outbox | Pause | Resume | Ignore | NotUploaded | Deletes) => {
+            "this folder is not connected to OneDrive, so nothing is uploaded from it".to_owned()
+        }
+        (Some("NoRoot"), Outbox | Pause | Resume | Ignore | NotUploaded | Deletes) => {
+            "the folder's sync has not started yet; try again in a moment".to_owned()
+        }
         (Some("Unsupported"), _) => {
             let why = detail.strip_prefix(&format!("{path}: ")).unwrap_or(detail);
             format!("{path} cannot be used as the sync folder: {why}")
@@ -775,6 +977,11 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
         ),
         (Some("NotHydrated"), _) => format!(
             "{path} is not downloaded, so there is no space to free — it already takes none"
+        ),
+        (Some("NotUploaded"), _) => format!(
+            "{} is not uploaded yet, so freeing up its space would lose the changes made here. It \
+             was left as it is; its space can be freed once it is uploaded (`{prefix} sync outbox`)",
+            if path.is_empty() { detail.split(" is not uploaded").next().unwrap_or(detail) } else { path }
         ),
         (Some("ModifiedLocally"), Hydrate(_)) => format!(
             "{path} was changed here and has not been uploaded, so downloading it again would \
@@ -836,9 +1043,21 @@ pub fn dev_refusal_text(name: Option<&str>, detail: &str, prefix: &str) -> Strin
             "cannot get an access token: the account is not signed in. Are you signed in? \
              (`{prefix} status` says; `{prefix} login` signs in.)"
         ),
+        Some("WritesNotAllowed") => format!(
+            "cannot get a read-write access token: while uploads are being developed, only the test \
+             accounts listed in write_test_drive_ids in ~/.config/konedrive/config.toml can be \
+             read-write, and this account is not one of them. {WITHOUT_READ_WRITE}"
+        ),
+        Some("ModeNotGranted") => format!(
+            "cannot get a read-write access token: the account is read-only. Switch it first: \
+             `{prefix} account mode read-write`"
+        ),
         _ => format!("cannot get an access token: {detail}"),
     }
 }
+
+/// What a refusal of read-write adds: the export without `--read-write` still works.
+const WITHOUT_READ_WRITE: &str = "Without --read-write, the export gives a read-only token.";
 
 /// A call on the accounts themselves, for [`explain_account_error`]. (`Remove`
 /// forgets a folder, and is a [`SyncAction`].)
@@ -855,6 +1074,9 @@ pub enum AccountAction<'a> {
     SignIn(&'a str),
     /// `Account1.SignOut`, with the account's label.
     SignOut(&'a str),
+    /// `Account1.SetMode`: the account's label, the mode asked for, and how a command
+    /// suggested about the account starts ([`command_prefix`]).
+    SetMode(&'a str, &'a str, &'a str),
 }
 
 /// What to tell a person when a call on the accounts failed: `Accounts1.Add`,
@@ -876,7 +1098,21 @@ pub fn account_refusal_text(action: AccountAction<'_>, name: Option<&str>, detai
     use AccountAction::*;
     let invalid = name == Some("org.freedesktop.DBus.Error.InvalidArgs");
     let failed = name == Some("org.freedesktop.DBus.Error.Failed");
+    let ours = name.and_then(|name| name.strip_prefix(ERROR_PREFIX)).and_then(|rest| rest.strip_prefix('.'));
     match action {
+        SetMode(label, _, _) if ours == Some("WritesNotAllowed") => format!(
+            "{label} was not switched to read-write: while uploads are being developed, only the test \
+             accounts listed in write_test_drive_ids in ~/.config/konedrive/config.toml can be, and \
+             this account is not one of them. Nothing was changed"
+        ),
+        SetMode(label, _, prefix) if ours == Some("NotSignedIn") => format!(
+            "{label} was not switched to read-write: it is not signed in. Sign in first: `{prefix} login`"
+        ),
+        SetMode(label, _, prefix) if ours == Some("PendingUploads") => format!(
+            "{label} was not switched to read-only: {detail}. `{prefix} account mode read-only --force` \
+             switches anyway"
+        ),
+        SetMode(label, mode, _) => format!("{label} was not switched to {mode}: {detail}"),
         Add(label) | Rename(_, label) if invalid => format!(
             "{label:?} cannot be an account's label: {detail}. A label has 1 to 40 characters, no \"/\" \
              and no \"@\", and is not another account's label, whatever the case"
@@ -1020,29 +1256,42 @@ pub fn activity_text(events: &[(i64, String, String, String)]) -> String {
     out
 }
 
-/// `sync transfers`: one line per download under way — path, how far, and
-/// the whole size.
-pub fn transfers_text(transfers: &[(String, u64, u64)]) -> String {
-    if transfers.is_empty() {
-        return "Nothing is downloading.\n".to_owned();
+/// `sync transfers`: one line per download and upload under way — its
+/// direction, path, how far, and the whole size.
+pub fn transfers_text(downloads: &[(String, u64, u64)], uploads: &[(String, u64, u64)]) -> String {
+    if downloads.is_empty() && uploads.is_empty() {
+        return "Nothing is downloading or uploading.\n".to_owned();
     }
     let mut out = String::new();
-    for (path, done, total) in transfers {
+    let lines = downloads.iter().map(|t| ("down", t)).chain(uploads.iter().map(|t| ("up", t)));
+    for (direction, (path, done, total)) in lines {
         let percent = if *total == 0 { 0 } else { done.saturating_mul(100) / total };
-        out.push_str(&format!("{path}  {percent}%  {}\n", human_bytes(*total)));
+        out.push_str(&format!("{direction:<4} {path}  {percent}%  {}\n", human_bytes(*total)));
     }
     out
 }
 
-/// `sync conflicts`: each local version moved out of the way, where it was
-/// and where it is now, and when.
-pub fn conflicts_text(conflicts: &[(i64, String, String)]) -> String {
+/// One row of `Sync1.Conflicts()`: (unix time, original full path, full path
+/// of the kept version, how it was kept: `rescued` or `copy`).
+pub type ConflictRow = (i64, String, String, String);
+
+/// `sync conflicts`: each local version kept, where it was and where it is
+/// now, and when: moved out of the way, or — in a read-write folder — kept as
+/// a copy beside OneDrive's.
+pub fn conflicts_text(conflicts: &[ConflictRow]) -> String {
     if conflicts.is_empty() {
         return "No conflicts.\n".to_owned();
     }
     let mut out = String::new();
-    for (at, original, rescued) in conflicts {
-        out.push_str(&format!("{original}\n    moved to {rescued} on {}\n", local_time(*at)));
+    for (at, original, rescued, kind) in conflicts {
+        if kind == "copy" {
+            out.push_str(&format!(
+                "{original}\n    changed here and in OneDrive: yours is kept beside it as {rescued}, {}\n",
+                local_time(*at)
+            ));
+        } else {
+            out.push_str(&format!("{original}\n    moved to {rescued} on {}\n", local_time(*at)));
+        }
     }
     out
 }
@@ -1051,10 +1300,11 @@ pub fn conflicts_text(conflicts: &[(i64, String, String)]) -> String {
 /// with the original's place in `folder` taken off its end (`rescued/<id>/<time>`, or a
 /// directory beside a folder on another filesystem), or the file's own directory when that
 /// cannot be told. Each once, in the order first met.
-pub fn rescue_dirs(folder: &str, conflicts: &[(i64, String, String)]) -> Vec<String> {
+pub fn rescue_dirs(folder: &str, conflicts: &[ConflictRow]) -> Vec<String> {
     use std::path::Path;
     let mut dirs: Vec<String> = Vec::new();
-    for (_, original, rescued) in conflicts {
+    // A copy is in the folder, beside its original, and stays with it.
+    for (_, original, rescued, _) in conflicts.iter().filter(|c| c.3 != "copy") {
         let rescued = Path::new(rescued);
         let within = if folder.is_empty() { None } else { Path::new(original).strip_prefix(folder).ok() };
         let dir = match within {
@@ -1080,7 +1330,7 @@ pub fn rescue_dirs(folder: &str, conflicts: &[(i64, String, String)]) -> Vec<Str
 /// were rescued to. Rescued files are never deleted; where the rescues of conflicts
 /// dismissed earlier went cannot be told from here (the data directory, beside a folder on
 /// another filesystem, or a migrated account's older ones), so only that they stay is said.
-pub fn removed_text(label: &str, folder: &str, conflicts: &[(i64, String, String)]) -> String {
+pub fn removed_text(label: &str, folder: &str, conflicts: &[ConflictRow]) -> String {
     let mut out = format!(
         "Removed the account {label}: it is signed out, and its token, cached name and quota, list of \
          OneDrive items, activity and conflicts list are deleted.\n"
@@ -1093,7 +1343,8 @@ pub fn removed_text(label: &str, folder: &str, conflicts: &[(i64, String, String
              placeholder, which reads as zeros.\n"
         ));
     }
-    let files = if conflicts.len() == 1 { "1 file".to_owned() } else { format!("{} files", conflicts.len()) };
+    let rescued = conflicts.iter().filter(|c| c.3 != "copy").count();
+    let files = if rescued == 1 { "1 file".to_owned() } else { format!("{rescued} files") };
     match rescue_dirs(folder, conflicts).as_slice() {
         [] => {}
         [one] => out.push_str(&format!("Kept: the {files} the conflicts list named, rescued in {one}\n")),
@@ -1145,14 +1396,21 @@ fn pinned_parts(detail: &str) -> Option<(&str, &str)> {
         .find(|(path, by)| std::path::Path::new(path).starts_with(by))
 }
 
-/// The one path a `NotAllowed` refusal of a call on several is about.
-/// `None` for any other error.
+/// The one path a `NotAllowed` or `NotUploaded` refusal of a call on several
+/// is about. `None` for any other error.
 pub fn refused_path(error: &zbus::Error) -> Option<&str> {
     let zbus::Error::MethodError(name, Some(detail), _) = error else { return None };
-    if name.as_str().strip_prefix(ERROR_PREFIX) != Some(".NotAllowed") {
-        return None;
+    refused_path_of(name.as_str(), detail)
+}
+
+/// [`refused_path`], on the error's name and message.
+fn refused_path_of<'a>(name: &str, detail: &'a str) -> Option<&'a str> {
+    match name.strip_prefix(ERROR_PREFIX) {
+        Some(".NotAllowed") => pinned_parts(detail).map(|(path, _)| path),
+        // "<path> is not uploaded yet, so freeing it up would lose …"
+        Some(".NotUploaded") => detail.split_once(" is not uploaded yet").map(|(path, _)| path),
+        _ => None,
     }
-    pinned_parts(detail).map(|(path, _)| path)
 }
 
 /// `sync unpin`: how many pins came off; the files stay.
@@ -1204,6 +1462,28 @@ pub fn human_bytes(bytes: u64) -> String {
     }
 }
 
+/// Polls `proxy` until `SetMode("read-write")`'s sign-in has ended: `Ok` once `Mode` is
+/// `read-write`, `Err` with `LastError` when the switch did not go through. The account stays
+/// `signed-in` throughout, so `State` cannot tell; it is polled for the same reason
+/// [`wait_for_sign_in`] polls.
+pub async fn wait_for_read_write(proxy: &Account1Proxy<'_>) -> anyhow::Result<()> {
+    loop {
+        if proxy.mode().await? == "read-write" {
+            return Ok(());
+        }
+        // `SetMode` clears `LastError` before it answers, so anything in it now is why the
+        // switch did not go through. Cancelled, it says nothing: the caller stops waiting.
+        let last_error = proxy.last_error().await?;
+        if !last_error.is_empty() {
+            anyhow::bail!("the account stays read-only: {last_error}");
+        }
+        if proxy.state().await? != "signed-in" {
+            anyhow::bail!("the account was signed out; it stays read-only");
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+}
+
 /// Polls `proxy` until the account leaves the `signing-in` state, then reports the outcome.
 ///
 /// Polling (rather than watching the `StateChanged` signal) sidesteps a coalescing hazard:
@@ -1236,10 +1516,44 @@ pub async fn wait_for_sign_in(proxy: &Account1Proxy<'_>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        choose, command_prefix, dev_refusal_text, human_bytes, refusal_text, refusal_text_in, removed_text, rescue_dirs,
-        shell_word, skip_reason_text,
-        write_secret_atomically, AccountInfo, Context, NoChoice, Source, SyncAction,
+        account_refusal_text, choose, command_prefix, dev_refusal_text, human_bytes, outbox_text, parse_duration,
+        refusal_text, refusal_text_in, removed_text, rescue_dirs, shell_word, skip_reason_text, upload_reason_text,
+        write_secret_atomically, AccountAction, AccountInfo,
+        Context, NoChoice, Source, SyncAction,
     };
+
+    /// `account remove` and `sync forget` refused while changes wait say how
+    /// to see them and how to drop them.
+    #[test]
+    fn a_remove_or_forget_refused_while_changes_wait_says_what_to_do() {
+        let detail = "2 change(s) made here have not been uploaded yet";
+        let removed = refusal_text(SyncAction::Remove("Test"), Some("org.konedrive.Error.PendingUploads"), detail, "/home/u/OneDrive");
+        assert!(removed.contains("was not removed") && removed.contains(detail), "{removed}");
+        assert!(removed.contains("`konedrivectl --account Test account mode read-only --force`"), "{removed}");
+        let forgot = refusal_text(SyncAction::Forget, Some("org.konedrive.Error.PendingUploads"), detail, "/home/u/OneDrive");
+        assert!(forgot.contains("still registered") && forgot.contains("`konedrivectl account mode read-only --force`"), "{forgot}");
+    }
+
+    /// `account mode` and `export-access-token --read-write` explain each refusal by its
+    /// name (`docs/design/writes.md` §11): the gate, uploads waiting, a read-only account.
+    #[test]
+    fn a_refused_mode_is_explained_by_its_name() {
+        let prefix = "konedrivectl --account Test";
+        let pending = account_refusal_text(
+            AccountAction::SetMode("Test", "read-only", prefix),
+            Some("org.konedrive.Error.PendingUploads"),
+            "3 changes made here have not been uploaded yet",
+        );
+        assert!(pending.contains("3 changes") && pending.contains("konedrivectl --account Test account mode read-only --force"), "{pending}");
+        let signed_out = account_refusal_text(AccountAction::SetMode("Test", "read-write", prefix), Some("org.konedrive.Error.NotSignedIn"), "x");
+        assert!(signed_out.contains("`konedrivectl --account Test login`"), "{signed_out}");
+        let other = account_refusal_text(AccountAction::SetMode("Test", "read-write", prefix), Some("org.konedrive.Error.Failed"), "no client id");
+        assert_eq!(other, "Test was not switched to read-write: no client id");
+        let read_only = dev_refusal_text(Some("org.konedrive.Error.ModeNotGranted"), "read-only", prefix);
+        assert!(read_only.contains("`konedrivectl --account Test account mode read-write`"), "{read_only}");
+        let gate = dev_refusal_text(Some("org.konedrive.Error.WritesNotAllowed"), "x", prefix);
+        assert!(gate.contains("write_test_drive_ids") && gate.contains("Without --read-write"), "{gate}");
+    }
 
     fn account(id: &str, label: &str, email: &str) -> AccountInfo {
         AccountInfo {
@@ -1319,13 +1633,18 @@ mod tests {
     /// cannot know.
     #[test]
     fn removal_says_where_the_listed_rescues_are() {
+        let rescued = |original: &str, kept: &str| (0, original.to_owned(), kept.to_owned(), "rescued".to_owned());
         let conflicts = [
-            (0, "/home/u/OneDrive/docs/a.txt".to_owned(), "/data/rescued/id/t1/docs/a.txt".to_owned()),
-            (0, "/home/u/OneDrive/b.txt".to_owned(), "/home/u/.konedrive-rescued-OneDrive/t2/b.txt".to_owned()),
-            (0, "/home/u/OneDrive/c.txt".to_owned(), "/data/rescued/id/t1/c.txt".to_owned()),
+            rescued("/home/u/OneDrive/docs/a.txt", "/data/rescued/id/t1/docs/a.txt"),
+            rescued("/home/u/OneDrive/b.txt", "/home/u/.konedrive-rescued-OneDrive/t2/b.txt"),
+            rescued("/home/u/OneDrive/c.txt", "/data/rescued/id/t1/c.txt"),
+            (0, "/home/u/OneDrive/d.txt".to_owned(), "/home/u/OneDrive/d-fedora.txt".to_owned(), "copy".to_owned()),
         ];
         let dirs = rescue_dirs("/home/u/OneDrive", &conflicts);
-        assert_eq!(dirs, ["/data/rescued/id/t1", "/home/u/.konedrive-rescued-OneDrive/t2"]);
+        assert_eq!(dirs, ["/data/rescued/id/t1", "/home/u/.konedrive-rescued-OneDrive/t2"], "a copy stays in the folder");
+        let listed = super::conflicts_text(&conflicts);
+        assert!(listed.contains("moved to /data/rescued/id/t1/c.txt"), "{listed}");
+        assert!(listed.contains("changed here and in OneDrive: yours is kept beside it as /home/u/OneDrive/d-fedora.txt"), "{listed}");
         let said = removed_text("Home", "", &[]);
         assert!(said.contains("It had no folder.") && !said.contains("Rescued"), "{said}");
     }
@@ -1586,6 +1905,41 @@ mod tests {
             "/home/u/OneDrive",
         );
         assert!(text.contains("To use /home/u/Other instead"), "{text}");
+    }
+
+    #[test]
+    fn durations_read_as_sync_pause_takes_them() {
+        assert_eq!(parse_duration("90"), Some(90));
+        assert_eq!(parse_duration("30m"), Some(1800));
+        assert_eq!(parse_duration("2h"), Some(7200));
+        assert_eq!(parse_duration("1d"), Some(86_400));
+        assert_eq!(parse_duration("1h30m"), Some(5400));
+        for bad in ["", "0", "soon", "2x", "h", "30m5", "999999999999"] {
+            assert_eq!(parse_duration(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn outbox_lines_say_what_waits_and_why() {
+        let rows = vec![
+            (1, "create".to_owned(), "/f/a.txt".to_owned(), "running".to_owned(), 512, 2048, String::new(), 0),
+            (2, "create".to_owned(), "/f/a:b".to_owned(), "blocked".to_owned(), 0, 1, "name-characters".to_owned(), 0),
+        ];
+        let text = outbox_text(&rows, true, "konedrivectl");
+        assert!(text.contains("running  create   /f/a.txt  25% of 2.0 KiB"), "{text}");
+        assert!(text.contains("blocked  create   /f/a:b  (a name OneDrive refuses"), "{text}");
+        assert!(text.ends_with("`konedrivectl sync outbox --all` shows them all\n"), "{text}");
+        assert_eq!(outbox_text(&[], false, "k"), "Nothing is waiting to upload.\n");
+        assert_eq!(upload_reason_text("refused: bad name"), "OneDrive refused it: bad name");
+    }
+
+    /// the outbox on the bus: a `FreeUp` of several paths refused `NotUploaded` names the
+    /// one path that has a change waiting, not all of them.
+    #[test]
+    fn a_free_up_refused_not_uploaded_names_the_one_path() {
+        let detail = "/f/B/y is not uploaded yet, so freeing it up would lose the changes made here";
+        assert_eq!(super::refused_path_of("org.konedrive.Error.NotUploaded", detail), Some("/f/B/y"));
+        assert_eq!(super::refused_path_of("org.konedrive.Error.Failed", detail), None);
     }
 
     #[test]
