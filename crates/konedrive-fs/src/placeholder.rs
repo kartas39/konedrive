@@ -14,6 +14,9 @@ pub const XATTR_ITEM_ID: &str = "user.konedrive.item-id";
 pub const XATTR_STATE: &str = "user.konedrive.state";
 pub const XATTR_STAMP: &str = "user.konedrive.stamp";
 pub const XATTR_ROOT: &str = "user.konedrive.root";
+/// On a OneDrive folder's root directory: the drive id of the account it shows. A folder
+/// forgotten by one account is refused to another that is not the same drive.
+pub const XATTR_DRIVE: &str = "user.konedrive.drive";
 pub const XATTR_CTAG: &str = "user.konedrive.ctag";
 pub const XATTR_PROGRESS: &str = "user.konedrive.progress";
 /// "Always keep on this device": `"1"` on a pinned file or folder. A folder's

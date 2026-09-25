@@ -1,14 +1,18 @@
 //! End-to-end tests for `org.konedrive.Sync1`, over a private test bus, the
-//! way `tests/dbus_api.rs` exercises `org.konedrive.Account1`. No fanotify is
-//! involved: a fake helper thread speaks the wire protocol and acknowledges
-//! everything, but never actually marks anything or sends a `HydrateRequest`
-//! — see `konedrived::sync::SyncService`'s own doc comment for why
-//! `Hydrate()` does not depend on that to fill a file.
+//! way `tests/dbus_api.rs` exercises `org.konedrive.Account1`: one account's
+//! `Sync1` at `/org/konedrive/Accounts/<id>`, and the per-file calls through
+//! `org.konedrive.Files1`, routed by path. No fanotify is involved: a fake
+//! helper thread speaks the wire protocol and acknowledges everything, but
+//! never actually marks anything or sends a `HydrateRequest` — see
+//! `konedrived::sync::SyncService`'s own doc comment for why `Hydrate()` does
+//! not depend on that to fill a file.
 //!
-//! The daemon is wired here exactly as `main.rs` wires it: both interfaces
-//! go through `konedrived::dbus::serve`, so `Sync1` is on the object before
-//! the bus name is claimed, and the helper is reached through
-//! `sync::supervise_helper` rather than inline.
+//! The daemon is started here exactly as `main.rs` starts it
+//! (`accounts::start`), so every account's objects are on the bus before the
+//! name is claimed, and the helper is reached through the hub's supervisor
+//! rather than inline.
+
+mod common;
 
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixStream;
@@ -16,33 +20,41 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::{introspect, signature_lines, start_daemon};
 use futures_util::StreamExt;
+use konedrive_dbus::accounts::{Accounts1Proxy, Dev1Proxy, Files1Proxy, Sync1Proxy};
 use konedrive_dbus::testing::TestBus;
-use konedrive_dbus::{error_name, Dev1Proxy, Sync1Proxy, OBJECT_PATH, SERVICE_NAME, SYNC_INTERFACE_NAME};
+use konedrive_dbus::{error_name, ACCOUNTS_INTERFACE_NAME, ACCOUNTS_PATH, SERVICE_NAME, SYNC_INTERFACE_NAME};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
-use konedrived::account::AccountService;
-use konedrived::config::Paths;
 use konedrived::oauth::Endpoints;
-use konedrived::secret::MemoryStore;
+use konedrived::secret::MemoryWallet;
 use konedrived::state::{SignInState, StateHandle};
 use konedrived::sync::helper::HelperLink;
 use konedrived::sync::{SyncService, SyncTrouble};
 use nix::sys::socket::{
     accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr,
 };
+use zbus::zvariant::OwnedObjectPath;
 
 const XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Sync1.xml"));
 const DEV_XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Dev1.xml"));
 
 struct Setup {
+    /// The account's `Sync1`.
     proxy: Sync1Proxy<'static>,
+    /// The per-file calls.
+    files: Files1Proxy<'static>,
+    manager: Accounts1Proxy<'static>,
+    /// The account's object.
+    path: OwnedObjectPath,
     client: zbus::Connection,
-    _server: zbus::Connection,
     dir: tempfile::TempDir,
     account: StateHandle,
     /// The daemon's own half, for what no method can reach: the state a sync
     /// with OneDrive publishes.
     sync: Arc<SyncService>,
+    _daemon: konedrived::accounts::Daemon,
+    _config: tempfile::TempDir,
     _helper_dir: tempfile::TempDir,
     _bus: TestBus,
 }
@@ -101,49 +113,40 @@ fn silent_helper(path: PathBuf) {
     });
 }
 
-fn account_service() -> Arc<AccountService> {
-    let account_dir = Box::leak(Box::new(tempfile::tempdir().unwrap()));
-    AccountService::new(
-        Paths::in_dir(account_dir.path()),
-        Endpoints::microsoft(),
-        Arc::new(MemoryStore::default()),
-        Duration::from_secs(5),
-    )
-    .unwrap()
-}
-
 async fn setup() -> Setup {
     setup_with_helper(true).await
 }
 
+/// The daemon with one account, `Personal`, signed in; the fake helper
+/// connected when `with_helper` says so.
 async fn setup_with_helper(with_helper: bool) -> Setup {
     let bus = TestBus::start();
+    let config = tempfile::tempdir().unwrap();
+    let daemon = start_daemon(
+        &bus,
+        config.path(),
+        Endpoints::microsoft(),
+        Arc::new(MemoryWallet::default()),
+        Duration::from_secs(5),
+    )
+    .await;
+    let added = daemon.manager.add("Personal", &daemon.connection).await.unwrap();
 
     let helper_dir = tempfile::tempdir().unwrap();
     let socket_path = helper_dir.path().join("helper.sock");
-    let link = if with_helper {
+    let hub = daemon.manager.hub();
+    // Without a helper, nothing is bound at this path: a punch with no link
+    // goes ahead whatever this machine runs at the real one.
+    hub.set_socket(&socket_path);
+    if with_helper {
         fake_helper(socket_path.clone());
         let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-        Some(link)
-    } else {
-        None
-    };
-
-    let account_service = account_service();
+        hub.set_link(Some(link));
+    }
     // §3.1 refuses a registration when nobody is signed in, so the tests
     // that register a folder start from a signed-in daemon. The one that
     // measures the refusal signs out again.
-    account_service.state().update(|s| s.state = SignInState::SignedIn);
-    let account = account_service.state().clone();
-    let sync_service = SyncService::new(link, Some(account.clone()), None);
-    // Without a helper, nothing is bound at this path: a punch with no link
-    // goes ahead whatever this machine runs at the real one.
-    sync_service.set_helper_socket(&socket_path);
-
-    let server =
-        konedrived::dbus::serve(bus.builder(), account_service, Some(Arc::clone(&sync_service)))
-            .await
-            .unwrap();
+    added.account.state().update(|s| s.state = SignInState::SignedIn);
 
     let client = bus.connect().await;
     // Property reads go to the daemon every time. A caching proxy — which is
@@ -151,6 +154,14 @@ async fn setup_with_helper(with_helper: bool) -> Setup {
     // the value it cached before the change, which is a property of the
     // proxy, not of the daemon this file is about.
     let proxy = Sync1Proxy::builder(&client)
+        .path(added.path.clone())
+        .unwrap()
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .unwrap();
+    let files = Files1Proxy::new(&client).await.unwrap();
+    let manager = Accounts1Proxy::builder(&client)
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await
@@ -158,75 +169,18 @@ async fn setup_with_helper(with_helper: bool) -> Setup {
     let dir = tempfile::tempdir().unwrap();
     Setup {
         proxy,
+        files,
+        manager,
+        path: added.path.clone(),
         client,
-        _server: server,
         dir,
-        account,
-        sync: sync_service,
+        account: added.account.state().clone(),
+        sync: Arc::clone(&added.sync),
+        _daemon: daemon,
+        _config: config,
         _helper_dir: helper_dir,
         _bus: bus,
     }
-}
-
-async fn introspect(client: &zbus::Connection, path: &str) -> String {
-    let introspectable = zbus::fdo::IntrospectableProxy::builder(client)
-        .destination(konedrive_dbus::SERVICE_NAME)
-        .unwrap()
-        .path(path)
-        .unwrap()
-        .build()
-        .await
-        .unwrap();
-    introspectable.introspect().await.unwrap()
-}
-
-/// Normalizes one interface to sorted lines such as `method Hydrate in=s
-/// out=` and `property RootState s read`. Argument names are ignored. Lifted
-/// from `tests/dbus_api.rs`, which has the canonical copy for `Account1`.
-fn signature_lines(xml: &str, interface: &str) -> Vec<String> {
-    let start = xml
-        .find(&format!("<interface name=\"{interface}\""))
-        .unwrap_or_else(|| panic!("interface {interface} missing in:\n{xml}"));
-    let end = start + xml[start..].find("</interface>").expect("unterminated interface");
-    let mut lines = Vec::new();
-    let mut method: Option<(String, String, String)> = None;
-    let flush = |method: &mut Option<(String, String, String)>, lines: &mut Vec<String>| {
-        if let Some((name, input, output)) = method.take() {
-            lines.push(format!("method {name} in={input} out={output}"));
-        }
-    };
-    for raw in xml[start..end].split('<').skip(1) {
-        let tag = raw.split('>').next().unwrap_or_default().trim();
-        let attr = |key: &str| -> String {
-            let pattern = format!("{key}=\"");
-            tag.find(&pattern)
-                .map(|i| {
-                    let rest = &tag[i + pattern.len()..];
-                    rest[..rest.find('"').unwrap()].to_owned()
-                })
-                .unwrap_or_default()
-        };
-        if tag.starts_with("method ") {
-            flush(&mut method, &mut lines);
-            method = Some((attr("name"), String::new(), String::new()));
-        } else if tag.starts_with("arg ") {
-            if let Some((_, input, output)) = method.as_mut() {
-                if attr("direction") == "out" {
-                    output.push_str(&attr("type"));
-                } else {
-                    input.push_str(&attr("type"));
-                }
-            }
-        } else if tag.starts_with("/method") {
-            flush(&mut method, &mut lines);
-        } else if tag.starts_with("property ") {
-            flush(&mut method, &mut lines);
-            lines.push(format!("property {} {} {}", attr("name"), attr("type"), attr("access")));
-        }
-    }
-    flush(&mut method, &mut lines);
-    lines.sort();
-    lines
 }
 
 /// The D-Bus error name a refused call came back with — never its message.
@@ -286,13 +240,13 @@ async fn populate_from_directory_mirrors_the_tree_as_placeholders() {
     let meta = std::fs::metadata(&placeholder).unwrap();
     assert_eq!(meta.len(), 4096, "the placeholder reports the real size");
     assert!(meta.blocks() < 8, "and takes no space");
-    assert_eq!(f.proxy.item_state(placeholder.to_str().unwrap()).await.unwrap(), "online-only");
+    assert_eq!(f.files.item_state(placeholder.to_str().unwrap()).await.unwrap(), "online-only");
     assert_eq!(
-        f.proxy.item_state(root.join("sub/b.bin").to_str().unwrap()).await.unwrap(),
+        f.files.item_state(root.join("sub/b.bin").to_str().unwrap()).await.unwrap(),
         "online-only"
     );
     assert_eq!(
-        f.proxy.item_state(source.join("a.bin").to_str().unwrap()).await.unwrap(),
+        f.files.item_state(source.join("a.bin").to_str().unwrap()).await.unwrap(),
         "not-managed",
         "a file outside the root is not ours"
     );
@@ -310,12 +264,12 @@ async fn hydrate_then_dehydrate_round_trips_one_file() {
     f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     let file = root.join("doc.bin");
 
-    f.proxy.hydrate(file.to_str().unwrap()).await.unwrap();
-    assert_eq!(f.proxy.item_state(file.to_str().unwrap()).await.unwrap(), "hydrated");
+    f.files.hydrate(file.to_str().unwrap()).await.unwrap();
+    assert_eq!(f.files.item_state(file.to_str().unwrap()).await.unwrap(), "hydrated");
     assert_eq!(std::fs::read(&file).unwrap(), vec![7u8; 8192]);
 
-    f.proxy.dehydrate(file.to_str().unwrap()).await.unwrap();
-    assert_eq!(f.proxy.item_state(file.to_str().unwrap()).await.unwrap(), "online-only");
+    f.files.dehydrate(file.to_str().unwrap()).await.unwrap();
+    assert_eq!(f.files.item_state(file.to_str().unwrap()).await.unwrap(), "online-only");
     use std::os::unix::fs::MetadataExt;
     let meta = std::fs::metadata(&file).unwrap();
     assert_eq!(meta.len(), 8192, "the size survives");
@@ -339,7 +293,7 @@ async fn a_download_is_announced_kept_and_freed_up_again() {
     let shown = file.to_str().unwrap();
     let mut added = f.proxy.receive_activity_added().await.unwrap();
 
-    f.proxy.hydrate(shown).await.unwrap();
+    f.files.hydrate(shown).await.unwrap();
 
     let signal = tokio::time::timeout(Duration::from_secs(5), added.next())
         .await
@@ -355,7 +309,7 @@ async fn a_download_is_announced_kept_and_freed_up_again() {
     let (files, bytes, busy) = f.proxy.free_up_space().await.unwrap();
     assert_eq!((files, busy), (1, 0));
     assert!(bytes >= 8192, "{bytes}");
-    assert_eq!(f.proxy.item_state(shown).await.unwrap(), "online-only");
+    assert_eq!(f.files.item_state(shown).await.unwrap(), "online-only");
 }
 
 /// Dismissing a conflict that is not there is an error, and the
@@ -373,14 +327,14 @@ async fn dismissing_a_conflict_that_is_not_there_names_the_path() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspection_matches_the_checked_in_xml() {
     let f = setup().await;
-    let live = introspect(&f.client, "/org/konedrive/Daemon").await;
+    let live = introspect(&f.client, f.path.as_str()).await;
     assert_eq!(signature_lines(&live, SYNC_INTERFACE_NAME), signature_lines(XML, SYNC_INTERFACE_NAME));
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dev1_matches_its_checked_in_xml() {
     let f = setup().await;
-    let live = introspect(&f.client, OBJECT_PATH).await;
+    let live = introspect(&f.client, f.path.as_str()).await;
     assert_eq!(
         signature_lines(&live, "org.konedrive.Dev1"),
         signature_lines(DEV_XML, "org.konedrive.Dev1")
@@ -390,7 +344,7 @@ async fn dev1_matches_its_checked_in_xml() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nothing_to_export_while_signed_out() {
     let f = setup().await;
-    let dev = Dev1Proxy::new(&f.client).await.unwrap();
+    let dev = Dev1Proxy::new(&f.client, f.path.clone()).await.unwrap();
     let err = dev.access_token().await.unwrap_err();
     assert_eq!(error_name(&err), Some("org.konedrive.Error.NotSignedIn"));
 }
@@ -426,9 +380,9 @@ async fn every_refusal_arrives_as_its_own_named_error() {
     std::fs::write(&outside, b"not ours").unwrap();
 
     assert_eq!(
-        refusal(f.proxy.hydrate(outside.to_str().unwrap()).await),
-        "org.konedrive.Error.NoRoot",
-        "before any root is registered"
+        refusal(f.files.hydrate(outside.to_str().unwrap()).await),
+        "org.konedrive.Error.OutsideRoot",
+        "before any root is registered, a path is in no account's folder"
     );
     assert_eq!(
         refusal(f.proxy.register_root(outside.to_str().unwrap()).await),
@@ -445,7 +399,7 @@ async fn every_refusal_arrives_as_its_own_named_error() {
         "org.konedrive.Error.AlreadyRegistered"
     );
     assert_eq!(
-        refusal(f.proxy.hydrate(root.join("doc.bin").to_str().unwrap()).await),
+        refusal(f.files.hydrate(root.join("doc.bin").to_str().unwrap()).await),
         "org.konedrive.Error.NoSource",
         "nothing has been populated, so there is nowhere to fetch from"
     );
@@ -454,37 +408,37 @@ async fn every_refusal_arrives_as_its_own_named_error() {
     let file = root.join("doc.bin");
 
     assert_eq!(
-        refusal(f.proxy.hydrate(outside.to_str().unwrap()).await),
+        refusal(f.files.hydrate(outside.to_str().unwrap()).await),
         "org.konedrive.Error.OutsideRoot"
     );
     assert_eq!(
-        refusal(f.proxy.hydrate(root.join("missing.bin").to_str().unwrap()).await),
+        refusal(f.files.hydrate(root.join("missing.bin").to_str().unwrap()).await),
         "org.konedrive.Error.Failed",
         "an I/O failure has no name of its own, and must not borrow one"
     );
     std::fs::write(root.join("stray.txt"), b"mine").unwrap();
     assert_eq!(
-        refusal(f.proxy.hydrate(root.join("stray.txt").to_str().unwrap()).await),
+        refusal(f.files.hydrate(root.join("stray.txt").to_str().unwrap()).await),
         "org.konedrive.Error.NotManaged"
     );
     assert_eq!(
-        refusal(f.proxy.dehydrate(file.to_str().unwrap()).await),
+        refusal(f.files.dehydrate(file.to_str().unwrap()).await),
         "org.konedrive.Error.NotHydrated",
         "an online-only file has nothing to free"
     );
 
-    f.proxy.hydrate(file.to_str().unwrap()).await.unwrap();
+    f.files.hydrate(file.to_str().unwrap()).await.unwrap();
     {
         // Somebody else holds it open: the write lease is refused.
         let _open = std::fs::File::open(&file).unwrap();
         assert_eq!(
-            refusal(f.proxy.dehydrate(file.to_str().unwrap()).await),
+            refusal(f.files.dehydrate(file.to_str().unwrap()).await),
             "org.konedrive.Error.InUse"
         );
     }
     std::fs::write(&file, b"what the user typed").unwrap();
     assert_eq!(
-        refusal(f.proxy.dehydrate(file.to_str().unwrap()).await),
+        refusal(f.files.dehydrate(file.to_str().unwrap()).await),
         "org.konedrive.Error.ModifiedLocally"
     );
 }
@@ -526,10 +480,10 @@ async fn a_daemon_with_no_helper_refuses_to_register_but_offers_the_explicit_mod
     std::fs::write(source.join("doc.bin"), vec![3u8; 2048]).unwrap();
     f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     let file = root.join("doc.bin");
-    f.proxy.hydrate(file.to_str().unwrap()).await.unwrap();
+    f.files.hydrate(file.to_str().unwrap()).await.unwrap();
     assert_eq!(std::fs::read(&file).unwrap(), vec![3u8; 2048]);
-    f.proxy.dehydrate(file.to_str().unwrap()).await.unwrap();
-    assert_eq!(f.proxy.item_state(file.to_str().unwrap()).await.unwrap(), "online-only");
+    f.files.dehydrate(file.to_str().unwrap()).await.unwrap();
+    assert_eq!(f.files.item_state(file.to_str().unwrap()).await.unwrap(), "online-only");
 }
 
 /// Every property emits `PropertiesChanged`, and only the ones that actually
@@ -551,7 +505,7 @@ async fn properties_changed_reports_exactly_what_changed() {
     let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
         .destination(SERVICE_NAME)
         .unwrap()
-        .path(OBJECT_PATH)
+        .path(f.path.clone())
         .unwrap()
         .build()
         .await
@@ -612,11 +566,12 @@ async fn helper_state_follows_the_link_and_then_what_systemd_says() {
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
     f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
-    assert_eq!(f.proxy.helper_state().await.unwrap(), "connected");
+    assert_eq!(f.manager.helper_state().await.unwrap(), "connected");
+    // `HelperState` is the manager's: one helper serves every account.
     let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
         .destination(SERVICE_NAME)
         .unwrap()
-        .path(OBJECT_PATH)
+        .path(ACCOUNTS_PATH)
         .unwrap()
         .build()
         .await
@@ -625,8 +580,10 @@ async fn helper_state_follows_the_link_and_then_what_systemd_says() {
 
     f.sync.set_link(None);
     f.sync.report_helper_lost();
-    assert!(changed_within(&mut changes, Duration::from_millis(600)).await.contains(&"HelperState".to_owned()));
-    let state = || async { f.proxy.helper_state().await.unwrap() };
+    assert!(changed_on(&mut changes, ACCOUNTS_INTERFACE_NAME, Duration::from_millis(600))
+        .await
+        .contains(&"HelperState".to_owned()));
+    let state = || async { f.manager.helper_state().await.unwrap() };
     for _ in 0..100 {
         if state().await == "stopped" {
             break;
@@ -661,7 +618,7 @@ async fn a_change_in_the_sync_alone_is_signalled_as_what_it_publishes() {
     let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
         .destination(SERVICE_NAME)
         .unwrap()
-        .path(OBJECT_PATH)
+        .path(f.path.clone())
         .unwrap()
         .build()
         .await
@@ -700,7 +657,7 @@ async fn the_counters_travel_in_one_properties_changed_message() {
     let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
         .destination(SERVICE_NAME)
         .unwrap()
-        .path(OBJECT_PATH)
+        .path(f.path.clone())
         .unwrap()
         .build()
         .await
@@ -727,11 +684,20 @@ async fn changed_within(
     changes: &mut zbus::fdo::PropertiesChangedStream,
     window: Duration,
 ) -> Vec<String> {
+    changed_on(changes, SYNC_INTERFACE_NAME, window).await
+}
+
+/// As [`changed_within`], for `interface`'s properties.
+async fn changed_on(
+    changes: &mut zbus::fdo::PropertiesChangedStream,
+    interface: &str,
+    window: Duration,
+) -> Vec<String> {
     let deadline = tokio::time::Instant::now() + window;
     let mut names = Vec::new();
     while let Ok(Some(signal)) = tokio::time::timeout_at(deadline, changes.next()).await {
         let args = signal.args().unwrap();
-        if args.interface_name != SYNC_INTERFACE_NAME {
+        if args.interface_name != interface {
             continue;
         }
         names.extend(args.changed_properties.keys().map(|k| k.to_string()));
@@ -780,21 +746,27 @@ async fn sync1_answers_from_the_moment_the_daemon_is_on_the_bus() {
     let helper_dir = tempfile::tempdir().unwrap();
     let socket_path = helper_dir.path().join("helper.sock");
     silent_helper(socket_path.clone());
+    // An account the daemon finds in config.toml at its start.
+    let config = tempfile::tempdir().unwrap();
+    let paths = konedrived::config::Paths::in_dir(config.path());
+    let id = konedrived::config::ConfigStore::open(&paths, async { false }).await.add_account("Personal").unwrap().id;
 
-    let account = account_service();
-    account.state().update(|s| s.state = SignInState::SignedIn);
-    let sync_service = SyncService::new(None, Some(account.state().clone()), None);
-    let _server = konedrived::dbus::serve(bus.builder(), account, Some(Arc::clone(&sync_service)))
-        .await
-        .unwrap();
-    tokio::spawn(konedrived::sync::supervise_helper(
-        sync_service,
+    let daemon = start_daemon(
+        &bus,
+        config.path(),
+        Endpoints::microsoft(),
+        Arc::new(MemoryWallet::default()),
+        Duration::from_secs(5),
+    )
+    .await;
+    tokio::spawn(konedrived::sync::hub::supervise(
+        Arc::clone(daemon.manager.hub()),
         socket_path,
         Duration::from_millis(50),
     ));
 
     let client = bus.connect().await;
-    let proxy = Sync1Proxy::new(&client).await.unwrap();
+    let proxy = Sync1Proxy::new(&client, konedrive_dbus::account_path(&id).unwrap()).await.unwrap();
     let answered = tokio::time::timeout(Duration::from_secs(3), proxy.root_state()).await;
 
     assert_eq!(

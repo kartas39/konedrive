@@ -1,4 +1,6 @@
 #include "accountcontroller.h"
+#include "accountsmodel.h"
+#include "daemoncontroller.h"
 #include "fakedaemon.h"
 #include "notifier.h"
 #include "synccontroller.h"
@@ -12,6 +14,8 @@
 namespace
 {
 const QString Root = QStringLiteral("/home/u/OneDrive");
+/// The tests' sign-out delay, in place of SignOutDelayMs.
+constexpr int SignOutMs = 50;
 }
 
 /// Stands in for KNotification: nothing reaches the desktop.
@@ -42,11 +46,12 @@ private:
         m_daemon->account->set({{QStringLiteral("State"), accountState}});
         m_daemon->sync->set({{QStringLiteral("RootPath"), Root}, {QStringLiteral("RootState"), QStringLiteral("ready")}});
         QVERIFY(m_daemon->start());
-        m_account = std::make_unique<AccountController>();
-        m_sync = std::make_unique<SyncController>();
+        m_account = std::make_unique<AccountController>(fake::FirstAccount);
+        m_sync = std::make_unique<SyncController>(fake::FirstAccount);
         m_notifier = std::make_unique<Notifier>(m_account.get(), m_sync.get(), &m_sink, [this] {
             return m_nowMs;
         });
+        m_notifier->setSignOutDelay(SignOutMs);
         QTRY_VERIFY(m_account->serviceAvailable() && m_sync->serviceAvailable());
         QTRY_COMPARE(m_account->state(), accountState);
     }
@@ -166,12 +171,36 @@ private Q_SLOTS:
         QCOMPARE(notice.showPath, QString());
     }
 
+    /// Every notice carries its account, for a click to open the window on
+    /// it; with more than one account the title names it, the text unchanged.
+    void theTitleNamesTheAccountWhenThereAreSeveral()
+    {
+        start();
+        report(QStringLiteral("failed"), QStringLiteral("a.txt"), QStringLiteral("timed out"));
+        QCOMPARE(m_sink.sent.size(), 1);
+        QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("Download failed"));
+        QCOMPARE(m_sink.sent.at(0).account, fake::FirstAccount);
+
+        m_notifier->setAccountName([] {
+            return QStringLiteral("Family");
+        });
+        report(QStringLiteral("update-failed"), QStringLiteral("b.txt"), QStringLiteral("timed out"));
+        QCOMPARE(m_sink.sent.size(), 2);
+        QCOMPARE(m_sink.sent.at(1).title, QStringLiteral("A file could not be updated — Family"));
+        QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("b.txt changed in OneDrive but could not be updated here: timed out"));
+        QCOMPARE(m_sink.sent.at(1).account, fake::FirstAccount);
+
+        m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
+        QTRY_COMPARE(m_sink.sent.size(), 3);
+        QCOMPARE(m_sink.sent.at(2).title, QStringLiteral("Signed out of OneDrive — Family"));
+    }
+
     void signingOutAfterBeingSignedInNotifies()
     {
         start();
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
         QTRY_COMPARE(m_account->state(), QStringLiteral("signed-out"));
-        QCOMPARE(m_sink.sent.size(), 1);
+        QTRY_COMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.first().event, QStringLiteral("signedOut"));
     }
 
@@ -183,6 +212,7 @@ private Q_SLOTS:
         QTRY_COMPARE(m_account->state(), QStringLiteral("signing-in"));
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
         QTRY_COMPARE(m_account->state(), QStringLiteral("signed-out"));
+        QTest::qWait(SignOutMs * 4);
         QCOMPARE(m_sink.sent.size(), 0);
     }
 
@@ -192,6 +222,7 @@ private Q_SLOTS:
         start();
         m_account->signOut();
         QTRY_COMPARE(m_account->state(), QStringLiteral("signed-out"));
+        QTest::qWait(SignOutMs * 4);
         QCOMPARE(m_sink.sent.size(), 0);
 
         // The next sign-out that the user did not ask for notifies again.
@@ -199,7 +230,52 @@ private Q_SLOTS:
         QTRY_COMPARE(m_account->state(), QStringLiteral("signed-in"));
         m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
         QTRY_COMPARE(m_account->state(), QStringLiteral("signed-out"));
+        QTRY_COMPARE(m_sink.sent.size(), 1);
+    }
+
+    /// Accounts1.Remove signs the account out before it goes: no one is told
+    /// to sign in again to an account that is gone, whether it was removed
+    /// here or with konedrivectl. Wired as main() wires it, a Notifier per
+    /// account, naming its account while there are several.
+    void removingAnAccountIsNotASignOut()
+    {
+        m_daemon = std::make_unique<FakeDaemon>(QStringList{QStringLiteral("Personal"), QStringLiteral("Family"), QStringLiteral("Work")});
+        for (FakeAccountObject *object : std::as_const(m_daemon->objects)) {
+            object->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        }
+        QVERIFY(m_daemon->start());
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        accounts.onEachAccount([this, &accounts](AccountItem *item) {
+            auto *notifier = new Notifier(item->account(), item->sync(), &m_sink, {}, item);
+            notifier->setSignOutDelay(SignOutMs * 4);
+            notifier->setAccountName([&accounts, item] {
+                return accounts.count() > 1 ? item->account()->label() : QString();
+            });
+        });
+        QTRY_COMPARE(accounts.count(), 3);
+        for (AccountItem *item : accounts.items()) {
+            QTRY_COMPARE(item->account()->state(), QStringLiteral("signed-in"));
+        }
+
+        FakeAccountObject *family = m_daemon->object(1);
+        family->sync->activity(1758700000, QStringLiteral("failed"), QStringLiteral("/home/u/Family/a.txt"), QStringLiteral("timed out"));
+        QTRY_COMPARE(m_sink.sent.size(), 1);
+        QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("Download failed — Family"));
+        QCOMPARE(m_sink.sent.at(0).account, family->path);
+
+        accounts.removeAccount(family->path);
+        m_daemon->removeAccount(m_daemon->object(2)->path);
+        QTRY_COMPARE(accounts.count(), 1);
+        QTest::qWait(SignOutMs * 10);
         QCOMPARE(m_sink.sent.size(), 1);
+
+        // One account left: a sign-out that is news is told, without a name.
+        m_daemon->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
+        QTRY_COMPARE(m_sink.sent.size(), 2);
+        QCOMPARE(m_sink.sent.at(1).event, QStringLiteral("signedOut"));
+        QCOMPARE(m_sink.sent.at(1).title, QStringLiteral("Signed out of OneDrive"));
+        QCOMPARE(m_sink.sent.at(1).account, fake::FirstAccount);
     }
 
     /// A daemon that restarts (a new owner of its name) hands the window its

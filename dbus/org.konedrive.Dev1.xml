@@ -1,11 +1,11 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node>
-  <!-- Development only (read-phase). -->
+  <!-- /org/konedrive/Accounts/<id>. Development only. -->
   <interface name="org.konedrive.Dev1">
-    <!-- The current access token: about an hour of read access to the
-         drive (Files.Read). Never the refresh token, which stays in the
-         wallet. Refused NotSignedIn when there is none. -->
+    <!-- This account's current access token: about an hour of read access
+         to its drive (Files.Read). Never the refresh token, which stays in
+         the wallet. Refused NotSignedIn when there is none. -->
     <method name="AccessToken">
       <arg name="token" type="s" direction="out"/>
     </method>

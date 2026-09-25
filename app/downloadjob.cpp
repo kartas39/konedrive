@@ -4,6 +4,7 @@
 
 DownloadJob::DownloadJob(QObject *parent)
     : KJob(parent)
+    , m_title(i18nc("@title job", "Downloading from OneDrive"))
 {
     setCapabilities(NoCapabilities);
     setProgressUnit(Bytes);
@@ -12,13 +13,13 @@ DownloadJob::DownloadJob(QObject *parent)
 void DownloadJob::setFileDescription(const QString &fileName)
 {
     m_detailText = fileName;
-    Q_EMIT description(this, i18nc("@title job", "Downloading from OneDrive"), qMakePair(i18nc("@label", "File"), fileName), {});
+    Q_EMIT description(this, m_title, qMakePair(i18nc("@label", "File"), fileName), {});
 }
 
 void DownloadJob::setOverflowDescription(int moreCount)
 {
     m_detailText = i18np("and 1 more file", "and %1 more files", moreCount);
-    Q_EMIT description(this, i18nc("@title job", "Downloading from OneDrive"), qMakePair(QString(), m_detailText), {});
+    Q_EMIT description(this, m_title, qMakePair(QString(), m_detailText), {});
 }
 
 void DownloadJob::updateProgress(qulonglong done, qulonglong total, qint64 nowMs)

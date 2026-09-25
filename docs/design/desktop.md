@@ -19,41 +19,50 @@ plugins. The daemon's own work is in [hydration.md](hydration.md) and [sync.md](
 
 ### 2.1 Names
 
-Session bus, service `org.konedrive.Daemon`, object `/org/konedrive/Daemon`, three interfaces:
-`org.konedrive.Account1`, `org.konedrive.Sync1` and `org.konedrive.Dev1`. The definitions are in
-`dbus/*.xml`, and a test keeps each in step with the live interface. The daemon is D-Bus activated
-(`SystemdService=konedrived.service`), so the first call from any client starts it. `Sync1` is on
-the object before the name is claimed, so no client sees a half-registered daemon.
+Session bus, service `org.konedrive.Daemon`, five interfaces on two kinds of object:
+
+| Object | Interfaces |
+|---|---|
+| `/org/konedrive/Accounts` | `org.konedrive.Accounts1` (the accounts, the client id, the helper), `org.konedrive.Files1` (the per-file calls, routed by path), `org.freedesktop.DBus.ObjectManager` |
+| `/org/konedrive/Accounts/<id>`, one per account | `org.konedrive.Account1` (its sign-in), `org.konedrive.Sync1` (its folder), `org.konedrive.Dev1` |
+
+The definitions are in `dbus/*.xml`, and a test keeps each in step with the live interface. The
+daemon is D-Bus activated (`SystemdService=konedrived.service`), so the first call from any client
+starts it. Every object is on the bus before the name is claimed, so no client sees a
+half-registered daemon. Nothing answers at `/org/konedrive/Daemon`, the object of the
+single-account versions ([accounts.md](accounts.md) §5).
 
 Properties change through `PropertiesChanged`. Counters, status and `Transfers` are coalesced: at
 most one signal per 250 ms, so a drive of hundreds of thousands of items cannot flood the bus.
 
-### 2.2 `Account1`
+The manager's interfaces, `Accounts1` and `Files1`, are in §2.8 and §2.9; each account's in §2.2
+to §2.7.
+
+### 2.2 `Account1`, per account
 
 | Member | Meaning |
 |---|---|
+| `Id` (`s`) | the account's id, the last element of its object path: 12 lowercase hexadecimal characters |
+| `Label` (`s`) | the account's name ([accounts.md](accounts.md) §2) |
+| `Mode` (`s`) | `read-only`, the only mode in this version ([accounts.md](accounts.md) §10) |
 | `State` (`s`) | `signed-out`, `signing-in` or `signed-in` |
-| `LastError` (`s`) | the reason for the most recent failure; empty when none |
-| `ClientId` (`s`) | the configured application id |
+| `LastError` (`s`) | the reason for the most recent failure, a sign-in refused as another account's included ([accounts.md](accounts.md) §6.2); empty when none |
 | `DisplayName`, `Email` (`s`) | from `GET /me` |
 | `QuotaUsed`, `QuotaTotal` (`t`) | bytes, from `GET /me/drive` |
-| `SetClientId(s)` | validates and stores the client id; refused while signing in or signed in |
 | `BeginSignIn() → s url` | starts the loopback listener and returns the authorization URL; the caller opens it ([sync.md](sync.md) §12.1) |
 | `CancelSignIn()`, `SignOut()`, `RefreshAccountInfo()` | as named; `SignOut` deletes the refresh token |
+| `SetLabel(s)` | renames the account; `InvalidArgs` for a label the rules refuse |
 
 Neither the refresh token nor the access token is ever exposed through `Account1`.
 
-### 2.3 `Sync1` methods
+### 2.3 `Sync1` methods, per account
 
 | Method | Does |
 |---|---|
-| `RegisterRoot(s path)` | binds an empty folder to the signed-in drive, with the helper intercepting ([hydration.md](hydration.md) §14.1) |
-| `RegisterRootWithoutInterception(s path)` | the developer's local folder, with nothing intercepting ([hydration.md](hydration.md) §14.3) |
+| `RegisterRoot(s path)` | binds an empty folder to the account's drive, with the helper intercepting ([hydration.md](hydration.md) §14.1); refused `Overlaps` for a folder that is, is inside, or contains another account's, and `NotEmpty` for one that carries another account's drive ([accounts.md](accounts.md) §6.3) |
+| `RegisterRootWithoutInterception(s path)` | the developer's local folder, with nothing intercepting ([hydration.md](hydration.md) §14.3); refused `Overlaps` in the same way |
 | `UnregisterRoot()` | Forget: leaves every file as it is ([hydration.md](hydration.md) §14.5) |
 | `PopulateFromDirectory(s source_dir) → t created` | fills a local folder with placeholders mirroring a directory; refused on a OneDrive folder |
-| `Hydrate(s path)` | downloads one file now ([hydration.md](hydration.md) §6.5) |
-| `Dehydrate(s path)` | frees one file up ([hydration.md](hydration.md) §8) |
-| `ItemState(s path) → s` | `online-only`, `hydrating`, `hydrated`, `dehydrating` or `not-managed`, read from the attribute by name (`lgetxattr`), never by opening the file |
 | `Refresh()` | runs a sync cycle now; refused `NoHelper` while the folder waits for the helper |
 | `Skipped() → a(ss)` | (path, reason) for everything in OneDrive that is not in the folder ([sync.md](sync.md) §7.5) |
 | `RecentActivity(u limit) → a(xsss)` | (time, kind, path, detail), newest first |
@@ -61,20 +70,20 @@ Neither the refresh token nor the access token is ever exposed through `Account1
 | `DismissConflict(s rescued_path)` | takes one conflict off the list; the file stays where it is |
 | `FreeUpSpace() → (u files, t bytes, u busy)` | frees up every downloaded file that is not in use; files open somewhere or busy with a download are skipped and counted, never waited for |
 
-### 2.4 `Sync1` properties and signals
+### 2.4 `Sync1` properties and signals, per account
 
 | Property | Meaning |
 |---|---|
 | `RootPath` (`s`) | the registered folder, empty when none |
 | `RootState` (`s`) | `none`, `listing`, `ready`, `no-interception` or `error` (§2.5) |
 | `RootSource` (`s`) | `onedrive`, `local`, or empty ([sync.md](sync.md) §3) |
-| `LastError` (`s`) | what needs attention, in words: the registration's trouble and the sync's, joined |
-| `HelperState` (`s`) | `connected`, `not-installed`, `stopped`, `failed` or `unknown` (§2.5) |
+| `LastError` (`s`) | what needs attention, in words: the registration's trouble and the sync's, joined; while the folder waits for the helper, it begins with the helper's advice (§2.5) |
 | `ItemsListed`, `ItemsPlaced`, `SkippedCount` (`t`) | the listing's progress ([sync.md](sync.md) §7.5) |
 | `LastChecked` (`x`) | Unix time of the last successful cycle; 0 for never |
 | `LocalBytes` (`t`) | the space the folder's files take on disk (`st_blocks × 512`), measured by a walk after each cycle and at most every 5 s after a download or free-up |
 | `ConflictCount` (`u`) | how many conflicts are listed |
-| `Transfers` (`a(stt)`) | each download under way as (path, bytes done, bytes total): fills on open, `Hydrate`, and replacements; not thumbnails |
+| `PinnedCount` (`u`) | how many files and folders carry a pin of their own ([pinning.md](pinning.md) §7) |
+| `Transfers` (`a(stt)`) | each download under way as (path, bytes done, bytes total): fills on open, `Hydrate`, pinned downloads and replacements; not thumbnails |
 
 The signal `ActivityAdded(x time, s kind, s path, s detail)` announces each event as it is recorded.
 The kinds are `downloaded`, `freed`, `added`, `updated`, `removed`, `moved`, `listed`, `conflict`,
@@ -92,52 +101,119 @@ more", and `FreeUpSpace` is one `freed` event (limitations log F25).
 
 - `none` — no folder is registered;
 - `error` — the registration or the sync is in trouble: signed out, another account than the store
-  was built from, an unusable store, a failed recovery, or a folder waiting for the helper;
+  was built from, an unusable store, a failed recovery, a folder waiting for the helper, or an
+  account held back for colliding with another in `config.toml` ([accounts.md](accounts.md) §4.1);
   `LastError` says which;
 - `listing` — a first or post-`410` listing is under way (only ever in place of `ready`);
 - `ready` or `no-interception` — the registration's own mode.
 
-`HelperState` says what the daemon knows of the helper. While it holds a link, `connected`.
-Otherwise it asks systemd — read-only, over the system bus, with no privilege — for
-`konedrive-helper.service`: not found is `not-installed`; inactive is `stopped`; failed, or a unit
-that cannot be loaded, is `failed`; no system bus, no systemd, or a unit systemd says is running
-while the daemon has no link yet, is `unknown`. It is asked again when the link drops or returns and
-every 30 s while there is none. The sentence for each state — how to install, start or diagnose the
-helper — is written once, in `konedrive_dbus::helper_advice`, for the daemon's `LastError`, the CLI
-and the window alike.
+`HelperState` says what the daemon knows of the helper. It is on `Accounts1`, not on each account,
+because one link serves every account ([accounts.md](accounts.md) §3.3). While the daemon holds the
+link, `connected`. Otherwise it asks systemd — read-only, over the system bus, with no privilege —
+for `konedrive-helper.service`: not found is `not-installed`; inactive is `stopped`; failed, or a
+unit that cannot be loaded, is `failed`; no system bus, no systemd, or a unit systemd says is
+running while the daemon has no link yet, is `unknown`. It is asked again when the link drops or
+returns and every 30 s while there is none. The sentence for each state — how to install, start or
+diagnose the helper — is written once, in `konedrive_dbus::helper_advice`, for the daemon's
+`LastError`, the CLI and the window alike; each account whose folder waits for the helper begins
+its `Sync1.LastError` with it.
 
 ### 2.6 Errors
 
 Every refusal is an error name under `org.konedrive.Error`: `NotSignedIn`, `AlreadyRegistered`,
 `NoHelper`, `NotEmpty`, `Unsupported`, `NoRoot`, `NoSource`, `OutsideRoot`, `NotManaged`,
-`NotHydrated`, `ModifiedLocally`, `InUse`, `NoConflict`, and `Failed` for everything without a name
-of its own (an I/O failure). Registration refusals come in the order `NotSignedIn`,
-`AlreadyRegistered`, `NoHelper`, then the folder checks.
+`NotHydrated`, `ModifiedLocally`, `InUse`, `NoConflict`, `NotAllowed` (a free-up of something a pin
+keeps, [pinning.md](pinning.md) §5), `Overlaps` (a folder that is, is inside, or contains another
+account's; the message names that account), `NoAccount` (`Remove` of a path that names no account),
+and `Failed` for everything without a name of its own (an I/O failure). Registration refusals come
+in the order `NotSignedIn`, `AlreadyRegistered`, `NoHelper`, `Overlaps`, then the folder checks.
+`Add`, `SetLabel` and `SetClientId` refuse a label or an id with the bus's own `InvalidArgs`, and
+`Accounts1` refuses with the bus's `Failed` a call that is not possible now — a client id changed
+while an account is signed in, or anything while `config.toml` cannot be read: nothing needs to
+tell those reasons apart.
 
-### 2.7 `Dev1`
+### 2.7 `Dev1`, per account
 
-`AccessToken() → s` returns the daemon's current access token for a test run in the VM — about an
-hour of `Files.Read`, never the refresh token ([sync.md](sync.md) §12.2).
+`AccessToken() → s` returns the account's current access token for a test run in the VM — about an
+hour of `Files.Read` on that account's drive, never the refresh token ([sync.md](sync.md) §12.2).
+
+### 2.8 `Accounts1`
+
+| Member | Meaning |
+|---|---|
+| `Accounts` (`ao`) | every account's object, in the order the accounts were added |
+| `ClientId` (`s`) | the application id every account signs in with |
+| `HelperState` (`s`) | `connected`, `not-installed`, `stopped`, `failed` or `unknown`: one helper serves every account (§2.5) |
+| `LastError` (`s`) | trouble that belongs to no account: `config.toml` cannot be read or was written by a newer version, a migration step failed, an account could not be loaded; empty when none |
+| `Add(s label) → o` | adds a signed-out, read-only account with no folder and returns its object ([accounts.md](accounts.md) §7.2); `InvalidArgs` for a label the rules refuse |
+| `Remove(o account)` | forgets the account's folder as `UnregisterRoot` does, signs it out, deletes its refresh token, cached name and quota and tree store, and takes its object off the bus; the folder's files and the rescued files stay ([accounts.md](accounts.md) §7.3) |
+| `SetClientId(s)` | validates and stores the client id; `InvalidArgs` for a malformed one, and refused while any account is signing in or signed in |
+
+The same object is an `org.freedesktop.DBus.ObjectManager`: `InterfacesAdded` when an account's
+object is on the bus, `InterfacesRemoved` when it goes, and `GetManagedObjects` for tools. The
+window and the CLI follow `Accounts` instead.
+
+### 2.9 `Files1`
+
+The calls on one file or on chosen paths, each routed by path to the account whose folder holds it
+([accounts.md](accounts.md) §3.5). A path in no account's folder is refused `OutsideRoot`.
+
+| Method | Does |
+|---|---|
+| `Hydrate(s path)` | downloads one file now ([hydration.md](hydration.md) §6.5) |
+| `Dehydrate(s path)` | frees one file up ([hydration.md](hydration.md) §8) |
+| `ItemState(s path) → s` | `online-only`, `hydrating`, `hydrated`, `dehydrating` or `not-managed`, read from the attribute by name (`lgetxattr`), never by opening the file; `not-managed` also for a path in no account's folder |
+| `Pin(as paths) → u queued` | "Always keep on this device" ([pinning.md](pinning.md) §3) |
+| `Unpin(as paths) → u unpinned` | takes each path's own pin off ([pinning.md](pinning.md) §5) |
+| `FreeUp(as paths) → (u files, t bytes, u busy, u skipped_pinned)` | "Free up space" ([pinning.md](pinning.md) §5) |
+
+`Pin`, `Unpin` and `FreeUp` route every path before anything changes, and their counts are summed
+over the accounts.
 
 ## 3. The command line
 
 `konedrivectl` talks to the same interfaces.
 
-| Command | Does |
-|---|---|
-| `set-client-id <id>`, `login`, `logout`, `status` | the account |
-| `sync register <path>` | registers a OneDrive folder (needs the helper) |
-| `sync register-without-interception <path>` | the developer's local folder, named after its cost on purpose |
-| `sync forget` | Forget |
-| `sync populate-from <dir>` | fills a local folder from a directory |
-| `sync hydrate <path>`, `sync dehydrate <path>`, `sync state <path>` | one file |
-| `sync status` | the folder, its state, source and counts, "Last checked", "On this computer", whether opens are intercepted, and a `Helper:` line with what to do |
-| `sync skipped` | what is not in the folder, and why |
-| `sync refresh` | a cycle now |
-| `sync activity [--limit N]`, `sync transfers` | recent events; downloads under way |
-| `sync conflicts`, `sync dismiss <rescued path>` | the conflicts |
-| `sync free-up-space` | frees up every downloaded file not in use |
-| `dev export-access-token --out <file>` | writes the access token to a `0600` file, atomically, never through a symlink |
+**Choosing the account.** A command that acts on one account takes the account from the global
+option `--account <id | label | email>`, else from the environment variable `KONEDRIVE_ACCOUNT`,
+else it is the only account there is. The name is matched as an id, as a label and as an email
+(label and email in any case). A label has no `@` and is not shaped like an id, so only a
+hand-edited `config.toml` can make a name fit two accounts; such a name is refused with exit
+status 2, listing each account it fits as `label (id)`, and never taken as the first. With several
+accounts and none named, the command stops with exit status 2 and lists the labels ("Several
+accounts: choose one with --account (Personal, Family)"); with no account at all, it stops with
+exit status 1 and says how to add one. The commands that name no chosen account — the path
+commands, `account …` and `set-client-id` — refuse `--account` with exit status 2 rather than
+ignore it, and ignore `KONEDRIVE_ACCOUNT`, which is a default for a whole shell (limitations log
+F51).
+
+| Command | Account | Does |
+|---|---|---|
+| `account list` | all | a table of every account in account order: id, label, email, sign-in state, mode, and the folder with its `RootState` |
+| `account add <label>` | — | `Accounts1.Add`: a signed-out account with no folder; prints its id |
+| `account rename <account> <label>` | the argument | `Account1.SetLabel` |
+| `account remove <account>` | the argument | `Accounts1.Remove`, without asking; then says what was deleted and what was kept |
+| `set-client-id <id>` | — | `Accounts1.SetClientId`, one client id for every account; a refusal names the accounts still signed in |
+| `login` | chosen | `BeginSignIn`, opens the browser and waits. With no account at all and none named, it first adds one called `Personal`; with no client id yet, it stops and says to set one |
+| `logout` | chosen | signs the account out and deletes its token |
+| `status` | chosen, or all | the account's sign-in state; with several accounts and none named, every account under its label, the `Client ID:` line once above them |
+| `sync register <path>` | chosen | registers a OneDrive folder (needs the helper) |
+| `sync register-without-interception <path>` | chosen | the developer's local folder, named after its cost on purpose |
+| `sync forget` | chosen | Forget |
+| `sync populate-from <dir>` | chosen | fills a local folder from a directory |
+| `sync hydrate <path>`, `sync dehydrate <path>`, `sync state <path>` | by path | one file, through `Files1` |
+| `sync pin`, `sync unpin`, `sync free` `<paths…>` | by path | pinning ([pinning.md](pinning.md) §8), through `Files1` |
+| `sync status` | chosen, or all | the folder, its state, source and counts, "Last checked", "On this computer", whether opens are intercepted; with several accounts and none named, every account's folder under its label. The `Helper:` line, with what to do, is printed once, above them |
+| `sync skipped` | chosen | what is not in the folder, and why |
+| `sync refresh` | chosen | a cycle now |
+| `sync activity [--limit N]`, `sync transfers` | chosen | recent events; downloads under way |
+| `sync conflicts`, `sync dismiss <rescued path>` | chosen | the conflicts |
+| `sync free-up-space` | chosen | frees up every downloaded file not in use |
+| `dev export-access-token --out <file>` | chosen | writes the account's access token to a `0600` file, atomically, never through a symlink |
+
+The path commands go through `Files1`, so the path decides the account. When one is refused
+`OutsideRoot`, the CLI reads every account's folder to say where the path is not, which is its own
+view of the routing rule (limitations log F50).
 
 When the daemon refuses, the CLI says what that means for the user's file and what to do, chosen by
 the error name. `sync status` never prints `error` so that it looks like success, and
@@ -147,21 +223,56 @@ the daemon as a symlink and is refused.
 
 ## 4. The window
 
-KOneDrive is a Kirigami application with a sidebar of six pages:
+KOneDrive is a Kirigami application. Its sidebar is headed by an **account switcher**, below which
+are five pages about the account chosen there and, after a separator, Settings, which is the whole
+app's:
 
 | Page | Shows |
 |---|---|
 | **Status** | the status line, the folder and its item count, "On this computer: …", "Free Up Space…", "Refresh Now", "Open in File Manager", and a card with the helper's instruction while it is not `connected` |
 | **Activity** | "Downloading now" (each file with a progress bar and its size) and "Recent" (the newest 50 events; clicking one shows the file in Dolphin) |
-| **Conflicts** | each rescued file: the file, where it was, where it is now, when; "Show in Folder" and "Dismiss". Always present, with a count badge while there are conflicts, and "No conflicts" otherwise |
+| **Conflicts** | each rescued file: the file, where it was, where it is now, when; "Show in Folder" and "Dismiss". Always present, with a count badge (the chosen account's) while there are conflicts, and "No conflicts" otherwise |
 | **Not in the Folder** | the skipped items and why, in the same words as `sync skipped` (a test keeps the two in step) |
-| **Account** | sign in or out, the account's name, email and quota |
-| **Settings** | the folder (chosen here, and registered only with the helper), "Start at login", "Show download progress", the client id, "Quit KOneDrive" |
+| **Account** | the account's name with "Rename…"; the mode, as the line "Read-only — Changes made here are not uploaded in this version.", with no switch; sign in or out, the Microsoft account's name, email and quota; the folder, with "Choose Folder…" and "Forget Folder"; and "Remove Account…" |
+| **Settings** | "Start at login", "Show download progress", "Show in Places", the client id every account signs in with, "Quit KOneDrive" |
+
+**The switcher** shows the chosen account's initials, label and email, and opens a menu of every
+account, each with its state's icon (the tray's four, §5), then "Add Account…". It is there with a
+single account too: it names the account, and it is where "Add Account…" lives. When an account
+other than the chosen one needs attention, a warning sign on the switcher says so, so trouble
+elsewhere is never hidden; another account merely signed out, or without a folder, does not count.
+The choice is remembered (`CurrentAccount=<id>` in `konedriverc`). With more than one account,
+each page's title names the account ("Status · Personal"), since a narrow window folds the sidebar
+away (limitations log A13).
+
+**No account yet.** Only the Status page is available, and it shows "Connect your OneDrive" with
+"Add Account…".
+
+**Add Account** asks for the client id first when none is set yet (the same field and check as in
+Settings), then for the account's name — "Personal" suggested while no account has it — and "Add
+and Sign In…" makes the account, chooses it, and opens its sign-in in the browser
+([accounts.md](accounts.md) §7.2; limitations log A15). The Account page follows the sign-in, and
+asks for the folder once the account is signed in. Names are checked as the daemon checks them
+before it is asked, so the dialog says at once why a name will not do (A14).
+
+**Remove Account…** asks first — "Your files stay in `<folder>`. Files that were never downloaded
+are left as empty placeholders." — and then calls `Accounts1.Remove`.
+
+**The helper** serves every account, so its card shows on the Status page of whichever account is
+chosen. Trouble that belongs to no account (`Accounts1.LastError`) shows above it.
 
 The **status line** reads, for example, "Up to date · checked 20 s ago", "Listing your OneDrive:
 N items so far", "Downloading 3 files", "1 changed file was moved out of the way", "Signed out of
 OneDrive", "No OneDrive folder yet", or the error, refreshed every 10 s. The window does not offer
 the no-interception mode: a folder is registered only through `RegisterRoot`.
+
+**Places.** Each account's folder has an entry in Dolphin's Places panel and in file dialogs, named
+`OneDrive — <label>` — with one account too, so that a second account renames nothing. The entry is
+found again by a tag of its own (`konedrive-account=<id>`), not by its URL: renaming the account
+renames it, a new folder moves it, and forgetting the folder or removing the account removes it.
+The single-account versions' entry is taken over in its place in the panel. Nothing is touched
+until the daemon and every account have answered. "Show in Places" is one switch for every account
+(limitations log A12, A19).
 
 **Free Up Space** asks for confirmation, then reports how much it freed and how many files it
 skipped as busy. It has no D-Bus timeout: freeing up a large folder can take longer than the
@@ -175,17 +286,31 @@ tray, closing the window hides it; without one, closing quits, so no process lin
 
 ## 5. The tray icon
 
-| State | Icon | When |
+Each account has one of four states, and the icon shows the **worst** of them across the accounts,
+in this order:
+
+| State | Icon | An account is in it when |
 |---|---|---|
-| synced | `state-ok` | the folder is up to date |
-| syncing | `state-sync` | a listing or a download is under way |
 | needs attention | `state-warning` | a sync error, a conflict, a failed update, trouble that does not stop the folder |
 | signed out | `state-offline` | signed out, OneDrive unreachable, or no folder yet |
+| syncing | `state-sync` | a listing or a download is under way |
+| synced | `state-ok` | the folder is up to date |
 
-The tooltip repeats the window's status line; a click opens the window. The menu has "Open OneDrive
-Folder", "Open KOneDrive", "Refresh Now" and "Quit". The tray reads its state from `RootState`,
-`HelperState`, `ConflictCount` and `LastError`; a few of those readings still depend on exact
-wording from the daemon (limitations log A2).
+With no account at all, the icon is `state-offline`. The helper's trouble counts against every
+account with an intercepted folder.
+
+- **Tooltip.** With one account, the window's status line. With several, one line per account, in
+  account order: "Personal — Up to date · checked 20 s ago", "Family — Signed out of OneDrive". An
+  account that needs attention shows why in place of its status line.
+- **Menu.** "Open OneDrive Folder" with one account; with several, an "Open Folder" submenu of the
+  accounts that have a folder. Then "Open KOneDrive", "Refresh Now" — every account whose folder
+  shows OneDrive — and "Quit".
+- **Click.** Opens the window; on the account that needs attention when exactly one does, and
+  otherwise on the account the window last showed.
+
+The tray reads each account's state from its `RootState`, `ConflictCount` and `LastError` and from
+`HelperState`; a few of those readings still depend on exact wording from the daemon (limitations
+log A2, A17).
 
 ## 6. Notifications
 
@@ -205,6 +330,10 @@ within 10 s are sent as one summary ("2 more files could not be downloaded"). A 
 chosen by the event's kind, never by its wording, except that a full disk is recognised by the
 exact detail "not enough disk space".
 
+Each account's events notify on their own, and the 10 s summaries are per account and kind. With
+more than one account a notification's title names the account ("Download failed — Family"); its
+text is unchanged, and clicking it opens the window on that account (limitations log A18).
+
 The cost of sending them from the app: with the app quit, nothing notifies, and events that happen
 meanwhile are never announced later; the window's lists still show everything (limitations log
 A1). The app runs at login in the tray, so that is the exception.
@@ -215,7 +344,9 @@ The app watches `Transfers`. A transfer still running **2 s** after it first app
 Plasma as a `KJob` through `KUiServerV2JobTracker` — the mechanism Dolphin's own copy progress
 uses — titled "Downloading from OneDrive", with the file name, bytes done of total, and speed.
 Shorter transfers never show. At most **5** jobs are visible at once; the rest are summed into one,
-"and N more files".
+"and N more files". Each account's `Transfers` is watched on its own: with several accounts, the
+cap of 5 and the summary are per account, and a job's title names the account, "Downloading from
+OneDrive — Family" (limitations log A18).
 
 The daemon removes a transfer from `Transfers` before it signals the transfer's failure, and the
 coalesced property can also arrive after the failure. So a job whose transfer leaves `Transfers` is
@@ -274,8 +405,8 @@ folder. So a OneDrive folder is **excluded from Baloo**:
   `[General]`, `exclude folders`, with or without `[$e]`, comma-separated, variables expanded,
   compared by path components) — `balooctl6 config list excludeFolders` was observed printing an
   empty list while the file held exclusions;
-- whether *this daemon* added the exclusion is recorded in `config.toml`
-  (`sync_root_baloo_excluded`), and Forget removes only an exclusion the daemon added, never one the
+- whether *this daemon* added the exclusion is recorded in `config.toml` (`baloo_excluded` in the
+  account's `[accounts.root]`), and Forget removes only an exclusion the daemon added, never one the
   user had set;
 - every bring-up of a folder not recorded as excluded runs the same check-then-add, which only ever
   adds, so an exclusion that failed, timed out or was interrupted, or a Baloo installed later, is
@@ -331,7 +462,9 @@ Checking it calls `Pin`; unchecking it calls `Unpin`, which only removes the pin
 downloaded, as on Windows (D-A). "Free up space" is shown for any folder in the root, or a file
 that is downloaded or explicitly pinned, and disabled for a selection with anything pinned only by
 a folder above it; it calls `FreeUp` (D-B). A selection is one asynchronous D-Bus call (`Pin`,
-`Unpin` or `FreeUp`) with no reply timeout, since downloads can take minutes. A click starts a
+`Unpin` or `FreeUp`, on `Files1` at `/org/konedrive/Accounts`) with no reply timeout, since
+downloads can take minutes; the daemon finds each path's account, so a selection may span the
+folders of several accounts ([accounts.md](accounts.md) §3.5). A click starts a
 stopped daemon through D-Bus activation, as any KDE service would, rather than reporting that it is
 not running. A path already waiting (in an earlier call not yet answered, whichever of the three it
 was for) is never sent again, and at most 1000 paths wait at once per window (limitations log K6).
@@ -345,3 +478,6 @@ The limitations log's sections 7 and 8 list them. The main ones: Dolphin still o
 itself (K1); notifications need the app running (A1); no emblems in search results or Recent Files,
 which do not use `file://` URLs (K2); and the Plasma side — how the tray, the popups and the job
 tracker actually render — is not covered by the tests, which run offscreen on private buses (A7).
+With several accounts: the window shows one at a time (A13), Add Account is three calls rather than
+one transaction (A15), and a window or a Dolphin running across the upgrade to multiple accounts
+needs a restart (F46).

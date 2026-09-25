@@ -1,4 +1,4 @@
-//! The privileged helper as the daemon sees it — `Sync1.HelperState` (HS1).
+//! The privileged helper as the daemon sees it — `Accounts1.HelperState` (HS1).
 //!
 //! While the daemon holds a link to the helper, the helper is `connected`.
 //! Otherwise systemd is asked, read-only and over the system bus, how its
@@ -20,7 +20,7 @@ pub const HELPER_UNIT: &str = "konedrive-helper.service";
 /// How often systemd is asked again while there is no link (HS1).
 pub const RECHECK: Duration = Duration::from_secs(30);
 
-/// `Sync1.HelperState`.
+/// `Accounts1.HelperState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HelperState {
     /// The daemon holds a link to the helper: files download when opened.

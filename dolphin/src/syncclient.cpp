@@ -11,8 +11,8 @@ namespace konedrive
 {
 
 const QString SyncClient::ServiceName = QStringLiteral("org.konedrive.Daemon");
-const QString SyncClient::ObjectPath = QStringLiteral("/org/konedrive/Daemon");
-const QString SyncClient::InterfaceName = QStringLiteral("org.konedrive.Sync1");
+const QString SyncClient::ObjectPath = QStringLiteral("/org/konedrive/Accounts");
+const QString SyncClient::InterfaceName = QStringLiteral("org.konedrive.Files1");
 
 namespace
 {

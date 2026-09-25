@@ -50,15 +50,14 @@ const REPLACEMENT_SLOTS: usize = 2;
 
 pub type LinkCell = Arc<std::sync::Mutex<Option<HelperLink>>>;
 
-/// The drive a folder was listed from, as `config.toml` keeps it beside the
-/// root: the same-account check then
-/// survives a tree store rebuilt empty, whose `meta` has forgotten it.
+/// The account's drive, as `config.toml` keeps it (A-M5, design §8.1): the
+/// same-account check then survives a tree store rebuilt empty, whose `meta`
+/// has forgotten it.
 #[derive(Clone)]
 pub struct DriveRecord {
-    pub config_file: PathBuf,
-    /// The root the record belongs to: written only while `config.toml`
-    /// still names it.
-    pub root_id: String,
+    pub store: Arc<crate::config::ConfigStore>,
+    /// The account's id.
+    pub account: String,
     /// What `config.toml` recorded when the sync started; `None` when
     /// nothing was, and the first cycle writes it.
     pub recorded: Option<String>,
@@ -103,6 +102,14 @@ pub enum CycleError {
          a folder for the account signed in now"
     )]
     OtherAccount(String),
+    /// The account is signed in to a drive another account of this daemon has
+    /// (design §8.2); that account's label. Two folders of one drive would
+    /// download everything twice.
+    #[error(
+        "this account is signed in to the Microsoft account already connected as '{0}'; sign it \
+         out, or remove one of the two"
+    )]
+    DriveTaken(String),
     #[error("cannot reach OneDrive ({0}); trying again")]
     Offline(String),
     #[error("the helper is not connected; the folder is brought up to date when it is back")]
@@ -121,7 +128,10 @@ impl CycleError {
     /// folder waiting for the helper, not as sync trouble
     /// ([`Listing::publish_outcome`]).
     pub fn blocking(&self) -> bool {
-        matches!(self, CycleError::SignedOut | CycleError::OtherAccount(_) | CycleError::Store(_) | CycleError::NoHelper)
+        matches!(
+            self,
+            CycleError::SignedOut | CycleError::OtherAccount(_) | CycleError::DriveTaken(_) | CycleError::Store(_) | CycleError::NoHelper
+        )
     }
 }
 
@@ -461,6 +471,14 @@ impl Listing {
         if let Some(recorded) = stored.clone().or(kept.clone()).filter(|recorded| *recorded != id) {
             return Err(CycleError::OtherAccount(recorded));
         }
+        // A drive is one account (§8.2): one another account has recorded is not
+        // listed a second time into this folder.
+        if let Some(record) = self.ctx.drive_record.as_ref().filter(|_| kept.is_none()) {
+            let config = record.store.snapshot();
+            if let Some(other) = config.accounts.iter().find(|a| a.id != record.account && a.drive_id == id) {
+                return Err(CycleError::DriveTaken(other.label.clone()));
+            }
+        }
         if stored.is_none() {
             let recorded = id.clone();
             self.on_store(turn, move |s| s.set_meta("drive_id", Some(&recorded))).await?;
@@ -678,6 +696,10 @@ impl Listing {
             let _held = held;
             if let Some((record, id)) = drive {
                 record_drive(&record, &id);
+                // The folder remembers its drive too (design §8.3).
+                if let Err(e) = super::root::mark_drive(&root, &id) {
+                    tracing::warn!("cannot record the drive on {}: {e}", root.path.display());
+                }
             }
             let Some(root_item_id) = store.with(|s| s.root_item_id()).map_err(|e| applying(e.into()))? else {
                 return match commit {
@@ -938,21 +960,12 @@ impl Listing {
     }
 }
 
-/// Writes the drive into `config.toml` beside the root (A-M5), if it still
-/// names this root and records none. Called by a reconcile, which holds the
-/// lifecycle lock for reading: no registration or Forget, which write the
-/// same file under it held for writing, comes in between. A failure is
+/// Writes the drive into `config.toml` as the account's (A-M5), if it records
+/// none yet. Called by a reconcile, on its blocking thread. A failure is
 /// logged; the store's `meta` still has the drive.
 fn record_drive(record: &DriveRecord, id: &str) {
-    let written = crate::config::Config::load(&record.config_file).and_then(|mut config| {
-        if config.sync_root_id == record.root_id && config.sync_root_drive_id.is_empty() {
-            config.sync_root_drive_id = id.to_owned();
-            config.save(&record.config_file)?;
-        }
-        Ok(())
-    });
-    if let Err(e) = written {
-        tracing::warn!("cannot record the folder's drive in config.toml: {e}");
+    if let Err(e) = record.store.record_drive(&record.account, id) {
+        tracing::warn!("cannot record the account's drive in config.toml: {e}");
     }
 }
 
@@ -2295,25 +2308,47 @@ mod tests {
     }
 
     /// the drive a folder was listed from is kept
-    /// in `config.toml` beside its root too, so a tree store rebuilt empty —
+    /// in `config.toml` as the account's too, so a tree store rebuilt empty —
     /// its `meta` has forgotten the drive — still refuses another account.
     /// The first cycle writes it there.
     #[tokio::test]
     async fn the_drive_kept_beside_the_root_outlives_a_rebuilt_store() {
         let s = setup().await;
         let config_dir = tempfile::tempdir().unwrap();
-        let config_file = config_dir.path().join("config.toml");
-        let config = crate::config::Config { sync_root_id: s.root.root_id.clone(), ..Default::default() };
-        config.save(&config_file).unwrap();
-        let record = DriveRecord { config_file: config_file.clone(), root_id: s.root.root_id.clone(), recorded: None };
+        let config = crate::config::Paths::in_dir(config_dir.path());
+        let store = Arc::new(crate::config::ConfigStore::open(&config, async { false }).await);
+        let account = store.add_account("Personal").unwrap().id;
+        let record = DriveRecord { store: Arc::clone(&store), account: account.clone(), recorded: None };
         listed_with(&s, ListingContext { drive_record: Some(record), ..s.context() }).await;
-        assert_eq!(crate::config::Config::load(&config_file).unwrap().sync_root_drive_id, "D1", "written by the first cycle");
+        assert_eq!(store.account(&account).unwrap().drive_id, "D1", "written by the first cycle");
 
         let rebuilt = Store::new(TreeStore::in_memory().unwrap());
-        let record = DriveRecord { config_file, root_id: s.root.root_id.clone(), recorded: Some("D0".into()) };
+        let record = DriveRecord { store, account, recorded: Some("D0".into()) };
         let listing = Listing::new(ListingContext { store: rebuilt, drive_record: Some(record), ..s.context() });
         let err = listing.cycle(&CancellationToken::new()).await.unwrap_err();
         assert!(matches!(&err, CycleError::OtherAccount(drive) if drive == "D0"), "{err:?}");
+    }
+
+    /// A drive is one account (design §8.2, review M1): an account with no drive recorded
+    /// yet, signed in to a drive another account has, does not list it into a second folder
+    /// — the folder is blocked, naming that account, and nothing is placed.
+    #[tokio::test]
+    async fn a_drive_another_account_has_is_not_listed_into_a_second_folder() {
+        let s = setup().await;
+        let config_dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(crate::config::ConfigStore::open(&crate::config::Paths::in_dir(config_dir.path()), async { false }).await);
+        let first = store.add_account("Work").unwrap().id;
+        store.record_drive(&first, "D1").unwrap();
+        let account = store.add_account("Personal").unwrap().id;
+        let record = DriveRecord { store: Arc::clone(&store), account: account.clone(), recorded: None };
+        let listing = Listing::new(ListingContext { drive_record: Some(record), ..s.context() });
+
+        let err = listing.cycle(&CancellationToken::new()).await.unwrap_err();
+
+        assert!(matches!(&err, CycleError::DriveTaken(label) if label == "Work"), "{err:?}");
+        assert!(err.blocking());
+        assert_eq!(store.account(&account).unwrap().drive_id, "");
+        assert!(std::fs::read_dir(&s.root.path).unwrap().next().is_none(), "nothing is placed");
     }
 
     /// A cycle whose future is dropped part-way is a failed one: the Full

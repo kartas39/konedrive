@@ -1,20 +1,52 @@
-//! Daemon configuration (`~/.config/konedrive/config.toml`) and file locations.
+//! Daemon configuration (`~/.config/konedrive/config.toml`, version 2) and file locations.
+//!
+//! One [`ConfigStore`] owns the file: it loads it, migrates version 1 into account #1
+//! ([`crate::migrate`]), holds back accounts that collide ([`Config::holds`]), and runs every
+//! read-modify-write under one lock ([`ConfigStore::update`]).
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use serde::{Deserialize, Serialize};
+
+use crate::migrate::V1Config;
+
+/// The version of `config.toml` this build reads and writes.
+pub const CONFIG_VERSION: u32 = 2;
+
+/// The label of the account a version-1 configuration becomes.
+pub const MIGRATED_LABEL: &str = "Personal";
 
 /// Locations of the daemon's files. Tests point these into a temp dir.
 #[derive(Debug, Clone)]
 pub struct Paths {
     pub config_file: PathBuf,
+    /// `$XDG_STATE_HOME/konedrive`: each account's state is in `accounts/<id>/` below it.
+    pub state_dir: PathBuf,
+    /// The cached name and quota of version 1, where the migration finds them. Per account:
+    /// [`Paths::account`].
     pub account_cache: PathBuf,
-    /// The tree store.
+    /// The tree store of version 1, where the migration finds it. Per account:
+    /// [`Paths::account`].
     pub tree_db: PathBuf,
-    /// Where files are rescued to.
+    /// Where files are rescued to: version 1 directly below it, each account in `<id>/`.
     pub rescue_dir: PathBuf,
-    /// The freedesktop thumbnail cache.
+    /// The freedesktop thumbnail cache, shared by every account (keyed by file URI).
     pub thumbnails: PathBuf,
+}
+
+/// Where one account's files are.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountPaths {
+    /// `accounts/<id>/` under the state directory: everything in it goes with the account.
+    pub dir: PathBuf,
+    /// Its cached name and quota.
+    pub account_cache: PathBuf,
+    /// Its tree store, activity log and conflicts.
+    pub tree_db: PathBuf,
+    /// `rescued/<id>/`: kept when the account is removed.
+    pub rescue_dir: PathBuf,
 }
 
 impl Paths {
@@ -24,10 +56,12 @@ impl Paths {
         let state = dirs::state_dir().ok_or_else(|| anyhow::anyhow!("no XDG state directory"))?;
         let data = dirs::data_dir().ok_or_else(|| anyhow::anyhow!("no XDG data directory"))?;
         let cache = dirs::cache_dir().ok_or_else(|| anyhow::anyhow!("no XDG cache directory"))?;
+        let state = state.join("konedrive");
         Ok(Self {
             config_file: config.join("konedrive").join("config.toml"),
-            account_cache: state.join("konedrive").join("account.json"),
-            tree_db: state.join("konedrive").join("tree.sqlite"),
+            account_cache: state.join("account.json"),
+            tree_db: state.join("tree.sqlite"),
+            state_dir: state,
             rescue_dir: data.join("konedrive").join("rescued"),
             thumbnails: cache.join("thumbnails"),
         })
@@ -37,72 +71,111 @@ impl Paths {
     pub fn in_dir(dir: &Path) -> Self {
         Self {
             config_file: dir.join("config.toml"),
+            state_dir: dir.to_owned(),
             account_cache: dir.join("account.json"),
             tree_db: dir.join("tree.sqlite"),
             rescue_dir: dir.join("rescued"),
             thumbnails: dir.join("thumbnails"),
         }
     }
+
+    /// The files of account `id`. `None` unless `id` is an account id
+    /// ([`is_valid_account_id`]), so a hand-edited id never names a path outside
+    /// `accounts/`.
+    pub fn account(&self, id: &str) -> Option<AccountPaths> {
+        if !is_valid_account_id(id) {
+            return None;
+        }
+        let dir = self.state_dir.join("accounts").join(id);
+        Some(AccountPaths {
+            account_cache: dir.join("account.json"),
+            tree_db: dir.join("tree.sqlite"),
+            dir,
+            rescue_dir: self.rescue_dir.join(id),
+        })
+    }
 }
 
+/// `config.toml`, version 2.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
+    pub config_version: u32,
+    /// The Entra application every account signs in with.
     #[serde(default)]
     pub client_id: String,
-    /// The registered sync root, empty when none. It has to be
-    /// "persisted, so it survives a restart" — and
-    /// without it the startup recovery walk never runs at a startup at
-    /// all, since nothing else re-registers the folder.
-    #[serde(default)]
-    pub sync_root: String,
-    /// Whether that root is the ordinary intercepted kind. Defaults to
-    /// `true` when the key is missing, so the fail-closed mode is what an
-    /// older or hand-edited config restores: a root wrongly restored as
-    /// intercepted refuses to come up without a helper, while one wrongly
-    /// restored as un-intercepted would come up silently serving zeros.
-    #[serde(default = "intercepted_by_default")]
-    pub sync_root_intercepted: bool,
-    /// The root id the folder carried when it was registered — the name the
-    /// helper holds an intercepted root under. Recorded so that a root
-    /// restored at startup can be held, forgotten and told apart before the
-    /// helper is back, without reading anything from the folder. Empty in a
-    /// config written before it existed; the folder's own
-    /// `user.konedrive.root` stands in for it then.
-    #[serde(default)]
-    pub sync_root_id: String,
-    /// What the folder shows: `"onedrive"` — listed from the
-    /// signed-in drive, locked, kept in step — or `"local"`, filled with
-    /// `PopulateFromDirectory` as in part 1. A config written before this
-    /// existed describes a local folder.
-    #[serde(default = "local_source")]
-    pub sync_root_source: String,
-    /// Whether *this daemon* excluded the root from KDE's Baloo indexer
-    /// — `false` when the folder was already excluded (the
-    /// user's own doing, or a parent directory's), since a Forget must never
-    /// take off an exclusion it did not add. Defaults to `false`, the safe
-    /// side for a config written before this field existed: nothing is
-    /// removed from Baloo's settings that this daemon cannot be sure it put
-    /// there.
-    #[serde(default)]
-    pub sync_root_baloo_excluded: bool,
-    /// Whether a root registered without interception switches to
-    /// interception when the helper connects: `true` when it was
-    /// registered that way because no helper was connected, `false` when a
-    /// helper was and the mode was a choice. Missing in a config written
-    /// before this existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sync_root_upgrade_when_helper: Option<bool>,
-    /// The drive a OneDrive folder was listed from, recorded
-    /// when its sync first learns it, so the check that the account signed
-    /// in is still that drive's survives a tree store rebuilt empty.
-    /// Empty until then, for a local folder, and in a
-    /// config written before it existed. It goes with `sync_root_id`: a
-    /// different root never inherits it.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
-    pub sync_root_drive_id: String,
+    /// Every account, in the order it was added.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<AccountConfig>,
 }
 
-fn intercepted_by_default() -> bool {
+impl Default for Config {
+    fn default() -> Self {
+        Self { config_version: CONFIG_VERSION, client_id: String::new(), accounts: Vec::new() }
+    }
+}
+
+/// One account, `[[accounts]]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountConfig {
+    /// 12 random lowercase hex characters, never reused; in object paths and file paths.
+    pub id: String,
+    /// What people see and type; see [`check_label`]. Nothing on disk is named after it.
+    pub label: String,
+    #[serde(default)]
+    pub mode: Mode,
+    #[serde(default)]
+    pub origin: Origin,
+    /// The Graph drive id: the account's identity, recorded at its first sign-in or its
+    /// first `GET /me/drive`, and never changed. Empty until then.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub drive_id: String,
+    /// Set only until the refresh token of version 1 is moved to this account's own
+    /// Secret Service item (design §7.4).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub legacy_token: bool,
+    /// Set only until `account.json` and `tree.sqlite` of version 1 are moved into this
+    /// account's directory ([`crate::migrate::finish_file_moves`]).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub migrate_files: bool,
+    /// The account's registered folder; `None` when it has none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<RootConfig>,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
+/// `[accounts.root]`: the registered folder. The fields and their defaults are version 1's
+/// `sync_root_*`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RootConfig {
+    pub path: PathBuf,
+    /// The root id the folder carried when it was registered (`user.konedrive.root`), the
+    /// name the helper holds an intercepted root under. Empty when carried over from a
+    /// configuration older than it; the folder's own attribute stands in for it then.
+    #[serde(default)]
+    pub id: String,
+    /// Whether the root is the ordinary intercepted kind. A missing key reads as `true`,
+    /// the fail-closed mode: a root wrongly restored as intercepted refuses to come up
+    /// without a helper, one wrongly restored as un-intercepted would serve zeros.
+    #[serde(default = "yes")]
+    pub intercepted: bool,
+    /// `"onedrive"` (listed from the account's drive) or `"local"` (filled with
+    /// `PopulateFromDirectory`). A missing key reads as `"local"`.
+    #[serde(default = "local_source")]
+    pub source: String,
+    /// Whether this daemon excluded the folder from Baloo, so a Forget takes off only an
+    /// exclusion it added.
+    #[serde(default)]
+    pub baloo_excluded: bool,
+    /// Whether a root registered without interception switches to interception when the
+    /// helper connects; see [`RootConfig::upgrades_when_helper`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upgrade_when_helper: Option<bool>,
+}
+
+fn yes() -> bool {
     true
 }
 
@@ -110,43 +183,444 @@ fn local_source() -> String {
     "local".into()
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            client_id: String::new(),
-            sync_root: String::new(),
-            sync_root_intercepted: true,
-            sync_root_id: String::new(),
-            sync_root_source: local_source(),
-            sync_root_baloo_excluded: false,
-            sync_root_upgrade_when_helper: None,
-            sync_root_drive_id: String::new(),
+impl RootConfig {
+    /// `upgrade_when_helper`, with a missing value read as Ruling 4 says: a root without
+    /// interception switches, and an intercepted root has nothing to switch.
+    pub fn upgrades_when_helper(&self) -> bool {
+        self.upgrade_when_helper.unwrap_or(!self.intercepted)
+    }
+}
+
+/// An account's mode. Only read-only exists in this phase: any other value in the file
+/// loads as read-only, is logged, and is written back as read-only.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Mode {
+    #[default]
+    ReadOnly,
+}
+
+impl Mode {
+    /// As `config.toml` and `Account1.Mode` spell it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mode::ReadOnly => "read-only",
         }
     }
 }
 
-impl Config {
-    /// A missing file yields the default configuration.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Ok(toml::from_str(&text)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e.into()),
+impl Serialize for Mode {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for Mode {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mode = String::deserialize(deserializer)?;
+        if mode != Mode::ReadOnly.as_str() {
+            tracing::warn!("config.toml: mode {mode:?} is not available in this version; the account is read-only");
+        }
+        Ok(Mode::ReadOnly)
+    }
+}
+
+/// Where an account came from. `Migrated` marks the account that existed before multiple
+/// accounts — the user's real one, which write tests must never use — and is what a missing
+/// or unknown value reads as.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Origin {
+    Added,
+    #[default]
+    #[serde(other)]
+    Migrated,
+}
+
+/// Whether `id` is an account id: 12 lowercase hex characters.
+pub fn is_valid_account_id(id: &str) -> bool {
+    id.len() == 12 && id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// A fresh account id: 12 random lowercase hex characters (48 bits), none of `taken`.
+pub fn new_account_id<'a>(taken: impl IntoIterator<Item = &'a str> + Clone) -> String {
+    loop {
+        let mut bytes = [0u8; 6];
+        getrandom::getrandom(&mut bytes).expect("the OS random number generator failed");
+        let id: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        if !taken.clone().into_iter().any(|t| t == id) {
+            return id;
         }
     }
+}
 
-    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        write_atomic(path, toml::to_string(self)?.as_bytes())
+/// Checks a label against the rules of `Accounts1.Add` and `Account1.SetLabel`, and returns
+/// it trimmed: 1–40 characters, no `/`, no `@` (so it is never taken for an email in
+/// `--account`), not 12 hexadecimal digits in any case (so it is never taken for an id
+/// there), no control characters, and no other account's label (`except` is the account
+/// being renamed), whatever the case. `Err` says why, for `InvalidArgs`.
+pub fn check_label(label: &str, config: &Config, except: Option<&str>) -> Result<String, String> {
+    let label = label.trim();
+    let length = label.chars().count();
+    if length == 0 {
+        return Err("the label is empty".into());
+    }
+    if length > 40 {
+        return Err(format!("the label is {length} characters long; at most 40 are allowed"));
+    }
+    if let Some(c) = label.chars().find(|&c| c == '/' || c == '@' || c.is_control()) {
+        return Err(format!("a label may not contain {c:?}"));
+    }
+    if is_valid_account_id(&label.to_ascii_lowercase()) {
+        return Err("a label may not be 12 hexadecimal digits, which is what an account id looks like".into());
+    }
+    let lower = label.to_lowercase();
+    match config.accounts.iter().find(|a| Some(a.id.as_str()) != except && a.label.to_lowercase() == lower) {
+        Some(other) => Err(format!("the label {:?} is already used", other.label)),
+        None => Ok(label.to_owned()),
+    }
+}
+
+impl Config {
+    pub fn account(&self, id: &str) -> Option<&AccountConfig> {
+        self.accounts.iter().find(|a| a.id == id)
     }
 
-    /// `sync_root_upgrade_when_helper`, with a config written before it
-    /// existed read as Ruling 4 says: a root without interception
-    /// switches — such a config cannot tell a folder registered that way on
-    /// purpose from one registered before the helper was installed, and the
-    /// second reads as zeros until it switches — and an intercepted root has
-    /// nothing to switch.
-    pub fn sync_root_upgrades_when_helper(&self) -> bool {
-        self.sync_root_upgrade_when_helper.unwrap_or(!self.sync_root_intercepted)
+    pub fn account_mut(&mut self, id: &str) -> Option<&mut AccountConfig> {
+        self.accounts.iter_mut().find(|a| a.id == id)
+    }
+
+    /// The validation at load (design §3.1): one entry per account, in file order, `Some`
+    /// with the reason when the account is *held* — loaded, but its folder is not brought
+    /// up. An account is held when its id is not an account id (it would not fit an object
+    /// path or a file path), or when it repeats an earlier account's id, label (whatever
+    /// the case) or drive, or its folder has an earlier folder's root id, or is, is inside
+    /// or contains an earlier folder. Nothing is rewritten.
+    pub fn holds(&self) -> Vec<Option<String>> {
+        self.accounts
+            .iter()
+            .enumerate()
+            .map(|(i, account)| {
+                if !is_valid_account_id(&account.id) {
+                    return Some(format!("its id {:?} is not 12 lowercase hexadecimal characters", account.id));
+                }
+                self.accounts[..i].iter().find_map(|earlier| conflict(earlier, account))
+            })
+            .collect()
+    }
+}
+
+/// Why `later` cannot be brought up beside `earlier`, if it cannot.
+fn conflict(earlier: &AccountConfig, later: &AccountConfig) -> Option<String> {
+    let other = &earlier.label;
+    if earlier.id == later.id {
+        return Some(format!("its id is also the id of {other:?}"));
+    }
+    if earlier.label.to_lowercase() == later.label.to_lowercase() {
+        return Some(format!("its label is also the label of {other:?}"));
+    }
+    if !later.drive_id.is_empty() && earlier.drive_id == later.drive_id {
+        return Some(format!("it is the same Microsoft account as {other:?}"));
+    }
+    let (Some(a), Some(b)) = (&earlier.root, &later.root) else {
+        return None;
+    };
+    if !b.id.is_empty() && a.id == b.id {
+        return Some(format!("its folder has the root id of the folder of {other:?}"));
+    }
+    if a.path.starts_with(&b.path) || b.path.starts_with(&a.path) {
+        return Some(format!(
+            "its folder {} is, is inside, or contains the folder of {other:?}, {}",
+            b.path.display(),
+            a.path.display()
+        ));
+    }
+    None
+}
+
+/// Why a [`ConfigStore`] call changed nothing.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ConfigError {
+    /// `config.toml` cannot be read, was written by a newer version, or was replaced by a
+    /// version-1 file while the daemon ran: nothing is written over it (`Failed`).
+    #[error("{0}")]
+    Unreadable(String),
+    /// It could not be written (`Failed`).
+    #[error("{0}")]
+    Write(String),
+    /// No account has this id (`NoAccount`).
+    #[error("there is no account {0:?}")]
+    NoAccount(String),
+    /// A label [`check_label`] refuses, with the reason (`InvalidArgs`).
+    #[error("{0}")]
+    InvalidLabel(String),
+    #[error("invalid client ID: expected a GUID like 00000000-0000-0000-0000-000000000000")]
+    InvalidClientId,
+    /// [`ConfigStore::record_drive`] of a drive another account has; its label.
+    #[error("this Microsoft account is already connected as '{0}'")]
+    DriveTaken(String),
+}
+
+impl From<ConfigError> for String {
+    fn from(error: ConfigError) -> Self {
+        error.to_string()
+    }
+}
+
+/// The one owner of `config.toml`. Every write goes through [`update`](Self::update), which
+/// re-reads the file, applies the change and writes it atomically, holding one lock across
+/// all three: two writers can no longer save over each other.
+///
+/// An unreadable file is never overwritten: the store is then *poisoned* for the life of
+/// the process — it has no accounts, refuses every write, and says why in
+/// [`last_error`](Self::last_error) (`Accounts1.LastError`). A later start with the file
+/// fixed loads, or migrates, it then.
+///
+/// The calls do blocking file I/O on a small file, as the single-account code did.
+pub struct ConfigStore {
+    file: PathBuf,
+    inner: Mutex<Inner>,
+}
+
+struct Inner {
+    /// As last read or written; empty while poisoned.
+    config: Config,
+    /// Why the file could not be loaded; `Some` means poisoned.
+    poisoned: Option<String>,
+    /// Trouble that belongs to no account: the poison, or a migration step that failed.
+    last_error: String,
+}
+
+/// What `config.toml` holds.
+enum Read {
+    Missing,
+    V1 { text: String, config: V1Config },
+    V2(Config),
+}
+
+fn read(file: &Path) -> Result<Read, String> {
+    let text = match std::fs::read_to_string(file) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Read::Missing),
+        Err(e) => return Err(format!("{} cannot be read: {e}", file.display())),
+    };
+    let unreadable = |e: toml::de::Error| format!("{} cannot be read: {}", file.display(), e.message());
+    let table: toml::Table = toml::from_str(&text).map_err(unreadable)?;
+    match table.get("config_version") {
+        None | Some(toml::Value::Integer(1)) => {
+            let config = toml::from_str(&text).map_err(unreadable)?;
+            Ok(Read::V1 { text, config })
+        }
+        Some(toml::Value::Integer(2)) => Ok(Read::V2(toml::from_str(&text).map_err(unreadable)?)),
+        Some(toml::Value::Integer(n)) if *n > 2 => Err(format!(
+            "{} was written by a newer version of konedrive (configuration version {n})",
+            file.display()
+        )),
+        Some(other) => Err(format!("{} has a configuration version this konedrive does not know: {other}", file.display())),
+    }
+}
+
+/// Writes `config` to `file` atomically.
+pub(crate) fn write_config(file: &Path, config: &Config) -> Result<(), ConfigError> {
+    let failed = |e: &dyn std::fmt::Display| ConfigError::Write(format!("cannot save {}: {e}", file.display()));
+    let text = toml::to_string(config).map_err(|e| failed(&e))?;
+    write_atomic(file, text.as_bytes()).map_err(|e| failed(&e))
+}
+
+impl ConfigStore {
+    /// Loads `paths.config_file` — first step of the daemon's start (design §2.2). A
+    /// version-1 file is migrated (§7.2): `legacy_token` is the wallet's presence check for
+    /// the version-1 refresh token (no unlock; a Secret Service that does not answer counts
+    /// as present), and is awaited only when nothing else says there is an account to carry
+    /// over. A missing file is an empty configuration and is not written.
+    ///
+    /// Next, before any account's services open a file: [`crate::migrate::finish_file_moves`].
+    pub async fn open(paths: &Paths, legacy_token: impl Future<Output = bool>) -> Self {
+        let file = paths.config_file.clone();
+        let loaded = match read(&file) {
+            Ok(Read::Missing) => Ok(Config::default()),
+            Ok(Read::V2(config)) => Ok(config),
+            Ok(Read::V1 { text, config }) => crate::migrate::migrate(paths, &text, config, legacy_token).await,
+            Err(e) => Err(e),
+        };
+        let (config, poisoned) = match loaded {
+            Ok(config) => (config, None),
+            Err(e) => {
+                tracing::error!("{e}; no account is loaded, and the file is not written");
+                (Config::default(), Some(e))
+            }
+        };
+        for (account, held) in config.accounts.iter().zip(config.holds()) {
+            if let Some(why) = held {
+                tracing::warn!("{}: account {:?} is held: {why}", file.display(), account.label);
+            }
+        }
+        let last_error = poisoned.clone().unwrap_or_default();
+        Self { file, inner: Mutex::new(Inner { config, poisoned, last_error }) }
+    }
+
+    pub fn file(&self) -> &Path {
+        &self.file
+    }
+
+    fn lock(&self) -> MutexGuard<'_, Inner> {
+        // A change that panicked wrote nothing and left `config` as it was.
+        self.inner.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The configuration as last read or written; empty while poisoned. Held accounts are
+    /// in it: see [`Config::holds`].
+    pub fn snapshot(&self) -> Config {
+        self.lock().config.clone()
+    }
+
+    pub fn account(&self, id: &str) -> Option<AccountConfig> {
+        self.lock().config.account(id).cloned()
+    }
+
+    pub fn client_id(&self) -> String {
+        self.lock().config.client_id.clone()
+    }
+
+    pub fn is_poisoned(&self) -> bool {
+        self.lock().poisoned.is_some()
+    }
+
+    /// `Accounts1.LastError`: why the file could not be loaded, or which migration step
+    /// failed. Empty when there is nothing.
+    pub fn last_error(&self) -> String {
+        self.lock().last_error.clone()
+    }
+
+    pub(crate) fn note_error(&self, message: String) {
+        let mut inner = self.lock();
+        if !inner.last_error.is_empty() {
+            inner.last_error.push_str("; ");
+        }
+        inner.last_error.push_str(&message);
+    }
+
+    /// The one way to change `config.toml`: under the store's lock, re-reads the file,
+    /// applies `change`, and writes the result atomically — or nothing, when `change`
+    /// returns `Err` or changes nothing. Refused while poisoned, and when the file can no
+    /// longer be read or has become a version-1 file: what cannot be read is never
+    /// overwritten. A missing file is an empty configuration. `change` runs under the lock,
+    /// so a check and the write it allows are one step (the identity guard of §8.2).
+    pub fn update<R, E: From<ConfigError>>(&self, change: impl FnOnce(&mut Config) -> Result<R, E>) -> Result<R, E> {
+        let mut inner = self.lock();
+        if let Some(why) = &inner.poisoned {
+            return Err(ConfigError::Unreadable(format!("{why}; it is not written until konedrived starts with it readable")).into());
+        }
+        let mut config = match read(&self.file).map_err(ConfigError::Unreadable)? {
+            Read::Missing => Config::default(),
+            Read::V2(config) => config,
+            Read::V1 { .. } => {
+                return Err(ConfigError::Unreadable(format!(
+                    "{} was replaced by a version-1 configuration; restart konedrived to migrate it",
+                    self.file.display()
+                ))
+                .into())
+            }
+        };
+        let before = config.clone();
+        let result = change(&mut config)?;
+        if config != before {
+            write_config(&self.file, &config)?;
+        }
+        inner.config = config;
+        Ok(result)
+    }
+
+    /// [`update`](Self::update) of one account; `NoAccount` when there is none with `id`.
+    pub fn update_account<R, E: From<ConfigError>>(
+        &self,
+        id: &str,
+        change: impl FnOnce(&mut AccountConfig) -> Result<R, E>,
+    ) -> Result<R, E> {
+        self.update(|config| match config.account_mut(id) {
+            Some(account) => change(account),
+            None => Err(ConfigError::NoAccount(id.to_owned()).into()),
+        })
+    }
+
+    /// `Accounts1.SetClientId`'s write. The rule that no account may be signing in or
+    /// signed in is the caller's.
+    pub fn set_client_id(&self, id: &str) -> Result<(), ConfigError> {
+        let id = id.trim();
+        if !is_valid_client_id(id) {
+            return Err(ConfigError::InvalidClientId);
+        }
+        self.update(|config| {
+            config.client_id = id.to_owned();
+            Ok(())
+        })
+    }
+
+    /// `Accounts1.Add`: a read-only account with no folder and no drive yet, after every
+    /// other, under a fresh id.
+    pub fn add_account(&self, label: &str) -> Result<AccountConfig, ConfigError> {
+        self.update(|config| {
+            let label = check_label(label, config, None).map_err(ConfigError::InvalidLabel)?;
+            let account = AccountConfig {
+                id: new_account_id(config.accounts.iter().map(|a| a.id.as_str())),
+                label,
+                mode: Mode::ReadOnly,
+                origin: Origin::Added,
+                drive_id: String::new(),
+                legacy_token: false,
+                migrate_files: false,
+                root: None,
+            };
+            config.accounts.push(account.clone());
+            Ok(account)
+        })
+    }
+
+    /// `Account1.SetLabel`: returns the label as stored (trimmed).
+    pub fn set_label(&self, id: &str, label: &str) -> Result<String, ConfigError> {
+        self.update(|config| {
+            let label = check_label(label, config, Some(id)).map_err(ConfigError::InvalidLabel)?;
+            let account = config.account_mut(id).ok_or_else(|| ConfigError::NoAccount(id.to_owned()))?;
+            account.label = label.clone();
+            Ok(label)
+        })
+    }
+
+    /// Takes the account's section out of the file and returns it. Its files, token and
+    /// folder are the caller's to deal with (`Accounts1.Remove`).
+    pub fn remove_account(&self, id: &str) -> Result<AccountConfig, ConfigError> {
+        self.update(|config| {
+            let at = config.accounts.iter().position(|a| a.id == id).ok_or_else(|| ConfigError::NoAccount(id.to_owned()))?;
+            Ok(config.accounts.remove(at))
+        })
+    }
+
+    /// The registration's record of the account's folder (`None`: forgotten). The drive
+    /// stays: it is the account's, not the folder's.
+    pub fn set_root(&self, id: &str, root: Option<RootConfig>) -> Result<(), ConfigError> {
+        self.update_account(id, |account| {
+            account.root = root;
+            Ok(())
+        })
+    }
+
+    /// Records `drive_id` as the account's drive when it has none yet, and returns the
+    /// account's drive, which differs from `drive_id` when another was recorded before: the
+    /// caller's same-account check (§8.1) compares them. Writes nothing when a drive is
+    /// already recorded. Refused `DriveTaken` when another account has `drive_id`: a drive is
+    /// one account (§8.2), whichever way it comes to be recorded.
+    pub fn record_drive(&self, id: &str, drive_id: &str) -> Result<String, ConfigError> {
+        self.update(|config| {
+            let recorded = config.account(id).ok_or_else(|| ConfigError::NoAccount(id.to_owned()))?.drive_id.clone();
+            if !recorded.is_empty() {
+                return Ok(recorded);
+            }
+            if let Some(other) = config.accounts.iter().find(|a| a.id != id && !drive_id.is_empty() && a.drive_id == drive_id) {
+                return Err(ConfigError::DriveTaken(other.label.clone()));
+            }
+            let account = config.account_mut(id).expect("found above");
+            account.drive_id = drive_id.to_owned();
+            Ok(account.drive_id.clone())
+        })
     }
 }
 
@@ -193,6 +667,25 @@ pub fn is_valid_client_id(id: &str) -> bool {
 mod tests {
     use super::*;
 
+    const CLIENT: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+
+    async fn open(paths: &Paths) -> ConfigStore {
+        ConfigStore::open(paths, async { false }).await
+    }
+
+    fn account(id: &str, label: &str) -> AccountConfig {
+        AccountConfig {
+            id: id.into(),
+            label: label.into(),
+            mode: Mode::ReadOnly,
+            origin: Origin::Added,
+            drive_id: String::new(),
+            legacy_token: false,
+            migrate_files: false,
+            root: None,
+        }
+    }
+
     #[test]
     fn accepts_guids_in_any_case() {
         assert!(is_valid_client_id("0f8fad5b-d9cb-469f-a165-70867728950e"));
@@ -214,95 +707,6 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_loads_default() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = Config::load(&dir.path().join("config.toml")).unwrap();
-        assert_eq!(config, Config::default());
-    }
-
-    #[test]
-    fn save_creates_directories_and_round_trips() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("nested").join("config.toml");
-        let config = Config {
-            client_id: "0f8fad5b-d9cb-469f-a165-70867728950e".into(),
-            ..Config::default()
-        };
-        config.save(&path).unwrap();
-        assert_eq!(Config::load(&path).unwrap(), config);
-    }
-
-    /// The sync root travels with the client id in the same file, so both
-    /// have to survive a round trip — and a config written before the sync
-    /// sub-project existed has to keep loading, defaulting to the
-    /// fail-closed intercepted mode rather than to the mode that serves
-    /// zeros.
-    #[test]
-    fn the_sync_root_round_trips_and_an_older_config_still_loads() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-        let config = Config {
-            client_id: "0f8fad5b-d9cb-469f-a165-70867728950e".into(),
-            sync_root: "/home/someone/OneDrive".into(),
-            sync_root_intercepted: false,
-            sync_root_id: "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d".into(),
-            sync_root_source: "onedrive".into(),
-            sync_root_baloo_excluded: true,
-            sync_root_upgrade_when_helper: Some(true),
-            sync_root_drive_id: "D1".into(),
-        };
-        config.save(&path).unwrap();
-        assert_eq!(Config::load(&path).unwrap(), config);
-
-        std::fs::write(&path, "client_id = \"0f8fad5b-d9cb-469f-a165-70867728950e\"\n").unwrap();
-        let older = Config::load(&path).unwrap();
-        assert_eq!(older.sync_root, "", "no root was persisted by that version");
-        assert_eq!(older.sync_root_id, "", "nor its id");
-        assert!(
-            older.sync_root_intercepted,
-            "a missing mode must read as the fail-closed one, not as the one that serves zeros"
-        );
-        assert!(
-            !older.sync_root_baloo_excluded,
-            "a config from before this existed must not have Baloo settings taken off it"
-        );
-
-        // A folder recorded by part 1, before a folder could show OneDrive,
-        // was filled from a directory: it is a local one.
-        std::fs::write(&path, "sync_root = \"/home/someone/Offline\"\nsync_root_intercepted = false\n").unwrap();
-        assert_eq!(Config::load(&path).unwrap().sync_root_source, "local");
-        assert_eq!(Config::default().sync_root_source, "local");
-    }
-
-    /// Ruling 4: a config written before the switch flag existed
-    /// cannot say why its root is without interception, and is read as one
-    /// to switch when the helper connects — the user's own folder is that
-    /// case. An intercepted root has nothing to switch. A written flag is
-    /// what it says.
-    #[test]
-    fn a_missing_switch_flag_reads_as_switch_only_for_a_root_without_interception() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("config.toml");
-
-        std::fs::write(&path, "sync_root = \"/home/someone/tools/test\"\nsync_root_intercepted = false\n").unwrap();
-        let unintercepted = Config::load(&path).unwrap();
-        assert_eq!(unintercepted.sync_root_upgrade_when_helper, None);
-        assert!(unintercepted.sync_root_upgrades_when_helper());
-
-        std::fs::write(&path, "sync_root = \"/home/someone/OneDrive\"\n").unwrap();
-        assert!(!Config::load(&path).unwrap().sync_root_upgrades_when_helper());
-
-        let written = Config { sync_root_intercepted: false, sync_root_upgrade_when_helper: Some(false), ..Config::default() };
-        written.save(&path).unwrap();
-        assert!(!Config::load(&path).unwrap().sync_root_upgrades_when_helper(), "a choice is kept");
-        assert!(Config::default().save(&path).is_ok());
-        assert!(
-            !std::fs::read_to_string(&path).unwrap().contains("sync_root_upgrade_when_helper"),
-            "no root, no flag written"
-        );
-    }
-
-    #[test]
     fn in_dir_places_every_file_in_the_directory() {
         let paths = Paths::in_dir(Path::new("/tmp/x"));
         assert_eq!(paths.config_file, Path::new("/tmp/x/config.toml"));
@@ -310,5 +714,236 @@ mod tests {
         assert_eq!(paths.tree_db, Path::new("/tmp/x/tree.sqlite"));
         assert_eq!(paths.rescue_dir, Path::new("/tmp/x/rescued"));
         assert_eq!(paths.thumbnails, Path::new("/tmp/x/thumbnails"));
+    }
+
+    /// Each account's state in its own directory, its rescues in their own; and an id that
+    /// is not an account id names no path at all.
+    #[test]
+    fn each_account_has_its_own_files() {
+        let paths = Paths::in_dir(Path::new("/tmp/x"));
+        assert_eq!(
+            paths.account("3f9a1c0e5b7d"),
+            Some(AccountPaths {
+                dir: "/tmp/x/accounts/3f9a1c0e5b7d".into(),
+                account_cache: "/tmp/x/accounts/3f9a1c0e5b7d/account.json".into(),
+                tree_db: "/tmp/x/accounts/3f9a1c0e5b7d/tree.sqlite".into(),
+                rescue_dir: "/tmp/x/rescued/3f9a1c0e5b7d".into(),
+            })
+        );
+        for bad in ["", "..", "../../etc/xx", "3F9A1C0E5B7D", "3f9a1c0e5b7", "my-account"] {
+            assert_eq!(paths.account(bad), None, "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn labels_follow_the_rules() {
+        let config = Config { accounts: vec![account("3f9a1c0e5b7d", "Personal")], ..Config::default() };
+        assert_eq!(check_label("  Family ", &config, None), Ok("Family".into()));
+        assert!(check_label(&"é".repeat(40), &config, None).is_ok(), "40 characters, not bytes");
+        let bad_labels =
+            ["", "   ", &"x".repeat(41), "Home/Work", "ann@outlook.com", "tab\there", "PERSONAL", "8C21D07A44E1"];
+        for bad in bad_labels {
+            assert!(check_label(bad, &config, None).is_err(), "{bad:?} should be refused");
+        }
+        assert_eq!(
+            check_label("PERSONAL", &config, Some("3f9a1c0e5b7d")),
+            Ok("PERSONAL".into()),
+            "an account may change the case of its own label"
+        );
+    }
+
+    /// §3.1: a hand-edited file whose accounts collide loads every account, holds each
+    /// later one that collides, and is not rewritten.
+    #[tokio::test]
+    async fn colliding_accounts_are_held_and_the_file_is_not_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dir(dir.path());
+        let text = r#"config_version = 2
+client_id = ""
+
+[[accounts]]
+id = "3f9a1c0e5b7d"
+label = "Personal"
+drive_id = "D1"
+[accounts.root]
+path = "/home/ann/OneDrive"
+id = "R1"
+
+[[accounts]]
+id = "3f9a1c0e5b7d"
+label = "Same id"
+
+[[accounts]]
+id = "000000000002"
+label = "personal"
+
+[[accounts]]
+id = "000000000003"
+label = "Same drive"
+drive_id = "D1"
+
+[[accounts]]
+id = "000000000004"
+label = "Same root id"
+[accounts.root]
+path = "/home/ann/Elsewhere"
+id = "R1"
+
+[[accounts]]
+id = "000000000005"
+label = "Inside"
+[accounts.root]
+path = "/home/ann/OneDrive/Family"
+id = "R5"
+
+[[accounts]]
+id = "my-account"
+label = "Not an id"
+
+[[accounts]]
+id = "000000000007"
+label = "Fine"
+drive_id = "D7"
+[accounts.root]
+path = "/home/ann/OneDrive-Fine"
+id = "R7"
+"#;
+        std::fs::write(&paths.config_file, text).unwrap();
+        let store = open(&paths).await;
+        let config = store.snapshot();
+        assert_eq!(config.accounts.len(), 8, "every account is loaded");
+        let holds = config.holds();
+        let expected = [None, Some("id is also"), Some("label"), Some("same Microsoft account"), Some("root id"), Some("inside"), Some("not 12"), None];
+        for ((account, held), expected) in config.accounts.iter().zip(&holds).zip(expected) {
+            match (held, expected) {
+                (None, None) => {}
+                (Some(why), Some(words)) => assert!(why.contains(words), "{}: {why}", account.label),
+                _ => panic!("{}: held {held:?}, expected {expected:?}", account.label),
+            }
+        }
+        assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), text);
+        assert_eq!(store.last_error(), "");
+    }
+
+    /// Read-write is hidden in this phase: a hand-edited mode loads as read-only, and the
+    /// next write says so. An unknown origin reads as the protected one.
+    #[tokio::test]
+    async fn any_mode_loads_as_read_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dir(dir.path());
+        std::fs::write(
+            &paths.config_file,
+            "config_version = 2\n[[accounts]]\nid = \"3f9a1c0e5b7d\"\nlabel = \"Personal\"\nmode = \"read-write\"\norigin = \"imported\"\n",
+        )
+        .unwrap();
+        let store = open(&paths).await;
+        let loaded = store.account("3f9a1c0e5b7d").unwrap();
+        assert_eq!((loaded.mode, loaded.origin), (Mode::ReadOnly, Origin::Migrated));
+        store.set_label("3f9a1c0e5b7d", "Home").unwrap();
+        let text = std::fs::read_to_string(&paths.config_file).unwrap();
+        assert!(text.contains("mode = \"read-only\"") && text.contains("origin = \"migrated\""), "{text}");
+    }
+
+    /// A drive is one account, however it comes to be recorded (design §8.2, review M1): a
+    /// drive another account has is refused, one of the account's own is kept.
+    #[tokio::test]
+    async fn a_drive_another_account_has_is_not_recorded_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = open(&Paths::in_dir(dir.path())).await;
+        let (a, b) = (store.add_account("A").unwrap().id, store.add_account("B").unwrap().id);
+        assert_eq!(store.record_drive(&a, "DA").unwrap(), "DA");
+        assert_eq!(store.record_drive(&b, "DA"), Err(ConfigError::DriveTaken("A".into())));
+        assert_eq!(store.account(&b).unwrap().drive_id, "", "nothing recorded");
+        assert_eq!(store.record_drive(&a, "DB").unwrap(), "DA", "the drive recorded first stays");
+    }
+
+    /// F37: every write goes through one lock, so writers from many threads each keep
+    /// their change; a fresh account gets its own valid id.
+    #[tokio::test]
+    async fn writers_never_save_over_each_other() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dir(dir.path());
+        let store = open(&paths).await;
+        assert!(!paths.config_file.exists(), "a missing file is not written at load");
+        std::thread::scope(|s| {
+            for i in 0..8 {
+                let store = &store;
+                s.spawn(move || store.add_account(&format!("Account {i}")).unwrap());
+            }
+        });
+        let on_disk: Config = toml::from_str(&std::fs::read_to_string(&paths.config_file).unwrap()).unwrap();
+        assert_eq!(on_disk, store.snapshot());
+        let mut ids: Vec<&str> = on_disk.accounts.iter().map(|a| a.id.as_str()).collect();
+        assert!(ids.iter().all(|id| is_valid_account_id(id)), "{ids:?}");
+        ids.sort();
+        ids.dedup();
+        assert_eq!(ids.len(), 8);
+        assert!(on_disk.accounts.iter().all(|a| a.origin == Origin::Added && a.mode == Mode::ReadOnly));
+        assert_eq!(store.add_account("account 0"), Err(ConfigError::InvalidLabel("the label \"Account 0\" is already used".into())));
+    }
+
+    /// Each write starts from the file as it is — a hand edit made meanwhile is kept — and
+    /// writes nothing when the change is refused, or when the file can no longer be read.
+    #[tokio::test]
+    async fn every_write_starts_from_the_file_and_never_overwrites_what_it_cannot_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dir(dir.path());
+        let store = open(&paths).await;
+        let id = store.add_account("Personal").unwrap().id;
+
+        let mut edited = store.snapshot();
+        edited.client_id = CLIENT.into();
+        write_config(&paths.config_file, &edited).unwrap();
+        assert_eq!(store.record_drive(&id, "D1"), Ok("D1".into()));
+        assert_eq!(store.client_id(), CLIENT, "the hand edit is kept");
+        assert_eq!(store.record_drive(&id, "D2"), Ok("D1".into()), "a drive, once recorded, stays");
+        let root = RootConfig {
+            path: "/home/ann/OneDrive".into(),
+            id: "R1".into(),
+            intercepted: true,
+            source: "onedrive".into(),
+            baloo_excluded: false,
+            upgrade_when_helper: Some(false),
+        };
+        store.set_root(&id, Some(root.clone())).unwrap();
+        let on_disk: Config = toml::from_str(&std::fs::read_to_string(&paths.config_file).unwrap()).unwrap();
+        assert_eq!(on_disk.account(&id).map(|a| (a.drive_id.as_str(), a.root.clone())), Some(("D1", Some(root))));
+
+        let before = std::fs::read_to_string(&paths.config_file).unwrap();
+        let refused: Result<(), ConfigError> = store.update(|config| {
+            config.client_id.clear();
+            Err(ConfigError::NoAccount("x".into()))
+        });
+        assert!(refused.is_err());
+        assert_eq!(store.record_drive("000000000000", "D9"), Err(ConfigError::NoAccount("000000000000".into())));
+        assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), before, "nothing written");
+
+        std::fs::write(&paths.config_file, "config_version = 2\nthis is not [toml\n").unwrap();
+        assert!(matches!(store.set_client_id(CLIENT), Err(ConfigError::Unreadable(_))));
+        std::fs::write(&paths.config_file, "config_version = 3\n").unwrap();
+        assert!(matches!(store.remove_account(&id), Err(ConfigError::Unreadable(_))));
+        assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), "config_version = 3\n");
+    }
+
+    /// §7.2 step 1: a file that cannot be read — or that a newer version wrote — loads no
+    /// account, is neither migrated nor written, and `LastError` names it.
+    #[tokio::test]
+    async fn an_unreadable_or_newer_file_poisons_the_store() {
+        for text in [
+            "sync_root = \"/home/u/OneDrive\"\nthis is not [toml\n",
+            "sync_root = 5\n",
+            "config_version = 3\n[[accounts]]\nid = \"3f9a1c0e5b7d\"\nlabel = \"Personal\"\n",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = Paths::in_dir(dir.path());
+            std::fs::write(&paths.config_file, text).unwrap();
+            let store = ConfigStore::open(&paths, async { true }).await;
+            assert!(store.is_poisoned(), "{text:?}");
+            assert_eq!(store.snapshot(), Config::default());
+            assert!(store.last_error().contains(&paths.config_file.display().to_string()), "{}", store.last_error());
+            assert!(matches!(store.add_account("Personal"), Err(ConfigError::Unreadable(_))));
+            assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), text, "never written");
+            assert!(!crate::migrate::v1_copy(&paths.config_file).exists(), "never migrated");
+        }
     }
 }

@@ -2,7 +2,8 @@
 //! content source, the hydration loop, and `SyncService` — the `org.konedrive.Sync1`
 //! D-Bus surface's own half of the work (`dbus.rs` is the thin zbus wrapper
 //! around it, the same split `crate::account`/`crate::dbus` uses for
-//! `Account1`).
+//! `Account1`). There is one `SyncService` per account; the helper link, its
+//! supervisor and the per-inode locks are the daemon's, in `hub.rs`.
 
 pub mod activity;
 pub mod baloo;
@@ -11,6 +12,7 @@ pub mod disk;
 pub mod graph_source;
 pub mod helper;
 pub mod helper_status;
+pub mod hub;
 pub mod listing;
 pub mod materialize;
 pub mod network;
@@ -44,7 +46,7 @@ use source::{Answered, ContentSource, Fetched, FillError, LocalDir, SourceError}
 use tokio::sync::{watch, Notify};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::Config;
+use crate::config::{ConfigStore, RootConfig};
 use crate::state::{SignInState, StateHandle};
 
 /// Fills served on open at once ([`serve_hydrations`]); pinned downloads
@@ -117,15 +119,46 @@ pub async fn serve_hydrations(
 
 /// [`serve_hydrations`], reporting each fill into `report`: a
 /// `Transfers` entry while it downloads, then a `downloaded` or `failed`
-/// event, and a new measurement of the folder's space. The daemon runs this
-/// one ([`supervise_helper`]); what a fill answers the opener is the same
-/// either way, and it is answered before anything is recorded.
+/// event, and a new measurement of the folder's space. The daemon runs the
+/// same loop with every fill routed to its account ([`hub::supervise`]);
+/// what a fill answers the opener is the same either way, and it is
+/// answered before anything is recorded.
 pub async fn serve_hydrations_reporting(
     link: HelperLink,
-    mut requests: tokio::sync::mpsc::Receiver<HydrateRequest>,
+    requests: tokio::sync::mpsc::Receiver<HydrateRequest>,
     source: Arc<dyn ContentSource>,
     locks: InodeLocks,
     report: Report,
+) {
+    serve(link, requests, locks, Fillers::One(source, report)).await;
+}
+
+/// Who fills a hydration request, and where it is reported.
+#[derive(Clone)]
+enum Fillers {
+    /// One source, one report, whatever the file (tests, the VM suite).
+    One(Arc<dyn ContentSource>, Report),
+    /// The account the file belongs to ([`hub::HelperHub::route`]): the
+    /// daemon's.
+    Routed(Arc<hub::HelperHub>),
+}
+
+impl Fillers {
+    async fn route(&self, fd: &std::os::fd::OwnedFd) -> Option<(Arc<dyn ContentSource>, Report)> {
+        match self {
+            Fillers::One(source, report) => Some((Arc::clone(source), report.clone())),
+            Fillers::Routed(hub) => hub.route(fd).await.map(hub::filler),
+        }
+    }
+}
+
+/// The loop behind [`serve_hydrations_reporting`] and the hub's: at most
+/// [`FILL_SLOTS`] fills at once, the four slots shared by every account.
+async fn serve(
+    link: HelperLink,
+    mut requests: tokio::sync::mpsc::Receiver<HydrateRequest>,
+    locks: InodeLocks,
+    fillers: Fillers,
 ) {
     let permits = Arc::new(tokio::sync::Semaphore::new(FILL_SLOTS));
     let mut running = tokio::task::JoinSet::new();
@@ -158,11 +191,25 @@ pub async fn serve_hydrations_reporting(
             continue;
         }
         let link = link.clone();
-        let source = Arc::clone(&source);
+        let fillers = fillers.clone();
         let locks = locks.clone();
-        let report = report.clone();
         running.spawn(async move {
             let permit = permit;
+            // Which account's file this is (design §2.4). One that is in no
+            // account's folder is denied rather than filled from a guess;
+            // the next open tries again.
+            let Some((source, report)) = fillers.route(&fd).await else {
+                tracing::warn!(
+                    "hydration request {req_id} is for a file in none of the folders ({}); \
+                     denying that open with EIO",
+                    fd_path(&fd)
+                );
+                if let Err(e) = link.hydrate_done(req_id, libc::EIO).await {
+                    tracing::error!("cannot report hydration {req_id}: {e}");
+                }
+                drop(permit);
+                return;
+            };
             // The identity the lock is taken on: `fstat` on the event fd
             // itself, read before the fd is handed to `hydrate` (which
             // consumes it). A descriptor whose identity cannot be read at
@@ -563,6 +610,16 @@ pub struct SyncPaths {
     pub thumbnails: Option<PathBuf>,
 }
 
+/// Where a folder is recorded so that it survives a restart: its account's
+/// `[accounts.root]` in `config.toml`, written only through the daemon's one
+/// [`ConfigStore`].
+#[derive(Clone)]
+pub struct Persist {
+    pub store: Arc<ConfigStore>,
+    /// The account's id.
+    pub account: String,
+}
+
 /// `RootState` as published: the registration's state, unless
 /// the folder waits for the helper or the sync is blocked (`error`), or an
 /// initial listing runs (`listing`).
@@ -653,6 +710,14 @@ pub enum SyncError {
     ModifiedLocally,
     #[error("not a plain file inside this sync root")]
     OutsideRoot,
+    /// A folder that remembers another account's drive (design §8.3);
+    /// `Sync1` answers it `NotEmpty`.
+    #[error("this folder holds another OneDrive account's files; choose an empty folder")]
+    ForeignFolder,
+    /// A folder that is, is inside, or contains another account's folder
+    /// (design §8.3); the other account's label.
+    #[error("this folder is, is inside, or contains the folder of the account '{0}'")]
+    Overlaps(String),
     #[error("a sync root is already registered; forget it first")]
     AlreadyRegistered,
     #[error("nobody is signed in")]
@@ -694,9 +759,9 @@ impl From<DehydrateError> for SyncError {
     }
 }
 
-/// The sync folder: registration, the manual `PopulateFromDirectory` fill,
-/// and per-file hydrate/dehydrate/state — everything `org.konedrive.Sync1`
-/// exposes.
+/// One account's folder: registration, the manual `PopulateFromDirectory`
+/// fill, and per-file hydrate/dehydrate/state — what that account's
+/// `org.konedrive.Sync1` exposes, and what `org.konedrive.Files1` routes to it.
 ///
 /// # Why `hydrate_now` fills directly rather than only through interception
 ///
@@ -722,8 +787,11 @@ impl From<DehydrateError> for SyncError {
 /// `serve_hydrations` can be started once at daemon startup, before any
 /// root exists, and pick up whatever gets registered later.
 pub struct SyncService {
-    /// Replaceable, because the helper can go away and come back:
-    /// `supervise_helper` swaps it for `None` the moment the
+    /// The link to the helper, its state and the per-inode locks, shared by
+    /// every account of the daemon (design §2.1).
+    hub: Arc<hub::HelperHub>,
+    /// The hub's link cell: replaceable, because the helper can go away and
+    /// come back — [`hub::supervise`] swaps it for `None` the moment the
     /// connection drops and back to a live link when it reconnects. Shared
     /// with a OneDrive folder's sync, which reads it at every reconcile.
     link: listing::LinkCell,
@@ -732,8 +800,9 @@ pub struct SyncService {
     /// this is what it asks. `None` only where nothing wired it up.
     account: Option<StateHandle>,
     /// Where the registered root is persisted, so it survives a restart
-    /// (§3.1). `None` disables persistence entirely.
-    config_file: Option<PathBuf>,
+    /// (§3.1): the account's entry in `config.toml`. `None` disables
+    /// persistence entirely.
+    persist: Option<Persist>,
     state: SyncStateHandle,
     root: Mutex<Option<Registration>>,
     /// Taken for writing by everything that changes which root is registered
@@ -754,12 +823,8 @@ pub struct SyncService {
     /// folder, so no registration changes under it.
     lifecycle: Arc<tokio::sync::RwLock<()>>,
     source: Mutex<Option<Arc<dyn ContentSource>>>,
+    /// The hub's lock table: one inode belongs to one account only.
     locks: InodeLocks,
-    /// Where the helper's socket is, for local rule: with no
-    /// link, a punch first looks there to see whether a helper — and so a
-    /// fanotify group that could hold a mark — exists at all. Set by
-    /// [`supervise_helper`] to the path it connects to.
-    helper_socket: Mutex<PathBuf>,
     /// A read-only Graph client, for a folder that shows OneDrive. `None`
     /// until `main` sets it; without it every folder is local.
     drive: Mutex<Option<crate::drive::DriveClient>>,
@@ -786,19 +851,16 @@ pub struct SyncService {
     /// installs the real `balooctl6`; a test that forgets `set_baloo` must
     /// never reach the user's own indexer settings.
     baloo: Mutex<Arc<Baloo>>,
+    /// Why this account's folder is held back (design §3.1: `config.toml`
+    /// gives it what an earlier account has), if it is: it is not brought
+    /// up, and no registration is made.
+    held: Mutex<Option<String>>,
     /// The activity log, the conflicts, the downloads under way and the
     /// folder's space, shared with the hydration loop and a
     /// OneDrive folder's sync. Its store is a clone of `store`'s, attached by
     /// [`start_sync`](Self::start_sync) and detached by
     /// [`stop_sync`](Self::stop_sync), after which no write holds it.
     report: Report,
-    /// What `HelperState` asks while there is no link (HS1). Starts as
-    /// [`helper_status::NotAsked`], which asks nothing: only `main` installs
-    /// systemd, so no test reaches the system bus.
-    helper_unit: Mutex<Arc<dyn HelperUnit>>,
-    /// Told whenever the link comes or goes, so [`watch_helper`] asks again
-    /// at once.
-    helper_changed: Arc<Notify>,
     /// "Always keep on this device": the pins and the downloads they ask
     /// for. Shared with a OneDrive folder's sync, which queues what it places
     /// under a pin and sweeps after every Full reconcile.
@@ -848,6 +910,10 @@ struct Registration {
     /// one registered without interception on purpose — with a helper
     /// connected.
     upgrade_when_helper: bool,
+    /// The device the folder is on, read once when the registration is made,
+    /// for the hub's router: never a path looked at per request. `None` when
+    /// the folder could not be looked at then.
+    dev: Option<u64>,
 }
 
 /// A root as `config.toml` records it.
@@ -908,70 +974,65 @@ const SWITCH_FAILED: &str =
 
 impl SyncService {
     /// `account` gates `RegisterRoot` on somebody being signed in (§3.1);
-    /// `config_file` is where the registered root is persisted so it
-    /// survives a restart. Both are `None` in tests that exercise neither.
+    /// `persist` is where the registered root is persisted so it survives a
+    /// restart. Both are `None` in tests that exercise neither. The service
+    /// has a hub of its own, holding `link`: the one account of a daemon.
     pub fn new(
         link: Option<HelperLink>,
         account: Option<StateHandle>,
-        config_file: Option<PathBuf>,
+        persist: Option<Persist>,
     ) -> Arc<Self> {
-        let helper_state = if link.is_some() { HelperState::Connected } else { HelperState::Unknown };
-        let state = SyncStateHandle::new(SyncSnapshot { helper_state, ..SyncSnapshot::default() });
-        // The pins' downloads go through this very service, which they must
-        // not keep alive: a weak reference.
-        Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
-            pins: pin::Pins::new(state.clone(), me.clone()),
-            link: Arc::new(Mutex::new(link)),
-            account,
-            config_file,
-            report: Report::new(state.clone()),
-            state,
-            root: Mutex::new(None),
-            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
-            source: Mutex::new(None),
-            locks: InodeLocks::new(),
-            helper_socket: Mutex::new(PathBuf::from(konedrive_proto::SOCKET_PATH)),
-            drive: Mutex::new(None),
-            sync_paths: Mutex::new(None),
-            schedule: Mutex::new(listing::Schedule::default()),
-            syncing: Arc::new(Mutex::new(None)),
-            store: Mutex::new(None),
-            baloo: Mutex::new(Arc::new(Baloo::disabled())),
-            helper_unit: Mutex::new(Arc::new(helper_status::NotAsked)),
-            helper_changed: Arc::new(Notify::new()),
+        Self::on_hub(&hub::HelperHub::with_link(link), account, persist)
+    }
+
+    /// One account's folder, on the daemon's `hub`, after every account the
+    /// hub has already.
+    pub fn on_hub(hub: &Arc<hub::HelperHub>, account: Option<StateHandle>, persist: Option<Persist>) -> Arc<Self> {
+        hub.join(|helper_state| {
+            let state = SyncStateHandle::new(SyncSnapshot { helper_state, ..SyncSnapshot::default() });
+            // The pins' downloads go through this very service, which they must
+            // not keep alive: a weak reference.
+            Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
+                pins: pin::Pins::new(state.clone(), me.clone()),
+                hub: Arc::clone(hub),
+                link: hub.link_cell(),
+                account,
+                persist,
+                report: Report::new(state.clone()),
+                state,
+                root: Mutex::new(None),
+                lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+                source: Mutex::new(None),
+                locks: hub.locks(),
+                drive: Mutex::new(None),
+                sync_paths: Mutex::new(None),
+                schedule: Mutex::new(listing::Schedule::default()),
+                syncing: Arc::new(Mutex::new(None)),
+                store: Mutex::new(None),
+                baloo: Mutex::new(Arc::new(Baloo::disabled())),
+                held: Mutex::new(None),
+            })
         })
     }
 
-    /// What `HelperState` asks while there is no link (HS1): `main`
-    /// installs systemd ([`helper_status::Systemd`]); a test, a fake.
+    /// The link to the helper this account shares with the daemon's others.
+    pub fn hub(&self) -> &Arc<hub::HelperHub> {
+        &self.hub
+    }
+
+    /// What `HelperState` asks while there is no link (HS1), for the hub.
     pub fn set_helper_unit(&self, unit: Arc<dyn HelperUnit>) {
-        *self.helper_unit.lock().unwrap() = unit;
-        self.helper_changed.notify_one();
+        self.hub.set_unit(unit);
     }
 
-    /// `HelperState` (HS1).
+    /// `HelperState` (HS1), the hub's.
     pub fn helper_state(&self) -> String {
-        self.state.get().helper_state.as_str().to_owned()
+        self.hub.state().as_str().to_owned()
     }
 
-    /// Works `HelperState` out again: `connected` while there is a link,
-    /// else what systemd says of the unit. A link that came up while systemd
-    /// was being asked wins.
+    /// Works the hub's `HelperState` out again ([`hub::HelperHub::check`]).
     pub async fn check_helper(&self) {
-        if self.link().is_some() {
-            self.state.update(|s| s.helper_state = HelperState::Connected);
-            return;
-        }
-        let unit = Arc::clone(&self.helper_unit.lock().unwrap());
-        let found = match unit.states().await {
-            Some((load, active)) => HelperState::of_unit(&load, &active),
-            None => HelperState::Unknown,
-        };
-        self.state.update(|s| {
-            if self.link().is_none() {
-                s.helper_state = found;
-            }
-        });
+        self.hub.check().await;
     }
 
     /// The drive a folder registered while signed in shows.
@@ -1008,20 +1069,17 @@ impl SyncService {
         *self.schedule.lock().unwrap() = schedule;
     }
 
-    /// Where the helper's socket is (see `helper_socket`). Defaults to
+    /// Where the helper's socket is, for the hub. Defaults to
     /// `konedrive_proto::SOCKET_PATH`.
     pub fn set_helper_socket(&self, path: impl Into<PathBuf>) {
-        *self.helper_socket.lock().unwrap() = path.into();
+        self.hub.set_socket(path);
     }
 
     /// What a punch goes by when nothing ties it to a link of its own
     /// (local rule, on [`Clearance`]): the live link if there
     /// is one, the helper's socket if not.
     fn clearance(&self) -> Clearance {
-        match self.link() {
-            Some(link) => Clearance::Link(link),
-            None => Clearance::NoLink(self.helper_socket.lock().unwrap().clone()),
-        }
+        self.hub.clearance()
     }
 
     pub fn state(&self) -> &SyncStateHandle {
@@ -1049,10 +1107,31 @@ impl SyncService {
     /// `HelperState` (HS1): `connected` at once, or, on a loss, `unknown`
     /// until [`watch_helper`] has asked systemd.
     pub fn set_link(&self, link: Option<HelperLink>) {
-        let now = if link.is_some() { HelperState::Connected } else { HelperState::Unknown };
-        *self.link.lock().unwrap() = link;
-        self.state.update(|s| s.helper_state = now);
-        self.helper_changed.notify_one();
+        self.hub.set_link(link);
+    }
+
+    /// The drive `config.toml` records for this account, if it records one.
+    fn account_drive(&self) -> Option<String> {
+        let persist = self.persist.as_ref()?;
+        persist.store.account(&persist.account).map(|a| a.drive_id).filter(|drive| !drive.is_empty())
+    }
+
+    /// The device the registered folder is on, as it was when it was
+    /// registered, for the hub's router; `None` with no folder, or one that
+    /// could not be looked at.
+    fn root_device(&self) -> Option<u64> {
+        self.registration().and_then(|reg| reg.dev)
+    }
+
+    /// Whether this account has a folder the router cannot place: one that is
+    /// held back, recorded but not registered yet (a registration under way
+    /// writes its folder down first), or whose device is unknown. An open in
+    /// such a folder could be taken for another account's by device alone.
+    fn has_unplaced_folder(&self) -> bool {
+        match self.registration() {
+            Some(reg) => reg.dev.is_none(),
+            None => self.persisted_root().is_some(),
+        }
     }
 
     fn registration(&self) -> Option<Registration> {
@@ -1105,9 +1184,12 @@ impl SyncService {
     pub async fn register_root(&self, path: &Path) -> Result<(), SyncError> {
         let _lifecycle = self.lifecycle.write().await;
         self.restore_locked().await;
+        self.check_held()?;
         self.require_sign_in()?;
         self.check_no_root_yet()?;
         self.require_link()?;
+        let _registering = self.hub.registering.lock().await;
+        self.check_overlap(path)?;
         self.bind(path, true, true).await
     }
 
@@ -1153,8 +1235,120 @@ impl SyncService {
     ) -> Result<(), SyncError> {
         let _lifecycle = self.lifecycle.write().await;
         self.restore_locked().await;
+        self.check_held()?;
         self.check_no_root_yet()?;
+        let _registering = self.hub.registering.lock().await;
+        self.check_overlap(path)?;
         self.bind(path, false, true).await
+    }
+
+    /// Holds this account's folder back (design §3.1): `config.toml` gives
+    /// the account an id, a label, a drive or a folder an earlier account
+    /// has. The folder is not brought up, `RootState` reads `error`,
+    /// `LastError` says why, and a registration is refused the same way.
+    pub fn hold_back(&self, why: &str) {
+        let message = format!("this account is held back: {why}; correct config.toml and start konedrived again");
+        tracing::warn!("{message}");
+        let path = self.persisted_root().map(|p| p.path.display().to_string()).unwrap_or_default();
+        *self.held.lock().unwrap() = Some(message.clone());
+        self.state.update(|s| {
+            s.root_path = path;
+            s.root_state = RootState::Error;
+            s.last_error = message;
+        });
+    }
+
+    fn check_held(&self) -> Result<(), SyncError> {
+        match self.held.lock().unwrap().clone() {
+            Some(why) => Err(SyncError::Io(why)),
+            None => Ok(()),
+        }
+    }
+
+    /// Says again why the account is held back, once its folder is
+    /// forgotten: a Forget clears everything published about the folder.
+    fn publish_held(&self) {
+        if let Some(message) = self.held.lock().unwrap().clone() {
+            self.state.update(|s| {
+                s.root_state = RootState::Error;
+                s.last_error = message;
+            });
+        }
+    }
+
+    /// No registration, bring-up or switch for this account from now on
+    /// (`Accounts1.Remove`). Called with `lifecycle` held for writing.
+    fn retire_locked(&self) {
+        *self.held.lock().unwrap() = Some("this account is being removed".into());
+    }
+
+    /// The folder a held-back account records, as a registration to forget
+    /// through: its folder is never brought up (§3.1), but one registered with
+    /// interception in an earlier session is still the helper's until the
+    /// helper lets go of it. `None` for an account not held back, or one that
+    /// records no folder. The root id comes from `config.toml` or, for a
+    /// config written before the id was recorded, from the folder, as
+    /// [`hold`](Self::hold) finds it; an intercepted folder with neither
+    /// cannot be named to the helper, and is refused.
+    async fn recorded_for_forget(&self) -> Result<Option<Registration>, SyncError> {
+        if self.held.lock().unwrap().is_none() {
+            return Ok(None);
+        }
+        let Some(persisted) = self.persisted_root() else { return Ok(None) };
+        let root_id = if root::looks_like_a_root_id(&persisted.root_id) {
+            persisted.root_id.clone()
+        } else if let Some(root_id) = root::recorded_root_id(&persisted.path).await {
+            root_id
+        } else if !persisted.intercepted {
+            persisted.root_id.clone()
+        } else {
+            return Err(SyncError::Io(format!(
+                "cannot forget {}: config.toml does not record its root id, and the folder carries \
+                 none that can be read",
+                persisted.path.display()
+            )));
+        };
+        Ok(Some(Registration {
+            dev: None,
+            root: SyncRoot { path: persisted.path, root_id },
+            intercepted: persisted.intercepted,
+            recovery_deferred: false,
+            source: persisted.source,
+            brought_up: false,
+            baloo_excluded: persisted.baloo_excluded,
+            upgrade_when_helper: false,
+        }))
+    }
+
+    /// Design §8.3: a folder that is, is inside, or contains another
+    /// account's folder is refused, naming that account. Called with the
+    /// hub's `registering` held, so that two accounts cannot both pass it.
+    /// The helper would refuse an intercepted overlap anyway (`EINVAL`);
+    /// checking first names the refusal, and covers a folder registered
+    /// without interception, which the helper never sees.
+    fn check_overlap(&self, path: &Path) -> Result<(), SyncError> {
+        match self.hub.overlapping(self, path) {
+            Some(label) => Err(SyncError::Overlaps(label)),
+            None => Ok(()),
+        }
+    }
+
+    /// The account's label, as `config.toml` has it — for a refusal that
+    /// names it.
+    fn label(&self) -> String {
+        self.persist
+            .as_ref()
+            .and_then(|persist| persist.store.account(&persist.account))
+            .map(|account| account.label)
+            .unwrap_or_else(|| "another account".into())
+    }
+
+    /// Every folder this account holds or records: the registered one, and
+    /// the one `config.toml` names (held, or not brought up yet).
+    fn folders(&self) -> Vec<PathBuf> {
+        let mut folders: Vec<PathBuf> = self.registration().map(|reg| reg.root.path).into_iter().collect();
+        folders.extend(self.persisted_root().map(|p| p.path));
+        folders
     }
 
     /// §3.1: a root is bound to the signed-in drive, so there has to be one.
@@ -1251,6 +1445,15 @@ impl SyncService {
     /// brought back shows what it showed before — the registration held, or
     /// else what `config.toml` records — whoever is signed in by then.
     async fn bind(&self, path: &Path, intercepted: bool, fresh: bool) -> Result<(), SyncError> {
+        // A OneDrive folder remembers its account's drive (design §8.3):
+        // one forgotten by another account is that account's files, and a
+        // folder carrying a root id may be registered again without being
+        // empty — so it is refused unless the drive is this account's, or
+        // the folder is empty: then there is nothing to adopt, and the stale
+        // drive comes off (Remove, then Add, on the same folder).
+        if fresh && !root::drive_allows(path, self.account_drive()).await {
+            return Err(SyncError::ForeignFolder);
+        }
         let source = if fresh {
             self.fresh_source(intercepted)
         } else {
@@ -1414,6 +1617,20 @@ impl SyncService {
             }
         };
 
+        // The folder remembers its account's drive once the drive is known
+        // (design §8.3): from its registration on, and at the first
+        // bring-up of a folder from before multiple accounts.
+        if source == RootSource::OneDrive {
+            if let Some(drive) = self.account_drive() {
+                let (marked, shown) = (root.clone(), root.path.display().to_string());
+                match tokio::task::spawn_blocking(move || root::mark_drive(&marked, &drive)).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(e)) => tracing::warn!("cannot record the drive on {shown}: {e}"),
+                    Err(e) => tracing::warn!("the task recording the drive on {shown} failed: {e}"),
+                }
+            }
+        }
+
         // `config.toml` names what is registered now: a fresh root without
         // interception is written down here (a fresh intercepted one already
         // was, before the helper heard of it), and a root brought back up
@@ -1421,6 +1638,7 @@ impl SyncService {
         self.remember(&Persisted::of(&root, intercepted, source, baloo_excluded, upgrade_when_helper));
         let path = root.path.display().to_string();
         let recovery_deferred = report.deferred > 0;
+        let dev = hub::device_of(&root.path);
         *self.root.lock().unwrap() = Some(Registration {
             root,
             intercepted,
@@ -1429,6 +1647,7 @@ impl SyncService {
             brought_up: true,
             baloo_excluded,
             upgrade_when_helper,
+            dev,
         });
         self.state.update(|s| {
             s.root_path = path;
@@ -1508,6 +1727,7 @@ impl SyncService {
                 );
                 tracing::error!("{message}");
                 let path = root.path.display().to_string();
+                let dev = hub::device_of(&root.path);
                 *self.root.lock().unwrap() = Some(Registration {
                     root,
                     intercepted: true,
@@ -1516,6 +1736,7 @@ impl SyncService {
                     brought_up: false,
                     baloo_excluded: false,
                     upgrade_when_helper: false,
+                    dev,
                 });
                 self.state.update(|s| {
                     s.root_path = path;
@@ -1571,6 +1792,21 @@ impl SyncService {
     /// and so starts its sync again; that one is stopped under the lock, where
     /// stopping cannot wait for a reconcile — none can hold the lock.
     pub async fn unregister_root(&self) -> Result<(), SyncError> {
+        self.forget(false).await
+    }
+
+    /// `Accounts1.Remove`'s first step: the folder forgotten exactly as
+    /// [`unregister_root`](Self::unregister_root) forgets it — refused under
+    /// the same rule — and, under the same `lifecycle` lock so that nothing
+    /// comes in between, the account retired: no registration, bring-up or
+    /// switch is made for it from then on. An account with no folder is
+    /// retired all the same.
+    pub async fn retire(&self) -> Result<(), SyncError> {
+        self.forget(true).await
+    }
+
+    /// [`unregister_root`](Self::unregister_root) and [`retire`](Self::retire).
+    async fn forget(&self, retire: bool) -> Result<(), SyncError> {
         // The tasks only, outside the lock; the activity is let go of under
         // it (B-M1), where no reconnect can have started a sync meanwhile.
         let was_syncing = self.stop_tasks().await;
@@ -1580,8 +1816,28 @@ impl SyncService {
             self.let_go_of_activity().await;
         }
         self.restore_locked().await;
-        let reg = self.require_registration()?;
+        // A held-back account never brings its folder up, but a folder the
+        // helper may still hold leaves through the helper all the same: its
+        // record is the only name the helper holds it by.
+        let (reg, recorded) = match self.registration() {
+            Some(reg) => (reg, false),
+            None => match self.recorded_for_forget().await? {
+                Some(reg) => (reg, true),
+                None if retire => {
+                    self.retire_locked();
+                    return Ok(());
+                }
+                None => return Err(SyncError::NoRoot),
+            },
+        };
         let result = self.forget_locked(&reg).await;
+        if result.is_ok() {
+            if retire {
+                self.retire_locked();
+            } else if recorded {
+                self.publish_held();
+            }
+        }
         if reg.source == RootSource::OneDrive {
             match &result {
                 Ok(()) => {
@@ -1717,13 +1973,11 @@ impl SyncService {
         .flatten()
         .unwrap_or(0);
         self.state.update(|s| s.last_checked = last_checked);
-        // drive, as `config.toml` keeps it for this root (A-M5).
-        let drive_record = self.config_file.clone().map(|config_file| {
-            let recorded = Config::load(&config_file)
-                .ok()
-                .filter(|c| c.sync_root_id == reg.root.root_id && !c.sync_root_drive_id.is_empty())
-                .map(|c| c.sync_root_drive_id);
-            listing::DriveRecord { config_file, root_id: reg.root.root_id.clone(), recorded }
+        // The account's drive, as `config.toml` keeps it (A-M5, design §8.1):
+        // the same-account check then survives a tree store rebuilt empty.
+        let drive_record = self.persist.clone().map(|persist| {
+            let recorded = persist.store.account(&persist.account).map(|a| a.drive_id).filter(|d| !d.is_empty());
+            listing::DriveRecord { store: persist.store, account: persist.account, recorded }
         });
         // Nudges the thumbnail filler right after a cycle, rather than making
         // it wait out its own idle timer.
@@ -1838,51 +2092,27 @@ impl SyncService {
     }
 
     /// The root is "persisted, so it survives a restart" — with its
-    /// mode, and with the id the helper holds it by.
-    /// Read-modify-write, because this file is the account sub-project's
-    /// `config.toml` and holds its `client_id` too. `Err` when the file could
-    /// not be written — or could not be read: what could not be read is
-    /// never overwritten. A missing file is not
-    /// unreadable; it is an empty configuration.
+    /// mode, and with the id the helper holds it by — as the account's
+    /// `[accounts.root]`, through the one `ConfigStore`: every write re-reads
+    /// the file, so nothing else in it is lost. `Err` when the file could not
+    /// be written — or could not be read: what could not be read is never
+    /// overwritten. The account's drive stays: it is the account's, not the
+    /// folder's (design §8.1).
     fn save_root(&self, root: Option<&Persisted>) -> Result<(), String> {
-        let Some(config_file) = &self.config_file else {
+        let Some(persist) = &self.persist else {
             return Ok(());
         };
-        let mut config = Config::load(config_file).map_err(|e| {
-            format!(
-                "cannot record the sync folder in {}: it cannot be read ({e}), and it is not \
-                 overwritten, since it holds the account's settings too",
-                config_file.display()
-            )
-        })?;
-        match root {
-            Some(root) => {
-                // The drive the folder was listed from belongs to this root
-                // alone (A-M5): the listing records it, and nothing here
-                // carries it over to another.
-                if config.sync_root_id != root.root_id {
-                    config.sync_root_drive_id.clear();
-                }
-                config.sync_root = root.path.display().to_string();
-                config.sync_root_id = root.root_id.clone();
-                config.sync_root_intercepted = root.intercepted;
-                config.sync_root_source = root.source.as_str().into();
-                config.sync_root_baloo_excluded = root.baloo_excluded;
-                config.sync_root_upgrade_when_helper = Some(root.upgrade_when_helper);
-            }
-            None => {
-                config.sync_root.clear();
-                config.sync_root_id.clear();
-                config.sync_root_intercepted = true;
-                config.sync_root_source = RootSource::Local.as_str().into();
-                config.sync_root_baloo_excluded = false;
-                config.sync_root_upgrade_when_helper = None;
-                config.sync_root_drive_id.clear();
-            }
-        }
-        config
-            .save(config_file)
-            .map_err(|e| format!("cannot record the sync folder in {}: {e}", config_file.display()))
+        let root = root.map(|root| RootConfig {
+            path: root.path.clone(),
+            id: root.root_id.clone(),
+            intercepted: root.intercepted,
+            source: root.source.as_str().into(),
+            baloo_excluded: root.baloo_excluded,
+            upgrade_when_helper: Some(root.upgrade_when_helper),
+        });
+        persist.store.set_root(&persist.account, root).map_err(|e| {
+            format!("cannot record the sync folder in {}: {e}", persist.store.file().display())
+        })
     }
 
     /// [`save_root`](Self::save_root) where a failure cannot be undone
@@ -1898,23 +2128,21 @@ impl SyncService {
     /// [`persist_or_log`](Self::persist_or_log), only when `config.toml`
     /// does not already say exactly this.
     fn remember(&self, root: &Persisted) {
-        if self.config_file.is_some() && self.persisted_root().as_ref() != Some(root) {
+        if self.persist.is_some() && self.persisted_root().as_ref() != Some(root) {
             self.persist_or_log(Some(root));
         }
     }
 
     fn persisted_root(&self) -> Option<Persisted> {
-        let config_file = self.config_file.as_ref()?;
-        let config = Config::load(config_file)
-            .map_err(|e| tracing::warn!("ignoring unreadable {}: {e}", config_file.display()))
-            .ok()?;
-        let upgrade_when_helper = config.sync_root_upgrades_when_helper();
-        (!config.sync_root.is_empty()).then(|| Persisted {
-            path: PathBuf::from(&config.sync_root),
-            root_id: config.sync_root_id,
-            intercepted: config.sync_root_intercepted,
-            source: RootSource::parse(&config.sync_root_source),
-            baloo_excluded: config.sync_root_baloo_excluded,
+        let persist = self.persist.as_ref()?;
+        let root = persist.store.account(&persist.account)?.root?;
+        let upgrade_when_helper = root.upgrades_when_helper();
+        Some(Persisted {
+            path: root.path,
+            root_id: root.id,
+            intercepted: root.intercepted,
+            source: RootSource::parse(&root.source),
+            baloo_excluded: root.baloo_excluded,
             upgrade_when_helper,
         })
     }
@@ -1957,6 +2185,9 @@ impl SyncService {
     /// to a second registration, `NoHelper` to a Forget or a dehydration.
     pub async fn resume(&self) {
         let _lifecycle = self.lifecycle.write().await;
+        if self.held.lock().unwrap().is_some() {
+            return;
+        }
         self.restore_locked().await;
         match self.registration() {
             // Registered without interception: there is no helper
@@ -2011,7 +2242,7 @@ impl SyncService {
     /// the root `config.toml` records has been looked at, whichever of them
     /// reaches a freshly started daemon first.
     async fn restore_locked(&self) {
-        if self.registration().is_some() {
+        if self.registration().is_some() || self.held.lock().unwrap().is_some() {
             return;
         }
         if let Some(persisted) = self.persisted_root().filter(|p| p.intercepted) {
@@ -2143,6 +2374,7 @@ impl SyncService {
                 );
                 tracing::error!("{message}");
                 *self.root.lock().unwrap() = Some(Registration {
+                    dev: hub::device_of(&root.path),
                     root,
                     intercepted: true,
                     recovery_deferred: false,
@@ -2202,6 +2434,7 @@ impl SyncService {
         };
         let shown = persisted.path.display().to_string();
         *self.root.lock().unwrap() = Some(Registration {
+            dev: hub::device_of(&persisted.path),
             root: SyncRoot { path: persisted.path, root_id },
             intercepted: true,
             recovery_deferred: false,
@@ -2686,6 +2919,38 @@ impl SyncService {
             Some(e) => Err(e),
             None => Ok(queued),
         }
+    }
+
+    /// What `Unpin` and `FreeUp` check of every path before they change
+    /// anything, on its own: each path is in the folder and one of ours, and
+    /// no folder above it pins it and stays pinned (`NotAllowed`). `Files1`
+    /// asks every account whose folder a call's paths are in first, so that
+    /// a call that spans accounts is refused as a whole or not at all.
+    pub async fn check_unpinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
+        let reg = self.require_registration()?;
+        let targets = self.pin_targets(&reg.root, paths).await?;
+        match kept_by_folder(&targets) {
+            Some(refusal) => Err(refusal),
+            None => Ok(()),
+        }
+    }
+
+    /// What `Pin` checks of every path before it pins any, on its own: each
+    /// path is in the folder, and one of ours. `Files1` asks every account
+    /// first, as for [`check_unpinnable`](Self::check_unpinnable).
+    pub async fn check_pinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
+        let reg = self.require_registration()?;
+        self.pin_targets(&reg.root, paths).await.map(drop)
+    }
+
+    /// What `FreeUp` checks before it frees anything, on its own:
+    /// [`check_unpinnable`](Self::check_unpinnable)'s rules, and a folder
+    /// with interception has its helper (`NoHelper`).
+    pub async fn check_free_up(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
+        if self.require_registration()?.intercepted {
+            self.require_link()?;
+        }
+        self.check_unpinnable(paths).await
     }
 
     /// `Unpin(paths)`, unchecking "Always keep on this device": each path's
@@ -3369,78 +3634,18 @@ fn remove_tree_files(tree_db: &Path) {
     }
 }
 
-/// Keeps a helper link alive for the life of the daemon.
-///
-/// Connects, brings the sync folder up on that link, serves hydration
-/// requests until the connection drops, publishes the drop at once — not
-/// once the downloads under way have finished — and tries
-/// again after a backoff that grows to a cap. Nothing reconnected before: when the
-/// helper went away `serve_hydrations` simply returned, `RootState` stayed
-/// `ready` with `LastError` empty, and every un-hydrated file in the folder
-/// read as zeros with nothing saying so.
-///
-/// `backoff` is the first delay; each failure doubles it up to
-/// `MAX_HELPER_BACKOFF`. A successful connection resets it.
-pub async fn supervise_helper(
-    service: Arc<SyncService>,
-    socket_path: PathBuf,
-    backoff: Duration,
-) {
-    let mut wait = backoff;
-    loop {
-        match HelperLink::connect(&socket_path).await {
-            Ok((link, requests)) => {
-                wait = backoff;
-                tracing::info!("connected to the konedrive helper at {}", socket_path.display());
-                service.set_helper_socket(&socket_path);
-                service.set_link(Some(link.clone()));
-                // Re-register the root before serving anything: a helper
-                // that has just started has no marks at all, and the root's
-                // own registration is what puts them back.
-                service.resume().await;
-                let source = Arc::clone(&service) as Arc<dyn ContentSource>;
-                // A task of its own, and the end of the connection is
-                // waited for on the link itself. Awaiting
-                // `serve_hydrations` here waited for every fill still
-                // running as well — a download of any length — and until
-                // then the loss was not published, the dead link was still
-                // handed out, and nothing reconnected. The fills already
-                // running finish in that task, their `HydrateDone` going
-                // nowhere; the per-inode locks keep each of them ahead of
-                // any fill of the same file on the next connection.
-                let serving = tokio::spawn(serve_hydrations_reporting(
-                    link.clone(),
-                    requests,
-                    source,
-                    service.locks(),
-                    service.report().clone(),
-                ));
-                link.closed().await;
-                tracing::error!("the konedrive helper connection dropped");
-                service.set_link(None);
-                service.report_helper_lost();
-                drop(serving);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "cannot connect to the konedrive helper at {}: {e}; retrying in {:?}",
-                    socket_path.display(),
-                    wait
-                );
-            }
-        }
-        tokio::time::sleep(wait).await;
-        wait = (wait * 2).min(MAX_HELPER_BACKOFF);
-    }
+/// Keeps `service`'s helper link alive for the life of the daemon: its hub's
+/// [`hub::supervise`], which brings up every account on the hub.
+pub async fn supervise_helper(service: Arc<SyncService>, socket_path: PathBuf, backoff: Duration) {
+    let hub = Arc::clone(service.hub());
+    drop(service);
+    hub::supervise(hub, socket_path, backoff).await
 }
 
-/// The longest [`supervise_helper`] ever waits between attempts.
+/// The longest [`hub::supervise`] ever waits between attempts.
 pub const MAX_HELPER_BACKOFF: Duration = Duration::from_secs(30);
 
-/// Keeps `HelperState` current for the life of the daemon (HS1): worked out
-/// again whenever the link comes or goes, and every
-/// [`helper_status::RECHECK`] while there is none — a helper installed,
-/// started or failed meanwhile shows within that.
+/// Keeps the `HelperState` of `service`'s hub current ([`hub::watch`]).
 pub async fn watch_helper(service: Arc<SyncService>) {
     watch_helper_every(service, helper_status::RECHECK).await
 }
@@ -3448,18 +3653,9 @@ pub async fn watch_helper(service: Arc<SyncService>) {
 /// [`watch_helper`], asking systemd again every `every` while there is no
 /// link (tests: well under a second).
 pub async fn watch_helper_every(service: Arc<SyncService>, every: Duration) {
-    let changed = Arc::clone(&service.helper_changed);
-    loop {
-        service.check_helper().await;
-        if service.link().is_some() {
-            changed.notified().await;
-        } else {
-            tokio::select! {
-                () = changed.notified() => {}
-                () = tokio::time::sleep(every) => {}
-            }
-        }
-    }
+    let hub = Arc::clone(service.hub());
+    drop(service);
+    hub::watch_every(hub, every).await
 }
 
 #[cfg(test)]
@@ -3479,6 +3675,72 @@ mod tests {
 
     use super::source::{ContentSource, Fetched, LocalDir, SourceError};
     use super::*;
+
+    /// Where a service persists its folder: the one account of the
+    /// `config.toml` at `file` (added when there is none), in a store opened
+    /// from the file — as each start opens it. A file that cannot be read
+    /// makes a store that refuses every write, as the daemon's does.
+    pub(super) fn persist(file: &Path) -> Persist {
+        assert_eq!(file.file_name().and_then(|n| n.to_str()), Some("config.toml"));
+        let paths = crate::config::Paths::in_dir(file.parent().unwrap());
+        // `open` awaits nothing but the wallet check, which here is ready.
+        let opening = std::pin::pin!(ConfigStore::open(&paths, async { false }));
+        let std::task::Poll::Ready(store) =
+            opening.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+        else {
+            unreachable!("ConfigStore::open waited")
+        };
+        let account = match store.snapshot().accounts.first() {
+            Some(account) => account.id.clone(),
+            None => store.add_account("Personal").map(|a| a.id).unwrap_or_else(|_| "0123456789ab".into()),
+        };
+        Persist { store: Arc::new(store), account }
+    }
+
+    /// What `config.toml` records of the account's folder, in the words of
+    /// version 1's file that these tests were first written in. No folder
+    /// reads as version 1's defaults.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub(super) struct Config {
+        pub sync_root: String,
+        pub sync_root_id: String,
+        pub sync_root_intercepted: bool,
+        pub sync_root_source: String,
+        pub sync_root_baloo_excluded: bool,
+        pub sync_root_upgrade_when_helper: Option<bool>,
+    }
+
+    impl Config {
+        pub(super) fn load(file: &Path) -> Result<Self, String> {
+            let text = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
+            let config: crate::config::Config = toml::from_str(&text).map_err(|e| e.to_string())?;
+            Ok(match config.accounts.first().and_then(|a| a.root.clone()) {
+                Some(root) => Config {
+                    sync_root: root.path.display().to_string(),
+                    sync_root_id: root.id,
+                    sync_root_intercepted: root.intercepted,
+                    sync_root_source: root.source,
+                    sync_root_baloo_excluded: root.baloo_excluded,
+                    sync_root_upgrade_when_helper: root.upgrade_when_helper,
+                },
+                None => Config {
+                    sync_root: String::new(),
+                    sync_root_id: String::new(),
+                    sync_root_intercepted: true,
+                    sync_root_source: "local".into(),
+                    sync_root_baloo_excluded: false,
+                    sync_root_upgrade_when_helper: None,
+                },
+            })
+        }
+    }
+
+    /// Writes a `config.toml` whose one account's folder is `root`, as a
+    /// daemon that knew less wrote it.
+    fn write_config(file: &Path, root: &str) {
+        let text = format!("config_version = 2\n\n[[accounts]]\nid = \"0123456789ab\"\nlabel = \"Personal\"\n\n[accounts.root]\n{root}");
+        std::fs::write(file, text).unwrap();
+    }
 
     /// A stand-in helper: accepts one connection, greets, acknowledges the
     /// handshake `Hello`, then acknowledges everything and reports every
@@ -6013,7 +6275,7 @@ mod tests {
 
         {
             let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-            let service = SyncService::new(Some(link), None, Some(config_file.clone()));
+            let service = SyncService::new(Some(link), None, Some(persist(&config_file)));
             service.register_root(root_dir.path()).await.unwrap();
         }
         assert_eq!(
@@ -6031,7 +6293,7 @@ mod tests {
         }
 
         let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-        let restarted = SyncService::new(Some(link), None, Some(config_file));
+        let restarted = SyncService::new(Some(link), None, Some(persist(&config_file)));
         helper.forget();
         restarted.resume().await;
 
@@ -6058,7 +6320,7 @@ mod tests {
         // brings back a root the user got rid of.
         restarted.unregister_root().await.unwrap();
         assert_eq!(
-            Config::load(restarted.config_file.as_ref().unwrap()).unwrap().sync_root,
+            Config::load(restarted.persist.as_ref().unwrap().store.file()).unwrap().sync_root,
             "",
             "a forgotten root must not come back at the next start"
         );
@@ -6210,6 +6472,44 @@ mod tests {
         assert_eq!(service.item_state(&file).await, "online-only");
     }
 
+    /// Design §8.3, review I2: an empty folder that carries another account's
+    /// drive holds nothing to adopt — the usual Remove, then Add, on the same
+    /// folder — so it is taken, and the stale drive comes off; a folder with
+    /// anything in it is still refused.
+    #[tokio::test]
+    async fn an_empty_folder_that_carries_another_drive_is_taken_and_a_full_one_is_not() {
+        let config_dir = tempfile::tempdir().unwrap();
+        let persist = persist(&config_dir.path().join("config.toml"));
+        persist.store.record_drive(&persist.account, "DB").unwrap();
+        let service = SyncService::new(None, None, Some(persist));
+        service.set_helper_socket(config_dir.path().join("no-helper.sock"));
+        let (full, empty) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        for dir in [full.path(), empty.path()] {
+            xattr::set(dir, "user.konedrive.drive", b"DA").unwrap();
+        }
+        std::fs::write(full.path().join("theirs.txt"), b"x").unwrap();
+
+        let refused = service.register_root_without_interception(full.path()).await;
+        assert!(matches!(refused, Err(SyncError::ForeignFolder)), "{refused:?}");
+        assert_eq!(xattr::get(full.path(), "user.konedrive.drive").unwrap().as_deref(), Some(&b"DA"[..]));
+
+        service.register_root_without_interception(empty.path()).await.unwrap();
+        assert_eq!(xattr::get(empty.path(), "user.konedrive.drive").unwrap(), None, "the stale drive is taken off");
+    }
+
+    /// Review M2: an account being removed is retired under its lifecycle
+    /// lock, and registers nothing from then on — not even a call that was
+    /// waiting for that lock.
+    #[tokio::test]
+    async fn a_retired_account_registers_nothing() {
+        let service = SyncService::new(None, None, None);
+        service.retire().await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let refused = service.register_root_without_interception(dir.path()).await;
+        assert!(matches!(&refused, Err(SyncError::Io(why)) if why.contains("being removed")), "{refused:?}");
+        assert_eq!(xattr::get(dir.path(), "user.konedrive.root").unwrap(), None, "the folder is not touched");
+    }
+
     /// N6. The persisted "intercepted" flag must survive a restart. A root
     /// registered without interception on a machine with no helper would
     /// otherwise be restored as an
@@ -6221,7 +6521,7 @@ mod tests {
         let config_file = config_dir.path().join("config.toml");
         let root_dir = tempfile::tempdir().unwrap();
         {
-            let service = SyncService::new(None, None, Some(config_file.clone()));
+            let service = SyncService::new(None, None, Some(persist(&config_file)));
             service.register_root_without_interception(root_dir.path()).await.unwrap();
         }
         assert!(
@@ -6229,7 +6529,7 @@ mod tests {
             "the mode must be written down with the root"
         );
 
-        let restarted = SyncService::new(None, None, Some(config_file));
+        let restarted = SyncService::new(None, None, Some(persist(&config_file)));
         restarted.resume().await;
 
         assert_eq!(
@@ -6270,7 +6570,7 @@ mod tests {
 
         // And a restart, with the helper there from the start.
         let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-        let restarted = SyncService::new(Some(link), None, Some(config_file));
+        let restarted = SyncService::new(Some(link), None, Some(persist(&config_file)));
         restarted.restore().await;
         restarted.resume().await;
 
@@ -6297,7 +6597,7 @@ mod tests {
         let socket_path = sockets.path().join("helper.sock");
         let config_dir = tempfile::tempdir().unwrap();
         let config_file = config_dir.path().join("config.toml");
-        let service = SyncService::new(None, None, Some(config_file.clone()));
+        let service = SyncService::new(None, None, Some(persist(&config_file)));
         service.set_helper_socket(&socket_path);
         let root_dir = tempfile::tempdir().unwrap();
         service.register_root_without_interception(root_dir.path()).await.unwrap();
@@ -6361,7 +6661,7 @@ mod tests {
         assert_eq!(Config::load(&config_file).unwrap().sync_root_upgrade_when_helper, Some(true));
         drop(service);
 
-        let restarted = SyncService::new(None, None, Some(config_file.clone()));
+        let restarted = SyncService::new(None, None, Some(persist(&config_file)));
         restarted.set_helper_socket(&socket_path);
         restarted.restore().await;
         restarted.resume().await;
@@ -6394,22 +6694,19 @@ mod tests {
         let root_dir = tempfile::tempdir().unwrap();
         let root_id = "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d";
         xattr::set(root_dir.path(), "user.konedrive.root", root_id.as_bytes()).unwrap();
-        // What the daemon before wrote for such a folder.
-        std::fs::write(
+        // What the daemon before wrote for such a folder (as migrated).
+        write_config(
             &config_file,
-            format!(
-                "client_id = \"\"\nsync_root = \"{}\"\nsync_root_intercepted = false\n\
-                 sync_root_id = \"{root_id}\"\nsync_root_source = \"local\"\n\
-                 sync_root_baloo_excluded = false\n",
+            &format!(
+                "path = \"{}\"\nid = \"{root_id}\"\nintercepted = false\nsource = \"local\"\nbaloo_excluded = false\n",
                 resolved(root_dir.path())
             ),
-        )
-        .unwrap();
+        );
         assert_eq!(Config::load(&config_file).unwrap().sync_root_upgrade_when_helper, None);
 
         // The daemon restarts; the helper connects.
         let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
-        let restarted = SyncService::new(None, None, Some(config_file.clone()));
+        let restarted = SyncService::new(None, None, Some(persist(&config_file)));
         restarted.set_helper_socket(&socket_path);
         restarted.restore().await;
         restarted.resume().await;
@@ -6512,7 +6809,7 @@ mod tests {
         let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
         let config_dir = tempfile::tempdir().unwrap();
         let config_file = config_dir.path().join("config.toml");
-        let service = SyncService::new(Some(link), None, Some(config_file.clone()));
+        let service = SyncService::new(Some(link), None, Some(persist(&config_file)));
         (service, helper, config_file, sockets, config_dir)
     }
 
@@ -6768,15 +7065,11 @@ mod tests {
         let config_dir = tempfile::tempdir().unwrap();
         let config_file = config_dir.path().join("config.toml");
         let (root_dir, stuck) = root_with_a_stuck_file();
-        Config {
-            sync_root: resolved(root_dir.path()),
-            sync_root_intercepted: false,
-            sync_root_upgrade_when_helper: Some(false),
-            ..Config::default()
-        }
-        .save(&config_file)
-        .unwrap();
-        let service = SyncService::new(None, None, Some(config_file));
+        write_config(
+            &config_file,
+            &format!("path = \"{}\"\nintercepted = false\nupgrade_when_helper = false\n", resolved(root_dir.path())),
+        );
+        let service = SyncService::new(None, None, Some(persist(&config_file)));
         service.set_helper_socket(&socket_path);
 
         service.resume().await;
@@ -6839,7 +7132,7 @@ mod tests {
         drop(first);
         helper.forget();
 
-        let restarted = SyncService::new(None, None, Some(config_file.clone()));
+        let restarted = SyncService::new(None, None, Some(persist(&config_file)));
         restarted.resume().await;
 
         let held = restarted.root().expect("a restored root must be held before the helper");
@@ -6891,7 +7184,7 @@ mod tests {
         drop(root_dir);
         helper.forget();
 
-        let restarted = SyncService::new(Some(link), None, Some(config_file.clone()));
+        let restarted = SyncService::new(Some(link), None, Some(persist(&config_file)));
         restarted.resume().await;
 
         assert_eq!(restarted.root_state(), "error");
@@ -6915,11 +7208,9 @@ mod tests {
         let root_dir = tempfile::tempdir().unwrap();
         let root_id = "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d";
         xattr::set(root_dir.path(), "user.konedrive.root", root_id.as_bytes()).unwrap();
-        Config { sync_root: resolved(root_dir.path()), ..Config::default() }
-            .save(&config_file)
-            .unwrap();
+        write_config(&config_file, &format!("path = \"{}\"\n", resolved(root_dir.path())));
 
-        let restarted = SyncService::new(None, None, Some(config_file));
+        let restarted = SyncService::new(None, None, Some(persist(&config_file)));
         restarted.resume().await;
 
         assert_eq!(restarted.root().map(|r| r.root_id), Some(root_id.to_owned()));
@@ -7006,7 +7297,7 @@ mod tests {
         let config_dir = tempfile::tempdir().unwrap();
         let blocker = config_dir.path().join("not-a-directory");
         std::fs::write(&blocker, b"").unwrap();
-        let service = SyncService::new(service.link(), None, Some(blocker.join("config.toml")));
+        let service = SyncService::new(service.link(), None, Some(persist(&blocker.join("config.toml"))));
         let root_dir = tempfile::tempdir().unwrap();
 
         let error = service.register_root(root_dir.path()).await.unwrap_err();
@@ -7082,7 +7373,7 @@ mod tests {
         drop(first);
         helper.forget();
 
-        let restarted = SyncService::new(None, None, Some(config_file.clone()));
+        let restarted = SyncService::new(None, None, Some(persist(&config_file)));
         let error =
             restarted.register_root_without_interception(root_dir.path()).await.unwrap_err();
 
@@ -7233,7 +7524,7 @@ mod tests {
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         use super::super::*;
-        use super::{wait_until, FakeHelper, Seen};
+        use super::{persist, wait_until, Config, FakeHelper, Seen};
         use crate::drive::{DriveClient, RetryPolicy};
         use crate::state::{AccountSnapshot, SignInState, StateHandle};
         use crate::sync::listing::Schedule;
@@ -7350,7 +7641,7 @@ mod tests {
             link: Option<HelperLink>,
             tokens: Arc<dyn TokenSource>,
         ) -> Arc<SyncService> {
-            let service = SyncService::new(link, Some(account), Some(w.config.path().join("config.toml")));
+            let service = SyncService::new(link, Some(account), Some(persist(&w.config.path().join("config.toml"))));
             let drive = DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), tokens)
                 .unwrap()
                 .with_retry(RetryPolicy { attempts: 2, default_wait: Duration::from_millis(5), max_wait: Duration::from_millis(10) });
@@ -7478,6 +7769,53 @@ mod tests {
             );
         }
 
+        /// Design §8.3 (test 7): a OneDrive folder remembers its account's
+        /// drive — written once the first cycle has recorded it, and at the
+        /// bring-up of a folder from before multiple accounts, which carries
+        /// none — and, forgotten, it is refused `NotEmpty` to another account,
+        /// while its own account may register it again.
+        #[tokio::test]
+        async fn a_onedrive_folder_remembers_its_drive_and_is_refused_to_another_account() {
+            use std::os::unix::fs::PermissionsExt;
+            let w = world().await;
+            let drive = || xattr::get(w.folder.path(), konedrive_fs::placeholder::XATTR_DRIVE).unwrap();
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            assert_eq!(drive().as_deref(), Some(&b"D1"[..]), "written with the drive the first cycle recorded");
+            service.stop_sync().await;
+            drop(service);
+
+            // A folder from before carries no drive: its first bring-up writes it.
+            let open = |mode| std::fs::set_permissions(w.folder.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+            open(0o755);
+            xattr::remove(w.folder.path(), konedrive_fs::placeholder::XATTR_DRIVE).unwrap();
+            open(0o555);
+            {
+                let restarted = connected(&w, true).await;
+                restarted.restore().await;
+                restarted.resume().await;
+                assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
+                assert_eq!(drive().as_deref(), Some(&b"D1"[..]));
+                restarted.unregister_root().await.unwrap();
+            }
+
+            // The world's helper serves one connection at a time: each service
+            // here goes before the next one connects.
+            {
+                let elsewhere = tempfile::tempdir().unwrap();
+                let other = persist(&elsewhere.path().join("config.toml"));
+                other.store.record_drive(&other.account, "D2").unwrap();
+                let stranger = SyncService::new(Some(link(&w).await), Some(account(true)), Some(other));
+                let refused = stranger.register_root(w.folder.path()).await;
+                assert!(matches!(refused, Err(SyncError::ForeignFolder)), "{refused:?}");
+            }
+
+            let own = connected(&w, true).await;
+            own.register_root(w.folder.path()).await.unwrap();
+            own.stop_sync().await;
+        }
+
         /// A folder the user has already excluded from Baloo —
         /// themselves, or through a parent directory — is never added again,
         /// and a later Forget must not remove an exclusion this daemon did
@@ -7565,7 +7903,7 @@ mod tests {
         async fn a_service_without_set_baloo_runs_no_program_on_registration() {
             let w = world().await;
             let account = account(true);
-            let service = SyncService::new(Some(link(&w).await), Some(account), Some(w.config.path().join("config.toml")));
+            let service = SyncService::new(Some(link(&w).await), Some(account), Some(persist(&w.config.path().join("config.toml"))));
             let drive = DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), Arc::new(StaticToken::new("T")))
                 .unwrap();
             service.set_drive(drive);
@@ -7970,11 +8308,16 @@ mod tests {
         /// that shows OneDrive registered without interception on purpose —
         /// with a helper connected, so not one to switch.
         fn legacy_without_interception(w: &World) {
-            let file = w.config.path().join("config.toml");
-            let mut config = Config::load(&file).unwrap();
-            config.sync_root_intercepted = false;
-            config.sync_root_upgrade_when_helper = Some(false);
-            config.save(&file).unwrap();
+            let persist = persist(&w.config.path().join("config.toml"));
+            persist
+                .store
+                .update_account(&persist.account, |account| {
+                    let root = account.root.as_mut().expect("a folder");
+                    root.intercepted = false;
+                    root.upgrade_when_helper = Some(false);
+                    Ok::<_, crate::config::ConfigError>(())
+                })
+                .unwrap();
         }
 
         /// HS2: a folder that shows OneDrive and is not intercepted — as a

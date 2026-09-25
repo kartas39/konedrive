@@ -1,4 +1,4 @@
-//! The two Microsoft Graph calls the account page needs.
+//! The two Microsoft Graph calls the account page needs, one of them also the account's identity.
 
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -14,6 +14,14 @@ pub struct Profile {
 pub struct Quota {
     pub used: u64,
     pub total: u64,
+}
+
+/// `GET /me/drive`: the drive's id — the account's identity (design §8) — and its quota.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Drive {
+    /// Empty only if Graph left it out.
+    pub id: String,
+    pub quota: Quota,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -37,6 +45,8 @@ struct MeBody {
 
 #[derive(Deserialize)]
 struct DriveBody {
+    #[serde(default)]
+    id: String,
     quota: QuotaBody,
 }
 
@@ -71,9 +81,9 @@ impl GraphClient {
         })
     }
 
-    pub async fn quota(&self, token: &str) -> Result<Quota, GraphError> {
+    pub async fn drive(&self, token: &str) -> Result<Drive, GraphError> {
         let drive: DriveBody = self.get_json("me/drive", token).await?;
-        Ok(Quota { used: drive.quota.used, total: drive.quota.total })
+        Ok(Drive { id: drive.id, quota: Quota { used: drive.quota.used, total: drive.quota.total } })
     }
 
     async fn get_json<T: DeserializeOwned>(&self, route: &str, token: &str) -> Result<T, GraphError> {
@@ -133,10 +143,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn quota_reads_used_and_total() {
+    async fn drive_reads_its_id_and_quota() {
         let server = MockServer::start().await;
         mock_get(&server, "/me/drive", 200, json!({"id": "d", "quota": {"used": 10, "total": 100, "remaining": 90}})).await;
-        assert_eq!(graph(&server).quota("T").await.unwrap(), Quota { used: 10, total: 100 });
+        assert_eq!(
+            graph(&server).drive("T").await.unwrap(),
+            Drive { id: "d".into(), quota: Quota { used: 10, total: 100 } }
+        );
     }
 
     #[tokio::test]
@@ -145,6 +158,6 @@ mod tests {
         mock_get(&server, "/me", 401, json!({})).await;
         mock_get(&server, "/me/drive", 500, json!({})).await;
         assert!(matches!(graph(&server).profile("T").await, Err(GraphError::Unauthorized)));
-        assert!(matches!(graph(&server).quota("T").await, Err(GraphError::Failed(_))));
+        assert!(matches!(graph(&server).drive("T").await, Err(GraphError::Failed(_))));
     }
 }

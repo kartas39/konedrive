@@ -3,9 +3,20 @@
 use serde::Deserialize;
 use url::Url;
 
+use crate::config::Mode;
 use crate::pkce::Pkce;
 
+/// What a read-only account asks for: reading its files, its profile, and a refresh token.
 pub const SCOPES: &str = "Files.Read User.Read offline_access";
+
+/// The scope an account in `mode` signs in and refreshes with. A read-only account keeps
+/// asking for `Files.Read` at every refresh, so its access tokens cannot write even when
+/// its grant is wider (design §9).
+pub fn scopes_for(mode: Mode) -> &'static str {
+    match mode {
+        Mode::ReadOnly => SCOPES,
+    }
+}
 
 /// Base URLs, both ending in `/`. Tests point them at a mock server.
 #[derive(Debug, Clone)]
@@ -58,11 +69,20 @@ pub struct OAuthClient {
     http: reqwest::Client,
     endpoints: Endpoints,
     client_id: String,
+    /// For the authorization, the code exchange and every refresh alike.
+    scope: &'static str,
 }
 
 impl OAuthClient {
+    /// A client asking for the read-only scope ([`SCOPES`]).
     pub fn new(http: reqwest::Client, endpoints: Endpoints, client_id: String) -> Self {
-        Self { http, endpoints, client_id }
+        Self { http, endpoints, client_id, scope: SCOPES }
+    }
+
+    /// The same client asking for `scope` instead ([`scopes_for`]).
+    pub fn with_scope(mut self, scope: &'static str) -> Self {
+        self.scope = scope;
+        self
     }
 
     pub fn authorize_url(&self, redirect_uri: &str, pkce: &Pkce, state: &str) -> Url {
@@ -72,7 +92,7 @@ impl OAuthClient {
             .append_pair("response_type", "code")
             .append_pair("redirect_uri", redirect_uri)
             .append_pair("response_mode", "query")
-            .append_pair("scope", SCOPES)
+            .append_pair("scope", self.scope)
             .append_pair("state", state)
             .append_pair("code_challenge", &pkce.challenge)
             .append_pair("code_challenge_method", "S256");
@@ -91,7 +111,7 @@ impl OAuthClient {
             ("code", code),
             ("redirect_uri", redirect_uri),
             ("code_verifier", verifier),
-            ("scope", SCOPES),
+            ("scope", self.scope),
         ])
         .await
     }
@@ -101,7 +121,7 @@ impl OAuthClient {
             ("client_id", self.client_id.as_str()),
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token),
-            ("scope", SCOPES),
+            ("scope", self.scope),
         ])
         .await
     }

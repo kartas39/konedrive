@@ -1,8 +1,15 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node>
-  <!-- KOneDrive sync folder: registration and per-file hydration. -->
+  <!-- /org/konedrive/Accounts/<id>: this account's folder. Calls on one
+       file or on chosen paths (Hydrate, Dehydrate, ItemState, Pin, Unpin,
+       FreeUp) are org.konedrive.Files1's, routed by path; the helper's state
+       is Accounts1.HelperState. -->
   <interface name="org.konedrive.Sync1">
+    <!-- Refused Overlaps when the folder is, is inside, or contains another
+         account's folder (the message names that account), and NotEmpty
+         when the folder carries user.konedrive.drive naming another drive
+         than this account's; otherwise as before. -->
     <method name="RegisterRoot">
       <arg name="path" type="s" direction="in"/>
     </method>
@@ -13,7 +20,8 @@
          hydrated. RootState then reports "no-interception" and LastError
          says so. Made while no helper is connected, the folder switches to
          interception by itself when the helper connects (RootState becomes
-         "ready"); made while one is connected, it stays without. -->
+         "ready"); made while one is connected, it stays without. Refused
+         Overlaps as RegisterRoot is. -->
     <method name="RegisterRootWithoutInterception">
       <arg name="path" type="s" direction="in"/>
     </method>
@@ -24,28 +32,6 @@
     <method name="PopulateFromDirectory">
       <arg name="source_dir" type="s" direction="in"/>
       <arg name="created" type="t" direction="out"/>
-    </method>
-    <!-- Downloads one file now. A file already downloaded is left as it is.
-         A file in any state but online-only may still carry the helper's
-         ignore mark, which has to be cleared before a download that could
-         fail empties the file: in a folder registered with interception and
-         no helper connected, or in any folder while a helper runs that the
-         daemon is not connected to, that is refused NoHelper. -->
-    <method name="Hydrate">
-      <arg name="path" type="s" direction="in"/>
-    </method>
-    <!-- Frees up one downloaded file's space. The helper's ignore mark on it
-         is cleared first, in either registration mode: refused NoHelper in a
-         folder registered with interception and no helper connected, and in
-         any folder while a helper runs that the daemon is not connected to;
-         with no helper running at all, a folder registered without
-         interception frees it up anyway. -->
-    <method name="Dehydrate">
-      <arg name="path" type="s" direction="in"/>
-    </method>
-    <method name="ItemState">
-      <arg name="path" type="s" direction="in"/>
-      <arg name="state" type="s" direction="out"/>
     </method>
     <!-- Asks OneDrive for changes now rather than within the minute. Refused
          Unsupported for a folder that is not connected to OneDrive. -->
@@ -88,36 +74,6 @@
     <method name="DismissConflict">
       <arg name="rescued_path" type="s" direction="in"/>
     </method>
-    <!-- "Always keep on this device": pins each path (a file or a folder;
-         a folder pins everything under it, now and later) and queues the
-         download of every file under it that is online-only. A path already
-         pinned by a folder above it is left as it is. Returns how many files
-         were queued. -->
-    <method name="Pin">
-      <arg name="paths" type="as" direction="in"/>
-      <arg name="queued" type="u" direction="out"/>
-    </method>
-    <!-- Unchecking "Always keep on this device": removes each path's own pin
-         and nothing else — files stay downloaded, as on Windows. A path pinned
-         only by a folder above it is refused (NotAllowed, naming that
-         folder). Returns how many pins were removed. -->
-    <method name="Unpin">
-      <arg name="paths" type="as" direction="in"/>
-      <arg name="unpinned" type="u" direction="out"/>
-    </method>
-    <!-- "Free up space" for chosen paths: an explicitly pinned path is
-         unpinned, then everything under it is freed; a path pinned only by a
-         folder above it is refused (NotAllowed, naming that folder); an
-         unpinned path is freed. Files in use are skipped and counted as busy;
-         files pinned by their own pin below a freed folder stay and are
-         counted as skipped_pinned. -->
-    <method name="FreeUp">
-      <arg name="paths" type="as" direction="in"/>
-      <arg name="files" type="u" direction="out"/>
-      <arg name="bytes" type="t" direction="out"/>
-      <arg name="busy" type="u" direction="out"/>
-      <arg name="skipped_pinned" type="u" direction="out"/>
-    </method>
     <!-- Frees every downloaded file under the folder that is not in use:
          how many files, how many bytes, how many were skipped as busy. -->
     <method name="FreeUpSpace">
@@ -131,9 +87,11 @@
     <!-- Every current problem, joined with ". ". While a changed file cannot
          be replaced here, one part reads "N file(s) changed in OneDrive could
          not be updated here yet: <reason>" — the window keys its attention
-         state on "could not be updated". -->
+         state on "could not be updated". While this folder waits for the
+         helper, it begins with the helper's advice for
+         Accounts1.HelperState. -->
     <property name="LastError" type="s" access="read"/>
-    <!-- "onedrive": the folder shows the signed-in drive, read-only in this
+    <!-- "onedrive": the folder shows this account's drive, read-only in this
          phase. "local": filled with PopulateFromDirectory. Empty: none. -->
     <property name="RootSource" type="s" access="read"/>
     <!-- Items in OneDrive (the root not counted), items in the folder, and
@@ -150,14 +108,6 @@
     <!-- How many files and folders carry their own "Always keep on this
          device" pin. -->
     <property name="PinnedCount" type="u" access="read"/>
-    <!-- The privileged helper, as the daemon sees it: "connected" (files
-         download when opened), "not-installed" (no konedrive-helper service
-         on this system), "stopped" (installed, not running: systemctl start
-         konedrive-helper), "failed" (the service failed: systemctl status
-         konedrive-helper), "unknown" (systemd cannot be asked, or the helper
-         has started but the daemon has no link to it yet). A OneDrive
-         folder is kept in step only while this is "connected". -->
-    <property name="HelperState" type="s" access="read"/>
     <!-- Downloads under way: (full path, bytes done, bytes total). Coalesced
          to a few changes a second. -->
     <property name="Transfers" type="a(stt)" access="read">

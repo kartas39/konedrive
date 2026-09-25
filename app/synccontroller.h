@@ -18,22 +18,18 @@
 class OrgKonedriveSync1Interface;
 class QDBusServiceWatcher;
 
-/// Presents konedrived's org.konedrive.Sync1 to QML. Never blocks the GUI thread.
+/// Presents one account's org.konedrive.Sync1 (at /org/konedrive/Accounts/<id>)
+/// to QML: that account's folder. The helper, which serves every account, is
+/// DaemonController's. Never blocks the GUI thread.
 class SyncController : public QObject
 {
     Q_OBJECT
     Q_PROPERTY(bool serviceAvailable READ serviceAvailable NOTIFY serviceAvailableChanged)
+    Q_PROPERTY(QString path READ path CONSTANT)
     Q_PROPERTY(QString rootPath READ rootPath NOTIFY syncChanged)
     Q_PROPERTY(QString rootState READ rootState NOTIFY syncChanged)
     Q_PROPERTY(QString rootSource READ rootSource NOTIFY syncChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY syncChanged)
-    /// "connected", "not-installed", "stopped", "failed", "unknown", or empty
-    /// before the daemon has said (dbus/org.konedrive.Sync1.xml).
-    Q_PROPERTY(QString helperState READ helperState NOTIFY syncChanged)
-    /// helperState is known and is not "connected".
-    Q_PROPERTY(bool helperTrouble READ helperTrouble NOTIFY syncChanged)
-    /// What to do about helperState, in one line; empty when there is nothing to add.
-    Q_PROPERTY(QString helperInstruction READ helperInstruction NOTIFY syncChanged)
     Q_PROPERTY(qulonglong itemsListed READ itemsListed NOTIFY syncChanged)
     Q_PROPERTY(qulonglong itemsPlaced READ itemsPlaced NOTIFY syncChanged)
     Q_PROPERTY(qulonglong skippedCount READ skippedCount NOTIFY syncChanged)
@@ -56,20 +52,17 @@ class SyncController : public QObject
 
 public:
     static const QString ServiceName;
-    static const QString ObjectPath;
     static const QString InterfaceName;
 
-    explicit SyncController(QObject *parent = nullptr);
-    explicit SyncController(const QDBusConnection &bus, QObject *parent = nullptr);
+    explicit SyncController(const QString &path, QObject *parent = nullptr);
+    SyncController(const QDBusConnection &bus, const QString &path, QObject *parent = nullptr);
 
     bool serviceAvailable() const { return m_serviceAvailable; }
+    QString path() const { return m_path; }
     QString rootPath() const { return m_rootPath; }
     QString rootState() const { return m_rootState; }
     QString rootSource() const { return m_rootSource; }
     QString lastError() const { return m_lastError; }
-    QString helperState() const { return m_helperState; }
-    bool helperTrouble() const;
-    QString helperInstruction() const;
     qulonglong itemsListed() const { return m_itemsListed; }
     qulonglong itemsPlaced() const { return m_itemsPlaced; }
     qulonglong skippedCount() const { return m_skippedCount; }
@@ -110,8 +103,7 @@ public:
     /// Opens the file manager on the file's folder with the file selected.
     Q_INVOKABLE void showInFolder(const QString &path);
     /// Re-reads every Sync1 property (GetAll). "Try Again" on the service-down
-    /// card calls this alongside AccountController::retry, and "Check Again"
-    /// on the helper card calls it alone.
+    /// card calls this alongside AccountController::retry.
     Q_INVOKABLE void retry();
 
     /// How long an ordinary call waits for the daemon, in ms (default: D-Bus's
@@ -149,6 +141,7 @@ private:
     void quietly(const QDBusPendingCall &pending, std::function<void(const QDBusPendingCall &)> onSuccess);
 
     QDBusConnection m_bus;
+    QString m_path;
     OrgKonedriveSync1Interface *m_iface;
     QDBusServiceWatcher *m_watcher;
     bool m_serviceAvailable = false;
@@ -156,7 +149,6 @@ private:
     QString m_rootState = QStringLiteral("none");
     QString m_rootSource;
     QString m_lastError;
-    QString m_helperState;
     qulonglong m_itemsListed = 0;
     qulonglong m_itemsPlaced = 0;
     qulonglong m_skippedCount = 0;

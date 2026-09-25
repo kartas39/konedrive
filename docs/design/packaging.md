@@ -95,11 +95,17 @@ waits for a file at that moment reads the placeholder's zeros, and that download
 cannot, as `dnf` asks once for the whole transaction. Upgrade when nothing is opening files in the
 folder.
 
+The first upgrade from a single-account version to one with multiple accounts also migrates each
+user's configuration, when the restarted daemon starts ([accounts.md](accounts.md) §8), and moves
+the daemon's D-Bus objects: a KOneDrive window or a Dolphin that was running across it has to be
+restarted (limitations log F46). There is no downgrade (F41).
+
 **What removal leaves.** The helper's list of registered folders (`/var/lib/konedrive/roots.json`)
-and each user's settings, tree store, KWallet entry and sync folder stay. A folder still
+and each user's settings, tree stores, KWallet entries and sync folders stay. A folder still
 registered when the helper stops reads as zeros where its files are not downloaded, and
-`konedrivectl` goes with the package, so `konedrivectl sync forget` comes first (limitations log
-R3). Unlike `scripts/install-helper.sh --uninstall`, the package does not refuse.
+`konedrivectl` goes with the package, so `konedrivectl --account <account> sync forget` comes
+first, for every account's folder (limitations log R3). Unlike
+`scripts/install-helper.sh --uninstall`, the package does not refuse.
 
 ## The developer install and the packages
 

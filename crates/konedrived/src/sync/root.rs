@@ -42,7 +42,7 @@ use std::sync::Arc;
 use konedrive_fs::lease::WriteLease;
 use konedrive_fs::placeholder::{
     punch_all, punch_from, read_progress, read_stamp, read_state, remove_progress, remove_stamp, stamp_matches,
-    write_state, State, StateError, XATTR_ROOT,
+    write_state, State, StateError, XATTR_DRIVE, XATTR_ROOT,
 };
 use konedrive_fs::probe::{probe_dir, ProbeError};
 use konedrive_fs::MAX_DEPTH;
@@ -267,6 +267,60 @@ pub(super) async fn recorded_root_id(path: &Path) -> Option<String> {
     .await
     .ok()
     .flatten()
+}
+
+/// Whether an account whose drive is `mine` may register `path` as far as
+/// the folder's drive goes (`user.konedrive.drive`, design §8.3): a folder
+/// that carries none, or `mine`, may be; one that carries another drive holds
+/// that account's files, and may not — unless it is empty, which holds
+/// nothing to adopt: its stale drive is taken off, and it may be. Read and
+/// written through a descriptor, never followed through a symlink; a folder
+/// that cannot be opened is left for the registration's own checks to refuse.
+pub(super) async fn drive_allows(path: &Path, mine: Option<String>) -> bool {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        let Ok(dir) = nix::fcntl::open(&path, flags, Mode::empty()).map(File::from) else { return true };
+        let theirs = dir.get_xattr(XATTR_DRIVE).ok().flatten().and_then(|raw| String::from_utf8(raw).ok());
+        match theirs {
+            None => true,
+            Some(theirs) if theirs.is_empty() || Some(&theirs) == mine.as_ref() => true,
+            Some(theirs) => {
+                let empty = std::fs::read_dir(proc_path(&dir)).is_ok_and(|mut entries| entries.next().is_none());
+                if empty {
+                    let _modes = super::disk::dir_modes();
+                    let removed = konedrive_fs::placeholder::with_owner_write(&dir, || dir.remove_xattr(XATTR_DRIVE));
+                    match removed {
+                        Ok(()) => tracing::info!("{} is empty: the drive {theirs} it carried is taken off", path.display()),
+                        Err(e) => tracing::warn!("cannot take the drive {theirs} off the empty {}: {e}", path.display()),
+                    }
+                }
+                empty
+            }
+        }
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Writes `drive` on the registered root as the drive it shows
+/// (`user.konedrive.drive`, design §8.3), when it carries none yet — through a
+/// window in the read-only lock, like every attribute the daemon writes in a
+/// locked folder. Whether it was written. Blocking.
+///
+/// A folder remembers its account's drive so that another account cannot adopt
+/// it once it is forgotten: a registration of a folder that carries another
+/// drive is refused.
+pub(super) fn mark_drive(root: &SyncRoot, drive: &str) -> io::Result<bool> {
+    let dir = root
+        .open_registered()?
+        .ok_or_else(|| io::Error::other(format!("{} no longer carries its root id", root.path.display())))?;
+    if dir.get_xattr(XATTR_DRIVE)?.is_some() {
+        return Ok(false);
+    }
+    let _modes = super::disk::dir_modes();
+    konedrive_fs::placeholder::with_owner_write(&dir, || dir.set_xattr(XATTR_DRIVE, drive.as_bytes()))?;
+    Ok(true)
 }
 
 /// [`register_root`] with nobody to intercept anything: the

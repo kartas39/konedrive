@@ -10,16 +10,17 @@ emblems and a right-click menu.
 **Status: alpha, read-only phase.** Nothing is uploaded — files in the KOneDrive folder are
 `r--r--r--`, directories `r-xr-xr-x`, so nothing here can diverge from the cloud on its own.
 A local edit forced past that lock is rescued (moved aside, listed under **Conflicts**), never
-silently overwritten or lost. Built and tested on Fedora with KDE Plasma 6; one Microsoft
-account at a time.
+silently overwritten or lost. Built and tested on Fedora with KDE Plasma 6. Any number of
+personal Microsoft accounts can be connected at once, each with its own folder.
 
 ## Screenshots
 
-| Status | Activity | Settings |
+| Status | Activity | Account |
 | --- | --- | --- |
-| ![Status page](docs/screenshots/status.png) | ![Activity page](docs/screenshots/activity.png) | ![Settings page](docs/screenshots/settings.png) |
+| ![Status page](docs/screenshots/status.png) | ![Activity page](docs/screenshots/activity.png) | ![Account page](docs/screenshots/account.png) |
 
-(Shown with example data from a test daemon, not a real OneDrive account.)
+(Shown with example data from a test daemon, not a real OneDrive account: two accounts,
+"Personal" chosen in the switcher at the top of the sidebar.)
 
 ## How it works
 
@@ -92,7 +93,8 @@ their own; it is free.
 
 No API permissions need to be configured; KOneDrive asks for them when you sign in. The consent
 screen will call the app "unverified" — expected for a personal registration. The account that
-registers the app and the OneDrive account you sign in with can be different.
+registers the app and the OneDrive account you sign in with can be different, and one
+registration serves every account you add to KOneDrive.
 
 ## Install from RPM
 
@@ -131,9 +133,15 @@ to the helper within half a minute; `konedrivectl sync status` then says `Helper
   (`docs/limitations-and-workarounds.md`, Z1 and R1): close programs that are opening files in
   the sync folder first. `dnf` treats a rebuild with the same version and release as the package
   already installed; install such a rebuild with `sudo dnf reinstall` and the same paths.
-- **Removing:** run `konedrivectl sync forget` first, then `sudo dnf remove konedrive
-  konedrive-kde`. Removing the package stops the helper, and a folder still registered then reads
-  as zeros where its files are not downloaded (R3).
+- **Upgrading from a single-account version.** The first start of the new daemon turns your setup
+  into one account named "Personal", with its folder, sign-in and history
+  ([`docs/design/accounts.md`](docs/design/accounts.md) §8). A KOneDrive window or a Dolphin that
+  was running across the upgrade has to be restarted (F46). There is no way back to the older
+  version except restoring `~/.config/konedrive/config.toml.v1` by hand (F41).
+- **Removing:** forget every account's folder first — **Forget Folder** on each account's
+  **Account** page, or `konedrivectl --account <account> sync forget` for each account — then
+  `sudo dnf remove konedrive konedrive-kde`. Removing the package stops the helper, and a folder
+  still registered then reads as zeros where its files are not downloaded (R3).
 
 What goes where, and why: [`docs/design/packaging.md`](docs/design/packaging.md).
 
@@ -154,14 +162,14 @@ sudo dnf install ./target/rpm/RPMS/x86_64/konedrive-0.1.0-1.fc44.x86_64.rpm \
 
 1. `scripts/dev-uninstall.sh` runs as you. It stops the daemon, removes exactly the files
    `scripts/dev-install.sh` installed, and reloads your systemd and D-Bus. It never touches your
-   settings (`~/.config/konedrive/config.toml`), the tree store, the refresh token in KWallet or
-   the sync folder, so the packaged daemon carries on from where this one stopped. It points
+   settings (`~/.config/konedrive/config.toml`), the tree stores, the refresh tokens in KWallet or
+   the sync folders, so the packaged daemon carries on from where this one stopped. It points
    "Start at login" at `/usr/bin/konedrive`, and it points out Dolphin plugins you installed for
    your user by hand: remove those, and `~/.config/plasma-workspace/env/konedrive-dolphin.sh`,
    as "Dolphin integration" says, so that Dolphin loads the packaged ones.
-2. `--force`, because your folder is registered: it stays registered, and the packaged helper
-   takes it over when it starts. Until then nothing intercepts the folder, so run the three
-   commands one after the other, with nothing opening files in the folder.
+2. `--force`, because your folders are registered: they stay registered, and the packaged helper
+   takes them over when it starts. Until then nothing intercepts the folders, so run the three
+   commands one after the other, with nothing opening files in them.
 3. The install starts the new helper. If the KOneDrive window was running, quit it from its tray
    icon and start it again from the launcher.
 
@@ -178,35 +186,72 @@ removes it all again, apart from the helper.
 
 ## Using your OneDrive
 
-- **Sign in.** Open **KOneDrive** from the launcher (or `konedrive` from a terminal), enter the
-  client ID under **Advanced**, and press **Sign In to OneDrive**. Or from a terminal:
+- **Add an account and sign in.** Open **KOneDrive** from the launcher (or `konedrive` from a
+  terminal) and choose **Add Account…**. The first time, it asks for the client ID (see
+  "Registering the application" above); then for a name for the account — "Personal" is
+  suggested — and it opens the Microsoft sign-in in your browser. Once you are signed in, the
+  **Account** page asks for a folder: choose an empty one, and your OneDrive appears in it. Or
+  from a terminal — with no account yet, `login` adds one called "Personal" first:
 
   ```
   konedrivectl set-client-id 00000000-0000-0000-0000-000000000000
   konedrivectl login
+  konedrivectl sync register ~/OneDrive
   konedrivectl status
-  konedrivectl logout
   ```
 
-- **The window.** A sidebar on the left switches between six pages: **Status** (the folder, its
-  item count, "Free Up Space…", "Refresh Now", "Open in File Manager"), **Activity** (downloads
-  under way now, and the most recent of what the daemon keeps), **Conflicts** (local edits
-  rescued out of the way, with a count badge), **Not in the Folder** (what OneDrive has that was
-  skipped, and why), **Account** (sign in/out, quota) and **Settings** (the folder, "Start at
-  login", "Show download progress" — a download that takes more than 2 s shows in Plasma's
-  notifications — and the client ID). While the helper is not connected, a card says so, with
-  the same instruction as the `Helper:` line of `konedrivectl sync status` (below). A tray icon
-  mirrors the folder's state — synced, syncing, needs attention, signed out — and keeps
-  KOneDrive running in the background so notifications still reach you with the window closed;
-  "Start at login" is on by default after the first run. While a folder is registered, it also
-  gets a "OneDrive" entry in Dolphin's Places panel and in file dialogs ("Show in Places" in
-  Settings, on by default).
+  `konedrivectl logout` signs the account out again and deletes its stored token.
+
+- **Several accounts.** Each Microsoft account you add gets its own folder. **Add Account…** is
+  in the menu at the top of the sidebar, which also switches between the accounts. Two accounts'
+  folders cannot be inside one another, and a Microsoft account can be connected once: signing
+  an account in as a different Microsoft account than its own is refused — add that one as a new
+  account. Only personal Microsoft accounts are supported, not work or school ones. **Rename…**
+  and **Remove Account…** are on the **Account** page. Removing an account signs it out and
+  forgets it on this computer: its folder's files stay where they are (files that were never
+  downloaded stay as empty placeholders), and nothing in OneDrive is deleted. Every account is
+  read-only in this version. How it works:
+  [`docs/design/accounts.md`](docs/design/accounts.md).
+
+  From a terminal, `konedrivectl account list` shows every account, and each command that acts on
+  one account takes it with `--account <id, label or email>`, or from the environment variable
+  `KONEDRIVE_ACCOUNT`. With a single account neither is needed; with several and none named, the
+  command stops and lists them. `status` and `sync status` show every account when none is named.
+  Commands that take a path, such as `sync hydrate <path>`, find the account from the path.
+
+  ```
+  konedrivectl account add Family                # a new account, signed out, with no folder
+  konedrivectl --account Family login
+  konedrivectl --account Family sync register ~/OneDrive-Family
+  konedrivectl account rename Family Home
+  konedrivectl account remove Home               # asks nothing; says what it deleted and kept
+  ```
+
+- **The window.** The sidebar starts with the account switcher: the account shown, a menu of
+  every account and **Add Account…**; a warning sign on it means that another account needs your
+  attention. Below it, five pages show that account: **Status** (the folder, its item count,
+  "Free Up Space…", "Refresh Now", "Open in File Manager"), **Activity** (downloads under way
+  now, and the most recent of what the daemon keeps), **Conflicts** (local edits rescued out of
+  the way, with a count badge), **Not in the Folder** (what OneDrive has that was skipped, and
+  why) and **Account** (the account's name with **Rename…**; sign in or out, and the quota; the
+  folder, with **Choose Folder…** and **Forget Folder**; and **Remove Account…**). **Settings**
+  is the whole app's: "Start at login", "Show download progress" (a download that takes more
+  than 2 s shows in Plasma's notifications), "Show in Places", and the client ID every account
+  signs in with. While the helper is not connected, a card on the Status page says so, with the
+  same instruction as the `Helper:` line of `konedrivectl sync status` (below). A tray icon
+  shows the worst state across your accounts — needs attention, signed out, syncing, synced —
+  with a line per account in its tooltip, and keeps KOneDrive running in the background so
+  notifications still reach you with the window closed; with more than one account,
+  notifications and download progress name the account. "Start at login" is on by default after
+  the first run. Each account's folder also gets an entry named `OneDrive — <name>` in Dolphin's
+  Places panel and in file dialogs ("Show in Places" in Settings, on by default).
 
 - **The helper.** A small privileged service that makes a placeholder download the moment a
   program opens it, instead of that program reading zeros. The `konedrive` package installs and
   starts it; with the developer install, install it with `sudo scripts/install-helper.sh` (see
-  "Installing the helper" below; see also SECURITY.md for what runs as root and why). Your OneDrive folder needs it: the folder is kept in step with
-  OneDrive only while the helper is connected. `konedrivectl sync status` has a `Helper:` line:
+  "Installing the helper" below; see also SECURITY.md for what runs as root and why). One helper
+  serves every account, and your OneDrive folders need it: a folder is kept in step with OneDrive
+  only while the helper is connected. `konedrivectl sync status` has a `Helper:` line:
   - `connected` — files download when opened;
   - `not-installed` — no konedrive-helper service on this system: install it
     (`sudo scripts/install-helper.sh`);
@@ -215,11 +260,15 @@ removes it all again, apart from the helper.
   - `unknown` — systemd cannot be asked, or the helper is running but the
     daemon has no link to it yet (the first few seconds after it starts).
 
-- **Registering a folder.** `konedrivectl sync register <path>`, with the helper connected. Right
-  after the helper is installed or started, the daemon takes up to half a minute to connect to
-  it, and `register` is refused (`NoHelper`) until then: wait for `Helper: connected`.
+- **Registering a folder.** **Choose Folder…** on the account's **Account** page, or
+  `konedrivectl sync register <path>` (with `--account` when there are several accounts), with
+  the helper connected. The folder
+  must be empty, and must not be inside another account's folder or contain one. Right after the
+  helper is installed or started, the daemon takes up to half a minute to connect to it, and
+  `register` is refused (`NoHelper`) until then: wait for `Helper: connected`.
 
-- **From the command line:**
+- **From the command line** — each of these acts on the chosen account, except `sync status` with
+  none chosen, which shows every account's folder, and `sync hydrate`, whose path decides:
   - `konedrivectl sync status` — the folder, its phase and item count, and the helper.
   - `konedrivectl sync activity [--limit N]` — what happened lately: downloads, free-ups,
     changes from OneDrive, conflicts, failures.
@@ -239,14 +288,16 @@ removes it all again, apart from the helper.
   local edit forced past that lock is rescued, not lost — moved aside and listed under
   **Conflicts** rather than overwritten.
 
-- **Forget.** `konedrivectl sync forget` unbinds the folder and takes the read-only lock off it;
-  the files themselves are left exactly as they are.
+- **Forget.** **Forget Folder** on the **Account** page, or `konedrivectl sync forget`, unbinds
+  the account's folder and takes the read-only lock off it; the files themselves are left exactly
+  as they are.
 
 ## A folder without OneDrive or the helper (developers only)
 
 This is a developer's and tester's mode, not a way to use KOneDrive: the window does not offer it.
 It drives the sync folder entirely from the command line, with a local directory standing in for
-the cloud and no helper at all.
+the cloud and no helper at all. The folder belongs to an account like any other; an account added
+for it and never signed in is enough, as below.
 
 `konedrivectl sync register-without-interception` always makes a local folder, filled with
 `populate-from` — even when you are signed in, it never shows your OneDrive (that needs
@@ -263,6 +314,8 @@ mkdir -p ~/OneDrive-test ~/fake-cloud/sub
 head -c 1M </dev/urandom > ~/fake-cloud/big.bin
 echo hello > ~/fake-cloud/sub/note.txt
 
+konedrivectl account add Test                # an account for the test, never signed in
+export KONEDRIVE_ACCOUNT=Test                # the account the commands below act on
 konedrivectl sync register-without-interception ~/OneDrive-test
 konedrivectl sync populate-from ~/fake-cloud
 ls -l ~/OneDrive-test        # real sizes
@@ -274,6 +327,8 @@ konedrivectl sync state ~/OneDrive-test/sub/note.txt    # hydrated
 konedrivectl sync dehydrate ~/OneDrive-test/sub/note.txt
 du -sh ~/OneDrive-test       # ~0 again
 konedrivectl sync forget
+konedrivectl account remove Test
+unset KONEDRIVE_ACCOUNT
 ```
 
 `konedrivectl sync status` always says something useful, including with no
@@ -343,8 +398,8 @@ stops and disables the service and removes both installed files. It refuses
 while a folder is registered with the helper (it reads the helper's own
 `/var/lib/konedrive/roots.json`): without the helper, that folder's files that
 are not downloaded would read as zeros, and `konedrivectl sync forget` would
-then be refused (`NoHelper`). Run `konedrivectl sync forget` first; `--force`
-uninstalls anyway. Like an update, it warns first if the helper is running
+then be refused (`NoHelper`). Run `konedrivectl sync forget` first, for each
+account with a folder (`--account`); `--force` uninstalls anyway. Like an update, it warns first if the helper is running
 (Z1).
 
 See [SECURITY.md](SECURITY.md) for what the helper can do as root and how its
@@ -439,7 +494,7 @@ tests/vm/run.sh full    # btrfs, ext4 and xfs, three VMs at once: slower; for ch
 A run against your actual OneDrive account is also possible. It lists your whole drive into the
 VM, as placeholders (names and sizes, no content: the daemon cannot list just one folder), but it
 opens and downloads files only inside one folder you name, each under a size cap, and fetches no
-thumbnails:
+thumbnails. The token is the chosen account's: with several accounts, name it with `--account`.
 
 ```
 konedrivectl dev export-access-token --out /tmp/konedrive-token   # about an hour of read access
@@ -461,9 +516,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full checklist before sending a c
 
 - Daemon log: `journalctl --user -u konedrived -f`; more detail with
   `systemctl --user edit konedrived` → `Environment=RUST_LOG=konedrived=debug`.
-- Files: `~/.config/konedrive/config.toml` (client ID), `~/.local/state/konedrive/account.json`
-  (cached name and quota). The refresh token is in KWallet under "KOneDrive refresh token" and
-  never leaves it (see SECURITY.md).
+- Files: `~/.config/konedrive/config.toml` (the client ID, and each account with its name and
+  folder; `config.toml.v1` is the single-account file it was migrated from, if any). Each
+  account's state is in `~/.local/state/konedrive/accounts/<id>/`: `account.json` (cached name
+  and quota) and `tree.sqlite` (the map of the drive, the activity log and the conflicts).
+  Changed files moved out of the way are in `~/.local/share/konedrive/rescued/<id>/`. Each
+  account's refresh token is in KWallet, under `KOneDrive: <email>`, and never leaves it (see
+  SECURITY.md). Where everything else lives:
+  [`docs/design/accounts.md`](docs/design/accounts.md) §4.2.
 
 ## Design
 
@@ -479,15 +539,16 @@ filing a bug that might already be there.
 
 ## Roadmap
 
-Read-only is the first phase. In order, what comes next:
+Built so far: the read-only client, the Dolphin integration, the RPM packages, pinning ("Always
+keep on this device") and multiple accounts. In order, what comes next:
 
 1. **A package repository** — the RPMs are built locally for now ("Install from RPM"); a COPR
    repository comes next, so that `dnf install` needs no build.
-2. **Pinning** — "Always keep on this device" and a Dolphin menu entry for it, so a file can be
-   told to stay downloaded rather than being freed up automatically.
-3. **Multiple accounts** — more than one Microsoft account signed in at once.
-4. **Writes to the cloud** — local changes uploaded back to OneDrive, turning this from a
+2. **Writes to the cloud** — local changes uploaded back to OneDrive, turning this from a
    read-only mirror into a real sync client.
+
+Work or school accounts (Microsoft 365, OneDrive for Business) come later, in a phase of their own
+(`docs/limitations-and-workarounds.md`, F49).
 
 ## Security
 

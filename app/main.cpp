@@ -1,14 +1,19 @@
 #include "accountcontroller.h"
+#include "accountsmodel.h"
+#include "accountstatus.h"
 #include "activitymodel.h"
 #include "appstatus.h"
 #include "autostart.h"
 #include "conflictmodel.h"
+#include "currentaccount.h"
+#include "daemoncontroller.h"
 #include "downloadjobtracker.h"
 #include "downloadprogresscontroller.h"
 #include "downloadprogresssettings.h"
 #include "notifier.h"
 #include "placescontroller.h"
 #include "placessettings.h"
+#include "qmlregistration.h"
 #include "synccontroller.h"
 #include "transfermodel.h"
 #include "trayicon.h"
@@ -62,26 +67,23 @@ int main(int argc, char *argv[])
         QQuickStyle::setStyle(QStringLiteral("org.kde.desktop"));
     }
 
-    AccountController account;
-    SyncController sync;
-    AppStatus status(&account, &sync);
     Autostart autostart;
     autostart.applyFirstRunDefault();
     DownloadProgressSettings downloadProgressSettings;
     PlacesSettings placesSettings;
-    PlacesController placesController(&sync, &placesSettings);
+    // Before the accounts: each account's download progress unregisters its
+    // jobs from it when the account goes, including at exit.
     KUiServerDownloadJobTracker downloadJobTracker;
-    DownloadProgressController downloadProgress(&sync, &downloadJobTracker, &downloadProgressSettings);
+    // Before the accounts too: their Notifiers point at it until they go.
+    KNotificationSink sink;
 
-    qmlRegisterSingletonInstance("org.konedrive.app", 1, 0, "Account", &account);
-    qmlRegisterSingletonInstance("org.konedrive.app", 1, 0, "Sync", &sync);
-    qmlRegisterSingletonInstance("org.konedrive.app", 1, 0, "Status", &status);
-    qmlRegisterSingletonInstance("org.konedrive.app", 1, 0, "Autostart", &autostart);
-    qmlRegisterSingletonInstance("org.konedrive.app", 1, 0, "DownloadProgress", &downloadProgressSettings);
-    qmlRegisterSingletonInstance("org.konedrive.app", 1, 0, "Places", &placesSettings);
-    qmlRegisterUncreatableType<TransferModel>("org.konedrive.app", 1, 0, "TransferModel", QStringLiteral("owned by Sync"));
-    qmlRegisterUncreatableType<ActivityModel>("org.konedrive.app", 1, 0, "ActivityModel", QStringLiteral("owned by Sync"));
-    qmlRegisterUncreatableType<ConflictModel>("org.konedrive.app", 1, 0, "ConflictModel", QStringLiteral("owned by Sync"));
+    DaemonController daemon;
+    AccountsModel accounts(&daemon);
+    CurrentAccount current(&accounts);
+    AppStatus appStatus(&accounts);
+    PlacesController placesController(&accounts, &placesSettings);
+
+    registerKonedriveQml(&daemon, &accounts, &current, &autostart, &downloadProgressSettings, &placesSettings);
 
     QQmlApplicationEngine engine;
     KLocalization::setupLocalizedContext(&engine);
@@ -91,14 +93,28 @@ int main(int argc, char *argv[])
     }
     auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
 
-    TrayIcon tray(&status, &sync);
+    TrayIcon tray(&appStatus);
     tray.setWindow(window);
     QObject::connect(&tray, &TrayIcon::quitRequested, &app, &QCoreApplication::quit);
+    // A click with exactly one account needing attention shows that one.
+    QObject::connect(&tray, &TrayIcon::accountToShow, &current, &CurrentAccount::select);
 
-    KNotificationSink sink([&tray] {
+    // A click on a notification opens the window on its account.
+    sink.setOpenWindow([&tray, &current](const QString &account) {
+        current.select(account);
         tray.showWindow();
     });
-    Notifier notifier(&account, &sync, &sink);
+    // Each account notifies and reports its downloads on its own, both going
+    // with it; with more than one account, each names its account.
+    accounts.onEachAccount([&](AccountItem *item) {
+        const auto name = [&accounts, item] {
+            return accounts.count() > 1 ? item->account()->label() : QString();
+        };
+        auto *notifier = new Notifier(item->account(), item->sync(), &sink, {}, item);
+        notifier->setAccountName(name);
+        auto *progress = new DownloadProgressController(item->sync(), &downloadJobTracker, &downloadProgressSettings, {}, item);
+        progress->setAccountName(name);
+    });
 
     QObject::connect(&service, &KDBusService::activateRequested, &tray, [&tray, window](const QStringList &arguments, const QString &) {
         // arguments[0] is the program; an autostart while running changes nothing.

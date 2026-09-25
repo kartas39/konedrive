@@ -159,14 +159,20 @@ A pin put on or taken off while a sweep walks is applied on top of what the walk
 item that OneDrive moves or removes — or a folder with one inside — is counted right by the sweep
 after that cycle.
 
-## 7. D-Bus (`org.konedrive.Sync1`)
+## 7. D-Bus
 
-| Member | Signature | Meaning |
-|---|---|---|
-| `Pin(paths)` | `as → u queued` | Pins each path (§3); how many files this call queued for download |
-| `Unpin(paths)` | `as → u unpinned` | Takes each path's own pin off, and nothing else (§5); how many came off |
-| `FreeUp(paths)` | `as → (u files, t bytes, u busy, u skipped_pinned)` | Frees up each path (§5) |
-| `PinnedCount` | `u`, read | How many files and folders carry a pin of their own |
+| Member | Interface | Signature | Meaning |
+|---|---|---|---|
+| `Pin(paths)` | `Files1` | `as → u queued` | Pins each path (§3); how many files this call queued for download |
+| `Unpin(paths)` | `Files1` | `as → u unpinned` | Takes each path's own pin off, and nothing else (§5); how many came off |
+| `FreeUp(paths)` | `Files1` | `as → (u files, t bytes, u busy, u skipped_pinned)` | Frees up each path (§5) |
+| `PinnedCount` | `Sync1` | `u`, read | How many files and folders in the account's folder carry a pin of their own |
+
+`Pin`, `Unpin` and `FreeUp` are on `org.konedrive.Files1` at `/org/konedrive/Accounts`: each path
+is routed to the account whose folder holds it, and one call may span several accounts' folders.
+Every path is routed, and for `Unpin` and `FreeUp` every path checked for a pin by a folder above
+it, before any account changes anything; the counts are summed over the accounts
+([accounts.md](accounts.md) §3.5). `PinnedCount` is each account's, on its `org.konedrive.Sync1`.
 
 `PinnedCount` travels in the coalesced `PropertiesChanged` with the other status properties
 ([desktop.md](desktop.md) §2.4). `NotAllowed` is a named error (`org.konedrive.Error.NotAllowed`)
@@ -175,13 +181,16 @@ the folder that pins it, in a fixed shape: `<path> is pinned by <folder>: unpin 
 
 ## 8. The command line
 
+The three commands take paths in any account's folder, and one call may name paths in several:
+they go through `Files1`, the paths decide the accounts, and `--account` is refused.
+
 - `konedrivectl sync pin <paths…>` — says how many files are downloading now.
 - `konedrivectl sync unpin <paths…>` — takes the pins off; what is downloaded stays.
 - `konedrivectl sync free <paths…>` — says what was freed, what was in use or changed here, and
   what a pin below kept.
 - A refusal of either names the one path refused and the folder that pins it, and says to unpin or
   free up that folder first.
-- `konedrivectl sync status` has a line `Always on this device: N` for a registered folder.
+- `konedrivectl sync status` has a line `Always on this device: N` for each registered folder.
 
 ## 9. The Dolphin plugin
 

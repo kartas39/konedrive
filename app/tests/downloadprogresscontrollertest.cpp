@@ -70,7 +70,7 @@ private:
     {
         m_daemon = std::make_unique<FakeDaemon>();
         QVERIFY(m_daemon->start());
-        m_sync = std::make_unique<SyncController>();
+        m_sync = std::make_unique<SyncController>(fake::FirstAccount);
         QTRY_VERIFY(m_sync->serviceAvailable());
     }
 
@@ -151,6 +151,35 @@ private Q_SLOTS:
         QCOMPARE(tracker.unregistered.first().name, path);
         QCOMPARE(tracker.unregistered.first().error, int(KJob::NoError));
         QCOMPARE(tracker.unregistered.first().processed, 3000ULL);
+    }
+
+    /// With more than one account, a job's title names its account; with one, it stays plain.
+    void theTitleNamesTheAccountWhenThereAreSeveral()
+    {
+        start();
+        RecordingJobTracker tracker;
+        DownloadProgressController controller(m_sync.get(), &tracker, nullptr, [this] {
+            return m_nowMs;
+        });
+        QString name;
+        controller.setAccountName([&name] {
+            return name;
+        });
+
+        m_daemon->sync->setTransfers({{Root + QStringLiteral("/a.iso"), 1, 10}});
+        QTRY_COMPARE(m_sync->transfers()->count(), 1);
+        m_nowMs += 2000;
+        controller.checkNow();
+        QCOMPARE(tracker.registered.size(), 1);
+        QCOMPARE(qobject_cast<DownloadJob *>(tracker.registered.at(0))->title(), QStringLiteral("Downloading from OneDrive"));
+
+        name = QStringLiteral("Family");
+        m_daemon->sync->setTransfers({{Root + QStringLiteral("/a.iso"), 1, 10}, {Root + QStringLiteral("/b.iso"), 1, 10}});
+        QTRY_COMPARE(m_sync->transfers()->count(), 2);
+        m_nowMs += 2000;
+        controller.checkNow();
+        QCOMPARE(tracker.registered.size(), 2);
+        QCOMPARE(qobject_cast<DownloadJob *>(tracker.registered.at(1))->title(), QStringLiteral("Downloading from OneDrive — Family"));
     }
 
     /// I1: a job is registered with Plasma before its title/file name and

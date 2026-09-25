@@ -13,6 +13,9 @@ include(KDECompilerSettings NO_POLICY_SCOPE)
 
 find_package(Qt6 ${QT_MIN_VERSION} REQUIRED COMPONENTS Core Gui DBus Widgets Test)
 
+set(KONEDRIVE_ACCOUNTS_XML ${CMAKE_CURRENT_SOURCE_DIR}/../dbus/org.konedrive.Accounts1.xml)
+qt_add_dbus_interface(konedrive_dbus_SRCS ${KONEDRIVE_ACCOUNTS_XML} accounts1interface)
+
 set(KONEDRIVE_DBUS_XML ${CMAKE_CURRENT_SOURCE_DIR}/../dbus/org.konedrive.Account1.xml)
 qt_add_dbus_interface(konedrive_dbus_SRCS ${KONEDRIVE_DBUS_XML} account1interface)
 
@@ -24,11 +27,15 @@ find_package(KF6 ${KF_MIN_VERSION} REQUIRED COMPONENTS
     I18n Config Notifications StatusNotifierItem DBusAddons KIO WindowSystem JobWidgets)
 
 add_library(konedrive_core STATIC
+    daemoncontroller.cpp
     accountcontroller.cpp
     synccontroller.cpp
+    accountsmodel.cpp
+    currentaccount.cpp
     transfermodel.cpp
     activitymodel.cpp
     conflictmodel.cpp
+    accountstatus.cpp
     appstatus.cpp
     notifier.cpp
     autostart.cpp
@@ -59,7 +66,9 @@ set(KONEDRIVE_QML
     qml/ConflictsPage.qml
     qml/SkippedPage.qml
     qml/AccountPage.qml
-    qml/SettingsPage.qml)
+    qml/SettingsPage.qml
+    qml/AccountSwitcher.qml
+    qml/AddAccountDialog.qml)
 qt_add_resources(konedrive "konedrive_qml" PREFIX "/" FILES ${KONEDRIVE_QML})
 target_link_libraries(konedrive PRIVATE
     konedrive_core
@@ -95,6 +104,7 @@ if(BUILD_TESTING)
     endfunction()
 
     konedrive_test(accountcontrollertest)
+    konedrive_test(accountsmodeltest)
     konedrive_test(synccontrollertest)
     konedrive_test(modelstest)
     konedrive_test(appstatustest)
@@ -103,6 +113,11 @@ if(BUILD_TESTING)
     konedrive_test(downloadprogresssettingstest)
     konedrive_test(placescontrollertest)
     konedrive_test(downloadprogresscontrollertest)
+
+    # Loads Main.qml as the app does, to see what its dialogs act on.
+    konedrive_test(dialogstest)
+    target_link_libraries(dialogstest PRIVATE Qt6::Qml Qt6::Quick Qt6::QuickControls2 KF6::I18nQml)
+    qt_add_resources(dialogstest "dialogstest_qml" PREFIX "/" FILES ${KONEDRIVE_QML})
 
     # Starts the real program twice on the private bus.
     konedrive_test(singleinstancetest)

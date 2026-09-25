@@ -16,11 +16,15 @@ This is the **read phase**. The sync reads from OneDrive and never writes to it:
   lock is rescued, never overwritten (§10).
 
 Uploads, local moves and renames propagated to the cloud, and conflicts on write belong to the
-write phase. Multiple accounts come later; pinning is described in [pinning.md](pinning.md).
+write phase. Pinning is described in [pinning.md](pinning.md).
+
+Everything here is per account: each account has its own folder, and its folder its own tree
+store, poller, activity log and conflicts. How several accounts share one daemon — and one link to
+the helper — is in [accounts.md](accounts.md).
 
 ## 2. Components
 
-All of this runs in the daemon, as the user.
+All of this runs in the daemon, as the user, once for each account.
 
 | Component | Where | Responsibility |
 |---|---|---|
@@ -33,10 +37,12 @@ All of this runs in the daemon, as the user.
 | Thumbnail filler | `sync/thumbs.rs` | Puts OneDrive's thumbnails into KDE's cache ([desktop.md](desktop.md) §8) |
 | Baloo exclusion | `sync/baloo.rs` | Keeps the file indexer out of the folder ([desktop.md](desktop.md) §9) |
 | Account | `account.rs`, `oauth.rs`, `token.rs`, `secret.rs` | Sign-in, tokens, the account's name and quota (§12) |
+| Configuration | `config.rs` | `config.toml`: the client id, and each account with its folder ([accounts.md](accounts.md) §4.1) |
 
 ## 3. Which folders sync
 
-A registered folder has a **source**, recorded in `config.toml` as `sync_root_source`:
+An account has at most one registered folder. It has a **source**, recorded in `config.toml` as
+`source` in the account's `[accounts.root]`:
 
 - **`onedrive`** — made by `RegisterRoot` while signed in and with the helper connected. It shows
   the drive and is kept in step with it.
@@ -120,8 +126,10 @@ folder changes one row. The schema is created in one transaction.
 
 ### 5.2 Where it lives
 
-`$XDG_STATE_HOME/konedrive/tree.sqlite`, in WAL mode with `synchronous=NORMAL`. Store calls run
-on blocking threads.
+`$XDG_STATE_HOME/konedrive/accounts/<account id>/tree.sqlite`, one for each account, in WAL mode
+with `synchronous=NORMAL`. Store calls run on blocking threads. A single-account installation's
+store, `$XDG_STATE_HOME/konedrive/tree.sqlite`, is moved there once ([accounts.md](accounts.md)
+§8.3).
 
 ### 5.3 A map, and rebuildable
 
@@ -129,7 +137,7 @@ The extended attributes on the files are the truth about each local file; the st
 the drive. If it is missing, unreadable, or of another schema version (currently 2), it is rebuilt:
 a full listing fills it and the folder is reconciled Full against it, finding what is already there
 by item id. Losing it costs one listing, never data — though the activity log and the conflict list
-go with it (limitations log F24). A Forget drops it.
+go with it (limitations log F24). A Forget drops it, and so does removing the account.
 
 ## 6. A sync cycle
 
@@ -328,7 +336,8 @@ rescued.
 ### 10.2 How a rescue works
 
 A rescue is **exactly one `renameat2(…, RENAME_NOREPLACE)`** into
-`$XDG_DATA_HOME/konedrive/rescued/<time>/<path in the folder>`: never a copy, never a delete. A
+`$XDG_DATA_HOME/konedrive/rescued/<account id>/<time>/<path in the folder>`: never a copy, never a
+delete. (A single-account installation rescued into `rescued/<time>/`; those files stay there.) A
 rename cannot lose bytes; a copy followed by a delete could delete something other than what was
 copied, would leave the tree unlocked for the duration, and would need its own crash protocol. A
 name already taken in the rescue directory sends the file on to `<name>.1`, `<name>.2`, …
@@ -384,30 +393,46 @@ phase lands, the lock goes.
 
 ## 12. The account
 
+Each account signs in, holds its tokens and checks its drive on its own, as described here; what
+keeps several accounts apart is in [accounts.md](accounts.md) §6.
+
 ### 12.1 Sign-in
 
 Sign-in is OAuth 2.0 authorization code with PKCE in the **system browser**, redirected to a
 loopback listener (`http://localhost:<ephemeral port>`, on `127.0.0.1` and `::1`), as recommended
 for desktop applications (RFC 8252). Password and second factor stay in the browser; there is no
-embedded web view. The authority is `login.microsoftonline.com/consumers`: personal accounts only.
-The listener accepts only `GET /` carrying `code` and the expected `state`, answers anything else
-with 404, is single use, and closes after five minutes. Each user registers their own Entra
-application and gives its client id to the daemon (`SetClientId`); the README has the steps.
+embedded web view. The authority is `login.microsoftonline.com/consumers`: personal accounts only
+(limitations log F49). The listener accepts only `GET /` carrying `code` and the expected `state`,
+answers anything else with 404, is single use, and closes after five minutes. Each user registers
+their own Entra application and gives its client id to the daemon (`Accounts1.SetClientId`); every
+account signs in with it, and the README has the steps.
+
+The scope is the account's mode's: for a read-only account, the only kind in this phase,
+`Files.Read User.Read offline_access`, asked for at the authorization, the code exchange and every
+refresh alike ([accounts.md](accounts.md) §10).
+
+Before the refresh token is stored, the daemon asks `GET /me/drive` with the new access token, and
+refuses the sign-in if that drive is not this account's, or is already another account's
+([accounts.md](accounts.md) §6.2). A sign-in that cannot make that check is refused too.
 
 ### 12.2 Tokens
 
-- **The refresh token** is stored only in the Secret Service (KWallet), under attributes
-  `application=konedrive`, `kind=refresh-token`. There is no plaintext fallback: without a Secret
-  Service, sign-in fails with a clear error. It never crosses D-Bus and is never logged.
-- **The access token** lives in the daemon's memory only. It is refreshed when less than 5 minutes
-  remain, by one refresh shared by all callers; a `401` invalidates it once. `invalid_grant`
-  (consent revoked, session expired) deletes the refresh token and signs out: `LastError` says to
-  sign in again, a download on open fails `EIO`, and the folder reports that it is signed out.
-- **For test runs only**, `org.konedrive.Dev1.AccessToken()` hands out the current access token —
-  about an hour of `Files.Read` — never the refresh token; `konedrivectl dev export-access-token`
-  writes it atomically to a `0600` file. Any process of the same user on the session bus can obtain
-  that hour of read access, which is no more than it has by opening files in the folder (limitations
-  log W11).
+- **The refresh token** is stored only in the Secret Service (KWallet), one item per account, under
+  attributes `application=konedrive`, `kind=account-refresh-token`, `account=<account id>`, and
+  labelled `KOneDrive: <email>` ([accounts.md](accounts.md) §4.3). There is no plaintext
+  fallback: without a Secret Service, sign-in fails with a clear error. It never crosses D-Bus and
+  is never logged. The single-account item (`kind=refresh-token`) is moved into the migrated
+  account's own the first time its token is loaded ([accounts.md](accounts.md) §8.4).
+- **The access token** lives in the daemon's memory only, one per account. It is refreshed when less
+  than 5 minutes remain, by one refresh shared by all callers; a `401` invalidates it once.
+  `invalid_grant` (consent revoked, session expired) deletes the account's refresh token and signs
+  it out: `LastError` says to sign in again, a download on open in its folder fails `EIO`, and the
+  folder reports that it is signed out.
+- **For test runs only**, each account's `org.konedrive.Dev1.AccessToken()` hands out that account's
+  current access token — about an hour of `Files.Read` — never the refresh token;
+  `konedrivectl dev export-access-token` writes the chosen account's (`--account`) atomically to a
+  `0600` file. Any process of the same user on the session bus can obtain that hour of read access, which
+  is no more than it has by opening files in the folder (limitations log W11).
 
 At startup, a refresh token found by attribute search (which does not unlock the wallet) means
 signed in; the cached name and quota are shown at once and refreshed in the background.
@@ -415,11 +440,13 @@ signed in; the cached name and quota are shown at once and refreshed in the back
 ### 12.3 The same account
 
 Every cycle begins with `GET /me/drive` and compares the drive id with the one the folder was built
-from, kept both in the tree store and in `config.toml` (`sync_root_drive_id`), so that a store
-rebuilt empty still has something to compare against. A mismatch is a blocking error, never a
-re-listing of another account's files over this folder. The check costs one request per cycle; a
-sign-out followed by a different sign-in between two polls would defeat any scheme that only
-checked at sign-in.
+from, kept both in the tree store and in `config.toml` — as the account's `drive_id`, which is also
+its identity ([accounts.md](accounts.md) §2) — so that a store rebuilt empty still has something to
+compare against. A mismatch is a blocking error, never a re-listing of another account's files over
+this folder. The check costs one request per cycle; a sign-out followed by a different sign-in
+between two polls would defeat any scheme that only checked at sign-in. The sign-in itself is also
+checked now (§12.1), and a OneDrive folder carries its drive, so that no other account can register
+it ([accounts.md](accounts.md) §6.3).
 
 ### 12.4 What a signed-out folder does
 

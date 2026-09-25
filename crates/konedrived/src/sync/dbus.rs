@@ -1,5 +1,7 @@
-//! `org.konedrive.Sync1`, on the same object as `Account1`
-//! (definition: `dbus/org.konedrive.Sync1.xml`).
+//! `org.konedrive.Sync1`, one per account on the account's object
+//! `/org/konedrive/Accounts/<id>`, beside its `Account1`
+//! (definition: `dbus/org.konedrive.Sync1.xml`). The per-file calls are
+//! `org.konedrive.Files1`'s, routed by path (`crate::accounts`).
 //!
 //! Follows the same split as `crate::dbus`/`crate::account`: this module is
 //! the thin zbus wrapper, and `SyncService` (in `sync/mod.rs`) does the
@@ -7,13 +9,15 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use konedrive_dbus::{OBJECT_PATH, SYNC_INTERFACE_NAME};
+use konedrive_dbus::SYNC_INTERFACE_NAME;
 use tokio::sync::{broadcast, watch};
+use tokio::task::JoinHandle;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
+use zbus::zvariant::ObjectPath;
 use zbus::{interface, Connection, DBusError};
 
 use super::activity::Transfer;
@@ -68,6 +72,12 @@ pub enum SyncFault {
     /// `FreeUp` of a path a folder above it pins, or `Dehydrate` of a pinned
     /// file. The message is "<path> is pinned by <folder>: unpin it first".
     NotAllowed(String),
+    /// `RegisterRoot` or `RegisterRootWithoutInterception` of a folder that
+    /// is, is inside, or contains another account's folder; the message
+    /// names that account's label.
+    Overlaps(String),
+    /// `Accounts1.Remove` of a path that names no account.
+    NoAccount(String),
     /// Everything with no name of its own: an I/O failure, mostly.
     Failed(String),
 }
@@ -100,18 +110,6 @@ impl Sync1 {
     /// with the Graph listing; this stays as the offline test path.
     async fn populate_from_directory(&self, source_dir: &str) -> Result<u64> {
         self.service.populate_from_directory(Path::new(source_dir)).await.map_err(to_fault)
-    }
-
-    async fn hydrate(&self, path: &str) -> Result<()> {
-        self.service.hydrate_now(Path::new(path)).await.map_err(to_fault)
-    }
-
-    async fn dehydrate(&self, path: &str) -> Result<()> {
-        self.service.dehydrate(Path::new(path)).await.map_err(to_fault)
-    }
-
-    async fn item_state(&self, path: &str) -> String {
-        self.service.item_state(Path::new(path)).await
     }
 
     async fn refresh(&self) -> Result<()> {
@@ -149,31 +147,6 @@ impl Sync1 {
 
     async fn dismiss_conflict(&self, rescued_path: &str) -> Result<()> {
         self.service.dismiss_conflict(rescued_path).await.map_err(to_fault)
-    }
-
-    /// "Always keep on this device" for each path; how many files were
-    /// queued for download.
-    #[zbus(out_args("queued"))]
-    async fn pin(&self, paths: Vec<String>) -> Result<u32> {
-        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-        self.service.pin(&paths).await.map_err(to_fault)
-    }
-
-    /// Unchecking "Always keep on this device": each path's own pin comes
-    /// off, and its files stay; how many pins came off.
-    #[zbus(out_args("unpinned"))]
-    async fn unpin(&self, paths: Vec<String>) -> Result<u32> {
-        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-        self.service.unpin(&paths).await.map_err(to_fault)
-    }
-
-    /// "Free up space" for each path, taking its own pin off first. `busy`
-    /// counts the files kept because they were in use or changed here.
-    #[zbus(out_args("files", "bytes", "busy", "skipped_pinned"))]
-    async fn free_up(&self, paths: Vec<String>) -> Result<(u32, u64, u32, u32)> {
-        let paths: Vec<PathBuf> = paths.into_iter().map(PathBuf::from).collect();
-        let freed = self.service.free_up(&paths).await.map_err(to_fault)?;
-        Ok((freed.files, freed.bytes, freed.busy + freed.modified, freed.pinned))
     }
 
     #[zbus(out_args("files", "bytes", "busy"))]
@@ -245,21 +218,16 @@ impl Sync1 {
     async fn transfers(&self) -> Vec<(String, u64, u64)> {
         self.service.transfers()
     }
-
-    /// The privileged helper as the daemon sees it (HS1).
-    #[zbus(property)]
-    async fn helper_state(&self) -> String {
-        self.service.helper_state()
-    }
 }
 
 /// Every refusal keeps its own name; only the ones with nothing a caller
 /// could act on differently fall through to `Failed` (Ruling: fail loudly
 /// rather than report success this component cannot back up).
-fn to_fault(error: SyncError) -> SyncFault {
+pub(crate) fn to_fault(error: SyncError) -> SyncFault {
     let message = error.to_string();
     match error {
-        SyncError::NotEmpty => SyncFault::NotEmpty(message),
+        SyncError::Overlaps(_) => SyncFault::Overlaps(message),
+        SyncError::NotEmpty | SyncError::ForeignFolder => SyncFault::NotEmpty(message),
         SyncError::Unsupported(_) => SyncFault::Unsupported(message),
         SyncError::InUse => SyncFault::InUse(message),
         SyncError::NoRoot => SyncFault::NoRoot(message),
@@ -277,32 +245,39 @@ fn to_fault(error: SyncError) -> SyncFault {
     }
 }
 
-/// Serves `Sync1` through a connection *builder* — before the bus name is
-/// claimed.
+/// Serves one account's `Sync1` at `path` and starts its signals; the tasks
+/// that send them, to stop when the account goes.
 ///
-/// `main` used to claim the name, then connect to the helper (up to 30 s),
-/// then attach this interface, so a D-Bus-activated client calling `Sync1`
-/// in that window got `UnknownInterface` from a daemon that was already on
-/// the bus. `Account1` had the opposite discipline spelled out three lines
-/// above it — "before the bus name is claimed, so a D-Bus-activated client's
-/// first call is never answered from stale state" — and this follows it.
-/// Nothing that can fail, and nothing that can be slow, is left between the
+/// At startup this runs before the bus name is claimed
+/// (`crate::accounts::serve`): `main` used to claim the name, then connect
+/// to the helper (up to 30 s), then attach this interface, so a
+/// D-Bus-activated client calling `Sync1` in that window got
+/// `UnknownInterface` from a daemon that was already on the bus. Nothing
+/// that can fail, and nothing that can be slow, is left between the
 /// interface and the name.
-pub fn add_to_builder<'a>(
-    builder: zbus::connection::Builder<'a>,
+pub async fn export(
+    connection: &Connection,
+    path: &ObjectPath<'_>,
     service: Arc<SyncService>,
-) -> zbus::Result<zbus::connection::Builder<'a>> {
-    builder.serve_at(OBJECT_PATH, Sync1::new(service))
+) -> zbus::Result<Vec<JoinHandle<()>>> {
+    connection.object_server().at(path, Sync1::new(Arc::clone(&service))).await?;
+    start_signals(connection, path, service).await
+}
+
+/// Takes one account's `Sync1` off the bus (`Accounts1.Remove`).
+pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()> {
+    connection.object_server().remove::<Sync1, _>(path).await.map(drop)
 }
 
 /// Turns `SyncService`'s state changes into `PropertiesChanged`, the same
-/// `StateHandle` → `PropertiesChanged` mechanism `crate::dbus::serve` uses
+/// `StateHandle` → `PropertiesChanged` mechanism `crate::dbus::export` uses
 /// for `Account1`.
-pub async fn start_signals(
+async fn start_signals(
     connection: &Connection,
+    path: &ObjectPath<'_>,
     service: Arc<SyncService>,
-) -> zbus::Result<()> {
-    let iface = connection.object_server().interface::<_, Sync1>(OBJECT_PATH).await?;
+) -> zbus::Result<Vec<JoinHandle<()>>> {
+    let iface = connection.object_server().interface::<_, Sync1>(path).await?;
     // Captured before spawning (not inside the task): otherwise a state
     // change landing between attaching the interface and the task's first
     // poll would be absorbed into this baseline instead of being emitted as
@@ -324,7 +299,7 @@ pub async fn start_signals(
     // between here and the task's first poll is still sent.
     let mut added = service.report().activity.subscribe();
     let activity_iface = iface.clone();
-    tokio::spawn(async move {
+    let states = tokio::spawn(async move {
         while changes.changed().await.is_ok() {
             let current = changes.borrow_and_update().clone();
             if let Err(e) = emit_changes(&iface, &previous, &current).await {
@@ -333,7 +308,7 @@ pub async fn start_signals(
             previous = current;
         }
     });
-    tokio::spawn(coalesce(counters, transfers, shown, move |old, new| {
+    let coalesced = tokio::spawn(coalesce(counters, transfers, shown, move |old, new| {
         let iface = counters_iface.clone();
         async move {
             if let Err(e) = emit_coalesced(&iface, &old, &new).await {
@@ -341,7 +316,7 @@ pub async fn start_signals(
             }
         }
     }));
-    tokio::spawn(async move {
+    let activity = tokio::spawn(async move {
         loop {
             match added.recv().await {
                 Ok(e) => {
@@ -358,7 +333,7 @@ pub async fn start_signals(
             }
         }
     });
-    Ok(())
+    Ok(vec![states, coalesced, activity])
 }
 
 /// What travels in the coalesced `PropertiesChanged`: the counters (spec
@@ -448,15 +423,6 @@ pub(crate) async fn coalesce<F, Fut>(
     }
 }
 
-/// Adds `Sync1` to an already-built connection and starts its signals. The
-/// daemon itself goes through [`add_to_builder`] instead, so that the
-/// interface is in place before the name is; this is for a connection that
-/// already exists.
-pub async fn attach(connection: &Connection, service: Arc<SyncService>) -> zbus::Result<()> {
-    connection.object_server().at(OBJECT_PATH, Sync1::new(Arc::clone(&service))).await?;
-    start_signals(connection, service).await
-}
-
 async fn emit_changes(
     iface: &InterfaceRef<Sync1>,
     old: &SyncSnapshot,
@@ -478,9 +444,8 @@ async fn emit_changes(
     if published_error(old) != published_error(new) {
         sync1.last_error_changed(emitter).await?;
     }
-    if old.helper_state != new.helper_state {
-        sync1.helper_state_changed(emitter).await?;
-    }
+    // `HelperState` itself is `Accounts1`'s now; a change of it shows here
+    // only as the `LastError` it changes (the comparison above).
     Ok(())
 }
 

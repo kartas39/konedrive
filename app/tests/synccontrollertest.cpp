@@ -43,7 +43,7 @@ private Q_SLOTS:
     void followsTheFolderAndItsCounters()
     {
         startFake();
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         m_fake->set({{QStringLiteral("RootPath"), QStringLiteral("/home/u/OneDrive")},
                      {QStringLiteral("RootState"), QStringLiteral("listing")},
@@ -59,7 +59,7 @@ private Q_SLOTS:
     void theServiceGoingAwayClearsTransfers()
     {
         startFake();
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         m_fake->setTransfers({{QStringLiteral("/home/u/OneDrive/big.iso"), 1, 10}});
         QTRY_COMPARE(controller.transfers()->count(), 1);
@@ -71,7 +71,7 @@ private Q_SLOTS:
     void choosingAFolderRegistersIt()
     {
         startFake();
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.chooseFolder(QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive")));
         QTRY_COMPARE(controller.rootPath(), QStringLiteral("/home/u/OneDrive"));
@@ -88,7 +88,7 @@ private Q_SLOTS:
     {
         startFake();
         m_fake->helperMissing = true;
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.chooseFolder(QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive")));
         QTRY_COMPARE(controller.pendingFolder(), QStringLiteral("/home/u/OneDrive"));
@@ -112,7 +112,7 @@ private Q_SLOTS:
     void listsWhatIsSkippedWithWhy()
     {
         startFake();
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.loadSkipped();
         QTRY_COMPARE(controller.skipped().size(), 1);
@@ -121,45 +121,13 @@ private Q_SLOTS:
         QVERIFY(item.value(QStringLiteral("why")).toString().contains(QStringLiteral("locked separately")));
     }
 
-    /// HelperState (dbus/org.konedrive.Sync1.xml) reaches the window and
-    /// drives helperTrouble (what StatusPage's helper card and the tray key
-    /// off) and helperInstruction (what that card and the NoHelper prompt say
-    /// to do about it).
-    void helperStateDrivesTroubleAndItsInstruction()
-    {
-        startFake();
-        SyncController controller;
-        QTRY_VERIFY(controller.serviceAvailable());
-        QCOMPARE(controller.helperState(), QStringLiteral("connected"));
-        QVERIFY(!controller.helperTrouble());
-        QCOMPARE(controller.helperInstruction(), QString());
-
-        m_fake->set({{QStringLiteral("HelperState"), QStringLiteral("not-installed")}});
-        QTRY_VERIFY(controller.helperTrouble());
-        QVERIFY2(controller.helperInstruction().contains(QStringLiteral("install-helper.sh")), qPrintable(controller.helperInstruction()));
-
-        m_fake->set({{QStringLiteral("HelperState"), QStringLiteral("stopped")}});
-        QTRY_VERIFY(controller.helperInstruction().contains(QStringLiteral("systemctl start")));
-
-        m_fake->set({{QStringLiteral("HelperState"), QStringLiteral("failed")}});
-        QTRY_VERIFY(controller.helperInstruction().contains(QStringLiteral("systemctl status")));
-
-        m_fake->set({{QStringLiteral("HelperState"), QStringLiteral("unknown")}});
-        QTRY_VERIFY(controller.helperTrouble());
-        QVERIFY(!controller.helperInstruction().isEmpty());
-
-        m_fake->set({{QStringLiteral("HelperState"), QStringLiteral("connected")}});
-        QTRY_VERIFY(!controller.helperTrouble());
-        QCOMPARE(controller.helperInstruction(), QString());
-    }
-
     /// M7: loadSkipped() is an incidental background reload (the Skipped
     /// page's own onVisibleChanged/onSyncChanged), so it must never clear an
     /// actionError a real action just set — only a new action gets to.
     void loadSkippedNeverClearsAnActionError()
     {
         startFake();
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.dismissConflict(QStringLiteral("/no/such/rescue"));
         QTRY_VERIFY(!controller.actionError().isEmpty());
@@ -171,7 +139,7 @@ private Q_SLOTS:
     void refreshAndForgetCallTheDaemon()
     {
         startFake();
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.refresh();
         controller.forget();
@@ -183,7 +151,7 @@ private Q_SLOTS:
     void followsLastCheckedLocalSpaceAndConflictCount()
     {
         startFake();
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         m_fake->set({{QStringLiteral("LastChecked"), QVariant::fromValue<qlonglong>(1758700000)},
                      {QStringLiteral("LocalBytes"), QVariant::fromValue<qulonglong>(1288490188)},
@@ -199,7 +167,7 @@ private Q_SLOTS:
     {
         startFake();
         m_fake->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(3)}});
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.pinnedCount(), 3U);
 
         m_fake->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(5)}});
@@ -213,7 +181,7 @@ private Q_SLOTS:
     {
         startFake();
         m_fake->setTransfers({{QStringLiteral("/home/u/OneDrive/a.iso"), 10, 100}});
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.transfers()->count(), 1); // from GetAll
         QCOMPARE(text(controller.transfers(), 0, TransferModel::PathRole), QStringLiteral("/home/u/OneDrive/a.iso"));
 
@@ -236,7 +204,7 @@ private Q_SLOTS:
         startFake();
         m_fake->log = {{200, QStringLiteral("downloaded"), QStringLiteral("/home/u/OneDrive/b.txt"), QStringLiteral("7 bytes")},
                        {100, QStringLiteral("listed"), QStringLiteral("/home/u/OneDrive"), QStringLiteral("12 items")}};
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.activity()->count(), 2);
         QVERIFY(m_fake->calls.contains(QStringLiteral("RecentActivity:50")));
         QCOMPARE(text(controller.activity(), 0, ActivityModel::PathRole), QStringLiteral("/home/u/OneDrive/b.txt"));
@@ -258,7 +226,7 @@ private Q_SLOTS:
         m_fake->conflictList = {{200, QStringLiteral("/home/u/OneDrive/doc.odt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/2/doc.odt")},
                                 {100, QStringLiteral("/home/u/OneDrive/a.txt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/1/a.txt")}};
         m_fake->set({{QStringLiteral("ConflictCount"), QVariant::fromValue<uint>(2)}});
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.conflicts()->count(), 2);
 
         controller.dismissConflict(QStringLiteral("/home/u/.local/share/konedrive/rescued/2/doc.odt"));
@@ -272,7 +240,7 @@ private Q_SLOTS:
     void aConflictCountChangeReloadsTheList()
     {
         startFake();
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         QCOMPARE(controller.conflicts()->count(), 0);
         m_fake->conflictList = {{100, QStringLiteral("/home/u/OneDrive/a.txt"), QStringLiteral("/r/1/a.txt")}};
@@ -291,7 +259,7 @@ private Q_SLOTS:
         m_fake->holdRefresh = true;
         m_fake->freedFiles = 2;
         m_fake->freedBytes = 8192;
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         controller.setCallTimeout(50);
         QTRY_VERIFY(controller.serviceAvailable());
 
@@ -316,7 +284,7 @@ private Q_SLOTS:
         startFake();
         m_fake->log = {{100, QStringLiteral("listed"), QStringLiteral("/home/u/OneDrive"), QStringLiteral("12 items")}};
         m_fake->holdActivity = true;
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("RecentActivity:50")));
 
         QSignalSpy added(&controller, &SyncController::activityAdded);
@@ -343,7 +311,7 @@ private Q_SLOTS:
     {
         startFake();
         m_fake->holdActivity = true;
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("RecentActivity:50")));
 
         // Stored (as the daemon always does before signalling) and already in
@@ -366,7 +334,7 @@ private Q_SLOTS:
         m_fake->freedFiles = 3;
         m_fake->freedBytes = 3 * 1024 * 1024;
         m_fake->busyFiles = 1;
-        SyncController controller;
+        SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.freeUpSpace();
         QTRY_VERIFY(!controller.freeUpResult().isEmpty());

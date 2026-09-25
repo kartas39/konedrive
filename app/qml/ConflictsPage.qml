@@ -10,10 +10,11 @@ import org.konedrive.app
 FormCard.FormCardPage {
     id: page
 
+    readonly property var sync: Current.sync
     readonly property var window: QQC2.ApplicationWindow.window
 
     objectName: "conflictsPage"
-    title: i18nc("@title", "Conflicts")
+    title: window ? window.accountTitle(i18nc("@title", "Conflicts")) : i18nc("@title", "Conflicts")
 
     Kirigami.InlineMessage {
         Layout.fillWidth: true
@@ -21,7 +22,7 @@ FormCard.FormCardPage {
         Layout.leftMargin: Kirigami.Units.largeSpacing
         Layout.rightMargin: Kirigami.Units.largeSpacing
         type: Kirigami.MessageType.Error
-        text: Sync.actionError
+        text: page.sync ? page.sync.actionError : ""
         visible: text.length > 0
     }
 
@@ -29,17 +30,17 @@ FormCard.FormCardPage {
         Layout.topMargin: Kirigami.Units.largeSpacing
 
         FormCard.FormPlaceholderMessageDelegate {
-            visible: Sync.conflicts.count === 0
+            visible: page.sync === null || page.sync.conflicts.count === 0
             text: i18n("No conflicts")
             explanation: i18n("When a file you changed here also changes in OneDrive, your version is moved out of the way and listed here.")
             icon.name: "document-duplicate"
         }
         FormCard.FormSectionText {
-            visible: Sync.conflicts.count > 0
+            visible: page.sync !== null && page.sync.conflicts.count > 0
             text: i18n("These files changed in OneDrive while you had changed them here. Your version was moved out of the way and is kept where it says. Dismiss takes it off this list; the file stays.")
         }
         Repeater {
-            model: Sync.conflicts
+            model: page.sync ? page.sync.conflicts : null
             delegate: FormCard.AbstractFormDelegate {
                 required property string name
                 required property string originalFolder
@@ -76,12 +77,12 @@ FormCard.FormCardPage {
                         QQC2.Button {
                             text: i18nc("@action:button", "Show in Folder")
                             icon.name: "document-open-folder"
-                            onClicked: Sync.showInFolder(rescued)
+                            onClicked: page.sync.showInFolder(rescued)
                         }
                         QQC2.Button {
                             text: i18nc("@action:button", "Dismiss")
                             icon.name: "dialog-close"
-                            onClicked: Sync.dismissConflict(rescued)
+                            onClicked: page.sync.dismissConflict(rescued)
                         }
                     }
                 }

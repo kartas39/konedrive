@@ -495,8 +495,8 @@ private Q_SLOTS:
             return QStringLiteral("org.konedrive.Error.") + QLatin1String(name);
         };
         QTest::newRow("Always keep: NoHelper") << true << named("NoHelper") << decoy << QStringLiteral("must first have the helper stop letting its opens through unchecked") << false << true;
-        QTest::newRow("Always keep: NoRoot") << true << named("NoRoot") << decoy << QStringLiteral("KOneDrive has no sync folder registered") << false << true;
-        QTest::newRow("Always keep: OutsideRoot") << true << named("OutsideRoot") << decoy << QStringLiteral("is not inside KOneDrive's sync folder") << false << true;
+        QTest::newRow("Always keep: NoRoot") << true << named("NoRoot") << decoy << QStringLiteral("is no longer registered with KOneDrive") << false << true;
+        QTest::newRow("Always keep: OutsideRoot") << true << named("OutsideRoot") << decoy << QStringLiteral("is not inside any of KOneDrive's folders") << false << true;
         QTest::newRow("Always keep: NotManaged") << true << named("NotManaged") << decoy << QStringLiteral("nothing for KOneDrive to keep downloaded") << false << true;
         QTest::newRow("Always keep: ModifiedLocally") << true << named("ModifiedLocally") << decoy << QStringLiteral("downloading it again would overwrite your edits") << false << true;
         QTest::newRow("Always keep: Failed") << true << named("Failed") << QStringLiteral("disk full") << QStringLiteral("Keeping “doc.bin” on this device failed: disk full") << true << true;
@@ -504,8 +504,8 @@ private Q_SLOTS:
             << true << QStringLiteral("org.freedesktop.DBus.Error.InUse") << QStringLiteral("something else entirely")
             << QStringLiteral("Keeping “doc.bin” on this device failed: something else entirely") << true << true;
         QTest::newRow("Free up: NoHelper") << false << named("NoHelper") << decoy << QStringLiteral("must first have the helper take off any mark") << false << true;
-        QTest::newRow("Free up: NoRoot") << false << named("NoRoot") << decoy << QStringLiteral("KOneDrive has no sync folder registered") << false << true;
-        QTest::newRow("Free up: OutsideRoot") << false << named("OutsideRoot") << decoy << QStringLiteral("is not inside KOneDrive's sync folder") << false << true;
+        QTest::newRow("Free up: NoRoot") << false << named("NoRoot") << decoy << QStringLiteral("is no longer registered with KOneDrive") << false << true;
+        QTest::newRow("Free up: OutsideRoot") << false << named("OutsideRoot") << decoy << QStringLiteral("is not inside any of KOneDrive's folders") << false << true;
         QTest::newRow("Free up: NotManaged") << false << named("NotManaged") << decoy << QStringLiteral("never frees the space of a file it could not download again") << false << true;
         QTest::newRow("Free up: NotHydrated") << false << named("NotHydrated") << decoy << QStringLiteral("is not downloaded, so there is no space to free") << false << true;
         QTest::newRow("Free up: ModifiedLocally") << false << named("ModifiedLocally") << decoy << QStringLiteral("freeing its space would lose your edits") << false << true;
@@ -583,7 +583,7 @@ private Q_SLOTS:
         }
         QVERIFY(QDBusConnection::sessionBus().interface()->activatableServiceNames().value().contains(DaemonService));
         const QDBusMessage probe = QDBusConnection::sessionBus().call(
-            QDBusMessage::createMethodCall(DaemonService, QStringLiteral("/org/konedrive/Daemon"), QStringLiteral("org.konedrive.Sync1"), QStringLiteral("Pin"))
+            QDBusMessage::createMethodCall(DaemonService, QStringLiteral("/org/konedrive/Accounts"), QStringLiteral("org.konedrive.Files1"), QStringLiteral("Pin"))
             << QStringList{QStringLiteral("/nonexistent")});
         qInfo("the bus answers a failed start with %s", qPrintable(probe.errorName()));
 

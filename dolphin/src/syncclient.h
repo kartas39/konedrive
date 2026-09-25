@@ -2,8 +2,9 @@
 // without ever waiting for it.
 //
 // Pin, Unpin and FreeUp each take the whole selection in one D-Bus call
-// (Sync1's `Pin(as) -> u`, `Unpin(as) -> u` and `FreeUp(as) -> (u,t,u,u)`),
-// unlike the old per-file Hydrate/Dehydrate this replaced: one call, one
+// (Files1's `Pin(as) -> u`, `Unpin(as) -> u` and `FreeUp(as) -> (u,t,u,u)`
+// at `/org/konedrive/Accounts`, routed by path to the right account), unlike
+// the old per-file Hydrate/Dehydrate this replaced: one call, one
 // aggregate answer. The call
 // is asynchronous and made with no reply timeout: freeing up a big folder can
 // take far longer than D-Bus's default 25 seconds, and a call that timed out

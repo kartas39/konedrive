@@ -1,7 +1,9 @@
 #pragma once
 
+#include <QList>
 #include <QLoggingCategory>
 #include <QObject>
+#include <QPair>
 #include <QPointer>
 
 /// The app's own log: konedrive.app, debug off unless QT_LOGGING_RULES turns it on.
@@ -12,17 +14,18 @@ class KStatusNotifierItem;
 class QAction;
 class QMenu;
 class QWindow;
-class SyncController;
 
-/// The tray icon: its icon and tooltip follow AppStatus, a click
-/// shows or hides the window, and its menu opens the folder or the window,
-/// refreshes, or quits.
+/// The tray icon: its icon is the worst state across the accounts and its
+/// tooltip has a line per account (AppStatus); a click shows or hides the
+/// window — on the one account needing attention, when exactly one does —
+/// and its menu opens a folder or the window, refreshes every account, or
+/// quits.
 class TrayIcon : public QObject
 {
     Q_OBJECT
 
 public:
-    TrayIcon(AppStatus *status, SyncController *sync, QObject *parent = nullptr);
+    explicit TrayIcon(AppStatus *status, QObject *parent = nullptr);
     ~TrayIcon() override;
 
     void setWindow(QWindow *window);
@@ -31,8 +34,14 @@ public:
     /// A system tray shows the icon (a StatusNotifierWatcher with a host).
     /// Without one, closing the window quits the app.
     bool trayAvailable() const { return m_trayAvailable; }
+    /// "Open OneDrive Folder", shown while there is at most one account.
     QAction *openFolderAction() const { return m_openFolder; }
+    /// "Open Folder", shown with several accounts: a submenu with an entry
+    /// for each account that has a folder.
+    QAction *openFolderMenuAction() const { return m_openFolderMenuAction; }
+    QMenu *openFolderMenu() const { return m_folderMenu; }
     QAction *openWindowAction() const { return m_openWindow; }
+    /// "Refresh Now": every account whose folder shows OneDrive.
     QAction *refreshAction() const { return m_refresh; }
     QAction *quitAction() const { return m_quit; }
 
@@ -46,6 +55,9 @@ Q_SIGNALS:
     /// main() quits the application on it.
     void quitRequested();
     void trayAvailableChanged();
+    /// A click is about to show the window, and this account (its object
+    /// path) is the only one needing attention: the window shows it.
+    void accountToShow(const QString &path);
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
@@ -55,21 +67,24 @@ private Q_SLOTS:
     void checkTrayHost();
     /// "Open KOneDrive": hands the menu click's activation token to the window (M2).
     void openWindowWithToken();
-    /// "Open OneDrive Folder": the same token, passed to KIO::OpenUrlJob (M2).
-    void openFolderWithToken();
 
 private:
     void update();
     void setTrayAvailable(bool available);
+    /// Opens a folder with the menu click's token, passed to KIO::OpenUrlJob (M2).
+    void openFolder(const QString &path);
 
     AppStatus *m_status;
-    SyncController *m_sync;
     KStatusNotifierItem *m_item;
     QMenu *m_menu;
+    QMenu *m_folderMenu;
     QAction *m_openFolder;
+    QAction *m_openFolderMenuAction;
     QAction *m_openWindow;
     QAction *m_refresh;
     QAction *m_quit;
+    /// (label, folder) of each account that has a folder, in account order.
+    QList<QPair<QString, QString>> m_folders;
     QPointer<QWindow> m_window;
     bool m_trayAvailable = false;
 };

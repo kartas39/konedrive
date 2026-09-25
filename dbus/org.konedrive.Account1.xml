@@ -1,20 +1,32 @@
 <!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node>
-  <!-- KOneDrive account: sign-in state and account info. Tokens are never exposed. -->
+  <!-- /org/konedrive/Accounts/<id>: one Microsoft account, its sign-in state
+       and account info. Tokens are never exposed. The client id every
+       account signs in with is Accounts1.ClientId. -->
   <interface name="org.konedrive.Account1">
-    <method name="SetClientId">
-      <arg name="id" type="s" direction="in"/>
-    </method>
+    <!-- A sign-in as a different Microsoft account than this one's, or as one
+         already connected as another account, ends in State "signed-out"
+         with the reason in LastError, like any failed sign-in. -->
     <method name="BeginSignIn">
       <arg name="url" type="s" direction="out"/>
     </method>
     <method name="CancelSignIn"/>
     <method name="SignOut"/>
     <method name="RefreshAccountInfo"/>
+    <!-- Same rules as Accounts1.Add; InvalidArgs otherwise. -->
+    <method name="SetLabel">
+      <arg name="label" type="s" direction="in"/>
+    </method>
+    <!-- The last element of this object's path: 12 lowercase hex
+         characters, never reused. -->
+    <property name="Id" type="s" access="read"/>
+    <property name="Label" type="s" access="read"/>
+    <!-- "read-only". "read-write" arrives with the write phase. -->
+    <property name="Mode" type="s" access="read"/>
+    <!-- signed-out | signing-in | signed-in -->
     <property name="State" type="s" access="read"/>
     <property name="LastError" type="s" access="read"/>
-    <property name="ClientId" type="s" access="read"/>
     <property name="DisplayName" type="s" access="read"/>
     <property name="Email" type="s" access="read"/>
     <property name="QuotaUsed" type="t" access="read"/>

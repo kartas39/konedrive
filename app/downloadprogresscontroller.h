@@ -52,6 +52,11 @@ public:
     /// The timer that promotes and rechecks jobs (tests check that it is armed).
     QTimer *timer() const { return m_timer; }
 
+    /// The account's name for the jobs' titles ("Downloading from OneDrive —
+    /// Family"), asked as each job appears; empty (the default) leaves the
+    /// title plain — with one account there is nothing to tell apart.
+    void setAccountName(std::function<QString()> name);
+
 public Q_SLOTS:
     /// Promotes any transfer that has now run for 2 s. The timer calls this;
     /// tests call it directly with the clock moved forward, instead of
@@ -82,6 +87,8 @@ private:
     };
 
     bool enabled() const;
+    /// A new job, registered, titled for the account.
+    DownloadJob *newJob(const QString &name);
     void reconcile();
     void promote(const QString &path, qint64 now);
     void finishPath(const QString &path, bool failed, const QString &reason);
@@ -95,6 +102,7 @@ private:
     DownloadJobTracker *m_tracker;
     DownloadProgressSettings *m_settings;
     Clock m_clock;
+    std::function<QString()> m_accountName;
     QTimer *m_timer;
     QHash<QString, Entry> m_entries;
     qint64 m_nextSeq = 0;

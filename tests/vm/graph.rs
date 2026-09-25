@@ -335,7 +335,11 @@ pub(crate) fn graph_mode(helper_binary: &Path, token_file: &Path, guard: Option<
 
 async fn scenarios(token: &str, base: &Path, folder: &Path, guard: Option<&str>, scope: Scope) -> bool {
     let account = StateHandle::new(AccountSnapshot { state: SignInState::SignedIn, ..AccountSnapshot::default() });
-    let service = SyncService::new(None, Some(account), Some(base.join("config.toml")));
+    let persist = match crate::one_account(base).await {
+        Ok(persist) => persist,
+        Err(why) => return report("the account's config.toml", Err(why)),
+    };
+    let service = SyncService::new(None, Some(account), Some(persist));
     let drive = DriveClient::new(url::Url::parse(GRAPH).unwrap(), Arc::new(StaticToken::new(token))).unwrap();
     service.set_drive(drive.clone());
     // No thumbnail filler (`thumbnails: None`): it would fetch a thumbnail

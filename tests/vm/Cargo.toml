@@ -39,6 +39,9 @@ path = "watch_probe.rs"
 
 [dependencies]
 async-trait = "0.1"
+# Scenario 15's account manager is served on a private bus of its own
+# (`konedrive_dbus::testing::TestBus`, a `dbus-daemon` in the guest).
+konedrive-dbus = { path = "../../crates/konedrive-dbus" }
 konedrive-fs = { path = "../../crates/konedrive-fs" }
 konedrive-helper = { path = "../../crates/konedrive-helper" }
 konedrived = { path = "../../crates/konedrived", features = ["fault-injection"] }

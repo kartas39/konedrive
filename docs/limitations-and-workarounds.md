@@ -106,6 +106,10 @@ application must never read zeros where real content should be.
   helper's marks remain.
 - **Way out:** on connecting, the daemon asks the helper which roots it holds for this user
   and reconciles. One new protocol message.
+- **With multiple accounts** it matters more: an account taken out of `config.toml` by hand
+  leaves its folder with the helper in the same way. `Accounts1.Remove` itself goes through
+  the helper, as a Forget does, and is refused `NoHelper` without it. The way out is still not
+  built.
 
 ### Z7. `UnregisterRoot` is best effort
 - **Kind** FRAGILE · **Evidence** reasoned · **Status** open
@@ -505,6 +509,20 @@ application must never read zeros where real content should be.
 - **Status:** mitigated. The unit is measured under systemd, in a VM, when someone runs the
   check.
 
+### W17. The VM's two-account scenario uses two local folders, signed in by hand
+- **What:** scenario 15 of `tests/vm/scenarios.rs` (`two_accounts_one_link`, multiple-accounts
+  design test 15) starts the account manager as `main.rs` does, on a private `dbus-daemon` in the
+  guest. It adds two accounts and marks both signed in by hand, with no drive. Their folders are
+  therefore local folders. The real helper intercepts them through the hub's one link, and each is
+  filled from a directory of its own. The files have the same names, and so the same item ids, in
+  both folders.
+- **Cost:** what a OneDrive folder adds is not run with two accounts against the real helper: the
+  router's lookup of an item id in a tree store (a local folder has none, F44), the folder's drive
+  attribute (F45), and a reconnect that brings both folders up one after the other (F43). The VM
+  measures routing by filesystem and by path proved by inode, and `Remove`'s Forget through the
+  shared link. The scenario also needs the host's `dbus-daemon` in the guest.
+- **Status:** open. Measured 2026-09-25 on btrfs (`tests/vm/run.sh quick`).
+
 ---
 
 ## 4. Fragile spots
@@ -781,7 +799,11 @@ application must never read zeros where real content should be.
   each do their own read-modify-write of `config.toml`, with no lock shared between them: one can
   read the file, the other can read, modify and save it, and the first then saves over that change
   with what it read before. Both are rare and small (a client id set once; a drive id recorded once
-  per fresh listing), so the window is narrow, but nothing closes it. Predates this phase. Reasoned. Open.
+  per fresh listing), so the window is narrow, but nothing closes it. Predates this phase. Reasoned.
+  Closed with multiple accounts: `ConfigStore` (`konedrived/src/config.rs`) is the only writer —
+  the client id, labels, drives, the migration's flags and every account's folder go through it —
+  and it re-reads, changes and writes the file under one lock
+  (`config::tests::writers_never_save_over_each_other`).
 - **F38. Pins: the sweep, and what waits for it** (`docs/design/pinning.md` §6) — (1) the sweep
   walks the whole folder, reading every item's pin attribute (one `lgetxattr` each, beside the
   `lstat`), after each Full reconcile and at start, because nothing but the attributes records
@@ -815,6 +837,126 @@ application must never read zeros where real content should be.
   fails, the file is up with OneDrive's time, and a warning is logged. (4) A `401` or `403` from an
   upload URL is read as the session having ended, like a `404`. Nothing calls the client yet.
   FRAGILE · reasoned. Planned: the write phase's run on a test account.
+- **F40. Moving version 1's tree store into its account can give up** (`konedrived/src/migrate.rs`,
+  `finish_file_moves`) — with multiple accounts, `tree.sqlite` moves into `accounts/<id>/`. Before
+  the move it is opened and closed once, so that its write-ahead log is folded into it and removed.
+  If the log is still there after that close, another process has the store open (an older daemon
+  still running). If the new place already holds a store, that store is newer. In both cases the old
+  store is left where it is, and the account lists its drive again into a new one. The activity log
+  and the conflict list of before are then lost (F24); the rescued files stay in `rescued/<time>/`.
+  `account.json` is moved the same way, and when it is left behind the name and quota are fetched
+  again. An unexpected error, such as a directory that cannot be created or a refused rename, keeps
+  the step for the next start and shows in `Accounts1.LastError`. FRAGILE · measured
+  (`migrate::tests::a_store_that_cannot_be_moved_is_left_where_it_is`,
+  `…the_store_move_keeps_rows_committed_to_the_write_ahead_log`). Open.
+- **F41. Version 2 of `config.toml` has no way back** (`konedrived/src/migrate.rs`) — the first
+  start with multiple accounts copies version 1 to `config.toml.v1` (private) and rewrites
+  `config.toml` as version 2. An older konedrived reads version 2 as a configuration with no
+  folder. Its next write of the file (a client id set, a drive recorded, a folder registered or
+  forgotten) then drops every account. So downgrading is not supported; copying `config.toml.v1`
+  back by hand is the way back. The same loss would follow if an older daemon were still running
+  while the new one migrates. The migration runs before the bus name is claimed, so the new daemon
+  first asks the bus whether `org.konedrive.Daemon` has an owner, and refuses to start if it has
+  (`accounts::start`). An older daemon that claims the name between that question and the claim is
+  not caught. Two daemons of this version never migrate at once: each takes `config.toml.lock` for
+  its life, and the second refuses to start. LIMIT · reasoned. Open.
+- **F42. A sign-in is refused when the daemon cannot check which drive it reached**
+  (`konedrived/src/account.rs`, design §8.2) — after the code exchange, and before the refresh
+  token is stored, the daemon asks `GET /me/drive` with the new token, and asks every other
+  signed-in account that has no drive recorded yet for its own. The check and the record run in
+  one `ConfigStore` update. It is fail-closed: a Graph that does not answer, or another account
+  that cannot be asked (its token cannot be refreshed), refuses the sign-in. The tokens are then
+  dropped, and `LastError` says to try again. A migrated account whose folder never recorded a
+  drive records one at its first `RefreshAccountInfo` or cycle. If the account was signed in as
+  another drive than its folder's, the folder's sync still says so, and the account keeps the drive
+  it recorded first. The wallet item is named `KOneDrive: <email>` once the email is known, and
+  `KOneDrive refresh token` before that. LIMIT · measured
+  (`account_flow::an_account_with_no_drive_recorded_is_asked_first`). Open.
+- **F43. Every account shares one helper link** (`konedrived/src/sync/hub.rs`, design §2.3) — the
+  helper sends a user's opens to that user's newest connection only, so one daemon keeps one link
+  for all its accounts. (1) The 4 fill slots and the helper's credit of 64 requests are shared:
+  pinning a large folder in one account slows opens in another. (2) On connect every account's
+  folder is registered again and recovered one after another, in account order, before any fill is
+  served: a reconnect waits for P3's walk once per folder. LIMIT · reasoned. Open.
+- **F44. An open that cannot be matched to an account is refused `EIO`**
+  (`konedrived/src/sync/hub.rs`, `HelperHub::route`) — a hydration request carries a descriptor and
+  nothing about accounts. The daemon looks for the account by the file's filesystem (each folder's,
+  read once when it is registered), then by the name the kernel has for it, proved by opening that
+  name beneath the folder, then by its item id in each tree store. The open is answered `EIO` when
+  none of these finds it, and the next open tries again. That happens when two folders share a
+  filesystem and the file was renamed or unlinked while its open waited, and no tree store knows its
+  id: a local folder has no tree store. The one folder on the file's filesystem is taken without
+  that proof only while every account's folder is placed. While some account has a folder whose
+  device is not known — held back (F48), or written down by a registration still under way — even
+  one candidate is proved, so a file moved out of its folder is answered `EIO` then. A tree store
+  in use by a registration or a Forget at that moment is not waited for. LIMIT · measured
+  (`sync::hub::tests`). Open.
+- **F45. A folder forgotten before multiple accounts can be adopted by another account**
+  (`konedrived/src/sync/root.rs`, design §8.3) — a OneDrive folder now carries its account's drive
+  (`user.konedrive.drive`). The drive is written at registration, or at the first bring-up of an
+  older folder, once the account's drive is known. A registration of a folder that carries another
+  drive is refused `NotEmpty`, unless the folder is empty: its stale drive is then taken off. A
+  folder forgotten before this phase carries no drive, so any account can register it again, as
+  before, and its sync then makes the folder match that account's drive. LIMIT · measured
+  (`sync::tests::onedrive::a_onedrive_folder_remembers_its_drive_and_is_refused_to_another_account`,
+  `sync::tests::an_empty_folder_that_carries_another_drive_is_taken_and_a_full_one_is_not`). Open.
+- **F46. Nothing answers at `/org/konedrive/Daemon` any more** (`konedrived/src/accounts.rs`, design
+  §4.1) — the daemon serves `/org/konedrive/Accounts` and one object per account, and keeps no
+  alias for the single-account object. A window or a Dolphin that was running across the upgrade
+  calls a path that is gone until it is restarted. `konedrivectl` moved to the new contract in the
+  same phase (task C1), and the deprecated single-account proxies are gone from `konedrive-dbus`.
+  LIMIT · reasoned. Open.
+- **F47. What removing an account keeps** (`konedrived/src/accounts.rs`, `AccountManager::remove`)
+  — `Accounts1.Remove` forgets the folder as a Forget does, then deletes the refresh token and
+  everything in `accounts/<id>/` (the cached name and quota, the tree store, the activity log and
+  the conflicts). The folder's files stay, and a file that was never downloaded stays as an empty
+  placeholder, which reads as zeros. Rescued files stay in `rescued/<id>/`, grouped by the account's
+  id rather than its label; the rescues of version 1 stay in `rescued/<time>/`. LIMIT · measured
+  (`accounts::removing_an_account_forgets_its_folder_and_keeps_its_rescued_files`). Open.
+- **F48. An account that collides with an earlier one in a hand-edited `config.toml` is held
+  back** (`konedrived/src/accounts.rs`, design §3.1) — an account whose label, drive, folder or
+  root id repeats an earlier account's is loaded and shown, but its folder is not brought up:
+  `RootState` reads `error`, `LastError` names the collision, and a registration is refused. Its
+  folder can still be forgotten, and the account removed: a folder it registered with interception
+  in an earlier session leaves through the helper, by the root id `config.toml` records, and is
+  refused `NoHelper` without one. An account whose id repeats an earlier one, or cannot name an
+  object, is not loaded at all, and `Accounts1.LastError` says so. Correcting the file and starting
+  the daemon again is the way out. LIMIT · measured
+  (`accounts::removing_a_held_account_forgets_its_folder_through_the_helper`). Open.
+- **F49. Personal Microsoft accounts only** (`konedrived/src/oauth.rs`, design §12.3) — every
+  account signs in through the `consumers` authority. Work or school accounts (Microsoft 365,
+  OneDrive for Business) need the `organizations` authority, an app registration that allows them,
+  often an administrator's consent, and testing against SharePoint-backed drives: a later phase.
+  LIMIT · reasoned. Open.
+- **F50. `konedrivectl` explains some refusals from its own view of the folders**
+  (`konedrivectl/src/main.rs`, `explained_paths`, `carries_a_drive`) — `Files1` refuses a path in
+  no account's folder `OutsideRoot` without saying which folders there are. After such a refusal
+  the CLI reads every account's `RootPath` and finds the folder that holds the path by the rule
+  `Files1` routes by (a component prefix, the directory part resolved by the CLI first). Where
+  the two disagree — a folder reached through a link that the daemon resolves and the CLI does
+  not — the explanation names the wrong folder, or none. And the daemon refuses a folder that is
+  another account's under `NotEmpty`, the same name as a folder that is not empty; the CLI tells
+  the two apart by reading `user.konedrive.drive` on the folder itself (a non-empty value). It
+  cannot see the account's own drive, so a folder with files in it that carries this account's
+  drive but no root id would be called another account's; the text then also says to sign in
+  first and register again, the way back for an account's own earlier folder. A `ForeignFolder`
+  error name of its own would end the guess. Only the words are at stake: the refusal is the
+  daemon's. FRAGILE · reasoned. Open.
+- **F51. Choosing the account on the command line** (`konedrivectl/src/lib.rs`, `choose`, design
+  §5.1) — (1) an email names an account only once the account has signed in: `Account1.Email`
+  is empty before. (2) `KONEDRIVE_ACCOUNT` is a default for a whole shell, so the commands that
+  act on no chosen account — the path commands, `account …` and `set-client-id` — ignore it;
+  `--account` given to them is refused with exit status 2 rather than ignored. (3) `login` with no
+  account adds `Personal` before the browser round trip, and keeps it when the sign-in is then
+  cancelled or refused. (4) `account remove` names where the files the conflicts list holds were
+  rescued to, read from the list before the removal. Where the rescues of conflicts dismissed
+  earlier went — the data directory, beside a folder on another filesystem, or a migrated
+  account's `rescued/<time>/` — nothing on the bus says, so it says only that they stay. It also
+  says the account's cached data was deleted when the daemon only logged that it could not delete
+  it. (5) A name that fits two accounts is refused (exit status 2), never taken as the first. The
+  daemon refuses a label shaped like an id, so only a hand-edited `config.toml` makes one; the
+  window's copy of the label rules (A14) does not know that rule yet and leaves it to the daemon.
+  LIMIT · measured (`konedrivectl/tests/accounts_cli.rs`, `tests/sync_cli.rs`). Open.
 
 ---
 
@@ -1181,26 +1323,107 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   (measured, `aDaemonRestartFinishesVisibleAndOverflowJobsWithAnError`).
 - **A12. Places: a folder registered only through `konedrivectl` while the app is not
   running gets its entry when the app next starts.** LIMIT · by design (`app/placescontroller.cpp`,
-  `app/tests/placescontrollertest.cpp`). `PlacesController` reconciles Dolphin's Places panel entry
-  on construction and on every `Sync.syncChanged`/`PlacesSettings::enabledChanged`, which only ever
-  fires inside the app process: `konedrivectl` registering or forgetting the root while the app is
-  not running does not touch the Places panel until the app is started again, at which point its
-  constructor-time `reconcile()` catches up. The entry is found again by a bookmark metadata tag
-  (`konedrive` = `1`, set with `KFilePlacesModel::bookmarkForIndex`/`KBookmark::setMetaDataItem`,
-  then `editPlace`/`refresh` to make sure the tag reaches disk and not just this process' copy of
-  the bookmark file), not by url, so a folder change updates the same entry in place instead of
-  leaving a stale one behind. WORKAROUND: adding a fresh entry takes the *last* row matching the new
-  url rather than the first, since `addPlace` does not hand back the row it created and a user could
-  already have an unrelated place at that exact url; this narrows, but does not close, the window
-  where such a pre-existing entry could be mistaken for konedrive's own on that one add. The icon is
-  `folder-cloud` only when the current icon theme reports having it (`QIcon::hasThemeIcon`), else
-  `cloudstatus`, which every Breeze release carries. "Show in Places" (`ShowInPlaces` in
-  konedriverc's `[General]` group, on by default, the same way `StartAtLogin` is stored) removes the
-  entry without touching anything else in the file. Tests (`addsTheEntryForARegisteredFolder`,
-  `updatesTheUrlWhenTheFolderChanges`, `removesTheEntryWhenTheFolderIsForgotten`,
-  `turningTheSwitchOffRemovesTheEntry`, `aUsersOwnEntryIsLeftAlone`) run against a real
+  `app/tests/placescontrollertest.cpp`). `PlacesController` reconciles Dolphin's Places panel
+  entries (one per account folder, A19) whenever the accounts or `PlacesSettings::enabledChanged`
+  change, which only ever happens inside the app process: `konedrivectl` registering or forgetting a
+  folder while the app is not running does not touch the Places panel until the app is started
+  again, at which point it catches up as soon as the daemon and every account have answered. Each
+  entry is found again by a bookmark metadata tag (`konedrive-account` = the account's id, set with
+  `KFilePlacesModel::bookmarkForIndex`/`KBookmark::setMetaDataItem`, then `refresh()` to make sure
+  the tag reaches disk and not just this process' copy of the bookmark file — `editPlace` saves
+  only when the text, url or icon change), not by url, so a folder change updates the same entry
+  in place instead of leaving a stale one behind. WORKAROUND: adding a fresh entry takes the *last*
+  row matching the new url rather than the first, since `addPlace` does not hand back the row it
+  created and a user could already have an unrelated place at that exact url; this narrows, but does
+  not close, the window where such a pre-existing entry could be mistaken for konedrive's own on
+  that one add. The icon is `folder-cloud` only when the current icon theme reports having it
+  (`QIcon::hasThemeIcon`), else `cloudstatus`, which every Breeze release carries. "Show in
+  Places" (`ShowInPlaces` in konedriverc's `[General]` group, on by default, the same way
+  `StartAtLogin` is stored), one switch for every account, removes the entries without touching
+  anything else in the file. Tests (`addsAnEntryPerAccountFolder`,
+  `updatesTheUrlWhenTheFolderChanges`, `forgettingOrRemovingRemovesTheEntry`,
+  `turningTheSwitchOffRemovesTheEntries`, `aUsersOwnEntryIsLeftAlone`, and A19's) run against a real
   `KFilePlacesModel` with `XDG_DATA_HOME`/`XDG_CONFIG_HOME` pointed at a wiped temporary directory,
   never the user's own `user-places.xbel` or `konedriverc`.
+- **A13. The window shows one account at a time.** Decision · measured
+  (`app/tests/accountsmodeltest.cpp`: `followsTheManager`, `theChoiceIsRemembered`,
+  `anotherAccountsTroubleShows`, `theRowsOutliveTheDaemon`). An account switcher heads the sidebar
+  (`app/qml/AccountSwitcher.qml`); Status, Activity, Conflicts, Not in the Folder and Account show
+  the account chosen there, Settings is the whole app's. With more than one account each page's
+  title names the account ("Status · Personal"), since a narrow window hides the switcher. The
+  choice is remembered as `CurrentAccount=<id>` in konedriverc's `[General]` group: the remembered
+  account whenever it is there, else the one shown if it is still there, else the first. Trouble in
+  an account not shown puts a warning sign on the switcher, but only trouble (the tray's
+  "needs attention"): another account signed out, or without a folder, does not. The folder moved
+  from Settings to the Account page and is asked for only once the account is signed in (a folder
+  already there shows whatever the sign-in); the window still never registers without
+  interception (I3). While the daemon is away the window keeps its last list of accounts, each
+  saying the service is not running, and follows the new list when it is back. Every account has
+  its own controllers, each watching the daemon's name and reading its own object, so a daemon
+  start costs two `GetAll` calls per account plus one for the manager.
+- **A14. Account names are checked in the window too, by a copy of the daemon's rules.** FRAGILE ·
+  reasoned (`labelProblems`). Add Account and Rename check a name before asking the daemon —
+  trimmed, 1 to 40 characters counted as the daemon counts them (not UTF-16 units), no "/", "@" or
+  control character, not 12 hexadecimal digits in any case (that is the shape of an account id, and
+  the command line takes a name or an id in one place), unique regardless of case
+  (`AccountsModel::labelProblem`) — so the button
+  says why at once. The daemon checks again and its refusal is shown as it words it. Qt's and
+  Rust's case-insensitive comparisons can differ on rare letters; the daemon's answer is then the
+  one that counts. The name suggested for a first account is "Personal", translated like any other
+  string, and only while no account is called that.
+- **A15. Add Account is three calls in a row, not one.** WORKAROUND · measured
+  (`addingSetsTheClientIdAddsChoosesAndSignsIn`, `aRefusedAddSaysWhy`). The dialog's one step is
+  `Accounts1.SetClientId` (only when no client ID is set yet), `Accounts1.Add`, then
+  `Account1.BeginSignIn` on the new account, whose URL opens in the browser. Nothing makes the
+  three one transaction: a failure part way keeps what succeeded — a saved client ID and no
+  account, or an account whose sign-in did not start, whose Account page then shows the error and
+  "Sign In to OneDrive". The new account is chosen at once, whether the `Accounts` change
+  announcing it arrives before `Add`'s answer or after.
+- **A16. The mode is shown, not switchable; the client ID is one for all.** Decision · reasoned.
+  The Account page shows "Read-only — changes made here are not uploaded in this version" while
+  `Account1.Mode` is `read-only`, which is all this phase publishes; there is no switch, and any
+  other value shows no line until the write phase adds its own. The client ID stays in Settings,
+  shared by every account (`Accounts1.ClientId`), and can be changed only while no account is
+  signed in or signing in, the daemon's own rule; the field says so.
+- **A17. The tray sums up every account.** Decision · measured (`app/tests/appstatustest.cpp`:
+  `theTrayShowsTheWorstStateAndALinePerAccount`, `theTrayMenuWithSeveralAccounts`,
+  `aClickShowsTheOneAccountNeedingAttention`, `noAccountIsOffline`). The icon is the worst state
+  across the accounts (`AppStatus`): needs attention, then signed out (which, as A8, includes no
+  folder yet and OneDrive out of reach), then syncing, then synced; with no account, signed out.
+  The tooltip keeps today's status line with one account; with several it has a line per account in
+  account order, "Family — Signed out of OneDrive", and an account needing attention shows why
+  ("2 changed files were moved out of the way") in place of its status line, so its "checked N ago"
+  is not there. The menu keeps "Open OneDrive Folder" with one account; with several it has an
+  "Open Folder" submenu of the accounts that have a folder (disabled when none has). "Refresh Now"
+  refreshes every account whose folder shows OneDrive. A click shows the window on the one account
+  needing attention when exactly one does, and that becomes the switcher's remembered choice; with
+  none or several it shows the account the window last showed, as "Open KOneDrive" always does.
+- **A18. Notifications and download progress name the account, only once there are several.**
+  Decision · measured (`notifiertest` and `downloadprogresscontrollertest`:
+  `theTitleNamesTheAccountWhenThereAreSeveral`). With more than one account a notification's title
+  becomes "<what happened> — <label>" ("Download failed — Family") and its text is unchanged: the
+  title keeps what happened because the text alone does not always say it (a sign-out's text is
+  "Sign in again to keep your OneDrive folder up to date."). A click on one opens the window on its
+  account. Each account has its own `Notifier`, so the 10 s windows and their summaries are per
+  account and kind (A3): two accounts failing together notify once each. Download progress has one
+  Plasma job tracker but a `DownloadProgressController` per account, so the cap of 5 jobs shown
+  (A11) is per account too, each with its own "and N more files". A job's title,
+  "Downloading from OneDrive — <label>", is set when the job appears; renaming the account while it
+  runs leaves it as it was. A sign-out notice waits 2 s before it is shown: removing a signed-in account
+  signs it out before its object goes away, and the wait lets the removal cancel the notice. A real
+  sign-out is therefore announced 2 s late.
+- **A19. Places: one entry per account folder; the single-account entry taken over in place.**
+  Decision · measured (`renamingTheAccountRenamesItsEntry`, `theOldEntryIsTakenOverInPlace`,
+  `nothingIsTouchedUntilEveryAccountHasAnswered`). Every entry is named "OneDrive — <label>", with
+  one account too, so a second account renames nothing; renaming an account renames its entry, and
+  forgetting its folder or removing it removes the entry. An entry of the single-account versions
+  (`konedrive` = `1`) whose url is an account's folder is re-tagged to that account and renamed,
+  keeping its place in the panel; any other such entry is removed. The entries are reconciled only
+  once the daemon and every account have answered: until then — and while the daemon is not
+  running — nothing is touched. That also ends what the single-account app did at every start,
+  where its entry was removed before the daemon had answered and added back at the bottom of the
+  panel. The name and icon are konedrive's: renaming an entry in Dolphin, or giving it another
+  icon, is undone at the next change; a second entry carrying one account's tag is removed.
 
 ---
 

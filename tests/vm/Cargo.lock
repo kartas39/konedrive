@@ -1289,6 +1289,7 @@ name = "poc-marks"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "konedrive-dbus",
  "konedrive-fs",
  "konedrive-helper",
  "konedrive-proto",

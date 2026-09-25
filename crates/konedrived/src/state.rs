@@ -26,6 +26,8 @@ pub struct AccountSnapshot {
     pub state: SignInState,
     pub last_error: String,
     pub client_id: String,
+    /// `Account1.Label`: what the account is called here, as `config.toml` keeps it.
+    pub label: String,
     pub display_name: String,
     pub email: String,
     pub quota_used: u64,
@@ -38,6 +40,7 @@ impl Default for AccountSnapshot {
             state: SignInState::SignedOut,
             last_error: String::new(),
             client_id: String::new(),
+            label: String::new(),
             display_name: String::new(),
             email: String::new(),
             quota_used: 0,

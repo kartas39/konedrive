@@ -1,9 +1,13 @@
-//! `org.konedrive.Account1` on the session bus.
+//! `org.konedrive.Account1` and `org.konedrive.Dev1`, one of each per account on the
+//! account's object `/org/konedrive/Accounts/<id>` (definitions: `dbus/*.xml`). The
+//! accounts themselves, and the client id every account signs in with, are
+//! `org.konedrive.Accounts1`'s (`crate::accounts`).
 
 use std::sync::Arc;
 
-use konedrive_dbus::{OBJECT_PATH, SERVICE_NAME};
+use tokio::task::JoinHandle;
 use zbus::object_server::InterfaceRef;
+use zbus::zvariant::ObjectPath;
 use zbus::{fdo, interface, Connection};
 
 use crate::account::{AccountError, AccountService};
@@ -15,10 +19,6 @@ pub struct Account1 {
 
 #[interface(name = "org.konedrive.Account1")]
 impl Account1 {
-    async fn set_client_id(&self, id: &str) -> fdo::Result<()> {
-        self.service.set_client_id(id).map_err(to_fdo)
-    }
-
     async fn begin_sign_in(&self) -> fdo::Result<String> {
         self.service.begin_sign_in().await.map_err(to_fdo)
     }
@@ -36,6 +36,26 @@ impl Account1 {
         tokio::spawn(async move { service.refresh_account_info().await });
     }
 
+    /// The rules of `Accounts1.Add`; `InvalidArgs` otherwise.
+    async fn set_label(&self, label: &str) -> fdo::Result<()> {
+        self.service.set_label(label).map_err(to_fdo)
+    }
+
+    #[zbus(property)]
+    async fn id(&self) -> String {
+        self.service.id().to_owned()
+    }
+
+    #[zbus(property)]
+    async fn label(&self) -> String {
+        self.service.state().get().label
+    }
+
+    #[zbus(property)]
+    async fn mode(&self) -> String {
+        self.service.mode().as_str().to_owned()
+    }
+
     #[zbus(property)]
     async fn state(&self) -> String {
         self.service.state().get().state.as_str().to_owned()
@@ -44,11 +64,6 @@ impl Account1 {
     #[zbus(property)]
     async fn last_error(&self) -> String {
         self.service.state().get().last_error
-    }
-
-    #[zbus(property)]
-    async fn client_id(&self) -> String {
-        self.service.state().get().client_id
     }
 
     #[zbus(property)]
@@ -74,13 +89,13 @@ impl Account1 {
 
 fn to_fdo(error: AccountError) -> fdo::Error {
     match error {
-        AccountError::InvalidClientId => fdo::Error::InvalidArgs(error.to_string()),
+        AccountError::InvalidClientId | AccountError::InvalidLabel(_) => fdo::Error::InvalidArgs(error.to_string()),
         other => fdo::Error::Failed(other.to_string()),
     }
 }
 
 /// `org.konedrive.Dev1`: development only.
-struct Dev1 {
+pub struct Dev1 {
     service: Arc<AccountService>,
 }
 
@@ -95,7 +110,7 @@ enum DevFault {
 
 #[zbus::interface(name = "org.konedrive.Dev1")]
 impl Dev1 {
-    /// The current access token — never the refresh token.
+    /// This account's current access token — never the refresh token.
     async fn access_token(&self) -> std::result::Result<String, DevFault> {
         match self.service.tokens().access_token().await {
             Ok(token) => Ok(token),
@@ -105,43 +120,23 @@ impl Dev1 {
     }
 }
 
-/// Serves both interfaces through `builder` and turns state changes into
-/// PropertiesChanged.
+/// Serves one account's `Account1` and `Dev1` at `path`, and turns its state changes into
+/// `PropertiesChanged`; the task that sends them, to stop when the account goes.
 ///
-/// `sync` is served on the same object path, and — the point of it being a
-/// parameter here rather than a later `attach` — through the same builder,
-/// so that both interfaces are advertised *before* `SERVICE_NAME` is
-/// claimed (zbus requests the name after registering everything
-/// `serve_at` was given). A D-Bus-activated client's first call therefore
-/// cannot land on a daemon that owns the name but does not yet answer
-/// `Sync1`, and the same discipline the comment below states
-/// for `Account1`'s restored state.
-pub async fn serve(
-    builder: zbus::connection::Builder<'_>,
-    service: Arc<AccountService>,
-    sync: Option<Arc<crate::sync::SyncService>>,
-) -> zbus::Result<Connection> {
-    let mut builder = builder
-        .name(SERVICE_NAME)?
-        .serve_at(OBJECT_PATH, Account1 { service: Arc::clone(&service) })?
-        .serve_at(OBJECT_PATH, Dev1 { service: Arc::clone(&service) })?;
-    if let Some(sync) = &sync {
-        builder = crate::sync::dbus::add_to_builder(builder, Arc::clone(sync))?;
-    }
-    let connection = builder.build().await?;
-    if let Some(sync) = sync {
-        crate::sync::dbus::start_signals(&connection, sync).await?;
-    }
-    let iface = connection
-        .object_server()
-        .interface::<_, Account1>(OBJECT_PATH)
-        .await?;
-    // Captured before spawning (not inside the task): otherwise a state change landing
-    // between claiming the name and the task's first poll would be absorbed into this
-    // baseline instead of being emitted as a PropertiesChanged signal.
+/// At startup this runs before the bus name is claimed (`crate::accounts::serve`), and
+/// after the session was restored from the wallet: a D-Bus-activated client's first call is
+/// never answered from stale, pre-restore state.
+pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc<AccountService>) -> zbus::Result<JoinHandle<()>> {
+    // Captured before the interface is on the bus (not inside the task): otherwise a state
+    // change landing in between would be absorbed into this baseline instead of being
+    // emitted as a PropertiesChanged signal.
     let mut changes = service.state().subscribe();
     let mut previous = changes.borrow_and_update().clone();
-    tokio::spawn(async move {
+    let server = connection.object_server();
+    server.at(path, Account1 { service: Arc::clone(&service) }).await?;
+    server.at(path, Dev1 { service: Arc::clone(&service) }).await?;
+    let iface = server.interface::<_, Account1>(path).await?;
+    Ok(tokio::spawn(async move {
         while changes.changed().await.is_ok() {
             let current = changes.borrow_and_update().clone();
             if let Err(e) = emit_changes(&iface, &previous, &current).await {
@@ -149,8 +144,14 @@ pub async fn serve(
             }
             previous = current;
         }
-    });
-    Ok(connection)
+    }))
+}
+
+/// Takes one account's `Account1` and `Dev1` off the bus (`Accounts1.Remove`).
+pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()> {
+    let server = connection.object_server();
+    server.remove::<Dev1, _>(path).await?;
+    server.remove::<Account1, _>(path).await.map(drop)
 }
 
 async fn emit_changes(
@@ -166,8 +167,8 @@ async fn emit_changes(
     if old.last_error != new.last_error {
         account.last_error_changed(emitter).await?;
     }
-    if old.client_id != new.client_id {
-        account.client_id_changed(emitter).await?;
+    if old.label != new.label {
+        account.label_changed(emitter).await?;
     }
     if old.display_name != new.display_name {
         account.display_name_changed(emitter).await?;

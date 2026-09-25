@@ -131,8 +131,9 @@ private:
     QTemporaryDir m_dir;
 };
 
-/// Stands in for konedrived's `org.konedrive.Sync1` on the private session
-/// bus, on a connection of its own -- so calls to it really cross the bus.
+/// Stands in for konedrived's `org.konedrive.Files1` at
+/// `/org/konedrive/Accounts` on the private session bus, on a connection of
+/// its own -- so calls to it really cross the bus.
 ///
 /// Pin(as), Unpin(as) and FreeUp(as) each take the whole batch of paths in one call and
 /// answer with one aggregate result, not one per path, so there is one
@@ -141,7 +142,7 @@ private:
 class FakeSync : public QObject, protected QDBusContext
 {
     Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "org.konedrive.Sync1")
+    Q_CLASSINFO("D-Bus Interface", "org.konedrive.Files1")
 
 public:
     struct Answer {
@@ -181,7 +182,7 @@ public:
     {
         QDBusConnection bus = QDBusConnection::connectToBus(QDBusConnection::SessionBus, connectionName());
         return bus.isConnected()
-            && bus.registerObject(QStringLiteral("/org/konedrive/Daemon"), this, QDBusConnection::ExportAllSlots)
+            && bus.registerObject(QStringLiteral("/org/konedrive/Accounts"), this, QDBusConnection::ExportAllSlots)
             && bus.registerService(QStringLiteral("org.konedrive.Daemon"));
     }
 

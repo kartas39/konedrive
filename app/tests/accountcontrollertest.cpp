@@ -1,144 +1,37 @@
 #include "accountcontroller.h"
+#include "fakedaemon.h"
 
-#include <QDBusConnection>
-#include <QDBusContext>
-#include <QDBusError>
-#include <QDBusMessage>
 #include <QSignalSpy>
 #include <QTest>
 
 #include <memory>
 
-namespace
-{
-const QString FakeBusName = QStringLiteral("fake-daemon");
-const QString ClientId = QStringLiteral("0f8fad5b-d9cb-469f-a165-70867728950e");
-}
-
-/// Stands in for konedrived on the private session bus.
-class FakeAccount : public QObject, protected QDBusContext
-{
-    Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "org.konedrive.Account1")
-    Q_PROPERTY(QString State READ state)
-    Q_PROPERTY(QString LastError READ lastError)
-    Q_PROPERTY(QString ClientId READ clientId)
-    Q_PROPERTY(QString DisplayName READ displayName)
-    Q_PROPERTY(QString Email READ email)
-    Q_PROPERTY(qulonglong QuotaUsed READ quotaUsed)
-    Q_PROPERTY(qulonglong QuotaTotal READ quotaTotal)
-
-public:
-    explicit FakeAccount(const QDBusConnection &bus)
-        : m_bus(bus)
-    {
-    }
-
-    QString state() const { return m_properties.value(QStringLiteral("State")).toString(); }
-    QString lastError() const { return m_properties.value(QStringLiteral("LastError")).toString(); }
-    QString clientId() const { return m_properties.value(QStringLiteral("ClientId")).toString(); }
-    QString displayName() const { return m_properties.value(QStringLiteral("DisplayName")).toString(); }
-    QString email() const { return m_properties.value(QStringLiteral("Email")).toString(); }
-    qulonglong quotaUsed() const { return m_properties.value(QStringLiteral("QuotaUsed")).toULongLong(); }
-    qulonglong quotaTotal() const { return m_properties.value(QStringLiteral("QuotaTotal")).toULongLong(); }
-
-    /// Changes properties and emits PropertiesChanged like konedrived does.
-    void set(const QVariantMap &changes)
-    {
-        for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
-            m_properties.insert(it.key(), it.value());
-        }
-        auto signal = QDBusMessage::createSignal(AccountController::ObjectPath,
-                                                 QStringLiteral("org.freedesktop.DBus.Properties"),
-                                                 QStringLiteral("PropertiesChanged"));
-        signal << AccountController::InterfaceName << changes << QStringList();
-        m_bus.send(signal);
-    }
-
-    QStringList calls;
-
-public Q_SLOTS:
-    void SetClientId(const QString &id)
-    {
-        calls << QStringLiteral("SetClientId:") + id;
-        if (id == QLatin1String("bad")) {
-            sendErrorReply(QDBusError::InvalidArgs, QStringLiteral("invalid client ID"));
-            return;
-        }
-        set({{QStringLiteral("ClientId"), id}});
-    }
-
-    QString BeginSignIn()
-    {
-        calls << QStringLiteral("BeginSignIn");
-        set({{QStringLiteral("State"), QStringLiteral("signing-in")}});
-        return QStringLiteral("https://login.example/authorize?x=1");
-    }
-
-    void CancelSignIn()
-    {
-        calls << QStringLiteral("CancelSignIn");
-        set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
-    }
-
-    void SignOut()
-    {
-        calls << QStringLiteral("SignOut");
-        set({{QStringLiteral("State"), QStringLiteral("signed-out")}, {QStringLiteral("DisplayName"), QString()}});
-    }
-
-    void RefreshAccountInfo()
-    {
-        calls << QStringLiteral("RefreshAccountInfo");
-    }
-
-private:
-    QDBusConnection m_bus;
-    QVariantMap m_properties{
-        {QStringLiteral("State"), QStringLiteral("signed-out")},
-        {QStringLiteral("LastError"), QString()},
-        {QStringLiteral("ClientId"), QString()},
-        {QStringLiteral("DisplayName"), QString()},
-        {QStringLiteral("Email"), QString()},
-        {QStringLiteral("QuotaUsed"), QVariant::fromValue<qulonglong>(0)},
-        {QStringLiteral("QuotaTotal"), QVariant::fromValue<qulonglong>(0)},
-    };
-};
-
+/// One account's Account1, at its own path, from the fake daemon on the private bus.
 class AccountControllerTest : public QObject
 {
     Q_OBJECT
 
 private:
-    std::unique_ptr<FakeAccount> m_fake;
-
-    static QDBusConnection fakeBus()
-    {
-        return QDBusConnection::connectToBus(QDBusConnection::SessionBus, FakeBusName);
-    }
+    std::unique_ptr<FakeDaemon> m_daemon;
 
     void startFake()
     {
-        auto bus = fakeBus();
-        m_fake = std::make_unique<FakeAccount>(bus);
-        QVERIFY(bus.registerObject(AccountController::ObjectPath,
-                                   m_fake.get(),
-                                   QDBusConnection::ExportAllSlots | QDBusConnection::ExportAllProperties));
-        QVERIFY(bus.registerService(AccountController::ServiceName));
+        m_daemon = std::make_unique<FakeDaemon>();
+        QVERIFY(m_daemon->start());
     }
 
 private Q_SLOTS:
     void cleanup()
     {
-        auto bus = fakeBus();
-        bus.unregisterService(AccountController::ServiceName);
-        bus.unregisterObject(AccountController::ObjectPath);
-        m_fake.reset();
+        if (m_daemon) {
+            m_daemon->stop();
+        }
+        m_daemon.reset();
     }
 
     void reportsUnavailableWithoutDaemon()
     {
-        AccountController controller;
+        AccountController controller(fake::FirstAccount);
         QTest::qWait(300);
         QVERIFY(!controller.serviceAvailable());
     }
@@ -146,15 +39,17 @@ private Q_SLOTS:
     void readsInitialProperties()
     {
         startFake();
-        AccountController controller;
+        AccountController controller(fake::FirstAccount);
+        QCOMPARE(controller.id(), fake::idFor(1));
         QTRY_VERIFY(controller.serviceAvailable());
         QCOMPARE(controller.state(), QStringLiteral("signed-out"));
-        QCOMPARE(controller.clientId(), QString());
+        QCOMPARE(controller.label(), QStringLiteral("Personal"));
+        QCOMPARE(controller.mode(), QStringLiteral("read-only"));
     }
 
     void noticesDaemonStartingLater()
     {
-        AccountController controller;
+        AccountController controller(fake::FirstAccount);
         QTest::qWait(100);
         QVERIFY(!controller.serviceAvailable());
         startFake();
@@ -164,9 +59,9 @@ private Q_SLOTS:
     void followsPropertiesChanged()
     {
         startFake();
-        AccountController controller;
+        AccountController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        m_fake->set({
+        m_daemon->account->set({
             {QStringLiteral("State"), QStringLiteral("signed-in")},
             {QStringLiteral("DisplayName"), QStringLiteral("Test User")},
             {QStringLiteral("QuotaTotal"), QVariant::fromValue<qulonglong>(5368709120ULL)},
@@ -176,47 +71,63 @@ private Q_SLOTS:
         QCOMPARE(controller.quotaTotal(), 5368709120ULL);
     }
 
+    /// Another account's changes are not this one's.
+    void followsOnlyItsOwnPath()
+    {
+        m_daemon = std::make_unique<FakeDaemon>(QStringList{QStringLiteral("Personal"), QStringLiteral("Family")});
+        QVERIFY(m_daemon->start());
+        AccountController personal(fake::FirstAccount);
+        AccountController family(m_daemon->object(1)->path);
+        QTRY_VERIFY(personal.serviceAvailable() && family.serviceAvailable());
+        QCOMPARE(family.label(), QStringLiteral("Family"));
+
+        m_daemon->object(1)->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        QTRY_COMPARE(family.state(), QStringLiteral("signed-in"));
+        QCOMPARE(personal.state(), QStringLiteral("signed-out"));
+    }
+
     void signInRequestsBrowserAndCancelClearsUrl()
     {
         startFake();
-        AccountController controller;
+        AccountController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         QSignalSpy openSpy(&controller, &AccountController::openUrlRequested);
         controller.signIn();
         QTRY_COMPARE(openSpy.count(), 1);
-        QCOMPARE(openSpy.at(0).at(0).toString(), QStringLiteral("https://login.example/authorize?x=1"));
-        QCOMPARE(controller.signInUrl(), QStringLiteral("https://login.example/authorize?x=1"));
+        const QString url = QStringLiteral("https://login.example/authorize?account=") + fake::idFor(1);
+        QCOMPARE(openSpy.at(0).at(0).toString(), url);
+        QCOMPARE(controller.signInUrl(), url);
         QTRY_COMPARE(controller.state(), QStringLiteral("signing-in"));
 
         controller.cancelSignIn();
         QTRY_COMPARE(controller.state(), QStringLiteral("signed-out"));
         QCOMPARE(controller.signInUrl(), QString());
-        QVERIFY(m_fake->calls.contains(QStringLiteral("CancelSignIn")));
+        QVERIFY(m_daemon->account->calls.contains(QStringLiteral("CancelSignIn")));
     }
 
-    void showsMethodErrorsAndClearsThemOnSuccess()
+    void renamingShowsRefusalsAndClearsThemOnSuccess()
     {
         startFake();
-        AccountController controller;
+        AccountController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        controller.setClientId(QStringLiteral("bad"));
-        QTRY_VERIFY(controller.actionError().contains(QStringLiteral("invalid client ID")));
+        controller.setLabel(QStringLiteral("a/b"));
+        QTRY_VERIFY(controller.actionError().contains(QStringLiteral("not a label")));
 
-        controller.setClientId(QStringLiteral("  ") + ClientId + QStringLiteral(" "));
-        QTRY_COMPARE(controller.clientId(), ClientId);
+        controller.setLabel(QStringLiteral("  Home "));
+        QTRY_COMPARE(controller.label(), QStringLiteral("Home"));
         QVERIFY(controller.actionError().isEmpty());
-        QVERIFY(m_fake->calls.contains(QStringLiteral("SetClientId:") + ClientId));
+        QVERIFY(m_daemon->account->calls.contains(QStringLiteral("SetLabel:Home")));
     }
 
     void signOutAndRefreshCallTheDaemon()
     {
         startFake();
-        AccountController controller;
+        AccountController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.refreshAccountInfo();
         controller.signOut();
-        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("SignOut")));
-        QVERIFY(m_fake->calls.contains(QStringLiteral("RefreshAccountInfo")));
+        QTRY_VERIFY(m_daemon->account->calls.contains(QStringLiteral("SignOut")));
+        QVERIFY(m_daemon->account->calls.contains(QStringLiteral("RefreshAccountInfo")));
     }
 };
 

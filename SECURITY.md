@@ -43,6 +43,10 @@ directory the request is about. A request carries a descriptor for that object, 
   that user's daemon, whoever makes it — another user or root included. A daemon is only ever
   handed descriptors for its own user's files.
 
+The helper knows users, not OneDrive accounts. A user with several accounts has one daemon, with
+one connection to the helper for all of them, and that daemon decides which account's folder a
+handed-over file is in; nothing about accounts crosses the socket.
+
 Per-uid bounds keep one local user from starving another. Each uid may hold at most 16
 connections. At most 8 workers wait for one uid's daemon to connect, and at most 32 across all
 uids. Each connection has at most 64 fills in flight. These numbers were chosen, not all of them
@@ -113,11 +117,12 @@ Treat a compromised helper as a compromised root.
 
 ## Credentials
 
-Your Microsoft account's refresh token is stored in KWallet (through the Secret Service D-Bus API).
-The daemon reads it from KWallet to get a short-lived access token, uses that access token to talk
-to Microsoft Graph, and never writes the refresh token to disk, to a log, or anywhere else. The
-`Dev1` D-Bus interface hands out the short-lived (about one hour), read-only access token for
-test runs, never the refresh token; see `docs/limitations-and-workarounds.md`, W11.
+Each Microsoft account's refresh token is stored in KWallet (through the Secret Service D-Bus API),
+as an item of its own. The daemon reads it from KWallet to get a short-lived access token for that
+account, uses that access token to talk to Microsoft Graph, and never writes the refresh token to
+disk, to a log, or anywhere else. Each account's `Dev1` D-Bus interface hands out that account's
+short-lived (about one hour), read-only access token for test runs, never the refresh token; see
+`docs/limitations-and-workarounds.md`, W11. Removing an account deletes its refresh token.
 
 ## Reporting a vulnerability
 

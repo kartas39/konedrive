@@ -538,6 +538,10 @@ it sits, handing control back to the next one. So a second process of the same u
 and hangs up cannot evict the live daemon. No uid may hold more than **16** connections: each costs
 two threads and a few descriptors, and the socket is open to every local user.
 
+Because requests go to one connection per uid, a daemon keeps one link for all of its accounts,
+and decides itself which account's folder a request's file is in ([accounts.md](accounts.md)
+§3.3, §3.4). The helper knows users, not accounts.
+
 ### 10.3 Flow control
 
 At most **64** `HydrateRequest`s are outstanding on a connection
@@ -654,12 +658,14 @@ every open waiting at that moment.
 
 ### 14.1 Registering a folder
 
-`RegisterRoot(path)` binds an **empty** directory to the signed-in drive. It is refused, with a
-named error, when nobody is signed in (`NotSignedIn`), when a folder is already registered
-(`AlreadyRegistered` — the daemon keeps one), when no helper is connected (`NoHelper`: a placeholder
-nobody intercepts reads as zeros), or when the folder fails the checks below (`NotEmpty`,
-`Unsupported`). "Empty" applies to a first registration only: a folder that already carries a
-well-formed root id is one this daemon claimed before, and restarts rely on it.
+`RegisterRoot(path)` binds an **empty** directory to the account's drive. It is refused, with a
+named error, when the account is not signed in (`NotSignedIn`), when it already has a folder
+(`AlreadyRegistered` — each account keeps one), when no helper is connected (`NoHelper`: a
+placeholder nobody intercepts reads as zeros), when the folder is, is inside, or contains another
+account's (`Overlaps`), or when the folder fails the checks below (`NotEmpty`, `Unsupported`).
+"Empty" applies to a first registration only: a folder that already carries a well-formed root id
+is one this daemon claimed before, and restarts rely on it — unless it also carries the drive of
+another account, which is refused `NotEmpty` ([accounts.md](accounts.md) §6.3).
 
 The registration is written to `config.toml` *before* the helper is told, and refused if it cannot
 be; a failure after the helper may have stored it is undone at the helper and in `config.toml` —

@@ -144,9 +144,8 @@ QString refusalText(Operation operation, const Failure &failure)
     }
     if (refusal == QLatin1String("NoRoot")) {
         return i18nc("@info",
-                      "KOneDrive has no sync folder registered, so nothing was done with “%1”. Register "
-                      "the folder first with “konedrivectl sync register” — or "
-                      "“konedrivectl sync register-without-interception” on a machine without the helper.",
+                      "The folder holding “%1” is no longer registered with KOneDrive, so nothing was "
+                      "done with it.",
                       file);
     }
     if (refusal == QLatin1String("NoSource")) {
@@ -158,8 +157,8 @@ QString refusalText(Operation operation, const Failure &failure)
     }
     if (refusal == QLatin1String("OutsideRoot")) {
         return i18nc("@info",
-                      "“%1” is not inside KOneDrive's sync folder, so nothing was done with it. Only files and "
-                      "folders inside it can be kept on this device or freed up.",
+                      "“%1” is not inside any of KOneDrive's folders, so nothing was done with it. Only files "
+                      "and folders inside them can be kept on this device or freed up.",
                       file);
     }
     if (refusal == QLatin1String("NotManaged")) {

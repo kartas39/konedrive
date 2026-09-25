@@ -1,12 +1,9 @@
-use std::sync::Arc;
+mod common;
+
 use std::time::Duration;
 
+use konedrive_dbus::accounts::{Account1Proxy, Accounts1Proxy};
 use konedrive_dbus::testing::TestBus;
-use konedrive_dbus::Account1Proxy;
-use konedrived::account::AccountService;
-use konedrived::config::Paths;
-use konedrived::oauth::Endpoints;
-use konedrived::secret::MemoryStore;
 
 const CLIENT_ID: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
@@ -18,30 +15,22 @@ const CLIENT_ID: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 async fn wait_for_sign_in_reports_cancellation_promptly() {
     let bus = TestBus::start();
     let dir = tempfile::tempdir().unwrap();
-    let service = AccountService::new(
-        Paths::in_dir(dir.path()),
-        Endpoints::microsoft(),
-        Arc::new(MemoryStore::default()),
-        Duration::from_secs(5),
-    )
-    .unwrap();
-    let _server = konedrived::dbus::serve(bus.builder(), service.clone(), None).await.unwrap();
+    let _daemon = common::start_daemon(&bus, dir.path()).await;
 
-    // The "driving" client: sets up the client ID and later cancels the sign-in.
+    // The "driving" client: adds the account, sets up the client ID and later cancels the
+    // sign-in.
     let driver = bus.connect().await;
-    let driver_proxy = Account1Proxy::new(&driver).await.unwrap();
-    driver_proxy.set_client_id(CLIENT_ID).await.unwrap();
-    for _ in 0..500 {
-        if driver_proxy.client_id().await.unwrap() == CLIENT_ID {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
+    let manager = Accounts1Proxy::new(&driver).await.unwrap();
+    let path = manager.add("Personal").await.unwrap();
+    let driver_proxy = Account1Proxy::new(&driver, path.clone()).await.unwrap();
+    manager.set_client_id(CLIENT_ID).await.unwrap();
 
     // A second, independent client: this is the one that polls, uncached, exactly as
     // `konedrivectl login` does.
     let waiter = bus.connect().await;
     let waiter_proxy = Account1Proxy::builder(&waiter)
+        .path(path)
+        .unwrap()
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await

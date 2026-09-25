@@ -1,7 +1,7 @@
 #include "trayicon.h"
 
+#include "accountsmodel.h"
 #include "appstatus.h"
-#include "synccontroller.h"
 
 #include <KIO/OpenUrlJob>
 #include <KLocalizedString>
@@ -28,12 +28,12 @@ const QString WatcherService = QStringLiteral("org.kde.StatusNotifierWatcher");
 const QString WatcherPath = QStringLiteral("/StatusNotifierWatcher");
 }
 
-TrayIcon::TrayIcon(AppStatus *status, SyncController *sync, QObject *parent)
+TrayIcon::TrayIcon(AppStatus *status, QObject *parent)
     : QObject(parent)
     , m_status(status)
-    , m_sync(sync)
     , m_item(new KStatusNotifierItem(QStringLiteral("konedrive"), this))
     , m_menu(new QMenu)
+    , m_folderMenu(new QMenu(i18nc("@action:inmenu", "Open Folder"), m_menu))
 {
     m_item->setCategory(KStatusNotifierItem::ApplicationStatus);
     m_item->setStatus(KStatusNotifierItem::Active);
@@ -45,6 +45,8 @@ TrayIcon::TrayIcon(AppStatus *status, SyncController *sync, QObject *parent)
     m_item->setStandardActionsEnabled(false);
 
     m_openFolder = m_menu->addAction(QIcon::fromTheme(QStringLiteral("folder-cloud")), i18nc("@action:inmenu", "Open OneDrive Folder"));
+    m_folderMenu->setIcon(QIcon::fromTheme(QStringLiteral("folder-cloud")));
+    m_openFolderMenuAction = m_menu->addMenu(m_folderMenu);
     m_openWindow = m_menu->addAction(QIcon::fromTheme(QStringLiteral("window")), i18nc("@action:inmenu", "Open KOneDrive"));
     m_refresh = m_menu->addAction(QIcon::fromTheme(QStringLiteral("view-refresh")), i18nc("@action:inmenu", "Refresh Now"));
     m_menu->addSeparator();
@@ -54,14 +56,29 @@ TrayIcon::TrayIcon(AppStatus *status, SyncController *sync, QObject *parent)
     // M2: unlike a click on the item itself (toggleWindow), these came
     // straight from a QAction::triggered, with no chance yet to hand over
     // the menu click's own xdg-activation token.
-    connect(m_openFolder, &QAction::triggered, this, &TrayIcon::openFolderWithToken);
+    connect(m_openFolder, &QAction::triggered, this, [this] {
+        if (!m_folders.isEmpty()) {
+            openFolder(m_folders.constFirst().second);
+        }
+    });
     connect(m_openWindow, &QAction::triggered, this, &TrayIcon::openWindowWithToken);
-    connect(m_refresh, &QAction::triggered, m_sync, &SyncController::refresh);
+    connect(m_refresh, &QAction::triggered, this, [this] {
+        for (AccountItem *item : m_status->accounts()->items()) {
+            if (!item->sync()->rootPath().isEmpty() && item->sync()->rootSource() == QLatin1String("onedrive")) {
+                item->sync()->refresh();
+            }
+        }
+    });
     connect(m_quit, &QAction::triggered, this, &TrayIcon::quitRequested);
     connect(m_item, &KStatusNotifierItem::activateRequested, this, &TrayIcon::toggleWindow);
 
     connect(m_status, &AppStatus::changed, this, &TrayIcon::update);
-    connect(m_sync, &SyncController::syncChanged, this, &TrayIcon::update);
+    // A folder or a label can change without the state or the tooltip.
+    AccountsModel *accounts = m_status->accounts();
+    connect(accounts, &QAbstractItemModel::dataChanged, this, &TrayIcon::update);
+    connect(accounts, &QAbstractItemModel::rowsInserted, this, &TrayIcon::update);
+    connect(accounts, &QAbstractItemModel::rowsRemoved, this, &TrayIcon::update);
+    connect(accounts, &QAbstractItemModel::rowsMoved, this, &TrayIcon::update);
     update();
 
     // Is there a system tray to show the icon (and to come back from)?
@@ -95,15 +112,43 @@ void TrayIcon::setWindow(QWindow *window)
 void TrayIcon::update()
 {
     m_item->setIconByName(m_status->iconName());
-    QString tip = m_status->text();
-    if (!m_status->attention().isEmpty()) {
-        tip += QLatin1Char('\n') + m_status->attention();
-    }
-    m_item->setToolTipSubTitle(tip);
+    m_item->setToolTipSubTitle(m_status->toolTip());
 
-    const bool hasFolder = !m_sync->rootPath().isEmpty();
-    m_openFolder->setEnabled(hasFolder);
-    m_refresh->setEnabled(hasFolder && m_sync->rootSource() == QLatin1String("onedrive"));
+    const QList<AccountItem *> &items = m_status->accounts()->items();
+    QList<QPair<QString, QString>> folders;
+    bool refreshable = false;
+    for (const AccountItem *item : items) {
+        const QString root = item->sync()->rootPath();
+        if (root.isEmpty()) {
+            continue;
+        }
+        folders.append({item->account()->label(), root});
+        refreshable = refreshable || item->sync()->rootSource() == QLatin1String("onedrive");
+    }
+
+    // One account: "Open OneDrive Folder", as ever. Several: "Open Folder", a
+    // submenu with the accounts that have a folder.
+    const bool several = items.size() > 1;
+    m_openFolder->setVisible(!several);
+    m_openFolder->setEnabled(!several && !folders.isEmpty());
+    m_openFolderMenuAction->setVisible(several);
+    m_openFolderMenuAction->setEnabled(several && !folders.isEmpty());
+    m_refresh->setEnabled(refreshable);
+
+    if (folders == m_folders) {
+        return;
+    }
+    m_folders = folders;
+    m_folderMenu->clear();
+    for (const auto &[label, root] : std::as_const(m_folders)) {
+        // A label may hold "&", which a menu would take for a mnemonic.
+        QAction *open = m_folderMenu->addAction(QIcon::fromTheme(QStringLiteral("folder-cloud")), QString(label).replace(QLatin1Char('&'), QStringLiteral("&&")));
+        open->setToolTip(root);
+        const QString path = root;
+        connect(open, &QAction::triggered, this, [this, path] {
+            openFolder(path);
+        });
+    }
 }
 
 bool TrayIcon::eventFilter(QObject *watched, QEvent *event)
@@ -152,6 +197,9 @@ void TrayIcon::toggleWindow()
     if (const QString token = m_item->providedToken(); !token.isEmpty()) {
         KWindowSystem::setCurrentXdgActivationToken(token);
     }
+    if (const AccountItem *item = m_status->onlyAccountNeedingAttention()) {
+        Q_EMIT accountToShow(item->path());
+    }
     showWindow();
 }
 
@@ -175,9 +223,8 @@ void TrayIcon::openWindowWithToken()
     showWindow();
 }
 
-void TrayIcon::openFolderWithToken()
+void TrayIcon::openFolder(const QString &path)
 {
-    const QString path = m_sync->rootPath();
     if (path.isEmpty()) {
         return;
     }

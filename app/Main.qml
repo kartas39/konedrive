@@ -7,7 +7,9 @@ import org.konedrive.app
 import "qml"
 
 /// The window: pages chosen from a sidebar on the left, which folds into a
-/// drawer behind a menu button when the window is narrow.
+/// drawer behind a menu button when the window is narrow. The account
+/// switcher heads the sidebar; the pages under it show the account chosen
+/// there, and Settings, below them, is the whole app's.
 Kirigami.ApplicationWindow {
     id: root
 
@@ -15,6 +17,8 @@ Kirigami.ApplicationWindow {
     property string currentPage: "status"
     /// Wide enough for the sidebar beside a page.
     readonly property bool sidebarFits: width >= Kirigami.Units.gridUnit * 36
+    /// An account is chosen: the per-account pages have something to show.
+    readonly property bool hasAccount: Current.account !== null
 
     title: i18nc("@title:window", "KOneDrive")
     // main.cpp shows the window unless started with --background.
@@ -24,7 +28,8 @@ Kirigami.ApplicationWindow {
     minimumWidth: Kirigami.Units.gridUnit * 20
     minimumHeight: Kirigami.Units.gridUnit * 20
 
-    /// Shows one of the pages, by name.
+    /// Shows one of the pages, by name. With no account, the per-account
+    /// pages give way to Status, which says how to add one.
     function showPage(name) {
         const pages = {
             "status": statusPage,
@@ -37,6 +42,9 @@ Kirigami.ApplicationWindow {
         if (!pages[name]) {
             return;
         }
+        if (!hasAccount && name !== "settings") {
+            name = "status";
+        }
         if (name !== currentPage || pageStack.depth === 0) {
             currentPage = name;
             pageStack.clear();
@@ -45,6 +53,19 @@ Kirigami.ApplicationWindow {
         if (drawer.modal) {
             drawer.close();
         }
+    }
+
+    /// A per-account page's title: with more than one account it names the
+    /// account too ("Status · Personal"), since a narrow window hides the switcher.
+    function accountTitle(title) {
+        if (Accounts.count > 1 && Current.account) {
+            return i18nc("@title page title, account label", "%1 · %2", title, Current.account.label);
+        }
+        return title;
+    }
+
+    function addAccount() {
+        addAccountDialog.open();
     }
 
     /// A unix time as the time of day today, or a short date and time before.
@@ -57,14 +78,67 @@ Kirigami.ApplicationWindow {
     }
 
     Connections {
-        target: Account
+        target: Accounts
         function onOpenUrlRequested(url) {
             Qt.openUrlExternally(url);
+        }
+        // An account added here: its page follows the sign-in under way.
+        function onAccountAdded() {
+            root.showPage("account");
+        }
+    }
+    Connections {
+        target: Current
+        function onChanged() {
+            if (!root.hasAccount && root.currentPage !== "settings") {
+                root.showPage("status");
+            }
         }
     }
 
     Component.onCompleted: pageStack.push(statusPage)
     pageStack.globalToolBar.showNavigationButtons: Kirigami.ApplicationHeaderStyle.NoNavigationButtons
+
+    component SidebarEntry: QQC2.ItemDelegate {
+        id: entry
+
+        required property string name
+        property int badge: 0
+
+        objectName: "sidebar-" + name
+        Layout.fillWidth: true
+        highlighted: root.currentPage === name
+        onClicked: root.showPage(name)
+
+        contentItem: RowLayout {
+            spacing: Kirigami.Units.largeSpacing
+            Kirigami.Icon {
+                source: entry.icon.name
+                implicitWidth: Kirigami.Units.iconSizes.smallMedium
+                implicitHeight: Kirigami.Units.iconSizes.smallMedium
+            }
+            QQC2.Label {
+                Layout.fillWidth: true
+                text: entry.text
+                elide: Text.ElideRight
+            }
+            // The count of conflicts, when there are any.
+            Rectangle {
+                visible: entry.badge > 0
+                radius: height / 2
+                color: Kirigami.Theme.negativeTextColor
+                implicitHeight: badgeLabel.implicitHeight + Kirigami.Units.smallSpacing
+                implicitWidth: Math.max(implicitHeight, badgeLabel.implicitWidth + Kirigami.Units.largeSpacing)
+                QQC2.Label {
+                    id: badgeLabel
+                    anchors.centerIn: parent
+                    text: entry.badge
+                    color: Kirigami.Theme.highlightedTextColor
+                    font.bold: true
+                }
+            }
+        }
+    }
 
     globalDrawer: Kirigami.GlobalDrawer {
         id: drawer
@@ -80,61 +154,46 @@ Kirigami.ApplicationWindow {
         onModalChanged: drawerOpen = !modal
         Component.onCompleted: drawerOpen = !modal
 
+        header: AccountSwitcher {
+            onAddRequested: root.addAccount()
+        }
+
+        // The pages of the account chosen above.
         Repeater {
             model: [
-                { name: "status", text: i18nc("@title sidebar", "Status"), icon: Status.iconName },
+                { name: "status", text: i18nc("@title sidebar", "Status"), icon: Current.status ? Current.status.iconName : "state-offline" },
                 { name: "activity", text: i18nc("@title sidebar", "Activity"), icon: "view-history" },
                 { name: "conflicts", text: i18nc("@title sidebar", "Conflicts"), icon: "document-duplicate" },
                 { name: "skipped", text: i18nc("@title sidebar", "Not in the Folder"), icon: "view-hidden" },
                 { name: "account", text: i18nc("@title sidebar", "Account"), icon: "im-user" },
-                { name: "settings", text: i18nc("@title sidebar", "Settings"), icon: "settings-configure" },
             ]
-            delegate: QQC2.ItemDelegate {
-                id: entry
-
+            delegate: SidebarEntry {
                 required property var modelData
-                readonly property int badge: modelData.name === "conflicts" ? Sync.conflictCount : 0
-
-                objectName: "sidebar-" + modelData.name
-                Layout.fillWidth: true
-                highlighted: root.currentPage === modelData.name
+                name: modelData.name
                 text: modelData.text
                 icon.name: modelData.icon
-                onClicked: root.showPage(modelData.name)
-
-                contentItem: RowLayout {
-                    spacing: Kirigami.Units.largeSpacing
-                    Kirigami.Icon {
-                        source: entry.icon.name
-                        implicitWidth: Kirigami.Units.iconSizes.smallMedium
-                        implicitHeight: Kirigami.Units.iconSizes.smallMedium
-                    }
-                    QQC2.Label {
-                        Layout.fillWidth: true
-                        text: entry.text
-                        elide: Text.ElideRight
-                    }
-                    // The count of conflicts, when there are any.
-                    Rectangle {
-                        visible: entry.badge > 0
-                        radius: height / 2
-                        color: Kirigami.Theme.negativeTextColor
-                        implicitHeight: badgeLabel.implicitHeight + Kirigami.Units.smallSpacing
-                        implicitWidth: Math.max(implicitHeight, badgeLabel.implicitWidth + Kirigami.Units.largeSpacing)
-                        QQC2.Label {
-                            id: badgeLabel
-                            anchors.centerIn: parent
-                            text: entry.badge
-                            color: Kirigami.Theme.highlightedTextColor
-                            font.bold: true
-                        }
-                    }
-                }
+                enabled: root.hasAccount || modelData.name === "status"
+                badge: modelData.name === "conflicts" && Current.sync ? Current.sync.conflictCount : 0
             }
+        }
+        Kirigami.Separator {
+            Layout.fillWidth: true
+            Layout.topMargin: Kirigami.Units.smallSpacing
+            Layout.bottomMargin: Kirigami.Units.smallSpacing
+        }
+        // The whole app's.
+        SidebarEntry {
+            name: "settings"
+            text: i18nc("@title sidebar", "Settings")
+            icon.name: "settings-configure"
         }
         Item {
             Layout.fillHeight: true
         }
+    }
+
+    AddAccountDialog {
+        id: addAccountDialog
     }
 
     // The pages live for the window's lifetime: the page row borrows the one

@@ -10,22 +10,23 @@
 #include <QGuiApplication>
 
 const QString AccountController::ServiceName = QStringLiteral("org.konedrive.Daemon");
-const QString AccountController::ObjectPath = QStringLiteral("/org/konedrive/Daemon");
 const QString AccountController::InterfaceName = QStringLiteral("org.konedrive.Account1");
 
-AccountController::AccountController(QObject *parent)
-    : AccountController(QDBusConnection::sessionBus(), parent)
+AccountController::AccountController(const QString &path, QObject *parent)
+    : AccountController(QDBusConnection::sessionBus(), path, parent)
 {
 }
 
-AccountController::AccountController(const QDBusConnection &bus, QObject *parent)
+AccountController::AccountController(const QDBusConnection &bus, const QString &path, QObject *parent)
     : QObject(parent)
     , m_bus(bus)
-    , m_iface(new OrgKonedriveAccount1Interface(ServiceName, ObjectPath, bus, this))
+    , m_path(path)
+    , m_id(path.section(QLatin1Char('/'), -1))
+    , m_iface(new OrgKonedriveAccount1Interface(ServiceName, path, bus, this))
     , m_watcher(new QDBusServiceWatcher(ServiceName, bus, QDBusServiceWatcher::WatchForOwnerChange, this))
 {
     m_bus.connect(ServiceName,
-                  ObjectPath,
+                  m_path,
                   QStringLiteral("org.freedesktop.DBus.Properties"),
                   QStringLiteral("PropertiesChanged"),
                   this,
@@ -47,7 +48,7 @@ void AccountController::retry()
 
 void AccountController::fetchAll()
 {
-    auto message = QDBusMessage::createMethodCall(ServiceName, ObjectPath, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("GetAll"));
+    auto message = QDBusMessage::createMethodCall(ServiceName, m_path, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("GetAll"));
     message << InterfaceName;
     auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(message), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
@@ -82,9 +83,10 @@ void AccountController::applyProperties(const QVariantMap &properties)
             field = it->toString();
         }
     };
+    take(QStringLiteral("Label"), m_label);
+    take(QStringLiteral("Mode"), m_mode);
     take(QStringLiteral("State"), m_state);
     take(QStringLiteral("LastError"), m_lastError);
-    take(QStringLiteral("ClientId"), m_clientId);
     take(QStringLiteral("DisplayName"), m_displayName);
     take(QStringLiteral("Email"), m_email);
     if (const auto it = properties.constFind(QStringLiteral("QuotaUsed")); it != properties.constEnd()) {
@@ -134,9 +136,9 @@ void AccountController::call(const QDBusPendingCall &pending, std::function<void
     });
 }
 
-void AccountController::setClientId(const QString &id)
+void AccountController::setLabel(const QString &label)
 {
-    call(m_iface->SetClientId(id.trimmed()));
+    call(m_iface->SetLabel(label.trimmed()));
 }
 
 void AccountController::signIn()

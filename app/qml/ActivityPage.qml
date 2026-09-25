@@ -9,10 +9,11 @@ import org.konedrive.app
 FormCard.FormCardPage {
     id: page
 
+    readonly property var sync: Current.sync
     readonly property var window: QQC2.ApplicationWindow.window
 
     objectName: "activityPage"
-    title: i18nc("@title", "Activity")
+    title: window ? window.accountTitle(i18nc("@title", "Activity")) : i18nc("@title", "Activity")
 
     Kirigami.InlineMessage {
         Layout.fillWidth: true
@@ -20,19 +21,19 @@ FormCard.FormCardPage {
         Layout.leftMargin: Kirigami.Units.largeSpacing
         Layout.rightMargin: Kirigami.Units.largeSpacing
         type: Kirigami.MessageType.Error
-        text: Sync.actionError
+        text: page.sync ? page.sync.actionError : ""
         visible: text.length > 0
     }
 
     FormCard.FormHeader {
-        visible: Sync.transfers.count > 0
+        visible: page.sync !== null && page.sync.transfers.count > 0
         title: i18nc("@title:group", "Downloading now")
     }
     FormCard.FormCard {
-        visible: Sync.transfers.count > 0
+        visible: page.sync !== null && page.sync.transfers.count > 0
 
         Repeater {
-            model: Sync.transfers
+            model: page.sync ? page.sync.transfers : null
             delegate: FormCard.AbstractFormDelegate {
                 required property string name
                 required property var done
@@ -69,13 +70,13 @@ FormCard.FormCardPage {
     }
     FormCard.FormCard {
         FormCard.FormPlaceholderMessageDelegate {
-            visible: Sync.activity.count === 0
+            visible: page.sync === null || page.sync.activity.count === 0
             text: i18n("Nothing yet")
             explanation: i18n("Downloads, freed-up files and changes from OneDrive appear here.")
             icon.name: "view-history"
         }
         Repeater {
-            model: Sync.activity
+            model: page.sync ? page.sync.activity : null
             delegate: FormCard.FormButtonDelegate {
                 required property string name
                 required property string path
@@ -87,7 +88,7 @@ FormCard.FormCardPage {
                 icon.name: iconName
                 description: (detail.length > 0 ? i18nc("@info what happened, detail, when", "%1: %2 · %3", what, detail, page.window.when(time))
                                                  : i18nc("@info what happened, when", "%1 · %2", what, page.window.when(time)))
-                onClicked: Sync.showInFolder(path)
+                onClicked: page.sync.showInFolder(path)
             }
         }
     }

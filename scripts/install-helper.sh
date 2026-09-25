@@ -10,7 +10,8 @@
 #
 # It says what it will do and asks before doing it (--yes skips the question).
 # --uninstall refuses while a folder is registered with the helper: run
-# `konedrivectl sync forget` first (--force uninstalls anyway).
+# `konedrivectl --account <account> sync forget` for each first (--force
+# uninstalls anyway).
 #
 # KONEDRIVE_INSTALL_ROOT and KONEDRIVE_SYSTEMCTL exist only for the VM test
 # (tests/vm/install_helper_test.sh); leave them unset.
@@ -98,7 +99,8 @@ if [ "$mode" = uninstall ]; then
         echo "Without the helper, its files that are not downloaded read as zeros, and" >&2
         echo "\`konedrivectl sync forget\` is then refused (NoHelper)." >&2
         if [ "$force" = no ]; then
-            echo "Run \`konedrivectl sync forget\` first, as the folder's owner, then run this again" >&2
+            echo "Run \`konedrivectl --account <account> sync forget\` for each folder first, as its" >&2
+            echo "owner (\`konedrivectl account list\` names the accounts), then run this again" >&2
             echo "(--force uninstalls anyway)." >&2
             exit 1
         fi

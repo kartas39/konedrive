@@ -64,6 +64,25 @@ bool DownloadProgressController::enabled() const
     return !m_settings || m_settings->enabled();
 }
 
+void DownloadProgressController::setAccountName(std::function<QString()> name)
+{
+    m_accountName = std::move(name);
+}
+
+DownloadJob *DownloadProgressController::newJob(const QString &name)
+{
+    auto *job = new DownloadJob(this);
+    job->setObjectName(name);
+    if (const QString account = m_accountName ? m_accountName() : QString(); !account.isEmpty()) {
+        job->setTitle(i18nc("@title job, %1 is the account's name", "Downloading from OneDrive — %1", account));
+    }
+    // Registered before the description/progress go out: KUiServerV2JobTracker
+    // connects to KJob::description only at the end of registerJob(), so a
+    // description emitted earlier is dropped (I1).
+    m_tracker->registerJob(job);
+    return job;
+}
+
 void DownloadProgressController::onTransfersChanged()
 {
     reconcile();
@@ -217,12 +236,7 @@ void DownloadProgressController::promote(const QString &path, qint64 now)
         return;
     }
     if (m_visibleOrder.size() < MaxVisibleJobs) {
-        auto *job = new DownloadJob(this);
-        job->setObjectName(path);
-        // Registered before the description/progress go out: KUiServerV2JobTracker
-        // connects to KJob::description only at the end of registerJob(), so a
-        // description emitted earlier is dropped (I1).
-        m_tracker->registerJob(job);
+        auto *job = newJob(path);
         job->setFileDescription(QFileInfo(path).fileName());
         job->updateProgress(it->done, it->total, now);
         it->job = job;
@@ -274,9 +288,7 @@ void DownloadProgressController::promoteFromOverflow()
     }
     it->inOverflow = false;
     const qint64 now = m_clock();
-    auto *job = new DownloadJob(this);
-    job->setObjectName(path);
-    m_tracker->registerJob(job);
+    auto *job = newJob(path);
     job->setFileDescription(QFileInfo(path).fileName());
     job->updateProgress(it->done, it->total, now);
     it->job = job;
@@ -307,9 +319,7 @@ void DownloadProgressController::updateOverflowJob()
         }
     }
     if (!m_overflowJob) {
-        m_overflowJob = new DownloadJob(this);
-        m_overflowJob->setObjectName(QStringLiteral("overflow"));
-        m_tracker->registerJob(m_overflowJob);
+        m_overflowJob = newJob(QStringLiteral("overflow"));
     }
     m_overflowJob->setOverflowDescription(m_overflowOrder.size());
     m_overflowJob->updateProgress(doneSum, totalKnown ? totalSum : 0, m_clock());

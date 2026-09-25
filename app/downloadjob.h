@@ -18,7 +18,11 @@ public:
     /// Nothing to trigger: feeds this job its progress.
     void start() override { }
 
-    /// "Downloading from OneDrive", with `fileName` as the description.
+    /// The job's title, from then on: "Downloading from OneDrive" unless set.
+    void setTitle(const QString &title) { m_title = title; }
+    QString title() const { return m_title; }
+
+    /// The title, with `fileName` as the description.
     void setFileDescription(const QString &fileName);
     /// The summed job past the cap: "and N more files".
     void setOverflowDescription(int moreCount);
@@ -45,6 +49,7 @@ protected:
     bool doKill() override;
 
 private:
+    QString m_title;
     QString m_detailText;
     bool m_hasSample = false;
     qulonglong m_lastDone = 0;

@@ -1,6 +1,9 @@
-//! Exercises `konedrivectl`'s testable sync-side surface (`sync_status_text`,
-//! and the `Sync1Proxy` it is built on) over a private test bus, the same
-//! harness shape `tests/status.rs` uses for the account side.
+//! Exercises `konedrivectl`'s sync side — `sync_status_text`, and the binary's
+//! `sync` and `dev` commands — against the daemon over a private test bus,
+//! with one account, `Personal`: the case where no command needs `--account`.
+//! The daemon is started as `konedrived` starts it (`tests/common`); the
+//! harness reaches into the account's services only for what nothing on the
+//! bus can do (taking the helper away, seeding a token, a mocked drive).
 //!
 //! `register_root` needs a helper connection to mark the root (that is what
 //! the helper is for), so — like `konedrived`'s own `tests/sync_dbus.rs` —
@@ -12,21 +15,20 @@
 //! interception — a local folder whose files read as zeros until hydrated —
 //! still works there.
 
+mod common;
+
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
+use common::{err_text, out_text, run};
+use konedrive_dbus::accounts::{Files1Proxy, Sync1Proxy};
 use konedrive_dbus::testing::TestBus;
-use konedrive_dbus::Sync1Proxy;
 use konedrive_fs::placeholder::{write_state, State};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use konedrived::account::AccountService;
-use konedrived::config::Paths;
-use konedrived::oauth::Endpoints;
-use konedrived::secret::MemoryStore;
 use konedrived::state::SignInState;
 use konedrived::sync::helper::HelperLink;
 use konedrived::sync::SyncService;
@@ -47,7 +49,10 @@ async fn wait_for(mut pred: impl FnMut() -> bool) {
 }
 
 struct Harness {
+    /// The account's `Sync1`.
     proxy: Sync1Proxy<'static>,
+    /// `Files1`: the calls on a path.
+    files: Files1Proxy<'static>,
     dir: tempfile::TempDir,
     /// The daemon-side service itself, for the one test that has to take
     /// its helper away mid-run (`set_link(None)`), which nothing on the bus
@@ -56,8 +61,8 @@ struct Harness {
     /// The account service, so the token-export test can seed an access
     /// token directly rather than going through a real sign-in.
     account: Arc<AccountService>,
-    _server: zbus::Connection,
-    _account_dir: tempfile::TempDir,
+    _daemon: konedrived::accounts::Daemon,
+    _config_dir: tempfile::TempDir,
     _helper_dir: tempfile::TempDir,
     _bus: TestBus,
 }
@@ -91,6 +96,8 @@ fn fake_helper(path: PathBuf, refuse_clear_ignore: bool) {
     });
 }
 
+/// The daemon with one account, `Personal`, signed in, and the fake helper
+/// connected.
 async fn harness() -> Harness {
     harness_with_helper(true).await
 }
@@ -99,84 +106,58 @@ async fn harness() -> Harness {
 /// connects to it — the shape `register-without-interception`, the
 /// developer's mode, exists for.
 async fn harness_with_helper(with_helper: bool) -> Harness {
-    build_harness(with_helper, false, false).await
+    build_harness(with_helper, true, false).await
 }
 
 /// As [`harness`], with a helper that refuses every `ClearIgnore` — how a
 /// test makes startup recovery genuinely fail (see [`stuck_root`]).
 async fn harness_refusing_clear_ignore() -> Harness {
-    build_harness(true, false, true).await
+    build_harness(true, true, true).await
 }
 
-/// As [`harness`], but signed in: the account's `StateHandle` is set to
-/// `SignedIn` before the `SyncService` is made, and the sign-in gate is on
-/// — the combination a folder registered while signed in needs,
-/// which is what [`harness_onedrive`] builds on.
-async fn build_harness_signed_in(with_helper: bool) -> Harness {
-    build_harness_full(with_helper, true, false, true).await
-}
-
-/// As [`harness`], but with `RegisterRoot`'s sign-in gate wired to an
-/// account nobody has signed in to — every other harness passes no account
-/// at all, which `SyncService` treats as "nothing to check".
+/// As [`harness`], but nobody has signed in to the account: `RegisterRoot`
+/// is refused for that.
 async fn harness_signed_out() -> Harness {
-    build_harness(true, true, false).await
+    build_harness(true, false, false).await
 }
 
-async fn build_harness(with_helper: bool, gate_on_sign_in: bool, refuse_clear_ignore: bool) -> Harness {
-    build_harness_full(with_helper, gate_on_sign_in, refuse_clear_ignore, false).await
-}
-
-async fn build_harness_full(
-    with_helper: bool,
-    gate_on_sign_in: bool,
-    refuse_clear_ignore: bool,
-    signed_in: bool,
-) -> Harness {
+/// The account is marked signed in (its `StateHandle` set to `SignedIn`, with
+/// no token behind it) unless `signed_in` is false: `RegisterRoot` binds a
+/// folder only to a signed-in account. The daemon's folders are local, so it
+/// shows OneDrive only where a test gives it a drive ([`harness_onedrive`]).
+async fn build_harness(with_helper: bool, signed_in: bool, refuse_clear_ignore: bool) -> Harness {
     let bus = TestBus::start();
+    let config_dir = tempfile::tempdir().unwrap();
+    let daemon = common::start_daemon(&bus, config_dir.path()).await;
 
     let helper_dir = tempfile::tempdir().unwrap();
-    let link = if with_helper {
+    let hub = daemon.manager.hub();
+    // Without a helper, nothing is bound at this path: a punch with no link
+    // goes ahead whatever this machine runs at the real one.
+    hub.set_socket(helper_dir.path().join("helper.sock"));
+    if with_helper {
         let socket_path = helper_dir.path().join("helper.sock");
         fake_helper(socket_path.clone(), refuse_clear_ignore);
         let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-        Some(link)
-    } else {
-        None
-    };
-    let account_dir = tempfile::tempdir().unwrap();
-    let account_service = AccountService::new(
-        Paths::in_dir(account_dir.path()),
-        Endpoints::microsoft(),
-        Arc::new(MemoryStore::default()),
-        Duration::from_secs(5),
-    )
-    .unwrap();
-    if signed_in {
-        account_service.state().update(|s| s.state = SignInState::SignedIn);
+        hub.set_link(Some(link));
     }
-    // A fresh account starts signed out, which is exactly what the one test
-    // that asks for the gate needs.
-    let account = gate_on_sign_in.then(|| account_service.state().clone());
-    let sync_service = SyncService::new(link, account, None);
-    // Without a helper, nothing is bound at this path: a punch with no link
-    // goes ahead whatever this machine runs at the real one.
-    sync_service.set_helper_socket(helper_dir.path().join("helper.sock"));
-
-    let server =
-        konedrived::dbus::serve(bus.builder(), Arc::clone(&account_service), None).await.unwrap();
-    konedrived::sync::dbus::attach(&server, Arc::clone(&sync_service)).await.unwrap();
+    let account = daemon.manager.add(konedrivectl::FIRST_LABEL, &daemon.connection).await.unwrap();
+    if signed_in {
+        account.account.state().update(|s| s.state = SignInState::SignedIn);
+    }
 
     let client = bus.connect().await;
-    let proxy = Sync1Proxy::new(&client).await.unwrap();
+    let proxy = Sync1Proxy::new(&client, account.path.clone()).await.unwrap();
+    let files = Files1Proxy::new(&client).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     Harness {
         proxy,
+        files,
         dir,
-        service: sync_service,
-        account: account_service,
-        _server: server,
-        _account_dir: account_dir,
+        service: Arc::clone(&account.sync),
+        account: Arc::clone(&account.account),
+        _daemon: daemon,
+        _config_dir: config_dir,
         _helper_dir: helper_dir,
         _bus: bus,
     }
@@ -208,7 +189,7 @@ async fn harness_onedrive() -> (Harness, wiremock::MockServer) {
         })))
         .mount(&graph)
         .await;
-    let f = build_harness_signed_in(true).await;
+    let f = build_harness(true, true, false).await;
     let drive = konedrived::drive::DriveClient::new(
         url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
         std::sync::Arc::new(konedrived::token::StaticToken::new("T")),
@@ -227,7 +208,7 @@ async fn harness_onedrive() -> (Harness, wiremock::MockServer) {
 async fn status_text_reports_no_folder_then_the_registered_one() {
     let f = harness().await;
 
-    let text = konedrivectl::sync_status_text(&f.proxy).await.unwrap();
+    let text = konedrivectl::sync_status_text(&f.proxy, None, "konedrivectl").await.unwrap();
     assert!(text.contains("Folder:"), "{text}");
     assert!(text.contains("(none)"), "{text}");
 
@@ -249,7 +230,7 @@ async fn status_text_reports_no_folder_then_the_registered_one() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 
-    let text = konedrivectl::sync_status_text(&f.proxy).await.unwrap();
+    let text = konedrivectl::sync_status_text(&f.proxy, None, "konedrivectl").await.unwrap();
     assert!(text.contains(root.to_str().unwrap()), "{text}");
     assert!(text.contains("ready"), "{text}");
 }
@@ -303,7 +284,7 @@ async fn status_text_shows_a_recovery_failure_as_error_not_a_success() {
     // does not fail the call, so this must still return `Ok(())`.
     f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
 
-    let text = konedrivectl::sync_status_text(&f.proxy).await.unwrap();
+    let text = konedrivectl::sync_status_text(&f.proxy, None, "konedrivectl").await.unwrap();
     assert!(text.contains("error"), "the state must read error: {text}");
     assert!(text.contains("Last error:"), "the detail must be shown: {text}");
     assert!(
@@ -319,23 +300,7 @@ async fn status_text_shows_a_recovery_failure_as_error_not_a_success() {
 // (now eight) `sync` subcommands' own success strings, or `absolute_str`'s
 // error path. `TestBus::address()` makes that reachable without a session
 // bus: point `DBUS_SESSION_BUS_ADDRESS` at the private one and run the real
-// binary, exactly as a user's shell would.
-
-fn run(bus_addr: &str, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_konedrivectl"))
-        .args(args)
-        .env("DBUS_SESSION_BUS_ADDRESS", bus_addr)
-        .output()
-        .expect("failed to run the konedrivectl binary")
-}
-
-fn out_text(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn err_text(output: &std::process::Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
-}
+// binary, exactly as a user's shell would (`common::run`).
 
 /// Drives the whole offline workflow through the binary: register, populate,
 /// hydrate, dehydrate, forget — checking both the success strings `main.rs`
@@ -565,7 +530,7 @@ async fn binary_dehydrate_of_a_locally_modified_file_says_the_edits_would_be_los
     let f = harness().await;
     let addr = f._bus.address();
     let file = populated(&f).await;
-    f.proxy.hydrate(file.to_str().unwrap()).await.unwrap();
+    f.files.hydrate(file.to_str().unwrap()).await.unwrap();
     std::fs::write(&file, b"what the user typed").unwrap();
 
     let told = refused(addr, &["sync", "dehydrate", file.to_str().unwrap()]);
@@ -582,7 +547,7 @@ async fn binary_hydrate_of_a_locally_modified_file_says_the_edits_would_be_overw
     let f = harness().await;
     let addr = f._bus.address();
     let file = populated(&f).await;
-    f.proxy.hydrate(file.to_str().unwrap()).await.unwrap();
+    f.files.hydrate(file.to_str().unwrap()).await.unwrap();
     std::fs::write(&file, b"what the user typed").unwrap();
 
     let told = refused(addr, &["sync", "hydrate", file.to_str().unwrap()]);
@@ -607,7 +572,7 @@ async fn binary_dehydrate_of_an_open_file_says_to_close_it() {
     let f = harness().await;
     let addr = f._bus.address();
     let file = populated(&f).await;
-    f.proxy.hydrate(file.to_str().unwrap()).await.unwrap();
+    f.files.hydrate(file.to_str().unwrap()).await.unwrap();
     let _held_open = std::fs::File::open(&file).unwrap();
 
     let told = refused(addr, &["sync", "dehydrate", file.to_str().unwrap()]);
@@ -645,7 +610,7 @@ async fn binary_dehydrate_without_the_helper_changes_nothing_and_says_why() {
     let f = harness().await;
     let addr = f._bus.address();
     let file = populated(&f).await;
-    f.proxy.hydrate(file.to_str().unwrap()).await.unwrap();
+    f.files.hydrate(file.to_str().unwrap()).await.unwrap();
     f.service.set_link(None);
 
     let told = refused(addr, &["sync", "dehydrate", file.to_str().unwrap()]);
@@ -721,8 +686,13 @@ async fn binary_a_file_outside_the_folder_is_named_as_outside_it() {
 
     let told = refused(addr, &["sync", "hydrate", outside.to_str().unwrap()]);
     assert!(told.contains(outside.to_str().unwrap()), "{told}");
-    assert!(told.contains("not a regular file inside the sync folder"), "{told}");
+    let root = f.dir.path().join("OneDrive");
+    assert!(told.contains(&format!("is not inside the sync folder ({})", root.display())), "{told}");
     assert_eq!(std::fs::read(&outside).unwrap(), b"not ours");
+
+    // Inside the folder, but not a file: the folder that holds it is named.
+    let told = refused(addr, &["sync", "hydrate", root.to_str().unwrap()]);
+    assert!(told.contains("not a regular file inside the sync folder"), "{told}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -749,6 +719,48 @@ async fn binary_register_of_a_non_empty_folder_says_to_choose_an_empty_one() {
     let told = refused(addr, &["sync", "register", root.to_str().unwrap()]);
     assert!(told.contains(root.to_str().unwrap()), "{told}");
     assert!(told.contains("choose an empty folder"), "{told}");
+    assert!(!told.contains("another OneDrive account"), "{told}");
+}
+
+/// A folder with files in it that carries another drive (`user.konedrive.drive`) is
+/// refused `NotEmpty` too, and said to be another account's, with the way back for this
+/// account's own earlier folder: signing in first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_register_of_another_accounts_folder_says_whose_it_is() {
+    let f = harness().await;
+    let root = f.dir.path().join("Theirs");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("x"), b"x").unwrap();
+    xattr::set(&root, "user.konedrive.drive", b"D-OTHER").unwrap();
+
+    let told = refused(f._bus.address(), &["sync", "register", root.to_str().unwrap()]);
+    assert!(told.contains("holds the files of another OneDrive account's folder"), "{told}");
+    assert!(told.contains("sign the account in first (`konedrivectl login`)"), "{told}");
+}
+
+/// `account remove` refused for want of the helper changes nothing, and says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_remove_without_the_helper_changes_nothing() {
+    let f = harness().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.service.set_link(None);
+
+    let told = refused(f._bus.address(), &["account", "remove", "Personal"]);
+    assert!(told.contains("the account Personal was not removed and nothing was changed"), "{told}");
+    let list = out_text(&run(f._bus.address(), &["account", "list"]));
+    assert!(list.contains("Personal") && list.contains(root.to_str().unwrap()), "{list}");
+}
+
+/// The client ID cannot change while an account uses it; the refusal names the account and
+/// how to sign it out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_set_client_id_while_signed_in_names_the_account() {
+    let f = harness().await;
+    let told = refused(f._bus.address(), &["set-client-id", "0f8fad5b-d9cb-469f-a165-70867728950e"]);
+    assert!(told.contains("while Personal is signed in or signing in"), "{told}");
+    assert!(told.contains("`konedrivectl --account Personal logout`"), "{told}");
 }
 
 /// `Unsupported` carries the daemon's specific reason (which feature is
@@ -906,7 +918,7 @@ async fn binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_
         )
         .mount(&graph)
         .await;
-    let f = build_harness_signed_in(true).await;
+    let f = build_harness(true, true, false).await;
     let drive = konedrived::drive::DriveClient::new(
         url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
         std::sync::Arc::new(konedrived::token::StaticToken::new("T")),
@@ -959,12 +971,7 @@ async fn binary_status_of_a_onedrive_folder_counts_its_items_and_says_it_is_read
 
 /// The binary, with `TZ` set so the times it prints are UTC.
 fn run_utc(bus_addr: &str, args: &[&str]) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_konedrivectl"))
-        .args(args)
-        .env("DBUS_SESSION_BUS_ADDRESS", bus_addr)
-        .env("TZ", "UTC")
-        .output()
-        .expect("failed to run the konedrivectl binary")
+    common::run_env(bus_addr, args, &[("TZ", "UTC")])
 }
 
 /// A folder registered without interception, with no helper anywhere, and
@@ -980,7 +987,7 @@ async fn downloaded_files(f: &Harness, names: &[&str]) -> PathBuf {
     f.proxy.register_root_without_interception(root.to_str().unwrap()).await.unwrap();
     f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     for name in names {
-        f.proxy.hydrate(root.join(name).to_str().unwrap()).await.unwrap();
+        f.files.hydrate(root.join(name).to_str().unwrap()).await.unwrap();
     }
     root
 }
@@ -997,7 +1004,7 @@ async fn binary_activity_lists_what_happened_newest_first() {
 
     let root = downloaded_files(&f, &["a.bin"]).await;
     let file = root.join("a.bin");
-    f.proxy.dehydrate(file.to_str().unwrap()).await.unwrap();
+    f.files.dehydrate(file.to_str().unwrap()).await.unwrap();
 
     let out = run_utc(addr, &["sync", "activity", "--limit", "5"]);
     assert!(out.status.success(), "{out:?}");
@@ -1071,6 +1078,35 @@ async fn binary_conflicts_are_listed_and_dismissed() {
 
     let text = refused(addr, &["sync", "dismiss", "/nowhere/f.txt"]);
     assert!(text.contains("/nowhere/f.txt"), "{text}");
+}
+
+/// `account remove` says what it kept: the folder, and where the files the conflicts list
+/// named were rescued to — read from the list, not assumed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_remove_says_where_the_listed_rescues_are() {
+    let f = harness_with_helper(false).await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root_without_interception(root.to_str().unwrap()).await.unwrap();
+    let batch = f.dir.path().join("elsewhere/2023-11-14T22-13-20Z");
+    let rescued = batch.join("docs/f.txt");
+    std::fs::create_dir_all(rescued.parent().unwrap()).unwrap();
+    std::fs::write(&rescued, b"mine").unwrap();
+    let activity = &f.service.report().activity;
+    activity.attach(konedrived::tree::Store::new(konedrived::tree::TreeStore::in_memory().unwrap()), f.dir.path());
+    activity.add_conflicts(vec![konedrived::tree::ConflictRow {
+        at: 1_700_000_000,
+        original: root.join("docs/f.txt").display().to_string(),
+        rescued: rescued.display().to_string(),
+    }]);
+
+    let out = run(f._bus.address(), &["account", "remove", "Personal"]);
+    assert!(out.status.success(), "{out:?}");
+    let said = out_text(&out);
+    assert!(said.contains(&format!("Kept: the folder {}", root.display())), "{said}");
+    assert!(said.contains(&format!("Kept: the 1 file the conflicts list named, rescued in {}\n", batch.display())), "{said}");
+    assert!(!said.contains(".local/share"), "no place it cannot know: {said}");
+    assert!(rescued.exists());
 }
 
 /// `sync free-up-space`: what it freed, and what it kept because it was in
@@ -1150,7 +1186,7 @@ async fn binary_unpin_stops_keeping_a_folder_and_leaves_its_files() {
     let f = harness_with_helper(false).await;
     let addr = f._bus.address();
     let (docs, a, b) = docs_to_pin(&f).await;
-    f.proxy.pin(&[docs.to_str().unwrap()]).await.unwrap();
+    f.files.pin(&[docs.to_str().unwrap()]).await.unwrap();
     wait_for(|| state(&a) == b"hydrated" && state(&b) == b"hydrated").await;
 
     let told = refused(addr, &["sync", "unpin", b.to_str().unwrap(), a.to_str().unwrap()]);
@@ -1293,7 +1329,7 @@ async fn binary_export_access_token_replaces_a_symlink_without_touching_its_targ
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_export_access_token_refused_while_signed_out_names_the_reason() {
-    let f = harness().await;
+    let f = harness_signed_out().await;
     let out_file = f.dir.path().join("token");
 
     let out = run(f._bus.address(), &["dev", "export-access-token", "--out", out_file.to_str().unwrap()]);

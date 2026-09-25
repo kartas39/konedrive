@@ -5,31 +5,71 @@ import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
-/// The start page: how the folder is doing, and what to do about it. With no
-/// service, no sign-in or no folder, it says so and leads to the page that
-/// fixes it (Account or Settings).
+/// The start page: how the chosen account's folder is doing, and what to do
+/// about it. With no service, no account, no sign-in or no folder, it says so
+/// and leads to what fixes it (Add Account…, or the Account page).
 FormCard.FormCardPage {
     id: page
 
-    readonly property bool available: Account.serviceAvailable && Sync.serviceAvailable
-    readonly property bool signedIn: available && Account.state === "signed-in"
-    readonly property bool hasFolder: available && Sync.rootPath.length > 0
+    readonly property var account: Current.account
+    readonly property var sync: Current.sync
+    readonly property var status: Current.status
+    /// The service answers, and has no account yet.
+    readonly property bool noAccount: Daemon.serviceAvailable && Accounts.count === 0
+    // Current.account and Current.sync change together, but these bindings
+    // may see one before the other: each checks both.
+    readonly property bool available: account !== null && sync !== null && account.serviceAvailable && sync.serviceAvailable
+    readonly property bool signedIn: available && account.state === "signed-in"
+    readonly property bool hasFolder: available && sync !== null && status !== null && sync.rootPath.length > 0
     // A no-interception folder is one Free Up Space warning; a folder that
     // shows OneDrive but whose helper is not connected (including a legacy
     // folder still waiting to switch, which publishes RootState "error", not
     // "no-interception") is the same warning by a different RootState.
-    readonly property bool freeUpUnsafe: Sync.rootState === "no-interception" || Sync.helperState !== "connected"
+    readonly property bool freeUpUnsafe: (sync !== null && sync.rootState === "no-interception") || Daemon.helperState !== "connected"
     readonly property var window: QQC2.ApplicationWindow.window
 
     objectName: "statusPage"
-    title: i18nc("@title", "Status")
+    title: window ? window.accountTitle(i18nc("@title", "Status")) : i18nc("@title", "Status")
 
-    // The helper: nothing keeps a folder in step, and nothing downloads on
-    // open, while this is anything but "connected" (dbus/org.konedrive.Sync1.xml).
+    // Trouble that belongs to no account: config.toml unreadable, a failed migration.
+    Kirigami.InlineMessage {
+        objectName: "daemonError"
+        Layout.fillWidth: true
+        Layout.topMargin: Kirigami.Units.largeSpacing
+        Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.rightMargin: Kirigami.Units.largeSpacing
+        type: Kirigami.MessageType.Error
+        text: Daemon.lastError
+        visible: Daemon.serviceAvailable && text.length > 0
+    }
+
+    // No account yet: the one way forward.
+    FormCard.FormCard {
+        objectName: "noAccountCard"
+        Layout.topMargin: Kirigami.Units.largeSpacing
+        visible: page.noAccount
+
+        FormCard.FormPlaceholderMessageDelegate {
+            text: i18n("Connect your OneDrive")
+            explanation: i18n("Add your Microsoft account and choose a folder: your OneDrive appears in it, and files download when you open them.")
+            icon.name: "folder-cloud"
+        }
+        FormCard.FormDelegateSeparator {}
+        FormCard.FormButtonDelegate {
+            objectName: "addAccountButton"
+            text: i18nc("@action:button", "Add Account…")
+            icon.name: "list-add-user"
+            onClicked: page.window.addAccount()
+        }
+    }
+
+    // The helper serves every account: nothing keeps a folder in step, and
+    // nothing downloads on open, while this is anything but "connected"
+    // (dbus/org.konedrive.Accounts1.xml).
     FormCard.FormCard {
         objectName: "helperCard"
         Layout.topMargin: Kirigami.Units.largeSpacing
-        visible: Sync.helperTrouble
+        visible: Daemon.serviceAvailable && Daemon.helperTrouble && !page.noAccount
 
         FormCard.FormTextDelegate {
             text: i18n("The helper is not available")
@@ -41,10 +81,10 @@ FormCard.FormCardPage {
             }
         }
         FormCard.AbstractFormDelegate {
-            visible: Sync.helperInstruction.length > 0
+            visible: Daemon.helperInstruction.length > 0
             background: null
             contentItem: TextEdit {
-                text: Sync.helperInstruction
+                text: Daemon.helperInstruction
                 wrapMode: Text.Wrap
                 textFormat: TextEdit.PlainText
                 readOnly: true
@@ -57,7 +97,7 @@ FormCard.FormCardPage {
             objectName: "helperCheckAgain"
             text: i18nc("@action:button", "Check Again")
             icon.name: "view-refresh"
-            onClicked: Sync.retry()
+            onClicked: Daemon.retry()
         }
     }
 
@@ -67,19 +107,41 @@ FormCard.FormCardPage {
         Layout.leftMargin: Kirigami.Units.largeSpacing
         Layout.rightMargin: Kirigami.Units.largeSpacing
         type: Kirigami.MessageType.Error
-        text: Sync.actionError
+        text: page.sync ? page.sync.actionError : ""
         visible: text.length > 0
+    }
+
+    // The service is not running (and so there is no account to show).
+    FormCard.FormCard {
+        Layout.topMargin: Kirigami.Units.largeSpacing
+        visible: !Daemon.serviceAvailable && page.account === null
+
+        FormCard.FormTextDelegate {
+            text: i18n("The KOneDrive service is not running")
+            description: i18n("Install it with scripts/dev-install.sh, then try again.")
+            leading: Kirigami.Icon {
+                source: "state-offline"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
+            }
+        }
+        FormCard.FormButtonDelegate {
+            text: i18nc("@action:button", "Try Again")
+            icon.name: "view-refresh"
+            onClicked: Accounts.retry()
+        }
     }
 
     // The folder and the status line, or what stands in the way.
     FormCard.FormCard {
         Layout.topMargin: Kirigami.Units.largeSpacing
+        visible: page.account !== null
 
         FormCard.FormTextDelegate {
-            text: page.hasFolder ? Sync.rootPath : Status.text
+            text: page.hasFolder && page.sync ? page.sync.rootPath : (page.status ? page.status.text : "")
             description: {
-                if (page.hasFolder) {
-                    return Status.text;
+                if (page.hasFolder && page.status) {
+                    return page.status.text;
                 }
                 if (!page.available) {
                     return i18n("Install it with scripts/dev-install.sh, then try again.");
@@ -87,18 +149,18 @@ FormCard.FormCardPage {
                 if (!page.signedIn) {
                     return i18n("Sign in on the Account page.");
                 }
-                return i18n("Choose an empty folder in Settings. Your OneDrive appears in it; files download when you open them.");
+                return i18n("Choose an empty folder on the Account page. Your OneDrive appears in it; files download when you open them.");
             }
             leading: Kirigami.Icon {
-                source: Status.iconName
+                source: page.status ? page.status.iconName : "state-offline"
                 implicitWidth: Kirigami.Units.iconSizes.medium
                 implicitHeight: Kirigami.Units.iconSizes.medium
             }
         }
         FormCard.FormTextDelegate {
-            visible: page.hasFolder && Status.attention.length > 0
+            visible: page.hasFolder && page.status !== null && page.status.attention.length > 0
             text: i18n("Needs your attention")
-            description: Status.attention
+            description: page.status ? page.status.attention : ""
             leading: Kirigami.Icon {
                 source: "dialog-warning"
                 implicitWidth: Kirigami.Units.iconSizes.medium
@@ -106,20 +168,17 @@ FormCard.FormCardPage {
             }
         }
         FormCard.FormButtonDelegate {
-            visible: page.hasFolder && Sync.conflictCount > 0
-            text: i18np("See the conflict", "See the %1 conflicts", Sync.conflictCount)
+            visible: page.hasFolder && page.sync !== null && page.sync.conflictCount > 0
+            text: page.sync ? i18np("See the conflict", "See the %1 conflicts", page.sync.conflictCount) : ""
             icon.name: "document-duplicate"
             onClicked: page.window.showPage("conflicts")
         }
         FormCard.FormButtonDelegate {
-            visible: !page.available
+            visible: page.account !== null && !page.available
             text: i18nc("@action:button", "Try Again")
             icon.name: "view-refresh"
-            // M8: the daemon that came back also owns Sync1 — both re-fetch.
-            onClicked: {
-                Account.retry();
-                Sync.retry();
-            }
+            // M8: the daemon that came back owns every object — all re-fetch.
+            onClicked: Accounts.retry()
         }
         FormCard.FormButtonDelegate {
             visible: page.available && !page.signedIn
@@ -131,7 +190,7 @@ FormCard.FormCardPage {
             visible: page.signedIn && !page.hasFolder
             text: i18nc("@action:button", "Choose Folder…")
             icon.name: "folder-open"
-            onClicked: page.window.showPage("settings")
+            onClicked: page.window.showPage("account")
         }
     }
 
@@ -141,11 +200,11 @@ FormCard.FormCardPage {
         visible: page.hasFolder
 
         FormCard.FormTextDelegate {
-            visible: Sync.pinnedCount > 0
-            text: i18np("Always on this device: %1 item", "Always on this device: %1 items", Sync.pinnedCount)
+            visible: page.sync !== null && page.sync.pinnedCount > 0
+            text: page.sync ? i18np("Always on this device: %1 item", "Always on this device: %1 items", page.sync.pinnedCount) : ""
         }
         FormCard.FormTextDelegate {
-            text: i18n("On this computer: %1", Qt.locale().formattedDataSize(Sync.localBytes))
+            text: i18n("On this computer: %1", Qt.locale().formattedDataSize(page.sync ? page.sync.localBytes : 0))
             // Without a connected helper, nothing fills a placeholder on
             // open, so freeing a file up would leave it reading as zeros
             // until it is explicitly hydrated again — Free Up Space stays
@@ -157,18 +216,18 @@ FormCard.FormCardPage {
                 objectName: "freeUpButton"
                 text: i18nc("@action:button", "Free Up Space…")
                 icon.name: "edit-clear"
-                enabled: !Sync.freeingUp && !page.freeUpUnsafe
+                enabled: page.sync !== null && !page.sync.freeingUp && !page.freeUpUnsafe
                 onClicked: freeUpDialog.open()
             }
         }
         FormCard.AbstractFormDelegate {
             objectName: "freeingUpRow"
-            visible: Sync.freeingUp
+            visible: page.sync !== null && page.sync.freeingUp
             background: null
             contentItem: RowLayout {
                 spacing: Kirigami.Units.largeSpacing
                 QQC2.BusyIndicator {
-                    running: Sync.freeingUp
+                    running: page.sync !== null && page.sync.freeingUp
                     implicitWidth: Kirigami.Units.iconSizes.medium
                     implicitHeight: Kirigami.Units.iconSizes.medium
                 }
@@ -183,15 +242,22 @@ FormCard.FormCardPage {
             Layout.fillWidth: true
             Layout.margins: Kirigami.Units.smallSpacing
             // Not bound: the close button hides it, and the next result shows it again.
-            visible: Sync.freeUpResult.length > 0
+            visible: page.sync !== null && page.sync.freeUpResult.length > 0
             type: Kirigami.MessageType.Information
-            text: Sync.freeUpResult
+            text: page.sync ? page.sync.freeUpResult : ""
             showCloseButton: true
 
             Connections {
-                target: Sync
+                target: page.sync
                 function onFreeUpResultChanged() {
-                    freeUpMessage.visible = Sync.freeUpResult.length > 0;
+                    freeUpMessage.visible = page.sync.freeUpResult.length > 0;
+                }
+            }
+            // Another account's result is its own.
+            Connections {
+                target: Current
+                function onChanged() {
+                    freeUpMessage.visible = page.sync !== null && page.sync.freeUpResult.length > 0;
                 }
             }
         }
@@ -202,15 +268,15 @@ FormCard.FormCardPage {
         visible: page.hasFolder
 
         FormCard.FormButtonDelegate {
-            visible: Sync.rootSource === "onedrive"
+            visible: page.sync !== null && page.sync.rootSource === "onedrive"
             text: i18nc("@action:button", "Refresh Now")
             icon.name: "view-refresh"
-            onClicked: Sync.refresh()
+            onClicked: page.sync.refresh()
         }
         FormCard.FormButtonDelegate {
             text: i18nc("@action:button", "Open in File Manager")
             icon.name: "system-file-manager"
-            onClicked: Sync.openFolder()
+            onClicked: page.sync.openFolder()
         }
     }
 
@@ -219,18 +285,18 @@ FormCard.FormCardPage {
         visible: page.hasFolder
 
         FormCard.FormTextDelegate {
-            visible: Sync.rootSource === "onedrive"
+            visible: page.sync !== null && page.sync.rootSource === "onedrive"
             text: i18n("Read-only for now")
             description: i18n("Files in this folder cannot be changed yet, and nothing is sent to OneDrive.")
         }
         FormCard.FormTextDelegate {
-            visible: Sync.rootState === "no-interception"
+            visible: page.sync !== null && page.sync.rootState === "no-interception"
             text: i18n("Files download only when you ask")
-            description: i18n("%1 items. Download them from Dolphin, or with konedrivectl sync hydrate.", Sync.itemsPlaced)
+            description: i18n("%1 items. Download them from Dolphin, or with konedrivectl sync hydrate.", page.sync ? page.sync.itemsPlaced : 0)
         }
         FormCard.FormButtonDelegate {
-            visible: Sync.rootSource === "onedrive" && Sync.skippedCount > 0
-            text: i18np("%1 item is not in the folder", "%1 items are not in the folder", Sync.skippedCount)
+            visible: page.sync !== null && page.sync.rootSource === "onedrive" && page.sync.skippedCount > 0
+            text: page.sync ? i18np("%1 item is not in the folder", "%1 items are not in the folder", page.sync.skippedCount) : ""
             icon.name: "view-hidden"
             onClicked: page.window.showPage("skipped")
         }
@@ -239,6 +305,18 @@ FormCard.FormCardPage {
     Kirigami.PromptDialog {
         id: freeUpDialog
         objectName: "freeUpDialog"
+
+        /// The account it was opened for (an AccountItem); null once that account is gone.
+        property QtObject item: null
+
+        function confirm() {
+            if (item) {
+                item.sync.freeUpSpace();
+            }
+            close();
+        }
+
+        onAboutToShow: item = Current.item
         title: i18nc("@title:window", "Free Up Space?")
         // Without a connected helper this promise is false (nothing fills a
         // placeholder on open), which is why the button that opens this
@@ -251,10 +329,8 @@ FormCard.FormCardPage {
             Kirigami.Action {
                 text: i18nc("@action:button", "Free Up Space")
                 icon.name: "edit-clear"
-                onTriggered: {
-                    Sync.freeUpSpace();
-                    freeUpDialog.close();
-                }
+                enabled: freeUpDialog.item !== null
+                onTriggered: freeUpDialog.confirm()
             },
             Kirigami.Action {
                 text: i18nc("@action:button", "Cancel")
@@ -262,5 +338,13 @@ FormCard.FormCardPage {
                 onTriggered: freeUpDialog.close()
             }
         ]
+
+        // Another account shown, or this one gone: not the question asked.
+        Connections {
+            target: Current
+            function onChanged() {
+                freeUpDialog.close();
+            }
+        }
     }
 }

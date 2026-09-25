@@ -31,7 +31,7 @@ QString fileName(const QString &path)
 const QRegularExpression cappedMore(QStringLiteral("^and (\\d+) more$"));
 }
 
-KNotificationSink::KNotificationSink(std::function<void()> openWindow)
+KNotificationSink::KNotificationSink(std::function<void(const QString &account)> openWindow)
     : m_openWindow(std::move(openWindow))
 {
 }
@@ -52,13 +52,14 @@ void KNotificationSink::send(const Notice &notice)
     }
     if (m_openWindow) {
         KNotificationAction *open = notification->addDefaultAction(i18nc("@action", "Open KOneDrive"));
-        const std::function<void()> openWindow = m_openWindow;
-        QObject::connect(open, &KNotificationAction::activated, notification, [notification, openWindow] {
+        const std::function<void(const QString &)> openWindow = m_openWindow;
+        const QString account = notice.account;
+        QObject::connect(open, &KNotificationAction::activated, notification, [notification, openWindow, account] {
             // The click hands over the right to raise a window (xdg-activation on Wayland).
             if (const QString token = notification->xdgActivationToken(); !token.isEmpty()) {
                 KWindowSystem::setCurrentXdgActivationToken(token);
             }
-            openWindow();
+            openWindow(account);
         });
     }
     notification->sendEvent();
@@ -71,8 +72,11 @@ Notifier::Notifier(AccountController *account, SyncController *sync, Notificatio
     , m_sink(sink)
     , m_clock(std::move(clock))
     , m_timer(new QTimer(this))
+    , m_signOutTimer(new QTimer(this))
     , m_accountState(account->state())
 {
+    m_signOutTimer->setSingleShot(true);
+    connect(m_signOutTimer, &QTimer::timeout, this, &Notifier::announceSignOut);
     if (!m_clock) {
         auto elapsed = std::make_shared<QElapsedTimer>();
         elapsed->start();
@@ -142,11 +146,37 @@ void Notifier::onAccountChanged()
         m_signOutAsked = false;
         return;
     }
+    // Accounts1.Remove signs the account out, then unexports it and drops it
+    // from Accounts: the row goes, and this Notifier with it, before the
+    // notice is due. A sign-out that is news stays signed out until then.
+    m_signOutTimer->start(m_signOutDelayMs);
+}
+
+void Notifier::setSignOutDelay(int ms)
+{
+    m_signOutDelayMs = ms;
+}
+
+void Notifier::announceSignOut()
+{
+    if (m_account->state() != QLatin1String("signed-out")) {
+        return;
+    }
     post({QStringLiteral("signedOut"), i18nc("@title notification", "Signed out of OneDrive"), i18n("Sign in again to keep your OneDrive folder up to date."), {}});
 }
 
-void Notifier::post(const Notice &notice, int count)
+void Notifier::setAccountName(std::function<QString()> name)
 {
+    m_accountName = std::move(name);
+}
+
+void Notifier::post(const Notice &event, int count)
+{
+    Notice notice = event;
+    notice.account = m_account->path();
+    if (const QString name = m_accountName ? m_accountName() : QString(); !name.isEmpty()) {
+        notice.title = i18nc("@title notification: what happened — the account's name", "%1 — %2", event.title, name);
+    }
     flushDue();
     const qint64 now = m_clock();
     auto it = m_windows.find(notice.event);

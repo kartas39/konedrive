@@ -23,11 +23,20 @@ A OneDrive folder is kept in step only while the helper is connected, so the hel
 ## 1. Install this build (as yourself), and sign in
     scripts/dev-install.sh
     konedrivectl set-client-id <your application id>
-    konedrivectl login
-Or open KOneDrive, enter the client id on the **Account** page and press **Sign In to OneDrive**.
+    konedrivectl login                     # with no account yet, adds one called Personal first
+Or open KOneDrive and choose **Add Account…** (at the top of the sidebar, or on the Status page
+while there is no account): it asks for the client id the first time, then for a name, and
+opens the sign-in in the browser.
 Expected: the window opens from the launcher (or `konedrive` on the command line); after the
-browser sign-in, `konedrivectl status` shows you signed in, with your name and quota. The tray
-icon appears; hovering it repeats the window's status line.
+browser sign-in, `konedrivectl status` shows you signed in, with your name and quota, and
+`konedrivectl account list` shows the one account, `signed-in`, `read-only`, with no folder yet.
+The account switcher at the top of the window's sidebar shows its name and email. The tray icon
+appears; hovering it repeats the window's status line.
+
+If this machine ran a version from before multiple accounts, with a folder registered: after the
+upgrade the window shows one account, "Personal", with the same folder, still signed in; its
+Places entry is now called "OneDrive — Personal"; and `~/.config/konedrive/config.toml.v1` holds
+the old configuration. Skip `set-client-id` and `login` then.
 
 `dev-install.sh` does not install the Dolphin plugins. For the emblems in steps 3 and 5, install
 them for your user as the README's "Dolphin integration" says, then log out and back in.
@@ -45,6 +54,7 @@ the output of `journalctl -u konedrive-helper` in the run log. The daemon connec
     mkdir ~/OneDrive-test
     konedrivectl sync register ~/OneDrive-test
     konedrivectl sync status        # repeat: State: listing, then ready
+Or, in the window, **Choose Folder…** on the **Account** page.
 Expected: `sync register` succeeds. If it is refused `NoHelper`, the daemon has not connected to
 the helper yet: wait for `Helper: connected` and run it again.
 
@@ -96,8 +106,11 @@ was downloaded, untouched until you open it again.
 Expected: the rename/edit from step 6 as one entry (downloaded, updated, renamed, or moved,
 depending what you did), and step 3's download and free-up as earlier entries. The window's
 **Activity** page shows the same two lists ("Downloading now" and "Recent"); clicking a "Recent"
-entry shows the file in Dolphin. The **Account** page shows you signed in with your quota; the
-**Settings** page shows the folder, "Start at login", "Show download progress" and the client ID.
+entry shows the file in Dolphin. The **Account** page shows the account's name with "Rename…",
+the line "Read-only" with no switch, you signed in with your quota, the folder with "Forget
+Folder", and "Remove Account…"; the **Settings** page shows "Start at login", "Show download
+progress", "Show in Places" and the client ID. Dolphin's Places panel has an entry for the folder,
+named `OneDrive — <account name>`.
 
 With "Show download progress" on (the default), open a large file that is not downloaded yet:
 after about 2 s, Plasma's notifications show "Downloading from OneDrive" with the file's name and
@@ -112,8 +125,8 @@ You own the files (the lock is `chmod`, not ownership), so this needs no `sudo`:
     chmod u-w ~/OneDrive-test/<that file>
 Now change that same file in OneDrive's web UI (or rename it) and either wait about a minute or run
 `konedrivectl sync refresh`.
-Expected: your local edit is moved to `$XDG_DATA_HOME/konedrive/rescued/<timestamp>/…` rather than
-lost, and:
+Expected: your local edit is moved to `$XDG_DATA_HOME/konedrive/rescued/<account id>/<timestamp>/…`
+(the id is the one `konedrivectl account list` shows) rather than lost, and:
     konedrivectl sync conflicts
 lists it (original path, rescued path, when). The window's **Conflicts** page shows the same, with
 "Show in Folder" and "Dismiss". A KDE notification appears ("your changed version was moved to
@@ -177,8 +190,40 @@ A KDE notification fires when you sign out ("needs signing in again"); System Se
 lists every notification event `konedrive.notifyrc` defines, and you can check the box there
 instead of forcing one, if you prefer.
 
+## 14. A second account (optional: needs a second Microsoft account)
+Everything above used one account. With a second Microsoft account (a test account is fine):
+    mkdir ~/OneDrive-test-2
+    konedrivectl account add Second
+    konedrivectl --account Second login
+    konedrivectl --account Second sync register ~/OneDrive-test/<a folder>   # refused
+    konedrivectl --account Second sync register ~/OneDrive-test-2
+Or, in the window, **Add Account…** from the switcher's menu, then **Choose Folder…** on the new
+account's **Account** page.
+Expected: the first `sync register` is refused, naming the first account — a folder inside another
+account's folder cannot be registered; the second succeeds. Then:
+- `konedrivectl account list` shows both accounts, each with its own folder; `konedrivectl sync
+  status` shows both folders, each under its account's name, with one `Helper:` line above them.
+  Without `--account`, a command such as `konedrivectl sync refresh` now stops and lists the two
+  names.
+- The window's switcher lists both; choosing one switches every page but Settings to it, and each
+  page's title names the account. The tray's tooltip has a line per account; its icon shows the
+  worse of the two states. Places has "OneDrive — Second" beside the first account's entry.
+- In Dolphin, a file in either folder downloads when opened, and "Always keep on this device" and
+  "Free up space" work in both folders (the right account's `sync activity` records each).
+  `konedrivectl sync state <a file in either folder>` works without `--account`.
+- A Microsoft account can be connected once: add a third account (`konedrivectl account add
+  Third`), and sign it in (`konedrivectl --account Third login`) with the first account's
+  Microsoft account. It stays signed out, and `konedrivectl --account Third status` (or its
+  Account page) says that Microsoft account is already connected, naming the first account.
+  Remove it again with `konedrivectl account remove Third`.
+
+Then remove the second account: **Remove Account…** on its Account page, or
+    konedrivectl account remove Second
+Expected: it is gone from `account list`, from the switcher and from Places; its folder is still
+there, unlocked, with the files it had; the first account is untouched.
+
 ## Undo
     konedrivectl sync forget                     # the lock comes off; the files stay
-    rm -r ~/OneDrive-test
+    rm -r ~/OneDrive-test ~/OneDrive-test-2
     sudo scripts/install-helper.sh --uninstall    # refuses while a folder is registered: forget first
     balooctl6 config rm excludeFolders ~/OneDrive-test   # only if Forget did not already remove it

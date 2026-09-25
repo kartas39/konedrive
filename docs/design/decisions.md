@@ -95,6 +95,60 @@ safe to run against a live account from the first day: a bug cannot damage the c
 **Trade-off.** The folder must be read-only in the meantime (below), and local edits are not
 uploaded.
 
+### Several accounts in one daemon, sharing one helper link
+
+**Decision.** One daemon serves every account of a user. Each account has its own sign-in, folder,
+tree store and poller, and D-Bus objects of its own; the link to the helper, the per-inode locks and
+the fill-on-open slots belong to the daemon and are shared. The helper did not change.
+
+**Why.** The helper sends a user's opens to that user's newest connection only, so a second
+connection — a second daemon, or a second link from the same one — would take every request away
+from the first. The helper already held any number of folders per user, refused folders that nest,
+and authorised by uid; keeping accounts out of it keeps the root side as small as it was.
+
+**Trade-off.** The accounts share four fill slots and the helper's credit of 64 requests, so a large
+pin in one slows opens in another, and a reconnect brings every folder up in turn before any fill
+is served (limitations log F43).
+
+### An intercepted open finds its account by device, verified path, then item id
+
+**Decision.** The daemon decides which account a fill request belongs to from its descriptor alone:
+the accounts whose folder is on the file's filesystem; then the kernel's name for the file, opened
+beneath a candidate folder and compared by inode; then the file's item id in each candidate's tree
+store. With no answer, the open is denied `EIO`.
+
+**Why.** The helper's request carries no account, and adding one would put account knowledge in the
+root helper. A wrong answer would fill a file from another account's drive, so each step either
+proves its answer or passes; routing never guesses.
+
+**Trade-off.** A file renamed or unlinked while its open waits, on a filesystem that holds two
+folders, and known to no tree store, is denied `EIO`; the next open retries (limitations log F44).
+
+### Per-file calls go to one interface, routed by path
+
+**Decision.** `Hydrate`, `Dehydrate`, `ItemState`, `Pin`, `Unpin` and `FreeUp` are on the
+daemon-wide `org.konedrive.Files1`, which finds each path's account by its folder. Each account's
+`Sync1` keeps what concerns its folder as a whole.
+
+**Why.** The Dolphin plugin and `konedrivectl` know a path, not an account. Making every client
+find the account first would repeat the routing in each of them, and a selection in Dolphin may
+span two accounts' folders.
+
+**Trade-off.** One path in no account's folder refuses a whole `Pin`, `Unpin` or `FreeUp` call, as
+one path outside the folder always did.
+
+### No alias for the single-account D-Bus object
+
+**Decision.** `/org/konedrive/Daemon` is no longer served. The window, the CLI and the Dolphin
+plugins moved to `/org/konedrive/Accounts` and the per-account objects in the same change.
+
+**Why.** konedrive has no outside clients, and its clients ship in the same packages as the daemon.
+An alias would need a meaning for "the first account" that changes when that account is removed,
+would double every `PropertiesChanged`, and would need tests of its own, to serve no one.
+
+**Trade-off.** A window or a Dolphin running across the upgrade calls an object that is gone, until
+it is restarted (limitations log F46).
+
 ## Interception and hydration
 
 ### One fanotify mark per directory, plus evictable ignore marks
@@ -458,13 +512,28 @@ stops the poller.
 ### Check the account every cycle
 
 **Decision.** Each cycle compares the drive id with the one the folder was built from, kept in the
-tree store and in `config.toml`; a mismatch blocks the cycle.
+tree store and in `config.toml` (as the account's drive, which is also its identity, below); a
+mismatch blocks the cycle.
 
 **Why.** A sign-out followed by a different sign-in between two polls would defeat a check made only
 at sign-in, and the result would be another account's files listed over this folder. Keeping the id
 in `config.toml` too covers a store rebuilt empty.
 
 **Trade-off.** One `GET /me/drive` per cycle.
+
+### A folder belongs to one account, and remembers which
+
+**Decision.** Two accounts' folders never nest: a registration that would is refused `Overlaps`,
+naming the other account. A OneDrive folder's root carries its account's drive
+(`user.konedrive.drive`), and a registration of a folder that carries another drive is refused.
+
+**Why.** The helper refuses nested roots anyway; checking in the daemon names the refusal, and covers
+folders without interception, which the helper never sees. A forgotten folder keeps its root id and
+may be registered again without being empty, so without the drive attribute another account could
+adopt it and reconcile its own drive over the first account's files.
+
+**Trade-off.** A folder forgotten before multiple accounts carries no drive and can still be adopted
+(limitations log F45).
 
 ### Skip what cannot be a local file, visibly
 
@@ -525,10 +594,13 @@ error.
 
 ### Scope `Files.Read`
 
-**Decision.** The daemon asks for `Files.Read User.Read offline_access`.
+**Decision.** The daemon asks for `Files.Read User.Read offline_access`: the scope of an account's
+mode, which for every account in this phase is `read-only`. It asks for it at the authorization, the
+code exchange and every refresh alike.
 
 **Why.** Microsoft refuses any write made with that token, so "nothing is written to the cloud" is
-enforced by the server, not by the client's discipline.
+enforced by the server, not by the client's discipline. Asking for the read-only scope at every
+refresh keeps a read-only account's tokens unable to write even if its grant were ever wider.
 
 **Trade-off.** The write phase will need incremental consent for `Files.ReadWrite`.
 
@@ -545,6 +617,104 @@ gated behind a build flag.
 **Trade-off.** Any process of the same user on the session bus can obtain an hour of read access —
 no more than it has by opening files in the folder; a Flatpak app is filtered by its bus proxy
 (limitations log W11).
+
+### An account is its drive
+
+**Decision.** An account's identity is its Graph drive id, recorded at its first sign-in and never
+changed. A sign-in that reaches another drive than the account's own is refused, and so is one that
+reaches a drive another account already has. The check and the record are one step under the
+configuration's lock, and the check is fail-closed.
+
+**Why.** An account's folder, tree store and rescues belong to one drive: signed in as someone else,
+it would reconcile a different drive over them. Two accounts of one drive would download everything
+twice, into two folders. The per-cycle check already compared drive ids, so the drive id was the
+natural identity. A check that let a sign-in through when Graph did not answer would leave nothing
+to compare later sign-ins against.
+
+**Trade-off.** A sign-in is refused when the daemon cannot ask which drive it reached, or cannot
+learn the drive of another signed-in account that has none recorded yet (limitations log F42).
+Connecting a different Microsoft account means adding a new account.
+
+### Account ids are random; labels are for people
+
+**Decision.** An account is known by 12 random hexadecimal characters, never reused, which name its
+D-Bus object and its directories. People see and type a label, 1 to 40 characters with no `/` and
+no `@`, which can change at any time and names nothing on disk.
+
+**Why.** What appears in a D-Bus path and in file names must be valid in both and stable across
+renames. An email address is neither stable in meaning — the same address can be removed and added
+again — nor valid in a D-Bus path. Without `@`, a label is never mistaken for an email where either
+can name an account.
+
+**Trade-off.** Rescued files are grouped by account id, not by a name a person recognises
+(limitations log F47).
+
+### `config.toml` has one owner, and a single-account file is migrated in place
+
+**Decision.** Every change to `config.toml` goes through one store that re-reads, changes and writes
+the file atomically under one lock, and that never overwrites a file it cannot read. At the first
+start with multiple accounts, a single-account file is copied to `config.toml.v1` and rewritten as
+version 2, its account becoming "Personal"; the tree store and the cached account then move into
+the account's directory, idempotently, at each start until done; the wallet item moves at the
+account's first token load.
+
+**Why.** With several accounts every change touches the same file, and two independent writers had
+already been able to save over each other (limitations log F37, now closed). The version-2 write is
+the one commit point, and idempotent moves let the next start finish whatever a crash interrupted.
+Moving the wallet item inside a token load that happens anyway adds no unlock prompt.
+
+**Trade-off.** No way back to a single-account version except copying `config.toml.v1` back by hand
+(limitations log F41); a tree store that cannot be moved safely is rebuilt with one listing, losing
+its activity log and conflicts (F40).
+
+### Each account's token is a wallet item of a new kind
+
+**Decision.** Each account's refresh token is stored under `kind=account-refresh-token` and
+`account=<id>`, rather than under the single-account `kind=refresh-token` with an `account`
+attribute added.
+
+**Why.** A Secret Service search returns every item whose attributes include the ones asked for: a
+search for the single-account item would find every account's as well, and telling them apart would
+mean reading attributes that a locked wallet may not show.
+
+**Trade-off.** While a migrated account's old item has not moved yet, both kinds are looked for and
+both are deleted at sign-out.
+
+### The mode exists, and is always read-only
+
+**Decision.** Every account has a mode, stored in `config.toml` and published as `Account1.Mode`,
+and it is always `read-only` in this version: there is no setter and no switch in the window, and
+any other value in the file loads as `read-only`. The OAuth scope follows the mode (above).
+
+**Why.** A switch that did nothing would read as "my changes are uploaded", and a choice stored now
+would silently turn uploads on for that account the day they exist.
+
+**Trade-off.** None until uploads exist; the window shows the mode as a line of text (limitations
+log A16).
+
+### Removing an account keeps the user's files
+
+**Decision.** Removing an account forgets its folder as a Forget does, signs it out, and deletes its
+refresh token, its cached name and quota and its tree store. The folder's files and the rescued
+files stay.
+
+**Why.** Nothing konedrive does deletes a user's file, and the Forget path is already crash-safe and
+goes through the helper.
+
+**Trade-off.** Files never downloaded stay as empty placeholders, which read as zeros; and, like a
+Forget, removing an account with an intercepted folder is refused while the helper is not connected
+(limitations log F47).
+
+### Personal accounts only, for now
+
+**Decision.** Every account signs in through the `consumers` authority.
+
+**Why.** Work or school accounts need another authority, an app registration that allows them,
+often an administrator's consent, and testing against SharePoint-backed drives: a phase of its own.
+Nothing in the design of accounts stands in its way; the authority would become a per-account field
+beside the mode.
+
+**Trade-off.** No Microsoft 365 or OneDrive for Business accounts (limitations log F49).
 
 ## The desktop
 
@@ -580,6 +750,52 @@ Conflicts is always present, with a count badge while there are conflicts.
 says the same thing without that.
 
 **Trade-off.** None.
+
+### An account switcher heads the sidebar
+
+**Decision.** The window shows one account at a time. A switcher at the top of the sidebar chooses
+it; the five account pages below show that account, and Settings, which holds only what is the
+whole app's, stays one page. The switcher is there with a single account too, and a warning sign on
+it says when another account needs attention. The folder moved from Settings to the Account page.
+
+**Why.** The pages stay where they were and show the chosen account, instead of a list of accounts
+standing in front of each of them; KDE's multi-account applications, such as NeoChat and Tokodon,
+put the account selector in the sidebar or the drawer in the same way. With one account, the
+switcher names it and gives "Add Account…" a home.
+
+**Trade-off.** Two accounts cannot be seen side by side in the window; the tray's tooltip is the
+overview (limitations log A13).
+
+### The tray shows the worst account; notifications and Places name the account
+
+**Decision.** The tray icon shows the worst state across the accounts, and its tooltip has a line
+per account. Notifications and download progress name the account once there are several. Every
+Places entry is named `OneDrive — <label>`, with a single account too.
+
+**Why.** One icon cannot show several states, and trouble must not hide behind an account that is
+fine. Naming the account only once there are several leaves a single account's notifications as
+they were. Naming the Places entry after the account from the start means that a second account
+renames nothing.
+
+**Trade-off.** In the tooltip, an account that needs attention shows why in place of its "checked
+N ago" (limitations log A17, A18, A19).
+
+### The command line names the account, and a path decides it
+
+**Decision.** `konedrivectl` takes the account from `--account` (id, label or email), else from
+`KONEDRIVE_ACCOUNT`, else the only account there is; with several and none named, it stops with
+exit status 2 and lists them. The commands that take a path find the account from the path, and
+refuse `--account`, as do `account …` and `set-client-id`. `login` with no account at all adds one
+called "Personal" first.
+
+**Why.** Guessing among several accounts would act on the wrong one sooner or later, and a
+refusal that lists the labels costs one retry. A path already says whose folder it is in; an
+`--account` that disagreed with it would have to be either ignored or obeyed wrongly, so it is
+refused. Adding "Personal" at `login` keeps the single-account setup — `set-client-id`, `login`,
+`sync register` — working word for word.
+
+**Trade-off.** An email names an account only once the account has signed in, and
+`KONEDRIVE_ACCOUNT` is ignored by the commands that name no chosen account (limitations log F51).
 
 ### The window registers a folder only with the helper
 

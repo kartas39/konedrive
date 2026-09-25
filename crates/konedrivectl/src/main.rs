@@ -1,29 +1,59 @@
-use std::process::{Command, Stdio};
+use std::path::Path;
+use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
-use anyhow::{bail, Context};
+use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand};
-use konedrive_dbus::{Account1Proxy, Dev1Proxy, Sync1Proxy};
-use konedrivectl::SyncAction;
+use konedrive_dbus::accounts::{Account1Proxy, Accounts1Proxy, Dev1Proxy, Files1Proxy, Sync1Proxy};
+use konedrivectl::{AccountAction, AccountInfo, AccountRow, Source, SyncAction, ACCOUNT_VARIABLE, FIRST_LABEL};
+use zbus::zvariant::OwnedObjectPath;
 
 #[derive(Parser)]
-#[command(name = "konedrivectl", version, about = "Control the KOneDrive daemon")]
+#[command(
+    name = "konedrivectl",
+    version,
+    about = "Control the KOneDrive daemon",
+    after_help = "Choosing the account: a command that acts on one account uses the one --account names, \
+                  else the one KONEDRIVE_ACCOUNT names, else the only account there is. With several \
+                  accounts and none named, or a name that fits more than one, it stops and lists them. \
+                  `status` and `sync status` show every account when none is named. The commands that take \
+                  a path (`sync hydrate`, `dehydrate`, `state`, `pin`, `unpin`, `free`) act on the account \
+                  whose folder holds the path; they, `account list`, `account add`, `account rename`, \
+                  `account remove` and `set-client-id` refuse --account and ignore KONEDRIVE_ACCOUNT."
+)]
 struct Cli {
+    /// The account to act on: its id, its label or its email, as `account list` shows them
+    /// (label and email in any case). Without it, KONEDRIVE_ACCOUNT; without that, the only
+    /// account there is
+    #[arg(long, global = true, value_name = "ACCOUNT", allow_hyphen_values = true)]
+    account: Option<String>,
     #[command(subcommand)]
     command: Cmd,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Save the Application (client) ID of your Microsoft Entra app registration
+    /// List, add, rename and remove accounts
+    Account {
+        #[command(subcommand)]
+        command: AccountCmd,
+    },
+    /// Save the Application (client) ID of your Microsoft Entra app registration, which
+    /// every account signs in with
+    ///
+    /// Refused while any account is signed in or signing in.
     SetClientId { id: String },
-    /// Sign in with your Microsoft account in the browser
+    /// Sign the account in with its Microsoft account, in the browser
+    ///
+    /// With no account at all, first adds one called Personal. The browser is opened with
+    /// xdg-open; the sign-in page's address is printed too.
     Login,
-    /// Sign out and delete the stored token
+    /// Sign the account out and delete its stored token
     Logout,
-    /// Show the account state
+    /// Show the account's sign-in state; every account's when there are several and none is
+    /// chosen
     Status,
-    /// Work with the sync folder
+    /// Work with an account's sync folder
     Sync {
         #[command(subcommand)]
         command: SyncCmd,
@@ -36,8 +66,45 @@ enum Cmd {
 }
 
 #[derive(Subcommand)]
+enum AccountCmd {
+    /// List every account: id, label, email, sign-in state, mode, and folder with its state
+    List,
+    /// Add an account, signed out and with no folder yet, and print its id
+    ///
+    /// A label has 1 to 40 characters, no "/" and no "@", is not 12 hexadecimal digits (the
+    /// shape of an id), and is not another account's label, whatever the case. Then sign it
+    /// in: `konedrivectl --account <label> login`.
+    Add {
+        #[arg(allow_hyphen_values = true)]
+        label: String,
+    },
+    /// Give an account a new label
+    Rename {
+        /// The account: its id, label or email
+        // Not `account`: that id is the global `--account`'s.
+        #[arg(value_name = "ACCOUNT", allow_hyphen_values = true)]
+        named: String,
+        /// The new label
+        #[arg(allow_hyphen_values = true)]
+        label: String,
+    },
+    /// Remove an account: forget its folder, sign it out, delete its token and cached data
+    ///
+    /// Asks nothing. Deleted: the refresh token, the cached name and quota, the list of
+    /// OneDrive items, the activity and the conflicts list. Kept: the folder's files, as they
+    /// are (a file that was never downloaded stays as an empty placeholder, which reads as
+    /// zeros), and rescued files. Refused, changing nothing, while the folder needs the helper
+    /// to be forgotten and the helper is not connected.
+    Remove {
+        /// The account: its id, label or email
+        #[arg(value_name = "ACCOUNT", allow_hyphen_values = true)]
+        named: String,
+    },
+}
+
+#[derive(Subcommand)]
 enum DevCmd {
-    /// Write the current access token — about an hour of read access, never
+    /// Write the account's current access token — about an hour of read access, never
     /// the refresh token — to a file only you can read, for a test run in the VM
     ExportAccessToken {
         #[arg(long)]
@@ -47,10 +114,11 @@ enum DevCmd {
 
 #[derive(Subcommand)]
 enum SyncCmd {
-    /// Bind an empty folder to the signed-in account
+    /// Bind an empty folder to the account
     Register { path: String },
-    /// The developer's mode: bind a local folder with NOTHING intercepting
-    /// opens inside it, filled from a directory with `populate-from`. Without
+    /// The developer's mode: bind a local folder with NOTHING intercepting opens inside it
+    ///
+    /// The folder is filled from a directory with `populate-from`. Without
     /// the helper, files that are not downloaded read as zeros until you
     /// `hydrate` them by hand. It never shows OneDrive: that takes `register`
     /// and the helper. Named after the D-Bus method it calls
@@ -58,17 +126,18 @@ enum SyncCmd {
     /// purpose: the cost this mode carries belongs in the word you type, not
     /// just in a warning you might scroll past.
     RegisterWithoutInterception { path: String },
-    /// Forget the folder (local files are left as they are)
+    /// Forget the account's folder (local files are left as they are)
     Forget,
-    /// Fill the folder with placeholders mirroring a local directory
+    /// Fill the account's folder with placeholders mirroring a local directory
     PopulateFrom { source_dir: String },
-    /// Download one file now
+    /// Download one file now. The path decides the account
     Hydrate { path: String },
-    /// Free up space for one file
+    /// Free up space for one file. The path decides the account
     Dehydrate { path: String },
-    /// Print one file's state
+    /// Print one file's state. The path decides the account
     State { path: String },
-    /// Print the folder's state
+    /// Show the account's folder and its state; every account's when there are several and
+    /// none is chosen
     Status,
     /// List what is in OneDrive but not in the folder, and why
     Skipped,
@@ -91,60 +160,422 @@ enum SyncCmd {
         /// Where the file was moved to, as `sync conflicts` shows it
         path: String,
     },
-    /// Free up the space of every downloaded file that is not in use
+    /// Free up the space of every downloaded file in the account's folder that is not in use
     FreeUpSpace,
     /// Always keep files or folders on this device: everything in them is
-    /// downloaded now, and whatever comes into a folder later
+    /// downloaded now, and whatever comes into a folder later. The paths decide the
+    /// accounts
     Pin {
         #[arg(required = true)]
         paths: Vec<String>,
     },
     /// Stop always keeping files or folders on this device; what is
-    /// downloaded stays downloaded
+    /// downloaded stays downloaded. The paths decide the accounts
     Unpin {
         #[arg(required = true)]
         paths: Vec<String>,
     },
     /// Free up space for files or folders: a file or folder you pinned stops
-    /// being kept on this device, and everything in it is freed up
+    /// being kept on this device, and everything in it is freed up. The paths decide the
+    /// accounts
     Free {
         #[arg(required = true)]
         paths: Vec<String>,
     },
 }
 
+/// A command line that has to change: exits with status 2, as clap's own usage errors do.
+#[derive(Debug)]
+struct Usage(String);
+
+impl std::fmt::Display for Usage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Usage {}
+
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> ExitCode {
     let cli = Cli::parse();
-    let connection = zbus::Connection::session()
-        .await
-        .context("cannot connect to the session bus")?;
-    let proxy = Account1Proxy::new(&connection).await?;
+    match run(cli).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            if error.downcast_ref::<Usage>().is_some() {
+                ExitCode::from(2)
+            } else if let Some(no_choice) = error.downcast_ref::<konedrivectl::NoChoice>() {
+                ExitCode::from(no_choice.exit_status())
+            } else {
+                ExitCode::FAILURE
+            }
+        }
+    }
+}
+
+/// Why `command` takes no `--account`, if it takes none: it names its account itself, acts on
+/// every account, or (a path command) acts on the account whose folder holds the path. Given
+/// anyway, `--account` is refused rather than ignored, so a mistaken option never silently
+/// does something else. `KONEDRIVE_ACCOUNT`, a default for a whole shell, is ignored by them.
+fn takes_no_account(command: &Cmd) -> Option<&'static str> {
+    match command {
+        Cmd::SetClientId { .. } => Some("the client ID is one for every account"),
+        Cmd::Account { command: AccountCmd::List } => Some("`account list` shows every account"),
+        Cmd::Account { command: AccountCmd::Add { .. } } => Some("`account add` adds a new account"),
+        Cmd::Account { command: AccountCmd::Rename { .. } | AccountCmd::Remove { .. } } => {
+            Some("`account rename` and `account remove` take the account as their first argument")
+        }
+        Cmd::Sync {
+            command:
+                SyncCmd::Hydrate { .. }
+                | SyncCmd::Dehydrate { .. }
+                | SyncCmd::State { .. }
+                | SyncCmd::Pin { .. }
+                | SyncCmd::Unpin { .. }
+                | SyncCmd::Free { .. },
+        } => Some("the path decides the account"),
+        _ => None,
+    }
+}
+
+async fn run(cli: Cli) -> anyhow::Result<()> {
+    if let (Some(_), Some(why)) = (&cli.account, takes_no_account(&cli.command)) {
+        return Err(Usage(format!("{why}: leave out --account")).into());
+    }
+    let daemon = Daemon::connect().await?;
+    let option = cli.account.as_deref();
     match cli.command {
-        Cmd::SetClientId { id } => {
-            proxy.set_client_id(&id).await?;
-            println!("Client ID saved.");
-        }
-        Cmd::Login => login(&connection, &proxy).await?,
+        Cmd::Account { command } => account(&daemon, command).await,
+        Cmd::SetClientId { id } => set_client_id(&daemon, &id).await,
+        Cmd::Login => login(&daemon, option).await,
         Cmd::Logout => {
-            proxy.sign_out().await?;
-            println!("Signed out.");
+            let chosen = daemon.chosen(option).await?.account;
+            let proxy = daemon.account(&chosen.path).await?;
+            let result = proxy.sign_out().await;
+            result.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::SignOut(&chosen.label), &e)))?;
+            println!("Signed out of {}.", chosen.label);
+            Ok(())
         }
-        Cmd::Status => print!("{}", konedrivectl::status_text(&proxy).await?),
-        Cmd::Sync { command } => sync(&connection, command).await?,
-        Cmd::Dev { command } => dev(&connection, command).await?,
+        Cmd::Status => status(&daemon, option).await,
+        Cmd::Sync { command } => sync(&daemon, option, command).await,
+        Cmd::Dev { command } => dev(&daemon, option, command).await,
+    }
+}
+
+/// The daemon: the accounts manager, and each account's objects.
+struct Daemon {
+    connection: zbus::Connection,
+    manager: Accounts1Proxy<'static>,
+}
+
+impl Daemon {
+    async fn connect() -> anyhow::Result<Self> {
+        let connection = zbus::Connection::session().await.context("cannot connect to the session bus")?;
+        let manager = Accounts1Proxy::new(&connection).await?;
+        Ok(Self { connection, manager })
+    }
+
+    async fn account(&self, path: &OwnedObjectPath) -> zbus::Result<Account1Proxy<'static>> {
+        Account1Proxy::new(&self.connection, path.clone()).await
+    }
+
+    async fn sync(&self, path: &OwnedObjectPath) -> zbus::Result<Sync1Proxy<'static>> {
+        Sync1Proxy::new(&self.connection, path.clone()).await
+    }
+
+    /// Every account, in the order they were added; one removed while this runs is left out.
+    async fn accounts(&self) -> anyhow::Result<Vec<AccountInfo>> {
+        let mut accounts = Vec::new();
+        for path in self.manager.accounts().await? {
+            let read = async {
+                let account = self.account(&path).await?;
+                zbus::Result::Ok(AccountInfo {
+                    id: account.id().await?,
+                    label: account.label().await?,
+                    email: account.email().await?,
+                    path: path.clone(),
+                })
+            };
+            match read.await {
+                Ok(info) => accounts.push(info),
+                Err(e) if konedrivectl::is_gone(&e) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok(accounts)
+    }
+
+    /// Stops with the daemon's reason when it has no account because it could not load its
+    /// configuration (`Accounts1.LastError`): "add one" would then be refused too.
+    async fn check_loaded(&self, accounts: &[AccountInfo]) -> anyhow::Result<()> {
+        if accounts.is_empty() {
+            let trouble = self.manager.last_error().await.unwrap_or_default();
+            if !trouble.is_empty() {
+                bail!("no account is loaded: {trouble}");
+            }
+        }
+        Ok(())
+    }
+
+    /// The account a command acts on (design §5.1): the one `--account` names, else the one
+    /// `KONEDRIVE_ACCOUNT` names, else the only account there is.
+    async fn chosen(&self, option: Option<&str>) -> anyhow::Result<Chosen> {
+        let accounts = self.accounts().await?;
+        self.check_loaded(&accounts).await?;
+        let account = konedrivectl::choose(&accounts, wanted(option))?.clone();
+        Ok(Chosen { account, several: accounts.len() > 1 })
+    }
+
+    /// The accounts `status` and `sync status` show: the chosen one when one is named, every
+    /// account otherwise; whether that is one account shown on its own; and whether there
+    /// are several.
+    async fn shown(&self, option: Option<&str>) -> anyhow::Result<(Vec<AccountInfo>, bool, bool)> {
+        if wanted(option).is_some() {
+            let chosen = self.chosen(option).await?;
+            return Ok((vec![chosen.account], true, chosen.several));
+        }
+        let accounts = self.accounts().await?;
+        let (alone, several) = (accounts.len() == 1, accounts.len() > 1);
+        Ok((accounts, alone, several))
+    }
+
+    /// Every registered folder, with its account's label and `Sync1`: what a path command's
+    /// refusal is explained against; and how many accounts there are.
+    async fn folders(&self) -> anyhow::Result<(Vec<Folder>, usize)> {
+        let (mut folders, mut accounts) = (Vec::new(), 0);
+        for path in self.manager.accounts().await? {
+            let read = async {
+                let sync = self.sync(&path).await?;
+                let root = sync.root_path().await?;
+                let label = self.account(&path).await?.label().await?;
+                zbus::Result::Ok(Folder { root, label, sync })
+            };
+            match read.await {
+                Ok(folder) => {
+                    accounts += 1;
+                    if !folder.root.is_empty() {
+                        folders.push(folder);
+                    }
+                }
+                Err(e) if konedrivectl::is_gone(&e) => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Ok((folders, accounts))
+    }
+}
+
+/// The account a command acts on, and whether there are others.
+struct Chosen {
+    account: AccountInfo,
+    several: bool,
+}
+
+impl Chosen {
+    /// How a command suggested about this account starts (`konedrivectl::command_prefix`).
+    fn prefix(&self) -> String {
+        konedrivectl::command_prefix(Some(&self.account.label), self.several, variable_set())
+    }
+
+    /// What a success line starts with: the account's label when there are several.
+    fn tag(&self) -> String {
+        if self.several {
+            format!("{}: ", self.account.label)
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// Whether `KONEDRIVE_ACCOUNT` is set, and not empty.
+fn variable_set() -> bool {
+    wanted(None).is_some()
+}
+
+/// The name of the account to use, and where it came from: `--account`, else
+/// `KONEDRIVE_ACCOUNT` when it is set and not empty.
+fn wanted(option: Option<&str>) -> Option<(&str, Source)> {
+    static VARIABLE: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let variable = VARIABLE.get_or_init(|| std::env::var(ACCOUNT_VARIABLE).ok().filter(|v| !v.trim().is_empty()));
+    match (option, variable) {
+        (Some(name), _) => Some((name, Source::Option)),
+        (None, Some(name)) => Some((name.as_str(), Source::Environment)),
+        (None, None) => None,
+    }
+}
+
+/// One account's registered folder.
+struct Folder {
+    root: String,
+    label: String,
+    sync: Sync1Proxy<'static>,
+}
+
+/// The folder that holds `path`, by the rule `Files1` routes by: the one that is a
+/// component prefix of it (the CLI has already resolved its directory part).
+fn holder<'f>(folders: &'f [Folder], path: &str) -> Option<&'f Folder> {
+    folders.iter().find(|f| Path::new(path).starts_with(&f.root))
+}
+
+async fn account(daemon: &Daemon, command: AccountCmd) -> anyhow::Result<()> {
+    match command {
+        AccountCmd::List => {
+            let mut rows = Vec::new();
+            for path in daemon.manager.accounts().await? {
+                let read = async {
+                    let (account, sync) = (daemon.account(&path).await?, daemon.sync(&path).await?);
+                    zbus::Result::Ok(AccountRow {
+                        id: account.id().await?,
+                        label: account.label().await?,
+                        email: account.email().await?,
+                        state: account.state().await?,
+                        mode: account.mode().await?,
+                        folder: sync.root_path().await?,
+                        root_state: sync.root_state().await?,
+                    })
+                };
+                match read.await {
+                    Ok(row) => rows.push(row),
+                    // Removed while this ran.
+                    Err(e) if konedrivectl::is_gone(&e) => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            print!("{}", konedrivectl::account_list_text(&rows));
+            let trouble = daemon.manager.last_error().await?;
+            if !trouble.is_empty() {
+                eprintln!("warning: {trouble}");
+            }
+        }
+        AccountCmd::Add { label } => {
+            let result = daemon.manager.add(&label).await;
+            let path = result.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::Add(&label), &e)))?;
+            let added = daemon.account(&path).await?;
+            let (id, label) = (added.id().await?, added.label().await?);
+            println!("Added the account {label} ({id}), signed out and with no folder yet.");
+            println!("Sign it in with: konedrivectl --account {} login", konedrivectl::shell_word(&label));
+        }
+        AccountCmd::Rename { named, label } => {
+            let accounts = daemon.accounts().await?;
+            daemon.check_loaded(&accounts).await?;
+            let target = konedrivectl::choose(&accounts, Some((&named, Source::Argument)))?;
+            let proxy = daemon.account(&target.path).await?;
+            let result = proxy.set_label(&label).await;
+            let action = AccountAction::Rename(&target.label, &label);
+            result.map_err(|e| anyhow!(konedrivectl::explain_account_error(action, &e)))?;
+            println!("Renamed {} to {}.", target.label, label.trim());
+        }
+        AccountCmd::Remove { named } => {
+            let accounts = daemon.accounts().await?;
+            daemon.check_loaded(&accounts).await?;
+            let target = konedrivectl::choose(&accounts, Some((&named, Source::Argument)))?;
+            let sync = daemon.sync(&target.path).await?;
+            let folder = sync.root_path().await.unwrap_or_default();
+            // Read first: the list goes with the account. Where each listed file was rescued
+            // to is the one thing about rescues this can know (F51).
+            let conflicts = sync.conflicts().await.unwrap_or_default();
+            let result = daemon.manager.remove(&target.path.as_ref()).await;
+            if let Err(error) = result {
+                let helper = daemon.manager.helper_state().await.unwrap_or_default();
+                let source = sync.root_source().await.unwrap_or_default();
+                let context = konedrivectl::Context { root: &folder, source: &source, helper: &helper, ..Default::default() };
+                let action = SyncAction::Remove(&target.label);
+                bail!("{}", konedrivectl::explain_sync_error_in(action, &error, context));
+            }
+            print!("{}", konedrivectl::removed_text(&target.label, &folder, &conflicts));
+        }
     }
     Ok(())
 }
 
-async fn dev(connection: &zbus::Connection, command: DevCmd) -> anyhow::Result<()> {
+async fn set_client_id(daemon: &Daemon, id: &str) -> anyhow::Result<()> {
+    if let Err(error) = daemon.manager.set_client_id(id).await {
+        // The daemon refuses while any account uses the old id: name them.
+        let mut busy = Vec::new();
+        for account in daemon.accounts().await.unwrap_or_default() {
+            let state = match daemon.account(&account.path).await {
+                Ok(proxy) => proxy.state().await.unwrap_or_default(),
+                Err(_) => continue,
+            };
+            if state == "signed-in" || state == "signing-in" {
+                busy.push(account.label);
+            }
+        }
+        bail!("{}", konedrivectl::explain_account_error(AccountAction::SetClientId(id, &busy), &error));
+    }
+    println!("Client ID saved.");
+    Ok(())
+}
+
+async fn status(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()> {
+    let client_id = daemon.manager.client_id().await?;
+    let trouble = daemon.manager.last_error().await?;
+    let trouble = if trouble.is_empty() { String::new() } else { format!("{:<12}{trouble}\n", "Problem:") };
+    let (accounts, alone, _) = daemon.shown(option).await?;
+    if alone {
+        let proxy = daemon.account(&accounts[0].path).await?;
+        print!("{}{trouble}", konedrivectl::status_text(&proxy, Some(&client_id)).await?);
+        return Ok(());
+    }
+    let mut out = format!("{}{trouble}", konedrivectl::client_id_line(&client_id));
+    if accounts.is_empty() {
+        out.push_str(&format!(
+            "{:<12}none yet: `konedrivectl login` adds one called {FIRST_LABEL} and signs it in\n",
+            "Accounts:"
+        ));
+    }
+    for account in &accounts {
+        let read = async { konedrivectl::status_text(&daemon.account(&account.path).await?, None).await };
+        match read.await {
+            Ok(block) => out.push_str(&format!("\n{}\n{}", account.label, konedrivectl::indented(&block))),
+            // Removed while this ran.
+            Err(e) if konedrivectl::is_gone(&e) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    print!("{out}");
+    Ok(())
+}
+
+async fn sync_status(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()> {
+    let helper = daemon.manager.helper_state().await?;
+    let (accounts, alone, several) = daemon.shown(option).await?;
+    let variable = variable_set();
+    if alone {
+        let sync = daemon.sync(&accounts[0].path).await?;
+        let prefix = konedrivectl::command_prefix(Some(&accounts[0].label), several, variable);
+        print!("{}", konedrivectl::sync_status_text(&sync, Some(&helper), &prefix).await?);
+        return Ok(());
+    }
+    daemon.check_loaded(&accounts).await?;
+    let mut out = konedrivectl::helper_line(&helper);
+    if accounts.is_empty() {
+        out.push_str(&format!("{}\n", konedrivectl::NoChoice::NoAccountYet));
+    }
+    for account in &accounts {
+        let prefix = konedrivectl::command_prefix(Some(&account.label), several, variable);
+        let read = async { konedrivectl::sync_status_text(&daemon.sync(&account.path).await?, None, &prefix).await };
+        match read.await {
+            Ok(block) => out.push_str(&format!("\n{}\n{}", account.label, konedrivectl::indented(&block))),
+            // Removed while this ran.
+            Err(e) if konedrivectl::is_gone(&e) => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    print!("{out}");
+    Ok(())
+}
+
+async fn dev(daemon: &Daemon, option: Option<&str>, command: DevCmd) -> anyhow::Result<()> {
     match command {
         DevCmd::ExportAccessToken { out } => {
-            let dev = Dev1Proxy::new(connection).await?;
+            let chosen = daemon.chosen(option).await?;
+            let dev = Dev1Proxy::new(&daemon.connection, chosen.account.path.clone()).await?;
             let token = dev
                 .access_token()
                 .await
-                .map_err(|e| anyhow::anyhow!("{}", konedrivectl::explain_dev_error(&e)))?;
+                .map_err(|e| anyhow!("{}", konedrivectl::explain_dev_error(&e, &chosen.prefix())))?;
             // I1: `write_secret_atomically` never opens `out`
             // itself, so a symlink there is replaced rather than followed
             // and truncated, and anyone who already had the old file open
@@ -152,8 +583,9 @@ async fn dev(connection: &zbus::Connection, command: DevCmd) -> anyhow::Result<(
             konedrivectl::write_secret_atomically(&out, token.as_bytes())
                 .with_context(|| format!("cannot write the access token to {}", out.display()))?;
             println!(
-                "Wrote an access token, valid for about an hour, to {}. It is not the refresh token. \
+                "Wrote an access token of {}, valid for about an hour, to {}. It is not the refresh token. \
                  Delete the file when the test is done.",
+                chosen.account.label,
                 out.display()
             );
         }
@@ -161,15 +593,88 @@ async fn dev(connection: &zbus::Connection, command: DevCmd) -> anyhow::Result<(
     Ok(())
 }
 
-async fn sync(connection: &zbus::Connection, command: SyncCmd) -> anyhow::Result<()> {
-    let proxy = Sync1Proxy::new(connection).await?;
+async fn sync(daemon: &Daemon, option: Option<&str>, command: SyncCmd) -> anyhow::Result<()> {
+    match command {
+        SyncCmd::Status => return sync_status(daemon, option).await,
+        SyncCmd::Hydrate { path } => {
+            let absolute = absolute_str(&path)?;
+            let files = Files1Proxy::new(&daemon.connection).await?;
+            let paths = [absolute.clone()];
+            let result = files.hydrate(&absolute).await;
+            explained_paths(daemon, PathAction::Hydrate, &paths, result).await?;
+            println!("Downloaded.");
+            fail_if_holders_unhealthy(daemon, &paths).await?;
+        }
+        SyncCmd::Dehydrate { path } => {
+            let absolute = absolute_str(&path)?;
+            let files = Files1Proxy::new(&daemon.connection).await?;
+            let paths = [absolute.clone()];
+            let result = files.dehydrate(&absolute).await;
+            explained_paths(daemon, PathAction::Dehydrate, &paths, result).await?;
+            println!("Freed up.");
+            fail_if_holders_unhealthy(daemon, &paths).await?;
+        }
+        SyncCmd::State { path } => {
+            let files = Files1Proxy::new(&daemon.connection).await?;
+            println!("{}", files.item_state(&absolute_str(&path)?).await?);
+        }
+        SyncCmd::Pin { paths } => {
+            let absolute = absolute_all(&paths)?;
+            let refs: Vec<&str> = absolute.iter().map(String::as_str).collect();
+            let files = Files1Proxy::new(&daemon.connection).await?;
+            let result = files.pin(&refs).await;
+            let queued = explained_paths(daemon, PathAction::Pin, &absolute, result).await?;
+            // `sync transfers` is one account's: the one the paths are in, if they are in one.
+            let (folders, accounts) = daemon.folders().await?;
+            let mut labels: Vec<&str> =
+                absolute.iter().filter_map(|path| holder(&folders, path)).map(|f| f.label.as_str()).collect();
+            labels.dedup();
+            let label = match labels.as_slice() {
+                [one] => Some(*one),
+                _ => None,
+            };
+            let prefix = konedrivectl::command_prefix(label, accounts > 1, variable_set());
+            println!("{}", konedrivectl::pin_text(queued, &prefix));
+            fail_if_holders_unhealthy(daemon, &absolute).await?;
+        }
+        SyncCmd::Unpin { paths } => {
+            let absolute = absolute_all(&paths)?;
+            let refs: Vec<&str> = absolute.iter().map(String::as_str).collect();
+            let files = Files1Proxy::new(&daemon.connection).await?;
+            let result = files.unpin(&refs).await;
+            let unpinned = explained_paths(daemon, PathAction::Unpin, &absolute, result).await?;
+            println!("{}", konedrivectl::unpin_text(unpinned));
+            fail_if_holders_unhealthy(daemon, &absolute).await?;
+        }
+        SyncCmd::Free { paths } => {
+            let absolute = absolute_all(&paths)?;
+            let refs: Vec<&str> = absolute.iter().map(String::as_str).collect();
+            let files = Files1Proxy::new(&daemon.connection).await?;
+            let result = files.free_up(&refs).await;
+            let (freed, bytes, busy, pinned) = explained_paths(daemon, PathAction::Free, &absolute, result).await?;
+            println!("{}", konedrivectl::free_text(freed, bytes, busy, pinned));
+            fail_if_holders_unhealthy(daemon, &absolute).await?;
+        }
+        command => {
+            let chosen = daemon.chosen(option).await?;
+            let proxy = daemon.sync(&chosen.account.path).await?;
+            folder_command(daemon, &chosen, &proxy, command).await?;
+        }
+    }
+    Ok(())
+}
+
+/// The `sync` commands that act on the chosen account's folder, through its `Sync1`. With
+/// several accounts, each success line starts with the account's label.
+async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &Sync1Proxy<'_>, command: SyncCmd) -> anyhow::Result<()> {
+    let tag = chosen.tag();
     match command {
         SyncCmd::Register { path } => {
             let absolute = absolute_str(&path)?;
             let action = SyncAction::Register(&absolute);
-            explained(&proxy, action, proxy.register_root(&absolute).await).await?;
-            match root_trouble(&proxy).await? {
-                None => println!("Folder registered: {absolute}"),
+            explained(daemon, chosen, proxy, action, proxy.register_root(&absolute).await).await?;
+            match root_trouble(proxy).await? {
+                None => println!("{tag}Folder registered: {absolute}"),
                 // `SyncService::register_root`'s own doc comment says the
                 // call still returns `Ok(())` here (the root itself is
                 // usable) — but printing "registered" with nothing else
@@ -188,13 +693,13 @@ async fn sync(connection: &zbus::Connection, command: SyncCmd) -> anyhow::Result
             let absolute = absolute_str(&path)?;
             let action = SyncAction::RegisterWithoutInterception(&absolute);
             let result = proxy.register_root_without_interception(&absolute).await;
-            explained(&proxy, action, result).await?;
-            match root_trouble(&proxy).await? {
+            explained(daemon, chosen, proxy, action, result).await?;
+            match root_trouble(proxy).await? {
                 Some(detail) => bail!(
                     "the folder at {absolute} is registered, but was not fully recovered: {detail}"
                 ),
                 None => {
-                    println!("Folder registered without interception: {absolute}");
+                    println!("{tag}Folder registered without interception: {absolute}");
                     // Always shown, success or not: the entire point of this
                     // mode is that a placeholder nobody intercepts reads as
                     // zeros, and that must never be left to be inferred.
@@ -206,34 +711,17 @@ async fn sync(connection: &zbus::Connection, command: SyncCmd) -> anyhow::Result
             }
         }
         SyncCmd::Forget => {
-            explained(&proxy, SyncAction::Forget, proxy.unregister_root().await).await?;
-            println!("Folder forgotten. Local files were left untouched.");
-            fail_if_root_unhealthy(&proxy).await?;
+            explained(daemon, chosen, proxy, SyncAction::Forget, proxy.unregister_root().await).await?;
+            println!("{tag}Folder forgotten. Local files were left untouched.");
+            fail_if_root_unhealthy(proxy).await?;
         }
         SyncCmd::PopulateFrom { source_dir } => {
             let absolute = absolute_str(&source_dir)?;
             let action = SyncAction::PopulateFrom(&absolute);
-            let created =
-                explained(&proxy, action, proxy.populate_from_directory(&absolute).await).await?;
-            println!("Created {created} placeholders.");
-            fail_if_root_unhealthy(&proxy).await?;
+            let created = explained(daemon, chosen, proxy, action, proxy.populate_from_directory(&absolute).await).await?;
+            println!("{tag}Created {created} placeholders.");
+            fail_if_root_unhealthy(proxy).await?;
         }
-        SyncCmd::Hydrate { path } => {
-            let absolute = absolute_str(&path)?;
-            let action = SyncAction::Hydrate(&absolute);
-            explained(&proxy, action, proxy.hydrate(&absolute).await).await?;
-            println!("Downloaded.");
-            fail_if_root_unhealthy(&proxy).await?;
-        }
-        SyncCmd::Dehydrate { path } => {
-            let absolute = absolute_str(&path)?;
-            let action = SyncAction::Dehydrate(&absolute);
-            explained(&proxy, action, proxy.dehydrate(&absolute).await).await?;
-            println!("Freed up.");
-            fail_if_root_unhealthy(&proxy).await?;
-        }
-        SyncCmd::State { path } => println!("{}", proxy.item_state(&absolute_str(&path)?).await?),
-        SyncCmd::Status => print!("{}", konedrivectl::sync_status_text(&proxy).await?),
         SyncCmd::Skipped => {
             let root_path = proxy.root_path().await?;
             if root_path.is_empty() {
@@ -245,7 +733,7 @@ async fn sync(connection: &zbus::Connection, command: SyncCmd) -> anyhow::Result
                 // between just means the list this call gets back is a
                 // little more complete than the note says, never less.
                 let still_listing = proxy.root_state().await? == "listing";
-                let skipped = explained(&proxy, SyncAction::Skipped, proxy.skipped().await).await?;
+                let skipped = explained(daemon, chosen, proxy, SyncAction::Skipped, proxy.skipped().await).await?;
                 if still_listing {
                     println!(
                         "The folder is still being filled from OneDrive; this list may be partial."
@@ -260,16 +748,16 @@ async fn sync(connection: &zbus::Connection, command: SyncCmd) -> anyhow::Result
             }
         }
         SyncCmd::Refresh => {
-            explained(&proxy, SyncAction::Refresh, proxy.refresh().await).await?;
-            println!("Asked OneDrive for changes.");
+            explained(daemon, chosen, proxy, SyncAction::Refresh, proxy.refresh().await).await?;
+            println!("{tag}Asked OneDrive for changes.");
         }
         SyncCmd::Activity { limit } => {
-            let events = explained(&proxy, SyncAction::Activity, proxy.recent_activity(limit).await).await?;
+            let events = explained(daemon, chosen, proxy, SyncAction::Activity, proxy.recent_activity(limit).await).await?;
             print!("{}", konedrivectl::activity_text(&events));
         }
         SyncCmd::Transfers => print!("{}", konedrivectl::transfers_text(&proxy.transfers().await?)),
         SyncCmd::Conflicts => {
-            let conflicts = explained(&proxy, SyncAction::Conflicts, proxy.conflicts().await).await?;
+            let conflicts = explained(daemon, chosen, proxy, SyncAction::Conflicts, proxy.conflicts().await).await?;
             print!("{}", konedrivectl::conflicts_text(&conflicts));
         }
         SyncCmd::Dismiss { path } => {
@@ -279,43 +767,24 @@ async fn sync(connection: &zbus::Connection, command: SyncCmd) -> anyhow::Result
             let absolute = std::path::absolute(&path).context("cannot make the path absolute")?;
             let absolute = absolute.to_str().context("non-UTF-8 path")?;
             let action = SyncAction::Dismiss(absolute);
-            explained(&proxy, action, proxy.dismiss_conflict(absolute).await).await?;
-            println!("Dismissed. The file was left where it is.");
+            explained(daemon, chosen, proxy, action, proxy.dismiss_conflict(absolute).await).await?;
+            println!("{tag}Dismissed. The file was left where it is.");
         }
         SyncCmd::FreeUpSpace => {
             let (files, bytes, busy) =
-                explained(&proxy, SyncAction::FreeUpSpace, proxy.free_up_space().await).await?;
-            println!("{}", konedrivectl::free_up_text(files, bytes, busy));
+                explained(daemon, chosen, proxy, SyncAction::FreeUpSpace, proxy.free_up_space().await).await?;
+            println!("{tag}{}", konedrivectl::free_up_text(files, bytes, busy));
             if proxy.pinned_count().await? > 0 {
                 println!("Files kept on this device (`konedrivectl sync pin`) were left as they are.");
             }
         }
-        SyncCmd::Pin { paths } => {
-            let absolute = absolute_all(&paths)?;
-            let named = absolute.join(", ");
-            let refs: Vec<&str> = absolute.iter().map(String::as_str).collect();
-            let queued = explained(&proxy, SyncAction::Pin(&named), proxy.pin(&refs).await).await?;
-            println!("{}", konedrivectl::pin_text(queued));
-            fail_if_root_unhealthy(&proxy).await?;
-        }
-        SyncCmd::Unpin { paths } => {
-            let absolute = absolute_all(&paths)?;
-            let refs: Vec<&str> = absolute.iter().map(String::as_str).collect();
-            let result = proxy.unpin(&refs).await;
-            let named = named_in_refusal(&result, &absolute);
-            let unpinned = explained(&proxy, SyncAction::Unpin(&named), result).await?;
-            println!("{}", konedrivectl::unpin_text(unpinned));
-            fail_if_root_unhealthy(&proxy).await?;
-        }
-        SyncCmd::Free { paths } => {
-            let absolute = absolute_all(&paths)?;
-            let refs: Vec<&str> = absolute.iter().map(String::as_str).collect();
-            let result = proxy.free_up(&refs).await;
-            let named = named_in_refusal(&result, &absolute);
-            let (files, bytes, busy, pinned) = explained(&proxy, SyncAction::Free(&named), result).await?;
-            println!("{}", konedrivectl::free_text(files, bytes, busy, pinned));
-            fail_if_root_unhealthy(&proxy).await?;
-        }
+        SyncCmd::Status
+        | SyncCmd::Hydrate { .. }
+        | SyncCmd::Dehydrate { .. }
+        | SyncCmd::State { .. }
+        | SyncCmd::Pin { .. }
+        | SyncCmd::Unpin { .. }
+        | SyncCmd::Free { .. } => unreachable!("handled by `sync`"),
     }
     Ok(())
 }
@@ -325,19 +794,12 @@ fn absolute_all(paths: &[String]) -> anyhow::Result<Vec<String>> {
     paths.iter().map(|path| absolute_str(path)).collect()
 }
 
-/// What a refusal of a call on several `paths` is said about: the one path
-/// a `NotAllowed` names, or all of them.
-fn named_in_refusal<T>(result: &zbus::Result<T>, paths: &[String]) -> String {
-    match result.as_ref().err().and_then(konedrivectl::refused_path) {
-        Some(path) => path.to_owned(),
-        None => paths.join(", "),
-    }
-}
-
 /// Passes a `Sync1` call's result through, turning a refusal into what the
 /// person running this should read (`konedrivectl::explain_sync_error`):
 /// matched by the D-Bus error name, and said in terms of their own file.
 async fn explained<T>(
+    daemon: &Daemon,
+    chosen: &Chosen,
     proxy: &Sync1Proxy<'_>,
     action: SyncAction<'_>,
     result: zbus::Result<T>,
@@ -351,11 +813,102 @@ async fn explained<T>(
             // thing to report.
             let root = proxy.root_path().await.unwrap_or_default();
             let source = proxy.root_source().await.unwrap_or_default();
-            let helper = proxy.helper_state().await.unwrap_or_default();
-            let context = konedrivectl::Context { root: &root, source: &source, helper: &helper };
-            Err(anyhow::anyhow!("{}", konedrivectl::explain_sync_error_in(action, &error, context)))
+            let helper = daemon.manager.helper_state().await.unwrap_or_default();
+            let foreign = match action {
+                SyncAction::Register(path) | SyncAction::RegisterWithoutInterception(path) => carries_a_drive(path),
+                _ => false,
+            };
+            let prefix = chosen.prefix();
+            let context = konedrivectl::Context {
+                root: &root,
+                source: &source,
+                helper: &helper,
+                folders: &[],
+                foreign,
+                prefix: &prefix,
+            };
+            Err(anyhow!("{}", konedrivectl::explain_sync_error_in(action, &error, context)))
         }
     }
+}
+
+/// Passes a `Files1` call's result on `paths` through, as [`explained`] does. `Files1` finds
+/// the account by the path, so the refusal is explained against the folder that holds the
+/// path it is about — the one a `NotAllowed` names, else the first in no folder, else the
+/// first given — and, for a path in none, against every account's folder.
+async fn explained_paths<T>(
+    daemon: &Daemon,
+    action: PathAction,
+    paths: &[String],
+    result: zbus::Result<T>,
+) -> anyhow::Result<T> {
+    let error = match result {
+        Ok(value) => return Ok(value),
+        Err(error) => error,
+    };
+    let (folders, accounts) = daemon.folders().await.unwrap_or_default();
+    let refused = konedrivectl::refused_path(&error).map(str::to_owned).or_else(|| {
+        let outside = konedrive_dbus::error_name(&error) == Some("org.konedrive.Error.OutsideRoot");
+        paths.iter().find(|path| outside && holder(&folders, path).is_none()).cloned()
+    });
+    let named = refused.clone().unwrap_or_else(|| paths.join(", "));
+    let about = refused.as_deref().or(paths.first().map(String::as_str)).unwrap_or_default();
+    let held_by = holder(&folders, about);
+    let root = held_by.map(|f| f.root.clone()).unwrap_or_default();
+    let source = match held_by {
+        Some(folder) => folder.sync.root_source().await.unwrap_or_default(),
+        None => String::new(),
+    };
+    let helper = daemon.manager.helper_state().await.unwrap_or_default();
+    let roots: Vec<String> = folders.iter().map(|f| f.root.clone()).collect();
+    // A command suggested about the folder that holds the path names its account; about
+    // a path in none, `<account>` stands in.
+    let prefix = konedrivectl::command_prefix(held_by.map(|f| f.label.as_str()), accounts > 1, variable_set());
+    let context = konedrivectl::Context {
+        root: &root,
+        source: &source,
+        helper: &helper,
+        folders: &roots,
+        foreign: false,
+        prefix: &prefix,
+    };
+    Err(anyhow!("{}", konedrivectl::explain_sync_error_in(action.about(&named), &error, context)))
+}
+
+/// A `Files1` call, for [`explained_paths`].
+#[derive(Clone, Copy)]
+enum PathAction {
+    Hydrate,
+    Dehydrate,
+    Pin,
+    Unpin,
+    Free,
+}
+
+impl PathAction {
+    /// The call, about `named`: the path its refusal is about, or the paths given.
+    fn about(self, named: &str) -> SyncAction<'_> {
+        match self {
+            PathAction::Hydrate => SyncAction::Hydrate(named),
+            PathAction::Dehydrate => SyncAction::Dehydrate(named),
+            PathAction::Pin => SyncAction::Pin(named),
+            PathAction::Unpin => SyncAction::Unpin(named),
+            PathAction::Free => SyncAction::Free(named),
+        }
+    }
+}
+
+/// Whether the folder at `path` carries a drive (`user.konedrive.drive`, design §8.3): a
+/// registration of it refused `NotEmpty` was refused because it is another account's
+/// folder. An empty value is no drive, as the daemon reads it. The link itself, if it is
+/// one: the daemon refuses links anyway.
+fn carries_a_drive(path: &str) -> bool {
+    let (Ok(path), Ok(name)) = (std::ffi::CString::new(path), std::ffi::CString::new("user.konedrive.drive")) else {
+        return false;
+    };
+    // SAFETY: both are NUL-terminated strings that live across the call; a null buffer of
+    // size 0 asks only for the value's size.
+    unsafe { libc::lgetxattr(path.as_ptr(), name.as_ptr(), std::ptr::null_mut(), 0) > 0 }
 }
 
 /// `Some(detail)` when the D-Bus call just made left (or found) the root in
@@ -373,12 +926,28 @@ async fn root_trouble(proxy: &Sync1Proxy<'_>) -> anyhow::Result<Option<String>> 
 }
 
 /// Bails with the detail when [`root_trouble`] finds one. Used after the
-/// four commands whose own success message is still true regardless (a file
+/// commands whose own success message is still true regardless (a file
 /// really was hydrated, a folder really was forgotten) but where the root as
 /// a whole may still need attention.
 async fn fail_if_root_unhealthy(proxy: &Sync1Proxy<'_>) -> anyhow::Result<()> {
     if let Some(detail) = root_trouble(proxy).await? {
         bail!("the sync root needs attention: {detail}");
+    }
+    Ok(())
+}
+
+/// [`fail_if_root_unhealthy`] for every folder that holds one of `paths`.
+async fn fail_if_holders_unhealthy(daemon: &Daemon, paths: &[String]) -> anyhow::Result<()> {
+    let (folders, _) = daemon.folders().await?;
+    let mut checked: Vec<&str> = Vec::new();
+    for folder in paths.iter().filter_map(|path| holder(&folders, path)) {
+        if checked.contains(&folder.root.as_str()) {
+            continue;
+        }
+        checked.push(&folder.root);
+        if let Some(detail) = root_trouble(&folder.sync).await? {
+            bail!("the sync folder {} needs attention: {detail}", folder.root);
+        }
     }
     Ok(())
 }
@@ -406,9 +975,43 @@ fn absolute_str(path: &str) -> anyhow::Result<String> {
     absolute.to_str().map(str::to_owned).context("non-UTF-8 path")
 }
 
-async fn login(connection: &zbus::Connection, proxy: &Account1Proxy<'_>) -> anyhow::Result<()> {
-    let url = proxy.begin_sign_in().await?;
-    println!("Opening the Microsoft sign-in page in your browser. If it does not open, visit:\n\n  {url}\n");
+/// `login` (design §5.2): the chosen account's sign-in. With no account at all and none
+/// named, it first adds one called `Personal`, so the documented setup — `set-client-id`,
+/// `login`, `sync register ~/OneDrive` — keeps working word for word.
+async fn login(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()> {
+    let accounts = daemon.accounts().await?;
+    // An unreadable configuration first: it also leaves the client ID unknown.
+    daemon.check_loaded(&accounts).await?;
+    // A name that fits no account, or several accounts and none named, before the client ID.
+    let named = match (accounts.is_empty(), wanted(option)) {
+        (true, None) => None,
+        (_, wanted) => Some(konedrivectl::choose(&accounts, wanted)?.clone()),
+    };
+    // Before anything is added: every account signs in with it.
+    if daemon.manager.client_id().await?.is_empty() {
+        bail!(
+            "no client ID is set yet. Save the Application (client) ID of your Microsoft Entra app \
+             registration first: `konedrivectl set-client-id <id>` (see the README)"
+        );
+    }
+    let chosen = match named {
+        Some(chosen) => chosen,
+        None => {
+            let result = daemon.manager.add(FIRST_LABEL).await;
+            let action = AccountAction::Add(FIRST_LABEL);
+            let path = result.map_err(|e| anyhow!(konedrivectl::explain_account_error(action, &e)))?;
+            let id = daemon.account(&path).await?.id().await?;
+            println!("Added an account called {FIRST_LABEL} (`konedrivectl account rename {FIRST_LABEL} <label>` renames it).");
+            AccountInfo { path, id, label: FIRST_LABEL.to_owned(), email: String::new() }
+        }
+    };
+    let proxy = daemon.account(&chosen.path).await?;
+    let result = proxy.begin_sign_in().await;
+    let url = result.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::SignIn(&chosen.label), &e)))?;
+    println!(
+        "Opening the Microsoft sign-in page for {} in your browser. If it does not open, visit:\n\n  {url}\n",
+        chosen.label
+    );
     let _ = Command::new("xdg-open")
         .arg(&url)
         .stdout(Stdio::null())
@@ -417,7 +1020,8 @@ async fn login(connection: &zbus::Connection, proxy: &Account1Proxy<'_>) -> anyh
 
     // An uncached proxy: the wait loop polls `State` directly rather than watching
     // `StateChanged`, so it never misses a transition the signal stream coalesced away.
-    let wait_proxy = Account1Proxy::builder(connection)
+    let wait_proxy = Account1Proxy::builder(&daemon.connection)
+        .path(chosen.path.clone())?
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await?;
@@ -431,6 +1035,9 @@ async fn login(connection: &zbus::Connection, proxy: &Account1Proxy<'_>) -> anyh
             bail!("cancelled");
         }
     }
-    println!("Signed in.");
+    match wait_proxy.email().await.unwrap_or_default() {
+        email if email.is_empty() => println!("Signed in to {}.", chosen.label),
+        email => println!("Signed in to {} as {email}.", chosen.label),
+    }
     Ok(())
 }

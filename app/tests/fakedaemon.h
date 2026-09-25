@@ -1,18 +1,22 @@
 #pragma once
 
-// A stand-in for konedrived on the tests' private session bus: Account1 and
-// Sync1 on one object, as the daemon has them. Each interface is an adaptor,
-// since one D-Bus path holds one object. What the controllers ask is logged
-// in `calls`; properties change through set(), which also emits
+// A stand-in for konedrived on the tests' private session bus, shaped as the
+// daemon serves it: the manager at /org/konedrive/Accounts with Accounts1
+// (dbus/org.konedrive.Accounts1.xml), and each account at
+// /org/konedrive/Accounts/<id> with Account1 and Sync1. Each interface is an
+// adaptor, since one D-Bus path holds one object. What the controllers ask is
+// logged in `calls`; properties change through set(), which also emits
 // PropertiesChanged the way the daemon does.
 
 #include "accountcontroller.h"
+#include "daemoncontroller.h"
 #include "synccontroller.h"
 #include "synctypes.h"
 
 #include <QDBusAbstractAdaptor>
 #include <QDBusConnection>
 #include <QDBusMessage>
+#include <QDBusObjectPath>
 #include <QStringList>
 #include <QVariantMap>
 
@@ -21,6 +25,21 @@
 namespace fake
 {
 inline const QString BusName = QStringLiteral("fake-daemon");
+inline const QString ManagerPath = QStringLiteral("/org/konedrive/Accounts");
+
+/// The n-th account's id (from 1): 12 hex characters, as the daemon's are.
+inline QString idFor(int n)
+{
+    return QStringLiteral("%1").arg(n, 12, 16, QLatin1Char('0'));
+}
+
+inline QString accountPath(const QString &id)
+{
+    return ManagerPath + QLatin1Char('/') + id;
+}
+
+/// The path of FakeDaemon's first account.
+inline const QString FirstAccount = accountPath(idFor(1));
 
 /// The fake's own connection, so the controllers under test (on the
 /// default session connection) talk to it over the bus.
@@ -29,9 +48,9 @@ inline QDBusConnection bus()
     return QDBusConnection::connectToBus(QDBusConnection::SessionBus, BusName);
 }
 
-inline void propertiesChanged(QDBusConnection connection, const QString &interfaceName, const QVariantMap &changes)
+inline void propertiesChanged(QDBusConnection connection, const QString &path, const QString &interfaceName, const QVariantMap &changes)
 {
-    auto signal = QDBusMessage::createSignal(SyncController::ObjectPath, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("PropertiesChanged"));
+    auto signal = QDBusMessage::createSignal(path, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("PropertiesChanged"));
     signal << interfaceName << changes << QStringList();
     connection.send(signal);
 }
@@ -41,24 +60,31 @@ class FakeAccount1 : public QDBusAbstractAdaptor
 {
     Q_OBJECT
     Q_CLASSINFO("D-Bus Interface", "org.konedrive.Account1")
+    Q_PROPERTY(QString Id READ id)
+    Q_PROPERTY(QString Label READ label)
+    Q_PROPERTY(QString Mode READ mode)
     Q_PROPERTY(QString State READ state)
     Q_PROPERTY(QString LastError READ lastError)
-    Q_PROPERTY(QString ClientId READ clientId)
     Q_PROPERTY(QString DisplayName READ displayName)
     Q_PROPERTY(QString Email READ email)
     Q_PROPERTY(qulonglong QuotaUsed READ quotaUsed)
     Q_PROPERTY(qulonglong QuotaTotal READ quotaTotal)
 
 public:
-    FakeAccount1(QObject *parent, const QDBusConnection &bus)
+    FakeAccount1(QObject *parent, const QDBusConnection &bus, const QString &path, const QString &id, const QString &label)
         : QDBusAbstractAdaptor(parent)
         , m_bus(bus)
+        , m_path(path)
     {
+        m_properties.insert(QStringLiteral("Id"), id);
+        m_properties.insert(QStringLiteral("Label"), label);
     }
 
+    QString id() const { return m_properties.value(QStringLiteral("Id")).toString(); }
+    QString label() const { return m_properties.value(QStringLiteral("Label")).toString(); }
+    QString mode() const { return m_properties.value(QStringLiteral("Mode")).toString(); }
     QString state() const { return m_properties.value(QStringLiteral("State")).toString(); }
     QString lastError() const { return m_properties.value(QStringLiteral("LastError")).toString(); }
-    QString clientId() const { return m_properties.value(QStringLiteral("ClientId")).toString(); }
     QString displayName() const { return m_properties.value(QStringLiteral("DisplayName")).toString(); }
     QString email() const { return m_properties.value(QStringLiteral("Email")).toString(); }
     qulonglong quotaUsed() const { return m_properties.value(QStringLiteral("QuotaUsed")).toULongLong(); }
@@ -69,25 +95,47 @@ public:
         for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
             m_properties.insert(it.key(), it.value());
         }
-        fake::propertiesChanged(m_bus, AccountController::InterfaceName, changes);
+        fake::propertiesChanged(m_bus, m_path, AccountController::InterfaceName, changes);
     }
 
     QStringList calls;
 
 public Q_SLOTS:
+    QString BeginSignIn()
+    {
+        calls << QStringLiteral("BeginSignIn");
+        set({{QStringLiteral("State"), QStringLiteral("signing-in")}});
+        return QStringLiteral("https://login.example/authorize?account=") + id();
+    }
+    void CancelSignIn()
+    {
+        calls << QStringLiteral("CancelSignIn");
+        set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
+    }
     void SignOut()
     {
         calls << QStringLiteral("SignOut");
         set({{QStringLiteral("State"), QStringLiteral("signed-out")}});
     }
     void RefreshAccountInfo() { calls << QStringLiteral("RefreshAccountInfo"); }
+    void SetLabel(const QString &label, const QDBusMessage &message)
+    {
+        calls << QStringLiteral("SetLabel:") + label;
+        if (label.trimmed().isEmpty() || label.contains(QLatin1Char('/'))) {
+            message.setDelayedReply(true);
+            m_bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("not a label: ") + label));
+            return;
+        }
+        set({{QStringLiteral("Label"), label.trimmed()}});
+    }
 
 private:
     QDBusConnection m_bus;
+    QString m_path;
     QVariantMap m_properties{
+        {QStringLiteral("Mode"), QStringLiteral("read-only")},
         {QStringLiteral("State"), QStringLiteral("signed-out")},
         {QStringLiteral("LastError"), QString()},
-        {QStringLiteral("ClientId"), QString()},
         {QStringLiteral("DisplayName"), QString()},
         {QStringLiteral("Email"), QString()},
         {QStringLiteral("QuotaUsed"), QVariant::fromValue<qulonglong>(0)},
@@ -103,7 +151,6 @@ class FakeSync1 : public QDBusAbstractAdaptor
     Q_PROPERTY(QString RootState READ rootState)
     Q_PROPERTY(QString RootSource READ rootSource)
     Q_PROPERTY(QString LastError READ lastError)
-    Q_PROPERTY(QString HelperState READ helperState)
     Q_PROPERTY(qulonglong ItemsListed READ itemsListed)
     Q_PROPERTY(qulonglong ItemsPlaced READ itemsPlaced)
     Q_PROPERTY(qulonglong SkippedCount READ skippedCount)
@@ -114,9 +161,10 @@ class FakeSync1 : public QDBusAbstractAdaptor
     Q_PROPERTY(KonedriveTransferList Transfers READ transfers)
 
 public:
-    FakeSync1(QObject *parent, const QDBusConnection &bus)
+    FakeSync1(QObject *parent, const QDBusConnection &bus, const QString &path)
         : QDBusAbstractAdaptor(parent)
         , m_bus(bus)
+        , m_path(path)
     {
     }
 
@@ -124,7 +172,6 @@ public:
     QString rootState() const { return m_properties.value(QStringLiteral("RootState")).toString(); }
     QString rootSource() const { return m_properties.value(QStringLiteral("RootSource")).toString(); }
     QString lastError() const { return m_properties.value(QStringLiteral("LastError")).toString(); }
-    QString helperState() const { return m_properties.value(QStringLiteral("HelperState")).toString(); }
     qulonglong itemsListed() const { return m_properties.value(QStringLiteral("ItemsListed")).toULongLong(); }
     qulonglong itemsPlaced() const { return m_properties.value(QStringLiteral("ItemsPlaced")).toULongLong(); }
     qulonglong skippedCount() const { return m_properties.value(QStringLiteral("SkippedCount")).toULongLong(); }
@@ -139,13 +186,13 @@ public:
         for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
             m_properties.insert(it.key(), it.value());
         }
-        fake::propertiesChanged(m_bus, SyncController::InterfaceName, changes);
+        fake::propertiesChanged(m_bus, m_path, SyncController::InterfaceName, changes);
     }
 
     void setTransfers(const KonedriveTransferList &transfers)
     {
         m_transfers = transfers;
-        fake::propertiesChanged(m_bus, SyncController::InterfaceName, {{QStringLiteral("Transfers"), QVariant::fromValue(transfers)}});
+        fake::propertiesChanged(m_bus, m_path, SyncController::InterfaceName, {{QStringLiteral("Transfers"), QVariant::fromValue(transfers)}});
     }
 
     /// Records an event in RecentActivity() and emits ActivityAdded, as the daemon does.
@@ -159,7 +206,7 @@ public:
     /// before its store has it.
     void signalOnly(qint64 time, const QString &kind, const QString &path, const QString &detail)
     {
-        auto signal = QDBusMessage::createSignal(SyncController::ObjectPath, SyncController::InterfaceName, QStringLiteral("ActivityAdded"));
+        auto signal = QDBusMessage::createSignal(m_path, SyncController::InterfaceName, QStringLiteral("ActivityAdded"));
         signal << time << kind << path << detail;
         m_bus.send(signal);
     }
@@ -263,6 +310,7 @@ public Q_SLOTS:
 
 private:
     QDBusConnection m_bus;
+    QString m_path;
     KonedriveTransferList m_transfers;
     QDBusMessage m_heldActivity;
     uint m_heldLimit = 0;
@@ -272,7 +320,6 @@ private:
         {QStringLiteral("RootState"), QStringLiteral("none")},
         {QStringLiteral("RootSource"), QString()},
         {QStringLiteral("LastError"), QString()},
-        {QStringLiteral("HelperState"), QStringLiteral("connected")},
         {QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(0)},
         {QStringLiteral("ItemsPlaced"), QVariant::fromValue<qulonglong>(0)},
         {QStringLiteral("SkippedCount"), QVariant::fromValue<qulonglong>(0)},
@@ -283,39 +330,216 @@ private:
     };
 };
 
-/// The daemon's one object, carrying both interfaces.
+/// One account's object, /org/konedrive/Accounts/<id>, carrying both interfaces.
+class FakeAccountObject : public QObject
+{
+    Q_OBJECT
+
+public:
+    FakeAccountObject(const QString &id, const QString &label, QObject *parent)
+        : QObject(parent)
+        , id(id)
+        , path(fake::accountPath(id))
+        , account(new FakeAccount1(this, fake::bus(), path, id, label))
+        , sync(new FakeSync1(this, fake::bus(), path))
+    {
+    }
+
+    const QString id;
+    const QString path;
+    FakeAccount1 *account;
+    FakeSync1 *sync;
+};
+
+class FakeDaemon;
+
+/// Accounts1 on the manager object; its methods act on the FakeDaemon.
+class FakeAccounts1 : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.konedrive.Accounts1")
+    Q_PROPERTY(QList<QDBusObjectPath> Accounts READ accounts)
+    Q_PROPERTY(QString ClientId READ clientId)
+    Q_PROPERTY(QString HelperState READ helperState)
+    Q_PROPERTY(QString LastError READ lastError)
+
+public:
+    explicit FakeAccounts1(FakeDaemon *daemon);
+
+    QList<QDBusObjectPath> accounts() const;
+    QString clientId() const { return m_properties.value(QStringLiteral("ClientId")).toString(); }
+    QString helperState() const { return m_properties.value(QStringLiteral("HelperState")).toString(); }
+    QString lastError() const { return m_properties.value(QStringLiteral("LastError")).toString(); }
+
+    void set(const QVariantMap &changes)
+    {
+        for (auto it = changes.cbegin(); it != changes.cend(); ++it) {
+            m_properties.insert(it.key(), it.value());
+        }
+        fake::propertiesChanged(fake::bus(), fake::ManagerPath, DaemonController::InterfaceName, changes);
+    }
+
+    QStringList calls;
+    /// Remove refuses NoHelper, as it does for an intercepted folder with no helper.
+    bool refuseRemove = false;
+
+public Q_SLOTS:
+    QDBusObjectPath Add(const QString &label, const QDBusMessage &message);
+    void Remove(const QDBusObjectPath &account, const QDBusMessage &message);
+    void SetClientId(const QString &id, const QDBusMessage &message)
+    {
+        calls << QStringLiteral("SetClientId:") + id;
+        if (id == QLatin1String("bad")) {
+            message.setDelayedReply(true);
+            fake::bus().send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("invalid client ID")));
+            return;
+        }
+        set({{QStringLiteral("ClientId"), id}});
+    }
+
+private:
+    FakeDaemon *m_daemon;
+    QVariantMap m_properties{
+        {QStringLiteral("ClientId"), QString()},
+        {QStringLiteral("HelperState"), QStringLiteral("connected")},
+        {QStringLiteral("LastError"), QString()},
+    };
+};
+
+/// The daemon: the manager object and its accounts. `account` and `sync` are
+/// the first account's, for tests about one account.
 class FakeDaemon : public QObject
 {
     Q_OBJECT
 
 public:
-    FakeDaemon()
-        : account(new FakeAccount1(this, fake::bus()))
-        , sync(new FakeSync1(this, fake::bus()))
+    /// One account per label, in order; by default one, "Personal".
+    explicit FakeDaemon(const QStringList &labels = {QStringLiteral("Personal")})
+        : manager(new FakeAccounts1(this))
     {
         // Before anything is sent: Transfers is an a(stt).
         registerKonedriveSyncTypes();
+        for (const QString &label : labels) {
+            addAccount(label);
+        }
     }
 
     /// Takes the daemon's name on the private bus. Returns false on failure.
     bool start()
     {
         auto connection = fake::bus();
-        return connection.registerObject(SyncController::ObjectPath, this, QDBusConnection::ExportAdaptors)
-            && connection.registerService(SyncController::ServiceName);
+        bool ok = connection.registerObject(fake::ManagerPath, this, QDBusConnection::ExportAdaptors);
+        for (FakeAccountObject *object : std::as_const(objects)) {
+            ok = connection.registerObject(object->path, object, QDBusConnection::ExportAdaptors) && ok;
+        }
+        m_started = true;
+        return connection.registerService(DaemonController::ServiceName) && ok;
     }
 
     /// Gives the name up, as a daemon that exits does.
     void stop()
     {
         auto connection = fake::bus();
-        connection.unregisterService(SyncController::ServiceName);
-        connection.unregisterObject(SyncController::ObjectPath);
+        connection.unregisterService(DaemonController::ServiceName);
+        for (FakeAccountObject *object : std::as_const(objects)) {
+            connection.unregisterObject(object->path);
+        }
+        connection.unregisterObject(fake::ManagerPath);
+        m_started = false;
     }
 
-    FakeAccount1 *account;
-    FakeSync1 *sync;
+    /// As Accounts1.Add does: a new account, exported, then announced in Accounts.
+    FakeAccountObject *addAccount(const QString &label)
+    {
+        auto *object = new FakeAccountObject(fake::idFor(++m_lastId), label, this);
+        objects << object;
+        if (objects.size() == 1) {
+            account = object->account;
+            sync = object->sync;
+        }
+        if (m_started) {
+            fake::bus().registerObject(object->path, object, QDBusConnection::ExportAdaptors);
+        }
+        announce();
+        return object;
+    }
+
+    /// As Accounts1.Remove does, once it has forgotten the folder: signed out
+    /// first (the daemon's `retire`), then unexported, then gone from Accounts.
+    bool removeAccount(const QString &path)
+    {
+        for (FakeAccountObject *object : std::as_const(objects)) {
+            if (object->path == path) {
+                object->account->set({{QStringLiteral("State"), QStringLiteral("signed-out")},
+                                      {QStringLiteral("DisplayName"), QString()},
+                                      {QStringLiteral("Email"), QString()}});
+                objects.removeOne(object);
+                if (m_started) {
+                    fake::bus().unregisterObject(path);
+                }
+                announce();
+                object->deleteLater();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    FakeAccountObject *object(int index) const { return objects.value(index); }
+
+    FakeAccounts1 *manager;
+    QList<FakeAccountObject *> objects;
+    FakeAccount1 *account = nullptr;
+    FakeSync1 *sync = nullptr;
+
+private:
+    void announce() { manager->set({{QStringLiteral("Accounts"), QVariant::fromValue(manager->accounts())}}); }
+
+    bool m_started = false;
+    int m_lastId = 0;
 };
+
+inline FakeAccounts1::FakeAccounts1(FakeDaemon *daemon)
+    : QDBusAbstractAdaptor(daemon)
+    , m_daemon(daemon)
+{
+}
+
+inline QList<QDBusObjectPath> FakeAccounts1::accounts() const
+{
+    QList<QDBusObjectPath> paths;
+    for (const FakeAccountObject *object : std::as_const(m_daemon->objects)) {
+        paths << QDBusObjectPath(object->path);
+    }
+    return paths;
+}
+
+inline QDBusObjectPath FakeAccounts1::Add(const QString &label, const QDBusMessage &message)
+{
+    calls << QStringLiteral("Add:") + label;
+    for (const FakeAccountObject *object : std::as_const(m_daemon->objects)) {
+        if (object->account->label().compare(label.trimmed(), Qt::CaseInsensitive) == 0 || label.trimmed().isEmpty()) {
+            message.setDelayedReply(true);
+            fake::bus().send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("that label is taken")));
+            return {};
+        }
+    }
+    return QDBusObjectPath(m_daemon->addAccount(label.trimmed())->path);
+}
+
+inline void FakeAccounts1::Remove(const QDBusObjectPath &account, const QDBusMessage &message)
+{
+    calls << QStringLiteral("Remove:") + account.path();
+    if (refuseRemove) {
+        message.setDelayedReply(true);
+        fake::bus().send(message.createErrorReply(QStringLiteral("org.konedrive.Error.NoHelper"), QStringLiteral("the konedrive helper is not connected")));
+        return;
+    }
+    if (!m_daemon->removeAccount(account.path())) {
+        message.setDelayedReply(true);
+        fake::bus().send(message.createErrorReply(QStringLiteral("org.konedrive.Error.NoAccount"), QStringLiteral("no such account")));
+    }
+}
 
 /// A system tray's StatusNotifierWatcher with a host registered, as Plasma
 /// runs one. Tray icons register with it; `items` records their names.

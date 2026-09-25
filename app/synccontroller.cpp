@@ -42,18 +42,18 @@ QString whyText(const QString &reason)
 }
 
 const QString SyncController::ServiceName = QStringLiteral("org.konedrive.Daemon");
-const QString SyncController::ObjectPath = QStringLiteral("/org/konedrive/Daemon");
 const QString SyncController::InterfaceName = QStringLiteral("org.konedrive.Sync1");
 
-SyncController::SyncController(QObject *parent)
-    : SyncController(QDBusConnection::sessionBus(), parent)
+SyncController::SyncController(const QString &path, QObject *parent)
+    : SyncController(QDBusConnection::sessionBus(), path, parent)
 {
 }
 
-SyncController::SyncController(const QDBusConnection &bus, QObject *parent)
+SyncController::SyncController(const QDBusConnection &bus, const QString &path, QObject *parent)
     : QObject(parent)
     , m_bus(bus)
-    , m_iface(new OrgKonedriveSync1Interface(ServiceName, ObjectPath, bus, this))
+    , m_path(path)
+    , m_iface(new OrgKonedriveSync1Interface(ServiceName, path, bus, this))
     , m_watcher(new QDBusServiceWatcher(ServiceName, bus, QDBusServiceWatcher::WatchForOwnerChange, this))
     , m_transfers(new TransferModel(this))
     , m_activity(new ActivityModel(this))
@@ -61,12 +61,12 @@ SyncController::SyncController(const QDBusConnection &bus, QObject *parent)
 {
     registerKonedriveSyncTypes();
     m_bus.connect(ServiceName,
-                  ObjectPath,
+                  m_path,
                   QStringLiteral("org.freedesktop.DBus.Properties"),
                   QStringLiteral("PropertiesChanged"),
                   this,
                   SLOT(onPropertiesChanged(QString, QVariantMap, QStringList)));
-    m_bus.connect(ServiceName, ObjectPath, InterfaceName, QStringLiteral("ActivityAdded"), this, SLOT(onActivityAdded(qlonglong, QString, QString, QString)));
+    m_bus.connect(ServiceName, m_path, InterfaceName, QStringLiteral("ActivityAdded"), this, SLOT(onActivityAdded(qlonglong, QString, QString, QString)));
     connect(m_watcher, &QDBusServiceWatcher::serviceOwnerChanged, this, [this](const QString &, const QString &, const QString &newOwner) {
         if (newOwner.isEmpty()) {
             setServiceAvailable(false);
@@ -82,7 +82,7 @@ SyncController::SyncController(const QDBusConnection &bus, QObject *parent)
 
 void SyncController::fetchAll()
 {
-    auto message = QDBusMessage::createMethodCall(ServiceName, ObjectPath, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("GetAll"));
+    auto message = QDBusMessage::createMethodCall(ServiceName, m_path, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("GetAll"));
     message << InterfaceName;
     auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(message), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
@@ -128,7 +128,6 @@ void SyncController::applyProperties(const QVariantMap &p)
     text("RootState", m_rootState);
     text("RootSource", m_rootSource);
     text("LastError", m_lastError);
-    text("HelperState", m_helperState);
     number("ItemsListed", m_itemsListed);
     number("ItemsPlaced", m_itemsPlaced);
     number("SkippedCount", m_skippedCount);
@@ -248,7 +247,7 @@ void SyncController::chooseFolder(const QUrl &folder)
     // M6: no timeout, as FreeUpSpace has — RegisterRoot can take a while
     // (the initial listing starts under it), so it bypasses the generated
     // proxy (whose timeout is shared with every other call on m_iface).
-    auto message = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, QStringLiteral("RegisterRoot"));
+    auto message = QDBusMessage::createMethodCall(ServiceName, m_path, InterfaceName, QStringLiteral("RegisterRoot"));
     message << path;
     call(
         m_bus.asyncCall(message, std::numeric_limits<int>::max()),
@@ -285,7 +284,7 @@ void SyncController::cancelPending()
 void SyncController::forget()
 {
     // M6: no timeout, as RegisterRoot and FreeUpSpace have.
-    const auto message = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, QStringLiteral("UnregisterRoot"));
+    const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, InterfaceName, QStringLiteral("UnregisterRoot"));
     call(m_bus.asyncCall(message, std::numeric_limits<int>::max()));
 }
 
@@ -374,7 +373,7 @@ void SyncController::freeUpSpace()
     Q_EMIT freeUpResultChanged();
     // Dehydrating a large folder can take minutes: no D-Bus timeout (INT_MAX
     // is libdbus's "infinite"), where the generated proxy would give up at 25 s.
-    const auto message = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, QStringLiteral("FreeUpSpace"));
+    const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, InterfaceName, QStringLiteral("FreeUpSpace"));
     auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(message, std::numeric_limits<int>::max()), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
         w->deleteLater();
@@ -419,26 +418,4 @@ void SyncController::showInFolder(const QString &path)
 void SyncController::retry()
 {
     fetchAll();
-}
-
-bool SyncController::helperTrouble() const
-{
-    return !m_helperState.isEmpty() && m_helperState != QLatin1String("connected");
-}
-
-QString SyncController::helperInstruction() const
-{
-    if (m_helperState == QLatin1String("not-installed")) {
-        return i18n("Install the helper: sudo scripts/install-helper.sh (see README)");
-    }
-    if (m_helperState == QLatin1String("stopped")) {
-        return i18n("sudo systemctl start konedrive-helper");
-    }
-    if (m_helperState == QLatin1String("failed")) {
-        return i18n("systemctl status konedrive-helper shows why");
-    }
-    if (m_helperState == QLatin1String("unknown")) {
-        return i18n("The daemon cannot reach the helper.");
-    }
-    return QString();
 }

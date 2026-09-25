@@ -1,0 +1,72 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- /org/konedrive/Accounts. Per-file calls, each routed by path to the
+       account whose folder holds the path: the directory part is resolved
+       first (`..` and links to directories), and the account is the one
+       whose folder is a component prefix of it. Routing never opens the
+       file. A path in no account's folder is
+       refused OutsideRoot (ItemState answers "not-managed"). Once routed,
+       each call does what it did on Sync1 before this interface, in that
+       account's folder. -->
+  <interface name="org.konedrive.Files1">
+    <!-- Downloads one file now. A file already downloaded is left as it is.
+         A file in any state but online-only may still carry the helper's
+         ignore mark, which has to be cleared before a download that could
+         fail empties the file: in a folder registered with interception and
+         no helper connected, or in any folder while a helper runs that the
+         daemon is not connected to, that is refused NoHelper. -->
+    <method name="Hydrate">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <!-- Frees up one downloaded file's space. The helper's ignore mark on it
+         is cleared first, in either registration mode: refused NoHelper in a
+         folder registered with interception and no helper connected, and in
+         any folder while a helper runs that the daemon is not connected to;
+         with no helper running at all, a folder registered without
+         interception frees it up anyway. -->
+    <method name="Dehydrate">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <method name="ItemState">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="state" type="s" direction="out"/>
+    </method>
+    <!-- "Always keep on this device": pins each path (a file or a folder;
+         a folder pins everything under it, now and later) and queues the
+         download of every file under it that is online-only. A path already
+         pinned by a folder above it is left as it is. Every path is routed
+         before anything is pinned: one path in no folder refuses the whole
+         call and changes nothing. Returns how many files were queued, summed
+         over the accounts. -->
+    <method name="Pin">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="queued" type="u" direction="out"/>
+    </method>
+    <!-- Unchecking "Always keep on this device": removes each path's own pin
+         and nothing else — files stay downloaded, as on Windows. A path pinned
+         only by a folder above it is refused (NotAllowed, naming that
+         folder). Routed as Pin, and every path checked for a pin by a folder
+         above it before anything is unpinned. Returns how many pins were
+         removed, summed over the accounts. -->
+    <method name="Unpin">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="unpinned" type="u" direction="out"/>
+    </method>
+    <!-- "Free up space" for chosen paths: an explicitly pinned path is
+         unpinned, then everything under it is freed; a path pinned only by a
+         folder above it is refused (NotAllowed, naming that folder); an
+         unpinned path is freed. Files in use are skipped and counted as busy;
+         files pinned by their own pin below a freed folder stay and are
+         counted as skipped_pinned. Routed as Pin, and every path checked for
+         a pin by a folder above it before anything is freed. Counts are
+         summed over the accounts. -->
+    <method name="FreeUp">
+      <arg name="paths" type="as" direction="in"/>
+      <arg name="files" type="u" direction="out"/>
+      <arg name="bytes" type="t" direction="out"/>
+      <arg name="busy" type="u" direction="out"/>
+      <arg name="skipped_pinned" type="u" direction="out"/>
+    </method>
+  </interface>
+</node>
