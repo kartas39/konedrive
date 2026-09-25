@@ -663,6 +663,11 @@ every account.
   folder and into the Trash, a download that stops part-way, a helper restart.
 - **The test account**, once, through the guarded harness below: what the service does that no mock
   can say (§13).
+- **A stress run**, by hand, against a separate read-write test account: `tests/stress/` drives the
+  real daemon through `konedrivectl` and the filesystem — many files, edits, renames and moves, a
+  file moved or edited while it is mid-upload, and deletes — and checks the outbox, the item
+  counts, and, read-only against Graph itself, that every file's size and QuickXorHash in OneDrive
+  match what is on disk. See `tests/stress/README.md`.
 
 ### 12.1 Running against the test account
 

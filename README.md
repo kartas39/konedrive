@@ -537,6 +537,10 @@ Uploads are checked against a real account only on a separate test account, by h
 account's, is on the write allow-list, and looks like a test account, and it writes only inside a
 folder of its own. How to run it: [`docs/design/writes.md`](docs/design/writes.md) §12.1.
 
+For a heavier, end-to-end workout of the upload path — many files, edits, moves, a file moved or
+edited mid-upload, deletes — against a real read-write test account, see
+[`tests/stress/README.md`](tests/stress/README.md).
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full checklist before sending a change, and
 [SECURITY.md](SECURITY.md) for how to report a vulnerability privately.
 

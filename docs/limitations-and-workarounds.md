@@ -596,6 +596,23 @@ application must never read zeros where real content should be.
   on a 0-byte PUT, `conflictBehavior` in a PUT's URL, and the service's own echo.
 - **Status:** open. Measured 2026-09-25 on btrfs (`tests/vm/run.sh quick --only 'writes:'`, 6/6).
 
+### W19. The upload stress tool confirms every held delete, and can miss a fast upload's "running" moment
+- **What:** `tests/stress/stress_uploads.py` drives the real daemon end to end, through
+  `konedrivectl` and the filesystem, against a read-write test account. Its drain step calls
+  `sync deletes confirm` whenever anything is held, so the outbox can finish without a human —
+  which means it releases *any* held delete on the account, not only ones this run made, and so it
+  must run only against a dedicated test account, never a real one (said in its README). Scenario
+  5 (move or edit a large file while it uploads) polls `sync outbox` every 0.2 s for that row to
+  reach `running` before touching the file again; on a fast enough link even a 60 MiB upload could
+  finish before the first poll lands, and the tool reports that as a scenario failure ("never saw
+  … reach 'running'") rather than silently skipping the case — raising `--big-file-mb` is the
+  workaround if that happens often on a given connection.
+- **Cost:** a run against the wrong account could confirm someone else's held deletes; a very fast
+  connection may need a larger `--big-file-mb` to reliably exercise scenario 5.
+- **Status:** open. Reasoned: the tool refuses to start unless `account mode` already says
+  read-write and requires an explicit `--account` (checked; see its README), but it has not yet
+  been run against a real test account by this change — the coordinator runs it separately.
+
 ---
 
 ## 4. Fragile spots

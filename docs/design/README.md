@@ -212,6 +212,7 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
 | `scripts/` | the per-user install and its removal, the helper installer, the RPM build |
 | `tests/vm/` | the privileged end-to-end suite, run in a virtme-ng VM |
 | `tests/write-account/` | the guarded harness that checks the uploads against a real test account ([writes.md](writes.md) §12.1) |
+| `tests/stress/` | the upload stress tool: many files, edits, moves, a move mid-upload, deletes, against a real read-write test account ([writes.md](writes.md) §12) |
 | `tests/kio/` | the KIO measurements behind `docs/kio-behavior.md` |
 
 ## Glossary
