@@ -3,8 +3,6 @@
 //! transaction, so a crash leaves all of it or none, and the row it concerns
 //! is replayed from what is left (WR7).
 
-use std::collections::HashMap;
-
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 
@@ -65,93 +63,7 @@ fn amend_in(conn: &Connection, seq: i64, amend: impl FnOnce(&mut OutboxRow)) -> 
     Ok(true)
 }
 
-/// What the base held below a folder when its removal was decided (C1 of
-/// the outbox worker review): the folder's delete is compared with this, never with a
-/// base that a cycle may have brought someone else's additions and edits
-/// into since. Kept per row (`seq`), the folder itself included, so an
-/// empty folder has one too.
-const SEEN_TABLE: &str = "CREATE TABLE IF NOT EXISTS outbox_seen (
-    seq INTEGER NOT NULL, id TEXT NOT NULL, parent_id TEXT, kind TEXT NOT NULL, ctag TEXT,
-    placed INTEGER NOT NULL, PRIMARY KEY (seq, id))";
-
-/// One item below a folder being removed, as the base had it then.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Seen {
-    pub parent: Option<String>,
-    pub folder: bool,
-    pub ctag: Option<String>,
-    /// Placed here, with a local object: seen by this machine. Anything else
-    /// (a OneNote notebook, a skipped name, what was never placed) is never
-    /// deleted with the folder (C2).
-    pub placed: bool,
-}
-
-fn seen_of(r: &rusqlite::Row<'_>) -> rusqlite::Result<(String, Seen)> {
-    Ok((
-        r.get::<_, String>(0)?,
-        Seen { parent: r.get(1)?, folder: r.get::<_, String>(2)? == "folder", ctag: r.get(3)?, placed: r.get::<_, i64>(4)? != 0 },
-    ))
-}
-
-/// The items below folder `?1` (itself included), as [`Seen`] reads them,
-/// each with the row `?2`.
-fn subtree_sql(select: &str) -> String {
-    format!(
-        "WITH RECURSIVE below(id, depth) AS (
-             SELECT ?1, 0
-             UNION ALL
-             SELECT c.id, b.depth + 1 FROM items c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
-         {select} i.id, i.parent_id, i.kind, i.ctag, (i.placement = 'placed' AND i.local_handle IS NOT NULL), ?2
-           FROM items i WHERE i.id IN (SELECT id FROM below)"
-    )
-}
-
-/// Remembers, once per row, what the base holds below each folder a live
-/// removal takes out of OneDrive, and forgets it for rows that are no
-/// longer removals. Runs in the examination's transaction, so what is
-/// remembered is the base the removal was decided against.
-pub(super) fn remember_removals(conn: &Connection) -> Result<(), TreeError> {
-    conn.execute_batch(SEEN_TABLE)?;
-    conn.execute("DELETE FROM outbox_seen WHERE seq NOT IN (SELECT seq FROM outbox WHERE kind IN ('delete', 'move-out'))", [])?;
-    let pending: Vec<(String, i64)> = {
-        let mut statement = conn.prepare(
-            "SELECT o.item_id, o.seq FROM outbox o JOIN items i ON i.id = o.item_id
-              WHERE o.kind IN ('delete', 'move-out') AND i.kind = 'folder'
-                AND o.seq NOT IN (SELECT DISTINCT seq FROM outbox_seen)",
-        )?;
-        let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
-        rows
-    };
-    let insert = subtree_sql("INSERT OR IGNORE INTO outbox_seen (id, parent_id, kind, ctag, placed, seq) SELECT");
-    for (id, seq) in pending {
-        conn.execute(&insert, params![id, seq])?;
-    }
-    Ok(())
-}
-
-/// Forgets row `seq`'s record, with the row.
-fn forget_seen(conn: &Connection, seq: i64) -> Result<(), TreeError> {
-    conn.execute_batch(SEEN_TABLE)?;
-    conn.execute("DELETE FROM outbox_seen WHERE seq = ?1", [seq])?;
-    Ok(())
-}
-
 impl TreeStore {
-    /// Row `seq`'s record goes: the row was committed.
-    pub fn outbox_forget_seen(&self, seq: i64) -> Result<(), TreeError> {
-        forget_seen(&self.conn, seq)
-    }
-
-    /// What the base held below the folder row `seq` removes when the
-    /// removal was decided, the folder itself included. `None` when nothing
-    /// was remembered (a row older than this record).
-    pub fn outbox_seen(&self, seq: i64) -> Result<Option<HashMap<String, Seen>>, TreeError> {
-        self.conn.execute_batch(SEEN_TABLE)?;
-        let mut statement = self.conn.prepare("SELECT id, parent_id, kind, ctag, placed FROM outbox_seen WHERE seq = ?1")?;
-        let seen: HashMap<String, Seen> = statement.query_map([seq], seen_of)?.collect::<Result<_, _>>()?;
-        Ok((!seen.is_empty()).then_some(seen))
-    }
-
     /// Takes row `seq` for the worker: `running` from now on, so that an
     /// examination never merges into it (a follow-up waits behind it
     /// instead). Only if it is still in the state the worker chose it in;
@@ -283,25 +195,6 @@ impl TreeStore {
             forget_local(&tx, id)?;
         }
         tx.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
-        forget_seen(&tx, seq)?;
-        add_activity(&tx, activity)?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// A folder's delete done in part (§4.7): `deleted` went to OneDrive's
-    /// recycle bin; the folder and what was added or changed in it stay, and
-    /// lose their local object, so that the reconcile places them again.
-    pub fn outbox_commit_partial(&mut self, seq: i64, folder: &str, deleted: &[String], activity: Option<&ActivityRow>) -> Result<(), TreeError> {
-        let tx = self.conn.transaction()?;
-        let changes: Vec<Change> = deleted.iter().cloned().map(Change::Delete).collect();
-        apply(&tx, Table::Items, &changes)?;
-        // A delta fetched before these deletes must not bring them back.
-        let local_seq = next_local_seq(&tx)?;
-        crate::tree::reconcile::tombstone(&tx, &deleted.iter().map(String::as_str).collect::<Vec<_>>(), local_seq)?;
-        forget_local(&tx, folder)?;
-        tx.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
-        forget_seen(&tx, seq)?;
         add_activity(&tx, activity)?;
         tx.commit()?;
         Ok(())
@@ -359,13 +252,12 @@ impl TreeStore {
         Ok(self.conn.query_row("SELECT kind FROM conflicts WHERE rescued = ?1", [rescued], |r| r.get(0)).optional()?)
     }
 
-    /// Drops every row, and every record of what a removal was decided
-    /// against (`docs/design/writes.md` §2: a forced switch to read-only). The rows, for
-    /// whatever marks their files carry. A rename half-done under a temporary
-    /// name stays — a row sending its item to one, or one
-    /// whose item the base has under one: dropped, the item would stay under
-    /// that name in OneDrive, which no listing places, and its local object
-    /// would go with the next reconcile.
+    /// Drops every row (`docs/design/writes.md` §2: a forced switch to
+    /// read-only). The rows, for whatever marks their files carry. A rename
+    /// half-done under a temporary name stays — a row sending its item to
+    /// one, or one whose item the base has under one: dropped, the item
+    /// would stay under that name in OneDrive, which no listing places, and
+    /// its local object would go with the next reconcile.
     pub fn outbox_drop_all(&mut self) -> Result<Vec<OutboxRow>, TreeError> {
         let tx = self.conn.transaction()?;
         let swapping = format!("{SWAP_PREFIX}%");
@@ -373,8 +265,6 @@ impl TreeStore {
                        OR COALESCE(item_id, '') IN (SELECT id FROM items WHERE name LIKE ?1))";
         let rows = rows_where(&tx, dropped, [&swapping])?;
         tx.execute(&format!("DELETE FROM outbox {dropped}"), [&swapping])?;
-        tx.execute_batch(SEEN_TABLE)?;
-        tx.execute("DELETE FROM outbox_seen WHERE seq NOT IN (SELECT seq FROM outbox)", [])?;
         tx.commit()?;
         Ok(rows)
     }

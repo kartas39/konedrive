@@ -139,7 +139,6 @@ impl Run {
         check!("an empty file: conflictBehavior=fail in the URL refuses a taken name", self.empty_file_name_taken());
         check!("an empty file: If-Match is honoured on a 0-byte PUT", self.empty_file_if_match());
         check!("a small file: a one-request session, its guards, its time and its hash", self.small_file());
-        check!("a folder's cTag guards its delete", self.folder_delete_guard());
         check!("a rename to a name that is taken is refused 409", self.rename_to_taken_name());
         check!("names collide whatever their case", self.case_collisions());
         check!("a large file: 10 MiB fragments, and a resume from the session's status", self.large_file());
@@ -264,37 +263,6 @@ impl Run {
             Ok(_) => Fail("a session with an old eTag went through".into()),
             Err(e) => Fail(format!("the session with an old eTag: {e}")),
         }
-    }
-
-    /// §3.6, assumed: on a personal drive a folder's cTag changes with anything inside it, and
-    /// guards the folder's delete.
-    async fn folder_delete_guard(&mut self) -> Outcome {
-        let folder = step!("the folder", self.drive.create_folder(&self.folder, "guarded").await);
-        let inner = step!("the file inside", self.new_file(&folder.id, "inside.txt", b"one".to_vec(), T0).await);
-        let before = step!("reading the folder", self.drive.item(&folder.id).await);
-        let Some(old) = before.c_tag.clone() else { return Fail("OneDrive gave the folder no cTag".into()) };
-        let inner_etag = inner.e_tag.clone().unwrap_or_default();
-        step!("changing the file inside", self.replace(&inner.id, &inner_etag, b"two, longer".to_vec(), T0 + 60).await);
-        let after = step!("reading the folder again", self.drive.item(&folder.id).await);
-        let Some(current) = after.c_tag.clone() else { return Fail("OneDrive gave the folder no cTag the second time".into()) };
-        if current == old {
-            return Fail("the folder's cTag did not change when the file inside it did".into());
-        }
-        match self.drive.delete_item(&folder.id, &old).await {
-            Err(WriteError::Changed) => {}
-            Ok(()) => {
-                self.gone.extend([folder.id.clone(), inner.id.clone()]);
-                return Fail("the folder was deleted with its cTag from before the change inside it".into());
-            }
-            Err(e) => return Fail(format!("the delete with the old cTag: {e}")),
-        }
-        step!("the delete with the current cTag", self.drive.delete_item(&folder.id, &current).await);
-        self.gone.extend([folder.id.clone(), inner.id.clone()]);
-        let etag = if before.e_tag == after.e_tag { "kept" } else { "changed" };
-        Pass(format!(
-            "the cTag moved with the file inside; the old one was refused 412, the current one deleted the folder \
-             (its eTag {etag} across the change)"
-        ))
     }
 
     /// §15, assumed: a rename or move onto a name that is taken is refused 409.

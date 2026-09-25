@@ -342,7 +342,7 @@ pub fn placeholder_moved_out(ctx: &Ctx, checks: &mut Checks) -> Result<(), Strin
 
 /// §4.6: a directory moved out has each placeholder of its item downloaded where it went by the
 /// worker itself, every directory unmarked, the attributes taken off, and only then the folder is
-/// deleted in OneDrive, guarded by its cTag.
+/// deleted in OneDrive, whole and with no guard at all.
 pub fn directory_moved_out(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     let (a, b) = (b"ALPHA IN THE FOLDER".to_vec(), vec![0x42_u8; 200 * 1024]);
     ctx.place("mo-dirs/d/a.bin", "ITEM_MO_A", &a)?;
@@ -375,7 +375,7 @@ pub fn directory_moved_out(ctx: &Ctx, checks: &mut Checks) -> Result<(), String>
     }))?;
     let before = ctx.fetches();
     let worker = base.worker(ctx, &url, false)?;
-    let outcome = base.drained(WITHIN).and_then(|()| one_delete(&seen, "ITEM_MO_DIR", "c-ITEM_MO_DIR"));
+    let outcome = base.drained(WITHIN).and_then(|()| one_delete(&seen, "ITEM_MO_DIR", ""));
     base.stop(ctx, worker);
     outcome?;
     if ctx.fetches() != before + 2 {

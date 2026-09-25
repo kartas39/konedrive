@@ -3,7 +3,6 @@
 //! object is, which folder it goes into, a name that is taken, the commit,
 //! the conflict copy.
 
-use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -20,7 +19,7 @@ use crate::drive::item::RESERVED_PREFIX;
 use crate::drive::{DriveError, DriveItem, ItemChange, WriteError};
 use crate::sync::disk::{Disk, Probe};
 use crate::sync::local::{names, RECHECK};
-use crate::tree::outbox::{frees, Base, Committed, OutboxKind, OutboxOp, OutboxRow, OutboxState, Seen};
+use crate::tree::outbox::{frees, Base, Committed, OutboxKind, OutboxOp, OutboxRow, OutboxState};
 use crate::tree::{classify, ActivityRow, Change, Kind, Placement, Row, Table};
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Outcome {
@@ -512,17 +511,9 @@ async fn move_gone(e: &Engine, disk: &Disk, row: &OutboxRow, found: Option<&Foun
 pub(super) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result<Outcome, Fail> {
     let Some(id) = row.item_id.clone() else { return Ok(Outcome::blocked("no-item")) };
     let base = row.base.clone().unwrap_or_default();
-    let seen = e.store().with(|s| s.outbox_seen(row.seq))?;
-    let folder = seen.as_ref().is_some_and(|s| s.get(&id).is_some_and(|f| f.folder))
-        || e.store().with(|s| s.get(Table::Items, &id))?.is_some_and(|item| item.kind == Kind::Folder);
+    let folder = e.store().with(|s| s.get(Table::Items, &id))?.is_some_and(|item| item.kind == Kind::Folder);
     if folder {
-        return match seen {
-            Some(seen) => delete_folder(e, &row, &id, &seen).await,
-            // No record of what the delete was decided against (a row from
-            // before the record): nothing is deleted, and the folder is
-            // placed again.
-            None => partial(e, &row, &id, &[], &HashSet::new()).await,
-        };
+        return delete_folder(e, &row, &id).await;
     }
     let Some(guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked("no-guard")) };
     match e.cfg.drive.delete_item(&id, &guard).await {
@@ -542,11 +533,6 @@ async fn gone(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcom
     let event = e.event(kind::CLOUD_DELETED, &row.rel, why);
     let _tree = e.cfg.tree_lock.lock().await;
     e.store().with(|s| s.outbox_commit(row.seq, Committed::Gone { item_id: id }, Some(&event)))?;
-    // Housekeeping: a crash before it leaves the record to the next
-    // examination's tidying.
-    if let Err(err) = e.store().with(|s| s.outbox_forget_seen(row.seq)) {
-        tracing::debug!("the record of a folder delete stays until the next examination: {err}");
-    }
     e.cfg.host.activity(&event);
     Ok(Outcome::Done)
 }
@@ -589,131 +575,19 @@ async fn file_changed(e: &Engine, row: &OutboxRow, id: &str, base: &Base) -> Res
     Ok(Outcome::backoff("changed in OneDrive again and again"))
 }
 
-/// Everything below folder `id` in OneDrive; `None` when it is too large to
-/// list.
-async fn cloud_subtree(e: &Engine, id: &str) -> Result<Option<Vec<DriveItem>>, Fail> {
-    let mut out = Vec::new();
-    let mut folders = vec![id.to_owned()];
-    while let Some(folder) = folders.pop() {
-        let Some(children) = e.cfg.drive.children(&folder).await? else { return Ok(None) };
-        folders.extend(children.iter().filter(|c| c.folder.is_some()).map(|c| c.id.clone()));
-        out.extend(children);
-    }
-    Ok(Some(out))
-}
-
-/// A folder's delete (§4.7), against what the base held below it when the
-/// delete was decided (`seen`, C1). Only what this machine saw goes:
-/// anything the base had below the folder that was never placed here (a
-/// OneNote notebook, a skipped name) keeps the folder, and itself, in
-/// OneDrive (C2). The folder goes whole, guarded by its cTag, only when
-/// everything below it was seen; its cTag moving (something below changed
-/// in OneDrive, or what left it first left) leads to the comparison.
-async fn delete_folder(e: &Engine, row: &OutboxRow, id: &str, seen: &HashMap<String, Seen>) -> Result<Outcome, Fail> {
-    let unseen = seen.iter().any(|(item, s)| item != id && !s.placed);
-    // A folder's eTag says nothing about what is below it (§15): only its
-    // cTag guards a whole delete — the cTag it had when the delete was
-    // decided, never one a commit wrote into the row since, such as a
-    // running move's answer.
-    let recorded = seen.get(id).and_then(|folder| folder.ctag.as_deref());
-    if let (false, Some(ctag)) = (unseen, recorded) {
-        match e.cfg.drive.delete_item(id, ctag).await {
-            Ok(()) => {
-                e.fault(Fault::AfterSend)?;
-                return gone(e, row, id, "to OneDrive's recycle bin").await;
-            }
-            Err(WriteError::NotFound) => return gone(e, row, id, "to OneDrive's recycle bin").await,
-            Err(WriteError::Changed) => {}
-            Err(other) => return Err(other.into()),
+/// A folder's delete (§4.7): one `DELETE` of the whole folder, unguarded —
+/// no `If-Match`, whatever changed inside it in OneDrive since. As on
+/// Windows, the folder goes to the recycle bin whole; the recycle bin is the
+/// safety net ([decisions.md](../../../../docs/design/decisions.md), "A
+/// folder delete is the whole folder, as on Windows").
+async fn delete_folder(e: &Engine, row: &OutboxRow, id: &str) -> Result<Outcome, Fail> {
+    match e.cfg.drive.delete_folder(id).await {
+        Ok(()) => {
+            e.fault(Fault::AfterSend)?;
+            gone(e, row, id, "to OneDrive's recycle bin").await
         }
+        // Gone already (§5: a DELETE sent, no answer).
+        Err(WriteError::NotFound) => gone(e, row, id, "to OneDrive's recycle bin").await,
+        Err(other) => Err(other.into()),
     }
-    for _ in 0..3 {
-        let remote = match e.cfg.drive.item(id).await {
-            Ok(remote) => remote,
-            Err(DriveError::NotFound) => return gone(e, row, id, "to OneDrive's recycle bin").await,
-            Err(err) => return Err(err.into()),
-        };
-        let Some(cloud) = cloud_subtree(e, id).await? else {
-            return partial(e, row, id, &[], &HashSet::new()).await;
-        };
-        // Changed: not seen here when the delete was decided — added, moved
-        // in, never placed — or a file whose content moved since.
-        let changed: HashSet<String> = cloud
-            .iter()
-            .filter(|c| match seen.get(&c.id) {
-                None => true,
-                Some(s) => !s.placed || (c.file.is_some() && c.c_tag != s.ctag),
-            })
-            .map(|c| c.id.clone())
-            .collect();
-        let fresh = remote.c_tag.clone();
-        match (changed.is_empty(), fresh) {
-            (true, Some(fresh)) => match e.cfg.drive.delete_item(id, &fresh).await {
-                Ok(()) | Err(WriteError::NotFound) => return gone(e, row, id, "to OneDrive's recycle bin").await,
-                Err(WriteError::Changed) => continue,
-                Err(other) => return Err(other.into()),
-            },
-            _ => return partial(e, row, id, &cloud, &changed).await,
-        }
-    }
-    Ok(Outcome::backoff("changed in OneDrive again and again"))
-}
-
-/// The partial delete: below the folder in OneDrive, every item seen here
-/// and unchanged goes, each with its own guard; a subfolder with nothing
-/// new, changed or unseen below it goes whole; the folder and the rest stay,
-/// and are placed here again (§6, delete × edit).
-async fn partial(e: &Engine, row: &OutboxRow, folder: &str, cloud: &[DriveItem], changed: &HashSet<String>) -> Result<Outcome, Fail> {
-    let parent_of = |item: &DriveItem| item.parent_reference.as_ref().and_then(|p| p.id.clone());
-    let by_id: HashMap<&str, &DriveItem> = cloud.iter().map(|c| (c.id.as_str(), c)).collect();
-    let mut by_parent: HashMap<String, Vec<&DriveItem>> = HashMap::new();
-    for item in cloud {
-        if let Some(parent) = parent_of(item) {
-            by_parent.entry(parent).or_default().push(item);
-        }
-    }
-    // The folders with something changed below them.
-    let mut dirty: HashSet<String> = HashSet::new();
-    for id in changed {
-        let mut at = by_id.get(id.as_str()).and_then(|c| parent_of(c));
-        while let Some(p) = at {
-            if p == folder || !dirty.insert(p.clone()) {
-                break;
-            }
-            at = by_id.get(p.as_str()).and_then(|c| parent_of(c));
-        }
-    }
-    let mut deleted = Vec::new();
-    let mut stack = vec![folder.to_owned()];
-    while let Some(dir) = stack.pop() {
-        for child in by_parent.get(&dir).map(Vec::as_slice).unwrap_or_default() {
-            if changed.contains(&child.id) {
-                continue;
-            }
-            let guard = match (child.folder.is_some(), &child.c_tag) {
-                (true, Some(ctag)) if !dirty.contains(&child.id) => ctag.clone(),
-                (true, _) => {
-                    stack.push(child.id.clone());
-                    continue;
-                }
-                (false, _) => match child.e_tag.clone().or(child.c_tag.clone()) {
-                    Some(tag) => tag,
-                    None => continue,
-                },
-            };
-            match e.cfg.drive.delete_item(&child.id, &guard).await {
-                Ok(()) | Err(WriteError::NotFound) => deleted.push(child.id.clone()),
-                Err(WriteError::Changed) => {}
-                Err(other) => return Err(other.into()),
-            }
-        }
-    }
-    let event = e.event(kind::RESTORED, &row.rel, "changed in OneDrive, or holding what was never here, when it was deleted here: that is kept");
-    {
-        let _tree = e.cfg.tree_lock.lock().await;
-        e.store().with(|s| s.outbox_commit_partial(row.seq, folder, &deleted, Some(&event)))?;
-    }
-    e.cfg.host.activity(&event);
-    e.cfg.host.full_cycle_wanted();
-    Ok(Outcome::Done)
 }

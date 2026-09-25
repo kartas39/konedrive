@@ -5,9 +5,12 @@
 //! Every change is guarded (the write design's WR2): `If-Match` on anything
 //! that exists, `conflictBehavior=fail` on anything new, so a guard that fails
 //! comes back as [`WriteError::Changed`] or [`WriteError::NameExists`] and is
-//! never retried unguarded here. Throttling (`429`, `503`) comes back as
-//! [`WriteError::Throttled`] with the wait Graph asked for: the worker pauses
-//! the whole account (§4.10), so nothing here sleeps.
+//! never retried unguarded here — except a folder's delete
+//! ([`DriveClient::delete_folder`]), sent with no guard at all: the whole
+//! folder goes, as on Windows, and the recycle bin is the safety net.
+//! Throttling (`429`, `503`) comes back as [`WriteError::Throttled`] with the
+//! wait Graph asked for: the worker pauses the whole account (§4.10), so
+//! nothing here sleeps.
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -132,14 +135,28 @@ impl DriveClient {
         item_from(response).await
     }
 
-    /// Deletes `id` into OneDrive's recycle bin, guarded by `if_match`: a
-    /// file's eTag, or a folder's cTag, which changes with any descendant.
-    /// [`WriteError::NotFound`] means it is already gone.
+    /// Deletes a file into OneDrive's recycle bin, guarded by `if_match`: its
+    /// eTag. [`WriteError::NotFound`] means it is already gone.
     pub async fn delete_item(&self, id: &str, if_match: &str) -> Result<(), WriteError> {
         let url = self.item_url(id, None)?;
         let response = self
             .send_write(|token| self.api.delete(url.clone()).bearer_auth(token).header(header::IF_MATCH, if_match))
             .await?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            Err(error_from(response).await)
+        }
+    }
+
+    /// Deletes folder `id`, whole, into OneDrive's recycle bin: no
+    /// `If-Match`, whatever changed inside it in OneDrive since — as Windows
+    /// deletes a folder ([decisions.md](../../../../docs/design/decisions.md),
+    /// "A folder delete is the whole folder, as on Windows"). The recycle bin
+    /// is the safety net. [`WriteError::NotFound`] means it is already gone.
+    pub async fn delete_folder(&self, id: &str) -> Result<(), WriteError> {
+        let url = self.item_url(id, None)?;
+        let response = self.send_write(|token| self.api.delete(url.clone()).bearer_auth(token)).await?;
         if response.status().is_success() {
             Ok(())
         } else {

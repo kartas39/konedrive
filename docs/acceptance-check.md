@@ -7,8 +7,8 @@ short run log: the build's commit, the kernel and filesystem, and, for each step
 matched "Expected" and anything that did not.
 
 What you need: a Fedora (or similar) machine with KDE Plasma 6, the build dependencies from the
-README, `sudo`, a Microsoft account you can sign in with (a test account is fine), and an Entra
-application id (README, "Registering the application").
+README, `sudo`, and a Microsoft account you can sign in with (a test account is fine). konedrive
+signs in with its own application registration, so there is nothing to register beforehand.
 
 Everything here is read-only against OneDrive: nothing is uploaded, renamed or deleted in the
 cloud by konedrive. The one step that touches a local file's permissions (step 8, the conflict)
@@ -22,11 +22,10 @@ A OneDrive folder is kept in step only while the helper is connected, so the hel
 
 ## 1. Install this build (as yourself), and sign in
     scripts/dev-install.sh
-    konedrivectl set-client-id <your application id>
     konedrivectl login                     # with no account yet, adds one called Personal first
-Or open KOneDrive and choose **Add Account…** (at the top of the sidebar, or on the Status page
-while there is no account): it asks for the client id the first time, then for a name, and
-opens the sign-in in the browser.
+Or open KOneDrive and choose **Sign in…** (at the top of the sidebar, or on the Status page
+while there is no account): it opens the account picker in the browser straight away — the
+account is created, named after its email, only once the sign-in succeeds.
 Expected: the window opens from the launcher (or `konedrive` on the command line); after the
 browser sign-in, `konedrivectl status` shows you signed in, with your name and quota, and
 `konedrivectl account list` shows the one account, `signed-in`, `read-only`, with no folder yet.
@@ -36,7 +35,7 @@ appears; hovering it repeats the window's status line.
 If this machine ran a version from before multiple accounts, with a folder registered: after the
 upgrade the window shows one account, "Personal", with the same folder, still signed in; its
 Places entry is now called "OneDrive — Personal"; and `~/.config/konedrive/config.toml.v1` holds
-the old configuration. Skip `set-client-id` and `login` then.
+the old configuration. Skip `login` then.
 
 `dev-install.sh` does not install the Dolphin plugins. For the emblems in steps 3 and 5, install
 them for your user as the README's "Dolphin integration" says, then log out and back in.
@@ -109,8 +108,8 @@ depending what you did), and step 3's download and free-up as earlier entries. T
 entry shows the file in Dolphin. The **Account** page shows the account's name with "Rename…",
 the line "Read-only" with no switch, you signed in with your quota, the folder with "Forget
 Folder", and "Remove Account…"; the **Settings** page shows "Start at login", "Show download
-progress", "Show in Places" and the client ID. Dolphin's Places panel has an entry for the folder,
-named `OneDrive — <account name>`.
+progress" and "Show in Places". Dolphin's Places panel has an entry for the folder, named
+`OneDrive — <account name>`.
 
 With "Show download progress" on (the default), open a large file that is not downloaded yet:
 after about 2 s, Plasma's notifications show "Downloading from OneDrive" with the file's name and
@@ -197,8 +196,8 @@ Everything above used one account. With a second Microsoft account (a test accou
     konedrivectl --account Second login
     konedrivectl --account Second sync register ~/OneDrive-test/<a folder>   # refused
     konedrivectl --account Second sync register ~/OneDrive-test-2
-Or, in the window, **Add Account…** from the switcher's menu, then **Choose Folder…** on the new
-account's **Account** page.
+Or, in the window, **Sign in…** from the switcher's menu: once you are signed in, the folder
+picker opens for the new account at once.
 Expected: the first `sync register` is refused, naming the first account — a folder inside another
 account's folder cannot be registered; the second succeeds. Then:
 - `konedrivectl account list` shows both accounts, each with its own folder; `konedrivectl sync

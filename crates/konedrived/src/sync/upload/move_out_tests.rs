@@ -792,6 +792,36 @@ fn a_folder_in_the_trash_keeps_only_what_was_downloaded() {
     assert!(w.rows().is_empty());
 }
 
+/// A folder deleted here — outright, or by a move to the Trash — sends OneDrive one `DELETE` of
+/// the whole folder and none for what is inside, whatever its size: as Windows deletes a folder
+/// (`docs/design/decisions.md`, "A folder delete is the whole folder, as on Windows").
+#[test]
+fn a_folder_delete_sends_one_delete_and_none_for_what_is_inside() {
+    let ids: Vec<String> = (0..20).map(|n| format!("P{n}")).collect();
+    let names: Vec<String> = (0..20).map(|n| format!("{n}.txt")).collect();
+    let mut items: Vec<(&str, Option<&str>, &str, &[u8])> = vec![("D", None, "d/", b"")];
+    items.extend((0..20).map(|n| (ids[n].as_str(), Some("D"), names[n].as_str(), b"x" as &[u8])));
+    let w = World::new(&items);
+    std::fs::remove_dir_all(w.path("d")).unwrap();
+    w.examine(&[("", "d")]);
+    assert_eq!(w.rows().len(), 1);
+    // 21 items out of 21 trips the mass-delete guard; confirming it is a
+    // separate mechanism (write design §4.5) this change leaves untouched.
+    w.store.with(|s| s.outbox_release_held()).unwrap();
+    w.h.run();
+    assert!(w.rows().is_empty(), "{:?}", w.rows());
+    assert_eq!(w.deletes(), 1, "one DELETE only, for the folder");
+    assert!(w.in_bin("D"));
+
+    let w = World::new(&[("E", None, "e/", b""), ("E1", Some("E"), "a.txt", b"a"), ("E2", Some("E"), "b.txt", b"b"), ("E3", Some("E"), "c.txt", b"c")]);
+    w.to_trash("e");
+    w.examine(&[("", "e")]);
+    w.h.run();
+    assert!(w.rows().is_empty(), "{:?}", w.rows());
+    assert_eq!(w.deletes(), 1, "one DELETE only, for the Trash move-out too");
+    assert!(w.in_bin("E"));
+}
+
 /// the examination: restoring a held move out (`RestoreDeletes`) places the item in the folder again,
 /// and tidies what had left: placeholders outside go, a downloaded file stays stripped, the
 /// directory is stripped and unmarked. Nothing is deleted in OneDrive.

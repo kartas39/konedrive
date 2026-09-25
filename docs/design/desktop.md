@@ -162,12 +162,12 @@ through, `ModeNotGranted` for one that is not read-write.
 | Member | Meaning |
 |---|---|
 | `Accounts` (`ao`) | every account's object, in the order the accounts were added |
-| `ClientId` (`s`) | the application id every account signs in with |
+| `ClientId` (`s`) | the application id every account signs in with; konedrive's own built-in one unless `SetClientId` overrode it |
 | `HelperState` (`s`) | `connected`, `not-installed`, `stopped`, `failed` or `unknown`: one helper serves every account (§2.5) |
 | `LastError` (`s`) | trouble that belongs to no account: `config.toml` cannot be read or was written by a newer version, a migration step failed, an account could not be loaded; empty when none |
 | `Add(s label) → o` | adds a signed-out, read-only account with no folder and returns its object ([accounts.md](accounts.md) §7.2); `InvalidArgs` for a label the rules refuse |
 | `Remove(o account)` | forgets the account's folder as `UnregisterRoot` does, signs it out, deletes its refresh token, cached name and quota and tree store, and takes its object off the bus; the folder's files and the rescued files stay ([accounts.md](accounts.md) §7.3) |
-| `SetClientId(s)` | validates and stores the client id; `InvalidArgs` for a malformed one, and refused while any account is signing in or signed in |
+| `SetClientId(s)` | overrides the built-in client id with one of the caller's own (a custom Entra registration); validates and stores it, `InvalidArgs` for a malformed one, and refused while any account is signing in or signed in |
 
 The same object is an `org.freedesktop.DBus.ObjectManager`: `InterfacesAdded` when an account's
 object is on the bus, `InterfacesRemoved` when it goes, and `GetManagedObjects` for tools. The
@@ -197,10 +197,11 @@ over the accounts.
 **Choosing the account.** A command that acts on one account takes the account from the global
 option `--account <id | label | email>`, else from the environment variable `KONEDRIVE_ACCOUNT`,
 else it is the only account there is. The name is matched as an id, as a label and as an email
-(label and email in any case). A label has no `@` and is not shaped like an id, so only a
-hand-edited `config.toml` can make a name fit two accounts; such a name is refused with exit
-status 2, listing each account it fits as `label (id)`, and never taken as the first. With several
-accounts and none named, the command stops with exit status 2 and lists the labels ("Several
+(label and email in any case). A label is not shaped like an id, so a name fits two accounts only
+when one account's label equals another's email — possible now that a label may equal an email —
+or a hand-edited `config.toml` gives two accounts colliding labels; such a name is refused with
+exit status 2, listing each account it fits as `label (id)`, and never taken as the first. With
+several accounts and none named, the command stops with exit status 2 and lists the labels ("Several
 accounts: choose one with --account (Personal, Family)"); with no account at all, it stops with
 exit status 1 and says how to add one. The commands that name no chosen account — the path
 commands, `account …` and `set-client-id` — refuse `--account` with exit status 2 rather than
@@ -214,8 +215,8 @@ F51).
 | `account rename <account> <label>` | the argument | `Account1.SetLabel` |
 | `account remove <account>` | the argument | `Accounts1.Remove`, without asking; then says what was deleted and what was kept |
 | `account mode [read-only\|read-write] [--force]` | chosen | shows the mode (and `LastError`), or switches it with `Account1.SetMode`: read-write opens the browser like `login` and waits until `Mode` is `read-write` or `LastError` says why not; read-only is refused while changes wait to be uploaded, unless `--force` |
-| `set-client-id <id>` | — | `Accounts1.SetClientId`, one client id for every account; a refusal names the accounts still signed in |
-| `login` | chosen | `BeginSignIn`, opens the browser and waits. With no account at all and none named, it first adds one called `Personal`; with no client id yet, it stops and says to set one |
+| `set-client-id <id>` | — | `Accounts1.SetClientId`, overriding the built-in client id for every account with the caller's own; a refusal names the accounts still signed in |
+| `login` | chosen | `BeginSignIn`, opens the browser and waits. With no account at all and none named, it first adds one called `Personal` |
 | `logout` | chosen | signs the account out and deletes its token |
 | `status` | chosen, or all | the account's sign-in state and mode; with several accounts and none named, every account under its label, the `Client ID:` line once above them |
 | `sync register <path>` | chosen | registers a OneDrive folder (needs the helper) |
@@ -261,7 +262,7 @@ app's:
 | **Not in the Folder** | the skipped items and why, in the same words as `sync skipped` (a test keeps the two in step) |
 | **Not Uploaded** | what stays on this computer and why (`NotUploaded()`): the blocked changes and what is never uploaded, each reason in words; clicking one shows it in Dolphin. A count badge while changes are blocked |
 | **Account** | the account's name with "Rename…"; the switch "Upload changes made on this computer" (below); sign in or out, the Microsoft account's name, email and quota; the folder, with "Choose Folder…" and "Forget Folder"; for a OneDrive folder, "Uploading": this computer's name for copies (`MachineName`, read-only: `machine_name` in `config.toml`) and the ignore list, with "Add" and a remove button per pattern (`SetIgnorePatterns`); and "Remove Account…" |
-| **Settings** | "Start at login", "Show download and upload progress", "Show in Places", the client id every account signs in with, "Quit KOneDrive" |
+| **Settings** | "Start at login", "Show download and upload progress", "Show in Places", "Quit KOneDrive" |
 
 **The switcher** shows the chosen account's initials, label and email, and opens a menu of every
 account, each with its state's icon (the tray's four, §5), then "Sign in…". It is there with a
@@ -275,8 +276,9 @@ away (limitations log A13).
 **No account yet.** Only the Status page is available, and it shows "Connect your OneDrive" with
 "Sign in…".
 
-**Sign in…** asks for the client id first when none is set yet (the same field and check as in
-Settings), then makes the account, signed in and named by its own doing: `Add` with a temporary
+**Sign in…** opens the Microsoft sign-in in the browser straight away, with the account picker:
+there is no client-id field or dialog, since konedrive signs in with its own built-in application
+registration. It makes the account, signed in and named by its own doing: `Add` with a temporary
 label, `BeginSignIn`, whose URL opens in the browser, and, once the sign-in succeeds, `SetLabel`
 with the account's email ([accounts.md](accounts.md) §7.2; limitations log A15). The account stays
 out of the switcher, the tray, Places and notifications until then; if the sign-in is cancelled,

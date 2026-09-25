@@ -35,7 +35,6 @@ use super::{apply, upsert, ActivityRow, Change, Kind, Row, Table, TreeError, Tre
 
 /// The outbox worker's own transactions.
 mod worker;
-pub use worker::Seen;
 
 /// A name the outbox worker gives an item in OneDrive while the name its
 /// row takes is still another item's (§4.4, F55 (7)).
@@ -793,7 +792,6 @@ impl TreeStore {
         out.queued.sort_unstable();
         out.queued.dedup();
         out.queued.retain(|seq| !out.removed.contains(seq));
-        worker::remember_removals(&tx)?;
         tx.commit()?;
         Ok(out)
     }
@@ -802,7 +800,6 @@ impl TreeStore {
     pub fn outbox_record(&mut self, d: &Detection) -> Result<Recorded, TreeError> {
         let tx = self.conn.transaction()?;
         let recorded = record(&tx, d)?;
-        worker::remember_removals(&tx)?;
         tx.commit()?;
         Ok(recorded)
     }
@@ -1074,13 +1071,6 @@ impl TreeStore {
             tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
         }
         tx.commit()?;
-        for row in &gone {
-            // Housekeeping: best effort, as `gone()`'s does (a crash leaves it
-            // for the next examination to tidy).
-            if let Err(e) = self.outbox_forget_seen(row.seq) {
-                tracing::debug!("the record of a folder delete already gone from OneDrive stays until the next examination: {e}");
-            }
-        }
         Ok(gone)
     }
 

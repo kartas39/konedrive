@@ -796,8 +796,8 @@ async fn elsewhere_file(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str,
 
 /// A folder moved anywhere but the Trash: every placeholder of its item downloaded where it is,
 /// the attributes taken off and every directory unmarked, then the folder deleted in OneDrive —
-/// as a folder delete is, so that anything it holds there that was not seen here stays (F82
-/// (10)).
+/// as a folder delete is: one unguarded `DELETE` of the folder itself, whatever it holds there by
+/// then (F82 (10)).
 async fn elsewhere_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str, object: File, shown: &Path) -> Result<Outcome, Fail> {
     let Some(top) = reopen_dir(shown, &object)? else { return Ok(Outcome::backoff(reason::PLACE_UNKNOWN)) };
     if let Err(err) = e.moved_out().helper.mark_dir(&object).await {
@@ -1079,9 +1079,8 @@ async fn left_since(
     Ok(Ok(extra))
 }
 
-/// The item leaves OneDrive, as a delete does (§4.7): `If-Match`, `404` done, `412` decided by
-/// what changed there — and a folder against what the base held below it when the move out was
-/// decided, so that nothing unseen here goes with it.
+/// The item leaves OneDrive, as a delete does (§4.7): `If-Match`, `404` done — a folder, unguarded,
+/// whole, whatever changed inside it since.
 async fn finish(e: &Arc<Engine>, row: &OutboxRow) -> Result<Outcome, Fail> {
     super::steps::delete(e, row.clone()).await
 }

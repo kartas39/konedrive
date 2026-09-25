@@ -19,7 +19,8 @@ exactly as [sync.md](sync.md) describes.
   file is never read for an upload: its bytes are not the item's.
 - **WR2 — every write is guarded, and a failed guard is resolved by reading again.** Changes carry
   `If-Match`, creates `conflictBehavior=fail`; a `412` or `409` leads to a fresh read and a
-  decision (§6.2, §7), never to a retry without the guard.
+  decision (§6.2, §7), never to a retry without the guard — except a folder's delete (§6.1), sent
+  with no guard: the folder goes whole, and the recycle bin is the safety net.
 - **WR3 — no local byte is lost.** Where the read phase would rescue a file, a read-write folder
   makes a conflict copy in the folder and uploads it; a change from OneDrive removes a local file
   only if it holds nothing only this computer has.
@@ -309,7 +310,6 @@ CREATE TABLE outbox (
 CREATE TABLE local_skipped (rel TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);
 -- items and staging: + local_handle BLOB, local_seq INTEGER (the outbox commit that last wrote the row)
 -- conflicts: + kind ('rescued' | 'copy')
--- outbox_seen: what the base held below a folder when its removal was decided
 -- outbox_gone, deferred: the reconcile's (§9)
 -- meta: + outbox_seq, paused_until, handles_root
 ```
@@ -382,7 +382,9 @@ version just sent. While a row waits, its file carries `user.konedrive.sync` (`p
 
 Every change carries a guard: `If-Match` on anything that exists, `conflictBehavior=fail` on
 anything new. A guard that fails is resolved by reading the item again, never by sending the change
-without it.
+without it — with one exception: a folder's delete, sent with no guard at all. The folder goes
+whole, whatever changed inside it in OneDrive since; the recycle bin is the safety net, as on
+Windows ([decisions.md](decisions.md), "A folder delete is the whole folder, as on Windows").
 
 | Operation | Request | Guard |
 |---|---|---|
@@ -394,7 +396,7 @@ without it.
 | a new folder | `POST /items/{parent}/children` | `conflictBehavior: fail` |
 | a rename or move | `PATCH /items/{id}` with `name` and/or `parentReference.id` | `If-Match: <base eTag>` |
 | a file's delete | `DELETE /items/{id}`, into the recycle bin | `If-Match: <base eTag>` |
-| a folder's delete | `DELETE /items/{id}` | `If-Match: <the folder's cTag when its removal was decided>` |
+| a folder's delete | `DELETE /items/{id}`, whole, into the recycle bin | none |
 | a session's status, its end | `GET` / `DELETE` of the upload URL | — |
 
 A row made against a download that was not the base's version carries only its cTag, and that is
@@ -466,15 +468,16 @@ characters.
 another hash gets a copy. A name that differs only in case is the same name to OneDrive, and gets a
 copy. Two new folders of one name merge, their contents meeting file by file under these rules.
 
-**Folders.** A folder deleted here whose cloud copy gained or changed anything meanwhile is deleted
-only in part: whatever OneDrive has below it that this computer never saw stays, with its folders.
+**Folders.** A folder deleted here is deleted whole in OneDrive — one `DELETE` of the folder itself,
+unguarded — whatever it gained or changed there meanwhile, as on Windows: the recycle bin is the
+safety net ([decisions.md](decisions.md), "A folder delete is the whole folder, as on Windows").
 A folder deleted in OneDrive that holds local work here is kept, with the work, and made again in
 OneDrive (§9).
 
 Every copy and every `restored` goes into the activity log; copies are listed by `Conflicts()` and
 on the window's Conflicts page with "Show Both". Nothing here deletes a local byte, and nothing
 deletes content in OneDrive that this computer has not seen, apart from §6.3's one-fragment window,
-which leaves a version.
+which leaves a version, and a folder's own delete, which takes whatever OneDrive holds below it.
 
 ## 8. Moves out of the folder
 
@@ -644,8 +647,9 @@ every account.
 
 - **The Graph client** against wiremock: every request of §6.1, its guard, and each answer of §6.2.
 - **The outbox worker** end to end against a stateful fake OneDrive on wiremock: every crash row of
-  §10 through fault points, every cell of §7, create/create, the partial folder delete, swaps and
-  circles, throttling, offline, pause and the blocked states.
+  §10 through fault points, every cell of §7, create/create, a whole folder delete (unguarded, one
+  request, nothing inside it deleted on its own), swaps and circles, throttling, offline, pause and
+  the blocked states.
 - **The examination** in temporary directories: every rule of §4.2, save by rename in the shapes
   real editors use (vim, Kate, LibreOffice, GNOME's `.goutputstream`), copies, hard links, the
   ignore list, the mass-delete guard.
@@ -718,7 +722,6 @@ test-account run (§12.1), each handled safely either way:
 - `If-Match` is honoured on the `PUT` that empties a file (otherwise an emptying could overwrite an
   edit made meanwhile, which version history keeps);
 - `conflictBehavior=fail` works in a `PUT`'s URL;
-- a folder's cTag changes with anything inside it and guards the folder's delete;
 - a rename or move onto a taken name is refused `409`;
 - names collide without regard to case;
 - the delta feed returns the daemon's own changes with the eTags their writes were answered with;

@@ -175,9 +175,9 @@ pub trait OutboxHost: Send + Sync {
         Ok(())
     }
     /// An item's local object was forgotten and OneDrive's version must be
-    /// placed again (§6: delete × edit, a folder deleted only in part),
-    /// though the delta may have carried it already: a cycle with a Full
-    /// reconcile should run soon (the outbox on the bus).
+    /// placed again (§6: delete × edit), though the delta may have carried it
+    /// already: a cycle with a Full reconcile should run soon (the outbox on
+    /// the bus).
     fn full_cycle_wanted(&self) {
         self.cycle_wanted();
     }

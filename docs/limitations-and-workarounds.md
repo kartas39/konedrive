@@ -593,8 +593,7 @@ application must never read zeros where real content should be.
   - the helper-restart check makes the one change no event reports: a write through a hard link
     outside the folder (F73). What only a Full local scan can find is thereby found by one.
 - **Cost:** what the fake cannot tell is left to the test-account run (F131): `If-Match`
-  on a 0-byte PUT, `conflictBehavior` in a PUT's URL, a folder's cTag guarding its delete, and the
-  service's own echo.
+  on a 0-byte PUT, `conflictBehavior` in a PUT's URL, and the service's own echo.
 - **Status:** open. Measured 2026-09-25 on btrfs (`tests/vm/run.sh quick --only 'writes:'`, 6/6).
 
 ---
@@ -1379,26 +1378,19 @@ application must never read zeros where real content should be.
   OneDrive's answer as it is, a newer cTag included; the file keeps its own `user.konedrive.ctag`, and
   the next cycle looks again at every item the outbox committed since the last one and replaces such
   a file (F117 for the time in between). (8) Where OneDrive's version wins or both are kept
-  (delete × edit, edit × edit, a folder deleted in part), the item's recorded handle is forgotten, so
+  (delete × edit, edit × edit), the item's recorded handle is forgotten, so
   that its empty name is placed again rather than taken for a delete; the next cycle places it
   (items with no local object on record are looked at again). (9) A conflict copy is a rename, then the
   attributes taken off, then one store transaction. A crash between the rename and the transaction
   leaves the renamed file carrying the item's id: the next examination takes it for a move (or an
   update) of the item, which a replay turns into a second copy, or which PATCHes OneDrive's version to
   the copy's name, or which stays `not-found` and keeps the item from being placed again at its name
-  until a Full scan. No byte is lost. (10) A folder's delete is compared with what the base held
-  below the folder when the delete was decided (`outbox_seen`, remembered in the examination's
-  transaction), never with a base a cycle changed since: anything added there since, moved in, never
-  placed here (a OneNote notebook, a skipped name, a folder not yet placed) or whose content moved
-  since stays, with the folder. The folder goes whole only when everything below it was seen here,
-  guarded by the cTag it had when the delete was decided (never one a commit wrote into the row
-  since); a `412` lists its descendants in OneDrive page by page. A rename inside does not count as a
-  change, and a folder of more than 100 000 children deletes nothing and is placed again. A folder
-  removal with no record (a row from before the record) deletes nothing and is placed again. The
-  record trusts the base's cTag of a placed file as the version the file holds: the read-write cycle
-  keeps it so (F112) — a replacement keeps its base until it lands, and a change the disk does not
-  take waits (F117 for what is left).
-  A record stays until its row is committed or the next examination tidies it. (11) The worker chooses the next rows by recomputing the outbox's dependencies after
+  until a Full scan. No byte is lost. (10) A folder's delete is one `DELETE` of the folder itself,
+  sent with no guard at all, whatever OneDrive gained or changed below it since the delete was
+  decided: as Windows deletes a folder, the folder goes whole, and OneDrive's recycle bin is the
+  safety net (`docs/design/decisions.md`, "A folder delete is the whole folder, as on Windows"). No
+  per-item request is ever sent for what is inside; a `404` on the folder's own `DELETE` means it is
+  already gone, which is success too. (11) The worker chooses the next rows by recomputing the outbox's dependencies after
   every row it finishes: a large first upload costs CPU growing with the square of the outbox. (12) A
   row rewritten and sent again at once (a temporary name, a copy, a fresh guard) more than 20 times
   backs off like a failure. (13) An answer whose content hash is not the one sent is never committed:
@@ -1704,7 +1696,7 @@ application must never read zeros where real content should be.
   the folder (its `/proc/self/fd` path opened again on the same inode), is the row
   marked (`moved-out:local` in its `snapshot`), konedrive's attributes taken off (the item id
   first), the directories unmarked (never one beneath any account's folder, M1), and the item
-  deleted as a delete is (the folder against what the base held below it, F82 (10)). An object
+  deleted as a delete is (a folder whole, in one unguarded `DELETE`, F82 (10)). An object
   moved into another account's folder is stripped and deleted all the same (write design §9), and
   its directories stay marked; F124 has what differs there. In the Trash nothing is downloaded: a placeholder is removed with
   its `.trashinfo` (`moved-out:trash` first), and the item goes to OneDrive's recycle bin only
@@ -1863,9 +1855,9 @@ application must never read zeros where real content should be.
   (`docs/design/writes.md` §13; `tests/write-account/src/checks.rs`) — the harness is built and its
   guards are tested, but it has not run: there is no test account yet. Until it runs, these stay
   assumed, each handled safely either way: `If-Match` honoured on a 0-byte `PUT`;
-  `conflictBehavior=fail` honoured in a `PUT`'s URL; a folder's cTag changing with what is inside it
-  and guarding its delete; `409` on a rename to a taken name; names colliding without regard to
-  case; the delta feed returning the daemon's own changes with the eTags their writes were
+  `conflictBehavior=fail` honoured in a `PUT`'s URL; `409` on a rename to a taken name; names
+  colliding without regard to case; the delta feed returning the daemon's own changes with the eTags
+  their writes were
   answered with; 10 MiB fragments and a resume from the session's status; deletes going to the
   recycle bin; an edit made during a session superseded by its last fragment (F80); and a
   read-only refresh after a switch back answering a token that cannot write (F66). LIMIT ·

@@ -5,7 +5,6 @@
 //! worker does, and the scope stays `Files.Read` until an account is switched
 //! to read-write.
 
-mod children;
 pub mod item;
 pub mod upload;
 pub mod write;

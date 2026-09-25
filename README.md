@@ -62,8 +62,6 @@ UI (see `konedrivectl --help`).
   which filesystems (Btrfs, ext4, XFS).
 - **Desktop:** KDE Plasma 6, Qt 6.8+, KDE Frameworks (KF6) 6.8+.
 - **Toolchain:** a stable Rust toolchain (edition 2021), CMake 3.24+ and Extra CMake Modules.
-- **A Microsoft Entra app registration** (a "client ID") — free, and yours alone; see
-  "Registering the application" below.
 
 ## Build dependencies (Fedora)
 
@@ -76,26 +74,6 @@ sudo dnf install rust cargo cmake extra-cmake-modules gcc-c++ qt6-qtbase-devel \
 ```
 
 These are what `app/CMakeLists.txt` and `dolphin/CMakeLists.txt` look for.
-
-## Registering the application (once)
-
-Microsoft only lets programs sign in with an application (client) ID. Each user registers
-their own; it is free.
-
-1. Sign in to <https://entra.microsoft.com> with an account that has a directory. An existing
-   Azure account works. Otherwise create a free Azure account at <https://azure.microsoft.com/free>;
-   it asks for a bank card and a phone number to verify your identity and charges nothing unless
-   you upgrade.
-2. Open **App registrations → New registration**.
-   - Name: `KOneDrive`
-   - Supported account types: **Personal Microsoft accounts only**
-   - Redirect URI: platform **Public client/native (mobile & desktop)**, value `http://localhost`
-3. Copy the **Application (client) ID**.
-
-No API permissions need to be configured; KOneDrive asks for them when you sign in. The consent
-screen will call the app "unverified" — expected for a personal registration. The account that
-registers the app and the OneDrive account you sign in with can be different, and one
-registration serves every account you add to KOneDrive.
 
 ## Install from RPM
 
@@ -188,14 +166,15 @@ removes it all again, apart from the helper.
 ## Using your OneDrive
 
 - **Add an account and sign in.** Open **KOneDrive** from the launcher (or `konedrive` from a
-  terminal) and choose **Add Account…**. The first time, it asks for the client ID (see
-  "Registering the application" above); then for a name for the account — "Personal" is
-  suggested — and it opens the Microsoft sign-in in your browser. Once you are signed in, the
-  **Account** page asks for a folder: choose an empty one, and your OneDrive appears in it. Or
-  from a terminal — with no account yet, `login` adds one called "Personal" first:
+  terminal) and choose **Sign in…** — on the Status page while there is no account yet, or in the
+  account switcher's menu at the top of the sidebar. It opens the Microsoft sign-in in your
+  browser straight away, with the account picker; there is nothing to register and nothing to
+  enter first. The account is created only once the sign-in succeeds, named after its email, and
+  the folder picker then opens for it: choose an empty folder, and your OneDrive appears in it. A
+  cancelled or failed sign-in leaves nothing behind. Or from a terminal — with no account yet,
+  `login` adds one called "Personal" first and opens the same browser sign-in:
 
   ```
-  konedrivectl set-client-id 00000000-0000-0000-0000-000000000000
   konedrivectl login
   konedrivectl sync register ~/OneDrive
   konedrivectl status
@@ -203,8 +182,12 @@ removes it all again, apart from the helper.
 
   `konedrivectl logout` signs the account out again and deletes its stored token.
 
-- **Several accounts.** Each Microsoft account you add gets its own folder. **Add Account…** is
-  in the menu at the top of the sidebar, which also switches between the accounts. Two accounts'
+  konedrive signs in with its own application registration, so this needs no setup. Anyone who
+  wants to sign in with their own Microsoft Entra registration instead can set its client ID with
+  `konedrivectl set-client-id <id>`.
+
+- **Several accounts.** Each Microsoft account you add gets its own folder. **Sign in…** is in
+  the menu at the top of the sidebar, which also switches between the accounts. Two accounts'
   folders cannot be inside one another, and a Microsoft account can be connected once: signing
   an account in as a different Microsoft account than its own is refused — add that one as a new
   account. Only personal Microsoft accounts are supported, not work or school ones. **Rename…**
@@ -230,7 +213,7 @@ removes it all again, apart from the helper.
   ```
 
 - **The window.** The sidebar starts with the account switcher: the account shown, a menu of
-  every account and **Add Account…**; a warning sign on it means that another account needs your
+  every account and **Sign in…**; a warning sign on it means that another account needs your
   attention. Below it, five pages show that account: **Status** (the folder, its item count,
   "Free Up Space…", "Refresh Now", "Open in File Manager"), **Activity** (downloads under way
   now, and the most recent of what the daemon keeps), **Conflicts** (local edits rescued out of
@@ -238,9 +221,9 @@ removes it all again, apart from the helper.
   why) and **Account** (the account's name with **Rename…**; sign in or out, and the quota; the
   folder, with **Choose Folder…** and **Forget Folder**; and **Remove Account…**). **Settings**
   is the whole app's: "Start at login", "Show download progress" (a download that takes more
-  than 2 s shows in Plasma's notifications), "Show in Places", and the client ID every account
-  signs in with. While the helper is not connected, a card on the Status page says so, with the
-  same instruction as the `Helper:` line of `konedrivectl sync status` (below). A tray icon
+  than 2 s shows in Plasma's notifications), and "Show in Places". While the helper is not
+  connected, a card on the Status page says so, with the same instruction as the `Helper:` line
+  of `konedrivectl sync status` (below). A tray icon
   shows the worst state across your accounts — needs attention, signed out, syncing, synced —
   with a line per account in its tooltip, and keeps KOneDrive running in the background so
   notifications still reach you with the window closed; with more than one account,

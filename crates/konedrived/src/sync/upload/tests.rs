@@ -25,7 +25,7 @@ use crate::sync::materialize::{Materializer, Scope};
 use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState};
 use crate::tree::{Change, Kind, Placement, Row, Table, TreeStore};
 
-use OutboxKind::{Create, Delete, Mkdir, Move, Update};
+use OutboxKind::{Create, Mkdir, Move, Update};
 
 const TIME: i64 = 1_700_000_000;
 
@@ -534,30 +534,6 @@ fn conflicts_keep_both_and_the_first_rename_wins() {
     assert_eq!(w.content("X.TXT").unwrap(), b"theirs");
 }
 
-/// §4.7: a folder deleted here whose cTag moved in OneDrive because
-/// something was added there: only what the base knew unchanged goes; the
-/// folder and the new file stay, to be placed here again.
-#[test]
-fn a_folder_changed_in_onedrive_is_deleted_only_in_part() {
-    let w = World::new(&[folder("F", "R", "f"), file("A", "F", "a.txt", b"a"), folder("S", "F", "sub"), file("B", "S", "b.txt", b"b")]);
-    std::fs::remove_dir_all(w.path("f")).unwrap();
-    w.examine(&[("", "f")]);
-    assert_eq!(w.summary(), vec![(Delete, "f".into(), OutboxState::Ready)]);
-    w.cloud(|c| {
-        c.add_file("NEW", "F", "new.txt", b"added there");
-        c.touch("F");
-    });
-    w.run();
-    assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.cloud(|c| c.paths()), vec!["f", "f/new.txt"]);
-    let mut binned: Vec<String> = w.cloud(|c| c.bin.keys().cloned().collect());
-    binned.sort();
-    assert_eq!(binned, vec!["A", "B", "S"], "the subfolder whole, with nothing new in it");
-    assert!(w.base("F").is_some() && w.base("A").is_none() && w.base("S").is_none());
-    assert_eq!(w.store.with(|s| s.local_handle("F")).unwrap(), None, "placed again, never deleted");
-    assert!(w.h.host.fulls.load(Ordering::SeqCst) > 0, "by a Full reconcile");
-}
-
 /// F55 (7) (d): a swap, a folder replaced by its own subfolder, and a
 /// folder wrapped in a new one of its name, end to end: each goes through
 /// a temporary name, nothing is adopted or copied, and nothing but what the
@@ -783,85 +759,6 @@ fn four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir() {
 
 // Fix round 1 (the outbox worker review): one test per Critical and Important finding.
 
-/// The base row a delta cycle would stage for what OneDrive holds as `id`.
-fn staged(w: &World, id: &str) -> Row {
-    let item = w.cloud(|c| c.item(id).cloned()).unwrap();
-    Row {
-        id: item.id,
-        parent_id: item.parent,
-        name: item.name,
-        kind: if item.folder { Kind::Folder } else { Kind::File },
-        size: item.size,
-        mtime: item.mtime,
-        etag: Some(item.etag),
-        ctag: Some(item.ctag),
-        quickxor: item.hash,
-        mime: None,
-        placement: Placement::Placed,
-    }
-}
-
-/// A cycle between the detection and the send, as §4.9 runs one first.
-fn cycle(w: &World, ids: &[&str]) {
-    let rows: Vec<Change> = ids.iter().map(|id| Change::Upsert(staged(w, id))).collect();
-    w.store
-        .with(|s| {
-            s.begin_staging(true)?;
-            s.stage(&rows)?;
-            s.commit_staging("link-2")
-        })
-        .unwrap();
-}
-
-/// C1: `rm -rf` offline; meanwhile OneDrive gets a new file and an edit
-/// in the folder, and a cycle brings both into the base before the worker
-/// runs. The delete is compared with what the base held when it was
-/// decided: the addition and the edit stay, only what this machine saw
-/// unchanged goes.
-#[test]
-fn a_folder_delete_never_takes_what_a_cycle_brought_in() {
-    let w = World::new(&[folder("F", "R", "photos"), file("A", "F", "a.txt", b"a"), file("X", "F", "x.txt", b"x")]);
-    std::fs::remove_dir_all(w.path("photos")).unwrap();
-    w.examine(&[("", "photos")]);
-    assert_eq!(w.summary(), vec![(Delete, "photos".into(), OutboxState::Ready)]);
-    let seq = w.rows()[0].seq;
-    let seen = w.store.with(|s| s.outbox_seen(seq)).unwrap().expect("remembered when the delete was decided");
-    let mut ids: Vec<&String> = seen.keys().collect();
-    ids.sort();
-    assert_eq!(ids, vec!["A", "F", "X"]);
-
-    w.cloud(|c| {
-        c.add_file("N", "F", "new.jpg", b"from the phone");
-        c.touch("F");
-        c.edit("X", b"edited there");
-    });
-    cycle(&w, &["N", "X", "F"]);
-    w.run();
-    assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.cloud(|c| c.paths()), vec!["photos", "photos/new.jpg", "photos/x.txt"]);
-    assert_eq!(w.cloud(|c| c.bin.keys().cloned().collect::<Vec<_>>()), vec!["A"]);
-    assert_eq!(w.content("photos/x.txt").unwrap(), b"edited there");
-    assert_eq!(w.store.with(|s| s.local_handle("F")).unwrap(), None, "placed again, never deleted");
-}
-
-/// C2: a folder holding a OneNote notebook, which is never placed here,
-/// looks empty locally; removing it never sends the notebook to the
-/// recycle bin with it.
-#[test]
-fn a_folder_holding_what_was_never_placed_here_is_not_deleted() {
-    let notebook = Row { placement: Placement::Skipped(crate::tree::SkipReason::OneNote), ..row("NB", Some("F"), "Notebook", Kind::Folder, b"") };
-    let w = World::new(&[folder("F", "R", "notes"), file("A", "F", "a.txt", b"a"), Change::Upsert(notebook)]);
-    assert!(!w.path("notes/Notebook").exists());
-    std::fs::remove_dir_all(w.path("notes")).unwrap();
-    w.examine(&[("", "notes")]);
-    assert_eq!(w.summary(), vec![(Delete, "notes".into(), OutboxState::Ready)]);
-    w.run();
-    assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.cloud(|c| c.count("DELETE", "items/F")), 0, "the folder itself is never deleted");
-    assert_eq!(w.cloud(|c| c.paths()), vec!["notes", "notes/Notebook"]);
-    assert_eq!(w.cloud(|c| c.bin.keys().cloned().collect::<Vec<_>>()), vec!["A"]);
-}
-
 /// I1: a swap where one side was also edited. The edited file goes through
 /// a temporary name; its content is throttled after the PATCH to that name
 /// landed, and the replay meets `412`. The file keeps its name here, and
@@ -986,49 +883,6 @@ fn delete_commits_wait_for_the_cycles_swap() {
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     assert_eq!(w.store.with(|s| s.local_handle("A")).unwrap(), None, "forgotten after the swap, not before");
     assert!(w.cloud(|c| c.item("A").is_some() && c.bin.is_empty()));
-}
-
-// The re-review's residuals.
-
-/// N1: a folder moved and then deleted while its move was being sent; an
-/// addition arrives in OneDrive meanwhile, and the move's answer (with the
-/// folder's new cTag) is written into the delete behind it. The whole
-/// delete is guarded by the cTag recorded when it was decided, so the
-/// addition is kept.
-#[test]
-fn a_whole_folder_delete_is_guarded_by_the_recorded_ctag() {
-    let w = World::new(&[folder("F", "R", "f"), file("A", "F", "a.txt", b"a")]);
-    w.rename("f", "g");
-    w.examine(&[("", "f"), ("", "g")]);
-    let moved = w.rows()[0].seq;
-    w.store.with(|s| s.outbox_set_state(moved, OutboxState::Running, None, None)).unwrap();
-    std::fs::remove_dir_all(w.path("g")).unwrap();
-    w.examine(&[("", "g")]);
-    assert_eq!(w.summary(), vec![(Move, "g".into(), OutboxState::Running), (Delete, "g".into(), OutboxState::Ready)]);
-    w.cloud(|c| {
-        c.add_file("N", "F", "new.txt", b"added there");
-        c.touch("F");
-    });
-    w.run();
-    assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.cloud(|c| c.paths()), vec!["g", "g/new.txt"]);
-    assert_eq!(w.cloud(|c| c.bin.keys().cloned().collect::<Vec<_>>()), vec!["A"]);
-}
-
-/// N3: a folder delete with no record of what it was decided against (a
-/// row from before the record) deletes nothing; the folder is placed again.
-#[test]
-fn a_folder_delete_without_a_record_deletes_nothing() {
-    let w = World::new(&[folder("F", "R", "f"), file("A", "F", "a.txt", b"a")]);
-    std::fs::remove_dir_all(w.path("f")).unwrap();
-    w.examine(&[("", "f")]);
-    let seq = w.rows()[0].seq;
-    w.store.with(|s| s.outbox_forget_seen(seq)).unwrap();
-    w.run();
-    assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.cloud(|c| c.paths()), vec!["f", "f/a.txt"]);
-    assert!(w.cloud(|c| c.bin.is_empty() && c.count("DELETE", "items/") == 0));
-    assert_eq!(w.store.with(|s| s.local_handle("F")).unwrap(), None, "placed again");
 }
 
 /// The activity words the worker writes are the ones the daemon's list of

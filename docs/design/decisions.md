@@ -633,16 +633,38 @@ until the test-account run ([writes.md](writes.md) §13).
 
 ### Every write is guarded, and a failed guard is settled by reading again
 
-**Decision.** `If-Match` on every change, `conflictBehavior=fail` on everything new, the folder's
-cTag on a folder's delete. A `412` or `409` is followed by reading the item and deciding: the same
-hash is adopted, a change of metadata only is sent again with the fresh tag, anything else is a
-conflict. Nothing is ever sent without its guard.
+**Decision.** `If-Match` on every change, `conflictBehavior=fail` on everything new. A `412` or
+`409` is followed by reading the item and deciding: the same hash is adopted, a change of metadata
+only is sent again with the fresh tag, anything else is a conflict. Nothing is ever sent without its
+guard — except a folder's delete, which carries none at all ("A folder delete is the whole folder,
+as on Windows", below).
 
 **Why.** It is the only way two writers cannot overwrite each other, and it makes every step
 replayable after a crash: "did my request land?" is answered by the content hash.
 
 **Trade-off.** An extra read on every refused guard; and a session checks `If-Match` when it is
 created, not when it completes, which leaves a window of one fragment (limitations log F80).
+
+### A folder delete is the whole folder, as on Windows; the recycle bin is the safety net
+
+**Decision.** A folder deleted here — outright, or by a move to the Trash — is one `DELETE` of the
+folder itself in OneDrive, with no `If-Match` and no reads or deletes of what is inside it first,
+whatever changed there meanwhile. `404` on the `DELETE` means it was already gone: that is success
+too.
+
+**Why.** This is what OneDrive on Windows does, so the result is what a user expects: deleting a
+folder deletes it, not "most of it, if nothing changed there since." The earlier design compared the
+folder's cTag with what the base held below it when the delete was decided, deleting file by file
+and only the folder itself if every one of them still matched; but the worker's own per-file deletes
+changed the folder's cTag first, so the guarded folder `DELETE` always lost the race with `412`, and
+the fallback kept the (now emptied) folder and placed it again, empty, locally. OneDrive's recycle
+bin is the safety net a whole, unguarded delete needs: nothing is lost for good, whatever the folder
+held when the `DELETE` landed.
+
+**Trade-off.** Something added to the folder in OneDrive between the user's delete and the request
+reaching OneDrive goes with it, to the recycle bin, rather than being kept and placed again locally;
+restoring it is a recycle-bin restore, not a resync. The mass-delete guard (§4.5) is unchanged and
+still holds a large removal for confirmation before any request is sent.
 
 ### Changed on both sides: keep both, named after the machine
 
@@ -740,14 +762,28 @@ F112, F113).
 ### Sign-in in the system browser, with PKCE and a loopback redirect
 
 **Decision.** OAuth authorization code with PKCE, the system browser, a single-use loopback
-listener, personal accounts only; each user registers their own Entra application.
+listener, personal accounts only.
 
 **Why.** Microsoft's recommendation for desktop applications (RFC 8252): the password and second
 factor stay in the browser, which keeps the user's Microsoft session, and there is no embedded web
 view to trust.
 
-**Trade-off.** A one-time app registration per user (the README has the steps); the consent screen
-calls the app unverified.
+**Trade-off.** The consent screen calls the app unverified.
+
+### konedrive ships its own client ID, like any desktop client
+
+**Decision.** konedrive signs in with its own Microsoft Entra application registration, built into
+the daemon (`DEFAULT_CLIENT_ID`). Nobody registers an app or enters a client ID to use konedrive.
+`config.toml`'s `client_id`, set with `konedrivectl set-client-id` or `Accounts1.SetClientId`,
+overrides it for anyone who wants to sign in with their own registration instead.
+
+**Why.** A public client's id is not a secret: it is sent in every sign-in URL, so there is nothing
+to protect by making each user register their own, and every other desktop OneDrive-style client
+ships one built in. Registering an app was a step with no security purpose, only friction between
+installing konedrive and signing in.
+
+**Trade-off.** Every install shares one Entra application's rate limits and "unverified publisher"
+consent screen, rather than each user's own.
 
 ### The daemon owns the token; the refresh token lives only in the Secret Service
 
@@ -809,13 +845,16 @@ Connecting a different Microsoft account means adding a new account.
 ### Account ids are random; labels are for people
 
 **Decision.** An account is known by 12 random hexadecimal characters, never reused, which name its
-D-Bus object and its directories. People see and type a label, 1 to 40 characters with no `/` and
-no `@`, which can change at any time and names nothing on disk.
+D-Bus object and its directories. People see and type a label, 1 to 40 characters with no `/`,
+which can change at any time and names nothing on disk. A label may contain `@` and equal an
+account's email — the window's own convention, since **Sign in…** names the account after it once
+it succeeds.
 
 **Why.** What appears in a D-Bus path and in file names must be valid in both and stable across
 renames. An email address is neither stable in meaning — the same address can be removed and added
-again — nor valid in a D-Bus path. Without `@`, a label is never mistaken for an email where either
-can name an account.
+again — nor valid in a D-Bus path, so the id, not the label, is what stays on disk. Matching by
+label and by email are separate tries (`--account`, the switcher's menu), so a label that happens
+to equal an email names one account, not two different things.
 
 **Trade-off.** Rescued files are grouped by account id, not by a name a person recognises
 (limitations log F47).
@@ -944,7 +983,7 @@ it says when another account needs attention. The folder moved from Settings to 
 **Why.** The pages stay where they were and show the chosen account, instead of a list of accounts
 standing in front of each of them; KDE's multi-account applications, such as NeoChat and Tokodon,
 put the account selector in the sidebar or the drawer in the same way. With one account, the
-switcher names it and gives "Add Account…" a home.
+switcher names it and gives "Sign in…" a home.
 
 **Trade-off.** Two accounts cannot be seen side by side in the window; the tray's tooltip is the
 overview (limitations log A13).
@@ -974,8 +1013,8 @@ called "Personal" first.
 **Why.** Guessing among several accounts would act on the wrong one sooner or later, and a
 refusal that lists the labels costs one retry. A path already says whose folder it is in; an
 `--account` that disagreed with it would have to be either ignored or obeyed wrongly, so it is
-refused. Adding "Personal" at `login` keeps the single-account setup — `set-client-id`, `login`,
-`sync register` — working word for word.
+refused. Adding "Personal" at `login` keeps the single-account setup — `login`, `sync register` —
+working word for word.
 
 **Trade-off.** An email names an account only once the account has signed in, and
 `KONEDRIVE_ACCOUNT` is ignored by the commands that name no chosen account (limitations log F51).

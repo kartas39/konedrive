@@ -172,7 +172,7 @@ The helper knows users, not accounts, so [SECURITY.md](../../SECURITY.md) and
 
 ```toml
 config_version = 2
-client_id = "0f8fad5b-d9cb-469f-a165-70867728950e"   # one Entra application for every account
+client_id = ""   # empty: konedrive signs in with its own built-in application; set to override it
 
 [[accounts]]
 id = "3f9a1c0e5b7d"
@@ -344,9 +344,11 @@ label.
 
 ### 7.1 The client id
 
-Every account signs in with one Entra application, `Accounts1.ClientId`. `SetClientId` accepts the
-canonical GUID form only, and is refused while any account is signing in or signed in, as it was
-for the single account.
+Every account signs in with one Entra application, `Accounts1.ClientId`. konedrive ships its own
+(`DEFAULT_CLIENT_ID`), so signing in needs nothing from the user; `config.toml`'s `client_id`
+overrides it for anyone who registers their own. `SetClientId` accepts the canonical GUID form
+only, and is refused while any account is signing in or signed in, as it was for the single
+account.
 
 ### 7.2 Add
 
@@ -356,11 +358,11 @@ other, and answers its object path; the object is on the bus by the time the cal
 (`Account1.BeginSignIn`) and choosing a folder (`Sync1.RegisterRoot`) are separate calls, made on the
 account's own object as they were for the single account.
 
-The window's **Sign in…** makes several calls in a row, not one transaction: `SetClientId` when no
-client id is set yet, `Add` with a temporary label, `BeginSignIn` on the new account, whose URL it
-opens in the browser, and, once the sign-in succeeds, `SetLabel` with the account's email. The
-account is kept out of the window everywhere in between, and is removed if any of this fails, is
-cancelled, or names an email another account already has (limitations log A15).
+The window's **Sign in…** makes several calls in a row, not one transaction: `Add` with a temporary
+label, `BeginSignIn` on the new account, whose URL it opens in the browser, and, once the sign-in
+succeeds, `SetLabel` with the account's email. The account is kept out of the window everywhere in
+between, and is removed if any of this fails, is cancelled, or names an email another account
+already has (limitations log A15).
 
 ### 7.3 Remove
 
@@ -481,12 +483,12 @@ log F41).
   account when none is chosen; and the path commands (`sync hydrate`, `dehydrate`, `state`, `pin`,
   `unpin`, `free`) go through `Files1`, where the path decides the account
   ([desktop.md](desktop.md) §3; limitations log F50, F51). `login` with no account at all first
-  adds one called `Personal`, so the single-account setup — `set-client-id`, `login`,
-  `sync register` — works as it did. A name that fits more than one account (possible only in a
-  hand-edited `config.toml`) is refused with exit status 2, never taken as the first. Every
-  command the CLI suggests names its account with `--account` whenever there are several or
-  `KONEDRIVE_ACCOUNT` is set, and with several accounts each success line starts with the
-  account's label.
+  adds one called `Personal`, so the single-account setup — `login`, `sync register` — works as it
+  did; `set-client-id` is needed only to override the built-in client id. A name that fits more
+  than one account (possible only in a hand-edited `config.toml`) is refused with exit status 2,
+  never taken as the first. Every command the CLI suggests names its account with `--account`
+  whenever there are several or `KONEDRIVE_ACCOUNT` is set, and with several accounts each success
+  line starts with the account's label.
 
 ```text
 $ konedrivectl account list
