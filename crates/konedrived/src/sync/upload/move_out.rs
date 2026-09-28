@@ -1200,7 +1200,7 @@ fn remove_info(entry: &TrashEntry) {
 /// temporary name stays, as `outbox_drop_all` keeps it.
 pub(in crate::sync) fn drop_rows(s: &mut TreeStore) -> Result<Vec<OutboxRow>, TreeError> {
     let mut rows = Vec::new();
-    for row in s.outbox_rows()?.into_iter().filter(|r| r.kind == OutboxKind::MoveOut) {
+    for row in s.outbox_move_outs()? {
         let swapping = match row.item_id.as_deref() {
             Some(id) => s.get(Table::Items, id)?.is_some_and(|item| item.name.starts_with(super::SWAP_PREFIX)),
             None => false,

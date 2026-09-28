@@ -202,10 +202,10 @@ pub fn handles_current(store: &Store, root: &File) -> bool {
 /// if that carries the row's item id, or goes (the item stays in OneDrive and
 /// is placed again). Then `now` is recorded. How many rows went.
 pub fn renew_handles(store: &Store, now: &str) -> Result<usize, crate::tree::TreeError> {
-    use crate::tree::outbox::{Inode, OutboxKind};
-    let rows = store.with(|s| s.outbox_rows())?;
+    use crate::tree::outbox::Inode;
+    let rows = store.with(|s| s.outbox_move_outs())?;
     let mut dropped = 0;
-    for row in rows.into_iter().filter(|r| r.kind == OutboxKind::MoveOut) {
+    for row in rows {
         let Some(id) = row.item_id.clone() else { continue };
         let found = row.target_name.as_deref().map(Path::new).filter(|p| p.is_absolute()).and_then(|path| {
             let carries = xattr::get(path, konedrive_fs::placeholder::XATTR_ITEM_ID).ok().flatten();

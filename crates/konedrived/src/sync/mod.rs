@@ -2232,7 +2232,7 @@ impl SyncService {
         // A read-only folder that still holds changes waiting to upload (a switch nobody
         // forced) runs no cycle while they wait: what a read-write cycle
         // deferred stays deferred for the read-write cycle that sends them.
-        let waiting = !writable && store.run(|s| s.outbox_rows()).await.map_or(true, |rows| !rows.is_empty());
+        let waiting = !writable && store.run(|s| s.outbox_len()).await.map_or(true, |n| n > 0);
         if !writable && !waiting {
             // Changes a read-write cycle deferred are the base's now: a read-only cycle knows
             // none. Nothing at all for a folder that never was read-write.

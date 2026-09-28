@@ -71,7 +71,7 @@ pub(super) const SCHEMA: &str = "
     CREATE TABLE local_skipped (rel TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);";
 
 /// The outbox's lookups (issue #38): by local object, by handle, by place, by
-/// what is due, by the folder a row goes into, and the rows that free a name
+/// what is due, by the folder a row goes into, by kind, and the rows that free a name
 /// in OneDrive (a partial index: removals, and moves away from the base place).
 /// Created on every open (`IF NOT EXISTS`), so a store made before them gains
 /// them without a rebuild.
@@ -81,6 +81,7 @@ const INDEXES: &str = "
     CREATE INDEX IF NOT EXISTS outbox_rel ON outbox(rel);
     CREATE INDEX IF NOT EXISTS outbox_due ON outbox(state, next_try, seq);
     CREATE INDEX IF NOT EXISTS outbox_target_parent ON outbox(target_parent);
+    CREATE INDEX IF NOT EXISTS outbox_kind ON outbox(kind);
     CREATE INDEX IF NOT EXISTS outbox_frees ON outbox(seq) WHERE FREES;";
 
 /// The rows the partial index `outbox_frees` holds: those with a base place

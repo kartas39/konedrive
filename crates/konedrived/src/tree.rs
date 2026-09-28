@@ -946,10 +946,27 @@ impl Store {
             .map_err(|e| TreeError::Io(std::io::Error::other(format!("the store task failed: {e}"))))?
     }
 
-    /// For synchronous callers already off the async runtime (the materializer).
-    /// When `f` changed the outbox, those waiting for a change are told, after
-    /// its transactions committed.
+    /// Runs `f` on the store, waiting for the lock. When `f` changed the
+    /// outbox, those waiting for a change are told, after its transactions
+    /// committed.
+    ///
+    /// Called on a worker thread of a multi-threaded tokio runtime (the outbox
+    /// worker's steps), the wait and the work go through `block_in_place`:
+    /// the worker's other tasks move to another thread first, so a long store
+    /// operation — an examination's apply, a cycle's commit — delays what
+    /// needs the store, never the D-Bus dispatcher or anything else on the
+    /// runtime (issue #38). Elsewhere (the examiner's and the materializer's
+    /// threads, `spawn_blocking`, a current-thread runtime) it runs as it is.
     pub fn with<T>(&self, f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError>) -> Result<T, TreeError> {
+        let on_workers = tokio::runtime::Handle::try_current().is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
+        if on_workers {
+            tokio::task::block_in_place(|| self.with_here(f))
+        } else {
+            self.with_here(f)
+        }
+    }
+
+    fn with_here<T>(&self, f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError>) -> Result<T, TreeError> {
         let mut store = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         let before = self.changes.generation();
         let out = f(&mut store);
@@ -983,6 +1000,38 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    /// Issue #38: tasks waiting for the store, more than the runtime has
+    /// workers, never hold up another task while something else holds it.
+    #[test]
+    fn waiting_for_the_store_does_not_starve_the_runtime() {
+        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        let store = Store::new(TreeStore::in_memory().unwrap());
+        let (held, release) = std::sync::mpsc::channel();
+        let holder = store.clone();
+        let holding = std::thread::spawn(move || {
+            holder.with(|_| {
+                held.send(()).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(1500));
+                Ok(())
+            })
+        });
+        release.recv().unwrap();
+        runtime.block_on(async {
+            let waiting: Vec<_> = (0..4).map(|_| {
+                let store = store.clone();
+                tokio::spawn(async move { store.with(|s| s.meta("x")) })
+            }).collect();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            let start = std::time::Instant::now();
+            let ran = tokio::spawn(async move { start.elapsed() }).await.unwrap();
+            assert!(ran < std::time::Duration::from_millis(500), "a task waited {ran:?} behind the store");
+            for task in waiting {
+                task.await.unwrap().unwrap();
+            }
+        });
+        holding.join().unwrap().unwrap();
+    }
 
     fn item(value: serde_json::Value) -> DriveItem {
         serde_json::from_value(value).unwrap()

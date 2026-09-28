@@ -1235,7 +1235,7 @@ async fn held_back(listing: &Listing) -> bool {
         return false;
     }
     let store = listing.ctx.store.clone();
-    let waiting = tokio::task::spawn_blocking(move || store.with(|s| s.outbox_rows()).map(|rows| rows.len())).await.ok().and_then(Result::ok);
+    let waiting = tokio::task::spawn_blocking(move || store.with(|s| s.outbox_len())).await.ok().and_then(Result::ok);
     let note = match waiting {
         Some(0) => String::new(),
         Some(n) => format!(

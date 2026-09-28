@@ -499,9 +499,9 @@ impl TreeStore {
         Ok(out)
     }
 
-    /// The `move-out` rows, through the index of the rows that free a name.
+    /// The `move-out` rows, through the kind index.
     pub fn outbox_move_outs(&self) -> Result<Vec<OutboxRow>, TreeError> {
-        Ok(rows_where(&self.conn, &format!("WHERE {FREES}"), [])?.into_iter().filter(|r| r.kind == OutboxKind::MoveOut).collect())
+        rows_where(&self.conn, "WHERE kind = 'move-out'", [])
     }
 
     /// The first `limit` rows, in `seq` order (`Outbox(limit)`).
@@ -523,6 +523,12 @@ impl TreeStore {
         .into_iter()
         .filter(|row| row.state == OutboxState::Blocked)
         .collect())
+    }
+
+    /// How many rows there are.
+    pub fn outbox_len(&self) -> Result<usize, TreeError> {
+        let n: i64 = self.conn.prepare_cached("SELECT count(*) FROM outbox")?.query_row([], |r| r.get(0))?;
+        Ok(n.max(0) as usize)
     }
 }
 
