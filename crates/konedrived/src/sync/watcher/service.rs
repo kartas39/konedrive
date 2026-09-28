@@ -10,7 +10,8 @@ use super::{Handled, Sink, StatusHook, WatchConfig, WatchStatus, Watcher};
 use crate::sync::disk::Disk;
 use crate::sync::listing::LinkCell;
 use crate::sync::local::ignore::SharedIgnore;
-use crate::sync::local::{Batch, ExamineError, Examiner, Liveness};
+use crate::sync::local::{Batch, ExamineError, Examiner, Liveness, ScanProgress, ScanReason};
+use crate::sync::local_scan::ScanReport;
 use crate::sync::root::SyncRoot;
 use crate::sync::{InodeLocks, RootState, SyncService};
 use crate::tree::Store;
@@ -40,6 +41,8 @@ pub struct ExamineSink {
     /// again (`Some`, what to say), and when a Full scan found them current
     /// (`None`): `LastError` says so meanwhile.
     pub on_handles: Option<Arc<dyn Fn(Option<String>) + Send + Sync>>,
+    /// Told how each Full local scan goes (issue #8); a single place examined is not.
+    pub scan: Option<ScanReport>,
 }
 
 impl Sink for ExamineSink {
@@ -56,11 +59,15 @@ impl Sink for ExamineSink {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
         let ignore = self.ignore.read().unwrap_or_else(|p| p.into_inner()).clone();
         let examiner = Examiner { disk: &disk, store: &self.store, liveness: &*self.liveness, ignore: &ignore, locks: &self.locks, now };
+        let run = self.scan.as_ref().filter(|_| batch.is_full()).map(|scan| scan.run(batch.reason().unwrap_or(ScanReason::Start)));
         let examined = {
             // On the examiner's own thread, never the runtime's.
             let _tree = self.tree_lock.as_ref().map(|lock| lock.blocking_lock());
-            examiner.examine(batch)
+            examiner.examine_reporting(batch, run.as_ref().map(|run| run as &dyn ScanProgress))
         };
+        if let Some(run) = run {
+            run.finish(examined.is_ok());
+        }
         match examined {
             Ok(done) => {
                 tracing::debug!(
@@ -141,6 +148,11 @@ impl SyncService {
         let runtime = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?;
         let mut config = WatchConfig::new(root.clone(), Arc::clone(&self.link), runtime.clone());
         config.on_status = Some(self.watch_hook(runtime.clone()));
+        config.first_scan = if self.switched_to_read_write.swap(false, std::sync::atomic::Ordering::SeqCst) {
+            ScanReason::ReadWrite
+        } else {
+            ScanReason::Start
+        };
         let sink = ExamineSink {
             root: root.clone(),
             store,
@@ -157,6 +169,7 @@ impl SyncService {
             on_rows: Some(self.outbox_waker()),
             on_handles: Some(self.handles_hook()),
             tree_lock: Some(Arc::clone(&self.tree_lock)),
+            scan: Some(ScanReport::new(self.state.clone())),
         };
         let watcher = Watcher::start(config, Box::new(FirstScan { inner: sink, scanned }))
             .map_err(|e| format!("cannot watch {} for local changes: {e}", root.path.display()))?;

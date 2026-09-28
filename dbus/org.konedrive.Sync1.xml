@@ -268,5 +268,30 @@
     <property name="LargeTransfers" type="u" access="read"/>
     <property name="LargeLimit" type="u" access="read"/>
     <property name="RetryAfter" type="u" access="read"/>
+    <!-- The Full local scan of a read-write folder: every directory walked,
+         for what changed while nothing watched (a start of its sync, the
+         switch to read-write, the helper back, an overflow of the notification
+         queue, the ignore list changed, or the periodic scan while part of the
+         folder cannot be watched). The small examinations after each change
+         are not reported. ScanState: running, idle, or none (a read-only
+         folder has no local scan). ScanReason: start, read-write, helper-back,
+         overflow, ignore-list, periodic. ScanStarted: unix seconds.
+         ScanDirectories and ScanFiles: what it has seen so far (every entry
+         that is not a directory is a file here), the root not counted.
+         ScanExpected: about how many items it will see — the items the folder's
+         base had placed when it started, not a count of the disk; never a
+         percentage. While idle these are the last scan's. ScanFinished: unix
+         seconds when the last scan finished, 0 for none since the daemon
+         started; ScanTook: how long it took, in seconds. Published at most once
+         a second while a scan runs, and once when it ends; coalesced with the
+         counters. -->
+    <property name="ScanState" type="s" access="read"/>
+    <property name="ScanReason" type="s" access="read"/>
+    <property name="ScanStarted" type="x" access="read"/>
+    <property name="ScanDirectories" type="t" access="read"/>
+    <property name="ScanFiles" type="t" access="read"/>
+    <property name="ScanExpected" type="t" access="read"/>
+    <property name="ScanFinished" type="x" access="read"/>
+    <property name="ScanTook" type="u" access="read"/>
   </interface>
 </node>

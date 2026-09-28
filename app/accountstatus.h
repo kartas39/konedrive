@@ -25,6 +25,11 @@ class AccountStatus : public QObject
     Q_PROPERTY(QString text READ text NOTIFY changed)
     /// Why the state is "warning" when the status line does not say it (a conflict, a failed update); else empty.
     Q_PROPERTY(QString attention READ attention NOTIFY changed)
+    /// The folder's local scan, one line: "Checking local files: 1234 folders and 45678
+    /// files, of about 50000 — started 2 min ago, after the switch to read-write", "Local
+    /// files last checked 5 min ago (took 40 s)", "Local files not checked yet"; empty for a
+    /// read-only folder.
+    Q_PROPERTY(QString scanLine READ scanLine NOTIFY changed)
 
 public:
     /// Unix seconds.
@@ -38,6 +43,7 @@ public:
     QString iconName() const;
     QString text() const { return m_text; }
     QString attention() const { return m_attention; }
+    QString scanLine() const { return m_scanLine; }
 
     /// The icon for a state name.
     static QString iconFor(const QString &state);
@@ -65,4 +71,5 @@ private:
     QString m_state = QStringLiteral("offline");
     QString m_text;
     QString m_attention;
+    QString m_scanLine;
 };

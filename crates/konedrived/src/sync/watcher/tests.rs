@@ -555,6 +555,7 @@ fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete()
         }),
         on_handles: None,
         tree_lock: None,
+        scan: None,
     };
     let watcher = Watcher::start(fx.config(), Box::new(sink)).unwrap();
     std::fs::write(fx.path("docs/new.txt"), b"new").unwrap();
@@ -576,4 +577,71 @@ fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete()
     assert!(watcher.status().examined >= 1);
     assert!(woken.load(std::sync::atomic::Ordering::SeqCst) >= 1, "the rows wake the outbox worker");
     watcher.stop();
+}
+
+/// The daemon's sink tells the folder's state how a Full local scan goes (issue #8): its
+/// reason, then idle with when it finished, how long it took and what it saw. A scan with no
+/// base yet, and a single place examined, change nothing.
+#[test]
+fn the_sink_reports_a_full_scan_and_not_a_single_place() {
+    use crate::config::Mode;
+    use crate::sync::local::ScanReason;
+    use crate::sync::local_scan::{ScanReport, ScanState};
+    use crate::sync::{SyncSnapshot, SyncStateHandle};
+    let fx = Fx::new();
+    let store = Store::new(TreeStore::in_memory().unwrap());
+    store
+        .with(|s| {
+            s.begin_staging(false)?;
+            s.stage(&[Change::Root(row("R", None, "", Kind::Folder)), Change::Upsert(row("D", Some("R"), "docs", Kind::Folder))])
+        })
+        .unwrap();
+    Materializer {
+        disk: Disk::open(&fx.root, false).unwrap(),
+        store: store.clone(),
+        link: None,
+        runtime: fx.runtime.handle().clone(),
+        locks: InodeLocks::new(),
+        root_item_id: "R".into(),
+        rescue_into: fx.outside.join("rescued"),
+        cancel: CancellationToken::new(),
+        rw: None,
+        claimed: None,
+    }
+    .apply(Scope::Full)
+    .unwrap();
+    std::fs::write(fx.path("docs/new.txt"), b"new").unwrap();
+    let state = SyncStateHandle::new(SyncSnapshot::default());
+    state.update(|s| {
+        s.items_placed = 2;
+        s.scan.follow(Mode::ReadWrite);
+    });
+    let mut sink = ExamineSink {
+        root: fx.root.clone(),
+        store: store.clone(),
+        locks: InodeLocks::new(),
+        ignore: IgnoreList::default().shared(),
+        liveness: Box::new(NoLiveness),
+        link: Arc::new(Mutex::new(None)),
+        runtime: fx.runtime.handle().clone(),
+        on_rows: None,
+        on_handles: None,
+        tree_lock: None,
+        scan: Some(ScanReport { state: state.clone(), every: Duration::ZERO }),
+    };
+    let idle = state.get().scan;
+    assert!(matches!(sink.handle(&Batch::scan(ScanReason::ReadWrite)), Handled::NotYet));
+    assert_eq!(state.get().scan, idle, "no base yet: no scan ran");
+
+    store.with(|s| s.commit_staging("link-1")).unwrap();
+    assert!(matches!(sink.handle(&Batch::scan(ScanReason::ReadWrite)), Handled::Done { .. }));
+    let scan = state.get().scan;
+    assert_eq!((scan.state, scan.reason.as_str(), scan.expected), (ScanState::Idle, "read-write", 2));
+    assert_eq!((scan.directories, scan.files), (1, 1), "docs, and docs/new.txt");
+    assert!(scan.started > 0 && scan.finished >= scan.started, "{scan:?}");
+
+    let mut one = Batch::new();
+    one.name(Path::new("docs"), OsStr::new("new.txt"));
+    assert!(matches!(sink.handle(&one), Handled::Done { .. }));
+    assert_eq!(state.get().scan, scan, "a single place examined is not a scan");
 }
