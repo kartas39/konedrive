@@ -430,6 +430,9 @@ impl TreeStore {
         // The read-write cycle's own tables, added to schema 3 without a
         // rebuild: a store made before them gains them here.
         conn.execute_batch(reconcile::TABLES)?;
+        conn.execute_batch(outbox::INDEXES)?;
+        // The outbox's point queries run thousands of times in one examination.
+        conn.set_prepared_statement_cache_capacity(64);
         Ok(Self { conn })
     }
 

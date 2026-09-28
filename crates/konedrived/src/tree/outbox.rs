@@ -61,6 +61,16 @@ pub(super) const SCHEMA: &str = "
     CREATE INDEX outbox_item ON outbox(item_id);
     CREATE TABLE local_skipped (rel TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);";
 
+/// The outbox's lookups (issue #38): by local object, by handle, by place, by
+/// what is due, by the folder a row goes into. Created on every open (`IF NOT
+/// EXISTS`), so a store made before them gains them without a rebuild.
+pub(super) const INDEXES: &str = "
+    CREATE INDEX IF NOT EXISTS outbox_object ON outbox(dev, ino);
+    CREATE INDEX IF NOT EXISTS outbox_handle ON outbox(handle);
+    CREATE INDEX IF NOT EXISTS outbox_rel ON outbox(rel);
+    CREATE INDEX IF NOT EXISTS outbox_due ON outbox(state, next_try, seq);
+    CREATE INDEX IF NOT EXISTS outbox_target_parent ON outbox(target_parent);";
+
 /// The `meta` key counting outbox commits: `items.local_seq` of the row a
 /// commit writes (the stale-delta guard, §3.7).
 pub const OUTBOX_SEQ: &str = "outbox_seq";
@@ -473,7 +483,7 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
 }
 
 fn rows_where(conn: &Connection, filter: &str, params: impl rusqlite::Params) -> Result<Vec<OutboxRow>, TreeError> {
-    let mut statement = conn.prepare(&format!("SELECT {OUTBOX_COLUMNS} FROM outbox {filter} ORDER BY seq"))?;
+    let mut statement = conn.prepare_cached(&format!("SELECT {OUTBOX_COLUMNS} FROM outbox {filter} ORDER BY seq"))?;
     let rows = statement.query_map(params, outbox_row)?.collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -490,15 +500,42 @@ fn item_gone(tx: &rusqlite::Transaction<'_>, id: &str) -> bool {
 }
 
 /// The live rows of the item or local object `d` is about, oldest first.
+/// An object is found through its inode or its handle, both indexed, and
+/// then compared as [`Inode::same_object`] does.
 fn rows_for(conn: &Connection, item_id: Option<&str>, inode: Option<&Inode>) -> Result<Vec<OutboxRow>, TreeError> {
     match (item_id, inode) {
         (Some(id), _) => rows_where(conn, "WHERE item_id = ?1", [id]),
-        (None, Some(inode)) => Ok(rows_where(conn, "WHERE item_id IS NULL", [])?
-            .into_iter()
-            .filter(|row| row.inode.as_ref().is_some_and(|i| i.same_object(inode)))
-            .collect()),
+        (None, Some(inode)) => Ok(rows_where(
+            conn,
+            // `+item_id`: not the item index, which every row without an id shares.
+            "WHERE +item_id IS NULL AND ((dev = ?1 AND ino = ?2) OR handle = ?3)",
+            params![inode.dev as i64, inode.ino as i64, inode.handle.as_ref().map(FileHandle::encode)],
+        )?
+        .into_iter()
+        .filter(|row| row.inode.as_ref().is_some_and(|i| i.same_object(inode)))
+        .collect()),
         (None, None) => Ok(Vec::new()),
     }
+}
+
+/// The rows whose place is strictly below `dir`, oldest first: a range of the
+/// `rel` index — the text form, and the bytes form of a name that is not UTF-8
+/// ([`path_value`]) — checked again with [`is_under`].
+fn rows_under(conn: &Connection, dir: &Path) -> Result<Vec<OutboxRow>, TreeError> {
+    if dir.as_os_str().is_empty() {
+        return Ok(all_rows(conn)?.into_iter().filter(|row| is_under(&row.rel, dir)).collect());
+    }
+    let bytes = dir.as_os_str().as_bytes();
+    let (mut low, mut high) = (bytes.to_vec(), bytes.to_vec());
+    low.push(b'/');
+    high.push(b'/' + 1);
+    let mut rows = rows_where(conn, "WHERE rel >= ?1 AND rel < ?2", params![Value::Blob(low.clone()), Value::Blob(high.clone())])?;
+    if let (Ok(low), Ok(high)) = (String::from_utf8(low), String::from_utf8(high)) {
+        rows.extend(rows_where(conn, "WHERE rel >= ?1 AND rel < ?2", params![low, high])?);
+    }
+    rows.retain(|row| is_under(&row.rel, dir));
+    rows.sort_by_key(|row| row.seq);
+    Ok(rows)
 }
 
 fn insert(conn: &Connection, row: &OutboxRow) -> Result<i64, TreeError> {
@@ -733,11 +770,10 @@ fn record(conn: &Connection, d: &Detection) -> Result<Recorded, TreeError> {
 }
 
 fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
-    for row in all_rows(conn)? {
+    let mut update = conn.prepare_cached("UPDATE outbox SET rel = ?2 WHERE seq = ?1")?;
+    for row in rows_under(conn, from)? {
         if let Ok(rest) = row.rel.strip_prefix(from) {
-            if is_under(&row.rel, from) {
-                conn.execute("UPDATE outbox SET rel = ?2 WHERE seq = ?1", params![row.seq, path_value(&to.join(rest))])?;
-            }
+            update.execute(params![row.seq, path_value(&to.join(rest))])?;
         }
     }
     Ok(())
@@ -791,7 +827,8 @@ impl TreeStore {
         }
         out.queued.sort_unstable();
         out.queued.dedup();
-        out.queued.retain(|seq| !out.removed.contains(seq));
+        let removed: HashSet<i64> = out.removed.iter().copied().collect();
+        out.queued.retain(|seq| !removed.contains(seq));
         tx.commit()?;
         Ok(out)
     }
@@ -832,7 +869,7 @@ impl TreeStore {
 
     /// Rows strictly below `rel`.
     pub fn outbox_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
-        Ok(all_rows(&self.conn)?.into_iter().filter(|row| is_under(&row.rel, rel)).collect())
+        rows_under(&self.conn, rel)
     }
 
     /// Every row's blockers: the live rows it waits for (the module's four
