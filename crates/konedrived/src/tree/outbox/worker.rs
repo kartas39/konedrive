@@ -331,6 +331,17 @@ impl TreeStore {
         Ok(self.conn.execute("UPDATE outbox SET next_try = 0 WHERE state IN ('retry', 'waiting')", [])?)
     }
 
+    /// Rows written as they are, without merging: the bench seeds a large outbox fast.
+    #[cfg(test)]
+    pub fn bench_insert(&mut self, rows: &[OutboxRow]) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        for row in rows {
+            insert(&tx, row)?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Every item of the base, for tests that seed a fake OneDrive from it.
     #[cfg(test)]
     pub fn all_items(&self) -> Result<Vec<Row>, TreeError> {

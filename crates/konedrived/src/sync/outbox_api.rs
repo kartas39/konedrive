@@ -251,7 +251,7 @@ const PAUSED_STATE: &str = "paused";
 /// in fragments still sending shows its bytes until it stops at the next).
 /// Otherwise, while OneDrive is `full`, a change that sends content and says
 /// nothing else says it waits for space (issue #2).
-fn entries(rows: Vec<crate::tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)], paused: bool, full: bool) -> Vec<OutboxEntry> {
+pub(crate) fn entries(rows: Vec<crate::tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)], paused: bool, full: bool) -> Vec<OutboxEntry> {
     rows
         .into_iter()
         .map(|row| {

@@ -41,7 +41,7 @@ const IDLE_CHECK: i64 = 300;
 const AGAIN_LIMIT: u32 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Class {
+pub(crate) enum Class {
     /// `mkdir`, `move`, `delete`: one at a time (§3.5).
     Meta,
     /// `create`, `update`: as many as the account's transfer pool gives, small or large.
@@ -547,7 +547,7 @@ impl Engine {
 
     /// The rows that may run now, in `seq` order: due, waiting for no other
     /// row, not held here already. Move-outs only with what they need.
-    fn candidates(&self) -> Result<Vec<(OutboxRow, Class)>, TreeError> {
+    pub(crate) fn candidates(&self) -> Result<Vec<(OutboxRow, Class)>, TreeError> {
         let now = now();
         let (rows, deps) = self.store().with(|s| Ok((s.outbox_rows()?, s.outbox_dependencies()?)))?;
         let flying: HashSet<i64> = self.shared().in_flight.keys().copied().collect();
