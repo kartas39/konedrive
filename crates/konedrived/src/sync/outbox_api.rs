@@ -229,8 +229,7 @@ impl SyncService {
     /// `limit` (0 for all): (seq, kind, full path, state, bytes sent, bytes
     /// in all, reason, next try).
     pub async fn outbox(&self, limit: u32) -> Result<Vec<OutboxEntry>, SyncError> {
-        let take = if limit == 0 { usize::MAX } else { limit as usize };
-        let rows = self.with_outbox(move |s| Ok(s.outbox_rows()?.into_iter().take(take).collect::<Vec<_>>())).await?;
+        let rows = self.with_outbox(move |s| if limit == 0 { s.outbox_rows() } else { s.outbox_first(limit as usize) }).await?;
         let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
         let state = self.state.get();
         let (uploads, paused, full) = (state.uploads, state.paused_until.is_some(), state.quota_full);
@@ -316,21 +315,17 @@ impl SyncService {
     /// `NotUploadedSummary()`: what is kept back, one row per reason:
     /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
     pub async fn not_uploaded_summary(&self) -> Result<Vec<super::kept_back::SummaryRow>, SyncError> {
-        let (skipped, rows) = self.with_outbox(|s| Ok((s.local_skipped()?, s.outbox_rows()?))).await?;
-        let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
+        let (skipped, groups) = self.with_outbox(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).await?;
         let full = self.state.get().quota_full;
-        tokio::task::spawn_blocking(move || super::kept_back::summary(&skipped, &rows, &root, full))
-            .await
-            .map_err(|e| SyncError::Io(format!("the summary task failed: {e}")))
+        Ok(super::kept_back::summary(&skipped, &groups, full))
     }
 
     /// `NotUploadedFiles(reason, limit)`: the files kept back for `reason`,
     /// at most `limit` (0 for all), and how many there are.
     pub async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32), SyncError> {
-        let (skipped, rows) = self.with_outbox(|s| Ok((s.local_skipped()?, s.outbox_rows()?))).await?;
         let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
         let full = self.state.get().quota_full;
-        Ok(super::kept_back::files(&skipped, &rows, &root, full, &reason, limit))
+        self.with_outbox(move |s| super::kept_back::files(s, &root, full, &reason, limit)).await
     }
 
     /// `ConfirmDeletes()`: the removals the mass-delete guard held go ahead;
@@ -561,6 +556,7 @@ mod tests {
             session_expires: None,
             session_next: None,
             confirmed: false,
+            size: None,
         }
     }
 

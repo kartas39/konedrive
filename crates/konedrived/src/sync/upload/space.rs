@@ -116,11 +116,24 @@ impl Space {
         if converted > 0 {
             tracing::info!("{converted} change(s) blocked on a full OneDrive wait for space now");
         }
-        let rows = store.with(|s| s.outbox_rows()).unwrap_or_default();
-        let full = rows.iter().any(|r| r.reason.as_deref() == Some(WAITING));
-        let wanted = full || rows.iter().any(|r| waits(r.reason.as_deref()));
+        let groups = store.with(|s| s.outbox_groups()).unwrap_or_default();
+        let full = groups.iter().any(|g| g.reason().as_deref() == Some(WAITING));
+        let wanted = full || groups.iter().any(|g| waits(g.reason().as_deref()));
         Self { full, wanted, ..Self::default() }
     }
+}
+
+/// Whether `row` may be taken as the space stands (`full`, and the waiting
+/// rows `looked` at since the last quota read). A `create` that waits for
+/// space is taken all the same when a removal of its object stands behind it
+/// (`removed`): a file removed before its upload finished leaves the outbox at
+/// once (issue #27), full or not. Its run sends no content: it ends if the
+/// file is gone, and waits on if not ([`Engine::space_holds`]).
+pub(super) fn allows(row: &OutboxRow, full: bool, looked: &HashSet<i64>, removed: impl FnOnce() -> Result<bool, TreeError>) -> Result<bool, TreeError> {
+    if !waits(row.reason.as_deref()) && !(full && row.kind.sends_content()) {
+        return Ok(true);
+    }
+    Ok(row.kind == crate::tree::outbox::OutboxKind::Create && !looked.contains(&row.seq) && removed()?)
 }
 
 /// The size a waiting row sends: its snapshot's, or the file's now.
@@ -129,6 +142,7 @@ fn size_of(row: &OutboxRow, disk: Option<&Disk>) -> u64 {
         .as_deref()
         .and_then(|s| s.split(' ').next())
         .and_then(|s| s.parse().ok())
+        .or(row.size)
         .or_else(|| disk.and_then(|d| local::size_at(d, &row.rel)))
         .unwrap_or(0)
 }
@@ -147,17 +161,11 @@ impl Engine {
         }
     }
 
-    /// Whether `row` may be taken as the space stands. A `create` that waits
-    /// for space is taken all the same when a removal of its object stands
-    /// behind it (`removed`): a file removed before its
-    /// upload finished leaves the outbox at once (issue #27), full or not.
-    /// Its run sends no content: it ends if the file is gone, and waits on
-    /// if not ([`Engine::space_holds`]).
-    pub(super) fn space_allows(&self, row: &OutboxRow, full: bool, removed: impl FnOnce() -> bool) -> bool {
-        if !waits(row.reason.as_deref()) && !(full && row.kind.sends_content()) {
-            return true;
-        }
-        removed() && !self.shared().space.looked.contains(&row.seq)
+    /// What a pick needs to know of the space: whether OneDrive is full, and
+    /// the waiting rows already looked at since the last quota read.
+    pub(super) fn space_seen(&self) -> (bool, HashSet<i64>) {
+        let shared = self.shared();
+        (shared.space.full, shared.space.looked.clone())
     }
 
     /// The reason a content row taken while it waits for space waits on
@@ -268,7 +276,7 @@ impl Engine {
     /// Every row waiting for space whose file fits in `free` goes again;
     /// the rest are *too big* for it.
     fn release_fitting(&self, free: u64) -> Result<(), TreeError> {
-        let rows = self.store().with(|s| s.outbox_rows())?;
+        let rows = self.store().with(|s| s.outbox_waiting_for_space())?;
         let disk = Disk::open(&self.cfg.root, false).ok();
         for row in rows.iter().filter(|r| r.state == OutboxState::Ready && waits(r.reason.as_deref())) {
             let size = size_of(row, disk.as_ref());

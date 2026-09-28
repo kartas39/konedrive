@@ -1151,6 +1151,7 @@ impl Run<'_, '_> {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: (e.ty == Type::File).then_some(e.size),
         }
     }
 
@@ -1435,6 +1436,7 @@ impl Run<'_, '_> {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: None,
         });
     }
 
@@ -1566,6 +1568,7 @@ impl Run<'_, '_> {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: None,
         });
         Ok(Settle::Done)
     }
@@ -1688,6 +1691,7 @@ impl Run<'_, '_> {
                     state: OutboxState::Ready,
                     reason: None,
                     next_try: None,
+                    size: None,
                 });
             } else if let Some(row) = pending.filter(|r| matches!(r.kind, OutboxKind::Create | OutboxKind::Mkdir)) {
                 self.ops.push(OutboxOp::Remove(row.seq));
@@ -1728,6 +1732,7 @@ impl Run<'_, '_> {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: (!is_dir).then_some(e.size),
         };
         if let Some(row) = &pending {
             if is_dir && row.rel != e.rel {
@@ -1764,7 +1769,15 @@ impl Run<'_, '_> {
             }
         }
         let skipped = std::mem::take(&mut self.skipped);
-        self.ops.extend(skipped.into_iter().map(|(rel, reason)| OutboxOp::Skip { rel, reason }));
+        let ops: Vec<OutboxOp> = skipped
+            .into_iter()
+            .map(|(rel, reason)| {
+                // A file's size, for the sums of what is kept back; nothing for the rest.
+                let size = self.at.get(&rel).map(|&i| &self.entries[i]).filter(|e| e.ty == Type::File).map_or(0, |e| e.size);
+                OutboxOp::Skip { rel, reason, size }
+            })
+            .collect();
+        self.ops.extend(ops);
         Ok(())
     }
 

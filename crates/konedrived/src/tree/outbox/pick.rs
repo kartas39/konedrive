@@ -1,0 +1,694 @@
+//! Which rows run next, without reading the whole queue (issue #38).
+//!
+//! **Rules 1–3** of the module's doc are asked of one row at a time, by point
+//! queries: its item's and its local object's earlier rows (the item and
+//! object indexes), the `mkdir` of its directory (the place index), and for
+//! a folder's removal, the rows of what the base has inside it (one walk of
+//! the base, joined to the outbox through the item index).
+//!
+//! **Rule 4** needs the whole picture, but only of the rows that free or
+//! take a name in OneDrive: removals and moves away from the base place (a
+//! partial index), and the rows that take one of the names those free —
+//! found through the target-folder index. Its circles are looked for in the
+//! graph those rows and what they wait for make, and a rule-4 edge inside
+//! one is dropped, as before.
+//!
+//! **Picking** reads the due rows in `seq` order, a portion at a time, and
+//! follows a row that waits to the head of its wait chain, remembering the
+//! rows visited. A head that is ready runs; one that runs, waits for a time
+//! or waits for the user says why nothing behind it can run. Portions are
+//! read until enough rows are found or the queue ends, so a portion where
+//! every row waits never stops the worker. **The invariant**: when nothing
+//! can run, something runs, something waits for a time, or something waits
+//! for the user ([`Picked`]); anything else is a stall, reported.
+
+use std::collections::{HashMap, HashSet};
+use rusqlite::{params, Connection};
+
+use super::{circles, frees, path_value, rows_where, takes, OutboxKind, OutboxRow, OutboxState, FREES};
+use crate::tree::{Kind, TreeError, TreeStore, MAX_CHAIN};
+
+/// Due rows read at a time (a guess: large enough that a portion is one
+/// query's worth of work, small enough that a pick that finds its rows early
+/// reads little).
+pub const PORTION: usize = 100;
+
+/// Whether `row` may be taken at `now` as far as its own state goes: `ready`,
+/// `running` with nobody holding it (a crash or a stop left it; replayed),
+/// `retry` whose time has come, `waiting` whose look is due.
+pub fn due(row: &OutboxRow, now: i64) -> bool {
+    match row.state {
+        OutboxState::Ready | OutboxState::Running => true,
+        OutboxState::Retry => row.next_try.is_none_or(|at| at <= now),
+        OutboxState::Waiting => row.next_try.is_some_and(|at| at <= now),
+        OutboxState::Blocked | OutboxState::Held => false,
+    }
+}
+
+/// What the worker asks of a pick.
+pub struct Pick<'a> {
+    pub now: i64,
+    /// Rows the worker holds already.
+    pub flying: &'a HashSet<i64>,
+    /// Whether `move-out` rows can run (a worker built with what they need).
+    pub move_outs: bool,
+    /// Enough rows: portions stop being read once this many are found.
+    pub want: usize,
+    /// Whether a row with nothing to wait for may be taken as the space in
+    /// OneDrive stands; the store is there for what that needs to look up.
+    pub allows: &'a dyn Fn(&TreeStore, &OutboxRow) -> Result<bool, TreeError>,
+}
+
+/// What a pick found: the rows to run, in `seq` order, and — the invariant —
+/// why the rest cannot run now.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Picked {
+    pub rows: Vec<OutboxRow>,
+    /// A row the worker holds is in front of others: its end wakes the worker.
+    pub running: bool,
+    /// The earliest time a row in front of others falls due.
+    pub until: Option<i64>,
+    /// A row in front of others waits for the user: held, blocked, waiting
+    /// for space, or for what a move out needs.
+    pub user: bool,
+    /// Due rows that wait for nothing of the above: must never happen.
+    pub stalled: Vec<i64>,
+}
+
+impl Picked {
+    fn wait_until(&mut self, at: i64) {
+        self.until = Some(self.until.map_or(at, |u| u.min(at)));
+    }
+}
+
+fn one(conn: &Connection, seq: i64) -> Result<Option<OutboxRow>, TreeError> {
+    Ok(rows_where(conn, "WHERE seq = ?1", [seq])?.into_iter().next())
+}
+
+/// What one pick has asked already: the `mkdir` row of each directory (many
+/// rows share one), and rule 1's answers for a whole portion, read at once.
+#[derive(Default)]
+struct Memo {
+    mkdirs: HashMap<std::path::PathBuf, Option<i64>>,
+    earlier: HashMap<i64, Vec<i64>>,
+    /// Once many portions were read: the item ids, handles and inodes more
+    /// than one row has. A row with none of them waits for no earlier row of
+    /// its own (rule 1), and is not asked.
+    shared: Option<(HashSet<String>, HashSet<Vec<u8>>, HashSet<(i64, i64)>)>,
+}
+
+/// Portions read before rule 1 is answered from what is shared ([`Memo::shared`]).
+const PORTIONS_ASKED: usize = 8;
+
+impl Memo {
+    /// What more than one row has: three walks of the indexes, once per pick.
+    fn share(&mut self, conn: &Connection) -> Result<(), TreeError> {
+        let ids = conn
+            .prepare("SELECT item_id FROM outbox WHERE item_id IS NOT NULL GROUP BY item_id HAVING count(*) > 1")?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<HashSet<String>, _>>()?;
+        let handles = conn
+            .prepare("SELECT handle FROM outbox WHERE handle IS NOT NULL GROUP BY handle HAVING count(*) > 1")?
+            .query_map([], |r| r.get(0))?
+            .collect::<Result<HashSet<Vec<u8>>, _>>()?;
+        let inodes = conn
+            .prepare("SELECT dev, ino FROM outbox WHERE dev IS NOT NULL GROUP BY dev, ino HAVING count(*) > 1")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<Result<HashSet<(i64, i64)>, _>>()?;
+        self.shared = Some((ids, handles, inodes));
+        Ok(())
+    }
+
+    /// Rule 1 for every row of `portion`: two queries for all of them — by
+    /// item id, and by handle — and one per row known by its inode alone; or,
+    /// once what is shared is known, a query only for a row that shares.
+    fn portion(&mut self, conn: &Connection, portion: &[OutboxRow]) -> Result<(), TreeError> {
+        if let Some((ids, handles, inodes)) = &self.shared {
+            for row in portion {
+                let shares = row.item_id.as_ref().is_some_and(|id| ids.contains(id))
+                    || row.inode.as_ref().is_some_and(|i| match &i.handle {
+                        Some(handle) => handles.contains(&handle.encode()),
+                        None => inodes.contains(&(i.dev as i64, i.ino as i64)),
+                    });
+                let mut earlier = Vec::new();
+                if shares {
+                    rule_one(conn, row, &mut earlier)?;
+                }
+                self.earlier.insert(row.seq, earlier);
+            }
+            return Ok(());
+        }
+        let ids: HashSet<&str> = portion.iter().filter_map(|r| r.item_id.as_deref()).collect();
+        let handles: HashSet<Vec<u8>> = portion.iter().filter_map(|r| r.inode.as_ref()?.handle.as_ref().map(|h| h.encode())).collect();
+        let mut by_id: HashMap<String, Vec<i64>> = HashMap::new();
+        if !ids.is_empty() {
+            let sql = format!("SELECT item_id, seq FROM outbox WHERE item_id IN ({})", vec!["?"; ids.len()].join(","));
+            let mut statement = conn.prepare(&sql)?;
+            let found = statement.query_map(rusqlite::params_from_iter(ids.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            for pair in found {
+                let (id, seq) = pair?;
+                by_id.entry(id).or_default().push(seq);
+            }
+        }
+        let mut by_handle: HashMap<Vec<u8>, Vec<i64>> = HashMap::new();
+        if !handles.is_empty() {
+            let sql = format!("SELECT handle, seq FROM outbox WHERE +item_id IS NULL AND handle IN ({})", vec!["?"; handles.len()].join(","));
+            let mut statement = conn.prepare(&sql)?;
+            let found = statement.query_map(rusqlite::params_from_iter(handles.iter()), |r| Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, i64>(1)?)))?;
+            for pair in found {
+                let (handle, seq) = pair?;
+                by_handle.entry(handle).or_default().push(seq);
+            }
+        }
+        for row in portion {
+            let mut earlier: Vec<i64> = Vec::new();
+            if let Some(id) = &row.item_id {
+                earlier.extend(by_id.get(id).into_iter().flatten().copied().filter(|&seq| seq < row.seq));
+            }
+            match row.inode.as_ref().map(|i| (i, i.handle.as_ref())) {
+                Some((_, Some(handle))) => earlier.extend(by_handle.get(&handle.encode()).into_iter().flatten().copied().filter(|&seq| seq < row.seq)),
+                Some((inode, None)) => earlier.extend(same_inode_before(conn, inode, row.seq)?),
+                None => {}
+            }
+            self.earlier.insert(row.seq, earlier);
+        }
+        Ok(())
+    }
+}
+
+/// Earlier rows with no item id and no handle, on `inode`.
+fn same_inode_before(conn: &Connection, inode: &super::Inode, seq: i64) -> Result<Vec<i64>, TreeError> {
+    let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE +item_id IS NULL AND handle IS NULL AND dev = ?1 AND ino = ?2 AND seq < ?3")?;
+    let seqs = statement.query_map(params![inode.dev as i64, inode.ino as i64, seq], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(seqs)
+}
+
+/// Rules 1–3 for `row`, by point queries: the live rows it waits for.
+/// `memo` holds what this pick asked already.
+fn structural(conn: &Connection, row: &OutboxRow, mut memo: Option<&mut Memo>) -> Result<Vec<i64>, TreeError> {
+    let mut out: Vec<i64> = Vec::new();
+    // 1. An earlier row of the same item, or of the same local object with no
+    // id yet, the object being its handle or, without one, its inode.
+    if let Some(known) = memo.as_deref_mut().and_then(|m| m.earlier.remove(&row.seq)) {
+        out.extend(known);
+    } else {
+        rule_one(conn, row, &mut out)?;
+    }
+    rule_two_three(conn, row, memo.map(|m| &mut m.mkdirs), out)
+}
+
+fn rule_one(conn: &Connection, row: &OutboxRow, out: &mut Vec<i64>) -> Result<(), TreeError> {
+    if let Some(id) = &row.item_id {
+        let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE item_id = ?1 AND seq < ?2")?;
+        out.extend(statement.query_map(params![id, row.seq], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?);
+    }
+    if let Some(inode) = &row.inode {
+        // The same handle's bytes, or no handle and the same inode (`same_key`).
+        let earlier: Vec<i64> = match &inode.handle {
+            Some(handle) => {
+                let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE +item_id IS NULL AND handle = ?1 AND seq < ?2")?;
+                let seqs = statement.query_map(params![handle.encode(), row.seq], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
+                seqs
+            }
+            None => same_inode_before(conn, inode, row.seq)?,
+        };
+        out.extend(earlier);
+    }
+    Ok(())
+}
+
+fn rule_two_three(
+    conn: &Connection,
+    row: &OutboxRow,
+    mut mkdirs: Option<&mut HashMap<std::path::PathBuf, Option<i64>>>,
+    mut out: Vec<i64>,
+) -> Result<Vec<i64>, TreeError> {
+    // 2. The mkdir of the directory it is in.
+    if !row.kind.removes() {
+        if let Some(parent) = row.rel.parent() {
+            let mkdir = match mkdirs.as_deref_mut().and_then(|m| m.get(parent).copied()) {
+                Some(known) => known,
+                None => {
+                    let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE rel = ?1 AND kind = 'mkdir' ORDER BY seq DESC LIMIT 1")?;
+                    let found: Option<i64> = statement.query_map([path_value(parent)], |r| r.get(0))?.next().transpose()?;
+                    if let Some(m) = mkdirs.as_deref_mut() {
+                        m.insert(parent.to_path_buf(), found);
+                    }
+                    found
+                }
+            };
+            if let Some(mkdir) = mkdir.filter(|&m| m != row.seq) {
+                out.push(mkdir);
+            }
+        }
+    }
+    // 3. A folder leaving OneDrive waits for every row of what the base has
+    // inside it: by item id, not by path.
+    if row.kind.removes() {
+        if let Some(id) = &row.item_id {
+            let folder: Option<String> =
+                conn.prepare_cached("SELECT kind FROM items WHERE id = ?1")?.query_map([id], |r| r.get(0))?.next().transpose()?;
+            if folder.as_deref() == Some(Kind::Folder.as_str()) {
+                let sql = format!(
+                    "WITH RECURSIVE below(id, depth) AS (
+                         SELECT id, 1 FROM items WHERE parent_id = ?1
+                         UNION ALL
+                         SELECT c.id, b.depth + 1 FROM items c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
+                     SELECT o.seq FROM below b JOIN outbox o ON o.item_id = b.id WHERE o.seq != ?2"
+                );
+                let mut statement = conn.prepare_cached(&sql)?;
+                out.extend(statement.query_map(params![id, row.seq], |r| r.get::<_, i64>(0))?.collect::<Result<Vec<_>, _>>()?);
+            }
+        }
+    }
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
+}
+
+/// Rule 4's edges, taker → freers, with those inside a circle dropped; built
+/// from the rows that free or take a name only.
+fn name_edges(conn: &Connection) -> Result<HashMap<i64, Vec<i64>>, TreeError> {
+    let freers: Vec<OutboxRow> = rows_where(conn, &format!("WHERE {FREES}"), [])?.into_iter().filter(|r| frees(r).is_some()).collect();
+    if freers.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut freeing: HashMap<(String, String), Vec<i64>> = HashMap::new();
+    for row in &freers {
+        let (parent, name) = frees(row).expect("filtered above");
+        freeing.entry((parent.to_owned(), name.to_lowercase())).or_default().push(row.seq);
+    }
+    let parents: HashSet<String> = freeing.keys().map(|(parent, _)| parent.clone()).collect();
+    let mut rows: HashMap<i64, OutboxRow> = freers.into_iter().map(|r| (r.seq, r)).collect();
+    let mut by_name: Vec<(i64, i64)> = Vec::new();
+    for parent in &parents {
+        for row in rows_where(conn, "WHERE target_parent = ?1", [parent])? {
+            let Some((p, name)) = takes(&row) else { continue };
+            let Some(freers) = freeing.get(&(p.to_owned(), name.to_lowercase())) else { continue };
+            for &freer in freers {
+                if freer != row.seq {
+                    by_name.push((row.seq, freer));
+                }
+            }
+            rows.entry(row.seq).or_insert(row);
+        }
+    }
+    if by_name.is_empty() {
+        return Ok(HashMap::new());
+    }
+    // The graph the name rows and what they wait for make (rules 1–3), for
+    // the circles: every circle through a rule-4 edge lies in it.
+    let mut union: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut queue: Vec<i64> = rows.keys().copied().collect();
+    while let Some(seq) = queue.pop() {
+        if union.contains_key(&seq) {
+            continue;
+        }
+        let row = match rows.get(&seq) {
+            Some(row) => row.clone(),
+            None => match one(conn, seq)? {
+                Some(row) => row,
+                None => continue,
+            },
+        };
+        let edges = structural(conn, &row, None)?;
+        queue.extend(edges.iter().copied().filter(|b| !union.contains_key(b)));
+        union.insert(seq, edges);
+    }
+    let mut kept: HashMap<i64, Vec<i64>> = HashMap::new();
+    let mut with_names = union.clone();
+    for &(taker, freer) in &by_name {
+        with_names.entry(taker).or_default().push(freer);
+    }
+    let circles = circles(&with_names);
+    let circle_of: HashMap<i64, usize> = circles.iter().enumerate().flat_map(|(n, c)| c.iter().map(move |&seq| (seq, n))).collect();
+    for (taker, freer) in by_name {
+        let inside_one_circle = circle_of.get(&taker).is_some_and(|n| circle_of.get(&freer) == Some(n));
+        if !inside_one_circle {
+            kept.entry(taker).or_default().push(freer);
+        }
+    }
+    Ok(kept)
+}
+
+impl TreeStore {
+    /// The rows `row` waits for (the module's four rules).
+    pub fn outbox_blockers_of(&self, row: &OutboxRow) -> Result<Vec<i64>, TreeError> {
+        let mut out = structural(&self.conn, row, None)?;
+        out.extend(name_edges(&self.conn)?.remove(&row.seq).unwrap_or_default());
+        out.sort_unstable();
+        out.dedup();
+        #[cfg(test)]
+        assert_eq!(out, self.outbox_dependencies()?.remove(&row.seq).unwrap_or_default(), "the point queries and the whole graph differ for row {}", row.seq);
+        Ok(out)
+    }
+
+    /// The rows `seq` waits for.
+    pub fn outbox_blockers(&self, seq: i64) -> Result<Vec<i64>, TreeError> {
+        match one(&self.conn, seq)? {
+            Some(row) => self.outbox_blockers_of(&row),
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// The rows that can run now, in `seq` order: `ready`, or `retry` whose
+    /// time has come, with nothing to wait for. Which of them run at once is
+    /// the worker's (metadata rows one at a time, §3.5).
+    pub fn outbox_runnable(&self, now: i64) -> Result<Vec<OutboxRow>, TreeError> {
+        let names = name_edges(&self.conn)?;
+        let mut out = Vec::new();
+        for row in rows_where(&self.conn, "WHERE state IN ('ready', 'retry')", [])? {
+            let ready = match row.state {
+                OutboxState::Ready => true,
+                OutboxState::Retry => row.next_try.is_none_or(|at| at <= now),
+                _ => false,
+            };
+            if ready && structural(&self.conn, &row, None)?.is_empty() && !names.contains_key(&row.seq) {
+                out.push(row);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Due rows after `seq`, in `seq` order, at most `limit`.
+    fn outbox_due_after(&self, now: i64, after: i64, limit: usize) -> Result<Vec<OutboxRow>, TreeError> {
+        Ok(rows_where(
+            &self.conn,
+            // `+state`: along `seq`, not the due index, whose order would have to be sorted.
+            "WHERE seq > ?1 AND (+state IN ('ready', 'running') OR (+state = 'retry' AND (next_try IS NULL OR next_try <= ?2))
+                                 OR (+state = 'waiting' AND next_try <= ?2)) ORDER BY seq LIMIT ?3",
+            params![after, now, limit as i64],
+        )?
+        .into_iter()
+        .filter(|row| due(row, now))
+        .collect())
+    }
+
+    /// The next rows to run ([`Pick`]), and why the others cannot (the module's doc).
+    pub fn outbox_pick(&self, pick: &Pick<'_>) -> Result<Picked, TreeError> {
+        let names = name_edges(&self.conn)?;
+        let mut out = Picked::default();
+        let mut seen: HashSet<i64> = HashSet::new();
+        let mut memo = Memo::default();
+        let mut cursor = 0;
+        let mut portions = 0;
+        let mut candidates = false;
+        while out.rows.len() < pick.want {
+            // The query's own order: `seq`, strictly after the last row read.
+            let portion = self.outbox_due_after(pick.now, cursor, PORTION)?;
+            let Some(last) = portion.last() else { break };
+            cursor = last.seq;
+            portions += 1;
+            if portions == PORTIONS_ASKED {
+                memo.share(&self.conn)?;
+            }
+            memo.portion(&self.conn, &portion)?;
+            for row in portion {
+                candidates = true;
+                if !seen.contains(&row.seq) {
+                    self.follow(row, &names, pick, &mut seen, &mut memo, &mut out)?;
+                }
+            }
+        }
+        out.rows.sort_by_key(|row| row.seq);
+        if candidates && out.rows.is_empty() && !out.running && out.until.is_none() && !out.user {
+            out.stalled = seen.into_iter().collect();
+            out.stalled.sort_unstable();
+        }
+        Ok(out)
+    }
+
+    /// Follows `start` to the heads of its wait chains: a head that can run
+    /// is taken; any other says what the chain waits for.
+    fn follow(
+        &self,
+        start: OutboxRow,
+        names: &HashMap<i64, Vec<i64>>,
+        pick: &Pick<'_>,
+        seen: &mut HashSet<i64>,
+        memo: &mut Memo,
+        out: &mut Picked,
+    ) -> Result<(), TreeError> {
+        let mut stack = vec![start];
+        while let Some(row) = stack.pop() {
+            if !seen.insert(row.seq) {
+                continue;
+            }
+            if pick.flying.contains(&row.seq) {
+                out.running = true;
+                continue;
+            }
+            if !due(&row, pick.now) {
+                match row.next_try.filter(|_| matches!(row.state, OutboxState::Retry | OutboxState::Waiting)) {
+                    Some(at) => out.wait_until(at),
+                    None => out.user = true,
+                }
+                continue;
+            }
+            if row.kind == OutboxKind::MoveOut && !pick.move_outs {
+                out.user = true;
+                continue;
+            }
+            let mut blockers = structural(&self.conn, &row, Some(memo))?;
+            blockers.extend(names.get(&row.seq).into_iter().flatten().copied());
+            if blockers.is_empty() {
+                if (pick.allows)(self, &row)? {
+                    out.rows.push(row);
+                } else {
+                    out.user = true;
+                }
+                continue;
+            }
+            for blocker in blockers {
+                if !seen.contains(&blocker) {
+                    if let Some(next) = one(&self.conn, blocker)? {
+                        stack.push(next);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// When the next row waiting for a time falls due after `now`.
+    pub fn outbox_next_due(&self, now: i64) -> Result<Option<i64>, TreeError> {
+        let mut statement =
+            self.conn.prepare_cached("SELECT min(next_try) FROM outbox WHERE state IN ('retry', 'waiting', 'blocked') AND next_try > ?1")?;
+        Ok(statement.query_row([now], |r| r.get(0))?)
+    }
+
+    /// Whether a removal of `row`'s object is recorded behind it (issue #27).
+    pub fn outbox_removed_behind(&self, row: &OutboxRow) -> Result<bool, TreeError> {
+        let Some(inode) = &row.inode else { return Ok(false) };
+        let behind = rows_where(
+            &self.conn,
+            "WHERE kind = 'delete' AND seq > ?1 AND ((dev = ?2 AND ino = ?3) OR handle = ?4)",
+            params![row.seq, inode.dev as i64, inode.ino as i64, inode.handle.as_ref().map(|h| h.encode())],
+        )?;
+        Ok(behind.iter().any(|r| r.inode.as_ref() == Some(inode)))
+    }
+
+    /// The rows with these `seq`s that are still there.
+    pub fn outbox_rows_of(&self, seqs: &[i64]) -> Result<Vec<OutboxRow>, TreeError> {
+        let mut out = Vec::with_capacity(seqs.len());
+        for chunk in seqs.chunks(500) {
+            let list = chunk.iter().map(i64::to_string).collect::<Vec<_>>().join(",");
+            out.extend(rows_where(&self.conn, &format!("WHERE seq IN ({list})"), [])?);
+        }
+        out.sort_by_key(|row| row.seq);
+        Ok(out)
+    }
+
+    /// The `move-out` rows, through the index of the rows that free a name.
+    pub fn outbox_move_outs(&self) -> Result<Vec<OutboxRow>, TreeError> {
+        Ok(rows_where(&self.conn, &format!("WHERE {FREES}"), [])?.into_iter().filter(|r| r.kind == OutboxKind::MoveOut).collect())
+    }
+
+    /// The first `limit` rows, in `seq` order (`Outbox(limit)`).
+    pub fn outbox_first(&self, limit: usize) -> Result<Vec<OutboxRow>, TreeError> {
+        rows_where(&self.conn, "ORDER BY seq LIMIT ?1", [limit.min(i64::MAX as usize) as i64])
+    }
+
+
+    /// The ready rows waiting for space in OneDrive (`waiting-for-space`,
+    /// `too-big:…`): what a quota read may let go.
+    pub fn outbox_waiting_for_space(&self) -> Result<Vec<OutboxRow>, TreeError> {
+        rows_where(&self.conn, "WHERE state = 'ready' AND (reason = 'waiting-for-space' OR substr(reason, 1, 8) = 'too-big:')", [])
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use konedrive_fs::handle::FileHandle;
+
+    use super::*;
+    use crate::tree::outbox::{Base, Inode};
+    use crate::tree::{Change, Placement, Row};
+
+    fn item(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
+        Row {
+            id: id.into(),
+            parent_id: parent.map(str::to_owned),
+            name: name.into(),
+            kind,
+            size: 0,
+            mtime: 0,
+            etag: Some(format!("e-{id}")),
+            ctag: None,
+            quickxor: None,
+            mime: None,
+            placement: Placement::Placed,
+        }
+    }
+
+    fn store(items: &[Row]) -> TreeStore {
+        let mut s = TreeStore::in_memory().unwrap();
+        let mut changes = vec![Change::Root(item("R", None, "", Kind::Folder))];
+        changes.extend(items.iter().cloned().map(Change::Upsert));
+        s.begin_staging(false).unwrap();
+        s.stage(&changes).unwrap();
+        s.commit_staging("link").unwrap();
+        s
+    }
+
+    fn object(n: u64) -> Inode {
+        Inode { dev: 1, ino: n, handle: Some(FileHandle { kind: 1, bytes: n.to_le_bytes().to_vec() }) }
+    }
+
+    fn row(kind: OutboxKind, rel: &str, n: u64) -> OutboxRow {
+        OutboxRow {
+            seq: 0,
+            kind,
+            item_id: None,
+            inode: Some(object(n)),
+            rel: rel.into(),
+            base: None,
+            target_parent: None,
+            target_name: Path::new(rel).file_name().map(|n| n.to_string_lossy().into_owned()),
+            state: OutboxState::Ready,
+            reason: None,
+            attempts: 0,
+            next_try: None,
+            snapshot: None,
+            session_url: None,
+            session_expires: None,
+            session_next: None,
+            confirmed: false,
+            size: None,
+        }
+    }
+
+    /// A row of item `of` (as the base has it) going to `rel` under `parent`.
+    fn of_item(kind: OutboxKind, of: &Row, rel: &str, parent: Option<&str>, n: u64) -> OutboxRow {
+        OutboxRow {
+            item_id: Some(of.id.clone()),
+            base: Some(Base { etag: of.etag.clone(), ctag: None, parent: of.parent_id.clone(), name: Some(of.name.clone()) }),
+            target_parent: parent.map(str::to_owned),
+            target_name: if kind.removes() { None } else { Path::new(rel).file_name().map(|n| n.to_string_lossy().into_owned()) },
+            ..row(kind, rel, n)
+        }
+    }
+
+    fn pick(s: &TreeStore, flying: &HashSet<i64>, now: i64) -> Picked {
+        s.outbox_pick(&Pick { now, flying, move_outs: true, want: 32, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap()
+    }
+
+    fn seqs(picked: &Picked) -> Vec<i64> {
+        picked.rows.iter().map(|r| r.seq).collect()
+    }
+
+    /// 1 000 files in a new folder whose `mkdir` came last: every portion
+    /// waits on it, and it is followed there and runs first; the files then.
+    #[test]
+    fn a_mkdir_at_the_end_of_the_queue_runs_first() {
+        let mut s = store(&[]);
+        let mut rows: Vec<OutboxRow> = (0..1000).map(|i| row(OutboxKind::Create, &format!("new/f{i:04}"), i)).collect();
+        rows.push(OutboxRow { target_parent: Some("R".into()), ..row(OutboxKind::Mkdir, "new", 5000) });
+        s.bench_insert(&rows).unwrap();
+        let first = pick(&s, &HashSet::new(), 0);
+        assert_eq!(seqs(&first), vec![1001], "only the mkdir");
+        let flying = HashSet::from([1001]);
+        let behind = pick(&s, &flying, 0);
+        assert!(behind.rows.is_empty() && behind.running && behind.stalled.is_empty(), "{behind:?}");
+        // The mkdir landed: the files go, in order.
+        s.conn.execute("DELETE FROM outbox WHERE seq = 1001", []).unwrap();
+        assert_eq!(seqs(&pick(&s, &HashSet::new(), 0))[..3], [1, 2, 3]);
+    }
+
+    /// A folder's removal waits for a row inside it that came later; followed,
+    /// that row runs first.
+    #[test]
+    fn a_folder_removal_waits_for_what_is_inside_it_even_later() {
+        let d = item("D", Some("R"), "d", Kind::Folder);
+        let x = item("X", Some("D"), "x", Kind::File);
+        let e = item("E", Some("R"), "e", Kind::Folder);
+        let mut s = store(&[d.clone(), x.clone(), e.clone()]);
+        s.bench_insert(&[of_item(OutboxKind::Delete, &d, "d", None, 1), of_item(OutboxKind::Move, &x, "e/x", Some("E"), 2)]).unwrap();
+        assert_eq!(s.outbox_blockers(1).unwrap(), vec![2]);
+        let picked = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), move_outs: true, want: 1, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap();
+        assert_eq!(seqs(&picked), vec![2]);
+    }
+
+    /// A swap is a circle of names alone: found in the graph of the rows that
+    /// free or take a name — not the queue's other rows — its edges go, and
+    /// both rows run.
+    #[test]
+    fn a_swap_among_many_rows_waits_on_nothing() {
+        let a = item("A", Some("R"), "a", Kind::File);
+        let b = item("B", Some("R"), "b", Kind::File);
+        let mut s = store(&[a.clone(), b.clone()]);
+        let mut rows: Vec<OutboxRow> =
+            (0..500).map(|i| OutboxRow { target_parent: Some("R".into()), ..row(OutboxKind::Create, &format!("f{i:04}"), 100 + i) }).collect();
+        rows.push(of_item(OutboxKind::Move, &a, "b", Some("R"), 1));
+        rows.push(of_item(OutboxKind::Move, &b, "a", Some("R"), 2));
+        s.bench_insert(&rows).unwrap();
+        assert_eq!(name_edges(&s.conn).unwrap(), HashMap::new(), "the circle's edges are dropped");
+        assert!(s.outbox_blockers(501).unwrap().is_empty() && s.outbox_blockers(502).unwrap().is_empty());
+        let picked = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), move_outs: true, want: 1000, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap();
+        assert_eq!(picked.rows.len(), 502);
+        // A later freer that is no circle is still waited for.
+        let c = item("C", Some("R"), "c", Kind::File);
+        let mut s = store(&[c.clone()]);
+        s.bench_insert(&[OutboxRow { target_parent: Some("R".into()), ..row(OutboxKind::Create, "c", 7) }, of_item(OutboxKind::Delete, &c, "c", None, 8)])
+            .unwrap();
+        assert_eq!(s.outbox_blockers(1).unwrap(), vec![2]);
+    }
+
+    /// Nothing can run: the pick says a row runs, a time comes, or the user is
+    /// needed — never nothing.
+    #[test]
+    fn nothing_runnable_says_why() {
+        let mut s = store(&[]);
+        let mkdir = |state: OutboxState, next_try: Option<i64>| OutboxRow {
+            state,
+            next_try,
+            target_parent: Some("R".into()),
+            reason: Some("because".into()),
+            ..row(OutboxKind::Mkdir, "d", 1)
+        };
+        let file = row(OutboxKind::Create, "d/f", 2);
+        s.bench_insert(&[mkdir(OutboxState::Ready, None), file.clone()]).unwrap();
+        let running = pick(&s, &HashSet::from([1]), 0);
+        assert!(running.rows.is_empty() && running.running && running.stalled.is_empty(), "{running:?}");
+
+        let mut s = store(&[]);
+        s.bench_insert(&[mkdir(OutboxState::Retry, Some(500)), file.clone()]).unwrap();
+        let later = pick(&s, &HashSet::new(), 100);
+        assert_eq!((later.rows.len(), later.until, later.stalled.len()), (0, Some(500), 0));
+        assert_eq!(s.outbox_next_due(100).unwrap(), Some(500));
+
+        for state in [OutboxState::Blocked, OutboxState::Held] {
+            let mut s = store(&[]);
+            s.bench_insert(&[mkdir(state, None), file.clone()]).unwrap();
+            let user = pick(&s, &HashSet::new(), 0);
+            assert!(user.rows.is_empty() && user.user && user.stalled.is_empty(), "{user:?}");
+        }
+        // Waiting for space: ready, and not allowed.
+        let mut s = store(&[]);
+        s.bench_insert(&[mkdir(OutboxState::Ready, None), file]).unwrap();
+        let full = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), move_outs: true, want: 32, allows: &|_: &TreeStore, _: &OutboxRow| Ok(false) }).unwrap();
+        assert!(full.rows.is_empty() && full.user && full.stalled.is_empty(), "{full:?}");
+    }
+}

@@ -98,6 +98,7 @@ fn new_row(kind: OutboxKind, rel: &str, parent: Option<&str>, inode: Inode, stat
         session_expires: None,
         session_next: None,
         confirmed: false,
+        size: None,
     }
 }
 
@@ -114,6 +115,7 @@ fn create_detection(rel: &str, n: u64) -> Detection {
         state: OutboxState::Ready,
         reason: None,
         next_try: None,
+        size: None,
     }
 }
 
@@ -273,8 +275,8 @@ fn engine_with(rows: &[OutboxRow]) -> (tempfile::TempDir, Harness, Arc<crate::sy
 }
 
 /// What the worker would take next.
-fn pick(engine: &crate::sync::upload::Engine) -> usize {
-    engine.candidates().unwrap().len()
+fn pick(h: &Harness, engine: &crate::sync::upload::Engine) -> usize {
+    h.block_on(engine.candidates()).unwrap().len()
 }
 
 /// Picking the next rows to run: 100 000 rows.
@@ -284,8 +286,8 @@ fn picking_among_100000_rows() {
     guard();
     let rows: Vec<OutboxRow> =
         (0..100_000).map(|i| new_row(OutboxKind::Create, &format!("f{i:06}"), Some("R"), object(i), OutboxState::Ready, None)).collect();
-    let (_dir, _h, engine) = engine_with(&rows);
-    let (_, took) = timed("picking the next rows among 100 000", || pick(&engine));
+    let (_dir, h, engine) = engine_with(&rows);
+    let (_, took) = timed("picking the next rows among 100 000", || pick(&h, &engine));
     within("picking", took, Duration::from_millis(50));
 }
 
@@ -297,8 +299,8 @@ fn picking_when_every_row_waits_on_the_last() {
     let mut rows: Vec<OutboxRow> =
         (0..99_999).map(|i| new_row(OutboxKind::Create, &format!("big/f{i:06}"), None, object(i), OutboxState::Ready, None)).collect();
     rows.push(new_row(OutboxKind::Mkdir, "big", Some("R"), object(1_000_000), OutboxState::Ready, None));
-    let (_dir, _h, engine) = engine_with(&rows);
-    let (picked, took) = timed("picking when 99 999 rows wait on the last", || pick(&engine));
+    let (_dir, h, engine) = engine_with(&rows);
+    let (picked, took) = timed("picking when 99 999 rows wait on the last", || pick(&h, &engine));
     assert!(picked >= 1, "the mkdir runs");
     within("picking, worst case", took, Duration::from_millis(200));
 }
@@ -348,9 +350,9 @@ fn mixed_rows() -> Vec<OutboxRow> {
 }
 
 /// `NotUploadedSummary()` as the daemon answers it.
-fn summary_now(store: &Store, root: &Path) -> Vec<crate::sync::kept_back::SummaryRow> {
-    let (skipped, rows) = store.with(|s| Ok((s.local_skipped()?, s.outbox_rows()?))).unwrap();
-    crate::sync::kept_back::summary(&skipped, &rows, root, false)
+fn summary_now(store: &Store, _root: &Path) -> Vec<crate::sync::kept_back::SummaryRow> {
+    let (skipped, groups) = store.with(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).unwrap();
+    crate::sync::kept_back::summary(&skipped, &groups, false)
 }
 
 /// A D-Bus count or the Not Uploaded summary while an `outbox_apply` of 30 000 runs.
@@ -383,13 +385,12 @@ fn the_first_rows_and_files_of_a_reason() {
     store.with(|s| s.bench_insert(&mixed_rows())).unwrap();
     let root = Path::new("/nowhere/OneDrive");
     let (entries, first) = timed("Outbox(21) of 30 000", || {
-        let rows = store.with(|s| Ok(s.outbox_rows()?.into_iter().take(21).collect::<Vec<_>>())).unwrap();
+        let rows = store.with(|s| s.outbox_first(21)).unwrap();
         crate::sync::outbox_api::entries(rows, root, &[], false, false)
     });
     assert_eq!(entries.len(), 21);
     let ((files, total), second) = timed("NotUploadedFiles(name-characters, 20) of 30 000", || {
-        let (skipped, rows) = store.with(|s| Ok((s.local_skipped()?, s.outbox_rows()?))).unwrap();
-        crate::sync::kept_back::files(&skipped, &rows, root, false, "name-characters", 20)
+        store.with(|s| crate::sync::kept_back::files(s, root, false, "name-characters", 20)).unwrap()
     });
     assert_eq!((files.len(), total), (20, 1000));
     within("Outbox(21)", first, Duration::from_millis(50));

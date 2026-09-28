@@ -328,6 +328,8 @@ fn should_rebuild(error: &TreeError) -> bool {
 
 pub struct TreeStore {
     conn: Connection,
+    /// What changed in the outbox since it was last asked (issue #38).
+    changes: std::sync::Arc<outbox::OutboxChanges>,
 }
 
 impl TreeStore {
@@ -430,10 +432,12 @@ impl TreeStore {
         // The read-write cycle's own tables, added to schema 3 without a
         // rebuild: a store made before them gains them here.
         conn.execute_batch(reconcile::TABLES)?;
-        conn.execute_batch(outbox::INDEXES)?;
+        outbox::upgrade(&conn)?;
         // The outbox's point queries run thousands of times in one examination.
         conn.set_prepared_statement_cache_capacity(64);
-        Ok(Self { conn })
+        let changes = std::sync::Arc::new(outbox::OutboxChanges::default());
+        outbox::watch(&conn, &changes)?;
+        Ok(Self { conn, changes })
     }
 
     pub fn meta(&self, key: &str) -> Result<Option<String>, TreeError> {
@@ -881,17 +885,34 @@ fn upsert(tx: &rusqlite::Transaction<'_>, table: Table, row: &Row) -> rusqlite::
 /// The store, shared by the tasks of one folder: the listing, the
 /// materializer and the D-Bus queries. A query holds the lock only for itself.
 #[derive(Clone)]
-pub struct Store(std::sync::Arc<std::sync::Mutex<TreeStore>>);
+pub struct Store {
+    inner: std::sync::Arc<std::sync::Mutex<TreeStore>>,
+    changes: std::sync::Arc<outbox::OutboxChanges>,
+}
 
 impl Store {
     pub fn new(store: TreeStore) -> Self {
-        Self(std::sync::Arc::new(std::sync::Mutex::new(store)))
+        let changes = std::sync::Arc::clone(&store.changes);
+        Self { inner: std::sync::Arc::new(std::sync::Mutex::new(store)), changes }
     }
 
     /// For synchronous callers already off the async runtime (the materializer).
+    /// When `f` changed the outbox, those waiting for a change are told, after
+    /// its transactions committed.
     pub fn with<T>(&self, f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError>) -> Result<T, TreeError> {
-        let mut store = self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        f(&mut store)
+        let mut store = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let before = self.changes.generation();
+        let out = f(&mut store);
+        drop(store);
+        if self.changes.generation() != before {
+            self.changes.committed();
+        }
+        out
+    }
+
+    /// What changed in the outbox, shared with the store.
+    pub fn changes(&self) -> &std::sync::Arc<outbox::OutboxChanges> {
+        &self.changes
     }
 
     /// For async callers: SQLite is synchronous, so the call runs on a

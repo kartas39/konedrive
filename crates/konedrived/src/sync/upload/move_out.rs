@@ -597,8 +597,7 @@ impl Engine {
     /// answer) leaves it for the next look.
     pub(super) async fn protect(&self, disk: &Disk) {
         let Some(mo) = self.cfg.moved_out.as_ref() else { return };
-        let Ok(rows) = self.store().with(|s| s.outbox_rows()) else { return };
-        let rows: Vec<OutboxRow> = rows.into_iter().filter(|r| r.kind == OutboxKind::MoveOut).collect();
+        let Ok(rows) = self.store().run(|s| s.outbox_move_outs()).await else { return };
         let mut ids = HashSet::new();
         for row in &rows {
             let Some(id) = &row.item_id else { continue };

@@ -95,6 +95,7 @@ fn a_delete_with_no_item_id_leaves_without_a_request() {
         state: OutboxState::Ready,
         reason: None,
         next_try: None,
+        size: None,
     };
     w.store.with(|s| s.outbox_record(&delete)).unwrap();
     w.run();

@@ -664,7 +664,7 @@ fn pause_offline_sign_in_and_blocked_rows() {
     assert_eq!(state("open.txt").map(|s| s.0), Some(OutboxState::Waiting));
     assert_eq!(w.attr("refused.txt", XATTR_SYNC).as_deref(), Some("blocked"));
     assert_eq!(w.attr("open.txt", XATTR_SYNC).as_deref(), Some("pending"));
-    let counts = restarted.counts().unwrap();
+    let counts = restarted.status().counts;
     assert_eq!((counts.pending, counts.blocked, counts.pending_bytes), (2, 1, 2));
     assert_eq!((counts.space_waiting, restarted.status().quota_full), (2, true));
     assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::UPLOAD_FAILED).count(), 2, "forbidden, refused: once each; full: none per file");
@@ -712,7 +712,7 @@ fn a_full_onedrive_sends_no_content_but_moves_and_deletes_go() {
     assert_eq!(content_requests(&w, "n1.txt") + content_requests(&w, "n2.txt"), 1, "one refusal, then nothing more");
     assert_eq!(reason_of(&w, "n1.txt").as_deref(), Some(space::WAITING));
     assert!(w.rows().iter().all(|r| r.state == OutboxState::Ready), "{:?}", w.summary());
-    let counts = engine.counts().unwrap();
+    let counts = engine.status().counts;
     assert_eq!((counts.space_waiting, counts.space_waiting_bytes, counts.blocked), (2, 6, 0));
 
     w.rename("old.txt", "moved.txt");
@@ -751,7 +751,7 @@ fn a_file_too_big_for_the_space_left_waits_alone() {
     assert_committed(&w, "b.txt", "b.txt");
     let reason = reason_of(&w, "big.bin").unwrap();
     assert_eq!(space::parse_too_big(&reason).map(|(needs, _)| needs), Some(big.len() as u64), "{reason}");
-    assert_eq!(engine.counts().unwrap().too_big, 1);
+    assert_eq!(engine.status().counts.too_big, 1);
     let sent = content_requests(&w, "big.bin");
 
     w.h.drain(&engine);

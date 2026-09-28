@@ -160,6 +160,7 @@ impl Fx {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: None,
         };
         self.store.with(|s| s.outbox_record(&detection)).unwrap();
     }

@@ -801,6 +801,11 @@ impl Harness {
         Arc::new(Engine::new(self.config()))
     }
 
+    /// Runs `future` on the harness's runtime.
+    pub fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
+        self.runtime.block_on(future)
+    }
+
     pub fn drain(&self, engine: &Arc<Engine>) {
         self.runtime.block_on(engine.drain(&CancellationToken::new()));
     }

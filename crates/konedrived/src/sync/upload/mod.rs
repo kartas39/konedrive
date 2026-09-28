@@ -1,7 +1,7 @@
 //! The outbox worker (`docs/design/writes.md` §5, §6, §10, §7): sends
 //! the outbox's rows to OneDrive, one step each, and commits each answer.
 //!
-//! **Order.** Rows run as [`TreeStore::outbox_dependencies`] allows, in `seq`
+//! **Order.** Rows run as the outbox's four rules allow ([`TreeStore::outbox_pick`]), in `seq`
 //! order: metadata rows (`mkdir`, `move`, `delete`) one at a time, content
 //! rows (`create`, `update`) beside them, each in a slot of the account's
 //! transfer pool (`crate::pool`), small or large alike. A row is `running` from the moment it is taken until its commit, so
@@ -32,7 +32,7 @@
 //! watcher and stops it with it (`sync::write_mode`); the watcher's
 //! examination wakes it whenever it records rows.
 //!
-//! [`TreeStore::outbox_dependencies`]: crate::tree::TreeStore::outbox_dependencies
+//! [`TreeStore::outbox_pick`]: crate::tree::TreeStore::outbox_pick
 //! [`TreeStore::outbox_commit`]: crate::tree::TreeStore::outbox_commit
 
 mod content;
@@ -333,17 +333,44 @@ pub struct OutboxCounts {
 }
 
 impl OutboxCounts {
-    /// Counts a pending `row` of `size` bytes where it waits for space.
-    fn add_space(&mut self, row: &crate::tree::outbox::OutboxRow, full: bool, size: u64) {
-        let reason = row.reason.as_deref();
+    /// The counts of the outbox whose rows are `groups` ([`TreeStore::outbox_groups`]),
+    /// `full` while OneDrive is full.
+    ///
+    /// [`TreeStore::outbox_groups`]: crate::tree::TreeStore::outbox_groups
+    pub fn of(groups: &[crate::tree::outbox::OutboxGroup], full: bool) -> Self {
+        use crate::tree::outbox::OutboxState;
+        let mut counts = OutboxCounts::default();
+        for group in groups {
+            let n = u32::try_from(group.count).unwrap_or(u32::MAX);
+            match group.state() {
+                OutboxState::Blocked => counts.blocked = counts.blocked.saturating_add(n),
+                OutboxState::Held => counts.held = counts.held.saturating_add(n),
+                _ => {
+                    counts.pending = counts.pending.saturating_add(n);
+                    counts.pending_bytes = counts.pending_bytes.saturating_add(group.bytes);
+                    counts.add_space(group.kind(), group.reason().as_deref(), full, n, group.bytes);
+                }
+            }
+        }
+        counts
+    }
+
+    /// Counts `n` pending rows of `kind` and `reason`, of `bytes` in all, where they wait for space.
+    fn add_space(&mut self, kind: crate::tree::outbox::OutboxKind, reason: Option<&str>, full: bool, n: u32, bytes: u64) {
         if reason.is_some_and(|r| space::parse_too_big(r).is_some()) {
-            self.too_big += 1;
-            self.too_big_bytes += size;
-        } else if full && row.kind.sends_content() || reason == Some(space::WAITING) {
-            self.space_waiting += 1;
-            self.space_waiting_bytes += size;
+            self.too_big = self.too_big.saturating_add(n);
+            self.too_big_bytes = self.too_big_bytes.saturating_add(bytes);
+        } else if full && kind.sends_content() || reason == Some(space::WAITING) {
+            self.space_waiting = self.space_waiting.saturating_add(n);
+            self.space_waiting_bytes = self.space_waiting_bytes.saturating_add(bytes);
         }
     }
+}
+
+/// The counts of the outbox in `store`, `full` while OneDrive is full: one
+/// SQL sum, nothing read from the disk.
+pub fn outbox_counts(store: &crate::tree::TreeStore, full: bool) -> Result<OutboxCounts, TreeError> {
+    Ok(OutboxCounts::of(&store.outbox_groups()?, full))
 }
 
 /// A point where the worker can be made to stop as if the daemon had died
@@ -477,12 +504,6 @@ impl OutboxWorker {
 
     pub fn subscribe(&self) -> watch::Receiver<WorkerStatus> {
         self.engine.subscribe()
-    }
-
-    /// `PendingCount`, `PendingBytes`, `BlockedCount`: read from the store
-    /// (and the files' sizes) when asked.
-    pub fn counts(&self) -> Result<OutboxCounts, TreeError> {
-        self.engine.counts()
     }
 
     /// Arms a fault point (tests and the VM suite only).

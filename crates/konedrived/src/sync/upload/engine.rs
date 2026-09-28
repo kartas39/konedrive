@@ -17,8 +17,8 @@ use crate::drive::write::MAX_RETRY_AFTER;
 use crate::pool::{Class as PoolClass, Size, Slot};
 use crate::drive::{DriveError, WriteError};
 use crate::sync::disk::Disk;
-use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState};
-use crate::tree::{ActivityRow, Store, TreeError};
+use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState, Pick, Picked};
+use crate::tree::{ActivityRow, Store, TreeError, TreeStore};
 
 /// The slot of the account's transfer pool a row of `class` takes: content is an upload;
 /// metadata, and a move out of the folder (a download, then a delete), go before transfers.
@@ -177,10 +177,11 @@ struct Mark {
     rel: PathBuf,
     value: &'static str,
     item: Option<String>,
-    /// The file's size when the mark was written: what `PendingBytes`
-    /// counts until the worker takes the row (its snapshot says then).
-    size: u64,
 }
+
+/// Rows a pick looks for: once this many can run, no more portions are read
+/// (a guess: more than the transfer pool runs at once).
+const PICK_WANT: usize = 32;
 
 pub(super) struct Shared {
     started: bool,
@@ -194,6 +195,11 @@ pub(super) struct Shared {
     /// The `user.konedrive.sync` value last written for each row, where,
     /// and the row's item.
     marks: HashMap<i64, Mark>,
+    /// The marks were written for every row once: from then on, only for
+    /// the rows that changed.
+    marks_read: bool,
+    /// What the last pick found in front of the rows that could not run.
+    pub(super) waits: Picked,
     /// What the outbox held when the worker last looked.
     pub(super) counts: OutboxCounts,
     /// A delta cycle has gone through since the worker was told to wait for
@@ -216,16 +222,6 @@ pub(crate) struct Engine {
     protection: Mutex<super::move_out::Protection>,
     /// One quota read at a time: refusals of rows running together share it.
     pub(super) quota_lock: tokio::sync::Mutex<()>,
-}
-
-fn due(row: &OutboxRow, now: i64) -> bool {
-    match row.state {
-        // A `running` row nobody holds: a crash or a stop left it; replayed.
-        OutboxState::Ready | OutboxState::Running => true,
-        OutboxState::Retry => row.next_try.is_none_or(|at| at <= now),
-        OutboxState::Waiting => row.next_try.is_some_and(|at| at <= now),
-        OutboxState::Blocked | OutboxState::Held => false,
-    }
 }
 
 /// The `user.konedrive.sync` value for a row's file (§9).
@@ -264,6 +260,8 @@ impl Engine {
                 cycled: true,
                 network_back: false,
                 marks: HashMap::new(),
+                marks_read: false,
+                waits: Picked::default(),
                 counts: OutboxCounts::default(),
                 space,
             }),
@@ -446,26 +444,6 @@ impl Engine {
         }
     }
 
-    pub(super) fn counts(&self) -> Result<OutboxCounts, TreeError> {
-        let rows = self.store().with(|s| s.outbox_rows())?;
-        let disk = Disk::open(&self.cfg.root, false).ok();
-        let full = self.space_full();
-        let mut counts = OutboxCounts::default();
-        for row in rows {
-            match row.state {
-                OutboxState::Blocked => counts.blocked += 1,
-                OutboxState::Held => counts.held += 1,
-                _ => {
-                    counts.pending += 1;
-                    let size = if row.kind.sends_content() { disk.as_ref().and_then(|d| local::size_at(d, &row.rel)).unwrap_or(0) } else { 0 };
-                    counts.pending_bytes += size;
-                    counts.add_space(&row, full, size);
-                }
-            }
-        }
-        Ok(counts)
-    }
-
     pub(super) fn upload_progress(&self, seq: i64, sent: u64, total: u64) {
         if let Some(flight) = self.shared().in_flight.get_mut(&seq) {
             flight.upload = Some((sent, total));
@@ -546,46 +524,80 @@ impl Engine {
     }
 
     /// The rows that may run now, in `seq` order: due, waiting for no other
-    /// row, not held here already. Move-outs only with what they need.
-    pub(crate) fn candidates(&self) -> Result<Vec<(OutboxRow, Class)>, TreeError> {
+    /// row, not held here already, and as the space allows; move-outs only
+    /// with what they need. Read a portion at a time ([`TreeStore::outbox_pick`]),
+    /// off the async runtime. What stands in front of the rest is kept
+    /// (`Shared::waits`), and a time it names wakes the worker.
+    ///
+    /// [`TreeStore::outbox_pick`]: crate::tree::TreeStore::outbox_pick
+    pub(crate) async fn candidates(&self) -> Result<Vec<(OutboxRow, Class)>, TreeError> {
         let now = now();
-        let (rows, deps) = self.store().with(|s| Ok((s.outbox_rows()?, s.outbox_dependencies()?)))?;
         let flying: HashSet<i64> = self.shared().in_flight.keys().copied().collect();
         let move_outs = self.cfg.moved_out.is_some();
-        let full = self.space_full();
-        // A create with a removal of its object recorded behind it (issue #27).
-        let deletes: Vec<(i64, &crate::tree::outbox::Inode)> =
-            rows.iter().filter(|r| r.kind == OutboxKind::Delete).filter_map(|r| r.inode.as_ref().map(|inode| (r.seq, inode))).collect();
-        let removed = |r: &OutboxRow| r.kind == OutboxKind::Create && r.inode.as_ref().is_some_and(|inode| deletes.iter().any(|&(seq, of)| seq > r.seq && of == inode));
-        Ok(rows
-            .iter()
-            .filter(|r| !flying.contains(&r.seq) && (r.kind != OutboxKind::MoveOut || move_outs) && due(r, now))
-            .filter(|r| deps.get(&r.seq).is_none_or(Vec::is_empty))
-            .filter(|r| self.space_allows(r, full, || removed(r)))
-            .cloned()
-            .map(|r| {
-                let class = self.class_of(&r);
-                (r, class)
+        let (full, looked) = self.space_seen();
+        let picked = self
+            .store()
+            .run(move |s| {
+                let allows = |s: &TreeStore, r: &OutboxRow| space::allows(r, full, &looked, || s.outbox_removed_behind(r));
+                s.outbox_pick(&Pick { now, flying: &flying, move_outs, want: PICK_WANT, allows: &allows })
             })
-            .collect())
+            .await?;
+        if !picked.stalled.is_empty() {
+            tracing::error!("{} outbox row(s) can run and wait for nothing that runs, has a time or needs the user: {:?}", picked.stalled.len(), picked.stalled);
+        }
+        let rows: Vec<(OutboxRow, Class)> = picked.rows.iter().cloned().map(|r| {
+            let class = self.class_of(&r);
+            (r, class)
+        }).collect();
+        self.shared().waits = Picked { rows: Vec::new(), ..picked };
+        Ok(rows)
     }
 
     /// Sets `user.konedrive.sync` on the files of rows whose state changed,
-    /// and takes it off those whose row went.
+    /// and takes it off those whose row went: the rows written or removed
+    /// since the last look ([`OutboxChanges`]), every row the first time.
+    /// The attributes are written with no lock held. The counts follow.
+    ///
+    /// [`OutboxChanges`]: crate::tree::outbox::OutboxChanges
     fn mark_rows(&self, disk: &Disk) {
-        let Ok(rows) = self.store().with(|s| s.outbox_rows()) else { return };
-        let live: HashSet<i64> = rows.iter().map(|r| r.seq).collect();
-        let mut shared = self.shared();
-        let gone: Vec<i64> = shared.marks.keys().filter(|seq| !live.contains(seq)).copied().collect();
+        let store = self.store();
+        let first = !self.shared().marks_read;
+        let dirty = store.changes().take_dirty();
+        let (read, asked): (Result<Vec<OutboxRow>, TreeError>, Option<HashSet<i64>>) = match dirty.filter(|_| !first) {
+            Some(seqs) if seqs.is_empty() => (Ok(Vec::new()), Some(seqs)),
+            Some(seqs) => {
+                let list: Vec<i64> = seqs.iter().copied().collect();
+                (store.with(|s| s.outbox_rows_of(&list)), Some(seqs))
+            }
+            None => (store.with(|s| s.outbox_rows()), None),
+        };
+        let mut rows = match read {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("cannot read the outbox for its marks: {e}");
+                // Every row, next time.
+                self.shared().marks_read = false;
+                return;
+            }
+        };
+        let present: HashSet<i64> = rows.iter().map(|r| r.seq).collect();
+        let gone: Vec<Mark> = {
+            let mut shared = self.shared();
+            shared.marks_read = true;
+            let gone: Vec<i64> = match &asked {
+                Some(seqs) => seqs.iter().filter(|seq| !present.contains(seq)).copied().collect(),
+                None => shared.marks.keys().filter(|seq| !present.contains(seq)).copied().collect(),
+            };
+            gone.into_iter().filter_map(|seq| shared.marks.remove(&seq)).collect()
+        };
         let mut cleared = HashSet::new();
-        for seq in gone {
-            let Some(mark) = shared.marks.remove(&seq) else { continue };
+        for mark in gone {
             local::mark(disk, &mark.rel, None);
             cleared.insert(mark.rel);
             // A move taken back (the file went back to its base place): the
             // mark is on the file there.
             if let Some(id) = mark.item {
-                if let Ok(Some(at)) = self.store().with(|s| s.locate(crate::tree::Table::Items, &id)) {
+                if let Ok(Some(at)) = store.with(|s| s.locate(crate::tree::Table::Items, &id)) {
                     if !at.rel.as_os_str().is_empty() {
                         local::mark(disk, &at.rel, None);
                         cleared.insert(at.rel);
@@ -594,33 +606,55 @@ impl Engine {
             }
         }
         // A row behind the one that went writes its mark again.
-        shared.marks.retain(|_, mark| !cleared.contains(&mark.rel));
-        let full = shared.space.full;
-        let mut counts = OutboxCounts::default();
-        for row in &rows {
-            if let Some(value) = wanted_mark(row) {
-                if !shared.marks.get(&row.seq).is_some_and(|m| m.rel == row.rel && m.value == value) {
-                    local::mark(disk, &row.rel, Some(value));
-                    let size = if row.kind.sends_content() { local::size_at(disk, &row.rel).unwrap_or(0) } else { 0 };
-                    shared.marks.insert(row.seq, Mark { rel: row.rel.clone(), value, item: row.item_id.clone(), size });
+        if !cleared.is_empty() {
+            let again: Vec<i64> = {
+                let mut shared = self.shared();
+                let again: Vec<i64> = shared.marks.iter().filter(|(_, m)| cleared.contains(&m.rel)).map(|(&seq, _)| seq).collect();
+                for seq in &again {
+                    shared.marks.remove(seq);
                 }
-            }
-            match row.state {
-                OutboxState::Blocked => counts.blocked += 1,
-                OutboxState::Held => counts.held += 1,
-                _ => {
-                    counts.pending += 1;
-                    let mut size = 0;
-                    if row.kind.sends_content() {
-                        let sent = row.snapshot.as_deref().and_then(|s| s.split(' ').next()).and_then(|s| s.parse().ok());
-                        size = sent.or_else(|| shared.marks.get(&row.seq).map(|m| m.size)).unwrap_or(0);
-                        counts.pending_bytes += size;
-                    }
-                    counts.add_space(row, full, size);
-                }
+                again.into_iter().filter(|seq| !present.contains(seq)).collect()
+            };
+            if !again.is_empty() {
+                rows.extend(store.with(|s| s.outbox_rows_of(&again)).unwrap_or_default());
             }
         }
-        shared.counts = counts;
+        let wanted: Vec<(PathBuf, &'static str)> = {
+            let mut shared = self.shared();
+            rows.iter()
+                .filter_map(|row| {
+                    let value = wanted_mark(row)?;
+                    if shared.marks.get(&row.seq).is_some_and(|m| m.rel == row.rel && m.value == value) {
+                        return None;
+                    }
+                    shared.marks.insert(row.seq, Mark { rel: row.rel.clone(), value, item: row.item_id.clone() });
+                    Some((row.rel.clone(), value))
+                })
+                .collect()
+        };
+        for (rel, value) in wanted {
+            local::mark(disk, &rel, Some(value));
+        }
+        if first || asked.as_ref().is_none_or(|seqs| !seqs.is_empty()) {
+            self.count();
+        }
+    }
+
+    /// `PendingCount` and the rest, from one SQL sum ([`super::outbox_counts`]).
+    fn count(&self) {
+        let full = self.space_full();
+        match self.store().with(|s| super::outbox_counts(s, full)) {
+            Ok(counts) => self.shared().counts = counts,
+            Err(e) => tracing::warn!("cannot count the outbox: {e}"),
+        }
+    }
+
+    /// [`mark_rows`](Self::mark_rows) off the async runtime.
+    async fn mark_rows_blocking(self: &Arc<Self>, disk: &Arc<Disk>) {
+        let (engine, disk) = (Arc::clone(self), Arc::clone(disk));
+        if let Err(e) = tokio::task::spawn_blocking(move || engine.mark_rows(&disk)).await {
+            tracing::warn!("the outbox's marks task failed: {e}");
+        }
     }
 
     /// Runs rows until none can run now (or `cancel`): what [`run`] does each
@@ -657,9 +691,9 @@ impl Engine {
             // may run now, and at every wake while rows are in flight — a new
             // move out, the helper back (`docs/design/writes.md` §8).
             self.protect(&disk).await;
-            self.mark_rows(&disk);
+            self.mark_rows_blocking(&disk).await;
             if self.may_start() {
-                match self.candidates() {
+                match self.candidates().await {
                     Ok(rows) => {
                         for (row, class) in rows {
                             if !self.slot_free(class) {
@@ -688,7 +722,8 @@ impl Engine {
                                     }
                                 },
                             };
-                            let claimed = match self.store().with(|s| s.outbox_claim(row.seq, row.state)) {
+                            let (seq, state) = (row.seq, row.state);
+                            let claimed = match self.store().run(move |s| s.outbox_claim(seq, state)).await {
                                 Ok(Some(claimed)) => claimed,
                                 Ok(None) => {
                                     spare.push(slot);
@@ -747,21 +782,29 @@ impl Engine {
                 joined = set.join_next_with_id(), if !set.is_empty() => match joined {
                     Some(Ok((id, (seq, outcome)))) => {
                         tasks.remove(&id);
-                        self.settle(seq, outcome);
+                        self.settle_blocking(seq, outcome).await;
                     }
                     Some(Err(e)) => {
                         if let Some(seq) = tasks.remove(&e.id()) {
                             // Replayed later, in backoff, never at once.
                             tracing::error!("outbox row {seq} failed: {e}; it is tried again later");
-                            self.settle(seq, Outcome::backoff("the step failed"));
+                            self.settle_blocking(seq, Outcome::backoff("the step failed")).await;
                         }
                     }
                     None => {}
                 }
             }
         }
-        self.mark_rows(&disk);
+        self.mark_rows_blocking(&disk).await;
         self.publish();
+    }
+
+    /// [`settle`](Self::settle) off the async runtime.
+    async fn settle_blocking(self: &Arc<Self>, seq: i64, outcome: Outcome) {
+        let engine = Arc::clone(self);
+        if let Err(e) = tokio::task::spawn_blocking(move || engine.settle(seq, outcome)).await {
+            tracing::warn!("settling outbox row {seq} failed: {e}");
+        }
     }
 
     /// What `outcome` does to row `seq` and to the worker.
@@ -854,7 +897,7 @@ impl Engine {
 
     /// When something may become runnable without a wake: a backoff, a
     /// throttle or a timed pause running out.
-    fn next_due(&self) -> Duration {
+    async fn next_due(&self) -> Duration {
         let now = now();
         let mut at = now + IDLE_CHECK;
         if let Some(until) = self.shared().throttled_until.filter(|&u| u > now) {
@@ -869,14 +912,11 @@ impl Engine {
         // While nothing can start, only the end of a pause or throttle
         // matters; rows already due wait for a wake.
         if self.may_start() {
-            if let Ok(rows) = self.store().with(|s| s.outbox_rows()) {
-                for row in rows {
-                    if matches!(row.state, OutboxState::Retry | OutboxState::Waiting | OutboxState::Blocked) {
-                        if let Some(next) = row.next_try.filter(|&n| n > now) {
-                            at = at.min(next);
-                        }
-                    }
-                }
+            if let Ok(Some(next)) = self.store().run(move |s| s.outbox_next_due(now)).await {
+                at = at.min(next);
+            }
+            if let Some(until) = self.shared().waits.until.filter(|&u| u > now) {
+                at = at.min(until);
             }
         }
         Duration::from_secs((at - now).max(1) as u64)
@@ -890,7 +930,7 @@ impl Engine {
             if cancel.is_cancelled() {
                 break;
             }
-            let wait = self.next_due();
+            let wait = self.next_due().await;
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 _ = self.wake.notified() => {}

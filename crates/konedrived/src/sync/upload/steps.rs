@@ -199,7 +199,8 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
         // Its own temporary name: a replay adopts what it made there.
         return Ok(if is_ours { Taken::Adopt(Box::new(holder)) } else { Taken::Temporary(format!("{name}-{}", row.seq)) });
     }
-    let rows = e.store().with(|s| s.outbox_rows())?;
+    // The live rows of the item that holds the name: all that is asked of them.
+    let rows = e.store().with(|s| s.outbox_for_item(&holder.id))?;
     let lower = name.to_lowercase();
     let freed = rows.iter().any(|r| {
         r.seq != row.seq

@@ -9021,6 +9021,7 @@ mod tests {
                 state: OutboxState::Ready,
                 reason: None,
                 next_try: None,
+                size: None,
             };
             store.with(|s| s.outbox_record(&change)).unwrap();
 
@@ -9088,6 +9089,7 @@ mod tests {
                 state: OutboxState::Held,
                 reason: Some("mass-delete".into()),
                 next_try: None,
+                size: None,
             };
             store.with(|s| s.outbox_record(&held)).unwrap();
             service.wake_outbox();

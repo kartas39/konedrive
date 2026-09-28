@@ -263,6 +263,7 @@ impl World {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: None,
         };
         match self.store.with(|s| s.outbox_record(&detection)).unwrap() {
             Recorded::Inserted(seq) | Recorded::Merged(seq) => seq,
@@ -886,7 +887,7 @@ async fn a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped() {
     let seq = w.store.with(|s| s.outbox_rows()).unwrap().into_iter().find(|r| r.item_id.as_deref() == Some("D")).unwrap().seq;
     // The mass-delete guard's decision, without tripping its threshold.
     w.store.with(|s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
-    assert_eq!(OutboxWorker::new(w.config()).counts().unwrap().held, 1);
+    assert_eq!(w.store.with(|s| crate::sync::upload::outbox_counts(s, false)).unwrap().held, 1);
 
     // `docs` is deleted in OneDrive too, from another device.
     w.graph.with(|c| c.trash("D"));
@@ -894,7 +895,7 @@ async fn a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped() {
 
     let rows = w.store.with(|s| s.outbox_rows()).unwrap();
     assert!(rows.is_empty(), "the held delete has nothing left to delete: {rows:?}");
-    assert_eq!(OutboxWorker::new(w.config()).counts().unwrap().held, 0);
+    assert_eq!(w.store.with(|s| crate::sync::upload::outbox_counts(s, false)).unwrap().held, 0);
     assert_eq!(w.deletes(), 0, "never sent to OneDrive");
     let dropped = w.dropped.lock().unwrap().clone();
     assert_eq!(dropped.len(), 1);

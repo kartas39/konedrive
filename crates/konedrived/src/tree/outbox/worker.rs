@@ -172,6 +172,7 @@ impl TreeStore {
                     session_expires: None,
                     session_next: None,
                     confirmed: false,
+                    size: None,
                 },
             )?;
         }
