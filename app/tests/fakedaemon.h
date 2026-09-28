@@ -226,6 +226,14 @@ class FakeSync1 : public QDBusAbstractAdaptor
     Q_PROPERTY(uint LargeTransfers READ largeTransfers)
     Q_PROPERTY(uint LargeLimit READ largeLimit)
     Q_PROPERTY(uint RetryAfter READ retryAfter)
+    Q_PROPERTY(QString ScanState READ scanState)
+    Q_PROPERTY(QString ScanReason READ scanReason)
+    Q_PROPERTY(qlonglong ScanStarted READ scanStarted)
+    Q_PROPERTY(qulonglong ScanDirectories READ scanDirectories)
+    Q_PROPERTY(qulonglong ScanFiles READ scanFiles)
+    Q_PROPERTY(qulonglong ScanExpected READ scanExpected)
+    Q_PROPERTY(qlonglong ScanFinished READ scanFinished)
+    Q_PROPERTY(uint ScanTook READ scanTook)
 
 public:
     FakeSync1(QObject *parent, const QDBusConnection &bus, const QString &path)
@@ -271,6 +279,14 @@ public:
     uint largeTransfers() const { return m_properties.value(QStringLiteral("LargeTransfers")).toUInt(); }
     uint largeLimit() const { return m_properties.value(QStringLiteral("LargeLimit")).toUInt(); }
     uint retryAfter() const { return m_properties.value(QStringLiteral("RetryAfter")).toUInt(); }
+    QString scanState() const { return m_properties.value(QStringLiteral("ScanState")).toString(); }
+    QString scanReason() const { return m_properties.value(QStringLiteral("ScanReason")).toString(); }
+    qlonglong scanStarted() const { return m_properties.value(QStringLiteral("ScanStarted")).toLongLong(); }
+    qulonglong scanDirectories() const { return m_properties.value(QStringLiteral("ScanDirectories")).toULongLong(); }
+    qulonglong scanFiles() const { return m_properties.value(QStringLiteral("ScanFiles")).toULongLong(); }
+    qulonglong scanExpected() const { return m_properties.value(QStringLiteral("ScanExpected")).toULongLong(); }
+    qlonglong scanFinished() const { return m_properties.value(QStringLiteral("ScanFinished")).toLongLong(); }
+    uint scanTook() const { return m_properties.value(QStringLiteral("ScanTook")).toUInt(); }
 
     void set(const QVariantMap &changes)
     {
@@ -535,6 +551,14 @@ private:
         {QStringLiteral("LargeTransfers"), QVariant::fromValue<uint>(0)},
         {QStringLiteral("LargeLimit"), QVariant::fromValue<uint>(4)},
         {QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("ScanState"), QStringLiteral("none")},
+        {QStringLiteral("ScanReason"), QString()},
+        {QStringLiteral("ScanStarted"), QVariant::fromValue<qlonglong>(0)},
+        {QStringLiteral("ScanDirectories"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("ScanFiles"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("ScanExpected"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("ScanFinished"), QVariant::fromValue<qlonglong>(0)},
+        {QStringLiteral("ScanTook"), QVariant::fromValue<uint>(0)},
     };
 };
 

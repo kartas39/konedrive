@@ -18,11 +18,12 @@ use konedrive_fs::handle::FileHandle;
 use super::fan::Fid;
 use super::map::DirMap;
 use super::Timing;
-use crate::sync::local::Batch;
+use crate::sync::local::{Batch, ScanReason};
 
 #[derive(Debug, Default)]
 pub struct Dirt {
-    full: bool,
+    /// A Full local scan, and why: the first reason given.
+    full: Option<ScanReason>,
     names: HashMap<Fid, BTreeSet<OsString>>,
     trees: HashSet<Fid>,
     objects: BTreeSet<FileHandle>,
@@ -58,13 +59,13 @@ impl Dirt {
         self.written.push((dir.clone(), name.to_owned(), handle.cloned()));
     }
 
-    /// Everything: the Full local scan.
-    pub fn full(&mut self) {
-        self.full = true;
+    /// Everything: the Full local scan, for `reason`.
+    pub fn full(&mut self, reason: ScanReason) {
+        self.full.get_or_insert(reason);
     }
 
     pub fn is_empty(&self) -> bool {
-        !self.full && self.names.is_empty() && self.trees.is_empty() && self.objects.is_empty() && self.written.is_empty()
+        self.full.is_none() && self.names.is_empty() && self.trees.is_empty() && self.objects.is_empty() && self.written.is_empty()
     }
 
     /// When to hand over: [`Timing::quiet`] after the last event, at the
@@ -83,7 +84,7 @@ impl Dirt {
     /// had, so nothing is lost by passing over what was inside it.
     pub fn take(&mut self, map: &DirMap) -> Batch {
         let dirt = std::mem::take(self);
-        let mut batch = if dirt.full { Batch::full() } else { Batch::new() };
+        let mut batch = dirt.full.map_or_else(Batch::new, Batch::scan);
         for (dir, names) in dirt.names {
             if let Some(path) = map.path(&dir) {
                 for name in names {

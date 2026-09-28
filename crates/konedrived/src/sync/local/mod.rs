@@ -30,8 +30,8 @@ use std::fs::File;
 use std::path::Path;
 use std::time::Duration;
 
-pub use batch::Batch;
-pub use examine::{ExamineError, Examined, Examiner};
+pub use batch::{Batch, ScanReason};
+pub use examine::{ExamineError, Examined, Examiner, ScanProgress};
 pub use ignore::IgnoreList;
 #[cfg(test)]
 pub use liveness::FakeLiveness;
