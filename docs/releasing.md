@@ -59,8 +59,10 @@ build may sort below a release already installed.
 
 On GitHub, **Actions → Release → Run workflow**, on any branch. `dry_run` is on by default: the run
 tests, builds and keeps the RPMs as its artifacts (downloadable from the run's page for 90 days),
-and tags and releases nothing. Its RPMs carry the version the next release would have, so a
-machine that installs them is not upgraded by that release (`dnf reinstall` replaces them). A run
-by hand with `dry_run` off releases, but only from `main`; on any other branch it stays a dry run.
+and tags and releases nothing. Its RPMs carry a local build's version, not the release's: the
+next version with a suffix that sorts below it (`0.1.2~dev.20260929.fad78d9`, as
+`scripts/version.sh local` prints it), so a machine that installs them is upgraded by the release
+with a plain `dnf upgrade`. Only a release is built as `X.Y.Z`. A run by hand with `dry_run` off
+releases, but only from `main`; on any other branch it stays a dry run.
 
 Locally, the same build: `git fetch --tags && scripts/build-rpm.sh --version X.Y.Z`.

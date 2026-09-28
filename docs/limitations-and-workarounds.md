@@ -2813,8 +2813,8 @@ The RPM packages, `konedrive` and `konedrive-kde`, from `packaging/rpm/konedrive
   The version counts only the tags the checkout has: a local build without `git fetch --tags`
   can be numbered below a release already installed, and `dnf` then refuses it as a downgrade.
   A release's version depends on every tag, on any branch: a stray `vX.Y.Z` tag pushed by mistake
-  moves the next release's number. A dry run's RPMs carry the version of the release that would
-  follow, and that release does not upgrade them.
+  moves the next release's number. A dry run is numbered as a local build, below the release that
+  would follow; two dry runs of the same commit carry the same version.
 - **R9. A merge into `main` can go without a release of its own.** LIMIT · reasoned · open. The
   release workflow runs one at a time (`concurrency`), and GitHub keeps one waiting run per group:
   a third push while one run builds and one waits cancels the waiting one. Nothing is lost — the

@@ -28,7 +28,14 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:44
     timeout-minutes: 120
+    env:
+      # A release only from main: a push, or a run by hand with the dry run
+      # turned off. Anything else is a dry run.
+      RELEASE: >-
+        ${{ github.ref == 'refs/heads/main' &&
+        (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
     outputs:
+      release: ${{ steps.version.outputs.release }}
       version: ${{ steps.version.outputs.version }}
       previous_tag: ${{ steps.version.outputs.previous_tag }}
     steps:
@@ -79,17 +86,34 @@ jobs:
           runuser -u tester -- env TMPDIR="$RUNNER_TEMP/tests" HOME=/home/tester \
             cargo test --locked -p konedrived --lib
 
+      # A release is X.Y.Z. A dry run takes a local build's version,
+      # X.Y.Z~dev.YYYYMMDD.SHA, which sorts below the release: installed, its
+      # RPMs do not stand in the way of the release's upgrade.
       - name: Choose the version
         id: version
         run: |
-          version=$(scripts/version.sh release)
-          previous_tag=$(scripts/version.sh previous "$version")
-          echo "Version $version (previous tag: ${previous_tag:-none})"
-          echo "version=$version" >>"$GITHUB_OUTPUT"
-          echo "previous_tag=$previous_tag" >>"$GITHUB_OUTPUT"
+          if [ "$RELEASE" = true ]; then
+            version=$(scripts/version.sh release)
+            previous_tag=$(scripts/version.sh previous "$version")
+            echo "Release $version (previous tag: ${previous_tag:-none})"
+          else
+            version=$(scripts/version.sh local)
+            previous_tag=
+            echo "Dry run: $version"
+          fi
+          {
+            echo "release=$RELEASE"
+            echo "version=$version"
+            echo "previous_tag=$previous_tag"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Build the RPMs
-        run: scripts/build-rpm.sh --version "${{ steps.version.outputs.version }}"
+        run: |
+          if [ "$RELEASE" = true ]; then
+            scripts/build-rpm.sh --version "${{ steps.version.outputs.version }}"
+          else
+            scripts/build-rpm.sh
+          fi
 
       - name: Collect the RPMs and their checksums
         run: |
@@ -106,12 +130,10 @@ jobs:
           path: dist/
           if-no-files-found: error
 
-  # Only from main: a push, or a run by hand with the dry run turned off.
+  # Only a release (the build job's RELEASE).
   publish:
     needs: build
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false))
+    if: needs.build.outputs.release == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
