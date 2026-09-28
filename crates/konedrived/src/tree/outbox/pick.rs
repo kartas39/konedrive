@@ -94,8 +94,11 @@ struct Memo {
     /// Once many portions were read: the item ids, handles and inodes more
     /// than one row has. A row with none of them waits for no earlier row of
     /// its own (rule 1), and is not asked.
-    shared: Option<(HashSet<String>, HashSet<Vec<u8>>, HashSet<(i64, i64)>)>,
+    shared: Option<Shared>,
 }
+
+/// The item ids, handles and inodes more than one row has.
+type Shared = (HashSet<String>, HashSet<Vec<u8>>, HashSet<(i64, i64)>);
 
 /// Portions read before rule 1 is answered from what is shared ([`Memo::shared`]).
 const PORTIONS_ASKED: usize = 8;
@@ -220,18 +223,18 @@ fn rule_one(conn: &Connection, row: &OutboxRow, out: &mut Vec<i64>) -> Result<()
 fn rule_two_three(
     conn: &Connection,
     row: &OutboxRow,
-    mut mkdirs: Option<&mut HashMap<std::path::PathBuf, Option<i64>>>,
+    mkdirs: Option<&mut HashMap<std::path::PathBuf, Option<i64>>>,
     mut out: Vec<i64>,
 ) -> Result<Vec<i64>, TreeError> {
     // 2. The mkdir of the directory it is in.
     if !row.kind.removes() {
         if let Some(parent) = row.rel.parent() {
-            let mkdir = match mkdirs.as_deref_mut().and_then(|m| m.get(parent).copied()) {
+            let mkdir = match mkdirs.as_ref().and_then(|m| m.get(parent).copied()) {
                 Some(known) => known,
                 None => {
                     let mut statement = conn.prepare_cached("SELECT seq FROM outbox WHERE rel = ?1 AND kind = 'mkdir' ORDER BY seq DESC LIMIT 1")?;
                     let found: Option<i64> = statement.query_map([path_value(parent)], |r| r.get(0))?.next().transpose()?;
-                    if let Some(m) = mkdirs.as_deref_mut() {
+                    if let Some(m) = mkdirs {
                         m.insert(parent.to_path_buf(), found);
                     }
                     found
@@ -665,7 +668,7 @@ mod tests {
         assert_eq!(picked.rows.len(), 502);
         // A later freer that is no circle is still waited for.
         let c = item("C", Some("R"), "c", Kind::File);
-        let mut s = store(&[c.clone()]);
+        let mut s = store(std::slice::from_ref(&c));
         s.bench_insert(&[OutboxRow { target_parent: Some("R".into()), ..row(OutboxKind::Create, "c", 7) }, of_item(OutboxKind::Delete, &c, "c", None, 8)])
             .unwrap();
         assert_eq!(s.outbox_blockers(1).unwrap(), vec![2]);
