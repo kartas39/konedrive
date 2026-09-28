@@ -35,7 +35,7 @@ add_library(konedrive_core STATIC
     transfermodel.cpp
     activitymodel.cpp
     conflictmodel.cpp
-    outboxmodel.cpp
+    uploadreasons.cpp
     accountstatus.cpp
     appstatus.cpp
     notifier.cpp

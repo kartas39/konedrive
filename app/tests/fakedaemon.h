@@ -17,6 +17,7 @@
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusObjectPath>
+#include <QHash>
 #include <QStringList>
 #include <QVariantMap>
 
@@ -336,6 +337,9 @@ public:
     KonedriveOutboxList outboxRows;
     /// NotUploaded().
     KonedriveSkippedList notUploadedList;
+    /// NotUploadedSummary(), and NotUploadedFiles() by reason.
+    KonedriveKeptBackList keptBack;
+    QHash<QString, KonedriveSkippedList> keptBackFiles;
     /// Pause(seconds) ends at pauseNow + seconds.
     qint64 pauseNow = 1758700000;
 
@@ -452,6 +456,18 @@ public Q_SLOTS:
     {
         calls << QStringLiteral("NotUploaded");
         return notUploadedList;
+    }
+    KonedriveKeptBackList NotUploadedSummary()
+    {
+        calls << QStringLiteral("NotUploadedSummary");
+        return keptBack;
+    }
+    KonedriveSkippedList NotUploadedFiles(const QString &reason, uint limit, uint &total)
+    {
+        calls << QStringLiteral("NotUploadedFiles:%1:%2").arg(reason).arg(limit);
+        const KonedriveSkippedList all = keptBackFiles.value(reason);
+        total = uint(all.size());
+        return limit == 0 ? all : all.mid(0, int(limit));
     }
     /// Answers (u files, t bytes, u busy) by hand, so that it can be held.
     void FreeUpSpace(const QDBusMessage &message)

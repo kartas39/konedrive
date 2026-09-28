@@ -19,16 +19,38 @@ FormCard.FormCardPage {
     objectName: "activityPage"
     title: window ? window.accountTitle(i18nc("@title", "Activity")) : i18nc("@title", "Activity")
 
-    /// The outbox has no signal of its own: it is read whenever the page is
-    /// shown, or shows another account (and after its counts change).
-    function loadOutbox() {
+    /// How many changes have not gone up yet — pending, blocked and held —
+    /// and the size of the files they send.
+    readonly property int waitingCount: sync ? sync.pendingCount + sync.blockedCount + sync.heldCount : 0
+    readonly property var waitingBytes: sync ? sync.pendingBytes + sync.blockedBytes : 0
+    /// Whether the Not Uploaded page lists anything.
+    readonly property bool keptBack: sync !== null && sync.notUploadedSummary.length > 0
+    /// The counts the summary was last asked for at.
+    property string shownCounts: ""
+
+    /// What is kept back has no signal of its own: its summary is read when
+    /// the page is shown, shows another account, or a count moves while it is.
+    function loadWaiting() {
         if (visible && sync) {
-            sync.loadOutbox();
+            shownCounts = waitingCount + "/" + sync.blockedCount;
+            sync.loadNotUploaded();
         }
     }
 
-    onVisibleChanged: loadOutbox()
-    onSyncChanged: loadOutbox()
+    onVisibleChanged: loadWaiting()
+    onSyncChanged: loadWaiting()
+    Connections {
+        target: page.sync
+        enabled: page.visible
+        function onSyncChanged() {
+            if (page.waitingCount + "/" + page.sync.blockedCount !== page.shownCounts) {
+                page.loadWaiting();
+            }
+        }
+        function onServiceAvailableChanged() {
+            page.loadWaiting();
+        }
+    }
 
     /// One direction's mini card: its speed, how many files move that way at once, and one
     /// chart of the last two minutes with two lines on two scales — speed on the left axis,
@@ -302,32 +324,34 @@ FormCard.FormCardPage {
         }
     }
 
-    // The outbox: every change made here that has not gone up yet.
+    // The outbox: every change made here that has not gone up yet, as one
+    // line; what is kept back is on the Not Uploaded page.
     FormCard.FormHeader {
-        visible: page.sync !== null && page.sync.outbox.total > 0
+        visible: page.waitingCount > 0 || page.keptBack
         title: i18nc("@title:group", "Waiting to upload")
     }
     FormCard.FormCard {
         objectName: "waitingToUpload"
-        visible: page.sync !== null && page.sync.outbox.total > 0
+        visible: page.waitingCount > 0 || page.keptBack
 
-        Repeater {
-            model: page.sync ? page.sync.outbox : null
-            delegate: FormCard.FormButtonDelegate {
-                required property string name
-                required property string path
-                required property string stateText
-                required property string why
-                required property string iconName
-                text: name
-                icon.name: iconName
-                description: why.length > 0 ? i18nc("@info outbox row: where it stands, why", "%1: %2", stateText, why) : stateText
-                onClicked: page.sync.showInFolder(path)
+        FormCard.FormTextDelegate {
+            objectName: "waitingLine"
+            visible: page.waitingCount > 0
+            text: page.waitingBytes > 0 ? i18np("1 change waits to upload (%2)", "%1 changes wait to upload (%2)", page.waitingCount, Qt.locale().formattedDataSize(page.waitingBytes))
+                                        : i18np("1 change waits to upload", "%1 changes wait to upload", page.waitingCount)
+            leading: Kirigami.Icon {
+                source: "cloud-upload"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
             }
         }
-        FormCard.FormTextDelegate {
-            visible: page.sync !== null && page.sync.outbox.total > page.sync.outbox.count
-            text: page.sync ? i18np("and 1 more", "and %1 more", page.sync.outbox.total - page.sync.outbox.count) : ""
+        FormCard.FormButtonDelegate {
+            objectName: "keptBackLink"
+            visible: page.keptBack
+            text: i18n("Some files are not uploaded")
+            description: i18n("The Not Uploaded page says why, and what to do.")
+            icon.name: "dialog-warning"
+            onClicked: page.window.showPage("notUploaded")
         }
     }
 
