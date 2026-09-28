@@ -170,7 +170,7 @@ impl Examiner<'_> {
             _ => (batch, false),
         };
         let handles_current = super::liveness::handles_current(self.store, &root);
-        let rows = self.store.with(|s| s.outbox_rows())?;
+        let rows = Rows::new(self.store.with(|s| s.outbox_rows())?);
         if let Some(progress) = progress {
             progress.started();
         }
@@ -273,8 +273,8 @@ struct Run<'e, 'a> {
     /// Whether the recorded handles are this filesystem's: `ESTALE` is gone
     /// only then (the move-out step).
     handles_current: bool,
-    /// The live rows before this examination.
-    rows: Vec<OutboxRow>,
+    /// The live rows before this examination, and what they are looked up by.
+    rows: Rows,
     entries: Vec<Entry>,
     at: HashMap<PathBuf, usize>,
     whole: BTreeSet<PathBuf>,
@@ -298,6 +298,141 @@ struct Run<'e, 'a> {
     detections: Vec<Detection>,
     ops: Vec<OutboxOp>,
     out: Examined,
+}
+
+/// The live rows as an examination looks them up (issue #38): by item, by
+/// local object, by place, by parent directory, built once per run, so that
+/// no step walks every row for each entry, item or directory.
+struct Rows {
+    /// In `seq` order.
+    all: Vec<OutboxRow>,
+    /// Item id → its rows, oldest first.
+    by_item: HashMap<String, Vec<usize>>,
+    /// Rows without an item id, by the handle of their object...
+    by_handle: HashMap<FileHandle, Vec<usize>>,
+    /// ... and by its inode.
+    by_inode: HashMap<(u64, u64), Vec<usize>>,
+    /// Every row by its place, in path order: what is below a directory is
+    /// one range.
+    by_rel: BTreeMap<PathBuf, Vec<usize>>,
+    /// Running `mkdir` rows without an item id.
+    making: Vec<usize>,
+}
+
+impl Rows {
+    fn new(all: Vec<OutboxRow>) -> Self {
+        let mut rows = Rows {
+            all,
+            by_item: HashMap::new(),
+            by_handle: HashMap::new(),
+            by_inode: HashMap::new(),
+            by_rel: BTreeMap::new(),
+            making: Vec::new(),
+        };
+        for (i, row) in rows.all.iter().enumerate() {
+            rows.by_rel.entry(row.rel.clone()).or_default().push(i);
+            match (&row.item_id, &row.inode) {
+                (Some(id), _) => rows.by_item.entry(id.clone()).or_default().push(i),
+                (None, Some(inode)) => {
+                    if let Some(handle) = &inode.handle {
+                        rows.by_handle.entry(handle.clone()).or_default().push(i);
+                    }
+                    rows.by_inode.entry((inode.dev, inode.ino)).or_default().push(i);
+                    if row.kind == OutboxKind::Mkdir && row.state == OutboxState::Running {
+                        rows.making.push(i);
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        rows
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, OutboxRow> {
+        self.all.iter()
+    }
+
+    /// The live rows of item `id`, oldest first.
+    fn of_item(&self, id: &str) -> impl DoubleEndedIterator<Item = &OutboxRow> + '_ {
+        self.by_item.get(id).into_iter().flatten().map(|&i| &self.all[i])
+    }
+
+    /// The rows without an item id whose object is `e`'s ([`Inode::same_object`]), oldest first.
+    fn of_object(&self, e: &Entry) -> Vec<&OutboxRow> {
+        let mut found: Vec<usize> = Vec::new();
+        if let Some(handle) = &e.handle {
+            found.extend(self.by_handle.get(handle).into_iter().flatten());
+        }
+        found.extend(self.by_inode.get(&(e.dev, e.ino)).into_iter().flatten());
+        found.sort_unstable();
+        found.dedup();
+        found
+            .into_iter()
+            .map(|i| &self.all[i])
+            .filter(|row| {
+                row.inode.as_ref().is_some_and(|i| match (&i.handle, &e.handle) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => i.dev == e.dev && i.ino == e.ino,
+                })
+            })
+            .collect()
+    }
+
+    /// The rows at `rel` exactly.
+    fn at(&self, rel: &Path) -> impl Iterator<Item = &OutboxRow> + '_ {
+        self.by_rel.get(rel).into_iter().flatten().map(|&i| &self.all[i])
+    }
+
+    /// The rows strictly below `dir`, in `seq` order.
+    fn under(&self, dir: &Path) -> Vec<&OutboxRow> {
+        let mut found: Vec<usize> = self
+            .by_rel
+            .range::<Path, _>((std::ops::Bound::Excluded(dir), std::ops::Bound::Unbounded))
+            .take_while(|(rel, _)| rel.starts_with(dir))
+            .flat_map(|(_, list)| list.iter().copied())
+            .collect();
+        found.sort_unstable();
+        found.into_iter().map(|i| &self.all[i]).collect()
+    }
+
+    /// The rows whose place is directly in `dir`, in `seq` order.
+    fn in_dir(&self, dir: &Path) -> Vec<&OutboxRow> {
+        self.under(dir).into_iter().filter(|row| row.rel.parent() == Some(dir)).collect()
+    }
+}
+
+/// The objects of the entries listed, to tell whether a pending row's object
+/// was seen ([`Inode::same_object`]) without comparing it with every entry.
+struct Objects {
+    handles: HashSet<FileHandle>,
+    /// Every entry's inode, and those of entries with no handle.
+    inodes: HashSet<(u64, u64)>,
+    unhandled: HashSet<(u64, u64)>,
+}
+
+impl Objects {
+    fn of(entries: &[Entry]) -> Self {
+        let mut objects = Objects { handles: HashSet::new(), inodes: HashSet::new(), unhandled: HashSet::new() };
+        for e in entries {
+            objects.inodes.insert((e.dev, e.ino));
+            match &e.handle {
+                Some(handle) => {
+                    objects.handles.insert(handle.clone());
+                }
+                None => {
+                    objects.unhandled.insert((e.dev, e.ino));
+                }
+            }
+        }
+        objects
+    }
+
+    fn seen(&self, inode: &Inode) -> bool {
+        match &inode.handle {
+            Some(handle) => self.handles.contains(handle) || self.unhandled.contains(&(inode.dev, inode.ino)),
+            None => self.inodes.contains(&(inode.dev, inode.ino)),
+        }
+    }
 }
 
 fn depth(rel: &Path) -> usize {
@@ -343,23 +478,14 @@ impl Run<'_, '_> {
         Ok(row)
     }
 
-    /// The live rows of item `id`, oldest first.
-    fn rows_of(&self, id: &str) -> Vec<&OutboxRow> {
-        self.rows.iter().filter(|row| row.item_id.as_deref() == Some(id)).collect()
-    }
-
     /// The live row of a local object with no item id yet.
     fn pending_row(&self, e: &Entry) -> Option<&OutboxRow> {
-        let inode = e.inode();
-        self.rows.iter().rev().find(|row| row.item_id.is_none() && row.inode.as_ref().is_some_and(|i| i.same_object(&inode)))
+        self.rows.of_object(e).last().copied()
     }
 
     /// Whether the worker is creating `e`'s object in OneDrive right now.
     fn being_created(&self, e: &Entry) -> bool {
-        let inode = e.inode();
-        self.rows
-            .iter()
-            .any(|row| row.item_id.is_none() && row.state == OutboxState::Running && row.inode.as_ref().is_some_and(|i| i.same_object(&inode)))
+        self.rows.of_object(e).iter().any(|row| row.state == OutboxState::Running)
     }
 
     /// Where item `id` should be: where its live row last saw it, or else
@@ -375,9 +501,10 @@ impl Run<'_, '_> {
         if let Some(expect) = self.expected.get(id) {
             return Ok(expect.clone());
         }
-        let expect = match self.rows_of(id).last() {
-            Some(row) if row.kind.removes() => Expect::Nowhere,
-            Some(row) => Expect::At(row.rel.clone()),
+        let last = self.rows.of_item(id).next_back().map(|row| (row.kind.removes(), row.rel.clone()));
+        let expect = match last {
+            Some((true, _)) => Expect::Nowhere,
+            Some((false, rel)) => Expect::At(rel),
             None => match self.base_row(id)? {
                 None => Expect::Unknown,
                 Some(row) if row.placement != Placement::Placed => Expect::Nowhere,
@@ -1068,7 +1195,7 @@ impl Run<'_, '_> {
         }
         let at_base = d.target_parent.as_deref() == base.parent_id.as_deref() && d.target_name.as_deref() == Some(base.name.as_str());
         // In place, unchanged or unknown, with no row: nothing to record.
-        if d.kind == OutboxKind::Move && at_base && self.rows_of(id).is_empty() {
+        if d.kind == OutboxKind::Move && at_base && self.rows.of_item(id).next().is_none() {
             return Ok(());
         }
         self.detections.push(d);
@@ -1098,7 +1225,7 @@ impl Run<'_, '_> {
 
     fn hydrated(&mut self, id: &str, base: &Row, e: &Entry, batch: &Batch) -> Result<Content, ExamineError> {
         let now = snapshot(e.size, e.mtime.0, e.mtime.1);
-        if self.rows_of(id).iter().any(|row| row.state == OutboxState::Running && row.snapshot.as_deref() == Some(now.as_str())) {
+        if self.rows.of_item(id).any(|row| row.state == OutboxState::Running && row.snapshot.as_deref() == Some(now.as_str())) {
             // Being uploaded as it is now.
             return Ok(Content::Unknown);
         }
@@ -1216,6 +1343,7 @@ impl Run<'_, '_> {
     /// Rule 7: base items (and pending rows) expected in the examined
     /// places and not found anywhere in the batch.
     fn missing(&mut self) -> Result<(), ExamineError> {
+        let objects = Objects::of(&self.entries);
         let mut places: Vec<(PathBuf, Option<BTreeSet<OsString>>)> = self.whole.iter().map(|d| (d.clone(), None)).collect();
         places.extend(self.named.iter().map(|(d, n)| (d.clone(), Some(n.clone()))));
         for (dir, names) in places {
@@ -1237,13 +1365,14 @@ impl Run<'_, '_> {
                 }
             }
             let mut pending: Vec<OutboxRow> = Vec::new();
-            for row in &self.rows {
-                if row.kind.removes() || row.rel.parent() != Some(dir.as_path()) || !in_scope(self, &row.rel) {
+            let listed: HashSet<String> = items.iter().map(|(id, _)| id.clone()).collect();
+            for row in self.rows.in_dir(&dir) {
+                if row.kind.removes() || !in_scope(self, &row.rel) {
                     continue;
                 }
                 match &row.item_id {
                     Some(id) => {
-                        if !items.iter().any(|(i, _)| i == id) && self.rows_of(id).last().map(|r| r.seq) == Some(row.seq) {
+                        if !listed.contains(id) && self.rows.of_item(id).next_back().map(|r| r.seq) == Some(row.seq) {
                             items.push((id.clone(), row.rel.clone()));
                         }
                     }
@@ -1256,7 +1385,7 @@ impl Run<'_, '_> {
                 }
             }
             for row in pending {
-                let seen = row.inode.as_ref().is_some_and(|inode| self.entries.iter().any(|e| e.inode().same_object(inode)));
+                let seen = row.inode.as_ref().is_some_and(|inode| objects.seen(inode));
                 if !seen {
                     self.missing_pending(&row)?;
                 }
@@ -1272,7 +1401,7 @@ impl Run<'_, '_> {
         if row.kind != OutboxKind::Mkdir {
             return Ok(());
         }
-        let inside: Vec<OutboxRow> = self.rows.iter().filter(|r| is_under(&r.rel, &row.rel)).cloned().collect();
+        let inside: Vec<OutboxRow> = self.rows.under(&row.rel).into_iter().cloned().collect();
         for r in inside {
             match &r.item_id {
                 None => self.gone_pending(&r),
@@ -1385,8 +1514,12 @@ impl Run<'_, '_> {
                 }
             }
             let inside: HashSet<String> = self.store(|s| s.descendants(Table::Items, id))?.into_iter().collect();
-            let rows: Vec<OutboxRow> =
-                self.rows.iter().filter(|r| is_under(&r.rel, rel) || r.item_id.as_ref().is_some_and(|i| inside.contains(i))).cloned().collect();
+            let mut rows: Vec<OutboxRow> = self.rows.under(rel).into_iter().cloned().collect();
+            let mut taken: HashSet<i64> = rows.iter().map(|r| r.seq).collect();
+            for id in &inside {
+                rows.extend(self.rows.of_item(id).filter(|r| taken.insert(r.seq)).cloned());
+            }
+            rows.sort_by_key(|r| r.seq);
             for r in rows {
                 if r.state == OutboxState::Running {
                     match r.item_id.clone() {
@@ -1524,12 +1657,11 @@ impl Run<'_, '_> {
     /// now: a running `mkdir` of its object.
     fn dir_being_made(&self, rel: &Path) -> bool {
         use std::os::unix::fs::MetadataExt;
-        let running = |row: &&OutboxRow| row.kind == OutboxKind::Mkdir && row.item_id.is_none() && row.state == OutboxState::Running;
-        if !self.rows.iter().any(|row| running(&row)) {
+        if self.rows.making.is_empty() {
             return false;
         }
         let Ok(meta) = self.ex.disk.dir(rel).and_then(|dir| dir.metadata()) else { return false };
-        self.rows.iter().filter(running).any(|row| row.inode.as_ref().is_some_and(|i| i.dev == meta.dev() && i.ino == meta.ino()))
+        self.rows.making.iter().map(|&i| &self.rows.all[i]).any(|row| row.inode.as_ref().is_some_and(|i| i.dev == meta.dev() && i.ino == meta.ino()))
     }
 
     /// Rules 3–5: an entry without an item id.
@@ -1564,12 +1696,8 @@ impl Run<'_, '_> {
             // along: their folder is never made in OneDrive (the outbox on the bus).
             // One being made keeps them: it is an item already.
             if e.ty == Type::Dir && !being_created {
-                let inside: Vec<i64> = self
-                    .rows
-                    .iter()
-                    .filter(|r| r.item_id.is_none() && r.state != OutboxState::Running && is_under(&r.rel, &e.rel))
-                    .map(|r| r.seq)
-                    .collect();
+                let inside: Vec<i64> =
+                    self.rows.under(&e.rel).into_iter().filter(|r| r.item_id.is_none() && r.state != OutboxState::Running).map(|r| r.seq).collect();
                 self.ops.extend(inside.into_iter().map(OutboxOp::Remove));
             }
             return Ok(());
@@ -1578,11 +1706,8 @@ impl Run<'_, '_> {
         // A file over a name whose delete is still pending: save-by-rename
         // across batches (§3.5).
         if !is_dir && pending.is_none() {
-            let delete = self
-                .rows
-                .iter()
-                .find(|r| r.kind == OutboxKind::Delete && r.state != OutboxState::Running && r.rel == e.rel && r.item_id.is_some())
-                .cloned();
+            let delete =
+                self.rows.at(&e.rel).find(|r| r.kind == OutboxKind::Delete && r.state != OutboxState::Running && r.item_id.is_some()).cloned();
             if let Some(row) = delete {
                 let id = row.item_id.clone().expect("filtered above");
                 if let Some(base) = self.base_row(&id)?.filter(|b| b.kind == Kind::File) {

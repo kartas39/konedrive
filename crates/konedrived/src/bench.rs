@@ -28,7 +28,23 @@ use crate::tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 const TIME: i64 = 1_700_000_000;
 
+/// Refuses to run unless the user's own places are out of reach: `HOME` and
+/// the XDG state, config, data and cache directories inside the temporary
+/// directory, and no session bus but a private one — so that nothing here,
+/// nor a wrong binary run in its place, can touch the user's data.
+fn guard() {
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    for var in ["HOME", "XDG_STATE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"] {
+        let value = std::env::var_os(var).unwrap_or_else(|| panic!("the bench runs only with {var} set inside {}", temp.display()));
+        let path = Path::new(&value).canonicalize().unwrap_or_else(|e| panic!("{var}: {e}"));
+        assert!(path.starts_with(&temp) && path != temp, "the bench runs only with {var} inside {}, not {}", temp.display(), path.display());
+    }
+    let bus = std::env::var("DBUS_SESSION_BUS_ADDRESS").unwrap_or_default();
+    assert!(!bus.contains("/run/user/"), "the bench runs only without the user's session bus ({bus})");
+}
+
 fn timed<T>(what: &str, f: impl FnOnce() -> T) -> (T, Duration) {
+    guard();
     let start = Instant::now();
     let out = f();
     let took = start.elapsed();
@@ -184,6 +200,7 @@ impl Folder {
 #[test]
 #[ignore]
 fn examination_of_a_directory_with_27000_new_files() {
+    guard();
     let mut changes = vec![Change::Upsert(item("D", Some("R"), "big", Kind::Folder))];
     changes.extend((0..3000).map(|i| Change::Upsert(item(&format!("K{i}"), Some("D"), &format!("k{i:05}"), Kind::File))));
     let folder = Folder::new(&changes);
@@ -205,6 +222,7 @@ fn examination_of_a_directory_with_27000_new_files() {
 #[test]
 #[ignore]
 fn full_scan_of_100000_items_and_30000_rows() {
+    guard();
     let mut changes = Vec::new();
     for d in 0..100 {
         changes.push(Change::Upsert(item(&format!("D{d}"), Some("R"), &format!("d{d:03}"), Kind::Folder)));
@@ -263,6 +281,7 @@ fn pick(engine: &crate::sync::upload::Engine) -> usize {
 #[test]
 #[ignore]
 fn picking_among_100000_rows() {
+    guard();
     let rows: Vec<OutboxRow> =
         (0..100_000).map(|i| new_row(OutboxKind::Create, &format!("f{i:06}"), Some("R"), object(i), OutboxState::Ready, None)).collect();
     let (_dir, _h, engine) = engine_with(&rows);
@@ -274,6 +293,7 @@ fn picking_among_100000_rows() {
 #[test]
 #[ignore]
 fn picking_when_every_row_waits_on_the_last() {
+    guard();
     let mut rows: Vec<OutboxRow> =
         (0..99_999).map(|i| new_row(OutboxKind::Create, &format!("big/f{i:06}"), None, object(i), OutboxState::Ready, None)).collect();
     rows.push(new_row(OutboxKind::Mkdir, "big", Some("R"), object(1_000_000), OutboxState::Ready, None));
@@ -288,6 +308,7 @@ fn picking_when_every_row_waits_on_the_last() {
 #[test]
 #[ignore]
 fn one_steps_own_work_is_flat() {
+    guard();
     let mut worst = Duration::ZERO;
     for n in [3_000u64, 30_000] {
         let dir = tempfile::tempdir().unwrap();
@@ -336,6 +357,7 @@ fn summary_now(store: &Store, root: &Path) -> Vec<crate::sync::kept_back::Summar
 #[test]
 #[ignore]
 fn the_summary_answers_while_an_apply_holds_the_store() {
+    guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &[]);
     store.with(|s| s.bench_insert(&mixed_rows()[..3000])).unwrap();
@@ -355,6 +377,7 @@ fn the_summary_answers_while_an_apply_holds_the_store() {
 #[test]
 #[ignore]
 fn the_first_rows_and_files_of_a_reason() {
+    guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &[]);
     store.with(|s| s.bench_insert(&mixed_rows())).unwrap();
@@ -387,6 +410,7 @@ fn many_rows() -> Vec<OutboxRow> {
 #[test]
 #[ignore]
 fn a_lookup_by_handle() {
+    guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &[]);
     store.with(|s| s.bench_insert(&many_rows())).unwrap();
@@ -400,6 +424,7 @@ fn a_lookup_by_handle() {
 #[test]
 #[ignore]
 fn a_folder_renamed() {
+    guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &[]);
     store.with(|s| s.bench_insert(&many_rows())).unwrap();
@@ -415,6 +440,7 @@ fn a_folder_renamed() {
 #[test]
 #[ignore]
 fn a_whole_table_read() {
+    guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &[]);
     store.with(|s| s.bench_insert(&mixed_rows())).unwrap();
