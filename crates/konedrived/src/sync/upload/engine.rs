@@ -831,6 +831,7 @@ impl Engine {
         }
         self.mark_rows_blocking(&disk).await;
         self.recount().await;
+        self.publish();
     }
 
     /// [`settle`](Self::settle) off the async runtime.
