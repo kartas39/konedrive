@@ -336,6 +336,37 @@ FormCard.FormCardPage {
             icon.name: "cloud-upload"
             onClicked: page.window.showPage("activity")
         }
+        // A full OneDrive (issue #2): one line for every change that waits for space.
+        FormCard.FormTextDelegate {
+            objectName: "quotaFullLine"
+            visible: page.oneDrive && page.sync.quotaFull
+            text: page.sync ? i18np("OneDrive is full: 1 file (%2) waits for space.",
+                                    "OneDrive is full: %1 files (%2) wait for space.",
+                                    page.sync.spaceWaitingCount,
+                                    Qt.locale().formattedDataSize(page.sync.spaceWaitingBytes)) : ""
+            description: i18n("Free up space in OneDrive, then Refresh.")
+            leading: Kirigami.Icon {
+                source: "dialog-warning"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
+            }
+            trailing: QQC2.Button {
+                objectName: "quotaRefreshButton"
+                text: i18nc("@action:button", "Refresh")
+                icon.name: "view-refresh"
+                onClicked: page.sync.refresh()
+            }
+        }
+        FormCard.FormButtonDelegate {
+            objectName: "tooBigLine"
+            visible: page.oneDrive && page.sync.tooBigCount > 0
+            text: page.sync ? i18np("1 file is too big for the space left in OneDrive",
+                                    "%1 files are too big for the space left in OneDrive",
+                                    page.sync.tooBigCount) : ""
+            description: i18n("Each goes up once a Refresh shows it fits; the Not Uploaded page lists them.")
+            icon.name: "dialog-warning"
+            onClicked: page.window.showPage("notUploaded")
+        }
         FormCard.FormButtonDelegate {
             objectName: "blockedLine"
             visible: page.oneDrive && page.sync.blockedCount > 0

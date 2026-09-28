@@ -23,6 +23,7 @@ use crate::tree::outbox::{frees, Base, Committed, OutboxKind, OutboxOp, OutboxRo
 use crate::tree::{classify, ActivityRow, Change, Kind, Placement, Row, Table};
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Outcome {
+    let rel = row.rel.clone();
     let result = match row.kind {
         OutboxKind::Create | OutboxKind::Update => super::content::run(e, disk, row).await,
         OutboxKind::Mkdir => mkdir(e, disk, row).await,
@@ -31,7 +32,12 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Ou
         // The object is downloaded before its item goes (WR5).
         OutboxKind::MoveOut => super::move_out::run(e, disk, row).await,
     };
-    result.unwrap_or_else(outcome_of)
+    match result.unwrap_or_else(outcome_of) {
+        // Refused for lack of space: the quota decides whether the account
+        // is full or only this file too big (`space`).
+        Outcome::NoSpace => e.space_refused(super::local::size_at(disk, &rel).unwrap_or(0)).await,
+        outcome => outcome,
+    }
 }
 
 pub(super) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> io::Result<T> + Send + 'static) -> Result<T, Fail> {

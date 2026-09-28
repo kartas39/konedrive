@@ -135,4 +135,6 @@ private:
     /// HeldCount as last seen; -1 while the daemon is away. The daemon's first
     /// answer only sets it (a restart replays nothing).
     int m_held = -1;
+    /// QuotaFull as last seen, the same way: one notice when OneDrive turns full.
+    int m_full = -1;
 };

@@ -614,9 +614,9 @@ fn http_date(at: i64) -> String {
 }
 
 /// Pause (persisted), offline and a sign-in that does not allow writes each
-/// stop the worker without touching the rows; a refused name, a full
-/// OneDrive and a writer each block or hold their own row; the file's
-/// `user.konedrive.sync` says which.
+/// stop the worker without touching the rows; a refused name and a writer
+/// each block or hold their own row, and a full OneDrive holds the content
+/// (issue #2); the file's `user.konedrive.sync` says which.
 #[test]
 fn pause_offline_sign_in_and_blocked_rows() {
     let w = World::new(&[]);
@@ -659,15 +659,18 @@ fn pause_offline_sign_in_and_blocked_rows() {
     w.h.drain(&restarted);
     let state = |rel: &str| w.rows().into_iter().find(|r| r.rel == Path::new(rel)).map(|r| (r.state, r.reason.unwrap_or_default()));
     assert_eq!(state("refused.txt"), Some((OutboxState::Blocked, "refused: bad name".into())));
-    assert_eq!(state("full.txt"), Some((OutboxState::Blocked, reason::QUOTA.into())));
+    // No quota to read: taken for full, and waiting for space in its place.
+    assert_eq!(state("full.txt"), Some((OutboxState::Ready, space::WAITING.into())));
     assert_eq!(state("open.txt").map(|s| s.0), Some(OutboxState::Waiting));
     assert_eq!(w.attr("refused.txt", XATTR_SYNC).as_deref(), Some("blocked"));
     assert_eq!(w.attr("open.txt", XATTR_SYNC).as_deref(), Some("pending"));
     let counts = restarted.counts().unwrap();
-    assert_eq!((counts.pending, counts.blocked, counts.pending_bytes), (1, 2, 1));
-    assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::UPLOAD_FAILED).count(), 3, "forbidden, refused, full: once each");
+    assert_eq!((counts.pending, counts.blocked, counts.pending_bytes), (2, 1, 2));
+    assert_eq!((counts.space_waiting, restarted.status().quota_full), (2, true));
+    assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::UPLOAD_FAILED).count(), 2, "forbidden, refused: once each; full: none per file");
     drop(writer);
-    restarted.quota_changed().unwrap();
+    w.cloud(|c| c.free = Some(10 << 20));
+    refresh(&w, &restarted);
     restarted.retry_now().unwrap();
     w.h.drain(&restarted);
     assert_eq!(w.summary(), vec![(Create, "refused.txt".into(), OutboxState::Blocked)]);
@@ -675,10 +678,176 @@ fn pause_offline_sign_in_and_blocked_rows() {
     assert_committed(&w, "open.txt", "open.txt");
 }
 
+/// `Refresh()`'s quota read (`SyncService::refresh_quota`), applied.
+fn refresh(w: &World, engine: &Arc<Engine>) {
+    let quota = w.h.runtime.block_on(w.h.graph.client().quota()).unwrap();
+    engine.apply_quota(&quota);
+}
+
+/// The contents of every request that sent `name`'s content.
+fn content_requests(w: &World, name: &str) -> usize {
+    w.cloud(|c| c.log.iter().filter(|(m, p)| p.contains(name) && (m == "PUT" || p.ends_with("createUploadSession"))).count())
+}
+
+fn reason_of(w: &World, rel: &str) -> Option<String> {
+    w.rows().into_iter().find(|r| r.rel == Path::new(rel)).and_then(|r| r.reason)
+}
+
+/// Issue #2, no space left: the first refusal reads the quota, the account
+/// turns full and sends no more content, while a rename and a delete still
+/// go. A Refresh that finds space lets everything go.
+#[test]
+fn a_full_onedrive_sends_no_content_but_moves_and_deletes_go() {
+    let w = World::new(&[file("A", "R", "old.txt", b"old"), file("B", "R", "gone.txt", b"gone")]);
+    w.cloud(|c| c.free = Some(0));
+    w.write("n1.txt", b"one");
+    w.write("n2.txt", b"two");
+    w.examine(&[("", "n1.txt"), ("", "n2.txt")]);
+    // One transfer at a time: the first refusal comes before the second starts.
+    let engine = w.h.engine();
+    engine.cfg.drive.pool().set_limits(1, 1);
+    w.h.drain(&engine);
+    assert!(engine.space_full());
+    assert_eq!(w.cloud(|c| c.quota_reads()), 1, "one read for the refusal");
+    assert_eq!(content_requests(&w, "n1.txt") + content_requests(&w, "n2.txt"), 1, "one refusal, then nothing more");
+    assert_eq!(reason_of(&w, "n1.txt").as_deref(), Some(space::WAITING));
+    assert!(w.rows().iter().all(|r| r.state == OutboxState::Ready), "{:?}", w.summary());
+    let counts = engine.counts().unwrap();
+    assert_eq!((counts.space_waiting, counts.space_waiting_bytes, counts.blocked), (2, 6, 0));
+
+    w.rename("old.txt", "moved.txt");
+    std::fs::remove_file(w.path("gone.txt")).unwrap();
+    w.examine(&[("", "old.txt"), ("", "moved.txt"), ("", "gone.txt")]);
+    w.h.drain(&engine);
+    assert!(w.content("moved.txt").is_some() || w.id_at("moved.txt").is_some(), "{:?}", w.cloud(|c| c.paths()));
+    assert!(w.id_at("gone.txt").is_none());
+    assert_eq!(content_requests(&w, "n1.txt") + content_requests(&w, "n2.txt"), 1);
+    assert_eq!(w.rows().len(), 2, "{:?}", w.summary());
+
+    w.cloud(|c| c.free = Some(10 << 20));
+    refresh(&w, &engine);
+    assert!(!engine.space_full());
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_committed(&w, "n1.txt", "n1.txt");
+    assert_committed(&w, "n2.txt", "n2.txt");
+}
+
+/// Issue #2, space left: the refused big file waits as too big while the
+/// small ones go; it is not sent again until a quota read shows it fits —
+/// the automatic read every 30 minutes, on a fake clock.
+#[test]
+fn a_file_too_big_for_the_space_left_waits_alone() {
+    let w = World::new(&[]);
+    let big = vec![7u8; 1536 * 1024];
+    w.cloud(|c| c.free = Some(1280 * 1024));
+    w.write("big.bin", &big);
+    w.write("a.txt", b"a");
+    w.write("b.txt", b"b");
+    w.examine(&[("", "big.bin"), ("", "a.txt"), ("", "b.txt")]);
+    let engine = w.run();
+    assert!(!engine.space_full());
+    assert_committed(&w, "a.txt", "a.txt");
+    assert_committed(&w, "b.txt", "b.txt");
+    let reason = reason_of(&w, "big.bin").unwrap();
+    assert_eq!(space::parse_too_big(&reason).map(|(needs, _)| needs), Some(big.len() as u64), "{reason}");
+    assert_eq!(engine.counts().unwrap().too_big, 1);
+    let sent = content_requests(&w, "big.bin");
+
+    w.h.drain(&engine);
+    let now = engine::now();
+    w.h.runtime.block_on(engine.space_check(now));
+    assert_eq!((w.cloud(|c| c.quota_reads()), content_requests(&w, "big.bin")), (1, sent), "neither read again nor sent");
+
+    // Thirty minutes on: read again, still too big.
+    w.h.runtime.block_on(engine.space_check(now + 31 * 60));
+    w.h.drain(&engine);
+    assert_eq!((w.cloud(|c| c.quota_reads()), content_requests(&w, "big.bin")), (2, sent));
+
+    // Space freed elsewhere: the next read lets it go.
+    w.cloud(|c| c.free = Some(5 << 20));
+    w.h.runtime.block_on(engine.space_check(now + 62 * 60));
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_committed(&w, "big.bin", "big.bin");
+}
+
+/// Issue #2: outside full, a file never refused is sent even when the free
+/// space known says it does not fit — OneDrive has the last word.
+#[test]
+fn a_file_not_refused_goes_whatever_the_known_free_space_says() {
+    let w = World::new(&[]);
+    let engine = w.h.engine();
+    engine.apply_quota(&crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(space::NO_SPACE + 1), state: "critical".into() });
+    w.write("big.bin", &vec![1u8; 1536 * 1024]);
+    w.examine(&[("", "big.bin")]);
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_committed(&w, "big.bin", "big.bin");
+}
+
+/// Issue #2: rows an earlier version blocked on a full OneDrive wait for
+/// space from the start, and one quota read decides them.
+#[test]
+fn rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start() {
+    let w = World::new(&[]);
+    w.write("full.txt", b"f");
+    w.examine(&[("", "full.txt")]);
+    let seq = w.rows()[0].seq;
+    w.store.with(|s| s.outbox_set_state(seq, OutboxState::Blocked, Some(reason::QUOTA), Some(engine::now() + 1800))).unwrap();
+    w.cloud(|c| c.free = Some(10 << 20));
+    let engine = w.h.engine();
+    assert!(engine.space_full(), "waiting rows keep the worker full until the quota is read");
+    assert_eq!(w.rows()[0].state, OutboxState::Ready);
+    w.h.drain(&engine);
+    assert_eq!(w.cloud(|c| c.quota_reads()), 1);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_committed(&w, "full.txt", "full.txt");
+}
+
+/// Issue #2 with #27: a file removed while its upload was under way — the
+/// daemon stopped mid-session, the removal examined (a `delete` behind the
+/// `running` create) — leaves the outbox at once although OneDrive is full
+/// and content rows are not taken: the session cancelled, nothing sent, one
+/// `not-uploaded` event, and the account still full.
+#[test]
+fn a_file_removed_while_it_waits_for_space_leaves_the_outbox() {
+    let w = World::new(&[]);
+    w.write("big.bin", &vec![3u8; 1024 * 1024 + 77]);
+    w.examine(&[("", "big.bin")]);
+    let crashed = w.h.engine();
+    crashed.arm(Fault::MidSession(1));
+    w.h.drain(&crashed);
+    let session = w.rows()[0].session_url.clone().expect("a session is open");
+    std::fs::remove_file(w.path("big.bin")).unwrap();
+    w.examine(&[("", "big.bin")]);
+    assert_eq!(w.summary(), vec![(Create, "big.bin".into(), OutboxState::Running), (OutboxKind::Delete, "big.bin".into(), OutboxState::Ready)]);
+
+    let engine = w.h.engine();
+    engine.apply_quota(&crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() });
+    let from = w.cloud(|c| c.log.len());
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert!(engine.space_full(), "still full: only a quota read ends it");
+    let sid = session.rsplit('/').next().unwrap();
+    assert_eq!(w.cloud(|c| c.log[from..].to_vec()), vec![("DELETE".to_owned(), format!("upload/{sid}"))], "the session cancelled, nothing sent");
+    assert!(w.h.host.kinds().iter().any(|k| k == kind::NOT_UPLOADED), "{:?}", w.h.host.kinds());
+}
+
 /// Drains `engine` in the background, pauses it while the first request of
 /// `method` whose path holds `fragment` is in flight, runs `meanwhile`, and
 /// waits for the drain to end.
 fn drain_paused_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, meanwhile: impl FnOnce()) {
+    drain_stopped_mid_request(w, engine, method, fragment, || {
+        engine.pause(None).unwrap();
+        meanwhile();
+    });
+}
+
+/// Drains `engine` in the background, runs `stop` while the first request
+/// of `method` whose path holds `fragment` is in flight, and waits for the
+/// drain to end.
+fn drain_stopped_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, stop: impl FnOnce()) {
     w.cloud(|c| c.delay(method, fragment, Duration::from_millis(400), 1));
     let task = w.h.runtime.spawn({
         let engine = Arc::clone(engine);
@@ -690,9 +859,34 @@ fn drain_paused_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragm
         waited += 1;
     }
     assert_eq!(w.cloud(|c| c.count(method, fragment)), 1, "{method} {fragment} is in flight");
-    engine.pause(None).unwrap();
-    meanwhile();
+    stop();
     w.h.runtime.block_on(task).unwrap();
+}
+
+/// Issue #2 with #19's stop: OneDrive turning full while an upload in
+/// fragments is under way stops it after the fragment in flight, as a pause
+/// does, but the row waits for space — ready, its session kept. Space again
+/// resumes it from its offset.
+#[test]
+fn a_full_onedrive_stops_a_session_after_its_fragment_and_space_resumes_it() {
+    let w = World::new(&[]);
+    let content: Vec<u8> = (0..(1024 * 1024 + 77)).map(|i| (i % 251) as u8).collect();
+    w.write("big.bin", &content);
+    w.examine(&[("", "big.bin")]);
+    let engine = w.h.engine();
+    let exceeded = crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() };
+    drain_stopped_mid_request(&w, &engine, "PUT", "upload/", || engine.apply_quota(&exceeded));
+    assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 1, "no fragment after the one in flight");
+    let row = w.rows().remove(0);
+    assert_eq!((row.state, row.reason.as_deref()), (OutboxState::Ready, Some(space::WAITING)));
+    assert_eq!(row.session_next, Some(320 * 1024), "the session is kept");
+
+    w.cloud(|c| c.free = Some(10 << 20));
+    refresh(&w, &engine);
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/"))), (1, 4), "resumed, not started over");
+    assert_eq!(w.content("big.bin").unwrap(), content);
 }
 
 /// #19: a pause stops an upload in fragments after the fragment in flight.

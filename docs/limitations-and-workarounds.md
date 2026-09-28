@@ -2015,6 +2015,31 @@ application must never read zeros where real content should be.
   upload progress job of such a file ends as if it succeeded (A21's rule: a row gone without an
   `upload-failed` event is done). DEBT · measured
   (`sync::upload::tests::removed::*`). Open.
+- **F150. A full OneDrive is decided by one quota read, and some edges are taken on trust**
+  (`konedrived/src/sync/upload/space.rs`; write design §6.4, issue #2) — a refusal for space reads
+  the quota once: `exceeded` or under 1 MiB free (a guess) turns the account full, otherwise only
+  the refused file waits as too big. Edges: (1) a quota that cannot be read, or that Graph gives
+  without `remaining` and `state`, after a refusal counts as full until the next read (Refresh, or
+  the automatic one 30 minutes on) — uploads that would fit may wait that long; (2) *full* lives in
+  the worker's memory: a start counts as full while a `waiting-for-space` row is in the outbox, and
+  reads the quota once before sending content — a start with only rows that were never refused
+  sends them, and the first refusal decides again; (3) a quota read lets every too-big file that
+  fits go, each judged alone, so several that fit one by one may not fit together — OneDrive
+  refuses the ones that do not, and the next read decides; (4) a file OneDrive refused although
+  the read says it fits is marked too big anyway, and goes again at the next read (at most one
+  refusal per 30 minutes); (5) a change to a waiting file merges into its row as a new detection
+  and drops the reason, so it is sent once more and OneDrive decides again; (6) the free space
+  shown only shrinks by what this computer uploaded until the next read; (7) a waiting `create`
+  with a removal of its object behind it is taken anyway, so that it leaves the outbox at once
+  (F149): if its file is found after all, it waits on and is not taken for that again until the
+  next quota read. The uploads freed are
+  paced by the account's transfer pool (#3), not all started at once. FRAGILE · measured for the main paths
+  (`sync::upload::tests::a_full_onedrive_sends_no_content_but_moves_and_deletes_go`,
+  `a_file_too_big_for_the_space_left_waits_alone`,
+  `a_file_not_refused_goes_whatever_the_known_free_space_says`,
+  `rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start`,
+  `a_file_removed_while_it_waits_for_space_leaves_the_outbox`), reasoned for the edges.
+  Open.
 - **F151. The local scan's "about N" is the base's count, not the disk's** (`sync/local_scan.rs`,
   `sync/local/examine.rs`, issue #8) — a running Full local scan is shown as the folders and files
   seen so far "of about N", where N is `ItemsPlaced` when it started: the items the base placed,
@@ -2132,7 +2157,9 @@ application must never read zeros where real content should be.
 | Outbox rows sent at once | 1 metadata row (`mkdir`, `move`, `delete`); files, small or large alike, as many as the account's transfer pool gives | the write design's one metadata row; the rest adaptive |
 | `move-out` rows run at once (`Class::Out`) / how long the examination waits for the helper's `OpenByHandle` (`ASK_WITHIN`) / a first `ESTALE` for a row's object is asked again after (`GONE_AGAIN`) | 1, beside the others / 45 s, past the link's own 30 s / 5 s | **guess** |
 | A failed row's backoff / a throttle without `Retry-After` (`BACKOFF_FIRST`/`BACKOFF_MAX`, `THROTTLE_FIRST`) | 1 s doubling to 1 h / 10 s doubling to 1 h; `Retry-After` taken up to 1 h | the write design's; **guess** |
-| OneDrive full, tried again (`QUOTA_RETRY`) | every 30 min, or when the quota changes | the write design's |
+| A full OneDrive, or a file too big for the space left: the quota read again by itself (`space::QUOTA_RECHECK`) | every 30 min, one request, never the uploads themselves | **guess** (issue #2) |
+| Less free space than this is none: the account is full (`space::NO_SPACE`) | 1 MiB | **guess** (issue #2) |
+| A quota read shared by refusals of rows running together (`space::REUSE`) | 10 s | **guess** |
 | A row rewritten and sent again at once before it backs off (`AGAIN_LIMIT`) / the worker's idle look at the outbox | 20 / every 300 s | **guess** |
 
 ---

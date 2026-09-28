@@ -2,6 +2,9 @@
 
 #include <KLocalizedString>
 
+#include <QLocale>
+#include <QStringList>
+
 
 QString uploadReasonText(const QString &reason)
 {
@@ -58,6 +61,22 @@ QString uploadReasonText(const QString &reason)
     }
     if (reason.startsWith(QLatin1String("refused: "))) {
         return i18n("OneDrive refused it: %1", reason.mid(9));
+    }
+    if (reason == QLatin1String("waiting-for-space")) {
+        return i18n("OneDrive is full: free up space in OneDrive, then Refresh.");
+    }
+    if (reason == QLatin1String("too-big")) {
+        return i18n("Too big for the space left in OneDrive: free up space there, then Refresh.");
+    }
+    // too-big:<bytes needed>:<bytes free>
+    if (reason.startsWith(QLatin1String("too-big:"))) {
+        const QStringList parts = reason.mid(8).split(QLatin1Char(':'));
+        if (parts.size() == 2) {
+            const QLocale locale;
+            return i18n("Too big: needs %1, %2 free.",
+                        locale.formattedDataSize(parts.at(0).toLongLong()),
+                        locale.formattedDataSize(parts.at(1).toLongLong()));
+        }
     }
     return reason;
 }

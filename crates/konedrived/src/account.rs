@@ -126,6 +126,9 @@ fn is_mode_message(text: &str) -> bool {
 pub trait PendingUploads: Send + Sync {
     async fn pending_uploads(&self) -> u64;
     async fn drop_pending_uploads(&self);
+    /// The account's quota was just read (`RefreshAccountInfo`): a full OneDrive, or a file
+    /// too big for what was left, is decided again by it (issue #2).
+    fn quota_read(&self, _quota: &crate::drive::DriveQuota) {}
 }
 
 /// Serializes sign-in commits, cancellation and sign-out against each other. `generation`
@@ -709,7 +712,11 @@ impl AccountService {
         // Says again why a read-write account runs read-only, if it does: the drive may have
         // just been recorded, or be another than config.toml's, and the line above cleared the
         // reason. A drive that is not the recorded one turns a read-write account read-only.
-        self.recompute_mode();
+        self.recompute_mode();        // The folder's outbox decides by the quota just read whether OneDrive is still full.
+        let uploads = self.uploads.lock().unwrap().as_ref().and_then(Weak::upgrade);
+        if let Some(uploads) = uploads {
+            uploads.quota_read(&drive.quota);
+        }
     }
 
     /// The drive recorded for this account, if one is.

@@ -355,7 +355,7 @@ waits behind it, and the commit rebases it (a new eTag, or the item id behind a 
 
 **States**: `waiting` (the quiet spell, or open for writing) → `ready` → `running` → gone at the
 commit; or `retry` (with `next_try`), `blocked` (needs the user: a refused name, too large,
-OneDrive full, no permission) or `held` (§4.5).
+no permission) or `held` (§4.5). A row waiting for space in OneDrive stays `ready` (§6.4).
 
 **An object gone before it landed.** A row is bound to its local object, not to its name. A
 `create` or `mkdir` whose object is under none of the names its rows saw ends on that run, with no
@@ -456,14 +456,61 @@ itself when a fragment is refused. Requests to an upload URL never carry the acc
 | `404` from an upload URL | the session ended: the item is read and adopted if its hash is ours, else a new session from zero |
 | `416` | a fragment the session has: its status says where to go on |
 | `423` | locked (co-authoring): retried later |
-| `507`, `quotaLimitReached` | `blocked` (`quota-exceeded`), tried again when the quota changes or every 30 minutes |
+| `507`, `quotaLimitReached` | the quota is read at once and decides: the account full, or only this file too big (§6.4) |
 | `400` | `blocked`, with the service's message |
 | `401` | the token refreshed once |
 | `403` | `blocked` (`forbidden`), and `LastError` says to sign in again; a new sign-in releases the rows |
 | `429`, `503` | the whole account's worker waits until `Retry-After` (in seconds or as an HTTP date, at most an hour; without one, 10 s doubling) |
 | another `5xx`, the network | the row retries after 1 s, doubling to an hour |
 
-No row is ever dropped for failing; `upload-failed` is recorded once per row and reason.
+No row is ever dropped for failing; `upload-failed` is recorded once per row and reason (a row
+waiting for space records none: `QuotaFull` says it once for the account).
+
+### 6.4 A full OneDrive
+
+**Free space** is Graph's `quota.remaining`, never `total - used`; `quota.state` is `normal`,
+`nearing`, `critical` or `exceeded`. Between two reads the bytes uploaded are taken off
+`remaining`, so the figure shown (`FreeSpace`) does not go stale.
+
+**A refusal** (`507`, `quotaLimitReached`) reads the quota at once — one request; refusals of rows
+running together share a read of the last 10 s. Then:
+
+- **no space left** — `state` is `exceeded`, or less than 1 MiB is free: the account is *full*. No
+  row that adds content is taken (new files, new versions, upload sessions), and an upload under
+  way stops at its next fragment and keeps its session — the same stop as a pause's (§11), with
+  its own reason. The refused row's reason is
+  `waiting-for-space`; the others simply wait;
+- **space left** — only the refused file waits, `too-big:<bytes needed>:<bytes free>`; the files
+  that fit keep going. It is not sent again until a quota read shows it fits. Every other file is
+  sent whatever the known free space says: a figure gone stale (space freed from another device)
+  never holds files back, and OneDrive has the last word.
+
+A quota that cannot be read after a refusal counts as full; the next read decides.
+
+A waiting row stays `ready` in its place in the outbox, with no timer of its own; only its reason
+says why it waits. Moves, renames, deletes and new folders go on: a delete frees space, but does
+not end *full* by itself. A file removed here while its upload was under way still leaves the
+outbox at once (§5.2's rule for an object gone before it landed, F149): a `create` with a removal
+of its object behind it is taken while full, sends no content and ends; found after all, it waits
+on.
+
+**Leaving full.** Every quota read decides again: `Sync1.Refresh` (which `konedrivectl sync
+refresh` calls, printing the quota it read), `Account1.RefreshAccountInfo` (the Account page's
+Refresh), and an automatic read every 30 minutes while the account is full or a file is too big —
+one request, never the uploads themselves. With space again, *full* ends and every too-big file
+that now fits is free to go; the rest stay too big, with the free space said again. The rows go
+through the account's transfer pool (§5.3), which paces them, not all at once.
+
+**At a start**, rows an earlier version blocked with `quota-exceeded` become `waiting-for-space`
+rows in their places, the worker counts as full while any such row waits, and the quota is read
+once before anything sends content.
+
+**What shows it**: `Sync1.QuotaFull`, `SpaceWaitingCount`/`SpaceWaitingBytes` (while full, the
+changes that send content), `TooBigCount`, `QuotaState` and `FreeSpace`; one line on the Status
+page and in `konedrivectl sync status` instead of a row per file; on the Not Uploaded page and in
+`sync not-uploaded` (`NotUploadedSummary`), `waiting-for-space` and `too-big` are each one line in
+"Needs you — one action", with Refresh; the tray needs attention while full or while a file is too
+big, and notifies once when full starts.
 
 ### 6.3 A large file
 
@@ -670,7 +717,8 @@ is answered by content hash or by place, never by guessing.
 
 Per account, on `org.konedrive.Sync1`: `Outbox`, `Pause`/`Resume`, `SetIgnorePatterns`,
 `ConfirmDeletes`/`RestoreDeletes`, `NotUploaded`; the properties `PendingCount`, `PendingBytes`,
-`BlockedCount`, `HeldCount`, `Uploads`, `Paused`, `PausedUntil`, `IgnorePatterns`, `MachineName`,
+`BlockedCount`, `HeldCount`, `QuotaFull`, `SpaceWaitingCount`, `SpaceWaitingBytes`, `TooBigCount`,
+`QuotaState`, `FreeSpace` (§6.4), `Uploads`, `Paused`, `PausedUntil`, `IgnorePatterns`, `MachineName`,
 and the Full local scan's `ScanState`, `ScanReason`, `ScanStarted`, `ScanDirectories`, `ScanFiles`,
 `ScanExpected`, `ScanFinished`, `ScanTook` (§4.6);
 the activity kinds `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, `restored` and
@@ -697,7 +745,8 @@ failed or retrying — while blocked and held rows keep their state; a pause wri
 `upload-failed`. Resume, or the end of a timed pause, makes the rows due at once: a kept session
 goes on from its offset, and one that expired meanwhile starts over, logged. A restart while
 paused keeps the sessions and resumes none of them. The stop between fragments is one check
-(`upload/content.rs`, `stop_between_fragments`), shared with the write gate.
+(`upload/content.rs`, `stop_between_fragments`) with three reasons: a pause, a full OneDrive
+(§6.4) and the write gate.
 
 ## 12. Testing
 

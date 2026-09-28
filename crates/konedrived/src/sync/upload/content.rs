@@ -18,7 +18,7 @@ use konedrive_fs::placeholder::{self, State};
 use super::engine::{Engine, Fail, Outcome};
 use super::local::{self, Found, Read, Snap, SYNC_UPLOADING};
 use super::steps::{answer_row, blocking, commit_row, copy, follow_cloud, local_name, locate, never_uploaded, parent_of, taken, temporary, upload_as_new, wanted_name, Ours, Taken};
-use super::{kind, reason, Fault};
+use super::{kind, reason, space, Fault};
 use crate::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
 use crate::quickxor::QuickXor;
 use crate::sync::disk::Disk;
@@ -39,6 +39,11 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
             _ => Ok(Outcome::later(reason::NOT_FOUND, RECHECK)),
         };
     };
+    // Taken while it waits for space only to see whether its file is gone
+    // (`space`, `Engine::space_allows`): it is not, so it waits on.
+    if let Some(why) = e.space_holds(&row) {
+        return Ok(Outcome::Space(why));
+    }
     match found.state() {
         Ok(None | Some(State::Hydrated)) => {}
         Ok(Some(_)) => return Ok(Outcome::wait(reason::NOT_LOCAL, RECHECK)),
@@ -79,10 +84,16 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
 ///
 /// - **Paused** (`docs/design/writes.md` §11): waiting, reason
 ///   [`reason::PAUSED`], due again as soon as the pause ends. No failure.
+/// - **OneDrive full** (a refusal of another row, `space`): ready in its
+///   place, reason [`space::WAITING`], taken again once a quota read shows
+///   space.
 /// - **The write gate** closed: waiting until it opens.
 fn stop_between_fragments(e: &Engine) -> Option<Outcome> {
     if super::paused(e.store()).is_some() {
         return Some(Outcome::wait(reason::PAUSED, std::time::Duration::ZERO));
+    }
+    if e.space_full() {
+        return Some(Outcome::Space(space::WAITING.into()));
     }
     if let Err(why) = e.cfg.host.may_write() {
         return Some(Outcome::wait(&format!("not allowed now: {why}"), std::time::Duration::ZERO));
@@ -256,6 +267,11 @@ impl Job<'_> {
     }
 
     async fn send(&self, target: UploadTarget<'_>, last_check: Option<(&str, &str)>) -> Result<Sent, Fail> {
+        // OneDrive became full since the row was taken: nothing that adds
+        // content starts (`space`).
+        if self.e.space_full() {
+            return Err(Fail::Now(Outcome::Space(space::WAITING.into())));
+        }
         if self.snap.size <= self.e.cfg.limits.small_max {
             self.send_small(target).await
         } else {
@@ -529,6 +545,7 @@ impl Job<'_> {
             blocking(move || local::commit_id(&file, &id)).await?;
         }
         self.e.fault(Fault::AfterCommitStep1)?;
+        self.e.space_used(self.snap.size);
         let event = self.e.event(kind::UPLOADED, &self.found.rel, crate::sync::activity::human_size(self.snap.size));
         commit_row(self.e, self.row, &answer, self.found.inode.handle.as_ref(), self.parent, event)?;
         Ok(Outcome::Done)

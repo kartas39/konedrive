@@ -206,6 +206,12 @@ class FakeSync1 : public QDBusAbstractAdaptor
     Q_PROPERTY(qulonglong PendingBytes READ pendingBytes)
     Q_PROPERTY(uint BlockedCount READ blockedCount)
     Q_PROPERTY(uint HeldCount READ heldCount)
+    Q_PROPERTY(bool QuotaFull READ quotaFull)
+    Q_PROPERTY(uint SpaceWaitingCount READ spaceWaitingCount)
+    Q_PROPERTY(qulonglong SpaceWaitingBytes READ spaceWaitingBytes)
+    Q_PROPERTY(uint TooBigCount READ tooBigCount)
+    Q_PROPERTY(QString QuotaState READ quotaState)
+    Q_PROPERTY(qulonglong FreeSpace READ freeSpace)
     Q_PROPERTY(KonedriveTransferList Uploads READ uploads)
     Q_PROPERTY(bool Paused READ paused)
     Q_PROPERTY(qlonglong PausedUntil READ pausedUntil)
@@ -261,6 +267,12 @@ public:
     qulonglong pendingBytes() const { return m_properties.value(QStringLiteral("PendingBytes")).toULongLong(); }
     uint blockedCount() const { return m_properties.value(QStringLiteral("BlockedCount")).toUInt(); }
     uint heldCount() const { return m_properties.value(QStringLiteral("HeldCount")).toUInt(); }
+    bool quotaFull() const { return m_properties.value(QStringLiteral("QuotaFull")).toBool(); }
+    uint spaceWaitingCount() const { return m_properties.value(QStringLiteral("SpaceWaitingCount")).toUInt(); }
+    qulonglong spaceWaitingBytes() const { return m_properties.value(QStringLiteral("SpaceWaitingBytes")).toULongLong(); }
+    uint tooBigCount() const { return m_properties.value(QStringLiteral("TooBigCount")).toUInt(); }
+    QString quotaState() const { return m_properties.value(QStringLiteral("QuotaState")).toString(); }
+    qulonglong freeSpace() const { return m_properties.value(QStringLiteral("FreeSpace")).toULongLong(); }
     KonedriveTransferList uploads() const { return m_uploads; }
     bool paused() const { return m_properties.value(QStringLiteral("Paused")).toBool(); }
     qlonglong pausedUntil() const { return m_properties.value(QStringLiteral("PausedUntil")).toLongLong(); }
@@ -536,6 +548,12 @@ private:
         {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(0)},
         {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(0)},
         {QStringLiteral("HeldCount"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("QuotaFull"), false},
+        {QStringLiteral("SpaceWaitingCount"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("SpaceWaitingBytes"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("TooBigCount"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("QuotaState"), QString()},
+        {QStringLiteral("FreeSpace"), QVariant::fromValue<qulonglong>(0)},
         {QStringLiteral("Paused"), false},
         {QStringLiteral("PausedUntil"), QVariant::fromValue<qlonglong>(0)},
         {QStringLiteral("IgnorePatterns"), QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}},

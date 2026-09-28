@@ -196,6 +196,20 @@ private Q_SLOTS:
         QVERIFY(AppStatus::rank(QStringLiteral("offline")) < AppStatus::rank(QStringLiteral("paused")));
     }
 
+    /// A full OneDrive, and a file too big for the space left, need
+    /// attention: one line for the account, not one per file (issue #2).
+    void aFullOneDriveNeedsAttention()
+    {
+        startSynced();
+        m_daemon->sync->set({{QStringLiteral("QuotaFull"), true}, {QStringLiteral("SpaceWaitingCount"), QVariant::fromValue<uint>(29)}});
+        QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
+        QCOMPARE(m_status->attention(), QStringLiteral("OneDrive is full: 29 files wait for space"));
+        m_daemon->sync->set({{QStringLiteral("QuotaFull"), false}, {QStringLiteral("TooBigCount"), QVariant::fromValue<uint>(1)}});
+        QTRY_COMPARE(m_status->attention(), QStringLiteral("1 file is too big for the space left in OneDrive"));
+        m_daemon->sync->set({{QStringLiteral("TooBigCount"), QVariant::fromValue<uint>(0)}});
+        QTRY_VERIFY(m_status->attention().isEmpty());
+    }
+
     void aSyncErrorNeedsAttention()
     {
         startSynced();

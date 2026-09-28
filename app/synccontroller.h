@@ -61,6 +61,13 @@ class SyncController : public QObject
     /// Removals the mass-delete guard holds (HeldCount), waiting for
     /// confirmDeletes() or restoreDeletes().
     Q_PROPERTY(uint heldCount READ heldCount NOTIFY syncChanged)
+    /// OneDrive is full (QuotaFull): no content goes up until a Refresh finds space.
+    Q_PROPERTY(bool quotaFull READ quotaFull NOTIFY syncChanged)
+    /// While full: the changes that wait for space, and the size of their files.
+    Q_PROPERTY(uint spaceWaitingCount READ spaceWaitingCount NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong spaceWaitingBytes READ spaceWaitingBytes NOTIFY syncChanged)
+    /// Files OneDrive refused as too big for the space left.
+    Q_PROPERTY(uint tooBigCount READ tooBigCount NOTIFY syncChanged)
     Q_PROPERTY(bool paused READ paused NOTIFY syncChanged)
     /// Unix seconds when the pause ends by itself; 0 while paused until resumed.
     Q_PROPERTY(qlonglong pausedUntil READ pausedUntil NOTIFY syncChanged)
@@ -158,6 +165,10 @@ public:
     qulonglong pendingBytes() const { return m_pendingBytes; }
     uint blockedCount() const { return m_blockedCount; }
     uint heldCount() const { return m_heldCount; }
+    bool quotaFull() const { return m_quotaFull; }
+    uint spaceWaitingCount() const { return m_spaceWaitingCount; }
+    qulonglong spaceWaitingBytes() const { return m_spaceWaitingBytes; }
+    uint tooBigCount() const { return m_tooBigCount; }
     bool paused() const { return m_paused; }
     qlonglong pausedUntil() const { return m_pausedUntil; }
     QStringList ignorePatterns() const { return m_ignorePatterns; }
@@ -316,6 +327,10 @@ private:
     qulonglong m_pendingBytes = 0;
     uint m_blockedCount = 0;
     uint m_heldCount = 0;
+    bool m_quotaFull = false;
+    uint m_spaceWaitingCount = 0;
+    qulonglong m_spaceWaitingBytes = 0;
+    uint m_tooBigCount = 0;
     bool m_paused = false;
     qlonglong m_pausedUntil = 0;
     QStringList m_ignorePatterns;

@@ -277,6 +277,12 @@ void AccountStatus::update()
         } else if (m_sync->conflictCount() > 0) {
             state = QStringLiteral("warning");
             attention = i18np("1 changed file was moved out of the way", "%1 changed files were moved out of the way", m_sync->conflictCount());
+        } else if (m_sync->quotaFull()) {
+            state = QStringLiteral("warning");
+            attention = i18np("OneDrive is full: 1 file waits for space", "OneDrive is full: %1 files wait for space", m_sync->spaceWaitingCount());
+        } else if (m_sync->tooBigCount() > 0) {
+            state = QStringLiteral("warning");
+            attention = i18np("1 file is too big for the space left in OneDrive", "%1 files are too big for the space left in OneDrive", m_sync->tooBigCount());
         } else if (m_sync->blockedCount() > 0) {
             state = QStringLiteral("warning");
             attention = i18np("1 change cannot be uploaded", "%1 changes cannot be uploaded", m_sync->blockedCount());

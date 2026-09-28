@@ -39,6 +39,9 @@
     </method>
     <!-- Asks OneDrive for changes now rather than within the minute, and
          tries the changes waiting to be uploaded that are in backoff now.
+         Reads the quota again (QuotaState, FreeSpace): with space again, a
+         full OneDrive ends (QuotaFull), and the files too big before go up
+         once they fit.
          Refused Unsupported for a folder that is not connected to OneDrive.
          While paused, OneDrive is not asked. -->
     <method name="Refresh"/>
@@ -158,7 +161,7 @@
          reserved-name, not-downloaded (a
          file from elsewhere that is not downloaded), hard-link; and every
          blocked change with its reason: name-characters, name-spaces,
-         name-reserved, name-not-utf8, too-large, quota-exceeded, forbidden,
+         name-reserved, name-not-utf8, too-large, forbidden,
          "refused: <OneDrive's message>". -->
     <method name="NotUploaded">
       <arg name="items" type="a(ss)" direction="out"/>
@@ -234,6 +237,25 @@
          ConfirmDeletes or RestoreDeletes. Neither pending nor blocked.
          Coalesced with the counts above. -->
     <property name="HeldCount" type="u" access="read"/>
+    <!-- OneDrive is full (quota state "exceeded", or less than 1 MiB free):
+         no content goes up until Refresh, or the automatic check every 30
+         minutes, finds space again. Moves, renames, deletes and new folders
+         still go. Not coalesced. -->
+    <property name="QuotaFull" type="b" access="read"/>
+    <!-- While QuotaFull: the changes that send content, which wait for
+         space, and the size of their files. Coalesced with the counts above. -->
+    <property name="SpaceWaitingCount" type="u" access="read"/>
+    <property name="SpaceWaitingBytes" type="t" access="read"/>
+    <!-- Files OneDrive refused as too big for the space left: each waits,
+         in Outbox with reason "too-big:<bytes needed>:<bytes free>", until a
+         quota read shows it fits. Coalesced with the counts above. -->
+    <property name="TooBigCount" type="u" access="read"/>
+    <!-- The quota as last read: Graph's quota.state (normal, nearing,
+         critical, exceeded; empty until read) and quota.remaining, less
+         what was uploaded since (0 until read). Coalesced with the counts
+         above. -->
+    <property name="QuotaState" type="s" access="read"/>
+    <property name="FreeSpace" type="t" access="read"/>
     <!-- Uploads under way: (full path, bytes sent, bytes total). Coalesced
          to a few changes a second. -->
     <property name="Uploads" type="a(stt)" access="read">
