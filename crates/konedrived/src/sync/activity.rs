@@ -565,12 +565,26 @@ impl Tracked {
 
 #[async_trait]
 impl ContentSource for Tracked {
-    async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         let entry = self.entry.get_or_init(|| self.transfers.start(self.path.clone(), 0));
-        let Fetched { served_from, size, mtime, version, stream } = self.source.fetch(item_id, from).await?;
+        let Fetched { served_from, size, mtime, version, stream } = self.source.fetch(item_id, from, end).await?;
+        if end.is_some() {
+            // A piece of a download in parts: the file is shown once, and the
+            // download says how far it has come as a whole (`progress`).
+            if entry.total() != size {
+                entry.progress(0, size);
+            }
+            return Ok(Fetched { served_from, size, mtime, version, stream });
+        }
         entry.progress(served_from, size);
         let stream = Box::new(Counting { inner: stream, at: served_from, total: size, handle: entry.handle() });
         Ok(Fetched { served_from, size, mtime, version, stream })
+    }
+
+    fn progress(&self, done: u64, size: u64) {
+        if let Some(entry) = self.entry.get() {
+            entry.progress(done, size);
+        }
     }
 }
 

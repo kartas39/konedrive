@@ -227,27 +227,43 @@ impl DriveClient {
         }
     }
 
-    /// The bytes behind a pre-authenticated download URL, from `from` on. The
-    /// URL carries its own authorisation; the account's token is never sent
-    /// to it.
-    pub async fn download(&self, url: &str, from: u64) -> Result<Download, DriveError> {
+    /// The bytes behind a pre-authenticated download URL, from `from` on — to
+    /// the end of the file, or up to `end` (the first byte not wanted: a piece
+    /// of a download in parts, issue #28). The URL carries its own
+    /// authorisation; the account's token is never sent to it.
+    pub async fn download(&self, url: &str, from: u64, end: Option<u64>) -> Result<Download, DriveError> {
         let url = Url::parse(url)
             .map_err(|e| DriveError::Failed(format!("a download URL from Graph cannot be parsed: {e}")))?;
+        if end.is_some_and(|end| end <= from) {
+            return Ok(Download { served_from: from, stream: Box::new(tokio::io::empty()) });
+        }
+        // `Range` names the last byte wanted, not the first one past it.
+        let range = match end {
+            Some(end) => Some(format!("bytes={from}-{}", end - 1)),
+            None if from > 0 => Some(format!("bytes={from}-")),
+            None => None,
+        };
         let response = self
             .send_anonymous(|| {
                 let request = self.content.get(url.clone());
-                if from > 0 {
-                    request.header(header::RANGE, format!("bytes={from}-"))
-                } else {
-                    request
+                match &range {
+                    Some(range) => request.header(header::RANGE, range.as_str()),
+                    None => request,
                 }
             })
             .await?;
+        // No more than was asked for, whatever the server sends.
+        let bounded = |stream: Box<dyn AsyncRead + Send + Unpin>, start: u64| -> Box<dyn AsyncRead + Send + Unpin> {
+            match end {
+                Some(end) => Box::new(stream.take(end.saturating_sub(start))),
+                None => stream,
+            }
+        };
         match response.status() {
             StatusCode::PARTIAL_CONTENT => {
                 let start = content_range_start(response.headers())
                     .ok_or_else(|| DriveError::Failed("a partial answer without a readable Content-Range".into()))?;
-                Ok(Download { served_from: start, stream: self.body(response) })
+                Ok(Download { served_from: start, stream: bounded(self.body(response), start) })
             }
             StatusCode::OK => {
                 let mut stream = self.body(response);
@@ -264,7 +280,7 @@ impl DriveClient {
                         )));
                     }
                 }
-                Ok(Download { served_from: from, stream })
+                Ok(Download { served_from: from, stream: bounded(stream, from) })
             }
             // Asked from the end of the file or past it: nothing to serve.
             StatusCode::RANGE_NOT_SATISFIABLE => {
@@ -680,11 +696,29 @@ mod tests {
         Mock::given(method("GET")).and(path("/dl")).and(header("range", "bytes=4-"))
             .respond_with(ResponseTemplate::new(206).insert_header("content-range", "bytes 4-9/10").set_body_bytes(b"456789".to_vec()))
             .mount(&server).await;
-        let download = client(&server).download(&format!("{}/dl", server.uri()), 4).await.unwrap();
+        let download = client(&server).download(&format!("{}/dl", server.uri()), 4, None).await.unwrap();
         assert_eq!(download.served_from, 4);
         assert_eq!(read_all(download).await, b"456789");
         let sent = &server.received_requests().await.unwrap()[0];
         assert!(sent.headers.get("authorization").is_none(), "a pre-authenticated URL gets no token");
+    }
+
+    /// A piece of a download in parts asks for its own range, and gets no
+    /// more than that even from a server that ignores it.
+    #[tokio::test]
+    async fn a_bounded_range_names_its_last_byte_and_reads_no_further() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/dl")).and(header("range", "bytes=4-6"))
+            .respond_with(ResponseTemplate::new(206).insert_header("content-range", "bytes 4-6/10").set_body_bytes(b"456".to_vec()))
+            .mount(&server).await;
+        let download = client(&server).download(&format!("{}/dl", server.uri()), 4, Some(7)).await.unwrap();
+        assert_eq!((download.served_from, read_all(download).await), (4, b"456".to_vec()));
+        server.reset().await;
+        Mock::given(method("GET")).and(path("/dl"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"0123456789".to_vec()))
+            .mount(&server).await;
+        let download = client(&server).download(&format!("{}/dl", server.uri()), 4, Some(7)).await.unwrap();
+        assert_eq!(read_all(download).await, b"456", "a whole body is cut to the range asked for");
     }
 
     #[tokio::test]
@@ -693,7 +727,7 @@ mod tests {
         Mock::given(method("GET")).and(path("/dl"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(b"0123456789".to_vec()))
             .mount(&server).await;
-        let download = client(&server).download(&format!("{}/dl", server.uri()), 4).await.unwrap();
+        let download = client(&server).download(&format!("{}/dl", server.uri()), 4, None).await.unwrap();
         assert_eq!(download.served_from, 4);
         assert_eq!(read_all(download).await, b"456789");
     }
@@ -704,7 +738,7 @@ mod tests {
         Mock::given(method("GET")).and(path("/dl"))
             .respond_with(ResponseTemplate::new(416))
             .mount(&server).await;
-        let download = client(&server).download(&format!("{}/dl", server.uri()), 10).await.unwrap();
+        let download = client(&server).download(&format!("{}/dl", server.uri()), 10, None).await.unwrap();
         assert_eq!(download.served_from, 10);
         assert!(read_all(download).await.is_empty());
     }
@@ -715,7 +749,7 @@ mod tests {
         Mock::given(method("GET")).and(path("/dl"))
             .respond_with(ResponseTemplate::new(403))
             .mount(&server).await;
-        assert!(matches!(client(&server).download(&format!("{}/dl", server.uri()), 0).await, Err(DriveError::UrlExpired)));
+        assert!(matches!(client(&server).download(&format!("{}/dl", server.uri()), 0, None).await, Err(DriveError::UrlExpired)));
     }
 
     #[tokio::test]

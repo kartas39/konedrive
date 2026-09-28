@@ -151,9 +151,9 @@ impl Watched {
 
 #[async_trait]
 impl ContentSource for Watched {
-    async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         self.froms.lock().unwrap().push(from);
-        let mut fetched = self.inner.fetch(item_id, from).await?;
+        let mut fetched = self.inner.fetch(item_id, from, end).await?;
         let at = if self.sticky { *self.break_at.lock().unwrap() } else { self.break_at.lock().unwrap().take() };
         if let Some(at) = at {
             fetched.stream = Box::new(BreakAfter { inner: fetched.stream, left: at.saturating_sub(fetched.served_from) });
@@ -171,8 +171,8 @@ struct NoHash(Arc<dyn ContentSource>);
 
 #[async_trait]
 impl ContentSource for NoHash {
-    async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
-        let mut fetched = self.0.fetch(item_id, from).await?;
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
+        let mut fetched = self.0.fetch(item_id, from, end).await?;
         if let Some(v) = fetched.version.as_mut() {
             v.quick_xor = None;
         }

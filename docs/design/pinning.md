@@ -79,6 +79,14 @@ and large files wait apart, so a large one held by that limit lets the small one
 An open of a file whose pinned download is already running waits on that same
 download, rather than starting a second one — as opening a file twice always does.
 
+**A large file in parts.** A large pinned file downloads in pieces of 256 MiB over several streams
+at once ([hydration.md](hydration.md) §7.5): its own slot is its first stream's, and it adds a
+stream for each large slot that is free and that nothing waits for, sharing them evenly with the
+other large files in parts — one large file alone runs in up to 4 streams (`[transfers] large`),
+two in 2 each, four or more in 1 each. An extra stream gives its slot back after its piece when a
+file in the queue, a small file or an upload waits for one. The file shows once in `Transfers`,
+with its overall progress.
+
 Just before a queued file is downloaded, the queue asks again whether it is still pinned. A file
 whose pin was taken off since it was queued (§5) is passed over. A Forget drops the queue and
 cancels the downloads under way; a cancelled download is left as any fill cut short is, its
@@ -247,6 +255,8 @@ about pins is shown there.
 
 Recorded in [`../limitations-and-workarounds.md`](../limitations-and-workarounds.md):
 
-- pinning a big folder downloads everything in it, four files at a time, with no prompt (P10);
+- pinning a big folder downloads everything in it, four large files at a time, with no prompt (P10);
+- a large pinned file in parts keeps only its gap-free start across a failure or a restart, and a
+  transfer waiting for a slot waits for an extra stream's piece to end (F155, F156);
 - the sweep is a walk of the whole folder after each Full reconcile and at start, and a pinned file
   whose download failed waits for it (F38).
