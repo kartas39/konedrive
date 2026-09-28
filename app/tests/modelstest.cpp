@@ -76,7 +76,8 @@ private Q_SLOTS:
         QCOMPARE(at(activity, 1, ActivityModel::IconRole).toString(), QStringLiteral("document-duplicate"));
         QCOMPARE(at(activity, 2, ActivityModel::IconRole).toString(), QStringLiteral("edit-delete"));
         QCOMPARE(uploadReasonText(QStringLiteral("other-device")), QStringLiteral("On another filesystem mounted inside the folder: never uploaded."));
-        for (const QString &kind : {QStringLiteral("uploaded"), QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored")}) {
+        for (const QString &kind : {QStringLiteral("uploaded"), QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored"),
+                                    QStringLiteral("not-uploaded")}) {
             QVERIFY2(ActivityModel::describe(kind, QString()) != kind, qPrintable(kind));
         }
 
