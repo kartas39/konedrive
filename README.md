@@ -77,30 +77,46 @@ These are what `app/CMakeLists.txt` and `dolphin/CMakeLists.txt` look for.
 
 ## Install from RPM
 
-On Fedora, KOneDrive installs as two packages, built from this repository on your own machine
-(there is no package repository yet):
+On Fedora 44 (x86_64), KOneDrive installs as two packages (there is no package repository yet):
 
 - `konedrive` — the daemon, `konedrivectl`, the KOneDrive window, and the helper with its system
   service, which is enabled and started when the package is installed;
 - `konedrive-kde` — the Dolphin plugins (see "Dolphin integration"). `konedrive` recommends it,
   so `dnf` installs it too; `sudo dnf remove konedrive-kde` removes it alone.
 
-Build them as yourself, never as root. `rpm-build` and the build dependencies are needed once
-(`builddep` installs whatever of the list above, and of the spec's, is missing):
+**From a release.** Every release is on the Releases page of the repository on GitHub
+(`kartas39/konedrive`). Download the two binary RPMs of the latest one,
+`konedrive-X.Y.Z-1.fc44.x86_64.rpm` and `konedrive-kde-X.Y.Z-1.fc44.x86_64.rpm` — not the
+`.src.rpm`, which the command below would pick up too. Its `SHA256SUMS` lists their checksums
+(`sha256sum -c --ignore-missing SHA256SUMS`). Then, in the directory they are in:
+
+```
+sudo dnf install ./konedrive-*.rpm
+```
+
+The packages are not signed (`docs/limitations-and-workarounds.md`, R6); `dnf` installs a local
+file without checking a signature.
+
+**From a checkout.** Build them as yourself, never as root. `rpm-build` and the build
+dependencies are needed once (`builddep` installs whatever of the list above, and of the spec's,
+is missing):
 
 ```
 sudo dnf install rpm-build
 sudo dnf builddep packaging/rpm/konedrive.spec
+git fetch --tags
 scripts/build-rpm.sh
 ```
 
 `scripts/build-rpm.sh` packages the committed tree (`HEAD`: uncommitted changes are left out),
-with its Rust crates vendored so that the build itself is offline. Everything it makes is under
-`target/rpm/`, and it lists the RPMs at the end. Then, from the repository:
+with its Rust crates vendored so that the build itself is offline. It versions the build after the
+latest release, below the next one — for example `0.1.2~dev.20260929.fad78d9` after the release
+0.1.1 — so the next release upgrades it (`docs/releasing.md`); that is what `git fetch --tags` is
+for. Everything it makes is under `target/rpm/`, and it lists the RPMs at the end. Then, from the
+repository:
 
 ```
-sudo dnf install ./target/rpm/RPMS/x86_64/konedrive-0.1.0-1.fc44.x86_64.rpm \
-                 ./target/rpm/RPMS/x86_64/konedrive-kde-0.1.0-1.fc44.x86_64.rpm
+sudo dnf install ./target/rpm/RPMS/x86_64/konedrive-*.rpm
 ```
 
 If the developer install below is on this machine, remove it first: see "Switching from the
@@ -135,9 +151,10 @@ running instead of the packaged one (R2). Build the RPMs first, then, from the r
 ```
 scripts/dev-uninstall.sh
 sudo scripts/install-helper.sh --uninstall --force
-sudo dnf install ./target/rpm/RPMS/x86_64/konedrive-0.1.0-1.fc44.x86_64.rpm \
-                 ./target/rpm/RPMS/x86_64/konedrive-kde-0.1.0-1.fc44.x86_64.rpm
+sudo dnf install ./target/rpm/RPMS/x86_64/konedrive-*.rpm
 ```
+
+(or, from a release, `sudo dnf install ./konedrive-*.rpm` where you downloaded them).
 
 1. `scripts/dev-uninstall.sh` runs as you. It stops the daemon, removes exactly the files
    `scripts/dev-install.sh` installed, and reloads your systemd and D-Bus. It never touches your
@@ -576,8 +593,9 @@ filing a bug that might already be there.
 Built so far: the read-only client, the Dolphin integration, the RPM packages, pinning ("Always
 keep on this device") and multiple accounts. In order, what comes next:
 
-1. **A package repository** — the RPMs are built locally for now ("Install from RPM"); a COPR
-   repository comes next, so that `dnf install` needs no build.
+1. **A package repository** — the RPMs are downloaded by hand from the Releases page for now
+   ("Install from RPM"); a COPR repository comes next, so that `dnf install` and `dnf upgrade`
+   find them.
 2. **Writes to the cloud** — local changes uploaded back to OneDrive, turning this from a
    read-only mirror into a real sync client. Built, and held back for test accounts ("Uploading
    changes"); released once checked against a real test account.
