@@ -164,6 +164,32 @@
       <arg name="items" type="a(ss)" direction="out"/>
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>
     </method>
+    <!-- What is kept back, one row per reason: (group, reason, count, bytes
+         of the files). Everything NotUploaded lists, and the changes that
+         wait with a reason (open for writing, locked, ...); removals held by
+         the mass-delete guard are not. Groups, in this order:
+         one-action (one action fixes every file: quota-exceeded, forbidden),
+         per-file (each file needs the user: name-characters, name-spaces,
+         name-reserved, name-not-utf8, too-large, refused — every
+         "refused: <message>" is summed as refused), never (never uploaded:
+         symlink, fifo, socket, device, other-device, reserved-name,
+         hard-link), waiting (goes up by itself; also every reason the
+         daemon does not know). Refused as NotUploaded is. -->
+    <method name="NotUploadedSummary">
+      <arg name="reasons" type="a(ssut)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveKeptBackList"/>
+    </method>
+    <!-- The files kept back for `reason` (as NotUploadedSummary names it),
+         by path, at most `limit` (0 for all): (full path, reason as stored,
+         "refused: <OneDrive's message>" for a refused one); and how many
+         there are in all. Refused as NotUploaded is. -->
+    <method name="NotUploadedFiles">
+      <arg name="reason" type="s" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="items" type="a(ss)" direction="out"/>
+      <arg name="total" type="u" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>
+    </method>
     <property name="RootPath" type="s" access="read"/>
     <!-- none | listing | ready | no-interception | error -->
     <property name="RootState" type="s" access="read"/>
@@ -223,5 +249,26 @@
          "Report-<MachineName>.docx". machine_name in config.toml, or the
          host's name. -->
     <property name="MachineName" type="s" access="read"/>
+    <!-- The account's transfers, published once a second while anything
+         moves or OneDrive's Retry-After runs: bytes a second downloaded and
+         uploaded (the average of the last 3 s), the transfer slots held by
+         downloads (files being opened, pinned files, replacements,
+         thumbnails) and by uploads, and the account's transfer pool: how many
+         requests it has in flight at most now, which adapts to OneDrive's
+         throttling, and its ceiling ([transfers] max in config.toml); the
+         large transfers (files of 100 MiB and up, files being opened
+         included) under way and how many may run at once ([transfers] large);
+         and the seconds left of OneDrive's Retry-After wait, during which no
+         transfer starts (0 when there is none). Coalesced with the
+         counters. -->
+    <property name="DownloadSpeed" type="t" access="read"/>
+    <property name="UploadSpeed" type="t" access="read"/>
+    <property name="ActiveDownloads" type="u" access="read"/>
+    <property name="ActiveUploads" type="u" access="read"/>
+    <property name="PoolSize" type="u" access="read"/>
+    <property name="PoolCeiling" type="u" access="read"/>
+    <property name="LargeTransfers" type="u" access="read"/>
+    <property name="LargeLimit" type="u" access="read"/>
+    <property name="RetryAfter" type="u" access="read"/>
   </interface>
 </node>

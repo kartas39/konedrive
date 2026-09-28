@@ -193,8 +193,14 @@ enum SyncCmd {
         #[command(subcommand)]
         action: Option<IgnoreCmd>,
     },
-    /// List what stays on this computer, and why
-    NotUploaded,
+    /// List what stays on this computer, and why: every reason with its
+    /// count, then the files of the reasons that need something done to each
+    NotUploaded {
+        /// List every file of every reason, not only the first 20 of each
+        /// reason that needs something done to each file
+        #[arg(long)]
+        all: bool,
+    },
     /// Decide on a large delete held for confirmation
     Deletes {
         #[command(subcommand)]
@@ -872,7 +878,20 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &Sync1Proxy<'_>
             let events = explained(daemon, chosen, proxy, SyncAction::Activity, proxy.recent_activity(limit).await).await?;
             print!("{}", konedrivectl::activity_text(&events));
         }
-        SyncCmd::Transfers => print!("{}", konedrivectl::transfers_text(&proxy.transfers().await?, &proxy.uploads().await?)),
+        SyncCmd::Transfers => {
+            let summary = konedrivectl::TransferSummary {
+                active_downloads: proxy.active_downloads().await?,
+                download_speed: proxy.download_speed().await?,
+                active_uploads: proxy.active_uploads().await?,
+                upload_speed: proxy.upload_speed().await?,
+                pool_size: proxy.pool_size().await?,
+                pool_ceiling: proxy.pool_ceiling().await?,
+                large_transfers: proxy.large_transfers().await?,
+                large_limit: proxy.large_limit().await?,
+                retry_after: proxy.retry_after().await?,
+            };
+            print!("{}", konedrivectl::transfers_text(&summary, &proxy.transfers().await?, &proxy.uploads().await?));
+        }
         SyncCmd::Outbox { all } => {
             const SHOWN: u32 = 50;
             let limit = if all { 0 } else { SHOWN + 1 };
@@ -929,9 +948,18 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &Sync1Proxy<'_>
                 println!("{said}");
             }
         }
-        SyncCmd::NotUploaded => {
-            let items = explained(daemon, chosen, proxy, SyncAction::NotUploaded, proxy.not_uploaded().await).await?;
-            print!("{}", konedrivectl::not_uploaded_text(&items));
+        SyncCmd::NotUploaded { all } => {
+            let summary = explained(daemon, chosen, proxy, SyncAction::NotUploaded, proxy.not_uploaded_summary().await).await?;
+            let limit = if all { 0 } else { konedrivectl::PER_FILE_SHOWN };
+            let mut files = Vec::new();
+            for (group, reason, _, _) in &summary {
+                if all || group == "per-file" {
+                    let (items, total) =
+                        explained(daemon, chosen, proxy, SyncAction::NotUploaded, proxy.not_uploaded_files(reason, limit).await).await?;
+                    files.push((reason.clone(), items, total));
+                }
+            }
+            print!("{}", konedrivectl::not_uploaded_text(&summary, &files, &chosen.prefix()));
         }
         SyncCmd::Deletes { action } => match action {
             DeletesCmd::Confirm => {

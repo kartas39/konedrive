@@ -1055,16 +1055,18 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let addr = f._bus.address();
     let out = run(addr, &["sync", "transfers"]);
     assert!(out.status.success(), "{out:?}");
-    assert_eq!(out_text(&out).trim(), "Nothing is downloading or uploading.");
+    let idle = "Downloading:  0 files, 0 B/s\nUploading:    0 files, 0 B/s\nPool: 16 of 64 (large: 0 of 4)\nNothing is downloading or uploading.";
+    assert_eq!(out_text(&out).trim(), idle);
 
     let entry = f.service.report().transfers.start("/home/u/OneDrive/big.bin".into(), 4 << 20);
     entry.progress(1 << 20, 4 << 20);
     let out = run(addr, &["sync", "transfers"]);
     let text = out_text(&out);
     assert!(out.status.success(), "{out:?}");
-    assert!(text.starts_with("down ") && text.contains("/home/u/OneDrive/big.bin") && text.contains("25%") && text.contains("4.0 MiB"), "{text}");
+    let list = text.lines().nth(3).unwrap_or_default();
+    assert!(list.starts_with("down ") && list.contains("/home/u/OneDrive/big.bin") && list.contains("25%") && list.contains("4.0 MiB"), "{text}");
     drop(entry);
-    assert_eq!(out_text(&run(addr, &["sync", "transfers"])).trim(), "Nothing is downloading or uploading.");
+    assert_eq!(out_text(&run(addr, &["sync", "transfers"])).trim(), idle);
 }
 
 /// `sync conflicts` lists each local version moved out of the way — where

@@ -350,7 +350,7 @@ upload starting over). The upload session it opened is cancelled, and it leaves 
 rows behind it of the same object that never got an item id; the activity log records it once as
 `not-uploaded`. Only a file whose last request may have gone out — the last fragment, or the one
 request of a file up to 10 MiB — looks its name up in the parent first: an item there that is its
-own, by size and time since the file cannot be hashed any more, goes to the recycle bin (F143).
+own, by size and time since the file cannot be hashed any more, goes to the recycle bin (F149).
 A `delete` with no item id has nothing to delete and leaves with no request. The rule applies
 whenever such a row runs, so rows an earlier version left in `retry` clear on their next run.
 
@@ -370,8 +370,12 @@ A row that then meets its name still taken (`409`), by an item a live row is fre
 through a temporary name, `.konedrive-swap-<id>`, saved in the row before the request, and a
 final `move` row follows once the name is free. Swaps (`a` ↔ `b`) go the same way.
 
-Metadata rows (`mkdir`, `move`, `delete`) run one at a time; content rows beside them, at most 4 of
-up to 10 MiB and 2 larger; `move-out` rows one at a time. These numbers are provisional.
+Metadata rows (`mkdir`, `move`, `delete`) run one at a time; content rows beside them, each in a
+slot of the account's transfer pool, which adapts to OneDrive's throttling
+([hydration.md](hydration.md) §6.4); `move-out` rows one at a time. Metadata rows and move-outs take
+the pool's metadata slots, which go before transfers. Any content row takes any free slot; a file
+of 100 MiB and up (its local size when the row is taken) also waits for the pool's large-file
+limit, shared with downloads, and a large row waiting for it lets the small rows behind it go.
 
 ### 5.4 The commit
 
@@ -661,7 +665,22 @@ window's pages.
 **Pause** stops the account's outbox, its poll (so no cycle and no replacement) and its thumbnails;
 fills on open, `Hydrate` and the watcher go on, so rows keep collecting. It is kept in the tree
 store, so it outlasts a restart, and a timed pause ends by itself. The tray's "Pause Syncing" pauses
-every account.
+every account. What it does to work already under way:
+
+| Work in progress | On pause |
+|---|---|
+| an upload in fragments (a session) | stops after the fragment being sent; the session and its offset stay in the row, which waits with the reason `paused` |
+| a one-request upload (up to 10 MiB) | finishes: it is short |
+| a metadata request (mkdir, move, delete) | finishes |
+| a fill on open, `Hydrate` | goes on: a pause never blocks opening a file |
+
+No new row starts. Within one fragment's time `Uploads` (`sync transfers`, the window's "Uploading
+now") is empty, and `Outbox()` lists every row that waits, retries or runs as `paused` — never as
+failed or retrying — while blocked and held rows keep their state; a pause writes no
+`upload-failed`. Resume, or the end of a timed pause, makes the rows due at once: a kept session
+goes on from its offset, and one that expired meanwhile starts over, logged. A restart while
+paused keeps the sessions and resumes none of them. The stop between fragments is one check
+(`upload/content.rs`, `stop_between_fragments`), shared with the write gate.
 
 ## 12. Testing
 
@@ -773,4 +792,4 @@ Recorded in [`../limitations-and-workarounds.md`](../limitations-and-workarounds
 - the outbox on the bus (F100–F102);
 - the reconcile in read-write mode (F110–F117);
 - the test-account harness, and what stays assumed until it runs (F130, F131);
-- an object removed before its upload finished (F143).
+- an object removed before its upload finished (F149).

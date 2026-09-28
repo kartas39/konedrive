@@ -1,7 +1,7 @@
 #include "activitymodel.h"
 #include "conflictmodel.h"
-#include "outboxmodel.h"
 #include "transfermodel.h"
+#include "uploadreasons.h"
 
 #include <QAbstractItemModelTester>
 #include <QSignalSpy>

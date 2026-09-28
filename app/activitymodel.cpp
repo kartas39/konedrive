@@ -1,6 +1,6 @@
 #include "activitymodel.h"
 
-#include "outboxmodel.h"
+#include "uploadreasons.h"
 
 #include <KLocalizedString>
 

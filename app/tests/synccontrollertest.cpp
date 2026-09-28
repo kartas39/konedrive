@@ -54,9 +54,9 @@ private Q_SLOTS:
         QCOMPARE(controller.rootSource(), QStringLiteral("onedrive"));
     }
 
-    /// What waits to go up, and the controls over it: the counts, the outbox
-    /// and what is held in it, pause and resume, the ignore list, the
-    /// mass-delete guard's two answers, and what is not uploaded.
+    /// What waits to go up, and the controls over it: the counts, pause and
+    /// resume, the ignore list, the mass-delete guard's two answers, and what
+    /// is kept back — by reason, with the files of a reason only when shown.
     void theOutboxAndItsControls()
     {
         startFake();
@@ -64,16 +64,15 @@ private Q_SLOTS:
         m_fake->outboxRows = {{1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("running"), 5, 10, QString(), 0},
                               {2, QStringLiteral("create"), root + QStringLiteral("/a:b"), QStringLiteral("blocked"), 0, 3, QStringLiteral("name-characters"), 0}};
         m_fake->holdDeletes(root + QStringLiteral("/old"), 1);
-        m_fake->notUploadedList = {{root + QStringLiteral("/link"), QStringLiteral("symlink")}};
+        m_fake->keptBack = {{QStringLiteral("one-action"), QStringLiteral("quota-exceeded"), 5000, 7ULL << 30},
+                            {QStringLiteral("per-file"), QStringLiteral("name-characters"), 1, 3},
+                            {QStringLiteral("never"), QStringLiteral("symlink"), 1, 0}};
+        m_fake->keptBackFiles.insert(QStringLiteral("name-characters"), {{root + QStringLiteral("/a:b"), QStringLiteral("name-characters")}});
         SyncController controller(fake::FirstAccount);
-        QTRY_VERIFY(controller.outboxKnown());
+        QTRY_VERIFY(controller.serviceAvailable());
         QCOMPARE(controller.machineName(), QStringLiteral("fedora"));
         QCOMPARE(controller.ignorePatterns(), (QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}));
-        QAbstractItemModelTester tester(controller.outbox(), QAbstractItemModelTester::FailureReportingMode::QtTest);
-        QCOMPARE(controller.outbox()->count(), 3);
         QCOMPARE(controller.heldCount(), 1u);
-        QCOMPARE(text(controller.outbox(), 1, OutboxModel::StateTextRole), QStringLiteral("New · cannot be uploaded"));
-        QVERIFY(text(controller.outbox(), 1, OutboxModel::WhyRole).startsWith(QStringLiteral("A name OneDrive refuses")));
 
         m_fake->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(1)},
                      {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(10)},
@@ -100,8 +99,28 @@ private Q_SLOTS:
         QVERIFY(m_fake->calls.contains(QStringLiteral("RestoreDeletes")));
 
         controller.loadNotUploaded();
-        QTRY_COMPARE(controller.notUploaded().size(), 1);
-        QCOMPARE(controller.notUploaded().first().toMap().value(QStringLiteral("why")).toString(), QStringLiteral("A symbolic link: never uploaded."));
+        QTRY_VERIFY(controller.notUploadedKnown());
+        QCOMPARE(controller.notUploadedSummary().size(), 3);
+        QCOMPARE(controller.notUploadedSummary().at(2).toMap().value(QStringLiteral("why")).toString(), QStringLiteral("A symbolic link: never uploaded."));
+        QCOMPARE(controller.blockedBytes(), (7ULL << 30) + 3);
+        QVERIFY(controller.notUploadedFiles().isEmpty());
+        controller.setNotUploadedFilesShown(QStringLiteral("name-characters"), true);
+        QTRY_VERIFY(controller.notUploadedFiles().contains(QStringLiteral("name-characters")));
+        const QVariantMap files = controller.notUploadedFiles().value(QStringLiteral("name-characters")).toMap();
+        QCOMPARE(files.value(QStringLiteral("total")).toUInt(), 1u);
+        QVERIFY(files.value(QStringLiteral("items")).toList().first().toMap().value(QStringLiteral("why")).toString().startsWith(QStringLiteral("A name OneDrive refuses")));
+        QVERIFY(m_fake->calls.contains(QStringLiteral("NotUploadedFiles:name-characters:20")));
+        // Asked for again and again: at most once a second, the last not dropped.
+        const auto asked = m_fake->calls.count(QStringLiteral("NotUploadedSummary"));
+        for (int i = 0; i < 5; ++i) {
+            controller.loadNotUploaded();
+        }
+        QTest::qWait(1300);
+        const auto more = m_fake->calls.count(QStringLiteral("NotUploadedSummary")) - asked;
+        QVERIFY2(more >= 1 && more <= 2, qPrintable(QString::number(more)));
+        // The window never asks for every row.
+        QVERIFY(!m_fake->calls.contains(QStringLiteral("Outbox")));
+        QVERIFY(!m_fake->calls.contains(QStringLiteral("NotUploaded")));
     }
 
     /// M8: nothing will update Transfers again once the daemon is gone, so a

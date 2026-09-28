@@ -675,6 +675,91 @@ fn pause_offline_sign_in_and_blocked_rows() {
     assert_committed(&w, "open.txt", "open.txt");
 }
 
+/// Drains `engine` in the background, pauses it while the first request of
+/// `method` whose path holds `fragment` is in flight, runs `meanwhile`, and
+/// waits for the drain to end.
+fn drain_paused_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, meanwhile: impl FnOnce()) {
+    w.cloud(|c| c.delay(method, fragment, Duration::from_millis(400), 1));
+    let task = w.h.runtime.spawn({
+        let engine = Arc::clone(engine);
+        async move { engine.drain(&CancellationToken::new()).await }
+    });
+    let mut waited = 0;
+    while w.cloud(|c| c.count(method, fragment)) == 0 && waited < 500 {
+        std::thread::sleep(Duration::from_millis(10));
+        waited += 1;
+    }
+    assert_eq!(w.cloud(|c| c.count(method, fragment)), 1, "{method} {fragment} is in flight");
+    engine.pause(None).unwrap();
+    meanwhile();
+    w.h.runtime.block_on(task).unwrap();
+}
+
+/// #19: a pause stops an upload in fragments after the fragment in flight.
+/// The row waits as `paused` — no failure, nothing uploading — with its
+/// session and offset kept, through a restart too. Resumed, a session still
+/// open goes on from that offset; an expired one starts over.
+#[test]
+fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
+    for expire in [false, true] {
+        let w = World::new(&[]);
+        let content: Vec<u8> = (0..(1024 * 1024 + 77)).map(|i| (i % 251) as u8).collect();
+        w.write("big.bin", &content);
+        w.examine(&[("", "big.bin")]);
+        let engine = w.h.engine();
+        drain_paused_mid_request(&w, &engine, "PUT", "upload/", || {});
+        assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 1, "no fragment after the one in flight");
+        let row = w.rows().remove(0);
+        assert_eq!((row.state, row.reason.as_deref()), (OutboxState::Waiting, Some(reason::PAUSED)));
+        assert!(row.session_url.is_some(), "the session is kept");
+        assert_eq!(row.session_next, Some(320 * 1024));
+        let status = engine.status();
+        assert!(status.uploads.is_empty() && status.running == 0, "nothing shows as uploading: {status:?}");
+        assert_eq!(w.attr("big.bin", XATTR_SYNC).as_deref(), Some("pending"));
+
+        // A restart while paused: nothing is sent, the session stays.
+        let asked = w.cloud(|c| c.log.len());
+        let restarted = w.h.engine();
+        w.h.drain(&restarted);
+        assert_eq!(w.cloud(|c| c.log.len()), asked, "nothing is sent while paused");
+        let kept = w.rows().remove(0);
+        assert_eq!((kept.session_url, kept.session_next), (row.session_url, row.session_next));
+
+        if expire {
+            w.cloud(|c| c.expire_sessions());
+        }
+        restarted.resume().unwrap();
+        w.h.drain(&restarted);
+        assert!(w.rows().is_empty(), "{:?}", w.summary());
+        let sent = w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/")));
+        // 1 MiB + 77 is four fragments of 320 KiB.
+        let wanted = if expire { (2, 1 + 4) } else { (1, 4) };
+        assert_eq!(sent, wanted, "expired: {expire}");
+        assert_eq!(w.content("big.bin").unwrap(), content);
+        assert_committed(&w, "big.bin", "big.bin");
+        assert!(!w.h.host.kinds().iter().any(|k| k == kind::UPLOAD_FAILED), "a pause is no failure: {:?}", w.h.host.kinds());
+    }
+}
+
+/// #19: a one-request upload in flight when the pause comes finishes; a row
+/// that comes meanwhile does not start.
+#[test]
+fn a_one_request_upload_in_flight_at_a_pause_finishes_and_nothing_new_starts() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"a");
+    w.examine(&[("", "a.txt")]);
+    let engine = w.h.engine();
+    drain_paused_mid_request(&w, &engine, "PUT", "upload/", || {
+        w.write("b.txt", b"b");
+        w.examine(&[("", "b.txt")]);
+        engine.wake();
+    });
+    assert_committed(&w, "a.txt", "a.txt");
+    assert_eq!(w.summary(), vec![(Create, "b.txt".into(), OutboxState::Ready)]);
+    assert_eq!(w.cloud(|c| c.count("POST", "b.txt")), 0, "nothing new starts while paused");
+    assert!(engine.status().uploads.is_empty());
+}
+
 /// The worker as the mode switch will run it: started, woken, stopped.
 #[test]
 fn the_worker_runs_until_stopped() {

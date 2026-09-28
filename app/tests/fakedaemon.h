@@ -17,6 +17,7 @@
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QDBusObjectPath>
+#include <QHash>
 #include <QStringList>
 #include <QVariantMap>
 
@@ -210,6 +211,15 @@ class FakeSync1 : public QDBusAbstractAdaptor
     Q_PROPERTY(qlonglong PausedUntil READ pausedUntil)
     Q_PROPERTY(QStringList IgnorePatterns READ ignorePatterns)
     Q_PROPERTY(QString MachineName READ machineName)
+    Q_PROPERTY(qulonglong DownloadSpeed READ downloadSpeed)
+    Q_PROPERTY(qulonglong UploadSpeed READ uploadSpeed)
+    Q_PROPERTY(uint ActiveDownloads READ activeDownloads)
+    Q_PROPERTY(uint ActiveUploads READ activeUploads)
+    Q_PROPERTY(uint PoolSize READ poolSize)
+    Q_PROPERTY(uint PoolCeiling READ poolCeiling)
+    Q_PROPERTY(uint LargeTransfers READ largeTransfers)
+    Q_PROPERTY(uint LargeLimit READ largeLimit)
+    Q_PROPERTY(uint RetryAfter READ retryAfter)
 
 public:
     FakeSync1(QObject *parent, const QDBusConnection &bus, const QString &path)
@@ -240,6 +250,15 @@ public:
     qlonglong pausedUntil() const { return m_properties.value(QStringLiteral("PausedUntil")).toLongLong(); }
     QStringList ignorePatterns() const { return m_properties.value(QStringLiteral("IgnorePatterns")).toStringList(); }
     QString machineName() const { return m_properties.value(QStringLiteral("MachineName")).toString(); }
+    qulonglong downloadSpeed() const { return m_properties.value(QStringLiteral("DownloadSpeed")).toULongLong(); }
+    qulonglong uploadSpeed() const { return m_properties.value(QStringLiteral("UploadSpeed")).toULongLong(); }
+    uint activeDownloads() const { return m_properties.value(QStringLiteral("ActiveDownloads")).toUInt(); }
+    uint activeUploads() const { return m_properties.value(QStringLiteral("ActiveUploads")).toUInt(); }
+    uint poolSize() const { return m_properties.value(QStringLiteral("PoolSize")).toUInt(); }
+    uint poolCeiling() const { return m_properties.value(QStringLiteral("PoolCeiling")).toUInt(); }
+    uint largeTransfers() const { return m_properties.value(QStringLiteral("LargeTransfers")).toUInt(); }
+    uint largeLimit() const { return m_properties.value(QStringLiteral("LargeLimit")).toUInt(); }
+    uint retryAfter() const { return m_properties.value(QStringLiteral("RetryAfter")).toUInt(); }
 
     void set(const QVariantMap &changes)
     {
@@ -318,6 +337,9 @@ public:
     KonedriveOutboxList outboxRows;
     /// NotUploaded().
     KonedriveSkippedList notUploadedList;
+    /// NotUploadedSummary(), and NotUploadedFiles() by reason.
+    KonedriveKeptBackList keptBack;
+    QHash<QString, KonedriveSkippedList> keptBackFiles;
     /// Pause(seconds) ends at pauseNow + seconds.
     qint64 pauseNow = 1758700000;
 
@@ -435,6 +457,18 @@ public Q_SLOTS:
         calls << QStringLiteral("NotUploaded");
         return notUploadedList;
     }
+    KonedriveKeptBackList NotUploadedSummary()
+    {
+        calls << QStringLiteral("NotUploadedSummary");
+        return keptBack;
+    }
+    KonedriveSkippedList NotUploadedFiles(const QString &reason, uint limit, uint &total)
+    {
+        calls << QStringLiteral("NotUploadedFiles:%1:%2").arg(reason).arg(limit);
+        const KonedriveSkippedList all = keptBackFiles.value(reason);
+        total = uint(all.size());
+        return limit == 0 ? all : all.mid(0, int(limit));
+    }
     /// Answers (u files, t bytes, u busy) by hand, so that it can be held.
     void FreeUpSpace(const QDBusMessage &message)
     {
@@ -474,6 +508,15 @@ private:
         {QStringLiteral("PausedUntil"), QVariant::fromValue<qlonglong>(0)},
         {QStringLiteral("IgnorePatterns"), QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}},
         {QStringLiteral("MachineName"), QStringLiteral("fedora")},
+        {QStringLiteral("DownloadSpeed"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("UploadSpeed"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("ActiveDownloads"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("ActiveUploads"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("PoolSize"), QVariant::fromValue<uint>(16)},
+        {QStringLiteral("PoolCeiling"), QVariant::fromValue<uint>(64)},
+        {QStringLiteral("LargeTransfers"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("LargeLimit"), QVariant::fromValue<uint>(4)},
+        {QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)},
     };
 };
 

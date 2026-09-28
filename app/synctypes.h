@@ -127,6 +127,33 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveO
     return argument;
 }
 
+/// One row of NotUploadedSummary(): (group, reason, count, bytes). Groups:
+/// one-action, per-file, never, waiting.
+struct KonedriveKeptBack {
+    QString group;
+    QString reason;
+    uint count = 0;
+    qulonglong bytes = 0;
+};
+using KonedriveKeptBackList = QList<KonedriveKeptBack>;
+Q_DECLARE_METATYPE(KonedriveKeptBack)
+
+inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveKeptBack &row)
+{
+    argument.beginStructure();
+    argument << row.group << row.reason << row.count << row.bytes;
+    argument.endStructure();
+    return argument;
+}
+
+inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveKeptBack &row)
+{
+    argument.beginStructure();
+    argument >> row.group >> row.reason >> row.count >> row.bytes;
+    argument.endStructure();
+    return argument;
+}
+
 /// Registers every Sync1 type with QtDBus; safe to call more than once.
 inline void registerKonedriveSyncTypes()
 {
@@ -140,4 +167,6 @@ inline void registerKonedriveSyncTypes()
     qDBusRegisterMetaType<KonedriveTransferList>();
     qDBusRegisterMetaType<KonedriveOutboxRow>();
     qDBusRegisterMetaType<KonedriveOutboxList>();
+    qDBusRegisterMetaType<KonedriveKeptBack>();
+    qDBusRegisterMetaType<KonedriveKeptBackList>();
 }
