@@ -3,9 +3,8 @@
 //!
 //! **Order.** Rows run as [`TreeStore::outbox_dependencies`] allows, in `seq`
 //! order: metadata rows (`mkdir`, `move`, `delete`) one at a time, content
-//! rows (`create`, `update`) beside them, at most [`Limits::small_slots`]
-//! of up to [`Limits::small_max`] bytes and [`Limits::large_slots`] larger
-//! ones. A row is `running` from the moment it is taken until its commit, so
+//! rows (`create`, `update`) beside them, each in a slot of the account's
+//! transfer pool (`crate::pool`), small or large alike. A row is `running` from the moment it is taken until its commit, so
 //! an examination never merges into it; a `running` row the worker does not
 //! hold (a crash, a stop) is replayed first, as its dependencies allow.
 //!
@@ -144,6 +143,10 @@ pub mod reason {
     /// A read lease cannot be probed (leases off, or not supported): a writer
     /// cannot be ruled out, so nothing is filled.
     pub const NO_LEASE: &str = "lease-probe-failed";
+    /// The account is paused: an upload in fragments stopped after the
+    /// fragment it was sending, its session kept (`docs/design/writes.md` §11).
+    /// Waiting, never a failure.
+    pub const PAUSED: &str = "paused";
 }
 
 /// The activity kinds the worker writes (§9; the outbox on the bus adds them to the D-Bus
@@ -188,14 +191,10 @@ pub struct NoHost;
 
 impl OutboxHost for NoHost {}
 
-/// How much runs at once, and how files are cut (provisional numbers; the
-/// tests make them small).
+/// How files are cut (provisional numbers; the tests make them small). How many
+/// run at once is the account's transfer pool's (`crate::pool`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// Content rows of at most `small_max` bytes at once.
-    pub small_slots: usize,
-    /// Larger ones at once.
-    pub large_slots: usize,
     /// Up to this size a file goes up in one request.
     pub small_max: u64,
     /// The fragment of a larger one: a multiple of 320 KiB.
@@ -204,7 +203,7 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { small_slots: 4, large_slots: 2, small_max: crate::drive::SMALL_UPLOAD_MAX, chunk: crate::drive::CHUNK_SIZE }
+        Self { small_max: crate::drive::SMALL_UPLOAD_MAX, chunk: crate::drive::CHUNK_SIZE }
     }
 }
 

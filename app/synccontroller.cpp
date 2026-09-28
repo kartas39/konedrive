@@ -60,6 +60,7 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
     , m_activity(new ActivityModel(this))
     , m_conflicts(new ConflictModel(this))
     , m_uploads(new TransferModel(this))
+    , m_sampler(new QTimer(this))
     , m_notUploadedSoon(new QTimer(this))
 {
     registerKonedriveSyncTypes();
@@ -68,6 +69,17 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
     // refresh never piles up behind the daemon's signals.
     m_notUploadedSoon->setSingleShot(true);
     connect(m_notUploadedSoon, &QTimer::timeout, this, &SyncController::loadNotUploaded);
+    // The charts' history: one sample a second, whether or not the daemon said anything,
+    // so that an idle line decays to 0.
+    for (auto &history : m_history) {
+        history.reserve(HistoryLength);
+        for (int i = 0; i < HistoryLength; ++i) {
+            history.append(0.0);
+        }
+    }
+    m_sampler->setInterval(1000);
+    connect(m_sampler, &QTimer::timeout, this, &SyncController::sampleHistory);
+    m_sampler->start();
     m_bus.connect(ServiceName,
                   m_path,
                   QStringLiteral("org.freedesktop.DBus.Properties"),
@@ -81,6 +93,9 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
             // M8: nothing will update these again until the daemon is back;
             // a stale row would otherwise look like a download still going.
             m_transfers->setTransfers({});
+            m_downloadSpeed = m_uploadSpeed = 0;
+            m_activeDownloads = m_activeUploads = 0;
+            m_largeTransfers = m_retryAfter = 0;
             m_uploads->setTransfers({});
             m_notUploadedKnown = false;
         } else {
@@ -181,6 +196,20 @@ void SyncController::applyProperties(const QVariantMap &p)
         m_ignorePatterns = it->toStringList();
     }
     text("MachineName", m_machineName);
+    number("DownloadSpeed", m_downloadSpeed);
+    number("UploadSpeed", m_uploadSpeed);
+    const auto count = [&p](const char *key, uint &field) {
+        if (const auto it = p.constFind(QLatin1String(key)); it != p.constEnd()) {
+            field = it->toUInt();
+        }
+    };
+    count("ActiveDownloads", m_activeDownloads);
+    count("ActiveUploads", m_activeUploads);
+    count("PoolSize", m_poolSize);
+    count("PoolCeiling", m_poolCeiling);
+    count("LargeTransfers", m_largeTransfers);
+    count("LargeLimit", m_largeLimit);
+    count("RetryAfter", m_retryAfter);
     Q_EMIT syncChanged();
 
     // GetAll's own answer loads the lists (fetchAll); a change on the way loads them again.
@@ -194,6 +223,29 @@ void SyncController::applyProperties(const QVariantMap &p)
     } else if (m_conflictCount != previousConflicts) {
         loadConflicts();
     }
+}
+
+void SyncController::sampleHistory()
+{
+    const double now[4] = {double(m_downloadSpeed), double(m_uploadSpeed), double(m_activeDownloads), double(m_activeUploads)};
+    bool changed = false;
+    for (int i = 0; i < 4; ++i) {
+        // An idle history that stays idle is not news.
+        const auto nonZero = [](const QVariant &sample) {
+            return sample.toDouble() != 0.0;
+        };
+        if (now[i] != 0.0 || std::any_of(m_history[i].cbegin(), m_history[i].cend(), nonZero)) {
+            changed = true;
+        }
+    }
+    if (!changed) {
+        return;
+    }
+    for (int i = 0; i < 4; ++i) {
+        m_history[i].removeFirst();
+        m_history[i].append(now[i]);
+    }
+    Q_EMIT historyChanged();
 }
 
 void SyncController::onActivityAdded(qlonglong time, const QString &kind, const QString &path, const QString &detail)

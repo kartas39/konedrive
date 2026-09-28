@@ -69,6 +69,25 @@ class SyncController : public QObject
     Q_PROPERTY(QString machineName READ machineName NOTIFY syncChanged)
     /// Uploads under way (Sync1's Uploads).
     Q_PROPERTY(TransferModel *uploads READ uploads CONSTANT)
+    /// The account's transfer pool (Sync1's DownloadSpeed, UploadSpeed, ActiveDownloads,
+    /// ActiveUploads, PoolSize, PoolCeiling, LargeTransfers, LargeLimit, RetryAfter): bytes a
+    /// second, slots held, the pool now, the large transfers under way and their limit, and
+    /// the seconds left of OneDrive's Retry-After (0: none).
+    Q_PROPERTY(qulonglong downloadSpeed READ downloadSpeed NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong uploadSpeed READ uploadSpeed NOTIFY syncChanged)
+    Q_PROPERTY(uint activeDownloads READ activeDownloads NOTIFY syncChanged)
+    Q_PROPERTY(uint activeUploads READ activeUploads NOTIFY syncChanged)
+    Q_PROPERTY(uint poolSize READ poolSize NOTIFY syncChanged)
+    Q_PROPERTY(uint poolCeiling READ poolCeiling NOTIFY syncChanged)
+    Q_PROPERTY(uint largeTransfers READ largeTransfers NOTIFY syncChanged)
+    Q_PROPERTY(uint largeLimit READ largeLimit NOTIFY syncChanged)
+    Q_PROPERTY(uint retryAfter READ retryAfter NOTIFY syncChanged)
+    /// The last two minutes of each, one sample a second, oldest first: the window keeps
+    /// them, the daemon does not.
+    Q_PROPERTY(QVariantList downloadSpeedHistory READ downloadSpeedHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList uploadSpeedHistory READ uploadSpeedHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList activeDownloadsHistory READ activeDownloadsHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList activeUploadsHistory READ activeUploadsHistory NOTIFY historyChanged)
     /// What is kept back, one entry per reason: {group, reason, count, bytes, why}
     /// (NotUploadedSummary()), groups in the order one-action, per-file, never, waiting.
     Q_PROPERTY(QVariantList notUploadedSummary READ notUploadedSummary NOTIFY notUploadedChanged)
@@ -120,6 +139,21 @@ public:
     QStringList ignorePatterns() const { return m_ignorePatterns; }
     QString machineName() const { return m_machineName; }
     TransferModel *uploads() const { return m_uploads; }
+    qulonglong downloadSpeed() const { return m_downloadSpeed; }
+    qulonglong uploadSpeed() const { return m_uploadSpeed; }
+    uint activeDownloads() const { return m_activeDownloads; }
+    uint activeUploads() const { return m_activeUploads; }
+    uint poolSize() const { return m_poolSize; }
+    uint poolCeiling() const { return m_poolCeiling; }
+    uint largeTransfers() const { return m_largeTransfers; }
+    uint largeLimit() const { return m_largeLimit; }
+    uint retryAfter() const { return m_retryAfter; }
+    QVariantList downloadSpeedHistory() const { return m_history[0]; }
+    QVariantList uploadSpeedHistory() const { return m_history[1]; }
+    QVariantList activeDownloadsHistory() const { return m_history[2]; }
+    QVariantList activeUploadsHistory() const { return m_history[3]; }
+    /// Samples kept in each history: two minutes, one a second.
+    static constexpr int HistoryLength = 120;
     QVariantList notUploadedSummary() const { return m_notUploadedSummary; }
     bool notUploadedKnown() const { return m_notUploadedKnown; }
     qulonglong blockedBytes() const { return m_blockedBytes; }
@@ -188,6 +222,7 @@ Q_SIGNALS:
     void pendingFolderChanged();
     void freeUpResultChanged();
     void notUploadedChanged();
+    void historyChanged();
     void notUploadedFilesChanged();
     /// One ActivityAdded from the daemon, as it happens.
     void activityAdded(qlonglong time, const QString &kind, const QString &path, const QString &detail);
@@ -246,6 +281,20 @@ private:
     QStringList m_ignorePatterns;
     QString m_machineName;
     TransferModel *m_uploads;
+    /// Adds one sample to each history (every second).
+    void sampleHistory();
+    qulonglong m_downloadSpeed = 0;
+    qulonglong m_uploadSpeed = 0;
+    uint m_activeDownloads = 0;
+    uint m_activeUploads = 0;
+    uint m_poolSize = 0;
+    uint m_poolCeiling = 0;
+    uint m_largeTransfers = 0;
+    uint m_largeLimit = 0;
+    uint m_retryAfter = 0;
+    /// Download speed, upload speed, active downloads, active uploads.
+    QVariantList m_history[4];
+    QTimer *m_sampler;
     QVariantList m_notUploadedSummary;
     bool m_notUploadedKnown = false;
     qulonglong m_blockedBytes = 0;

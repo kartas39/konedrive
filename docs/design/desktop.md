@@ -70,7 +70,7 @@ Neither the refresh token nor the access token is ever exposed through `Account1
 | `Conflicts() → a(xss)` | (time, original path, rescued path) ([sync.md](sync.md) §10.3) |
 | `DismissConflict(s rescued_path)` | takes one conflict off the list; the file stays where it is |
 | `FreeUpSpace() → (u files, t bytes, u busy)` | frees up every downloaded file that is not in use; files open somewhere or busy with a download are skipped and counted, never waited for; a file whose change waits to be uploaded is left, and counted as busy |
-| `Outbox(u limit) → a(tsssttsx)` | the changes waiting to be uploaded, oldest first (0: all): seq, kind (`create`, `mkdir`, `update`, `move`, `delete`, `move-out`), path, state (`waiting`, `ready`, `running`, `retry`, `blocked`, `held`), bytes sent, bytes in all, reason, next try; `Unsupported` for a folder not connected to OneDrive |
+| `Outbox(u limit) → a(tsssttsx)` | the changes waiting to be uploaded, oldest first (0: all): seq, kind (`create`, `mkdir`, `update`, `move`, `delete`, `move-out`), path, state (`waiting`, `ready`, `running`, `retry`, `blocked`, `held`; while the account is paused, every row but a blocked or held one reads `paused`, with no reason and no next try), bytes sent, bytes in all, reason, next try; `Unsupported` for a folder not connected to OneDrive |
 | `Pause(u seconds)`, `Resume()` | pause the account — no upload, no poll, no thumbnails; fills on open, `Hydrate` and detection go on — for `seconds`, or until `Resume` when 0; the pause outlasts a daemon restart |
 | `SetIgnorePatterns(as)` | the names of the user's own files that are never uploaded (shell globs on a name); written to `config.toml`, then the whole folder is scanned again; `InvalidArgs` for an empty pattern or one holding "/" |
 | `ConfirmDeletes() → u`, `RestoreDeletes() → u` | the mass-delete guard's two answers: the held removals go ahead, or are dropped and the items placed again; how many rows |
@@ -97,6 +97,7 @@ Neither the refresh token nor the access token is ever exposed through `Account1
 | `BlockedCount` (`u`) | the changes that need the user before they can go up (see `NotUploaded`); removals the mass-delete guard holds are not counted |
 | `HeldCount` (`u`) | the removals the mass-delete guard holds, waiting for `ConfirmDeletes` or `RestoreDeletes`; `held` rows in `Outbox()` |
 | `Paused` (`b`), `PausedUntil` (`x`) | whether the account is paused, and when the pause ends by itself (0: until `Resume`) |
+| `DownloadSpeed` (`t`), `UploadSpeed` (`t`), `ActiveDownloads` (`u`), `ActiveUploads` (`u`), `PoolSize` (`u`), `PoolCeiling` (`u`), `LargeTransfers` (`u`), `LargeLimit` (`u`), `RetryAfter` (`u`) | the account's transfer pool ([hydration.md](hydration.md) §6.4), updated once a second while anything moves or OneDrive's `Retry-After` runs: bytes a second each way (the average of the last 3 s), the slots downloads and uploads hold, the pool's size now and its ceiling (`[transfers] max`), the large transfers (100 MiB and up) under way and how many may run at once (`[transfers] large`), and the seconds left of OneDrive's `Retry-After` wait (0: none) |
 | `IgnorePatterns` (`as`), `MachineName` (`s`) | the ignore list, and the name copies of files changed on both sides are named after ("Report-`<MachineName>`.docx"): `machine_name` in `config.toml`, or the host's name; read-only |
 
 The signal `ActivityAdded(x time, s kind, s path, s detail)` announces each event as it is recorded.
@@ -230,7 +231,7 @@ F51).
 | `sync status` | chosen, or all | the folder, its state, source and counts, "Last checked", "On this computer", whether opens are intercepted; with several accounts and none named, every account's folder under its label. The `Helper:` line, with what to do, is printed once, above them |
 | `sync skipped` | chosen | what is not in the folder, and why |
 | `sync refresh` | chosen | a cycle now |
-| `sync activity [--limit N]`, `sync transfers` | chosen | recent events; downloads and uploads under way |
+| `sync activity [--limit N]`, `sync transfers` | chosen | recent events; how many files go each way and how fast, the transfer pool ("Pool: 15 of 64 (large: 3 of 4)", ending "— OneDrive asked to wait 30 s" during a `Retry-After`), and the downloads and uploads under way |
 | `sync conflicts`, `sync dismiss <rescued path>` | chosen | the conflicts |
 | `sync free-up-space` | chosen | frees up every downloaded file not in use |
 | `sync outbox [--all]` | chosen | `Outbox`: the changes waiting to be uploaded, each with its state and why it waits; the first 50 without `--all` |
@@ -259,7 +260,7 @@ app's:
 | Page | Shows |
 |---|---|
 | **Status** | the status line, the folder and its item count, "On this computer: …", "Free Up Space…", "Refresh Now", "Open in File Manager", and a card with the helper's instruction while it is not `connected`. For a OneDrive folder: the mode ("Read-only" or "Changes upload"), "N changes waiting to upload" with the size to send (to the Activity page), "N changes cannot be uploaded" while any are blocked (to Not Uploaded), removals the mass-delete guard holds with "Restore Them" and "Delete in OneDrive Too", and "Pause Syncing…" (for 2, 8 or 24 hours, or until resumed) or, while paused, "Paused until 14:00" with "Resume" |
-| **Activity** | "Downloading now" and "Uploading now" (each file with a progress bar and its size), "Waiting to upload" (one line, "N changes wait to upload (size)": every change not uploaded yet — pending, blocked and held — and the size of the files they send, with "Some files are not uploaded" to the Not Uploaded page while it lists anything; no row per file), and "Recent" (the newest 50 events; clicking one shows the file in Dolphin) |
+| **Activity** | two mini cards side by side, "Downloading" and "Uploading": each the speed, "N files downloading" (or "uploading") and one chart of the last two minutes (one sample a second, kept by the window) with two lines on two scales — speed on the left axis, the files moving that way on the right — each in its own colour, with a small legend ("Speed", and "Files downloading" or "Files uploading"); dimmed with "no transfers" while idle (KQuickCharts); below both, the shared pool once, "Pool: 25 of 64 (large: 3 of 4)", adding "— OneDrive asked to wait 30 s" (counting down) during a `Retry-After`; then "Downloading now" and "Uploading now" (each file with a progress bar and its size), "Waiting to upload" (one line, "N changes wait to upload (size)": every change not uploaded yet — pending, blocked and held — and the size of the files they send, with "Some files are not uploaded" to the Not Uploaded page while it lists anything; no row per file), and "Recent" (the newest 50 events; clicking one shows the file in Dolphin) |
 | **Conflicts** | each rescued file: the file, where it was, where it is now, when; "Show in Folder" and "Dismiss". A file changed on both sides kept a copy beside it instead: which name is whose, "Show Both" (both files selected in Dolphin) and "Dismiss". Always present, with a count badge (the chosen account's) while there are conflicts, and "No conflicts" otherwise |
 | **Not in the Folder** | the skipped items and why, in the same words as `sync skipped` (a test keeps the two in step) |
 | **Not Uploaded** | what stays on this computer and why (`NotUploadedSummary()`), in four groups: "Needs You" (a reason one action fixes: its count, size and button — "Refresh" for a full OneDrive, "Sign In Again" for a sign-in that does not allow writes), "Needs You for Each File" (each reason with its count; opened, its files — `NotUploadedFiles(reason, 20)`, asked only then — each with its reason, OneDrive's own words for a refused one; clicking one shows it in Dolphin; past 20, "and N more" names `konedrivectl sync not-uploaded --all`), "Never Uploaded" (a line per reason with its count) and "Waiting" (one line, "N changes wait and will go up by themselves", its reasons when opened). Read when shown and when a count moves while it is, at most once a second. A count badge while changes are blocked |
@@ -309,7 +310,8 @@ account in this version (the write gate), sign in first, sign in again (limitati
 
 **Held removals.** The mass-delete guard holds a large delete until the user decides. The window
 follows `HeldCount` for the Status page, the tray and the `massDelete` notification, and reads
-`Outbox()` for the list when a count changes or the Activity page is shown (limitations log A20).
+`Outbox()` for the list when a count changes, when `Paused` changes, or when the Activity page is
+shown (limitations log A20).
 
 The **status line** reads, for example, "Up to date · checked 20 s ago", "Listing your OneDrive:
 N items so far", "Downloading 3 files", "Uploading 1 file", "3 changes waiting to upload", "Paused
@@ -433,7 +435,8 @@ file. Listing a folder opens nothing.
   for one thumbnail, `c512x512`, and writes it to `x-large` as it is and scaled down to `large`
   and `normal`, each tagged with the file's URI and the placeholder's time;
 - it runs after each listing cycle and every 10 minutes regardless, up to 200 items per run, one
-  request at a time with 500 ms between them;
+  each request in a background slot of the account's transfer pool ([hydration.md](hydration.md)
+  §6.4), like any background download;
 - `thumb_key` in the tree store records the cTag, path and time a thumbnail was made for, so a file
   is fetched again only when its content, name or time changes (a rename needs a new cache entry,
   because the cache is keyed by URI and checked against the time);

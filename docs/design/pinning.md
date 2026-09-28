@@ -64,11 +64,19 @@ sweep (§6) finds every pinned file that is still online-only.
 `sync::pin::Pins` holds the files waiting to be downloaded for a pin. A file is in it once,
 however often a pin, a placement or a sweep asks for it, and leaves it when its download ends.
 
+**Order.** What a pin, a placement or a sweep queues goes folder by folder, alphabetically: a
+folder's files by name first, then its subfolders by name, each the same way (depth first). Names
+compare as Dolphin sorts them: lower-cased, and a run of digits as a number (`file2` before
+`file10`). A batch queued later goes after what already waits.
+
 Each download goes through the ordinary fill path, `SyncService::fill_now` — the same as
 `Hydrate`: opened beneath the root, taken under the per-inode lock, verified against OneDrive's
 hash, checkpointed, shown in `Transfers` while it runs, and recorded as `downloaded` or `failed`
-in the activity log. At most four run at once (`PIN_SLOTS`, equal to `FILL_SLOTS`), in slots of
-their own. An open of a file whose pinned download is already running waits on that same
+in the activity log. Each takes a background slot of the account's transfer pool
+([hydration.md](hydration.md) §6.4), so an open never waits behind a big pinned folder. A large
+file (100 MiB and up, by its placeholder's size) also waits for the pool's large-file limit; small
+and large files wait apart, so a large one held by that limit lets the small ones behind it go.
+An open of a file whose pinned download is already running waits on that same
 download, rather than starting a second one — as opening a file twice always does.
 
 Just before a queued file is downloaded, the queue asks again whether it is still pinned. A file

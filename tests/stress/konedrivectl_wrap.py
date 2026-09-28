@@ -93,6 +93,15 @@ class Ctl:
     def refresh(self) -> Run:
         return self.run("sync", "refresh")
 
+    def transfers(self) -> Run:
+        return self.run("sync", "transfers")
+
+    def pin(self, path: str) -> Run:
+        return self.run("sync", "pin", path)
+
+    def free(self, path: str) -> Run:
+        return self.run("sync", "free", path)
+
     def deletes_confirm(self) -> Run:
         return self.run("sync", "deletes", "confirm")
 
@@ -104,6 +113,16 @@ class Ctl:
 
 
 # -- parsers -----------------------------------------------------------------------------------
+
+
+def parse_pool(text: str):
+    """`sync transfers`'s `Pool: 15 of 64 (large: 3 of 4)` line — ending `— OneDrive asked to
+    wait 30 s` during a `Retry-After` — as (size, ceiling), or None."""
+    for line in text.splitlines():
+        m = re.match(r"^Pool: (\d+) of (\d+)\b", line.strip())
+        if m:
+            return int(m.group(1)), int(m.group(2))
+    return None
 
 
 def parse_status(text: str) -> dict:

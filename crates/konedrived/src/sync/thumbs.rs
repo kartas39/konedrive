@@ -1,8 +1,8 @@
 //! Thumbnails from OneDrive: Graph's own thumbnail of
 //! every image and video, written into the freedesktop thumbnail cache under
 //! the name KIO looks for (`docs/kio-behavior.md`), so that Dolphin draws it
-//! without opening — and so downloading — the file. In the background, one
-//! request at a time with a pause between them.
+//! without opening — and so downloading — the file. In the background, each
+//! request in a slot of the account's transfer pool, like any background download.
 //!
 //! Only `normal`, `large` and `x-large` (up to 512 px) are filled: one Graph
 //! request per image (`c512x512`), scaled down locally to the smaller sizes.
@@ -61,7 +61,6 @@ pub struct ThumbnailFiller {
     store: Store,
     root: SyncRoot,
     cache: PathBuf,
-    pause: Duration,
 }
 
 /// What one `run_once` did: `taken` is how many candidates it
@@ -90,16 +89,11 @@ enum FillError {
 
 impl ThumbnailFiller {
     pub fn new(drive: DriveClient, store: Store, root: SyncRoot, cache: PathBuf) -> Self {
-        Self { drive, store, root, cache, pause: Duration::from_millis(500) }
+        Self { drive, store, root, cache }
     }
 
-    /// The pause between two requests (tests: none).
-    pub fn with_pause(mut self, pause: Duration) -> Self {
-        self.pause = pause;
-        self
-    }
-
-    /// Makes up to `limit` missing thumbnails.
+    /// Makes up to `limit` missing thumbnails, each request in a background slot of the
+    /// account's transfer pool, as many at once as the pool gives.
     pub async fn run_once(&self, cancel: &CancellationToken, limit: usize) -> RunOutcome {
         let candidates = match self.store.run(move |s| s.thumbnail_candidates(limit, thumb_key)).await {
             Ok(candidates) => candidates,
@@ -109,64 +103,32 @@ impl ThumbnailFiller {
             }
         };
         let taken = candidates.len();
+        let mut running = tokio::task::JoinSet::new();
         let mut written = 0;
         for (row, rel) in candidates {
-            if cancel.is_cancelled() {
-                break;
-            }
-            let key = thumb_key(&row, &rel);
-            // Whether to record `key` for this item: true for anything that
-            // settles the question of whether it has a usable thumbnail
-            // (a real write, a 404, an oversized/refused body, bytes that
-            // will not decode); false for a condition worth trying again
-            // (a network hiccup, a local I/O problem).
-            //
-            // The request gives way to a stop: it
-            // can wait out Graph's `Retry-After` — up to 300 s, four times —
-            // and a Forget, or a switch to interception under the lifecycle
-            // lock, waits for this task.
-            let fetched = tokio::select! {
-                () = cancel.cancelled() => break,
-                fetched = self.drive.thumbnail(&row.id, GRAPH_SIZE) => fetched,
-            };
-            let settle = match fetched {
-                Ok(Some(bytes)) => {
-                    let (cache, file, mtime) = (self.cache.clone(), self.root.path.join(&rel), row.mtime);
-                    match tokio::task::spawn_blocking(move || write_thumbnail(&cache, &file, mtime, &bytes)).await {
-                        Ok(Ok(())) => {
-                            written += 1;
-                            true
-                        }
-                        Ok(Err(FillError::Undecodable(reason))) => {
-                            tracing::warn!("no usable thumbnail for {}: {reason}", rel.display());
-                            true
-                        }
-                        Ok(Err(FillError::Io(reason))) => {
-                            tracing::warn!("cannot cache the thumbnail of {}: {reason}", rel.display());
-                            false
-                        }
-                        Err(e) => {
-                            tracing::warn!("the thumbnail task for {} failed: {e}", rel.display());
-                            false
-                        }
-                    }
-                }
-                Ok(None) => true,
-                Err(e) => {
-                    tracing::info!("no thumbnail for {} this time: {e}", rel.display());
-                    false
+            // The wait for a slot, and the request — which can wait out Graph's
+            // `Retry-After`, up to 300 s, four times — give way to a stop: a
+            // Forget, or a switch to interception under the lifecycle lock,
+            // waits for this task.
+            let slot = loop {
+                tokio::select! {
+                    () = cancel.cancelled() => break None,
+                    slot = self.drive.pool().acquire(crate::pool::Class::Download) => break Some(slot),
+                    Some(done) = running.join_next(), if !running.is_empty() => written += usize::from(done.unwrap_or(false)),
                 }
             };
-            if settle {
-                let id = row.id.clone();
-                if let Err(e) = self.store.run(move |s| s.set_thumb_key(&id, &key)).await {
-                    tracing::warn!("cannot record the thumbnail of {}: {e}", rel.display());
+            let Some(slot) = slot else { break };
+            let one = One { drive: self.drive.clone(), store: self.store.clone(), cache: self.cache.clone(), folder: self.root.path.clone() };
+            let cancel = cancel.clone();
+            running.spawn(async move {
+                tokio::select! {
+                    () = cancel.cancelled() => false,
+                    written = one.make(row, rel, slot) => written,
                 }
-            }
-            tokio::select! {
-                () = cancel.cancelled() => break,
-                () = tokio::time::sleep(self.pause) => {}
-            }
+            });
+        }
+        while let Some(done) = running.join_next().await {
+            written += usize::from(done.unwrap_or(false));
         }
         RunOutcome { taken, written }
     }
@@ -207,6 +169,67 @@ impl ThumbnailFiller {
                 self.drain(&cancel, 200).await;
             }
         })
+    }
+}
+
+/// What one thumbnail needs, for a task of its own.
+struct One {
+    drive: DriveClient,
+    store: Store,
+    cache: PathBuf,
+    folder: PathBuf,
+}
+
+impl One {
+    /// Asks Graph for the thumbnail of `row` and caches it; whether one was written.
+    async fn make(self, row: Row, rel: PathBuf, mut slot: crate::pool::Slot) -> bool {
+        let key = thumb_key(&row, &rel);
+        let fetched = self.drive.thumbnail(&row.id, GRAPH_SIZE).await;
+        if fetched.is_ok() {
+            slot.succeeded();
+        }
+        drop(slot);
+        let mut written = false;
+        // Whether to record `key` for this item: true for anything that
+        // settles the question of whether it has a usable thumbnail
+        // (a real write, a 404, an oversized/refused body, bytes that
+        // will not decode); false for a condition worth trying again
+        // (a network hiccup, a local I/O problem).
+        let settle = match fetched {
+            Ok(Some(bytes)) => {
+                let (cache, file, mtime) = (self.cache.clone(), self.folder.join(&rel), row.mtime);
+                match tokio::task::spawn_blocking(move || write_thumbnail(&cache, &file, mtime, &bytes)).await {
+                    Ok(Ok(())) => {
+                        written = true;
+                        true
+                    }
+                    Ok(Err(FillError::Undecodable(reason))) => {
+                        tracing::warn!("no usable thumbnail for {}: {reason}", rel.display());
+                        true
+                    }
+                    Ok(Err(FillError::Io(reason))) => {
+                        tracing::warn!("cannot cache the thumbnail of {}: {reason}", rel.display());
+                        false
+                    }
+                    Err(e) => {
+                        tracing::warn!("the thumbnail task for {} failed: {e}", rel.display());
+                        false
+                    }
+                }
+            }
+            Ok(None) => true,
+            Err(e) => {
+                tracing::info!("no thumbnail for {} this time: {e}", rel.display());
+                false
+            }
+        };
+        if settle {
+            let id = row.id.clone();
+            if let Err(e) = self.store.run(move |s| s.set_thumb_key(&id, &key)).await {
+                tracing::warn!("cannot record the thumbnail of {}: {e}", rel.display());
+            }
+        }
+        written
     }
 }
 
@@ -355,7 +378,7 @@ mod tests {
         fn filler(&self) -> ThumbnailFiller {
             let drive = crate::drive::DriveClient::new(Url::parse(&format!("{}/", self.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap();
             let root = SyncRoot { path: self.folder.path().canonicalize().unwrap(), root_id: "r".into() };
-            ThumbnailFiller::new(drive, self.store.clone(), root, self.cache.path().to_path_buf()).with_pause(Duration::ZERO)
+            ThumbnailFiller::new(drive, self.store.clone(), root, self.cache.path().to_path_buf())
         }
 
         fn cached(&self, dir: &str, file: &std::path::Path) -> std::path::PathBuf {

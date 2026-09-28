@@ -254,6 +254,11 @@ impl Cloud {
         self.delays.push((method.into(), fragment.into(), wait, times));
     }
 
+    /// Every open upload session expires: its URL answers `404` from now on.
+    pub fn expire_sessions(&mut self) {
+        self.sessions.clear();
+    }
+
     pub fn count(&self, method: &str, fragment: &str) -> usize {
         self.log.iter().filter(|(m, p)| m == method && p.contains(fragment)).count()
     }
@@ -751,7 +756,7 @@ impl Harness {
             root: root.clone(),
             store: store.clone(),
             locks: locks.clone(),
-            limits: Limits { small_slots: 4, large_slots: 2, small_max: 320 * 1024, chunk: 320 * 1024 },
+            limits: Limits { small_max: 320 * 1024, chunk: 320 * 1024 },
             moved_out: Mutex::new(None),
         }
     }
