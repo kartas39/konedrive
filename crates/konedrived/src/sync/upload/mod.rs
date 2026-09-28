@@ -326,8 +326,10 @@ pub struct OutboxCounts {
     /// the changes that send content, which wait for space.
     pub space_waiting: u32,
     pub space_waiting_bytes: u64,
-    /// `TooBigCount`: files refused as too big for the space left.
+    /// `TooBigCount`: files refused as too big for the space left; and their size, which only
+    /// the queue totals use (issue #16: kept back, so not left to upload).
     pub too_big: u32,
+    pub too_big_bytes: u64,
 }
 
 impl OutboxCounts {
@@ -336,6 +338,7 @@ impl OutboxCounts {
         let reason = row.reason.as_deref();
         if reason.is_some_and(|r| space::parse_too_big(r).is_some()) {
             self.too_big += 1;
+            self.too_big_bytes += size;
         } else if full && row.kind.sends_content() || reason == Some(space::WAITING) {
             self.space_waiting += 1;
             self.space_waiting_bytes += size;

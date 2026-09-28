@@ -9,7 +9,8 @@
 //!   ([`super::pin::Pins`]) and every download under way (`Transfers`: opens, `Hydrate`,
 //!   replacements, pinned files), less the bytes already received of those under way. A file
 //!   being opened and a replacement are not queued ahead: they count only while they run.
-//!   What is kept back — blocked, held — is not left: the Not Uploaded page counts it.
+//!   What is kept back — blocked, held, waiting for space while OneDrive is full, too big for
+//!   the space left — is not left: the Not Uploaded page counts it.
 //! - **Done.** The bytes moved that way (the transfer pool's count) since nothing was last
 //!   left that way, or since the daemon started; 0 while nothing is left.
 //! - **Time left.** The bytes left over the pool's average speed (`pool::AVERAGE_SPAN`); none
@@ -58,8 +59,12 @@ impl Counter {
         let running = u32::try_from(transfers.len()).unwrap_or(u32::MAX);
         let (pinned, pinned_bytes) = s.pinned_waiting;
         let down = (pinned.saturating_add(running), pinned_bytes.saturating_add(received));
+        // `PendingCount` takes in the changes that wait for space and those too big for it:
+        // kept back, not left.
         let sent: u64 = s.uploads.iter().map(|(_, sent, _)| sent).sum();
-        let up = (s.pending_count, s.pending_bytes.saturating_sub(sent));
+        let kept = s.space_waiting_count.saturating_add(s.too_big_count);
+        let kept_bytes = s.space_waiting_bytes.saturating_add(s.too_big_bytes);
+        let up = (s.pending_count.saturating_sub(kept), s.pending_bytes.saturating_sub(kept_bytes).saturating_sub(sent));
         let throttled = pool.retry_after > 0;
         QueueTotals {
             down: self.direction(0, down, pool.down_moved, pool.down_average, throttled),
@@ -154,6 +159,24 @@ mod tests {
         tokio::time::sleep(STILL_AFTER).await;
         s.throughput = pool.throughput();
         assert_eq!(counter.count(&s, &BTreeMap::new()).up, Totals { time_left: 0, ..up });
+    }
+
+    /// What waits for space, or is too big for it, is kept back: not left.
+    #[test]
+    fn changes_waiting_for_space_are_not_left() {
+        let mut counter = Counter::default();
+        let mut s = uploading(5, 50 * MIB, 0);
+        s.uploads.clear();
+        s.space_waiting_count = 3;
+        s.space_waiting_bytes = 30 * MIB;
+        s.too_big_count = 1;
+        s.too_big_bytes = 15 * MIB;
+        let up = counter.count(&s, &BTreeMap::new()).up;
+        assert_eq!((up.left_count, up.left_bytes), (1, 5 * MIB));
+
+        s.pending_count = 4;
+        s.pending_bytes = 45 * MIB;
+        assert_eq!(counter.count(&s, &BTreeMap::new()).up, Totals::default(), "all of it kept back");
     }
 
     /// Done goes back to 0 when nothing is left — what is kept back does not hold it — and

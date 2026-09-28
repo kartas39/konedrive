@@ -2057,8 +2057,9 @@ application must never read zeros where real content should be.
   `sync transfers`.
   - **This run.** "Done" is the bytes the account's transfer pool has counted that way since
     the daemon started, or since the totals were last counted with nothing left that way —
-    whichever is later; it is 0 while nothing is left. What is kept back (blocked, held) is not
-    left, so it never holds a run open. The totals are counted at most once a second, so a run
+    whichever is later; it is 0 while nothing is left. What is kept back (blocked, held, waiting
+    for space while OneDrive is full, too big for the space left) is not left, so it never holds
+    a run open. The totals are counted at most once a second, so a run
     that ends and another that starts within the same second are one run.
   - **Done is bytes moved, not files finished.** Everything the pool counts that way is in it:
     thumbnails fetched while anything is left to download, and an upload fragment sent again
@@ -2069,7 +2070,8 @@ application must never read zeros where real content should be.
     taken off the queue whose fill has not fetched yet is in neither for that moment, and a
     download whose size is not known yet counts 0 bytes.
   - **Left, uploads.** `PendingCount` changes (a move, a delete, a new folder has no bytes) and
-    `PendingBytes` less what the uploads under way have sent. A pending change that waits with a
+    `PendingBytes`, less the changes waiting for space or too big for it (`SpaceWaitingCount`,
+    `TooBigCount` and their sizes; issue #2) and less what the uploads under way have sent. A pending change that waits with a
     reason (locked, open for writing) is in "left" and also in the Not Uploaded page's "Waiting"
     group, so the Activity page's "N changes kept back" link counts it too.
   - **Time left.** The bytes left over the pool's average of the last 30 s — or of the run so

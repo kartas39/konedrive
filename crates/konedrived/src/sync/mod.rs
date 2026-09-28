@@ -612,6 +612,8 @@ pub struct SyncSnapshot {
     pub space_waiting_count: u32,
     pub space_waiting_bytes: u64,
     pub too_big_count: u32,
+    /// Their size: not on the bus, but taken off what is left to upload ([`totals`]).
+    pub too_big_bytes: u64,
     /// `DownloadSpeed`, `UploadSpeed`, `ActiveDownloads`, `ActiveUploads`, `PoolSize`,
     /// `PoolCeiling`, `LargeTransfers`, `LargeLimit`, `RetryAfter`: the account's transfer
     /// pool, once a second while anything moves or a `Retry-After` runs.
@@ -660,6 +662,7 @@ impl Default for SyncSnapshot {
             space_waiting_count: 0,
             space_waiting_bytes: 0,
             too_big_count: 0,
+            too_big_bytes: 0,
             throughput: crate::pool::Throughput::default(),
             pinned_waiting: (0, 0),
             queue: totals::QueueTotals::default(),

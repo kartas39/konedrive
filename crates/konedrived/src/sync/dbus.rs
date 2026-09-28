@@ -443,7 +443,7 @@ impl Sync1 {
         self.service.state().get().queue.down.time_left
     }
 
-    /// Changes left to upload (`PendingCount`).
+    /// Changes left to upload: `PendingCount` less those waiting for space or too big for it.
     #[zbus(property)]
     async fn upload_left_count(&self) -> u32 {
         self.service.state().get().queue.up.left_count
