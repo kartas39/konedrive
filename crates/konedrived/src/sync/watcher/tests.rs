@@ -518,7 +518,7 @@ fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete()
     let fx = Fx::new();
     let store = Store::new(TreeStore::in_memory().unwrap());
     store
-        .with(|s| {
+        .call_blocking(move |s| {
             s.begin_staging(false)?;
             s.stage(&[Change::Root(row("R", None, "", Kind::Folder)), Change::Upsert(row("D", Some("R"), "docs", Kind::Folder))])
         })
@@ -561,12 +561,12 @@ fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete()
     std::fs::write(fx.path("docs/new.txt"), b"new").unwrap();
     std::fs::write(fx.path("docs/.new.txt.swp"), b"noise").unwrap();
     std::thread::sleep(Duration::from_millis(800));
-    assert!(store.with(|s| s.outbox_rows()).unwrap().is_empty(), "no base to compare with until the listing completes");
+    assert!(store.call_blocking(move |s| s.outbox_rows()).unwrap().is_empty(), "no base to compare with until the listing completes");
 
-    store.with(|s| s.commit_staging("link-1")).unwrap();
+    store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
     let deadline = Instant::now() + WAIT;
     let rows = loop {
-        let rows = store.with(|s| s.outbox_rows()).unwrap();
+        let rows = store.call_blocking(move |s| s.outbox_rows()).unwrap();
         if !rows.is_empty() || Instant::now() > deadline {
             break rows;
         }
@@ -591,7 +591,7 @@ fn the_sink_reports_a_full_scan_and_not_a_single_place() {
     let fx = Fx::new();
     let store = Store::new(TreeStore::in_memory().unwrap());
     store
-        .with(|s| {
+        .call_blocking(move |s| {
             s.begin_staging(false)?;
             s.stage(&[Change::Root(row("R", None, "", Kind::Folder)), Change::Upsert(row("D", Some("R"), "docs", Kind::Folder))])
         })
@@ -633,7 +633,7 @@ fn the_sink_reports_a_full_scan_and_not_a_single_place() {
     assert!(matches!(sink.handle(&Batch::scan(ScanReason::ReadWrite)), Handled::NotYet));
     assert_eq!(state.get().scan, idle, "no base yet: no scan ran");
 
-    store.with(|s| s.commit_staging("link-1")).unwrap();
+    store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
     assert!(matches!(sink.handle(&Batch::scan(ScanReason::ReadWrite)), Handled::Done { .. }));
     let scan = state.get().scan;
     assert_eq!((scan.state, scan.reason.as_str(), scan.expected), (ScanState::Idle, "read-write", 2));

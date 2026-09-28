@@ -1100,13 +1100,15 @@ async fn binary_conflicts_are_listed_and_dismissed() {
     std::fs::create_dir_all(rescued.parent().unwrap()).unwrap();
     std::fs::write(&rescued, b"mine").unwrap();
     let activity = &f.service.report().activity;
-    activity.attach(konedrived::tree::Store::new(konedrived::tree::TreeStore::in_memory().unwrap()), f.dir.path());
-    activity.add_conflicts(vec![konedrived::tree::ConflictRow {
+    // The activity log is blocking code: a plain thread of its own, off the runtime.
+    std::thread::scope(|scope| scope.spawn(|| activity.attach(konedrived::tree::Store::new(konedrived::tree::TreeStore::in_memory().unwrap()), f.dir.path())).join().unwrap());
+    let conflict = konedrived::tree::ConflictRow {
         at: 1_700_000_000,
         original: "/home/u/OneDrive/docs/f.txt".into(),
         rescued: rescued.display().to_string(),
         kind: konedrived::tree::ConflictKind::Rescued,
-    }]);
+    };
+    std::thread::scope(|scope| scope.spawn(|| activity.add_conflicts(vec![conflict])).join().unwrap());
 
     let status = out_text(&run(addr, &["sync", "status"]));
     assert!(
@@ -1141,13 +1143,15 @@ async fn binary_remove_says_where_the_listed_rescues_are() {
     std::fs::create_dir_all(rescued.parent().unwrap()).unwrap();
     std::fs::write(&rescued, b"mine").unwrap();
     let activity = &f.service.report().activity;
-    activity.attach(konedrived::tree::Store::new(konedrived::tree::TreeStore::in_memory().unwrap()), f.dir.path());
-    activity.add_conflicts(vec![konedrived::tree::ConflictRow {
+    // The activity log is blocking code: a plain thread of its own, off the runtime.
+    std::thread::scope(|scope| scope.spawn(|| activity.attach(konedrived::tree::Store::new(konedrived::tree::TreeStore::in_memory().unwrap()), f.dir.path())).join().unwrap());
+    let conflict = konedrived::tree::ConflictRow {
         at: 1_700_000_000,
         original: root.join("docs/f.txt").display().to_string(),
         rescued: rescued.display().to_string(),
         kind: konedrived::tree::ConflictKind::Rescued,
-    }]);
+    };
+    std::thread::scope(|scope| scope.spawn(|| activity.add_conflicts(vec![conflict])).join().unwrap());
 
     let out = run(f._bus.address(), &["account", "remove", "Personal"]);
     assert!(out.status.success(), "{out:?}");

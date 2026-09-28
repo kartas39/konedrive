@@ -383,7 +383,7 @@ impl TreeStore {
     /// #38): in WAL mode it reads the last committed state and never waits
     /// for the writer. Nothing is created or changed; its reads are the
     /// outbox's lists and sums for the bus.
-    fn open_read_only(path: &Path) -> Result<Self, TreeError> {
+    pub fn open_read_only(path: &Path) -> Result<Self, TreeError> {
         use rusqlite::OpenFlags;
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -896,102 +896,246 @@ fn upsert(tx: &rusqlite::Transaction<'_>, table: Table, row: &Row) -> rusqlite::
     )
 }
 
+/// Runs `f` on a plain thread of its own and waits for it: for tests that
+/// call blocking code (the activity log, the examiner) from async code.
+#[cfg(test)]
+pub fn off_runtime<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| scope.spawn(f).join().expect("the plain thread panicked"))
+}
+
+/// A job for a store's owner thread: a closure over the store, which sends
+/// its own answer.
+type Job = Box<dyn FnOnce(&mut TreeStore) + Send>;
+
+/// Jobs a store's channel holds before a sender waits (issue #38).
+pub const QUEUE: usize = 1024;
+
+/// Hands out the ids of the owner threads.
+static NEXT_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+thread_local! {
+    /// The id of the store this thread owns; 0 on any other thread.
+    static OWNING: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// One thread that owns a connection and runs the jobs sent to it, one at a
+/// time, in the order they arrive (issue #38).
+struct Owner {
+    jobs: tokio::sync::mpsc::Sender<Job>,
+    id: u64,
+}
+
+impl Owner {
+    /// Starts the thread. It ends, dropping the connection, once every
+    /// sender is gone and the jobs already queued have run. After each job
+    /// that changed the outbox, `changes` tells those waiting for a change.
+    fn spawn(mut store: TreeStore, name: &str, changes: Option<std::sync::Arc<outbox::OutboxChanges>>) -> Self {
+        let id = NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (jobs, mut queue) = tokio::sync::mpsc::channel::<Job>(QUEUE);
+        std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || {
+                OWNING.with(|owning| owning.set(id));
+                while let Some(job) = queue.blocking_recv() {
+                    let before = changes.as_ref().map(|c| c.generation());
+                    // A job that panics answers nobody (its caller gets an error);
+                    // its transaction, if any, is rolled back as it is dropped.
+                    if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&mut store))).is_err() {
+                        tracing::error!("a job of the tree store panicked; the store goes on");
+                    }
+                    if let (Some(changes), Some(before)) = (&changes, before) {
+                        if changes.generation() != before {
+                            changes.committed();
+                        }
+                    }
+                }
+            })
+            .expect("the tree store's thread starts");
+        Owner { jobs, id }
+    }
+
+    /// A call from inside one of this owner's jobs would wait for itself:
+    /// a bug, which panics in debug and test builds and is an error otherwise.
+    fn refuse_reentry(&self) -> Result<(), TreeError> {
+        if OWNING.with(|owning| owning.get()) != self.id {
+            return Ok(());
+        }
+        debug_assert!(false, "a job of the tree store called the store: it would wait for itself");
+        Err(TreeError::Io(std::io::Error::other("a job of the tree store called the store")))
+    }
+
+    fn job<T: Send + 'static>(
+        f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
+    ) -> (Job, tokio::sync::oneshot::Receiver<Result<T, TreeError>>) {
+        let (answer, answered) = tokio::sync::oneshot::channel();
+        let job: Job = Box::new(move |store| {
+            let _ = answer.send(f(store));
+        });
+        (job, answered)
+    }
+
+    async fn call<T: Send + 'static>(&self, f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
+        self.refuse_reentry()?;
+        let (job, answered) = Self::job(f);
+        self.jobs.send(job).await.map_err(|_| stopped())?;
+        answered.await.map_err(|_| failed())?
+    }
+
+    fn call_blocking<T: Send + 'static>(&self, f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
+        self.refuse_reentry()?;
+        let (job, answered) = Self::job(f);
+        self.jobs.blocking_send(job).map_err(|_| stopped())?;
+        answered.blocking_recv().map_err(|_| failed())?
+    }
+}
+
+fn stopped() -> TreeError {
+    TreeError::Io(std::io::Error::other("the tree store's thread has stopped"))
+}
+
+fn failed() -> TreeError {
+    TreeError::Io(std::io::Error::other("a job of the tree store failed"))
+}
+
 /// The store, shared by the tasks of one folder: the listing, the
-/// materializer and the D-Bus queries. A query holds the lock only for itself.
+/// materializer, the outbox worker and the D-Bus queries. One thread owns
+/// its connection, and everyone else sends it jobs (issue #38): `call` from
+/// async code, `call_blocking` from plain threads. Only that thread holds a
+/// read-write connection to the store; the bus's reads go to a second,
+/// read-only connection with a thread of its own.
 #[derive(Clone)]
 pub struct Store {
-    inner: std::sync::Arc<std::sync::Mutex<TreeStore>>,
+    owner: std::sync::Arc<Owner>,
     changes: std::sync::Arc<outbox::OutboxChanges>,
-    /// The read-only connection ([`Store::read`]), opened when first used;
-    /// only for a store on disk.
-    reader: std::sync::Arc<std::sync::Mutex<Option<TreeStore>>>,
+    /// The read-only connection's owner ([`Store::read`]), started when
+    /// first used; `None` inside when it cannot be opened.
+    reader: std::sync::Arc<std::sync::OnceLock<Option<Owner>>>,
     path: Option<PathBuf>,
+    /// The pause as `meta` last had it (`outbox::PAUSED_UNTIL`): [`NOT_PAUSED`],
+    /// or paused until then, 0 for until resumed. Kept here so that it is
+    /// read without a job, from anywhere.
+    pause: std::sync::Arc<std::sync::atomic::AtomicI64>,
 }
+
+/// [`Store::pause`]'s memory while not paused.
+const NOT_PAUSED: i64 = -1;
 
 impl Store {
     pub fn new(store: TreeStore) -> Self {
         let changes = std::sync::Arc::clone(&store.changes);
         let path = store.path.clone();
-        Self { inner: std::sync::Arc::new(std::sync::Mutex::new(store)), changes, reader: Default::default(), path }
+        let pause = store.meta(outbox::PAUSED_UNTIL).ok().flatten().map_or(NOT_PAUSED, |v| v.parse::<i64>().unwrap_or(0).max(0));
+        let owner = Owner::spawn(store, "konedrive-store", Some(std::sync::Arc::clone(&changes)));
+        Self {
+            owner: std::sync::Arc::new(owner),
+            changes,
+            reader: Default::default(),
+            path,
+            pause: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(pause)),
+        }
+    }
+
+    /// The pause as last written: paused until then (unix seconds, 0 for
+    /// until resumed), or `None`. From memory: no job.
+    pub fn pause(&self) -> Option<i64> {
+        let until = self.pause.load(std::sync::atomic::Ordering::SeqCst);
+        (until != NOT_PAUSED).then_some(until)
+    }
+
+    /// Writes the pause (`None`: resumed), and remembers it.
+    pub async fn set_pause(&self, until: Option<i64>) -> Result<(), TreeError> {
+        self.call(move |s| s.set_meta(outbox::PAUSED_UNTIL, until.map(|u| u.to_string()).as_deref())).await?;
+        self.pause.store(until.map_or(NOT_PAUSED, |u| u.max(0)), std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// [`set_pause`](Self::set_pause) for plain threads.
+    pub fn set_pause_blocking(&self, until: Option<i64>) -> Result<(), TreeError> {
+        self.call_blocking(move |s| s.set_meta(outbox::PAUSED_UNTIL, until.map(|u| u.to_string()).as_deref()))?;
+        self.pause.store(until.map_or(NOT_PAUSED, |u| u.max(0)), std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
+    /// A timed pause until `until` has run out: forgotten here, and taken
+    /// off `meta` by a job nobody waits for (unless a pause was written since).
+    pub fn pause_ended(&self, until: i64) {
+        use std::sync::atomic::Ordering;
+        if self.pause.compare_exchange(until, NOT_PAUSED, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            return;
+        }
+        let (job, _) = Owner::job(move |s| {
+            if s.meta(outbox::PAUSED_UNTIL)?.and_then(|v| v.parse::<i64>().ok()) == Some(until) {
+                s.set_meta(outbox::PAUSED_UNTIL, None)?;
+            }
+            Ok(())
+        });
+        let _ = self.owner.jobs.try_send(job);
+    }
+
+    /// Runs `f` on the store's thread and waits for its answer: for async
+    /// code. Jobs run one at a time, in the order they arrive; `f` may hold a
+    /// transaction, and must never await, block on anything but SQLite, or
+    /// call the store.
+    pub async fn call<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
+    ) -> Result<T, TreeError> {
+        self.owner.call(f).await
+    }
+
+    /// [`call`](Self::call) for plain threads (the examiner, the
+    /// materializer, the body of a `spawn_blocking`): waits for the answer.
+    /// On an async runtime's thread it panics (tokio refuses to block there).
+    pub fn call_blocking<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
+    ) -> Result<T, TreeError> {
+        self.owner.call_blocking(f)
+    }
+
+    /// The read-only connection's owner, started when first asked for; `None`
+    /// for a store in memory, or one that cannot be opened for reading alone.
+    fn reader(&self) -> Option<&Owner> {
+        let path = self.path.as_ref()?;
+        self.reader
+            .get_or_init(|| match TreeStore::open_read_only(path) {
+                Ok(opened) => Some(Owner::spawn(opened, "konedrive-store-read", None)),
+                Err(e) => {
+                    tracing::warn!("the tree store cannot be opened for reading alone ({e}); it is read through its own thread");
+                    None
+                }
+            })
+            .as_ref()
     }
 
     /// Runs `f` on the store's read-only connection, which never waits for a
     /// writer and sees what was last committed (issue #38): the bus's lists and
     /// sums. A store in memory, or one whose second connection cannot be
-    /// opened, is read through the shared one.
-    pub fn read_blocking<T>(&self, f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError>) -> Result<T, TreeError> {
-        let Some(path) = &self.path else { return self.with(f) };
-        let mut reader = self.reader.lock().unwrap_or_else(|p| p.into_inner());
-        if reader.is_none() {
-            match TreeStore::open_read_only(path) {
-                Ok(opened) => *reader = Some(opened),
-                Err(e) => {
-                    tracing::warn!("the tree store cannot be opened for reading alone ({e}); it is read through the shared connection");
-                    drop(reader);
-                    return self.with(f);
-                }
-            }
-        }
-        f(reader.as_mut().expect("opened above"))
-    }
-
-    /// [`read_blocking`](Self::read_blocking) on a blocking thread.
+    /// opened, is read through its own thread.
     pub async fn read<T: Send + 'static>(
         &self,
         f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
     ) -> Result<T, TreeError> {
-        let store = self.clone();
-        tokio::task::spawn_blocking(move || store.read_blocking(f))
-            .await
-            .map_err(|e| TreeError::Io(std::io::Error::other(format!("the store task failed: {e}"))))?
-    }
-
-    /// Runs `f` on the store, waiting for the lock. When `f` changed the
-    /// outbox, those waiting for a change are told, after its transactions
-    /// committed.
-    ///
-    /// Called on a worker thread of a multi-threaded tokio runtime (the outbox
-    /// worker's steps), the wait and the work go through `block_in_place`:
-    /// the worker's other tasks move to another thread first, so a long store
-    /// operation — an examination's apply, a cycle's commit — delays what
-    /// needs the store, never the D-Bus dispatcher or anything else on the
-    /// runtime (issue #38). Elsewhere (the examiner's and the materializer's
-    /// threads, `spawn_blocking`, a current-thread runtime) it runs as it is.
-    pub fn with<T>(&self, f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError>) -> Result<T, TreeError> {
-        let on_workers = tokio::runtime::Handle::try_current().is_ok_and(|h| h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread);
-        if on_workers {
-            tokio::task::block_in_place(|| self.with_here(f))
-        } else {
-            self.with_here(f)
+        match self.reader() {
+            Some(reader) => reader.call(f).await,
+            None => self.call(f).await,
         }
     }
 
-    fn with_here<T>(&self, f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError>) -> Result<T, TreeError> {
-        let mut store = self.inner.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-        let before = self.changes.generation();
-        let out = f(&mut store);
-        drop(store);
-        if self.changes.generation() != before {
-            self.changes.committed();
+    /// [`read`](Self::read) for plain threads.
+    pub fn read_blocking<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
+    ) -> Result<T, TreeError> {
+        match self.reader() {
+            Some(reader) => reader.call_blocking(f),
+            None => self.call_blocking(f),
         }
-        out
     }
 
     /// What changed in the outbox, shared with the store.
     pub fn changes(&self) -> &std::sync::Arc<outbox::OutboxChanges> {
         &self.changes
-    }
-
-    /// For async callers: SQLite is synchronous, so the call runs on a
-    /// blocking thread.
-    pub async fn run<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
-    ) -> Result<T, TreeError> {
-        let store = self.clone();
-        tokio::task::spawn_blocking(move || store.with(f))
-            .await
-            .map_err(|e| TreeError::Io(std::io::Error::other(format!("the store task failed: {e}"))))?
     }
 }
 
@@ -1001,16 +1145,16 @@ mod tests {
 
     use super::*;
 
-    /// Issue #38: tasks waiting for the store, more than the runtime has
-    /// workers, never hold up another task while something else holds it.
+    /// Issue #38: while a long job holds the store's thread, tasks waiting for
+    /// the store — more than the runtime has workers — hold up no other task.
     #[test]
-    fn waiting_for_the_store_does_not_starve_the_runtime() {
+    fn a_long_job_does_not_starve_the_runtime() {
         let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
         let store = Store::new(TreeStore::in_memory().unwrap());
         let (held, release) = std::sync::mpsc::channel();
         let holder = store.clone();
         let holding = std::thread::spawn(move || {
-            holder.with(|_| {
+            holder.call_blocking(move |_| {
                 held.send(()).unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(1500));
                 Ok(())
@@ -1018,11 +1162,13 @@ mod tests {
         });
         release.recv().unwrap();
         runtime.block_on(async {
-            let waiting: Vec<_> = (0..4).map(|_| {
-                let store = store.clone();
-                tokio::spawn(async move { store.with(|s| s.meta("x")) })
-            }).collect();
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            let waiting: Vec<_> = (0..4)
+                .map(|_| {
+                    let store = store.clone();
+                    tokio::spawn(async move { store.call(move |s| s.meta("x")).await })
+                })
+                .collect();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             let start = std::time::Instant::now();
             let ran = tokio::spawn(async move { start.elapsed() }).await.unwrap();
             assert!(ran < std::time::Duration::from_millis(500), "a task waited {ran:?} behind the store");
@@ -1031,6 +1177,72 @@ mod tests {
             }
         });
         holding.join().unwrap().unwrap();
+    }
+
+    /// Jobs run one at a time, in the order they arrive.
+    #[test]
+    fn jobs_run_in_arrival_order() {
+        let store = Store::new(TreeStore::in_memory().unwrap());
+        let order = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        runtime.block_on(async {
+            let calls: Vec<_> = (0..50)
+                .map(|n| {
+                    let order = std::sync::Arc::clone(&order);
+                    store.call(move |_| {
+                        order.lock().unwrap().push(n);
+                        Ok(())
+                    })
+                })
+                .collect();
+            for call in calls {
+                call.await.unwrap();
+            }
+        });
+        assert_eq!(*order.lock().unwrap(), (0..50).collect::<Vec<_>>());
+    }
+
+    /// A job that panics answers its caller with an error; the store's thread
+    /// goes on with the next job, and the panicking job's transaction is gone.
+    #[test]
+    fn a_panicking_job_is_an_error_and_the_next_job_runs() {
+        let store = Store::new(TreeStore::in_memory().unwrap());
+        let failed = store.call_blocking(|s| -> Result<(), TreeError> {
+            let tx = s.conn.transaction()?;
+            tx.execute("INSERT INTO meta (key, value) VALUES ('half', 'done')", [])?;
+            panic!("a job's bug");
+        });
+        assert!(failed.is_err());
+        assert_eq!(store.call_blocking(|s| s.meta("half")).unwrap(), None, "rolled back");
+        store.call_blocking(|s| s.set_meta("after", Some("yes"))).unwrap();
+        assert_eq!(store.call_blocking(|s| s.meta("after")).unwrap().as_deref(), Some("yes"));
+    }
+
+    /// A job that calls the store would wait for itself: caught (a panic in
+    /// tests, so the job fails), and the store goes on.
+    #[test]
+    fn a_call_from_inside_a_job_is_caught() {
+        let store = Store::new(TreeStore::in_memory().unwrap());
+        let inner = store.clone();
+        let nested = store.call_blocking(move |_| inner.call_blocking(|s| s.meta("x")));
+        assert!(nested.is_err());
+        assert_eq!(store.call_blocking(|s| s.meta("x")).unwrap(), None, "the store still answers");
+    }
+
+    /// The last clone gone, the store's thread ends and closes its connection:
+    /// what its jobs wrote is there for the next open.
+    #[test]
+    fn the_store_finishes_its_queue_when_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tree.sqlite");
+        {
+            let store = Store::new(TreeStore::open(&path).unwrap());
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let queued = store.call(|s| s.set_meta("queued", Some("kept")));
+            let written = runtime.block_on(queued);
+            written.unwrap();
+        }
+        assert_eq!(TreeStore::open(&path).unwrap().meta("queued").unwrap().as_deref(), Some("kept"));
     }
 
     fn item(value: serde_json::Value) -> DriveItem {

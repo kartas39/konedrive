@@ -47,7 +47,7 @@ fn a_file_removed_mid_upload_leaves_the_outbox_with_the_delete_behind_it() {
         assert_eq!(w.summary(), vec![(Create, "d/big.bin".into(), OutboxState::Running), (Delete, "d/big.bin".into(), OutboxState::Ready)]);
         if stuck {
             let seq = w.rows()[0].seq;
-            w.store.with(|s| s.outbox_set_state(seq, OutboxState::Retry, Some(reason::NOT_FOUND), Some(0))).unwrap();
+            w.store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Retry, Some(reason::NOT_FOUND), Some(0))).unwrap();
         }
 
         let from = w.cloud(|c| c.log.len());
@@ -97,7 +97,7 @@ fn a_delete_with_no_item_id_leaves_without_a_request() {
         next_try: None,
         size: None,
     };
-    w.store.with(|s| s.outbox_record(&delete)).unwrap();
+    w.store.call_blocking(move |s| s.outbox_record(&delete)).unwrap();
     w.run();
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     assert!(w.cloud(|c| c.log.is_empty()), "{:?}", w.cloud(|c| c.log.clone()));
@@ -235,7 +235,7 @@ fn an_update_whose_file_is_gone_at_its_start_ends_and_the_delete_behind_it_runs(
         assert_eq!(w.summary(), vec![(Update, "d/big.bin".into(), OutboxState::Running), (Delete, "d/big.bin".into(), OutboxState::Ready)]);
         if stuck {
             let seq = w.rows()[0].seq;
-            w.store.with(|s| s.outbox_set_state(seq, OutboxState::Retry, Some(reason::NOT_FOUND), Some(0))).unwrap();
+            w.store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Retry, Some(reason::NOT_FOUND), Some(0))).unwrap();
         }
 
         let from = w.cloud(|c| c.log.len());

@@ -57,7 +57,7 @@ impl SyncService {
         &self,
         f: impl FnOnce(&mut crate::tree::TreeStore) -> Result<T, crate::tree::TreeError> + Send + 'static,
     ) -> Result<T, SyncError> {
-        self.outbox_store()?.run(f).await.map_err(|e| SyncError::Io(e.to_string()))
+        self.outbox_store()?.call(f).await.map_err(|e| SyncError::Io(e.to_string()))
     }
 
     /// Wakes the worker of the sync running now, if any.
@@ -71,9 +71,7 @@ impl SyncService {
     pub(super) fn retry_outbox(&self) {
         let syncing = self.syncing.lock().unwrap();
         if let Some(outbox) = syncing.as_ref().and_then(|s| s.outbox.as_ref()) {
-            if let Err(e) = outbox.retry_now() {
-                tracing::warn!("cannot make the outbox's waiting rows due: {e}");
-            }
+            outbox.retry_now();
         }
     }
 
@@ -111,10 +109,7 @@ impl SyncService {
     pub async fn pause_syncing(&self, seconds: u32) -> Result<(), SyncError> {
         let store = self.outbox_store()?;
         let until = if seconds == 0 { 0 } else { crate::sync::activity::unix_now() + i64::from(seconds) };
-        tokio::task::spawn_blocking(move || upload::set_paused(&store, Some(until)))
-            .await
-            .map_err(|e| SyncError::Io(format!("the pause task failed: {e}")))?
-            .map_err(|e| SyncError::Io(e.to_string()))?;
+        upload::set_paused(&store, Some(until)).await.map_err(|e| SyncError::Io(e.to_string()))?;
         tracing::info!("syncing paused{}", if seconds == 0 { " until resumed".to_owned() } else { format!(" for {seconds} s") });
         self.show_pause();
         Ok(())
@@ -123,10 +118,7 @@ impl SyncService {
     /// `Resume()`: the pause ends now; the outbox and the poll go at once.
     pub async fn resume_syncing(&self) -> Result<(), SyncError> {
         let store = self.outbox_store()?;
-        tokio::task::spawn_blocking(move || upload::set_paused(&store, None))
-            .await
-            .map_err(|e| SyncError::Io(format!("the resume task failed: {e}")))?
-            .map_err(|e| SyncError::Io(e.to_string()))?;
+        upload::set_paused(&store, None).await.map_err(|e| SyncError::Io(e.to_string()))?;
         tracing::info!("syncing resumed");
         self.show_pause();
         Ok(())
@@ -178,7 +170,7 @@ impl SyncService {
                 let Some(service) = me.upgrade() else { return };
                 let store = service.store.lock().unwrap().clone();
                 let Some(store) = store else { return };
-                let still = tokio::task::spawn_blocking(move || upload::paused(&store)).await.ok().flatten();
+                let still = upload::paused(&store);
                 if still.is_none() && service.pause_timer_done(seen, true) {
                     service.wake_outbox();
                     service.nudge();
@@ -458,7 +450,7 @@ impl SyncService {
         // Through the shared connection, off the async runtime: a change an
         // examination is recording now is waited for, not missed.
         let waiting = store
-            .run(move |s| {
+            .call(move |s| {
                 let by_item = match &id {
                     Some(id) => !s.outbox_for_item(id)?.is_empty(),
                     None => false,

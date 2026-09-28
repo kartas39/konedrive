@@ -173,7 +173,7 @@ pub enum Handles {
 
 pub fn handles(store: &Store, root: &File) -> Handles {
     let Ok(now) = handle_namespace(root) else { return Handles::Unknown };
-    match store.with(|s| s.meta(HANDLES_ON)) {
+    match store.call_blocking(move |s| s.meta(HANDLES_ON)) {
         Ok(Some(recorded)) if recorded == now => Handles::Current,
         Ok(Some(_)) => Handles::Changed(now),
         Ok(None) => Handles::Unrecorded(now),
@@ -189,8 +189,19 @@ pub fn handles(store: &Store, root: &File) -> Handles {
 pub fn handles_current(store: &Store, root: &File) -> bool {
     match handles(store, root) {
         Handles::Current => true,
-        Handles::Unrecorded(now) => store.with(|s| s.set_meta(HANDLES_ON, Some(&now))).is_ok(),
+        Handles::Unrecorded(now) => store.call_blocking(move |s| s.set_meta(HANDLES_ON, Some(&now))).is_ok(),
         Handles::Changed(_) | Handles::Unknown => false,
+    }
+}
+
+/// [`handles_current`] for async code.
+pub async fn handles_current_async(store: &Store, root: &File) -> bool {
+    let Ok(now) = handle_namespace(root) else { return false };
+    let recorded = store.call(|s| s.meta(HANDLES_ON)).await;
+    match recorded {
+        Ok(Some(recorded)) => recorded == now,
+        Ok(None) => store.call(move |s| s.set_meta(HANDLES_ON, Some(&now))).await.is_ok(),
+        Err(_) => false,
     }
 }
 
@@ -203,7 +214,7 @@ pub fn handles_current(store: &Store, root: &File) -> bool {
 /// is placed again). Then `now` is recorded. How many rows went.
 pub fn renew_handles(store: &Store, now: &str) -> Result<usize, crate::tree::TreeError> {
     use crate::tree::outbox::Inode;
-    let rows = store.with(|s| s.outbox_move_outs())?;
+    let rows = store.call_blocking(move |s| s.outbox_move_outs())?;
     let mut dropped = 0;
     for row in rows {
         let Some(id) = row.item_id.clone() else { continue };
@@ -216,17 +227,18 @@ pub fn renew_handles(store: &Store, now: &str) -> Result<usize, crate::tree::Tre
         });
         match found {
             Some(inode) => {
-                store.with(|s| s.outbox_amend(row.seq, |r| r.inode = Some(inode)))?;
+                store.call_blocking(move |s| s.outbox_amend(row.seq, |r| r.inode = Some(inode)))?;
             }
             None => {
-                store.with(|s| s.outbox_drop(row.seq, None, Some(&id), None))?;
+                store.call_blocking(move |s| s.outbox_drop(row.seq, None, Some(&id), None))?;
                 dropped += 1;
             }
         }
     }
-    store.with(|s| {
+    let now = now.to_owned();
+    store.call_blocking(move |s| {
         s.forget_local_handles()?;
-        s.set_meta(HANDLES_ON, Some(now))
+        s.set_meta(HANDLES_ON, Some(&now))
     })?;
     Ok(dropped)
 }

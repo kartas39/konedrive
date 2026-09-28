@@ -92,7 +92,7 @@ impl Fx {
         };
         let mut all = vec![Change::Root(row("R", None, "", Kind::Folder, b""))];
         all.extend_from_slice(changes);
-        fx.store.with(|s| {
+        fx.store.call_blocking(move |s| {
             s.begin_staging(false)?;
             s.stage(&all)
         })
@@ -111,7 +111,7 @@ impl Fx {
             claimed: None,
         };
         materializer.apply(Scope::Full).unwrap();
-        fx.store.with(|s| s.commit_staging("link-1")).unwrap();
+        fx.store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
         fx
     }
 
@@ -136,7 +136,7 @@ impl Fx {
     }
 
     fn rows(&self) -> Vec<OutboxRow> {
-        self.store.with(|s| s.outbox_rows()).unwrap()
+        self.store.call_blocking(move |s| s.outbox_rows()).unwrap()
     }
 
     /// (kind, where, item) of every row, in `seq` order.
@@ -197,7 +197,7 @@ fn copy_keeping_attributes(from: &Path, to: &Path) {
 fn placement_records_each_items_inode() {
     let fx = Fx::new(&[folder("D", "R", "docs"), file("A", "D", "a.txt", b"abc")]);
     for (id, rel) in [("D", "docs"), ("A", "docs/a.txt")] {
-        assert_eq!(fx.store.with(|s| s.local_handle(id)).unwrap(), Some(fx.handle(rel)), "{id}");
+        assert_eq!(fx.store.call_blocking(move |s| s.local_handle(id)).unwrap(), Some(fx.handle(rel)), "{id}");
     }
 }
 
@@ -236,11 +236,11 @@ fn new_things_become_rows_and_what_cannot_be_uploaded_is_listed() {
     assert_eq!(fx.row_at("new").target_parent.as_deref(), Some("R"));
     assert_eq!(fx.row_at("new/sub").target_parent, None, "its parent's id comes when its mkdir lands");
     let (mkdir, create) = (fx.row_at("new/sub").seq, fx.row_at("new/sub/f.txt").seq);
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(create)).unwrap(), vec![mkdir]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(create)).unwrap(), vec![mkdir]);
     assert!(fx.row_at("new").seq < mkdir, "new folders shallowest first");
 
     let skipped: Vec<(String, String)> =
-        fx.store.with(|s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason)).collect();
+        fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason)).collect();
     assert_eq!(
         skipped,
         vec![(".konedrive-mine".into(), "reserved-name".into()), ("link".into(), "symlink".into()), ("pipe".into(), "fifo".into())]
@@ -248,7 +248,7 @@ fn new_things_become_rows_and_what_cannot_be_uploaded_is_listed() {
     // Listed while it is there.
     std::fs::remove_file(fx.path("pipe")).unwrap();
     fx.examine(&names(&[("", "pipe")]));
-    assert_eq!(fx.store.with(|s| s.local_skipped()).unwrap().len(), 2);
+    assert_eq!(fx.store.call_blocking(move |s| s.local_skipped()).unwrap().len(), 2);
 }
 
 /// The content check: a size change is a change; a same-size change is
@@ -311,7 +311,7 @@ fn a_file_open_for_writing_waits_for_its_writer() {
         assert_eq!((row.state, row.reason.as_deref(), row.next_try), (OutboxState::Waiting, Some("open-for-writing"), Some(1030)), "{rel}");
     }
     assert!(!out.recheck.is_empty());
-    assert!(fx.store.with(|s| s.outbox_runnable(i64::MAX)).unwrap().is_empty());
+    assert!(fx.store.call_blocking(move |s| s.outbox_runnable(i64::MAX)).unwrap().is_empty());
 
     drop(writer);
     drop(new_writer);
@@ -438,7 +438,7 @@ fn save_by_rename_in_editors_patterns_is_an_update_of_the_item() {
         assert_eq!(row.inode.and_then(|i| i.handle), Some(fx.handle(name)), "{name}: the new inode takes the item over");
     }
     assert!(fx.liveness.asked().is_empty());
-    assert!(fx.store.with(|s| s.local_skipped()).unwrap().is_empty(), "temporary and lock files stay local, unlisted");
+    assert!(fx.store.call_blocking(move |s| s.local_skipped()).unwrap().is_empty(), "temporary and lock files stay local, unlisted");
 }
 
 /// A copy that kept konedrive's attributes (`cp -a`, KIO) is a new file,
@@ -468,7 +468,7 @@ fn copies_that_kept_their_attributes_are_new_files() {
         assert_eq!(id_of(&fx.path(original.0)).as_deref(), Some(original.1), "{} is untouched", original.0);
     }
     assert_eq!(out.mark_files, vec![PathBuf::from("p.bin")]);
-    let skipped = fx.store.with(|s| s.local_skipped()).unwrap();
+    let skipped = fx.store.call_blocking(move |s| s.local_skipped()).unwrap();
     assert_eq!(skipped.iter().map(|s| (s.rel.display().to_string(), s.reason.as_str())).collect::<Vec<_>>(), vec![("p-link.bin".into(), "hard-link")]);
 }
 
@@ -519,7 +519,7 @@ fn a_missing_item_is_decided_by_its_object() {
 #[test]
 fn a_rebuilt_base_never_deletes() {
     let fx = Fx::new(&[file("A", "R", "a.txt", b"a")]);
-    fx.store.with(|s| s.set_local_handle("A", None)).unwrap();
+    fx.store.call_blocking(move |s| s.set_local_handle("A", None)).unwrap();
     std::fs::remove_file(fx.path("a.txt")).unwrap();
     let out = fx.examine(&Batch::full());
     assert_eq!(out.unproven, vec!["A".to_owned()]);
@@ -547,7 +547,7 @@ fn a_folder_delete_is_one_row_that_waits_for_what_left_it() {
     fx.examine(&names(&[("docs", "x.txt"), ("", "x.txt"), ("docs", "y.txt"), ("docs", "z.txt"), ("", "docs")]));
     assert_eq!(fx.summary(), vec![(Move, "x.txt".into(), Some("X".into())), (Delete, "docs".into(), Some("D".into()))]);
     let (moved, deleted) = (fx.row_at("x.txt").seq, fx.row_at("docs").seq);
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(deleted)).unwrap(), vec![moved]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(deleted)).unwrap(), vec![moved]);
 }
 
 /// A batch that would remove more than the guard allows is held until the
@@ -567,9 +567,9 @@ fn the_mass_delete_guard_holds_a_large_delete() {
     assert_eq!(fx.row_at("other.txt").state, OutboxState::Held);
     let row = fx.row_at("big");
     assert_eq!((row.kind, row.state, row.reason.as_deref()), (Delete, OutboxState::Held, Some("mass-delete")));
-    assert!(fx.store.with(|s| s.outbox_runnable(i64::MAX)).unwrap().iter().all(|r| r.seq != row.seq));
-    fx.store.with(|s| s.outbox_release_held()).unwrap();
-    assert!(fx.store.with(|s| s.outbox_runnable(i64::MAX)).unwrap().iter().any(|r| r.seq == row.seq));
+    assert!(fx.store.call_blocking(move |s| s.outbox_runnable(i64::MAX)).unwrap().iter().all(|r| r.seq != row.seq));
+    fx.store.call_blocking(move |s| s.outbox_release_held()).unwrap();
+    assert!(fx.store.call_blocking(move |s| s.outbox_runnable(i64::MAX)).unwrap().iter().any(|r| r.seq == row.seq));
 }
 
 /// Rule 6, an id the base does not know: a downloaded file from elsewhere
@@ -594,7 +594,7 @@ fn a_file_from_elsewhere_is_uploaded_if_downloaded_and_listed_if_not() {
     assert_eq!(id_of(&fx.path("linked.txt")).as_deref(), Some("LINKED"), "stripping it would strip its other name too");
     assert_eq!(id_of(&fx.path("ghost.bin")).as_deref(), Some("GHOST"));
     let skipped: Vec<(String, String)> =
-        fx.store.with(|s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason)).collect();
+        fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason)).collect();
     assert_eq!(skipped, vec![("ghost.bin".into(), "not-downloaded".into()), ("linked.txt".into(), "hard-link".into())]);
 }
 
@@ -637,7 +637,7 @@ fn ignoring_a_directory_being_made_keeps_what_is_inside_it() {
     fx.examine(&names(&[("", "build")]));
     let mkdir = fx.row_at("build");
     assert_eq!((mkdir.kind, fx.row_at("build/a.o").kind), (Mkdir, Create));
-    fx.store.with(|s| s.outbox_set_state(mkdir.seq, OutboxState::Running, None, None)).unwrap();
+    fx.store.call_blocking(move |s| s.outbox_set_state(mkdir.seq, OutboxState::Running, None, None)).unwrap();
     fx.ignore = IgnoreList::new(["build"]);
     fx.examine(&names(&[("", "build"), ("build", "a.o")]));
     let rows = fx.rows();
@@ -746,7 +746,7 @@ fn a_placeholder_dragged_out_before_its_folder_was_deleted_is_not_deleted_with_i
     fx.examine(&names(&[("", "Docs")]));
     assert_eq!(fx.summary(), vec![(MoveOut, "Docs/p.bin".into(), Some("P".into())), (Delete, "Docs".into(), Some("D".into()))]);
     let (moved_out, deleted) = (fx.row_at("Docs/p.bin").seq, fx.row_at("Docs").seq);
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(deleted)).unwrap(), vec![moved_out]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(deleted)).unwrap(), vec![moved_out]);
 }
 
 /// C1, in one batch: the folder's listing fails, so what left it is asked
@@ -766,7 +766,7 @@ fn a_placeholder_dragged_out_and_its_folder_deleted_in_one_batch_is_a_move_out()
     assert_eq!(rows, vec![(Delete, "Docs".into(), Some("D".into())), (MoveOut, "Docs/p.bin".into(), Some("P".into()))]);
     assert_eq!(fx.row_at("Docs/p.bin").inode.and_then(|i| i.handle), Some(p));
     let (moved_out, deleted) = (fx.row_at("Docs/p.bin").seq, fx.row_at("Docs").seq);
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(deleted)).unwrap(), vec![moved_out]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(deleted)).unwrap(), vec![moved_out]);
 }
 
 /// C2: until a listing has completed there is no base. Against a store
@@ -777,7 +777,7 @@ fn an_unfinished_listing_is_no_base_to_examine_against() {
     let fx = Fx::new(&[file("A", "R", "a.txt", b"abc")]);
     fx.hydrate("a.txt", b"abc");
     fx.store
-        .with(|s| {
+        .call_blocking(move |s| {
             *s = TreeStore::in_memory()?;
             s.begin_staging(false)?;
             s.stage(&[Change::Root(row("R", None, "", Kind::Folder, b""))])
@@ -787,8 +787,8 @@ fn an_unfinished_listing_is_no_base_to_examine_against() {
     assert!(matches!(err, ExamineError::NoBase), "{err:?}");
     // A first listing placed page by page, part-way: rows in `items`, and
     // still no base.
-    fx.store.with(|s| s.commit_page(&[Change::Root(row("R", None, "", Kind::Folder, b""))], "next-2")).unwrap();
-    fx.store.with(|s| s.set_meta("delta_link", Some("an old link"))).unwrap();
+    fx.store.call_blocking(move |s| s.commit_page(&[Change::Root(row("R", None, "", Kind::Folder, b""))], "next-2")).unwrap();
+    fx.store.call_blocking(move |s| s.set_meta("delta_link", Some("an old link"))).unwrap();
     let err = fx.try_examine(&fx.disk(), &Batch::full(), &fx.liveness).unwrap_err();
     assert!(matches!(err, ExamineError::NoBase), "{err:?}");
     assert_eq!(id_of(&fx.path("a.txt")).as_deref(), Some("A"), "nothing stripped");
@@ -811,9 +811,9 @@ fn a_folder_removed_and_made_again_is_deleted_before_the_new_one_is_made() {
     );
     let rows = fx.rows();
     let (delete, mkdir, create) = (rows[0].seq, rows[1].seq, rows[2].seq);
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(mkdir)).unwrap(), vec![delete]);
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(create)).unwrap(), vec![mkdir]);
-    assert!(fx.store.with(|s| s.outbox_blockers(delete)).unwrap().is_empty());
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(mkdir)).unwrap(), vec![delete]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(create)).unwrap(), vec![mkdir]);
+    assert!(fx.store.call_blocking(move |s| s.outbox_blockers(delete)).unwrap().is_empty());
 }
 
 /// C3: `mv d d.old && mkdir d`: the new folder waits for the old one's move.
@@ -825,7 +825,7 @@ fn a_folder_made_at_a_name_another_is_leaving_waits_for_it() {
     fx.examine(&names(&[("", "d"), ("", "d.old")]));
     assert_eq!(fx.summary(), vec![(Move, "d.old".into(), Some("D".into())), (Mkdir, "d".into(), None)]);
     let (moved, made) = (fx.row_at("d.old").seq, fx.row_at("d").seq);
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(made)).unwrap(), vec![moved]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(made)).unwrap(), vec![moved]);
 }
 
 /// A source that serves one new version, for a real replacement.
@@ -859,7 +859,7 @@ fn a_replaced_file_moved_out_is_a_move_out() {
     assert!(matches!(outcome, crate::sync::materialize::ReplaceOutcome::Replaced), "{outcome:?}");
     record_replaced(&disk, &fx.store, "A", Path::new("a.txt"));
     let now = fx.handle("a.txt");
-    assert_eq!(fx.store.with(|s| s.local_handle("A")).unwrap(), Some(now.clone()));
+    assert_eq!(fx.store.call_blocking(move |s| s.local_handle("A")).unwrap(), Some(now.clone()));
 
     std::fs::rename(fx.path("a.txt"), fx.outside.join("a.txt")).unwrap();
     fx.liveness.alive(now, fx.outside.join("a.txt"));
@@ -911,7 +911,7 @@ fn a_row_being_sent_is_never_taken_from_under_the_worker() {
     fx.write("m.txt", b"m");
     fx.examine(&names(&[("", "n.txt"), ("", "m.txt")]));
     for row in fx.rows() {
-        fx.store.with(|s| s.outbox_set_state(row.seq, OutboxState::Running, None, None)).unwrap();
+        fx.store.call_blocking(move |s| s.outbox_set_state(row.seq, OutboxState::Running, None, None)).unwrap();
     }
     std::fs::remove_file(fx.path("n.txt")).unwrap();
     fx.rename("m.txt", "m.txt.tmp");
@@ -923,13 +923,17 @@ fn a_row_being_sent_is_never_taken_from_under_the_worker() {
     let (n_delete, m_move) = (find(Delete, "n.txt"), find(Move, "m.txt.tmp"));
     assert_eq!((n_create.state, m_create.state), (OutboxState::Running, OutboxState::Running));
     assert_eq!((n_delete.state, m_move.state), (OutboxState::Ready, OutboxState::Ready));
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(n_delete.seq)).unwrap(), vec![n_create.seq]);
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(m_move.seq)).unwrap(), vec![m_create.seq]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(n_delete.seq)).unwrap(), vec![n_create.seq]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(m_move.seq)).unwrap(), vec![m_create.seq]);
     let answered = row("N", Some("R"), "n.txt", Kind::File, b"n");
-    let commit = |fx: &Fx| fx.store.with(|s| s.outbox_commit(n_create.seq, crate::tree::outbox::Committed::Item { row: &answered, handle: None }, None));
+    let seq = n_create.seq;
+    let commit = |fx: &Fx| {
+        let answered = answered.clone();
+        fx.store.call_blocking(move |s| s.outbox_commit(seq, crate::tree::outbox::Committed::Item { row: &answered, handle: None }, None))
+    };
     commit(&fx).unwrap();
     assert!(commit(&fx).is_err(), "a row that is gone commits nothing");
-    assert_eq!(fx.store.with(|s| s.outbox_row(n_delete.seq)).unwrap().and_then(|r| r.item_id).as_deref(), Some("N"));
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_row(n_delete.seq)).unwrap().and_then(|r| r.item_id).as_deref(), Some("N"));
 }
 
 /// I4: a copy that kept the attributes does not take the item when the
@@ -948,7 +952,7 @@ fn a_copy_does_not_take_the_item_when_its_original_left_the_folder() {
     rows.sort();
     assert_eq!(rows, vec![(Create, "b.txt".into(), None), (MoveOut, "a.txt".into(), Some("A".into()))]);
     assert_eq!(id_of(&fx.path("b.txt")), None);
-    assert_eq!(fx.store.with(|s| s.local_handle("A")).unwrap(), Some(original), "the item is still the original");
+    assert_eq!(fx.store.call_blocking(move |s| s.local_handle("A")).unwrap(), Some(original), "the item is still the original");
 }
 
 /// I5: nothing is examined in a root that was deleted, or that no longer
@@ -1005,7 +1009,7 @@ fn an_unreadable_directory_does_not_stop_the_examination() {
 // Fix round 2 (the examination re-review): each of these failed before its fix.
 
 fn runnable(fx: &Fx) -> Vec<(OutboxKind, String)> {
-    fx.store.with(|s| s.outbox_runnable(i64::MAX)).unwrap().into_iter().map(|r| (r.kind, r.rel.display().to_string())).collect()
+    fx.store.call_blocking(move |s| s.outbox_runnable(i64::MAX)).unwrap().into_iter().map(|r| (r.kind, r.rel.display().to_string())).collect()
 }
 
 fn seq_of(fx: &Fx, kind: OutboxKind, rel: &str) -> i64 {
@@ -1029,9 +1033,9 @@ fn a_new_folder_moved_over_one_deleted_since_waits_for_its_delete() {
     assert_eq!(seq_of(&fx, Mkdir, "exports"), mkdir, "the merged row keeps its seq");
     let delete = seq_of(&fx, Delete, "exports");
     assert!(delete > mkdir);
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(mkdir)).unwrap(), vec![delete]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(mkdir)).unwrap(), vec![delete]);
     let create = seq_of(&fx, Create, "exports/a.txt");
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(create)).unwrap(), vec![mkdir]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(create)).unwrap(), vec![mkdir]);
 }
 
 /// R2: a folder replaced by its own subfolder (`mv F/sub F.tmp && rm -rf F
@@ -1050,7 +1054,7 @@ fn a_folder_replaced_by_its_own_subfolder_does_not_wait_for_ever() {
     assert_eq!(rows, vec![(Move, "F".into(), Some("S".into())), (Delete, "F".into(), Some("F".into()))]);
     let (moved, deleted) = (seq_of(&fx, Move, "F"), seq_of(&fx, Delete, "F"));
     assert_eq!(runnable(&fx), vec![(Move, "F".into())]);
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(deleted)).unwrap(), vec![moved], "the folder still goes after what left it");
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(deleted)).unwrap(), vec![moved], "the folder still goes after what left it");
 }
 
 /// R2: a folder wrapped in a new one of its own name (`mkdir t && mv d t/
@@ -1068,7 +1072,7 @@ fn a_folder_wrapped_in_a_new_one_of_its_name_does_not_wait_for_ever() {
     assert_eq!(rows, vec![(Mkdir, "d".into(), None), (Move, "d/d".into(), Some("D".into()))]);
     assert_eq!(runnable(&fx), vec![(Mkdir, "d".into())]);
     let (moved, made) = (seq_of(&fx, Move, "d/d"), seq_of(&fx, Mkdir, "d"));
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(moved)).unwrap(), vec![made]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(moved)).unwrap(), vec![made]);
 }
 
 /// R3: removals the user confirmed are not counted or held again while the
@@ -1080,7 +1084,7 @@ fn confirmed_removals_are_not_held_again() {
     let fx = Fx::new(&changes);
     std::fs::remove_dir_all(fx.path("big")).unwrap();
     assert_eq!(fx.examine(&names(&[("", "big")])).held, 61);
-    assert_eq!(fx.store.with(|s| s.outbox_release_held()).unwrap(), 1);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_release_held()).unwrap(), 1);
     fx.write("new.txt", b"n");
     let out = fx.examine(&names(&[("", "new.txt")]));
     assert_eq!(out.held, 0);
@@ -1104,7 +1108,7 @@ fn a_placeholder_moved_out_unseen_before_its_folder_was_deleted_is_a_move_out() 
     rows.sort();
     assert_eq!(rows, vec![(Delete, "Docs".into(), Some("D".into())), (MoveOut, "Docs/p.bin".into(), Some("P".into()))]);
     let (moved_out, deleted) = (seq_of(&fx, MoveOut, "Docs/p.bin"), seq_of(&fx, Delete, "Docs"));
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(deleted)).unwrap(), vec![moved_out]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(deleted)).unwrap(), vec![moved_out]);
 }
 
 /// R5: an item of a deleted folder alive elsewhere in the folder, where the
@@ -1125,7 +1129,7 @@ fn a_folder_whose_item_is_elsewhere_in_the_folder_waits_until_it_is_found() {
     rows.sort();
     assert_eq!(rows, vec![(Move, "other/x.txt".into(), Some("X".into())), (Delete, "docs".into(), Some("D".into()))]);
     let (moved, deleted) = (seq_of(&fx, Move, "other/x.txt"), seq_of(&fx, Delete, "docs"));
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(deleted)).unwrap(), vec![moved]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(deleted)).unwrap(), vec![moved]);
 }
 
 /// R6: an item being moved into a folder (its row running) that then left
@@ -1137,14 +1141,14 @@ fn a_running_move_into_a_folder_that_went_gets_its_own_follow_up() {
     fx.rename("x.txt", "docs/x.txt");
     fx.examine(&names(&[("", "x.txt"), ("docs", "x.txt")]));
     let running = seq_of(&fx, Move, "docs/x.txt");
-    fx.store.with(|s| s.outbox_set_state(running, OutboxState::Running, None, None)).unwrap();
+    fx.store.call_blocking(move |s| s.outbox_set_state(running, OutboxState::Running, None, None)).unwrap();
     let x = fx.handle("docs/x.txt");
     std::fs::rename(fx.path("docs/x.txt"), fx.outside.join("x.txt")).unwrap();
     fx.liveness.alive(x, fx.outside.join("x.txt"));
     std::fs::remove_dir_all(fx.path("docs")).unwrap();
     fx.examine(&names(&[("", "docs")]));
     let follow_up = seq_of(&fx, MoveOut, "docs/x.txt");
-    assert_eq!(fx.store.with(|s| s.outbox_blockers(follow_up)).unwrap(), vec![running]);
+    assert_eq!(fx.store.call_blocking(move |s| s.outbox_blockers(follow_up)).unwrap(), vec![running]);
     assert!(fx.rows().iter().any(|r| r.kind == Delete && r.item_id.as_deref() == Some("D")));
 }
 
@@ -1178,7 +1182,7 @@ fn a_subfolder_dragged_out_that_is_held_back_keeps_its_parent_from_being_deleted
         file("A", "S", "a.bin", b"only in the cloud"),
         file("B", "S", "b.bin", b"only in the cloud"),
     ]);
-    fx.store.with(|s| s.set_local_handle("A", None)).unwrap();
+    fx.store.call_blocking(move |s| s.set_local_handle("A", None)).unwrap();
     let (sub, b) = (fx.handle("Docs/Sub"), fx.handle("Docs/Sub/b.bin"));
     std::fs::rename(fx.path("Docs/Sub"), fx.outside.join("Sub")).unwrap();
     fx.liveness.alive(sub, fx.outside.join("Sub"));
@@ -1197,7 +1201,7 @@ fn a_subfolder_dragged_out_that_is_held_back_keeps_its_parent_from_being_deleted
 #[test]
 fn a_folder_with_an_item_that_has_no_handle_is_unproven_not_rechecked() {
     let fx = Fx::new(&[folder("D", "R", "docs"), file("X", "D", "x.txt", b"x"), file("Y", "D", "y.txt", b"y")]);
-    fx.store.with(|s| s.set_local_handle("X", None)).unwrap();
+    fx.store.call_blocking(move |s| s.set_local_handle("X", None)).unwrap();
     std::fs::remove_dir_all(fx.path("docs")).unwrap();
     let out = fx.examine(&names(&[("", "docs")]));
     assert!(fx.rows().is_empty());
@@ -1264,7 +1268,7 @@ fn w5_fixture_folder_replaced_offline_keeping_one_file() {
         );
         let row = |kind: OutboxKind| fx.rows().into_iter().find(|r| r.kind == kind).unwrap();
         let (mkdir, keep, delete, create) = (row(Mkdir), row(Move), row(Delete), row(Create));
-        let blockers = |seq: i64| fx.store.with(|s| s.outbox_blockers(seq)).unwrap();
+        let blockers = |seq: i64| fx.store.call_blocking(move |s| s.outbox_blockers(seq)).unwrap();
         assert!(blockers(mkdir.seq).is_empty(), "the name's wait closed a circle and was dropped");
         assert_eq!(blockers(keep.seq), vec![mkdir.seq]);
         assert_eq!(blockers(delete.seq), vec![keep.seq], "the old folder goes only after the keep has left it");
@@ -1279,7 +1283,7 @@ fn w5_fixture_folder_replaced_offline_keeping_one_file() {
         // The worker drives these rows against a fake OneDrive holding
         // what the base holds.
         if let Some(state) = freer {
-            fx.store.with(|s| s.outbox_set_state(delete.seq, state, Some("test"), Some(i64::MAX))).unwrap();
+            fx.store.call_blocking(move |s| s.outbox_set_state(delete.seq, state, Some("test"), Some(i64::MAX))).unwrap();
         }
         let h = Harness::new(&fx.root, &fx.store, &fx.locks);
         let never_deleted = |h: &Harness| {
@@ -1306,7 +1310,7 @@ fn w5_fixture_folder_replaced_offline_keeping_one_file() {
             let last = rows.iter().find(|r| r.kind == Move).expect("the final move");
             assert_eq!(last.base.as_ref().and_then(|b| b.name.as_deref()), Some(swap.as_str()), "its base: the temporary place");
             assert_eq!(blockers(last.seq), vec![delete.seq], "the final move waits for the delete");
-            fx.store.with(|s| s.outbox_set_state(delete.seq, OutboxState::Ready, None, None)).unwrap();
+            fx.store.call_blocking(move |s| s.outbox_set_state(delete.seq, OutboxState::Ready, None, None)).unwrap();
             h.run();
             never_deleted(&h);
         }

@@ -152,7 +152,7 @@ impl Folder {
         all.extend_from_slice(changes);
         let store = Store::new(TreeStore::open(&dir.path().join("tree.sqlite")).unwrap());
         store
-            .with(|s| {
+            .call_blocking(move |s| {
                 s.begin_staging(false)?;
                 s.stage(&all)
             })
@@ -171,7 +171,7 @@ impl Folder {
             claimed: None,
         };
         materializer.apply(Scope::Full).unwrap();
-        store.with(|s| s.commit_staging("link-1")).unwrap();
+        store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
         Folder { dir, root, store, liveness: FakeLiveness::new(), locks: InodeLocks::new() }
     }
 
@@ -193,7 +193,7 @@ impl Folder {
     }
 
     fn rows(&self) -> usize {
-        self.store.with(|s| s.outbox_rows()).unwrap().len()
+        self.store.call_blocking(move |s| s.outbox_rows()).unwrap().len()
     }
 }
 
@@ -254,7 +254,7 @@ fn full_scan_of_100000_items_and_30000_rows() {
         let handle = FileHandle::at(&dir, std::ffi::OsStr::new(&name)).ok();
         rows.push(new_row(OutboxKind::Create, &format!("new/{name}"), None, Inode { dev, ino, handle }, OutboxState::Ready, None));
     }
-    folder.store.with(|s| s.bench_insert(&rows)).unwrap();
+    folder.store.call_blocking(move |s| s.bench_insert(&rows)).unwrap();
     let (_, took) = timed("Full local scan: 100 000 items, 30 000 rows", || folder.examine(&Batch::full()));
     assert_eq!(folder.rows(), 30001);
     drop(folder.dir);
@@ -268,7 +268,8 @@ fn engine_with(rows: &[OutboxRow]) -> (tempfile::TempDir, Harness, Arc<crate::sy
     std::fs::create_dir(&path).unwrap();
     let root = SyncRoot { path, root_id: "5b0e2c7a-1d3f-4e8a-9b6c-0f1e2d3c4b5a".into() };
     let store = store_at(dir.path(), &[]);
-    store.with(|s| s.bench_insert(rows)).unwrap();
+    let rows = rows.to_vec();
+    store.call_blocking(move |s| s.bench_insert(&rows)).unwrap();
     let harness = Harness::new(&root, &store, &InodeLocks::new());
     let engine = harness.engine();
     (dir, harness, engine)
@@ -317,17 +318,17 @@ fn one_steps_own_work_is_flat() {
         let mut store = store_at(dir.path(), &[]);
         let rows: Vec<OutboxRow> =
             (0..n).map(|i| new_row(OutboxKind::Create, &format!("f{i:06}"), Some("R"), object(i), OutboxState::Ready, None)).collect();
-        store.with(|s| s.bench_insert(&rows)).unwrap();
+        store.call_blocking(move |s| s.bench_insert(&rows)).unwrap();
         let _ = &mut store;
         for pick in [n / 2, n / 2 + 1, n / 2 + 2] {
             let seq = pick as i64 + 1;
             let inode = object(pick);
             let answer = item(&format!("N{pick}"), Some("R"), &format!("f{pick:06}"), Kind::File);
             let (_, took) = timed(&format!("claim, locate and commit one row of {n}"), || {
-                let claimed = store.with(|s| s.outbox_claim(seq, OutboxState::Ready)).unwrap().unwrap();
-                let located = store.with(|s| s.outbox_for_inode(claimed.inode.as_ref().unwrap())).unwrap();
+                let claimed = store.call_blocking(move |s| s.outbox_claim(seq, OutboxState::Ready)).unwrap().unwrap();
+                let located = store.call_blocking(move |s| s.outbox_for_inode(claimed.inode.as_ref().unwrap())).unwrap();
                 assert_eq!(located.len(), 1);
-                store.with(|s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: inode.handle.as_ref() }, None)).unwrap();
+                store.call_blocking(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: inode.handle.as_ref() }, None)).unwrap();
             });
             worst = worst.max(took);
         }
@@ -363,10 +364,10 @@ fn the_summary_answers_while_an_apply_holds_the_store() {
     guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &[]);
-    store.with(|s| s.bench_insert(&mixed_rows()[..3000])).unwrap();
+    store.call_blocking(move |s| s.bench_insert(&mixed_rows()[..3000])).unwrap();
     let ops: Vec<OutboxOp> = (0..30_000u64).map(|i| OutboxOp::Record(create_detection(&format!("new/f{i:06}"), 1_000_000 + i))).collect();
     let applying = store.clone();
-    let apply = std::thread::spawn(move || timed("outbox_apply of 30 000 new files", || applying.with(|s| s.outbox_apply(&ops, TIME)).unwrap()));
+    let apply = std::thread::spawn(move || timed("outbox_apply of 30 000 new files", || applying.call_blocking(move |s| s.outbox_apply(&ops, TIME)).unwrap()));
     std::thread::sleep(Duration::from_millis(100));
     let root = Path::new("/nowhere/OneDrive");
     let (summary, took) = timed("the Not Uploaded summary during the apply", || summary_now(&store, root));
@@ -383,7 +384,7 @@ fn the_first_rows_and_files_of_a_reason() {
     guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &[]);
-    store.with(|s| s.bench_insert(&mixed_rows())).unwrap();
+    store.call_blocking(move |s| s.bench_insert(&mixed_rows())).unwrap();
     let root = Path::new("/nowhere/OneDrive");
     let (entries, first) = timed("Outbox(21) of 30 000", || {
         let rows = store.read_blocking(|s| s.outbox_first(21)).unwrap();
@@ -415,9 +416,9 @@ fn a_lookup_by_handle() {
     guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &[]);
-    store.with(|s| s.bench_insert(&many_rows())).unwrap();
+    store.call_blocking(move |s| s.bench_insert(&many_rows())).unwrap();
     let handle = object(77_777).handle.unwrap();
-    let (found, took) = timed("outbox_by_handle among 100 000", || store.with(|s| s.outbox_by_handle(&handle)).unwrap());
+    let (found, took) = timed("outbox_by_handle among 100 000", || store.call_blocking(move |s| s.outbox_by_handle(&handle)).unwrap());
     assert!(found.is_some());
     within("a lookup by handle", took, Duration::from_millis(1));
 }
@@ -429,10 +430,10 @@ fn a_folder_renamed() {
     guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &[]);
-    store.with(|s| s.bench_insert(&many_rows())).unwrap();
+    store.call_blocking(move |s| s.bench_insert(&many_rows())).unwrap();
     let rebase = [OutboxOp::Rebase { from: "moving".into(), to: "moved/here".into() }];
-    let (_, took) = timed("rebase of 1 000 rows among 100 000", || store.with(|s| s.outbox_apply(&rebase, TIME)).unwrap());
-    let under = store.with(|s| s.outbox_under(Path::new("moved/here"))).unwrap().len();
+    let (_, took) = timed("rebase of 1 000 rows among 100 000", || store.call_blocking(move |s| s.outbox_apply(&rebase, TIME)).unwrap());
+    let under = store.call_blocking(move |s| s.outbox_under(Path::new("moved/here"))).unwrap().len();
     assert_eq!(under, 1000);
     within("a rebase", took, Duration::from_millis(100));
 }
@@ -445,7 +446,7 @@ fn a_whole_table_read() {
     guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &[]);
-    store.with(|s| s.bench_insert(&mixed_rows())).unwrap();
-    let (rows, _) = timed("every row of 30 000", || store.with(|s| s.outbox_rows()).unwrap());
+    store.call_blocking(move |s| s.bench_insert(&mixed_rows())).unwrap();
+    let (rows, _) = timed("every row of 30 000", || store.call_blocking(move |s| s.outbox_rows()).unwrap());
     assert_eq!(rows.len(), 30_000);
 }

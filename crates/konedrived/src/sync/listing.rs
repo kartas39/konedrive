@@ -513,7 +513,7 @@ impl Listing {
         // Paused (`docs/design/writes.md` §11): no replacement starts; the next cycle after
         // the pause is Full, and finds them again.
         let store = self.ctx.store.clone();
-        let paused = tokio::task::spawn_blocking(move || crate::sync::upload::paused(&store).is_some()).await.unwrap_or(false);
+        let paused = crate::sync::upload::paused(&store).is_some();
         if paused && !applied.replacements.is_empty() {
             self.needs_full.store(true, Ordering::SeqCst);
         } else {
@@ -533,14 +533,16 @@ impl Listing {
         turn: &Turn,
         f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
     ) -> Result<T, CycleError> {
-        let (store, turn) = (self.ctx.store.clone(), Arc::clone(turn));
-        tokio::task::spawn_blocking(move || {
-            let _turn = turn;
-            store.with(f)
-        })
-        .await
-        .map_err(|e| CycleError::Store(format!("the store task failed: {e}")))?
-        .map_err(CycleError::from)
+        // The job holds the turn until it has run, whatever becomes of this future.
+        let turn = Arc::clone(turn);
+        self.ctx
+            .store
+            .call(move |s| {
+                let _turn = turn;
+                f(s)
+            })
+            .await
+            .map_err(CycleError::from)
     }
 
     /// At every cycle: a sign-out and a sign-in as someone else
@@ -829,13 +831,13 @@ impl Listing {
                     tracing::warn!("cannot record the drive on {}: {e}", root.path.display());
                 }
             }
-            let Some(root_item_id) = store.with(|s| s.root_item_id()).map_err(|e| applying(e.into()))? else {
+            let Some(root_item_id) = store.call_blocking(move |s| s.root_item_id()).map_err(|e| applying(e.into()))? else {
                 return match commit {
                     // Nothing on a page can be placed before the drive's
                     // root has come: it waits in `items` like any entry
                     // whose folder has not come yet.
                     Commit::Page { changes, next } => {
-                        store.with(|s| s.commit_page(&changes, &next))?;
+                        store.call_blocking(move |s| s.commit_page(&changes, &next))?;
                         Ok(Reconciled::default())
                     }
                     Commit::Swap { .. } => Err(CycleError::Apply("the drive's listing has no root".into())),
@@ -879,7 +881,7 @@ impl Listing {
             // where the files went.
             let said = match commit {
                 Commit::Swap { link, listing } => {
-                    store.with(|s| s.commit_staging(&link))?;
+                    store.call_blocking(move |s| s.commit_staging(&link))?;
                     if listing || full {
                         Said::Listed
                     } else {
@@ -887,7 +889,7 @@ impl Listing {
                     }
                 }
                 Commit::Page { changes, next } => {
-                    store.with(|s| s.commit_page(&changes, &next))?;
+                    store.call_blocking(move |s| s.commit_page(&changes, &next))?;
                     Said::Nothing
                 }
             };
@@ -1024,7 +1026,7 @@ impl Listing {
         };
         if matches!(outcome, ReplaceOutcome::Replaced) {
             // A new version is a new inode: the item's recorded one now.
-            super::local::record_replaced(&disk, &self.ctx.store, &replacement.id, &replacement.rel);
+            super::local::record_replaced_async(&disk, &self.ctx.store, &replacement.id, &replacement.rel).await;
             slot.succeeded();
         }
         outcome
@@ -1135,7 +1137,7 @@ fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Appl
     let folder = root.display().to_string();
     let mut events = match said {
         Said::Listed => {
-            let listed = match store.with(|s| s.counts(Table::Items)) {
+            let listed = match store.call_blocking(move |s| s.counts(Table::Items)) {
                 Ok(counts) => counts.listed,
                 Err(e) => {
                     tracing::warn!("cannot count what was listed: {e}");
@@ -1235,7 +1237,7 @@ async fn held_back(listing: &Listing) -> bool {
         return false;
     }
     let store = listing.ctx.store.clone();
-    let waiting = tokio::task::spawn_blocking(move || store.with(|s| s.outbox_len())).await.ok().and_then(Result::ok);
+    let waiting = tokio::task::spawn_blocking(move || store.call_blocking(move |s| s.outbox_len())).await.ok().and_then(Result::ok);
     let note = match waiting {
         Some(0) => String::new(),
         Some(n) => format!(
@@ -1257,7 +1259,7 @@ async fn run(listing: Arc<Listing>, schedule: Schedule, refresh: Arc<Notify>, ca
         // Paused (`docs/design/writes.md` §11): OneDrive is not asked, so nothing is
         // replaced either, until the pause ends or `Resume()` nudges.
         let store = listing.ctx.store.clone();
-        let paused = tokio::task::spawn_blocking(move || crate::sync::upload::paused(&store)).await.ok().flatten();
+        let paused = crate::sync::upload::paused(&store);
         if let Some(until) = paused {
             let left = if until == 0 { schedule.interval } else { Duration::from_secs((until - crate::sync::activity::unix_now()).max(1) as u64) };
             tokio::select! {
@@ -1385,7 +1387,7 @@ mod tests {
         let state = SyncStateHandle::new(SyncSnapshot { root_path: folder.display().to_string(), ..SyncSnapshot::default() });
         let report = Report::new(state.clone());
         let pins = Pins::detached(state.clone());
-        report.activity.attach(store.clone(), &folder);
+        crate::tree::off_runtime(|| report.activity.attach(store.clone(), &folder));
         let helper = tempfile::tempdir().unwrap();
         let socket_path = helper.path().join("helper.sock");
         recording_helper(&socket_path);
@@ -1437,7 +1439,7 @@ mod tests {
 
         /// Every event recorded so far, oldest first, as (kind, path, detail).
         fn activity(&self) -> Vec<(String, String, String)> {
-            let mut events = self.report.activity.recent(1000).unwrap();
+            let mut events = crate::tree::off_runtime(|| self.report.activity.recent(1000)).unwrap();
             events.reverse();
             events.into_iter().map(|e| (e.kind, e.path, e.detail)).collect()
         }
@@ -1749,7 +1751,7 @@ mod tests {
             .mount(&s.server).await;
         s.listing().cycle(&CancellationToken::new()).await.unwrap();
         assert!(s.root.path.join("docs/f.txt").is_file());
-        assert_eq!(s.store.run(|t| t.delta_link()).await.unwrap(), Some(s.link("L1")));
+        assert_eq!(s.store.call(|t| t.delta_link()).await.unwrap(), Some(s.link("L1")));
         let snapshot = s.state.get();
         assert!(!snapshot.listing);
         assert_eq!((snapshot.items_listed, snapshot.items_placed, snapshot.skipped_count), (3, 2, 1));
@@ -1765,7 +1767,7 @@ mod tests {
         let report = listing.cycle(&CancellationToken::new()).await.unwrap();
         assert!(!report.full);
         assert!(s.root.path.join("docs/renamed.txt").is_file());
-        assert_eq!(s.store.run(|t| t.delta_link()).await.unwrap(), Some(s.link("L2")));
+        assert_eq!(s.store.call(|t| t.delta_link()).await.unwrap(), Some(s.link("L2")));
     }
 
     #[tokio::test]
@@ -1781,7 +1783,7 @@ mod tests {
         let report = listing.cycle(&CancellationToken::new()).await.unwrap();
         assert_eq!((report.full, report.changes), (false, 0));
         assert_eq!(ctime(s.root.path.join("docs")), before);
-        assert_eq!(s.store.run(|t| t.delta_link()).await.unwrap(), Some(s.link("L2")));
+        assert_eq!(s.store.call(|t| t.delta_link()).await.unwrap(), Some(s.link("L2")));
     }
 
     /// A feed that has expired is listed again, and what the new
@@ -1798,7 +1800,7 @@ mod tests {
         let report = listing.cycle(&CancellationToken::new()).await.unwrap();
         assert!(report.full);
         assert!(!s.root.path.join("docs/f.txt").exists());
-        assert_eq!(s.store.run(|t| t.delta_link()).await.unwrap(), Some(s.link("L9")));
+        assert_eq!(s.store.call(|t| t.delta_link()).await.unwrap(), Some(s.link("L9")));
     }
 
     #[tokio::test]
@@ -1869,7 +1871,7 @@ mod tests {
     #[tokio::test]
     async fn another_account_blocks_the_folder_and_touches_nothing() {
         let s = setup().await;
-        s.store.run(|t| t.set_meta("drive_id", Some("D0"))).await.unwrap();
+        s.store.call(|t| t.set_meta("drive_id", Some("D0"))).await.unwrap();
         s.feed(None, json!([root_item(), folder("D", "R", "docs")]), "L1").await;
         // The account hears which drive its token reaches.
         let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
@@ -1969,7 +1971,7 @@ mod tests {
         let docs = s.root.path.join("docs");
         let mut staged = false;
         for _ in 0..100 {
-            staged = s.store.run(|t| t.get(Table::Staging, "D")).await.unwrap().is_some();
+            staged = s.store.call(|t| t.get(Table::Staging, "D")).await.unwrap().is_some();
             if staged || docs.exists() {
                 break;
             }
@@ -2045,7 +2047,7 @@ mod tests {
         let kept = &report.applied.rescued[0].rescued;
         assert!(kept.starts_with(&beside), "{}", kept.display());
         assert_eq!(std::fs::read(kept).unwrap(), b"mine");
-        let conflicts = s.report.activity.conflicts().unwrap();
+        let conflicts = crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
         assert_eq!(conflicts.len(), 1);
         assert_eq!(conflicts[0].rescued, kept.display().to_string());
         assert!(!conflicts[0].rescued.starts_with(&preferred.display().to_string()));
@@ -2222,13 +2224,13 @@ mod tests {
                 Rescued { original: format!("docs/f{n:02}.txt").into(), rescued: at }
             })
             .collect();
-        record(&s.report, &s.store, &s.root.path, &Applied { rescued, ..Applied::default() }, Said::EachChange);
+        crate::tree::off_runtime(|| record(&s.report, &s.store, &s.root.path, &Applied { rescued, ..Applied::default() }, Said::EachChange));
 
         let folder = s.root.path.display().to_string();
         let events = s.activity();
         assert_eq!(events.iter().filter(|(kind, at, _)| kind == "conflict" && *at != folder).count(), 50);
         assert!(events.contains(&("conflict".to_owned(), folder, "and 3 more".to_owned())), "{events:?}");
-        assert_eq!(s.report.activity.conflicts().unwrap().len(), 53, "every conflict is still listed");
+        assert_eq!(crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap().len(), 53, "every conflict is still listed");
     }
 
     /// A Changed pass that moves a local file out of
@@ -2249,7 +2251,7 @@ mod tests {
         assert!(report.full, "the Changed pass handed over to a Full one");
 
         let original = s.full("top.txt");
-        let rows = s.report.activity.conflicts().unwrap();
+        let rows = crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
         assert_eq!(rows.iter().map(|c| c.original.as_str()).collect::<Vec<_>>(), vec![original.as_str()]);
         assert_eq!(std::fs::read(&rows[0].rescued).unwrap(), b"mine");
         assert!(s.activity().contains(&("conflict".to_owned(), original, rows[0].rescued.clone())), "{:?}", s.activity());
@@ -2309,7 +2311,7 @@ mod tests {
         let rescued = report.applied.rescued[0].rescued.display().to_string();
         let original = s.full("docs/new.txt");
 
-        let conflicts = s.report.activity.conflicts().unwrap();
+        let conflicts = crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
         let rows: Vec<_> = conflicts.iter().map(|c| (c.original.clone(), c.rescued.clone())).collect();
         assert_eq!(rows, vec![(original.clone(), rescued.clone())]);
         assert_eq!(s.state.get().conflict_count, 1);
@@ -2324,7 +2326,7 @@ mod tests {
         s.feed(Some("L2"), json!([]), "L3").await;
         listing.cycle(&CancellationToken::new()).await.unwrap();
         assert_eq!(s.state.get().conflict_count, 0, "a conflict whose file is gone drops off by the next cycle");
-        assert!(s.report.activity.conflicts().unwrap().is_empty());
+        assert!(crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap().is_empty());
     }
 
     /// `LastChecked` is when a cycle last succeeded — kept in the
@@ -2336,7 +2338,7 @@ mod tests {
         let listing = listed(&s).await;
         let checked = s.state.get().last_checked;
         assert!(checked >= before, "{checked} < {before}");
-        assert_eq!(s.store.with(|x| x.meta("last_checked")).unwrap(), Some(checked.to_string()));
+        assert_eq!(s.store.call(move |x| x.meta("last_checked")).await.unwrap(), Some(checked.to_string()));
 
         // Marked, so that a failed cycle writing the time it ran — the same
         // second, most likely — could not pass for leaving it alone.
@@ -2614,7 +2616,7 @@ mod tests {
         first.unwrap();
         second.unwrap();
         assert!(s.root.path.join("new").is_dir());
-        assert_eq!(s.store.run(|t| t.delta_link()).await.unwrap(), Some(s.link("L3")));
+        assert_eq!(s.store.call(|t| t.delta_link()).await.unwrap(), Some(s.link("L3")));
     }
 
     /// A cycle dropped while its reconcile runs keeps the lifecycle lock, and
@@ -2683,8 +2685,8 @@ mod tests {
         let snapshot = s.state.get();
         assert!(snapshot.listing, "the listing is still said to run");
         assert_eq!((snapshot.items_listed, snapshot.items_placed), (3, 3));
-        assert_eq!(s.store.with(|t| t.listing_next()).unwrap(), Some(s.link("P2")));
-        assert_eq!(s.store.with(|t| t.delta_link()).unwrap(), None);
+        assert_eq!(s.store.call(move |t| t.listing_next()).await.unwrap(), Some(s.link("P2")));
+        assert_eq!(s.store.call(move |t| t.delta_link()).await.unwrap(), None);
         assert!(s.activity().is_empty(), "the one `listed` event comes at the end: {:?}", s.activity());
 
         cancel.cancel();
@@ -2759,7 +2761,7 @@ mod tests {
         let from = |t: &str| Some(t.to_owned());
         assert_eq!(s.delta_tokens().await, [None, from("P2"), from("P3"), from("P3")], "pages 1 and 2 are not asked for again");
         assert_eq!(tree_of(&s.root.path), ["docs", "docs/f.txt", "extra"]);
-        assert_eq!(s.store.with(|t| Ok((t.delta_link()?, t.listing_next()?))).unwrap(), (Some(s.link("L1")), None));
+        assert_eq!(s.store.call(move |t| Ok((t.delta_link()?, t.listing_next()?))).await.unwrap(), (Some(s.link("L1")), None));
         let folder = s.root.path.display().to_string();
         assert_eq!(s.activity(), vec![("listed".to_owned(), folder, "3 items".to_owned())]);
         let snapshot = s.state.get();
@@ -2790,12 +2792,12 @@ mod tests {
 
             assert!(report.full, "{refusal}");
             assert!(report.applied.rescued.is_empty(), "{refusal}: {:?}", report.applied.rescued);
-            assert!(s.report.activity.conflicts().unwrap().is_empty(), "{refusal}");
+            assert!(crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap().is_empty(), "{refusal}");
             assert_eq!(tree_of(&s.root.path), ["docs", "docs/f.txt", "extra"], "{refusal}");
             assert_eq!(ino(&s.root.path.join("docs/f.txt")), placed, "{refusal}: the placeholder was found, not made again");
             let from = |t: &str| Some(t.to_owned());
             assert_eq!(s.delta_tokens().await, [None, from("P2"), from("P2"), None], "{refusal}");
-            assert_eq!(s.store.with(|t| Ok((t.delta_link()?, t.listing_next()?))).unwrap(), (Some(s.link("L1")), None), "{refusal}");
+            assert_eq!(s.store.call(move |t| Ok((t.delta_link()?, t.listing_next()?))).await.unwrap(), (Some(s.link("L1")), None), "{refusal}");
             let folder = s.root.path.display().to_string();
             assert_eq!(s.activity(), vec![("listed".to_owned(), folder, "3 items".to_owned())], "{refusal}");
         }
@@ -2814,7 +2816,7 @@ mod tests {
         let listing = s.listing();
         let err = within(listing.cycle(&CancellationToken::new())).await.unwrap_err();
         assert!(matches!(err, CycleError::Offline(_)), "{err:?}");
-        assert_eq!(s.store.with(|t| t.listing_next()).unwrap(), Some(s.link("P2")), "still page by page, at page 2");
+        assert_eq!(s.store.call(move |t| t.listing_next()).await.unwrap(), Some(s.link("P2")), "still page by page, at page 2");
         assert_eq!(tree_of(&s.root.path), ["docs"]);
 
         s.feed(Some("P2"), json!([folder("E", "R", "extra")]), "L1").await;
@@ -2822,7 +2824,7 @@ mod tests {
         let from = |t: &str| Some(t.to_owned());
         assert_eq!(s.delta_tokens().await, [None, from("P2"), from("P2")], "page 1 is not asked for again");
         assert_eq!(tree_of(&s.root.path), ["docs", "extra"]);
-        assert_eq!(s.store.with(|t| Ok((t.delta_link()?, t.listing_next()?))).unwrap(), (Some(s.link("L1")), None));
+        assert_eq!(s.store.call(move |t| Ok((t.delta_link()?, t.listing_next()?))).await.unwrap(), (Some(s.link("L1")), None));
     }
 
     /// Only the first listing is placed page by page (Ruling 2 of):
@@ -2839,7 +2841,7 @@ mod tests {
         within(asked.recv()).await.unwrap();
 
         assert!(!s.root.path.join("new").exists(), "nothing of the delta is placed before all of it is in");
-        assert_eq!(s.store.with(|t| Ok((t.delta_link()?, t.listing_next()?))).unwrap(), (Some(s.link("L1")), None));
+        assert_eq!(s.store.call(move |t| Ok((t.delta_link()?, t.listing_next()?))).await.unwrap(), (Some(s.link("L1")), None));
         cancel.cancel();
         assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
     }
@@ -2895,7 +2897,7 @@ mod tests {
         cancel.cancel();
         release.send(()).unwrap();
         assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
-        assert_eq!(s.store.with(|t| t.listing_next()).unwrap(), Some(s.link("P2")), "page 2 was not committed");
+        assert_eq!(s.store.call(move |t| t.listing_next()).await.unwrap(), Some(s.link("P2")), "page 2 was not committed");
         assert_eq!(tree_of(&s.root.path), ["docs", "g"], "g was placed before the stop was seen");
         let g = ino(&s.root.path.join("g"));
 
@@ -2971,7 +2973,7 @@ mod tests {
         assert_eq!(seen.lock().unwrap().take().expect("page 2 was asked for"), ["docs", "docs/f.txt"], "nothing changed part-way");
         assert_eq!(tree_of(&s.root.path), ["docs", "docs/f.txt", "extra"]);
         assert_eq!(ino(&s.root.path.join("docs/f.txt")), placed);
-        assert_eq!(fresh.with(|t| t.delta_link()).unwrap(), Some(s.link("L2")));
+        assert_eq!(fresh.call(move |t| t.delta_link()).await.unwrap(), Some(s.link("L2")));
     }
 
     /// A rescue made while a page is placed is a conflict at once (spec
@@ -2987,7 +2989,7 @@ mod tests {
         let running = spawn_cycle(&s.listing(), &cancel);
         within(asked.recv()).await.unwrap();
 
-        let conflicts = s.report.activity.conflicts().unwrap();
+        let conflicts = crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
         assert_eq!(conflicts.iter().map(|c| c.original.clone()).collect::<Vec<_>>(), [s.full("docs")]);
         assert_eq!(std::fs::read(&conflicts[0].rescued).unwrap(), b"mine");
         assert!(s.activity().contains(&("conflict".to_owned(), s.full("docs"), conflicts[0].rescued.clone())), "{:?}", s.activity());

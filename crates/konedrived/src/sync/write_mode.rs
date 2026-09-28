@@ -421,7 +421,7 @@ impl SyncService {
         // it forgets here.
         let tree = self.tree_lock.lock().await;
         let dropped = tokio::task::spawn_blocking(move || {
-            let rows = dropping.with(|s| {
+            let rows = dropping.call_blocking(move |s| {
                 let mut rows = upload::move_out::drop_rows(s)?;
                 rows.extend(s.outbox_drop_all()?);
                 Ok(rows)
@@ -517,7 +517,7 @@ impl SyncService {
         let running = self.store.lock().unwrap().clone();
         if let Some(store) = running {
             return store
-                .run(|s| s.outbox_len())
+                .call(|s| s.outbox_len())
                 .await
                 .map(|n| n as u64)
                 .map_err(|e| SyncError::Io(format!("cannot tell whether changes wait to be uploaded: {e}")));
@@ -526,7 +526,7 @@ impl SyncService {
         if !tree_db.exists() {
             return Ok(0);
         }
-        let counted = tokio::task::spawn_blocking(move || crate::tree::TreeStore::open(&tree_db).and_then(|s| s.outbox_len()))
+        let counted = tokio::task::spawn_blocking(move || crate::tree::TreeStore::open_read_only(&tree_db).and_then(|s| s.outbox_len()))
             .await
             .map_err(|e| e.to_string())
             .and_then(|rows| rows.map_err(|e| e.to_string()));
@@ -558,7 +558,7 @@ impl PendingUploads for SyncService {
         // Read with the lifecycle lock held, as every clone of the store outside the sync is.
         let _lifecycle = self.lifecycle.read().await;
         let Some(store) = self.store.lock().unwrap().clone() else { return 0 };
-        store.run(|s| s.outbox_len()).await.map_or(0, |n| n as u64)
+        store.call(|s| s.outbox_len()).await.map_or(0, |n| n as u64)
     }
 
     /// A forced switch to read-only drops the outbox's rows (`docs/design/writes.md`

@@ -166,7 +166,7 @@ impl Base {
             changes.push(Change::Upsert(base_row(id, Some(parent.unwrap_or(&home_id)), name, *kind, *size)));
         }
         store
-            .with(|s| {
+            .call_blocking(move |s| {
                 s.begin_staging(false)?;
                 s.stage(&changes)?;
                 s.commit_staging("link-move-out")
@@ -176,7 +176,7 @@ impl Base {
         placed.extend(items.iter().map(|(id, _, rel, _, _)| (*id, *rel)));
         for (id, rel) in placed {
             let handle = handle_of(&ctx.root.join(rel))?;
-            store.with(|s| s.set_local_handle(id, Some(&handle))).map_err(|e| e.to_string())?;
+            store.call_blocking({ let id = id.to_owned(); move |s| s.set_local_handle(&id, Some(&handle)) }).map_err(|e| e.to_string())?;
         }
         Ok(Self { store, link: Arc::new(Mutex::new(Some(ctx.link()?))) })
     }
@@ -194,7 +194,7 @@ impl Base {
         Examiner { disk: &disk, store: &self.store, liveness: &liveness, ignore: &ignore, locks: &ctx.locks, now }
             .examine(&batch)
             .map_err(|e| format!("the examination failed: {e}"))?;
-        let rows = self.store.with(|s| s.outbox_rows()).map_err(|e| e.to_string())?;
+        let rows = self.store.call_blocking(move |s| s.outbox_rows()).map_err(|e| e.to_string())?;
         Ok(rows.into_iter().map(|r| (r.kind, r.item_id)).collect())
     }
 
@@ -238,7 +238,7 @@ impl Base {
     fn drained(&self, within: Duration) -> Result<(), String> {
         let started = Instant::now();
         loop {
-            let rows = self.store.with(|s| s.outbox_rows()).map_err(|e| e.to_string())?;
+            let rows = self.store.call_blocking(move |s| s.outbox_rows()).map_err(|e| e.to_string())?;
             if rows.is_empty() {
                 return Ok(());
             }
@@ -457,7 +457,7 @@ pub fn crash_mid_download_then_restart(ctx: &Ctx, checks: &mut Checks) -> Result
     ctx.source.fail_once.store(false, Ordering::SeqCst);
     let worker = base.worker(ctx, &url, false)?;
     let failed = wait_for("a failed download", WITHIN, || {
-        base.store.with(|s| s.outbox_rows()).is_ok_and(|rows| {
+        base.store.call_blocking(move |s| s.outbox_rows()).is_ok_and(|rows| {
             rows.iter().any(|r| r.state == OutboxState::Retry && r.reason.as_deref().is_some_and(|w| w.starts_with("download-failed")))
         })
     });
@@ -484,7 +484,7 @@ pub fn crash_mid_download_then_restart(ctx: &Ctx, checks: &mut Checks) -> Result
     if dir_mark_present(ctx.helper_pid(), ino) {
         return Err("the restarted helper still marks the file; the check proves nothing".into());
     }
-    base.store.with(|s| s.outbox_retry_now()).map_err(|e| e.to_string())?;
+    base.store.call_blocking(move |s| s.outbox_retry_now()).map_err(|e| e.to_string())?;
     let worker = base.worker(ctx, &url, true)?;
     let outcome = (|| {
         wait_for("the re-mark after the restart", Duration::from_secs(10), || dir_mark_present(ctx.helper_pid(), ino))?;

@@ -235,16 +235,16 @@ impl Listing {
                     tracing::warn!("cannot record the drive on {}: {e}", root.path.display());
                 }
             }
-            let Some(root_item_id) = store.with(|s| s.root_item_id()).map_err(|e| applying(e.into()))? else {
+            let Some(root_item_id) = store.call_blocking(move |s| s.root_item_id()).map_err(|e| applying(e.into()))? else {
                 return match commit {
                     Commit::Page { changes, next } => {
-                        store.with(|s| s.commit_page(&changes, &next))?;
+                        store.call_blocking(move |s| s.commit_page(&changes, &next))?;
                         Ok(Reconciled::default())
                     }
                     Commit::Swap { .. } => Err(CycleError::Apply("the drive's listing has no root".into())),
                 };
             };
-            let plan = store.with(|s| Rw::read(s, machine, upload_differences, ignore))?;
+            let plan = store.call_blocking(move |s| Rw::read(s, machine, upload_differences, ignore))?;
             let materializer = Materializer {
                 disk: Disk::open(&root, locked).map_err(|e| applying(e.into()))?,
                 store: store.clone(),
@@ -283,7 +283,7 @@ impl Listing {
                 Commit::Swap { link, listing } => {
                     // What the disk does not show yet keeps its base; its
                     // change waits (the read-write reconcile must, items 3 and 4).
-                    let changed = store.with(|s| s.changed_ids())?;
+                    let changed = store.call_blocking(move |s| s.changed_ids())?;
                     let defer: Vec<String> = changed
                         .iter()
                         .filter(|id| !plan.removing.contains(*id) && (plan.held.contains(*id) || applied.unsettled.contains(*id)))
@@ -298,7 +298,7 @@ impl Listing {
                     if !defer.is_empty() || !content.is_empty() {
                         tracing::debug!("{} change(s) wait for the folder to take them", defer.len() + content.len());
                     }
-                    store.with(|s| s.commit_staging_deferring(&link, &consumed, &defer, &content, fetch_seq))?;
+                    store.call_blocking(move |s| s.commit_staging_deferring(&link, &consumed, &defer, &content, fetch_seq))?;
                     if listing || full {
                         Said::Listed
                     } else {
@@ -306,13 +306,14 @@ impl Listing {
                     }
                 }
                 Commit::Page { changes, next } => {
-                    store.with(|s| s.commit_page(&changes, &next))?;
+                    store.call_blocking(move |s| s.commit_page(&changes, &next))?;
                     Said::Nothing
                 }
             };
             if !applied.recreated.is_empty() {
                 // Rows into a folder made again wait for its `mkdir` (F82 (4)).
-                if let Err(e) = store.with(|s| s.outbox_detach_parents(&applied.recreated)) {
+                let recreated = applied.recreated.clone();
+                if let Err(e) = store.call_blocking(move |s| s.outbox_detach_parents(&recreated)) {
                     tracing::warn!("cannot let the outbox wait for folders made again: {e}");
                 }
             }
@@ -320,7 +321,7 @@ impl Listing {
             // `delete`/`move-out` row whose item is not in it any more has
             // nothing left to send (the fix for a held delete outliving the
             // item's own removal in OneDrive).
-            match store.with(|s| s.outbox_drop_removed()) {
+            match store.call_blocking(move |s| s.outbox_drop_removed()) {
                 Ok(dropped) if !dropped.is_empty() => {
                     let events = dropped
                         .iter()

@@ -768,7 +768,10 @@ the outbox changes, at most once a second. The lists (`Outbox(limit)`, `NotUploa
 limit)`, `NotUploaded()`) are read with a `LIMIT` through a second, read-only connection to the tree
 store, which in WAL mode reads the last committed state and never waits for a writer: an
 examination recording thousands of rows, or a cycle's commit, never makes the bus wait. No answer
-reads a file's size from the disk.
+reads a file's size from the disk. The tree store itself is owned by one thread per account, the only one with a
+read-write connection to it: every other part of the daemon sends it jobs over a channel and
+waits for the answer (`store.call`), so a long store operation delays only the store's own queue,
+never the async runtime or the bus.
 
 **Pause** stops the account's outbox, its poll (so no cycle and no replacement) and its thumbnails;
 fills on open, `Hydrate` and the watcher go on, so rows keep collecting. It is kept in the tree

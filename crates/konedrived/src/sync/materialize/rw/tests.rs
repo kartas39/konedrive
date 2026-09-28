@@ -78,13 +78,13 @@ impl Fx {
             rescue: tempfile::tempdir().unwrap(),
             runtime: tokio::runtime::Runtime::new().unwrap(),
         };
-        fx.store.with(|s| {
+        fx.store.call_blocking(move |s| {
             s.begin_staging(false)?;
             s.stage(&tree())
         })
         .unwrap();
         fx.materializer(None).apply(Scope::Full).unwrap();
-        fx.store.with(|s| s.commit_staging("link-1")).unwrap();
+        fx.store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
         fx
     }
 
@@ -108,11 +108,12 @@ impl Fx {
     /// and committed as a read-write cycle commits: what the disk does not
     /// show keeps its base, and its change waits.
     fn cycle(&self, changes: &[Change], full: bool) -> Result<Applied, ApplyError> {
+        let staged = changes.to_vec();
         let (ids, plan) = self
             .store
-            .with(|s| {
+            .call_blocking(move |s| {
                 s.begin_staging(true)?;
-                s.stage(changes)?;
+                s.stage(&staged)?;
                 let mut ids = s.changed_ids()?;
                 ids.extend(s.unplaced(Table::Staging)?);
                 Ok((ids, Rw::read(s, "fedora".into(), false, IgnoreList::default())?))
@@ -120,7 +121,7 @@ impl Fx {
             .unwrap();
         let scope = if full { Scope::Full } else { Scope::Changed(ids) };
         let applied = self.materializer(Some(plan.clone())).apply(scope)?;
-        let changed = self.store.with(|s| s.changed_ids()).unwrap();
+        let changed = self.store.call_blocking(move |s| s.changed_ids()).unwrap();
         let defer: Vec<String> = changed
             .iter()
             .filter(|id| !plan.removing.contains(*id) && (plan.held.contains(*id) || applied.unsettled.contains(*id)))
@@ -131,7 +132,7 @@ impl Fx {
             .filter(|id| !plan.removing.contains(*id) && !defer.contains(id) && applied.content_waits.contains(*id))
             .cloned()
             .collect();
-        self.store.with(|s| s.commit_staging_deferring("link-2", &[], &defer, &content, 0)).unwrap();
+        self.store.call_blocking(move |s| s.commit_staging_deferring("link-2", &[], &defer, &content, 0)).unwrap();
         Ok(applied)
     }
 
@@ -141,7 +142,7 @@ impl Fx {
 
     /// A live outbox row of `kind` for `id` (None: something new) at `rel`.
     fn row(&self, kind: OutboxKind, id: Option<&str>, rel: &str) {
-        let base = id.and_then(|id| self.store.with(|s| s.get(Table::Items, id)).unwrap()).map(|r| Base {
+        let base = id.and_then(|id| { let id = id.to_owned(); self.store.call_blocking(move |s| s.get(Table::Items, &id)).unwrap() }).map(|r| Base {
             etag: r.etag,
             ctag: r.ctag,
             parent: r.parent_id,
@@ -162,15 +163,15 @@ impl Fx {
             next_try: None,
             size: None,
         };
-        self.store.with(|s| s.outbox_record(&detection)).unwrap();
+        self.store.call_blocking(move |s| s.outbox_record(&detection)).unwrap();
     }
 
     fn base(&self, id: &str) -> Option<Row> {
-        self.store.with(|s| s.get(Table::Items, id)).unwrap()
+        { let id = id.to_owned(); self.store.call_blocking(move |s| s.get(Table::Items, &id)).unwrap() }
     }
 
     fn deferred(&self, id: &str) -> Option<Change> {
-        self.store.with(|s| s.deferred(id)).unwrap()
+        { let id = id.to_owned(); self.store.call_blocking(move |s| s.deferred(&id)).unwrap() }
     }
 }
 
@@ -255,16 +256,16 @@ fn a_missing_item_is_placed_again_only_with_something_to_place() {
     assert!(!fx.path("docs/f.txt").exists(), "a delete not examined yet is not undone");
 
     // The outbox forgets the object once OneDrive's change won: then it comes back.
-    fx.store.with(|s| s.set_local_handle("T", None)).unwrap();
+    fx.store.call_blocking(move |s| s.set_local_handle("T", None)).unwrap();
     fx.cycle(&[file("T", "R", "top.txt", "c2")], false).unwrap();
     assert_eq!(id_at(&fx.path("top.txt")).as_deref(), Some("T"), "changed in OneDrive: it comes back");
     assert_eq!(placeholder::read_state(&File::open(fx.path("top.txt")).unwrap()).unwrap(), Some(State::OnlineOnly));
 
     // F82 (8): an item the outbox forgot (its local object dropped) is placed again.
-    fx.store.with(|s| s.set_local_handle("F", None)).unwrap();
+    fx.store.call_blocking(move |s| s.set_local_handle("F", None)).unwrap();
     fx.cycle(&[], false).unwrap();
     assert_eq!(id_at(&fx.path("docs/f.txt")).as_deref(), Some("F"));
-    assert!(fx.store.with(|s| s.local_handle("F")).unwrap().is_some(), "and its object recorded again");
+    assert!(fx.store.call_blocking(move |s| s.local_handle("F")).unwrap().is_some(), "and its object recorded again");
 }
 
 /// §3.7, §6 create/create: a file of the user's where a new item arrives is

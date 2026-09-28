@@ -2232,11 +2232,11 @@ impl SyncService {
         // A read-only folder that still holds changes waiting to upload (a switch nobody
         // forced) runs no cycle while they wait: what a read-write cycle
         // deferred stays deferred for the read-write cycle that sends them.
-        let waiting = !writable && store.run(|s| s.outbox_len()).await.map_or(true, |n| n > 0);
+        let waiting = !writable && store.call(|s| s.outbox_len()).await.map_or(true, |n| n > 0);
         if !writable && !waiting {
             // Changes a read-write cycle deferred are the base's now: a read-only cycle knows
             // none. Nothing at all for a folder that never was read-write.
-            match store.run(|s| s.apply_deferred()).await {
+            match store.call(|s| s.apply_deferred()).await {
                 Ok(0) => {}
                 Ok(n) => tracing::info!("{n} change(s) from OneDrive that waited for local changes are applied now"),
                 Err(e) => tracing::warn!("cannot apply the changes from OneDrive that waited: {e}"),
@@ -2249,7 +2249,7 @@ impl SyncService {
         let (report, attached, folder) = (self.report.clone(), store.clone(), reg.root.path.clone());
         let last_checked = tokio::task::spawn_blocking(move || {
             report.activity.attach(attached.clone(), &folder);
-            attached.with(|s| s.meta("last_checked")).ok().flatten().and_then(|v| v.parse::<i64>().ok())
+            attached.call_blocking(move |s| s.meta("last_checked")).ok().flatten().and_then(|v| v.parse::<i64>().ok())
         })
         .await
         .ok()
@@ -2995,7 +2995,7 @@ impl SyncService {
         let Some(store) = self.store.lock().unwrap().clone() else { return Ok(Vec::new()) };
         let skipped = tokio::task::spawn_blocking(move || {
             let _lifecycle = lifecycle;
-            store.with(|s| s.skipped(crate::tree::Table::Items))
+            store.call_blocking(move |s| s.skipped(crate::tree::Table::Items))
         })
         .await
         .map_err(|e| SyncError::Io(format!("the store task failed: {e}")))?
@@ -8458,7 +8458,7 @@ mod tests {
             // `sqlite3` say — so that the daemon's connection is not the last
             // one: SQLite then leaves its journal files when that closes, and
             // only the Forget itself removes them.
-            let reader = rusqlite::Connection::open(w.config.path().join("tree.sqlite")).unwrap();
+            let reader = rusqlite::Connection::open_with_flags(w.config.path().join("tree.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
             reader.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0)).unwrap();
             for name in ["tree.sqlite-wal", "tree.sqlite-shm"] {
                 assert!(w.config.path().join(name).exists(), "no {name} to remove");
@@ -9027,7 +9027,7 @@ mod tests {
                 next_try: None,
                 size: None,
             };
-            store.with(|s| s.outbox_record(&change)).unwrap();
+            store.call(move |s| s.outbox_record(&change)).await.unwrap();
 
             let rows = service.outbox(0).await.unwrap();
             assert_eq!(rows.len(), 1);
@@ -9054,13 +9054,13 @@ mod tests {
             assert_eq!(std::fs::read(&file).unwrap(), b"abc", "still downloaded");
 
             let seq = rows[0].0 as i64;
-            store.with(|s| s.outbox_set_state(seq, OutboxState::Blocked, Some("name-characters"), None)).unwrap();
+            store.call(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some("name-characters"), None)).await.unwrap();
             assert_eq!(service.not_uploaded().await.unwrap(), vec![(file.display().to_string(), "name-characters".to_owned())]);
 
-            store.with(|s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
+            store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).await.unwrap();
             assert_eq!(service.confirm_deletes().await.unwrap(), 1);
             assert_eq!(service.outbox(0).await.unwrap()[0].3, "ready");
-            store.with(|s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
+            store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).await.unwrap();
             assert_eq!(service.restore_deletes().await.unwrap(), 1);
             assert!(service.outbox(0).await.unwrap().is_empty());
             service.stop_sync().await;
@@ -9092,7 +9092,7 @@ mod tests {
                 next_try: None,
                 size: Some(3),
             };
-            store.with(|s| s.outbox_record(&blocked)).unwrap();
+            store.call(move |s| s.outbox_record(&blocked)).await.unwrap();
             wait_until("BlockedCount counts it", || service.state().get().blocked_count == 1).await;
             wait_until("the summary is summed", || service.kept_back.lock().unwrap().as_ref().is_some_and(|k| k.iter().any(|r| r.1 == "name-characters"))).await;
 
@@ -9100,7 +9100,7 @@ mod tests {
             let (held, release) = std::sync::mpsc::channel::<()>();
             let holder = store.clone();
             let holding = std::thread::spawn(move || {
-                holder.with(|_| {
+                holder.call_blocking(move |_| {
                     held.send(()).unwrap();
                     std::thread::sleep(Duration::from_secs(2));
                     Ok(())
@@ -9148,7 +9148,7 @@ mod tests {
                 next_try: None,
                 size: None,
             };
-            store.with(|s| s.outbox_record(&held)).unwrap();
+            store.call(move |s| s.outbox_record(&held)).await.unwrap();
             service.wake_outbox();
             wait_until("HeldCount counts it", || service.state().get().held_count == 1).await;
 

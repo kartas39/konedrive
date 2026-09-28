@@ -2156,8 +2156,8 @@ application must never read zeros where real content should be.
   outbox, at most once a second (a guess), and at the end of each drain; `PendingCount` and the
   summary can show the state of a second ago. The summary is answered from memory only while the
   worker runs; otherwise it is summed on the call, through the read-only connection. The change
-  is noticed through SQLite's update hook on the shared connection and signalled once
-  `Store::with` returns; a write through another connection (a store opened on its own, as a
+  is noticed through SQLite's update hook on the store's connection and signalled by the store's
+  thread once the job that made it has run; a write through another connection (a store opened on its own, as a
   Forget's count does) is not noticed until the next change. A row written before this version
   has no recorded size: `PendingBytes` and the summary count 0 bytes for it until its snapshot is
   written or it is detected again (the next Full local scan). Things never uploaded (`local_skipped`)
@@ -2173,15 +2173,32 @@ application must never read zeros where real content should be.
   may be left out of the first page where a sort of full paths would have put it in. A free-up's
   check of waiting changes keeps the shared connection: a change being recorded is waited for,
   not missed. LIMIT (chosen) · reasoned. Open.
-- **F162. Store work on the runtime goes through `block_in_place`** (`tree.rs`, `Store::with`;
-  issue #38) — the outbox worker's pick, marks, claims, settling and next due time run through
-  `run` or `spawn_blocking`; every other call to `Store::with` on a worker thread of the
-  multi-threaded runtime (the upload steps' own reads and commits) hands the thread's other tasks
-  to another thread first. A long store operation so delays what needs the store, never the D-Bus
-  dispatcher. Each such call costs a thread hand-over (tens of microseconds); on a current-thread
-  runtime (tests) the call runs as it is. Chosen over rewriting each step's calls as `'static`
-  closures. LIMIT (chosen) · measured
-  (`tree::tests::waiting_for_the_store_does_not_starve_the_runtime`). Open.
+- **F162. One thread owns each tree store; everyone sends it jobs** (`tree.rs`, `Store`, `Owner`;
+  issue #38) — the store's read-write connection lives on one thread of its own, the only one
+  that holds a read-write connection to it; async code sends it jobs with `store.call(…).await`,
+  plain threads (the examiner, the materializer, a `spawn_blocking` body) with
+  `store.call_blocking(…)`, over a channel of 1 024 jobs (`QUEUE`, a guess: a full channel makes
+  senders wait), each answered through a one-shot reply. Jobs run one at a time, in the order they
+  arrive; a job holds its own transaction, and work that spans jobs keeps using the tree lock. A
+  long job (an examination's apply, a cycle's commit) delays only the jobs behind it, never the
+  async runtime or the D-Bus dispatcher; the bus's reads go to a read-only connection with a
+  thread of its own. Costs and edges: (1) each call is a hand-over between threads (about 10 µs);
+  the examination asks an item's row, recorded object and place in one job to keep a Full local
+  scan of 100 000 items near 8 s (`bench::full_scan_of_100000_items_and_30000_rows`), up from
+  7.5 s; (2) a job's closure must own what it uses (`'static`), so callers clone ids and rows into
+  it; (3) a job that calls the store would wait for itself: it panics in debug and test builds
+  and is an error otherwise; (4) a job that panics answers its caller with an error, its
+  transaction rolled back, and the thread goes on; (5) `call_blocking` on an async runtime's
+  thread panics (tokio refuses to block there), in every build — a missed conversion shows in the
+  tests; (6) the pause is kept in the store's memory as well as in `meta`, so that it is read
+  without a job; a timed pause that ran out is taken off `meta` by a job nobody waits for; (7) a
+  few blocking helpers (the activity log, `claimed_elsewhere`, `renew_handles`) stay blocking and
+  are called from plain threads only; (8) a Forget's count with no sync running opens the store
+  read-only; `migrate.rs` opens it before any store is. The VM suite's scenarios (`tests/vm`) are
+  converted, but that crate does not build on `dev` for a reason of its own
+  (`ExamineSink` gained a field `watch.rs` does not set); not fixed here. LIMIT (chosen) · measured
+  (`tree::tests::a_long_job_does_not_starve_the_runtime`, `jobs_run_in_arrival_order`,
+  `a_panicking_job_is_an_error_and_the_next_job_runs`, `a_call_from_inside_a_job_is_caught`). Open.
 - **F163. Whole-table reads kept, and when they run** (issue #38) — each reads every outbox row,
   about 28 ms at 30 000 rows (`bench::a_whole_table_read`): the examination's own start (once per
   batch, to build its maps); the worker's first marks after it starts, and after more than
@@ -2250,6 +2267,7 @@ application must never read zeros where real content should be.
 | The counts and the Not Uploaded summary summed again at most every (`TALLY_EVERY`) | 1 s | **guess** (F160) |
 | Changed outbox rows remembered one by one for the marks (`DIRTY_MAX`) | 100 000; past it, every row once | **guess** (F163) |
 | The outbox's budgets at scale (`bench.rs`) | see F158 | **guess** |
+| Jobs a tree store's channel holds before a sender waits (`tree::QUEUE`) | 1 024 | **guess** (F162) |
 
 ---
 

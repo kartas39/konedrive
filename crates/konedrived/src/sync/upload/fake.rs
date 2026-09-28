@@ -677,7 +677,7 @@ impl FakeGraph {
     #[cfg(test)]
     pub async fn from_store(store: &Store) -> Self {
         let graph = Self::start().await;
-        let rows = store.with(|s| s.all_items()).unwrap();
+        let rows = store.call(move |s| s.all_items()).await.unwrap();
         graph.with(|cloud| {
             for row in rows {
                 cloud.add(FakeItem {

@@ -40,7 +40,7 @@
 //! own lookups, checks that it is the same inode, and goes down one name at a time from there,
 //! never following a symlink.
 //!
-//! [`handles_current`]: crate::sync::local::liveness::handles_current
+//! [`handles_current`]: crate::sync::local::liveness::handles_current_async
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
@@ -63,7 +63,7 @@ use super::{reason, Fault};
 use crate::sync::disk::Disk;
 use crate::sync::helper::{reopen_for_writing, Clearance, HelperError};
 use crate::sync::listing::LinkCell;
-use crate::sync::local::liveness::{absent_at, handles_current, same_place};
+use crate::sync::local::liveness::{absent_at, handles_current_async, same_place};
 use crate::sync::local::RECHECK;
 use crate::sync::root::SyncRoot;
 use crate::sync::source::{self, Answered, ContentSource, FillError};
@@ -341,8 +341,8 @@ fn in_another_folder(mo: &MoveOuts, disk: &Disk, path: &Path) -> bool {
 /// examination recorded behind it — the object came back, and went on — supersedes it, and it
 /// goes), and the object is still proved to be outside this account's folder. `Some` is what the
 /// row does instead.
-fn before_marker(e: &Engine, disk: &Disk, row: &OutboxRow, id: &str, object: &File) -> Result<Option<Outcome>, Fail> {
-    if let Some(outcome) = superseded(e, row, id)? {
+async fn before_marker(e: &Engine, disk: &Disk, row: &OutboxRow, id: &str, object: &File) -> Result<Option<Outcome>, Fail> {
+    if let Some(outcome) = superseded(e, row, id).await? {
         return Ok(Some(outcome));
     }
     let Some(path) = verified_path(object) else { return Ok(Some(Outcome::backoff(reason::PLACE_UNKNOWN))) };
@@ -354,16 +354,18 @@ fn before_marker(e: &Engine, disk: &Disk, row: &OutboxRow, id: &str, object: &Fi
 
 /// A newer row of the same item (the examination's, behind this running one) supersedes it: this
 /// one goes, unless it has begun to take attributes off already.
-fn superseded(e: &Engine, row: &OutboxRow, id: &str) -> Result<Option<Outcome>, Fail> {
+async fn superseded(e: &Engine, row: &OutboxRow, id: &str) -> Result<Option<Outcome>, Fail> {
     if marker(row) {
         return Ok(None);
     }
-    let newer = e.store().with(|s| s.outbox_for_item(id))?.into_iter().any(|r| r.seq > row.seq);
+    let item = id.to_owned();
+    let newer = e.store().call(move |s| s.outbox_for_item(&item)).await?.into_iter().any(|r| r.seq > row.seq);
     if !newer {
         return Ok(None);
     }
     tracing::info!("{} came back before its move out was done: the newer change goes instead", row.rel.display());
-    e.store().with(|s| s.outbox_drop(row.seq, None, None, None))?;
+    let seq = row.seq;
+    e.store().call(move |s| s.outbox_drop(seq, None, None, None)).await?;
     Ok(Some(Outcome::Done))
 }
 
@@ -379,10 +381,11 @@ fn last_place(row: &OutboxRow) -> Option<&Path> {
 
 /// Keeps where `object` is now, proved, as the row's last place. A name that is not UTF-8 is not
 /// kept: its `ESTALE` stays unproved.
-fn remember_place(e: &Engine, row: &OutboxRow, object: &File) -> Result<(), Fail> {
+async fn remember_place(e: &Engine, row: &OutboxRow, object: &File) -> Result<(), Fail> {
     let Some(path) = verified_path(object) else { return Ok(()) };
     let Some(text) = path.to_str().filter(|t| row.target_name.as_deref() != Some(*t)) else { return Ok(()) };
-    Ok(e.store().with(|s| s.outbox_set_target(row.seq, None, Some(text)))?)
+    let (seq, text) = (row.seq, text.to_owned());
+    Ok(e.store().call(move |s| s.outbox_set_target(seq, None, Some(&text))).await?)
 }
 
 // ---------------------------------------------------------------------------
@@ -585,8 +588,9 @@ impl Engine {
     }
 
     /// Writes a row's marker (or takes it off), before anything is taken off or removed.
-    fn set_marker(&self, row: &OutboxRow, marker: Option<&str>) -> Result<(), Fail> {
-        Ok(self.store().with(|s| s.outbox_set_snapshot(row.seq, marker))?)
+    async fn set_marker(&self, row: &OutboxRow, marker: Option<&str>) -> Result<(), Fail> {
+        let (seq, marker) = (row.seq, marker.map(str::to_owned));
+        Ok(self.store().call(move |s| s.outbox_set_snapshot(seq, marker.as_deref())).await?)
     }
 
     /// Re-marks what the pending `move-out` rows name, and hands their ids to the router: before
@@ -597,12 +601,13 @@ impl Engine {
     /// answer) leaves it for the next look.
     pub(super) async fn protect(&self, disk: &Disk) {
         let Some(mo) = self.cfg.moved_out.as_ref() else { return };
-        let Ok(rows) = self.store().run(|s| s.outbox_move_outs()).await else { return };
+        let Ok(rows) = self.store().call(|s| s.outbox_move_outs()).await else { return };
         let mut ids = HashSet::new();
         for row in &rows {
             let Some(id) = &row.item_id else { continue };
             ids.insert(id.clone());
-            if let Ok(inside) = self.store().with(|s| s.descendants(Table::Items, id)) {
+            let folder = id.clone();
+            if let Ok(inside) = self.store().call(move |s| s.descendants(Table::Items, &folder)).await {
                 ids.extend(inside);
             }
         }
@@ -637,7 +642,7 @@ impl Engine {
                     return;
                 }
             };
-            if let Err(e) = remember_place(self, &row, &object) {
+            if let Err(e) = remember_place(self, &row, &object).await {
                 tracing::debug!("where {} is now is not kept: {e:?}", row.rel.display());
             }
             let marked = if object.metadata().is_ok_and(|m| m.is_dir()) {
@@ -706,7 +711,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
         Ok(object) => File::from(object),
         // Every decode failure is `ESTALE`: believed only for handles taken on the filesystem the
         // folder is on now.
-        Err(HelperError::Refused(libc::ESTALE)) if !handles_current(e.store(), &root) => {
+        Err(HelperError::Refused(libc::ESTALE)) if !handles_current_async(e.store(), &root).await => {
             return Ok(Outcome::backoff(reason::STALE_HANDLE));
         }
         // What this row removed or stripped itself.
@@ -748,12 +753,12 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
         // The helper hands over only an object carrying an item id: another one's is no answer.
         return Ok(Outcome::blocked("another-item"));
     }
-    remember_place(e, &row, &object)?;
+    remember_place(e, &row, &object).await?;
     let is_dir = object.metadata()?.is_dir();
     match place_of(e, disk, &object, &handle) {
         // A marker stays: what it took off may be taken off already.
         Place::Inside => {
-            if let Some(outcome) = superseded(e, &row, &id)? {
+            if let Some(outcome) = superseded(e, &row, &id).await? {
                 return Ok(outcome);
             }
             Ok(Outcome::backoff(reason::BACK_INSIDE))
@@ -783,10 +788,10 @@ async fn elsewhere_file(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str,
     if let Local::No(outcome) = e.make_local(&object, shown).await? {
         return Ok(outcome);
     }
-    if let Some(outcome) = before_marker(e, disk, row, id, &object)? {
+    if let Some(outcome) = before_marker(e, disk, row, id, &object).await? {
         return Ok(outcome);
     }
-    e.set_marker(row, Some(CONTENT_LOCAL))?;
+    e.set_marker(row, Some(CONTENT_LOCAL)).await?;
     super::steps::blocking(move || strip(&object)).await?;
     e.fault(Fault::AfterStrip)?;
     tracing::info!("{} left the folder: downloaded to {}, and removed from OneDrive", row.rel.display(), shown.display());
@@ -802,7 +807,7 @@ async fn elsewhere_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &st
     if let Err(err) = e.moved_out().helper.mark_dir(&object).await {
         tracing::debug!("{} is not marked again yet: {err}", shown.display());
     }
-    let inside = inside_of(e, id)?;
+    let inside = inside_of(e, id).await?;
     let top2 = top.try_clone()?;
     let met = super::steps::blocking(move || walk(&top2)).await?;
     let mut ours: Vec<Met> = Vec::new();
@@ -826,10 +831,10 @@ async fn elsewhere_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &st
         Ok(extra) => extra,
         Err(outcome) => return Ok(outcome),
     };
-    if let Some(outcome) = before_marker(e, disk, row, id, &object)? {
+    if let Some(outcome) = before_marker(e, disk, row, id, &object).await? {
         return Ok(outcome);
     }
-    e.set_marker(row, Some(CONTENT_LOCAL))?;
+    e.set_marker(row, Some(CONTENT_LOCAL)).await?;
     for (n, m) in ours.into_iter().enumerate() {
         let top = top.try_clone()?;
         super::steps::blocking(move || strip(&open_met(&top, &m)?)).await?;
@@ -868,23 +873,23 @@ async fn trashed_file(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str, o
     let Some(path) = verified_path(&object) else { return Ok(Outcome::backoff(reason::PLACE_UNKNOWN)) };
     let key = InodeKey::of(&object)?;
     let Some(_inode) = e.cfg.locks.try_lock(key) else { return Ok(Outcome::later(reason::NOT_LOCAL, RECHECK)) };
-    if let Some(outcome) = before_marker(e, disk, row, id, &object)? {
+    if let Some(outcome) = before_marker(e, disk, row, id, &object).await? {
         return Ok(outcome);
     }
     match placeholder::read_state(&object) {
         Ok(Some(State::Hydrated)) => {
-            e.set_marker(row, Some(CONTENT_LOCAL))?;
+            e.set_marker(row, Some(CONTENT_LOCAL)).await?;
             super::steps::blocking(move || strip(&object)).await?;
         }
         // Holds nothing whole: the cloud keeps it, in its recycle bin.
         Ok(Some(State::OnlineOnly | State::Hydrating)) => {
-            e.set_marker(row, Some(TRASHED))?;
+            e.set_marker(row, Some(TRASHED)).await?;
             let (entry, removed) = (entry.clone(), object.try_clone()?);
             super::steps::blocking(move || remove(&removed, &path, Some(&entry))).await?;
             // Proved gone: no link left. Renamed meanwhile, or linked elsewhere, it is found where
             // it is at the next run.
             if object.metadata()?.nlink() != 0 {
-                e.set_marker(row, None)?;
+                e.set_marker(row, None).await?;
                 return Ok(Outcome::backoff(reason::PLACE_UNKNOWN));
             }
         }
@@ -902,7 +907,7 @@ async fn trashed_file(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str, o
 async fn trashed_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str, object: File, entry: &TrashEntry) -> Result<Outcome, Fail> {
     let Some(path) = verified_path(&object) else { return Ok(Outcome::backoff(reason::PLACE_UNKNOWN)) };
     let Some(top) = reopen_dir(&path, &object)? else { return Ok(Outcome::backoff(reason::PLACE_UNKNOWN)) };
-    let inside = inside_of(e, id)?;
+    let inside = inside_of(e, id).await?;
     let top2 = top.try_clone()?;
     let met = super::steps::blocking(move || walk(&top2)).await?;
     let mut found: HashSet<String> = HashSet::new();
@@ -932,10 +937,10 @@ async fn trashed_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str,
         Ok(extra) => extra,
         Err(outcome) => return Ok(outcome),
     };
-    if let Some(outcome) = before_marker(e, disk, row, id, &object)? {
+    if let Some(outcome) = before_marker(e, disk, row, id, &object).await? {
         return Ok(outcome);
     }
-    e.set_marker(row, Some(TRASHED))?;
+    e.set_marker(row, Some(TRASHED)).await?;
     // The placeholders go first, each proved gone; nothing is stripped until they all are, so
     // that the marker can be taken off again with nothing stripped.
     let removed_all = {
@@ -955,7 +960,7 @@ async fn trashed_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str,
     drop(guards);
     if !removed_all {
         // A placeholder renamed or linked meanwhile: nothing goes until it is found again.
-        e.set_marker(row, None)?;
+        e.set_marker(row, None).await?;
         return Ok(Outcome::backoff(reason::PLACE_UNKNOWN));
     }
     {
@@ -1008,8 +1013,9 @@ async fn trashed_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str,
 }
 
 /// The ids the base has inside folder `id` now, the folder's own included.
-fn inside_of(e: &Engine, id: &str) -> Result<HashSet<String>, Fail> {
-    let mut inside: HashSet<String> = e.store().with(|s| s.descendants(Table::Items, id))?.into_iter().collect();
+async fn inside_of(e: &Engine, id: &str) -> Result<HashSet<String>, Fail> {
+    let folder = id.to_owned();
+    let mut inside: HashSet<String> = e.store().call(move |s| s.descendants(Table::Items, &folder)).await?.into_iter().collect();
     inside.insert(id.to_owned());
     Ok(inside)
 }
@@ -1032,25 +1038,29 @@ async fn left_since(
 ) -> Result<Result<Vec<File>, Outcome>, Fail> {
     let mo = e.moved_out();
     let root = disk.dir(Path::new(""))?;
-    let folder = e.store().with(|s| s.locate(Table::Items, id))?.map(|l| l.rel);
+    let asked = id.to_owned();
+    let folder = e.store().call(move |s| s.locate(Table::Items, &asked)).await?.map(|l| l.rel);
     let mut extra = Vec::new();
     for item in inside.iter().filter(|i| i.as_str() != id && !found.contains(*i)) {
-        let Some(base) = e.store().with(|s| s.get(Table::Items, item))? else { continue };
+        let asked = item.clone();
+        let Some(base) = e.store().call(move |s| s.get(Table::Items, &asked)).await? else { continue };
         if base.kind != Kind::File || base.placement != Placement::Placed {
             continue;
         }
-        let Some(handle) = e.store().with(|s| s.local_handle(item))? else {
+        let asked = item.clone();
+        let Some(handle) = e.store().call(move |s| s.local_handle(&asked)).await? else {
             return Ok(Err(Outcome::backoff(reason::UNREACHABLE)));
         };
         let object = match mo.helper.open_by_handle(&root, &handle).await {
             Ok(object) => File::from(object),
-            Err(HelperError::Refused(libc::ESTALE)) if !handles_current(e.store(), &root) => {
+            Err(HelperError::Refused(libc::ESTALE)) if !handles_current_async(e.store(), &root).await => {
                 return Ok(Err(Outcome::backoff(reason::STALE_HANDLE)));
             }
             // Gone with its evidence: nothing, or another object, at its place in the folder
             // where the folder is now.
             Err(HelperError::Refused(libc::ESTALE)) => {
-                let at = e.store().with(|s| s.locate(Table::Items, item))?.map(|l| l.rel);
+                let asked = item.clone();
+                let at = e.store().call(move |s| s.locate(Table::Items, &asked)).await?.map(|l| l.rel);
                 let there = match (top, folder.as_deref(), at.as_deref()) {
                     (Some(top), Some(folder), Some(at)) => at.strip_prefix(folder).ok().map(|inside| top.join(inside)),
                     _ => None,
@@ -1088,17 +1098,18 @@ async fn finish(e: &Arc<Engine>, row: &OutboxRow) -> Result<Outcome, Fail> {
 /// it left (§5), and its item is deleted as any delete is — a folder only once what left it since
 /// is local where it went, or gone too.
 async fn gone(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str) -> Result<Outcome, Fail> {
-    let folder = e.store().with(|s| s.get(Table::Items, id))?.is_some_and(|item| item.kind == Kind::Folder);
+    let asked = id.to_owned();
+    let folder = e.store().call(move |s| s.get(Table::Items, &asked)).await?.is_some_and(|item| item.kind == Kind::Folder);
     if folder {
-        let inside = inside_of(e, id)?;
+        let inside = inside_of(e, id).await?;
         let extra = match left_since(e, disk, row, id, &inside, &HashSet::new(), last_place(row)).await? {
             Ok(extra) => extra,
             Err(outcome) => return Ok(outcome),
         };
-        if let Some(outcome) = superseded(e, row, id)? {
+        if let Some(outcome) = superseded(e, row, id).await? {
             return Ok(outcome);
         }
-        e.set_marker(row, Some(CONTENT_LOCAL))?;
+        e.set_marker(row, Some(CONTENT_LOCAL)).await?;
         super::steps::blocking(move || {
             for file in &extra {
                 strip(file)?;
@@ -1127,7 +1138,8 @@ async fn kept(e: &Arc<Engine>, row: &OutboxRow, id: &str) -> Result<Outcome, Fai
     let event = e.event(super::kind::RESTORED, &row.rel, "it was last in another account's folder, and stays in OneDrive");
     {
         let _tree = e.cfg.tree_lock.lock().await;
-        e.store().with(|s| s.outbox_drop(row.seq, None, Some(id), Some(&event)))?;
+        let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
+        e.store().call(move |s| s.outbox_drop(seq, None, Some(&id), Some(&stored))).await?;
     }
     tracing::info!("{} went from another account's folder: it stays in OneDrive, and comes back here", row.rel.display());
     e.cfg.host.activity(&event);
@@ -1259,7 +1271,7 @@ impl Tidy<'_> {
 
     async fn tidy(&self, disk: &Disk, id: &str, object: File, path: &Path, entry: Option<&TrashEntry>) -> io::Result<()> {
         let mut inside: HashSet<String> =
-            self.store.with(|s| s.descendants(Table::Items, id)).map_err(|_| io::Error::other("the base cannot be read"))?.into_iter().collect();
+            { let folder = id.to_owned(); self.store.call(move |s| s.descendants(Table::Items, &folder)).await }.map_err(|_| io::Error::other("the base cannot be read"))?.into_iter().collect();
         inside.insert(id.to_owned());
         let (locks, at, trash) = (self.locks.clone(), path.to_path_buf(), entry.cloned());
         // The files, off the runtime.
@@ -1429,12 +1441,9 @@ impl SyncService {
     pub(in crate::sync) async fn drop_moved_out(&self, root: &SyncRoot) {
         let store = self.store.lock().unwrap().clone();
         if let Some(store) = store {
-            let dropping = store.clone();
-            let dropped = tokio::task::spawn_blocking(move || dropping.with(drop_rows)).await;
-            match dropped {
-                Ok(Ok(rows)) => self.tidy_dropped(root, &store, &rows).await,
-                Ok(Err(e)) => tracing::warn!("the moves out of the folder waiting to finish cannot be read: {e}"),
-                Err(e) => tracing::warn!("the task dropping the moves out of the folder failed: {e}"),
+            match store.call(drop_rows).await {
+                Ok(rows) => self.tidy_dropped(root, &store, &rows).await,
+                Err(e) => tracing::warn!("the moves out of the folder waiting to finish cannot be read: {e}"),
             }
         }
         self.forget_moved_out();

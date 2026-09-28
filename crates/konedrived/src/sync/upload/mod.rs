@@ -72,7 +72,6 @@ pub fn clear_marks(root: &SyncRoot, rows: &[crate::tree::outbox::OutboxRow]) {
 use crate::drive::DriveClient;
 use crate::sync::root::SyncRoot;
 use crate::sync::InodeLocks;
-use crate::tree::outbox::PAUSED_UNTIL;
 use crate::tree::{ActivityRow, Store, TreeError};
 
 pub(crate) use engine::Engine;
@@ -191,6 +190,21 @@ pub trait OutboxHost: Send + Sync {
     }
 }
 
+/// Runs `work` — the store's jobs and what follows them — as a task of the
+/// runtime it is asked on, without waiting for it; asked on a plain thread
+/// (tests), on a runtime of its own, to its end.
+fn detach(work: impl std::future::Future<Output = ()> + Send + 'static) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => {
+            runtime.spawn(work);
+        }
+        Err(_) => match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(runtime) => runtime.block_on(work),
+            Err(e) => tracing::warn!("no runtime for the outbox's work: {e}"),
+        },
+    }
+}
+
 /// A host that listens to nothing.
 pub struct NoHost;
 
@@ -296,11 +310,12 @@ impl Default for WorkerStatus {
 /// `Some(until)` while paused, unix seconds, 0 meaning until resumed. A
 /// timed pause that has run out is taken off here. Kept in the store's
 /// `meta`, so it survives a restart.
+/// Answered from the store's memory of it ([`Store::pause`]), never by a job:
+/// callable from anywhere.
 pub fn paused(store: &Store) -> Option<i64> {
-    let value = store.with(|s| s.meta(PAUSED_UNTIL)).ok().flatten()?;
-    let until: i64 = value.parse().unwrap_or(0);
+    let until = store.pause()?;
     if until != 0 && until <= engine::now() {
-        let _ = store.with(|s| s.set_meta(PAUSED_UNTIL, None));
+        store.pause_ended(until);
         return None;
     }
     Some(until)
@@ -308,8 +323,13 @@ pub fn paused(store: &Store) -> Option<i64> {
 
 /// Pauses the account whose tree store is `store` until `until` (unix
 /// seconds, 0 for until resumed), or resumes it (`None`).
-pub fn set_paused(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
-    store.with(|s| s.set_meta(PAUSED_UNTIL, until.map(|u| u.to_string()).as_deref()))
+pub async fn set_paused(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
+    store.set_pause(until).await
+}
+
+/// [`set_paused`] for plain threads.
+pub fn set_paused_blocking(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
+    store.set_pause_blocking(until)
 }
 
 /// What the outbox holds, for `PendingCount`, `PendingBytes` and
@@ -460,7 +480,8 @@ impl OutboxWorker {
     /// NetworkManager's word. Going online, the host runs a delta cycle
     /// first (§4.9) and then calls this.
     pub fn set_online(&self, online: bool) {
-        self.engine.set_online(online);
+        let engine = Arc::clone(&self.engine);
+        detach(async move { engine.set_online(online).await });
     }
 
     /// Sends nothing until [`cycle_done`](Self::cycle_done): a folder's
@@ -473,25 +494,43 @@ impl OutboxWorker {
 
     /// A delta cycle went through.
     pub fn cycle_done(&self) {
-        self.engine.cycle_done();
+        let engine = Arc::clone(&self.engine);
+        detach(async move { engine.cycle_done().await });
     }
 
     /// After a sign-in: rows blocked by `403` are ready again, and the
     /// worker sends again.
-    pub fn signed_in(&self) -> Result<(), TreeError> {
-        self.engine.signed_in()
+    pub fn signed_in(&self) {
+        let engine = Arc::clone(&self.engine);
+        detach(async move {
+            if let Err(e) = engine.signed_in().await {
+                tracing::warn!("cannot let the rows a sign-in held go: {e}");
+            }
+        });
     }
 
     /// The quota was read elsewhere (`RefreshAccountInfo`): *full* is
     /// decided again, and the waiting files that fit now go ([`space`]).
     pub fn quota_read(&self, quota: &crate::drive::DriveQuota) {
-        self.engine.apply_quota(quota);
+        // Applied as a task of its own: it writes the rows it lets go.
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let (engine, quota) = (Arc::clone(&self.engine), quota.clone());
+                runtime.spawn(async move { engine.apply_quota(&quota).await });
+            }
+            Err(_) => tracing::warn!("a quota read with no runtime to apply it on is ignored"),
+        }
     }
 
 
     /// `Refresh()`: rows in backoff are tried now.
-    pub fn retry_now(&self) -> Result<(), TreeError> {
-        self.engine.retry_now()
+    pub fn retry_now(&self) {
+        let engine = Arc::clone(&self.engine);
+        detach(async move {
+            if let Err(e) = engine.retry_now().await {
+                tracing::warn!("cannot make the outbox's waiting rows due: {e}");
+            }
+        });
     }
 
     /// The helper is back, with none of its marks (`docs/design/writes.md` §10): what

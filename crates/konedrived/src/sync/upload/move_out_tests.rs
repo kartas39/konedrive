@@ -179,7 +179,7 @@ impl World {
             }
         }
         store
-            .with(|s| {
+            .call_blocking(move |s| {
                 s.begin_staging(false)?;
                 s.stage(&all)
             })
@@ -200,7 +200,7 @@ impl World {
             };
             materializer.apply(Scope::Full).unwrap();
         }
-        store.with(|s| s.commit_staging("link-1")).unwrap();
+        store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
         let locks = InodeLocks::new();
         let h = Harness::new(&root, &store, &locks);
         let helper = Arc::new(FakeHelper { socket: base.join("no-helper.sock"), ..FakeHelper::default() });
@@ -275,7 +275,7 @@ impl World {
     }
 
     fn rows(&self) -> Vec<OutboxRow> {
-        self.store.with(|s| s.outbox_rows()).unwrap()
+        self.store.call_blocking(move |s| s.outbox_rows()).unwrap()
     }
 
     fn deletes(&self) -> usize {
@@ -296,7 +296,7 @@ impl World {
 
     /// Rows in backoff are due now, as after a restart that waited long enough.
     fn due_now(&self) {
-        self.store.with(|s| s.outbox_retry_now()).unwrap();
+        self.store.call_blocking(move |s| s.outbox_retry_now()).unwrap();
     }
 
     /// What `dropped` left outside the folder tidied, as a drop with no worker tidies it.
@@ -339,7 +339,7 @@ fn a_placeholder_moved_out_is_downloaded_where_it_went_then_deleted() {
     assert!(!marked.is_empty() && marked.iter().all(|p| p == &to), "marked again before the download: {marked:?}");
     assert!(w.in_bin("P"), "the item went to OneDrive's recycle bin");
     assert!(w.rows().is_empty());
-    assert!(w.store.with(|s| s.get(Table::Items, "P")).unwrap().is_none());
+    assert!(w.store.call_blocking(move |s| s.get(Table::Items, "P")).unwrap().is_none());
 }
 
 /// §5: a download that stops part-way deletes nothing; the row stays, and the next run — a
@@ -400,7 +400,7 @@ fn eperm_keeps_the_row_and_estale_deletes() {
     *w.helper.down.lock().unwrap() = false;
     std::fs::remove_file(&q).unwrap();
     let p = w.rows().into_iter().find(|r| r.item_id.as_deref() == Some("P")).unwrap();
-    w.store.with(|s| s.outbox_set_snapshot(p.seq, Some(CONTENT_LOCAL))).unwrap();
+    w.store.call_blocking(move |s| s.outbox_set_snapshot(p.seq, Some(CONTENT_LOCAL))).unwrap();
     xattr::remove(w.base().join("outside/p.txt"), XATTR_ITEM_ID).unwrap();
     w.due_now();
     w.h.run();
@@ -428,14 +428,14 @@ fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
     let row = w.rows()[0].clone();
     assert_eq!(row.target_name.as_deref(), p.to_str(), "where it went is kept");
     let root = File::open(&w.root.path).unwrap();
-    let recorded = w.store.with(|s| s.meta(HANDLES_ON)).unwrap().unwrap();
+    let recorded = w.store.call_blocking(move |s| s.meta(HANDLES_ON)).unwrap().unwrap();
     assert_eq!(recorded, handle_namespace(&root).unwrap());
     assert!(recorded.starts_with("root:"), "keyed on the root's handle: {recorded}");
 
     // The filesystem changed: P's recorded handle is from the old one and no longer found.
-    w.store.with(|s| s.set_meta(HANDLES_ON, Some("root:0102"))).unwrap();
+    w.store.call_blocking(move |s| s.set_meta(HANDLES_ON, Some("root:0102"))).unwrap();
     let stale = FileHandle { kind: p_handle.kind, bytes: vec![0; p_handle.bytes.len()] };
-    w.store.with(|s| s.outbox_amend(row.seq, |r| r.inode.as_mut().unwrap().handle = Some(stale.clone()))).unwrap();
+    w.store.call_blocking(move |s| s.outbox_amend(row.seq, |r| r.inode.as_mut().unwrap().handle = Some(stale.clone()))).unwrap();
     for _ in 0..2 {
         w.h.run();
         w.due_now();
@@ -448,7 +448,7 @@ fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
     let examined = w.examine(&[("", "q.txt")]);
     assert!(examined.renewed);
     assert_eq!(examined.unproven, vec!["Q".to_owned()]);
-    assert_eq!(w.store.with(|s| s.meta(HANDLES_ON)).unwrap(), Some(recorded));
+    assert_eq!(w.store.call_blocking(move |s| s.meta(HANDLES_ON)).unwrap(), Some(recorded));
     assert_eq!(w.rows().len(), 1);
     assert_eq!(w.rows()[0].inode.as_ref().unwrap().handle.as_ref(), Some(&p_handle), "found again where it went");
 
@@ -517,7 +517,7 @@ fn a_trashed_folder_strips_nothing_until_its_placeholders_are_gone() {
     let handle = w.move_out("p.txt", &w.base().join("outside/p.txt"));
     w.examine(&[("", "p.txt")]);
     let seq = w.rows()[0].seq;
-    w.store.with(|s| s.outbox_set_snapshot(seq, Some(CONTENT_LOCAL))).unwrap();
+    w.store.call_blocking(move |s| s.outbox_set_snapshot(seq, Some(CONTENT_LOCAL))).unwrap();
     std::fs::rename(w.base().join("outside/p.txt"), w.path("back.txt")).unwrap();
     w.helper.at.lock().unwrap().insert(handle, w.path("back.txt"));
     w.h.run();
@@ -807,7 +807,7 @@ fn a_folder_delete_sends_one_delete_and_none_for_what_is_inside() {
     assert_eq!(w.rows().len(), 1);
     // 21 items out of 21 trips the mass-delete guard; confirming it is a
     // separate mechanism (write design §4.5) this change leaves untouched.
-    w.store.with(|s| s.outbox_release_held()).unwrap();
+    w.store.call_blocking(move |s| s.outbox_release_held()).unwrap();
     w.h.run();
     assert!(w.rows().is_empty(), "{:?}", w.rows());
     assert_eq!(w.deletes(), 1, "one DELETE only, for the folder");
@@ -838,9 +838,9 @@ fn restoring_a_held_move_out_tidies_what_left() {
     w.move_out("q.txt", &q);
     w.examine(&[("", "d"), ("", "q.txt")]);
     for row in w.rows() {
-        w.store.with(|s| s.outbox_set_state(row.seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
+        w.store.call_blocking(move |s| s.outbox_set_state(row.seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
     }
-    let dropped = w.store.with(|s| s.outbox_drop_held()).unwrap();
+    let dropped = w.store.call_blocking(move |s| s.outbox_drop_held()).unwrap();
     assert_eq!(dropped.len(), 2);
 
     w.tidy(&dropped);
@@ -868,15 +868,15 @@ fn dropped_move_outs_leave_no_placeholder_outside() {
     w.move_out("q.txt", &q);
     w.examine(&[("", "p.txt"), ("", "q.txt")]);
     assert_eq!(w.rows().len(), 2);
-    assert!(w.store.with(|s| s.local_handle("P")).unwrap().is_some());
+    assert!(w.store.call_blocking(move |s| s.local_handle("P")).unwrap().is_some());
 
-    let dropped = w.store.with(move_out::drop_rows).unwrap();
+    let dropped = w.store.call_blocking(move_out::drop_rows).unwrap();
     w.tidy(&dropped);
     assert!(!p.exists(), "the placeholder outside went");
     assert_eq!(std::fs::read(&q).unwrap(), b"down");
     assert!(World::konedrive_attrs(&q).is_empty());
     assert!(w.rows().is_empty());
-    assert!(w.store.with(|s| s.local_handle("P")).unwrap().is_none(), "placed again, not taken for a delete");
+    assert!(w.store.call_blocking(move |s| s.local_handle("P")).unwrap().is_none(), "placed again, not taken for a delete");
     assert_eq!(w.deletes(), 0);
 }
 
@@ -895,7 +895,7 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
     let b_store = Store::new(TreeStore::in_memory().unwrap());
     let b_items = vec![Change::Root(row("RB", None, "", Kind::Folder, b"")), Change::Upsert(row("B1", Some("RB"), "b.txt", Kind::File, b"b"))];
     let a_store = w.store.clone();
-    let claimed: crate::sync::materialize::Claimed = Arc::new(move |id| a_store.with(|s| Ok(s.get(Table::Items, id)?.is_some())).unwrap());
+    let claimed: crate::sync::materialize::Claimed = Arc::new(move |id| { let id = id.to_owned(); a_store.call_blocking(move |s| Ok(s.get(Table::Items, &id)?.is_some())).unwrap() });
     let reconcile_b = |locked: bool| {
         Materializer {
             disk: Disk::open(&b_root, locked).unwrap(),
@@ -913,13 +913,13 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
         .unwrap()
     };
     b_store
-        .with(|s| {
+        .call_blocking(move |s| {
             s.begin_staging(false)?;
             s.stage(&b_items)
         })
         .unwrap();
     reconcile_b(false);
-    b_store.with(|s| s.commit_staging("b-1")).unwrap();
+    b_store.call_blocking(move |s| s.commit_staging("b-1")).unwrap();
 
     // The user moves A's placeholder into B; A's examination sees it leave, and its move out waits.
     let in_b = b.join("p.txt");
@@ -928,7 +928,7 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
     assert_eq!(w.rows()[0].kind, OutboxKind::MoveOut);
 
     // B is read-only now: its Full reconcile does not know P, and A claims it.
-    b_store.with(|s| s.begin_staging(true)).unwrap();
+    b_store.call_blocking(move |s| s.begin_staging(true)).unwrap();
     let applied = reconcile_b(true);
     assert!(!in_b.exists(), "out of B's folder");
     let aside = applied.rescued.iter().find(|r| r.original == Path::new("p.txt")).map(|r| r.rescued.clone()).expect("set aside");
@@ -962,8 +962,8 @@ fn a_move_out_gone_inside_another_accounts_folder_deletes_nothing() {
     }
     assert_eq!(w.deletes(), 0, "nothing is deleted in OneDrive");
     assert!(w.rows().is_empty());
-    assert!(w.store.with(|s| s.local_handle("P")).unwrap().is_none(), "placed again by the next reconcile");
-    assert!(w.store.with(|s| s.get(Table::Items, "P")).unwrap().is_some());
+    assert!(w.store.call_blocking(move |s| s.local_handle("P")).unwrap().is_none(), "placed again by the next reconcile");
+    assert!(w.store.call_blocking(move |s| s.get(Table::Items, "P")).unwrap().is_some());
 }
 
 /// A downloaded file moved into another account's read-write folder, whose examination
@@ -986,7 +986,7 @@ fn a_file_another_account_took_for_its_own_is_kept_here_too() {
     w.h.run();
     assert_eq!(w.deletes(), 0, "nothing is deleted in OneDrive");
     assert!(w.rows().is_empty(), "no row waits for ever: {:?}", w.rows());
-    assert!(w.store.with(|s| s.local_handle("P")).unwrap().is_none());
+    assert!(w.store.call_blocking(move |s| s.local_handle("P")).unwrap().is_none());
     assert_eq!(std::fs::read(&in_b).unwrap(), b"down");
 
     // Stripped anywhere else, the object is not proved to be anyone's: the row waits.

@@ -252,7 +252,7 @@ fn backoff_after(attempts: u32) -> i64 {
 impl Engine {
     pub(crate) fn new(cfg: WorkerConfig) -> Self {
         let (status, _) = watch::channel(WorkerStatus::default());
-        let space = space::Space::start(&cfg.store);
+        let space = space::Space::default();
         Self {
             cfg,
             shared: Mutex::new(Shared {
@@ -331,25 +331,25 @@ impl Engine {
 
     pub(super) fn pause(&self, for_: Option<Duration>) -> Result<(), TreeError> {
         let until = for_.map(|d| now() + d.as_secs().max(1) as i64).unwrap_or(0);
-        super::set_paused(self.store(), Some(until))?;
+        super::set_paused_blocking(self.store(), Some(until))?;
         self.publish();
         self.wake();
         Ok(())
     }
 
     pub(super) fn resume(&self) -> Result<(), TreeError> {
-        super::set_paused(self.store(), None)?;
+        super::set_paused_blocking(self.store(), None)?;
         self.publish();
         self.wake();
         Ok(())
     }
 
-    pub(super) fn set_online(&self, online: bool) {
+    pub(crate) async fn set_online(&self, online: bool) {
         self.shared().online = online;
         if online {
             // Rows that backed off on network errors the host never reported
             // go now, not up to an hour later.
-            if let Err(e) = self.store().with(|s| s.outbox_retry_now()) {
+            if let Err(e) = self.store().call(move |s| s.outbox_retry_now()).await {
                 tracing::warn!("cannot make the outbox's waiting rows due: {e}");
             }
         }
@@ -371,7 +371,7 @@ impl Engine {
 
     /// A delta cycle went through: the base caught up. Rows in backoff go
     /// now after the first cycle and after the network came back.
-    pub(super) fn cycle_done(&self) {
+    pub(crate) async fn cycle_done(&self) {
         let due = {
             let mut shared = self.shared();
             let first = !shared.cycled;
@@ -379,7 +379,7 @@ impl Engine {
             first || std::mem::take(&mut shared.network_back)
         };
         if due {
-            if let Err(e) = self.store().with(|s| s.outbox_retry_now()) {
+            if let Err(e) = self.store().call(move |s| s.outbox_retry_now()).await {
                 tracing::warn!("cannot make the outbox's waiting rows due: {e}");
             }
             self.publish();
@@ -387,20 +387,20 @@ impl Engine {
         }
     }
 
-    pub(super) fn signed_in(&self) -> Result<(), TreeError> {
+    pub(crate) async fn signed_in(&self) -> Result<(), TreeError> {
         {
             let mut shared = self.shared();
             shared.needs_sign_in = false;
             shared.last_error.clear();
         }
-        self.store().with(|s| s.outbox_unblock(&[reason::FORBIDDEN]))?;
+        self.store().call(move |s| s.outbox_unblock(&[reason::FORBIDDEN])).await?;
         self.publish();
         self.wake();
         Ok(())
     }
 
-    pub(super) fn retry_now(&self) -> Result<(), TreeError> {
-        self.store().with(|s| s.outbox_retry_now())?;
+    pub(crate) async fn retry_now(&self) -> Result<(), TreeError> {
+        self.store().call(move |s| s.outbox_retry_now()).await?;
         self.wake();
         Ok(())
     }
@@ -461,7 +461,8 @@ impl Engine {
 
     /// Writes an activity event outside a commit, and hands it to the host.
     pub(super) fn activity(&self, event: ActivityRow) {
-        if let Err(e) = self.store().with(|s| s.add_activity(std::slice::from_ref(&event))) {
+        let stored = event.clone();
+        if let Err(e) = self.store().call_blocking(move |s| s.add_activity(std::slice::from_ref(&stored))) {
             tracing::warn!("cannot record an activity event: {e}");
         }
         self.cfg.host.activity(&event);
@@ -545,7 +546,7 @@ impl Engine {
         let (full, looked) = self.space_seen();
         let picked = self
             .store()
-            .run(move |s| {
+            .call(move |s| {
                 let allows = |s: &TreeStore, r: &OutboxRow| space::allows(r, full, &looked, || s.outbox_removed_behind(r));
                 s.outbox_pick(&Pick { now, flying: &flying, move_outs, want: PICK_WANT, allows: &allows })
             })
@@ -575,9 +576,9 @@ impl Engine {
             Some(seqs) if seqs.is_empty() => (Ok(Vec::new()), Some(seqs)),
             Some(seqs) => {
                 let list: Vec<i64> = seqs.iter().copied().collect();
-                (store.with(|s| s.outbox_rows_of(&list)), Some(seqs))
+                (store.call_blocking(move |s| s.outbox_rows_of(&list)), Some(seqs))
             }
-            None => (store.with(|s| s.outbox_rows()), None),
+            None => (store.call_blocking(move |s| s.outbox_rows()), None),
         };
         let mut rows = match read {
             Ok(rows) => rows,
@@ -605,7 +606,7 @@ impl Engine {
             // A move taken back (the file went back to its base place): the
             // mark is on the file there.
             if let Some(id) = mark.item {
-                if let Ok(Some(at)) = store.with(|s| s.locate(crate::tree::Table::Items, &id)) {
+                if let Ok(Some(at)) = store.call_blocking(move |s| s.locate(crate::tree::Table::Items, &id)) {
                     if !at.rel.as_os_str().is_empty() {
                         local::mark(disk, &at.rel, None);
                         cleared.insert(at.rel);
@@ -624,7 +625,7 @@ impl Engine {
                 again.into_iter().filter(|seq| !present.contains(seq)).collect()
             };
             if !again.is_empty() {
-                rows.extend(store.with(|s| s.outbox_rows_of(&again)).unwrap_or_default());
+                rows.extend(store.call_blocking(move |s| s.outbox_rows_of(&again)).unwrap_or_default());
             }
         }
         let wanted: Vec<(PathBuf, &'static str)> = {
@@ -706,6 +707,7 @@ impl Engine {
                 return;
             }
         };
+        self.space_start().await;
         // The quota, read again when it is due (while full, while a file is
         // too big, once after a start that found waiting rows).
         if self.may_start() {
@@ -757,7 +759,7 @@ impl Engine {
                                 },
                             };
                             let (seq, state) = (row.seq, row.state);
-                            let claimed = match self.store().run(move |s| s.outbox_claim(seq, state)).await {
+                            let claimed = match self.store().call(move |s| s.outbox_claim(seq, state)).await {
                                 Ok(Some(claimed)) => claimed,
                                 Ok(None) => {
                                     spare.push(slot);
@@ -861,18 +863,19 @@ impl Engine {
             Outcome::Again { state, reason, next_try, backoff } => (|| {
                 let (mut state, mut reason, mut next_try) = (state, reason, next_try);
                 if backoff {
-                    next_try = Some(now + backoff_after(store.with(|s| s.outbox_count_attempt(seq))?));
+                    next_try = Some(now + backoff_after(store.call_blocking(move |s| s.outbox_count_attempt(seq))?));
                 } else if state == OutboxState::Ready {
                     // Rewritten and ready at once (a temporary name, a copy,
                     // a fresh guard): never more than a few times in a row,
                     // unless OneDrive keeps changing under it — then it backs
                     // off like a failure.
-                    let attempts = store.with(|s| s.outbox_count_attempt(seq))?;
+                    let attempts = store.call_blocking(move |s| s.outbox_count_attempt(seq))?;
                     if attempts > AGAIN_LIMIT {
                         (state, reason, next_try) = (OutboxState::Retry, Some("changing in OneDrive again and again".into()), Some(now + backoff_after(attempts)));
                     }
                 }
-                store.with(|s| s.outbox_set_state(seq, state, reason.as_deref(), next_try))?;
+                let written = reason.clone();
+                store.call_blocking(move |s| s.outbox_set_state(seq, state, written.as_deref(), next_try))?;
                 if state == OutboxState::Blocked && reason != before {
                     self.activity(self.event(kind::UPLOAD_FAILED, &rel, reason.unwrap_or_default()));
                 }
@@ -893,7 +896,7 @@ impl Engine {
                     shared.throttled_until = Some(until);
                     shared.last_error = format!("OneDrive asked to wait {} s before sending more", until - now);
                 }
-                store.with(|s| s.outbox_set_state(seq, OutboxState::Ready, None, None))
+                store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Ready, None, None))
             }
             Outcome::SignedOut => {
                 {
@@ -901,7 +904,7 @@ impl Engine {
                     shared.needs_sign_in = true;
                     shared.last_error = "signed out: sign in again to upload changes".into();
                 }
-                store.with(|s| s.outbox_set_state(seq, OutboxState::Ready, None, None))
+                store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Ready, None, None))
             }
             Outcome::Forbidden => {
                 {
@@ -909,7 +912,7 @@ impl Engine {
                     shared.needs_sign_in = true;
                     shared.last_error = "OneDrive does not allow changes with this sign-in: sign in again".into();
                 }
-                let set = store.with(|s| s.outbox_set_state(seq, OutboxState::Blocked, Some(reason::FORBIDDEN), None));
+                let set = store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some(reason::FORBIDDEN), None));
                 if before.as_deref() != Some(reason::FORBIDDEN) {
                     self.activity(self.event(kind::UPLOAD_FAILED, &rel, reason::FORBIDDEN));
                 }
@@ -921,13 +924,27 @@ impl Engine {
             }
             // In its place, with no timer: a quota read lets it go. No event
             // per file: the account's `QuotaFull` says it once.
-            Outcome::Space(why) => store.with(|s| s.outbox_set_state(seq, OutboxState::Ready, Some(&why), None)),
-            Outcome::NoSpace => store.with(|s| s.outbox_set_state(seq, OutboxState::Ready, Some(space::WAITING), None)),
+            Outcome::Space(why) => store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Ready, Some(&why), None)),
+            Outcome::NoSpace => store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Ready, Some(space::WAITING), None)),
         };
         if let Err(e) = result {
             tracing::warn!("cannot settle outbox row {seq}: {e}");
         }
         self.publish();
+    }
+
+    /// The start's look at the space (`space::Space::start`), once, before
+    /// the first drain: off the constructor, which may run on the runtime.
+    pub(crate) async fn space_start(&self) {
+        if self.shared().space.started {
+            return;
+        }
+        // What a quota read found meanwhile stays.
+        let start = space::Space::start(self.store()).await;
+        let mut shared = self.shared();
+        shared.space.full |= start.full;
+        shared.space.wanted |= start.wanted;
+        shared.space.started = true;
     }
 
     /// When something may become runnable without a wake: a backoff, a
@@ -947,7 +964,7 @@ impl Engine {
         // While nothing can start, only the end of a pause or throttle
         // matters; rows already due wait for a wake.
         if self.may_start() {
-            if let Ok(Some(next)) = self.store().run(move |s| s.outbox_next_due(now)).await {
+            if let Ok(Some(next)) = self.store().call(move |s| s.outbox_next_due(now)).await {
                 at = at.min(next);
             }
             if let Some(until) = self.shared().waits.until.filter(|&u| u > now) {
