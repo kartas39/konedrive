@@ -305,6 +305,37 @@ impl Sync1 {
         self.service.state().get().held_count
     }
 
+    /// OneDrive is full: no content goes up (issue #2).
+    #[zbus(property)]
+    async fn quota_full(&self) -> bool {
+        self.service.state().get().quota_full
+    }
+
+    #[zbus(property)]
+    async fn space_waiting_count(&self) -> u32 {
+        self.service.state().get().space_waiting_count
+    }
+
+    #[zbus(property)]
+    async fn space_waiting_bytes(&self) -> u64 {
+        self.service.state().get().space_waiting_bytes
+    }
+
+    #[zbus(property)]
+    async fn too_big_count(&self) -> u32 {
+        self.service.state().get().too_big_count
+    }
+
+    #[zbus(property)]
+    async fn quota_state(&self) -> String {
+        self.service.state().get().quota_state
+    }
+
+    #[zbus(property)]
+    async fn free_space(&self) -> u64 {
+        self.service.state().get().free_space
+    }
+
     /// Uploads under way, shaped as `Transfers`.
     #[zbus(property)]
     async fn uploads(&self) -> Vec<(String, u64, u64)> {
@@ -573,6 +604,11 @@ pub(crate) struct Coalesced {
     blocked_count: u32,
     held_count: u32,
     uploads: Vec<(String, u64, u64)>,
+    space_waiting_count: u32,
+    space_waiting_bytes: u64,
+    too_big_count: u32,
+    quota_state: String,
+    free_space: u64,
     throughput: crate::pool::Throughput,
     scan: super::local_scan::LocalScan,
 }
@@ -593,6 +629,11 @@ impl Coalesced {
             blocked_count: s.blocked_count,
             held_count: s.held_count,
             uploads: s.uploads.clone(),
+            space_waiting_count: s.space_waiting_count,
+            space_waiting_bytes: s.space_waiting_bytes,
+            too_big_count: s.too_big_count,
+            quota_state: s.quota_state.clone(),
+            free_space: s.free_space,
             throughput: s.throughput,
             scan: s.scan.clone(),
         }
@@ -639,6 +680,21 @@ impl Coalesced {
         }
         if old.uploads != self.uploads {
             changed.insert("Uploads", self.uploads.clone().into());
+        }
+        if old.space_waiting_count != self.space_waiting_count {
+            changed.insert("SpaceWaitingCount", self.space_waiting_count.into());
+        }
+        if old.space_waiting_bytes != self.space_waiting_bytes {
+            changed.insert("SpaceWaitingBytes", self.space_waiting_bytes.into());
+        }
+        if old.too_big_count != self.too_big_count {
+            changed.insert("TooBigCount", self.too_big_count.into());
+        }
+        if old.quota_state != self.quota_state {
+            changed.insert("QuotaState", self.quota_state.clone().into());
+        }
+        if old.free_space != self.free_space {
+            changed.insert("FreeSpace", self.free_space.into());
         }
         let (was, now) = (old.throughput, self.throughput);
         if was.down_speed != now.down_speed {
@@ -751,6 +807,10 @@ async fn emit_changes(
     if old.paused_until != new.paused_until {
         sync1.paused_changed(emitter).await?;
         sync1.paused_until_changed(emitter).await?;
+    }
+    // Not coalesced either: the tray says once that OneDrive is full.
+    if old.quota_full != new.quota_full {
+        sync1.quota_full_changed(emitter).await?;
     }
     // `HelperState` itself is `Accounts1`'s now; a change of it shows here
     // only as the `LastError` it changes (the comparison above).

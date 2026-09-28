@@ -24,7 +24,7 @@ FormCard.FormCardPage {
     property bool waitingOpened: false
 
     function countsNow() {
-        return sync ? sync.pendingCount + "/" + sync.blockedCount + "/" + sync.heldCount : "";
+        return sync ? sync.pendingCount + "/" + sync.blockedCount + "/" + sync.heldCount + "/" + sync.quotaFull + "/" + sync.spaceWaitingCount + "/" + sync.tooBigCount : "";
     }
 
     /// Loads the summary when the page is shown, when a count changes while
@@ -113,7 +113,7 @@ FormCard.FormCardPage {
                     }
                 }
                 FormCard.FormButtonDelegate {
-                    visible: modelData.reason === "quota-exceeded"
+                    visible: modelData.reason === "quota-exceeded" || modelData.reason === "waiting-for-space" || modelData.reason === "too-big"
                     text: i18nc("@action:button", "Refresh")
                     description: i18n("Once there is room in OneDrive, these go up.")
                     icon.name: "view-refresh"

@@ -186,6 +186,16 @@ void SyncController::applyProperties(const QVariantMap &p)
     if (const auto it = p.constFind(QLatin1String("HeldCount")); it != p.constEnd()) {
         m_heldCount = it->toUInt();
     }
+    if (const auto it = p.constFind(QLatin1String("QuotaFull")); it != p.constEnd()) {
+        m_quotaFull = it->toBool();
+    }
+    if (const auto it = p.constFind(QLatin1String("SpaceWaitingCount")); it != p.constEnd()) {
+        m_spaceWaitingCount = it->toUInt();
+    }
+    number("SpaceWaitingBytes", m_spaceWaitingBytes);
+    if (const auto it = p.constFind(QLatin1String("TooBigCount")); it != p.constEnd()) {
+        m_tooBigCount = it->toUInt();
+    }
     if (const auto it = p.constFind(QLatin1String("Paused")); it != p.constEnd()) {
         m_paused = it->toBool();
     }

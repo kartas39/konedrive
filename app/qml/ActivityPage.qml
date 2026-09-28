@@ -28,11 +28,17 @@ FormCard.FormCardPage {
     /// The counts the summary was last asked for at.
     property string shownCounts: ""
 
+    /// The counts that move what is kept back: a full OneDrive and the files
+    /// too big for it change reasons, not the pending count.
+    function countsNow() {
+        return sync ? waitingCount + "/" + sync.blockedCount + "/" + sync.quotaFull + "/" + sync.spaceWaitingCount + "/" + sync.tooBigCount : "";
+    }
+
     /// What is kept back has no signal of its own: its summary is read when
     /// the page is shown, shows another account, or a count moves while it is.
     function loadWaiting() {
         if (visible && sync) {
-            shownCounts = waitingCount + "/" + sync.blockedCount;
+            shownCounts = countsNow();
             sync.loadNotUploaded();
         }
     }
@@ -43,7 +49,7 @@ FormCard.FormCardPage {
         target: page.sync
         enabled: page.visible
         function onSyncChanged() {
-            if (page.waitingCount + "/" + page.sync.blockedCount !== page.shownCounts) {
+            if (page.countsNow() !== page.shownCounts) {
                 page.loadWaiting();
             }
         }

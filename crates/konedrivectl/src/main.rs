@@ -873,6 +873,9 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &Sync1Proxy<'_>
         SyncCmd::Refresh => {
             explained(daemon, chosen, proxy, SyncAction::Refresh, proxy.refresh().await).await?;
             println!("{tag}Asked OneDrive for changes.");
+            // `Refresh` read the quota again: what it read.
+            let (state, free, full) = (proxy.quota_state().await?, proxy.free_space().await?, proxy.quota_full().await?);
+            print!("{}", konedrivectl::quota_text(&state, free, full));
         }
         SyncCmd::Activity { limit } => {
             let events = explained(daemon, chosen, proxy, SyncAction::Activity, proxy.recent_activity(limit).await).await?;

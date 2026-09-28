@@ -10,11 +10,9 @@ pub struct Profile {
     pub email: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Quota {
-    pub used: u64,
-    pub total: u64,
-}
+/// The drive's quota: `used` and `total` for the account page, Graph's `remaining` and
+/// `state` for the outbox (issue #2).
+pub use crate::drive::DriveQuota as Quota;
 
 /// `GET /me/drive`: the drive's id — the account's identity (design §8) — and its quota.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,15 +45,7 @@ struct MeBody {
 struct DriveBody {
     #[serde(default)]
     id: String,
-    quota: QuotaBody,
-}
-
-#[derive(Deserialize)]
-struct QuotaBody {
-    #[serde(default)]
-    used: u64,
-    #[serde(default)]
-    total: u64,
+    quota: Quota,
 }
 
 #[derive(Clone)]
@@ -83,7 +73,7 @@ impl GraphClient {
 
     pub async fn drive(&self, token: &str) -> Result<Drive, GraphError> {
         let drive: DriveBody = self.get_json("me/drive", token).await?;
-        Ok(Drive { id: drive.id, quota: Quota { used: drive.quota.used, total: drive.quota.total } })
+        Ok(Drive { id: drive.id, quota: drive.quota })
     }
 
     async fn get_json<T: DeserializeOwned>(&self, route: &str, token: &str) -> Result<T, GraphError> {
@@ -148,7 +138,7 @@ mod tests {
         mock_get(&server, "/me/drive", 200, json!({"id": "d", "quota": {"used": 10, "total": 100, "remaining": 90}})).await;
         assert_eq!(
             graph(&server).drive("T").await.unwrap(),
-            Drive { id: "d".into(), quota: Quota { used: 10, total: 100 } }
+            Drive { id: "d".into(), quota: Quota { used: 10, total: 100, remaining: Some(90), state: String::new() } }
         );
     }
 
