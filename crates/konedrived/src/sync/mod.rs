@@ -1028,6 +1028,9 @@ pub struct SyncService {
     /// an item takes a slot of it. The drive set with [`set_drive`](Self::set_drive) reports
     /// into it.
     pool: Arc<crate::pool::TransferPool>,
+    /// The large pinned files downloading in parts, and how many streams each has: who is
+    /// due the next free large slot of `pool` (`source::parts`, issue #28).
+    parts: Arc<source::Share>,
 }
 
 /// A OneDrive folder's sync while it runs.
@@ -1170,6 +1173,7 @@ impl SyncService {
             Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
                 pins: pin::Pins::new(state.clone(), me.clone(), Arc::clone(&pool)),
                 pool,
+                parts: source::Share::new(),
                 hub: Arc::clone(hub),
                 link: hub.link_cell(),
                 account,
@@ -3034,7 +3038,9 @@ impl SyncService {
     ///
     /// `class` is the slot of the account's transfer pool it takes, before the per-inode
     /// lock (never waiting for a slot with the lock held); `None` when the caller holds one
-    /// already (a pinned download).
+    /// already (a pinned download). A pinned download of a large file goes in parallel parts
+    /// (`source::parts`, issue #28), the slot held for it being its first stream's; a file
+    /// being opened, and `Hydrate`, keep one stream.
     async fn fill_now(&self, path: &Path, class: Option<crate::pool::Class>) -> Result<Answered, SyncError> {
         let reg = self.require_registration()?;
         let Some(source) = self.source.lock().unwrap().clone() else {
@@ -3048,14 +3054,14 @@ impl SyncService {
             .map_err(|e| SyncError::Io(format!("the hydration task failed: {e}")))??;
         let key = InodeKey::of(&file).map_err(|e| SyncError::Io(e.to_string()))?;
 
+        // A placeholder has its full size: whether this is a large transfer.
+        let size = crate::pool::Size::of(file.metadata().map_or(0, |meta| meta.len()));
         let mut slot = match class {
-            // A placeholder has its full size: whether this is a large transfer.
-            Some(class) => {
-                let bytes = file.metadata().map_or(0, |meta| meta.len());
-                Some(self.pool.acquire_sized(class, crate::pool::Size::of(bytes)).await)
-            }
+            Some(class) => Some(self.pool.acquire_sized(class, size).await),
             None => None,
         };
+        let split = (class.is_none() && size == crate::pool::Size::Large)
+            .then(|| source::Split::new(Arc::clone(&self.pool), Arc::clone(&self.parts)));
         // Serializes against `dehydrate()` and against `serve_hydrations`'s
         // own fills of the same inode (both share this table).
         let guard = self.locks.lock(key).await;
@@ -3086,7 +3092,10 @@ impl SyncService {
         let fd: std::os::fd::OwnedFd = file.into();
         // Shown in `Transfers` while it downloads.
         let tracked = Tracked::new(source, self.report.transfers.clone(), shown.clone());
-        let filled = source::hydrate_with(fd, &tracked, clearance.as_ref()).await;
+        let filled = match &split {
+            Some(split) => source::hydrate_in_parts(fd, &tracked, clearance.as_ref(), split).await,
+            None => source::hydrate_with(fd, &tracked, clearance.as_ref()).await,
+        };
         let size = tracked.fetched();
         drop(tracked);
         drop(guard);
@@ -3760,10 +3769,10 @@ fn state_of_path(path: &Path) -> Option<State> {
 /// source do exist.
 #[async_trait]
 impl ContentSource for SyncService {
-    async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         let source = self.source.lock().unwrap().clone();
         match source {
-            Some(source) => source.fetch(item_id, from).await,
+            Some(source) => source.fetch(item_id, from, end).await,
             None => Err(SourceError::NotFound(format!(
                 "{item_id}: no content source is registered"
             ))),
@@ -4202,7 +4211,7 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for Panics {
-        async fn fetch(&self, _item_id: &str, _from: u64) -> Result<Fetched, SourceError> {
+        async fn fetch(&self, _item_id: &str, _from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
             panic!("this content source explodes on contact");
         }
     }
@@ -4437,10 +4446,10 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for ClearedFirst {
-        async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+        async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
             let cleared = self.seen.lock().unwrap().contains(&Seen::ClearIgnore);
             self.fetches.lock().unwrap().push(cleared);
-            LocalDir::new(self.dir.clone()).fetch(item_id, from).await
+            LocalDir::new(self.dir.clone()).fetch(item_id, from, end).await
         }
     }
 
@@ -5117,7 +5126,7 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for Piped {
-        async fn fetch(&self, _item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+        async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
             let stream = self.reader.lock().unwrap().take().ok_or_else(|| SourceError::NotFound("fetched twice".into()))?;
             Ok(Fetched {
                 served_from: from,
@@ -5134,7 +5143,7 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for Gated {
-        async fn fetch(&self, _item_id: &str, _from: u64) -> Result<Fetched, SourceError> {
+        async fn fetch(&self, _item_id: &str, _from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
             let gate = self.0.lock().unwrap().take();
             if let Some(gate) = gate {
                 let _ = gate.await;
@@ -5386,6 +5395,57 @@ mod tests {
 
     fn pin_of(path: &Path) -> Option<Vec<u8>> {
         xattr::get(path, konedrive_fs::placeholder::XATTR_PIN).unwrap()
+    }
+
+    /// Records the range every fetch asks for.
+    struct RecordsRanges {
+        inner: LocalDir,
+        asked: Mutex<Vec<(String, Option<u64>)>>,
+    }
+
+    #[async_trait]
+    impl ContentSource for RecordsRanges {
+        async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
+            self.asked.lock().unwrap().push((item_id.to_string(), end));
+            self.inner.fetch(item_id, from, end).await
+        }
+    }
+
+    /// Issue #28: a large file being opened (`Hydrate`) keeps one stream, open-ended; the
+    /// same kind of file pinned downloads in parts, each asking for a bounded range.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_large_file_being_opened_keeps_one_stream_and_a_pinned_one_goes_in_parts() {
+        let service = SyncService::new(None, None, None);
+        let dir = tempfile::tempdir().unwrap();
+        service.set_helper_socket(dir.path().join("no-helper.sock"));
+        let source = dir.path().join("source");
+        std::fs::create_dir_all(&source).unwrap();
+        // Placeholders as large as a large file (sparse, nothing on disk)...
+        for name in ["opened.bin", "pinned.bin"] {
+            File::create(source.join(name)).unwrap().set_len(crate::pool::LARGE_FROM).unwrap();
+        }
+        let root_dir = tempfile::tempdir().unwrap();
+        service.register_root_without_interception(root_dir.path()).await.unwrap();
+        service.populate_from_directory(&source).await.unwrap();
+        // ...whose content turns out small: the fill takes the source's size.
+        for name in ["opened.bin", "pinned.bin"] {
+            std::fs::write(source.join(name), vec![7u8; 300_000]).unwrap();
+        }
+        let recording = Arc::new(RecordsRanges { inner: LocalDir::new(&source), asked: Mutex::default() });
+        install_source(&service, Arc::clone(&recording) as Arc<dyn ContentSource>);
+        let root = root_dir.path().canonicalize().unwrap();
+
+        service.hydrate_now(&root.join("opened.bin")).await.unwrap();
+        service.pin(&[root.join("pinned.bin")]).await.unwrap();
+        pinned_downloads_done(&service).await;
+
+        for name in ["opened.bin", "pinned.bin"] {
+            assert_eq!(std::fs::read(root.join(name)).unwrap(), vec![7u8; 300_000], "{name}");
+        }
+        let asked = recording.asked.lock().unwrap().clone();
+        let ends = |name: &str| asked.iter().filter(|(id, _)| id == name).map(|(_, end)| *end).collect::<Vec<_>>();
+        assert_eq!(ends("opened.bin"), vec![None], "a file being opened is not split");
+        assert_eq!(ends("pinned.bin"), vec![Some(source::parts::PIECE)], "a pinned one asks for its first piece");
     }
 
     /// Pinning a folder queues every online-only file in it, and each is
@@ -5771,12 +5831,12 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for CountingSource {
-        async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+        async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
             use std::sync::atomic::Ordering::SeqCst;
             let now = self.in_flight.fetch_add(1, SeqCst) + 1;
             self.peak.fetch_max(now, SeqCst);
             tokio::time::sleep(self.delay).await;
-            let fetched = LocalDir::new(self.dir.clone()).fetch(item_id, from).await;
+            let fetched = LocalDir::new(self.dir.clone()).fetch(item_id, from, end).await;
             self.in_flight.fetch_sub(1, SeqCst);
             fetched
         }

@@ -290,7 +290,8 @@ application must never read zeros where real content should be.
 - **What:** "Always keep on this device" on a folder queues every online-only file under it, and
   everything OneDrive adds there later, and downloads them folder by folder in the background
   slots of the account's transfer pool (`crates/konedrived/src/sync/pin.rs`, issue #3), at most
-  four large files at once. Nothing asks first, and nothing checks the free space beforehand.
+  four large files at once — or one to four large files in parallel parts, four streams in all
+  (issue #28, F155). Nothing asks first, and nothing checks the free space beforehand.
 - **Why:** the product decision was no size prompt, as on Windows.
 - **Cost:** a pinned folder bigger than the free space fills the disk. The first download that
   fails for want of space is a `failed` event reading "not enough disk space" (the window
@@ -2050,6 +2051,30 @@ application must never read zeros where real content should be.
   next watcher's start takes; the scan every 10 minutes of a folder watched only in part is
   reported too (`periodic`). SHORTCUT, on purpose · measured
   (`sync::watcher::tests::the_sink_reports_a_full_scan_and_not_a_single_place`). Open.
+- **F155. A large pinned download in parts keeps only its gap-free start** (`sync/source/parts.rs`,
+  issue #28) — `user.konedrive.progress` keeps its meaning, the bytes on disk from the start
+  without a gap, so a piece finished beyond a gap is not recorded. A fill that gives up (three
+  breaks of one piece, a full disk, a Forget) or a daemon restart keeps only that start, and
+  everything past it is downloaded again: with 4 streams at even speed, under 1 GiB (the pieces
+  in flight, 256 MiB each), more when one stream lags far behind the others. The piece size is a
+  **guess** (section 5). A server that answers a bounded range with the whole body (`200`, which
+  HTTP allows) makes each piece read and skip everything before it; OneDrive answers `206`. SHORTCUT
+  (the checkpoint format is unchanged) · measured
+  (`sync::source::parts::tests::a_failed_download_is_continued_from_its_gap_free_start`). Open.
+- **F156. Only pinned large files go in parts, and extra streams give way one piece at a time**
+  (`sync/source/parts.rs`, `sync/mod.rs` `fill_now`) — a file being opened, `Hydrate`, a replacement
+  of a changed file (a temporary file with no checkpoint, `materialize::replace`) and every small
+  file keep one stream, however large. An extra stream gives its slot back only after its piece
+  ends, so a transfer that starts waiting for a slot — a large file in the queue, a small file, an
+  upload — waits up to one piece (256 MiB at one stream's speed, about 15 s at 17 MiB/s). A file
+  in parts takes a free slot only on its own look, every 100 ms (`LOOK_AGAIN`) and after each
+  piece; an even share is reached by extra streams giving way after their pieces, not at once. A
+  pause lets extra streams already running go on, as it lets downloads go on. Each piece asks
+  Graph for the item's metadata afresh, as every fetch does (one request per 256 MiB; #26 is
+  where download URLs change). LIMIT (chosen) ·
+  measured
+  (`sync::source::parts::tests::two_large_files_share_the_slots_and_a_waiting_transfer_gets_one`,
+  `sync::tests::a_large_file_being_opened_keeps_one_stream_and_a_pinned_one_goes_in_parts`). Open.
 ---
 
 ## 5. Provisional numbers
@@ -2075,6 +2100,7 @@ application must never read zeros where real content should be.
 | Transfer pool: throttle level forgotten after (`THROTTLE_MEMORY`) / a throttle within the wait (+1 s, `BURST_GRACE`) is the same burst / no slot for, without `Retry-After` (`DEFAULT_THROTTLE_WAIT`) | 5 min / halves once / 10 s | **guess** |
 | A large file, from (`LARGE_FROM`) / large transfers at once per account (`[transfers] large`, `DEFAULT_LARGE`, clamped to 1…`max`), files being opened not held | 100 MiB / 4 | **guess** |
 | Slots above the pool only a file being opened may take (`RESERVE`) | 2 | **guess** |
+| A large pinned download's piece (`sync::source::parts::PIECE`) / how often a download in parts looks for a free slot to add a stream in (`LOOK_AGAIN`) | 256 MiB / 100 ms | **guess** (issue #28): large enough that a request's round trip is nothing beside it, small enough that the streams share a file's end |
 | Speed shown (`DownloadSpeed`, `UploadSpeed`): the average of (`SPEED_SPAN`) / published every | 3 s / 1 s while anything moves or a `Retry-After` runs | **guess** |
 | Hydration requests taken off the helper's queue at once (`FILL_ADMISSION`) | 64, the helper's credit; each then waits for its account's pool | pinned by a test |
 | Window's transfer charts | the last 2 min, one sample a second | **guess** |

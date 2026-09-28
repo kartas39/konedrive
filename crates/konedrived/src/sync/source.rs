@@ -21,6 +21,10 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use super::helper::{Clearance, HelperLink, NotCleared};
 use crate::quickxor::QuickXor;
 
+pub mod parts;
+
+pub use parts::{Share, Split};
+
 #[derive(Debug, thiserror::Error)]
 pub enum SourceError {
     #[error("{0}")]
@@ -61,7 +65,18 @@ pub struct Version {
 #[async_trait]
 pub trait ContentSource: Send + Sync {
     /// Bytes of `item_id` starting at `from`, plus the item's current size and mtime.
-    async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError>;
+    ///
+    /// `end` is where the bytes wanted stop — the offset of the first byte not
+    /// wanted — or `None` for the rest of the file: one piece of a download
+    /// in parts (issue #28) asks for its own range only. A source may still
+    /// serve more than that; the download reads no further than `end`.
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError>;
+
+    /// How far a download in parts has come as a whole: `done` bytes of the
+    /// file's `size` are on disk. No one of its streams can tell, so the
+    /// download says it here; a source that shows progress
+    /// (`activity::Tracked`) shows this one.
+    fn progress(&self, _done: u64, _size: u64) {}
 }
 
 /// Why a source file must not be read into a placeholder, or
@@ -172,7 +187,7 @@ impl LocalDir {
 
 #[async_trait]
 impl ContentSource for LocalDir {
-    async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         let fetch_number = self.fetches.fetch_add(1, Ordering::SeqCst);
         if let Some(delay) = self.delay {
             tokio::time::sleep(delay).await;
@@ -206,6 +221,9 @@ impl ContentSource for LocalDir {
         };
         if let Some(limit) = breaks_here {
             stream = Box::new(stream.take(limit.saturating_sub(from)));
+        }
+        if let Some(end) = end {
+            stream = Box::new(stream.take(end.saturating_sub(from)));
         }
         Ok(Fetched {
             served_from: from,
@@ -315,7 +333,7 @@ pub async fn answer_request(
         }
         Ok(Some(_)) => {
             let clearance = link.map(|link| Clearance::Link(link.clone()));
-            match fill_file(file, source, clearance.as_ref()).await {
+            match fill_file(file, source, clearance.as_ref(), None).await {
                 Ok(()) => Answered::Filled,
                 Err(e) => Answered::Failed(e),
             }
@@ -395,13 +413,26 @@ pub async fn hydrate_with(
     source: &dyn ContentSource,
     clearance: Option<&Clearance>,
 ) -> Result<(), FillError> {
-    fill_file(File::from(fd), source, clearance).await
+    fill_file(File::from(fd), source, clearance, None).await
+}
+
+/// [`hydrate_with`], downloading the file in parallel parts ([`parts`]): a large pinned
+/// file (issue #28). Everything else about the fill — the state, the clearance, the
+/// checkpoint, the roll-back and the commit — is the same.
+pub async fn hydrate_in_parts(
+    fd: OwnedFd,
+    source: &dyn ContentSource,
+    clearance: Option<&Clearance>,
+    split: &Split,
+) -> Result<(), FillError> {
+    fill_file(File::from(fd), source, clearance, Some(split)).await
 }
 
 async fn fill_file(
     file: File,
     source: &dyn ContentSource,
     clearance: Option<&Clearance>,
+    split: Option<&Split>,
 ) -> Result<(), FillError> {
     let meta = file.metadata().map_err(|e| FillError::Errno(errno_of(&e)))?;
     // The placeholder's own time — the cloud's — which a roll-back puts back
@@ -432,7 +463,7 @@ async fn fill_file(
         }
     }
 
-    fill(&file, &item_id, original_size, source).await.map_err(|errno| {
+    fill(&file, &item_id, original_size, source, split).await.map_err(|errno| {
         roll_back(&file, original_size, original.1);
         FillError::Errno(errno)
     })
@@ -585,12 +616,21 @@ pub(crate) struct Downloaded {
     pub version: Option<Version>,
 }
 
-async fn fill(file: &File, item_id: &str, original_size: u64, source: &dyn ContentSource) -> Result<(), i32> {
+async fn fill(
+    file: &File,
+    item_id: &str,
+    original_size: u64,
+    source: &dyn ContentSource,
+    split: Option<&Split>,
+) -> Result<(), i32> {
     let resume = usable_checkpoint(file, original_size);
     if resume.is_none() {
         drop_unusable_checkpoint(file)?;
     }
-    let downloaded = download(file, item_id, original_size, source, resume, true).await?;
+    let downloaded = match split {
+        Some(split) => parts::download(file, item_id, original_size, source, resume, split).await?,
+        None => download(file, item_id, original_size, source, resume, true).await?,
+    };
     commit(file, &downloaded)
 }
 
@@ -708,7 +748,7 @@ async fn download(
     }
 
     loop {
-        let fetched = match source.fetch(item_id, written).await {
+        let fetched = match source.fetch(item_id, written, None).await {
             Ok(fetched) => fetched,
             Err(SourceError::NotFound(_)) => return Err(libc::EIO),
             Err(SourceError::Transient(why)) => {
@@ -1025,7 +1065,7 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for AlwaysTransient {
-        async fn fetch(&self, _item_id: &str, _from: u64) -> Result<Fetched, SourceError> {
+        async fn fetch(&self, _item_id: &str, _from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
             self.attempts.fetch_add(1, Ordering::SeqCst);
             Err(SourceError::Transient("the connection dropped".into()))
         }
@@ -1041,7 +1081,7 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for RestartsFromZero {
-        async fn fetch(&self, _item_id: &str, _from: u64) -> Result<Fetched, SourceError> {
+        async fn fetch(&self, _item_id: &str, _from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
             let n = self.fetches.fetch_add(1, Ordering::SeqCst);
             let meta = std::fs::metadata(&self.path).unwrap();
             let file = tokio::fs::File::open(&self.path).await.unwrap();
@@ -1069,8 +1109,8 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for ImpossibleMtime {
-        async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
-            let mut fetched = self.inner.fetch(item_id, from).await?;
+        async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
+            let mut fetched = self.inner.fetch(item_id, from, end).await?;
             fetched.mtime = SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1);
             Ok(fetched)
         }
@@ -1086,10 +1126,10 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for WatchesState {
-        async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+        async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
             let opened = std::fs::File::open(&self.path).unwrap();
             *self.seen.lock().unwrap() = read_state(&opened).unwrap();
-            self.inner.fetch(item_id, from).await
+            self.inner.fetch(item_id, from, end).await
         }
     }
 
@@ -1558,7 +1598,7 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for Scripted {
-        async fn fetch(&self, _item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+        async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
             let n = {
                 let mut froms = self.froms.lock().unwrap();
                 froms.push(from);
