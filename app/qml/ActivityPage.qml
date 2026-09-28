@@ -4,6 +4,7 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
 import org.kde.quickcharts as Charts
+import org.kde.quickcharts.controls as ChartsControls
 import org.konedrive.app
 
 /// How fast things move (two mini cards with the last two minutes), the
@@ -29,11 +30,9 @@ FormCard.FormCardPage {
     onVisibleChanged: loadOutbox()
     onSyncChanged: loadOutbox()
 
-    /// The charts show speed, or how many files move at once.
-    property bool showFiles: false
-
-    /// One direction's mini card: its speed, how many files at once, and a line of the
-    /// last two minutes; dimmed while nothing moves.
+    /// One direction's mini card: its speed, how many files move that way at once, and one
+    /// chart of the last two minutes with two lines on two scales — speed on the left axis,
+    /// files at once on the right — and a small legend. Dimmed while nothing moves.
     component TransferCard: Kirigami.AbstractCard {
         id: card
         required property string title
@@ -41,11 +40,11 @@ FormCard.FormCardPage {
         required property int active
         required property var speedHistory
         required property var activeHistory
-        /// The pool's line: "N files at once (pool M: X down, Y up)".
-        required property string poolText
-        /// Whether the chart shows files at once rather than speed.
-        required property bool showFiles
+        /// "N files downloading" or "N files uploading".
+        required property string filesText
         readonly property bool idle: active === 0 && speed === 0
+        readonly property color speedColor: Kirigami.Theme.highlightColor
+        readonly property color filesColor: Kirigami.Theme.neutralTextColor
 
         Layout.fillWidth: true
         Layout.preferredWidth: 1
@@ -66,20 +65,91 @@ FormCard.FormCardPage {
                 Layout.fillWidth: true
                 elide: Text.ElideRight
                 opacity: 0.7
-                text: card.poolText
+                text: card.filesText
             }
-            Charts.LineChart {
+            RowLayout {
                 Layout.fillWidth: true
                 Layout.preferredHeight: Kirigami.Units.gridUnit * 3
-                fillOpacity: 0.2
-                lineWidth: 1
-                yRange.automatic: true
-                yRange.from: 0
-                valueSources: Charts.ArraySource {
-                    array: card.showFiles ? card.activeHistory : card.speedHistory
+                spacing: Kirigami.Units.smallSpacing
+
+                // Left axis: speed.
+                ChartsControls.AxisLabels {
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 3
+                    direction: ChartsControls.AxisLabels.VerticalBottomTop
+                    source: Charts.ChartAxisSource {
+                        chart: speedChart
+                        axis: Charts.ChartAxisSource.YAxis
+                        itemCount: 2
+                    }
+                    delegate: QQC2.Label {
+                        font: Kirigami.Theme.smallFont
+                        color: card.speedColor
+                        text: Qt.locale().formattedDataSize(Number(ChartsControls.AxisLabels.label), 0) + "/s"
+                    }
                 }
-                colorSource: Charts.SingleValueSource {
-                    value: Kirigami.Theme.highlightColor
+                Item {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    Charts.LineChart {
+                        id: speedChart
+                        anchors.fill: parent
+                        fillOpacity: 0.2
+                        lineWidth: 1
+                        yRange.from: 0
+                        yRange.automatic: true
+                        valueSources: Charts.ArraySource { array: card.speedHistory }
+                        colorSource: Charts.SingleValueSource { value: card.speedColor }
+                    }
+                    Charts.LineChart {
+                        id: filesChart
+                        anchors.fill: parent
+                        fillOpacity: 0
+                        lineWidth: 1
+                        yRange.from: 0
+                        yRange.automatic: true
+                        valueSources: Charts.ArraySource { array: card.activeHistory }
+                        colorSource: Charts.SingleValueSource { value: card.filesColor }
+                    }
+                }
+                // Right axis: files at once.
+                ChartsControls.AxisLabels {
+                    Layout.fillHeight: true
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 1.5
+                    direction: ChartsControls.AxisLabels.VerticalBottomTop
+                    source: Charts.ChartAxisSource {
+                        chart: filesChart
+                        axis: Charts.ChartAxisSource.YAxis
+                        itemCount: 2
+                    }
+                    delegate: QQC2.Label {
+                        font: Kirigami.Theme.smallFont
+                        color: card.filesColor
+                        text: Math.round(Number(ChartsControls.AxisLabels.label))
+                    }
+                }
+            }
+            // The legend.
+            RowLayout {
+                spacing: Kirigami.Units.smallSpacing
+                Rectangle {
+                    implicitWidth: Kirigami.Units.gridUnit * 0.6
+                    implicitHeight: 2
+                    color: card.speedColor
+                }
+                QQC2.Label {
+                    font: Kirigami.Theme.smallFont
+                    text: i18nc("@info chart legend", "Speed")
+                }
+                Rectangle {
+                    Layout.leftMargin: Kirigami.Units.smallSpacing
+                    implicitWidth: Kirigami.Units.gridUnit * 0.6
+                    implicitHeight: 2
+                    color: card.filesColor
+                }
+                QQC2.Label {
+                    font: Kirigami.Theme.smallFont
+                    text: i18nc("@info chart legend", "Files at once")
                 }
             }
         }
@@ -94,40 +164,32 @@ FormCard.FormCardPage {
         visible: page.sync !== null
         spacing: Kirigami.Units.largeSpacing
 
-        /// The pool's line for a card whose direction has `active` files moving.
-        function poolText(active) {
-            return page.sync ? i18ncp("@info files moving in one direction; the account's transfer pool",
-                                      "%1 file at once (pool %2: %3 down, %4 up)",
-                                      "%1 files at once (pool %2: %3 down, %4 up)",
-                                      active, page.sync.poolSize, page.sync.activeDownloads, page.sync.activeUploads)
-                             : "";
-        }
-
         TransferCard {
+            id: downloading
             title: i18nc("@title a mini card", "Downloading")
             speed: page.sync ? page.sync.downloadSpeed : 0
             active: page.sync ? page.sync.activeDownloads : 0
             speedHistory: page.sync ? page.sync.downloadSpeedHistory : []
             activeHistory: page.sync ? page.sync.activeDownloadsHistory : []
-            poolText: parent.poolText(active)
-            showFiles: page.showFiles
+            filesText: i18ncp("@info files downloading at once", "%1 file downloading", "%1 files downloading", downloading.active)
         }
         TransferCard {
+            id: uploading
             title: i18nc("@title a mini card", "Uploading")
             speed: page.sync ? page.sync.uploadSpeed : 0
             active: page.sync ? page.sync.activeUploads : 0
             speedHistory: page.sync ? page.sync.uploadSpeedHistory : []
             activeHistory: page.sync ? page.sync.activeUploadsHistory : []
-            poolText: parent.poolText(active)
-            showFiles: page.showFiles
+            filesText: i18ncp("@info files uploading at once", "%1 file uploading", "%1 files uploading", uploading.active)
         }
     }
-    QQC2.Switch {
+    // The account's transfer pool, shared by both directions: shown once.
+    QQC2.Label {
+        objectName: "transferPool"
         Layout.leftMargin: Kirigami.Units.largeSpacing
         visible: page.sync !== null
-        text: i18nc("@option:check the charts show files at once rather than speed", "Show files at once")
-        checked: page.showFiles
-        onToggled: page.showFiles = checked
+        opacity: 0.7
+        text: page.sync ? i18nc("@info the account's transfer pool: slots now, ceiling", "Pool: %1 of %2", page.sync.poolSize, page.sync.poolCeiling) : ""
     }
 
     Kirigami.InlineMessage {
