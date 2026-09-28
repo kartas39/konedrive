@@ -155,6 +155,8 @@ pub mod kind {
     pub const UPLOAD_FAILED: &str = "upload-failed";
     pub const RESTORED: &str = "restored";
     pub const CONFLICT: &str = "conflict";
+    /// A file or folder removed here before its upload finished.
+    pub const NOT_UPLOADED: &str = "not-uploaded";
 }
 
 /// What the worker needs from the account it serves.

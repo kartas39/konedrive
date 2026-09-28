@@ -81,6 +81,9 @@ QString ActivityModel::describe(const QString &kind, const QString &detail)
     if (kind == QLatin1String("restored")) {
         return i18nc("@info activity", "Restored");
     }
+    if (kind == QLatin1String("not-uploaded")) {
+        return i18nc("@info activity", "Not uploaded");
+    }
     if (kind == QLatin1String("failed")) {
         return i18nc("@info activity", "Could not be downloaded");
     }
@@ -134,7 +137,7 @@ QVariant ActivityModel::data(const QModelIndex &index, int role) const
         if (row.kind == QLatin1String("uploaded") || row.kind == QLatin1String("cloud-moved")) {
             return QStringLiteral("cloud-upload");
         }
-        if (row.kind == QLatin1String("cloud-deleted")) {
+        if (row.kind == QLatin1String("cloud-deleted") || row.kind == QLatin1String("not-uploaded")) {
             return QStringLiteral("edit-delete");
         }
         if (row.kind == QLatin1String("restored")) {
