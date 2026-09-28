@@ -1955,8 +1955,9 @@ application must never read zeros where real content should be.
   `sync::pin::tests::a_large_file_waiting_for_the_limit_does_not_hold_up_the_small_ones`). Open.
 - **F148. Pinned downloads go in alphabetical order batch by batch, small and large apart**
   (`sync/pin.rs`, `folder_order`) — each sweep or pin queues its files folder by folder (a
-  folder's files by name, then its subfolders, depth first); names compare lower-cased, then byte
-  by byte — not Dolphin's natural order, so `file10` comes before `file2`. What a later pin or
+  folder's files by name, then its subfolders, depth first); names compare lower-cased, with a
+  run of digits as a number (`file2` before `file10`), close to Dolphin's order but not its locale
+  rules for accents and punctuation. What a later pin or
   sweep queues goes after what already waits: the queue is never sorted again. Small and large
   files wait in two queues, each in that order, so a large file of an earlier folder may come
   after small files of later ones. SHORTCUT · measured

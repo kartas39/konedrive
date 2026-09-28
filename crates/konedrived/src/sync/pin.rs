@@ -194,8 +194,9 @@ pub fn online_only_under(path: &Path) -> Vec<Wanted> {
 
 /// The order pinned downloads go in: folder by folder, alphabetically — a folder's files by
 /// name first, then its subfolders by name, each the same way (depth first). Names compare
-/// without regard to case, then byte by byte.
-pub fn folder_order(path: &Path) -> Vec<(bool, String, OsString)> {
+/// as Dolphin sorts them: without regard to case, and a run of digits as a number, so `file2`
+/// comes before `file10`.
+pub fn folder_order(path: &Path) -> Vec<(bool, Vec<NamePiece>, OsString)> {
     let names: Vec<&std::ffi::OsStr> = path
         .components()
         .filter_map(|c| match c {
@@ -208,8 +209,32 @@ pub fn folder_order(path: &Path) -> Vec<(bool, String, OsString)> {
         .into_iter()
         .enumerate()
         // A folder on the way sorts after every file beside it: `false` before `true`.
-        .map(|(i, name)| (i < last, name.to_string_lossy().to_lowercase(), name.to_os_string()))
+        .map(|(i, name)| (i < last, name_pieces(&name.to_string_lossy()), name.to_os_string()))
         .collect()
+}
+
+/// A piece of a name as [`folder_order`] compares it: one character (`c`, 0, ""), or a run of
+/// digits as a number (`'0'`, count of significant digits, the digits) — it sorts where a digit
+/// would, and by value at any length.
+pub type NamePiece = (char, usize, String);
+
+fn name_pieces(name: &str) -> Vec<NamePiece> {
+    let name = name.to_lowercase();
+    let mut pieces = Vec::new();
+    let mut chars = name.chars().peekable();
+    while let Some(c) = chars.next() {
+        if !c.is_ascii_digit() {
+            pieces.push((c, 0, String::new()));
+            continue;
+        }
+        let mut digits = c.to_string();
+        while let Some(d) = chars.next_if(char::is_ascii_digit) {
+            digits.push(d);
+        }
+        let value = digits.trim_start_matches('0');
+        pieces.push(('0', value.len(), value.to_string()));
+    }
+    pieces
 }
 
 /// Sorts `files` into [`folder_order`].
@@ -742,6 +767,18 @@ mod tests {
         in_folder_order(&mut files);
         let order: Vec<&str> = files.iter().map(|(p, _)| p.to_str().unwrap()).collect();
         assert_eq!(order, ["/r/a.txt", "/r/B.txt", "/r/C.txt", "/r/a/2.txt", "/r/a/b/3.txt", "/r/a/c/1.txt", "/r/b/z.txt"]);
+    }
+
+    /// Digits compare as numbers, as Dolphin sorts: `file2` before `file10`.
+    #[test]
+    fn numbers_in_names_sort_by_value() {
+        let mut files: Vec<Wanted> = ["/r/file10.txt", "/r/file2.txt", "/r/File1.txt", "/r/file02b.txt", "/r/file.txt"]
+            .into_iter()
+            .map(|p| (PathBuf::from(p), 0))
+            .collect();
+        in_folder_order(&mut files);
+        let order: Vec<&str> = files.iter().map(|(p, _)| p.to_str().unwrap()).collect();
+        assert_eq!(order, ["/r/file.txt", "/r/File1.txt", "/r/file2.txt", "/r/file02b.txt", "/r/file10.txt"]);
     }
 
     /// A large file waiting for the large-file limit lets the small files queued behind it

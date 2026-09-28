@@ -66,7 +66,8 @@ however often a pin, a placement or a sweep asks for it, and leaves it when its 
 
 **Order.** What a pin, a placement or a sweep queues goes folder by folder, alphabetically: a
 folder's files by name first, then its subfolders by name, each the same way (depth first). Names
-compare lower-cased, then byte by byte. A batch queued later goes after what already waits.
+compare as Dolphin sorts them: lower-cased, and a run of digits as a number (`file2` before
+`file10`). A batch queued later goes after what already waits.
 
 Each download goes through the ordinary fill path, `SyncService::fill_now` — the same as
 `Hydrate`: opened beneath the root, taken under the per-inode lock, verified against OneDrive's
