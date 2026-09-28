@@ -2,7 +2,7 @@
 
 #include "accountcontroller.h"
 #include "activitymodel.h"
-#include "outboxmodel.h"
+#include "uploadreasons.h"
 #include "synccontroller.h"
 
 #include <KIO/OpenFileManagerWindowJob>

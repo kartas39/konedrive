@@ -166,7 +166,8 @@ impl DriveClient {
 
     /// Sends a write with the account's token. A `401` is answered once by
     /// dropping the cached token and asking again, as reads do; every other
-    /// answer, throttling included, goes back to the caller as it is.
+    /// answer, throttling included, goes back to the caller as it is — throttling told to
+    /// the account's transfer pool first.
     pub(super) async fn send_write(
         &self,
         request: impl Fn(&str) -> reqwest::RequestBuilder,
@@ -183,7 +184,15 @@ impl DriveClient {
                 self.tokens.invalidate().await;
                 continue;
             }
+            self.answered(&response);
             return Ok(response);
+        }
+    }
+
+    /// Tells the account's transfer pool of an answer to a write: a `429`/`503` throttles it.
+    pub(super) fn answered(&self, response: &reqwest::Response) {
+        if matches!(response.status(), StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE) {
+            self.pool.throttled(retry_after(response.headers(), SystemTime::now()));
         }
     }
 }

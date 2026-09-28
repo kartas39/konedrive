@@ -134,6 +134,8 @@ impl SyncService {
         let paused = upload::paused(&store);
         let before = self.state.get().paused_until;
         self.state.update(|s| s.paused_until = paused);
+        // The transfer pool hands out nothing but opens while paused.
+        self.pool.set_paused(paused.is_some());
         if before != paused {
             self.wake_outbox();
             self.nudge();
@@ -191,6 +193,7 @@ impl SyncService {
         }
         if end {
             self.state.update(|s| s.paused_until = None);
+            self.pool.set_paused(false);
         }
         *timer = None;
         true
@@ -202,6 +205,7 @@ impl SyncService {
             timer.abort();
         }
         self.state.update(|s| s.paused_until = None);
+        self.pool.set_paused(false);
     }
 
     /// The outbox's counts on the bus are 0: its worker stopped, or its rows
@@ -227,18 +231,26 @@ impl SyncService {
         let take = if limit == 0 { usize::MAX } else { limit as usize };
         let rows = self.with_outbox(move |s| Ok(s.outbox_rows()?.into_iter().take(take).collect::<Vec<_>>())).await?;
         let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
-        let (uploads, full) = { let s = self.state.get(); (s.uploads, s.quota_full) };
-        tokio::task::spawn_blocking(move || entries(rows, &root, &uploads, full))
+        let state = self.state.get();
+        let (uploads, paused, full) = (state.uploads, state.paused_until.is_some(), state.quota_full);
+        tokio::task::spawn_blocking(move || entries(rows, &root, &uploads, paused, full))
             .await
             .map_err(|e| SyncError::Io(format!("the outbox task failed: {e}")))
     }
 }
 
+/// A row's state in `Outbox()` while the account is paused, whatever it
+/// waited for before: blocked and held rows keep theirs.
+const PAUSED_STATE: &str = "paused";
+
 /// `Outbox()`'s entries for `rows`; a waiting file's size is read from the
-/// disk (`lstat`), off the runtime.
-/// While OneDrive is `full`, a change that sends content and says nothing else
-/// says it waits for space (issue #2).
-fn entries(rows: Vec<crate::tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)], full: bool) -> Vec<OutboxEntry> {
+/// disk (`lstat`), off the runtime. While `paused`, every row that would
+/// otherwise wait, retry or run reads `paused`, with no reason and no next
+/// try: a pause is no failure, and nothing is tried before it ends (an upload
+/// in fragments still sending shows its bytes until it stops at the next).
+/// Otherwise, while OneDrive is `full`, a change that sends content and says
+/// nothing else says it waits for space (issue #2).
+fn entries(rows: Vec<crate::tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)], paused: bool, full: bool) -> Vec<OutboxEntry> {
     rows
         .into_iter()
         .map(|row| {
@@ -256,6 +268,9 @@ fn entries(rows: Vec<crate::tree::outbox::OutboxRow>, root: &std::path::Path, up
                 }
                 None => (0, 0),
             };
+            if paused && !matches!(row.state, OutboxState::Blocked | OutboxState::Held) {
+                return (row.seq as u64, row.kind.as_str().to_owned(), path, PAUSED_STATE.to_owned(), done, total, String::new(), 0);
+            }
             (
                 row.seq as u64,
                 row.kind.as_str().to_owned(),
@@ -295,6 +310,26 @@ impl SyncService {
         );
         out.sort();
         Ok(out)
+    }
+
+    /// `NotUploadedSummary()`: what is kept back, one row per reason:
+    /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
+    pub async fn not_uploaded_summary(&self) -> Result<Vec<super::kept_back::SummaryRow>, SyncError> {
+        let (skipped, rows) = self.with_outbox(|s| Ok((s.local_skipped()?, s.outbox_rows()?))).await?;
+        let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
+        let full = self.state.get().quota_full;
+        tokio::task::spawn_blocking(move || super::kept_back::summary(&skipped, &rows, &root, full))
+            .await
+            .map_err(|e| SyncError::Io(format!("the summary task failed: {e}")))
+    }
+
+    /// `NotUploadedFiles(reason, limit)`: the files kept back for `reason`,
+    /// at most `limit` (0 for all), and how many there are.
+    pub async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32), SyncError> {
+        let (skipped, rows) = self.with_outbox(|s| Ok((s.local_skipped()?, s.outbox_rows()?))).await?;
+        let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
+        let full = self.state.get().quota_full;
+        Ok(super::kept_back::files(&skipped, &rows, &root, full, &reason, limit))
     }
 
     /// `ConfirmDeletes()`: the removals the mass-delete guard held go ahead;
@@ -495,5 +530,63 @@ impl OutboxHost for Host {
             Some(service) => service.write_gate(),
             None => Err("the folder's sync is gone".into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::entries;
+    use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState};
+
+    fn row(seq: i64, state: OutboxState, reason: &str) -> OutboxRow {
+        OutboxRow {
+            seq,
+            kind: OutboxKind::Create,
+            item_id: None,
+            inode: None,
+            rel: PathBuf::from(format!("{seq}.bin")),
+            base: None,
+            target_parent: Some("R".into()),
+            target_name: None,
+            state,
+            reason: Some(reason.into()).filter(|r: &String| !r.is_empty()),
+            attempts: 0,
+            next_try: Some(1_700_000_000),
+            snapshot: Some("100 1".into()),
+            session_url: None,
+            session_expires: None,
+            session_next: None,
+            confirmed: false,
+        }
+    }
+
+    /// While paused, every row that waits reads `paused` — a session stopped
+    /// by the pause, one never started, one in backoff — with no reason and no
+    /// next try; a blocked or held row keeps its own state.
+    #[test]
+    fn rows_waiting_while_paused_read_paused() {
+        let rows = vec![
+            row(1, OutboxState::Waiting, "paused"),
+            row(2, OutboxState::Ready, ""),
+            row(3, OutboxState::Retry, "error sending request"),
+            row(4, OutboxState::Blocked, "quota-exceeded"),
+            row(5, OutboxState::Held, "mass-delete"),
+        ];
+        let root = Path::new("/nowhere");
+        let seen = |paused| entries(rows.clone(), root, &[], paused, false).into_iter().map(|e| (e.3, e.6, e.7)).collect::<Vec<_>>();
+        let t = 1_700_000_000;
+        assert_eq!(
+            seen(true),
+            vec![
+                ("paused".into(), String::new(), 0),
+                ("paused".into(), String::new(), 0),
+                ("paused".into(), String::new(), 0),
+                ("blocked".into(), "quota-exceeded".into(), t),
+                ("held".into(), "mass-delete".into(), t),
+            ]
+        );
+        assert_eq!(seen(false)[2], ("retry".into(), "error sending request".into(), t), "resumed, each row reads as it stands");
     }
 }

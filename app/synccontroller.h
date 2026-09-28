@@ -2,13 +2,15 @@
 
 #include "activitymodel.h"
 #include "conflictmodel.h"
-#include "outboxmodel.h"
 #include "synctypes.h"
 #include "transfermodel.h"
+#include "uploadreasons.h"
 
 #include <QDBusConnection>
 #include <QDBusPendingCall>
+#include <QElapsedTimer>
 #include <QObject>
+#include <QSet>
 #include <QString>
 #include <QUrl>
 #include <QVariantList>
@@ -54,7 +56,7 @@ class SyncController : public QObject
     /// Changes waiting to be uploaded (neither blocked nor held), and the size they send.
     Q_PROPERTY(uint pendingCount READ pendingCount NOTIFY syncChanged)
     Q_PROPERTY(qulonglong pendingBytes READ pendingBytes NOTIFY syncChanged)
-    /// Changes that need the user before they can go up (see notUploaded).
+    /// Changes that need the user before they can go up (see notUploadedSummary).
     Q_PROPERTY(uint blockedCount READ blockedCount NOTIFY syncChanged)
     /// Removals the mass-delete guard holds (HeldCount), waiting for
     /// confirmDeletes() or restoreDeletes().
@@ -74,12 +76,40 @@ class SyncController : public QObject
     Q_PROPERTY(QString machineName READ machineName NOTIFY syncChanged)
     /// Uploads under way (Sync1's Uploads).
     Q_PROPERTY(TransferModel *uploads READ uploads CONSTANT)
-    /// The changes waiting to be uploaded (Outbox()).
-    Q_PROPERTY(OutboxModel *outbox READ outbox CONSTANT)
-    /// What stays on this computer, and why: {path, reason, why} (NotUploaded()).
-    Q_PROPERTY(QVariantList notUploaded READ notUploaded NOTIFY notUploadedChanged)
+    /// The account's transfer pool (Sync1's DownloadSpeed, UploadSpeed, ActiveDownloads,
+    /// ActiveUploads, PoolSize, PoolCeiling, LargeTransfers, LargeLimit, RetryAfter): bytes a
+    /// second, slots held, the pool now, the large transfers under way and their limit, and
+    /// the seconds left of OneDrive's Retry-After (0: none).
+    Q_PROPERTY(qulonglong downloadSpeed READ downloadSpeed NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong uploadSpeed READ uploadSpeed NOTIFY syncChanged)
+    Q_PROPERTY(uint activeDownloads READ activeDownloads NOTIFY syncChanged)
+    Q_PROPERTY(uint activeUploads READ activeUploads NOTIFY syncChanged)
+    Q_PROPERTY(uint poolSize READ poolSize NOTIFY syncChanged)
+    Q_PROPERTY(uint poolCeiling READ poolCeiling NOTIFY syncChanged)
+    Q_PROPERTY(uint largeTransfers READ largeTransfers NOTIFY syncChanged)
+    Q_PROPERTY(uint largeLimit READ largeLimit NOTIFY syncChanged)
+    Q_PROPERTY(uint retryAfter READ retryAfter NOTIFY syncChanged)
+    /// The last two minutes of each, one sample a second, oldest first: the window keeps
+    /// them, the daemon does not.
+    Q_PROPERTY(QVariantList downloadSpeedHistory READ downloadSpeedHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList uploadSpeedHistory READ uploadSpeedHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList activeDownloadsHistory READ activeDownloadsHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList activeUploadsHistory READ activeUploadsHistory NOTIFY historyChanged)
+    /// What is kept back, one entry per reason: {group, reason, count, bytes, why}
+    /// (NotUploadedSummary()), groups in the order one-action, per-file, never, waiting.
+    Q_PROPERTY(QVariantList notUploadedSummary READ notUploadedSummary NOTIFY notUploadedChanged)
+    /// Whether the summary has been read since the daemon appeared.
+    Q_PROPERTY(bool notUploadedKnown READ notUploadedKnown NOTIFY notUploadedChanged)
+    /// The size of the blocked changes: the reasons that need the user.
+    Q_PROPERTY(qulonglong blockedBytes READ blockedBytes NOTIFY notUploadedChanged)
+    /// The files of each reason shown (setNotUploadedFilesShown), at most
+    /// perFileCap each: reason → {items: [{path, reason, why}], total}.
+    Q_PROPERTY(QVariantMap notUploadedFiles READ notUploadedFiles NOTIFY notUploadedFilesChanged)
+    /// How many files of one reason the window lists (issue #20; a guess).
+    Q_PROPERTY(int perFileCap READ perFileCap CONSTANT)
 
 public:
+    static constexpr int PerFileCap = 20;
     static const QString ServiceName;
     static const QString InterfaceName;
 
@@ -120,10 +150,26 @@ public:
     QStringList ignorePatterns() const { return m_ignorePatterns; }
     QString machineName() const { return m_machineName; }
     TransferModel *uploads() const { return m_uploads; }
-    OutboxModel *outbox() const { return m_outbox; }
-    QVariantList notUploaded() const { return m_notUploaded; }
-    /// Whether the outbox has been read at least once since the daemon appeared.
-    bool outboxKnown() const { return m_outboxKnown; }
+    qulonglong downloadSpeed() const { return m_downloadSpeed; }
+    qulonglong uploadSpeed() const { return m_uploadSpeed; }
+    uint activeDownloads() const { return m_activeDownloads; }
+    uint activeUploads() const { return m_activeUploads; }
+    uint poolSize() const { return m_poolSize; }
+    uint poolCeiling() const { return m_poolCeiling; }
+    uint largeTransfers() const { return m_largeTransfers; }
+    uint largeLimit() const { return m_largeLimit; }
+    uint retryAfter() const { return m_retryAfter; }
+    QVariantList downloadSpeedHistory() const { return m_history[0]; }
+    QVariantList uploadSpeedHistory() const { return m_history[1]; }
+    QVariantList activeDownloadsHistory() const { return m_history[2]; }
+    QVariantList activeUploadsHistory() const { return m_history[3]; }
+    /// Samples kept in each history: two minutes, one a second.
+    static constexpr int HistoryLength = 120;
+    QVariantList notUploadedSummary() const { return m_notUploadedSummary; }
+    bool notUploadedKnown() const { return m_notUploadedKnown; }
+    qulonglong blockedBytes() const { return m_blockedBytes; }
+    QVariantMap notUploadedFiles() const { return m_notUploadedFiles; }
+    int perFileCap() const { return PerFileCap; }
 
     /// RegisterRoot; a NoHelper refusal is kept as `pendingFolder` for the
     /// window to prompt about — never registered without interception, since
@@ -163,10 +209,14 @@ public:
     /// The mass-delete guard: the held removals go ahead, or are taken back.
     Q_INVOKABLE void confirmDeletes();
     Q_INVOKABLE void restoreDeletes();
-    /// Outbox(0) into `outbox`, quietly.
-    Q_INVOKABLE void loadOutbox();
-    /// NotUploaded() into `notUploaded`, quietly.
+    /// NotUploadedSummary() into `notUploadedSummary`, and the files of the
+    /// reasons shown into `notUploadedFiles`, quietly; at most once a second
+    /// (a call within the second is put off to its end). The pages call it
+    /// while they are shown: nothing reloads it on its own.
     Q_INVOKABLE void loadNotUploaded();
+    /// The files of `reason` are shown (NotUploadedFiles(reason, perFileCap)
+    /// now, and with every loadNotUploaded()), or no longer.
+    Q_INVOKABLE void setNotUploadedFilesShown(const QString &reason, bool shown);
     /// Opens the file manager with both files selected: a copy beside its original.
     Q_INVOKABLE void showBoth(const QString &first, const QString &second);
 
@@ -183,6 +233,8 @@ Q_SIGNALS:
     void pendingFolderChanged();
     void freeUpResultChanged();
     void notUploadedChanged();
+    void historyChanged();
+    void notUploadedFilesChanged();
     /// One ActivityAdded from the daemon, as it happens.
     void activityAdded(qlonglong time, const QString &kind, const QString &path, const QString &detail);
 
@@ -205,6 +257,7 @@ private:
               bool resetError = true);
     /// A call the user did not ask for (a list refresh): its failure is not shown.
     void quietly(const QDBusPendingCall &pending, std::function<void(const QDBusPendingCall &)> onSuccess);
+    void loadNotUploadedFiles(const QString &reason);
 
     QDBusConnection m_bus;
     QString m_path;
@@ -243,11 +296,28 @@ private:
     QStringList m_ignorePatterns;
     QString m_machineName;
     TransferModel *m_uploads;
-    OutboxModel *m_outbox;
-    bool m_outboxKnown = false;
-    QVariantList m_notUploaded;
-    /// Reads the outbox again a moment after its counts change.
-    QTimer *m_outboxSoon;
+    /// Adds one sample to each history (every second).
+    void sampleHistory();
+    qulonglong m_downloadSpeed = 0;
+    qulonglong m_uploadSpeed = 0;
+    uint m_activeDownloads = 0;
+    uint m_activeUploads = 0;
+    uint m_poolSize = 0;
+    uint m_poolCeiling = 0;
+    uint m_largeTransfers = 0;
+    uint m_largeLimit = 0;
+    uint m_retryAfter = 0;
+    /// Download speed, upload speed, active downloads, active uploads.
+    QVariantList m_history[4];
+    QTimer *m_sampler;
+    QVariantList m_notUploadedSummary;
+    bool m_notUploadedKnown = false;
+    qulonglong m_blockedBytes = 0;
+    QVariantMap m_notUploadedFiles;
+    QSet<QString> m_filesShown;
+    /// loadNotUploaded() put off to the end of the second since the last one.
+    QTimer *m_notUploadedSoon;
+    QElapsedTimer m_notUploadedLast;
     /// RecentActivity() calls on their way, and the live events since the first of them.
     int m_activityLoads = 0;
     KonedriveActivityList m_liveDuringLoad;

@@ -113,6 +113,54 @@ pub struct Config {
     /// Every account, in the order it was added.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountConfig>,
+    /// `[transfers]`: the transfer pools' emergency ceiling and large-file limit. Not in the
+    /// window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transfers: Option<TransfersConfig>,
+}
+
+/// `[transfers]`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransfersConfig {
+    /// The most requests one account's transfer pool has in flight (`crate::pool`), each
+    /// account's separately; [`crate::pool::DEFAULT_CEILING`] when missing. Clamped into
+    /// 1–256.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<i64>,
+    /// Large files ([`crate::pool::LARGE_FROM`] and up) one account transfers at once;
+    /// [`crate::pool::DEFAULT_LARGE`] when missing. Clamped into 1…`max`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large: Option<i64>,
+}
+
+impl Config {
+    /// Each account's transfer pool ceiling: `[transfers] max`, clamped into
+    /// [`crate::pool::CEILING_MIN`]–[`crate::pool::CEILING_MAX`] with a warning when it is
+    /// outside, or [`crate::pool::DEFAULT_CEILING`].
+    pub fn transfer_ceiling(&self) -> usize {
+        use crate::pool::{CEILING_MAX, CEILING_MIN, DEFAULT_CEILING};
+        let Some(max) = self.transfers.as_ref().and_then(|t| t.max) else { return DEFAULT_CEILING };
+        let clamped = max.clamp(CEILING_MIN as i64, CEILING_MAX as i64) as usize;
+        if clamped as i64 != max {
+            tracing::warn!("[transfers] max = {max} in config.toml is outside {CEILING_MIN}-{CEILING_MAX}; using {clamped}");
+        }
+        clamped
+    }
+
+    /// Each account's large-file limit: `[transfers] large`, clamped into 1…the ceiling
+    /// ([`transfer_ceiling`](Self::transfer_ceiling)) with a warning when it is outside, or
+    /// [`crate::pool::DEFAULT_LARGE`] (never above the ceiling).
+    pub fn transfer_large(&self) -> usize {
+        let ceiling = self.transfer_ceiling();
+        let Some(large) = self.transfers.as_ref().and_then(|t| t.large) else {
+            return crate::pool::DEFAULT_LARGE.min(ceiling);
+        };
+        let clamped = large.clamp(1, ceiling as i64) as usize;
+        if clamped as i64 != large {
+            tracing::warn!("[transfers] large = {large} in config.toml is outside 1-{ceiling}; using {clamped}");
+        }
+        clamped
+    }
 }
 
 impl Default for Config {
@@ -122,6 +170,7 @@ impl Default for Config {
             client_id: String::new(),
             write_test_drive_ids: Vec::new(),
             accounts: Vec::new(),
+            transfers: None,
         }
     }
 }
@@ -851,6 +900,27 @@ mod tests {
             Ok("PERSONAL".into()),
             "an account may change the case of its own label"
         );
+    }
+
+    /// `[transfers] max`: 64 when missing, clamped into 1–256.
+    #[test]
+    fn the_transfer_ceiling_is_read_and_clamped() {
+        let read = |text: &str| toml::from_str::<Config>(&format!("config_version = 2\n{text}")).unwrap().transfer_ceiling();
+        assert_eq!(read(""), crate::pool::DEFAULT_CEILING);
+        assert_eq!(read("[transfers]\nmax = 20"), 20);
+        assert_eq!(read("[transfers]\nmax = 0"), 1);
+        assert_eq!(read("[transfers]\nmax = 1000"), 256);
+    }
+
+    /// `[transfers] large`: 4 when missing, clamped into 1…`max`.
+    #[test]
+    fn the_large_file_limit_is_read_and_clamped() {
+        let read = |text: &str| toml::from_str::<Config>(&format!("config_version = 2\n{text}")).unwrap().transfer_large();
+        assert_eq!(read(""), 4);
+        assert_eq!(read("[transfers]\nlarge = 2"), 2);
+        assert_eq!(read("[transfers]\nlarge = 0"), 1);
+        assert_eq!(read("[transfers]\nmax = 8\nlarge = 20"), 8);
+        assert_eq!(read("[transfers]\nmax = 2"), 2, "the default never above the ceiling");
     }
 
     /// A label may contain "@": an account is commonly named by its email.

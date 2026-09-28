@@ -72,6 +72,13 @@ python3 tests/stress/stress_uploads.py --account <test-account>
     exactly — renamed files only under their new names, deleted files entirely absent.
 5d. A file written, then overwritten five more times back-to-back while it is still queued.
     Checked that OneDrive ends up with the last content written.
+5e. A folder of many small files (`--pin-files`, default 2000) created and uploaded, freed up
+    (`sync free`), then pinned (`sync pin`): the report gives the time until every one is
+    downloaded (read from `st_blocks`, which never opens a file), the largest transfer pool
+    `sync transfers` showed, and how many `429`/`503` bursts there were — the daemon's
+    `transfer pool throttled` log lines during the scenario (the user journal, `journalctl --user
+    -u konedrived`). Then the same checks as every scenario. `--pin-timeout` (default 1800 s)
+    bounds the wait.
 6. Deletes: some individual files, then a whole folder; the whole run folder too, only with
    `--cleanup`.
 

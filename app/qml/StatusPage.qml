@@ -352,9 +352,9 @@ FormCard.FormCardPage {
             text: page.sync ? i18np("1 file is too big for the space left in OneDrive",
                                     "%1 files are too big for the space left in OneDrive",
                                     page.sync.tooBigCount) : ""
-            description: i18n("Each goes up once a Refresh shows it fits; the Activity page lists them.")
+            description: i18n("Each goes up once a Refresh shows it fits; the Not Uploaded page lists them.")
             icon.name: "dialog-warning"
-            onClicked: page.window.showPage("activity")
+            onClicked: page.window.showPage("notUploaded")
         }
         FormCard.FormButtonDelegate {
             objectName: "blockedLine"

@@ -358,8 +358,12 @@ A row that then meets its name still taken (`409`), by an item a live row is fre
 through a temporary name, `.konedrive-swap-<id>`, saved in the row before the request, and a
 final `move` row follows once the name is free. Swaps (`a` ↔ `b`) go the same way.
 
-Metadata rows (`mkdir`, `move`, `delete`) run one at a time; content rows beside them, at most 4 of
-up to 10 MiB and 2 larger; `move-out` rows one at a time. These numbers are provisional.
+Metadata rows (`mkdir`, `move`, `delete`) run one at a time; content rows beside them, each in a
+slot of the account's transfer pool, which adapts to OneDrive's throttling
+([hydration.md](hydration.md) §6.4); `move-out` rows one at a time. Metadata rows and move-outs take
+the pool's metadata slots, which go before transfers. Any content row takes any free slot; a file
+of 100 MiB and up (its local size when the row is taken) also waits for the pool's large-file
+limit, shared with downloads, and a large row waiting for it lets the small rows behind it go.
 
 ### 5.4 The commit
 
@@ -446,7 +450,8 @@ running together share a read of the last 10 s. Then:
 
 - **no space left** — `state` is `exceeded`, or less than 1 MiB is free: the account is *full*. No
   row that adds content is taken (new files, new versions, upload sessions), and an upload under
-  way stops at its next fragment and keeps its session. The refused row's reason is
+  way stops at its next fragment and keeps its session — the same stop as a pause's (§11), with
+  its own reason. The refused row's reason is
   `waiting-for-space`; the others simply wait;
 - **space left** — only the refused file waits, `too-big:<bytes needed>:<bytes free>`; the files
   that fit keep going. It is not sent again until a quota read shows it fits. Every other file is
@@ -464,7 +469,7 @@ refresh` calls, printing the quota it read), `Account1.RefreshAccountInfo` (the 
 Refresh), and an automatic read every 30 minutes while the account is full or a file is too big —
 one request, never the uploads themselves. With space again, *full* ends and every too-big file
 that now fits is free to go; the rest stay too big, with the free space said again. The rows go
-through the worker's usual limits (§5.3), not all at once.
+through the account's transfer pool (§5.3), which paces them, not all at once.
 
 **At a start**, rows an earlier version blocked with `quota-exceeded` become `waiting-for-space`
 rows in their places, the worker counts as full while any such row waits, and the quota is read
@@ -472,8 +477,10 @@ once before anything sends content.
 
 **What shows it**: `Sync1.QuotaFull`, `SpaceWaitingCount`/`SpaceWaitingBytes` (while full, the
 changes that send content), `TooBigCount`, `QuotaState` and `FreeSpace`; one line on the Status
-page and in `konedrivectl sync status` instead of a row per file; the tray needs attention while
-full or while a file is too big, and notifies once when full starts.
+page and in `konedrivectl sync status` instead of a row per file; on the Not Uploaded page and in
+`sync not-uploaded` (`NotUploadedSummary`), `waiting-for-space` and `too-big` are each one line in
+"Needs you — one action", with Refresh; the tray needs attention while full or while a file is too
+big, and notifies once when full starts.
 
 ### 6.3 A large file
 
@@ -689,7 +696,23 @@ window's pages.
 **Pause** stops the account's outbox, its poll (so no cycle and no replacement) and its thumbnails;
 fills on open, `Hydrate` and the watcher go on, so rows keep collecting. It is kept in the tree
 store, so it outlasts a restart, and a timed pause ends by itself. The tray's "Pause Syncing" pauses
-every account.
+every account. What it does to work already under way:
+
+| Work in progress | On pause |
+|---|---|
+| an upload in fragments (a session) | stops after the fragment being sent; the session and its offset stay in the row, which waits with the reason `paused` |
+| a one-request upload (up to 10 MiB) | finishes: it is short |
+| a metadata request (mkdir, move, delete) | finishes |
+| a fill on open, `Hydrate` | goes on: a pause never blocks opening a file |
+
+No new row starts. Within one fragment's time `Uploads` (`sync transfers`, the window's "Uploading
+now") is empty, and `Outbox()` lists every row that waits, retries or runs as `paused` — never as
+failed or retrying — while blocked and held rows keep their state; a pause writes no
+`upload-failed`. Resume, or the end of a timed pause, makes the rows due at once: a kept session
+goes on from its offset, and one that expired meanwhile starts over, logged. A restart while
+paused keeps the sessions and resumes none of them. The stop between fragments is one check
+(`upload/content.rs`, `stop_between_fragments`) with three reasons: a pause, a full OneDrive
+(§6.4) and the write gate.
 
 ## 12. Testing
 

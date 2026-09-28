@@ -52,6 +52,9 @@ pub fn too_big(needs: u64, free: u64) -> String {
 
 const TOO_BIG: &str = "too-big:";
 
+/// The key every *too big* reason is summed under (`NotUploadedSummary()`).
+pub const TOO_BIG_KEY: &str = "too-big";
+
 /// `(needs, free)` of a *too big* reason.
 pub fn parse_too_big(reason: &str) -> Option<(u64, u64)> {
     let (needs, free) = reason.strip_prefix(TOO_BIG)?.split_once(':')?;

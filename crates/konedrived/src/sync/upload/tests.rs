@@ -698,13 +698,15 @@ fn reason_of(w: &World, rel: &str) -> Option<String> {
 /// go. A Refresh that finds space lets everything go.
 #[test]
 fn a_full_onedrive_sends_no_content_but_moves_and_deletes_go() {
-    let mut w = World::new(&[file("A", "R", "old.txt", b"old"), file("B", "R", "gone.txt", b"gone")]);
-    w.h.limits.small_slots = 1;
+    let w = World::new(&[file("A", "R", "old.txt", b"old"), file("B", "R", "gone.txt", b"gone")]);
     w.cloud(|c| c.free = Some(0));
     w.write("n1.txt", b"one");
     w.write("n2.txt", b"two");
     w.examine(&[("", "n1.txt"), ("", "n2.txt")]);
-    let engine = w.run();
+    // One transfer at a time: the first refusal comes before the second starts.
+    let engine = w.h.engine();
+    engine.cfg.drive.pool().set_limits(1, 1);
+    w.h.drain(&engine);
     assert!(engine.space_full());
     assert_eq!(w.cloud(|c| c.quota_reads()), 1, "one read for the refusal");
     assert_eq!(content_requests(&w, "n1.txt") + content_requests(&w, "n2.txt"), 1, "one refusal, then nothing more");
@@ -801,6 +803,126 @@ fn rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start() {
     assert_eq!(w.cloud(|c| c.quota_reads()), 1);
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     assert_committed(&w, "full.txt", "full.txt");
+}
+
+/// Drains `engine` in the background, pauses it while the first request of
+/// `method` whose path holds `fragment` is in flight, runs `meanwhile`, and
+/// waits for the drain to end.
+fn drain_paused_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, meanwhile: impl FnOnce()) {
+    drain_stopped_mid_request(w, engine, method, fragment, || {
+        engine.pause(None).unwrap();
+        meanwhile();
+    });
+}
+
+/// Drains `engine` in the background, runs `stop` while the first request
+/// of `method` whose path holds `fragment` is in flight, and waits for the
+/// drain to end.
+fn drain_stopped_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, stop: impl FnOnce()) {
+    w.cloud(|c| c.delay(method, fragment, Duration::from_millis(400), 1));
+    let task = w.h.runtime.spawn({
+        let engine = Arc::clone(engine);
+        async move { engine.drain(&CancellationToken::new()).await }
+    });
+    let mut waited = 0;
+    while w.cloud(|c| c.count(method, fragment)) == 0 && waited < 500 {
+        std::thread::sleep(Duration::from_millis(10));
+        waited += 1;
+    }
+    assert_eq!(w.cloud(|c| c.count(method, fragment)), 1, "{method} {fragment} is in flight");
+    stop();
+    w.h.runtime.block_on(task).unwrap();
+}
+
+/// Issue #2 with #19's stop: OneDrive turning full while an upload in
+/// fragments is under way stops it after the fragment in flight, as a pause
+/// does, but the row waits for space — ready, its session kept. Space again
+/// resumes it from its offset.
+#[test]
+fn a_full_onedrive_stops_a_session_after_its_fragment_and_space_resumes_it() {
+    let w = World::new(&[]);
+    let content: Vec<u8> = (0..(1024 * 1024 + 77)).map(|i| (i % 251) as u8).collect();
+    w.write("big.bin", &content);
+    w.examine(&[("", "big.bin")]);
+    let engine = w.h.engine();
+    let exceeded = crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() };
+    drain_stopped_mid_request(&w, &engine, "PUT", "upload/", || engine.apply_quota(&exceeded));
+    assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 1, "no fragment after the one in flight");
+    let row = w.rows().remove(0);
+    assert_eq!((row.state, row.reason.as_deref()), (OutboxState::Ready, Some(space::WAITING)));
+    assert_eq!(row.session_next, Some(320 * 1024), "the session is kept");
+
+    w.cloud(|c| c.free = Some(10 << 20));
+    refresh(&w, &engine);
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/"))), (1, 4), "resumed, not started over");
+    assert_eq!(w.content("big.bin").unwrap(), content);
+}
+
+/// #19: a pause stops an upload in fragments after the fragment in flight.
+/// The row waits as `paused` — no failure, nothing uploading — with its
+/// session and offset kept, through a restart too. Resumed, a session still
+/// open goes on from that offset; an expired one starts over.
+#[test]
+fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
+    for expire in [false, true] {
+        let w = World::new(&[]);
+        let content: Vec<u8> = (0..(1024 * 1024 + 77)).map(|i| (i % 251) as u8).collect();
+        w.write("big.bin", &content);
+        w.examine(&[("", "big.bin")]);
+        let engine = w.h.engine();
+        drain_paused_mid_request(&w, &engine, "PUT", "upload/", || {});
+        assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 1, "no fragment after the one in flight");
+        let row = w.rows().remove(0);
+        assert_eq!((row.state, row.reason.as_deref()), (OutboxState::Waiting, Some(reason::PAUSED)));
+        assert!(row.session_url.is_some(), "the session is kept");
+        assert_eq!(row.session_next, Some(320 * 1024));
+        let status = engine.status();
+        assert!(status.uploads.is_empty() && status.running == 0, "nothing shows as uploading: {status:?}");
+        assert_eq!(w.attr("big.bin", XATTR_SYNC).as_deref(), Some("pending"));
+
+        // A restart while paused: nothing is sent, the session stays.
+        let asked = w.cloud(|c| c.log.len());
+        let restarted = w.h.engine();
+        w.h.drain(&restarted);
+        assert_eq!(w.cloud(|c| c.log.len()), asked, "nothing is sent while paused");
+        let kept = w.rows().remove(0);
+        assert_eq!((kept.session_url, kept.session_next), (row.session_url, row.session_next));
+
+        if expire {
+            w.cloud(|c| c.expire_sessions());
+        }
+        restarted.resume().unwrap();
+        w.h.drain(&restarted);
+        assert!(w.rows().is_empty(), "{:?}", w.summary());
+        let sent = w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/")));
+        // 1 MiB + 77 is four fragments of 320 KiB.
+        let wanted = if expire { (2, 1 + 4) } else { (1, 4) };
+        assert_eq!(sent, wanted, "expired: {expire}");
+        assert_eq!(w.content("big.bin").unwrap(), content);
+        assert_committed(&w, "big.bin", "big.bin");
+        assert!(!w.h.host.kinds().iter().any(|k| k == kind::UPLOAD_FAILED), "a pause is no failure: {:?}", w.h.host.kinds());
+    }
+}
+
+/// #19: a one-request upload in flight when the pause comes finishes; a row
+/// that comes meanwhile does not start.
+#[test]
+fn a_one_request_upload_in_flight_at_a_pause_finishes_and_nothing_new_starts() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"a");
+    w.examine(&[("", "a.txt")]);
+    let engine = w.h.engine();
+    drain_paused_mid_request(&w, &engine, "PUT", "upload/", || {
+        w.write("b.txt", b"b");
+        w.examine(&[("", "b.txt")]);
+        engine.wake();
+    });
+    assert_committed(&w, "a.txt", "a.txt");
+    assert_eq!(w.summary(), vec![(Create, "b.txt".into(), OutboxState::Ready)]);
+    assert_eq!(w.cloud(|c| c.count("POST", "b.txt")), 0, "nothing new starts while paused");
+    assert!(engine.status().uploads.is_empty());
 }
 
 /// The worker as the mode switch will run it: started, woken, stopped.

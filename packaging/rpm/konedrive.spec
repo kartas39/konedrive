@@ -55,6 +55,7 @@ BuildRequires:  systemd-rpm-macros
 # The window's QML modules, which no library dependency pulls in.
 Requires:       kf6-kirigami%{?_isa}
 Requires:       kf6-kirigami-addons%{?_isa}
+Requires:       kf6-kquickcharts%{?_isa}
 Requires:       qt6-qtdeclarative%{?_isa}
 Recommends:     %{name}-kde = %{version}-%{release}
 

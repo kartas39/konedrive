@@ -167,6 +167,12 @@ pub trait Sync1 {
     fn restore_deletes(&self) -> zbus::Result<u32>;
     /// What stays on this computer and why: (full path, reason).
     fn not_uploaded(&self) -> zbus::Result<Vec<(String, String)>>;
+    /// What is kept back, one row per reason: (group, reason, count, bytes).
+    /// Groups: one-action, per-file, never, waiting, in that order.
+    fn not_uploaded_summary(&self) -> zbus::Result<Vec<(String, String, u32, u64)>>;
+    /// The files kept back for `reason` (as the summary names it), at most
+    /// `limit` (0 for all), each with its reason as stored; and how many there are.
+    fn not_uploaded_files(&self, reason: &str, limit: u32) -> zbus::Result<(Vec<(String, String)>, u32)>;
 
     #[zbus(signal)]
     fn activity_added(&self, time: i64, kind: String, path: String, detail: String) -> zbus::Result<()>;
@@ -240,6 +246,29 @@ pub trait Sync1 {
     fn ignore_patterns(&self) -> zbus::Result<Vec<String>>;
     #[zbus(property)]
     fn machine_name(&self) -> zbus::Result<String>;
+    /// Bytes a second downloaded and uploaded, the average of the last 3 s.
+    #[zbus(property)]
+    fn download_speed(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn upload_speed(&self) -> zbus::Result<u64>;
+    /// Transfer slots held by downloads and by uploads now.
+    #[zbus(property)]
+    fn active_downloads(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn active_uploads(&self) -> zbus::Result<u32>;
+    /// The account's transfer pool now, and its ceiling.
+    #[zbus(property)]
+    fn pool_size(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn pool_ceiling(&self) -> zbus::Result<u32>;
+    /// Large transfers (100 MiB and up) under way now, and how many may run at once.
+    #[zbus(property)]
+    fn large_transfers(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn large_limit(&self) -> zbus::Result<u32>;
+    /// Seconds left of OneDrive's `Retry-After` wait; 0 when there is none.
+    #[zbus(property)]
+    fn retry_after(&self) -> zbus::Result<u32>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: development only.
