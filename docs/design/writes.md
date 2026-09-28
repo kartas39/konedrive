@@ -651,7 +651,22 @@ window's pages.
 **Pause** stops the account's outbox, its poll (so no cycle and no replacement) and its thumbnails;
 fills on open, `Hydrate` and the watcher go on, so rows keep collecting. It is kept in the tree
 store, so it outlasts a restart, and a timed pause ends by itself. The tray's "Pause Syncing" pauses
-every account.
+every account. What it does to work already under way:
+
+| Work in progress | On pause |
+|---|---|
+| an upload in fragments (a session) | stops after the fragment being sent; the session and its offset stay in the row, which waits with the reason `paused` |
+| a one-request upload (up to 10 MiB) | finishes: it is short |
+| a metadata request (mkdir, move, delete) | finishes |
+| a fill on open, `Hydrate` | goes on: a pause never blocks opening a file |
+
+No new row starts. Within one fragment's time `Uploads` (`sync transfers`, the window's "Uploading
+now") is empty, and `Outbox()` lists every row that waits, retries or runs as `paused` — never as
+failed or retrying — while blocked and held rows keep their state; a pause writes no
+`upload-failed`. Resume, or the end of a timed pause, makes the rows due at once: a kept session
+goes on from its offset, and one that expired meanwhile starts over, logged. A restart while
+paused keeps the sessions and resumes none of them. The stop between fragments is one check
+(`upload/content.rs`, `stop_between_fragments`), shared with the write gate.
 
 ## 12. Testing
 

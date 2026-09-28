@@ -1504,13 +1504,23 @@ application must never read zeros where real content should be.
   paused (`Unsupported`, `NoRoot`). While paused, the poll asks OneDrive for nothing, and the first
   cycle after a restart waits too; `Refresh()` asks for nothing either. A cycle already running when
   the pause comes starts no replacement (the next cycle after the pause is Full and finds them
-  again), and an upload in fragments stops at its next fragment and resumes its session after the
-  pause; a one-request upload or a metadata request already sent finishes. A timed pause is looked
+  again). An upload in fragments stops after the fragment it is sending (at most 10 MiB, so
+  "Uploading now" and `sync transfers` empty within one fragment's time), its session and offset
+  kept in the row, which waits as `paused` — no failure, no activity event — through a restart too;
+  `Outbox()` lists every row that waits, retries or runs as `paused` while the account is (#19). On
+  resume the kept session goes on from its offset; a session OneDrive let expire during a long
+  pause starts over from zero, which is logged, and what was sent before is sent again. A
+  one-request upload (up to 10 MiB) or a metadata request already sent finishes. The one stop point
+  between fragments (`stop_between_fragments` in `upload/content.rs`) serves the pause and the
+  write gate. A timed pause is looked
   at by the wall clock at least every minute, so a suspend does not stretch it; its timer ends it on
   the bus only if no `Pause` or `Resume` came after it read the store; a forgotten folder is no
   longer paused. The tray's "pause every account" is one `Pause` per account (A23).
   LIMIT · measured (`sync::tests::onedrive::a_pause_holds_the_poll_outlasts_a_restart_…`,
-  `…a_forgotten_folder_is_not_paused`, `…a_pause_that_lands_as_the_last_one_ends_stands`). Open.
+  `…a_forgotten_folder_is_not_paused`, `…a_pause_that_lands_as_the_last_one_ends_stands`,
+  `sync::upload::tests::a_pause_stops_a_session_after_its_fragment_and_resume_goes_on`,
+  `…a_one_request_upload_in_flight_at_a_pause_finishes_and_nothing_new_starts`,
+  `sync::outbox_api::tests::rows_waiting_while_paused_read_paused`). Open.
 - **F101. A coalesced property that changes and changes back is not signalled**
   (`konedrived/src/sync/dbus.rs`, `coalesce`) — the counters, `Transfers`, and
   `PendingCount`, `PendingBytes`, `BlockedCount`, `HeldCount` and `Uploads` are sent at most four
@@ -2526,8 +2536,8 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   `notifiertest::heldDeletesNotifyWithRestoreAsTheDefault`, `synccontrollertest::theOutboxAndItsControls`).
   The window follows `Sync1.HeldCount` for the tray's "needs attention", the Status page's "Restore
   Them" and "Delete in OneDrive Too", and the `massDelete` notification; `Outbox()` is read only for
-  the Activity page's list (when a count changes, or the page is shown), which shows the first 100
-  rows and "and N more". The notification fires when `HeldCount` rises from 0: the daemon's first
+  the Activity page's list (when a count changes, when `Paused` changes, or the page is shown),
+  which shows the first 100 rows and "and N more". The notification fires when `HeldCount` rises from 0: the daemon's first
   answer after the app or the daemon starts only sets the baseline, so removals already held then
   show in the tray and on the Status page, not as a new popup, and more held while some already are
   add no second one. Its default action — a click on the notification itself — is

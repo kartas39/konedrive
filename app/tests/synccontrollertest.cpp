@@ -82,9 +82,12 @@ private Q_SLOTS:
         QCOMPARE(controller.pendingCount(), 1u);
         QCOMPARE(controller.pendingBytes(), 10ULL);
 
+        // #19: paused, the daemon lists waiting rows as "paused", and the list is read again.
+        m_fake->outboxRows[0] = {1, QStringLiteral("update"), root + QStringLiteral("/a.odt"), QStringLiteral("paused"), 5, 10, QString(), 0};
         controller.pause(7200);
         QTRY_VERIFY(controller.paused());
         QCOMPARE(controller.pausedUntil(), m_fake->pauseNow + 7200);
+        QTRY_COMPARE(text(controller.outbox(), 0, OutboxModel::StateTextRole), QStringLiteral("Changed · paused"));
         controller.resume();
         QTRY_VERIFY(!controller.paused());
 
