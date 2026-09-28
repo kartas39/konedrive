@@ -7,9 +7,9 @@ import org.kde.quickcharts as Charts
 import org.kde.quickcharts.controls as ChartsControls
 import org.konedrive.app
 
-/// How fast things move (two mini cards with the last two minutes), the
-/// downloads and uploads under way, the changes waiting to be uploaded, then
-/// the recent events; a click shows the file in the file manager.
+/// How fast things move and how much is left (two mini cards with the last two
+/// minutes), the downloads and uploads under way, the way to what is kept back,
+/// then the recent events; a click shows the file in the file manager.
 FormCard.FormCardPage {
     id: page
 
@@ -19,12 +19,29 @@ FormCard.FormCardPage {
     objectName: "activityPage"
     title: window ? window.accountTitle(i18nc("@title", "Activity")) : i18nc("@title", "Activity")
 
-    /// How many changes have not gone up yet — pending, blocked and held —
-    /// and the size of the files they send.
+    /// How many changes have not gone up yet — pending, blocked and held.
     readonly property int waitingCount: sync ? sync.pendingCount + sync.blockedCount + sync.heldCount : 0
-    readonly property var waitingBytes: sync ? sync.pendingBytes + sync.blockedBytes : 0
-    /// Whether the Not Uploaded page lists anything.
+    /// Whether the Not Uploaded page lists anything, and how many changes it counts.
     readonly property bool keptBack: sync !== null && sync.notUploadedSummary.length > 0
+    readonly property int keptBackCount: sync ? sync.notUploadedSummary.reduce((n, row) => n + row.count, 0) : 0
+
+    /// A queue's time left: "about 12 min".
+    function timeLeftText(seconds) {
+        const minutes = Math.ceil(seconds / 60);
+        if (seconds < 60) {
+            return i18nc("@info time left, seconds", "about %1 s", seconds);
+        }
+        if (minutes < 60) {
+            return i18nc("@info time left, minutes", "about %1 min", minutes);
+        }
+        if (seconds < 86400) {
+            return minutes % 60 === 0 ? i18nc("@info time left, hours", "about %1 h", Math.floor(minutes / 60))
+                                      : i18nc("@info time left, hours and minutes", "about %1 h %2 min", Math.floor(minutes / 60), minutes % 60);
+        }
+        const hours = Math.ceil(seconds / 3600);
+        return hours % 24 === 0 ? i18nc("@info time left, days", "about %1 d", Math.floor(hours / 24))
+                                : i18nc("@info time left, days and hours", "about %1 d %2 h", Math.floor(hours / 24), hours % 24);
+    }
     /// The counts the summary was last asked for at.
     property string shownCounts: ""
 
@@ -72,6 +89,14 @@ FormCard.FormCardPage {
         required property string filesText
         /// The legend of the files line: "Files downloading" or "Files uploading".
         required property string filesLegend
+        /// What is left that way (issue #16): how many, the bytes, about how long (empty:
+        /// unknown), and the bytes done in this run.
+        required property int leftCount
+        required property real leftBytes
+        required property string timeText
+        required property real doneBytes
+        /// "N files left" or "N changes left".
+        required property string leftText
         readonly property bool idle: active === 0 && speed === 0
         readonly property color speedColor: Kirigami.Theme.highlightColor
         readonly property color filesColor: Kirigami.Theme.neutralTextColor
@@ -96,6 +121,32 @@ FormCard.FormCardPage {
                 elide: Text.ElideRight
                 opacity: 0.7
                 text: card.filesText
+            }
+            // "1 234 files left · 48.2 GiB · about 12 min", and what this run has done.
+            QQC2.Label {
+                objectName: card.objectName + "Left"
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+                visible: card.leftCount > 0
+                text: {
+                    const parts = [card.leftText];
+                    if (card.leftBytes > 0) {
+                        parts.push(Qt.locale().formattedDataSize(card.leftBytes));
+                    }
+                    if (card.timeText.length > 0) {
+                        parts.push(card.timeText);
+                    }
+                    return parts.join(" · ");
+                }
+            }
+            QQC2.Label {
+                objectName: card.objectName + "Done"
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+                visible: card.leftCount > 0
+                font: Kirigami.Theme.smallFont
+                opacity: 0.7
+                text: i18nc("@info bytes moved in this run", "%1 done", Qt.locale().formattedDataSize(card.doneBytes))
             }
             RowLayout {
                 Layout.fillWidth: true
@@ -196,6 +247,7 @@ FormCard.FormCardPage {
 
         TransferCard {
             id: downloading
+            objectName: "downloadingCard"
             title: i18nc("@title a mini card", "Downloading")
             speed: page.sync ? page.sync.downloadSpeed : 0
             active: page.sync ? page.sync.activeDownloads : 0
@@ -203,9 +255,15 @@ FormCard.FormCardPage {
             activeHistory: page.sync ? page.sync.activeDownloadsHistory : []
             filesText: i18ncp("@info files downloading at once", "%1 file downloading", "%1 files downloading", downloading.active)
             filesLegend: i18nc("@info chart legend", "Files downloading")
+            leftCount: page.sync ? page.sync.downloadLeftCount : 0
+            leftBytes: page.sync ? page.sync.downloadLeftBytes : 0
+            timeText: page.sync && page.sync.downloadTimeLeft > 0 ? page.timeLeftText(page.sync.downloadTimeLeft) : ""
+            doneBytes: page.sync ? page.sync.downloadDoneBytes : 0
+            leftText: i18ncp("@info files left to download", "%1 file left", "%1 files left", downloading.leftCount)
         }
         TransferCard {
             id: uploading
+            objectName: "uploadingCard"
             title: i18nc("@title a mini card", "Uploading")
             speed: page.sync ? page.sync.uploadSpeed : 0
             active: page.sync ? page.sync.activeUploads : 0
@@ -213,6 +271,11 @@ FormCard.FormCardPage {
             activeHistory: page.sync ? page.sync.activeUploadsHistory : []
             filesText: i18ncp("@info files uploading at once", "%1 file uploading", "%1 files uploading", uploading.active)
             filesLegend: i18nc("@info chart legend", "Files uploading")
+            leftCount: page.sync ? page.sync.uploadLeftCount : 0
+            leftBytes: page.sync ? page.sync.uploadLeftBytes : 0
+            timeText: page.sync && page.sync.uploadTimeLeft > 0 ? page.timeLeftText(page.sync.uploadTimeLeft) : ""
+            doneBytes: page.sync ? page.sync.uploadDoneBytes : 0
+            leftText: i18ncp("@info changes left to upload", "%1 change left", "%1 changes left", uploading.leftCount)
         }
     }
     // The account's transfer pool, shared by both directions: shown once, with the large
@@ -330,31 +393,20 @@ FormCard.FormCardPage {
         }
     }
 
-    // The outbox: every change made here that has not gone up yet, as one
-    // line; what is kept back is on the Not Uploaded page.
+    // What is kept back is on the Not Uploaded page; what is left to upload is counted in
+    // the Uploading card.
     FormCard.FormHeader {
-        visible: page.waitingCount > 0 || page.keptBack
+        visible: page.keptBack
         title: i18nc("@title:group", "Waiting to upload")
     }
     FormCard.FormCard {
         objectName: "waitingToUpload"
-        visible: page.waitingCount > 0 || page.keptBack
+        visible: page.keptBack
 
-        FormCard.FormTextDelegate {
-            objectName: "waitingLine"
-            visible: page.waitingCount > 0
-            text: page.waitingBytes > 0 ? i18np("1 change waits to upload (%2)", "%1 changes wait to upload (%2)", page.waitingCount, Qt.locale().formattedDataSize(page.waitingBytes))
-                                        : i18np("1 change waits to upload", "%1 changes wait to upload", page.waitingCount)
-            leading: Kirigami.Icon {
-                source: "cloud-upload"
-                implicitWidth: Kirigami.Units.iconSizes.medium
-                implicitHeight: Kirigami.Units.iconSizes.medium
-            }
-        }
         FormCard.FormButtonDelegate {
             objectName: "keptBackLink"
             visible: page.keptBack
-            text: i18n("Some files are not uploaded")
+            text: i18ncp("@action:button", "1 change kept back — see Not Uploaded", "%1 changes kept back — see Not Uploaded", page.keptBackCount)
             description: i18n("The Not Uploaded page says why, and what to do.")
             icon.name: "dialog-warning"
             onClicked: page.window.showPage("notUploaded")

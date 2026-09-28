@@ -162,12 +162,14 @@ _PROGRESS_RE = re.compile(r"  \d+% of .+$")
 
 def parse_outbox(text: str) -> list:
     """`sync outbox --all`'s rows: `{state:<8} {kind:<8} {path}[  N% of SIZE][  (reason)][  next
-    try TIME]` (`konedrivectl::outbox_text`)."""
-    stripped = text.strip()
+    try TIME]` (`konedrivectl::outbox_text`), after its `Uploading:` summary line
+    (`konedrivectl::uploading_line`), which is skipped."""
+    lines = [line for line in text.splitlines() if not line.startswith("Uploading:")]
+    stripped = "\n".join(lines).strip()
     if stripped == "Nothing is waiting to upload." or not stripped:
         return []
     rows = []
-    for line in text.splitlines():
+    for line in lines:
         if not line.strip() or line.startswith("…") or "sync outbox --all" in line:
             continue
         if len(line) < 18:

@@ -6,6 +6,7 @@
 
 #include <QDateTime>
 #include <QFile>
+#include <QLocale>
 #include <QQmlApplicationEngine>
 #include <QElapsedTimer>
 #include <QQuickItem>
@@ -270,7 +271,15 @@ private Q_SLOTS:
                         {QStringLiteral("RootSource"), QStringLiteral("onedrive")},
                         {QStringLiteral("PendingCount"), QVariant::fromValue<uint>(2)},
                         {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(1024)},
-                        {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(5003)}});
+                        {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(5003)},
+                        {QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(1234)},
+                        {QStringLiteral("DownloadLeftBytes"), QVariant::fromValue<qulonglong>(3ULL << 30)},
+                        {QStringLiteral("DownloadDoneBytes"), QVariant::fromValue<qulonglong>(1ULL << 30)},
+                        {QStringLiteral("DownloadTimeLeft"), QVariant::fromValue<uint>(720)},
+                        {QStringLiteral("UploadLeftCount"), QVariant::fromValue<uint>(2)},
+                        {QStringLiteral("UploadLeftBytes"), QVariant::fromValue<qulonglong>(1024)},
+                        {QStringLiteral("UploadDoneBytes"), QVariant::fromValue<qulonglong>(0)},
+                        {QStringLiteral("UploadTimeLeft"), QVariant::fromValue<uint>(0)}});
         fake.sync->keptBack = {{QStringLiteral("one-action"), QStringLiteral("quota-exceeded"), 5000, 5000ULL << 20},
                                {QStringLiteral("per-file"), QStringLiteral("name-characters"), 3, 30}};
         KonedriveSkippedList quota;
@@ -323,17 +332,36 @@ private Q_SLOTS:
         QVERIFY(fake.sync->calls.contains(QStringLiteral("NotUploadedFiles:name-characters:20")));
         QVERIFY(!fake.sync->calls.join(QLatin1Char(' ')).contains(QStringLiteral("NotUploadedFiles:quota-exceeded")));
 
-        // Activity: one line for everything waiting, and the way to what is kept back.
+        // Activity: what is left is in the cards (issue #16), and one line leads to what is kept back.
         QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("activity")));
         auto *activity = window->findChild<QQuickItem *>(QStringLiteral("activityPage"));
         QVERIFY(activity);
-        auto *line = window->findChild<QQuickItem *>(QStringLiteral("waitingLine"));
         auto *link = window->findChild<QQuickItem *>(QStringLiteral("keptBackLink"));
-        QVERIFY(line && link);
-        QTRY_VERIFY(line->isVisible() && link->isVisible());
-        QVERIFY2(line->property("text").toString().contains(QStringLiteral("wait to upload (4")), qPrintable(line->property("text").toString()));
+        QVERIFY(link);
+        QTRY_VERIFY(link->isVisible());
+        QTRY_VERIFY2(link->property("text").toString().endsWith(QStringLiteral("003 changes kept back — see Not Uploaded")),
+                     qPrintable(link->property("text").toString()));
+        const auto text = [window](const char *name) {
+            auto *item = window->findChild<QQuickItem *>(QLatin1String(name));
+            return item && item->isVisible() ? item->property("text").toString() : QString();
+        };
+        // Sizes as the locale writes them, and 1234 with or without its thousands apart.
+        const QLocale locale;
+        const QString down = text("downloadingCardLeft");
+        QVERIFY2(down.startsWith(QLatin1Char('1'))
+                     && down.endsWith(QStringLiteral("234 files left · ") + locale.formattedDataSize(3ULL << 30) + QStringLiteral(" · about 12 min")),
+                 qPrintable(down));
+        QCOMPARE(text("downloadingCardDone"), locale.formattedDataSize(1ULL << 30) + QStringLiteral(" done"));
+        QCOMPARE(text("uploadingCardLeft"), QStringLiteral("2 changes left · ") + locale.formattedDataSize(1024));
+        QCOMPARE(text("uploadingCardDone"), locale.formattedDataSize(0) + QStringLiteral(" done"));
         QCOMPARE(itemsSaying(activity, root), 0);
         QVERIFY(itemsSaying(activity, QString()) <= 10);
+
+        // Nothing left: the lines go.
+        fake.sync->set({{QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(0)}});
+        QTRY_VERIFY(text("downloadingCardLeft").isEmpty());
+        QVERIFY(text("downloadingCardDone").isEmpty());
+        QVERIFY(!text("uploadingCardLeft").isEmpty());
 
         QVERIFY(!fake.sync->calls.contains(QStringLiteral("Outbox")));
         QVERIFY(!fake.sync->calls.contains(QStringLiteral("NotUploaded")));

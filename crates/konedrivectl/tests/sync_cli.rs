@@ -1062,24 +1062,28 @@ async fn binary_activity_lists_what_happened_newest_first() {
 }
 
 /// `sync transfers`: each download under way with how far it has got, or
-/// that there is none.
+/// that there is none; the summary line says what is left (issue #16).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_transfers_lists_the_downloads_under_way() {
     let f = harness().await;
     let addr = f._bus.address();
     let out = run(addr, &["sync", "transfers"]);
     assert!(out.status.success(), "{out:?}");
-    let idle = "Downloading:  0 files, 0 B/s\nUploading:    0 files, 0 B/s\nPool: 16 of 32 (large: 0 of 4)\nNothing is downloading or uploading.";
+    let idle = "Downloading:  0 now, 0 B/s\nUploading:    0 now, 0 B/s\nPool: 16 of 32 (large: 0 of 4)\nNothing is downloading or uploading.";
     assert_eq!(out_text(&out).trim(), idle);
 
     let entry = f.service.report().transfers.start("/home/u/OneDrive/big.bin".into(), 4 << 20);
     entry.progress(1 << 20, 4 << 20);
+    // The totals are counted at most once a second.
+    wait_for(|| f.service.state().get().queue.down.left_count == 1).await;
     let out = run(addr, &["sync", "transfers"]);
     let text = out_text(&out);
     assert!(out.status.success(), "{out:?}");
+    assert!(text.starts_with("Downloading:  0 now, 1 file left (3.0 MiB), 0 B done, 0 B/s\n"), "{text}");
     let list = text.lines().nth(3).unwrap_or_default();
     assert!(list.starts_with("down ") && list.contains("/home/u/OneDrive/big.bin") && list.contains("25%") && list.contains("4.0 MiB"), "{text}");
     drop(entry);
+    wait_for(|| f.service.state().get().queue.down.left_count == 0).await;
     assert_eq!(out_text(&run(addr, &["sync", "transfers"])).trim(), idle);
 }
 
@@ -1562,7 +1566,7 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     assert!(!f.proxy.ignore_patterns().await.unwrap().contains(&"*.bak".to_owned()));
     assert_eq!(run(addr, &["sync", "ignore", "remove", "*.bak"]).status.code(), Some(2));
 
-    assert_eq!(out_text(&run(addr, &["sync", "outbox"])).trim(), "Nothing is waiting to upload.");
+    assert_eq!(out_text(&run(addr, &["sync", "outbox"])).trim(), "Uploading:    0 now, 0 B/s\nNothing is waiting to upload.");
     assert_eq!(out_text(&run(addr, &["sync", "not-uploaded"])).trim(), "Everything here is uploaded or waits to be.");
     assert_eq!(out_text(&run(addr, &["sync", "deletes", "confirm"])).trim(), "No delete is waiting for confirmation.");
 }

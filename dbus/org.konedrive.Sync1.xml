@@ -292,6 +292,25 @@
     <property name="LargeTransfers" type="u" access="read"/>
     <property name="LargeLimit" type="u" access="read"/>
     <property name="RetryAfter" type="u" access="read"/>
+    <!-- The queue totals, each way, updated with the speeds above. Left:
+         files to download — the pinned files waiting and every download
+         under way (a file being opened or a replacement counts only while it
+         runs) — and changes to upload (PendingCount; a move, a delete or a
+         new folder is a change of no bytes), with their bytes less what is
+         already moved of those under way. Done: bytes moved since nothing
+         was last left that way, or since the daemon started; 0 while nothing
+         is left. Time left: seconds at the speed of the last 30 s; 0 when
+         unknown — nothing moved for 10 s, OneDrive's Retry-After, and for
+         uploads a pause. What is kept back (BlockedCount, HeldCount,
+         SpaceWaitingCount, TooBigCount) is not left. Coalesced with the counters. -->
+    <property name="DownloadLeftCount" type="u" access="read"/>
+    <property name="DownloadLeftBytes" type="t" access="read"/>
+    <property name="DownloadDoneBytes" type="t" access="read"/>
+    <property name="DownloadTimeLeft" type="u" access="read"/>
+    <property name="UploadLeftCount" type="u" access="read"/>
+    <property name="UploadLeftBytes" type="t" access="read"/>
+    <property name="UploadDoneBytes" type="t" access="read"/>
+    <property name="UploadTimeLeft" type="u" access="read"/>
     <!-- The Full local scan of a read-write folder: every directory walked,
          for what changed while nothing watched (a start of its sync, the
          switch to read-write, the helper back, an overflow of the notification

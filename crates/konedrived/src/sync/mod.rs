@@ -24,6 +24,7 @@ pub mod pin;
 pub mod root;
 pub mod source;
 pub mod thumbs;
+pub mod totals;
 pub mod upload;
 pub mod watcher;
 pub mod write_mode;
@@ -611,10 +612,18 @@ pub struct SyncSnapshot {
     pub space_waiting_count: u32,
     pub space_waiting_bytes: u64,
     pub too_big_count: u32,
+    /// Their size: not on the bus, but taken off what is left to upload ([`totals`]).
+    pub too_big_bytes: u64,
     /// `DownloadSpeed`, `UploadSpeed`, `ActiveDownloads`, `ActiveUploads`, `PoolSize`,
     /// `PoolCeiling`, `LargeTransfers`, `LargeLimit`, `RetryAfter`: the account's transfer
     /// pool, once a second while anything moves or a `Retry-After` runs.
     pub throughput: crate::pool::Throughput,
+    /// The pinned files waiting to download (not those under way), and their size
+    /// ([`pin::Pins`]).
+    pub pinned_waiting: (u32, u64),
+    /// `DownloadLeftCount`, `DownloadLeftBytes`, `DownloadDoneBytes`, `DownloadTimeLeft` and
+    /// the same four for uploads: counted from the rest by [`totals::run`].
+    pub queue: totals::QueueTotals,
     /// `ScanState`, `ScanReason`, `ScanStarted`, `ScanDirectories`, `ScanFiles`,
     /// `ScanExpected`, `ScanFinished`, `ScanTook`: the Full local scan (issue #8).
     pub scan: local_scan::LocalScan,
@@ -653,7 +662,10 @@ impl Default for SyncSnapshot {
             space_waiting_count: 0,
             space_waiting_bytes: 0,
             too_big_count: 0,
+            too_big_bytes: 0,
             throughput: crate::pool::Throughput::default(),
+            pinned_waiting: (0, 0),
+            queue: totals::QueueTotals::default(),
             scan: local_scan::LocalScan::default(),
         }
     }
@@ -783,6 +795,11 @@ impl SyncStateHandle {
     /// The transfer pool's throughput, told only when it changed.
     pub fn set_throughput(&self, throughput: crate::pool::Throughput) {
         self.tx.send_if_modified(|s| std::mem::replace(&mut s.throughput, throughput) != throughput);
+    }
+
+    /// The queue totals, told only when they changed.
+    pub fn set_queue(&self, queue: totals::QueueTotals) {
+        self.tx.send_if_modified(|s| std::mem::replace(&mut s.queue, queue) != queue);
     }
 
     pub fn subscribe(&self) -> watch::Receiver<SyncSnapshot> {

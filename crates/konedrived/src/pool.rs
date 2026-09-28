@@ -56,6 +56,15 @@ pub const BURST_GRACE: Duration = Duration::from_secs(1);
 pub const DEFAULT_THROTTLE_WAIT: Duration = Duration::from_secs(10);
 /// The speed is the average of this long.
 pub const SPEED_SPAN: Duration = Duration::from_secs(3);
+/// The speed a queue's time left is worked out from is the average of this long (issue #16):
+/// longer than [`SPEED_SPAN`], so that the estimate does not jump with every burst. A guess.
+pub const AVERAGE_SPAN: Duration = Duration::from_secs(30);
+/// A direction in which nothing has moved for this long has no average speed, and so no time
+/// left (issue #16). A guess.
+pub const STILL_AFTER: Duration = Duration::from_secs(10);
+/// The shortest span the average is taken over at the start of a run, so that the first
+/// bytes of a run do not make a speed of their own.
+const AVERAGE_FLOOR: Duration = Duration::from_secs(1);
 /// How often the throughput is published while anything moves.
 pub const PUBLISH_EVERY: Duration = Duration::from_secs(1);
 /// The resolution of the speed meter.
@@ -124,6 +133,14 @@ pub struct Throughput {
     /// Seconds left of OneDrive's `Retry-After`, during which no slot is handed out; 0 when
     /// there is none.
     pub retry_after: u32,
+    /// Bytes moved each way since the pool started (issue #16: what a run has done).
+    pub down_moved: u64,
+    pub up_moved: u64,
+    /// Bytes a second each way, the average of the last [`AVERAGE_SPAN`] (or of the run so
+    /// far, when it began within it); 0 once nothing has moved that way for [`STILL_AFTER`]
+    /// (issue #16: what a queue's time left is worked out from).
+    pub down_average: u64,
+    pub up_average: u64,
 }
 
 type Observer = Arc<dyn Fn(Throughput) + Send + Sync>;
@@ -157,8 +174,11 @@ struct Inner {
     unblock_armed: bool,
     /// The size the last throttle came at, and when.
     throttle_level: Option<(usize, Instant)>,
-    /// Bytes moved per [`BUCKET`], by the bucket's number since `epoch`.
+    /// Bytes moved per [`BUCKET`], by the bucket's number since `epoch`, for the last
+    /// [`AVERAGE_SPAN`].
     moved: VecDeque<(u64, [u64; 2])>,
+    /// Bytes moved each way since the pool started.
+    moved_total: [u64; 2],
     epoch: Instant,
     observer: Option<Observer>,
     publishing: bool,
@@ -203,6 +223,7 @@ impl TransferPool {
                 unblock_armed: false,
                 throttle_level: None,
                 moved: VecDeque::new(),
+                moved_total: [0; 2],
                 epoch: Instant::now(),
                 observer: None,
                 publishing: false,
@@ -350,6 +371,7 @@ impl TransferPool {
         }
         {
             let mut inner = self.lock();
+            inner.moved_total[direction as usize] += bytes;
             let bucket = bucket_of(&inner, Instant::now());
             match inner.moved.back_mut() {
                 Some((at, counts)) if *at == bucket => counts[direction as usize] += bytes,
@@ -359,7 +381,7 @@ impl TransferPool {
                     inner.moved.push_back((bucket, counts));
                 }
             }
-            let keep = (SPEED_SPAN.as_millis() / BUCKET.as_millis()) as u64;
+            let keep = (AVERAGE_SPAN.as_millis() / BUCKET.as_millis()) as u64;
             while inner.moved.front().is_some_and(|(at, _)| at + keep <= bucket) {
                 inner.moved.pop_front();
             }
@@ -477,9 +499,13 @@ impl TransferPool {
                     let mut inner = pool.lock();
                     let now = Instant::now();
                     let shown = throughput_of(&inner, now);
+                    // Until nothing has moved for `STILL_AFTER`: the average, and with it
+                    // the time left, goes to 0 on the bus too.
                     let idle = inner.held.iter().sum::<usize>() == 0
                         && shown.down_speed == 0
                         && shown.up_speed == 0
+                        && shown.down_average == 0
+                        && shown.up_average == 0
                         && !inner.blocked(now);
                     if idle {
                         inner.publishing = false;
@@ -572,6 +598,7 @@ fn throughput_of(inner: &Inner, now: Instant) -> Throughput {
         }
     }
     let per_second = |bytes: u64| (bytes as f64 / SPEED_SPAN.as_secs_f64()) as u64;
+    let average = |direction: usize| average_of(inner, now, direction);
     // Whole seconds left, rounded up: "wait 30 s" until the very end.
     let retry_after = inner.blocked_until.map_or(0, |until| {
         let left = until.saturating_duration_since(now);
@@ -587,7 +614,36 @@ fn throughput_of(inner: &Inner, now: Instant) -> Throughput {
         large: inner.large_held as u32,
         large_limit: inner.large_limit as u32,
         retry_after: u32::try_from(retry_after).unwrap_or(u32::MAX),
+        down_moved: inner.moved_total[0],
+        up_moved: inner.moved_total[1],
+        down_average: average(0),
+        up_average: average(1),
     }
+}
+
+/// Bytes a second moved `direction` (the index of a [`Direction`]) over the last
+/// [`AVERAGE_SPAN`] — or since the first bucket within it that moved any, when that is
+/// later, but never less than [`AVERAGE_FLOOR`]; 0 when nothing has moved that way for
+/// [`STILL_AFTER`].
+fn average_of(inner: &Inner, now: Instant, direction: usize) -> u64 {
+    let bucket = bucket_of(inner, now);
+    let keep = (AVERAGE_SPAN.as_millis() / BUCKET.as_millis()) as u64;
+    let still = (STILL_AFTER.as_millis() / BUCKET.as_millis()) as u64;
+    let (mut first, mut last, mut sum) = (None, 0, 0u64);
+    for (at, counts) in &inner.moved {
+        if at + keep > bucket && counts[direction] > 0 {
+            first.get_or_insert(*at);
+            last = *at;
+            sum += counts[direction];
+        }
+    }
+    let Some(first) = first else { return 0 };
+    if last + still <= bucket {
+        return 0;
+    }
+    let began = inner.epoch + BUCKET * u32::try_from(first).unwrap_or(u32::MAX);
+    let span = now.saturating_duration_since(began).clamp(AVERAGE_FLOOR, AVERAGE_SPAN);
+    (sum as f64 / span.as_secs_f64()) as u64
 }
 
 /// A slot held: given back when dropped. A transfer that went through says so first
@@ -990,5 +1046,27 @@ mod tests {
         assert_eq!((shown.down_speed, shown.up_speed), (1_000_000, 100));
         tokio::time::sleep(SPEED_SPAN + BUCKET).await;
         assert_eq!(pool.throughput().down_speed, 0, "decays to 0");
+    }
+
+    /// The average a queue's time left is worked out from covers the run so far (up to the
+    /// last 30 s), outlasts the three-second speed, and is 0 once nothing has moved for 10 s;
+    /// what moved is counted for good.
+    #[tokio::test(start_paused = true)]
+    async fn the_average_covers_the_run_and_ends_after_ten_still_seconds() {
+        let pool = TransferPool::starting_at(4, 64);
+        for _ in 0..4 {
+            pool.moved(Direction::Up, 1_000_000);
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        }
+        let shown = pool.throughput();
+        assert_eq!((shown.up_average, shown.up_moved, shown.down_average), (1_000_000, 4_000_000, 0));
+
+        tokio::time::sleep(STILL_AFTER - Duration::from_secs(2)).await;
+        let shown = pool.throughput();
+        assert_eq!(shown.up_speed, 0, "the three-second speed is gone");
+        assert!(shown.up_average > 0, "the average is not yet");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        let shown = pool.throughput();
+        assert_eq!((shown.up_average, shown.up_moved), (0, 4_000_000));
     }
 }

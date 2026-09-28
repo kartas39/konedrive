@@ -226,6 +226,14 @@ class FakeSync1 : public QDBusAbstractAdaptor
     Q_PROPERTY(uint LargeTransfers READ largeTransfers)
     Q_PROPERTY(uint LargeLimit READ largeLimit)
     Q_PROPERTY(uint RetryAfter READ retryAfter)
+    Q_PROPERTY(uint DownloadLeftCount READ downloadLeftCount)
+    Q_PROPERTY(qulonglong DownloadLeftBytes READ downloadLeftBytes)
+    Q_PROPERTY(qulonglong DownloadDoneBytes READ downloadDoneBytes)
+    Q_PROPERTY(uint DownloadTimeLeft READ downloadTimeLeft)
+    Q_PROPERTY(uint UploadLeftCount READ uploadLeftCount)
+    Q_PROPERTY(qulonglong UploadLeftBytes READ uploadLeftBytes)
+    Q_PROPERTY(qulonglong UploadDoneBytes READ uploadDoneBytes)
+    Q_PROPERTY(uint UploadTimeLeft READ uploadTimeLeft)
     Q_PROPERTY(QString ScanState READ scanState)
     Q_PROPERTY(QString ScanReason READ scanReason)
     Q_PROPERTY(qlonglong ScanStarted READ scanStarted)
@@ -279,6 +287,14 @@ public:
     uint largeTransfers() const { return m_properties.value(QStringLiteral("LargeTransfers")).toUInt(); }
     uint largeLimit() const { return m_properties.value(QStringLiteral("LargeLimit")).toUInt(); }
     uint retryAfter() const { return m_properties.value(QStringLiteral("RetryAfter")).toUInt(); }
+    uint downloadLeftCount() const { return m_properties.value(QStringLiteral("DownloadLeftCount")).toUInt(); }
+    qulonglong downloadLeftBytes() const { return m_properties.value(QStringLiteral("DownloadLeftBytes")).toULongLong(); }
+    qulonglong downloadDoneBytes() const { return m_properties.value(QStringLiteral("DownloadDoneBytes")).toULongLong(); }
+    uint downloadTimeLeft() const { return m_properties.value(QStringLiteral("DownloadTimeLeft")).toUInt(); }
+    uint uploadLeftCount() const { return m_properties.value(QStringLiteral("UploadLeftCount")).toUInt(); }
+    qulonglong uploadLeftBytes() const { return m_properties.value(QStringLiteral("UploadLeftBytes")).toULongLong(); }
+    qulonglong uploadDoneBytes() const { return m_properties.value(QStringLiteral("UploadDoneBytes")).toULongLong(); }
+    uint uploadTimeLeft() const { return m_properties.value(QStringLiteral("UploadTimeLeft")).toUInt(); }
     QString scanState() const { return m_properties.value(QStringLiteral("ScanState")).toString(); }
     QString scanReason() const { return m_properties.value(QStringLiteral("ScanReason")).toString(); }
     qlonglong scanStarted() const { return m_properties.value(QStringLiteral("ScanStarted")).toLongLong(); }
@@ -551,6 +567,14 @@ private:
         {QStringLiteral("LargeTransfers"), QVariant::fromValue<uint>(0)},
         {QStringLiteral("LargeLimit"), QVariant::fromValue<uint>(4)},
         {QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("DownloadLeftBytes"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("DownloadDoneBytes"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("DownloadTimeLeft"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("UploadLeftCount"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("UploadLeftBytes"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("UploadDoneBytes"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("UploadTimeLeft"), QVariant::fromValue<uint>(0)},
         {QStringLiteral("ScanState"), QStringLiteral("none")},
         {QStringLiteral("ScanReason"), QString()},
         {QStringLiteral("ScanStarted"), QVariant::fromValue<qlonglong>(0)},

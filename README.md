@@ -257,7 +257,8 @@ removes it all again, apart from the helper.
   - `konedrivectl sync status` — the folder, its phase and item count, and the helper.
   - `konedrivectl sync activity [--limit N]` — what happened lately: downloads, free-ups,
     changes from OneDrive, conflicts, failures.
-  - `konedrivectl sync transfers` — downloads and uploads under way right now.
+  - `konedrivectl sync transfers` — downloads and uploads under way right now, and for each way
+    how much is left, about how long it takes, and how much is done.
   - `konedrivectl sync conflicts` — local edits rescued out of the way; `konedrivectl sync
     dismiss <path>` takes one off the list (the file itself stays where it was moved to).
   - `konedrivectl sync free-up-space` — send every downloaded file that is not in use back to
@@ -268,7 +269,8 @@ removes it all again, apart from the helper.
     poll (about a minute).
   - `konedrivectl sync hydrate <path>` — download one file now.
   - For an account that uploads (`konedrivectl account mode read-write`):
-    - `konedrivectl sync outbox [--all]` — the changes waiting to go up, and why each waits;
+    - `konedrivectl sync outbox [--all]` — how much is left to upload, then the changes waiting
+      to go up, and why each waits;
     - `konedrivectl sync pause [--for 2h]` and `konedrivectl sync resume` — nothing is uploaded
       and OneDrive is not asked for changes meanwhile; opening a file still downloads it;
     - `konedrivectl sync ignore [list | add <pattern> | remove <pattern>]` — names of local files

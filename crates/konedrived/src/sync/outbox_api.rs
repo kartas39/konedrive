@@ -221,6 +221,7 @@ impl SyncService {
             s.space_waiting_count = 0;
             s.space_waiting_bytes = 0;
             s.too_big_count = 0;
+            s.too_big_bytes = 0;
         });
     }
 
@@ -499,6 +500,7 @@ impl OutboxHost for Host {
             s.space_waiting_count = status.counts.space_waiting;
             s.space_waiting_bytes = status.counts.space_waiting_bytes;
             s.too_big_count = status.counts.too_big;
+            s.too_big_bytes = status.counts.too_big_bytes;
             if let Some(free) = status.free_space {
                 s.free_space = free;
                 s.quota_state = status.quota_state.clone();

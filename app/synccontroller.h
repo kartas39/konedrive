@@ -89,6 +89,18 @@ class SyncController : public QObject
     Q_PROPERTY(uint largeTransfers READ largeTransfers NOTIFY syncChanged)
     Q_PROPERTY(uint largeLimit READ largeLimit NOTIFY syncChanged)
     Q_PROPERTY(uint retryAfter READ retryAfter NOTIFY syncChanged)
+    /// The queue totals, each way (Sync1's DownloadLeftCount, DownloadLeftBytes,
+    /// DownloadDoneBytes, DownloadTimeLeft and the same four for uploads): files left to
+    /// download and changes left to upload, their bytes, the bytes done in this run, and
+    /// the seconds left (0: unknown).
+    Q_PROPERTY(uint downloadLeftCount READ downloadLeftCount NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong downloadLeftBytes READ downloadLeftBytes NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong downloadDoneBytes READ downloadDoneBytes NOTIFY syncChanged)
+    Q_PROPERTY(uint downloadTimeLeft READ downloadTimeLeft NOTIFY syncChanged)
+    Q_PROPERTY(uint uploadLeftCount READ uploadLeftCount NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong uploadLeftBytes READ uploadLeftBytes NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong uploadDoneBytes READ uploadDoneBytes NOTIFY syncChanged)
+    Q_PROPERTY(uint uploadTimeLeft READ uploadTimeLeft NOTIFY syncChanged)
     /// The Full local scan (Sync1's Scan* properties): "running", "idle", or "none" for a
     /// read-only folder; why it runs; when it started (unix seconds); the directories and
     /// files seen so far; about how many items it will see (the base's count); when the
@@ -171,6 +183,14 @@ public:
     uint largeTransfers() const { return m_largeTransfers; }
     uint largeLimit() const { return m_largeLimit; }
     uint retryAfter() const { return m_retryAfter; }
+    uint downloadLeftCount() const { return m_downloadLeftCount; }
+    qulonglong downloadLeftBytes() const { return m_downloadLeftBytes; }
+    qulonglong downloadDoneBytes() const { return m_downloadDoneBytes; }
+    uint downloadTimeLeft() const { return m_downloadTimeLeft; }
+    uint uploadLeftCount() const { return m_uploadLeftCount; }
+    qulonglong uploadLeftBytes() const { return m_uploadLeftBytes; }
+    qulonglong uploadDoneBytes() const { return m_uploadDoneBytes; }
+    uint uploadTimeLeft() const { return m_uploadTimeLeft; }
     QString scanState() const { return m_scanState; }
     QString scanReason() const { return m_scanReason; }
     qlonglong scanStarted() const { return m_scanStarted; }
@@ -327,6 +347,14 @@ private:
     uint m_largeTransfers = 0;
     uint m_largeLimit = 0;
     uint m_retryAfter = 0;
+    uint m_downloadLeftCount = 0;
+    qulonglong m_downloadLeftBytes = 0;
+    qulonglong m_downloadDoneBytes = 0;
+    uint m_downloadTimeLeft = 0;
+    uint m_uploadLeftCount = 0;
+    qulonglong m_uploadLeftBytes = 0;
+    qulonglong m_uploadDoneBytes = 0;
+    uint m_uploadTimeLeft = 0;
     QString m_scanState = QStringLiteral("none");
     QString m_scanReason;
     qlonglong m_scanStarted = 0;
