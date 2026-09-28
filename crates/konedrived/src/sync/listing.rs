@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use tokio::sync::{Notify, OwnedMutexGuard, Semaphore};
+use tokio::sync::{Notify, OwnedMutexGuard};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -50,8 +50,6 @@ pub use rw::Writes;
 
 /// A delta with more changes than this is reconciled in full.
 pub const FULL_THRESHOLD: usize = 5000;
-/// Replacements of changed files downloading at once.
-const REPLACEMENT_SLOTS: usize = 2;
 
 pub type LinkCell = Arc<std::sync::Mutex<Option<HelperLink>>>;
 
@@ -223,7 +221,6 @@ pub struct Listing {
     /// Replacements that failed ("the status says why"), tried
     /// again after every cycle until they succeed or are no longer needed.
     failed_replacements: std::sync::Mutex<HashMap<String, (Replacement, String)>>,
-    replacement_slots: Semaphore,
     replacements: std::sync::Mutex<JoinSet<()>>,
     cancel_replacements: CancellationToken,
     /// Read-write mode: the outbox commit count the last cycle's fetch
@@ -365,7 +362,6 @@ impl Listing {
             turns: Arc::new(tokio::sync::Mutex::new(())),
             replacing: std::sync::Mutex::new(HashMap::new()),
             failed_replacements: std::sync::Mutex::new(HashMap::new()),
-            replacement_slots: Semaphore::new(REPLACEMENT_SLOTS),
             replacements: std::sync::Mutex::new(JoinSet::new()),
             cancel_replacements: CancellationToken::new(),
             revisit_from: std::sync::atomic::AtomicI64::new(0),
@@ -1005,7 +1001,8 @@ impl Listing {
     }
 
     async fn replace_through(&self, source: &Tracked, replacement: &Replacement) -> ReplaceOutcome {
-        let _slot = self.replacement_slots.acquire().await;
+        // A background download in the account's transfer pool.
+        let mut slot = self.ctx.drive.pool().acquire(crate::pool::Class::Download).await;
         // Opening reads the root's attribute to prove it is still this root:
         // on a blocking thread, like every open (part 1's).
         let (root, locked) = (self.ctx.root.clone(), self.ctx.locked);
@@ -1026,6 +1023,7 @@ impl Listing {
         if matches!(outcome, ReplaceOutcome::Replaced) {
             // A new version is a new inode: the item's recorded one now.
             super::local::record_replaced(&disk, &self.ctx.store, &replacement.id, &replacement.rel);
+            slot.succeeded();
         }
         outcome
     }
@@ -2459,7 +2457,8 @@ mod tests {
         .await;
 
         // The replacement is issued, and waits for a slot.
-        let slots = listing.replacement_slots.acquire_many(REPLACEMENT_SLOTS as u32).await.unwrap();
+        // A paused pool hands no background slot out: the replacement waits.
+        listing.ctx.drive.pool().set_paused(true);
         s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
         listing.cycle(&CancellationToken::new()).await.unwrap();
         // The next cycle starts, and is stuck marking the folder it makes.
@@ -2470,7 +2469,7 @@ mod tests {
         });
         tokio::task::spawn_blocking(move || reached.recv().unwrap()).await.unwrap();
         // Meanwhile the replacement runs, and ends with nothing to do.
-        drop(slots);
+        listing.ctx.drive.pool().set_paused(false);
         listing.join_replacements().await;
         assert!(!running.is_finished());
         release.send(()).unwrap();
@@ -2505,12 +2504,13 @@ mod tests {
         s.serve_download("c2", &two).await;
         s.serve_download("c3", &three).await;
 
-        let slots = listing.replacement_slots.acquire_many(REPLACEMENT_SLOTS as u32).await.unwrap();
+        // A paused pool hands no background slot out: the replacement waits.
+        listing.ctx.drive.pool().set_paused(true);
         s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
         listing.cycle(&CancellationToken::new()).await.unwrap();
         s.feed(Some("L2"), json!([file("F", "D", "f.txt", "c3")]), "L3").await;
         listing.cycle(&CancellationToken::new()).await.unwrap();
-        drop(slots);
+        listing.ctx.drive.pool().set_paused(false);
         listing.join_replacements().await;
         assert_eq!(std::fs::read(&f_txt).unwrap(), three);
         assert_eq!(placeholder::read_ctag(&File::open(&f_txt).unwrap()).unwrap().as_deref(), Some("c3"));

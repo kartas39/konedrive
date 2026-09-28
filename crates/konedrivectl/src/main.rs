@@ -872,7 +872,17 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &Sync1Proxy<'_>
             let events = explained(daemon, chosen, proxy, SyncAction::Activity, proxy.recent_activity(limit).await).await?;
             print!("{}", konedrivectl::activity_text(&events));
         }
-        SyncCmd::Transfers => print!("{}", konedrivectl::transfers_text(&proxy.transfers().await?, &proxy.uploads().await?)),
+        SyncCmd::Transfers => {
+            let summary = konedrivectl::TransferSummary {
+                active_downloads: proxy.active_downloads().await?,
+                download_speed: proxy.download_speed().await?,
+                active_uploads: proxy.active_uploads().await?,
+                upload_speed: proxy.upload_speed().await?,
+                pool_size: proxy.pool_size().await?,
+                pool_ceiling: proxy.pool_ceiling().await?,
+            };
+            print!("{}", konedrivectl::transfers_text(&summary, &proxy.transfers().await?, &proxy.uploads().await?));
+        }
         SyncCmd::Outbox { all } => {
             const SHOWN: u32 = 50;
             let limit = if all { 0 } else { SHOWN + 1 };

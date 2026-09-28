@@ -221,5 +221,19 @@
          "Report-<MachineName>.docx". machine_name in config.toml, or the
          host's name. -->
     <property name="MachineName" type="s" access="read"/>
+    <!-- The account's transfers, published once a second while anything
+         moves: bytes a second downloaded and uploaded (the average of the
+         last 3 s), the transfer slots held by downloads (files being opened,
+         pinned files, replacements, thumbnails) and by uploads, and the
+         account's transfer pool: how many requests it has in flight at most
+         now, which adapts to OneDrive's throttling and latency, and its
+         ceiling ([transfers] max in config.toml). Coalesced with the
+         counters. -->
+    <property name="DownloadSpeed" type="t" access="read"/>
+    <property name="UploadSpeed" type="t" access="read"/>
+    <property name="ActiveDownloads" type="u" access="read"/>
+    <property name="ActiveUploads" type="u" access="read"/>
+    <property name="PoolSize" type="u" access="read"/>
+    <property name="PoolCeiling" type="u" access="read"/>
   </interface>
 </node>

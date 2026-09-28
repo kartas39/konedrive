@@ -3,9 +3,11 @@ import QtQuick.Controls as QQC2
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.kirigamiaddons.formcard as FormCard
+import org.kde.quickcharts as Charts
 import org.konedrive.app
 
-/// Downloads and uploads under way, the changes waiting to be uploaded, then
+/// How fast things move (two mini cards with the last two minutes), the
+/// downloads and uploads under way, the changes waiting to be uploaded, then
 /// the recent events; a click shows the file in the file manager.
 FormCard.FormCardPage {
     id: page
@@ -26,6 +28,107 @@ FormCard.FormCardPage {
 
     onVisibleChanged: loadOutbox()
     onSyncChanged: loadOutbox()
+
+    /// The charts show speed, or how many files move at once.
+    property bool showFiles: false
+
+    /// One direction's mini card: its speed, how many files at once, and a line of the
+    /// last two minutes; dimmed while nothing moves.
+    component TransferCard: Kirigami.AbstractCard {
+        id: card
+        required property string title
+        required property real speed
+        required property int active
+        required property var speedHistory
+        required property var activeHistory
+        /// The pool's line: "N files at once (pool M: X down, Y up)".
+        required property string poolText
+        /// Whether the chart shows files at once rather than speed.
+        required property bool showFiles
+        readonly property bool idle: active === 0 && speed === 0
+
+        Layout.fillWidth: true
+        Layout.preferredWidth: 1
+        opacity: idle ? 0.6 : 1
+
+        contentItem: ColumnLayout {
+            spacing: Kirigami.Units.smallSpacing
+            QQC2.Label {
+                text: card.title
+                font.bold: true
+            }
+            Kirigami.Heading {
+                level: 2
+                text: card.idle ? i18nc("@info a transfer card while nothing moves", "no transfers")
+                                : i18nc("@info bytes a second", "%1/s", Qt.locale().formattedDataSize(card.speed))
+            }
+            QQC2.Label {
+                Layout.fillWidth: true
+                elide: Text.ElideRight
+                opacity: 0.7
+                text: card.poolText
+            }
+            Charts.LineChart {
+                Layout.fillWidth: true
+                Layout.preferredHeight: Kirigami.Units.gridUnit * 3
+                fillOpacity: 0.2
+                lineWidth: 1
+                yRange.automatic: true
+                yRange.from: 0
+                valueSources: Charts.ArraySource {
+                    array: card.showFiles ? card.activeHistory : card.speedHistory
+                }
+                colorSource: Charts.SingleValueSource {
+                    value: Kirigami.Theme.highlightColor
+                }
+            }
+        }
+    }
+
+    RowLayout {
+        objectName: "transferCards"
+        Layout.fillWidth: true
+        Layout.topMargin: Kirigami.Units.largeSpacing
+        Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.rightMargin: Kirigami.Units.largeSpacing
+        visible: page.sync !== null
+        spacing: Kirigami.Units.largeSpacing
+
+        /// The pool's line for a card whose direction has `active` files moving.
+        function poolText(active) {
+            return page.sync ? i18ncp("@info files moving in one direction; the account's transfer pool",
+                                      "%1 file at once (pool %2: %3 down, %4 up)",
+                                      "%1 files at once (pool %2: %3 down, %4 up)",
+                                      active, page.sync.poolSize, page.sync.activeDownloads, page.sync.activeUploads)
+                             : "";
+        }
+
+        TransferCard {
+            title: i18nc("@title a mini card", "Downloading")
+            speed: page.sync ? page.sync.downloadSpeed : 0
+            active: page.sync ? page.sync.activeDownloads : 0
+            speedHistory: page.sync ? page.sync.downloadSpeedHistory : []
+            activeHistory: page.sync ? page.sync.activeDownloadsHistory : []
+            poolText: parent.poolText(active)
+            showFiles: page.showFiles
+        }
+        TransferCard {
+            title: i18nc("@title a mini card", "Uploading")
+            speed: page.sync ? page.sync.uploadSpeed : 0
+            active: page.sync ? page.sync.activeUploads : 0
+            speedHistory: page.sync ? page.sync.uploadSpeedHistory : []
+            activeHistory: page.sync ? page.sync.activeUploadsHistory : []
+            poolText: parent.poolText(active)
+            showFiles: page.showFiles
+        }
+    }
+    QQC2.Switch {
+        Layout.leftMargin: Kirigami.Units.largeSpacing
+        visible: page.sync !== null
+        text: i18nc("@option:check the charts show files at once rather than speed", "Show files at once")
+        checked: page.showFiles
+        onToggled: page.showFiles = checked
+    }
 
     Kirigami.InlineMessage {
         Layout.fillWidth: true

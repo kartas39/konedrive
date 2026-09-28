@@ -67,8 +67,8 @@ however often a pin, a placement or a sweep asks for it, and leaves it when its 
 Each download goes through the ordinary fill path, `SyncService::fill_now` — the same as
 `Hydrate`: opened beneath the root, taken under the per-inode lock, verified against OneDrive's
 hash, checkpointed, shown in `Transfers` while it runs, and recorded as `downloaded` or `failed`
-in the activity log. At most four run at once (`PIN_SLOTS`, equal to `FILL_SLOTS`), in slots of
-their own. An open of a file whose pinned download is already running waits on that same
+in the activity log. Each takes a background slot of the account's transfer pool
+([hydration.md](hydration.md) §6.4), so an open never waits behind a big pinned folder. An open of a file whose pinned download is already running waits on that same
 download, rather than starting a second one — as opening a file twice always does.
 
 Just before a queued file is downloaded, the queue asks again whether it is still pinned. A file

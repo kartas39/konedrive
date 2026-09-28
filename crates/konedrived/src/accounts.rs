@@ -188,6 +188,7 @@ impl AccountManager {
         self.siblings.add(&account);
         let persist = Persist { store: Arc::clone(&self.config), account: entry.id.clone() };
         let sync = SyncService::on_hub(&self.hub, Some(account.state().clone()), Some(persist));
+        sync.set_transfer_ceiling(self.config.snapshot().transfer_ceiling());
         // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2).
         let uploads: std::sync::Weak<SyncService> = Arc::downgrade(&sync);
         account.set_uploads(uploads);

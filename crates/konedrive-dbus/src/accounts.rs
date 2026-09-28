@@ -223,6 +223,21 @@ pub trait Sync1 {
     fn ignore_patterns(&self) -> zbus::Result<Vec<String>>;
     #[zbus(property)]
     fn machine_name(&self) -> zbus::Result<String>;
+    /// Bytes a second downloaded and uploaded, the average of the last 3 s.
+    #[zbus(property)]
+    fn download_speed(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn upload_speed(&self) -> zbus::Result<u64>;
+    /// Transfer slots held by downloads and by uploads now.
+    #[zbus(property)]
+    fn active_downloads(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn active_uploads(&self) -> zbus::Result<u32>;
+    /// The account's transfer pool now, and its ceiling.
+    #[zbus(property)]
+    fn pool_size(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn pool_ceiling(&self) -> zbus::Result<u32>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: development only.

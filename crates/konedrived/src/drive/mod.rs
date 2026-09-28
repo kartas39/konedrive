@@ -23,6 +23,7 @@ pub use item::DriveItem;
 pub use upload::{ChunkOutcome, SessionProgress, UploadSession, UploadTarget, CHUNK_SIZE, FRAGMENT_UNIT, SMALL_UPLOAD_MAX};
 pub use write::{ItemChange, WriteError};
 
+use crate::pool::{Direction, TransferPool};
 use crate::token::{AuthError, TokenSource};
 
 #[derive(Debug, thiserror::Error)]
@@ -114,6 +115,10 @@ pub struct DriveClient {
     base: Url,
     tokens: Arc<dyn TokenSource>,
     retry: RetryPolicy,
+    /// The account's transfer pool (`crate::pool`): told of every `429`/`503`, the latency of
+    /// every request that moves data or changes an item, and the bytes that move. A client of
+    /// its own until the account's is set ([`with_pool`](Self::with_pool)).
+    pool: Arc<TransferPool>,
 }
 
 #[derive(Deserialize)]
@@ -151,7 +156,19 @@ impl DriveClient {
             .timeout(UPLOAD_REQUEST_TIMEOUT)
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
-        Ok(Self { api, content, upload, base, tokens, retry: RetryPolicy::default() })
+        let pool = TransferPool::new(crate::pool::DEFAULT_CEILING);
+        Ok(Self { api, content, upload, base, tokens, retry: RetryPolicy::default(), pool })
+    }
+
+    /// This client reports into `pool`, the account's.
+    pub fn with_pool(mut self, pool: Arc<TransferPool>) -> Self {
+        self.pool = pool;
+        self
+    }
+
+    /// The account's transfer pool.
+    pub fn pool(&self) -> &Arc<TransferPool> {
+        &self.pool
     }
 
     pub fn with_retry(mut self, retry: RetryPolicy) -> Self {
@@ -197,7 +214,7 @@ impl DriveClient {
     /// carried no download URL.
     pub async fn content_url(&self, id: &str) -> Result<String, DriveError> {
         let url = self.item_url(id, Some("content"))?;
-        let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token)).await?;
+        let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token), Some(Direction::Down)).await?;
         match response.status() {
             status if status.is_redirection() => response
                 .headers()
@@ -218,23 +235,26 @@ impl DriveClient {
         let url = Url::parse(url)
             .map_err(|e| DriveError::Failed(format!("a download URL from Graph cannot be parsed: {e}")))?;
         let response = self
-            .send_anonymous(|| {
-                let request = self.content.get(url.clone());
-                if from > 0 {
-                    request.header(header::RANGE, format!("bytes={from}-"))
-                } else {
-                    request
-                }
-            })
+            .send_anonymous(
+                || {
+                    let request = self.content.get(url.clone());
+                    if from > 0 {
+                        request.header(header::RANGE, format!("bytes={from}-"))
+                    } else {
+                        request
+                    }
+                },
+                Some(Direction::Down),
+            )
             .await?;
         match response.status() {
             StatusCode::PARTIAL_CONTENT => {
                 let start = content_range_start(response.headers())
                     .ok_or_else(|| DriveError::Failed("a partial answer without a readable Content-Range".into()))?;
-                Ok(Download { served_from: start, stream: body(response) })
+                Ok(Download { served_from: start, stream: self.body(response) })
             }
             StatusCode::OK => {
-                let mut stream = body(response);
+                let mut stream = self.body(response);
                 if from > 0 {
                     // The server ignored the range, as it may.
                     // Skip what is already on disk, so that the stream starts
@@ -273,7 +293,7 @@ impl DriveClient {
     pub async fn thumbnail(&self, id: &str, size: &str) -> Result<Option<Vec<u8>>, DriveError> {
         let mut url = self.item_url(id, Some("thumbnails"))?;
         url.path_segments_mut().map_err(|()| DriveError::Failed("the Graph base URL cannot take a path".into()))?.push("0").push(size).push("content");
-        let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token)).await?;
+        let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token), Some(Direction::Down)).await?;
         let response = if response.status().is_redirection() {
             let location = response
                 .headers()
@@ -283,12 +303,12 @@ impl DriveClient {
                 .to_owned();
             let redirected = Url::parse(&location)
                 .map_err(|e| DriveError::Failed(format!("a thumbnail redirect cannot be parsed: {e}")))?;
-            self.send_anonymous(|| self.content.get(redirected.clone())).await?
+            self.send_anonymous(|| self.content.get(redirected.clone()), Some(Direction::Down)).await?
         } else {
             response
         };
         match response.status() {
-            status if status.is_success() => Self::bounded_thumbnail_body(response).await,
+            status if status.is_success() => self.bounded_thumbnail_body(response).await,
             StatusCode::NOT_FOUND => Ok(None),
             status if status.is_server_error() => Err(DriveError::Transient(format!("a thumbnail returned {status}"))),
             status => Err(DriveError::Failed(format!("a thumbnail returned {status}"))),
@@ -301,13 +321,14 @@ impl DriveClient {
     /// `Content-Length`), comes back as `None` rather than an error — a
     /// body this size for a `c512x512` request is not a transient condition
     /// worth retrying, so the caller treats it exactly like a 404.
-    async fn bounded_thumbnail_body(response: reqwest::Response) -> Result<Option<Vec<u8>>, DriveError> {
+    async fn bounded_thumbnail_body(&self, response: reqwest::Response) -> Result<Option<Vec<u8>>, DriveError> {
         if response.content_length().is_some_and(|len| len > MAX_THUMBNAIL_BYTES) {
             return Ok(None);
         }
         let mut stream = response.bytes_stream();
         let mut buf = Vec::new();
         while let Some(chunk) = stream.try_next().await.map_err(|e| DriveError::Transient(e.to_string()))? {
+            self.pool.moved(Direction::Down, chunk.len() as u64);
             buf.extend_from_slice(&chunk);
             if buf.len() as u64 > MAX_THUMBNAIL_BYTES {
                 return Ok(None);
@@ -317,7 +338,7 @@ impl DriveClient {
     }
 
     async fn get_json<T: DeserializeOwned>(&self, url: Url) -> Result<T, DriveError> {
-        let response = self.send(|token| self.api.get(url.clone()).bearer_auth(token)).await?;
+        let response = self.send(|token| self.api.get(url.clone()).bearer_auth(token), None).await?;
         match response.status() {
             status if status.is_success() => response
                 .json()
@@ -332,16 +353,24 @@ impl DriveClient {
 
     /// Sends a request with the account's token. A `401` is answered once by
     /// dropping the cached token and asking again; `429` and `503` wait as
-    /// told (Ruling of).
-    async fn send(&self, request: impl Fn(&str) -> reqwest::RequestBuilder) -> Result<reqwest::Response, DriveError> {
+    /// told (Ruling of), and tell the pool, which hands out nothing meanwhile. The
+    /// time to the answer's headers goes to the pool as the latency of `measure`, for a
+    /// request that moves data (not a listing).
+    async fn send(
+        &self,
+        request: impl Fn(&str) -> reqwest::RequestBuilder,
+        measure: Option<Direction>,
+    ) -> Result<reqwest::Response, DriveError> {
         let mut renewed = false;
         let mut throttled = 0;
         loop {
             let token = self.token().await?;
+            let started = tokio::time::Instant::now();
             let response = request(&token)
                 .send()
                 .await
                 .map_err(|e| DriveError::Transient(format!("cannot reach Microsoft Graph: {e}")))?;
+            self.measured(measure, started, &response);
             match response.status() {
                 StatusCode::UNAUTHORIZED if !renewed => {
                     renewed = true;
@@ -358,7 +387,9 @@ impl DriveClient {
                             response.status()
                         )));
                     }
-                    tokio::time::sleep(self.wait_for(&response)).await;
+                    let wait = self.wait_for(&response);
+                    self.pool.throttled(Some(wait));
+                    tokio::time::sleep(wait).await;
                 }
                 _ => return Ok(response),
             }
@@ -366,20 +397,28 @@ impl DriveClient {
     }
 
     /// [`send`](Self::send) for a pre-authenticated URL: no token at all.
-    async fn send_anonymous(&self, request: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response, DriveError> {
+    async fn send_anonymous(
+        &self,
+        request: impl Fn() -> reqwest::RequestBuilder,
+        measure: Option<Direction>,
+    ) -> Result<reqwest::Response, DriveError> {
         let mut throttled = 0;
         loop {
+            let started = tokio::time::Instant::now();
             let response = request()
                 .send()
                 .await
                 .map_err(|e| DriveError::Transient(format!("cannot reach OneDrive: {e}")))?;
+            self.measured(measure, started, &response);
             match response.status() {
                 StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
                     throttled += 1;
                     if throttled >= self.retry.attempts {
                         return Err(DriveError::Transient(format!("OneDrive kept answering {}", response.status())));
                     }
-                    tokio::time::sleep(self.wait_for(&response)).await;
+                    let wait = self.wait_for(&response);
+                    self.pool.throttled(Some(wait));
+                    tokio::time::sleep(wait).await;
                 }
                 _ => return Ok(response),
             }
@@ -392,6 +431,25 @@ impl DriveClient {
             AuthError::Locked => DriveError::Transient("the secret storage is locked".into()),
             AuthError::Transient(message) => DriveError::Transient(message),
         })
+    }
+
+    /// The latency of a request that moves data, answered with anything but throttling
+    /// (whose answer says nothing of how fast the service is).
+    fn measured(&self, measure: Option<Direction>, started: tokio::time::Instant, response: &reqwest::Response) {
+        let throttled = matches!(response.status(), StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE);
+        if let Some(direction) = measure.filter(|_| !throttled) {
+            self.pool.latency(direction, started.elapsed());
+        }
+    }
+
+    /// A download's body, its bytes counted into the pool's speed as they are read.
+    fn body(&self, response: reqwest::Response) -> Box<dyn AsyncRead + Send + Unpin> {
+        let pool = Arc::clone(&self.pool);
+        let stream = response
+            .bytes_stream()
+            .inspect_ok(move |chunk| pool.moved(Direction::Down, chunk.len() as u64))
+            .map_err(std::io::Error::other);
+        Box::new(tokio_util::io::StreamReader::new(Box::pin(stream)))
     }
 
     /// `Retry-After` in seconds or as an HTTP date, else the default; capped.
@@ -448,11 +506,6 @@ impl DriveClient {
         }
         Ok(url)
     }
-}
-
-fn body(response: reqwest::Response) -> Box<dyn AsyncRead + Send + Unpin> {
-    let stream = response.bytes_stream().map_err(std::io::Error::other);
-    Box::new(tokio_util::io::StreamReader::new(Box::pin(stream)))
 }
 
 /// The first byte of `Content-Range: bytes <first>-<last>/<size>`.
@@ -556,8 +609,11 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "D1"})))
             .with_priority(2)
             .mount(&server).await;
-        assert_eq!(client(&server).drive_id().await.unwrap(), "D1");
+        let drive = client(&server);
+        let before = drive.pool().size();
+        assert_eq!(drive.drive_id().await.unwrap(), "D1");
         assert_eq!(server.received_requests().await.unwrap().len(), 2);
+        assert_eq!(drive.pool().size(), before / 2, "a throttle on any request halves the account's pool");
     }
 
     #[tokio::test]

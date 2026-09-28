@@ -166,7 +166,9 @@ impl DriveClient {
 
     /// Sends a write with the account's token. A `401` is answered once by
     /// dropping the cached token and asking again, as reads do; every other
-    /// answer, throttling included, goes back to the caller as it is.
+    /// answer, throttling included, goes back to the caller as it is — throttling told to
+    /// the account's transfer pool first, and the time to the answer given to it as an
+    /// upload's latency (the bodies are small).
     pub(super) async fn send_write(
         &self,
         request: impl Fn(&str) -> reqwest::RequestBuilder,
@@ -174,6 +176,7 @@ impl DriveClient {
         let mut renewed = false;
         loop {
             let token = self.token().await?;
+            let started = tokio::time::Instant::now();
             let response = request(&token)
                 .send()
                 .await
@@ -183,7 +186,24 @@ impl DriveClient {
                 self.tokens.invalidate().await;
                 continue;
             }
+            self.answered(&response, Some(started));
             return Ok(response);
+        }
+    }
+
+    /// Tells the account's transfer pool of an answer to a write: a `429`/`503` throttles
+    /// it; any other answer is a latency sample, from `sent` (the end of the request's
+    /// body) when given.
+    pub(super) fn answered(&self, response: &reqwest::Response, sent: Option<tokio::time::Instant>) {
+        match response.status() {
+            StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
+                self.pool.throttled(retry_after(response.headers(), SystemTime::now()));
+            }
+            _ => {
+                if let Some(sent) = sent {
+                    self.pool.latency(crate::pool::Direction::Up, sent.elapsed());
+                }
+            }
         }
     }
 }

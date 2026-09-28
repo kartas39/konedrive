@@ -1256,13 +1256,39 @@ pub fn activity_text(events: &[(i64, String, String, String)]) -> String {
     out
 }
 
-/// `sync transfers`: one line per download and upload under way — its
-/// direction, path, how far, and the whole size.
-pub fn transfers_text(downloads: &[(String, u64, u64)], uploads: &[(String, u64, u64)]) -> String {
+/// What `sync transfers` says first: the account's transfer pool (`Sync1`'s
+/// `ActiveDownloads`, `DownloadSpeed`, `ActiveUploads`, `UploadSpeed`, `PoolSize`,
+/// `PoolCeiling`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TransferSummary {
+    pub active_downloads: u32,
+    pub download_speed: u64,
+    pub active_uploads: u32,
+    pub upload_speed: u64,
+    pub pool_size: u32,
+    pub pool_ceiling: u32,
+}
+
+/// `sync transfers`: how many files go each way and how fast, and the pool; then one
+/// line per download and upload under way — its direction, path, how far, and the whole
+/// size.
+pub fn transfers_text(summary: &TransferSummary, downloads: &[(String, u64, u64)], uploads: &[(String, u64, u64)]) -> String {
+    let files = |n: u32| if n == 1 { " 1 file".to_owned() } else { format!("{n:>2} files") };
+    let mut out = format!(
+        "{:<12} {}, {}/s\n{:<12} {}, {}/s\nPool: {} of {}\n",
+        "Downloading:",
+        files(summary.active_downloads),
+        human_bytes(summary.download_speed),
+        "Uploading:",
+        files(summary.active_uploads),
+        human_bytes(summary.upload_speed),
+        summary.pool_size,
+        summary.pool_ceiling,
+    );
     if downloads.is_empty() && uploads.is_empty() {
-        return "Nothing is downloading or uploading.\n".to_owned();
+        out.push_str("Nothing is downloading or uploading.\n");
+        return out;
     }
-    let mut out = String::new();
     let lines = downloads.iter().map(|t| ("down", t)).chain(uploads.iter().map(|t| ("up", t)));
     for (direction, (path, done, total)) in lines {
         let percent = if *total == 0 { 0 } else { done.saturating_mul(100) / total };
@@ -1940,6 +1966,23 @@ mod tests {
         let detail = "/f/B/y is not uploaded yet, so freeing it up would lose the changes made here";
         assert_eq!(super::refused_path_of("org.konedrive.Error.NotUploaded", detail), Some("/f/B/y"));
         assert_eq!(super::refused_path_of("org.konedrive.Error.Failed", detail), None);
+    }
+
+    #[test]
+    fn transfers_start_with_the_pool_summary() {
+        let summary = super::TransferSummary {
+            active_downloads: 12,
+            download_speed: 8_808_038,
+            active_uploads: 3,
+            upload_speed: 1_258_291,
+            pool_size: 15,
+            pool_ceiling: 64,
+        };
+        let text = super::transfers_text(&summary, &[], &[]);
+        assert_eq!(
+            text,
+            "Downloading: 12 files, 8.4 MiB/s\nUploading:    3 files, 1.2 MiB/s\nPool: 15 of 64\nNothing is downloading or uploading.\n"
+        );
     }
 
     #[test]

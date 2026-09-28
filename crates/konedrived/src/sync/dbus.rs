@@ -320,6 +320,42 @@ impl Sync1 {
     async fn machine_name(&self) -> String {
         self.service.machine_name()
     }
+
+    /// Bytes a second downloaded, the average of the last 3 s.
+    #[zbus(property)]
+    async fn download_speed(&self) -> u64 {
+        self.service.state().get().throughput.down_speed
+    }
+
+    /// Bytes a second uploaded, the average of the last 3 s.
+    #[zbus(property)]
+    async fn upload_speed(&self) -> u64 {
+        self.service.state().get().throughput.up_speed
+    }
+
+    /// Transfer slots held by downloads now.
+    #[zbus(property)]
+    async fn active_downloads(&self) -> u32 {
+        self.service.state().get().throughput.active_down
+    }
+
+    /// Transfer slots held by uploads now.
+    #[zbus(property)]
+    async fn active_uploads(&self) -> u32 {
+        self.service.state().get().throughput.active_up
+    }
+
+    /// The size of the account's transfer pool now.
+    #[zbus(property)]
+    async fn pool_size(&self) -> u32 {
+        self.service.state().get().throughput.size
+    }
+
+    /// Its ceiling (`[transfers] max` in `config.toml`).
+    #[zbus(property)]
+    async fn pool_ceiling(&self) -> u32 {
+        self.service.state().get().throughput.ceiling
+    }
 }
 
 /// Every refusal keeps its own name; only the ones with nothing a caller
@@ -458,6 +494,7 @@ pub(crate) struct Coalesced {
     blocked_count: u32,
     held_count: u32,
     uploads: Vec<(String, u64, u64)>,
+    throughput: crate::pool::Throughput,
 }
 
 impl Coalesced {
@@ -476,6 +513,7 @@ impl Coalesced {
             blocked_count: s.blocked_count,
             held_count: s.held_count,
             uploads: s.uploads.clone(),
+            throughput: s.throughput,
         }
     }
 
@@ -520,6 +558,25 @@ impl Coalesced {
         }
         if old.uploads != self.uploads {
             changed.insert("Uploads", self.uploads.clone().into());
+        }
+        let (was, now) = (old.throughput, self.throughput);
+        if was.down_speed != now.down_speed {
+            changed.insert("DownloadSpeed", now.down_speed.into());
+        }
+        if was.up_speed != now.up_speed {
+            changed.insert("UploadSpeed", now.up_speed.into());
+        }
+        if was.active_down != now.active_down {
+            changed.insert("ActiveDownloads", now.active_down.into());
+        }
+        if was.active_up != now.active_up {
+            changed.insert("ActiveUploads", now.active_up.into());
+        }
+        if was.size != now.size {
+            changed.insert("PoolSize", now.size.into());
+        }
+        if was.ceiling != now.ceiling {
+            changed.insert("PoolCeiling", now.ceiling.into());
         }
         changed
     }

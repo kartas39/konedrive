@@ -467,9 +467,10 @@ pub(super) fn device_of(path: &Path) -> Option<u64> {
 }
 
 /// A content source is what an account is, to the fill loop.
-pub(super) fn filler(account: Arc<SyncService>) -> (Arc<dyn ContentSource>, super::activity::Report) {
+pub(super) fn filler(account: Arc<SyncService>) -> (Arc<dyn ContentSource>, super::activity::Report, Arc<crate::pool::TransferPool>) {
     let report = account.report().clone();
-    (account as Arc<dyn ContentSource>, report)
+    let pool = Arc::clone(account.pool());
+    (account as Arc<dyn ContentSource>, report, pool)
 }
 
 #[cfg(test)]

@@ -353,9 +353,30 @@ the opener suspended.
 
 ### 6.4 Concurrency and the per-inode lock
 
-At most **4** fills run at once. The slot is taken before a fill starts, so requests waiting for one
-stay in the daemon's request queue — exactly as deep as the helper's credit (§10.3) — rather than
-piling up as tasks that each hold an event descriptor.
+Every transfer of an account takes a slot of that account's **transfer pool**
+(`crates/konedrived/src/pool.rs`): fills on open and `Hydrate`, pinned downloads, replacements of
+changed files, thumbnails, uploads and metadata changes alike; the delta feed and the account's
+information stay outside it. The pool's size is not fixed — OneDrive publishes no limit and
+throttles an account as a whole with `429`/`503` — so it finds its own level:
+
+- it starts at 16 and grows by one slot for each successful transfer made while work waits and every
+  slot is busy, up to the ceiling (`[transfers] max` in `config.toml`, 64 by default, each
+  account's pool separately);
+- each request's time to first byte is measured (an upload's from the end of its body); while the
+  median of the last 20 is over twice the best of the last five minutes, it gives one slot back and
+  does not grow, until the median is under one and a half times that best;
+- a `429` or `503` on any of the account's requests halves it, once per burst, and nothing gets a
+  slot for the whole `Retry-After`; at and above the size the throttle came at it grows by one slot
+  per round only, until five minutes pass without one.
+
+A file being opened goes first: it may use two reserve slots above the pool, and while any open
+waits or runs no background work takes a new slot. Then metadata changes, then background
+downloads and uploads, one to each in turn. A pause holds back everything but opens. Every number
+is a guess (limitations log, section 5; F143–F146).
+
+A request is taken off the daemon's request queue — at most as many at once as the helper's
+credit (§10.3), so they never pile up as tasks that each hold an event descriptor — routed to its
+account (§2.4 of [accounts.md](accounts.md)), and only then waits for a slot of that account's pool.
 
 Every fill, `Hydrate`, `Dehydrate`, recovery and every reconcile step that changes a file take a
 **per-inode lock**, keyed by `(st_dev, st_ino)` read from the descriptor — never by a name, so two

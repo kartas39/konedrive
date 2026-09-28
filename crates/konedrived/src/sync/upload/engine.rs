@@ -14,10 +14,20 @@ use tokio_util::sync::CancellationToken;
 use super::local::{self, SYNC_BLOCKED, SYNC_PENDING, SYNC_UPLOADING};
 use super::{kind, reason, Fault, OutboxCounts, Upload, WorkerConfig, WorkerStatus, BACKOFF_FIRST, BACKOFF_MAX, QUOTA_RETRY, THROTTLE_FIRST};
 use crate::drive::write::MAX_RETRY_AFTER;
+use crate::pool::{Class as PoolClass, Slot};
 use crate::drive::{DriveError, WriteError};
 use crate::sync::disk::Disk;
 use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState};
 use crate::tree::{ActivityRow, Store, TreeError};
+
+/// The slot of the account's transfer pool a row of `class` takes: content is an upload;
+/// metadata, and a move out of the folder (a download, then a delete), go before transfers.
+fn pool_class(class: Class) -> PoolClass {
+    match class {
+        Class::Content => PoolClass::Upload,
+        Class::Meta | Class::Out => PoolClass::Metadata,
+    }
+}
 
 /// Unix seconds now.
 pub(super) fn now() -> i64 {
@@ -34,8 +44,8 @@ const AGAIN_LIMIT: u32 = 20;
 pub(super) enum Class {
     /// `mkdir`, `move`, `delete`: one at a time (§3.5).
     Meta,
-    Small,
-    Large,
+    /// `create`, `update`: as many as the account's transfer pool gives, small or large.
+    Content,
     /// `move-out`: a download, then a delete. One at a time, beside
     /// the others: its dependencies order it (a folder's removal waits for
     /// what left it first).
@@ -509,33 +519,30 @@ impl Engine {
         }
     }
 
+    /// Whether a row of `class` may start beside those running: metadata and move-outs
+    /// one at a time; content as the pool allows.
     fn slot_free(&self, class: Class) -> bool {
         let shared = self.shared();
         let busy = shared.in_flight.values().filter(|f| f.class == class).count();
-        busy < match class {
-            Class::Meta => 1,
-            Class::Small => self.cfg.limits.small_slots,
-            Class::Large => self.cfg.limits.large_slots,
-            Class::Out => 1,
+        match class {
+            Class::Meta | Class::Out => busy < 1,
+            Class::Content => true,
         }
     }
 
-    fn class_of(&self, disk: &Disk, row: &OutboxRow) -> Class {
+    fn class_of(&self, row: &OutboxRow) -> Class {
         if row.kind == OutboxKind::MoveOut {
             return Class::Out;
         }
         if !row.kind.sends_content() {
             return Class::Meta;
         }
-        match local::size_at(disk, &row.rel) {
-            Some(size) if size > self.cfg.limits.small_max => Class::Large,
-            _ => Class::Small,
-        }
+        Class::Content
     }
 
     /// The rows that may run now, in `seq` order: due, waiting for no other
     /// row, not held here already. Move-outs only with what they need.
-    fn candidates(&self, disk: &Disk) -> Result<Vec<(OutboxRow, Class)>, TreeError> {
+    fn candidates(&self) -> Result<Vec<(OutboxRow, Class)>, TreeError> {
         let now = now();
         let (rows, deps) = self.store().with(|s| Ok((s.outbox_rows()?, s.outbox_dependencies()?)))?;
         let flying: HashSet<i64> = self.shared().in_flight.keys().copied().collect();
@@ -545,7 +552,7 @@ impl Engine {
             .filter(|r| !flying.contains(&r.seq) && (r.kind != OutboxKind::MoveOut || move_outs) && due(r, now))
             .filter(|r| deps.get(&r.seq).is_none_or(Vec::is_empty))
             .map(|r| {
-                let class = self.class_of(disk, &r);
+                let class = self.class_of(&r);
                 (r, class)
             })
             .collect())
@@ -617,28 +624,56 @@ impl Engine {
         };
         let mut set: JoinSet<(i64, Outcome)> = JoinSet::new();
         let mut tasks: HashMap<tokio::task::Id, i64> = HashMap::new();
+        let pool = Arc::clone(self.cfg.drive.pool());
+        // A slot of the account's transfer pool that came while the loop waited, for the
+        // next row of its class; one that no row takes goes back at once.
+        let mut spare: Option<Slot> = None;
         loop {
+            // The pool classes whose rows waited for a slot this time round.
+            let mut wanting: Option<PoolClass> = None;
             // What left the folder is marked again first, whether or not rows
             // may run now, and at every wake while rows are in flight — a new
             // move out, the helper back (`docs/design/writes.md` §8).
             self.protect(&disk).await;
             self.mark_rows(&disk);
             if self.may_start() {
-                match self.candidates(&disk) {
+                match self.candidates() {
                     Ok(rows) => {
                         for (row, class) in rows {
                             if !self.slot_free(class) {
+                                continue;
+                            }
+                            let wants = pool_class(class);
+                            if wanting.is_some_and(|w| w == wants) {
                                 continue;
                             }
                             // Asked again right before each row is taken.
                             if !self.gate_open() {
                                 break;
                             }
+                            let slot = match spare.take() {
+                                Some(slot) if slot.class() == wants => slot,
+                                other => {
+                                    spare = other;
+                                    match pool.try_acquire(wants) {
+                                        Some(slot) => slot,
+                                        None => {
+                                            // The first class that waits is the one waited for.
+                                            wanting.get_or_insert(wants);
+                                            continue;
+                                        }
+                                    }
+                                }
+                            };
                             let claimed = match self.store().with(|s| s.outbox_claim(row.seq, row.state)) {
                                 Ok(Some(claimed)) => claimed,
-                                Ok(None) => continue,
+                                Ok(None) => {
+                                    spare = Some(slot);
+                                    continue;
+                                }
                                 Err(e) => {
                                     tracing::warn!("cannot take outbox row {}: {e}", row.seq);
+                                    spare = Some(slot);
                                     continue;
                                 }
                             };
@@ -647,7 +682,13 @@ impl Engine {
                             let engine = Arc::clone(self);
                             let disk = Arc::clone(&disk);
                             let handle = set.spawn(async move {
+                                // The row holds its slot for all it sends, every fragment.
+                                let mut slot = slot;
                                 let outcome = super::steps::run(&engine, &disk, claimed).await;
+                                if matches!(outcome, Outcome::Done) {
+                                    slot.succeeded();
+                                }
+                                drop(slot);
                                 (seq, outcome)
                             });
                             tasks.insert(handle.id(), seq);
@@ -657,10 +698,19 @@ impl Engine {
                 }
                 self.publish();
             }
-            if set.is_empty() {
+            drop(spare.take());
+            if set.is_empty() && wanting.is_none() {
                 break;
             }
+            let waited = async {
+                match wanting {
+                    Some(class) => pool.acquire(class).await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
+                // A slot for a row that waited for one: taken at the top of the loop.
+                slot = waited => spare = Some(slot),
                 // New rows, or the helper back: looked at while the others run.
                 _ = self.wake.notified() => {}
                 _ = cancel.cancelled() => {
@@ -668,7 +718,7 @@ impl Engine {
                     self.shared().in_flight.clear();
                     break;
                 }
-                joined = set.join_next_with_id() => match joined {
+                joined = set.join_next_with_id(), if !set.is_empty() => match joined {
                     Some(Ok((id, (seq, outcome)))) => {
                         tasks.remove(&id);
                         self.settle(seq, outcome);

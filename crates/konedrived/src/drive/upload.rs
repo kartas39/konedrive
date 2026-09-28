@@ -14,6 +14,7 @@
 //! leaves it out, and so do the errors).
 
 use std::fmt;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use reqwest::{header, StatusCode};
@@ -217,12 +218,18 @@ impl DriveClient {
                 "a fragment of {len} bytes: each must be under 60 MiB, and all but the last a multiple of 320 KiB"
             )));
         }
+        // The body goes out in pieces, each counted into the pool's speed as it is taken;
+        // the latency is measured from the last of them.
+        let sent = Arc::new(Mutex::new(None));
         let request = self
             .upload
             .put(session_url_of(session_url)?)
             .header(header::CONTENT_RANGE, format!("bytes {offset}-{}/{total}", end - 1))
-            .body(chunk);
+            .header(header::CONTENT_LENGTH, len.to_string())
+            .body(self.metered(chunk, Arc::clone(&sent)));
         let response = send_to_session(request).await?;
+        let sent = *sent.lock().unwrap_or_else(|p| p.into_inner());
+        self.answered(&response, sent);
         match response.status() {
             StatusCode::ACCEPTED => {
                 let body = progress_from(response).await?;
@@ -239,6 +246,7 @@ impl DriveClient {
     pub async fn upload_status(&self, session_url: &str) -> Result<SessionProgress, WriteError> {
         let request = self.upload.get(session_url_of(session_url)?).timeout(SESSION_CALL_TIMEOUT);
         let response = send_to_session(request).await?;
+        self.answered(&response, None);
         match response.status() {
             StatusCode::OK => {
                 let body = progress_from(response).await?;
@@ -255,6 +263,7 @@ impl DriveClient {
     pub async fn cancel_upload(&self, session_url: &str) -> Result<(), WriteError> {
         let request = self.upload.delete(session_url_of(session_url)?).timeout(SESSION_CALL_TIMEOUT);
         let response = send_to_session(request).await?;
+        self.answered(&response, None);
         match response.status() {
             status if status.is_success() || session_ended(status) => Ok(()),
             _ => Err(error_from(response).await),
@@ -302,6 +311,28 @@ impl DriveClient {
         }
     }
 }
+
+impl DriveClient {
+    /// `chunk` as a request body that goes out in pieces of [`METER_PIECE`], each counted
+    /// into the pool's upload speed as it is taken; `sent` gets the moment the last one was.
+    fn metered(&self, chunk: Vec<u8>, sent: Arc<Mutex<Option<tokio::time::Instant>>>) -> reqwest::Body {
+        let pool = Arc::clone(self.pool());
+        let len = chunk.len();
+        let pieces = futures_util::stream::iter((0..len).step_by(METER_PIECE).map(move |at| {
+            let end = (at + METER_PIECE).min(len);
+            let piece = chunk[at..end].to_vec();
+            pool.moved(crate::pool::Direction::Up, piece.len() as u64);
+            if end == len {
+                *sent.lock().unwrap_or_else(|p| p.into_inner()) = Some(tokio::time::Instant::now());
+            }
+            Ok::<_, std::io::Error>(piece)
+        }));
+        reqwest::Body::wrap_stream(pieces)
+    }
+}
+
+/// The pieces an upload's body goes out in, for its speed.
+const METER_PIECE: usize = 256 * 1024;
 
 /// A session URL that answers these no longer takes fragments: gone (`404`,
 /// `410`) or refused (`401`, `403`: its own authorisation has lapsed).

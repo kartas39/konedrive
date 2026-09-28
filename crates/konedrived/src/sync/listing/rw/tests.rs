@@ -211,7 +211,7 @@ impl World {
             machine_name: "fedora".into(),
             tree_lock: Arc::clone(&self.tree_lock),
             host: Arc::new(NoHost),
-            limits: Limits { small_slots: 4, large_slots: 2, small_max: 320 * 1024, chunk: 320 * 1024 },
+            limits: Limits { small_max: 320 * 1024, chunk: 320 * 1024 },
             moved_out: None,
         }
     }

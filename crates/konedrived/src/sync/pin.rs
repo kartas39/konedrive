@@ -9,8 +9,8 @@
 //!
 //! [`Pins`] is the queue: every online-only file a pin covers is downloaded
 //! through the ordinary fill path ([`PinFill`], which `SyncService`
-//! implements), at most [`PIN_SLOTS`] at once, each file once however often
-//! it is asked for.
+//! implements), each in a background slot of the account's transfer pool
+//! (`crate::pool`, `Class::Download`), each file once however often it is asked for.
 
 use std::collections::{BTreeSet, HashSet, VecDeque};
 use std::fs::Metadata;
@@ -21,16 +21,12 @@ use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
 use konedrive_fs::placeholder::{State, XATTR_PIN};
-use tokio::sync::{Notify, Semaphore};
+use tokio::sync::Notify;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use super::SyncStateHandle;
-
-/// Pinned files downloading at once: as many as are filled on open
-/// ([`super::FILL_SLOTS`]), in slots of their own, so that a big pinned
-/// folder never makes an application's open wait behind it.
-pub const PIN_SLOTS: usize = super::FILL_SLOTS;
+use crate::pool::{Class, TransferPool};
 
 /// Whether the item at `path` carries its own pin.
 pub fn carries_pin(path: &Path) -> bool {
@@ -271,6 +267,9 @@ pub struct Pins {
     state: SyncStateHandle,
     /// `None`: nothing is ever downloaded (tests of what is queued).
     filler: Option<Weak<dyn PinFill>>,
+    /// The account's transfer pool: a pinned download is background work, so an open
+    /// never waits behind a big pinned folder.
+    pool: Arc<TransferPool>,
     /// Cancels the downloads under way ([`clear`](Self::clear)); replaced
     /// with a fresh one each time.
     cancel: Mutex<CancellationToken>,
@@ -280,17 +279,18 @@ pub struct Pins {
 }
 
 impl Pins {
-    pub fn new(state: SyncStateHandle, filler: Weak<dyn PinFill>) -> Arc<Self> {
-        Arc::new(Self::with(state, Some(filler)))
+    pub fn new(state: SyncStateHandle, filler: Weak<dyn PinFill>, pool: Arc<TransferPool>) -> Arc<Self> {
+        Arc::new(Self::with(state, Some(filler), pool))
     }
 
     /// A queue that only keeps what it is given: tests of what is queued.
     pub fn detached(state: SyncStateHandle) -> Arc<Self> {
-        Arc::new(Self::with(state, None))
+        Arc::new(Self::with(state, None, TransferPool::new(crate::pool::DEFAULT_CEILING)))
     }
 
-    fn with(state: SyncStateHandle, filler: Option<Weak<dyn PinFill>>) -> Self {
+    fn with(state: SyncStateHandle, filler: Option<Weak<dyn PinFill>>, pool: Arc<TransferPool>) -> Self {
         Self {
+            pool,
             queue: Mutex::new(Queue::default()),
             explicit: Mutex::new(Explicit::default()),
             wake: Notify::new(),
@@ -452,34 +452,41 @@ impl Pins {
         self.state.update(|s| s.pinned_count = count);
     }
 
-    /// Takes files off the queue and downloads them, [`PIN_SLOTS`] at once,
-    /// until the queue is empty and nothing downloads.
+    /// Takes files off the queue and downloads them, each in a slot of the
+    /// account's transfer pool, until the queue is empty and nothing downloads.
     async fn work(self: Arc<Self>, filler: Weak<dyn PinFill>) {
-        let slots = Arc::new(Semaphore::new(PIN_SLOTS));
         let mut running = JoinSet::new();
         loop {
             while running.try_join_next().is_some() {}
-            // A slot first, and only then a file: a file is never out of
-            // the queue while it waits for a slot, so a full disk drops it
-            // with the rest.
-            let permit = Arc::clone(&slots).acquire_owned().await.expect("the semaphore is never closed");
-            let next = {
+            // Only while a file waits is a slot asked for, so that the pool sees work
+            // queued exactly when there is some.
+            let waiting = {
                 let mut queue = self.queue.lock().unwrap();
-                match queue.pending.pop_front() {
-                    Some(path) => Some(path),
-                    None if running.is_empty() => {
-                        queue.working = false;
-                        return;
-                    }
-                    None => None,
+                if queue.pending.is_empty() && running.is_empty() {
+                    queue.working = false;
+                    return;
                 }
+                !queue.pending.is_empty()
             };
-            let Some(path) = next else {
-                drop(permit);
+            if !waiting {
                 tokio::select! {
                     _ = running.join_next() => {}
                     () = self.wake.notified() => {}
                 }
+                continue;
+            }
+            // A slot first, and only then a file: a file is never out of
+            // the queue while it waits for a slot, so a full disk drops it
+            // with the rest. A download that ends meanwhile is reaped as it goes.
+            let mut permit = loop {
+                tokio::select! {
+                    permit = self.pool.acquire(Class::Download) => break permit,
+                    Some(_) = running.join_next(), if !running.is_empty() => {}
+                }
+            };
+            let next = self.queue.lock().unwrap().pending.pop_front();
+            let Some(path) = next else {
+                drop(permit);
                 continue;
             };
             let Some(fill) = filler.upgrade() else {
@@ -496,6 +503,9 @@ impl Pins {
                 // `Hydrate` whose caller went away is.
                 let filled = cancel.run_until_cancelled(fill.fill_pinned(&path)).await.unwrap_or(Filled::Done);
                 drop(fill);
+                if filled == Filled::Done {
+                    permit.succeeded();
+                }
                 // Before the slot goes back, so that no file is taken from a
                 // queue a full disk is about to drop.
                 this.finished(&path, filled);
@@ -528,8 +538,13 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
 
+    use tokio::sync::Semaphore;
+
     use super::*;
     use crate::sync::SyncSnapshot;
+
+    /// The pool the tests' pins download in: four slots, never more.
+    const PIN_SLOTS: usize = 4;
 
     /// Downloads nothing: each fill counts itself, waits for the test to let
     /// it through, and answers `answer`. One whose future is dropped while it
@@ -573,7 +588,7 @@ mod tests {
     fn pins_for(held: &Arc<Held>) -> Arc<Pins> {
         let state = SyncStateHandle::new(SyncSnapshot { root_path: "/r".into(), ..SyncSnapshot::default() });
         let filler: Weak<dyn PinFill> = Arc::downgrade(held) as Weak<Held>;
-        Pins::new(state, filler)
+        Pins::new(state, filler, TransferPool::starting_at(PIN_SLOTS, PIN_SLOTS))
     }
 
     fn files(n: usize) -> Vec<PathBuf> {

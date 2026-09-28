@@ -540,6 +540,106 @@ def scenario_edit_while_queued(ctx: RunContext, problems: list, extra: dict) -> 
     extra.update(e)
 
 
+def _throttle_lines_since(since: datetime) -> int:
+    """How many `transfer pool throttled` lines the daemon logged since `since`: one per halving
+    of the account's transfer pool, i.e. per burst of `429`/`503` answers. -1 when the journal
+    cannot be read."""
+    try:
+        proc = subprocess.run(
+            ["journalctl", "--user", "-u", "konedrived", "--since", since.strftime("%Y-%m-%d %H:%M:%S"),
+             "-g", "transfer pool throttled", "--no-pager", "-q"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except Exception:
+        return -1
+    # `-g` with nothing found exits 1.
+    if proc.returncode not in (0, 1):
+        return -1
+    return sum(1 for line in proc.stdout.splitlines() if "transfer pool throttled" in line)
+
+
+def _downloaded(path: Path) -> bool:
+    """Whether a file holds its bytes on disk, by `st_blocks` alone: never opens it, which would
+    download it."""
+    st = path.lstat()
+    return st.st_size == 0 or st.st_blocks > 0
+
+
+def scenario_pin_many(ctx: RunContext, problems: list, extra: dict) -> None:
+    """5e. pin a folder of many small files: created and uploaded, freed up, then pinned"""
+    count = ctx.args.pin_files
+    if count <= 0:
+        extra["skipped"] = "--pin-files 0"
+        return
+    folder = ctx.run_root / "PinMany"
+    folder.mkdir(parents=True, exist_ok=True)
+    paths = []
+    for i in range(count):
+        path = folder / f"small-{i:05d}.bin"
+        write_new_file(path, random_bytes(random.randint(200, 8000)))
+        paths.append(path)
+    p, e = check_scenario(ctx, tag="after uploading the files to pin")
+    problems.extend(p)
+    for k, v in e.items():
+        extra[f"upload: {k}"] = v
+    if p:
+        return
+
+    freed = ctx.ctl.free(str(folder))
+    if not freed.ok:
+        problems.append(f"`sync free` failed: {freed.combined()}")
+        return
+    deadline = time.monotonic() + ctx.args.outbox_timeout
+    while any(_downloaded(path) for path in paths) and time.monotonic() < deadline:
+        time.sleep(1.0)
+    still = [path for path in paths if _downloaded(path)]
+    if still:
+        problems.append(f"{len(still)} file(s) still take space after `sync free`, e.g. {still[0]}")
+        return
+
+    started_at = datetime.now()
+    t0 = time.monotonic()
+    pinned = ctx.ctl.pin(str(folder))
+    if not pinned.ok:
+        problems.append(f"`sync pin` failed: {pinned.combined()}")
+        return
+    largest_pool = 0
+    ceiling = 0
+    deadline = time.monotonic() + ctx.args.pin_timeout
+    left = len(paths)
+    while time.monotonic() < deadline:
+        pool = konedrivectl_wrap.parse_pool(ctx.ctl.transfers().stdout)
+        if pool:
+            largest_pool = max(largest_pool, pool[0])
+            ceiling = pool[1]
+        left = sum(1 for path in paths if not _downloaded(path))
+        if left == 0:
+            break
+        time.sleep(0.5)
+    elapsed = time.monotonic() - t0
+    throttles = _throttle_lines_since(started_at)
+    ctx.state["pin_many"] = {
+        "files": len(paths),
+        "seconds": elapsed,
+        "largest_pool": largest_pool,
+        "ceiling": ceiling,
+        "throttles": throttles,
+        "left": left,
+    }
+    extra["pinned download"] = (
+        f"{len(paths) - left} of {len(paths)} files in {elapsed:.1f}s; largest pool {largest_pool} of {ceiling}; "
+        f"429/503 bursts (pool halvings): {'unknown' if throttles < 0 else throttles}"
+    )
+    if left:
+        problems.append(f"{left} of {len(paths)} pinned file(s) not downloaded after {ctx.args.pin_timeout:.0f}s")
+    p, e = check_scenario(ctx, tag="after the pinned download")
+    problems.extend(p)
+    for k, v in e.items():
+        extra[f"after: {k}"] = v
+
+
 def scenario_deletes(ctx: RunContext, problems: list, extra: dict) -> None:
     """6. deletes: files, then a folder (the whole run folder too, only with --cleanup)"""
     files = ctx.state.get("files", {})
@@ -581,6 +681,7 @@ SCENARIOS = [
     scenario_delete_while_uploading,
     scenario_touch_before_upload,
     scenario_edit_while_queued,
+    scenario_pin_many,
     scenario_deletes,
 ]
 
@@ -960,6 +1061,17 @@ def write_report(args, ctx: RunContext, results: list, soak_result, start_dt: da
         lines.append(f"| {i} | {r.name} | {'PASS' if r.passed else 'FAIL'} | {r.duration_s:.1f}s |")
     lines.append("")
 
+    pin = ctx.state.get("pin_many")
+    if pin:
+        lines.append("## Pinned download of many small files")
+        lines.append("")
+        lines.append(f"- Files: {pin['files']} ({pin['files'] - pin['left']} downloaded)")
+        lines.append(f"- Time to download them all: {pin['seconds']:.1f}s")
+        lines.append(f"- Largest transfer pool reached: {pin['largest_pool']} of {pin['ceiling']}")
+        throttles = "unknown (the journal could not be read)" if pin["throttles"] < 0 else str(pin["throttles"])
+        lines.append(f"- `429`/`503` bursts (`transfer pool throttled` lines in the daemon's log): {throttles}")
+        lines.append("")
+
     for i, r in enumerate(results, 1):
         if r.passed:
             continue
@@ -1064,6 +1176,12 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument(
         "--running-timeout", type=float, default=60.0, help="seconds to wait for scenario 5's big files to show 'running' in the outbox (default: 60)"
     )
+    p.add_argument(
+        "--pin-files", type=int, default=2000, help="small files scenario 5e creates, uploads, frees up and pins (default: 2000; 0 skips it)"
+    )
+    p.add_argument(
+        "--pin-timeout", type=float, default=1800.0, help="seconds to wait for scenario 5e's pinned files to download (default: 1800)"
+    )
     p.add_argument("--report", default=None, help="where to write the Markdown report (default: tests/stress/reports/stress-<account>-<time>.md)")
     p.add_argument(
         "--cleanup",
@@ -1096,6 +1214,8 @@ def parse_args(argv=None) -> argparse.Namespace:
         p.error("--files-per-folder must be at least 1")
     if args.large_file_mb < 1 or args.big_file_mb < 1:
         p.error("--large-file-mb and --big-file-mb must be at least 1")
+    if args.pin_files < 0:
+        p.error("--pin-files must not be negative")
     if args.soak_minutes < 0:
         p.error("--soak-minutes must not be negative")
     if args.soak_max_mb < 1 or args.soak_max_files < 1:

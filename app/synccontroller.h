@@ -71,6 +71,20 @@ class SyncController : public QObject
     Q_PROPERTY(OutboxModel *outbox READ outbox CONSTANT)
     /// What stays on this computer, and why: {path, reason, why} (NotUploaded()).
     Q_PROPERTY(QVariantList notUploaded READ notUploaded NOTIFY notUploadedChanged)
+    /// The account's transfer pool (Sync1's DownloadSpeed, UploadSpeed, ActiveDownloads,
+    /// ActiveUploads, PoolSize, PoolCeiling): bytes a second, slots held, the pool now.
+    Q_PROPERTY(qulonglong downloadSpeed READ downloadSpeed NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong uploadSpeed READ uploadSpeed NOTIFY syncChanged)
+    Q_PROPERTY(uint activeDownloads READ activeDownloads NOTIFY syncChanged)
+    Q_PROPERTY(uint activeUploads READ activeUploads NOTIFY syncChanged)
+    Q_PROPERTY(uint poolSize READ poolSize NOTIFY syncChanged)
+    Q_PROPERTY(uint poolCeiling READ poolCeiling NOTIFY syncChanged)
+    /// The last two minutes of each, one sample a second, oldest first: the window keeps
+    /// them, the daemon does not.
+    Q_PROPERTY(QVariantList downloadSpeedHistory READ downloadSpeedHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList uploadSpeedHistory READ uploadSpeedHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList activeDownloadsHistory READ activeDownloadsHistory NOTIFY historyChanged)
+    Q_PROPERTY(QVariantList activeUploadsHistory READ activeUploadsHistory NOTIFY historyChanged)
 
 public:
     static const QString ServiceName;
@@ -111,6 +125,18 @@ public:
     TransferModel *uploads() const { return m_uploads; }
     OutboxModel *outbox() const { return m_outbox; }
     QVariantList notUploaded() const { return m_notUploaded; }
+    qulonglong downloadSpeed() const { return m_downloadSpeed; }
+    qulonglong uploadSpeed() const { return m_uploadSpeed; }
+    uint activeDownloads() const { return m_activeDownloads; }
+    uint activeUploads() const { return m_activeUploads; }
+    uint poolSize() const { return m_poolSize; }
+    uint poolCeiling() const { return m_poolCeiling; }
+    QVariantList downloadSpeedHistory() const { return m_history[0]; }
+    QVariantList uploadSpeedHistory() const { return m_history[1]; }
+    QVariantList activeDownloadsHistory() const { return m_history[2]; }
+    QVariantList activeUploadsHistory() const { return m_history[3]; }
+    /// Samples kept in each history: two minutes, one a second.
+    static constexpr int HistoryLength = 120;
     /// Whether the outbox has been read at least once since the daemon appeared.
     bool outboxKnown() const { return m_outboxKnown; }
 
@@ -172,6 +198,7 @@ Q_SIGNALS:
     void pendingFolderChanged();
     void freeUpResultChanged();
     void notUploadedChanged();
+    void historyChanged();
     /// One ActivityAdded from the daemon, as it happens.
     void activityAdded(qlonglong time, const QString &kind, const QString &path, const QString &detail);
 
@@ -233,6 +260,17 @@ private:
     QVariantList m_notUploaded;
     /// Reads the outbox again a moment after its counts change.
     QTimer *m_outboxSoon;
+    /// Adds one sample to each history (every second).
+    void sampleHistory();
+    qulonglong m_downloadSpeed = 0;
+    qulonglong m_uploadSpeed = 0;
+    uint m_activeDownloads = 0;
+    uint m_activeUploads = 0;
+    uint m_poolSize = 0;
+    uint m_poolCeiling = 0;
+    /// Download speed, upload speed, active downloads, active uploads.
+    QVariantList m_history[4];
+    QTimer *m_sampler;
     /// RecentActivity() calls on their way, and the live events since the first of them.
     int m_activityLoads = 0;
     KonedriveActivityList m_liveDuringLoad;
