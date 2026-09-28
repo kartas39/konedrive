@@ -288,9 +288,9 @@ application must never read zeros where real content should be.
 ### P10. Pinning a big folder downloads everything in it, with no prompt
 - **Kind** LIMIT (chosen) · **Evidence** reasoned · **Status** open
 - **What:** "Always keep on this device" on a folder queues every online-only file under it, and
-  everything OneDrive adds there later, and downloads them four at a time (`PIN_SLOTS`,
-  `crates/konedrived/src/sync/pin.rs`), in slots of their own beside the four fills served on
-  open. Nothing asks first, and nothing checks the free space beforehand.
+  everything OneDrive adds there later, and downloads them folder by folder in the background
+  slots of the account's transfer pool (`crates/konedrived/src/sync/pin.rs`, issue #3), at most
+  four large files at once. Nothing asks first, and nothing checks the free space beforehand.
 - **Why:** the product decision was no size prompt, as on Windows.
 - **Cost:** a pinned folder bigger than the free space fills the disk. The first download that
   fails for want of space is a `failed` event reading "not enough disk space" (the window
@@ -1935,6 +1935,49 @@ application must never read zeros where real content should be.
   waiting on changes to upload (F140, F141) keeps such a row — pointing at nothing — until it runs
   a cycle again, same as every other reconcile-driven change. FRAGILE · measured
   (`sync::listing::rw::tests::a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped`). Open.
+- **F143. The transfer pool's numbers are guesses, and only a throttle stops its growth**
+  (`crates/konedrived/src/pool.rs`, issue #3) — every constant in section 5's transfer pool rows
+  is a guess, untested against a real account until the stress scenario (5e, `pin-many`) is run.
+  Latency is not measured (a latency back-off held the pool at 15 on a saturated link, and was
+  taken out after review of PR #22), so the pool keeps growing on a slow link until a `429`/`503`
+  or the ceiling stops it: many slots then share the link, each transfer slower. A throttle while
+  the pool waits out a `Retry-After` (plus 1 s) is the same burst. The `RetryAfter` countdown is
+  the daemon's, published once a second and coalesced with the counters, so the window's "wait
+  30 s" can lag by about a second. GUESS · measured by unit tests only (`pool::tests`). Open.
+- **F147. A transfer's size class is read once, before its first request** (`pool::Size`,
+  `LARGE_FROM`) — a download is large when its placeholder's size is 100 MiB or more, read when a
+  pinned file is queued (a newer, larger version that lands meanwhile keeps the old class), when a
+  replacement is issued (the new version's size from the delta), and when a file is opened; an
+  upload when its row is taken (a file growing while it waits is classed by the size then). A
+  file being opened is counted among the large transfers under way but never held by the limit,
+  so the pool line can read "large: 5 of 4". FRAGILE (a wrong class costs speed, never data) ·
+  measured by unit tests (`pool::tests::at_most_four_large_transfers_run_while_small_ones_keep_going`,
+  `sync::pin::tests::a_large_file_waiting_for_the_limit_does_not_hold_up_the_small_ones`). Open.
+- **F148. Pinned downloads go in alphabetical order batch by batch, small and large apart**
+  (`sync/pin.rs`, `folder_order`) — each sweep or pin queues its files folder by folder (a
+  folder's files by name, then its subfolders, depth first); names compare lower-cased, with a
+  run of digits as a number (`file2` before `file10`), close to Dolphin's order but not its locale
+  rules for accents and punctuation. What a later pin or
+  sweep queues goes after what already waits: the queue is never sorted again. Small and large
+  files wait in two queues, each in that order, so a large file of an earlier folder may come
+  after small files of later ones. SHORTCUT · measured
+  (`sync::pin::tests::pinned_downloads_go_folder_by_folder_in_alphabetical_order`). Open.
+- **F144. An open holds background work back for as long as it runs** (`pool.rs`,
+  `dispatch`) — while any file is being opened or `Hydrate` runs, no pinned download,
+  replacement, thumbnail, upload or metadata change takes a new slot: a long download on open
+  (a large video) holds uploads for all of it, as the task asks. Metadata changes and move-outs
+  count as background work here, and take the pool's metadata class (one at a time, by the
+  outbox worker's own rule). LIMIT, on purpose. Open.
+- **F145. Only the sync's Graph client reports to the pool** — the delta feed, downloads,
+  thumbnails and every write go through the folder's `DriveClient`, which carries the account's
+  pool (`SyncService::set_drive`); the account's own client (sign-in's `me/drive`, the quota) does
+  not, so a `429` on those does not halve the pool. Rare calls; SHORTCUT. Open.
+- **F146. A hydration request waits for its account's slot in a task of its own** (`sync/mod.rs`,
+  `serve`) — requests are taken off the helper's queue up to its whole credit (64,
+  `FILL_ADMISSION`), routed to their account, and only then wait for that account's pool, so
+  one account's full pool never holds up another account's open. The backpressure test now pins
+  the admission (64 + queue), not four fills. LIMIT, on purpose ·
+  measured (`sync::tests::the_request_loop_stops_taking_work_once_the_admission_is_full`). Open.
 ---
 
 ## 5. Provisional numbers
@@ -1954,10 +1997,16 @@ application must never read zeros where real content should be.
 | Upload fragment, and the most sent in one request (`CHUNK_SIZE`, `SMALL_UPLOAD_MAX`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
 | One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |
 | Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (write design §6.2) |
-| Replacements of changed files downloading at once | 2 | **guess** |
-| Fills served on open at once (`serve_hydrations`) | 4 | **guess** |
-| Pinned downloads at once (`PIN_SLOTS`), beside the fills on open | 4 | **guess**, equal to the fills on open |
-| Thumbnails filled per run / how far apart / how often regardless | 200 / 500 ms / every 10 min | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |
+| Transfers at once — fills on open, `Hydrate`, pinned downloads, replacements, thumbnails, uploads, metadata rows | **adaptive**, one pool per account (`crates/konedrived/src/pool.rs`, issue #3): the numbers below | see below |
+| Transfer pool: start (`START`) / ceiling (`[transfers] max`, `DEFAULT_CEILING`, clamped to 1–256) | 16 / 32, each account's pool separately | **guess** |
+| Transfer pool growth | +1 slot per successful transfer while work waits and every slot is busy; +1 per round (as many successes as slots) at and above the size the last `429`/`503` came at | **guess** |
+| Transfer pool: throttle level forgotten after (`THROTTLE_MEMORY`) / a throttle within the wait (+1 s, `BURST_GRACE`) is the same burst / no slot for, without `Retry-After` (`DEFAULT_THROTTLE_WAIT`) | 5 min / halves once / 10 s | **guess** |
+| A large file, from (`LARGE_FROM`) / large transfers at once per account (`[transfers] large`, `DEFAULT_LARGE`, clamped to 1…`max`), files being opened not held | 100 MiB / 4 | **guess** |
+| Slots above the pool only a file being opened may take (`RESERVE`) | 2 | **guess** |
+| Speed shown (`DownloadSpeed`, `UploadSpeed`): the average of (`SPEED_SPAN`) / published every | 3 s / 1 s while anything moves or a `Retry-After` runs | **guess** |
+| Hydration requests taken off the helper's queue at once (`FILL_ADMISSION`) | 64, the helper's credit; each then waits for its account's pool | pinned by a test |
+| Window's transfer charts | the last 2 min, one sample a second | **guess** |
+| Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |
 | Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
 | Shortest time between two `LocalBytes` walks | 5 s | **guess** |
 | Shortest time between two coalesced `PropertiesChanged` (counters, status, `Transfers`) | 250 ms, at most 4 signals a second | the design's four a second |
@@ -1971,7 +2020,7 @@ application must never read zeros where real content should be.
 | A `MarkDir` the helper did not answer is asked again after (`MARK_RETRY`) | 60 s, and when the helper is back | **guess** |
 | Shortest time between two walks for a directory the map lost (`UNKNOWN_WALK`) | 60 s | **guess** |
 | Mass-delete guard (`MASS_DELETE_ITEMS`, `MASS_DELETE_PERCENT`, `MASS_DELETE_FLOOR`) | more than 500 items, or more than 20 % of the folder's items once at least 10, counting removals still waiting | 500 and 20 % the write design's, the floor of 10 ours; all **guesses** |
-| Outbox rows sent at once (`upload::Limits`) — uploads at once: 4 (guess) | 1 metadata row (`mkdir`, `move`, `delete`); 4 files up to 10 MiB and 2 larger beside it | the write design's; **guess** |
+| Outbox rows sent at once | 1 metadata row (`mkdir`, `move`, `delete`); files, small or large alike, as many as the account's transfer pool gives | the write design's one metadata row; the rest adaptive |
 | `move-out` rows run at once (`Class::Out`) / how long the examination waits for the helper's `OpenByHandle` (`ASK_WITHIN`) / a first `ESTALE` for a row's object is asked again after (`GONE_AGAIN`) | 1, beside the others / 45 s, past the link's own 30 s / 5 s | **guess** |
 | A failed row's backoff / a throttle without `Retry-After` (`BACKOFF_FIRST`/`BACKOFF_MAX`, `THROTTLE_FIRST`) | 1 s doubling to 1 h / 10 s doubling to 1 h; `Retry-After` taken up to 1 h | the write design's; **guess** |
 | OneDrive full, tried again (`QUOTA_RETRY`) | every 30 min, or when the quota changes | the write design's |
@@ -2023,6 +2072,11 @@ application must never read zeros where real content should be.
   failed once in a full `cargo test --workspace` while other builds loaded the machine (load 6), and
   passes alone: it waits at most 2.5 s for `RootState` to read `listing`, behind a delta answer held
   for 2 s, so a slow bring-up misses the window. A read-only folder's path; seen once; not chased.
+- **D17.** `konedrived` `sync::upload::tests::four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir`
+  and `sync::tests::onedrive::refresh_starts_a_sync_that_could_not_start_or_says_why` failed once
+  each in a full `cargo test --workspace` while other worktrees' builds loaded the machine, and pass
+  alone and in the whole `konedrived` run: the first samples `Uploads` every 10 ms behind 150 ms
+  delays. Seen once (issue #3's run); not chased.
 
 ---
 

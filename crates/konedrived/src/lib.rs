@@ -11,6 +11,7 @@ pub mod loopback;
 pub mod migrate;
 pub mod oauth;
 pub mod pkce;
+pub mod pool;
 pub mod quickxor;
 pub mod secret;
 pub mod state;

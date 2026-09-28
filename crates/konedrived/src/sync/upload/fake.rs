@@ -751,7 +751,7 @@ impl Harness {
             root: root.clone(),
             store: store.clone(),
             locks: locks.clone(),
-            limits: Limits { small_slots: 4, large_slots: 2, small_max: 320 * 1024, chunk: 320 * 1024 },
+            limits: Limits { small_max: 320 * 1024, chunk: 320 * 1024 },
             moved_out: Mutex::new(None),
         }
     }

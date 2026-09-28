@@ -1256,13 +1256,55 @@ pub fn activity_text(events: &[(i64, String, String, String)]) -> String {
     out
 }
 
-/// `sync transfers`: one line per download and upload under way — its
-/// direction, path, how far, and the whole size.
-pub fn transfers_text(downloads: &[(String, u64, u64)], uploads: &[(String, u64, u64)]) -> String {
-    if downloads.is_empty() && uploads.is_empty() {
-        return "Nothing is downloading or uploading.\n".to_owned();
+/// What `sync transfers` says first: the account's transfer pool (`Sync1`'s
+/// `ActiveDownloads`, `DownloadSpeed`, `ActiveUploads`, `UploadSpeed`, `PoolSize`,
+/// `PoolCeiling`, `LargeTransfers`, `LargeLimit`, `RetryAfter`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TransferSummary {
+    pub active_downloads: u32,
+    pub download_speed: u64,
+    pub active_uploads: u32,
+    pub upload_speed: u64,
+    pub pool_size: u32,
+    pub pool_ceiling: u32,
+    pub large_transfers: u32,
+    pub large_limit: u32,
+    /// Seconds left of OneDrive's `Retry-After`; 0 when there is none.
+    pub retry_after: u32,
+}
+
+/// The pool's line, as the window shows it too: "Pool: 15 of 64 (large: 3 of 4)", with
+/// "— OneDrive asked to wait 30 s" during a `Retry-After`.
+pub fn pool_text(summary: &TransferSummary) -> String {
+    let mut line = format!(
+        "Pool: {} of {} (large: {} of {})",
+        summary.pool_size, summary.pool_ceiling, summary.large_transfers, summary.large_limit
+    );
+    if summary.retry_after > 0 {
+        line.push_str(&format!(" — OneDrive asked to wait {} s", summary.retry_after));
     }
-    let mut out = String::new();
+    line
+}
+
+/// `sync transfers`: how many files go each way and how fast, and the pool; then one
+/// line per download and upload under way — its direction, path, how far, and the whole
+/// size.
+pub fn transfers_text(summary: &TransferSummary, downloads: &[(String, u64, u64)], uploads: &[(String, u64, u64)]) -> String {
+    let files = |n: u32| if n == 1 { " 1 file".to_owned() } else { format!("{n:>2} files") };
+    let mut out = format!(
+        "{:<12} {}, {}/s\n{:<12} {}, {}/s\n{}\n",
+        "Downloading:",
+        files(summary.active_downloads),
+        human_bytes(summary.download_speed),
+        "Uploading:",
+        files(summary.active_uploads),
+        human_bytes(summary.upload_speed),
+        pool_text(summary),
+    );
+    if downloads.is_empty() && uploads.is_empty() {
+        out.push_str("Nothing is downloading or uploading.\n");
+        return out;
+    }
     let lines = downloads.iter().map(|t| ("down", t)).chain(uploads.iter().map(|t| ("up", t)));
     for (direction, (path, done, total)) in lines {
         let percent = if *total == 0 { 0 } else { done.saturating_mul(100) / total };
@@ -1940,6 +1982,28 @@ mod tests {
         let detail = "/f/B/y is not uploaded yet, so freeing it up would lose the changes made here";
         assert_eq!(super::refused_path_of("org.konedrive.Error.NotUploaded", detail), Some("/f/B/y"));
         assert_eq!(super::refused_path_of("org.konedrive.Error.Failed", detail), None);
+    }
+
+    #[test]
+    fn transfers_start_with_the_pool_summary() {
+        let summary = super::TransferSummary {
+            active_downloads: 12,
+            download_speed: 8_808_038,
+            active_uploads: 3,
+            upload_speed: 1_258_291,
+            pool_size: 15,
+            pool_ceiling: 64,
+            large_transfers: 3,
+            large_limit: 4,
+            retry_after: 0,
+        };
+        let text = super::transfers_text(&summary, &[], &[]);
+        assert_eq!(
+            text,
+            "Downloading: 12 files, 8.4 MiB/s\nUploading:    3 files, 1.2 MiB/s\nPool: 15 of 64 (large: 3 of 4)\nNothing is downloading or uploading.\n"
+        );
+        let waiting = super::TransferSummary { retry_after: 30, ..summary };
+        assert_eq!(super::pool_text(&waiting), "Pool: 15 of 64 (large: 3 of 4) — OneDrive asked to wait 30 s");
     }
 
     #[test]

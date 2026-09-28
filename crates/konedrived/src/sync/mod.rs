@@ -54,24 +54,29 @@ use tokio_util::sync::CancellationToken;
 use crate::config::{ConfigStore, Mode, RootConfig};
 use crate::state::{SignInState, StateHandle};
 
-/// Fills served on open at once ([`serve_hydrations`]); pinned downloads
-/// have as many slots again of their own ([`pin::PIN_SLOTS`]).
-pub const FILL_SLOTS: usize = 4;
+/// Hydration requests taken off the queue at once: the helper's whole credit
+/// (`konedrive_proto::MAX_OUTSTANDING_HYDRATIONS`). Each is routed to its account and then
+/// waits for a slot of that account's transfer pool (`crate::pool`, `Class::Open`).
+pub const FILL_ADMISSION: usize = konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;
 
-/// Answers hydration requests until the helper goes away. At most four run at
-/// once; everything else waits, and no request is ever dropped silently.
+/// Answers hydration requests until the helper goes away. Each request is routed
+/// to its account first, then takes a slot of that account's transfer pool — an
+/// open goes before any background work and may use the pool's reserve — and no
+/// request is ever dropped silently.
 ///
-/// The permit is acquired *before* spawning, not inside the
-/// spawned task. Acquiring it inside the task would drain the bounded mpsc
+/// An admission permit ([`FILL_ADMISSION`]) is acquired *before* spawning, not
+/// inside the spawned task. Acquiring nothing would drain the bounded mpsc
 /// of hydration requests into an unbounded pile of tasks — each holding a
 /// suspended open's event descriptor — as fast as the helper could send
-/// them, destroying the backpressure the channel exists to provide.
-/// Blocking here instead, before `recv()` is called again, propagates that
+/// them, destroying the backpressure the channel exists to provide. The pool's
+/// slot is taken inside the task, after routing, so that one account's full pool
+/// never holds up another account's open.
+/// Blocking here, before `recv()` is called again, propagates that
 /// backpressure all the way back to the helper — but only as far as the
 /// request queue. It must never reach the socket: the reader thread that
 /// fills the queue is also the one that reads the `Ack` each fill below
 /// waits for before it lets go of its permit, so a reader stopped by a full
-/// queue with requests still ahead of an `Ack` in the socket wedges all four
+/// queue with requests still ahead of an `Ack` in the socket wedges the
 /// fills for good. The helper keeps at most
 /// `konedrive_proto::MAX_OUTSTANDING_HYDRATIONS` requests outstanding on a
 /// connection and the queue is exactly that deep, so the reader never stops;
@@ -135,37 +140,38 @@ pub async fn serve_hydrations_reporting(
     locks: InodeLocks,
     report: Report,
 ) {
-    serve(link, requests, locks, Fillers::One(source, report)).await;
+    let pool = crate::pool::TransferPool::new(crate::pool::DEFAULT_CEILING);
+    serve(link, requests, locks, Fillers::One(source, report, pool)).await;
 }
 
 /// Who fills a hydration request, and where it is reported.
 #[derive(Clone)]
 enum Fillers {
-    /// One source, one report, whatever the file (tests, the VM suite).
-    One(Arc<dyn ContentSource>, Report),
+    /// One source, one report, one pool, whatever the file (tests, the VM suite).
+    One(Arc<dyn ContentSource>, Report, Arc<crate::pool::TransferPool>),
     /// The account the file belongs to ([`hub::HelperHub::route`]): the
     /// daemon's.
     Routed(Arc<hub::HelperHub>),
 }
 
 impl Fillers {
-    async fn route(&self, fd: &std::os::fd::OwnedFd) -> Option<(Arc<dyn ContentSource>, Report)> {
+    async fn route(&self, fd: &std::os::fd::OwnedFd) -> Option<(Arc<dyn ContentSource>, Report, Arc<crate::pool::TransferPool>)> {
         match self {
-            Fillers::One(source, report) => Some((Arc::clone(source), report.clone())),
+            Fillers::One(source, report, pool) => Some((Arc::clone(source), report.clone(), Arc::clone(pool))),
             Fillers::Routed(hub) => hub.route(fd).await.map(hub::filler),
         }
     }
 }
 
 /// The loop behind [`serve_hydrations_reporting`] and the hub's: at most
-/// [`FILL_SLOTS`] fills at once, the four slots shared by every account.
+/// [`FILL_ADMISSION`] requests taken at once, each filled in a slot of its account's pool.
 async fn serve(
     link: HelperLink,
     mut requests: tokio::sync::mpsc::Receiver<HydrateRequest>,
     locks: InodeLocks,
     fillers: Fillers,
 ) {
-    let permits = Arc::new(tokio::sync::Semaphore::new(FILL_SLOTS));
+    let permits = Arc::new(tokio::sync::Semaphore::new(FILL_ADMISSION));
     let mut running = tokio::task::JoinSet::new();
     while let Some(HydrateRequest { req_id, fd }) = requests.recv().await {
         // Reap whatever finished while we were waiting; the set must not
@@ -203,7 +209,7 @@ async fn serve(
             // Which account's file this is (design §2.4). One that is in no
             // account's folder is denied rather than filled from a guess;
             // the next open tries again.
-            let Some((source, report)) = fillers.route(&fd).await else {
+            let Some((source, report, pool)) = fillers.route(&fd).await else {
                 tracing::warn!(
                     "hydration request {req_id} is for a file in none of the folders ({}); \
                      denying that open with EIO",
@@ -214,6 +220,19 @@ async fn serve(
                 }
                 drop(permit);
                 return;
+            };
+            // Routed first, then a slot of that account's pool: an open goes before
+            // any background work there, and may use the pool's reserve. A connection
+            // that ends meanwhile had its opener answered by the helper. The placeholder's
+            // size says whether it is a large transfer: counted as one, never held by the
+            // large-file limit.
+            let bytes = nix::sys::stat::fstat(&fd).map_or(0, |stat| stat.st_size.max(0) as u64);
+            let mut slot = tokio::select! {
+                slot = pool.acquire_sized(crate::pool::Class::Open, crate::pool::Size::of(bytes)) => slot,
+                () = link.closed() => {
+                    tracing::warn!("hydration request {req_id} waited for a transfer slot until its helper connection ended; not filled");
+                    return;
+                }
             };
             // The identity the lock is taken on: `fstat` on the event fd
             // itself, read before the fd is handed to `hydrate` (which
@@ -261,7 +280,12 @@ async fn serve(
             // Whatever came of it, the download is over.
             drop(tracked);
             let (errno, event) = match filled {
-                Ok(answered) => (answered.errno(), fill_event(&answered, &shown, size)),
+                Ok(answered) => {
+                    if matches!(answered, Answered::Filled) {
+                        slot.succeeded();
+                    }
+                    (answered.errno(), fill_event(&answered, &shown, size))
+                }
                 Err(_) => {
                     tracing::error!(
                         "the hydration of request {req_id} panicked; denying that open with EIO \
@@ -277,6 +301,7 @@ async fn serve(
             // waits (the log is SQLite) must not keep a fifth request from
             // being filled.
             drop(inode_guard);
+            drop(slot);
             drop(permit);
             if let Some(event) = event {
                 report.activity.record(vec![event]).await;
@@ -572,6 +597,10 @@ pub struct SyncSnapshot {
     pub paused_until: Option<i64>,
     /// `Uploads`: (full path, bytes sent, bytes in all), as `Transfers`.
     pub uploads: Vec<(String, u64, u64)>,
+    /// `DownloadSpeed`, `UploadSpeed`, `ActiveDownloads`, `ActiveUploads`, `PoolSize`,
+    /// `PoolCeiling`, `LargeTransfers`, `LargeLimit`, `RetryAfter`: the account's transfer
+    /// pool, once a second while anything moves or a `Retry-After` runs.
+    pub throughput: crate::pool::Throughput,
 }
 
 impl Default for SyncSnapshot {
@@ -601,6 +630,7 @@ impl Default for SyncSnapshot {
             held_count: 0,
             paused_until: None,
             uploads: Vec::new(),
+            throughput: crate::pool::Throughput::default(),
         }
     }
 }
@@ -724,6 +754,11 @@ impl SyncStateHandle {
 
     pub fn update(&self, change: impl FnOnce(&mut SyncSnapshot)) {
         self.tx.send_modify(change);
+    }
+
+    /// The transfer pool's throughput, told only when it changed.
+    pub fn set_throughput(&self, throughput: crate::pool::Throughput) {
+        self.tx.send_if_modified(|s| std::mem::replace(&mut s.throughput, throughput) != throughput);
     }
 
     pub fn subscribe(&self) -> watch::Receiver<SyncSnapshot> {
@@ -962,6 +997,10 @@ pub struct SyncService {
     /// Told the drive the account's token reaches when a cycle finds it is not the folder's:
     /// the account's own, set where the account is wired up.
     drive_seen: Mutex<Option<listing::DriveSeen>>,
+    /// The account's transfer pool (`crate::pool`): every download, upload and change of
+    /// an item takes a slot of it. The drive set with [`set_drive`](Self::set_drive) reports
+    /// into it.
+    pool: Arc<crate::pool::TransferPool>,
 }
 
 /// A OneDrive folder's sync while it runs.
@@ -1096,10 +1135,14 @@ impl SyncService {
     pub fn on_hub(hub: &Arc<hub::HelperHub>, account: Option<StateHandle>, persist: Option<Persist>) -> Arc<Self> {
         hub.join(|helper_state| {
             let state = SyncStateHandle::new(SyncSnapshot { helper_state, ..SyncSnapshot::default() });
+            let pool = crate::pool::TransferPool::new(crate::pool::DEFAULT_CEILING);
+            let shown = state.clone();
+            pool.set_observer(Arc::new(move |throughput| shown.set_throughput(throughput)));
             // The pins' downloads go through this very service, which they must
             // not keep alive: a weak reference.
             Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
-                pins: pin::Pins::new(state.clone(), me.clone()),
+                pins: pin::Pins::new(state.clone(), me.clone(), Arc::clone(&pool)),
+                pool,
                 hub: Arc::clone(hub),
                 link: hub.link_cell(),
                 account,
@@ -1153,7 +1196,18 @@ impl SyncService {
     /// The drive a folder registered while signed in shows.
     /// Without one, every folder is local.
     pub fn set_drive(&self, drive: crate::drive::DriveClient) {
-        *self.drive.lock().unwrap() = Some(drive);
+        *self.drive.lock().unwrap() = Some(drive.with_pool(Arc::clone(&self.pool)));
+    }
+
+    /// The account's transfer pool.
+    pub fn pool(&self) -> &Arc<crate::pool::TransferPool> {
+        &self.pool
+    }
+
+    /// The emergency ceiling of the account's transfer pool (`[transfers] max`) and its
+    /// large-file limit (`[transfers] large`).
+    pub fn set_transfer_limits(&self, ceiling: usize, large: usize) {
+        self.pool.set_limits(ceiling, large);
     }
 
     /// What a cycle tells when the account's token reaches another drive than the folder's:
@@ -2929,7 +2983,8 @@ impl SyncService {
     /// may well have been a fill of this same inode, and it may have
     /// finished the job.
     pub async fn hydrate_now(&self, path: &Path) -> Result<(), SyncError> {
-        match self.fill_now(path).await? {
+        // "Download now" is an open, for the pool: it goes first.
+        match self.fill_now(path, Some(crate::pool::Class::Open)).await? {
             Answered::Failed(FillError::NotCleared(NotCleared::Unlinked)) => Err(SyncError::NoHelper),
             Answered::Failed(FillError::NotCleared(e)) => Err(SyncError::Io(format!("nothing was filled: {e}"))),
             Answered::Failed(FillError::Errno(errno)) => Err(SyncError::Io(format!(
@@ -2943,7 +2998,11 @@ impl SyncService {
     /// [`hydrate_now`](Self::hydrate_now)'s fill, and what came of it —
     /// recorded as any fill is. A pinned download goes through here too
     /// ([`pin::PinFill`]).
-    async fn fill_now(&self, path: &Path) -> Result<Answered, SyncError> {
+    ///
+    /// `class` is the slot of the account's transfer pool it takes, before the per-inode
+    /// lock (never waiting for a slot with the lock held); `None` when the caller holds one
+    /// already (a pinned download).
+    async fn fill_now(&self, path: &Path, class: Option<crate::pool::Class>) -> Result<Answered, SyncError> {
         let reg = self.require_registration()?;
         let Some(source) = self.source.lock().unwrap().clone() else {
             return Err(SyncError::NoSource);
@@ -2956,6 +3015,14 @@ impl SyncService {
             .map_err(|e| SyncError::Io(format!("the hydration task failed: {e}")))??;
         let key = InodeKey::of(&file).map_err(|e| SyncError::Io(e.to_string()))?;
 
+        let mut slot = match class {
+            // A placeholder has its full size: whether this is a large transfer.
+            Some(class) => {
+                let bytes = file.metadata().map_or(0, |meta| meta.len());
+                Some(self.pool.acquire_sized(class, crate::pool::Size::of(bytes)).await)
+            }
+            None => None,
+        };
         // Serializes against `dehydrate()` and against `serve_hydrations`'s
         // own fills of the same inode (both share this table).
         let guard = self.locks.lock(key).await;
@@ -2994,6 +3061,10 @@ impl SyncService {
             Ok(()) => Answered::Filled,
             Err(e) => Answered::Failed(e),
         };
+        if let (Some(slot), Answered::Filled) = (slot.as_mut(), &answered) {
+            slot.succeeded();
+        }
+        drop(slot);
         // A fill that never started for want of the helper is a refusal
         // the caller is told of, not a download that failed.
         let refused = matches!(answered, Answered::Failed(FillError::NotCleared(_)));
@@ -3682,7 +3753,8 @@ impl pin::PinFill for SyncService {
         if !still {
             return pin::Filled::Done;
         }
-        match self.fill_now(path).await {
+        // The pins' worker holds a slot of the pool for it.
+        match self.fill_now(path, None).await {
             Ok(Answered::Failed(FillError::Errno(errno))) if errno == libc::ENOSPC || errno == libc::EDQUOT => {
                 pin::Filled::NoSpace
             }
@@ -4129,14 +4201,14 @@ mod tests {
     }
 
     /// Pinned the only way it can be: the discriminator is
-    /// not how many fills run at once — that is 4 either way — but whether
-    /// the request loop stops *taking* work while they run. Acquiring the
-    /// permit inside the spawned task instead drains the bounded channel as
+    /// not how many fills run at once but whether
+    /// the request loop stops *taking* work once [`FILL_ADMISSION`] requests are
+    /// under way. Acquiring no permit before spawning drains the bounded channel as
     /// fast as the helper can fill it, into a pile of tasks each holding a
     /// suspended open's event descriptor, and the channel never refuses
     /// anything. Here it must refuse.
     #[tokio::test]
-    async fn the_request_loop_stops_taking_work_while_four_fills_are_running() {
+    async fn the_request_loop_stops_taking_work_once_the_admission_is_full() {
         let dir = tempfile::tempdir().unwrap();
         let socket_path = dir.path().join("helper.sock");
         let _seen = fake_helper(socket_path.clone());
@@ -4145,7 +4217,7 @@ mod tests {
         let remote = tempfile::tempdir().unwrap();
         std::fs::write(remote.path().join("ITEM"), vec![1u8; 4096]).unwrap();
         let local = tempfile::tempdir().unwrap();
-        let fds: Vec<OwnedFd> = (0..40)
+        let fds: Vec<OwnedFd> = (0..FILL_ADMISSION + 20)
             .map(|i| placeholder(local.path(), &format!("f{i}.bin"), "ITEM", 4096))
             .collect();
 
@@ -4174,11 +4246,11 @@ mod tests {
         assert!(
             refused,
             "the channel accepted all {accepted} requests: the request loop is draining it \
-             into unbounded in-flight work instead of stopping at four"
+             into unbounded in-flight work instead of stopping at the admission"
         );
         assert!(
-            accepted <= 4 + 4 + 1,
-            "at most four in flight, four buffered and one blocked on the permit, but \
+            accepted <= FILL_ADMISSION + 4 + 1,
+            "at most the admission in flight, four buffered and one blocked on the permit, but \
              {accepted} were accepted"
         );
     }

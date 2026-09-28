@@ -106,6 +106,8 @@ impl SyncService {
         let paused = upload::paused(&store);
         let before = self.state.get().paused_until;
         self.state.update(|s| s.paused_until = paused);
+        // The transfer pool hands out nothing but opens while paused.
+        self.pool.set_paused(paused.is_some());
         if before != paused {
             self.wake_outbox();
             self.nudge();
@@ -163,6 +165,7 @@ impl SyncService {
         }
         if end {
             self.state.update(|s| s.paused_until = None);
+            self.pool.set_paused(false);
         }
         *timer = None;
         true
@@ -174,6 +177,7 @@ impl SyncService {
             timer.abort();
         }
         self.state.update(|s| s.paused_until = None);
+        self.pool.set_paused(false);
     }
 
     /// The outbox's counts on the bus are 0: its worker stopped, or its rows
