@@ -254,6 +254,11 @@ impl Cloud {
         self.delays.push((method.into(), fragment.into(), wait, times));
     }
 
+    /// Every open upload session expires: its URL answers `404` from now on.
+    pub fn expire_sessions(&mut self) {
+        self.sessions.clear();
+    }
+
     pub fn count(&self, method: &str, fragment: &str) -> usize {
         self.log.iter().filter(|(m, p)| m == method && p.contains(fragment)).count()
     }

@@ -168,6 +168,7 @@ void SyncController::applyProperties(const QVariantMap &p)
     const uint previousPending = m_pendingCount;
     const uint previousBlocked = m_blockedCount;
     const uint previousHeld = m_heldCount;
+    const bool previousPaused = m_paused;
     if (const auto it = p.constFind(QLatin1String("PendingCount")); it != p.constEnd()) {
         m_pendingCount = it->toUInt();
     }
@@ -190,8 +191,10 @@ void SyncController::applyProperties(const QVariantMap &p)
     text("MachineName", m_machineName);
     Q_EMIT syncChanged();
 
-    // The list itself has no signal: it is read again when a count moves.
-    if (m_serviceAvailable && (m_pendingCount != previousPending || m_blockedCount != previousBlocked || m_heldCount != previousHeld)) {
+    // The list itself has no signal: it is read again when a count moves, and
+    // when the pause starts or ends (its rows then read "paused", or as they stand).
+    if (m_serviceAvailable
+        && (m_pendingCount != previousPending || m_blockedCount != previousBlocked || m_heldCount != previousHeld || m_paused != previousPaused)) {
         m_outboxSoon->start();
     }
 

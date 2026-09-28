@@ -104,6 +104,8 @@ QString OutboxModel::stateText(const QString &state, const QString &kind)
         how = i18nc("@info outbox state", "cannot be uploaded");
     } else if (state == QLatin1String("held")) {
         how = i18nc("@info outbox state", "held until you decide");
+    } else if (state == QLatin1String("paused")) {
+        how = i18nc("@info outbox state", "paused");
     } else {
         how = state;
     }

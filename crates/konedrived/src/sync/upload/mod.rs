@@ -144,6 +144,10 @@ pub mod reason {
     /// A read lease cannot be probed (leases off, or not supported): a writer
     /// cannot be ruled out, so nothing is filled.
     pub const NO_LEASE: &str = "lease-probe-failed";
+    /// The account is paused: an upload in fragments stopped after the
+    /// fragment it was sending, its session kept (`docs/design/writes.md` §11).
+    /// Waiting, never a failure.
+    pub const PAUSED: &str = "paused";
 }
 
 /// The activity kinds the worker writes (§9; the outbox on the bus adds them to the D-Bus

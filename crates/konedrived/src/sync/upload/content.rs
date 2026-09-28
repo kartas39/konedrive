@@ -67,6 +67,24 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     }
 }
 
+/// Whether an upload in fragments stops after the fragment just sent, and
+/// how its row waits then: the one place such a stop is decided. The session
+/// and its offset stay in the row, and the next run resumes them — or opens a
+/// new session, logged, when this one expired meanwhile.
+///
+/// - **Paused** (`docs/design/writes.md` §11): waiting, reason
+///   [`reason::PAUSED`], due again as soon as the pause ends. No failure.
+/// - **The write gate** closed: waiting until it opens.
+fn stop_between_fragments(e: &Engine) -> Option<Outcome> {
+    if super::paused(e.store()).is_some() {
+        return Some(Outcome::wait(reason::PAUSED, std::time::Duration::ZERO));
+    }
+    if let Err(why) = e.cfg.host.may_write() {
+        return Some(Outcome::wait(&format!("not allowed now: {why}"), std::time::Duration::ZERO));
+    }
+    None
+}
+
 /// What a send came back with: the content's hash when it was computed on
 /// the way, and OneDrive's answer.
 struct Sent {
@@ -338,6 +356,9 @@ impl Job<'_> {
                     if let Some(sent) = self.ended(&target).await? {
                         return Ok(sent);
                     }
+                    // Expired while it waited (a pause, a restart, the network): the
+                    // bytes sent before are lost.
+                    tracing::info!("the upload session of {} has expired: the upload starts over", self.found.rel.display());
                 }
                 Err(other) => return Err(other.into()),
             }
@@ -361,14 +382,9 @@ impl Job<'_> {
             self.hash_prefix(&mut hasher, next).await?;
             let mut fragments = 0;
             loop {
-                // Paused (`docs/design/writes.md` §11): the session stays, and is resumed
-                // after the pause (the outbox on the bus).
-                if super::paused(e.store()).is_some() {
-                    return Err(Fail::Now(Outcome::wait("paused", std::time::Duration::ZERO)));
-                }
-                // The write gate, between fragments too: the session stays.
-                if let Err(why) = e.cfg.host.may_write() {
-                    return Err(Fail::Now(Outcome::wait(&format!("not allowed now: {why}"), std::time::Duration::ZERO)));
+                if let Some(stop) = stop_between_fragments(e) {
+                    tracing::info!("the upload of {} stops at {next} of {size} bytes; its session is kept", self.found.rel.display());
+                    return Err(Fail::Now(stop));
                 }
                 let len = (size - next).min(e.cfg.limits.chunk);
                 if next + len >= size {
@@ -429,6 +445,7 @@ impl Job<'_> {
                         if let Some(sent) = self.ended(&target).await? {
                             return Ok(sent);
                         }
+                        tracing::info!("the upload session of {} ended: the upload starts over", self.found.rel.display());
                         restarts += 1;
                         if restarts > 1 {
                             return Err(Fail::Now(Outcome::backoff("the upload session ended twice")));

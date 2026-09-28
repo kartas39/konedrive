@@ -70,7 +70,7 @@ Neither the refresh token nor the access token is ever exposed through `Account1
 | `Conflicts() → a(xss)` | (time, original path, rescued path) ([sync.md](sync.md) §10.3) |
 | `DismissConflict(s rescued_path)` | takes one conflict off the list; the file stays where it is |
 | `FreeUpSpace() → (u files, t bytes, u busy)` | frees up every downloaded file that is not in use; files open somewhere or busy with a download are skipped and counted, never waited for; a file whose change waits to be uploaded is left, and counted as busy |
-| `Outbox(u limit) → a(tsssttsx)` | the changes waiting to be uploaded, oldest first (0: all): seq, kind (`create`, `mkdir`, `update`, `move`, `delete`, `move-out`), path, state (`waiting`, `ready`, `running`, `retry`, `blocked`, `held`), bytes sent, bytes in all, reason, next try; `Unsupported` for a folder not connected to OneDrive |
+| `Outbox(u limit) → a(tsssttsx)` | the changes waiting to be uploaded, oldest first (0: all): seq, kind (`create`, `mkdir`, `update`, `move`, `delete`, `move-out`), path, state (`waiting`, `ready`, `running`, `retry`, `blocked`, `held`; while the account is paused, every row but a blocked or held one reads `paused`, with no reason and no next try), bytes sent, bytes in all, reason, next try; `Unsupported` for a folder not connected to OneDrive |
 | `Pause(u seconds)`, `Resume()` | pause the account — no upload, no poll, no thumbnails; fills on open, `Hydrate` and detection go on — for `seconds`, or until `Resume` when 0; the pause outlasts a daemon restart |
 | `SetIgnorePatterns(as)` | the names of the user's own files that are never uploaded (shell globs on a name); written to `config.toml`, then the whole folder is scanned again; `InvalidArgs` for an empty pattern or one holding "/" |
 | `ConfirmDeletes() → u`, `RestoreDeletes() → u` | the mass-delete guard's two answers: the held removals go ahead, or are dropped and the items placed again; how many rows |
@@ -307,7 +307,8 @@ account in this version (the write gate), sign in first, sign in again (limitati
 
 **Held removals.** The mass-delete guard holds a large delete until the user decides. The window
 follows `HeldCount` for the Status page, the tray and the `massDelete` notification, and reads
-`Outbox()` for the list when a count changes or the Activity page is shown (limitations log A20).
+`Outbox()` for the list when a count changes, when `Paused` changes, or when the Activity page is
+shown (limitations log A20).
 
 The **status line** reads, for example, "Up to date · checked 20 s ago", "Listing your OneDrive:
 N items so far", "Downloading 3 files", "Uploading 1 file", "3 changes waiting to upload", "Paused
