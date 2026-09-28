@@ -1,8 +1,9 @@
 # Packaging
 
 KOneDrive installs on Fedora as two RPM packages, built from one spec
-(`packaging/rpm/konedrive.spec`) by `scripts/build-rpm.sh`, on the user's own machine. There is no
-package repository yet: a COPR one needs a Fedora account and comes later. The README's "Install
+(`packaging/rpm/konedrive.spec`) by `scripts/build-rpm.sh`: on the user's own machine, or, for a
+release, by the release workflow, which publishes them on GitHub Releases (`docs/releasing.md`).
+There is no package repository yet: a COPR one needs a Fedora account and comes later. The README's "Install
 from RPM" and "Switching from the developer install" are the user's side of this page.
 
 ## The two packages
@@ -38,8 +39,15 @@ name leaves room for other KDE integration later.
    them. The spec unpacks it into the source tree.
 3. `rpmbuild -ba` builds the binary packages and the source RPM.
 
-The spec's version is Cargo's (`[workspace.package]` in `Cargo.toml`); the script refuses to build
-when the two differ.
+The version comes from the git tags (`scripts/version.sh`, `docs/releasing.md`): a release's
+`X.Y.Z` is given with `--version`, and a local build takes the next release's version with a
+suffix that sorts below it (`0.1.2~dev.20260929.fad78d9`). The script writes it into the copies of
+`Cargo.toml`, `Cargo.lock` and the spec (`Version:` and a `%changelog` entry) that Source0 and the
+source RPM hold; the versions in git are placeholders. It stops if a line it rewrites is not
+there, and `cargo vendor --locked` stops it if the rewritten lock file does not fit.
+
+Releases are built the same way by `.github/workflows/release.yml`, in a `fedora:44` container, and
+published on GitHub Releases.
 
 Inside the spec:
 

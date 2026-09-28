@@ -1,4 +1,5 @@
 cmake_minimum_required(VERSION 3.24)
+# A placeholder, shown nowhere; the packages' version is Cargo's (docs/releasing.md).
 project(konedrive-dolphin VERSION 0.1.0 LANGUAGES CXX)
 
 # Dolphin integration: an overlay emblem for each file's state and pin, and

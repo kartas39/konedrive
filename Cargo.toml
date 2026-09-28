@@ -6,6 +6,8 @@ members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", 
 default-members = ["crates/konedrive-dbus", "crates/konedrived", "crates/konedrivectl", "crates/konedrive-fs", "crates/konedrive-helper", "crates/konedrive-proto"]
 
 [workspace.package]
+# A placeholder: scripts/build-rpm.sh writes the build's version here (and into Cargo.lock), from the
+# git tags (docs/releasing.md). The window reads it from here too (app/CMakeLists.txt).
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
