@@ -435,6 +435,55 @@ impl Sync1 {
     async fn upload_time_left(&self) -> u32 {
         self.service.state().get().queue.up.time_left
     }
+
+    /// The Full local scan (issue #8): `running`, `idle`, or `none` for a read-only folder.
+    #[zbus(property)]
+    async fn scan_state(&self) -> String {
+        self.service.state().get().scan.state.as_str().to_owned()
+    }
+
+    /// Why the running (or the last) scan runs: start, read-write, helper-back, overflow,
+    /// ignore-list, periodic.
+    #[zbus(property)]
+    async fn scan_reason(&self) -> String {
+        self.service.state().get().scan.reason
+    }
+
+    /// Unix seconds when it started; 0 before the first.
+    #[zbus(property)]
+    async fn scan_started(&self) -> i64 {
+        self.service.state().get().scan.started
+    }
+
+    /// Directories it has seen so far.
+    #[zbus(property)]
+    async fn scan_directories(&self) -> u64 {
+        self.service.state().get().scan.directories
+    }
+
+    /// Files (and other entries that are not directories) it has seen so far.
+    #[zbus(property)]
+    async fn scan_files(&self) -> u64 {
+        self.service.state().get().scan.files
+    }
+
+    /// About how many items it will see: the items the base had placed when it started.
+    #[zbus(property)]
+    async fn scan_expected(&self) -> u64 {
+        self.service.state().get().scan.expected
+    }
+
+    /// Unix seconds when the last scan finished; 0 for none since the daemon started.
+    #[zbus(property)]
+    async fn scan_finished(&self) -> i64 {
+        self.service.state().get().scan.finished
+    }
+
+    /// How long the last finished scan took, in seconds.
+    #[zbus(property)]
+    async fn scan_took(&self) -> u32 {
+        self.service.state().get().scan.took
+    }
 }
 
 /// Every refusal keeps its own name; only the ones with nothing a caller
@@ -577,6 +626,7 @@ pub(crate) struct Coalesced {
     uploads: Vec<(String, u64, u64)>,
     throughput: crate::pool::Throughput,
     queue: super::totals::QueueTotals,
+    scan: super::local_scan::LocalScan,
 }
 
 impl Coalesced {
@@ -597,6 +647,7 @@ impl Coalesced {
             uploads: s.uploads.clone(),
             throughput: s.throughput,
             queue: s.queue,
+            scan: s.scan.clone(),
         }
     }
 
@@ -690,6 +741,31 @@ impl Coalesced {
             if before != after {
                 changed.insert(name, after.into());
             }
+        }
+        let (was, now) = (&old.scan, &self.scan);
+        if was.state != now.state {
+            changed.insert("ScanState", now.state.as_str().to_owned().into());
+        }
+        if was.reason != now.reason {
+            changed.insert("ScanReason", now.reason.clone().into());
+        }
+        if was.started != now.started {
+            changed.insert("ScanStarted", now.started.into());
+        }
+        if was.directories != now.directories {
+            changed.insert("ScanDirectories", now.directories.into());
+        }
+        if was.files != now.files {
+            changed.insert("ScanFiles", now.files.into());
+        }
+        if was.expected != now.expected {
+            changed.insert("ScanExpected", now.expected.into());
+        }
+        if was.finished != now.finished {
+            changed.insert("ScanFinished", now.finished.into());
+        }
+        if was.took != now.took {
+            changed.insert("ScanTook", now.took.into());
         }
         changed
     }

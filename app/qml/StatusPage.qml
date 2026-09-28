@@ -317,6 +317,17 @@ FormCard.FormCardPage {
                 implicitHeight: Kirigami.Units.iconSizes.medium
             }
         }
+        // The Full local scan: how far it got, or when the last one finished. None read-only.
+        FormCard.FormTextDelegate {
+            objectName: "scanLine"
+            visible: page.oneDrive && page.status !== null && page.status.scanLine.length > 0
+            text: page.status ? page.status.scanLine : ""
+            leading: Kirigami.Icon {
+                source: page.sync && page.sync.scanState === "running" ? "folder-sync" : "folder-open"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
+            }
+        }
         FormCard.FormButtonDelegate {
             objectName: "pendingLine"
             visible: page.oneDrive && page.sync.pendingCount > 0

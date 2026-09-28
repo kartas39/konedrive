@@ -228,6 +228,14 @@ class FakeSync1 : public QDBusAbstractAdaptor
     Q_PROPERTY(qulonglong UploadLeftBytes READ uploadLeftBytes)
     Q_PROPERTY(qulonglong UploadDoneBytes READ uploadDoneBytes)
     Q_PROPERTY(uint UploadTimeLeft READ uploadTimeLeft)
+    Q_PROPERTY(QString ScanState READ scanState)
+    Q_PROPERTY(QString ScanReason READ scanReason)
+    Q_PROPERTY(qlonglong ScanStarted READ scanStarted)
+    Q_PROPERTY(qulonglong ScanDirectories READ scanDirectories)
+    Q_PROPERTY(qulonglong ScanFiles READ scanFiles)
+    Q_PROPERTY(qulonglong ScanExpected READ scanExpected)
+    Q_PROPERTY(qlonglong ScanFinished READ scanFinished)
+    Q_PROPERTY(uint ScanTook READ scanTook)
 
 public:
     FakeSync1(QObject *parent, const QDBusConnection &bus, const QString &path)
@@ -275,6 +283,14 @@ public:
     qulonglong uploadLeftBytes() const { return m_properties.value(QStringLiteral("UploadLeftBytes")).toULongLong(); }
     qulonglong uploadDoneBytes() const { return m_properties.value(QStringLiteral("UploadDoneBytes")).toULongLong(); }
     uint uploadTimeLeft() const { return m_properties.value(QStringLiteral("UploadTimeLeft")).toUInt(); }
+    QString scanState() const { return m_properties.value(QStringLiteral("ScanState")).toString(); }
+    QString scanReason() const { return m_properties.value(QStringLiteral("ScanReason")).toString(); }
+    qlonglong scanStarted() const { return m_properties.value(QStringLiteral("ScanStarted")).toLongLong(); }
+    qulonglong scanDirectories() const { return m_properties.value(QStringLiteral("ScanDirectories")).toULongLong(); }
+    qulonglong scanFiles() const { return m_properties.value(QStringLiteral("ScanFiles")).toULongLong(); }
+    qulonglong scanExpected() const { return m_properties.value(QStringLiteral("ScanExpected")).toULongLong(); }
+    qlonglong scanFinished() const { return m_properties.value(QStringLiteral("ScanFinished")).toLongLong(); }
+    uint scanTook() const { return m_properties.value(QStringLiteral("ScanTook")).toUInt(); }
 
     void set(const QVariantMap &changes)
     {
@@ -541,6 +557,14 @@ private:
         {QStringLiteral("UploadLeftBytes"), QVariant::fromValue<qulonglong>(0)},
         {QStringLiteral("UploadDoneBytes"), QVariant::fromValue<qulonglong>(0)},
         {QStringLiteral("UploadTimeLeft"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("ScanState"), QStringLiteral("none")},
+        {QStringLiteral("ScanReason"), QString()},
+        {QStringLiteral("ScanStarted"), QVariant::fromValue<qlonglong>(0)},
+        {QStringLiteral("ScanDirectories"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("ScanFiles"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("ScanExpected"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("ScanFinished"), QVariant::fromValue<qlonglong>(0)},
+        {QStringLiteral("ScanTook"), QVariant::fromValue<uint>(0)},
     };
 };
 

@@ -341,6 +341,17 @@ pub async fn sync_status_text(proxy: &Sync1Proxy<'_>, helper: Option<&str>, pref
         out.push_str(&format!("{:<W$}{}\n", "Mode:", mode_text(&mode)));
         let (down, down_bytes) = (proxy.download_left_count().await?, proxy.download_left_bytes().await?);
         out.push_str(&format!("{:<W$}{}\n", "Waiting to download:", waiting_download_text(down, down_bytes)));
+        let scan = LocalScan {
+            state: proxy.scan_state().await?,
+            reason: proxy.scan_reason().await?,
+            started: proxy.scan_started().await?,
+            directories: proxy.scan_directories().await?,
+            files: proxy.scan_files().await?,
+            expected: proxy.scan_expected().await?,
+            finished: proxy.scan_finished().await?,
+            took: proxy.scan_took().await?,
+        };
+        out.push_str(&format!("{:<W$}{}\n", "Local scan:", local_scan_text(&scan, unix_now())));
         let (pending, bytes, blocked) = (proxy.pending_count().await?, proxy.pending_bytes().await?, proxy.blocked_count().await?);
         if mode == "read-write" || pending > 0 || blocked > 0 {
             out.push_str(&format!("{:<W$}{}\n", "Waiting to upload:", waiting_text(pending, bytes)));
@@ -397,6 +408,74 @@ pub fn mode_text(mode: &str) -> String {
         "read-only" => "read-only: nothing made or changed here is uploaded".to_owned(),
         other => other.to_owned(),
     }
+}
+
+/// The Full local scan as `Sync1`'s `Scan*` properties say it (issue #8).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalScan {
+    pub state: String,
+    pub reason: String,
+    pub started: i64,
+    pub directories: u64,
+    pub files: u64,
+    pub expected: u64,
+    pub finished: i64,
+    pub took: u32,
+}
+
+/// `sync status`'s `Local scan:` line: `running — 1 234 folders and 45 678 files, of about
+/// 50 000 (2 min, after the switch to read-write)`, `last finished 5 min ago (took 40 s)`,
+/// `not yet since the daemon started`, or `none — read-only`.
+pub fn local_scan_text(scan: &LocalScan, now: i64) -> String {
+    match scan.state.as_str() {
+        "none" => "none — read-only".to_owned(),
+        "running" => {
+            let mut text = format!("running — {} folders and {} files", grouped(scan.directories), grouped(scan.files));
+            if scan.expected > 0 {
+                text.push_str(&format!(", of about {}", grouped(scan.expected)));
+            }
+            let running = seconds_text(u64::try_from(now - scan.started).unwrap_or(0));
+            format!("{text} ({running}, {})", scan_reason_text(&scan.reason))
+        }
+        _ if scan.finished == 0 => "not yet since the daemon started".to_owned(),
+        _ => format!("last finished {} (took {})", checked_text(scan.finished, now), seconds_text(u64::from(scan.took))),
+    }
+}
+
+/// Why a local scan runs, after its count.
+pub fn scan_reason_text(reason: &str) -> String {
+    match reason {
+        "start" => "as syncing started".to_owned(),
+        "read-write" => "after the switch to read-write".to_owned(),
+        "helper-back" => "after the helper came back".to_owned(),
+        "overflow" => "after too many changes at once for the notifications".to_owned(),
+        "ignore-list" => "after the ignore list changed".to_owned(),
+        "periodic" => "the regular scan while part of the folder cannot be watched".to_owned(),
+        other => other.to_owned(),
+    }
+}
+
+/// `40 s`, `2 min`, `3 h 5 min`.
+fn seconds_text(seconds: u64) -> String {
+    match seconds {
+        0..=59 => format!("{seconds} s"),
+        60..=3_599 => format!("{} min", seconds / 60),
+        _ if seconds % 3_600 < 60 => format!("{} h", seconds / 3_600),
+        _ => format!("{} h {} min", seconds / 3_600, seconds % 3_600 / 60),
+    }
+}
+
+/// `45 678`: the thousands set apart.
+fn grouped(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// `sync status`'s `Waiting to upload:` line: `3 files (1.5 MiB)`.
@@ -1372,19 +1451,6 @@ pub fn pool_text(summary: &TransferSummary) -> String {
     line
 }
 
-/// A count with its thousands apart, as the window shows it: `1 234`.
-pub fn grouped(n: u64) -> String {
-    let digits = n.to_string();
-    let mut out = String::new();
-    for (i, digit) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push(' ');
-        }
-        out.push(digit);
-    }
-    out
-}
-
 /// A queue's time left: `about 45 s`, `about 12 min`, `about 2 h 5 min`, `about 3 d 4 h`.
 pub fn time_left_text(seconds: u32) -> String {
     let seconds = u64::from(seconds);
@@ -2209,6 +2275,33 @@ mod tests {
             [45, 3600, 3700, 90_000].map(super::time_left_text),
             ["about 45 s", "about 1 h", "about 1 h 2 min", "about 1 d 1 h"]
         );
+    }
+
+    #[test]
+    fn the_local_scan_line_says_how_far_it_got_or_when_it_last_finished() {
+        let now = 1_000_000;
+        let running = super::LocalScan {
+            state: "running".into(),
+            reason: "read-write".into(),
+            started: now - 130,
+            directories: 1_234,
+            files: 45_678,
+            expected: 50_000,
+            ..Default::default()
+        };
+        assert_eq!(
+            super::local_scan_text(&running, now),
+            "running — 1 234 folders and 45 678 files, of about 50 000 (2 min, after the switch to read-write)"
+        );
+        let idle = super::LocalScan { state: "idle".into(), finished: now - 300, took: 40, ..running.clone() };
+        assert_eq!(super::local_scan_text(&idle, now), "last finished 5 min ago (took 40 s)");
+        let never = super::LocalScan { state: "idle".into(), ..Default::default() };
+        assert_eq!(super::local_scan_text(&never, now), "not yet since the daemon started");
+        let none = super::LocalScan { state: "none".into(), ..Default::default() };
+        assert_eq!(super::local_scan_text(&none, now), "none — read-only");
+        assert_eq!(super::grouped(999), "999");
+        assert_eq!(super::grouped(1_000_000), "1 000 000");
+        assert_eq!(super::seconds_text(3_900), "1 h 5 min");
     }
 
     #[test]

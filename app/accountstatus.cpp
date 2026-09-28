@@ -67,6 +67,42 @@ QString troubleIn(const QString &lastError)
     return trouble;
 }
 
+/// "40 s", "2 min", "1 h": how long something took.
+QString durationText(qint64 seconds)
+{
+    if (seconds < 60) {
+        return i18nc("@info duration", "%1 s", seconds);
+    }
+    if (seconds < 3600) {
+        return i18nc("@info duration", "%1 min", seconds / 60);
+    }
+    return i18nc("@info duration", "%1 h", seconds / 3600);
+}
+
+/// Why a local scan runs (Sync1's ScanReason), after "started 2 min ago, ".
+QString scanReasonText(const QString &reason)
+{
+    if (reason == QLatin1String("start")) {
+        return i18nc("@info why the local files are checked", "as syncing started");
+    }
+    if (reason == QLatin1String("read-write")) {
+        return i18nc("@info why the local files are checked", "after the switch to read-write");
+    }
+    if (reason == QLatin1String("helper-back")) {
+        return i18nc("@info why the local files are checked", "after the helper came back");
+    }
+    if (reason == QLatin1String("overflow")) {
+        return i18nc("@info why the local files are checked", "after too many changes at once");
+    }
+    if (reason == QLatin1String("ignore-list")) {
+        return i18nc("@info why the local files are checked", "after the ignore list changed");
+    }
+    if (reason == QLatin1String("periodic")) {
+        return i18nc("@info why the local files are checked", "as part of the folder cannot be watched");
+    }
+    return reason;
+}
+
 /// A no-interception root's LastError with the fixed warning (and the
 /// separator after it, if there is trouble) stripped, so `troubleIn` sees
 /// only the trouble, exactly as it does for a `ready` root (I2).
@@ -265,6 +301,35 @@ void AccountStatus::update()
         }
     }
 
+    // The local scan: never a percentage, since only the base's count is known in advance.
+    QString scanLine;
+    const QString scanState = m_sync->scanState();
+    if (scanState == QLatin1String("running")) {
+        QString seen = i18nc("@info local scan: N folders and M files",
+                             "%1 and %2",
+                             i18ncp("@info local scan", "1 folder", "%1 folders", m_sync->scanDirectories()),
+                             i18ncp("@info local scan", "1 file", "%1 files", m_sync->scanFiles()));
+        if (m_sync->scanExpected() > 0) {
+            seen = i18nc("@info local scan: what was seen, of about N", "%1, of about %2", seen, m_sync->scanExpected());
+        }
+        scanLine = i18nc("@info local scan: what was seen, when it started, why",
+                         "Checking local files: %1 — started %2, %3",
+                         seen,
+                         ago(m_sync->scanStarted()),
+                         scanReasonText(m_sync->scanReason()));
+        ages = true;
+    } else if (scanState == QLatin1String("idle")) {
+        if (m_sync->scanFinished() > 0) {
+            scanLine = i18nc("@info local scan: when, how long it took",
+                             "Local files last checked %1 (took %2)",
+                             ago(m_sync->scanFinished()),
+                             durationText(m_sync->scanTook()));
+            ages = true;
+        } else {
+            scanLine = i18n("Local files not checked yet");
+        }
+    }
+
     // The timer runs only while the text says how long ago.
     if (ages && !m_tick->isActive()) {
         m_tick->start();
@@ -272,11 +337,12 @@ void AccountStatus::update()
         m_tick->stop();
     }
 
-    if (state == m_state && text == m_text && attention == m_attention) {
+    if (state == m_state && text == m_text && attention == m_attention && scanLine == m_scanLine) {
         return;
     }
     m_state = state;
     m_text = text;
     m_attention = attention;
+    m_scanLine = scanLine;
     Q_EMIT changed();
 }

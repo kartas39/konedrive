@@ -57,6 +57,7 @@ use super::{Shared, Timing, ToExaminer, WalkState};
 use crate::sync::disk::{open_subdir, HOLDING, NEW_PREFIX};
 use crate::sync::helper::HelperError;
 use crate::sync::listing::LinkCell;
+use crate::sync::local::ScanReason;
 
 /// The shortest time between two walks for a directory the map lost (an
 /// event from a handle it does not know, a directory it could not list).
@@ -245,7 +246,7 @@ impl Reader {
     /// done, or that it was cut short (a stop, a folder it could not list).
     fn bring_up(&mut self) {
         let walked = self.walk_all(Walk::BringUp);
-        self.dirt.full();
+        self.dirt.full(self.shared.first_scan);
         self.dirt.touch(Instant::now());
         self.publish();
         let state = if walked && !self.shared.stopping() { WalkState::Done } else { WalkState::Cut };
@@ -428,7 +429,7 @@ impl Reader {
         if event.has(fan::Q_OVERFLOW) {
             tracing::warn!("the notification queue overflowed: the folder is scanned in full");
             self.shared.update(|s| s.overflows += 1);
-            self.dirt.full();
+            self.dirt.full(ScanReason::Overflow);
             self.dirt.touch(now);
             self.rewalk = true;
             return Flow::Go;

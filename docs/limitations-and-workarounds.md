@@ -2014,6 +2014,17 @@ application must never read zeros where real content should be.
   upload progress job of such a file ends as if it succeeded (A21's rule: a row gone without an
   `upload-failed` event is done). DEBT · measured
   (`sync::upload::tests::removed::*`). Open.
+- **F151. The local scan's "about N" is the base's count, not the disk's** (`sync/local_scan.rs`,
+  `sync/local/examine.rs`, issue #8) — a running Full local scan is shown as the folders and files
+  seen so far "of about N", where N is `ItemsPlaced` when it started: the items the base placed,
+  not what is on the disk, which is not known until the walk ends. Files made here and not yet
+  uploaded, what is ignored, symlinks and other special files (counted as files), and folders on
+  another device or ignored (counted, not walked) make the two differ, so the seen count can end
+  above or below N; hence never a percentage. The counts reach the bus at most once a second.
+  Whether a bring-up's scan says `start` or `read-write` rests on a flag the switch sets and the
+  next watcher's start takes; the scan every 10 minutes of a folder watched only in part is
+  reported too (`periodic`). SHORTCUT, on purpose · measured
+  (`sync::watcher::tests::the_sink_reports_a_full_scan_and_not_a_single_place`). Open.
 - **F152. Queue totals: what "left", "done" and "time left" count, and where they are
   approximate** (`crates/konedrived/src/sync/totals.rs`, issue #16) — `Sync1`'s
   `DownloadLeft*`/`UploadLeft*`, `*DoneBytes`, `*TimeLeft`, the Activity page's cards and

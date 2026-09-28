@@ -4,6 +4,7 @@
 #include <KLocalizedQmlContext>
 #include <KLocalizedString>
 
+#include <QDateTime>
 #include <QFile>
 #include <QLocale>
 #include <QQmlApplicationEngine>
@@ -200,6 +201,59 @@ private Q_SLOTS:
         QTRY_VERIFY(accounts.at(0)->account()->switchingTo().isEmpty());
         QVERIFY(!uploadSwitch->property("checked").toBool());
 
+        fake.stop();
+    }
+
+    /// Issue #8: the Status page says how the local scan goes — how far a running one got,
+    /// of about how many, since when and why; then when the last one finished; and nothing
+    /// for a read-only folder.
+    void theStatusPageShowsTheLocalScan()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        fake.sync->set({{QStringLiteral("RootPath"), QStringLiteral("/home/u/OneDrive")},
+                        {QStringLiteral("RootState"), QStringLiteral("ready")},
+                        {QStringLiteral("RootSource"), QStringLiteral("onedrive")},
+                        {QStringLiteral("ScanState"), QStringLiteral("running")},
+                        {QStringLiteral("ScanReason"), QStringLiteral("read-write")},
+                        {QStringLiteral("ScanStarted"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 125)},
+                        {QStringLiteral("ScanDirectories"), QVariant::fromValue<qulonglong>(12)},
+                        {QStringLiteral("ScanFiles"), QVariant::fromValue<qulonglong>(345)},
+                        {QStringLiteral("ScanExpected"), QVariant::fromValue<qulonglong>(500)}});
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("status")));
+        auto *line = window->findChild<QQuickItem *>(QStringLiteral("scanLine"));
+        QVERIFY(line);
+        QTRY_VERIFY(line->isVisible());
+        QCOMPARE(line->property("text").toString(),
+                 QStringLiteral("Checking local files: 12 folders and 345 files, of about 500 — started 2 min ago, after the switch to read-write"));
+
+        fake.sync->set({{QStringLiteral("ScanState"), QStringLiteral("idle")},
+                        {QStringLiteral("ScanFinished"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 300)},
+                        {QStringLiteral("ScanTook"), QVariant::fromValue<uint>(40)}});
+        QTRY_COMPARE(line->property("text").toString(), QStringLiteral("Local files last checked 5 min ago (took 40 s)"));
+
+        fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-only")}});
+        fake.sync->set({{QStringLiteral("ScanState"), QStringLiteral("none")}});
+        QTRY_VERIFY(!line->isVisible());
         fake.stop();
     }
 

@@ -94,6 +94,18 @@ class SyncController : public QObject
     Q_PROPERTY(qulonglong uploadLeftBytes READ uploadLeftBytes NOTIFY syncChanged)
     Q_PROPERTY(qulonglong uploadDoneBytes READ uploadDoneBytes NOTIFY syncChanged)
     Q_PROPERTY(uint uploadTimeLeft READ uploadTimeLeft NOTIFY syncChanged)
+    /// The Full local scan (Sync1's Scan* properties): "running", "idle", or "none" for a
+    /// read-only folder; why it runs; when it started (unix seconds); the directories and
+    /// files seen so far; about how many items it will see (the base's count); when the
+    /// last one finished (0: not yet) and how long it took, in seconds.
+    Q_PROPERTY(QString scanState READ scanState NOTIFY syncChanged)
+    Q_PROPERTY(QString scanReason READ scanReason NOTIFY syncChanged)
+    Q_PROPERTY(qlonglong scanStarted READ scanStarted NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong scanDirectories READ scanDirectories NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong scanFiles READ scanFiles NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong scanExpected READ scanExpected NOTIFY syncChanged)
+    Q_PROPERTY(qlonglong scanFinished READ scanFinished NOTIFY syncChanged)
+    Q_PROPERTY(uint scanTook READ scanTook NOTIFY syncChanged)
     /// The last two minutes of each, one sample a second, oldest first: the window keeps
     /// them, the daemon does not.
     Q_PROPERTY(QVariantList downloadSpeedHistory READ downloadSpeedHistory NOTIFY historyChanged)
@@ -168,6 +180,14 @@ public:
     qulonglong uploadLeftBytes() const { return m_uploadLeftBytes; }
     qulonglong uploadDoneBytes() const { return m_uploadDoneBytes; }
     uint uploadTimeLeft() const { return m_uploadTimeLeft; }
+    QString scanState() const { return m_scanState; }
+    QString scanReason() const { return m_scanReason; }
+    qlonglong scanStarted() const { return m_scanStarted; }
+    qulonglong scanDirectories() const { return m_scanDirectories; }
+    qulonglong scanFiles() const { return m_scanFiles; }
+    qulonglong scanExpected() const { return m_scanExpected; }
+    qlonglong scanFinished() const { return m_scanFinished; }
+    uint scanTook() const { return m_scanTook; }
     QVariantList downloadSpeedHistory() const { return m_history[0]; }
     QVariantList uploadSpeedHistory() const { return m_history[1]; }
     QVariantList activeDownloadsHistory() const { return m_history[2]; }
@@ -320,6 +340,14 @@ private:
     qulonglong m_uploadLeftBytes = 0;
     qulonglong m_uploadDoneBytes = 0;
     uint m_uploadTimeLeft = 0;
+    QString m_scanState = QStringLiteral("none");
+    QString m_scanReason;
+    qlonglong m_scanStarted = 0;
+    qulonglong m_scanDirectories = 0;
+    qulonglong m_scanFiles = 0;
+    qulonglong m_scanExpected = 0;
+    qlonglong m_scanFinished = 0;
+    uint m_scanTook = 0;
     /// Download speed, upload speed, active downloads, active uploads.
     QVariantList m_history[4];
     QTimer *m_sampler;
