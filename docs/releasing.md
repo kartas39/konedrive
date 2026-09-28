@@ -15,8 +15,10 @@ Merge `dev` into `main`. Every push to `main` runs the release workflow
    three RPMs and `SHA256SUMS`. The release notes list the pull requests merged since the previous
    tag.
 
-It uses only the workflow's own token, with `contents: write` for the last step. Runs queue up one
-after another, and a running release is never cancelled.
+It uses only the workflow's own token, with `contents: write` for the last step. Runs go one at a
+time, and a running release is never cancelled. GitHub keeps only one run waiting behind it,
+though: a merge that arrives while another run already waits replaces that run, so the commit of
+the replaced run gets no release of its own — the next release holds it.
 
 A failed run can be rerun. If it failed after the tag was pushed, the rerun finds the tag on the
 commit and reuses its version, and it replaces the files of a release that already exists instead
@@ -57,7 +59,8 @@ build may sort below a release already installed.
 
 On GitHub, **Actions → Release → Run workflow**, on any branch. `dry_run` is on by default: the run
 tests, builds and keeps the RPMs as its artifacts (downloadable from the run's page for 90 days),
-and tags and releases nothing. A run by hand with `dry_run` off releases, but only from `main`; on
-any other branch it stays a dry run.
+and tags and releases nothing. Its RPMs carry the version the next release would have, so a
+machine that installs them is not upgraded by that release (`dnf reinstall` replaces them). A run
+by hand with `dry_run` off releases, but only from `main`; on any other branch it stays a dry run.
 
 Locally, the same build: `git fetch --tags && scripts/build-rpm.sh --version X.Y.Z`.

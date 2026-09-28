@@ -14,7 +14,8 @@ on:
         type: boolean
         default: true
 
-# One run at a time; a release in progress is never cancelled.
+# One run at a time; a release in progress is never cancelled. GitHub keeps
+# one waiting run per group: a newer one replaces it (docs/releasing.md).
 concurrency:
   group: release
   cancel-in-progress: false
@@ -27,6 +28,10 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:44
     timeout-minutes: 120
+    env:
+      # Inside the checkout, so that the cache below and the tests' user
+      # (not root) share it.
+      CARGO_HOME: ${{ github.workspace }}/.cargo-home
     outputs:
       version: ${{ steps.version.outputs.version }}
       previous_tag: ${{ steps.version.outputs.previous_tag }}
@@ -54,16 +59,24 @@ jobs:
         uses: actions/cache@v6
         with:
           path: |
-            ~/.cargo/registry
-            ~/.cargo/git
+            .cargo-home/registry
+            .cargo-home/git
             target/debug
           key: fedora44-cargo-${{ hashFiles('Cargo.lock') }}
           restore-keys: fedora44-cargo-
 
       # The daemon's unit tests; a failure stops the run before anything is
-      # tagged. Not the workspace (#21).
+      # tagged. Not the workspace (#21). As a user, not root: several tests
+      # take a permission away and expect it to hold. Their temporary files go
+      # on the runner's disk, bind-mounted, not on the container's overlay,
+      # which has no file handles (name_to_handle_at).
       - name: Test the daemon
-        run: cargo test --locked -p konedrived --lib
+        run: |
+          id tester >/dev/null 2>&1 || useradd --create-home tester
+          mkdir -p target .cargo-home "$RUNNER_TEMP/tests"
+          chown -R tester: target .cargo-home "$RUNNER_TEMP/tests"
+          runuser -u tester -- env TMPDIR="$RUNNER_TEMP/tests" HOME=/home/tester \
+            cargo test --locked -p konedrived --lib
 
       - name: Choose the version
         id: version
@@ -95,7 +108,9 @@ jobs:
   # Only from main: a push, or a run by hand with the dry run turned off.
   publish:
     needs: build
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.dry_run == false)
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
