@@ -32,7 +32,7 @@ FormCard.FormCardPage {
 
     /// One direction's mini card: its speed, how many files move that way at once, and one
     /// chart of the last two minutes with two lines on two scales — speed on the left axis,
-    /// files at once on the right — and a small legend. Dimmed while nothing moves.
+    /// the files moving that way on the right — and a small legend. Dimmed while nothing moves.
     component TransferCard: Kirigami.AbstractCard {
         id: card
         required property string title
@@ -42,6 +42,8 @@ FormCard.FormCardPage {
         required property var activeHistory
         /// "N files downloading" or "N files uploading".
         required property string filesText
+        /// The legend of the files line: "Files downloading" or "Files uploading".
+        required property string filesLegend
         readonly property bool idle: active === 0 && speed === 0
         readonly property color speedColor: Kirigami.Theme.highlightColor
         readonly property color filesColor: Kirigami.Theme.neutralTextColor
@@ -112,7 +114,7 @@ FormCard.FormCardPage {
                         colorSource: Charts.SingleValueSource { value: card.filesColor }
                     }
                 }
-                // Right axis: files at once.
+                // Right axis: the files moving.
                 ChartsControls.AxisLabels {
                     Layout.fillHeight: true
                     Layout.preferredWidth: Kirigami.Units.gridUnit * 1.5
@@ -149,7 +151,7 @@ FormCard.FormCardPage {
                 }
                 QQC2.Label {
                     font: Kirigami.Theme.smallFont
-                    text: i18nc("@info chart legend", "Files at once")
+                    text: card.filesLegend
                 }
             }
         }
@@ -172,6 +174,7 @@ FormCard.FormCardPage {
             speedHistory: page.sync ? page.sync.downloadSpeedHistory : []
             activeHistory: page.sync ? page.sync.activeDownloadsHistory : []
             filesText: i18ncp("@info files downloading at once", "%1 file downloading", "%1 files downloading", downloading.active)
+            filesLegend: i18nc("@info chart legend", "Files downloading")
         }
         TransferCard {
             id: uploading
@@ -181,6 +184,7 @@ FormCard.FormCardPage {
             speedHistory: page.sync ? page.sync.uploadSpeedHistory : []
             activeHistory: page.sync ? page.sync.activeUploadsHistory : []
             filesText: i18ncp("@info files uploading at once", "%1 file uploading", "%1 files uploading", uploading.active)
+            filesLegend: i18nc("@info chart legend", "Files uploading")
         }
     }
     // The account's transfer pool, shared by both directions: shown once, with the large
