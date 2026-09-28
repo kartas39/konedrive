@@ -36,7 +36,7 @@ use tokio::time::Instant;
 /// The pool's size when an account starts.
 pub const START: usize = 16;
 /// The ceiling when `config.toml` sets none.
-pub const DEFAULT_CEILING: usize = 64;
+pub const DEFAULT_CEILING: usize = 16;
 /// The lowest and the highest ceiling `config.toml` may set; anything else is clamped.
 pub const CEILING_MIN: usize = 1;
 pub const CEILING_MAX: usize = 256;
