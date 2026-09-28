@@ -1347,7 +1347,7 @@ impl TestSource {
 
 #[async_trait]
 impl ContentSource for TestSource {
-    async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         self.fetches.fetch_add(1, Ordering::SeqCst);
         let mut local = LocalDir::new(self.dir.clone());
         let delay = self.delay_ms.load(Ordering::SeqCst);
@@ -1361,7 +1361,7 @@ impl ContentSource for TestSource {
                 self.fail_at.store(-1, Ordering::SeqCst);
             }
         }
-        local.fetch(item_id, from).await
+        local.fetch(item_id, from, end).await
     }
 }
 

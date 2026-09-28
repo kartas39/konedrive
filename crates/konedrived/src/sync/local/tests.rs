@@ -833,7 +833,7 @@ struct Served(&'static [u8]);
 
 #[async_trait::async_trait]
 impl crate::sync::source::ContentSource for Served {
-    async fn fetch(&self, _item_id: &str, from: u64) -> Result<crate::sync::source::Fetched, crate::sync::source::SourceError> {
+    async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<crate::sync::source::Fetched, crate::sync::source::SourceError> {
         let mut hash = crate::quickxor::QuickXor::new();
         hash.update(self.0);
         Ok(crate::sync::source::Fetched {

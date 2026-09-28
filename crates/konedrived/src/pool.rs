@@ -15,7 +15,9 @@
 //! A **large** transfer (a file of [`LARGE_FROM`] or more) fills the link on its own: at most
 //! `[transfers] large` ([`DEFAULT_LARGE`]) of them run at once, each in a slot of the pool; a
 //! large one waiting for that limit lets the small ones behind it go. A file being opened is not
-//! held by it (it still counts as a large transfer under way).
+//! held by it (it still counts as a large transfer under way). A large pinned download in parts
+//! holds one large slot per stream (`sync::source::parts`, issue #28): its extra streams take only
+//! slots nothing waits for ([`TransferPool::waiting`]), and give them back when something does.
 //!
 //! Who gets a free slot: a file being opened first — it may also take [`RESERVE`] slots above
 //! the pool, and while any open waits or runs no background work takes a new slot; then
@@ -124,7 +126,8 @@ pub struct Throughput {
     pub active_up: u32,
     pub size: u32,
     pub ceiling: u32,
-    /// Large transfers under way (openings included), and how many may run at once.
+    /// Large transfers under way (openings included, and each stream of a download in parts),
+    /// and how many may run at once.
     pub large: u32,
     pub large_limit: u32,
     /// Seconds left of OneDrive's `Retry-After`, during which no slot is handed out; 0 when
@@ -264,6 +267,13 @@ impl TransferPool {
     /// Large transfers under way now, openings included.
     pub fn large_held(&self) -> usize {
         self.lock().large_held
+    }
+
+    /// Whether anything waits for a slot now: a transfer in line that has not been handed
+    /// one. An extra stream of a download in parts takes only a slot nothing waits for, and
+    /// gives its slot back when something does (issue #28).
+    pub fn waiting(&self) -> bool {
+        self.lock().waiters.iter().any(|w| !w.granted)
     }
 
     /// "Pause syncing": no new slot for anything but opens.
