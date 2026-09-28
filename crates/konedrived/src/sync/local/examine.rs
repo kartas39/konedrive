@@ -116,6 +116,15 @@ pub struct Examined {
     pub renewed: bool,
 }
 
+/// Told how a Full local scan goes (issue #8): once it has started — the base is there and
+/// the root is — and then after each directory it listed, with what it has seen so far.
+/// Only a Full scan is told; an examination of single places never is.
+pub trait ScanProgress {
+    fn started(&self);
+    /// Directories and other entries (files, links, ...) read so far, the root not counted.
+    fn seen(&self, directories: u64, files: u64);
+}
+
 pub struct Examiner<'a> {
     pub disk: &'a Disk,
     pub store: &'a Store,
@@ -130,6 +139,11 @@ pub struct Examiner<'a> {
 impl Examiner<'_> {
     /// Examines `batch` and records what it found.
     pub fn examine(&self, batch: &Batch) -> Result<Examined, ExamineError> {
+        self.examine_reporting(batch, None)
+    }
+
+    /// [`examine`](Self::examine), telling `progress` how a Full local scan goes.
+    pub fn examine_reporting(&self, batch: &Batch, progress: Option<&dyn ScanProgress>) -> Result<Examined, ExamineError> {
         let (root_id, complete) = self.store.with(|s| Ok((s.root_item_id()?, s.delta_link()?.is_some() && s.listing_next()?.is_none())))?;
         let root_id = root_id.filter(|_| complete).ok_or(ExamineError::NoBase)?;
         let root = self.disk.dir(Path::new(""))?;
@@ -140,7 +154,9 @@ impl Examiner<'_> {
         let root_path = std::fs::read_link(entry::proc_path(&root)).ok();
         // The folder's filesystem changed since its handles were recorded (a new disk, a
         // snapshot rolled back): they are taken again, by a Full scan of everything, before
-        // anything is decided by them.
+        // anything is decided by them. Only a Full local scan asked for is told how it goes,
+        // not one the renewed handles make.
+        let progress = progress.filter(|_| batch.is_full());
         let full = Batch::full();
         let (batch, renewed) = match super::liveness::handles(self.store, &root) {
             super::liveness::Handles::Changed(now) => {
@@ -155,8 +171,13 @@ impl Examiner<'_> {
         };
         let handles_current = super::liveness::handles_current(self.store, &root);
         let rows = self.store.with(|s| s.outbox_rows())?;
+        if let Some(progress) = progress {
+            progress.started();
+        }
         let mut run = Run {
             ex: self,
+            progress,
+            seen: (0, 0),
             root_id,
             root_dev: stat.st_dev as u64,
             root_path,
@@ -240,6 +261,10 @@ enum Content {
 
 struct Run<'e, 'a> {
     ex: &'e Examiner<'a>,
+    /// Told after each directory a Full local scan lists.
+    progress: Option<&'e dyn ScanProgress>,
+    /// Directories and other entries read in whole listings so far.
+    seen: (u64, u64),
     root_id: String,
     /// The folder's device: nothing on another one is uploaded, nor looked
     /// into (a nested Btrfs subvolume, a mount).
@@ -552,6 +577,12 @@ impl Run<'_, '_> {
             }
             self.whole.insert(rel.to_path_buf());
             self.named.remove(rel);
+            if let Some(progress) = self.progress {
+                let directories = read.iter().filter(|e| e.ty == Type::Dir).count() as u64;
+                self.seen.0 += directories;
+                self.seen.1 += read.len() as u64 - directories;
+                progress.seen(self.seen.0, self.seen.1);
+            }
         }
         for e in read {
             // A directory of the user's own whose name is ignored stays local

@@ -63,7 +63,7 @@ pub use service::ExamineSink;
 
 pub use crate::sync::local::{CEILING, QUIET, RECHECK};
 use crate::sync::listing::LinkCell;
-use crate::sync::local::Batch;
+use crate::sync::local::{Batch, ScanReason};
 use crate::sync::root::SyncRoot;
 
 /// While part of the folder cannot be watched, a Full local scan and a walk
@@ -208,6 +208,9 @@ pub struct WatchConfig {
     pub own_pid: Option<i32>,
     pub timing: Timing,
     pub on_status: Option<StatusHook>,
+    /// Why the bring-up's Full local scan runs: the sync started, or the account was
+    /// switched to read-write.
+    pub first_scan: ScanReason,
     /// A mark budget below the kernel's, to reach the degraded mode without
     /// root (tests only).
     #[cfg(test)]
@@ -223,6 +226,7 @@ impl WatchConfig {
             own_pid: Some(std::process::id() as i32),
             timing: Timing::default(),
             on_status: None,
+            first_scan: ScanReason::Start,
             #[cfg(test)]
             mark_limit: None,
         }
@@ -236,6 +240,8 @@ pub(crate) struct Shared {
     wake: OwnedFd,
     status: Mutex<WatchStatus>,
     on_status: Option<StatusHook>,
+    /// Why the bring-up's Full local scan runs.
+    first_scan: ScanReason,
     /// True once the bring-up walk has marked every directory.
     walked: tokio::sync::watch::Sender<WalkState>,
     /// The reader thread has ended: nothing will answer a flush.
@@ -251,7 +257,7 @@ pub(crate) struct Shared {
 }
 
 impl Shared {
-    fn new(on_status: Option<StatusHook>) -> io::Result<Self> {
+    fn new(on_status: Option<StatusHook>, first_scan: ScanReason) -> io::Result<Self> {
         // SAFETY: plain syscall; the descriptor is owned here.
         let fd = unsafe { libc::eventfd(0, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
         if fd < 0 {
@@ -263,6 +269,7 @@ impl Shared {
             wake: unsafe { OwnedFd::from_raw_fd(fd) },
             status: Mutex::new(WatchStatus::default()),
             on_status,
+            first_scan,
             walked: tokio::sync::watch::Sender::new(WalkState::Walking),
             reader_done: AtomicBool::new(false),
             flushes: Mutex::new(Vec::new()),
@@ -350,7 +357,7 @@ impl Shared {
 /// To the examiner thread.
 pub(crate) enum ToExaminer {
     Batch(Batch),
-    Full,
+    Full(ScanReason),
     /// Examine what is pending now, then answer whether all of it was.
     Flush(mpsc::Sender<bool>),
     /// Look at `stopping`.
@@ -368,9 +375,9 @@ pub struct WatchHandle {
 
 impl WatchHandle {
     /// A Full local scan, as soon as the examiner is free (§4.11: the ignore
-    /// list shrank).
-    pub fn full_scan(&self) {
-        let _ = self.tx.send(ToExaminer::Full);
+    /// list shrank), for `reason`.
+    pub fn full_scan(&self, reason: ScanReason) {
+        let _ = self.tx.send(ToExaminer::Full(reason));
     }
 
     /// The helper is back (§3.3): its registration walk marked every
@@ -379,7 +386,7 @@ impl WatchHandle {
     pub fn helper_back(&self) {
         self.shared.helper_back.store(true, Ordering::SeqCst);
         self.shared.wake();
-        self.full_scan();
+        self.full_scan(ScanReason::HelperBack);
     }
 
     /// Hands over at once what the events so far made dirty, and waits until
@@ -438,7 +445,7 @@ impl Watcher {
             .root
             .open_registered()?
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{} no longer carries its root id", config.root.path.display())))?;
-        let shared = Arc::new(Shared::new(config.on_status.clone())?);
+        let shared = Arc::new(Shared::new(config.on_status.clone(), config.first_scan)?);
         let reader = reader::Reader::new(
             root,
             config.own_pid,
@@ -480,8 +487,8 @@ impl Watcher {
     }
 
     /// See [`WatchHandle::full_scan`].
-    pub fn full_scan(&self) {
-        self.handle().full_scan();
+    pub fn full_scan(&self, reason: ScanReason) {
+        self.handle().full_scan(reason);
     }
 
     /// See [`WatchHandle::helper_back`].
@@ -543,7 +550,7 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
     let mut next_scan: Option<Instant> = None;
     let absorb = |message: ToExaminer, pending: &mut Batch, acks: &mut Vec<mpsc::Sender<bool>>| match message {
         ToExaminer::Batch(batch) => pending.merge(batch),
-        ToExaminer::Full => pending.merge(Batch::full()),
+        ToExaminer::Full(reason) => pending.merge(Batch::scan(reason)),
         ToExaminer::Flush(ack) => acks.push(ack),
         ToExaminer::Wake => {}
     };
@@ -563,7 +570,7 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
         if shared.degraded() {
             let at = *next_scan.get_or_insert(now + timing.degraded_scan);
             if at <= now {
-                pending.merge(Batch::full());
+                pending.merge(Batch::scan(ScanReason::Periodic));
                 next_scan = Some(now + timing.degraded_scan);
             }
         }

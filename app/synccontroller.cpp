@@ -210,6 +210,19 @@ void SyncController::applyProperties(const QVariantMap &p)
     count("LargeTransfers", m_largeTransfers);
     count("LargeLimit", m_largeLimit);
     count("RetryAfter", m_retryAfter);
+    text("ScanState", m_scanState);
+    text("ScanReason", m_scanReason);
+    const auto time = [&p](const char *key, qlonglong &field) {
+        if (const auto it = p.constFind(QLatin1String(key)); it != p.constEnd()) {
+            field = it->toLongLong();
+        }
+    };
+    time("ScanStarted", m_scanStarted);
+    number("ScanDirectories", m_scanDirectories);
+    number("ScanFiles", m_scanFiles);
+    number("ScanExpected", m_scanExpected);
+    time("ScanFinished", m_scanFinished);
+    count("ScanTook", m_scanTook);
     Q_EMIT syncChanged();
 
     // GetAll's own answer loads the lists (fetchAll); a change on the way loads them again.

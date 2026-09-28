@@ -49,6 +49,7 @@ impl SyncService {
     /// local scan.
     pub fn start_in_mode(&self, mode: Mode) {
         *self.mode.lock().unwrap() = mode;
+        self.state.update(|s| s.scan.follow(mode));
     }
 
     /// Follows the account to `mode` (`docs/design/writes.md` §2, §2.2). The folder's sync is stopped as
@@ -80,6 +81,9 @@ impl SyncService {
             self.let_go_of_activity().await;
         }
         *self.mode.lock().unwrap() = mode;
+        // The watcher that starts next says why its Full local scan runs.
+        self.switched_to_read_write.store(mode == Mode::ReadWrite, Ordering::SeqCst);
+        self.state.update(|s| s.scan.follow(mode));
         let forced = self.drop_at_read_only.swap(false, Ordering::SeqCst);
         if mode == Mode::ReadOnly {
             // Only a forced switch drops the changes waiting to upload; what
@@ -472,7 +476,7 @@ impl Watcher {
 
     /// A Full local scan now: the ignore list changed (`docs/design/writes.md` §4.4).
     pub(super) fn full_scan(&self) {
-        self.inner.full_scan();
+        self.inner.full_scan(super::local::ScanReason::IgnoreList);
     }
 }
 

@@ -1989,6 +1989,43 @@ application must never read zeros where real content should be.
   one account's full pool never holds up another account's open. The backpressure test now pins
   the admission (64 + queue), not four fills. LIMIT, on purpose ·
   measured (`sync::tests::the_request_loop_stops_taking_work_once_the_admission_is_full`). Open.
+- **F149. A file or folder removed here before its upload finished leaves the outbox at once**
+  (`konedrived/src/sync/upload/steps.rs`, `never_uploaded`, `landed_away`;
+  `tree/outbox/worker.rs`, `outbox_drop_unsent`; issue #27) — a `create` or `mkdir` whose object
+  `locate` finds under none of its names ends on that run, with no retry: an upload session it
+  opened is cancelled, and it leaves with the rows behind it of the same object that never got an
+  item id; the activity log gets one `not-uploaded` event ("removed here before its upload
+  finished"). The rule is applied when a row runs, so rows a store of the previous version kept in
+  `retry`/`not-found` clear on their next run. A `delete` with no item id leaves with no request
+  (it was blocked as `no-item`). It rests on a row being bound to its object, not its name, and on
+  such an object never coming back: (1) a file moved where no row looked, before the move was
+  examined, loses its row, and the move's examination queues it again as new — its upload starts
+  over from zero; (2) an object that comes back in the moment between the worker's look and the
+  drop (moved back in, its move examined in between) keeps the row recorded meanwhile, turned into
+  a `create`/`mkdir`, or, if it came back later, is queued anew by its examination. (3) Only a file
+  whose last request may have gone out — the last fragment of its session, or the one request of a
+  file up to 10 MiB, with the snapshot taken — looks its name up in the parent. With the file gone
+  it cannot be hashed, so the item there is taken for its own by its size and time (seconds), as
+  well as by `taken`'s rules (not an item a live row frees, not one this machine knows); an item of
+  another device with the same name, size and time, uploaded after this one and so not refused by
+  `conflictBehavior=fail`, cannot be told apart and would go to the recycle bin with it. A
+  small file whose request never went out (its parent not found yet) costs one needless lookup.
+  (4) A `mkdir` whose request landed with its answer lost, then removed here, leaves no lookup:
+  the empty folder stays in OneDrive, and the reconcile places it here again. (5) The window's
+  upload progress job of such a file ends as if it succeeded (A21's rule: a row gone without an
+  `upload-failed` event is done). DEBT · measured
+  (`sync::upload::tests::removed::*`). Open.
+- **F151. The local scan's "about N" is the base's count, not the disk's** (`sync/local_scan.rs`,
+  `sync/local/examine.rs`, issue #8) — a running Full local scan is shown as the folders and files
+  seen so far "of about N", where N is `ItemsPlaced` when it started: the items the base placed,
+  not what is on the disk, which is not known until the walk ends. Files made here and not yet
+  uploaded, what is ignored, symlinks and other special files (counted as files), and folders on
+  another device or ignored (counted, not walked) make the two differ, so the seen count can end
+  above or below N; hence never a percentage. The counts reach the bus at most once a second.
+  Whether a bring-up's scan says `start` or `read-write` rests on a flag the switch sets and the
+  next watcher's start takes; the scan every 10 minutes of a folder watched only in part is
+  reported too (`periodic`). SHORTCUT, on purpose · measured
+  (`sync::watcher::tests::the_sink_reports_a_full_scan_and_not_a_single_place`). Open.
 - **F155. A large pinned download in parts keeps only its gap-free start** (`sync/source/parts.rs`,
   issue #28) — `user.konedrive.progress` keeps its meaning, the bytes on disk from the start
   without a gap, so a piece finished beyond a gap is not recorded. A fill that gives up (three

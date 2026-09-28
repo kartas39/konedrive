@@ -677,6 +677,40 @@ async fn the_counters_travel_in_one_properties_changed_message() {
     );
 }
 
+/// The Full local scan on the bus (issue #8): a read-only folder has none, and a scan's
+/// progress travels with the counters, in one message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_local_scan_is_on_the_bus() {
+    use konedrived::sync::local_scan::ScanState;
+    let f = setup().await;
+    assert_eq!(f.proxy.scan_state().await.unwrap(), "none", "a read-only folder has no local scan");
+    assert_eq!(f.proxy.scan_finished().await.unwrap(), 0);
+    let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
+        .destination(SERVICE_NAME)
+        .unwrap()
+        .path(f.path.clone())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let mut changes = properties.receive_properties_changed().await.unwrap();
+
+    f.sync.state().update(|s| {
+        s.scan.state = ScanState::Running;
+        s.scan.reason = "overflow".into();
+        s.scan.files = 7;
+    });
+
+    assert_eq!(
+        messages_within(&mut changes, Duration::from_millis(600)).await,
+        vec![vec!["ScanFiles".to_owned(), "ScanReason".to_owned(), "ScanState".to_owned()]]
+    );
+    assert_eq!(
+        (f.proxy.scan_state().await.unwrap(), f.proxy.scan_reason().await.unwrap(), f.proxy.scan_files().await.unwrap()),
+        ("running".to_owned(), "overflow".to_owned(), 7)
+    );
+}
+
 /// The names of the `Sync1` properties that reported a change within
 /// `window`, sorted and de-duplicated. One `PropertiesChanged` arrives per
 /// property, so a window is what a caller has to work with.

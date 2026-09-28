@@ -685,6 +685,49 @@ fn the_full_scan_finds_what_changed_while_the_daemon_was_down() {
     assert!(fx.row_at("new").seq < fx.row_at("new/m.txt").seq, "a new folder before what is in it");
 }
 
+/// What a Full local scan tells, as it goes (issue #8).
+#[derive(Default)]
+struct Told {
+    started: std::cell::Cell<u32>,
+    seen: std::cell::RefCell<Vec<(u64, u64)>>,
+}
+
+impl ScanProgress for Told {
+    fn started(&self) {
+        self.started.set(self.started.get() + 1);
+    }
+
+    fn seen(&self, directories: u64, files: u64) {
+        self.seen.borrow_mut().push((directories, files));
+    }
+}
+
+/// A Full local scan says it started, then how many directories and files it has seen after
+/// each directory, growing to everything in the folder; a single place examined says
+/// nothing.
+#[test]
+fn a_full_scan_tells_how_far_it_got_and_a_single_place_tells_nothing() {
+    let fx = Fx::new(&[folder("D", "R", "docs"), file("A", "D", "a.txt", b"a"), file("B", "R", "b.txt", b"b")]);
+    std::fs::create_dir(fx.path("docs/deep")).unwrap();
+    fx.write("docs/deep/n.txt", b"n");
+    let examine = |batch: &Batch, told: &Told| {
+        Examiner { disk: &fx.disk(), store: &fx.store, liveness: &fx.liveness, ignore: &fx.ignore, locks: &fx.locks, now: 1000 }
+            .examine_reporting(batch, Some(told))
+            .unwrap()
+    };
+
+    let told = Told::default();
+    examine(&Batch::full(), &told);
+    assert_eq!(told.started.get(), 1);
+    let seen = told.seen.into_inner();
+    assert!(seen.windows(2).all(|w| w[0].0 <= w[1].0 && w[0].1 <= w[1].1), "{seen:?}");
+    assert_eq!(seen.last(), Some(&(2, 3)), "docs and docs/deep; b.txt, a.txt and n.txt: {seen:?}");
+
+    let told = Told::default();
+    examine(&names(&[("docs", "a.txt")]), &told);
+    assert_eq!((told.started.get(), told.seen.into_inner()), (0, Vec::new()));
+}
+
 // Fix round 1 (the examination review): each of these failed before its fix.
 
 /// C1, across two batches: a placeholder dragged out of a folder is a

@@ -16,6 +16,7 @@ pub mod hub;
 pub mod kept_back;
 pub mod listing;
 pub mod local;
+pub mod local_scan;
 pub mod materialize;
 pub mod network;
 pub mod outbox_api;
@@ -602,6 +603,9 @@ pub struct SyncSnapshot {
     /// `PoolCeiling`, `LargeTransfers`, `LargeLimit`, `RetryAfter`: the account's transfer
     /// pool, once a second while anything moves or a `Retry-After` runs.
     pub throughput: crate::pool::Throughput,
+    /// `ScanState`, `ScanReason`, `ScanStarted`, `ScanDirectories`, `ScanFiles`,
+    /// `ScanExpected`, `ScanFinished`, `ScanTook`: the Full local scan (issue #8).
+    pub scan: local_scan::LocalScan,
 }
 
 impl Default for SyncSnapshot {
@@ -632,6 +636,7 @@ impl Default for SyncSnapshot {
             paused_until: None,
             uploads: Vec::new(),
             throughput: crate::pool::Throughput::default(),
+            scan: local_scan::LocalScan::default(),
         }
     }
 }
@@ -992,6 +997,9 @@ pub struct SyncService {
     /// the folder's turn to read-only drops what its watcher recorded since, and only then
     /// does a turn to read-only drop anything.
     drop_at_read_only: std::sync::atomic::AtomicBool,
+    /// The account was switched to read-write, and the watcher that follows has not started
+    /// yet: its Full local scan says so (`Sync1.ScanReason`).
+    switched_to_read_write: std::sync::atomic::AtomicBool,
     /// Works the account's mode out again when the write gate closes under the outbox worker
     /// ([`set_mode_check`](Self::set_mode_check)). None in tests.
     mode_check: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -1155,6 +1163,7 @@ impl SyncService {
                 pause_timer: Mutex::new(None),
                 pause_shown: std::sync::atomic::AtomicU64::new(0),
                 drop_at_read_only: std::sync::atomic::AtomicBool::new(false),
+                switched_to_read_write: std::sync::atomic::AtomicBool::new(false),
                 mode_check: Mutex::new(None),
                 persist,
                 report: Report::new(state.clone()),

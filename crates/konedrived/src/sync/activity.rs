@@ -87,12 +87,15 @@ pub enum Kind {
     /// OneDrive's version was kept, or put back, where both sides changed
     /// one item (`docs/design/writes.md` §7). Detail: why.
     Restored,
+    /// Made here, then removed here before its upload finished: it never
+    /// goes up, and its rows leave the outbox. Detail: why.
+    NotUploaded,
 }
 
 impl Kind {
     /// Every kind there is, for whatever has to agree with them all (the
     /// window's guard in `konedrivectl`'s tests).
-    pub const ALL: [Kind; 15] = [
+    pub const ALL: [Kind; 16] = [
         Kind::Downloaded,
         Kind::Freed,
         Kind::Added,
@@ -108,6 +111,7 @@ impl Kind {
         Kind::CloudDeleted,
         Kind::UploadFailed,
         Kind::Restored,
+        Kind::NotUploaded,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -127,6 +131,7 @@ impl Kind {
             Kind::CloudDeleted => "cloud-deleted",
             Kind::UploadFailed => "upload-failed",
             Kind::Restored => "restored",
+            Kind::NotUploaded => "not-uploaded",
         }
     }
 }

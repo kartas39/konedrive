@@ -286,6 +286,21 @@ an edit made while the daemon was not running that kept both the size and the ti
 log F52). With a rebuilt base (the store lost or recreated) it makes no `delete` rows: an item
 without a recorded handle cannot be proved gone, and is placed again from OneDrive instead.
 
+**How it goes is published** (issue #8). A Full local scan carries its reason from where it was
+asked for: the watcher's bring-up (`start` — the folder's read-write sync started — or
+`read-write`, when that start follows a switch to read-write), an overflow (`overflow`), the helper
+back (`helper-back`), `SetIgnorePatterns` (`ignore-list`), or the scan every 10 minutes while part of
+the folder cannot be watched (`periodic`); merged with another batch, the first reason stays. The
+examination tells the watcher's sink once it has started (the base and the root are there) and
+after every directory it lists whole, with the directories and the other entries seen so far; the
+sink puts that in the folder's state at most once a second, and once more when the scan ends —
+`idle`, with the time it finished and how long it took; one that fails part way keeps the last
+finish. "About N" is the number of items the base had placed when the scan started: the disk's own
+count is not known in advance, so the window and `sync status` never show a percentage
+(limitations log F151). A single place examined after a change is not reported, and a read-only
+folder, which has no watcher, reads `none`. `Sync1`'s `Scan*` properties ([desktop.md](desktop.md)
+§2.4), `sync status`'s "Local scan:" line and a line on the Status page show it.
+
 ## 5. The outbox
 
 ### 5.1 In the tree store
@@ -341,6 +356,18 @@ waits behind it, and the commit rebases it (a new eTag, or the item id behind a 
 **States**: `waiting` (the quiet spell, or open for writing) → `ready` → `running` → gone at the
 commit; or `retry` (with `next_try`), `blocked` (needs the user: a refused name, too large,
 OneDrive full, no permission) or `held` (§4.5).
+
+**An object gone before it landed.** A row is bound to its local object, not to its name. A
+`create` or `mkdir` whose object is under none of the names its rows saw ends on that run, with no
+retry: such an object does not come back (a file saved by replacing it is a new object, queued as
+its own row; one moved where no row looked is found by the move's examination and queued again, its
+upload starting over). The upload session it opened is cancelled, and it leaves the outbox with the
+rows behind it of the same object that never got an item id; the activity log records it once as
+`not-uploaded`. Only a file whose last request may have gone out — the last fragment, or the one
+request of a file up to 10 MiB — looks its name up in the parent first: an item there that is its
+own, by size and time since the file cannot be hashed any more, goes to the recycle bin (F149).
+A `delete` with no item id has nothing to delete and leaves with no request. The rule applies
+whenever such a row runs, so rows an earlier version left in `retry` clear on their next run.
 
 ### 5.3 Order
 
@@ -628,6 +655,7 @@ is answered by content hash or by place, never by guessing.
 | a session created, not persisted | nothing about it | a new session; the orphan expires |
 | mid-session | `session_url`, `session_next` | the session's status, then on |
 | the last fragment sent, no answer | `session_url` | the status answers `404`: the item's hash equal, adopted |
+| the last request sent, no answer, then the file removed | the row `running`, no object | the name looked up: an item of this size and time, unknown here, goes to the recycle bin; the rows leave (§5.2) |
 | the answer received, the commit's first step partial | some attributes written, the row `running` | replays, meets `409`/`412`, adopts, commits again |
 | the first step done, the second not | the file with the new cTag and id, the store with the old base | replays, `412`, the same hash: adopted, the store's step runs |
 | a `PATCH` sent, no answer | the row `running` | replays, `412`: the item is where the row wanted it, adopted |
@@ -642,8 +670,11 @@ is answered by content hash or by place, never by guessing.
 
 Per account, on `org.konedrive.Sync1`: `Outbox`, `Pause`/`Resume`, `SetIgnorePatterns`,
 `ConfirmDeletes`/`RestoreDeletes`, `NotUploaded`; the properties `PendingCount`, `PendingBytes`,
-`BlockedCount`, `HeldCount`, `Uploads`, `Paused`, `PausedUntil`, `IgnorePatterns`, `MachineName`;
-the activity kinds `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed` and `restored`; the
+`BlockedCount`, `HeldCount`, `Uploads`, `Paused`, `PausedUntil`, `IgnorePatterns`, `MachineName`,
+and the Full local scan's `ScanState`, `ScanReason`, `ScanStarted`, `ScanDirectories`, `ScanFiles`,
+`ScanExpected`, `ScanFinished`, `ScanTook` (§4.6);
+the activity kinds `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, `restored` and
+`not-uploaded`; the
 error `NotUploaded`, which "Free up space" gets for a file with changes not uploaded yet. On
 `Account1`: `SetMode` and `Mode`. [desktop.md](desktop.md) has each member, the commands and the
 window's pages.
@@ -777,4 +808,5 @@ Recorded in [`../limitations-and-workarounds.md`](../limitations-and-workarounds
 - `OpenByHandle` (F90–F92), moved-out objects and their windows (Z3, F120–F124);
 - the outbox on the bus (F100–F102);
 - the reconcile in read-write mode (F110–F117);
-- the test-account harness, and what stays assumed until it runs (F130, F131).
+- the test-account harness, and what stays assumed until it runs (F130, F131);
+- an object removed before its upload finished (F149).

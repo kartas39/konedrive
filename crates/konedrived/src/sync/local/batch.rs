@@ -28,6 +28,37 @@ use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
 
+/// Why a Full local scan runs (`Sync1.ScanReason`, issue #8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanReason {
+    /// The folder's read-write sync started: the daemon started, or the sync started again.
+    Start,
+    /// The account was switched to read-write.
+    ReadWrite,
+    /// The helper came back.
+    HelperBack,
+    /// The notification queue overflowed.
+    Overflow,
+    /// The ignore list changed.
+    IgnoreList,
+    /// Part of the folder cannot be watched: it is scanned every few minutes instead.
+    Periodic,
+}
+
+impl ScanReason {
+    /// As `Sync1.ScanReason` says it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::ReadWrite => "read-write",
+            Self::HelperBack => "helper-back",
+            Self::Overflow => "overflow",
+            Self::IgnoreList => "ignore-list",
+            Self::Periodic => "periodic",
+        }
+    }
+}
+
 /// How much of a directory to examine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DirScope {
@@ -38,6 +69,8 @@ pub enum DirScope {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Batch {
     pub(super) full: bool,
+    /// Why the Full local scan runs, when this batch is one and someone said why.
+    pub(super) reason: Option<ScanReason>,
     pub(super) dirs: BTreeMap<PathBuf, DirScope>,
     pub(super) trees: BTreeSet<PathBuf>,
     pub(super) objects: BTreeSet<FileHandle>,
@@ -55,8 +88,18 @@ impl Batch {
         Self { full: true, ..Self::default() }
     }
 
+    /// The Full local scan, for `reason`.
+    pub fn scan(reason: ScanReason) -> Self {
+        Self { full: true, reason: Some(reason), ..Self::default() }
+    }
+
     pub fn is_full(&self) -> bool {
         self.full
+    }
+
+    /// Why this Full local scan runs: the first reason given, if any.
+    pub fn reason(&self) -> Option<ScanReason> {
+        self.reason.filter(|_| self.full)
     }
 
     pub fn is_empty(&self) -> bool {
@@ -111,6 +154,7 @@ impl Batch {
     /// Everything `other` holds, added to this batch.
     pub fn merge(&mut self, other: Batch) {
         self.full |= other.full;
+        self.reason = self.reason.or(other.reason);
         for (dir, scope) in other.dirs {
             match scope {
                 DirScope::Whole => self.dir(&dir),

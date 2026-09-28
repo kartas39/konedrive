@@ -886,6 +886,20 @@ async fn the_folder_follows_the_accounts_mode() {
     assert_eq!(f.service.mode(), Mode::ReadOnly);
 }
 
+/// `sync status` says how the local scan goes (issue #8): a read-only folder has none.
+/// (How a read-write folder's scan reads is `konedrivectl::local_scan_text`'s test.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_status_says_a_read_only_folder_has_no_local_scan() {
+    let (f, _graph) = harness_onedrive().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/f.txt").is_file()).await;
+    let text = out_text(&run(f._bus.address(), &["sync", "status"]));
+    let line = text.lines().find(|l| l.starts_with("Local scan:")).unwrap_or_else(|| panic!("{text}"));
+    assert_eq!(line, "Local scan:             none — read-only");
+}
+
 /// `sync skipped` with no folder registered at all: there is nothing to be
 /// signed in about, and nothing OneDrive-related to say either — a plain
 /// statement of the actual reason, not the empty "Nothing is skipped."
@@ -1055,7 +1069,7 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let addr = f._bus.address();
     let out = run(addr, &["sync", "transfers"]);
     assert!(out.status.success(), "{out:?}");
-    let idle = "Downloading:  0 files, 0 B/s\nUploading:    0 files, 0 B/s\nPool: 16 of 64 (large: 0 of 4)\nNothing is downloading or uploading.";
+    let idle = "Downloading:  0 files, 0 B/s\nUploading:    0 files, 0 B/s\nPool: 16 of 32 (large: 0 of 4)\nNothing is downloading or uploading.";
     assert_eq!(out_text(&out).trim(), idle);
 
     let entry = f.service.report().transfers.start("/home/u/OneDrive/big.bin".into(), 4 << 20);
