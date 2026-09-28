@@ -553,10 +553,16 @@ impl Engine {
         let flying: HashSet<i64> = self.shared().in_flight.keys().copied().collect();
         let move_outs = self.cfg.moved_out.is_some();
         let full = self.space_full();
+        // A create with a removal of its object recorded behind it (issue #27).
+        let deletes: Vec<(i64, &crate::tree::outbox::Inode)> =
+            rows.iter().filter(|r| r.kind == OutboxKind::Delete).filter_map(|r| r.inode.as_ref().map(|inode| (r.seq, inode))).collect();
+        let removed = |r: &OutboxRow| r.kind == OutboxKind::Create && r.inode.as_ref().is_some_and(|inode| deletes.iter().any(|&(seq, of)| seq > r.seq && of == inode));
         Ok(rows
-            .into_iter()
-            .filter(|r| !flying.contains(&r.seq) && (r.kind != OutboxKind::MoveOut || move_outs) && due(r, now) && self.space_allows(r, full))
+            .iter()
+            .filter(|r| !flying.contains(&r.seq) && (r.kind != OutboxKind::MoveOut || move_outs) && due(r, now))
             .filter(|r| deps.get(&r.seq).is_none_or(Vec::is_empty))
+            .filter(|r| self.space_allows(r, full, || removed(r)))
+            .cloned()
             .map(|r| {
                 let class = self.class_of(&r);
                 (r, class)

@@ -1988,7 +1988,33 @@ application must never read zeros where real content should be.
   one account's full pool never holds up another account's open. The backpressure test now pins
   the admission (64 + queue), not four fills. LIMIT, on purpose ·
   measured (`sync::tests::the_request_loop_stops_taking_work_once_the_admission_is_full`). Open.
-- **F149. A full OneDrive is decided by one quota read, and some edges are taken on trust**
+- **F149. A file or folder removed here before its upload finished leaves the outbox at once**
+  (`konedrived/src/sync/upload/steps.rs`, `never_uploaded`, `landed_away`;
+  `tree/outbox/worker.rs`, `outbox_drop_unsent`; issue #27) — a `create` or `mkdir` whose object
+  `locate` finds under none of its names ends on that run, with no retry: an upload session it
+  opened is cancelled, and it leaves with the rows behind it of the same object that never got an
+  item id; the activity log gets one `not-uploaded` event ("removed here before its upload
+  finished"). The rule is applied when a row runs, so rows a store of the previous version kept in
+  `retry`/`not-found` clear on their next run. A `delete` with no item id leaves with no request
+  (it was blocked as `no-item`). It rests on a row being bound to its object, not its name, and on
+  such an object never coming back: (1) a file moved where no row looked, before the move was
+  examined, loses its row, and the move's examination queues it again as new — its upload starts
+  over from zero; (2) an object that comes back in the moment between the worker's look and the
+  drop (moved back in, its move examined in between) keeps the row recorded meanwhile, turned into
+  a `create`/`mkdir`, or, if it came back later, is queued anew by its examination. (3) Only a file
+  whose last request may have gone out — the last fragment of its session, or the one request of a
+  file up to 10 MiB, with the snapshot taken — looks its name up in the parent. With the file gone
+  it cannot be hashed, so the item there is taken for its own by its size and time (seconds), as
+  well as by `taken`'s rules (not an item a live row frees, not one this machine knows); an item of
+  another device with the same name, size and time, uploaded after this one and so not refused by
+  `conflictBehavior=fail`, cannot be told apart and would go to the recycle bin with it. A
+  small file whose request never went out (its parent not found yet) costs one needless lookup.
+  (4) A `mkdir` whose request landed with its answer lost, then removed here, leaves no lookup:
+  the empty folder stays in OneDrive, and the reconcile places it here again. (5) The window's
+  upload progress job of such a file ends as if it succeeded (A21's rule: a row gone without an
+  `upload-failed` event is done). DEBT · measured
+  (`sync::upload::tests::removed::*`). Open.
+- **F150. A full OneDrive is decided by one quota read, and some edges are taken on trust**
   (`konedrived/src/sync/upload/space.rs`; write design §6.4, issue #2) — a refusal for space reads
   the quota once: `exceeded` or under 1 MiB free (a guess) turns the account full, otherwise only
   the refused file waits as too big. Edges: (1) a quota that cannot be read, or that Graph gives
@@ -2002,12 +2028,16 @@ application must never read zeros where real content should be.
   the read says it fits is marked too big anyway, and goes again at the next read (at most one
   refusal per 30 minutes); (5) a change to a waiting file merges into its row as a new detection
   and drops the reason, so it is sent once more and OneDrive decides again; (6) the free space
-  shown only shrinks by what this computer uploaded until the next read. The uploads freed are
+  shown only shrinks by what this computer uploaded until the next read; (7) a waiting `create`
+  with a removal of its object behind it is taken anyway, so that it leaves the outbox at once
+  (F149): if its file is found after all, it waits on and is not taken for that again until the
+  next quota read. The uploads freed are
   paced by the account's transfer pool (#3), not all started at once. FRAGILE · measured for the main paths
   (`sync::upload::tests::a_full_onedrive_sends_no_content_but_moves_and_deletes_go`,
   `a_file_too_big_for_the_space_left_waits_alone`,
   `a_file_not_refused_goes_whatever_the_known_free_space_says`,
-  `rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start`), reasoned for the edges.
+  `rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start`,
+  `a_file_removed_while_it_waits_for_space_leaves_the_outbox`), reasoned for the edges.
   Open.
 ---
 

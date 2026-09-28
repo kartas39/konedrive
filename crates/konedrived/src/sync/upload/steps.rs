@@ -156,6 +156,9 @@ pub(super) enum Ours<'a> {
     File(&'a str),
     /// This item, moved.
     Item(&'a str),
+    /// A file of this size and time (Unix seconds): the content a row sent
+    /// whose file is gone and cannot be hashed any more.
+    Sent { size: u64, mtime: i64 },
 }
 
 pub(super) enum Taken {
@@ -190,6 +193,7 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
         Ours::Folder => holder.folder.is_some(),
         Ours::File(hash) => holder.file.is_some() && holder.quick_xor_hash() == Some(hash),
         Ours::Item(_) => own_item && holder.name.as_deref() == Some(name),
+        Ours::Sent { size, mtime } => holder.file.is_some() && holder.size == Some(size) && holder.mtime() == mtime,
     };
     if name.starts_with(SWAP_PREFIX) {
         // Its own temporary name: a replay adopts what it made there.
@@ -352,7 +356,7 @@ pub(super) async fn upload_as_new(e: &Engine, row: &OutboxRow, found: &Found, pa
 
 async fn mkdir(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
     let local = local_name(&row)?;
-    let Some(found) = locate(e, disk, &row)?.filter(|f| f.is_dir) else { return Ok(Outcome::later(reason::NOT_FOUND, RECHECK)) };
+    let Some(found) = locate(e, disk, &row)?.filter(|f| f.is_dir) else { return never_uploaded(e, disk, &row).await };
     let Some(parent) = parent_of(e, disk, &row)? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
     let name = wanted_name(&row, &local);
     // Opened before the request, as a file's content is: the commit marks the
@@ -522,7 +526,12 @@ async fn move_gone(e: &Engine, disk: &Disk, row: &OutboxRow, found: Option<&Foun
 }
 
 pub(super) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result<Outcome, Fail> {
-    let Some(id) = row.item_id.clone() else { return Ok(Outcome::blocked("no-item")) };
+    let Some(id) = row.item_id.clone() else {
+        // Never in OneDrive (its create never landed): nothing to delete.
+        tracing::info!("{} was never uploaded: its delete leaves the outbox", row.rel.display());
+        e.store().with(|s| s.outbox_drop(row.seq, None, None, None))?;
+        return Ok(Outcome::Done);
+    };
     let base = row.base.clone().unwrap_or_default();
     let folder = e.store().with(|s| s.get(Table::Items, &id))?.is_some_and(|item| item.kind == Kind::Folder);
     if folder {
@@ -603,4 +612,74 @@ async fn delete_folder(e: &Engine, row: &OutboxRow, id: &str) -> Result<Outcome,
         Err(WriteError::NotFound) => gone(e, row, id, "to OneDrive's recycle bin").await,
         Err(other) => Err(other.into()),
     }
+}
+
+/// A `create` or `mkdir` whose local object is under none of its names
+/// (issue #27). A row is bound to its object, not to its name, and such an
+/// object does not come back: a file saved over by replacing it is a new
+/// object, and one moved where no row looked is found by the examination
+/// and queued again as new. So the row ends now, with no retry: the upload
+/// session it opened is cancelled, and it leaves the outbox with the rows
+/// behind it of the same object that never got an item id — nothing of it
+/// reached OneDrive. Except where it may have: see [`landed_away`].
+pub(super) async fn never_uploaded(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Outcome, Fail> {
+    let behind: Vec<i64> = match &row.inode {
+        Some(inode) => e.store().with(|s| s.outbox_for_inode(inode))?.into_iter().filter(|r| r.seq > row.seq).map(|r| r.seq).collect(),
+        None => Vec::new(),
+    };
+    if let Some(url) = &row.session_url {
+        if let Err(err) = e.cfg.drive.cancel_upload(url).await {
+            tracing::debug!("the upload session of a removed file was not cancelled: {err}");
+        }
+    }
+    let detail = if landed_away(e, disk, row).await? {
+        "removed here before its upload finished; what reached OneDrive went to its recycle bin"
+    } else {
+        "removed here before its upload finished"
+    };
+    tracing::info!("{} is not uploaded: {detail}", row.rel.display());
+    let event = e.event(kind::NOT_UPLOADED, &row.rel, detail);
+    e.store().with(|s| s.outbox_drop_unsent(row.seq, &behind, Some(&event)))?;
+    e.cfg.host.activity(&event);
+    Ok(Outcome::Done)
+}
+
+/// A file's upload whose last request may have gone out with its answer
+/// lost — the last fragment of a session, or the one request of a file up
+/// to [`Limits::small_max`](super::Limits::small_max) — may have made the
+/// item although the row never committed. Only such a row looks the name up
+/// in the parent; the item there is this row's the way a replay's `409`
+/// decides it ([`taken`]), by the size and time sent, the file being gone.
+/// If it is, it goes to OneDrive's recycle bin. Whether it did.
+async fn landed_away(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<bool, Fail> {
+    if row.kind != OutboxKind::Create {
+        return Ok(false);
+    }
+    let Some((size, mtime)) = row.snapshot.as_deref().and_then(sent) else { return Ok(false) };
+    let limits = e.cfg.limits;
+    let last_sent = size <= limits.small_max || (row.session_url.is_some() && row.session_next.unwrap_or(0).saturating_add(limits.chunk) >= size);
+    if !last_sent {
+        return Ok(false);
+    }
+    let Ok(local) = local_name(row) else { return Ok(false) };
+    // The parent gone here as well, with no id recorded: its own delete
+    // takes whatever is inside it in OneDrive.
+    let Some(parent) = parent_of(e, disk, row)? else { return Ok(false) };
+    let name = wanted_name(row, &local);
+    let Taken::Adopt(item) = taken(e, row, &parent, &name, Ours::Sent { size, mtime }).await? else { return Ok(false) };
+    let guard = item.e_tag.clone().or(item.c_tag.clone()).unwrap_or_default();
+    match e.cfg.drive.delete_item(&item.id, &guard).await {
+        Ok(()) | Err(WriteError::NotFound) => Ok(true),
+        // Changed there since: someone's now, not this row's.
+        Err(WriteError::Changed) => Ok(false),
+        Err(err) => Err(err.into()),
+    }
+}
+
+/// The size and time (Unix seconds) a row's snapshot, `<size> <mtime_ns>`,
+/// says were sent.
+fn sent(snapshot: &str) -> Option<(u64, i64)> {
+    let (size, ns) = snapshot.split_once(' ')?;
+    let ns: i128 = ns.parse().ok()?;
+    Some((size.parse().ok()?, i64::try_from(ns.div_euclid(1_000_000_000)).ok()?))
 }

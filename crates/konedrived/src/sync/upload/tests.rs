@@ -805,6 +805,35 @@ fn rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start() {
     assert_committed(&w, "full.txt", "full.txt");
 }
 
+/// Issue #2 with #27: a file removed while its upload was under way — the
+/// daemon stopped mid-session, the removal examined (a `delete` behind the
+/// `running` create) — leaves the outbox at once although OneDrive is full
+/// and content rows are not taken: the session cancelled, nothing sent, one
+/// `not-uploaded` event, and the account still full.
+#[test]
+fn a_file_removed_while_it_waits_for_space_leaves_the_outbox() {
+    let w = World::new(&[]);
+    w.write("big.bin", &vec![3u8; 1024 * 1024 + 77]);
+    w.examine(&[("", "big.bin")]);
+    let crashed = w.h.engine();
+    crashed.arm(Fault::MidSession(1));
+    w.h.drain(&crashed);
+    let session = w.rows()[0].session_url.clone().expect("a session is open");
+    std::fs::remove_file(w.path("big.bin")).unwrap();
+    w.examine(&[("", "big.bin")]);
+    assert_eq!(w.summary(), vec![(Create, "big.bin".into(), OutboxState::Running), (OutboxKind::Delete, "big.bin".into(), OutboxState::Ready)]);
+
+    let engine = w.h.engine();
+    engine.apply_quota(&crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() });
+    let from = w.cloud(|c| c.log.len());
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert!(engine.space_full(), "still full: only a quota read ends it");
+    let sid = session.rsplit('/').next().unwrap();
+    assert_eq!(w.cloud(|c| c.log[from..].to_vec()), vec![("DELETE".to_owned(), format!("upload/{sid}"))], "the session cancelled, nothing sent");
+    assert!(w.h.host.kinds().iter().any(|k| k == kind::NOT_UPLOADED), "{:?}", w.h.host.kinds());
+}
+
 /// Drains `engine` in the background, pauses it while the first request of
 /// `method` whose path holds `fragment` is in flight, runs `meanwhile`, and
 /// waits for the drain to end.
@@ -1147,6 +1176,7 @@ fn the_workers_activity_words_are_the_daemons_kinds() {
         (kind::UPLOAD_FAILED, Kind::UploadFailed),
         (kind::RESTORED, Kind::Restored),
         (kind::CONFLICT, Kind::Conflict),
+        (kind::NOT_UPLOADED, Kind::NotUploaded),
     ] {
         assert_eq!(word, kind.as_str());
     }
@@ -1273,3 +1303,7 @@ fn renames_moves_and_removals_reach_onedrive_as_the_disk_is() {
         assert_eq!(w.cloud(|c| c.paths()), vec!["a", "b", "b/h.txt"], "sent between {sent_between}");
     }
 }
+
+/// A file or folder removed before its upload finished (issue #27).
+#[path = "removed_tests.rs"]
+mod removed;

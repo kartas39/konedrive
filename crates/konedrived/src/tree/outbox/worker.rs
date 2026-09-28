@@ -200,6 +200,41 @@ impl TreeStore {
         Ok(())
     }
 
+    /// A `create` or `mkdir` whose local object is gone before it landed
+    /// (issue #27): in one transaction, row `seq` goes, and so do the rows
+    /// `behind` it of the same object that never got an item id — nothing
+    /// of it reached OneDrive. A row of that object recorded since the worker
+    /// looked (the object back in a place it was not looked for) is not
+    /// dropped: an `update` or `move` becomes the upload of the object as new,
+    /// the kind of row `seq` was; a removal of it is left to leave on its own.
+    pub fn outbox_drop_unsent(&mut self, seq: i64, behind: &[i64], activity: Option<&ActivityRow>) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        let Some(dropped) = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next() else {
+            return Ok(());
+        };
+        let later = match &dropped.inode {
+            Some(inode) => rows_for(&tx, None, Some(inode))?,
+            None => Vec::new(),
+        };
+        for mut row in later.into_iter().filter(|r| r.seq != seq) {
+            if behind.contains(&row.seq) {
+                tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+            } else if matches!(row.kind, OutboxKind::Update | OutboxKind::Move) {
+                row.kind = dropped.kind;
+                row.base = None;
+                row.snapshot = None;
+                row.session_url = None;
+                row.session_expires = None;
+                row.session_next = None;
+                rewrite(&tx, &row)?;
+            }
+        }
+        tx.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+        add_activity(&tx, activity)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Item `id` is gone from OneDrive while this machine still holds its
     /// content (§6: edit/delete, move/delete): the base forgets it and what
     /// was inside it, and its row becomes, through `amend`, the create or

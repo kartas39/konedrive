@@ -20,6 +20,7 @@
 //! file is too big — ends *full* when there is space again and frees the
 //! files that now fit.
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use super::engine::{now, Engine, Outcome};
@@ -92,6 +93,10 @@ pub(super) struct Space {
     /// A read is wanted whatever the rows say: the outbox held waiting rows
     /// at start-up.
     wanted: bool,
+    /// Waiting rows taken, since the last quota read, to see whether their
+    /// file is gone, and found it was not ([`Engine::space_holds`]): not
+    /// taken again for that until the next read.
+    looked: HashSet<i64>,
 }
 
 impl Space {
@@ -142,9 +147,33 @@ impl Engine {
         }
     }
 
-    /// Whether `row` may be taken as the space stands.
-    pub(super) fn space_allows(&self, row: &OutboxRow, full: bool) -> bool {
-        !waits(row.reason.as_deref()) && !(full && row.kind.sends_content())
+    /// Whether `row` may be taken as the space stands. A `create` that waits
+    /// for space is taken all the same when a removal of its object stands
+    /// behind it (`removed`): a file removed before its
+    /// upload finished leaves the outbox at once (issue #27), full or not.
+    /// Its run sends no content: it ends if the file is gone, and waits on
+    /// if not ([`Engine::space_holds`]).
+    pub(super) fn space_allows(&self, row: &OutboxRow, full: bool, removed: impl FnOnce() -> bool) -> bool {
+        if !waits(row.reason.as_deref()) && !(full && row.kind.sends_content()) {
+            return true;
+        }
+        removed() && !self.shared().space.looked.contains(&row.seq)
+    }
+
+    /// The reason a content row taken while it waits for space waits on
+    /// with, if it does: its own `waiting-for-space` or `too-big:…`, or
+    /// `waiting-for-space` while OneDrive is full.
+    /// Such a row is not taken again for its removal until the next quota
+    /// read.
+    pub(super) fn space_holds(&self, row: &OutboxRow) -> Option<String> {
+        let why = match row.reason.as_deref() {
+            Some(r) if waits(Some(r)) => Some(r.to_owned()),
+            _ => (self.space_full() && row.kind.sends_content()).then(|| WAITING.to_owned()),
+        };
+        if why.is_some() {
+            self.shared().space.looked.insert(row.seq);
+        }
+        why
     }
 
     /// The quota, read now — or, `reuse`, the read of a moment ago, which a
@@ -225,6 +254,7 @@ impl Engine {
             space.last = Some((quota.clone(), now));
             space.next_check = now + QUOTA_RECHECK.as_secs() as i64;
             space.wanted = false;
+            space.looked.clear();
         }
         if !full {
             if let Err(e) = self.release_fitting(quota.remaining.unwrap_or(0)) {

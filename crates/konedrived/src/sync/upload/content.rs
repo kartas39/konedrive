@@ -17,7 +17,7 @@ use konedrive_fs::placeholder::{self, State};
 
 use super::engine::{Engine, Fail, Outcome};
 use super::local::{self, Found, Read, Snap, SYNC_UPLOADING};
-use super::steps::{answer_row, blocking, commit_row, copy, follow_cloud, local_name, locate, parent_of, taken, temporary, upload_as_new, wanted_name, Ours, Taken};
+use super::steps::{answer_row, blocking, commit_row, copy, follow_cloud, local_name, locate, never_uploaded, parent_of, taken, temporary, upload_as_new, wanted_name, Ours, Taken};
 use super::{kind, reason, space, Fault};
 use crate::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
 use crate::quickxor::QuickXor;
@@ -33,7 +33,17 @@ const BAD_ITEM: &str = "hash-mismatch:";
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
     let local = local_name(&row)?;
-    let Some(found) = locate(e, disk, &row)?.filter(|f| !f.is_dir) else { return Ok(Outcome::later(reason::NOT_FOUND, RECHECK)) };
+    let Some(found) = locate(e, disk, &row)?.filter(|f| !f.is_dir) else {
+        return match row.kind {
+            OutboxKind::Create => never_uploaded(e, disk, &row).await,
+            _ => Ok(Outcome::later(reason::NOT_FOUND, RECHECK)),
+        };
+    };
+    // Taken while it waits for space only to see whether its file is gone
+    // (`space`, `Engine::space_allows`): it is not, so it waits on.
+    if let Some(why) = e.space_holds(&row) {
+        return Ok(Outcome::Space(why));
+    }
     match found.state() {
         Ok(None | Some(State::Hydrated)) => {}
         Ok(Some(_)) => return Ok(Outcome::wait(reason::NOT_LOCAL, RECHECK)),
