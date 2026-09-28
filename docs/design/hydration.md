@@ -360,7 +360,7 @@ information stay outside it. The pool's size is not fixed — OneDrive publishes
 throttles an account as a whole with `429`/`503` — so it finds its own level:
 
 - it starts at 16 and grows by one slot for each successful transfer made while work waits and every
-  slot is busy, up to the ceiling (`[transfers] max` in `config.toml`, 16 by default, each
+  slot is busy, up to the ceiling (`[transfers] max` in `config.toml`, 32 by default, each
   account's pool separately). Latency is not measured: only a throttle or the ceiling stops it;
 - a `429` or `503` on any of the account's requests — the delta feed and the pre-authenticated
   download URLs included — halves it, once per burst, and nothing gets a slot for the whole
