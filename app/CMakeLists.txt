@@ -1,5 +1,18 @@
 cmake_minimum_required(VERSION 3.24)
+# CMake's project version is not shown anywhere. The version the window shows
+# is Cargo's, read below, so that it is the build's (docs/releasing.md).
 project(konedrive-app VERSION 0.1.0 LANGUAGES CXX)
+
+# The version in the workspace's Cargo.toml ([workspace.package]): a
+# placeholder in git, and the build's own in a package build.
+set(KONEDRIVE_CARGO_TOML ${CMAKE_CURRENT_SOURCE_DIR}/../Cargo.toml)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${KONEDRIVE_CARGO_TOML})
+file(READ ${KONEDRIVE_CARGO_TOML} KONEDRIVE_CARGO_TOML_TEXT)
+if(NOT KONEDRIVE_CARGO_TOML_TEXT MATCHES "\\[workspace\\.package\\][^[]*\nversion = \"([^\"]+)\"")
+    message(FATAL_ERROR "no version in [workspace.package] of ${KONEDRIVE_CARGO_TOML}")
+endif()
+set(KONEDRIVE_VERSION ${CMAKE_MATCH_1})
+message(STATUS "KOneDrive version: ${KONEDRIVE_VERSION}")
 
 set(QT_MIN_VERSION "6.8.0")
 set(KF_MIN_VERSION "6.8.0")
@@ -60,6 +73,7 @@ find_package(KF6 ${KF_MIN_VERSION} REQUIRED COMPONENTS CoreAddons I18n Kirigami)
 find_package(KF6KirigamiAddons 1.0 REQUIRED)
 
 add_executable(konedrive main.cpp)
+target_compile_definitions(konedrive PRIVATE KONEDRIVE_VERSION="${KONEDRIVE_VERSION}")
 set(KONEDRIVE_QML
     Main.qml
     qml/StatusPage.qml

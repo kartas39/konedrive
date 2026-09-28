@@ -2782,8 +2782,9 @@ The RPM packages, `konedrive` and `konedrive-kde`, from `packaging/rpm/konedrive
   names only GPL-3.0-or-later, although the binaries link the vendored crates, each under its own
   license; it declares no `bundled(crate(…))`; it builds no debuginfo packages; the vendor tarball
   holds every crate in `Cargo.lock`, for every platform (about 49 MB); `%check` runs only
-  `desktop-file-validate`, not the test suites. A rebuild of the same version and release
-  installs only with `dnf reinstall`. A COPR repository needs the first two fixed.
+  `desktop-file-validate`, not the test suites (the release workflow runs the daemon's unit tests
+  before it builds). A rebuild of the same version and release — a local build of the same
+  commit — installs only with `dnf reinstall`. A COPR repository needs the first two fixed.
 - **R5. Nothing tests the scriptlets.** FRAGILE · reasoned · open. No test installs the RPMs: the
   preset, the first-install start, the restart on upgrade and the stop on removal first run when
   the user installs. The first-install start runs in `%post`, before systemd's own reload at the
@@ -2793,6 +2794,32 @@ The RPM packages, `konedrive` and `konedrive-kde`, from `packaging/rpm/konedrive
   to `dnf`'s output naming `systemctl status konedrive-helper`, and `konedrivectl sync status`
   says `Helper: stopped` until `sudo systemctl start konedrive-helper` or the next boot. Checked
   once, with a stub `systemctl` whose start fails: the scriptlet exits 0 and prints that line.
+- **R6. The packages are not signed.** DEBT · reasoned · open. The release workflow publishes the
+  RPMs on GitHub Releases with a `SHA256SUMS` file, which is published next to them and so vouches
+  only against a damaged download, not a changed release. `dnf install ./file.rpm` checks no
+  signature. Way out: a COPR repository, which signs what it builds.
+- **R7. Only Fedora 44 on x86_64 is built.** LIMIT · reasoned · open. The workflow builds in one
+  `fedora:44` container on GitHub's x86_64 runners. The RPMs name `fc44` and link Fedora 44's
+  Qt and KF6 libraries; another Fedora release has to build them from a checkout. Way out: a COPR
+  repository, which builds for each release and architecture.
+- **R8. The versions in git are placeholders.** FRAGILE · reasoned · mitigated. `Cargo.toml`,
+  `Cargo.lock` and the spec keep `0.1.0`; `scripts/build-rpm.sh` writes the build's version into
+  its own copies (`docs/releasing.md`), and a comment next to each says so. A build that does not
+  go through the script — `cargo build`, `scripts/dev-install.sh` — says `0.1.0`. The script
+  rewrites lines by pattern (the `version` line of `[workspace.package]`, the `version` of every
+  lock entry without a `source`, the spec's `Version:`) and stops if one it expects is missing;
+  `cargo vendor --locked` stops it if the lock file no longer fits. The window's CMake reads the
+  version from `Cargo.toml` with a regular expression, and stops configuring if it finds none.
+  The version counts only the tags the checkout has: a local build without `git fetch --tags`
+  can be numbered below a release already installed, and `dnf` then refuses it as a downgrade.
+  A release's version depends on every tag, on any branch: a stray `vX.Y.Z` tag pushed by mistake
+  moves the next release's number. A dry run is numbered as a local build, below the release that
+  would follow; two dry runs of the same commit carry the same version.
+- **R9. A merge into `main` can go without a release of its own.** LIMIT · reasoned · open. The
+  release workflow runs one at a time (`concurrency`), and GitHub keeps one waiting run per group:
+  a third push while one run builds and one waits cancels the waiting one. Nothing is lost — the
+  next release is built from the newer commit, which holds the older one — but no release carries
+  the cancelled commit alone.
 
 ---
 

@@ -1,0 +1,188 @@
+# A release on every push to main: the daemon's tests, then the RPMs, then the
+# tag vX.Y.Z and a GitHub Release with the packages. Run by hand
+# (workflow_dispatch) it is a dry run by default: the RPMs are kept as the
+# run's artifacts, and nothing is tagged or released. docs/releasing.md.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run: build the RPMs and keep them as the run's artifacts; no tag, no release"
+        type: boolean
+        default: true
+
+# One run at a time; a release in progress is never cancelled. GitHub keeps
+# one waiting run per group: a newer one replaces it (docs/releasing.md).
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: fedora:44
+    timeout-minutes: 120
+    env:
+      # A release only from main: a push, or a run by hand with the dry run
+      # turned off. Anything else is a dry run.
+      RELEASE: >-
+        ${{ github.ref == 'refs/heads/main' &&
+        (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.dry_run == false)) }}
+    outputs:
+      release: ${{ steps.version.outputs.release }}
+      version: ${{ steps.version.outputs.version }}
+      previous_tag: ${{ steps.version.outputs.previous_tag }}
+    steps:
+      # git before the checkout, so that it is a repository with its history
+      # and tags; dbus-daemon for the tests' private buses.
+      - name: Install the tools
+        run: dnf -y install git rpm-build dbus-daemon
+
+      - name: Check out, with every tag
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # The container runs as root; the checkout belongs to the runner's user.
+      # Cargo's home goes inside the checkout, so that the cache below and the
+      # tests' user (not root) share it. Set here, from the container's path:
+      # github.workspace would give the host's.
+      - name: Set up the checkout
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          echo "CARGO_HOME=$GITHUB_WORKSPACE/.cargo-home" >>"$GITHUB_ENV"
+
+      - name: Install the build dependencies
+        run: dnf -y builddep packaging/rpm/konedrive.spec
+
+      # For the tests only: the RPM build is offline, from vendored crates, in
+      # its own directory.
+      - name: Cache the crates and the test build
+        uses: actions/cache@v6
+        with:
+          path: |
+            .cargo-home/registry
+            .cargo-home/git
+            target/debug
+          key: fedora44-cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: fedora44-cargo-
+
+      # The daemon's unit tests; a failure stops the run before anything is
+      # tagged. Not the workspace (#21). As a user, not root: several tests
+      # take a permission away and expect it to hold. Their temporary files go
+      # on the runner's disk, bind-mounted, not on the container's overlay,
+      # which has no file handles (name_to_handle_at).
+      - name: Test the daemon
+        run: |
+          id tester >/dev/null 2>&1 || useradd --create-home tester
+          mkdir -p target .cargo-home "$RUNNER_TEMP/tests"
+          chown -R tester: target .cargo-home "$RUNNER_TEMP/tests"
+          runuser -u tester -- env TMPDIR="$RUNNER_TEMP/tests" HOME=/home/tester \
+            cargo test --locked -p konedrived --lib
+
+      # A release is X.Y.Z. A dry run takes a local build's version,
+      # X.Y.Z~dev.YYYYMMDD.SHA, which sorts below the release: installed, its
+      # RPMs do not stand in the way of the release's upgrade.
+      - name: Choose the version
+        id: version
+        run: |
+          if [ "$RELEASE" = true ]; then
+            version=$(scripts/version.sh release)
+            previous_tag=$(scripts/version.sh previous "$version")
+            echo "Release $version (previous tag: ${previous_tag:-none})"
+          else
+            version=$(scripts/version.sh local)
+            previous_tag=
+            echo "Dry run: $version"
+          fi
+          {
+            echo "release=$RELEASE"
+            echo "version=$version"
+            echo "previous_tag=$previous_tag"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Build the RPMs
+        run: |
+          if [ "$RELEASE" = true ]; then
+            scripts/build-rpm.sh --version "${{ steps.version.outputs.version }}"
+          else
+            scripts/build-rpm.sh
+          fi
+
+      - name: Collect the RPMs and their checksums
+        run: |
+          mkdir dist
+          cp target/rpm/RPMS/*/*.rpm target/rpm/SRPMS/*.src.rpm dist/
+          cd dist
+          sha256sum -- *.rpm >SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Keep them as the run's artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: konedrive-${{ steps.version.outputs.version }}
+          path: dist/
+          if-no-files-found: error
+
+  # Only a release (the build job's RELEASE).
+  publish:
+    needs: build
+    if: needs.build.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.build.outputs.version }}
+      PREVIOUS_TAG: ${{ needs.build.outputs.previous_tag }}
+    steps:
+      - name: Fetch the RPMs
+        uses: actions/download-artifact@v8
+        with:
+          name: konedrive-${{ needs.build.outputs.version }}
+          path: dist
+
+      # A rerun after the tag was pushed finds it on this commit and reuses
+      # it; the build job then chose the same version.
+      - name: Tag the commit
+        run: |
+          tag="v$VERSION"
+          if ref=$(gh api "repos/$GH_REPO/git/ref/tags/$tag" --jq '.object.type + " " + .object.sha' 2>/dev/null); then
+            sha=${ref#* }
+            if [ "${ref%% *}" = tag ]; then
+              sha=$(gh api "repos/$GH_REPO/git/tags/$sha" --jq .object.sha)
+            fi
+            if [ "$sha" != "$GITHUB_SHA" ]; then
+              echo "::error::$tag already exists, on $sha, not on $GITHUB_SHA"
+              exit 1
+            fi
+            echo "$tag is already on $GITHUB_SHA: reused"
+          else
+            gh api "repos/$GH_REPO/git/refs" -f ref="refs/tags/$tag" -f sha="$GITHUB_SHA" >/dev/null
+            echo "tagged $GITHUB_SHA as $tag"
+          fi
+
+      # A rerun finds the release and replaces its files instead of making a
+      # second one. The notes list the pull requests merged since the
+      # previous tag.
+      - name: Publish the release
+        run: |
+          tag="v$VERSION"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+            echo "release $tag existed: its files were replaced"
+          else
+            set -- --generate-notes
+            if [ -n "$PREVIOUS_TAG" ]; then
+              set -- "$@" --notes-start-tag "$PREVIOUS_TAG"
+            fi
+            gh release create "$tag" dist/* --verify-tag --title "KOneDrive $VERSION" "$@"
+          fi

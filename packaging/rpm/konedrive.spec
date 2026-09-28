@@ -12,6 +12,8 @@
 %global debug_package %{nil}
 
 Name:           konedrive
+# A placeholder: scripts/build-rpm.sh writes the build's version here, and a
+# changelog entry for it, from the git tags (docs/releasing.md).
 Version:        0.1.0
 Release:        1%{?dist}
 Summary:        OneDrive client for KDE Plasma with files on demand
