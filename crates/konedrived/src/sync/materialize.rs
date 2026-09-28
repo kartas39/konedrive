@@ -1597,7 +1597,7 @@ mod tests {
 
     #[async_trait]
     impl ContentSource for Memory {
-        async fn fetch(&self, _item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+        async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
             if let Some(hook) = self.on_fetch.lock().unwrap().take() {
                 hook();
             }
@@ -1658,7 +1658,7 @@ mod tests {
         struct Gone;
         #[async_trait]
         impl ContentSource for Gone {
-            async fn fetch(&self, _: &str, _: u64) -> Result<Fetched, SourceError> {
+            async fn fetch(&self, _: &str, _: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
                 Err(SourceError::NotFound("gone".into()))
             }
         }

@@ -7,6 +7,11 @@
 //! only on `k mod 160`, and XOR is linear, so every byte is first folded into
 //! one of 160 lanes — one XOR per byte, whatever the file's size — and the
 //! lanes are placed into the register once, at the end.
+//!
+//! The same linearity lets a file be hashed in pieces, in any order: a piece
+//! hashed [`at`](QuickXor::at) its offset in the file folds its bytes into
+//! the lanes they belong to in the whole, and the pieces
+//! [`combine`](QuickXor::combine) into the whole file's hash (issue #28).
 
 use base64::Engine;
 
@@ -19,6 +24,8 @@ pub const LEN: usize = 20;
 pub struct QuickXor {
     lanes: [u8; WIDTH_BITS],
     length: u64,
+    /// Where in the file the first byte given to [`update`](Self::update) lies.
+    start: u64,
 }
 
 impl Default for QuickXor {
@@ -29,11 +36,27 @@ impl Default for QuickXor {
 
 impl QuickXor {
     pub fn new() -> Self {
-        Self { lanes: [0; WIDTH_BITS], length: 0 }
+        Self::at(0)
+    }
+
+    /// A hasher of the bytes that start at `offset` in the file: a piece of it,
+    /// to be [`combine`](Self::combine)d with the others.
+    pub fn at(offset: u64) -> Self {
+        Self { lanes: [0; WIDTH_BITS], length: 0, start: offset }
+    }
+
+    /// Adds the hash of another piece of the same file; the pieces must not
+    /// overlap. Once every byte of the file is in, [`finish`](Self::finish)
+    /// gives the whole file's hash, whatever order the pieces came in.
+    pub fn combine(&mut self, other: &QuickXor) {
+        for (lane, value) in self.lanes.iter_mut().zip(other.lanes.iter()) {
+            *lane ^= value;
+        }
+        self.length += other.length;
     }
 
     pub fn update(&mut self, data: &[u8]) {
-        let mut lane = (self.length % WIDTH_BITS as u64) as usize;
+        let mut lane = ((self.start + self.length) % WIDTH_BITS as u64) as usize;
         for &byte in data {
             self.lanes[lane] ^= byte;
             lane += 1;
@@ -171,6 +194,32 @@ mod tests {
             }
             assert_eq!(pieces.finish(), whole.finish(), "pieces {sizes:?}");
         }
+    }
+
+    /// Pieces hashed at their offsets, in any order, combine into the hash of
+    /// the whole: what a download in parallel parts checks (issue #28).
+    #[test]
+    fn pieces_hashed_at_their_offsets_combine_into_the_whole() {
+        let data = noise(100_003, 13);
+        let mut whole = QuickXor::new();
+        whole.update(&data);
+        // Boundaries that fall on and off the 160-byte period.
+        let bounds = [0usize, 1, 161, 4_000, 4_160, 50_001, 100_003];
+        let mut pieces: Vec<QuickXor> = bounds
+            .windows(2)
+            .map(|w| {
+                let mut h = QuickXor::at(w[0] as u64);
+                h.update(&data[w[0]..w[1]]);
+                h
+            })
+            .collect();
+        pieces.reverse();
+        let mut combined = QuickXor::new();
+        for piece in &pieces {
+            combined.combine(piece);
+        }
+        assert_eq!(combined.finish(), whole.finish());
+        assert_eq!(combined.finish(), reference(&data));
     }
 
     #[test]

@@ -428,7 +428,8 @@ The fill asks `GET /me/drive/items/{id}` for fresh metadata: size, cTag, `quickX
 pre-authenticated `@microsoft.graph.downloadUrl`. It streams from that URL, falling back to
 `GET /items/{id}/content` (which answers `302` to the same kind of URL) only when the metadata
 carries none. One request gives everything the fill checks against, and a 2 GB file is one request
-and one response. `429` and `503` are honoured with their `Retry-After` ([sync.md](sync.md) §4.3).
+and one response — except a large pinned file, which goes in parallel parts (§7.5). `429` and `503`
+are honoured with their `Retry-After` ([sync.md](sync.md) §4.3).
 
 ### 7.2 Verification
 
@@ -466,6 +467,43 @@ restart: anything wrong there fails the hash, and the file is downloaded from ze
 that a file shown as `online-only` may hold part of its blocks until the next fill or a change in
 the cloud (limitations log F33). A reconcile keeps the checkpoint too: it judges a placeholder's
 content by cTag and size, not by its time, which a fill's writes change ([sync.md](sync.md) §7.4).
+
+### 7.5 Large pinned files in parallel parts
+
+One stream from OneDrive does not fill a fast link (about 17 MiB/s measured on a link that carries
+~68 MiB/s), so a **pinned download of a large file** (100 MiB and up, by its placeholder's size)
+goes in parts (`sync/source/parts.rs`, issue #28). A file being opened, `Hydrate`, a replacement of
+a changed file and every small file keep one stream.
+
+**Pieces.** The file is cut into pieces of **256 MiB** (the last one shorter). Each stream downloads
+one piece at a time with a bounded range (`Range: bytes=<start>-<end>`), writes it at its offset,
+and then takes the next piece not yet taken, in file order. Every piece's answer must be of the
+version the first answer had; another version starts the whole file over, once (§7.2).
+
+**Streams.** The file's first stream runs in the slot the pins' worker took for it. It may add
+extra streams, each in a large slot of the account's pool (§6.4) taken only when one is free and
+nothing waits for a slot — never waiting for one. Free slots go evenly: the next one goes to the
+large file in parts with the fewest streams. After each piece an extra stream gives its slot back
+if any transfer waits for one (a large file in the queue, a small file, an upload), or if another
+file in parts has two streams fewer. So with `[transfers] large = 4` and nothing else waiting, one
+large file runs in up to 4 streams, two in 2 each, four or more in 1 each. Each stream holds one
+slot of the pool, and `large: N of 4` counts streams; `Transfers` shows the file once, with its
+overall progress. `429`/`503` and the pool's `Retry-After` wait apply to each stream as to any
+transfer. An open of the file waits for the whole fill, as always (§6.4).
+
+**Checking.** QuickXorHash is positional: each byte's contribution depends only on its offset. Each
+piece is hashed at its offset as it arrives, and the pieces combine into the whole file's hash at
+the end, with no second read. A mismatch starts the whole file over once; a second one is `EIO`.
+
+**Checkpoint.** `user.konedrive.progress` keeps its meaning (§7.4): the bytes on disk **from the
+start without a gap**. It grows with that gap-free start once its bytes are durable, every 16 MiB,
+inside the piece at the front too. A piece finished beyond a gap is not recorded: a fill that
+gives up, and a restart, keep only the gap-free start, and everything past it is downloaded again
+(limitations log F155). A restart continues from the checkpoint as a single stream does, then
+splits the rest.
+
+**Breaks.** A dropped or short answer continues that piece from where its bytes stopped. Three
+breaks of the same piece and the whole download fails, as three breaks fail a single stream (§7.3).
 
 ## 8. Freeing up space (dehydration)
 

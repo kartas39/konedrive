@@ -1,7 +1,8 @@
 //! The content source of a folder that shows OneDrive: each fetch asks Graph
 //! for the item's metadata afresh — the cTag
 //! and quickXorHash the fill checks the bytes against, and a download URL that
-//! has not expired — and streams from the offset asked for.
+//! has not expired — and streams from the offset asked for, to the end of
+//! the file or to the end of the piece asked for.
 
 use std::time::{Duration, SystemTime};
 
@@ -23,7 +24,7 @@ impl GraphSource {
 
 #[async_trait]
 impl ContentSource for GraphSource {
-    async fn fetch(&self, item_id: &str, from: u64) -> Result<Fetched, SourceError> {
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         let mut fresh_link = false;
         loop {
             let item = self.drive.item(item_id).await.map_err(source_error)?;
@@ -39,7 +40,7 @@ impl ContentSource for GraphSource {
                 Some(url) => url.clone(),
                 None => self.drive.content_url(item_id).await.map_err(source_error)?,
             };
-            match self.drive.download(&url, from).await {
+            match self.drive.download(&url, from, end).await {
                 Ok(download) => {
                     return Ok(Fetched {
                         served_from: download.served_from,
@@ -191,7 +192,7 @@ mod tests {
         let src = source(&server);
         // A single fetch() call must succeed: only the internal retry (not the
         // outer hydrate loop) can recover from an expired URL in one go.
-        let fetched = src.fetch("I", 0).await.unwrap();
+        let fetched = src.fetch("I", 0, None).await.unwrap();
         assert_eq!(fetched.size, content.len() as u64);
         let items = server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/me/drive/items/I").count();
         assert_eq!(items, 2, "metadata was asked again for a fresh link");
