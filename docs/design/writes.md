@@ -366,8 +366,13 @@ rows behind it of the same object that never got an item id; the activity log re
 `not-uploaded`. Only a file whose last request may have gone out — the last fragment, or the one
 request of a file up to 10 MiB — looks its name up in the parent first: an item there that is its
 own, by size and time since the file cannot be hashed any more, goes to the recycle bin (F149).
+An `update` whose file is under none of its names ends the same way, alone and with no event of
+its own (issue #36): its session is cancelled and the row leaves; the version OneDrive has stays
+until a removal of the item deletes it — the `delete` or `move-out` behind the update, or the one
+the examination records later — which logs its `cloud-deleted` as usual.
 A `delete` with no item id has nothing to delete and leaves with no request. The rule applies
 whenever such a row runs, so rows an earlier version left in `retry` clear on their next run.
+It applies between the fragments of a large file as well (§6.3, §11).
 
 ### 5.3 Order
 
@@ -518,7 +523,10 @@ big, and notifies once when full starts.
 2. The session is created, and its URL, expiry and `session_next = 0` persisted before the first
    byte. A crash before that leaves an orphan session, which expires on its own.
 3. Each fragment is read into one buffer, fed to the hash, sent, and on `202` its progress
-   persisted. Memory does not grow with the file.
+   persisted. Memory does not grow with the file. Before each fragment the file is looked for under
+   its row's names: removed (or moved where no row looks), the upload stops there and ends as §5.2
+   says — a file put in by mistake and removed is not sent to the end (issue #36). A move whose row
+   is recorded is found under its new name, and the upload goes on.
 4. Before the last fragment the worker probes for a writer, compares the file with the snapshot and
    reads the item's eTag again. `If-Match` is checked when a session is created, not when it
    completes; this narrows the window in which an edit made in OneDrive meanwhile is superseded to
@@ -745,8 +753,9 @@ failed or retrying — while blocked and held rows keep their state; a pause wri
 `upload-failed`. Resume, or the end of a timed pause, makes the rows due at once: a kept session
 goes on from its offset, and one that expired meanwhile starts over, logged. A restart while
 paused keeps the sessions and resumes none of them. The stop between fragments is one check
-(`upload/content.rs`, `stop_between_fragments`) with three reasons: a pause, a full OneDrive
-(§6.4) and the write gate.
+(`upload/content.rs`, `stop_between_fragments`) with four reasons: a pause, a full OneDrive
+(§6.4), the write gate — each keeps the session — and the file removed (§5.2, §6.3), which cancels
+the session and ends the row. A one-request upload is one request, and is not interrupted.
 
 ## 12. Testing
 

@@ -34,10 +34,7 @@ const BAD_ITEM: &str = "hash-mismatch:";
 pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
     let local = local_name(&row)?;
     let Some(found) = locate(e, disk, &row)?.filter(|f| !f.is_dir) else {
-        return match row.kind {
-            OutboxKind::Create => never_uploaded(e, disk, &row).await,
-            _ => Ok(Outcome::later(reason::NOT_FOUND, RECHECK)),
-        };
+        return removed(e, disk, &row).await;
     };
     // Taken while it waits for space only to see whether its file is gone
     // (`space`, `Engine::space_allows`): it is not, so it waits on.
@@ -77,10 +74,44 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     }
 }
 
+/// A `create` or `update` whose file is under none of its names — removed
+/// here, or moved where no row looks (issue #36; for a `create`, #27). The
+/// row ends now, with no retry, and the upload session it opened is
+/// cancelled. A `create` ends through [`never_uploaded`]: it leaves with the
+/// rows behind it that never got an item id, and one `not-uploaded` event.
+/// An `update` leaves alone, with no event: the version OneDrive has stays
+/// until a removal of the item deletes it — the row behind it, or the one
+/// the examination records.
+///
+/// `row` as the store holds it now: the session it names is the one to
+/// cancel.
+async fn removed(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Outcome, Fail> {
+    if row.kind == OutboxKind::Create {
+        return never_uploaded(e, disk, row).await;
+    }
+    if let Some(url) = &row.session_url {
+        if let Err(err) = e.cfg.drive.cancel_upload(url).await {
+            tracing::debug!("the upload session of a removed file was not cancelled: {err}");
+        }
+    }
+    tracing::info!("the new version of {} is not uploaded: the file was removed here", row.rel.display());
+    e.store().with(|s| s.outbox_drop(row.seq, None, None, None))?;
+    Ok(Outcome::Done)
+}
+
+/// Why an upload in fragments stops after the fragment just sent.
+enum Stop {
+    /// The row waits with this outcome: the session and its offset stay in
+    /// the row, and the next run resumes them — or opens a new session,
+    /// logged, when this one expired meanwhile.
+    Wait(Outcome),
+    /// The file is under none of the row's names: the upload ends
+    /// ([`removed`]).
+    Removed,
+}
+
 /// Whether an upload in fragments stops after the fragment just sent, and
-/// how its row waits then: the one place such a stop is decided. The session
-/// and its offset stay in the row, and the next run resumes them — or opens a
-/// new session, logged, when this one expired meanwhile.
+/// why: the one place such a stop is decided.
 ///
 /// - **Paused** (`docs/design/writes.md` §11): waiting, reason
 ///   [`reason::PAUSED`], due again as soon as the pause ends. No failure.
@@ -88,17 +119,23 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
 ///   place, reason [`space::WAITING`], taken again once a quota read shows
 ///   space.
 /// - **The write gate** closed: waiting until it opens.
-fn stop_between_fragments(e: &Engine) -> Option<Outcome> {
+/// - **The file removed** (issue #36): under none of the row's names, as
+///   [`locate`] looks for it — the same test as a run's start. A move whose
+///   row is recorded is found under its new name, and the upload goes on.
+fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<Stop>, Fail> {
     if super::paused(e.store()).is_some() {
-        return Some(Outcome::wait(reason::PAUSED, std::time::Duration::ZERO));
+        return Ok(Some(Stop::Wait(Outcome::wait(reason::PAUSED, std::time::Duration::ZERO))));
     }
     if e.space_full() {
-        return Some(Outcome::Space(space::WAITING.into()));
+        return Ok(Some(Stop::Wait(Outcome::Space(space::WAITING.into()))));
     }
     if let Err(why) = e.cfg.host.may_write() {
-        return Some(Outcome::wait(&format!("not allowed now: {why}"), std::time::Duration::ZERO));
+        return Ok(Some(Stop::Wait(Outcome::wait(&format!("not allowed now: {why}"), std::time::Duration::ZERO))));
     }
-    None
+    if locate(e, disk, row)?.filter(|f| !f.is_dir).is_none() {
+        return Ok(Some(Stop::Removed));
+    }
+    Ok(None)
 }
 
 /// What a send came back with: the content's hash when it was computed on
@@ -403,9 +440,19 @@ impl Job<'_> {
             self.hash_prefix(&mut hasher, next).await?;
             let mut fragments = 0;
             loop {
-                if let Some(stop) = stop_between_fragments(e) {
-                    tracing::info!("the upload of {} stops at {next} of {size} bytes; its session is kept", self.found.rel.display());
-                    return Err(Fail::Now(stop));
+                match stop_between_fragments(e, self.disk, self.row)? {
+                    Some(Stop::Wait(stop)) => {
+                        tracing::info!("the upload of {} stops at {next} of {size} bytes; its session is kept", self.found.rel.display());
+                        return Err(Fail::Now(stop));
+                    }
+                    Some(Stop::Removed) => {
+                        tracing::info!("the upload of {} stops at {next} of {size} bytes: the file was removed", self.found.rel.display());
+                        // The row as it is now: with the session just used.
+                        let now = e.store().with(|s| s.outbox_row(seq))?;
+                        let Some(now) = now else { return Err(Fail::Now(Outcome::Done)) };
+                        return Err(Fail::Now(removed(e, self.disk, &now).await?));
+                    }
+                    None => {}
                 }
                 let len = (size - next).min(e.cfg.limits.chunk);
                 if next + len >= size {
