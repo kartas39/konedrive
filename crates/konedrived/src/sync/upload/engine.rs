@@ -14,7 +14,7 @@ use tokio_util::sync::CancellationToken;
 use super::local::{self, SYNC_BLOCKED, SYNC_PENDING, SYNC_UPLOADING};
 use super::{kind, reason, Fault, OutboxCounts, Upload, WorkerConfig, WorkerStatus, BACKOFF_FIRST, BACKOFF_MAX, QUOTA_RETRY, THROTTLE_FIRST};
 use crate::drive::write::MAX_RETRY_AFTER;
-use crate::pool::{Class as PoolClass, Slot};
+use crate::pool::{Class as PoolClass, Size, Slot};
 use crate::drive::{DriveError, WriteError};
 use crate::sync::disk::Disk;
 use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState};
@@ -625,12 +625,13 @@ impl Engine {
         let mut set: JoinSet<(i64, Outcome)> = JoinSet::new();
         let mut tasks: HashMap<tokio::task::Id, i64> = HashMap::new();
         let pool = Arc::clone(self.cfg.drive.pool());
-        // A slot of the account's transfer pool that came while the loop waited, for the
-        // next row of its class; one that no row takes goes back at once.
-        let mut spare: Option<Slot> = None;
+        // Slots of the account's transfer pool that came while the loop waited, each for the
+        // next row of its class and size; one that no row takes goes back at once.
+        let mut spare: Vec<Slot> = Vec::new();
         loop {
-            // The pool classes whose rows waited for a slot this time round.
-            let mut wanting: Option<PoolClass> = None;
+            // The pool classes and sizes whose rows waited for a slot this time round: a
+            // large file waiting for the large-file limit does not hold up the small ones.
+            let mut wanting: Vec<(PoolClass, Size)> = Vec::new();
             // What left the folder is marked again first, whether or not rows
             // may run now, and at every wake while rows are in flight — a new
             // move out, the helper back (`docs/design/writes.md` §8).
@@ -643,37 +644,38 @@ impl Engine {
                             if !self.slot_free(class) {
                                 continue;
                             }
-                            let wants = pool_class(class);
-                            if wanting.is_some_and(|w| w == wants) {
+                            // The local file's size says whether its upload is large.
+                            let size = match class {
+                                Class::Content => Size::of(local::size_at(&disk, &row.rel).unwrap_or(0)),
+                                Class::Meta | Class::Out => Size::Small,
+                            };
+                            let wants = (pool_class(class), size);
+                            if wanting.contains(&wants) {
                                 continue;
                             }
                             // Asked again right before each row is taken.
                             if !self.gate_open() {
                                 break;
                             }
-                            let slot = match spare.take() {
-                                Some(slot) if slot.class() == wants => slot,
-                                other => {
-                                    spare = other;
-                                    match pool.try_acquire(wants) {
-                                        Some(slot) => slot,
-                                        None => {
-                                            // The first class that waits is the one waited for.
-                                            wanting.get_or_insert(wants);
-                                            continue;
-                                        }
+                            let slot = match spare.iter().position(|slot| (slot.class(), slot.size()) == wants) {
+                                Some(at) => spare.swap_remove(at),
+                                None => match pool.try_acquire_sized(wants.0, wants.1) {
+                                    Some(slot) => slot,
+                                    None => {
+                                        wanting.push(wants);
+                                        continue;
                                     }
-                                }
+                                },
                             };
                             let claimed = match self.store().with(|s| s.outbox_claim(row.seq, row.state)) {
                                 Ok(Some(claimed)) => claimed,
                                 Ok(None) => {
-                                    spare = Some(slot);
+                                    spare.push(slot);
                                     continue;
                                 }
                                 Err(e) => {
                                     tracing::warn!("cannot take outbox row {}: {e}", row.seq);
-                                    spare = Some(slot);
+                                    spare.push(slot);
                                     continue;
                                 }
                             };
@@ -698,19 +700,22 @@ impl Engine {
                 }
                 self.publish();
             }
-            drop(spare.take());
-            if set.is_empty() && wanting.is_none() {
+            spare.clear();
+            if set.is_empty() && wanting.is_empty() {
                 break;
             }
+            // Whichever slot comes first; the others' waits are dropped, a slot granted
+            // meanwhile going back.
             let waited = async {
-                match wanting {
-                    Some(class) => pool.acquire(class).await,
-                    None => std::future::pending().await,
+                if wanting.is_empty() {
+                    return std::future::pending().await;
                 }
+                let waits = wanting.iter().map(|&(class, size)| pool.acquire_sized(class, size));
+                futures_util::future::select_all(waits).await.0
             };
             tokio::select! {
                 // A slot for a row that waited for one: taken at the top of the loop.
-                slot = waited => spare = Some(slot),
+                slot = waited => spare.push(slot),
                 // New rows, or the helper back: looked at while the others run.
                 _ = self.wake.notified() => {}
                 _ = cancel.cancelled() => {

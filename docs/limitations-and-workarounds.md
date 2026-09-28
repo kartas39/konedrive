@@ -288,9 +288,9 @@ application must never read zeros where real content should be.
 ### P10. Pinning a big folder downloads everything in it, with no prompt
 - **Kind** LIMIT (chosen) · **Evidence** reasoned · **Status** open
 - **What:** "Always keep on this device" on a folder queues every online-only file under it, and
-  everything OneDrive adds there later, and downloads them four at a time (`PIN_SLOTS`,
-  `crates/konedrived/src/sync/pin.rs`), in slots of their own beside the four fills served on
-  open. Nothing asks first, and nothing checks the free space beforehand.
+  everything OneDrive adds there later, and downloads them folder by folder in the background
+  slots of the account's transfer pool (`crates/konedrived/src/sync/pin.rs`, issue #3), at most
+  four large files at once. Nothing asks first, and nothing checks the free space beforehand.
 - **Why:** the product decision was no size prompt, as on Windows.
 - **Cost:** a pinned folder bigger than the free space fills the disk. The first download that
   fails for want of space is a `failed` event reading "not enough disk space" (the window
@@ -1935,18 +1935,32 @@ application must never read zeros where real content should be.
   waiting on changes to upload (F140, F141) keeps such a row — pointing at nothing — until it runs
   a cycle again, same as every other reconcile-driven change. FRAGILE · measured
   (`sync::listing::rw::tests::a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped`). Open.
-- **F143. The transfer pool's numbers are guesses, and its latency signal is coarse**
+- **F143. The transfer pool's numbers are guesses, and only a throttle stops its growth**
   (`crates/konedrived/src/pool.rs`, issue #3) — every constant in section 5's transfer pool rows
-  is a guess, untested against a real account until the stress scenario (`pin-many`) is run. The
-  latency sample is the time to the answer's headers from `reqwest`: it includes a new
-  connection's TLS handshake, so a burst of new connections reads as latency. An upload's is
-  measured from the moment the last piece of its body was handed to `hyper`, not from when it
-  left the socket. Downloads and uploads keep their own median and baseline (the task asked for
-  one), since an upload's answer comes after the server took the whole fragment and would
-  otherwise hold every download's growth back. The back-off gives back one slot when the median
-  first goes over 2×, not one per round. A throttle while the pool waits out a `Retry-After`
-  (plus 1 s) is the same burst. GUESS · measured by unit tests only
-  (`pool::tests`). Open.
+  is a guess, untested against a real account until the stress scenario (5e, `pin-many`) is run.
+  Latency is not measured (a latency back-off held the pool at 15 on a saturated link, and was
+  taken out after review of PR #22), so the pool keeps growing on a slow link until a `429`/`503`
+  or the ceiling stops it: many slots then share the link, each transfer slower. A throttle while
+  the pool waits out a `Retry-After` (plus 1 s) is the same burst. The `RetryAfter` countdown is
+  the daemon's, published once a second and coalesced with the counters, so the window's "wait
+  30 s" can lag by about a second. GUESS · measured by unit tests only (`pool::tests`). Open.
+- **F147. A transfer's size class is read once, before its first request** (`pool::Size`,
+  `LARGE_FROM`) — a download is large when its placeholder's size is 100 MiB or more, read when a
+  pinned file is queued (a newer, larger version that lands meanwhile keeps the old class), when a
+  replacement is issued (the new version's size from the delta), and when a file is opened; an
+  upload when its row is taken (a file growing while it waits is classed by the size then). A
+  file being opened is counted among the large transfers under way but never held by the limit,
+  so the pool line can read "large: 5 of 4". FRAGILE (a wrong class costs speed, never data) ·
+  measured by unit tests (`pool::tests::at_most_four_large_transfers_run_while_small_ones_keep_going`,
+  `sync::pin::tests::a_large_file_waiting_for_the_limit_does_not_hold_up_the_small_ones`). Open.
+- **F148. Pinned downloads go in alphabetical order batch by batch, small and large apart**
+  (`sync/pin.rs`, `folder_order`) — each sweep or pin queues its files folder by folder (a
+  folder's files by name, then its subfolders, depth first); names compare lower-cased, then byte
+  by byte — not Dolphin's natural order, so `file10` comes before `file2`. What a later pin or
+  sweep queues goes after what already waits: the queue is never sorted again. Small and large
+  files wait in two queues, each in that order, so a large file of an earlier folder may come
+  after small files of later ones. SHORTCUT · measured
+  (`sync::pin::tests::pinned_downloads_go_folder_by_folder_in_alphabetical_order`). Open.
 - **F144. An open holds background work back for as long as it runs** (`pool.rs`,
   `dispatch`) — while any file is being opened or `Hydrate` runs, no pinned download,
   replacement, thumbnail, upload or metadata change takes a new slot: a long download on open
@@ -1986,9 +2000,9 @@ application must never read zeros where real content should be.
 | Transfer pool: start (`START`) / ceiling (`[transfers] max`, `DEFAULT_CEILING`, clamped to 1–256) | 16 / 64, each account's pool separately | **guess** |
 | Transfer pool growth | +1 slot per successful transfer while work waits and every slot is busy; +1 per round (as many successes as slots) at and above the size the last `429`/`503` came at | **guess** |
 | Transfer pool: throttle level forgotten after (`THROTTLE_MEMORY`) / a throttle within the wait (+1 s, `BURST_GRACE`) is the same burst / no slot for, without `Retry-After` (`DEFAULT_THROTTLE_WAIT`) | 5 min / halves once / 10 s | **guess** |
-| Transfer pool latency back-off: median of the last N requests (`LATENCY_WINDOW`, judged from 5 samples) against the best of 5 min (`BASELINE_SPAN`), one slot back and no growth above 2× (`SLOW_DOWN`), growth again below 1.5× (`RESUME`) | 20 / 5 min / 2× / 1.5× | **guess**; kept per direction (downloads, uploads), since an upload's answer comes after the server took the whole fragment |
+| A large file, from (`LARGE_FROM`) / large transfers at once per account (`[transfers] large`, `DEFAULT_LARGE`, clamped to 1…`max`), files being opened not held | 100 MiB / 4 | **guess** |
 | Slots above the pool only a file being opened may take (`RESERVE`) | 2 | **guess** |
-| Speed shown (`DownloadSpeed`, `UploadSpeed`): the average of (`SPEED_SPAN`) / published every | 3 s / 1 s while anything moves | **guess** |
+| Speed shown (`DownloadSpeed`, `UploadSpeed`): the average of (`SPEED_SPAN`) / published every | 3 s / 1 s while anything moves or a `Retry-After` runs | **guess** |
 | Hydration requests taken off the helper's queue at once (`FILL_ADMISSION`) | 64, the helper's credit; each then waits for its account's pool | pinned by a test |
 | Window's transfer charts | the last 2 min, one sample a second | **guess** |
 | Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |

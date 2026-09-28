@@ -113,7 +113,8 @@ pub struct Config {
     /// Every account, in the order it was added.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountConfig>,
-    /// `[transfers]`: the transfer pools' emergency ceiling. Not in the window.
+    /// `[transfers]`: the transfer pools' emergency ceiling and large-file limit. Not in the
+    /// window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfers: Option<TransfersConfig>,
 }
@@ -126,6 +127,10 @@ pub struct TransfersConfig {
     /// 1–256.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<i64>,
+    /// Large files ([`crate::pool::LARGE_FROM`] and up) one account transfers at once;
+    /// [`crate::pool::DEFAULT_LARGE`] when missing. Clamped into 1…`max`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub large: Option<i64>,
 }
 
 impl Config {
@@ -138,6 +143,21 @@ impl Config {
         let clamped = max.clamp(CEILING_MIN as i64, CEILING_MAX as i64) as usize;
         if clamped as i64 != max {
             tracing::warn!("[transfers] max = {max} in config.toml is outside {CEILING_MIN}-{CEILING_MAX}; using {clamped}");
+        }
+        clamped
+    }
+
+    /// Each account's large-file limit: `[transfers] large`, clamped into 1…the ceiling
+    /// ([`transfer_ceiling`](Self::transfer_ceiling)) with a warning when it is outside, or
+    /// [`crate::pool::DEFAULT_LARGE`] (never above the ceiling).
+    pub fn transfer_large(&self) -> usize {
+        let ceiling = self.transfer_ceiling();
+        let Some(large) = self.transfers.as_ref().and_then(|t| t.large) else {
+            return crate::pool::DEFAULT_LARGE.min(ceiling);
+        };
+        let clamped = large.clamp(1, ceiling as i64) as usize;
+        if clamped as i64 != large {
+            tracing::warn!("[transfers] large = {large} in config.toml is outside 1-{ceiling}; using {clamped}");
         }
         clamped
     }
@@ -890,6 +910,17 @@ mod tests {
         assert_eq!(read("[transfers]\nmax = 20"), 20);
         assert_eq!(read("[transfers]\nmax = 0"), 1);
         assert_eq!(read("[transfers]\nmax = 1000"), 256);
+    }
+
+    /// `[transfers] large`: 4 when missing, clamped into 1…`max`.
+    #[test]
+    fn the_large_file_limit_is_read_and_clamped() {
+        let read = |text: &str| toml::from_str::<Config>(&format!("config_version = 2\n{text}")).unwrap().transfer_large();
+        assert_eq!(read(""), 4);
+        assert_eq!(read("[transfers]\nlarge = 2"), 2);
+        assert_eq!(read("[transfers]\nlarge = 0"), 1);
+        assert_eq!(read("[transfers]\nmax = 8\nlarge = 20"), 8);
+        assert_eq!(read("[transfers]\nmax = 2"), 2, "the default never above the ceiling");
     }
 
     /// A label may contain "@": an account is commonly named by its email.

@@ -1001,8 +1001,10 @@ impl Listing {
     }
 
     async fn replace_through(&self, source: &Tracked, replacement: &Replacement) -> ReplaceOutcome {
-        // A background download in the account's transfer pool.
-        let mut slot = self.ctx.drive.pool().acquire(crate::pool::Class::Download).await;
+        // A background download in the account's transfer pool; a large one also waits for
+        // the large-file limit.
+        let size = crate::pool::Size::of(replacement.size);
+        let mut slot = self.ctx.drive.pool().acquire_sized(crate::pool::Class::Download, size).await;
         // Opening reads the root's attribute to prove it is still this root:
         // on a blocking thread, like every open (part 1's).
         let (root, locked) = (self.ctx.root.clone(), self.ctx.locked);

@@ -115,9 +115,8 @@ pub struct DriveClient {
     base: Url,
     tokens: Arc<dyn TokenSource>,
     retry: RetryPolicy,
-    /// The account's transfer pool (`crate::pool`): told of every `429`/`503`, the latency of
-    /// every request that moves data or changes an item, and the bytes that move. A client of
-    /// its own until the account's is set ([`with_pool`](Self::with_pool)).
+    /// The account's transfer pool (`crate::pool`): told of every `429`/`503` and of the bytes
+    /// that move. A pool of its own until the account's is set ([`with_pool`](Self::with_pool)).
     pool: Arc<TransferPool>,
 }
 
@@ -214,7 +213,7 @@ impl DriveClient {
     /// carried no download URL.
     pub async fn content_url(&self, id: &str) -> Result<String, DriveError> {
         let url = self.item_url(id, Some("content"))?;
-        let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token), Some(Direction::Down)).await?;
+        let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token)).await?;
         match response.status() {
             status if status.is_redirection() => response
                 .headers()
@@ -235,17 +234,14 @@ impl DriveClient {
         let url = Url::parse(url)
             .map_err(|e| DriveError::Failed(format!("a download URL from Graph cannot be parsed: {e}")))?;
         let response = self
-            .send_anonymous(
-                || {
-                    let request = self.content.get(url.clone());
-                    if from > 0 {
-                        request.header(header::RANGE, format!("bytes={from}-"))
-                    } else {
-                        request
-                    }
-                },
-                Some(Direction::Down),
-            )
+            .send_anonymous(|| {
+                let request = self.content.get(url.clone());
+                if from > 0 {
+                    request.header(header::RANGE, format!("bytes={from}-"))
+                } else {
+                    request
+                }
+            })
             .await?;
         match response.status() {
             StatusCode::PARTIAL_CONTENT => {
@@ -293,7 +289,7 @@ impl DriveClient {
     pub async fn thumbnail(&self, id: &str, size: &str) -> Result<Option<Vec<u8>>, DriveError> {
         let mut url = self.item_url(id, Some("thumbnails"))?;
         url.path_segments_mut().map_err(|()| DriveError::Failed("the Graph base URL cannot take a path".into()))?.push("0").push(size).push("content");
-        let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token), Some(Direction::Down)).await?;
+        let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token)).await?;
         let response = if response.status().is_redirection() {
             let location = response
                 .headers()
@@ -303,7 +299,7 @@ impl DriveClient {
                 .to_owned();
             let redirected = Url::parse(&location)
                 .map_err(|e| DriveError::Failed(format!("a thumbnail redirect cannot be parsed: {e}")))?;
-            self.send_anonymous(|| self.content.get(redirected.clone()), Some(Direction::Down)).await?
+            self.send_anonymous(|| self.content.get(redirected.clone())).await?
         } else {
             response
         };
@@ -338,7 +334,7 @@ impl DriveClient {
     }
 
     async fn get_json<T: DeserializeOwned>(&self, url: Url) -> Result<T, DriveError> {
-        let response = self.send(|token| self.api.get(url.clone()).bearer_auth(token), None).await?;
+        let response = self.send(|token| self.api.get(url.clone()).bearer_auth(token)).await?;
         match response.status() {
             status if status.is_success() => response
                 .json()
@@ -353,24 +349,16 @@ impl DriveClient {
 
     /// Sends a request with the account's token. A `401` is answered once by
     /// dropping the cached token and asking again; `429` and `503` wait as
-    /// told (Ruling of), and tell the pool, which hands out nothing meanwhile. The
-    /// time to the answer's headers goes to the pool as the latency of `measure`, for a
-    /// request that moves data (not a listing).
-    async fn send(
-        &self,
-        request: impl Fn(&str) -> reqwest::RequestBuilder,
-        measure: Option<Direction>,
-    ) -> Result<reqwest::Response, DriveError> {
+    /// told (Ruling of), and tell the pool, which hands out nothing meanwhile.
+    async fn send(&self, request: impl Fn(&str) -> reqwest::RequestBuilder) -> Result<reqwest::Response, DriveError> {
         let mut renewed = false;
         let mut throttled = 0;
         loop {
             let token = self.token().await?;
-            let started = tokio::time::Instant::now();
             let response = request(&token)
                 .send()
                 .await
                 .map_err(|e| DriveError::Transient(format!("cannot reach Microsoft Graph: {e}")))?;
-            self.measured(measure, started, &response);
             match response.status() {
                 StatusCode::UNAUTHORIZED if !renewed => {
                     renewed = true;
@@ -397,19 +385,13 @@ impl DriveClient {
     }
 
     /// [`send`](Self::send) for a pre-authenticated URL: no token at all.
-    async fn send_anonymous(
-        &self,
-        request: impl Fn() -> reqwest::RequestBuilder,
-        measure: Option<Direction>,
-    ) -> Result<reqwest::Response, DriveError> {
+    async fn send_anonymous(&self, request: impl Fn() -> reqwest::RequestBuilder) -> Result<reqwest::Response, DriveError> {
         let mut throttled = 0;
         loop {
-            let started = tokio::time::Instant::now();
             let response = request()
                 .send()
                 .await
                 .map_err(|e| DriveError::Transient(format!("cannot reach OneDrive: {e}")))?;
-            self.measured(measure, started, &response);
             match response.status() {
                 StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
                     throttled += 1;
@@ -431,15 +413,6 @@ impl DriveClient {
             AuthError::Locked => DriveError::Transient("the secret storage is locked".into()),
             AuthError::Transient(message) => DriveError::Transient(message),
         })
-    }
-
-    /// The latency of a request that moves data, answered with anything but throttling
-    /// (whose answer says nothing of how fast the service is).
-    fn measured(&self, measure: Option<Direction>, started: tokio::time::Instant, response: &reqwest::Response) {
-        let throttled = matches!(response.status(), StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE);
-        if let Some(direction) = measure.filter(|_| !throttled) {
-            self.pool.latency(direction, started.elapsed());
-        }
     }
 
     /// A download's body, its bytes counted into the pool's speed as they are read.

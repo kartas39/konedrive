@@ -6,14 +6,16 @@
 //!
 //! - it starts at [`START`] slots and **grows by one on every successful transfer** made while
 //!   work is queued and every slot is busy — about doubling each round of transfers — up to the
-//!   ceiling (`[transfers] max` in `config.toml`, [`DEFAULT_CEILING`]);
-//! - **latency** (TCP Vegas style): each request's time to first byte is measured; while the
-//!   median of the last [`LATENCY_WINDOW`] of a direction is more than [`SLOW_DOWN`] times the
-//!   best of the last [`BASELINE_SPAN`], one slot is given back and the pool does not grow, until
-//!   the median falls below [`RESUME`] times the baseline;
+//!   ceiling (`[transfers] max` in `config.toml`, [`DEFAULT_CEILING`]). Latency is not measured:
+//!   only a throttle stops the growth;
 //! - a **`429`/`503`** on any request of the account halves the pool, once per burst, and no slot
 //!   is handed out for the whole `Retry-After`. The size it came at is remembered for
 //!   [`THROTTLE_MEMORY`]: at and above it the pool grows by one per round only.
+//!
+//! A **large** transfer (a file of [`LARGE_FROM`] or more) fills the link on its own: at most
+//! `[transfers] large` ([`DEFAULT_LARGE`]) of them run at once, each in a slot of the pool; a
+//! large one waiting for that limit lets the small ones behind it go. A file being opened is not
+//! held by it (it still counts as a large transfer under way).
 //!
 //! Who gets a free slot: a file being opened first — it may also take [`RESERVE`] slots above
 //! the pool, and while any open waits or runs no background work takes a new slot; then
@@ -38,18 +40,12 @@ pub const DEFAULT_CEILING: usize = 64;
 /// The lowest and the highest ceiling `config.toml` may set; anything else is clamped.
 pub const CEILING_MIN: usize = 1;
 pub const CEILING_MAX: usize = 256;
+/// A file is large from this size up (bytes).
+pub const LARGE_FROM: u64 = 100 * 1024 * 1024;
+/// Large transfers at once when `config.toml` sets none (`[transfers] large`).
+pub const DEFAULT_LARGE: usize = 4;
 /// Slots above the pool that only a file being opened may take.
 pub const RESERVE: usize = 2;
-/// How many of the last requests of a direction the median latency is taken over.
-pub const LATENCY_WINDOW: usize = 20;
-/// The fewest samples the latency is judged on.
-pub const LATENCY_MIN_SAMPLES: usize = 5;
-/// The baseline latency is the best of this long.
-pub const BASELINE_SPAN: Duration = Duration::from_secs(300);
-/// Over this many times the baseline, the pool backs off.
-pub const SLOW_DOWN: f64 = 2.0;
-/// Under this many times the baseline, it grows again.
-pub const RESUME: f64 = 1.5;
 /// How long the size a throttle came at is remembered.
 pub const THROTTLE_MEMORY: Duration = Duration::from_secs(300);
 /// A throttle this soon after the last one's wait ended belongs to the same burst.
@@ -62,8 +58,6 @@ pub const SPEED_SPAN: Duration = Duration::from_secs(3);
 pub const PUBLISH_EVERY: Duration = Duration::from_secs(1);
 /// The resolution of the speed meter.
 const BUCKET: Duration = Duration::from_millis(250);
-/// The resolution of the latency baseline.
-const BASELINE_BUCKET: Duration = Duration::from_secs(5);
 
 /// What a slot is taken for, in the order free slots go.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +78,26 @@ impl Class {
     }
 }
 
-/// The direction of a request, for its latency and the bytes it moves.
+/// Whether a transfer is large ([`LARGE_FROM`] bytes or more): at most `[transfers] large` of
+/// those run at once, openings aside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Size {
+    Small,
+    Large,
+}
+
+impl Size {
+    /// The size class of a file of `bytes`: its placeholder's size, or the local file's.
+    pub fn of(bytes: u64) -> Self {
+        if bytes >= LARGE_FROM {
+            Size::Large
+        } else {
+            Size::Small
+        }
+    }
+}
+
+/// The direction of the bytes a request moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     Down,
@@ -102,6 +115,12 @@ pub struct Throughput {
     pub active_up: u32,
     pub size: u32,
     pub ceiling: u32,
+    /// Large transfers under way (openings included), and how many may run at once.
+    pub large: u32,
+    pub large_limit: u32,
+    /// Seconds left of OneDrive's `Retry-After`, during which no slot is handed out; 0 when
+    /// there is none.
+    pub retry_after: u32,
 }
 
 type Observer = Arc<dyn Fn(Throughput) + Send + Sync>;
@@ -109,52 +128,21 @@ type Observer = Arc<dyn Fn(Throughput) + Send + Sync>;
 struct Waiter {
     id: u64,
     class: Class,
+    large: bool,
     granted: bool,
     waker: Option<Waker>,
-}
-
-/// One direction's latencies.
-#[derive(Default)]
-struct Latency {
-    last: VecDeque<Duration>,
-    /// The best of each [`BASELINE_BUCKET`], by when it began.
-    best: VecDeque<(Instant, Duration)>,
-}
-
-impl Latency {
-    fn add(&mut self, now: Instant, sample: Duration) {
-        self.last.push_back(sample);
-        while self.last.len() > LATENCY_WINDOW {
-            self.last.pop_front();
-        }
-        match self.best.back_mut() {
-            Some((at, best)) if now.duration_since(*at) < BASELINE_BUCKET => *best = (*best).min(sample),
-            _ => self.best.push_back((now, sample)),
-        }
-        while self.best.front().is_some_and(|(at, _)| now.duration_since(*at) > BASELINE_SPAN) {
-            self.best.pop_front();
-        }
-    }
-
-    /// (median, baseline), once there are enough samples.
-    fn judged(&self) -> Option<(Duration, Duration)> {
-        if self.last.len() < LATENCY_MIN_SAMPLES {
-            return None;
-        }
-        let mut sorted: Vec<Duration> = self.last.iter().copied().collect();
-        sorted.sort();
-        let median = sorted[sorted.len() / 2];
-        let baseline = self.best.iter().map(|(_, d)| *d).min()?;
-        Some((median, baseline))
-    }
 }
 
 struct Inner {
     size: usize,
     ceiling: usize,
+    /// Large transfers at once, openings aside.
+    large_limit: usize,
     /// Successes counted towards the next slot of slow growth.
     credit: usize,
     held: [usize; 4],
+    /// Of those, large ones.
+    large_held: usize,
     waiters: VecDeque<Waiter>,
     next_id: u64,
     /// Whose turn it is when downloads and uploads both wait.
@@ -166,14 +154,17 @@ struct Inner {
     unblock_armed: bool,
     /// The size the last throttle came at, and when.
     throttle_level: Option<(usize, Instant)>,
-    /// The latency is above [`SLOW_DOWN`] times the baseline.
-    congested: bool,
-    latency: [Latency; 2],
     /// Bytes moved per [`BUCKET`], by the bucket's number since `epoch`.
     moved: VecDeque<(u64, [u64; 2])>,
     epoch: Instant,
     observer: Option<Observer>,
     publishing: bool,
+}
+
+impl Inner {
+    fn blocked(&self, now: Instant) -> bool {
+        self.blocked_until.is_some_and(|until| now < until)
+    }
 }
 
 /// One account's transfer pool. See the module's documentation.
@@ -183,7 +174,8 @@ pub struct TransferPool {
 }
 
 impl TransferPool {
-    /// A pool that starts at [`START`] (or `ceiling`, if lower).
+    /// A pool that starts at [`START`] (or `ceiling`, if lower), with [`DEFAULT_LARGE`] large
+    /// transfers at once.
     pub fn new(ceiling: usize) -> Arc<Self> {
         Self::starting_at(START, ceiling)
     }
@@ -196,8 +188,10 @@ impl TransferPool {
             inner: Mutex::new(Inner {
                 size: start.clamp(1, ceiling),
                 ceiling,
+                large_limit: DEFAULT_LARGE.clamp(1, ceiling),
                 credit: 0,
                 held: [0; 4],
+                large_held: 0,
                 waiters: VecDeque::new(),
                 next_id: 0,
                 turn: Direction::Down,
@@ -205,8 +199,6 @@ impl TransferPool {
                 blocked_until: None,
                 unblock_armed: false,
                 throttle_level: None,
-                congested: false,
-                latency: [Latency::default(), Latency::default()],
                 moved: VecDeque::new(),
                 epoch: Instant::now(),
                 observer: None,
@@ -219,13 +211,18 @@ impl TransferPool {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// The ceiling from now on (`config.toml`'s `[transfers] max`, already clamped); the pool
-    /// shrinks to it if it is larger.
-    pub fn set_ceiling(&self, ceiling: usize) {
-        let mut inner = self.lock();
-        inner.ceiling = ceiling.clamp(CEILING_MIN, CEILING_MAX);
-        inner.size = inner.size.min(inner.ceiling);
-        drop(inner);
+    /// The limits from now on (`config.toml`'s `[transfers] max` and `large`, already
+    /// clamped): the pool shrinks to the ceiling if it is larger, and the large-file limit
+    /// is kept within 1 and the ceiling.
+    pub fn set_limits(&self, ceiling: usize, large: usize) {
+        let wake = {
+            let mut inner = self.lock();
+            inner.ceiling = ceiling.clamp(CEILING_MIN, CEILING_MAX);
+            inner.size = inner.size.min(inner.ceiling);
+            inner.large_limit = large.clamp(1, inner.ceiling);
+            self.dispatch(&mut inner)
+        };
+        wake_all(wake);
         self.publish_now();
     }
 
@@ -243,6 +240,11 @@ impl TransferPool {
         self.lock().held[class.index()]
     }
 
+    /// Large transfers under way now, openings included.
+    pub fn large_held(&self) -> usize {
+        self.lock().large_held
+    }
+
     /// "Pause syncing": no new slot for anything but opens.
     pub fn set_paused(&self, paused: bool) {
         let wake = {
@@ -257,39 +259,51 @@ impl TransferPool {
     }
 
     /// Where the throughput goes: called at once with what it is now, then once a second
-    /// while anything moves, and once more when it stops.
+    /// while anything moves (or a `Retry-After` runs), and once more when it stops.
     pub fn set_observer(&self, observer: Observer) {
         self.lock().observer = Some(Arc::clone(&observer));
         observer(self.throughput());
     }
 
-    /// Waits for a slot of `class`. Cancel-safe: a slot granted to a future dropped before
-    /// it was polled again goes back.
+    /// Waits for a small slot of `class`. Cancel-safe: a slot granted to a future dropped
+    /// before it was polled again goes back.
     pub fn acquire(&self, class: Class) -> Acquire {
-        Acquire { pool: self.arc(), class, id: None, done: false }
+        self.acquire_sized(class, Size::Small)
     }
 
-    /// A slot of `class` if one would be handed out now, without waiting in line.
+    /// Waits for a slot of `class` for a transfer of `size`: a large one also waits for the
+    /// large-file limit, unless it is an open.
+    pub fn acquire_sized(&self, class: Class, size: Size) -> Acquire {
+        Acquire { pool: self.arc(), class, large: size == Size::Large, id: None, done: false }
+    }
+
+    /// A small slot of `class` if one would be handed out now, without waiting in line.
     pub fn try_acquire(&self, class: Class) -> Option<Slot> {
+        self.try_acquire_sized(class, Size::Small)
+    }
+
+    /// A slot of `class` for a transfer of `size`, if one would be handed out now.
+    pub fn try_acquire_sized(&self, class: Class, size: Size) -> Option<Slot> {
+        let large = size == Size::Large;
         let mut inner = self.lock();
         let id = inner.next_id;
         inner.next_id += 1;
-        inner.waiters.push_back(Waiter { id, class, granted: false, waker: None });
+        inner.waiters.push_back(Waiter { id, class, large, granted: false, waker: None });
         let wake = self.dispatch(&mut inner);
         let at = inner.waiters.iter().position(|w| w.id == id).expect("the waiter was just added");
         let granted = inner.waiters.remove(at).is_some_and(|w| w.granted);
         drop(inner);
         wake_all(wake);
-        granted.then(|| self.slot(class))
+        granted.then(|| self.slot(class, large))
     }
 
     fn arc(&self) -> Arc<Self> {
         self.me.upgrade().expect("a pool is only used through its Arc")
     }
 
-    fn slot(&self, class: Class) -> Slot {
+    fn slot(&self, class: Class, large: bool) -> Slot {
         self.start_publishing();
-        Slot { pool: self.arc(), class, succeeded: false }
+        Slot { pool: self.arc(), class, large, succeeded: false }
     }
 
     /// A request of the account was answered `429` or `503`: the pool halves (once per
@@ -298,37 +312,25 @@ impl TransferPool {
     pub fn throttled(&self, wait: Option<Duration>) {
         let wait = wait.unwrap_or(DEFAULT_THROTTLE_WAIT);
         let now = Instant::now();
-        let mut inner = self.lock();
-        let same_burst = inner.blocked_until.is_some_and(|until| now < until + BURST_GRACE);
-        let until = now + wait;
-        inner.blocked_until = Some(inner.blocked_until.map_or(until, |b| b.max(until)));
-        if !same_burst {
-            let old = inner.size;
-            inner.size = (old / 2).max(1);
-            inner.credit = 0;
-            inner.throttle_level = Some((old, now));
-            tracing::warn!("transfer pool throttled: {old} -> {}", inner.size);
-        } else if let Some((_, at)) = inner.throttle_level.as_mut() {
-            *at = now;
+        {
+            let mut inner = self.lock();
+            let same_burst = inner.blocked_until.is_some_and(|until| now < until + BURST_GRACE);
+            let until = now + wait;
+            inner.blocked_until = Some(inner.blocked_until.map_or(until, |b| b.max(until)));
+            if !same_burst {
+                let old = inner.size;
+                inner.size = (old / 2).max(1);
+                inner.credit = 0;
+                inner.throttle_level = Some((old, now));
+                tracing::warn!("transfer pool throttled: {old} -> {}", inner.size);
+            } else if let Some((_, at)) = inner.throttle_level.as_mut() {
+                *at = now;
+            }
+            self.arm_unblock(&mut inner);
         }
-        self.arm_unblock(&mut inner);
-    }
-
-    /// A request's time to first byte (for an upload, from the end of its body).
-    pub fn latency(&self, direction: Direction, sample: Duration) {
-        let now = Instant::now();
-        let mut inner = self.lock();
-        inner.latency[direction as usize].add(now, sample);
-        let judged: Vec<(Duration, Duration)> = inner.latency.iter().filter_map(Latency::judged).collect();
-        let slow = judged.iter().any(|&(median, base)| median.as_secs_f64() > base.as_secs_f64() * SLOW_DOWN);
-        let calm = judged.iter().all(|&(median, base)| median.as_secs_f64() < base.as_secs_f64() * RESUME);
-        if slow && !inner.congested {
-            inner.congested = true;
-            inner.size = inner.size.saturating_sub(1).max(1);
-            tracing::info!("transfer pool slowing down: latency is up, {} slot(s)", inner.size);
-        } else if inner.congested && calm {
-            inner.congested = false;
-        }
+        // The wait counts down on the bus, whether or not anything moves.
+        self.publish_now();
+        self.start_publishing();
     }
 
     /// `bytes` went `direction` just now.
@@ -361,13 +363,16 @@ impl TransferPool {
         throughput_of(&inner, Instant::now())
     }
 
-    fn release(&self, class: Class, succeeded: bool) {
+    fn release(&self, class: Class, large: bool, succeeded: bool) {
         let wake = {
             let mut inner = self.lock();
             if succeeded {
                 grow(&mut inner);
             }
             inner.held[class.index()] -= 1;
+            if large {
+                inner.large_held -= 1;
+            }
             self.dispatch(&mut inner)
         };
         wake_all(wake);
@@ -376,13 +381,12 @@ impl TransferPool {
     /// Hands free slots to whoever is next, and says whom to wake.
     fn dispatch(&self, inner: &mut Inner) -> Vec<Waker> {
         let mut wake = Vec::new();
-        if inner.blocked_until.is_some_and(|until| Instant::now() < until) {
+        if inner.blocked(Instant::now()) {
             self.arm_unblock(inner);
             return wake;
         }
         loop {
             let total: usize = inner.held.iter().sum();
-            let first = |inner: &Inner, class: Class| inner.waiters.iter().position(|w| !w.granted && w.class == class);
             if total < inner.size + RESERVE {
                 if let Some(at) = first(inner, Class::Open) {
                     grant(inner, at, &mut wake);
@@ -440,6 +444,7 @@ impl TransferPool {
                     pool.dispatch(&mut inner)
                 };
                 wake_all(wake);
+                pool.publish_now();
                 return;
             }
         });
@@ -460,8 +465,12 @@ impl TransferPool {
                 let Some(pool) = me.upgrade() else { return };
                 let (shown, observer, idle) = {
                     let mut inner = pool.lock();
-                    let shown = throughput_of(&inner, Instant::now());
-                    let idle = inner.held.iter().sum::<usize>() == 0 && shown.down_speed == 0 && shown.up_speed == 0;
+                    let now = Instant::now();
+                    let shown = throughput_of(&inner, now);
+                    let idle = inner.held.iter().sum::<usize>() == 0
+                        && shown.down_speed == 0
+                        && shown.up_speed == 0
+                        && !inner.blocked(now);
                     if idle {
                         inner.publishing = false;
                     }
@@ -491,14 +500,27 @@ fn wake_all(wake: Vec<Waker>) {
     }
 }
 
+/// The first waiter of `class` that may have a slot: a large one only while the large-file
+/// limit leaves room, unless it is an open.
+fn first(inner: &Inner, class: Class) -> Option<usize> {
+    let large_free = inner.large_held < inner.large_limit;
+    inner
+        .waiters
+        .iter()
+        .position(|w| !w.granted && w.class == class && (!w.large || class == Class::Open || large_free))
+}
+
 fn grant(inner: &mut Inner, at: usize, wake: &mut Vec<Waker>) {
     let waiter = &mut inner.waiters[at];
     waiter.granted = true;
-    let class = waiter.class;
+    let (class, large) = (waiter.class, waiter.large);
     if let Some(waker) = waiter.waker.take() {
         wake.push(waker);
     }
     inner.held[class.index()] += 1;
+    if large {
+        inner.large_held += 1;
+    }
 }
 
 /// One more slot after a success, when work waits and every slot is busy (the slot that
@@ -510,7 +532,7 @@ fn grow(inner: &mut Inner) {
     }
     let busy = inner.held.iter().sum::<usize>() >= inner.size;
     let queued = inner.waiters.iter().any(|w| !w.granted);
-    if !busy || !queued || inner.congested || inner.size >= inner.ceiling {
+    if !busy || !queued || inner.size >= inner.ceiling {
         return;
     }
     match inner.throttle_level {
@@ -540,6 +562,11 @@ fn throughput_of(inner: &Inner, now: Instant) -> Throughput {
         }
     }
     let per_second = |bytes: u64| (bytes as f64 / SPEED_SPAN.as_secs_f64()) as u64;
+    // Whole seconds left, rounded up: "wait 30 s" until the very end.
+    let retry_after = inner.blocked_until.map_or(0, |until| {
+        let left = until.saturating_duration_since(now);
+        left.as_secs() + u64::from(left.subsec_nanos() > 0)
+    });
     Throughput {
         down_speed: per_second(sums[0]),
         up_speed: per_second(sums[1]),
@@ -547,6 +574,9 @@ fn throughput_of(inner: &Inner, now: Instant) -> Throughput {
         active_up: inner.held[Class::Upload.index()] as u32,
         size: inner.size as u32,
         ceiling: inner.ceiling as u32,
+        large: inner.large_held as u32,
+        large_limit: inner.large_limit as u32,
+        retry_after: u32::try_from(retry_after).unwrap_or(u32::MAX),
     }
 }
 
@@ -555,12 +585,22 @@ fn throughput_of(inner: &Inner, now: Instant) -> Throughput {
 pub struct Slot {
     pool: Arc<TransferPool>,
     class: Class,
+    large: bool,
     succeeded: bool,
 }
 
 impl Slot {
     pub fn class(&self) -> Class {
         self.class
+    }
+
+    /// The size class it was taken for.
+    pub fn size(&self) -> Size {
+        if self.large {
+            Size::Large
+        } else {
+            Size::Small
+        }
     }
 
     /// The transfer this slot was for went through.
@@ -571,13 +611,13 @@ impl Slot {
 
 impl Drop for Slot {
     fn drop(&mut self) {
-        self.pool.release(self.class, self.succeeded);
+        self.pool.release(self.class, self.large, self.succeeded);
     }
 }
 
 impl std::fmt::Debug for Slot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Slot").field("class", &self.class).finish()
+        f.debug_struct("Slot").field("class", &self.class).field("large", &self.large).finish()
     }
 }
 
@@ -585,6 +625,7 @@ impl std::fmt::Debug for Slot {
 pub struct Acquire {
     pool: Arc<TransferPool>,
     class: Class,
+    large: bool,
     id: Option<u64>,
     done: bool,
 }
@@ -602,7 +643,7 @@ impl Future for Acquire {
                 None => {
                     let id = inner.next_id;
                     inner.next_id += 1;
-                    inner.waiters.push_back(Waiter { id, class: this.class, granted: false, waker: None });
+                    inner.waiters.push_back(Waiter { id, class: this.class, large: this.large, granted: false, waker: None });
                     this.id = Some(id);
                     wake = this.pool.dispatch(&mut inner);
                     id
@@ -620,7 +661,7 @@ impl Future for Acquire {
         wake_all(wake);
         if granted {
             this.done = true;
-            Poll::Ready(this.pool.slot(this.class))
+            Poll::Ready(this.pool.slot(this.class, this.large))
         } else {
             Poll::Pending
         }
@@ -634,13 +675,14 @@ impl Drop for Acquire {
             let mut inner = self.pool.lock();
             let Some(at) = inner.waiters.iter().position(|w| w.id == id) else { return };
             let waiter = inner.waiters.remove(at).expect("found just now");
-            if !waiter.granted {
-                // Nothing was held; but a waiter gone may let another class go first.
-                self.pool.dispatch(&mut inner)
-            } else {
+            if waiter.granted {
                 inner.held[waiter.class.index()] -= 1;
-                self.pool.dispatch(&mut inner)
+                if waiter.large {
+                    inner.large_held -= 1;
+                }
             }
+            // A slot back, or a waiter gone that may have let another class go first.
+            self.pool.dispatch(&mut inner)
         };
         wake_all(wake);
     }
@@ -652,14 +694,22 @@ mod tests {
 
     /// Holds `n` slots of `class`, taken without waiting.
     fn take(pool: &Arc<TransferPool>, class: Class, n: usize) -> Vec<Slot> {
-        (0..n).map(|_| pool.try_acquire(class).expect("a free slot")).collect()
+        take_sized(pool, class, Size::Small, n)
+    }
+
+    fn take_sized(pool: &Arc<TransferPool>, class: Class, size: Size, n: usize) -> Vec<Slot> {
+        (0..n).map(|_| pool.try_acquire_sized(class, size).expect("a free slot")).collect()
     }
 
     /// A waiter of `class`, polled once so that it stands in line.
     fn queue(pool: &Arc<TransferPool>, class: Class) -> Pin<Box<Acquire>> {
-        let mut acquire = Box::pin(pool.acquire(class));
+        queue_sized(pool, class, Size::Small)
+    }
+
+    fn queue_sized(pool: &Arc<TransferPool>, class: Class, size: Size) -> Pin<Box<Acquire>> {
+        let mut acquire = Box::pin(pool.acquire_sized(class, size));
         let waker = futures_util::task::noop_waker();
-        assert!(acquire.as_mut().poll(&mut Context::from_waker(&waker)).is_pending(), "{class:?} waits");
+        assert!(acquire.as_mut().poll(&mut Context::from_waker(&waker)).is_pending(), "{class:?} {size:?} waits");
         acquire
     }
 
@@ -724,11 +774,13 @@ mod tests {
         let pool = TransferPool::starting_at(8, 64);
         pool.throttled(Some(Duration::from_secs(5)));
         assert_eq!(pool.size(), 4);
+        assert_eq!(pool.throughput().retry_after, 5, "the wait is published");
         assert!(pool.try_acquire(Class::Open).is_none(), "nothing during Retry-After, not even an open");
         pool.throttled(Some(Duration::from_secs(5)));
         assert_eq!(pool.size(), 4, "the same burst halves once");
         tokio::time::sleep(Duration::from_secs(6)).await;
         assert!(pool.try_acquire(Class::Download).is_some(), "slots again after the wait");
+        assert_eq!(pool.throughput().retry_after, 0);
 
         // Below the level: one per success.
         let grow_once = |pool: &Arc<TransferPool>| {
@@ -765,44 +817,6 @@ mod tests {
         let pool = TransferPool::starting_at(1, 64);
         pool.throttled(None);
         assert_eq!(pool.size(), 1);
-    }
-
-    /// Latency over twice the baseline gives one slot back and stops growth; it resumes
-    /// only below one and a half times the baseline.
-    #[tokio::test(start_paused = true)]
-    async fn latency_backs_off_and_resumes_with_hysteresis() {
-        let pool = TransferPool::starting_at(10, 64);
-        for _ in 0..LATENCY_WINDOW {
-            pool.latency(Direction::Down, Duration::from_millis(100));
-        }
-        assert_eq!(pool.size(), 10);
-        for _ in 0..LATENCY_WINDOW {
-            pool.latency(Direction::Down, Duration::from_millis(300));
-        }
-        assert_eq!(pool.size(), 9, "one slot back");
-
-        let try_grow = |pool: &Arc<TransferPool>| {
-            let size = pool.size();
-            let mut slots = take(pool, Class::Download, size);
-            let waiting = queue(pool, Class::Download);
-            let mut done = slots.pop().unwrap();
-            done.succeeded();
-            drop((done, waiting, slots));
-        };
-        try_grow(&pool);
-        assert_eq!(pool.size(), 9, "no growth while slow");
-
-        for _ in 0..LATENCY_WINDOW {
-            pool.latency(Direction::Down, Duration::from_millis(170));
-        }
-        try_grow(&pool);
-        assert_eq!(pool.size(), 9, "between 1.5x and 2x: still no growth");
-
-        for _ in 0..LATENCY_WINDOW {
-            pool.latency(Direction::Down, Duration::from_millis(120));
-        }
-        try_grow(&pool);
-        assert_eq!(pool.size(), 10, "below 1.5x: growth again");
     }
 
     /// An open goes first and may use the reserve above the pool; while one is under way,
@@ -893,16 +907,67 @@ mod tests {
         assert!(pool.try_acquire(Class::Download).is_some());
     }
 
+    /// At most four large transfers at once, downloads and uploads together, each in a slot
+    /// of the pool; small ones keep taking the other slots, and a large one waiting for the
+    /// limit does not hold back the small ones behind it.
+    #[test]
+    fn at_most_four_large_transfers_run_while_small_ones_keep_going() {
+        let pool = TransferPool::starting_at(16, 64);
+        let mut large = take_sized(&pool, Class::Download, Size::Large, 2);
+        large.extend(take_sized(&pool, Class::Upload, Size::Large, 2));
+        assert_eq!(pool.large_held(), DEFAULT_LARGE);
+        assert!(pool.try_acquire_sized(Class::Download, Size::Large).is_none(), "the fifth large one waits");
+        assert!(pool.try_acquire_sized(Class::Upload, Size::Large).is_none());
+
+        let mut fifth = queue_sized(&pool, Class::Download, Size::Large);
+        let small = take(&pool, Class::Download, 6);
+        assert_eq!(small.len(), 6, "small ones behind the waiting large one go");
+        let mut small = small;
+        small.extend(take(&pool, Class::Upload, 6));
+        assert_eq!(pool.throughput().large, 4);
+        assert_eq!(pool.throughput().large_limit, 4);
+
+        drop(large.pop());
+        let fifth = ready(&mut fifth);
+        assert!(fifth.is_some(), "a large one done: the next large one goes");
+        assert_eq!(pool.large_held(), DEFAULT_LARGE);
+    }
+
+    /// A file being opened is not held by the large-file limit, though it counts among the
+    /// large transfers under way.
+    #[test]
+    fn an_open_is_not_held_by_the_large_file_limit() {
+        let pool = TransferPool::starting_at(16, 64);
+        let _large = take_sized(&pool, Class::Download, Size::Large, DEFAULT_LARGE);
+        let open = pool.try_acquire_sized(Class::Open, Size::Large);
+        assert!(open.is_some(), "an open of a large file goes at once");
+        assert_eq!(pool.large_held(), DEFAULT_LARGE + 1);
+    }
+
+    /// `[transfers] large` sets the limit, kept within 1 and the ceiling.
+    #[test]
+    fn the_large_file_limit_follows_the_setting() {
+        let pool = TransferPool::starting_at(16, 64);
+        pool.set_limits(64, 1);
+        let _one = take_sized(&pool, Class::Upload, Size::Large, 1);
+        assert!(pool.try_acquire_sized(Class::Upload, Size::Large).is_none());
+        pool.set_limits(8, 100);
+        assert_eq!(pool.throughput().large_limit, 8, "never above the ceiling");
+        assert_eq!(pool.size(), 8, "the pool shrinks to a lower ceiling");
+    }
+
     /// A slot granted to a future dropped before it saw it goes back.
     #[test]
     fn a_granted_slot_of_a_dropped_waiter_goes_back() {
         let pool = TransferPool::starting_at(1, 64);
         let held = take(&pool, Class::Download, 1);
-        let waiting = queue(&pool, Class::Download);
+        let waiting = queue_sized(&pool, Class::Download, Size::Large);
         drop(held);
         assert_eq!(pool.held(Class::Download), 1, "granted to the waiter");
+        assert_eq!(pool.large_held(), 1);
         drop(waiting);
         assert_eq!(pool.held(Class::Download), 0);
+        assert_eq!(pool.large_held(), 0);
     }
 
     /// The speed is the average of the last three seconds.

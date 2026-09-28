@@ -223,9 +223,12 @@ async fn serve(
             };
             // Routed first, then a slot of that account's pool: an open goes before
             // any background work there, and may use the pool's reserve. A connection
-            // that ends meanwhile had its opener answered by the helper.
+            // that ends meanwhile had its opener answered by the helper. The placeholder's
+            // size says whether it is a large transfer: counted as one, never held by the
+            // large-file limit.
+            let bytes = nix::sys::stat::fstat(&fd).map_or(0, |stat| stat.st_size.max(0) as u64);
             let mut slot = tokio::select! {
-                slot = pool.acquire(crate::pool::Class::Open) => slot,
+                slot = pool.acquire_sized(crate::pool::Class::Open, crate::pool::Size::of(bytes)) => slot,
                 () = link.closed() => {
                     tracing::warn!("hydration request {req_id} waited for a transfer slot until its helper connection ended; not filled");
                     return;
@@ -595,7 +598,8 @@ pub struct SyncSnapshot {
     /// `Uploads`: (full path, bytes sent, bytes in all), as `Transfers`.
     pub uploads: Vec<(String, u64, u64)>,
     /// `DownloadSpeed`, `UploadSpeed`, `ActiveDownloads`, `ActiveUploads`, `PoolSize`,
-    /// `PoolCeiling`: the account's transfer pool, once a second while anything moves.
+    /// `PoolCeiling`, `LargeTransfers`, `LargeLimit`, `RetryAfter`: the account's transfer
+    /// pool, once a second while anything moves or a `Retry-After` runs.
     pub throughput: crate::pool::Throughput,
 }
 
@@ -1200,9 +1204,10 @@ impl SyncService {
         &self.pool
     }
 
-    /// The emergency ceiling of the account's transfer pool (`[transfers] max`).
-    pub fn set_transfer_ceiling(&self, ceiling: usize) {
-        self.pool.set_ceiling(ceiling);
+    /// The emergency ceiling of the account's transfer pool (`[transfers] max`) and its
+    /// large-file limit (`[transfers] large`).
+    pub fn set_transfer_limits(&self, ceiling: usize, large: usize) {
+        self.pool.set_limits(ceiling, large);
     }
 
     /// What a cycle tells when the account's token reaches another drive than the folder's:
@@ -3011,7 +3016,11 @@ impl SyncService {
         let key = InodeKey::of(&file).map_err(|e| SyncError::Io(e.to_string()))?;
 
         let mut slot = match class {
-            Some(class) => Some(self.pool.acquire(class).await),
+            // A placeholder has its full size: whether this is a large transfer.
+            Some(class) => {
+                let bytes = file.metadata().map_or(0, |meta| meta.len());
+                Some(self.pool.acquire_sized(class, crate::pool::Size::of(bytes)).await)
+            }
             None => None,
         };
         // Serializes against `dehydrate()` and against `serve_hydrations`'s

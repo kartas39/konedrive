@@ -358,10 +358,12 @@ A row that then meets its name still taken (`409`), by an item a live row is fre
 through a temporary name, `.konedrive-swap-<id>`, saved in the row before the request, and a
 final `move` row follows once the name is free. Swaps (`a` ↔ `b`) go the same way.
 
-Metadata rows (`mkdir`, `move`, `delete`) run one at a time; content rows beside them, small or
-large alike, each in a slot of the account's transfer pool, which adapts to OneDrive's throttling
+Metadata rows (`mkdir`, `move`, `delete`) run one at a time; content rows beside them, each in a
+slot of the account's transfer pool, which adapts to OneDrive's throttling
 ([hydration.md](hydration.md) §6.4); `move-out` rows one at a time. Metadata rows and move-outs take
-the pool's metadata slots, which go before transfers.
+the pool's metadata slots, which go before transfers. Any content row takes any free slot; a file
+of 100 MiB and up (its local size when the row is taken) also waits for the pool's large-file
+limit, shared with downloads, and a large row waiting for it lets the small rows behind it go.
 
 ### 5.4 The commit
 

@@ -361,18 +361,22 @@ throttles an account as a whole with `429`/`503` — so it finds its own level:
 
 - it starts at 16 and grows by one slot for each successful transfer made while work waits and every
   slot is busy, up to the ceiling (`[transfers] max` in `config.toml`, 64 by default, each
-  account's pool separately);
-- each request's time to first byte is measured (an upload's from the end of its body); while the
-  median of the last 20 is over twice the best of the last five minutes, it gives one slot back and
-  does not grow, until the median is under one and a half times that best;
-- a `429` or `503` on any of the account's requests halves it, once per burst, and nothing gets a
-  slot for the whole `Retry-After`; at and above the size the throttle came at it grows by one slot
+  account's pool separately). Latency is not measured: only a throttle or the ceiling stops it;
+- a `429` or `503` on any of the account's requests — the delta feed and the pre-authenticated
+  download URLs included — halves it, once per burst, and nothing gets a slot for the whole
+  `Retry-After`, not even an open; at and above the size the throttle came at it grows by one slot
   per round only, until five minutes pass without one.
+
+A **large** file (100 MiB and up, by its placeholder's size, or the local file's for an upload)
+fills the link on its own: at most `[transfers] large` (4 by default, clamped to 1…`max`) large
+transfers run at once per account, each in a pool slot; the other slots go to small files, and a
+large one waiting for the limit lets the small ones behind it go. A file being opened, and
+`Hydrate`, is never held by it.
 
 A file being opened goes first: it may use two reserve slots above the pool, and while any open
 waits or runs no background work takes a new slot. Then metadata changes, then background
 downloads and uploads, one to each in turn. A pause holds back everything but opens. Every number
-is a guess (limitations log, section 5; F143–F146).
+is a guess (limitations log, section 5; F143–F148).
 
 A request is taken off the daemon's request queue — at most as many at once as the helper's
 credit (§10.3), so they never pile up as tasks that each hold an event descriptor — routed to its
