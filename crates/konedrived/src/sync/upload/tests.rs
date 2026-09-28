@@ -982,6 +982,7 @@ fn the_workers_activity_words_are_the_daemons_kinds() {
         (kind::UPLOAD_FAILED, Kind::UploadFailed),
         (kind::RESTORED, Kind::Restored),
         (kind::CONFLICT, Kind::Conflict),
+        (kind::NOT_UPLOADED, Kind::NotUploaded),
     ] {
         assert_eq!(word, kind.as_str());
     }
@@ -1108,3 +1109,7 @@ fn renames_moves_and_removals_reach_onedrive_as_the_disk_is() {
         assert_eq!(w.cloud(|c| c.paths()), vec!["a", "b", "b/h.txt"], "sent between {sent_between}");
     }
 }
+
+/// A file or folder removed before its upload finished (issue #27).
+#[path = "removed_tests.rs"]
+mod removed;

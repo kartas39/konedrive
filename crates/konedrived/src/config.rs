@@ -906,7 +906,7 @@ mod tests {
     #[test]
     fn the_transfer_ceiling_is_read_and_clamped() {
         let read = |text: &str| toml::from_str::<Config>(&format!("config_version = 2\n{text}")).unwrap().transfer_ceiling();
-        assert_eq!(read(""), 64);
+        assert_eq!(read(""), crate::pool::DEFAULT_CEILING);
         assert_eq!(read("[transfers]\nmax = 20"), 20);
         assert_eq!(read("[transfers]\nmax = 0"), 1);
         assert_eq!(read("[transfers]\nmax = 1000"), 256);

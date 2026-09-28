@@ -106,7 +106,8 @@ The kinds are `downloaded`, `freed`, `added`, `updated`, `removed`, `moved`, `li
 `failed` (a download) and `update-failed` (a changed file could not be replaced here). For a full
 disk, the detail is exactly "not enough disk space" in either failure kind. A read-write account
 adds `uploaded`, `cloud-moved` (detail: where it was), `cloud-deleted` (to OneDrive's recycle bin),
-`upload-failed` (detail: the reason's code, once per change and reason) and `restored`; a copy of a
+`upload-failed` (detail: the reason's code, once per change and reason), `restored` and
+`not-uploaded` (made here and removed here before its upload finished; detail: why); a copy of a
 file changed on both sides is a `conflict` whose detail is the copy, beside the file.
 
 The daemon keeps the newest **200** events in the tree store; a Forget or a rebuild drops them. The
