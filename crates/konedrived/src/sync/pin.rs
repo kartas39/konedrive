@@ -282,8 +282,10 @@ pub trait PinFill: Send + Sync {
 struct Queue {
     /// Waiting, in the order queued: small files, and large ones apart, so that a large
     /// one waiting for the pool's large-file limit never holds up the small ones behind it.
-    small: VecDeque<PathBuf>,
-    large: VecDeque<PathBuf>,
+    small: VecDeque<Wanted>,
+    large: VecDeque<Wanted>,
+    /// The size of the files waiting, together.
+    waiting_bytes: u64,
     /// Pending or downloading now: a file is queued once, however often a
     /// pin or a sweep asks for it.
     known: HashSet<PathBuf>,
@@ -293,11 +295,23 @@ struct Queue {
 }
 
 impl Queue {
-    fn waiting(&mut self, size: Size) -> &mut VecDeque<PathBuf> {
+    fn waiting(&mut self, size: Size) -> &mut VecDeque<Wanted> {
         match size {
             Size::Small => &mut self.small,
             Size::Large => &mut self.large,
         }
+    }
+
+    /// The next file waiting of `size`, off the queue.
+    fn next(&mut self, size: Size) -> Option<PathBuf> {
+        let (file, bytes) = self.waiting(size).pop_front()?;
+        self.waiting_bytes = self.waiting_bytes.saturating_sub(bytes);
+        Some(file)
+    }
+
+    /// How many files wait (not those downloading), and their size together.
+    fn left(&self) -> (u32, u64) {
+        (u32::try_from(self.small.len() + self.large.len()).unwrap_or(u32::MAX), self.waiting_bytes)
     }
 
     fn is_empty(&self) -> bool {
@@ -305,8 +319,9 @@ impl Queue {
     }
 
     fn drain(&mut self) -> Vec<PathBuf> {
-        let mut waiting: Vec<PathBuf> = self.small.drain(..).collect();
-        waiting.extend(self.large.drain(..));
+        let mut waiting: Vec<PathBuf> = self.small.drain(..).map(|(file, _)| file).collect();
+        waiting.extend(self.large.drain(..).map(|(file, _)| file));
+        self.waiting_bytes = 0;
         for file in &waiting {
             self.known.remove(file);
         }
@@ -419,9 +434,13 @@ impl Pins {
         let mut added = 0u32;
         for (file, bytes) in files {
             if queue.known.insert(file.clone()) {
-                queue.waiting(Size::of(bytes)).push_back(file);
+                queue.waiting(Size::of(bytes)).push_back((file, bytes));
+                queue.waiting_bytes += bytes;
                 added += 1;
             }
+        }
+        if added > 0 {
+            self.publish_waiting(&queue);
         }
         if queue.is_empty() {
             return added;
@@ -535,6 +554,7 @@ impl Pins {
             let mut queue = self.queue.lock().unwrap();
             queue.drain();
             queue.known.clear();
+            self.publish_waiting(&queue);
         }
         // A worker waiting for a slot looks again, and gives up the slots it asked for.
         self.wake.notify_one();
@@ -544,6 +564,13 @@ impl Pins {
         explicit.set.clear();
         explicit.journal.clear();
         self.publish(&explicit.set);
+    }
+
+    /// The pinned files waiting to download, and their size: part of what is left to
+    /// download (issue #16).
+    fn publish_waiting(&self, queue: &Queue) {
+        let left = queue.left();
+        self.state.update(|s| s.pinned_waiting = left);
     }
 
     fn publish(&self, explicit: &BTreeSet<PathBuf>) {
@@ -588,7 +615,12 @@ impl Pins {
             };
             let size = permit.size();
             asked[usize::from(size == Size::Large)] = None;
-            let next = self.queue.lock().unwrap().waiting(size).pop_front();
+            let next = {
+                let mut queue = self.queue.lock().unwrap();
+                let next = queue.next(size);
+                self.publish_waiting(&queue);
+                next
+            };
             let Some(path) = next else {
                 drop(permit);
                 continue;
@@ -599,6 +631,7 @@ impl Pins {
                 queue.drain();
                 queue.known.clear();
                 queue.working = false;
+                self.publish_waiting(&queue);
                 return;
             };
             let (this, cancel) = (Arc::clone(&self), self.cancel.lock().unwrap().clone());
@@ -627,6 +660,7 @@ impl Pins {
         queue.known.remove(path);
         if filled == Filled::NoSpace && !queue.is_empty() {
             let waiting = queue.drain();
+            self.publish_waiting(&queue);
             tracing::warn!(
                 "the disk is full: {} file(s) kept on this device wait for the next sweep",
                 waiting.len()

@@ -82,6 +82,18 @@ class SyncController : public QObject
     Q_PROPERTY(uint largeTransfers READ largeTransfers NOTIFY syncChanged)
     Q_PROPERTY(uint largeLimit READ largeLimit NOTIFY syncChanged)
     Q_PROPERTY(uint retryAfter READ retryAfter NOTIFY syncChanged)
+    /// The queue totals, each way (Sync1's DownloadLeftCount, DownloadLeftBytes,
+    /// DownloadDoneBytes, DownloadTimeLeft and the same four for uploads): files left to
+    /// download and changes left to upload, their bytes, the bytes done in this run, and
+    /// the seconds left (0: unknown).
+    Q_PROPERTY(uint downloadLeftCount READ downloadLeftCount NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong downloadLeftBytes READ downloadLeftBytes NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong downloadDoneBytes READ downloadDoneBytes NOTIFY syncChanged)
+    Q_PROPERTY(uint downloadTimeLeft READ downloadTimeLeft NOTIFY syncChanged)
+    Q_PROPERTY(uint uploadLeftCount READ uploadLeftCount NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong uploadLeftBytes READ uploadLeftBytes NOTIFY syncChanged)
+    Q_PROPERTY(qulonglong uploadDoneBytes READ uploadDoneBytes NOTIFY syncChanged)
+    Q_PROPERTY(uint uploadTimeLeft READ uploadTimeLeft NOTIFY syncChanged)
     /// The last two minutes of each, one sample a second, oldest first: the window keeps
     /// them, the daemon does not.
     Q_PROPERTY(QVariantList downloadSpeedHistory READ downloadSpeedHistory NOTIFY historyChanged)
@@ -148,6 +160,14 @@ public:
     uint largeTransfers() const { return m_largeTransfers; }
     uint largeLimit() const { return m_largeLimit; }
     uint retryAfter() const { return m_retryAfter; }
+    uint downloadLeftCount() const { return m_downloadLeftCount; }
+    qulonglong downloadLeftBytes() const { return m_downloadLeftBytes; }
+    qulonglong downloadDoneBytes() const { return m_downloadDoneBytes; }
+    uint downloadTimeLeft() const { return m_downloadTimeLeft; }
+    uint uploadLeftCount() const { return m_uploadLeftCount; }
+    qulonglong uploadLeftBytes() const { return m_uploadLeftBytes; }
+    qulonglong uploadDoneBytes() const { return m_uploadDoneBytes; }
+    uint uploadTimeLeft() const { return m_uploadTimeLeft; }
     QVariantList downloadSpeedHistory() const { return m_history[0]; }
     QVariantList uploadSpeedHistory() const { return m_history[1]; }
     QVariantList activeDownloadsHistory() const { return m_history[2]; }
@@ -292,6 +312,14 @@ private:
     uint m_largeTransfers = 0;
     uint m_largeLimit = 0;
     uint m_retryAfter = 0;
+    uint m_downloadLeftCount = 0;
+    qulonglong m_downloadLeftBytes = 0;
+    qulonglong m_downloadDoneBytes = 0;
+    uint m_downloadTimeLeft = 0;
+    uint m_uploadLeftCount = 0;
+    qulonglong m_uploadLeftBytes = 0;
+    qulonglong m_uploadDoneBytes = 0;
+    uint m_uploadTimeLeft = 0;
     /// Download speed, upload speed, active downloads, active uploads.
     QVariantList m_history[4];
     QTimer *m_sampler;

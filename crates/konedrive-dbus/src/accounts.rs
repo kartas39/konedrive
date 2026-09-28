@@ -252,6 +252,24 @@ pub trait Sync1 {
     /// Seconds left of OneDrive's `Retry-After` wait; 0 when there is none.
     #[zbus(property)]
     fn retry_after(&self) -> zbus::Result<u32>;
+    /// The queue totals (issue #16): files left to download and changes left to upload,
+    /// their bytes, the bytes done in this run, and the seconds left (0: unknown).
+    #[zbus(property)]
+    fn download_left_count(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn download_left_bytes(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn download_done_bytes(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn download_time_left(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn upload_left_count(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn upload_left_bytes(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn upload_done_bytes(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn upload_time_left(&self) -> zbus::Result<u32>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: development only.

@@ -96,6 +96,9 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
             m_downloadSpeed = m_uploadSpeed = 0;
             m_activeDownloads = m_activeUploads = 0;
             m_largeTransfers = m_retryAfter = 0;
+            m_downloadLeftCount = m_uploadLeftCount = 0;
+            m_downloadLeftBytes = m_downloadDoneBytes = m_uploadLeftBytes = m_uploadDoneBytes = 0;
+            m_downloadTimeLeft = m_uploadTimeLeft = 0;
             m_uploads->setTransfers({});
             m_notUploadedKnown = false;
         } else {
@@ -210,6 +213,14 @@ void SyncController::applyProperties(const QVariantMap &p)
     count("LargeTransfers", m_largeTransfers);
     count("LargeLimit", m_largeLimit);
     count("RetryAfter", m_retryAfter);
+    count("DownloadLeftCount", m_downloadLeftCount);
+    number("DownloadLeftBytes", m_downloadLeftBytes);
+    number("DownloadDoneBytes", m_downloadDoneBytes);
+    count("DownloadTimeLeft", m_downloadTimeLeft);
+    count("UploadLeftCount", m_uploadLeftCount);
+    number("UploadLeftBytes", m_uploadLeftBytes);
+    number("UploadDoneBytes", m_uploadDoneBytes);
+    count("UploadTimeLeft", m_uploadTimeLeft);
     Q_EMIT syncChanged();
 
     // GetAll's own answer loads the lists (fetchAll); a change on the way loads them again.

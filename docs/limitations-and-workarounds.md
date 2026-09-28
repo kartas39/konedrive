@@ -1988,6 +1988,38 @@ application must never read zeros where real content should be.
   one account's full pool never holds up another account's open. The backpressure test now pins
   the admission (64 + queue), not four fills. LIMIT, on purpose ·
   measured (`sync::tests::the_request_loop_stops_taking_work_once_the_admission_is_full`). Open.
+- **F152. Queue totals: what "left", "done" and "time left" count, and where they are
+  approximate** (`crates/konedrived/src/sync/totals.rs`, issue #16) — `Sync1`'s
+  `DownloadLeft*`/`UploadLeft*`, `*DoneBytes`, `*TimeLeft`, the Activity page's cards and
+  `sync transfers`.
+  - **This run.** "Done" is the bytes the account's transfer pool has counted that way since
+    the daemon started, or since the totals were last counted with nothing left that way —
+    whichever is later; it is 0 while nothing is left. What is kept back (blocked, held) is not
+    left, so it never holds a run open. The totals are counted at most once a second, so a run
+    that ends and another that starts within the same second are one run.
+  - **Done is bytes moved, not files finished.** Everything the pool counts that way is in it:
+    thumbnails fetched while anything is left to download, and an upload fragment sent again
+    after a failure, add to it.
+  - **Left, downloads.** The pinned files waiting (the pins' queue) and every download under way
+    (`Transfers`: opens, `Hydrate`, replacements, pinned files), less what those have received. A
+    file being opened or replaced is not queued ahead: it counts only while it runs. A pinned file
+    taken off the queue whose fill has not fetched yet is in neither for that moment, and a
+    download whose size is not known yet counts 0 bytes.
+  - **Left, uploads.** `PendingCount` changes (a move, a delete, a new folder has no bytes) and
+    `PendingBytes` less what the uploads under way have sent. A pending change that waits with a
+    reason (locked, open for writing) is in "left" and also in the Not Uploaded page's "Waiting"
+    group, so the Activity page's "N changes kept back" link counts it too.
+  - **Time left.** The bytes left over the pool's average of the last 30 s — or of the run so
+    far, when it began within them (never under 1 s, so the first bytes do not make a speed of
+    their own). None once nothing has moved that way for 10 s, during OneDrive's `Retry-After`,
+    and, for uploads, while syncing is paused. Both numbers are guesses (section 5). So that the
+    time left goes on the bus too, the pool now publishes until nothing has moved for 10 s
+    rather than 3 s.
+  - **Numbers.** The window writes the counts in the locale's way ("1,234" or "1 234"); the
+    command line always sets thousands apart with a space ("1 234").
+
+  GUESS · measured by unit tests on a paused clock (`sync::totals::tests`,
+  `pool::tests::the_average_covers_the_run_and_ends_after_ten_still_seconds`). Open.
 ---
 
 ## 5. Provisional numbers
@@ -2013,7 +2045,9 @@ application must never read zeros where real content should be.
 | Transfer pool: throttle level forgotten after (`THROTTLE_MEMORY`) / a throttle within the wait (+1 s, `BURST_GRACE`) is the same burst / no slot for, without `Retry-After` (`DEFAULT_THROTTLE_WAIT`) | 5 min / halves once / 10 s | **guess** |
 | A large file, from (`LARGE_FROM`) / large transfers at once per account (`[transfers] large`, `DEFAULT_LARGE`, clamped to 1…`max`), files being opened not held | 100 MiB / 4 | **guess** |
 | Slots above the pool only a file being opened may take (`RESERVE`) | 2 | **guess** |
-| Speed shown (`DownloadSpeed`, `UploadSpeed`): the average of (`SPEED_SPAN`) / published every | 3 s / 1 s while anything moves or a `Retry-After` runs | **guess** |
+| Speed shown (`DownloadSpeed`, `UploadSpeed`): the average of (`SPEED_SPAN`) / published every | 3 s / 1 s while anything moves or a `Retry-After` runs, and until nothing has moved for 10 s | **guess** |
+| A queue's time left (`DownloadTimeLeft`, `UploadTimeLeft`): the speed it is worked out from is the average of (`AVERAGE_SPAN`) / none once nothing has moved that way for (`STILL_AFTER`) | 30 s, or the run so far when shorter (never under 1 s) / 10 s | **guess** (F152) |
+| Queue totals counted at most every (`PUBLISH_EVERY`) | 1 s | the speeds' own rate |
 | Hydration requests taken off the helper's queue at once (`FILL_ADMISSION`) | 64, the helper's credit; each then waits for its account's pool | pinned by a test |
 | Window's transfer charts | the last 2 min, one sample a second | **guess** |
 | Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |
@@ -2595,10 +2629,10 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   needs its own answer; `hard-link`, `device` and `reserved-name` (a `.konedrive-` name) are "never
   uploaded"; `not-downloaded` is "waiting"; removals the mass-delete guard holds are not kept back
   here, since the Status page asks about them; "matched by the ignore list" has a place in the table
-  but no code, since the examination records nothing for an ignored name. The Activity line counts
-  `PendingCount + BlockedCount + HeldCount`, and its size is `PendingBytes` plus the bytes of the
-  two "needs you" groups: a blocked row whose reason is unknown (an unreadable row) is counted but
-  not sized. The waiting group's reasons are shown as codes where the window has no words for them
+  but no code, since the examination records nothing for an ignored name. The Activity line that counted
+  `PendingCount + BlockedCount + HeldCount` is gone since issue #16: what is left to upload is in
+  the Uploading card (F152), and the link to the Not Uploaded page says how many changes that page
+  counts. The waiting group's reasons are shown as codes where the window has no words for them
   (A22). Open.
 
 ---

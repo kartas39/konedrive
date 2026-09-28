@@ -386,6 +386,55 @@ impl Sync1 {
     async fn retry_after(&self) -> u32 {
         self.service.state().get().throughput.retry_after
     }
+
+    /// Files left to download: the pinned files waiting and every download under way
+    /// (issue #16, `sync::totals`).
+    #[zbus(property)]
+    async fn download_left_count(&self) -> u32 {
+        self.service.state().get().queue.down.left_count
+    }
+
+    /// Their size, less what the downloads under way have received.
+    #[zbus(property)]
+    async fn download_left_bytes(&self) -> u64 {
+        self.service.state().get().queue.down.left_bytes
+    }
+
+    /// Bytes downloaded since nothing was last left to download, or since the daemon started.
+    #[zbus(property)]
+    async fn download_done_bytes(&self) -> u64 {
+        self.service.state().get().queue.down.done_bytes
+    }
+
+    /// Seconds the downloads left take at the last 30 s's speed; 0 when unknown.
+    #[zbus(property)]
+    async fn download_time_left(&self) -> u32 {
+        self.service.state().get().queue.down.time_left
+    }
+
+    /// Changes left to upload (`PendingCount`).
+    #[zbus(property)]
+    async fn upload_left_count(&self) -> u32 {
+        self.service.state().get().queue.up.left_count
+    }
+
+    /// `PendingBytes`, less what the uploads under way have sent.
+    #[zbus(property)]
+    async fn upload_left_bytes(&self) -> u64 {
+        self.service.state().get().queue.up.left_bytes
+    }
+
+    /// Bytes uploaded since nothing was last left to upload, or since the daemon started.
+    #[zbus(property)]
+    async fn upload_done_bytes(&self) -> u64 {
+        self.service.state().get().queue.up.done_bytes
+    }
+
+    /// Seconds the uploads left take at the last 30 s's speed; 0 when unknown, and while paused.
+    #[zbus(property)]
+    async fn upload_time_left(&self) -> u32 {
+        self.service.state().get().queue.up.time_left
+    }
 }
 
 /// Every refusal keeps its own name; only the ones with nothing a caller
@@ -470,6 +519,8 @@ async fn start_signals(
     // between here and the task's first poll is still sent.
     let mut added = service.report().activity.subscribe();
     let activity_iface = iface.clone();
+    // The queue totals, counted from the rest into the state (issue #16).
+    let totals = tokio::spawn(super::totals::run(service.state().clone(), service.report().transfers.clone()));
     let states = tokio::spawn(async move {
         while changes.changed().await.is_ok() {
             let current = changes.borrow_and_update().clone();
@@ -504,7 +555,7 @@ async fn start_signals(
             }
         }
     });
-    Ok(vec![states, coalesced, activity])
+    Ok(vec![states, coalesced, activity, totals])
 }
 
 /// What travels in the coalesced `PropertiesChanged`: the counters (spec
@@ -525,6 +576,7 @@ pub(crate) struct Coalesced {
     held_count: u32,
     uploads: Vec<(String, u64, u64)>,
     throughput: crate::pool::Throughput,
+    queue: super::totals::QueueTotals,
 }
 
 impl Coalesced {
@@ -544,6 +596,7 @@ impl Coalesced {
             held_count: s.held_count,
             uploads: s.uploads.clone(),
             throughput: s.throughput,
+            queue: s.queue,
         }
     }
 
@@ -616,6 +669,27 @@ impl Coalesced {
         }
         if was.retry_after != now.retry_after {
             changed.insert("RetryAfter", now.retry_after.into());
+        }
+        let (was, now) = (old.queue, self.queue);
+        for (name, before, after) in [
+            ("DownloadLeftBytes", was.down.left_bytes, now.down.left_bytes),
+            ("DownloadDoneBytes", was.down.done_bytes, now.down.done_bytes),
+            ("UploadLeftBytes", was.up.left_bytes, now.up.left_bytes),
+            ("UploadDoneBytes", was.up.done_bytes, now.up.done_bytes),
+        ] {
+            if before != after {
+                changed.insert(name, after.into());
+            }
+        }
+        for (name, before, after) in [
+            ("DownloadLeftCount", was.down.left_count, now.down.left_count),
+            ("DownloadTimeLeft", was.down.time_left, now.down.time_left),
+            ("UploadLeftCount", was.up.left_count, now.up.left_count),
+            ("UploadTimeLeft", was.up.time_left, now.up.time_left),
+        ] {
+            if before != after {
+                changed.insert(name, after.into());
+            }
         }
         changed
     }
