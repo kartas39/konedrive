@@ -2023,6 +2023,8 @@ application must never read zeros where real content should be.
 | Notifications per event kind (A3) | one per 10 s, the rest as one summary | **guess** |
 | Window's "checked N s ago" refresh | every 10 s, from the clock | **guess** |
 | Window's "Recent" list | 50 rows | **guess**; the daemon keeps 200 |
+| Files of one reason the window lists, and `sync not-uploaded` without `--all` (`PerFileCap`, `PER_FILE_SHOWN`) | 20 | **guess** (A24) |
+| Shortest time between two reads of what is kept back (`NotUploadedSummary`) while a page shows it | 1 s | **guess** |
 | Quiet spell before a batch of local changes is examined, and its ceiling during continuous activity (`QUIET`, `CEILING`) | 2 s / 30 s | the write design's; **guess** |
 | A busy file (open for writing, being filled or freed) examined again after (`RECHECK`) | 30 s | **guess** |
 | A folder the watcher cannot watch in full is scanned and walked every (`DEGRADED_SCAN`) | 10 min | the write design's; **guess** |
@@ -2556,7 +2558,7 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   (A22). Plasma's side is unverified, as A7 says. Open.
 - **A22. The reasons, the kinds and copies are read by their codes, in words kept apart from
   `konedrivectl`'s.** FRAGILE · reasoned (`modelstest::uploadKindsAndCopies`). `uploadReasonText`
-  (`app/outboxmodel.cpp`) turns an outbox row's reason, an `upload-failed` detail and a
+  (`app/uploadreasons.cpp`) turns an outbox row's reason, an `upload-failed` detail and a
   `NotUploaded()` reason into the window's words, with the same meanings as `konedrivectl`'s
   `upload_reason_text` but pointing at the window instead of commands; no test keeps the two in
   step (unlike W12's skip reasons), and a code neither knows is shown as the daemon wrote it. The
@@ -2576,6 +2578,28 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   account that also needs attention shows the warning instead. The Status page pauses and resumes
   the account it shows, and says "Paused until 14:00" from `PausedUntil`, the time of day when it is
   today, or a date. Open.
+- **A24. What is kept back is shown by reason; files only where each needs something done, 20 at
+  most.** LIMIT · measured (`kept_back::tests`, `dialogstest::thousandsKeptBackAreAFewLines`;
+  issue #20). The window no longer reads the whole outbox (`Outbox(0)`) or `NotUploaded()`: the
+  Not Uploaded page asks `NotUploadedSummary()` (one row per reason) and, for a reason that needs
+  something done to each file, `NotUploadedFiles(reason, 20)` only when that reason is opened; the
+  Activity page shows one "N changes wait to upload (size)" line and a link to Not Uploaded. So a
+  full OneDrive with 2000 blocked uploads is one line with "Refresh", and the window cannot list
+  every file of a reason past the first 20 — "and N more" points at
+  `konedrivectl sync not-uploaded --all`. The cap of 20 is a **guess**. The daemon still reads its
+  whole outbox, and `lstat`s each file without a recorded size, for every summary; the window asks
+  for it at most once a second and only while one of the two pages is shown. The grouping lives in
+  one table (`crates/konedrived/src/sync/kept_back.rs`): a reason no code writes (a backoff's reason
+  can be an error's text) is shown under "Waiting" and logged once (the first 64 such reasons).
+  Choices the task left open: `too-large` (over 250 GB) is per file, not one action, since each file
+  needs its own answer; `hard-link`, `device` and `reserved-name` (a `.konedrive-` name) are "never
+  uploaded"; `not-downloaded` is "waiting"; removals the mass-delete guard holds are not kept back
+  here, since the Status page asks about them; "matched by the ignore list" has a place in the table
+  but no code, since the examination records nothing for an ignored name. The Activity line counts
+  `PendingCount + BlockedCount + HeldCount`, and its size is `PendingBytes` plus the bytes of the
+  two "needs you" groups: a blocked row whose reason is unknown (an unreadable row) is counted but
+  not sized. The waiting group's reasons are shown as codes where the window has no words for them
+  (A22). Open.
 
 ---
 

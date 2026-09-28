@@ -205,6 +205,17 @@ impl Sync1 {
         self.service.not_uploaded().await.map_err(to_fault)
     }
 
+    /// What is kept back, one row per reason: (group, reason, count, bytes).
+    async fn not_uploaded_summary(&self) -> Result<Vec<(String, String, u32, u64)>> {
+        self.service.not_uploaded_summary().await.map_err(to_fault)
+    }
+
+    /// The files kept back for one reason, at most `limit` (0 for all), and how many there are.
+    #[zbus(out_args("items", "total"))]
+    async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32)> {
+        self.service.not_uploaded_files(reason, limit).await.map_err(to_fault)
+    }
+
     #[zbus(property)]
     /// From the published state, as `RootState` and `LastError` are: a
     /// folder that could not be brought up reads
