@@ -515,6 +515,15 @@ impl TreeStore {
     pub fn outbox_waiting_for_space(&self) -> Result<Vec<OutboxRow>, TreeError> {
         rows_where(&self.conn, "WHERE state = 'ready' AND (reason = 'waiting-for-space' OR substr(reason, 1, 8) = 'too-big:')", [])
     }
+
+    /// The blocked rows (`NotUploaded()`), through the due index.
+    pub fn outbox_blocked(&self) -> Result<Vec<OutboxRow>, TreeError> {
+        Ok(rows_where(&self.conn, "WHERE state = 'blocked' OR kind NOT IN ('create', 'mkdir', 'update', 'move', 'delete', 'move-out')
+                                     OR state NOT IN ('waiting', 'ready', 'running', 'retry', 'blocked', 'held')", [])?
+        .into_iter()
+        .filter(|row| row.state == OutboxState::Blocked)
+        .collect())
+    }
 }
 
 #[cfg(test)]

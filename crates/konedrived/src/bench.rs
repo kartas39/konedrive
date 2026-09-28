@@ -349,9 +349,10 @@ fn mixed_rows() -> Vec<OutboxRow> {
         .collect()
 }
 
-/// `NotUploadedSummary()` as the daemon answers it.
+/// `NotUploadedSummary()` as the daemon sums it when it has no sum in
+/// memory: through the store's read-only connection.
 fn summary_now(store: &Store, _root: &Path) -> Vec<crate::sync::kept_back::SummaryRow> {
-    let (skipped, groups) = store.with(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).unwrap();
+    let (skipped, groups) = store.read_blocking(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).unwrap();
     crate::sync::kept_back::summary(&skipped, &groups, false)
 }
 
@@ -385,12 +386,12 @@ fn the_first_rows_and_files_of_a_reason() {
     store.with(|s| s.bench_insert(&mixed_rows())).unwrap();
     let root = Path::new("/nowhere/OneDrive");
     let (entries, first) = timed("Outbox(21) of 30 000", || {
-        let rows = store.with(|s| s.outbox_first(21)).unwrap();
+        let rows = store.read_blocking(|s| s.outbox_first(21)).unwrap();
         crate::sync::outbox_api::entries(rows, root, &[], false, false)
     });
     assert_eq!(entries.len(), 21);
     let ((files, total), second) = timed("NotUploadedFiles(name-characters, 20) of 30 000", || {
-        store.with(|s| crate::sync::kept_back::files(s, root, false, "name-characters", 20)).unwrap()
+        store.read_blocking(|s| crate::sync::kept_back::files(s, root, false, "name-characters", 20)).unwrap()
     });
     assert_eq!((files.len(), total), (20, 1000));
     within("Outbox(21)", first, Duration::from_millis(50));

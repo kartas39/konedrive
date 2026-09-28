@@ -328,6 +328,8 @@ fn should_rebuild(error: &TreeError) -> bool {
 
 pub struct TreeStore {
     conn: Connection,
+    /// Where it is on disk; `None` in memory.
+    path: Option<PathBuf>,
     /// What changed in the outbox since it was last asked (issue #38).
     changes: std::sync::Arc<outbox::OutboxChanges>,
 }
@@ -374,7 +376,19 @@ impl TreeStore {
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get::<_, String>(0))?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
-        Self::prepare(conn)
+        Ok(Self { path: Some(path.to_path_buf()), ..Self::prepare(conn)? })
+    }
+
+    /// A second connection to the store at `path`, for reading only (issue
+    /// #38): in WAL mode it reads the last committed state and never waits
+    /// for the writer. Nothing is created or changed; its reads are the
+    /// outbox's lists and sums for the bus.
+    fn open_read_only(path: &Path) -> Result<Self, TreeError> {
+        use rusqlite::OpenFlags;
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.set_prepared_statement_cache_capacity(64);
+        Ok(Self { conn, path: None, changes: Default::default() })
     }
 
     /// Creates the schema in a store with no table at all, in one
@@ -437,7 +451,7 @@ impl TreeStore {
         conn.set_prepared_statement_cache_capacity(64);
         let changes = std::sync::Arc::new(outbox::OutboxChanges::default());
         outbox::watch(&conn, &changes)?;
-        Ok(Self { conn, changes })
+        Ok(Self { conn, path: None, changes })
     }
 
     pub fn meta(&self, key: &str) -> Result<Option<String>, TreeError> {
@@ -888,12 +902,48 @@ fn upsert(tx: &rusqlite::Transaction<'_>, table: Table, row: &Row) -> rusqlite::
 pub struct Store {
     inner: std::sync::Arc<std::sync::Mutex<TreeStore>>,
     changes: std::sync::Arc<outbox::OutboxChanges>,
+    /// The read-only connection ([`Store::read`]), opened when first used;
+    /// only for a store on disk.
+    reader: std::sync::Arc<std::sync::Mutex<Option<TreeStore>>>,
+    path: Option<PathBuf>,
 }
 
 impl Store {
     pub fn new(store: TreeStore) -> Self {
         let changes = std::sync::Arc::clone(&store.changes);
-        Self { inner: std::sync::Arc::new(std::sync::Mutex::new(store)), changes }
+        let path = store.path.clone();
+        Self { inner: std::sync::Arc::new(std::sync::Mutex::new(store)), changes, reader: Default::default(), path }
+    }
+
+    /// Runs `f` on the store's read-only connection, which never waits for a
+    /// writer and sees what was last committed (issue #38): the bus's lists and
+    /// sums. A store in memory, or one whose second connection cannot be
+    /// opened, is read through the shared one.
+    pub fn read_blocking<T>(&self, f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError>) -> Result<T, TreeError> {
+        let Some(path) = &self.path else { return self.with(f) };
+        let mut reader = self.reader.lock().unwrap_or_else(|p| p.into_inner());
+        if reader.is_none() {
+            match TreeStore::open_read_only(path) {
+                Ok(opened) => *reader = Some(opened),
+                Err(e) => {
+                    tracing::warn!("the tree store cannot be opened for reading alone ({e}); it is read through the shared connection");
+                    drop(reader);
+                    return self.with(f);
+                }
+            }
+        }
+        f(reader.as_mut().expect("opened above"))
+    }
+
+    /// [`read_blocking`](Self::read_blocking) on a blocking thread.
+    pub async fn read<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
+    ) -> Result<T, TreeError> {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || store.read_blocking(f))
+            .await
+            .map_err(|e| TreeError::Io(std::io::Error::other(format!("the store task failed: {e}"))))?
     }
 
     /// For synchronous callers already off the async runtime (the materializer).

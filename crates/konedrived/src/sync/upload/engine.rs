@@ -179,6 +179,10 @@ struct Mark {
     item: Option<String>,
 }
 
+/// The counts are summed again at most this often while the outbox changes
+/// (issue #38).
+const TALLY_EVERY: Duration = Duration::from_secs(1);
+
 /// Rows a pick looks for: once this many can run, no more portions are read
 /// (a guess: more than the transfer pool runs at once).
 const PICK_WANT: usize = 32;
@@ -222,6 +226,9 @@ pub(crate) struct Engine {
     protection: Mutex<super::move_out::Protection>,
     /// One quota read at a time: refusals of rows running together share it.
     pub(super) quota_lock: tokio::sync::Mutex<()>,
+    /// The counts are wanted again though the outbox did not change (OneDrive
+    /// turned full, or not).
+    recount: Notify,
 }
 
 /// The `user.konedrive.sync` value for a row's file (§9).
@@ -270,6 +277,7 @@ impl Engine {
             faults: Mutex::new(Vec::new()),
             protection: Mutex::new(super::move_out::Protection::default()),
             quota_lock: tokio::sync::Mutex::new(()),
+            recount: Notify::new(),
         }
     }
 
@@ -635,17 +643,43 @@ impl Engine {
         for (rel, value) in wanted {
             local::mark(disk, &rel, Some(value));
         }
-        if first || asked.as_ref().is_none_or(|seqs| !seqs.is_empty()) {
-            self.count();
+    }
+
+    /// `PendingCount` and the rest, and the Not Uploaded summary, summed by
+    /// SQL through the store's read-only connection — never waiting for a
+    /// writer — and kept in memory for the bus.
+    pub(super) async fn recount(&self) {
+        let full = self.space_full();
+        match self.store().read(|s| Ok((s.outbox_groups()?, s.skipped_groups()?))).await {
+            Ok((groups, skipped)) => {
+                self.shared().counts = OutboxCounts::of(&groups, full);
+                self.cfg.host.kept_back(&crate::sync::kept_back::summary(&skipped, &groups, full));
+                self.publish();
+            }
+            Err(e) => tracing::warn!("cannot count the outbox: {e}"),
         }
     }
 
-    /// `PendingCount` and the rest, from one SQL sum ([`super::outbox_counts`]).
-    fn count(&self) {
-        let full = self.space_full();
-        match self.store().with(|s| super::outbox_counts(s, full)) {
-            Ok(counts) => self.shared().counts = counts,
-            Err(e) => tracing::warn!("cannot count the outbox: {e}"),
+    /// The counts wanted again though the outbox did not change.
+    pub(super) fn recount_soon(&self) {
+        self.recount.notify_one();
+    }
+
+    /// Sums the outbox again whenever a change to it is committed, at most
+    /// every [`TALLY_EVERY`].
+    async fn tally(self: Arc<Self>, cancel: CancellationToken) {
+        let mut changes = self.store().changes().subscribe();
+        loop {
+            self.recount().await;
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                _ = tokio::time::sleep(TALLY_EVERY) => {}
+            }
+            tokio::select! {
+                _ = cancel.cancelled() => return,
+                changed = changes.changed() => if changed.is_err() { return },
+                _ = self.recount.notified() => {}
+            }
         }
     }
 
@@ -796,7 +830,7 @@ impl Engine {
             }
         }
         self.mark_rows_blocking(&disk).await;
-        self.publish();
+        self.recount().await;
     }
 
     /// [`settle`](Self::settle) off the async runtime.
@@ -925,6 +959,7 @@ impl Engine {
     /// The worker's life: drain, then sleep until woken or something falls
     /// due.
     pub(super) async fn run(self: Arc<Self>, cancel: CancellationToken) {
+        let tally = tokio::spawn(Arc::clone(&self).tally(cancel.clone()));
         loop {
             self.drain(&cancel).await;
             if cancel.is_cancelled() {
@@ -937,5 +972,6 @@ impl Engine {
                 _ = tokio::time::sleep(wait) => {}
             }
         }
+        let _ = tally.await;
     }
 }

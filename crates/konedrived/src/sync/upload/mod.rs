@@ -169,6 +169,8 @@ pub trait OutboxHost: Send + Sync {
     fn activity(&self, _event: &ActivityRow) {}
     /// The worker's status changed: its counts, its uploads, its trouble.
     fn status(&self, _status: &WorkerStatus) {}
+    /// What is kept back, summed again (`NotUploadedSummary()`, issue #38).
+    fn kept_back(&self, _summary: &[crate::sync::kept_back::SummaryRow]) {}
     /// OneDrive changed under a row (§6), or a folder a row needs is gone
     /// there: a delta cycle should run soon, so that the base catches up and
     /// the reconcile places what came back. The delta carries it: a plain

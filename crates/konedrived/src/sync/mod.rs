@@ -1028,6 +1028,9 @@ pub struct SyncService {
     /// How many times the pause was shown: the timer ends it on the bus only
     /// if no `Pause` or `Resume` came after it read the store (the outbox on the bus).
     pause_shown: std::sync::atomic::AtomicU64,
+    /// `NotUploadedSummary()` as the outbox worker last summed it (issue #38):
+    /// answered from memory while the worker runs.
+    kept_back: Mutex<Option<Vec<kept_back::SummaryRow>>>,
     /// Set by a forced switch's drop of the outbox (`PendingUploads::drop_pending_uploads`):
     /// the folder's turn to read-only drops what its watcher recorded since, and only then
     /// does a turn to read-only drop anything.
@@ -1197,6 +1200,7 @@ impl SyncService {
                 ignore: outbox_api::configured_ignore(persist.as_ref()),
                 pause_timer: Mutex::new(None),
                 pause_shown: std::sync::atomic::AtomicU64::new(0),
+                kept_back: Mutex::new(None),
                 drop_at_read_only: std::sync::atomic::AtomicBool::new(false),
                 switched_to_read_write: std::sync::atomic::AtomicBool::new(false),
                 mode_check: Mutex::new(None),
@@ -3357,7 +3361,7 @@ impl SyncService {
         // call, before any account frees anything (the outbox on the bus).
         let targets = self.pin_targets(&reg.root, paths).await?;
         for target in targets.iter().filter(|t| !t.is_dir) {
-            self.refuse_unuploaded(&target.item, &target.shown.display().to_string())?;
+            self.refuse_unuploaded(&target.item, &target.shown.display().to_string()).await?;
         }
         Ok(())
     }
@@ -3420,7 +3424,7 @@ impl SyncService {
         // A file named itself, whose change waits to be uploaded, is refused as
         // a whole (`docs/design/writes.md` §11); inside a folder it is left and counted.
         for target in targets.iter().filter(|t| !t.is_dir) {
-            self.refuse_unuploaded(&target.item, &target.shown.display().to_string())?;
+            self.refuse_unuploaded(&target.item, &target.shown.display().to_string()).await?;
         }
         let walks: Vec<(PathBuf, bool)> = targets.iter().map(|t| (t.shown.clone(), t.is_dir)).collect();
         // The other descriptors close here: one of our own left open on a
@@ -3506,7 +3510,7 @@ impl SyncService {
         };
         // A change waiting to be uploaded is only here (`docs/design/writes.md` §11):
         // looked at under the inode lock, and refused when it cannot be told.
-        self.refuse_unuploaded(&file, &shown)?;
+        self.refuse_unuploaded(&file, &shown).await?;
         let _lifecycle = self.lifecycle.read().await;
         let reg = match self.registration() {
             Some(now) if now.root.path == reg.root.path && now.root.root_id == reg.root.root_id => now,
@@ -9059,6 +9063,59 @@ mod tests {
             store.with(|s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
             assert_eq!(service.restore_deletes().await.unwrap(), 1);
             assert!(service.outbox(0).await.unwrap().is_empty());
+            service.stop_sync().await;
+        }
+
+        /// Issue #38: while an examination's apply holds the store, the bus still
+        /// answers at once — the counts and the Not Uploaded summary from memory,
+        /// `Outbox()` and `NotUploadedFiles()` through the read-only connection.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_bus_answers_while_the_store_is_held() {
+            use crate::tree::outbox::{Base, Detection, OutboxKind, OutboxState};
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            service.follow_mode(Mode::ReadWrite).await;
+            let store = service.store.lock().unwrap().clone().unwrap();
+            let blocked = Detection {
+                kind: OutboxKind::Update,
+                item_id: Some("F".into()),
+                inode: None,
+                rel: "docs/f.txt".into(),
+                base: Some(Base { etag: None, ctag: Some("c1".into()), parent: Some("D".into()), name: Some("f.txt".into()) }),
+                target_parent: Some("D".into()),
+                target_name: Some("f.txt".into()),
+                same_content: false,
+                state: OutboxState::Blocked,
+                reason: Some("name-characters".into()),
+                next_try: None,
+                size: Some(3),
+            };
+            store.with(|s| s.outbox_record(&blocked)).unwrap();
+            wait_until("BlockedCount counts it", || service.state().get().blocked_count == 1).await;
+            wait_until("the summary is summed", || service.kept_back.lock().unwrap().as_ref().is_some_and(|k| k.iter().any(|r| r.1 == "name-characters"))).await;
+
+            // An apply that holds the store for two seconds.
+            let (held, release) = std::sync::mpsc::channel::<()>();
+            let holder = store.clone();
+            let holding = std::thread::spawn(move || {
+                holder.with(|_| {
+                    held.send(()).unwrap();
+                    std::thread::sleep(Duration::from_secs(2));
+                    Ok(())
+                })
+            });
+            release.recv().unwrap();
+            let start = std::time::Instant::now();
+            assert_eq!(service.state().get().blocked_count, 1);
+            let summary = service.not_uploaded_summary().await.unwrap();
+            assert_eq!(summary, vec![("per-file".to_owned(), "name-characters".to_owned(), 1, 3)]);
+            assert_eq!(service.outbox(21).await.unwrap().len(), 1);
+            assert_eq!(service.not_uploaded_files("name-characters".into(), 20).await.unwrap().1, 1);
+            let took = start.elapsed();
+            assert!(took < Duration::from_millis(500), "the bus waited for the store: {took:?}");
+            holding.join().unwrap().unwrap();
             service.stop_sync().await;
         }
 

@@ -236,6 +236,8 @@ impl Engine {
         if !shared.space.full {
             tracing::warn!("OneDrive is full: nothing more is uploaded until there is space again");
             shared.space.full = true;
+            drop(shared);
+            self.recount_soon();
         }
     }
 
@@ -256,6 +258,9 @@ impl Engine {
                 tracing::info!("OneDrive has space again: uploads go on");
             } else if full && !space.full {
                 tracing::warn!("OneDrive is full: nothing more is uploaded until there is space again");
+            }
+            if space.full != full {
+                self.recount_soon();
             }
             space.full = full;
             space.free = quota.remaining;

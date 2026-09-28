@@ -43,6 +43,15 @@ impl SyncService {
         self.store.lock().unwrap().clone().ok_or(SyncError::NoRoot)
     }
 
+    /// Runs `f` on the store's read-only connection, on a blocking thread:
+    /// never behind a writer (issue #38).
+    async fn read_outbox<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut crate::tree::TreeStore) -> Result<T, crate::tree::TreeError> + Send + 'static,
+    ) -> Result<T, SyncError> {
+        self.outbox_store()?.read(f).await.map_err(|e| SyncError::Io(e.to_string()))
+    }
+
     /// Runs `f` on the store on a blocking thread.
     async fn with_outbox<T: Send + 'static>(
         &self,
@@ -211,6 +220,7 @@ impl SyncService {
     /// The outbox's counts on the bus are 0: its worker stopped, or its rows
     /// were dropped (the outbox on the bus). A worker that starts counts again.
     pub(super) fn clear_outbox_counts(&self) {
+        *self.kept_back.lock().unwrap() = None;
         self.state.update(|s| {
             s.pending_count = 0;
             s.pending_bytes = 0;
@@ -229,7 +239,7 @@ impl SyncService {
     /// `limit` (0 for all): (seq, kind, full path, state, bytes sent, bytes
     /// in all, reason, next try).
     pub async fn outbox(&self, limit: u32) -> Result<Vec<OutboxEntry>, SyncError> {
-        let rows = self.with_outbox(move |s| if limit == 0 { s.outbox_rows() } else { s.outbox_first(limit as usize) }).await?;
+        let rows = self.read_outbox(move |s| if limit == 0 { s.outbox_rows() } else { s.outbox_first(limit as usize) }).await?;
         let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
         let state = self.state.get();
         let (uploads, paused, full) = (state.uploads, state.paused_until.is_some(), state.quota_full);
@@ -300,7 +310,7 @@ impl SyncService {
     /// that is not downloaded, …) and the changes that need the user
     /// (blocked: a name OneDrive refuses, OneDrive full).
     pub async fn not_uploaded(&self) -> Result<Vec<(String, String)>, SyncError> {
-        let (skipped, rows) = self.with_outbox(|s| Ok((s.local_skipped()?, s.outbox_rows()?))).await?;
+        let (skipped, rows) = self.read_outbox(|s| Ok((s.local_skipped()?, s.outbox_blocked()?))).await?;
         let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
         let mut out: Vec<(String, String)> = skipped.into_iter().map(|s| (root.join(&s.rel).display().to_string(), s.reason)).collect();
         out.extend(
@@ -315,7 +325,11 @@ impl SyncService {
     /// `NotUploadedSummary()`: what is kept back, one row per reason:
     /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
     pub async fn not_uploaded_summary(&self) -> Result<Vec<super::kept_back::SummaryRow>, SyncError> {
-        let (skipped, groups) = self.with_outbox(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).await?;
+        self.require_onedrive()?;
+        if let Some(kept) = self.kept_back.lock().unwrap().clone() {
+            return Ok(kept);
+        }
+        let (skipped, groups) = self.read_outbox(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).await?;
         let full = self.state.get().quota_full;
         Ok(super::kept_back::summary(&skipped, &groups, full))
     }
@@ -325,7 +339,7 @@ impl SyncService {
     pub async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32), SyncError> {
         let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
         let full = self.state.get().quota_full;
-        self.with_outbox(move |s| super::kept_back::files(s, &root, full, &reason, limit)).await
+        self.read_outbox(move |s| super::kept_back::files(s, &root, full, &reason, limit)).await
     }
 
     /// `ConfirmDeletes()`: the removals the mass-delete guard held go ahead;
@@ -420,7 +434,7 @@ impl SyncService {
     /// outbox that cannot be read — its sync not started yet, a store error —
     /// refuses. Only a downloaded file is asked about: one that is not has
     /// nothing to lose, and its own refusal says so (`NotHydrated`, M5).
-    pub(super) fn refuse_unuploaded(&self, file: &File, shown: &str) -> Result<(), SyncError> {
+    pub(super) async fn refuse_unuploaded(&self, file: &File, shown: &str) -> Result<(), SyncError> {
         let Some(reg) = self.registration() else { return Ok(()) };
         if reg.source != super::RootSource::OneDrive {
             return Ok(());
@@ -441,14 +455,17 @@ impl SyncService {
             use std::os::unix::fs::MetadataExt;
             Inode { dev: meta.dev(), ino: meta.ino(), handle: FileHandle::of(file).ok() }
         };
+        // Through the shared connection, off the async runtime: a change an
+        // examination is recording now is waited for, not missed.
         let waiting = store
-            .with(|s| {
+            .run(move |s| {
                 let by_item = match &id {
                     Some(id) => !s.outbox_for_item(id)?.is_empty(),
                     None => false,
                 };
                 Ok(by_item || !s.outbox_for_inode(&inode)?.is_empty())
             })
+            .await
             .map_err(|e| cannot_tell(e.to_string()))?;
         if waiting {
             return Err(SyncError::NotUploaded(shown.to_owned()));
@@ -476,6 +493,13 @@ impl OutboxHost for Host {
     fn activity(&self, event: &ActivityRow) {
         if let Some(service) = self.sync.upgrade() {
             service.report.activity.announce(event.clone());
+        }
+    }
+
+    /// `NotUploadedSummary()`'s answer from now on.
+    fn kept_back(&self, summary: &[super::kept_back::SummaryRow]) {
+        if let Some(service) = self.sync.upgrade() {
+            *service.kept_back.lock().unwrap() = Some(summary.to_vec());
         }
     }
 
