@@ -216,6 +216,9 @@ class FakeSync1 : public QDBusAbstractAdaptor
     Q_PROPERTY(uint ActiveUploads READ activeUploads)
     Q_PROPERTY(uint PoolSize READ poolSize)
     Q_PROPERTY(uint PoolCeiling READ poolCeiling)
+    Q_PROPERTY(uint LargeTransfers READ largeTransfers)
+    Q_PROPERTY(uint LargeLimit READ largeLimit)
+    Q_PROPERTY(uint RetryAfter READ retryAfter)
 
 public:
     FakeSync1(QObject *parent, const QDBusConnection &bus, const QString &path)
@@ -252,6 +255,9 @@ public:
     uint activeUploads() const { return m_properties.value(QStringLiteral("ActiveUploads")).toUInt(); }
     uint poolSize() const { return m_properties.value(QStringLiteral("PoolSize")).toUInt(); }
     uint poolCeiling() const { return m_properties.value(QStringLiteral("PoolCeiling")).toUInt(); }
+    uint largeTransfers() const { return m_properties.value(QStringLiteral("LargeTransfers")).toUInt(); }
+    uint largeLimit() const { return m_properties.value(QStringLiteral("LargeLimit")).toUInt(); }
+    uint retryAfter() const { return m_properties.value(QStringLiteral("RetryAfter")).toUInt(); }
 
     void set(const QVariantMap &changes)
     {
@@ -492,6 +498,9 @@ private:
         {QStringLiteral("ActiveUploads"), QVariant::fromValue<uint>(0)},
         {QStringLiteral("PoolSize"), QVariant::fromValue<uint>(16)},
         {QStringLiteral("PoolCeiling"), QVariant::fromValue<uint>(64)},
+        {QStringLiteral("LargeTransfers"), QVariant::fromValue<uint>(0)},
+        {QStringLiteral("LargeLimit"), QVariant::fromValue<uint>(4)},
+        {QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)},
     };
 };
 

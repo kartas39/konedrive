@@ -72,13 +72,18 @@ class SyncController : public QObject
     /// What stays on this computer, and why: {path, reason, why} (NotUploaded()).
     Q_PROPERTY(QVariantList notUploaded READ notUploaded NOTIFY notUploadedChanged)
     /// The account's transfer pool (Sync1's DownloadSpeed, UploadSpeed, ActiveDownloads,
-    /// ActiveUploads, PoolSize, PoolCeiling): bytes a second, slots held, the pool now.
+    /// ActiveUploads, PoolSize, PoolCeiling, LargeTransfers, LargeLimit, RetryAfter): bytes a
+    /// second, slots held, the pool now, the large transfers under way and their limit, and
+    /// the seconds left of OneDrive's Retry-After (0: none).
     Q_PROPERTY(qulonglong downloadSpeed READ downloadSpeed NOTIFY syncChanged)
     Q_PROPERTY(qulonglong uploadSpeed READ uploadSpeed NOTIFY syncChanged)
     Q_PROPERTY(uint activeDownloads READ activeDownloads NOTIFY syncChanged)
     Q_PROPERTY(uint activeUploads READ activeUploads NOTIFY syncChanged)
     Q_PROPERTY(uint poolSize READ poolSize NOTIFY syncChanged)
     Q_PROPERTY(uint poolCeiling READ poolCeiling NOTIFY syncChanged)
+    Q_PROPERTY(uint largeTransfers READ largeTransfers NOTIFY syncChanged)
+    Q_PROPERTY(uint largeLimit READ largeLimit NOTIFY syncChanged)
+    Q_PROPERTY(uint retryAfter READ retryAfter NOTIFY syncChanged)
     /// The last two minutes of each, one sample a second, oldest first: the window keeps
     /// them, the daemon does not.
     Q_PROPERTY(QVariantList downloadSpeedHistory READ downloadSpeedHistory NOTIFY historyChanged)
@@ -131,6 +136,9 @@ public:
     uint activeUploads() const { return m_activeUploads; }
     uint poolSize() const { return m_poolSize; }
     uint poolCeiling() const { return m_poolCeiling; }
+    uint largeTransfers() const { return m_largeTransfers; }
+    uint largeLimit() const { return m_largeLimit; }
+    uint retryAfter() const { return m_retryAfter; }
     QVariantList downloadSpeedHistory() const { return m_history[0]; }
     QVariantList uploadSpeedHistory() const { return m_history[1]; }
     QVariantList activeDownloadsHistory() const { return m_history[2]; }
@@ -268,6 +276,9 @@ private:
     uint m_activeUploads = 0;
     uint m_poolSize = 0;
     uint m_poolCeiling = 0;
+    uint m_largeTransfers = 0;
+    uint m_largeLimit = 0;
+    uint m_retryAfter = 0;
     /// Download speed, upload speed, active downloads, active uploads.
     QVariantList m_history[4];
     QTimer *m_sampler;

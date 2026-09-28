@@ -183,13 +183,27 @@ FormCard.FormCardPage {
             filesText: i18ncp("@info files uploading at once", "%1 file uploading", "%1 files uploading", uploading.active)
         }
     }
-    // The account's transfer pool, shared by both directions: shown once.
+    // The account's transfer pool, shared by both directions: shown once, with the large
+    // transfers under way, and OneDrive's Retry-After counting down while it runs.
     QQC2.Label {
         objectName: "transferPool"
         Layout.leftMargin: Kirigami.Units.largeSpacing
+        Layout.rightMargin: Kirigami.Units.largeSpacing
+        Layout.fillWidth: true
+        wrapMode: Text.Wrap
         visible: page.sync !== null
         opacity: 0.7
-        text: page.sync ? i18nc("@info the account's transfer pool: slots now, ceiling", "Pool: %1 of %2", page.sync.poolSize, page.sync.poolCeiling) : ""
+        text: {
+            if (!page.sync) {
+                return "";
+            }
+            const pool = i18nc("@info the account's transfer pool: slots now, ceiling, large transfers now, their limit",
+                               "Pool: %1 of %2 (large: %3 of %4)",
+                               page.sync.poolSize, page.sync.poolCeiling, page.sync.largeTransfers, page.sync.largeLimit);
+            return page.sync.retryAfter > 0
+                ? i18nc("@info the pool line during OneDrive's Retry-After, seconds left", "%1 — OneDrive asked to wait %2 s", pool, page.sync.retryAfter)
+                : pool;
+        }
     }
 
     Kirigami.InlineMessage {

@@ -238,6 +238,14 @@ pub trait Sync1 {
     fn pool_size(&self) -> zbus::Result<u32>;
     #[zbus(property)]
     fn pool_ceiling(&self) -> zbus::Result<u32>;
+    /// Large transfers (100 MiB and up) under way now, and how many may run at once.
+    #[zbus(property)]
+    fn large_transfers(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn large_limit(&self) -> zbus::Result<u32>;
+    /// Seconds left of OneDrive's `Retry-After` wait; 0 when there is none.
+    #[zbus(property)]
+    fn retry_after(&self) -> zbus::Result<u32>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: development only.

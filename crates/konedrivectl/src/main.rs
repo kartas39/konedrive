@@ -880,6 +880,9 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &Sync1Proxy<'_>
                 upload_speed: proxy.upload_speed().await?,
                 pool_size: proxy.pool_size().await?,
                 pool_ceiling: proxy.pool_ceiling().await?,
+                large_transfers: proxy.large_transfers().await?,
+                large_limit: proxy.large_limit().await?,
+                retry_after: proxy.retry_after().await?,
             };
             print!("{}", konedrivectl::transfers_text(&summary, &proxy.transfers().await?, &proxy.uploads().await?));
         }

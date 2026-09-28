@@ -222,12 +222,16 @@
          host's name. -->
     <property name="MachineName" type="s" access="read"/>
     <!-- The account's transfers, published once a second while anything
-         moves: bytes a second downloaded and uploaded (the average of the
-         last 3 s), the transfer slots held by downloads (files being opened,
-         pinned files, replacements, thumbnails) and by uploads, and the
-         account's transfer pool: how many requests it has in flight at most
-         now, which adapts to OneDrive's throttling and latency, and its
-         ceiling ([transfers] max in config.toml). Coalesced with the
+         moves or OneDrive's Retry-After runs: bytes a second downloaded and
+         uploaded (the average of the last 3 s), the transfer slots held by
+         downloads (files being opened, pinned files, replacements,
+         thumbnails) and by uploads, and the account's transfer pool: how many
+         requests it has in flight at most now, which adapts to OneDrive's
+         throttling, and its ceiling ([transfers] max in config.toml); the
+         large transfers (files of 100 MiB and up, files being opened
+         included) under way and how many may run at once ([transfers] large);
+         and the seconds left of OneDrive's Retry-After wait, during which no
+         transfer starts (0 when there is none). Coalesced with the
          counters. -->
     <property name="DownloadSpeed" type="t" access="read"/>
     <property name="UploadSpeed" type="t" access="read"/>
@@ -235,5 +239,8 @@
     <property name="ActiveUploads" type="u" access="read"/>
     <property name="PoolSize" type="u" access="read"/>
     <property name="PoolCeiling" type="u" access="read"/>
+    <property name="LargeTransfers" type="u" access="read"/>
+    <property name="LargeLimit" type="u" access="read"/>
+    <property name="RetryAfter" type="u" access="read"/>
   </interface>
 </node>

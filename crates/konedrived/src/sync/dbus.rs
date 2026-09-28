@@ -356,6 +356,25 @@ impl Sync1 {
     async fn pool_ceiling(&self) -> u32 {
         self.service.state().get().throughput.ceiling
     }
+
+    /// Large transfers (100 MiB and up) under way now, files being opened included.
+    #[zbus(property)]
+    async fn large_transfers(&self) -> u32 {
+        self.service.state().get().throughput.large
+    }
+
+    /// How many large transfers may run at once (`[transfers] large` in `config.toml`).
+    #[zbus(property)]
+    async fn large_limit(&self) -> u32 {
+        self.service.state().get().throughput.large_limit
+    }
+
+    /// Seconds left of OneDrive's `Retry-After` wait, during which no transfer starts; 0
+    /// when there is none.
+    #[zbus(property)]
+    async fn retry_after(&self) -> u32 {
+        self.service.state().get().throughput.retry_after
+    }
 }
 
 /// Every refusal keeps its own name; only the ones with nothing a caller
@@ -577,6 +596,15 @@ impl Coalesced {
         }
         if was.ceiling != now.ceiling {
             changed.insert("PoolCeiling", now.ceiling.into());
+        }
+        if was.large != now.large {
+            changed.insert("LargeTransfers", now.large.into());
+        }
+        if was.large_limit != now.large_limit {
+            changed.insert("LargeLimit", now.large_limit.into());
+        }
+        if was.retry_after != now.retry_after {
+            changed.insert("RetryAfter", now.retry_after.into());
         }
         changed
     }

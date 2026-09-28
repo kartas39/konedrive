@@ -116,9 +116,10 @@ class Ctl:
 
 
 def parse_pool(text: str):
-    """`sync transfers`'s `Pool: 15 of 64` line as (size, ceiling), or None."""
+    """`sync transfers`'s `Pool: 15 of 64 (large: 3 of 4)` line — ending `— OneDrive asked to
+    wait 30 s` during a `Retry-After` — as (size, ceiling), or None."""
     for line in text.splitlines():
-        m = re.match(r"^Pool: (\d+) of (\d+)$", line.strip())
+        m = re.match(r"^Pool: (\d+) of (\d+)\b", line.strip())
         if m:
             return int(m.group(1)), int(m.group(2))
     return None

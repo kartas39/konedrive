@@ -98,6 +98,7 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
             m_transfers->setTransfers({});
             m_downloadSpeed = m_uploadSpeed = 0;
             m_activeDownloads = m_activeUploads = 0;
+            m_largeTransfers = m_retryAfter = 0;
             m_uploads->setTransfers({});
             m_outboxKnown = false;
         } else {
@@ -213,6 +214,9 @@ void SyncController::applyProperties(const QVariantMap &p)
     count("ActiveUploads", m_activeUploads);
     count("PoolSize", m_poolSize);
     count("PoolCeiling", m_poolCeiling);
+    count("LargeTransfers", m_largeTransfers);
+    count("LargeLimit", m_largeLimit);
+    count("RetryAfter", m_retryAfter);
     Q_EMIT syncChanged();
 
     // The list itself has no signal: it is read again when a count moves.
