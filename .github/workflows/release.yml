@@ -28,10 +28,6 @@ jobs:
     runs-on: ubuntu-latest
     container: fedora:44
     timeout-minutes: 120
-    env:
-      # Inside the checkout, so that the cache below and the tests' user
-      # (not root) share it.
-      CARGO_HOME: ${{ github.workspace }}/.cargo-home
     outputs:
       version: ${{ steps.version.outputs.version }}
       previous_tag: ${{ steps.version.outputs.previous_tag }}
@@ -47,8 +43,13 @@ jobs:
           fetch-depth: 0
 
       # The container runs as root; the checkout belongs to the runner's user.
-      - name: Trust the checkout
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # Cargo's home goes inside the checkout, so that the cache below and the
+      # tests' user (not root) share it. Set here, from the container's path:
+      # github.workspace would give the host's.
+      - name: Set up the checkout
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          echo "CARGO_HOME=$GITHUB_WORKSPACE/.cargo-home" >>"$GITHUB_ENV"
 
       - name: Install the build dependencies
         run: dnf -y builddep packaging/rpm/konedrive.spec
