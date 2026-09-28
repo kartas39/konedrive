@@ -252,6 +252,28 @@ pub trait Sync1 {
     /// Seconds left of OneDrive's `Retry-After` wait; 0 when there is none.
     #[zbus(property)]
     fn retry_after(&self) -> zbus::Result<u32>;
+    /// The Full local scan: `running`, `idle`, or `none` for a read-only folder.
+    #[zbus(property)]
+    fn scan_state(&self) -> zbus::Result<String>;
+    /// Why it runs: start, read-write, helper-back, overflow, ignore-list, periodic.
+    #[zbus(property)]
+    fn scan_reason(&self) -> zbus::Result<String>;
+    /// Unix seconds when it started.
+    #[zbus(property)]
+    fn scan_started(&self) -> zbus::Result<i64>;
+    /// Directories and files seen so far.
+    #[zbus(property)]
+    fn scan_directories(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn scan_files(&self) -> zbus::Result<u64>;
+    /// About how many items it will see (the base's count, not the disk's).
+    #[zbus(property)]
+    fn scan_expected(&self) -> zbus::Result<u64>;
+    /// Unix seconds when the last scan finished (0: none yet), and how long it took.
+    #[zbus(property)]
+    fn scan_finished(&self) -> zbus::Result<i64>;
+    #[zbus(property)]
+    fn scan_took(&self) -> zbus::Result<u32>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: development only.

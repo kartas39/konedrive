@@ -286,6 +286,21 @@ an edit made while the daemon was not running that kept both the size and the ti
 log F52). With a rebuilt base (the store lost or recreated) it makes no `delete` rows: an item
 without a recorded handle cannot be proved gone, and is placed again from OneDrive instead.
 
+**How it goes is published** (issue #8). A Full local scan carries its reason from where it was
+asked for: the watcher's bring-up (`start` — the folder's read-write sync started — or
+`read-write`, when that start follows a switch to read-write), an overflow (`overflow`), the helper
+back (`helper-back`), `SetIgnorePatterns` (`ignore-list`), or the scan every 10 minutes while part of
+the folder cannot be watched (`periodic`); merged with another batch, the first reason stays. The
+examination tells the watcher's sink once it has started (the base and the root are there) and
+after every directory it lists whole, with the directories and the other entries seen so far; the
+sink puts that in the folder's state at most once a second, and once more when the scan ends —
+`idle`, with the time it finished and how long it took; one that fails part way keeps the last
+finish. "About N" is the number of items the base had placed when the scan started: the disk's own
+count is not known in advance, so the window and `sync status` never show a percentage
+(limitations log F151). A single place examined after a change is not reported, and a read-only
+folder, which has no watcher, reads `none`. `Sync1`'s `Scan*` properties ([desktop.md](desktop.md)
+§2.4), `sync status`'s "Local scan:" line and a line on the Status page show it.
+
 ## 5. The outbox
 
 ### 5.1 In the tree store
@@ -655,7 +670,9 @@ is answered by content hash or by place, never by guessing.
 
 Per account, on `org.konedrive.Sync1`: `Outbox`, `Pause`/`Resume`, `SetIgnorePatterns`,
 `ConfirmDeletes`/`RestoreDeletes`, `NotUploaded`; the properties `PendingCount`, `PendingBytes`,
-`BlockedCount`, `HeldCount`, `Uploads`, `Paused`, `PausedUntil`, `IgnorePatterns`, `MachineName`;
+`BlockedCount`, `HeldCount`, `Uploads`, `Paused`, `PausedUntil`, `IgnorePatterns`, `MachineName`,
+and the Full local scan's `ScanState`, `ScanReason`, `ScanStarted`, `ScanDirectories`, `ScanFiles`,
+`ScanExpected`, `ScanFinished`, `ScanTook` (§4.6);
 the activity kinds `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, `restored` and
 `not-uploaded`; the
 error `NotUploaded`, which "Free up space" gets for a file with changes not uploaded yet. On
