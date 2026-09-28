@@ -60,17 +60,14 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
     , m_activity(new ActivityModel(this))
     , m_conflicts(new ConflictModel(this))
     , m_uploads(new TransferModel(this))
-    , m_outbox(new OutboxModel(this))
-    , m_outboxSoon(new QTimer(this))
+    , m_notUploadedSoon(new QTimer(this))
 {
     registerKonedriveSyncTypes();
     // The counts are coalesced to a few changes a second (up to 4, during a
-    // bulk upload): the outbox list itself is read back at most once a
-    // second, so its refresh never piles up behind the daemon's signals.
-    m_outboxSoon->setSingleShot(true);
-    m_outboxSoon->setInterval(1000);
-    connect(m_outboxSoon, &QTimer::timeout, this, &SyncController::loadOutbox);
-    connect(m_outbox, &OutboxModel::changed, this, &SyncController::syncChanged);
+    // bulk upload): what is kept back is read at most once a second, so its
+    // refresh never piles up behind the daemon's signals.
+    m_notUploadedSoon->setSingleShot(true);
+    connect(m_notUploadedSoon, &QTimer::timeout, this, &SyncController::loadNotUploaded);
     m_bus.connect(ServiceName,
                   m_path,
                   QStringLiteral("org.freedesktop.DBus.Properties"),
@@ -85,7 +82,7 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
             // a stale row would otherwise look like a download still going.
             m_transfers->setTransfers({});
             m_uploads->setTransfers({});
-            m_outboxKnown = false;
+            m_notUploadedKnown = false;
         } else {
             fetchAll();
         }
@@ -109,7 +106,6 @@ void SyncController::fetchAll()
         setServiceAvailable(true);
         loadActivity();
         loadConflicts();
-        loadOutbox();
     });
 }
 
@@ -165,9 +161,6 @@ void SyncController::applyProperties(const QVariantMap &p)
     if (const auto it = p.constFind(QLatin1String("Uploads")); it != p.constEnd()) {
         m_uploads->setTransfers(transfers(*it));
     }
-    const uint previousPending = m_pendingCount;
-    const uint previousBlocked = m_blockedCount;
-    const uint previousHeld = m_heldCount;
     if (const auto it = p.constFind(QLatin1String("PendingCount")); it != p.constEnd()) {
         m_pendingCount = it->toUInt();
     }
@@ -189,11 +182,6 @@ void SyncController::applyProperties(const QVariantMap &p)
     }
     text("MachineName", m_machineName);
     Q_EMIT syncChanged();
-
-    // The list itself has no signal: it is read again when a count moves.
-    if (m_serviceAvailable && (m_pendingCount != previousPending || m_blockedCount != previousBlocked || m_heldCount != previousHeld)) {
-        m_outboxSoon->start();
-    }
 
     // GetAll's own answer loads the lists (fetchAll); a change on the way loads them again.
     if (!m_serviceAvailable) {
@@ -510,41 +498,88 @@ void SyncController::removeIgnorePattern(const QString &pattern)
 
 void SyncController::confirmDeletes()
 {
-    call(m_iface->ConfirmDeletes(), [this](const QDBusPendingCall &) {
-        loadOutbox();
-    });
+    call(m_iface->ConfirmDeletes());
 }
 
 void SyncController::restoreDeletes()
 {
-    call(m_iface->RestoreDeletes(), [this](const QDBusPendingCall &) {
-        loadOutbox();
-    });
-}
-
-void SyncController::loadOutbox()
-{
-    if (!m_serviceAvailable) {
-        return;
-    }
-    // Refused Unsupported for a folder not connected to OneDrive, and
-    // UnknownMethod by an older daemon: the list stays empty.
-    quietly(m_iface->Outbox(0), [this](const QDBusPendingCall &pending) {
-        const QDBusPendingReply<KonedriveOutboxList> reply = pending;
-        m_outboxKnown = true;
-        m_outbox->setRows(reply.value());
-    });
+    call(m_iface->RestoreDeletes());
 }
 
 void SyncController::loadNotUploaded()
 {
-    quietly(m_iface->NotUploaded(), [this](const QDBusPendingCall &pending) {
-        const QDBusPendingReply<KonedriveSkippedList> reply = pending;
-        m_notUploaded.clear();
-        for (const KonedriveSkippedItem &item : reply.value()) {
-            m_notUploaded << QVariantMap{{QStringLiteral("path"), item.path}, {QStringLiteral("reason"), item.reason}, {QStringLiteral("why"), uploadReasonText(item.reason)}};
+    if (!m_serviceAvailable || m_notUploadedSoon->isActive()) {
+        return;
+    }
+    // With thousands of changes kept back the daemon reads its whole outbox
+    // for this: once a second at most, however often the counts move.
+    if (m_notUploadedLast.isValid() && m_notUploadedLast.elapsed() < 1000) {
+        m_notUploadedSoon->start(int(1000 - m_notUploadedLast.elapsed()));
+        return;
+    }
+    m_notUploadedLast.start();
+    // Refused Unsupported for a folder not connected to OneDrive, and
+    // UnknownMethod by an older daemon: nothing is shown as kept back.
+    quietly(m_iface->NotUploadedSummary(), [this](const QDBusPendingCall &pending) {
+        const QDBusPendingReply<KonedriveKeptBackList> reply = pending;
+        m_notUploadedSummary.clear();
+        m_blockedBytes = 0;
+        QSet<QString> reasons;
+        for (const KonedriveKeptBack &row : reply.value()) {
+            reasons.insert(row.reason);
+            if (row.group == QLatin1String("one-action") || row.group == QLatin1String("per-file")) {
+                m_blockedBytes += row.bytes;
+            }
+            m_notUploadedSummary << QVariantMap{{QStringLiteral("group"), row.group},
+                                                {QStringLiteral("reason"), row.reason},
+                                                {QStringLiteral("count"), row.count},
+                                                {QStringLiteral("bytes"), row.bytes},
+                                                {QStringLiteral("why"), uploadReasonText(row.reason)}};
         }
+        m_notUploadedKnown = true;
         Q_EMIT notUploadedChanged();
+        // A reason gone from the summary has no files left to show.
+        bool dropped = false;
+        for (auto it = m_notUploadedFiles.begin(); it != m_notUploadedFiles.end();) {
+            if (reasons.contains(it.key())) {
+                ++it;
+            } else {
+                it = m_notUploadedFiles.erase(it);
+                dropped = true;
+            }
+        }
+        if (dropped) {
+            Q_EMIT notUploadedFilesChanged();
+        }
+    });
+    for (const QString &reason : std::as_const(m_filesShown)) {
+        loadNotUploadedFiles(reason);
+    }
+}
+
+void SyncController::setNotUploadedFilesShown(const QString &reason, bool shown)
+{
+    if (!shown) {
+        m_filesShown.remove(reason);
+        return;
+    }
+    m_filesShown.insert(reason);
+    loadNotUploadedFiles(reason);
+}
+
+void SyncController::loadNotUploadedFiles(const QString &reason)
+{
+    if (!m_serviceAvailable) {
+        return;
+    }
+    quietly(m_iface->NotUploadedFiles(reason, PerFileCap), [this, reason](const QDBusPendingCall &pending) {
+        const QDBusPendingReply<KonedriveSkippedList, uint> reply = pending;
+        QVariantList items;
+        for (const KonedriveSkippedItem &item : reply.argumentAt<0>()) {
+            items << QVariantMap{{QStringLiteral("path"), item.path}, {QStringLiteral("reason"), item.reason}, {QStringLiteral("why"), uploadReasonText(item.reason)}};
+        }
+        m_notUploadedFiles.insert(reason, QVariantMap{{QStringLiteral("items"), items}, {QStringLiteral("total"), reply.argumentAt<1>()}});
+        Q_EMIT notUploadedFilesChanged();
     });
 }
 

@@ -258,6 +258,24 @@ impl SyncService {
         Ok(out)
     }
 
+    /// `NotUploadedSummary()`: what is kept back, one row per reason:
+    /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
+    pub async fn not_uploaded_summary(&self) -> Result<Vec<super::kept_back::SummaryRow>, SyncError> {
+        let (skipped, rows) = self.with_outbox(|s| Ok((s.local_skipped()?, s.outbox_rows()?))).await?;
+        let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
+        tokio::task::spawn_blocking(move || super::kept_back::summary(&skipped, &rows, &root))
+            .await
+            .map_err(|e| SyncError::Io(format!("the summary task failed: {e}")))
+    }
+
+    /// `NotUploadedFiles(reason, limit)`: the files kept back for `reason`,
+    /// at most `limit` (0 for all), and how many there are.
+    pub async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32), SyncError> {
+        let (skipped, rows) = self.with_outbox(|s| Ok((s.local_skipped()?, s.outbox_rows()?))).await?;
+        let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
+        Ok(super::kept_back::files(&skipped, &rows, &root, &reason, limit))
+    }
+
     /// `ConfirmDeletes()`: the removals the mass-delete guard held go ahead;
     /// how many.
     pub async fn confirm_deletes(&self) -> Result<u32, SyncError> {

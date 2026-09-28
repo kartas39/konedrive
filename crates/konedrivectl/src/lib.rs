@@ -468,6 +468,7 @@ pub fn upload_reason_text(reason: &str) -> String {
         "other-device" => "on another filesystem mounted inside the folder: never uploaded".to_owned(),
         "hard-link" => "a file with other hard links: not uploaded".to_owned(),
         "locked" => "locked in OneDrive (open for co-authoring): tried again later".to_owned(),
+        "refused" => "refused by OneDrive".to_owned(),
         other => match other.strip_prefix("refused: ") {
             Some(message) => format!("OneDrive refused it: {message}"),
             None => other.to_owned(),
@@ -506,14 +507,55 @@ pub fn outbox_text(rows: &[OutboxRow], more: bool, prefix: &str) -> String {
     out
 }
 
-/// `sync not-uploaded`: what stays on this computer, and why.
-pub fn not_uploaded_text(items: &[(String, String)]) -> String {
-    if items.is_empty() {
+/// How many files of a reason `sync not-uploaded` lists without `--all`:
+/// the window's per-file cap, the same guess (issue #20).
+pub const PER_FILE_SHOWN: u32 = 20;
+
+/// A `NotUploadedSummary()` group's heading.
+fn kept_back_group_text(group: &str) -> &str {
+    match group {
+        "one-action" => "Needs you: one action fixes them all",
+        "per-file" => "Needs you: each file",
+        "never" => "Never uploaded",
+        "waiting" => "Waiting: these go up by themselves",
+        other => other,
+    }
+}
+
+/// One reason's files as `sync not-uploaded` lists them: (reason, (path,
+/// reason as stored) of the files asked for, how many there are in all).
+pub type ReasonFiles = (String, Vec<(String, String)>, u32);
+
+/// `sync not-uploaded`: what stays on this computer, and why — each group,
+/// its reasons with their counts, then `files` for the reasons whose files
+/// were asked for.
+pub fn not_uploaded_text(summary: &[(String, String, u32, u64)], files: &[ReasonFiles], prefix: &str) -> String {
+    if summary.is_empty() {
         return "Everything here is uploaded or waits to be.\n".to_owned();
     }
     let mut out = String::new();
-    for (path, reason) in items {
-        out.push_str(&format!("{path}\n    {}\n", upload_reason_text(reason)));
+    let mut group_shown: Option<&str> = None;
+    for (group, reason, count, bytes) in summary {
+        if group_shown != Some(group.as_str()) {
+            out.push_str(&format!("{}:\n", kept_back_group_text(group)));
+            group_shown = Some(group);
+        }
+        let size = if *bytes > 0 { format!(", {}", human_bytes(*bytes)) } else { String::new() };
+        out.push_str(&format!("  {count}{size}: {}\n", upload_reason_text(reason)));
+    }
+    for (reason, items, total) in files {
+        out.push_str(&format!("\n{}:\n", upload_reason_text(reason)));
+        for (path, why) in items {
+            out.push_str(&format!("  {path}"));
+            if why != reason {
+                out.push_str(&format!("  ({})", upload_reason_text(why)));
+            }
+            out.push('\n');
+        }
+        let more = (*total as usize).saturating_sub(items.len());
+        if more > 0 {
+            out.push_str(&format!("  … and {more} more: `{prefix} sync not-uploaded --all` lists them all\n"));
+        }
     }
     out
 }
@@ -1516,7 +1558,7 @@ pub async fn wait_for_sign_in(proxy: &Account1Proxy<'_>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        account_refusal_text, choose, command_prefix, dev_refusal_text, human_bytes, outbox_text, parse_duration,
+        account_refusal_text, choose, command_prefix, dev_refusal_text, human_bytes, not_uploaded_text, outbox_text, parse_duration,
         refusal_text, refusal_text_in, removed_text, rescue_dirs, shell_word, skip_reason_text, upload_reason_text,
         write_secret_atomically, AccountAction, AccountInfo,
         Context, NoChoice, Source, SyncAction,
@@ -1931,6 +1973,25 @@ mod tests {
         assert!(text.ends_with("`konedrivectl sync outbox --all` shows them all\n"), "{text}");
         assert_eq!(outbox_text(&[], false, "k"), "Nothing is waiting to upload.\n");
         assert_eq!(upload_reason_text("refused: bad name"), "OneDrive refused it: bad name");
+    }
+
+    /// `sync not-uploaded`: a full OneDrive is one line with its count; the
+    /// files of a per-file reason follow, capped, with how to see them all.
+    #[test]
+    fn not_uploaded_lists_reasons_then_the_files_of_per_file_ones() {
+        let summary = vec![
+            ("one-action".to_owned(), "quota-exceeded".to_owned(), 5000, 3 << 30),
+            ("per-file".to_owned(), "refused".to_owned(), 25, 0),
+            ("never".to_owned(), "symlink".to_owned(), 1, 0),
+        ];
+        let items: Vec<(String, String)> = (0..20).map(|i| (format!("/f/{i}"), "refused: bad name".to_owned())).collect();
+        let text = not_uploaded_text(&summary, &[("refused".to_owned(), items, 25)], "konedrivectl");
+        assert!(text.starts_with("Needs you: one action fixes them all:\n  5000, 3.0 GiB: OneDrive is full"), "{text}");
+        assert!(text.contains("Never uploaded:\n  1: a symbolic link"), "{text}");
+        assert!(text.contains("\nrefused by OneDrive:\n  /f/0  (OneDrive refused it: bad name)\n"), "{text}");
+        assert!(!text.contains("/f/20"), "{text}");
+        assert!(text.ends_with("… and 5 more: `konedrivectl sync not-uploaded --all` lists them all\n"), "{text}");
+        assert_eq!(not_uploaded_text(&[], &[], "k"), "Everything here is uploaded or waits to be.\n");
     }
 
     /// the outbox on the bus: a `FreeUp` of several paths refused `NotUploaded` names the

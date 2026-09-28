@@ -167,6 +167,12 @@ pub trait Sync1 {
     fn restore_deletes(&self) -> zbus::Result<u32>;
     /// What stays on this computer and why: (full path, reason).
     fn not_uploaded(&self) -> zbus::Result<Vec<(String, String)>>;
+    /// What is kept back, one row per reason: (group, reason, count, bytes).
+    /// Groups: one-action, per-file, never, waiting, in that order.
+    fn not_uploaded_summary(&self) -> zbus::Result<Vec<(String, String, u32, u64)>>;
+    /// The files kept back for `reason` (as the summary names it), at most
+    /// `limit` (0 for all), each with its reason as stored; and how many there are.
+    fn not_uploaded_files(&self, reason: &str, limit: u32) -> zbus::Result<(Vec<(String, String)>, u32)>;
 
     #[zbus(signal)]
     fn activity_added(&self, time: i64, kind: String, path: String, detail: String) -> zbus::Result<()>;

@@ -6,6 +6,8 @@
 
 #include <QFile>
 #include <QQmlApplicationEngine>
+#include <QElapsedTimer>
+#include <QQuickItem>
 #include <QQuickStyle>
 #include <QQuickWindow>
 #include <QTemporaryDir>
@@ -26,6 +28,25 @@ private:
     static bool shown(const QObject *dialog)
     {
         return dialog->property("visible").toBool();
+    }
+
+    /// The visible form rows (delegates) under `root`, by the visual tree,
+    /// whose text holds `part`.
+    static int itemsSaying(const QQuickItem *root, const QString &part)
+    {
+        int n = 0;
+        const auto children = root->childItems();
+        for (const QQuickItem *item : children) {
+            if (!item->isVisible()) {
+                continue;
+            }
+            if (QLatin1String(item->metaObject()->className()).contains(QLatin1String("Delegate"))
+                && item->property("text").toString().contains(part)) {
+                ++n;
+            }
+            n += itemsSaying(item, part);
+        }
+        return n;
     }
 
 private Q_SLOTS:
@@ -178,6 +199,90 @@ private Q_SLOTS:
         QTRY_VERIFY(accounts.at(0)->account()->switchingTo().isEmpty());
         QVERIFY(!uploadSwitch->property("checked").toBool());
 
+        fake.stop();
+    }
+
+    /// Issue #20: with 5000 changes OneDrive has no room for and 3 names it
+    /// refuses, both pages come up at once and build a handful of rows — a
+    /// line per reason, files only for a per-file reason opened — and the
+    /// window never asks for every row.
+    void thousandsKeptBackAreAFewLines()
+    {
+        const QString root = QStringLiteral("/home/u/OneDrive");
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        fake.sync->set({{QStringLiteral("RootPath"), root},
+                        {QStringLiteral("RootState"), QStringLiteral("ready")},
+                        {QStringLiteral("RootSource"), QStringLiteral("onedrive")},
+                        {QStringLiteral("PendingCount"), QVariant::fromValue<uint>(2)},
+                        {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(1024)},
+                        {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(5003)}});
+        fake.sync->keptBack = {{QStringLiteral("one-action"), QStringLiteral("quota-exceeded"), 5000, 5000ULL << 20},
+                               {QStringLiteral("per-file"), QStringLiteral("name-characters"), 3, 30}};
+        KonedriveSkippedList quota;
+        for (int i = 0; i < 5000; ++i) {
+            quota << KonedriveSkippedItem{root + QStringLiteral("/big/%1.bin").arg(i), QStringLiteral("quota-exceeded")};
+        }
+        fake.sync->keptBackFiles.insert(QStringLiteral("quota-exceeded"), quota);
+        fake.sync->keptBackFiles.insert(QStringLiteral("name-characters"),
+                                        {{root + QStringLiteral("/a:b"), QStringLiteral("name-characters")},
+                                         {root + QStringLiteral("/c?d"), QStringLiteral("name-characters")},
+                                         {root + QStringLiteral("/e|f"), QStringLiteral("name-characters")}});
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->sync()->blockedCount() == 5003);
+        SyncController *sync = accounts.at(0)->sync();
+
+        QElapsedTimer clock;
+        clock.start();
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("notUploaded")));
+        auto *page = window->findChild<QQuickItem *>(QStringLiteral("notUploadedPage"));
+        QVERIFY(page);
+        QTRY_VERIFY(sync->notUploadedKnown());
+        QTRY_COMPARE(itemsSaying(page, QStringLiteral("changes: OneDrive is full")), 1);
+        QVERIFY2(clock.elapsed() < 3000, qPrintable(QString::number(clock.elapsed())));
+        QCOMPARE(itemsSaying(page, QStringLiteral("3 files")), 1);
+        QCOMPARE(itemsSaying(page, root), 0);
+        QCOMPARE(itemsSaying(page, QStringLiteral("Refresh")), 1);
+        const int rows = itemsSaying(page, QString());
+        QVERIFY2(rows <= 10, qPrintable(QString::number(rows)));
+
+        // Opened, the refused names are listed; the full OneDrive never is.
+        QMetaObject::invokeMethod(page, "setOpened", Q_ARG(QVariant, QStringLiteral("name-characters")), Q_ARG(QVariant, true));
+        QTRY_COMPARE(itemsSaying(page, root), 3);
+        QVERIFY(fake.sync->calls.contains(QStringLiteral("NotUploadedFiles:name-characters:20")));
+        QVERIFY(!fake.sync->calls.join(QLatin1Char(' ')).contains(QStringLiteral("NotUploadedFiles:quota-exceeded")));
+
+        // Activity: one line for everything waiting, and the way to what is kept back.
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("activity")));
+        auto *activity = window->findChild<QQuickItem *>(QStringLiteral("activityPage"));
+        QVERIFY(activity);
+        auto *line = window->findChild<QQuickItem *>(QStringLiteral("waitingLine"));
+        auto *link = window->findChild<QQuickItem *>(QStringLiteral("keptBackLink"));
+        QVERIFY(line && link);
+        QTRY_VERIFY(line->isVisible() && link->isVisible());
+        QVERIFY2(line->property("text").toString().contains(QStringLiteral("wait to upload (4")), qPrintable(line->property("text").toString()));
+        QCOMPARE(itemsSaying(activity, root), 0);
+        QVERIFY(itemsSaying(activity, QString()) <= 10);
+
+        QVERIFY(!fake.sync->calls.contains(QStringLiteral("Outbox")));
+        QVERIFY(!fake.sync->calls.contains(QStringLiteral("NotUploaded")));
         fake.stop();
     }
 };

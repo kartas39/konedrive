@@ -3,7 +3,7 @@
 #include "downloadjob.h"
 #include "downloadjobtracker.h"
 #include "downloadprogresssettings.h"
-#include "outboxmodel.h"
+#include "uploadreasons.h"
 #include "synccontroller.h"
 #include "transfermodel.h"
 
