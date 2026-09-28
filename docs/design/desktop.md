@@ -64,7 +64,7 @@ Neither the refresh token nor the access token is ever exposed through `Account1
 | `RegisterRootWithoutInterception(s path)` | the developer's local folder, with nothing intercepting ([hydration.md](hydration.md) §14.3); refused `Overlaps` in the same way |
 | `UnregisterRoot()` | Forget: leaves every file as it is ([hydration.md](hydration.md) §14.5) |
 | `PopulateFromDirectory(s source_dir) → t created` | fills a local folder with placeholders mirroring a directory; refused on a OneDrive folder |
-| `Refresh()` | runs a sync cycle now; refused `NoHelper` while the folder waits for the helper |
+| `Refresh()` | runs a sync cycle now, tries the changes in backoff, and reads the quota again (which may end a full OneDrive); refused `NoHelper` while the folder waits for the helper |
 | `Skipped() → a(ss)` | (path, reason) for everything in OneDrive that is not in the folder ([sync.md](sync.md) §7.5) |
 | `RecentActivity(u limit) → a(xsss)` | (time, kind, path, detail), newest first |
 | `Conflicts() → a(xss)` | (time, original path, rescued path) ([sync.md](sync.md) §10.3) |
@@ -74,7 +74,7 @@ Neither the refresh token nor the access token is ever exposed through `Account1
 | `Pause(u seconds)`, `Resume()` | pause the account — no upload, no poll, no thumbnails; fills on open, `Hydrate` and detection go on — for `seconds`, or until `Resume` when 0; the pause outlasts a daemon restart |
 | `SetIgnorePatterns(as)` | the names of the user's own files that are never uploaded (shell globs on a name); written to `config.toml`, then the whole folder is scanned again; `InvalidArgs` for an empty pattern or one holding "/" |
 | `ConfirmDeletes() → u`, `RestoreDeletes() → u` | the mass-delete guard's two answers: the held removals go ahead, or are dropped and the items placed again; how many rows |
-| `NotUploaded() → a(ss)` | (path, reason) for what stays on this computer: what is never uploaded (`symlink`, `hard-link`, `not-downloaded`, …) and every blocked change (`name-characters`, `quota-exceeded`, `forbidden`, …) |
+| `NotUploaded() → a(ss)` | (path, reason) for what stays on this computer: what is never uploaded (`symlink`, `hard-link`, `not-downloaded`, …) and every blocked change (`name-characters`, `forbidden`, …) |
 
 ### 2.4 `Sync1` properties and signals, per account
 
@@ -94,6 +94,10 @@ Neither the refresh token nor the access token is ever exposed through `Account1
 | `PendingCount` (`u`), `PendingBytes` (`t`) | the changes waiting to be uploaded, neither blocked nor held, and the size of what they send |
 | `BlockedCount` (`u`) | the changes that need the user before they can go up (see `NotUploaded`); removals the mass-delete guard holds are not counted |
 | `HeldCount` (`u`) | the removals the mass-delete guard holds, waiting for `ConfirmDeletes` or `RestoreDeletes`; `held` rows in `Outbox()` |
+| `QuotaFull` (`b`) | OneDrive is full: no content goes up until a quota read finds space ([writes.md](writes.md) §6.4) |
+| `SpaceWaitingCount` (`u`), `SpaceWaitingBytes` (`t`) | while full, the changes that send content, and the size of their files |
+| `TooBigCount` (`u`) | files refused as too big for the space left; each is `ready` in `Outbox()` with reason `too-big:<needed>:<free>` |
+| `QuotaState` (`s`), `FreeSpace` (`t`) | Graph's `quota.state` and `quota.remaining` as last read (by `Refresh`, `RefreshAccountInfo` or the outbox), less what was uploaded since; empty and 0 until read |
 | `Paused` (`b`), `PausedUntil` (`x`) | whether the account is paused, and when the pause ends by itself (0: until `Resume`) |
 | `IgnorePatterns` (`as`), `MachineName` (`s`) | the ignore list, and the name copies of files changed on both sides are named after ("Report-`<MachineName>`.docx"): `machine_name` in `config.toml`, or the host's name; read-only |
 

@@ -28,7 +28,8 @@
 //! adopted, never copied.
 //!
 //! **Throttling, offline, pause, sign-in** stop the whole worker: the rows
-//! keep their states. A read-write folder's sync starts it beside the
+//! keep their states. **A full OneDrive** stops only what sends content, and
+//! a file too big for what is left waits alone ([`space`]). A read-write folder's sync starts it beside the
 //! watcher and stops it with it (`sync::write_mode`); the watcher's
 //! examination wakes it whenever it records rows.
 //!
@@ -39,6 +40,7 @@ mod content;
 mod engine;
 pub mod local;
 pub mod move_out;
+pub mod space;
 mod steps;
 
 /// A fake OneDrive on wiremock: the worker's tests, and the VM suite's write
@@ -88,14 +90,13 @@ pub const BACKOFF_MAX: Duration = Duration::from_secs(3600);
 /// Throttled without `Retry-After`: 10 s, doubling, at most an hour (§4.10;
 /// provisional).
 pub const THROTTLE_FIRST: Duration = Duration::from_secs(10);
-/// A full OneDrive is tried again this often, or when the quota changes
-/// (§3.6).
-pub const QUOTA_RETRY: Duration = Duration::from_secs(30 * 60);
 
 /// What a row's `reason` says when the worker set it (beside the
 /// examination's `open-for-writing` and the name pre-check's codes).
 pub mod reason {
-    /// OneDrive is full (`507`, `quotaLimitReached`): blocked.
+    /// OneDrive is full (`507`, `quotaLimitReached`): what earlier versions
+    /// blocked a row with. Such rows wait for space now, from the start
+    /// ([`space`](super::space)).
     pub const QUOTA: &str = "quota-exceeded";
     /// `403`: the sign-in does not allow writes. Blocked until signed in again.
     pub const FORBIDDEN: &str = "forbidden";
@@ -260,6 +261,12 @@ pub struct WorkerStatus {
     /// What the outbox held when the worker last looked: `PendingCount`,
     /// `PendingBytes`, `BlockedCount`.
     pub counts: OutboxCounts,
+    /// `QuotaFull`: OneDrive is full, and no content goes up ([`space`]).
+    pub quota_full: bool,
+    /// Graph's `quota.remaining` as last read, less what went up since.
+    pub free_space: Option<u64>,
+    /// Graph's `quota.state` as last read; empty until one is.
+    pub quota_state: String,
 }
 
 impl Default for WorkerStatus {
@@ -275,6 +282,9 @@ impl Default for WorkerStatus {
             running: 0,
             uploads: Vec::new(),
             counts: OutboxCounts::default(),
+            quota_full: false,
+            free_space: None,
+            quota_state: String::new(),
         }
     }
 }
@@ -311,6 +321,25 @@ pub struct OutboxCounts {
     pub blocked: u32,
     /// Removals held by the mass-delete guard.
     pub held: u32,
+    /// `SpaceWaitingCount`, `SpaceWaitingBytes`: while OneDrive is full,
+    /// the changes that send content, which wait for space.
+    pub space_waiting: u32,
+    pub space_waiting_bytes: u64,
+    /// `TooBigCount`: files refused as too big for the space left.
+    pub too_big: u32,
+}
+
+impl OutboxCounts {
+    /// Counts a pending `row` of `size` bytes where it waits for space.
+    fn add_space(&mut self, row: &crate::tree::outbox::OutboxRow, full: bool, size: u64) {
+        let reason = row.reason.as_deref();
+        if reason.is_some_and(|r| space::parse_too_big(r).is_some()) {
+            self.too_big += 1;
+        } else if full && row.kind.sends_content() || reason == Some(space::WAITING) {
+            self.space_waiting += 1;
+            self.space_waiting_bytes += size;
+        }
+    }
 }
 
 /// A point where the worker can be made to stop as if the daemon had died
@@ -420,11 +449,12 @@ impl OutboxWorker {
         self.engine.signed_in()
     }
 
-    /// The quota changed (read each cycle): rows blocked on a full OneDrive
-    /// are tried again.
-    pub fn quota_changed(&self) -> Result<(), TreeError> {
-        self.engine.quota_changed()
+    /// The quota was read elsewhere (`RefreshAccountInfo`): *full* is
+    /// decided again, and the waiting files that fit now go ([`space`]).
+    pub fn quota_read(&self, quota: &crate::drive::DriveQuota) {
+        self.engine.apply_quota(quota);
     }
+
 
     /// `Refresh()`: rows in backoff are tried now.
     pub fn retry_now(&self) -> Result<(), TreeError> {

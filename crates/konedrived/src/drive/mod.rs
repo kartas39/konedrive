@@ -130,6 +130,28 @@ struct DriveBody {
     id: String,
 }
 
+/// The drive's quota as Graph gives it (`GET /me/drive`): what the outbox decides a full
+/// OneDrive by (issue #2). `remaining` is Graph's own figure, never `total - used`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub struct DriveQuota {
+    #[serde(default)]
+    pub total: u64,
+    #[serde(default)]
+    pub used: u64,
+    /// `None` when Graph left it out.
+    #[serde(default)]
+    pub remaining: Option<u64>,
+    /// `normal`, `nearing`, `critical` or `exceeded`; empty when Graph left it out.
+    #[serde(default)]
+    pub state: String,
+}
+
+#[derive(Deserialize)]
+struct QuotaBody {
+    #[serde(default)]
+    quota: DriveQuota,
+}
+
 impl DriveClient {
     /// `base` is Graph's root, ending in `/` (`https://graph.microsoft.com/v1.0/`).
     pub fn new(base: Url, tokens: Arc<dyn TokenSource>) -> anyhow::Result<Self> {
@@ -163,6 +185,12 @@ impl DriveClient {
     pub async fn drive_id(&self) -> Result<String, DriveError> {
         let body: DriveBody = self.get_json(self.route("me/drive")?).await?;
         Ok(body.id)
+    }
+
+    /// The signed-in account's quota: one request.
+    pub async fn quota(&self) -> Result<DriveQuota, DriveError> {
+        let body: QuotaBody = self.get_json(self.route("me/drive")?).await?;
+        Ok(body.quota)
     }
 
     pub async fn delta(&self, from: &DeltaFrom) -> Result<DeltaPage, DriveError> {
@@ -744,5 +772,15 @@ mod tests {
             .mount(&server).await;
         assert_eq!(client(&server).drive_id().await.unwrap(), "D9");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn the_quota_is_graphs_remaining_and_state() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/me/drive"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "D9", "quota": {"used": 90, "total": 100, "remaining": 4, "state": "critical", "deleted": 6}})))
+            .mount(&server).await;
+        let quota = client(&server).quota().await.unwrap();
+        assert_eq!(quota, DriveQuota { total: 100, used: 90, remaining: Some(4), state: "critical".into() });
     }
 }

@@ -346,6 +346,14 @@ pub async fn sync_status_text(proxy: &Sync1Proxy<'_>, helper: Option<&str>, pref
         if blocked > 0 {
             out.push_str(&format!("{:<W$}{blocked} (see `{prefix} sync not-uploaded`)\n", "Blocked:"));
         }
+        if proxy.quota_full().await? {
+            let (count, bytes) = (proxy.space_waiting_count().await?, proxy.space_waiting_bytes().await?);
+            out.push_str(&format!("{:<W$}{}\n", "Waiting for space:", space_waiting_text(count, bytes)));
+        }
+        let too_big = proxy.too_big_count().await?;
+        if too_big > 0 {
+            out.push_str(&format!("{:<W$}{too_big} (see `{prefix} sync outbox`)\n", "Too big for the space:"));
+        }
         let held = proxy.held_count().await?;
         if held > 0 {
             out.push_str(&format!(
@@ -406,6 +414,25 @@ pub fn waiting_text(count: u32, bytes: u64) -> String {
     }
 }
 
+/// `sync status`'s `Waiting for space:` line, while OneDrive is full:
+/// `2029 files (42.0 GiB) — OneDrive is full`.
+pub fn space_waiting_text(count: u32, bytes: u64) -> String {
+    let files = if count == 1 { "1 file".to_owned() } else { format!("{count} files") };
+    format!("{files} ({}) — OneDrive is full", human_bytes(bytes))
+}
+
+/// What `sync refresh` says of the quota it read: the free space and
+/// Graph's state, or that OneDrive is still full. Empty when none was read.
+pub fn quota_text(state: &str, free: u64, full: bool) -> String {
+    if full {
+        return format!("OneDrive is full ({} free): free up space in OneDrive, then refresh again.\n", human_bytes(free));
+    }
+    if state.is_empty() {
+        return String::new();
+    }
+    format!("OneDrive: {} free (quota {state}).\n", human_bytes(free))
+}
+
 /// `sync status`'s `Paused until:` line.
 pub fn paused_text(until: i64, prefix: &str) -> String {
     if until == 0 {
@@ -458,6 +485,7 @@ pub fn upload_reason_text(reason: &str) -> String {
         "name-not-utf8" => format!("a name that is not valid UTF-8: {rename}"),
         "too-large" => "larger than OneDrive takes (250 GB)".to_owned(),
         "quota-exceeded" => "OneDrive is full: free some space in OneDrive".to_owned(),
+        "waiting-for-space" => "waiting for space: OneDrive is full".to_owned(),
         "forbidden" => "this sign-in does not allow uploads: sign in again".to_owned(),
         "open-for-writing" => "open for writing in another program: it goes up once closed".to_owned(),
         "mass-delete" => "part of a large delete: confirm it (`sync deletes confirm`) or undo it (`sync deletes restore`)".to_owned(),
@@ -468,11 +496,18 @@ pub fn upload_reason_text(reason: &str) -> String {
         "other-device" => "on another filesystem mounted inside the folder: never uploaded".to_owned(),
         "hard-link" => "a file with other hard links: not uploaded".to_owned(),
         "locked" => "locked in OneDrive (open for co-authoring): tried again later".to_owned(),
-        other => match other.strip_prefix("refused: ") {
-            Some(message) => format!("OneDrive refused it: {message}"),
-            None => other.to_owned(),
+        other => match (other.strip_prefix("refused: "), too_big(other)) {
+            (Some(message), _) => format!("OneDrive refused it: {message}"),
+            (None, Some((needs, free))) => format!("too big: needs {}, {} free", human_bytes(needs), human_bytes(free)),
+            (None, None) => other.to_owned(),
         },
     }
+}
+
+/// `too-big:<needs>:<free>`: a file too big for the space left in OneDrive.
+fn too_big(reason: &str) -> Option<(u64, u64)> {
+    let (needs, free) = reason.strip_prefix("too-big:")?.split_once(':')?;
+    Some((needs.parse().ok()?, free.parse().ok()?))
 }
 
 /// One row of `Sync1.Outbox()`: (seq, kind, full path, state, bytes sent, bytes
@@ -1516,7 +1551,7 @@ pub async fn wait_for_sign_in(proxy: &Account1Proxy<'_>) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        account_refusal_text, choose, command_prefix, dev_refusal_text, human_bytes, outbox_text, parse_duration,
+        account_refusal_text, choose, command_prefix, dev_refusal_text, human_bytes, outbox_text, parse_duration, quota_text, space_waiting_text,
         refusal_text, refusal_text_in, removed_text, rescue_dirs, shell_word, skip_reason_text, upload_reason_text,
         write_secret_atomically, AccountAction, AccountInfo,
         Context, NoChoice, Source, SyncAction,
@@ -1940,6 +1975,15 @@ mod tests {
         let detail = "/f/B/y is not uploaded yet, so freeing it up would lose the changes made here";
         assert_eq!(super::refused_path_of("org.konedrive.Error.NotUploaded", detail), Some("/f/B/y"));
         assert_eq!(super::refused_path_of("org.konedrive.Error.Failed", detail), None);
+    }
+
+    #[test]
+    fn waiting_for_space_is_one_line_and_too_big_says_what_it_needs() {
+        assert_eq!(space_waiting_text(2029, 42 << 30), "2029 files (42.0 GiB) — OneDrive is full");
+        assert_eq!(upload_reason_text("too-big:3221225472:1073741824"), "too big: needs 3.0 GiB, 1.0 GiB free");
+        assert_eq!(upload_reason_text("waiting-for-space"), "waiting for space: OneDrive is full");
+        assert_eq!(quota_text("nearing", 5 << 30, false), "OneDrive: 5.0 GiB free (quota nearing).\n");
+        assert_eq!(quota_text("", 0, false), "");
     }
 
     #[test]

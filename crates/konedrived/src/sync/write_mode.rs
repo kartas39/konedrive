@@ -538,6 +538,12 @@ impl SyncService {
 
 #[async_trait::async_trait]
 impl PendingUploads for SyncService {
+    /// `RefreshAccountInfo` read the quota: the outbox decides by it whether OneDrive is
+    /// still full (issue #2).
+    fn quota_read(&self, quota: &crate::drive::DriveQuota) {
+        self.quota_seen(quota);
+    }
+
     /// How many changes wait to be uploaded — the outbox's live rows
     /// (`crate::tree::outbox`). A switch to read-only is refused `PendingUploads` while
     /// this is not 0 and the switch is not forced. The watcher hands over and has examined

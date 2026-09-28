@@ -572,6 +572,18 @@ pub struct SyncSnapshot {
     pub paused_until: Option<i64>,
     /// `Uploads`: (full path, bytes sent, bytes in all), as `Transfers`.
     pub uploads: Vec<(String, u64, u64)>,
+    /// `QuotaFull`: OneDrive is full and no content goes up (issue #2).
+    pub quota_full: bool,
+    /// `QuotaState` and `FreeSpace`: Graph's `quota.state` and
+    /// `quota.remaining` as last read (less what went up since); empty and 0
+    /// until a read.
+    pub quota_state: String,
+    pub free_space: u64,
+    /// `SpaceWaitingCount`, `SpaceWaitingBytes`: while full, the changes
+    /// that send content; `TooBigCount`: files too big for the space left.
+    pub space_waiting_count: u32,
+    pub space_waiting_bytes: u64,
+    pub too_big_count: u32,
 }
 
 impl Default for SyncSnapshot {
@@ -601,6 +613,12 @@ impl Default for SyncSnapshot {
             held_count: 0,
             paused_until: None,
             uploads: Vec::new(),
+            quota_full: false,
+            quota_state: String::new(),
+            free_space: 0,
+            space_waiting_count: 0,
+            space_waiting_bytes: 0,
+            too_big_count: 0,
         }
     }
 }
@@ -2800,9 +2818,12 @@ impl SyncService {
     /// step with (HS2): no link, or no interception yet.
     pub async fn refresh(&self) -> Result<(), SyncError> {
         self.require_helper_for(&self.require_onedrive()?)?;
-        // The outbox too (`docs/design/writes.md` §11): rows in backoff go now.
+        // The outbox too (`docs/design/writes.md` §11): rows in backoff go now,
+        // and, while a sync runs, the quota is read again, which may end a
+        // full OneDrive (issue #2).
         self.retry_outbox();
         if self.nudge() {
+            self.refresh_quota().await;
             return Ok(());
         }
         let _lifecycle = self.lifecycle.write().await;
@@ -2814,6 +2835,8 @@ impl SyncService {
         }
         self.start_sync().await;
         if self.syncing.lock().unwrap().is_some() {
+            drop(_lifecycle);
+            self.refresh_quota().await;
             return Ok(());
         }
         let why = self.state.get().sync_trouble.map(|t| t.text);

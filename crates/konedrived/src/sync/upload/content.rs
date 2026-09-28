@@ -18,7 +18,7 @@ use konedrive_fs::placeholder::{self, State};
 use super::engine::{Engine, Fail, Outcome};
 use super::local::{self, Found, Read, Snap, SYNC_UPLOADING};
 use super::steps::{answer_row, blocking, commit_row, copy, follow_cloud, local_name, locate, parent_of, taken, temporary, upload_as_new, wanted_name, Ours, Taken};
-use super::{kind, reason, Fault};
+use super::{kind, reason, space, Fault};
 use crate::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
 use crate::quickxor::QuickXor;
 use crate::sync::disk::Disk;
@@ -233,6 +233,11 @@ impl Job<'_> {
     }
 
     async fn send(&self, target: UploadTarget<'_>, last_check: Option<(&str, &str)>) -> Result<Sent, Fail> {
+        // OneDrive became full since the row was taken: nothing that adds
+        // content starts (`space`).
+        if self.e.space_full() {
+            return Err(Fail::Now(Outcome::Space(space::WAITING.into())));
+        }
         if self.snap.size <= self.e.cfg.limits.small_max {
             self.send_small(target).await
         } else {
@@ -365,6 +370,11 @@ impl Job<'_> {
                 // after the pause (the outbox on the bus).
                 if super::paused(e.store()).is_some() {
                     return Err(Fail::Now(Outcome::wait("paused", std::time::Duration::ZERO)));
+                }
+                // OneDrive full (a refusal of another row): the session stays,
+                // resumed once there is space (`space`).
+                if e.space_full() {
+                    return Err(Fail::Now(Outcome::Space(space::WAITING.into())));
                 }
                 // The write gate, between fragments too: the session stays.
                 if let Err(why) = e.cfg.host.may_write() {
@@ -507,6 +517,7 @@ impl Job<'_> {
             blocking(move || local::commit_id(&file, &id)).await?;
         }
         self.e.fault(Fault::AfterCommitStep1)?;
+        self.e.space_used(self.snap.size);
         let event = self.e.event(kind::UPLOADED, &self.found.rel, crate::sync::activity::human_size(self.snap.size));
         commit_row(self.e, self.row, &answer, self.found.inode.handle.as_ref(), self.parent, event)?;
         Ok(Outcome::Done)

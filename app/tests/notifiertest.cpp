@@ -188,6 +188,18 @@ private Q_SLOTS:
         QCOMPARE(m_sink.sent.at(1).text, QStringLiteral("big.iso cannot be uploaded until there is space in OneDrive."));
     }
 
+    /// OneDrive turning full notifies once, for the account (issue #2).
+    void aFullOneDriveNotifiesOnce()
+    {
+        start();
+        m_daemon->sync->set({{QStringLiteral("QuotaFull"), true}, {QStringLiteral("SpaceWaitingCount"), QVariant::fromValue<uint>(3)}});
+        QTRY_COMPARE(m_sink.sent.size(), 1);
+        QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("OneDrive is full"));
+        m_daemon->sync->set({{QStringLiteral("SpaceWaitingCount"), QVariant::fromValue<uint>(4)}});
+        QTest::qWait(50);
+        QCOMPARE(m_sink.sent.size(), 1);
+    }
+
     /// Removals the mass-delete guard holds notify once when they appear
     /// (not those already held when the window first looked), with Restore
     /// first and as what a click on the notification does.

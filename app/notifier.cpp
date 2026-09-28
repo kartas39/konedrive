@@ -114,9 +114,11 @@ Notifier::Notifier(AccountController *account, SyncController *sync, Notificatio
     connect(m_sync, &SyncController::syncChanged, this, &Notifier::onSyncChanged);
     connect(m_sync, &SyncController::serviceAvailableChanged, this, [this] {
         m_held = m_sync->serviceAvailable() ? int(m_sync->heldCount()) : -1;
+        m_full = m_sync->serviceAvailable() ? int(m_sync->quotaFull()) : -1;
     });
     if (m_sync->serviceAvailable()) {
         m_held = int(m_sync->heldCount());
+        m_full = int(m_sync->quotaFull());
     }
     connect(m_account, &AccountController::accountChanged, this, &Notifier::onAccountChanged);
     connect(m_account, &AccountController::signOutRequested, this, [this] {
@@ -188,6 +190,15 @@ void Notifier::onSyncChanged()
         // The daemon's first answer sets the baseline (serviceAvailableChanged).
         return;
     }
+    // OneDrive turned full: said once for the account, never per file (issue #2).
+    const int full = int(m_sync->quotaFull());
+    if (m_full == 0 && full == 1) {
+        post({QStringLiteral("uploadFailed"),
+              i18nc("@title notification", "OneDrive is full"),
+              i18n("Nothing more is uploaded until there is space in OneDrive. Free up space there, then Refresh on the Status page."),
+              {}});
+    }
+    m_full = full;
     const int held = int(m_sync->heldCount());
     const int before = m_held;
     m_held = held;

@@ -57,7 +57,9 @@ public:
 
     /// A row's state and kind in a few words: "Uploading", "Waiting: open in
     /// another program", "Held until you decide"…
-    static QString stateText(const QString &state, const QString &kind);
+    /// A row waiting for space (reason `waiting-for-space` or `too-big:…`) says so rather than
+    /// its state.
+    static QString stateText(const QString &state, const QString &kind, const QString &reason = QString());
 
 Q_SIGNALS:
     void changed();

@@ -211,6 +211,23 @@ pub trait Sync1 {
     /// `restore_deletes` decides them.
     #[zbus(property)]
     fn held_count(&self) -> zbus::Result<u32>;
+    /// OneDrive is full: no content goes up until a quota read finds space.
+    #[zbus(property)]
+    fn quota_full(&self) -> zbus::Result<bool>;
+    /// While full: the changes that send content, and their size.
+    #[zbus(property)]
+    fn space_waiting_count(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn space_waiting_bytes(&self) -> zbus::Result<u64>;
+    /// Files refused as too big for the space left.
+    #[zbus(property)]
+    fn too_big_count(&self) -> zbus::Result<u32>;
+    /// Graph's `quota.state` as last read; empty until read.
+    #[zbus(property)]
+    fn quota_state(&self) -> zbus::Result<String>;
+    /// Graph's `quota.remaining` as last read, less what went up since.
+    #[zbus(property)]
+    fn free_space(&self) -> zbus::Result<u64>;
     /// Uploads under way: (full path, bytes sent, bytes total).
     #[zbus(property)]
     fn uploads(&self) -> zbus::Result<Vec<(String, u64, u64)>>;

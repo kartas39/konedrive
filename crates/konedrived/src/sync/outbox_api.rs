@@ -68,6 +68,34 @@ impl SyncService {
         }
     }
 
+    /// `Refresh()`'s part for the quota (issue #2): read now, one request, shown in
+    /// `QuotaState` and `FreeSpace`, and handed to the outbox, which ends a full OneDrive
+    /// and lets the files that fit now go. A quota that cannot be read changes nothing.
+    pub(super) async fn refresh_quota(&self) {
+        let drive = self.drive.lock().unwrap().clone();
+        let Some(drive) = drive else { return };
+        match drive.quota().await {
+            Ok(quota) => self.quota_seen(&quota),
+            Err(e) => tracing::warn!("cannot read the OneDrive quota: {e}"),
+        }
+    }
+
+    /// A quota just read, here or by the account (`RefreshAccountInfo`).
+    pub(super) fn quota_seen(&self, quota: &crate::drive::DriveQuota) {
+        if !upload::space::known(quota) {
+            return;
+        }
+        let syncing = self.syncing.lock().unwrap();
+        match syncing.as_ref().and_then(|s| s.outbox.as_ref()) {
+            // The worker's status carries it to the bus.
+            Some(outbox) => outbox.quota_read(quota),
+            None => self.state.update(|s| {
+                s.quota_state = quota.state.clone();
+                s.free_space = quota.remaining.unwrap_or(0);
+            }),
+        }
+    }
+
     /// `Pause(seconds)`: nothing is uploaded, and OneDrive is not asked for
     /// changes, until `seconds` have passed — or until `Resume()` when 0.
     /// Kept in the tree store, so it outlasts a restart.
@@ -185,6 +213,10 @@ impl SyncService {
             s.blocked_count = 0;
             s.held_count = 0;
             s.uploads.clear();
+            s.quota_full = false;
+            s.space_waiting_count = 0;
+            s.space_waiting_bytes = 0;
+            s.too_big_count = 0;
         });
     }
 
@@ -195,8 +227,8 @@ impl SyncService {
         let take = if limit == 0 { usize::MAX } else { limit as usize };
         let rows = self.with_outbox(move |s| Ok(s.outbox_rows()?.into_iter().take(take).collect::<Vec<_>>())).await?;
         let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
-        let uploads = self.state.get().uploads;
-        tokio::task::spawn_blocking(move || entries(rows, &root, &uploads))
+        let (uploads, full) = { let s = self.state.get(); (s.uploads, s.quota_full) };
+        tokio::task::spawn_blocking(move || entries(rows, &root, &uploads, full))
             .await
             .map_err(|e| SyncError::Io(format!("the outbox task failed: {e}")))
     }
@@ -204,7 +236,9 @@ impl SyncService {
 
 /// `Outbox()`'s entries for `rows`; a waiting file's size is read from the
 /// disk (`lstat`), off the runtime.
-fn entries(rows: Vec<crate::tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)]) -> Vec<OutboxEntry> {
+/// While OneDrive is `full`, a change that sends content and says nothing else
+/// says it waits for space (issue #2).
+fn entries(rows: Vec<crate::tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)], full: bool) -> Vec<OutboxEntry> {
     rows
         .into_iter()
         .map(|row| {
@@ -229,7 +263,12 @@ fn entries(rows: Vec<crate::tree::outbox::OutboxRow>, root: &std::path::Path, up
                 row.state.as_str().to_owned(),
                 done,
                 total,
-                row.reason.unwrap_or_default(),
+                match row.reason {
+                    None if full && row.kind.sends_content() && !matches!(row.state, OutboxState::Blocked | OutboxState::Held) => {
+                        upload::space::WAITING.to_owned()
+                    }
+                    reason => reason.unwrap_or_default(),
+                },
                 row.next_try.unwrap_or(0),
             )
         })
@@ -421,6 +460,14 @@ impl OutboxHost for Host {
             s.blocked_count = status.counts.blocked;
             s.held_count = status.counts.held;
             s.uploads = uploads;
+            s.quota_full = status.quota_full;
+            s.space_waiting_count = status.counts.space_waiting;
+            s.space_waiting_bytes = status.counts.space_waiting_bytes;
+            s.too_big_count = status.counts.too_big;
+            if let Some(free) = status.free_space {
+                s.free_space = free;
+                s.quota_state = status.quota_state.clone();
+            }
         });
     }
 

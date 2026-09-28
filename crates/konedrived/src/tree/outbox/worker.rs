@@ -281,6 +281,16 @@ impl TreeStore {
         Ok(n)
     }
 
+    /// Rows blocked with reason `from` are ready again with reason `to`, in
+    /// their places: rows an earlier version blocked on a full OneDrive wait
+    /// for space now (issue #2). How many.
+    pub fn outbox_space_convert(&self, from: &str, to: &str) -> Result<usize, TreeError> {
+        Ok(self.conn.execute(
+            "UPDATE outbox SET state = 'ready', reason = ?2, next_try = NULL WHERE state = 'blocked' AND reason = ?1",
+            [from, to],
+        )?)
+    }
+
     /// Rows in backoff are due now (`Refresh()`).
     pub fn outbox_retry_now(&self) -> Result<usize, TreeError> {
         Ok(self.conn.execute("UPDATE outbox SET next_try = 0 WHERE state IN ('retry', 'waiting')", [])?)

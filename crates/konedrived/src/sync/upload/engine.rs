@@ -12,7 +12,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use super::local::{self, SYNC_BLOCKED, SYNC_PENDING, SYNC_UPLOADING};
-use super::{kind, reason, Fault, OutboxCounts, Upload, WorkerConfig, WorkerStatus, BACKOFF_FIRST, BACKOFF_MAX, QUOTA_RETRY, THROTTLE_FIRST};
+use super::{kind, reason, space, Fault, OutboxCounts, Upload, WorkerConfig, WorkerStatus, BACKOFF_FIRST, BACKOFF_MAX, THROTTLE_FIRST};
 use crate::drive::write::MAX_RETRY_AFTER;
 use crate::drive::{DriveError, WriteError};
 use crate::sync::disk::Disk;
@@ -57,6 +57,12 @@ pub(super) enum Outcome {
     Forbidden,
     /// A fault point fired: the row stays `running`, as after a crash.
     Crashed,
+    /// OneDrive refused the content for lack of space: the step reads the
+    /// quota and turns this into [`Outcome::Space`] (`space`).
+    NoSpace,
+    /// Ready, in its place, but not taken until a quota read lets it go:
+    /// `waiting-for-space` or `too-big:…` (`space`).
+    Space(String),
 }
 
 impl Outcome {
@@ -137,12 +143,7 @@ pub(super) fn outcome_of(fail: Fail) -> Outcome {
         Fail::Store(e) => Outcome::backoff(e.to_string()),
         Fail::Io(e) => Outcome::backoff(e.to_string()),
         Fail::Write(e) => match e {
-            WriteError::QuotaExceeded => Outcome::Again {
-                state: OutboxState::Blocked,
-                reason: Some(reason::QUOTA.into()),
-                next_try: Some(now() + QUOTA_RETRY.as_secs() as i64),
-                backoff: false,
-            },
+            WriteError::QuotaExceeded => Outcome::NoSpace,
             WriteError::Throttled { retry_after } => Outcome::Throttled(retry_after),
             WriteError::Locked => Outcome::backoff(reason::LOCKED),
             WriteError::Forbidden => Outcome::Forbidden,
@@ -171,7 +172,7 @@ struct Mark {
     size: u64,
 }
 
-struct Shared {
+pub(super) struct Shared {
     started: bool,
     online: bool,
     throttled_until: Option<i64>,
@@ -184,12 +185,14 @@ struct Shared {
     /// and the row's item.
     marks: HashMap<i64, Mark>,
     /// What the outbox held when the worker last looked.
-    counts: OutboxCounts,
+    pub(super) counts: OutboxCounts,
     /// A delta cycle has gone through since the worker was told to wait for
     /// one (`docs/design/writes.md` §3 and §4.9: the cycle before the outbox).
     cycled: bool,
     /// The network came back: rows in backoff go once the cycle is done.
     network_back: bool,
+    /// What is known of the space in OneDrive (issue #2).
+    pub(super) space: space::Space,
 }
 
 pub(crate) struct Engine {
@@ -201,6 +204,8 @@ pub(crate) struct Engine {
     /// What the pending `move-out` rows name, re-marked on this helper
     /// connection.
     protection: Mutex<super::move_out::Protection>,
+    /// One quota read at a time: refusals of rows running together share it.
+    pub(super) quota_lock: tokio::sync::Mutex<()>,
 }
 
 fn due(row: &OutboxRow, now: i64) -> bool {
@@ -209,8 +214,7 @@ fn due(row: &OutboxRow, now: i64) -> bool {
         OutboxState::Ready | OutboxState::Running => true,
         OutboxState::Retry => row.next_try.is_none_or(|at| at <= now),
         OutboxState::Waiting => row.next_try.is_some_and(|at| at <= now),
-        OutboxState::Blocked => row.reason.as_deref() == Some(reason::QUOTA) && row.next_try.is_some_and(|at| at <= now),
-        OutboxState::Held => false,
+        OutboxState::Blocked | OutboxState::Held => false,
     }
 }
 
@@ -235,6 +239,7 @@ fn backoff_after(attempts: u32) -> i64 {
 impl Engine {
     pub(crate) fn new(cfg: WorkerConfig) -> Self {
         let (status, _) = watch::channel(WorkerStatus::default());
+        let space = space::Space::start(&cfg.store);
         Self {
             cfg,
             shared: Mutex::new(Shared {
@@ -250,15 +255,17 @@ impl Engine {
                 network_back: false,
                 marks: HashMap::new(),
                 counts: OutboxCounts::default(),
+                space,
             }),
             status,
             wake: Notify::new(),
             faults: Mutex::new(Vec::new()),
             protection: Mutex::new(super::move_out::Protection::default()),
+            quota_lock: tokio::sync::Mutex::new(()),
         }
     }
 
-    fn shared(&self) -> MutexGuard<'_, Shared> {
+    pub(super) fn shared(&self) -> MutexGuard<'_, Shared> {
         self.shared.lock().unwrap_or_else(|p| p.into_inner())
     }
 
@@ -376,12 +383,6 @@ impl Engine {
         Ok(())
     }
 
-    pub(super) fn quota_changed(&self) -> Result<(), TreeError> {
-        self.store().with(|s| s.outbox_unblock(&[reason::QUOTA]))?;
-        self.wake();
-        Ok(())
-    }
-
     pub(super) fn retry_now(&self) -> Result<(), TreeError> {
         self.store().with(|s| s.outbox_retry_now())?;
         self.wake();
@@ -413,11 +414,14 @@ impl Engine {
             running: shared.in_flight.len(),
             uploads: uploads.into_iter().map(|(_, u)| u).collect(),
             counts: shared.counts,
+            quota_full: shared.space.full,
+            free_space: shared.space.free,
+            quota_state: shared.space.state(),
         }
     }
 
     /// Publishes the status, and hands it to the host when it changed.
-    fn publish(&self) {
+    pub(super) fn publish(&self) {
         let status = self.status();
         let changed = self.status.send_if_modified(|current| {
             if *current == status {
@@ -435,6 +439,7 @@ impl Engine {
     pub(super) fn counts(&self) -> Result<OutboxCounts, TreeError> {
         let rows = self.store().with(|s| s.outbox_rows())?;
         let disk = Disk::open(&self.cfg.root, false).ok();
+        let full = self.space_full();
         let mut counts = OutboxCounts::default();
         for row in rows {
             match row.state {
@@ -442,9 +447,9 @@ impl Engine {
                 OutboxState::Held => counts.held += 1,
                 _ => {
                     counts.pending += 1;
-                    if row.kind.sends_content() {
-                        counts.pending_bytes += disk.as_ref().and_then(|d| local::size_at(d, &row.rel)).unwrap_or(0);
-                    }
+                    let size = if row.kind.sends_content() { disk.as_ref().and_then(|d| local::size_at(d, &row.rel)).unwrap_or(0) } else { 0 };
+                    counts.pending_bytes += size;
+                    counts.add_space(&row, full, size);
                 }
             }
         }
@@ -540,9 +545,10 @@ impl Engine {
         let (rows, deps) = self.store().with(|s| Ok((s.outbox_rows()?, s.outbox_dependencies()?)))?;
         let flying: HashSet<i64> = self.shared().in_flight.keys().copied().collect();
         let move_outs = self.cfg.moved_out.is_some();
+        let full = self.space_full();
         Ok(rows
             .into_iter()
-            .filter(|r| !flying.contains(&r.seq) && (r.kind != OutboxKind::MoveOut || move_outs) && due(r, now))
+            .filter(|r| !flying.contains(&r.seq) && (r.kind != OutboxKind::MoveOut || move_outs) && due(r, now) && self.space_allows(r, full))
             .filter(|r| deps.get(&r.seq).is_none_or(Vec::is_empty))
             .map(|r| {
                 let class = self.class_of(disk, &r);
@@ -576,6 +582,7 @@ impl Engine {
         }
         // A row behind the one that went writes its mark again.
         shared.marks.retain(|_, mark| !cleared.contains(&mark.rel));
+        let full = shared.space.full;
         let mut counts = OutboxCounts::default();
         for row in &rows {
             if let Some(value) = wanted_mark(row) {
@@ -590,10 +597,13 @@ impl Engine {
                 OutboxState::Held => counts.held += 1,
                 _ => {
                     counts.pending += 1;
+                    let mut size = 0;
                     if row.kind.sends_content() {
                         let sent = row.snapshot.as_deref().and_then(|s| s.split(' ').next()).and_then(|s| s.parse().ok());
-                        counts.pending_bytes += sent.or_else(|| shared.marks.get(&row.seq).map(|m| m.size)).unwrap_or(0);
+                        size = sent.or_else(|| shared.marks.get(&row.seq).map(|m| m.size)).unwrap_or(0);
+                        counts.pending_bytes += size;
                     }
+                    counts.add_space(row, full, size);
                 }
             }
         }
@@ -615,6 +625,11 @@ impl Engine {
                 return;
             }
         };
+        // The quota, read again when it is due (while full, while a file is
+        // too big, once after a start that found waiting rows).
+        if self.may_start() {
+            self.space_check(now()).await;
+        }
         let mut set: JoinSet<(i64, Outcome)> = JoinSet::new();
         let mut tasks: HashMap<tokio::task::Id, i64> = HashMap::new();
         loop {
@@ -765,6 +780,10 @@ impl Engine {
                 self.shared().crashed = true;
                 Ok(())
             }
+            // In its place, with no timer: a quota read lets it go. No event
+            // per file: the account's `QuotaFull` says it once.
+            Outcome::Space(why) => store.with(|s| s.outbox_set_state(seq, OutboxState::Ready, Some(&why), None)),
+            Outcome::NoSpace => store.with(|s| s.outbox_set_state(seq, OutboxState::Ready, Some(space::WAITING), None)),
         };
         if let Err(e) = result {
             tracing::warn!("cannot settle outbox row {seq}: {e}");
@@ -782,6 +801,9 @@ impl Engine {
         }
         if let Some(until) = self.paused().filter(|&u| u > 0) {
             at = at.min(until);
+        }
+        if let Some(check) = self.space_check_at() {
+            at = at.min(check);
         }
         // While nothing can start, only the end of a pause or throttle
         // matters; rows already due wait for a wake.

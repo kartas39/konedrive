@@ -168,6 +168,8 @@ void SyncController::applyProperties(const QVariantMap &p)
     const uint previousPending = m_pendingCount;
     const uint previousBlocked = m_blockedCount;
     const uint previousHeld = m_heldCount;
+    const bool previousFull = m_quotaFull;
+    const uint previousTooBig = m_tooBigCount;
     if (const auto it = p.constFind(QLatin1String("PendingCount")); it != p.constEnd()) {
         m_pendingCount = it->toUInt();
     }
@@ -177,6 +179,16 @@ void SyncController::applyProperties(const QVariantMap &p)
     }
     if (const auto it = p.constFind(QLatin1String("HeldCount")); it != p.constEnd()) {
         m_heldCount = it->toUInt();
+    }
+    if (const auto it = p.constFind(QLatin1String("QuotaFull")); it != p.constEnd()) {
+        m_quotaFull = it->toBool();
+    }
+    if (const auto it = p.constFind(QLatin1String("SpaceWaitingCount")); it != p.constEnd()) {
+        m_spaceWaitingCount = it->toUInt();
+    }
+    number("SpaceWaitingBytes", m_spaceWaitingBytes);
+    if (const auto it = p.constFind(QLatin1String("TooBigCount")); it != p.constEnd()) {
+        m_tooBigCount = it->toUInt();
     }
     if (const auto it = p.constFind(QLatin1String("Paused")); it != p.constEnd()) {
         m_paused = it->toBool();
@@ -191,7 +203,8 @@ void SyncController::applyProperties(const QVariantMap &p)
     Q_EMIT syncChanged();
 
     // The list itself has no signal: it is read again when a count moves.
-    if (m_serviceAvailable && (m_pendingCount != previousPending || m_blockedCount != previousBlocked || m_heldCount != previousHeld)) {
+    if (m_serviceAvailable && (m_pendingCount != previousPending || m_blockedCount != previousBlocked || m_heldCount != previousHeld
+                                || m_quotaFull != previousFull || m_tooBigCount != previousTooBig)) {
         m_outboxSoon->start();
     }
 

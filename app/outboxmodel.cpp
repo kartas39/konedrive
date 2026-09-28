@@ -3,6 +3,7 @@
 #include <KLocalizedString>
 
 #include <QFileInfo>
+#include <QLocale>
 #include <QSet>
 
 #include <algorithm>
@@ -60,6 +61,19 @@ QString uploadReasonText(const QString &reason)
     if (reason.startsWith(QLatin1String("refused: "))) {
         return i18n("OneDrive refused it: %1", reason.mid(9));
     }
+    if (reason == QLatin1String("waiting-for-space")) {
+        return i18n("OneDrive is full: free up space in OneDrive, then Refresh.");
+    }
+    // too-big:<bytes needed>:<bytes free>
+    if (reason.startsWith(QLatin1String("too-big:"))) {
+        const QStringList parts = reason.mid(8).split(QLatin1Char(':'));
+        if (parts.size() == 2) {
+            const QLocale locale;
+            return i18n("Too big: needs %1, %2 free.",
+                        locale.formattedDataSize(parts.at(0).toLongLong()),
+                        locale.formattedDataSize(parts.at(1).toLongLong()));
+        }
+    }
     return reason;
 }
 
@@ -73,7 +87,7 @@ int OutboxModel::rowCount(const QModelIndex &parent) const
     return parent.isValid() ? 0 : count();
 }
 
-QString OutboxModel::stateText(const QString &state, const QString &kind)
+QString OutboxModel::stateText(const QString &state, const QString &kind, const QString &reason)
 {
     QString what;
     if (kind == QLatin1String("create")) {
@@ -92,7 +106,11 @@ QString OutboxModel::stateText(const QString &state, const QString &kind)
         what = kind;
     }
     QString how;
-    if (state == QLatin1String("waiting")) {
+    if (reason == QLatin1String("waiting-for-space")) {
+        how = i18nc("@info outbox state", "waiting for space");
+    } else if (reason.startsWith(QLatin1String("too-big:"))) {
+        how = i18nc("@info outbox state", "too big for the space left");
+    } else if (state == QLatin1String("waiting")) {
         how = i18nc("@info outbox state", "waiting until it is closed");
     } else if (state == QLatin1String("ready")) {
         how = i18nc("@info outbox state", "waiting to upload");
@@ -133,7 +151,7 @@ QVariant OutboxModel::data(const QModelIndex &index, int role) const
     case StateRole:
         return row.state;
     case StateTextRole:
-        return stateText(row.state, row.kind);
+        return stateText(row.state, row.kind, row.reason);
     case DoneRole:
         return row.done;
     case TotalRole:

@@ -116,6 +116,10 @@ pub struct Cloud {
     /// a fragment of the path, how long, how many times) — proves two
     /// requests are in flight together without changing what either answers.
     delays: Vec<(String, String, Duration, u32)>,
+    /// The space left, when the drive has a quota: content larger is refused
+    /// `507` as it lands, and `GET me/drive` says it (`remaining`, and
+    /// `state` `exceeded` at 0). No quota at all while `None`.
+    pub free: Option<u64>,
 }
 
 impl Cloud {
@@ -252,6 +256,11 @@ impl Cloud {
     /// to hold a request in flight so a test can catch several at once.
     pub fn delay(&mut self, method: &str, fragment: &str, wait: Duration, times: u32) {
         self.delays.push((method.into(), fragment.into(), wait, times));
+    }
+
+    /// How many times the quota was read (`GET me/drive`).
+    pub fn quota_reads(&self) -> usize {
+        self.log.iter().filter(|(m, p)| m == "GET" && p == "me/drive").count()
     }
 
     pub fn count(&self, method: &str, fragment: &str) -> usize {
@@ -399,7 +408,13 @@ impl Cloud {
                 ResponseTemplate::new(204)
             }
             // the read-write reconcile's cycles: the account's drive, the delta feed, the bytes.
-            ("GET", ["me", "drive"]) => ResponseTemplate::new(200).set_body_json(json!({ "id": "D" })),
+            ("GET", ["me", "drive"]) => match self.free {
+                Some(free) => ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "D",
+                    "quota": { "remaining": free, "state": if free == 0 { "exceeded" } else { "normal" } },
+                })),
+                None => ResponseTemplate::new(200).set_body_json(json!({ "id": "D" })),
+            },
             ("GET", ["me", "drive", "root", "delta"]) => {
                 let from = request.url.query_pairs().find(|(k, _)| k == "token").and_then(|(_, v)| v.strip_prefix('t').and_then(|n| n.parse::<usize>().ok()));
                 let body = match from {
@@ -535,6 +550,12 @@ impl Cloud {
     /// Writes `content` as the file the target names; the item's id.
     #[allow(clippy::result_large_err)]
     fn land(&mut self, target: &Target, content: Vec<u8>, mtime: i64) -> Result<(u16, String), ResponseTemplate> {
+        if let Some(free) = self.free.as_mut() {
+            if content.len() as u64 > *free {
+                return Err(error(507, "quotaLimitReached"));
+            }
+            *free -= content.len() as u64;
+        }
         match target {
             Target::New { parent, name } => {
                 if !self.items.contains_key(parent) {
