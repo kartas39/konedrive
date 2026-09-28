@@ -1055,7 +1055,7 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let addr = f._bus.address();
     let out = run(addr, &["sync", "transfers"]);
     assert!(out.status.success(), "{out:?}");
-    let idle = "Downloading:  0 files, 0 B/s\nUploading:    0 files, 0 B/s\nPool: 16 of 64 (large: 0 of 4)\nNothing is downloading or uploading.";
+    let idle = "Downloading:  0 files, 0 B/s\nUploading:    0 files, 0 B/s\nPool: 16 of 32 (large: 0 of 4)\nNothing is downloading or uploading.";
     assert_eq!(out_text(&out).trim(), idle);
 
     let entry = f.service.report().transfers.start("/home/u/OneDrive/big.bin".into(), 4 << 20);
