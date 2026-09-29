@@ -4,6 +4,8 @@
 #     scripts/build-rpm.sh                   # both binary packages and the source RPM
 #     scripts/build-rpm.sh --sources-only    # only the two source tarballs
 #     scripts/build-rpm.sh --version X.Y.Z   # a release's version (the release workflow)
+#     scripts/build-rpm.sh --dev-tools       # a local development package: its daemon
+#                                            # serves the token export (limitations log W11)
 #
 # Everything lands under target/rpm/ in this repository (rpmbuild's _topdir);
 # the RPMs are listed at the end. Needs rpmbuild (`sudo dnf install rpm-build`)
@@ -24,9 +26,11 @@ top="$root/target/rpm"
 
 sources_only=no
 version=
+dev_tools=no
 while [ $# -gt 0 ]; do
     case $1 in
         --sources-only) sources_only=yes ;;
+        --dev-tools) dev_tools=yes ;;
         --version)
             [ $# -ge 2 ] || { echo "--version needs a version, X.Y.Z" >&2; exit 2; }
             version=$2
@@ -40,6 +44,11 @@ done
 if [ "$sources_only" = no ] && ! command -v rpmbuild >/dev/null 2>&1; then
     echo "rpmbuild is not installed: sudo dnf install rpm-build" >&2
     exit 1
+fi
+
+if [ -n "$version" ] && [ "$dev_tools" = yes ]; then
+    echo "--dev-tools is for a local build, never a release's (--version)" >&2
+    exit 2
 fi
 
 if [ -n "$version" ]; then
@@ -121,10 +130,13 @@ if [ "$sources_only" = yes ]; then
     exit 0
 fi
 
-rpmbuild -ba --define "_topdir $top" "$top/SPECS/konedrive.spec"
+with=
+[ "$dev_tools" = yes ] && with="--with dev_tools"
+# shellcheck disable=SC2086 # $with is empty or two words
+rpmbuild -ba --define "_topdir $top" $with "$top/SPECS/konedrive.spec"
 
 echo
-echo "Built ($version):"
+echo "Built ($version$([ "$dev_tools" = yes ] && echo ", with dev-tools")):"
 find "$top/RPMS" "$top/SRPMS" -name '*.rpm' | sort
 echo
 echo "Install both packages (see README, \"Install from RPM\"):"
