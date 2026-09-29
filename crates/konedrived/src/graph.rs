@@ -84,12 +84,12 @@ impl GraphClient {
             .bearer_auth(token)
             .send()
             .await
-            .map_err(|e| GraphError::Failed(format!("cannot reach Microsoft Graph: {e}")))?;
+            .map_err(|e| GraphError::Failed(format!("cannot reach Microsoft Graph: {}", e.without_url())))?;
         match response.status() {
             status if status.is_success() => response
                 .json()
                 .await
-                .map_err(|e| GraphError::Failed(format!("unreadable response from {route}: {e}"))),
+                .map_err(|e| GraphError::Failed(format!("unreadable response from {route}: {}", e.without_url()))),
             reqwest::StatusCode::UNAUTHORIZED => Err(GraphError::Unauthorized),
             status => Err(GraphError::Failed(format!("{route} returned {status}"))),
         }
