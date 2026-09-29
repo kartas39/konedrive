@@ -11,6 +11,11 @@
 # that glob too, and the debugsource one would carry every vendored crate.
 %global debug_package %{nil}
 
+# `rpmbuild --with dev_tools` (scripts/build-rpm.sh --dev-tools): a local
+# development package whose daemon serves the token export (limitations log
+# W11). A release is never built with it.
+%bcond dev_tools 0
+
 Name:           konedrive
 # A placeholder: scripts/build-rpm.sh writes the build's version here, and a
 # changelog entry for it, from the git tags (docs/releasing.md).
@@ -83,13 +88,14 @@ shows whether it is online-only, downloading or downloaded, and "Download" and
 %build
 # The Rust workspace, offline. The vendored .cargo/config.toml replaces
 # crates.io with vendor/. Cargo's home and output stay in the build directory.
-# RUSTFLAGS come from Fedora's build flags. No --features: fault-injection is
-# the VM suite's alone and must never ship (limitations log W8), and dev-tools
-# (the token export) is a development build's alone (W11).
+# RUSTFLAGS come from Fedora's build flags. fault-injection is the VM suite's
+# alone and never packaged (limitations log W8); dev-tools (the token export)
+# only with `--with dev_tools`, a local development package (W11).
 export CARGO_HOME="$PWD/.cargo-home"
 export CARGO_TARGET_DIR="$PWD/target"
 cargo build --release --offline --locked \
-    -p konedrived -p konedrivectl -p konedrive-helper
+    -p konedrived -p konedrivectl -p konedrive-helper \
+    %{?with_dev_tools:--features konedrived/dev-tools,konedrivectl/dev-tools}
 # The helper's test hooks are all named KONEDRIVE_FAULT_*; a release helper has
 # none. scripts/install-helper.sh refuses such a binary the same way.
 if grep -aq KONEDRIVE_FAULT_ target/release/konedrive-helper; then
@@ -98,10 +104,12 @@ if grep -aq KONEDRIVE_FAULT_ target/release/konedrive-helper; then
 fi
 # A released daemon hands out no access token: only a development build
 # (dev-tools) serves org.konedrive.TokenExport.
+%if %{without dev_tools}
 if grep -aq org.konedrive.TokenExport target/release/konedrived; then
     echo "konedrived was built with the dev-tools feature" >&2
     exit 1
 fi
+%endif
 
 # The window, then the Dolphin plugins, each with Fedora's KF6 settings:
 # installed under /usr, tests off.

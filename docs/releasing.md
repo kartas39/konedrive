@@ -76,6 +76,9 @@ that sorts below it: `0.1.2~dev.20260929.fad78d9` in the spec (RPM's `~`) and
 local build with a plain `dnf upgrade`, and two builds of the same commit have the same version.
 Run `git fetch --tags` first: only the tags the checkout has are counted, and without them a local
 build may sort below a release already installed.
+`--dev-tools` makes a local development package whose daemon serves the token export (limitations
+log W11), for the developer's own machine; it is refused together with `--version`, and CI never
+passes it.
 
 ## A dry run
 
