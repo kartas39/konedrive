@@ -5240,8 +5240,11 @@ mod tests {
 
     /// `FreeUpSpace`: every downloaded file freed up through the
     /// per-file path, except one that is open — counted as busy, left as it
-    /// is, and no error. The bytes are the blocks given back. And a Forget of
-    /// the folder takes its activity with it.
+    /// is, and no error. The bytes are the blocks given back, as `stat`
+    /// reads them before and after: how many a 64 KiB file takes is the
+    /// filesystem's own business (btrfs gives it 64 KiB, the runner's ext4
+    /// 68), so the activity is checked against that, not a fixed figure.
+    /// And a Forget of the folder takes its activity with it.
     #[tokio::test]
     async fn free_up_space_frees_what_is_not_in_use_and_counts_what_is() {
         let (service, root_dir, _dir) = local_folder(&[("a.bin", 64 * 1024, true), ("b.bin", 64 * 1024, true)]).await;
@@ -5251,12 +5254,14 @@ mod tests {
 
         let freed = service.free_up_space().await.unwrap();
 
-        assert_eq!(freed, FreedUp { files: 1, bytes: (before - data_blocks(&a)) * 512, busy: 1, modified: 0, pinned: 0 });
+        let given_back = (before - data_blocks(&a)) * 512;
+        assert_eq!(freed, FreedUp { files: 1, bytes: given_back, busy: 1, modified: 0, pinned: 0 });
         assert!(freed.bytes >= 64 * 1024, "{freed:?}");
         assert_eq!(service.item_state(&a).await, "online-only");
         assert_eq!(service.item_state(&b).await, "hydrated", "an open file is left as it is");
         let folder = root_dir.path().display().to_string();
-        assert_eq!(activity_of(&service).await.pop().unwrap(), ("freed".to_owned(), folder, "1 file, 64.0 KiB".to_owned()));
+        let detail = format!("1 file, {}", activity::human_size(given_back));
+        assert_eq!(activity_of(&service).await.pop().unwrap(), ("freed".to_owned(), folder, detail));
 
         service.unregister_root().await.unwrap();
         assert!(activity_of(&service).await.is_empty(), "a Forget drops the activity");
