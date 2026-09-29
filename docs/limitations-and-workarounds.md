@@ -150,7 +150,7 @@ application must never read zeros where real content should be.
 - **Way out:** on connecting, the daemon asks the helper which roots it holds for this user
   and reconciles. One new protocol message.
 - **With multiple accounts** it matters more: an account taken out of `config.toml` by hand
-  leaves its folder with the helper in the same way. `Accounts1.Remove` itself goes through
+  leaves its folder with the helper in the same way. `Accounts.Remove` itself goes through
   the helper, as a Forget does, and is refused `NoHelper` without it. The way out is still not
   built.
 
@@ -278,11 +278,11 @@ application must never read zeros where real content should be.
 
 ### P9. `Skipped()` returns the whole list in one D-Bus message
 - **Kind** LIMIT · **Evidence** reasoned · **Status** open
-- **What:** `Sync1.Skipped()` answers with every skipped item at once, as one method reply — bounded
+- **What:** `Folder.Skipped()` answers with every skipped item at once, as one method reply — bounded
   by zbus's 128 MiB message limit, not paged. What is in it is also coarser than "every OneDrive
   item that did not make it into the folder": an item inside a skipped folder is not listed of its
   own accord (its own folder's entry already covers it, per the method's own doc comment in
-  `dbus/org.konedrive.Sync1.xml`), so entries are only the top of each skipped subtree, not
+  `dbus/org.konedrive.Folder.xml`), so entries are only the top of each skipped subtree, not
   everything under it.
 
 ### P10. Pinning a big folder downloads everything in it, with no prompt
@@ -312,7 +312,7 @@ application must never read zeros where real content should be.
   it is always a local folder, filled with `populate-from`, whoever is signed in
   (`docs/design/sync.md` §3): a OneDrive folder is kept in step only with the helper. A OneDrive
   folder an older daemon registered this way is not kept in step at all — no listing, no change
-  applied, `RootState` `error` with how to start the helper — until the helper connects; then it
+  applied, `Folder.State` `error` with how to start the helper — until the helper connects; then it
   switches as below, whatever it was recorded as.
 - **Why:** development and the test suites need a sync folder on a machine where no helper runs.
   A user installs the helper instead (`scripts/install-helper.sh`).
@@ -390,16 +390,16 @@ application must never read zeros where real content should be.
   one an older connection is still downloading — is counted `busy` and handled on the next pass.
   Waiting would make every reconnect wait for every download.
 
-### W11. `Dev1.AccessToken` and `konedrivectl dev export-access-token`
+### W11. `TokenExport.ReadOnly` and `konedrivectl dev export-access-token`
 - **What:** for a VM test run that needs to speak Graph itself without a full sign-in of its own.
-  `Dev1` hands out an *access* token — about an hour of `Files.Read` — never the refresh token,
+  `TokenExport` hands out an *access* token — about an hour of `Files.Read` — never the refresh token,
   which never leaves the daemon/KWallet. It is read-only whatever the account's mode: for a
   read-write account it comes from a refresh that asks for `Files.Read` only (write design §2.1),
-  and one Microsoft answered with more is not handed out. `Dev1.ReadWriteAccessToken`
+  and one Microsoft answered with more is not handed out. `TokenExport.ReadWrite`
   (`export-access-token --read-write`), a token that can change files, is for the test-account
   harness only, and refused for any account the write gate does not let through (F60); the commit
   that removes the gate before the release must remove it too, or keep it behind the list.
-  **`Dev1` is served in every build**, not
+  **`TokenExport` is served in every build**, not
   only a development one: a per-user install (`scripts/dev-install.sh`) needs it for real-account
   test runs. The CLI writes the token through a temporary file in the same directory as `--out`,
   created with `O_CREAT | O_EXCL | O_NOFOLLOW` at mode 0600 from the instant it exists, then
@@ -408,9 +408,9 @@ application must never read zeros where real content should be.
   open keeps reading its old content untouched (an earlier open-and-truncate version followed a
   symlink and disturbed an existing reader).
 - **Cost:** any process running as the same Linux user that can reach the session bus can call
-  `Dev1.AccessToken()` and obtain about an hour of read access to the signed-in account's OneDrive.
+  `TokenExport.ReadOnly()` and obtain about an hour of read access to the signed-in account's OneDrive.
   This is **the same access that process already has** by opening any file inside the sync folder
-  directly — `Dev1` does not open a door that was not already open, only makes going through it
+  directly — `TokenExport` does not open a door that was not already open, only makes going through it
   faster and without a helper in the way. It carries no authorisation of its own beyond being the
   same Linux user. A Flatpak app is not "any same-user process" here: its own bus proxy (the
   portal's D-Bus filtering) decides whether it can reach `org.konedrive.Daemon` at all, same as for
@@ -675,7 +675,7 @@ application must never read zeros where real content should be.
   the status says so. Reasoned. Open.
 - **F17.** The same limit as F28, and merged into it.
 - **F18. A tree store that cannot be opened stops the sync until something asks again** — the status
-  says so (`RootState` `error`) and downloads on open still work, but nothing retries the open on its
+  says so (`Folder.State` `error`) and downloads on open still work, but nothing retries the open on its
   own. `Refresh()` (`konedrivectl sync refresh`) does, and refuses with the reason when it still
   cannot; so does a daemon restart, and a helper reconnect. (A OneDrive folder without interception
   has no sync to start until the helper connects: `docs/design/sync.md` §3.) Measured
@@ -689,7 +689,7 @@ application must never read zeros where real content should be.
   and puts back the mode it found, `r--r--r--`, possibly after the walk made it writable. Reasoned.
   Open.
 - **F20. What a folder shows is decided when it is registered** — signed in (with the drive the
-  daemon always has) and with the helper (`RegisterRoot`), it shows OneDrive; signed out, or
+  daemon always has) and with the helper (`Folder.Register`), it shows OneDrive; signed out, or
   registered without interception (`docs/design/sync.md` §3), it is local and filled with
   `PopulateFromDirectory`. A local folder stays local after a sign-in, and a OneDrive folder stays
   OneDrive after a sign-out (it then says "signed out"); changing it takes a Forget and a new
@@ -756,12 +756,12 @@ application must never read zeros where real content should be.
   recorded with its result. A reconcile that fails with an error records none of the rescues it
   already made: those files are in the rescue directory and the daemon's log, not in the conflict
   list. `LastError` carries no rescue note at all: a conflict is not a problem, and `Conflicts()`,
-  `ConflictCount` and the `conflict` events say where each file went. And `ActivityAdded` is a live signal with a
+  `Conflicts.Count` and the `conflict` events say where each file went. And `ActivityLog.Added` is a live signal with a
   1024-event queue: more than that waiting at once and the oldest of them are not signalled, only
-  logged (`RecentActivity` still has the newest 200). Measured (`sync::listing::tests`) but for the
+  logged (`ActivityLog.Recent` still has the newest 200). Measured (`sync::listing::tests`) but for the
   queue, which is reasoned. Open.
 - **F29. A fill on open is shown under the name the file had when it was opened** — its
-  `Transfers` entry and its `downloaded`/`failed` event take the name from the open descriptor
+  `Transfers.Downloads` entry and its `downloaded`/`failed` event take the name from the open descriptor
   (`/proc/self/fd`); a file renamed or deleted while it downloads is shown under its old name, or
   with " (deleted)". `Hydrate` and replacements use the path they were given. Reasoned. Open.
 - **F30. A failed switch the helper may still hold is kept intercepted, and waits for the next
@@ -788,7 +788,7 @@ application must never read zeros where real content should be.
   this is exactly what `Skipped()`'s own doc means by "whose own folder is in the tree", not a bug.
   Found in a real-account run of the VM suite, where `placed + skipped` stayed short of `listed` by
   exactly the items inside skipped folders. A test (or any future monitoring code) that waits for
-  `RootState` to leave `listing` and then compares `placed + skipped` against `listed` to decide a
+  `Folder.State` to leave `listing` and then compares `placed + skipped` against `listed` to decide a
   cycle is done can wait forever on a real, deep tree with a skipped folder that has enough inside
   it. `LastChecked` (`status().0` moving off `0`) is the reliable "this cycle's reconcile actually
   finished" signal; `tests/vm/graph.rs`'s `g1` uses it for exactly this reason. Measured
@@ -939,7 +939,7 @@ application must never read zeros where real content should be.
   and the conflict list of before are then lost (F24); the rescued files stay in `rescued/<time>/`.
   `account.json` is moved the same way, and when it is left behind the name and quota are fetched
   again. An unexpected error, such as a directory that cannot be created or a refused rename, keeps
-  the step for the next start and shows in `Accounts1.LastError`. FRAGILE · measured
+  the step for the next start and shows in `Accounts.LastError`. FRAGILE · measured
   (`migrate::tests::a_store_that_cannot_be_moved_is_left_where_it_is`,
   `…the_store_move_keeps_rows_committed_to_the_write_ahead_log`). Open.
 - **F41. Version 2 of `config.toml` has no way back** (`konedrived/src/migrate.rs`) — the first
@@ -960,7 +960,7 @@ application must never read zeros where real content should be.
   one `ConfigStore` update. It is fail-closed: a Graph that does not answer, or another account
   that cannot be asked (its token cannot be refreshed), refuses the sign-in. The tokens are then
   dropped, and `LastError` says to try again. A migrated account whose folder never recorded a
-  drive records one at its first `RefreshAccountInfo` or cycle. If the account was signed in as
+  drive records one at its first `RefreshInfo` or cycle. If the account was signed in as
   another drive than its folder's, the folder's sync still says so, and the account keeps the drive
   it recorded first. The wallet item is named `KOneDrive: <email>` once the email is known, and
   `KOneDrive refresh token` before that. LIMIT · measured
@@ -1000,7 +1000,7 @@ application must never read zeros where real content should be.
   same phase, and the deprecated single-account proxies are gone from `konedrive-dbus`.
   LIMIT · reasoned. Open.
 - **F47. What removing an account keeps** (`konedrived/src/accounts.rs`, `AccountManager::remove`)
-  — `Accounts1.Remove` forgets the folder as a Forget does, then deletes the refresh token and
+  — `Accounts.Remove` forgets the folder as a Forget does, then deletes the refresh token and
   everything in `accounts/<id>/` (the cached name and quota, the tree store, the activity log and
   the conflicts). The folder's files stay, and a file that was never downloaded stays as an empty
   placeholder, which reads as zeros. Rescued files stay in `rescued/<id>/`, grouped by the account's
@@ -1009,11 +1009,11 @@ application must never read zeros where real content should be.
 - **F48. An account that collides with an earlier one in a hand-edited `config.toml` is held
   back** (`konedrived/src/accounts.rs`, design §3.1) — an account whose label, drive, folder or
   root id repeats an earlier account's is loaded and shown, but its folder is not brought up:
-  `RootState` reads `error`, `LastError` names the collision, and a registration is refused. Its
+  `Folder.State` reads `error`, `LastError` names the collision, and a registration is refused. Its
   folder can still be forgotten, and the account removed: a folder it registered with interception
   in an earlier session leaves through the helper, by the root id `config.toml` records, and is
   refused `NoHelper` without one. An account whose id repeats an earlier one, or cannot name an
-  object, is not loaded at all, and `Accounts1.LastError` says so. Correcting the file and starting
+  object, is not loaded at all, and `Accounts.LastError` says so. Correcting the file and starting
   the daemon again is the way out. LIMIT · measured
   (`accounts::removing_a_held_account_forgets_its_folder_through_the_helper`). Open.
 - **F49. Personal Microsoft accounts only** (`konedrived/src/oauth.rs`, design §12.3) — every
@@ -1022,10 +1022,10 @@ application must never read zeros where real content should be.
   often an administrator's consent, and testing against SharePoint-backed drives: a later phase.
   LIMIT · reasoned. Open.
 - **F50. `konedrivectl` explains some refusals from its own view of the folders**
-  (`konedrivectl/src/main.rs`, `explained_paths`, `carries_a_drive`) — `Files1` refuses a path in
+  (`konedrivectl/src/main.rs`, `explained_paths`, `carries_a_drive`) — `Files` refuses a path in
   no account's folder `OutsideRoot` without saying which folders there are. After such a refusal
-  the CLI reads every account's `RootPath` and finds the folder that holds the path by the rule
-  `Files1` routes by (a component prefix, the directory part resolved by the CLI first). Where
+  the CLI reads every account's `Folder.Path` and finds the folder that holds the path by the rule
+  `Files` routes by (a component prefix, the directory part resolved by the CLI first). Where
   the two disagree — a folder reached through a link that the daemon resolves and the CLI does
   not — the explanation names the wrong folder, or none. And the daemon refuses a folder that is
   another account's under `NotEmpty`, the same name as a folder that is not empty; the CLI tells
@@ -1036,7 +1036,7 @@ application must never read zeros where real content should be.
   error name of its own would end the guess. Only the words are at stake: the refusal is the
   daemon's. FRAGILE · reasoned. Open.
 - **F51. Choosing the account on the command line** (`konedrivectl/src/lib.rs`, `choose`, design
-  §5.1) — (1) an email names an account only once the account has signed in: `Account1.Email`
+  §5.1) — (1) an email names an account only once the account has signed in: `Account.Email`
   is empty before. (2) `KONEDRIVE_ACCOUNT` is a default for a whole shell, so the commands that
   act on no chosen account — the path commands, `account …` and `set-client-id` — ignore it;
   `--account` given to them is refused with exit status 2 rather than ignored. (3) `login` with no
@@ -1164,8 +1164,8 @@ application must never read zeros where real content should be.
   `sync::upload::tests::swaps_and_folders_replaced_in_place_…`). Open.
 - **F60. The write gate: only test accounts can be read-write, until the release**
   (`konedrived/src/config.rs`, `Config::writes_allowed`; write design §2) — while uploads are being
-  developed, `Account1.SetMode("read-write")` is refused `WritesNotAllowed`, and
-  `Dev1.ReadWriteAccessToken` too, for any account whose drive id is not in `write_test_drive_ids`
+  developed, `Account.SetMode("read-write")` is refused `WritesNotAllowed`, and
+  `TokenExport.ReadWrite` too, for any account whose drive id is not in `write_test_drive_ids`
   in `config.toml`; the list is empty by default, and nothing in the daemon writes it (the developer
   install sets it to the test account's drive by hand). An account `config.toml` sets to read-write
   by hand whose drive is not listed loads, runs read-only, asks for `Files.Read` at every refresh,
@@ -1180,18 +1180,18 @@ application must never read zeros where real content should be.
   token refresh. Writes are still addressed to `/me/drive/items/…`, not to the recorded drive:
   what holds them to that drive is the gate's comparison with the drive last seen, and the
   sync's own same-drive check at every cycle. The release removes the gate in a commit of its own,
-  a user decision; that commit removes `Dev1.ReadWriteAccessToken` too, or keeps it behind the
+  a user decision; that commit removes `TokenExport.ReadWrite` too, or keeps it behind the
   list (W11). LIMIT, on purpose · measured (`config::tests::the_write_gate_refuses_every_drive_by_default`,
   `konedrived/tests/mode.rs::the_gate_refuses_read_write_by_default`, `konedrivectl/tests/mode_cli.rs`,
   `sync::tests::onedrive::a_drive_taken_off_the_list_while_the_worker_runs_sends_nothing_more`).
   Open until the release.
 - **F61. A read-write account is read-write only while its last token carried `Files.ReadWrite`**
   (`konedrived/src/account.rs`, `recompute_mode`; write design §2) — the mode the account runs in
-  (`Account1.Mode`) is read-write only when `config.toml` says so and the gate lets its drive
+  (`Account.Mode`) is read-write only when `config.toml` says so and the gate lets its drive
   through (F60) — both from one reading of the file, taken again each time the mode is worked out,
   and a file that cannot be read then counts as read-only, with `LastError` saying so; a token used
   meanwhile is refreshed down, so the way back is a new switch — the drive the account's token was last seen to reach
-  (`GET /me/drive` at a sign-in, at `RefreshAccountInfo`, by `Dev1.ReadWriteAccessToken` with
+  (`GET /me/drive` at a sign-in, at `RefreshInfo`, by `TokenExport.ReadWrite` with
   the very token it hands out, and by a sync cycle that finds it is not the drive the folder was
   listed from, which the account then records) is the one `config.toml` records, and the scopes its last token
   response granted include `Files.ReadWrite`. The scopes and the drive seen are kept in
@@ -1263,7 +1263,7 @@ application must never read zeros where real content should be.
   refused before anything is stored. Consent given anyway stays. That a read-only refresh then
   answers with a `Files.Read` token is assumed, not measured: should Microsoft answer with more, the
   token is used to read only, what is recorded as granted is never more than was asked for (so it
-  can never make the account read-write), `Dev1.AccessToken` refuses to hand it out, and
+  can never make the account read-write), `TokenExport.ReadOnly` refuses to hand it out, and
   `LastError` says so and names the page. The test-account run (F130) checks it: the token exported
   after the switch back to read-only must be refused a write. LIMIT · reasoned; the handling
   measured with a fake endpoint
@@ -1508,7 +1508,7 @@ application must never read zeros where real content should be.
   again). An upload in fragments stops after the fragment it is sending (at most 10 MiB, so
   "Uploading now" and `sync transfers` empty within one fragment's time), its session and offset
   kept in the row, which waits as `paused` — no failure, no activity event — through a restart too;
-  `Outbox()` lists every row that waits, retries or runs as `paused` while the account is (#19). On
+  `UploadQueue.Changes()` lists every row that waits, retries or runs as `paused` while the account is (#19). On
   resume the kept session goes on from its offset; a session OneDrive let expire during a long
   pause starts over from zero, which is logged, and what was sent before is sent again. A
   one-request upload (up to 10 MiB) or a metadata request already sent finishes. The one stop point
@@ -1523,7 +1523,7 @@ application must never read zeros where real content should be.
   `…a_one_request_upload_in_flight_at_a_pause_finishes_and_nothing_new_starts`,
   `sync::outbox_api::tests::rows_waiting_while_paused_read_paused`). Open.
 - **F101. A coalesced property that changes and changes back is not signalled**
-  (`konedrived/src/sync/dbus.rs`, `coalesce`) — the counters, `Transfers`, and
+  (`konedrived/src/sync/dbus.rs`, `coalesce`) — the counters, `Transfers.Downloads`, and
   `PendingCount`, `PendingBytes`, `BlockedCount`, `HeldCount` and `Uploads` are sent at most four
   times a second, compared with what was sent last. A value that changes and changes back within
   one 250 ms window (a small file queued and uploaded at once) sends nothing, and a client that read
@@ -1551,7 +1551,7 @@ application must never read zeros where real content should be.
   caller last looked included. `RestoreDeletes` forgets the items' local objects in both the base
   and a cycle's staging, under the tree lock, and asks for a cycle with a Full reconcile at once,
   which places them again (items with no local object on record, F115); it deletes nothing in OneDrive.
-  (4) `BlockedCount` does not count held removals: `HeldCount` does. (5) `Outbox()` reads a waiting
+  (4) `BlockedCount` does not count held removals: `HeldCount` does. (5) `UploadQueue.Changes()` reads a waiting
   file's size with `lstat` for each call, off the runtime; `sync outbox` shows the first 50 rows
   unless `--all`. (6) A free-up of a downloaded file named on its own whose change waits to be
   uploaded is refused `NotUploaded`, before any account frees anything; inside a folder, such a file
@@ -1774,7 +1774,7 @@ application must never read zeros where real content should be.
   path waits; (6) what left a moved-out folder since is asked after by its handle, one round trip
   per placed file the base still has below it, and made local where it went (the Trash included);
   (7) move-outs run one at a time, beside the other rows, so a big folder's download holds the
-  other move-outs back; (8) a download's progress shows in `Transfers` under the moved-out path,
+  other move-outs back; (8) a download's progress shows in `Transfers.Downloads` under the moved-out path,
   and the rows' reasons (`waiting-for-the-helper`, `moved-out-unreachable`,
   `moved-out-place-unknown`, `back-in-the-folder`, `download-failed`, `gone-once`,
   `handle-from-another-filesystem`, `gone-unproved`, `lease-probe-failed`) in `sync outbox`;
@@ -1924,7 +1924,7 @@ application must never read zeros where real content should be.
   `…an_expired_sign_in_keeps_the_changes_waiting_to_upload`,
   `tree::outbox::tests::a_forced_drop_keeps_a_rename_half_done`,
   `konedrived/tests/mode.rs::a_forced_switch_drops_what_a_read_only_account_kept`). Open.
-- **F141. A Forget and `Accounts1.Remove` are refused while changes wait to be uploaded**
+- **F141. A Forget and `Accounts.Remove` are refused while changes wait to be uploaded**
   (`konedrived/src/sync/mod.rs`, `forget`; `write_mode.rs`, `changes_in_store`) —
   the folder's tree store, which holds the outbox, goes with a Forget and with the account, so both
   are refused `PendingUploads` while it holds any row — waiting, blocked or held by the mass-delete
@@ -2052,7 +2052,7 @@ application must never read zeros where real content should be.
   reported too (`periodic`). SHORTCUT, on purpose · measured
   (`sync::watcher::tests::the_sink_reports_a_full_scan_and_not_a_single_place`). Open.
 - **F152. Queue totals: what "left", "done" and "time left" count, and where they are
-  approximate** (`crates/konedrived/src/sync/totals.rs`, issue #16) — `Sync1`'s
+  approximate** (`crates/konedrived/src/sync/totals.rs`, issue #16) — `Transfers`'
   `DownloadLeft*`/`UploadLeft*`, `*DoneBytes`, `*TimeLeft`, the Activity page's cards and
   `sync transfers`.
   - **This run.** "Done" is the bytes the account's transfer pool has counted that way since
@@ -2065,12 +2065,12 @@ application must never read zeros where real content should be.
     thumbnails fetched while anything is left to download, and an upload fragment sent again
     after a failure, add to it.
   - **Left, downloads.** The pinned files waiting (the pins' queue) and every download under way
-    (`Transfers`: opens, `Hydrate`, replacements, pinned files), less what those have received. A
+    (`Transfers.Downloads`: opens, `Hydrate`, replacements, pinned files), less what those have received. A
     file being opened or replaced is not queued ahead: it counts only while it runs. A pinned file
     taken off the queue whose fill has not fetched yet is in neither for that moment, and a
     download whose size is not known yet counts 0 bytes.
   - **Left, uploads.** `PendingCount` changes (a move, a delete, a new folder has no bytes) and
-    `PendingBytes`, less the changes waiting for space or too big for it (`SpaceWaitingCount`,
+    `PendingBytes`, less the changes waiting for space or too big for it (`QuotaWaitingCount`,
     `TooBigCount` and their sizes; issue #2) and less what the uploads under way have sent. A pending change that waits with a
     reason (locked, open for writing) is in "left" and also in the Not Uploaded page's "Waiting"
     group, so the Activity page's "N changes kept back" link counts it too.
@@ -2131,7 +2131,7 @@ application must never read zeros where real content should be.
   (`konedrived/src/bench.rs`; issue #38) — the sizes designed for are 30 000 queued changes,
   100 000 items and a directory of 30 000 entries with 27 000 new files. The budgets (an
   examination batch 3 s, a Full local scan 10 s on tmpfs, a pick 50 ms and 200 ms in the worst
-  case, a step's own store work 10 ms, a bus answer during an apply 100 ms, `Outbox(21)` and
+  case, a step's own store work 10 ms, a bus answer during an apply 100 ms, `Changes(21)` and
   `NotUploadedFiles(…, 20)` 50 ms, a lookup by handle 1 ms, a folder's rename 100 ms) are guesses
   of what keeps the daemon responsive, and the bench is an ignored test run by hand
   (`cargo test -p konedrived --release --lib bench:: -- --ignored`, with `HOME`, the XDG
@@ -2164,7 +2164,7 @@ application must never read zeros where real content should be.
   likewise. LIMIT (chosen) · measured (`sync::tests::…::the_bus_answers_while_the_store_is_held`).
   Open.
 - **F161. The bus's lists read the last committed state** (`tree.rs`, `Store::read`; issue #38) —
-  `Outbox(limit)`, `NotUploadedFiles`, `NotUploaded()` and the summary summed on the call go
+  `Changes(limit)`, `NotUploadedFiles`, `NotUploaded()` and the summary summed on the call go
   through a second, read-only SQLite connection, so a change being recorded right now (an
   examination's apply) is not listed until it commits. `NotUploadedFiles` asks one query per
   group of rows (kind, state and reason) with its own `LIMIT`, then sorts: a reason with many
@@ -2203,7 +2203,7 @@ application must never read zeros where real content should be.
   about 28 ms at 30 000 rows (`bench::a_whole_table_read`): the examination's own start (once per
   batch, to build its maps); the worker's first marks after it starts, and after more than
   100 000 changed rows went unread (`OutboxChanges`, `DIRTY_MAX`); a forced switch to read-only
-  (`outbox_drop_all`, `write_mode`); `Outbox(0)` and `NotUploaded()`, unbounded by their
+  (`outbox_drop_all`, `write_mode`); `Changes(0)` and `NotUploaded()`, unbounded by their
   signatures; restoring or confirming held deletes (their rows); a quota read that lets waiting
   files go (the waiting rows only, each sized from its snapshot, its recorded size or the disk);
   and the read-write reconcile's plan (`Rw::read`, `materialize/rw.rs`), once per cycle that
@@ -2298,9 +2298,9 @@ application must never read zeros where real content should be.
   `prune`, `PRUNE_BATCH`; `app/conflictmodel.cpp`, `app/qml/ConflictsPage.qml`; issue #39) — at
   each cycle's end, and after a conflict is added or dismissed, the next 200 conflicts (a guess), in
   the order of their rescued paths from where the last look stopped, are read on the store's
-  read-only connection, each `lstat`ed, and those gone dropped in one transaction; `ConflictCount`
+  read-only connection, each `lstat`ed, and those gone dropped in one transaction; `Conflicts.Count`
   is then what is on record. So with more than 200 conflicts, a rescued file removed by hand drops
-  off within a few cycles rather than at the next one, and `ConflictCount` can count it until
+  off within a few cycles rather than at the next one, and `Conflicts.Count` can count it until
   then. `Conflicts()` still looks at every one (3.4 ms at 2 000) and sets the count right. The
   window's Conflicts page lists the newest 200 (a guess), then "and N more" with
   `konedrivectl sync conflicts`; the rest cannot be reached from the window. Its model takes a new
@@ -2387,7 +2387,7 @@ application must never read zeros where real content should be.
 | Conflicts looked over per cycle (`PRUNE_BATCH`) / rows the window's Skipped and Conflicts pages list / how often the Skipped page asks again | 200 / 200 / at most once a second | **guess** (`crates/konedrived/src/sync/activity.rs`, `app/qml/SkippedPage.qml`, `app/conflictmodel.h`; issue #39) |
 | Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
 | Shortest time between two `LocalBytes` walks | 5 s | **guess** |
-| Shortest time between two coalesced `PropertiesChanged` (counters, status, `Transfers`) | 250 ms, at most 4 signals a second | the design's four a second |
+| Shortest time between two coalesced `PropertiesChanged` (counters, status, `Transfers.Downloads`) | 250 ms, at most 4 signals a second | the design's four a second |
 | Notifications per event kind (A3) | one per 10 s, the rest as one summary | **guess** |
 | Window's "checked N s ago" refresh | every 10 s, from the clock | **guess** |
 | Window's "Recent" list | 50 rows | **guess**; the daemon keeps 200 |
@@ -2457,7 +2457,7 @@ application must never read zeros where real content should be.
   assertion wants an `eventually`), not in the daemon. Seen once; not chased.
 - **D16.** `konedrivectl/tests/sync_cli.rs::binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_partial`
   failed once in a full `cargo test --workspace` while other builds loaded the machine (load 6), and
-  passes alone: it waits at most 2.5 s for `RootState` to read `listing`, behind a delta answer held
+  passes alone: it waits at most 2.5 s for `Folder.State` to read `listing`, behind a delta answer held
   for 2 s, so a slow bring-up misses the window. A read-only folder's path; seen once; not chased.
 - **D17.** `konedrived` `sync::tests::onedrive::refresh_starts_a_sync_that_could_not_start_or_says_why`
   failed once in a full `cargo test --workspace` while other worktrees' builds loaded the machine,
@@ -2514,7 +2514,7 @@ attributes and never open it.
   level up to the root, not cached -- K25), which is paid on top of it for every file and folder
   Dolphin asks about; not remeasured.
 - **K6. At most 1000 paths wait at once, per window.** DEBT · measured. `Pin`/`FreeUp` now take the
-  whole selection in one call each (`dbus/org.konedrive.Sync1.xml`), so this cap and the dedupe against
+  whole selection in one call each (`dbus/org.konedrive.Files.xml`), so this cap and the dedupe against
   a path already waiting bound one batch, not one call per file as before; a selection of more than 1000
   files still takes several clicks. A never-answering daemon still costs up to ~3 MB of Dolphin memory
   per window (the paths, not the calls, are what is kept), and on `dbus-daemon` buses (not Fedora's
@@ -2655,7 +2655,7 @@ attributes and never open it.
 ## 8. Window and tray
 
 The app in `app/` (`docs/design/desktop.md` §4–§6): the tray icon, KDE notifications, and the
-window's status, activity and conflicts, all read from `org.konedrive.Sync1` and `Account1`.
+window's status, activity and conflicts, all read from the folder's interfaces (`org.konedrive.Folder`, `Transfers`, `UploadQueue`, `Conflicts`, `LocalScan`, `ActivityLog`) and `Account`.
 
 - **A1. Notifications need the app running.** LIMIT · by design (`docs/design/decisions.md`,
   "Notifications come from the app"). They come from the app, not the daemon: the app starts hidden
@@ -2671,7 +2671,7 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   - a detail of exactly "not enough disk space" — the daemon's words for ENOSPC in either kind —
     makes it `diskFull`; other words for a full disk are notified as a plain failure;
   - the tray's "a failed update" is the `LastError` part "… could not be updated here yet: …"
-    (documented in `dbus/org.konedrive.Sync1.xml`), a state that survives an app restart; the app
+    (documented in `dbus/org.konedrive.Folder.xml`), a state that survives an app restart; the app
     takes it to be the last part of `LastError`, as the daemon writes it;
   - while the folder is `ready`, whatever else `LastError` says is shown as trouble that does not
     stop the folder ("Cannot reach OneDrive (…); trying again · checked 2 h ago"), with the offline
@@ -2682,7 +2682,7 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
     after it are stripped off — before that fix, whatever followed it (the same "cannot reach
     OneDrive…", a switch-failure note) never reached the status line or the tray at all. The rescue
     note this used to except no longer exists: it left `LastError` altogether (F17, F28) — a rescue
-    is now carried structurally, through `Conflicts()`/`ConflictCount`/the `conflict` event, never
+    is now carried structurally, through `Conflicts.List()`/`Conflicts.Count`/the `conflict` event, never
     as words inside `LastError`. `app/appstatus.cpp`'s regex that used to filter that note out is
     dead code left over from before the change (harmless — there is nothing left for it to match).
   - the helper's own state (`HelperState`, read as `helperState`/`helperTrouble`/
@@ -2716,11 +2716,11 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   user did not ask for is silent once.
 - **A6. The "Recent" list merges a load with what arrives during it.** WORKAROUND · measured
   (`liveEventsDuringALoadAreKeptOnce`, `aLiveEventAlreadyInTheReplyIsNotListedTwice`). It is
-  `RecentActivity(50)`, loaded when the daemon appears or the folder changes, with each live
-  `ActivityAdded` put on top. Live events that arrive while a load is on its way are kept and, when
+  `ActivityLog.Recent(50)`, loaded when the daemon appears or the folder changes, with each live
+  `ActivityLog.Added` put on top. Live events that arrive while a load is on its way are kept and, when
   the answer lands, added to it if it lacks them — compared by (time, kind, path, detail) — so an
   event signalled before the daemon stored it is not lost. The other order is guarded separately:
-  the daemon stores an event before it signals it, so its `RecentActivity()` reply, if it happens to
+  the daemon stores an event before it signals it, so its `Recent()` reply, if it happens to
   be answered after the storing but before the client sees the matching signal, can already hold the
   event — `onActivityAdded` (`app/synccontroller.cpp`) checks the model before prepending a live
   event and drops it if the row is already there, so either order lists it once, not twice. Two
@@ -2767,16 +2767,16 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   (`removalThenFailureWithinTheGraceWindowGivesAnError`,
   `removalThenNothingGivesSuccessAfterTheGraceWindow`, and the trace in
   `crates/konedrived/src/sync/mod.rs` ~202). The real daemon usually drops a transfer from
-  `Transfers` *before* its failure is knowable: the tracked transfer is removed synchronously, so
-  `Transfers`' `PropertiesChanged` (the coalescer emits on the first change) goes out at once, while
-  `ActivityAdded(failed)` only follows the helper's `hydrate_done` round trip and `activity.record`.
+  `Transfers.Downloads` *before* its failure is knowable: the tracked transfer is removed synchronously, so
+  `Transfers.Downloads`' `PropertiesChanged` (the coalescer emits on the first change) goes out at once, while
+  `ActivityLog.Added(failed)` only follows the helper's `hydrate_done` round trip and `activity.record`.
   But the coalescer also sleeps 250 ms after each emission, so a failure fast enough can still reach
   the client before the removal does; this is not a rare corner, since 250 ms is on the same order
   as a quick local failure. So `DownloadProgressController` cannot finish a job the moment its path
-  leaves `Transfers`: it holds the job for a 1.5 s grace window (`RemovalGraceMs`) on the injected
-  clock; a `failed`/`update-failed` `ActivityAdded` naming that path inside the window fails the job
+  leaves `Transfers.Downloads`: it holds the job for a 1.5 s grace window (`RemovalGraceMs`) on the injected
+  clock; a `failed`/`update-failed` `ActivityLog.Added` naming that path inside the window fails the job
   with the reason, and the window elapsing without one finishes it as a plain success. An
-  `ActivityAdded` for a path whose job is still active (has not left `Transfers`) still fails it at
+  `ActivityLog.Added` for a path whose job is still active (has not left `Transfers.Downloads`) still fails it at
   once — this is not merely kept for robustness, it is the real daemon's other order, made possible
   by the coalescer's 250 ms sleep. 1.5 s is a guess, not measured against the real daemon's actual
   gap between the two signals; a failure slower than that still shows as finished. A failure that
@@ -2840,26 +2840,26 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   and only while no account is called that (`suggestedLabel`, unused by Sign In itself now).
 - **A15. Sign In is several calls in a row, not one.** WORKAROUND · measured
   (`addingSetsTheClientIdAddsChoosesAndSignsIn`, `aRefusedAddSaysWhy`). "Sign in…" is
-  `Accounts1.SetClientId` (only when no client ID is set yet), `Accounts1.Add` with a temporary
-  label ("Signing in…"), `Account1.BeginSignIn` on the new account, whose URL opens in the browser,
-  and, once its sign-in succeeds, `Account1.SetLabel` with the account's email. Nothing makes these
+  `Accounts.SetClientId` (only when no client ID is set yet), `Accounts.Add` with a temporary
+  label ("Signing in…"), `Account.BeginSignIn` on the new account, whose URL opens in the browser,
+  and, once its sign-in succeeds, `Account.SetLabel` with the account's email. Nothing makes these
   one transaction: a failure part way keeps what already succeeded — a saved client ID with no
   account, for one that never reached `Add`. From `Add` on, the account is a draft
   (`AccountsModel::m_draftPath`/`m_hiddenDrafts`): kept out of the model, so the switcher, the tray,
   Places and notifications never see it, until it is signed in and renamed. If the sign-in is
   cancelled, fails, or the dialog is closed, or its email is already another account's label
   (`AccountsModel::emailAlreadyUsed`, shown as "This account is already added"), the draft is
-  removed (`Accounts1.Remove`) and nothing is left. A draft still there at the next start — an
+  removed (`Accounts.Remove`) and nothing is left. A draft still there at the next start — an
   earlier run crashed mid sign-in — is found by its temporary label and removed the same way
   (`AccountsModel::probe`).
 - **A16. The upload switch keeps its own "waiting for sign-in"; the client ID is one for all.**
   FRAGILE · measured (`accountcontrollertest`: `aSwitchToReadWriteWaitsForItsSignIn`,
   `aRefusedSwitchSaysWhyInPlainWords`, `aSwitchToReadOnlyAsksBeforeDroppingUploads`;
   `dialogstest::theUploadSwitch`). The Account page's "Upload changes made on this computer" shows
-  `Account1.Mode`, the mode the account runs in: on is read-write, so a read-write account whose
+  `Account.Mode`, the mode the account runs in: on is read-write, so a read-write account whose
   token lost `Files.ReadWrite` shows off, with `LastError` saying why (F61). Turned on, it first
   explains that a sign-in follows and what uploading means, then calls `SetMode("read-write",
-  false)` and opens the URL it answers, as Sign In does. `Account1` says nothing while that sign-in
+  false)` and opens the URL it answers, as Sign In does. `Account` says nothing while that sign-in
   waits (F64), so the window keeps the wait itself (`AccountController::modeSignInPending`, with
   "Copy Sign-In Link" and "Cancel", which calls `CancelSignIn`) and ends it as `konedrivectl account
   mode` does: `Mode` turning read-write, a `LastError` arriving (`SetMode` cleared it before it
@@ -2879,7 +2879,7 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   is not signed in and while a switch is under way. WORKAROUND: Kirigami Addons'
   `FormSwitchDelegate` writes `checked` back from its inner switch, which ends a binding on it, so
   the page writes the mode again on every change (`onUploadingChanged`). The client ID stays in
-  Settings, shared by every account (`Accounts1.ClientId`), and can be changed only while no
+  Settings, shared by every account (`Accounts.ClientId`), and can be changed only while no
   account is signed in or signing in, the daemon's own rule; the field says so. Open.
 - **A17. The tray sums up every account.** Decision · measured (`app/tests/appstatustest.cpp`:
   `theTrayShowsTheWorstStateAndALinePerAccount`, `theTrayMenuWithSeveralAccounts`,
@@ -2923,8 +2923,8 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
 - **A20. Held removals: the notification's baseline and its default.** Decision · measured
   against the fake daemon (`appstatustest::uploadsBlockedHeldAndPaused`,
   `notifiertest::heldDeletesNotifyWithRestoreAsTheDefault`, `synccontrollertest::theOutboxAndItsControls`).
-  The window follows `Sync1.HeldCount` for the tray's "needs attention", the Status page's "Restore
-  Them" and "Delete in OneDrive Too", and the `massDelete` notification; `Outbox()` is read only for
+  The window follows `UploadQueue.HeldCount` for the tray's "needs attention", the Status page's "Restore
+  Them" and "Delete in OneDrive Too", and the `massDelete` notification; `UploadQueue.Changes()` is read only for
   the Activity page's list (when a count changes, when `Paused` changes, or the page is shown),
   which shows the first 100 rows and "and N more". The notification fires when `HeldCount` rises from 0: the daemon's first
   answer after the app or the daemon starts only sets the baseline, so removals already held then
@@ -2967,7 +2967,7 @@ window's status, activity and conflicts, all read from `org.konedrive.Sync1` and
   today, or a date. Open.
 - **A24. What is kept back is shown by reason; files only where each needs something done, 20 at
   most.** LIMIT · measured (`kept_back::tests`, `dialogstest::thousandsKeptBackAreAFewLines`;
-  issue #20). The window no longer reads the whole outbox (`Outbox(0)`) or `NotUploaded()`: the
+  issue #20). The window no longer reads the whole outbox (`Changes(0)`) or `NotUploaded()`: the
   Not Uploaded page asks `NotUploadedSummary()` (one row per reason) and, for a reason that needs
   something done to each file, `NotUploadedFiles(reason, 20)` only when that reason is opened; the
   Activity page shows one "N changes wait to upload (size)" line and a link to Not Uploaded. So a
@@ -3076,6 +3076,14 @@ The RPM packages, `konedrive` and `konedrive-kde`, from `packaging/rpm/konedrive
   test says so on its output and passes without its check, as it did before. Tests that assumed
   btrfs's block allocation now read what the filesystem allocated (`st_blocks`). The tests that need
   root, and the VM suite, do not run in the workflow (#44).
+- **R11. A window or a Dolphin left open across the upgrade that renamed the D-Bus interfaces talks
+  to names that are gone.** LIMIT · reasoned · open. The interfaces lost their version suffix and
+  the account's one interface was split in six (`org.konedrive.Accounts`, `Files`, `Account`,
+  `Folder`, `Transfers`, `UploadQueue`, `Conflicts`, `LocalScan`, `ActivityLog`, `TokenExport`;
+  issue #78), with no old name kept alongside. The daemon is restarted by the upgrade, but a
+  KOneDrive window, a tray or a Dolphin started before it still asks for the old names: every call
+  is refused `UnknownInterface`, and the window reads the service as not running, until that program is restarted (log out and in, or quit and start it). Nothing in the
+  folder is touched.
 
 ---
 

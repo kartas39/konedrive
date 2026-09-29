@@ -1,6 +1,6 @@
 #include "daemoncontroller.h"
 
-#include "accounts1interface.h"
+#include "accountsinterface.h"
 
 #include <QDBusArgument>
 #include <QDBusError>
@@ -16,7 +16,7 @@
 
 const QString DaemonController::ServiceName = QStringLiteral("org.konedrive.Daemon");
 const QString DaemonController::ObjectPath = QStringLiteral("/org/konedrive/Accounts");
-const QString DaemonController::InterfaceName = QStringLiteral("org.konedrive.Accounts1");
+const QString DaemonController::InterfaceName = QStringLiteral("org.konedrive.Accounts");
 
 namespace
 {
@@ -42,7 +42,7 @@ DaemonController::DaemonController(QObject *parent)
 DaemonController::DaemonController(const QDBusConnection &bus, QObject *parent)
     : QObject(parent)
     , m_bus(bus)
-    , m_iface(new OrgKonedriveAccounts1Interface(ServiceName, ObjectPath, bus, this))
+    , m_iface(new OrgKonedriveAccountsInterface(ServiceName, ObjectPath, bus, this))
     , m_watcher(new QDBusServiceWatcher(ServiceName, bus, QDBusServiceWatcher::WatchForOwnerChange, this))
 {
     m_bus.connect(ServiceName,
@@ -105,7 +105,7 @@ void DaemonController::applyProperties(const QVariantMap &p)
     text("HelperState", m_helperState);
     text("LastError", m_lastError);
     Q_EMIT changed();
-    if (const auto it = p.constFind(QLatin1String("Accounts")); it != p.constEnd()) {
+    if (const auto it = p.constFind(QLatin1String("List")); it != p.constEnd()) {
         const QStringList accounts = objectPaths(*it);
         if (accounts != m_accounts) {
             m_accounts = accounts;

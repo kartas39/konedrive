@@ -9,11 +9,11 @@
 
 #include <functional>
 
-class OrgKonedriveAccounts1Interface;
+class OrgKonedriveAccountsInterface;
 class QDBusServiceWatcher;
 
 /// konedrived's manager object, /org/konedrive/Accounts
-/// (dbus/org.konedrive.Accounts1.xml): the accounts, in the order they were
+/// (dbus/org.konedrive.Accounts.xml): the accounts, in the order they were
 /// added; the client id every account signs in with; and the helper, which
 /// serves every account. Never blocks the GUI thread.
 class DaemonController : public QObject
@@ -68,7 +68,7 @@ public:
     bool removeNeedsHelper() const { return m_removeNeedsHelper; }
     bool removeWaitsForUploads() const { return m_removeWaitsForUploads; }
 
-    /// Re-reads every Accounts1 property (GetAll).
+    /// Re-reads every Accounts property (GetAll).
     Q_INVOKABLE void retry();
     Q_INVOKABLE void setClientId(const QString &id);
     /// SetClientId, then `done`; or `failed` with the daemon's reason. Leaves actionError alone.
@@ -98,7 +98,7 @@ private:
     void watch(const QDBusPendingCall &pending, std::function<void()> done, std::function<void(const QString &)> failed);
 
     QDBusConnection m_bus;
-    OrgKonedriveAccounts1Interface *m_iface;
+    OrgKonedriveAccountsInterface *m_iface;
     QDBusServiceWatcher *m_watcher;
     bool m_serviceAvailable = false;
     QStringList m_accounts;

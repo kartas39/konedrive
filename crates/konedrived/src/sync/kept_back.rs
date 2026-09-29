@@ -97,7 +97,7 @@ pub fn group_of(key: &str) -> Group {
 /// they are: blocked, or waiting (or in backoff) with a reason; ready but
 /// waiting for space (`waiting-for-space`, `too-big:…`); and, while OneDrive
 /// is `full`, a change that sends content and says nothing else waits for
-/// space, as `Outbox()` shows it. Held removals have their own question (the
+/// space, as `Changes()` shows it. Held removals have their own question (the
 /// mass-delete guard), and a row running is not kept back.
 pub fn kept_reason(kind: OutboxKind, state: OutboxState, reason: Option<&str>, full: bool) -> Option<String> {
     let said = reason.filter(|r| !r.is_empty()).map(str::to_owned);

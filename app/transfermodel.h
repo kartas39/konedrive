@@ -4,7 +4,7 @@
 
 #include <QAbstractListModel>
 
-/// The downloads under way (Sync1's Transfers), one row per file. Rows are
+/// The downloads under way (Transfers.Downloads), one row per file. Rows are
 /// kept by path: a download that goes on is updated in place, so a progress
 /// bar in the window moves instead of being rebuilt.
 class TransferModel : public QAbstractListModel

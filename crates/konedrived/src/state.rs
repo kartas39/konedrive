@@ -28,13 +28,13 @@ pub struct AccountSnapshot {
     pub state: SignInState,
     pub last_error: String,
     pub client_id: String,
-    /// `Account1.Label`: what the account is called here, as `config.toml` keeps it.
+    /// `Account.Label`: what the account is called here, as `config.toml` keeps it.
     pub label: String,
     pub display_name: String,
     pub email: String,
     pub quota_used: u64,
     pub quota_total: u64,
-    /// `Account1.Mode`: the mode the account runs in (`docs/design/writes.md` §2) — read-write only
+    /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2) — read-write only
     /// while `config.toml` says so, the gate lets its drive through, and `granted_scopes`
     /// carries `Files.ReadWrite`. The account's folder follows it
     /// (`crate::sync::write_mode::follow`).
@@ -45,10 +45,10 @@ pub struct AccountSnapshot {
     pub granted_scopes: String,
     /// What the last token was valid for when that was more than a read-only request asked
     /// for: consent Microsoft still holds (limitations log F66). Such a token is used to read
-    /// only, `Dev1` hands it out to nobody, and `LastError` says so. Empty otherwise.
+    /// only, `TokenExport` hands it out to nobody, and `LastError` says so. Empty otherwise.
     pub wider_grant: String,
     /// The drive the account's token was last seen to reach (`GET /me/drive` at a sign-in,
-    /// at `RefreshAccountInfo`, or for `Dev1.ReadWriteAccessToken`). The account is
+    /// at `RefreshInfo`, or for `TokenExport.ReadWrite`). The account is
     /// read-write only while it is the drive `config.toml` records.
     pub live_drive: String,
 }

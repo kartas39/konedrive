@@ -2,7 +2,7 @@ mod common;
 
 use std::time::Duration;
 
-use konedrive_dbus::accounts::{Account1Proxy, Accounts1Proxy};
+use konedrive_dbus::accounts::{AccountProxy, AccountsProxy};
 use konedrive_dbus::testing::TestBus;
 
 const CLIENT_ID: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -20,15 +20,15 @@ async fn wait_for_sign_in_reports_cancellation_promptly() {
     // The "driving" client: adds the account, sets up the client ID and later cancels the
     // sign-in.
     let driver = bus.connect().await;
-    let manager = Accounts1Proxy::new(&driver).await.unwrap();
+    let manager = AccountsProxy::new(&driver).await.unwrap();
     let path = manager.add("Personal").await.unwrap();
-    let driver_proxy = Account1Proxy::new(&driver, path.clone()).await.unwrap();
+    let driver_proxy = AccountProxy::new(&driver, path.clone()).await.unwrap();
     manager.set_client_id(CLIENT_ID).await.unwrap();
 
     // A second, independent client: this is the one that polls, uncached, exactly as
     // `konedrivectl login` does.
     let waiter = bus.connect().await;
-    let waiter_proxy = Account1Proxy::builder(&waiter)
+    let waiter_proxy = AccountProxy::builder(&waiter)
         .path(path)
         .unwrap()
         .cache_properties(zbus::proxy::CacheProperties::No)

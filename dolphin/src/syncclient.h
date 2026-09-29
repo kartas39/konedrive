@@ -2,7 +2,7 @@
 // without ever waiting for it.
 //
 // Pin, Unpin and FreeUp each take the whole selection in one D-Bus call
-// (Files1's `Pin(as) -> u`, `Unpin(as) -> u` and `FreeUp(as) -> (u,t,u,u)`
+// (the Files interface's `Pin(as) -> u`, `Unpin(as) -> u` and `FreeUp(as) -> (u,t,u,u)`
 // at `/org/konedrive/Accounts`, routed by path to the right account), unlike
 // the old per-file Hydrate/Dehydrate this replaced: one call, one
 // aggregate answer. The call

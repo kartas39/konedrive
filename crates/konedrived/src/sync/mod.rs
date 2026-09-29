@@ -1,8 +1,8 @@
 //! Everything this sub-project adds to the daemon: the helper link, the
-//! content source, the hydration loop, and `SyncService` — the `org.konedrive.Sync1`
+//! content source, the hydration loop, and `SyncService` — the `org.konedrive.Folder`
 //! D-Bus surface's own half of the work (`dbus.rs` is the thin zbus wrapper
 //! around it, the same split `crate::account`/`crate::dbus` uses for
-//! `Account1`). There is one `SyncService` per account; the helper link, its
+//! `Account`). There is one `SyncService` per account; the helper link, its
 //! supervisor and the per-inode locks are the daemon's, in `hub.rs`.
 
 pub mod activity;
@@ -500,13 +500,13 @@ pub struct InodeGuard {
     _row: Row,
 }
 
-// --- `org.konedrive.Sync1`'s own half of the work ------------------------
+// --- the folder's interfaces' own half of the work ------------------------
 //
 // `dbus.rs` is the thin zbus wrapper (the same split `crate::account` /
-// `crate::dbus` uses for `Account1`); everything that actually does
+// `crate::dbus` uses for `Account`); everything that actually does
 // something lives here, so it can be exercised without a bus at all.
 
-/// What `RootState` reports.
+/// What `Folder.State` reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RootState {
     /// No root is registered.
@@ -515,7 +515,7 @@ pub enum RootState {
     Ready,
     /// A root is registered, but **nothing intercepts opens inside it**
     ///: it was registered through
-    /// `RegisterRootWithoutInterception`, so a placeholder nobody fills
+    /// `RegisterWithoutInterception`, so a placeholder nobody fills
     /// reads as zeros until it is hydrated by hand. Distinct from `ready`
     /// precisely because a client must be able to tell the two apart. A
     /// folder registered that way because no helper was connected leaves
@@ -540,7 +540,7 @@ impl RootState {
 
 /// The observable sync state; `sync::dbus` turns changes into
 /// `PropertiesChanged`, exactly as `state::AccountSnapshot` does for
-/// `Account1`.
+/// `Account`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncSnapshot {
     pub root_path: String,
@@ -561,7 +561,7 @@ pub struct SyncSnapshot {
     /// `LocalBytes`: what the folder's files take on disk, as last measured
     /// (`activity::LocalSpace`).
     pub local_bytes: u64,
-    /// `ConflictCount`: conflicts whose rescued file is still there.
+    /// `Conflicts.Count`: conflicts whose rescued file is still there.
     pub conflict_count: u32,
     /// `PinnedCount`: files and folders with a pin of their own
     /// ([`pin::Pins`]).
@@ -598,16 +598,16 @@ pub struct SyncSnapshot {
     /// `Paused` and `PausedUntil`: `Some(until)` while paused, unix seconds,
     /// 0 meaning until resumed (`outbox_api`).
     pub paused_until: Option<i64>,
-    /// `Uploads`: (full path, bytes sent, bytes in all), as `Transfers`.
+    /// `Transfers.Uploads`: (full path, bytes sent, bytes in all), as `Downloads`.
     pub uploads: Vec<(String, u64, u64)>,
     /// `QuotaFull`: OneDrive is full and no content goes up (issue #2).
     pub quota_full: bool,
-    /// `QuotaState` and `FreeSpace`: Graph's `quota.state` and
+    /// `QuotaState` and `QuotaRemaining`: Graph's `quota.state` and
     /// `quota.remaining` as last read (less what went up since); empty and 0
     /// until a read.
     pub quota_state: String,
     pub free_space: u64,
-    /// `SpaceWaitingCount`, `SpaceWaitingBytes`: while full, the changes
+    /// `QuotaWaitingCount`, `QuotaWaitingBytes`: while full, the changes
     /// that send content; `TooBigCount`: files too big for the space left.
     pub space_waiting_count: u32,
     pub space_waiting_bytes: u64,
@@ -615,7 +615,7 @@ pub struct SyncSnapshot {
     /// Their size: not on the bus, but taken off what is left to upload ([`totals`]).
     pub too_big_bytes: u64,
     /// `DownloadSpeed`, `UploadSpeed`, `ActiveDownloads`, `ActiveUploads`, `PoolSize`,
-    /// `PoolCeiling`, `LargeTransfers`, `LargeLimit`, `RetryAfter`: the account's transfer
+    /// `PoolCeiling`, `LargeStreams`, `LargeStreamLimit`, `RetryAfter`: the account's transfer
     /// pool, once a second while anything moves or a `Retry-After` runs.
     pub throughput: crate::pool::Throughput,
     /// The pinned files waiting to download (not those under way), and their size
@@ -624,8 +624,8 @@ pub struct SyncSnapshot {
     /// `DownloadLeftCount`, `DownloadLeftBytes`, `DownloadDoneBytes`, `DownloadTimeLeft` and
     /// the same four for uploads: counted from the rest by [`totals::run`].
     pub queue: totals::QueueTotals,
-    /// `ScanState`, `ScanReason`, `ScanStarted`, `ScanDirectories`, `ScanFiles`,
-    /// `ScanExpected`, `ScanFinished`, `ScanTook`: the Full local scan (issue #8).
+    /// `LocalScan`'s `State`, `Reason`, `Started`, `Directories`, `Files`,
+    /// `Expected`, `Finished`, `Took`: the Full local scan (issue #8).
     pub scan: local_scan::LocalScan,
 }
 
@@ -747,7 +747,7 @@ pub fn published_state(s: &SyncSnapshot) -> &'static str {
 /// `LastError` as published: what the helper's absence means, the
 /// registration's text, the sync's and the replacement note, in that order
 /// — problems only. Where local work was moved out of the way is a conflict
-/// (`Conflicts()`, `ConflictCount`), not a problem, and is not said here
+/// (`Conflicts.List()`, `Conflicts.Count`), not a problem, and is not said here
 ///: said here, it stayed until a Forget, and a folder that
 /// ever had a conflict read as trouble for good.
 ///
@@ -772,7 +772,7 @@ pub fn published_error(s: &SyncSnapshot) -> String {
 }
 
 /// Shared, observable sync state (see `state::StateHandle`, the same shape
-/// for `Account1`).
+/// for `Account`).
 #[derive(Clone)]
 pub struct SyncStateHandle {
     tx: Arc<watch::Sender<SyncSnapshot>>,
@@ -807,7 +807,7 @@ impl SyncStateHandle {
     }
 }
 
-/// Everything `Sync1` can refuse, flattened from `RegisterError` and
+/// Everything the folder can refuse, flattened from `RegisterError` and
 /// `DehydrateError` plus the failures that only exist at this layer (no
 /// root registered, no helper connected, a path outside the root).
 #[derive(Debug, thiserror::Error)]
@@ -831,7 +831,7 @@ pub enum SyncError {
     #[error("not a plain file inside this sync root")]
     OutsideRoot,
     /// A folder that remembers another account's drive (design §8.3);
-    /// `Sync1` answers it `NotEmpty`.
+    /// `Folder` answers it `NotEmpty`.
     #[error("this folder holds another OneDrive account's files; choose an empty folder")]
     ForeignFolder,
     /// A folder that is, is inside, or contains another account's folder
@@ -857,7 +857,7 @@ pub enum SyncError {
     /// An argument no value of which makes sense (`SetIgnorePatterns`).
     #[error("{0}")]
     InvalidArgs(String),
-    /// A Forget, or `Accounts1.Remove`, while changes wait to be uploaded:
+    /// A Forget, or `Accounts.Remove`, while changes wait to be uploaded:
     /// the tree store holding them would go. The message says how many, and what to do.
     #[error("{0}")]
     PendingUploads(String),
@@ -904,7 +904,7 @@ impl From<DehydrateError> for SyncError {
 
 /// One account's folder: registration, the manual `PopulateFromDirectory`
 /// fill, and per-file hydrate/dehydrate/state — what that account's
-/// `org.konedrive.Sync1` exposes, and what `org.konedrive.Files1` routes to it.
+/// `org.konedrive.Folder` and its sibling interfaces expose, and what `org.konedrive.Files` routes to it.
 ///
 /// # Why `hydrate_now` fills directly rather than only through interception
 ///
@@ -1036,7 +1036,7 @@ pub struct SyncService {
     /// does a turn to read-only drop anything.
     drop_at_read_only: std::sync::atomic::AtomicBool,
     /// The account was switched to read-write, and the watcher that follows has not started
-    /// yet: its Full local scan says so (`Sync1.ScanReason`).
+    /// yet: its Full local scan says so (`LocalScan.Reason`).
     switched_to_read_write: std::sync::atomic::AtomicBool,
     /// Works the account's mode out again when the write gate closes under the outbox worker
     /// ([`set_mode_check`](Self::set_mode_check)). None in tests.
@@ -1078,7 +1078,7 @@ struct Syncing {
 struct Registration {
     root: SyncRoot,
     /// False only for a root registered through
-    /// `RegisterRootWithoutInterception`.
+    /// `RegisterWithoutInterception`.
     intercepted: bool,
     /// Whether its last recovery left interrupted files as found because a
     /// helper was running that this daemon had no link to, so
@@ -1519,7 +1519,7 @@ impl SyncService {
     }
 
     /// No registration, bring-up or switch for this account from now on
-    /// (`Accounts1.Remove`). Called with `lifecycle` held for writing.
+    /// (`Accounts.Remove`). Called with `lifecycle` held for writing.
     fn retire_locked(&self) {
         *self.held.lock().unwrap() = Some("this account is being removed".into());
     }
@@ -1632,7 +1632,7 @@ impl SyncService {
     }
 
     /// Registers `path`, recovers it, and publishes the result — the half
-    /// shared by a `RegisterRoot` call, a `RegisterRootWithoutInterception`
+    /// shared by a `RegisterRoot` call, a `RegisterWithoutInterception`
     /// call, and a root brought back up at startup or after the helper
     /// reconnected. `fresh` is true for the first two: a registration the
     /// daemon did not hold before this call.
@@ -1656,7 +1656,7 @@ impl SyncService {
     /// # Whatever the helper holds, the daemon holds (link 2)
     ///
     /// A folder the helper holds and the daemon does not is a folder the
-    /// daemon will accept for `RegisterRootWithoutInterception` — and then
+    /// daemon will accept for `RegisterWithoutInterception` — and then
     /// free up files in with no `ClearIgnore`, while the helper still has
     /// them ignore-marked. So a fresh intercepted registration:
     ///
@@ -2037,7 +2037,7 @@ impl SyncService {
         self.forget(false).await
     }
 
-    /// `Accounts1.Remove`'s first step: the folder forgotten exactly as
+    /// `Accounts.Remove`'s first step: the folder forgotten exactly as
     /// [`unregister_root`](Self::unregister_root) forgets it — refused under
     /// the same rule — and, under the same `lifecycle` lock so that nothing
     /// comes in between, the account retired: no registration, bring-up or
@@ -2533,7 +2533,7 @@ impl SyncService {
     /// came back and the bind succeeded: in between — the start of every
     /// session, and a D-Bus-activated first call in particular — the daemon
     /// held no root, `RootState` said `none`, and
-    /// `RegisterRootWithoutInterception` of the very folder the helper still
+    /// `RegisterWithoutInterception` of the very folder the helper still
     /// held, marks, ignore marks and all, was accepted. Measured in the VM
     /// suite: the next dehydration there punched a file that was still
     /// ignored, and it read 65536 zero bytes. Held, it answers what an
@@ -3330,7 +3330,7 @@ impl SyncService {
 
     /// What `Unpin` and `FreeUp` check of every path before they change
     /// anything, on its own: each path is in the folder and one of ours, and
-    /// no folder above it pins it and stays pinned (`NotAllowed`). `Files1`
+    /// no folder above it pins it and stays pinned (`NotAllowed`). `Files`
     /// asks every account whose folder a call's paths are in first, so that
     /// a call that spans accounts is refused as a whole or not at all.
     pub async fn check_unpinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
@@ -3343,7 +3343,7 @@ impl SyncService {
     }
 
     /// What `Pin` checks of every path before it pins any, on its own: each
-    /// path is in the folder, and one of ours. `Files1` asks every account
+    /// path is in the folder, and one of ours. `Files` asks every account
     /// first, as for [`check_unpinnable`](Self::check_unpinnable).
     pub async fn check_pinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
         let reg = self.require_registration()?;
@@ -3541,7 +3541,7 @@ impl SyncService {
         Ok((before.saturating_sub(blocks(&probe)) * 512, shown))
     }
 
-    /// `RecentActivity(limit)`: the newest `limit` events, newest first.
+    /// `ActivityLog.Recent(limit)`: the newest `limit` events, newest first.
     pub async fn recent_activity(&self, limit: u32) -> Result<Vec<activity::Event>, SyncError> {
         let report = self.report.clone();
         tokio::task::spawn_blocking(move || report.activity.recent(limit as usize))
@@ -3550,7 +3550,7 @@ impl SyncService {
             .map_err(|e| SyncError::Io(e.to_string()))
     }
 
-    /// `Conflicts()`: (time, original, rescued), newest first; one whose
+    /// `Conflicts.List()`: (time, original, rescued), newest first; one whose
     /// rescued file is gone is dropped on the way.
     pub async fn conflicts(&self) -> Result<Vec<crate::tree::ConflictRow>, SyncError> {
         let report = self.report.clone();
@@ -3560,7 +3560,7 @@ impl SyncService {
             .map_err(|e| SyncError::Io(e.to_string()))
     }
 
-    /// `DismissConflict(rescued_path)`: the conflict comes off the list, and
+    /// `Conflicts.Dismiss(rescued_path)`: the conflict comes off the list, and
     /// the file stays where it is. A path that names no conflict is refused
     /// with that path in the refusal.
     pub async fn dismiss_conflict(&self, rescued: &str) -> Result<(), SyncError> {
@@ -3576,7 +3576,7 @@ impl SyncService {
         }
     }
 
-    /// `LastChecked`, `LocalBytes`, `ConflictCount`.
+    /// `LastChecked`, `LocalBytes`, `Conflicts.Count`.
     pub fn status(&self) -> (i64, u64, u32) {
         let s = self.state.get();
         (s.last_checked, s.local_bytes, s.conflict_count)
@@ -7602,7 +7602,7 @@ mod tests {
     /// The route into no-interception mode that H133 alone leaves open. A
     /// root restored from `config.toml` used to exist nowhere in the daemon
     /// until the helper came back — `resume` returned early — so
-    /// `RegisterRootWithoutInterception` of the very folder the helper still
+    /// `RegisterWithoutInterception` of the very folder the helper still
     /// held (marks, ignore marks and all) was accepted, and the next
     /// dehydration there punched files that were still ignored. Measured in
     /// the VM suite: 65536 zero bytes. The root is held as registered now,
@@ -7846,7 +7846,7 @@ mod tests {
     }
 
     /// The deterministic form of a D-Bus-activated first call: the bus name
-    /// is claimed before `resume` runs, so a `RegisterRootWithoutInterception`
+    /// is claimed before `resume` runs, so a `RegisterWithoutInterception`
     /// can reach a restarted daemon before anything has looked at
     /// `config.toml`. It must find the restored root all the same.
     #[tokio::test]
@@ -8968,7 +8968,7 @@ mod tests {
                 }
             })
             .await
-            .expect("ActivityAdded for the upload");
+            .expect("ActivityLog.Added for the upload");
             assert_eq!(event.path, file.display().to_string());
             wait_until("the outbox counted empty", || service.state().get().pending_count == 0).await;
             assert!(service.state().get().uploads.is_empty());
@@ -9012,7 +9012,7 @@ mod tests {
             restarted.stop_sync().await;
         }
 
-        /// the outbox on the bus: the outbox as the bus shows it — `Outbox()`, `NotUploaded()`, the
+        /// the outbox on the bus: the outbox as the bus shows it — `Changes()`, `NotUploaded()`, the
         /// mass-delete guard's two answers — and a free-up of a file whose change
         /// waits to be uploaded, refused `NotUploaded`.
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -9080,7 +9080,7 @@ mod tests {
 
         /// Issue #38: while an examination's apply holds the store, the bus still
         /// answers at once — the counts and the Not Uploaded summary from memory,
-        /// `Outbox()` and `NotUploadedFiles()` through the read-only connection.
+        /// `Changes()` and `NotUploadedFiles()` through the read-only connection.
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn the_bus_answers_while_the_store_is_held() {
             use crate::tree::outbox::{Base, Detection, OutboxKind, OutboxState};
@@ -9438,7 +9438,7 @@ mod tests {
             a_switch_nobody_forced_keeps_the_changes(true).await;
         }
 
-        /// A Forget — and so `Accounts1.Remove`, which forgets first — is
+        /// A Forget — and so `Accounts.Remove`, which forgets first — is
         /// refused `PendingUploads` while changes wait to be uploaded, and changes nothing; once
         /// a forced switch to read-only has dropped them, it goes through.
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

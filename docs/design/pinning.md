@@ -71,7 +71,7 @@ compare as Dolphin sorts them: lower-cased, and a run of digits as a number (`fi
 
 Each download goes through the ordinary fill path, `SyncService::fill_now` — the same as
 `Hydrate`: opened beneath the root, taken under the per-inode lock, verified against OneDrive's
-hash, checkpointed, shown in `Transfers` while it runs, and recorded as `downloaded` or `failed`
+hash, checkpointed, shown in `Transfers.Downloads` while it runs, and recorded as `downloaded` or `failed`
 in the activity log. Each takes a background slot of the account's transfer pool
 ([hydration.md](hydration.md) §6.4), so an open never waits behind a big pinned folder. A large
 file (100 MiB and up, by its placeholder's size) also waits for the pool's large-file limit; small
@@ -84,7 +84,7 @@ at once ([hydration.md](hydration.md) §7.5): its own slot is its first stream's
 stream for each large slot that is free and that nothing waits for, sharing them evenly with the
 other large files in parts — one large file alone runs in up to 4 streams (`[transfers] large`),
 two in 2 each, four or more in 1 each. An extra stream gives its slot back after its piece when a
-file in the queue, a small file or an upload waits for one. The file shows once in `Transfers`,
+file in the queue, a small file or an upload waits for one. The file shows once in `Transfers.Downloads`,
 with its overall progress.
 
 Just before a queued file is downloaded, the queue asks again whether it is still pinned. A file
@@ -179,16 +179,16 @@ after that cycle.
 
 | Member | Interface | Signature | Meaning |
 |---|---|---|---|
-| `Pin(paths)` | `Files1` | `as → u queued` | Pins each path (§3); how many files this call queued for download |
-| `Unpin(paths)` | `Files1` | `as → u unpinned` | Takes each path's own pin off, and nothing else (§5); how many came off |
-| `FreeUp(paths)` | `Files1` | `as → (u files, t bytes, u busy, u skipped_pinned)` | Frees up each path (§5) |
-| `PinnedCount` | `Sync1` | `u`, read | How many files and folders in the account's folder carry a pin of their own |
+| `Pin(paths)` | `Files` | `as → u queued` | Pins each path (§3); how many files this call queued for download |
+| `Unpin(paths)` | `Files` | `as → u unpinned` | Takes each path's own pin off, and nothing else (§5); how many came off |
+| `FreeUp(paths)` | `Files` | `as → (u files, t bytes, u busy, u skipped_pinned)` | Frees up each path (§5) |
+| `PinnedCount` | `Folder` | `u`, read | How many files and folders in the account's folder carry a pin of their own |
 
-`Pin`, `Unpin` and `FreeUp` are on `org.konedrive.Files1` at `/org/konedrive/Accounts`: each path
+`Pin`, `Unpin` and `FreeUp` are on `org.konedrive.Files` at `/org/konedrive/Accounts`: each path
 is routed to the account whose folder holds it, and one call may span several accounts' folders.
 Every path is routed, and for `Unpin` and `FreeUp` every path checked for a pin by a folder above
 it, before any account changes anything; the counts are summed over the accounts
-([accounts.md](accounts.md) §3.5). `PinnedCount` is each account's, on its `org.konedrive.Sync1`.
+([accounts.md](accounts.md) §3.5). `PinnedCount` is each account's, on its `org.konedrive.Folder`.
 
 `PinnedCount` travels in the coalesced `PropertiesChanged` with the other status properties
 ([desktop.md](desktop.md) §2.4). `NotAllowed` is a named error (`org.konedrive.Error.NotAllowed`)
@@ -198,7 +198,7 @@ the folder that pins it, in a fixed shape: `<path> is pinned by <folder>: unpin 
 ## 8. The command line
 
 The three commands take paths in any account's folder, and one call may name paths in several:
-they go through `Files1`, the paths decide the accounts, and `--account` is refused.
+they go through `Files`, the paths decide the accounts, and `--account` is refused.
 
 - `konedrivectl sync pin <paths…>` — says how many files are downloading now.
 - `konedrivectl sync unpin <paths…>` — takes the pins off; what is downloaded stays.

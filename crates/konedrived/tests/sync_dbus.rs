@@ -1,7 +1,8 @@
-//! End-to-end tests for `org.konedrive.Sync1`, over a private test bus, the
-//! way `tests/dbus_api.rs` exercises `org.konedrive.Account1`: one account's
-//! `Sync1` at `/org/konedrive/Accounts/<id>`, and the per-file calls through
-//! `org.konedrive.Files1`, routed by path. No fanotify is involved: a fake
+//! End-to-end tests for the interfaces of an account's folder (`org.konedrive.Folder`,
+//! `Transfers`, `UploadQueue`, `Conflicts`, `LocalScan`, `ActivityLog`), over a private
+//! test bus, the way `tests/dbus_api.rs` exercises `org.konedrive.Account`: one account's
+//! folder at `/org/konedrive/Accounts/<id>`, and the per-file calls through
+//! `org.konedrive.Files`, routed by path. No fanotify is involved: a fake
 //! helper thread speaks the wire protocol and acknowledges everything, but
 //! never actually marks anything or sends a `HydrateRequest` — see
 //! `konedrived::sync::SyncService`'s own doc comment for why `Hydrate()` does
@@ -22,9 +23,16 @@ use std::time::Duration;
 
 use common::{introspect, signature_lines, start_daemon};
 use futures_util::StreamExt;
-use konedrive_dbus::accounts::{Accounts1Proxy, Dev1Proxy, Files1Proxy, Sync1Proxy};
+use konedrive_dbus::accounts::{
+    AccountsProxy, ActivityLogProxy, ConflictsProxy, FilesProxy, FolderProxies, FolderProxy, LocalScanProxy,
+    TokenExportProxy,
+};
 use konedrive_dbus::testing::TestBus;
-use konedrive_dbus::{error_name, ACCOUNTS_INTERFACE_NAME, ACCOUNTS_PATH, SERVICE_NAME, SYNC_INTERFACE_NAME};
+use konedrive_dbus::{
+    error_name, ACCOUNTS_INTERFACE_NAME, ACCOUNTS_PATH, ACTIVITY_LOG_INTERFACE_NAME, CONFLICTS_INTERFACE_NAME,
+    FOLDER_INTERFACE_NAME, LOCAL_SCAN_INTERFACE_NAME, SERVICE_NAME, TOKEN_EXPORT_INTERFACE_NAME, TRANSFERS_INTERFACE_NAME,
+    UPLOAD_QUEUE_INTERFACE_NAME,
+};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use konedrived::oauth::Endpoints;
 use konedrived::secret::MemoryWallet;
@@ -36,15 +44,27 @@ use nix::sys::socket::{
 };
 use zbus::zvariant::OwnedObjectPath;
 
-const XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Sync1.xml"));
-const DEV_XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Dev1.xml"));
+/// Each interface of the account's object but `Account`'s (`tests/dbus_api.rs`), with its
+/// checked-in definition.
+const XML: [(&str, &str); 7] = [
+    (FOLDER_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Folder.xml"))),
+    (TRANSFERS_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Transfers.xml"))),
+    (UPLOAD_QUEUE_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.UploadQueue.xml"))),
+    (CONFLICTS_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Conflicts.xml"))),
+    (LOCAL_SCAN_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.LocalScan.xml"))),
+    (ACTIVITY_LOG_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.ActivityLog.xml"))),
+    (TOKEN_EXPORT_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.TokenExport.xml"))),
+];
 
 struct Setup {
-    /// The account's `Sync1`.
-    proxy: Sync1Proxy<'static>,
+    /// The account's folder.
+    folder: FolderProxy<'static>,
+    conflicts: ConflictsProxy<'static>,
+    scan: LocalScanProxy<'static>,
+    activity: ActivityLogProxy<'static>,
     /// The per-file calls.
-    files: Files1Proxy<'static>,
-    manager: Accounts1Proxy<'static>,
+    files: FilesProxy<'static>,
+    manager: AccountsProxy<'static>,
     /// The account's object.
     path: OwnedObjectPath,
     client: zbus::Connection,
@@ -153,22 +173,20 @@ async fn setup_with_helper(with_helper: bool) -> Setup {
     // what `konedrivectl` uses — would answer some of these assertions from
     // the value it cached before the change, which is a property of the
     // proxy, not of the daemon this file is about.
-    let proxy = Sync1Proxy::builder(&client)
-        .path(added.path.clone())
-        .unwrap()
-        .cache_properties(zbus::proxy::CacheProperties::No)
-        .build()
-        .await
-        .unwrap();
-    let files = Files1Proxy::new(&client).await.unwrap();
-    let manager = Accounts1Proxy::builder(&client)
+    let FolderProxies { folder, conflicts, scan, activity, .. } =
+        FolderProxies::uncached(&client, added.path.clone()).await.unwrap();
+    let files = FilesProxy::new(&client).await.unwrap();
+    let manager = AccountsProxy::builder(&client)
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await
         .unwrap();
     let dir = tempfile::tempdir().unwrap();
     Setup {
-        proxy,
+        folder,
+        conflicts,
+        scan,
+        activity,
         files,
         manager,
         path: added.path.clone(),
@@ -199,10 +217,10 @@ async fn registering_an_empty_folder_makes_it_the_root() {
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
 
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.folder.register(root.to_str().unwrap()).await.unwrap();
 
-    assert_eq!(f.proxy.root_path().await.unwrap(), root.to_str().unwrap());
-    assert_eq!(f.proxy.root_state().await.unwrap(), "ready");
+    assert_eq!(f.folder.path().await.unwrap(), root.to_str().unwrap());
+    assert_eq!(f.folder.state().await.unwrap(), "ready");
     assert!(
         xattr::get(&root, "user.konedrive.root").unwrap().is_some(),
         "the root must be stamped with its id"
@@ -216,9 +234,9 @@ async fn a_non_empty_folder_is_refused_with_a_useful_error() {
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("stray.txt"), b"x").unwrap();
 
-    let name = refusal(f.proxy.register_root(root.to_str().unwrap()).await);
+    let name = refusal(f.folder.register(root.to_str().unwrap()).await);
     assert_eq!(name, "org.konedrive.Error.NotEmpty");
-    assert_eq!(f.proxy.root_state().await.unwrap(), "none");
+    assert_eq!(f.folder.state().await.unwrap(), "none");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -230,9 +248,9 @@ async fn populate_from_directory_mirrors_the_tree_as_placeholders() {
     std::fs::write(source.join("sub/b.bin"), vec![2u8; 100]).unwrap();
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.folder.register(root.to_str().unwrap()).await.unwrap();
 
-    let created = f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+    let created = f.folder.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     assert_eq!(created, 2);
 
     use std::os::unix::fs::MetadataExt;
@@ -260,8 +278,8 @@ async fn hydrate_then_dehydrate_round_trips_one_file() {
     std::fs::write(source.join("doc.bin"), vec![7u8; 8192]).unwrap();
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
-    f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+    f.folder.register(root.to_str().unwrap()).await.unwrap();
+    f.folder.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     let file = root.join("doc.bin");
 
     f.files.hydrate(file.to_str().unwrap()).await.unwrap();
@@ -277,7 +295,7 @@ async fn hydrate_then_dehydrate_round_trips_one_file() {
 }
 
 /// Over the bus: a download is announced as it happens
-/// (`ActivityAdded`), kept (`RecentActivity`), and `FreeUpSpace` answers
+/// (`ActivityLog.Added`), kept (`ActivityLog.Recent`), and `FreeUpSpace` answers
 /// (files, bytes, busy) in three out arguments.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_download_is_announced_kept_and_freed_up_again() {
@@ -287,26 +305,26 @@ async fn a_download_is_announced_kept_and_freed_up_again() {
     std::fs::write(source.join("doc.bin"), vec![7u8; 8192]).unwrap();
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
-    f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+    f.folder.register(root.to_str().unwrap()).await.unwrap();
+    f.folder.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     let file = root.join("doc.bin");
     let shown = file.to_str().unwrap();
-    let mut added = f.proxy.receive_activity_added().await.unwrap();
+    let mut added = f.activity.receive_added().await.unwrap();
 
     f.files.hydrate(shown).await.unwrap();
 
     let signal = tokio::time::timeout(Duration::from_secs(5), added.next())
         .await
-        .expect("no ActivityAdded for the download")
+        .expect("no ActivityLog.Added for the download")
         .unwrap();
     let args = signal.args().unwrap();
     assert_eq!((args.kind().as_str(), args.path().as_str(), args.detail().as_str()), ("downloaded", shown, "8.0 KiB"));
-    let recent = f.proxy.recent_activity(10).await.unwrap();
+    let recent = f.activity.recent(10).await.unwrap();
     assert_eq!(recent.len(), 1, "{recent:?}");
     assert_eq!((recent[0].1.as_str(), recent[0].2.as_str()), ("downloaded", shown));
     assert_eq!(recent[0].0, *args.time());
 
-    let (files, bytes, busy) = f.proxy.free_up_space().await.unwrap();
+    let (files, bytes, busy) = f.folder.free_up_space().await.unwrap();
     assert_eq!((files, busy), (1, 0));
     assert!(bytes >= 8192, "{bytes}");
     assert_eq!(f.files.item_state(shown).await.unwrap(), "online-only");
@@ -317,35 +335,27 @@ async fn a_download_is_announced_kept_and_freed_up_again() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn dismissing_a_conflict_that_is_not_there_names_the_path() {
     let f = setup().await;
-    let error = f.proxy.dismiss_conflict("/nowhere/rescued.txt").await.unwrap_err();
+    let error = f.conflicts.dismiss("/nowhere/rescued.txt").await.unwrap_err();
     assert_eq!(error_name(&error), Some("org.konedrive.Error.NoConflict"));
     assert!(error.to_string().contains("/nowhere/rescued.txt"), "{error}");
-    assert!(f.proxy.conflicts().await.unwrap().is_empty());
-    assert_eq!(f.proxy.conflict_count().await.unwrap(), 0);
+    assert!(f.conflicts.list().await.unwrap().is_empty());
+    assert_eq!(f.conflicts.count().await.unwrap(), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn introspection_matches_the_checked_in_xml() {
     let f = setup().await;
     let live = introspect(&f.client, f.path.as_str()).await;
-    assert_eq!(signature_lines(&live, SYNC_INTERFACE_NAME), signature_lines(XML, SYNC_INTERFACE_NAME));
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dev1_matches_its_checked_in_xml() {
-    let f = setup().await;
-    let live = introspect(&f.client, f.path.as_str()).await;
-    assert_eq!(
-        signature_lines(&live, "org.konedrive.Dev1"),
-        signature_lines(DEV_XML, "org.konedrive.Dev1")
-    );
+    for (interface, xml) in XML {
+        assert_eq!(signature_lines(&live, interface), signature_lines(xml, interface), "{interface}");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nothing_to_export_while_signed_out() {
     let f = setup().await;
-    let dev = Dev1Proxy::new(&f.client, f.path.clone()).await.unwrap();
-    let err = dev.access_token().await.unwrap_err();
+    let export = TokenExportProxy::new(&f.client, f.path.clone()).await.unwrap();
+    let err = export.read_only().await.unwrap_err();
     assert_eq!(error_name(&err), Some("org.konedrive.Error.NotSignedIn"));
 }
 
@@ -354,11 +364,11 @@ async fn a_local_folder_has_no_counters_and_refuses_refresh() {
     let f = setup().await;
     let root = f.dir.path().join("root");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
-    assert_eq!(f.proxy.root_source().await.unwrap(), "local");
-    assert_eq!((f.proxy.items_listed().await.unwrap(), f.proxy.skipped_count().await.unwrap()), (0, 0));
-    assert!(f.proxy.skipped().await.unwrap().is_empty());
-    let err = f.proxy.refresh().await.unwrap_err();
+    f.folder.register(root.to_str().unwrap()).await.unwrap();
+    assert_eq!(f.folder.source().await.unwrap(), "local");
+    assert_eq!((f.folder.items_listed().await.unwrap(), f.folder.skipped_count().await.unwrap()), (0, 0));
+    assert!(f.folder.skipped().await.unwrap().is_empty());
+    let err = f.folder.refresh().await.unwrap_err();
     assert_eq!(error_name(&err), Some("org.konedrive.Error.Unsupported"));
 }
 
@@ -385,17 +395,17 @@ async fn every_refusal_arrives_as_its_own_named_error() {
         "before any root is registered, a path is in no account's folder"
     );
     assert_eq!(
-        refusal(f.proxy.register_root(outside.to_str().unwrap()).await),
+        refusal(f.folder.register(outside.to_str().unwrap()).await),
         "org.konedrive.Error.Unsupported",
         "a file is not a folder"
     );
 
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.folder.register(root.to_str().unwrap()).await.unwrap();
 
     let second = f.dir.path().join("Another");
     std::fs::create_dir(&second).unwrap();
     assert_eq!(
-        refusal(f.proxy.register_root(second.to_str().unwrap()).await),
+        refusal(f.folder.register(second.to_str().unwrap()).await),
         "org.konedrive.Error.AlreadyRegistered"
     );
     assert_eq!(
@@ -404,7 +414,7 @@ async fn every_refusal_arrives_as_its_own_named_error() {
         "nothing has been populated, so there is nowhere to fetch from"
     );
 
-    f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+    f.folder.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     let file = root.join("doc.bin");
 
     assert_eq!(
@@ -453,11 +463,11 @@ async fn a_daemon_with_no_helper_refuses_to_register_but_offers_the_explicit_mod
     std::fs::create_dir(&root).unwrap();
 
     assert_eq!(
-        refusal(f.proxy.register_root(root.to_str().unwrap()).await),
+        refusal(f.folder.register(root.to_str().unwrap()).await),
         "org.konedrive.Error.NoHelper",
         "no helper means no interception, and a placeholder nobody intercepts reads as zeros"
     );
-    assert_eq!(f.proxy.root_state().await.unwrap(), "none");
+    assert_eq!(f.folder.state().await.unwrap(), "none");
 
     // Deliberately signed out. `RegisterRoot` requires a sign-in because §3.1
     // binds the folder to the signed-in drive; this mode must not, because it
@@ -465,20 +475,20 @@ async fn a_daemon_with_no_helper_refuses_to_register_but_offers_the_explicit_mod
     // directory. Requiring a Microsoft sign-in here would put the one path
     // that works without the cloud behind the cloud.
     f.account.update(|s| s.state = SignInState::SignedOut);
-    f.proxy.register_root_without_interception(root.to_str().unwrap()).await.unwrap();
+    f.folder.register_without_interception(root.to_str().unwrap()).await.unwrap();
 
-    assert_eq!(f.proxy.root_state().await.unwrap(), "no-interception");
+    assert_eq!(f.folder.state().await.unwrap(), "no-interception");
     assert!(
-        f.proxy.last_error().await.unwrap().contains("read as zeros"),
+        f.folder.last_error().await.unwrap().contains("read as zeros"),
         "the mode must say what it costs: {}",
-        f.proxy.last_error().await.unwrap()
+        f.folder.last_error().await.unwrap()
     );
 
     // And the folder is fully usable in that mode.
     let source = f.dir.path().join("source");
     std::fs::create_dir(&source).unwrap();
     std::fs::write(source.join("doc.bin"), vec![3u8; 2048]).unwrap();
-    f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+    f.folder.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     let file = root.join("doc.bin");
     f.files.hydrate(file.to_str().unwrap()).await.unwrap();
     assert_eq!(std::fs::read(&file).unwrap(), vec![3u8; 2048]);
@@ -512,25 +522,25 @@ async fn properties_changed_reports_exactly_what_changed() {
         .unwrap();
     let mut changes = properties.receive_properties_changed().await.unwrap();
 
-    f.proxy.register_root(first.to_str().unwrap()).await.unwrap();
+    f.folder.register(first.to_str().unwrap()).await.unwrap();
     assert_eq!(
         changed_within(&mut changes, Duration::from_millis(600)).await,
-        vec!["RootPath", "RootSource", "RootState"],
+        vec!["Path", "Source", "State"],
         "registering a root changes where it is, what it shows, and what state it is in"
     );
 
-    f.proxy.unregister_root().await.unwrap();
+    f.folder.unregister().await.unwrap();
     assert_eq!(
         changed_within(&mut changes, Duration::from_millis(600)).await,
-        vec!["RootPath", "RootSource", "RootState"],
+        vec!["Path", "Source", "State"],
         "forgetting it changes them back — a daemon comparing against a stale baseline \
          would say nothing here"
     );
 
-    f.proxy.register_root_without_interception(second.to_str().unwrap()).await.unwrap();
+    f.folder.register_without_interception(second.to_str().unwrap()).await.unwrap();
     assert_eq!(
         changed_within(&mut changes, Duration::from_millis(600)).await,
-        vec!["LastError", "RootPath", "RootSource", "RootState"],
+        vec!["LastError", "Path", "Source", "State"],
         "and this mode also publishes why it is dangerous"
     );
 }
@@ -565,7 +575,7 @@ async fn helper_state_follows_the_link_and_then_what_systemd_says() {
     let watching = tokio::spawn(konedrived::sync::watch_helper_every(Arc::clone(&f.sync), Duration::from_millis(100)));
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.folder.register(root.to_str().unwrap()).await.unwrap();
     assert_eq!(f.manager.helper_state().await.unwrap(), "connected");
     // `HelperState` is the manager's: one helper serves every account.
     let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
@@ -591,8 +601,8 @@ async fn helper_state_follows_the_link_and_then_what_systemd_says() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(state().await, "stopped");
-    assert_eq!(f.proxy.root_state().await.unwrap(), "error");
-    assert!(f.proxy.last_error().await.unwrap().contains("sudo systemctl start konedrive-helper"));
+    assert_eq!(f.folder.state().await.unwrap(), "error");
+    assert!(f.folder.last_error().await.unwrap().contains("sudo systemctl start konedrive-helper"));
 
     unit.says("loaded", "failed");
     for _ in 0..100 {
@@ -602,11 +612,11 @@ async fn helper_state_follows_the_link_and_then_what_systemd_says() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert_eq!(state().await, "failed", "asked again while there is no link");
-    assert!(f.proxy.last_error().await.unwrap().contains("systemctl status konedrive-helper"));
+    assert!(f.folder.last_error().await.unwrap().contains("systemctl status konedrive-helper"));
     watching.abort();
 }
 
-/// `RootState` and `LastError` are what the registration and the
+/// `Folder.State` and `LastError` are what the registration and the
 /// folder's sync say together, so a change in the sync alone changes them —
 /// and has to be signalled like any other change.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -614,7 +624,7 @@ async fn a_change_in_the_sync_alone_is_signalled_as_what_it_publishes() {
     let f = setup_with_helper(false).await;
     let folder = f.dir.path().join("OneDrive");
     std::fs::create_dir(&folder).unwrap();
-    f.proxy.register_root_without_interception(folder.to_str().unwrap()).await.unwrap();
+    f.folder.register_without_interception(folder.to_str().unwrap()).await.unwrap();
     let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
         .destination(SERVICE_NAME)
         .unwrap()
@@ -630,10 +640,10 @@ async fn a_change_in_the_sync_alone_is_signalled_as_what_it_publishes() {
     });
     assert_eq!(
         changed_within(&mut changes, Duration::from_millis(600)).await,
-        vec!["LastError", "RootState"]
+        vec!["LastError", "State"]
     );
-    assert_eq!(f.proxy.root_state().await.unwrap(), "error");
-    assert!(f.proxy.last_error().await.unwrap().ends_with(". signed out"));
+    assert_eq!(f.folder.state().await.unwrap(), "error");
+    assert!(f.folder.last_error().await.unwrap().ends_with(". signed out"));
 
     f.sync.state().update(|s| s.replacement_note = "1 file(s) changed in OneDrive could not be updated here yet".into());
     assert_eq!(changed_within(&mut changes, Duration::from_millis(600)).await, vec!["LastError"]);
@@ -644,7 +654,7 @@ async fn a_change_in_the_sync_alone_is_signalled_as_what_it_publishes() {
 /// bus*, not about properties: three counters changing at once must arrive
 /// as one `PropertiesChanged` carrying all three, not three separate
 /// messages that each happen to land inside the same window. `changed_within`
-/// above (built for `RootPath`/`RootState`/`LastError`, each still its own
+/// above (built for `Path`/`State`/`LastError`, each still its own
 /// `_changed()` call and so its own message) cannot tell those apart — it
 /// merges every message in the window into one set of names — so this uses
 /// [`messages_within`] instead, which keeps each message separate.
@@ -653,7 +663,7 @@ async fn the_counters_travel_in_one_properties_changed_message() {
     let f = setup_with_helper(false).await;
     let folder = f.dir.path().join("OneDrive");
     std::fs::create_dir(&folder).unwrap();
-    f.proxy.register_root_without_interception(folder.to_str().unwrap()).await.unwrap();
+    f.folder.register_without_interception(folder.to_str().unwrap()).await.unwrap();
     let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
         .destination(SERVICE_NAME)
         .unwrap()
@@ -671,9 +681,58 @@ async fn the_counters_travel_in_one_properties_changed_message() {
     });
 
     assert_eq!(
-        messages_within(&mut changes, Duration::from_millis(600)).await,
+        messages_within(&mut changes, FOLDER_INTERFACE_NAME, Duration::from_millis(600)).await,
         vec![vec!["ItemsListed".to_owned(), "ItemsPlaced".to_owned(), "SkippedCount".to_owned()]],
         "all three counters must travel in one PropertiesChanged message, not one each"
+    );
+}
+
+/// Each property's `PropertiesChanged` goes out under the interface that holds it: one
+/// change of the state that touches every interface of the folder sends one message for
+/// each, carrying only its own properties.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn each_property_changes_under_its_own_interface() {
+    let f = setup_with_helper(false).await;
+    let folder = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&folder).unwrap();
+    f.folder.register_without_interception(folder.to_str().unwrap()).await.unwrap();
+    let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
+        .destination(SERVICE_NAME)
+        .unwrap()
+        .path(f.path.clone())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let mut changes = properties.receive_properties_changed().await.unwrap();
+
+    f.sync.state().update(|s| {
+        s.items_listed = 3;
+        s.throughput.size = 7;
+        s.pending_count = 2;
+        s.conflict_count = 1;
+        s.scan.directories = 5;
+    });
+
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(600);
+    let mut seen = Vec::new();
+    while let Ok(Some(signal)) = tokio::time::timeout_at(deadline, changes.next()).await {
+        let args = signal.args().unwrap();
+        let mut names: Vec<String> = args.changed_properties.keys().map(|k| k.to_string()).collect();
+        names.sort();
+        seen.push((args.interface_name.to_string(), names));
+    }
+    seen.sort();
+    let one = |interface: &str, name: &str| (interface.to_owned(), vec![name.to_owned()]);
+    assert_eq!(
+        seen,
+        vec![
+            one(CONFLICTS_INTERFACE_NAME, "Count"),
+            one(FOLDER_INTERFACE_NAME, "ItemsListed"),
+            one(LOCAL_SCAN_INTERFACE_NAME, "Directories"),
+            one(TRANSFERS_INTERFACE_NAME, "PoolSize"),
+            one(UPLOAD_QUEUE_INTERFACE_NAME, "PendingCount"),
+        ]
     );
 }
 
@@ -683,8 +742,8 @@ async fn the_counters_travel_in_one_properties_changed_message() {
 async fn the_local_scan_is_on_the_bus() {
     use konedrived::sync::local_scan::ScanState;
     let f = setup().await;
-    assert_eq!(f.proxy.scan_state().await.unwrap(), "none", "a read-only folder has no local scan");
-    assert_eq!(f.proxy.scan_finished().await.unwrap(), 0);
+    assert_eq!(f.scan.state().await.unwrap(), "none", "a read-only folder has no local scan");
+    assert_eq!(f.scan.finished().await.unwrap(), 0);
     let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
         .destination(SERVICE_NAME)
         .unwrap()
@@ -702,23 +761,23 @@ async fn the_local_scan_is_on_the_bus() {
     });
 
     assert_eq!(
-        messages_within(&mut changes, Duration::from_millis(600)).await,
-        vec![vec!["ScanFiles".to_owned(), "ScanReason".to_owned(), "ScanState".to_owned()]]
+        messages_within(&mut changes, LOCAL_SCAN_INTERFACE_NAME, Duration::from_millis(600)).await,
+        vec![vec!["Files".to_owned(), "Reason".to_owned(), "State".to_owned()]]
     );
     assert_eq!(
-        (f.proxy.scan_state().await.unwrap(), f.proxy.scan_reason().await.unwrap(), f.proxy.scan_files().await.unwrap()),
+        (f.scan.state().await.unwrap(), f.scan.reason().await.unwrap(), f.scan.files().await.unwrap()),
         ("running".to_owned(), "overflow".to_owned(), 7)
     );
 }
 
-/// The names of the `Sync1` properties that reported a change within
+/// The names of the `Folder` properties that reported a change within
 /// `window`, sorted and de-duplicated. One `PropertiesChanged` arrives per
 /// property, so a window is what a caller has to work with.
 async fn changed_within(
     changes: &mut zbus::fdo::PropertiesChangedStream,
     window: Duration,
 ) -> Vec<String> {
-    changed_on(changes, SYNC_INTERFACE_NAME, window).await
+    changed_on(changes, FOLDER_INTERFACE_NAME, window).await
 }
 
 /// As [`changed_within`], for `interface`'s properties.
@@ -742,19 +801,20 @@ async fn changed_on(
     names
 }
 
-/// As [`changed_within`], but one entry per `PropertiesChanged` message
+/// As [`changed_on`], but one entry per `PropertiesChanged` message
 /// (its own changed/invalidated names, sorted) rather than merged across the
 /// whole window — what tells "one message with three keys" apart from
 /// "three messages with one key each".
 async fn messages_within(
     changes: &mut zbus::fdo::PropertiesChangedStream,
+    interface: &str,
     window: Duration,
 ) -> Vec<Vec<String>> {
     let deadline = tokio::time::Instant::now() + window;
     let mut messages = Vec::new();
     while let Ok(Some(signal)) = tokio::time::timeout_at(deadline, changes.next()).await {
         let args = signal.args().unwrap();
-        if args.interface_name != SYNC_INTERFACE_NAME {
+        if args.interface_name != interface {
             continue;
         }
         let mut names: Vec<String> = args.changed_properties.keys().map(|k| k.to_string()).collect();
@@ -765,17 +825,17 @@ async fn messages_within(
     messages
 }
 
-/// `Sync1` has to be on the object before the bus name is, so
+/// `Folder` has to be on the object before the bus name is, so
 /// that a D-Bus-activated client's very first call cannot be answered with
 /// `UnknownInterface` by a daemon that already owns the name.
 ///
 /// The helper here accepts the connection and then says nothing, which is
 /// the shape that makes `HelperLink::connect` take its full 30 s bound
 ///. The daemon used to claim the name, then connect, then
-/// attach `Sync1` — so that silence was a 30 s window in which the daemon
+/// attach the folder's interface — so that silence was a 30 s window in which the daemon
 /// was on the bus and this interface was not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sync1_answers_from_the_moment_the_daemon_is_on_the_bus() {
+async fn the_folder_answers_from_the_moment_the_daemon_is_on_the_bus() {
     let bus = TestBus::start();
     let helper_dir = tempfile::tempdir().unwrap();
     let socket_path = helper_dir.path().join("helper.sock");
@@ -800,12 +860,12 @@ async fn sync1_answers_from_the_moment_the_daemon_is_on_the_bus() {
     ));
 
     let client = bus.connect().await;
-    let proxy = Sync1Proxy::new(&client, konedrive_dbus::account_path(&id).unwrap()).await.unwrap();
-    let answered = tokio::time::timeout(Duration::from_secs(3), proxy.root_state()).await;
+    let proxy = FolderProxy::new(&client, konedrive_dbus::account_path(&id).unwrap()).await.unwrap();
+    let answered = tokio::time::timeout(Duration::from_secs(3), proxy.state()).await;
 
     assert_eq!(
         answered
-            .expect("Sync1 did not answer while the daemon was waiting on a silent helper")
+            .expect("Folder did not answer while the daemon was waiting on a silent helper")
             .unwrap(),
         "none"
     );

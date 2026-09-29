@@ -44,7 +44,7 @@ private:
     {
         m_daemon = std::make_unique<FakeDaemon>();
         m_daemon->account->set({{QStringLiteral("State"), accountState}});
-        m_daemon->sync->set({{QStringLiteral("RootPath"), Root}, {QStringLiteral("RootState"), QStringLiteral("ready")}});
+        m_daemon->sync->folder->set({{QStringLiteral("Path"), Root}, {QStringLiteral("State"), QStringLiteral("ready")}});
         QVERIFY(m_daemon->start());
         m_account = std::make_unique<AccountController>(fake::FirstAccount);
         m_sync = std::make_unique<SyncController>(fake::FirstAccount);
@@ -56,7 +56,7 @@ private:
         QTRY_COMPARE(m_account->state(), accountState);
     }
 
-    /// Emits ActivityAdded from the fake and waits until the window has it.
+    /// Emits ActivityLog.Added from the fake and waits until the window has it.
     void report(const QString &kind, const QString &name, const QString &detail)
     {
         QSignalSpy arrived(m_sync.get(), &SyncController::activityAdded);
@@ -192,10 +192,10 @@ private Q_SLOTS:
     void aFullOneDriveNotifiesOnce()
     {
         start();
-        m_daemon->sync->set({{QStringLiteral("QuotaFull"), true}, {QStringLiteral("SpaceWaitingCount"), QVariant::fromValue<uint>(3)}});
+        m_daemon->sync->queue->set({{QStringLiteral("QuotaFull"), true}, {QStringLiteral("QuotaWaitingCount"), QVariant::fromValue<uint>(3)}});
         QTRY_COMPARE(m_sink.sent.size(), 1);
         QCOMPARE(m_sink.sent.at(0).title, QStringLiteral("OneDrive is full"));
-        m_daemon->sync->set({{QStringLiteral("SpaceWaitingCount"), QVariant::fromValue<uint>(4)}});
+        m_daemon->sync->queue->set({{QStringLiteral("QuotaWaitingCount"), QVariant::fromValue<uint>(4)}});
         QTest::qWait(50);
         QCOMPARE(m_sink.sent.size(), 1);
     }
@@ -309,7 +309,7 @@ private Q_SLOTS:
         QTRY_COMPARE(m_sink.sent.size(), 1);
     }
 
-    /// Accounts1.Remove signs the account out before it goes: no one is told
+    /// Accounts.Remove signs the account out before it goes: no one is told
     /// to sign in again to an account that is gone, whether it was removed
     /// here or with konedrivectl. Wired as main() wires it, a Notifier per
     /// account, naming its account while there are several.
@@ -367,7 +367,7 @@ private Q_SLOTS:
         m_daemon->stop();
         QTRY_VERIFY(!m_sync->serviceAvailable());
         QVERIFY(m_daemon->start());
-        QTRY_COMPARE(m_daemon->sync->calls.count(QStringLiteral("RecentActivity:50")), 2);
+        QTRY_COMPARE(m_daemon->sync->calls.count(QStringLiteral("Recent:50")), 2);
         QTRY_COMPARE(m_sync->activity()->count(), 3);
         QTRY_VERIFY(m_account->serviceAvailable());
         QCoreApplication::processEvents();

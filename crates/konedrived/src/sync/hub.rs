@@ -51,7 +51,7 @@ pub struct HelperHub {
     unit: Mutex<Arc<dyn HelperUnit>>,
     /// Told whenever the link comes or goes, so [`watch`] asks again at once.
     changed: Arc<Notify>,
-    /// `Accounts1.HelperState`; every account's snapshot has a copy, which
+    /// `Accounts.HelperState`; every account's snapshot has a copy, which
     /// its `LastError` is worked out from.
     state: watch::Sender<HelperState>,
     /// Held while `HelperState` is published, so that a link published while
@@ -182,7 +182,7 @@ impl HelperHub {
         *self.state.borrow()
     }
 
-    /// `HelperState` as it changes (`Accounts1`'s `PropertiesChanged`).
+    /// `HelperState` as it changes (`Accounts`'s `PropertiesChanged`).
     pub fn subscribe(&self) -> watch::Receiver<HelperState> {
         self.state.subscribe()
     }

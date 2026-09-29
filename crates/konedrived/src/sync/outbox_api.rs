@@ -1,4 +1,4 @@
-//! The outbox as `org.konedrive.Sync1` shows it (`docs/design/writes.md` §11):
+//! The outbox as `org.konedrive.UploadQueue` shows it (`docs/design/writes.md` §11):
 //! what waits to be uploaded, the pause, the ignore list, the mass-delete
 //! guard's decision and what stays local. `sync::dbus` is the thin wrapper
 //! around these; the worker itself is `sync::upload`.
@@ -24,7 +24,7 @@ use crate::config::ConfigError;
 use crate::tree::outbox::{Inode, OutboxState};
 use crate::tree::{ActivityRow, Store};
 
-/// One row as `Outbox()` lists it: (seq, kind, full path, state, bytes sent,
+/// One row as `Changes()` lists it: (seq, kind, full path, state, bytes sent,
 /// bytes in all, reason, next try in unix seconds or 0).
 pub type OutboxEntry = (u64, String, String, String, u64, u64, String, i64);
 
@@ -76,7 +76,7 @@ impl SyncService {
     }
 
     /// `Refresh()`'s part for the quota (issue #2): read now, one request, shown in
-    /// `QuotaState` and `FreeSpace`, and handed to the outbox, which ends a full OneDrive
+    /// `QuotaState` and `QuotaRemaining`, and handed to the outbox, which ends a full OneDrive
     /// and lets the files that fit now go. A quota that cannot be read changes nothing.
     pub(super) async fn refresh_quota(&self) {
         let drive = self.drive.lock().unwrap().clone();
@@ -87,7 +87,7 @@ impl SyncService {
         }
     }
 
-    /// A quota just read, here or by the account (`RefreshAccountInfo`).
+    /// A quota just read, here or by the account (`RefreshInfo`).
     pub(super) fn quota_seen(&self, quota: &crate::drive::DriveQuota) {
         if !upload::space::known(quota) {
             return;
@@ -227,7 +227,7 @@ impl SyncService {
         });
     }
 
-    /// `Outbox(limit)`: the rows waiting to be uploaded, oldest first, at most
+    /// `Changes(limit)`: the rows waiting to be uploaded, oldest first, at most
     /// `limit` (0 for all): (seq, kind, full path, state, bytes sent, bytes
     /// in all, reason, next try).
     pub async fn outbox(&self, limit: u32) -> Result<Vec<OutboxEntry>, SyncError> {
@@ -241,11 +241,11 @@ impl SyncService {
     }
 }
 
-/// A row's state in `Outbox()` while the account is paused, whatever it
+/// A row's state in `Changes()` while the account is paused, whatever it
 /// waited for before: blocked and held rows keep theirs.
 const PAUSED_STATE: &str = "paused";
 
-/// `Outbox()`'s entries for `rows`; a waiting file's size is read from the
+/// `Changes()`'s entries for `rows`; a waiting file's size is read from the
 /// disk (`lstat`), off the runtime. While `paused`, every row that would
 /// otherwise wait, retry or run reads `paused`, with no reason and no next
 /// try: a pause is no failure, and nothing is tried before it ends (an upload
@@ -480,7 +480,7 @@ impl Host {
 }
 
 impl OutboxHost for Host {
-    /// `ActivityAdded`: the worker has written the event into the store with
+    /// `ActivityLog.Added`: the worker has written the event into the store with
     /// its commit.
     fn activity(&self, event: &ActivityRow) {
         if let Some(service) = self.sync.upgrade() {

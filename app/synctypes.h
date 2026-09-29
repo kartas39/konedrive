@@ -1,8 +1,8 @@
 #pragma once
 
-// The structured types of org.konedrive.Sync1 (dbus/org.konedrive.Sync1.xml
-// names them in its QtTypeName annotations). qdbusxml2cpp takes one include,
-// so this header carries them all.
+// The structured types of an account's folder (the QtTypeName annotations of
+// dbus/org.konedrive.{Folder,Transfers,UploadQueue,Conflicts,ActivityLog}.xml
+// name them). qdbusxml2cpp takes one include, so this header carries them all.
 
 #include "skippeditem.h"
 
@@ -154,7 +154,7 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveK
     return argument;
 }
 
-/// Registers every Sync1 type with QtDBus; safe to call more than once.
+/// Registers every one of these types with QtDBus; safe to call more than once.
 inline void registerKonedriveSyncTypes()
 {
     qDBusRegisterMetaType<KonedriveSkippedItem>();

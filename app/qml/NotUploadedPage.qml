@@ -6,7 +6,7 @@ import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
 /// What stays on this computer and is not uploaded, grouped by what can be
-/// done about it (Sync1's NotUploadedSummary()): a reason one action fixes is
+/// done about it (UploadQueue.NotUploadedSummary()): a reason one action fixes is
 /// one line with its button; files are listed only where something can be
 /// done to each, and only when their reason is opened (NotUploadedFiles(),
 /// at most perFileCap of them).

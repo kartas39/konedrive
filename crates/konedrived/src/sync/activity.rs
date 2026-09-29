@@ -32,7 +32,7 @@ use super::SyncStateHandle;
 use crate::tree::{ActivityRow, ConflictRow, Store, TreeError, ACTIVITY_KEPT};
 
 /// One event of the activity log: unix seconds, a [`Kind`]'s
-/// name, a full path and a detail. `RecentActivity` and `ActivityAdded` carry
+/// name, a full path and a detail. `ActivityLog.Recent` and `ActivityLog.Added` carry
 /// exactly these four fields.
 pub type Event = ActivityRow;
 
@@ -222,7 +222,7 @@ pub fn capped(events: Vec<Event>, per_kind: usize, root: &str) -> Vec<Event> {
 /// Backed by the folder's tree store while a OneDrive folder syncs
 /// ([`attach`](Self::attach)), and by memory otherwise. Every event recorded
 /// is also sent to [`subscribe`](Self::subscribe)rs — `sync::dbus` turns them
-/// into `ActivityAdded`.
+/// into `ActivityLog.Added`.
 ///
 /// One lock holds both the store and the memory, and every write holds it for
 /// as long as it writes:
@@ -286,7 +286,7 @@ impl Activity {
 
     /// Keeps the log of the folder at `root` in `store` from now on: what was
     /// recorded in memory meanwhile about that folder moves into it — and
-    /// anything about another folder is dropped — and `ConflictCount` is
+    /// anything about another folder is dropped — and `Conflicts.Count` is
     /// what it holds. Blocking: the store is SQLite.
     pub fn attach(&self, store: Store, root: &Path) {
         {
@@ -351,7 +351,7 @@ impl Activity {
         }
     }
 
-    /// Announces `event` (`ActivityAdded`) without recording it: the outbox
+    /// Announces `event` (`ActivityLog.Added`) without recording it: the outbox
     /// worker writes its events into the store in the same transaction as
     /// the commit they belong to. Dropped when it is not inside the folder
     /// registered now.
@@ -404,7 +404,7 @@ impl Activity {
     /// The conflicts whose rescued file is still there, newest first; the
     /// rest are dropped (a conflict whose file is gone drops off
     /// by itself). Whether it is there is asked with `lstat`, never an open.
-    /// `ConflictCount` follows. Read on the store's read-only connection,
+    /// `Conflicts.Count` follows. Read on the store's read-only connection,
     /// and what is gone dropped in one job (issue #39). Blocking.
     pub fn conflicts(&self) -> Result<Vec<ConflictRow>, TreeError> {
         let kept = {
@@ -428,7 +428,7 @@ impl Activity {
     /// Looks over the next [`PRUNE_BATCH`] conflicts, in the order of their
     /// rescued paths from where the last look stopped — the whole list, a
     /// batch at a time, round and round (issue #39) — drops those whose file
-    /// is gone in one job, and sets `ConflictCount` to what is left on
+    /// is gone in one job, and sets `Conflicts.Count` to what is left on
     /// record. Blocking.
     pub fn prune(&self) {
         let counted = {

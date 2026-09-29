@@ -226,7 +226,7 @@ fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
 /// errno, so a degraded root still acks success here. Nothing in
 /// this crate today has anywhere to put that signal — the natural home is a
 /// later helper→daemon query (or an addition to `RootState`/`LastError` on
-/// the `org.konedrive.Sync1` D-Bus surface), once one exists.
+/// `org.konedrive.Folder`), once one exists.
 pub async fn register_root(link: &HelperLink, path: &Path) -> Result<SyncRoot, RegisterError> {
     let (dir, root) = prepare(path).await?;
     link.register_root(&dir, &root.root_id)
@@ -329,7 +329,7 @@ pub(super) fn mark_drive(root: &SyncRoot, drive: &str) -> io::Result<bool> {
 /// suspended.
 ///
 /// This is the deliberate, separately-named opt-in behind
-/// `org.konedrive.Sync1.RegisterRootWithoutInterception`, never a fallback
+/// `org.konedrive.Folder.RegisterWithoutInterception`, never a fallback
 /// that a failed helper connection can slide into: `RegisterRoot` itself
 /// still refuses outright without a helper, because a placeholder nobody
 /// intercepts reads as zeros, which is the one outcome this project exists

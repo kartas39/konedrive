@@ -67,14 +67,14 @@ private:
 
     static void setFolder(FakeAccountObject *object, const QUrl &folder)
     {
-        object->sync->set({{QStringLiteral("RootPath"), folder.toLocalFile()},
-                           {QStringLiteral("RootState"), QStringLiteral("ready")},
-                           {QStringLiteral("RootSource"), QStringLiteral("onedrive")}});
+        object->sync->folder->set({{QStringLiteral("Path"), folder.toLocalFile()},
+                                   {QStringLiteral("State"), QStringLiteral("ready")},
+                                   {QStringLiteral("Source"), QStringLiteral("onedrive")}});
     }
 
     static void forget(FakeAccountObject *object)
     {
-        object->sync->set({{QStringLiteral("RootPath"), QString()}, {QStringLiteral("RootState"), QStringLiteral("none")}, {QStringLiteral("RootSource"), QString()}});
+        object->sync->folder->set({{QStringLiteral("Path"), QString()}, {QStringLiteral("State"), QStringLiteral("none")}, {QStringLiteral("Source"), QString()}});
     }
 
     static QModelIndex entry(KFilePlacesModel *model, const QString &id)

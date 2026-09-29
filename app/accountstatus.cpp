@@ -27,7 +27,7 @@ const QString NoInterceptionWarning = QStringLiteral(
 
 /// Where, in LastError ("every current problem, joined with '. '"), the
 /// failed-update note begins: "N file(s) changed in OneDrive could not be
-/// updated here yet: <reason>" (dbus/org.konedrive.Sync1.xml). The daemon
+/// updated here yet: <reason>" (dbus/org.konedrive.Folder.xml). The daemon
 /// puts it last; -1 when there is none.
 qsizetype updateNoteStart(const QString &lastError)
 {
@@ -79,7 +79,7 @@ QString durationText(qint64 seconds)
     return i18nc("@info duration", "%1 h", seconds / 3600);
 }
 
-/// Why a local scan runs (Sync1's ScanReason), after "started 2 min ago, ".
+/// Why a local scan runs (LocalScan.Reason), after "started 2 min ago, ".
 QString scanReasonText(const QString &reason)
 {
     if (reason == QLatin1String("start")) {

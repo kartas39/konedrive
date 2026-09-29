@@ -37,7 +37,7 @@ pub fn grants_writes(scope: &str) -> bool {
 
 /// Whether a token valid for `scope` can change nothing: none of its permissions writes,
 /// manages or fully controls anything. Wider than [`grants_writes`] on purpose — the read-only
-/// token `Dev1.AccessToken` hands out must not carry `Sites.ReadWrite.All` either.
+/// token `TokenExport.ReadOnly` hands out must not carry `Sites.ReadWrite.All` either.
 pub fn is_read_only(scope: &str) -> bool {
     !permissions(scope).any(|p| {
         let p = p.to_ascii_lowercase();

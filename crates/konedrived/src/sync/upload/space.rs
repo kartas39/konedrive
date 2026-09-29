@@ -16,7 +16,7 @@
 //!
 //! A waiting row stays `ready` in its place in the outbox, with no timer of
 //! its own; only its reason says it waits. A quota read — `Refresh`,
-//! `RefreshAccountInfo`, and every [`QUOTA_RECHECK`] while full or while a
+//! `RefreshInfo`, and every [`QUOTA_RECHECK`] while full or while a
 //! file is too big — ends *full* when there is space again and frees the
 //! files that now fit.
 
@@ -244,7 +244,7 @@ impl Engine {
         }
     }
 
-    /// A quota just read (`Refresh`, `RefreshAccountInfo`, the automatic
+    /// A quota just read (`Refresh`, `RefreshInfo`, the automatic
     /// read, a refusal): *full* or not, and every waiting file that fits now
     /// is free to go; one that does not stays *too big*, with the free space
     /// said again. A quota that says nothing of the space is ignored.

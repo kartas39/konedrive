@@ -75,7 +75,7 @@ Every one of these has a command: `sync outbox`, `sync pause`/`resume`, `sync ig
 
 ### 2.1 Read-only and read-write
 
-The mode is per account, in `config.toml`, a new account read-only; `Account1.Mode` publishes the
+The mode is per account, in `config.toml`, a new account read-only; `Account.Mode` publishes the
 mode the account *runs* in ([accounts.md](accounts.md) §10). The scope follows it:
 `Files.Read User.Read offline_access` for read-only, asked for at every refresh, so that Microsoft
 refuses a read-only account's writes whatever it was once granted;
@@ -107,7 +107,7 @@ drops them then too (limitations log F140). A Forget and removing the account ar
 
 ### 2.3 The write gate
 
-While uploads are being finished, `SetMode("read-write")` and `Dev1.ReadWriteAccessToken` are
+While uploads are being finished, `SetMode("read-write")` and `TokenExport.ReadWrite` are
 refused `WritesNotAllowed` for any account whose drive id is not in `write_test_drive_ids`, a
 top-level list in `config.toml`. The list is empty by default and nothing in konedrive writes it; a
 developer adds a test account's drive by hand. An account whose `mode` was set to read-write by
@@ -187,7 +187,7 @@ F72).
 ### 3.7 The root itself
 
 `FAN_DELETE_SELF` or `FAN_MOVE_SELF` on the root, or an examination that finds the root gone,
-stops the folder's sync and outbox and sets `RootState` to `error`. Nothing is deleted in OneDrive
+stops the folder's sync and outbox and sets `Folder.State` to `error`. Nothing is deleted in OneDrive
 because the folder went away.
 
 ## 4. The examination: from a batch to rows
@@ -298,7 +298,7 @@ sink puts that in the folder's state at most once a second, and once more when t
 finish. "About N" is the number of items the base had placed when the scan started: the disk's own
 count is not known in advance, so the window and `sync status` never show a percentage
 (limitations log F151). A single place examined after a change is not reported, and a read-only
-folder, which has no watcher, reads `none`. `Sync1`'s `Scan*` properties ([desktop.md](desktop.md)
+folder, which has no watcher, reads `none`. `LocalScan`'s properties ([desktop.md](desktop.md)
 §2.4), `sync status`'s "Local scan:" line and a line on the Status page show it.
 
 ## 5. The outbox
@@ -531,7 +531,7 @@ waiting for space records none: `QuotaFull` says it once for the account).
 
 **Free space** is Graph's `quota.remaining`, never `total - used`; `quota.state` is `normal`,
 `nearing`, `critical` or `exceeded`. Between two reads the bytes uploaded are taken off
-`remaining`, so the figure shown (`FreeSpace`) does not go stale.
+`remaining`, so the figure shown (`QuotaRemaining`) does not go stale.
 
 **A refusal** (`507`, `quotaLimitReached`) reads the quota at once — one request; refusals of rows
 running together share a read of the last 10 s. Then:
@@ -555,8 +555,8 @@ outbox at once (§5.2's rule for an object gone before it landed, F149): a `crea
 of its object behind it is taken while full, sends no content and ends; found after all, it waits
 on.
 
-**Leaving full.** Every quota read decides again: `Sync1.Refresh` (which `konedrivectl sync
-refresh` calls, printing the quota it read), `Account1.RefreshAccountInfo` (the Account page's
+**Leaving full.** Every quota read decides again: `Folder.Refresh` (which `konedrivectl sync
+refresh` calls, printing the quota it read), `Account.RefreshInfo` (the Account page's
 Refresh), and an automatic read every 30 minutes while the account is full or a file is too big —
 one request, never the uploads themselves. With space again, *full* ends and every too-big file
 that now fits is free to go; the rest stay too big, with the free space said again. The rows go
@@ -566,8 +566,8 @@ through the account's transfer pool (§5.3), which paces them, not all at once.
 rows in their places, the worker counts as full while any such row waits, and the quota is read
 once before anything sends content.
 
-**What shows it**: `Sync1.QuotaFull`, `SpaceWaitingCount`/`SpaceWaitingBytes` (while full, the
-changes that send content), `TooBigCount`, `QuotaState` and `FreeSpace`; one line on the Status
+**What shows it**: `UploadQueue.QuotaFull`, `QuotaWaitingCount`/`QuotaWaitingBytes` (while full, the
+changes that send content), `TooBigCount`, `QuotaState` and `QuotaRemaining`; one line on the Status
 page and in `konedrivectl sync status` instead of a row per file; on the Not Uploaded page and in
 `sync not-uploaded` (`NotUploadedSummary`), `waiting-for-space` and `too-big` are each one line in
 "Needs you — one action", with Refresh; the tray needs attention while full or while a file is too
@@ -786,23 +786,24 @@ is answered by content hash or by place, never by guessing.
 
 ## 11. On the bus and the command line
 
-Per account, on `org.konedrive.Sync1`: `Outbox`, `Pause`/`Resume`, `SetIgnorePatterns`,
-`ConfirmDeletes`/`RestoreDeletes`, `NotUploaded`; the properties `PendingCount`, `PendingBytes`,
-`BlockedCount`, `HeldCount`, `QuotaFull`, `SpaceWaitingCount`, `SpaceWaitingBytes`, `TooBigCount`,
-`QuotaState`, `FreeSpace` (§6.4), `Uploads`, `Paused`, `PausedUntil`, `IgnorePatterns`, `MachineName`,
-and the Full local scan's `ScanState`, `ScanReason`, `ScanStarted`, `ScanDirectories`, `ScanFiles`,
-`ScanExpected`, `ScanFinished`, `ScanTook` (§4.6);
+Per account: on `org.konedrive.UploadQueue`, `Changes`, `ConfirmDeletes`/`RestoreDeletes`,
+`NotUploaded`, `NotUploadedSummary`, `NotUploadedFiles` and the properties `PendingCount`,
+`PendingBytes`, `BlockedCount`, `HeldCount`, `QuotaFull`, `QuotaWaitingCount`, `QuotaWaitingBytes`,
+`TooBigCount`, `QuotaState`, `QuotaRemaining` (§6.4); on `org.konedrive.Folder`, `Pause`/`Resume`,
+`SetIgnorePatterns`, `Paused`, `PausedUntil` and `IgnorePatterns`; `Transfers.Uploads`;
+`Conflicts.MachineName`; and the Full local scan's `org.konedrive.LocalScan` — `State`, `Reason`,
+`Started`, `Directories`, `Files`, `Expected`, `Finished`, `Took` (§4.6);
 the activity kinds `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, `restored` and
 `not-uploaded`; the
 error `NotUploaded`, which "Free up space" gets for a file with changes not uploaded yet. On
-`Account1`: `SetMode` and `Mode`. [desktop.md](desktop.md) has each member, the commands and the
+`Account`: `SetMode` and `Mode`. [desktop.md](desktop.md) has each member, the commands and the
 window's pages.
 
 **Answers from memory.** The counts (`PendingCount`, `PendingBytes`, `BlockedCount`, `HeldCount`,
 the space counts of §6.4, the queue totals) and the Not Uploaded summary are kept in memory by the
 daemon and answered from there. They are summed again by SQL — one `GROUP BY` over the rows' kind,
 state and reason, sizes from the row's snapshot or from the size the examination recorded — after
-the outbox changes, at most once a second. The lists (`Outbox(limit)`, `NotUploadedFiles(reason,
+the outbox changes, at most once a second. The lists (`Changes(limit)`, `NotUploadedFiles(reason,
 limit)`, `NotUploaded()`) are read with a `LIMIT` through a second, read-only connection to the tree
 store, which in WAL mode reads the last committed state and never waits for a writer: an
 examination recording thousands of rows, or a cycle's commit, never makes the bus wait. No answer
@@ -824,7 +825,7 @@ every account. What it does to work already under way:
 | a fill on open, `Hydrate` | goes on: a pause never blocks opening a file |
 
 No new row starts. Within one fragment's time `Uploads` (`sync transfers`, the window's "Uploading
-now") is empty, and `Outbox()` lists every row that waits, retries or runs as `paused` — never as
+now") is empty, and `Changes()` lists every row that waits, retries or runs as `paused` — never as
 failed or retrying — while blocked and held rows keep their state; a pause writes no
 `upload-failed`. Resume, or the end of a timed pause, makes the rows due at once: a kept session
 goes on from its offset, and one that expired meanwhile starts over, logged. A restart while

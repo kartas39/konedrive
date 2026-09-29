@@ -1,5 +1,5 @@
 //! The multiple-accounts daemon over a private test bus (design §10, tests 7–11): the
-//! manager at `/org/konedrive/Accounts` — `Accounts1`, `Files1` and the `ObjectManager` —
+//! manager at `/org/konedrive/Accounts` — `Accounts`, `Files` and the `ObjectManager` —
 //! and the accounts below it, started as `main` starts them (`accounts::start`). A fake
 //! helper speaks the wire protocol; nothing is intercepted for real.
 
@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use common::*;
 use futures_util::StreamExt;
-use konedrive_dbus::accounts::{Account1Proxy, Accounts1Proxy, Files1Proxy, Sync1Proxy};
+use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, FilesProxy, FolderProxies, FolderProxy};
 use konedrive_dbus::testing::TestBus;
 use konedrive_dbus::{error_name, ACCOUNTS_INTERFACE_NAME, ACCOUNTS_PATH, ACCOUNT_INTERFACE_NAME, FILES_INTERFACE_NAME};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
@@ -27,8 +27,8 @@ use nix::sys::socket::{accept, bind, listen, socket, AddressFamily, Backlog, Soc
 use wiremock::MockServer;
 use zbus::zvariant::OwnedObjectPath;
 
-const ACCOUNTS_XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Accounts1.xml"));
-const FILES_XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Files1.xml"));
+const ACCOUNTS_XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Accounts.xml"));
+const FILES_XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Files.xml"));
 
 /// A stand-in helper: greets, acknowledges `Hello` and every request after it, records
 /// what it was asked, and sends hydration requests on the live connection when told to.
@@ -103,8 +103,8 @@ impl FakeHelper {
 struct Daemon {
     daemon: konedrived::accounts::Daemon,
     client: zbus::Connection,
-    manager: Accounts1Proxy<'static>,
-    files: Files1Proxy<'static>,
+    manager: AccountsProxy<'static>,
+    files: FilesProxy<'static>,
     wallet: Arc<MemoryWallet>,
     /// `config.toml` and the accounts' files.
     config: tempfile::TempDir,
@@ -126,19 +126,13 @@ impl Daemon {
             start_daemon(&bus, config.path(), Endpoints::microsoft(), Arc::clone(&wallet), Duration::from_secs(5)).await;
         let client = bus.connect().await;
         let manager =
-            Accounts1Proxy::builder(&client).cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
-        let files = Files1Proxy::new(&client).await.unwrap();
+            AccountsProxy::builder(&client).cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
+        let files = FilesProxy::new(&client).await.unwrap();
         Self { daemon, client, manager, files, wallet, config, dir, _bus: bus }
     }
 
-    async fn sync(&self, account: &OwnedObjectPath) -> Sync1Proxy<'static> {
-        Sync1Proxy::builder(&self.client)
-            .path(account.clone())
-            .unwrap()
-            .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
-            .await
-            .unwrap()
+    async fn sync(&self, account: &OwnedObjectPath) -> FolderProxies<'static> {
+        FolderProxies::uncached(&self.client, account.clone()).await.unwrap()
     }
 
     /// The daemon's own half of an account, for what no method reaches.
@@ -197,9 +191,9 @@ fn refusal<T: std::fmt::Debug>(result: zbus::Result<T>) -> String {
     error_name(&error).unwrap_or_else(|| panic!("not a D-Bus method error: {error}")).to_owned()
 }
 
-/// Design test 8: `Add` and `Remove`, the ordered `Accounts`, the `ObjectManager`'s
-/// `InterfacesAdded` and `InterfacesRemoved`, and the checked-in XML of `Accounts1` and
-/// `Files1` against the live object.
+/// Design test 8: `Add` and `Remove`, the ordered `List`, the `ObjectManager`'s
+/// `InterfacesAdded` and `InterfacesRemoved`, and the checked-in XML of `Accounts` and
+/// `Files` against the live object.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn accounts_are_added_listed_announced_and_removed() {
     let d = Daemon::start().await;
@@ -222,7 +216,7 @@ async fn accounts_are_added_listed_announced_and_removed() {
         .await
         .unwrap();
     let mut changed = properties.receive_properties_changed().await.unwrap();
-    assert!(d.manager.accounts().await.unwrap().is_empty());
+    assert!(d.manager.list().await.unwrap().is_empty());
 
     let family = d.manager.add(" Family ").await.unwrap();
     let announced = tokio::time::timeout(Duration::from_secs(5), added.next()).await.unwrap().unwrap();
@@ -231,15 +225,15 @@ async fn accounts_are_added_listed_announced_and_removed() {
     let signal = tokio::time::timeout(Duration::from_secs(5), changed.next()).await.unwrap().unwrap();
     let args = signal.args().unwrap();
     assert_eq!(args.interface_name.as_str(), ACCOUNTS_INTERFACE_NAME);
-    assert!(args.changed_properties.contains_key("Accounts"), "{:?}", args.changed_properties.keys().collect::<Vec<_>>());
-    let account = Account1Proxy::new(&d.client, family.clone()).await.unwrap();
+    assert!(args.changed_properties.contains_key("List"), "{:?}", args.changed_properties.keys().collect::<Vec<_>>());
+    let account = AccountProxy::new(&d.client, family.clone()).await.unwrap();
     assert_eq!(account.label().await.unwrap(), "Family", "trimmed");
     assert_eq!(format!("{ACCOUNTS_PATH}/{}", account.id().await.unwrap()), family.as_str());
     assert_eq!(refusal(d.manager.add("family").await), "org.freedesktop.DBus.Error.InvalidArgs", "a label used, in another case");
     assert_eq!(refusal(d.manager.add("a/b").await), "org.freedesktop.DBus.Error.InvalidArgs");
 
     let personal = d.manager.add("Personal").await.unwrap();
-    assert_eq!(d.manager.accounts().await.unwrap(), vec![family.clone(), personal.clone()], "in the order added");
+    assert_eq!(d.manager.list().await.unwrap(), vec![family.clone(), personal.clone()], "in the order added");
     let managed = objects.get_managed_objects().await.unwrap();
     for path in [&family, &personal] {
         let interfaces: Vec<String> = managed[path].keys().map(|name| name.to_string()).collect();
@@ -247,7 +241,7 @@ async fn accounts_are_added_listed_announced_and_removed() {
     }
 
     d.manager.remove(&family.as_ref()).await.unwrap();
-    assert_eq!(d.manager.accounts().await.unwrap(), vec![personal.clone()]);
+    assert_eq!(d.manager.list().await.unwrap(), vec![personal.clone()]);
     let gone = tokio::time::timeout(Duration::from_secs(5), removed.next()).await.unwrap().unwrap();
     assert_eq!(gone.args().unwrap().object_path.as_str(), family.as_str());
     let managed = objects.get_managed_objects().await.unwrap();
@@ -271,19 +265,19 @@ async fn a_folder_that_nests_with_another_accounts_is_refused_naming_it() {
     for folder in [&in_a, &in_b] {
         std::fs::create_dir_all(folder).unwrap();
     }
-    d.sync(&a).await.register_root_without_interception(in_a.to_str().unwrap()).await.unwrap();
+    d.sync(&a).await.folder.register_without_interception(in_a.to_str().unwrap()).await.unwrap();
     std::fs::create_dir(in_a.join("inner")).unwrap();
 
     let b_sync = d.sync(&b).await;
-    let inside = b_sync.register_root_without_interception(in_a.join("inner").to_str().unwrap()).await.unwrap_err();
+    let inside = b_sync.folder.register_without_interception(in_a.join("inner").to_str().unwrap()).await.unwrap_err();
     assert_eq!(error_name(&inside), Some("org.konedrive.Error.Overlaps"));
     assert!(inside.to_string().contains("'A'"), "{inside}");
-    let around = b_sync.register_root_without_interception(d.dir.path().to_str().unwrap()).await;
+    let around = b_sync.folder.register_without_interception(d.dir.path().to_str().unwrap()).await;
     assert_eq!(refusal(around), "org.konedrive.Error.Overlaps", "a folder that contains A's");
-    b_sync.register_root_without_interception(in_b.to_str().unwrap()).await.unwrap();
+    b_sync.folder.register_without_interception(in_b.to_str().unwrap()).await.unwrap();
 }
 
-/// Design test 9: two accounts, two local folders filled from two sources. `Files1.Hydrate`
+/// Design test 9: two accounts, two local folders filled from two sources. `Files.Hydrate`
 /// and a hydration request from the helper each fill from the right account's source, and
 /// the downloads are the right account's activity.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -298,8 +292,8 @@ async fn each_account_fills_from_its_own_source() {
         (&b_sync, &in_b, d.source("B", &[("doc.bin", 2, 4096), ("opened.bin", 3, 2048)])),
     ] {
         std::fs::create_dir(folder).unwrap();
-        sync.register_root_without_interception(folder.to_str().unwrap()).await.unwrap();
-        sync.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+        sync.folder.register_without_interception(folder.to_str().unwrap()).await.unwrap();
+        sync.folder.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     }
 
     d.files.hydrate(in_a.join("doc.bin").to_str().unwrap()).await.unwrap();
@@ -330,20 +324,20 @@ async fn each_account_fills_from_its_own_source() {
     };
     let path = |p: PathBuf| std::fs::canonicalize(p).unwrap().display().to_string();
     eventually("B's download on open is recorded", || async {
-        b_sync.recent_activity(10).await.unwrap().len() == 2
+        b_sync.activity.recent(10).await.unwrap().len() == 2
     })
     .await;
-    let mut in_b_activity = shown(b_sync.recent_activity(10).await.unwrap());
+    let mut in_b_activity = shown(b_sync.activity.recent(10).await.unwrap());
     in_b_activity.sort();
     assert_eq!(
         in_b_activity,
         vec![("downloaded".to_owned(), path(in_b.join("doc.bin"))), ("downloaded".to_owned(), path(opened))]
     );
     eventually("A's download on open is recorded", || async {
-        a_sync.recent_activity(10).await.unwrap().len() == 2
+        a_sync.activity.recent(10).await.unwrap().len() == 2
     })
     .await;
-    let mut in_a_activity = shown(a_sync.recent_activity(10).await.unwrap());
+    let mut in_a_activity = shown(a_sync.activity.recent(10).await.unwrap());
     in_a_activity.sort();
     assert_eq!(
         in_a_activity,
@@ -357,7 +351,7 @@ async fn each_account_fills_from_its_own_source() {
     );
 }
 
-/// `Files1.Pin` and `FreeUp` over two accounts: every path is routed before anything
+/// `Files.Pin` and `FreeUp` over two accounts: every path is routed before anything
 /// changes — one in no account's folder refuses the whole call — and then each account
 /// does its own paths, the counts summed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -371,8 +365,8 @@ async fn a_files1_call_over_two_accounts_is_refused_whole_or_done_whole() {
     ] {
         std::fs::create_dir(folder).unwrap();
         let sync = d.sync(account).await;
-        sync.register_root_without_interception(folder.to_str().unwrap()).await.unwrap();
-        sync.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+        sync.folder.register_without_interception(folder.to_str().unwrap()).await.unwrap();
+        sync.folder.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     }
     let (a_file, b_file) = (in_a.join("a.bin"), in_b.join("b.bin"));
     let outside = d.dir.path().join("A-source/a.bin");
@@ -423,13 +417,13 @@ async fn removing_an_account_forgets_its_folder_and_keeps_its_rescued_files() {
     std::fs::write(files.rescue_dir.join("2026-09-25/mine.txt"), "rescued").unwrap();
     let folder = d.dir.path().join("OneDrive");
     std::fs::create_dir(&folder).unwrap();
-    d.sync(&path).await.register_root(folder.to_str().unwrap()).await.unwrap();
+    d.sync(&path).await.folder.register(folder.to_str().unwrap()).await.unwrap();
 
     // The helper goes away: an intercepted folder is forgotten through it, or not at all.
     d.daemon.manager.hub().set_link(None);
     account.sync.report_helper_lost();
     assert_eq!(refusal(d.manager.remove(&path.as_ref()).await), "org.konedrive.Error.NoHelper");
-    assert_eq!(d.manager.accounts().await.unwrap(), vec![path.clone()]);
+    assert_eq!(d.manager.list().await.unwrap(), vec![path.clone()]);
     assert_eq!(d.wallet.current(&item).as_deref(), Some("RT"), "nothing changed");
     assert!(files.tree_db.exists() && files.account_cache.exists());
     let config = std::fs::read_to_string(d.config.path().join("config.toml")).unwrap();
@@ -440,7 +434,7 @@ async fn removing_an_account_forgets_its_folder_and_keeps_its_rescued_files() {
     d.manager.remove(&path.as_ref()).await.unwrap();
 
     assert_eq!(helper.seen().last(), Some(&"UnregisterRoot"), "{:?}", helper.seen());
-    assert!(d.manager.accounts().await.unwrap().is_empty());
+    assert!(d.manager.list().await.unwrap().is_empty());
     assert_eq!(d.wallet.current(&item), None, "the refresh token is deleted");
     assert!(!files.dir.exists(), "the cached name and quota and the tree store are deleted");
     assert_eq!(std::fs::read_to_string(files.rescue_dir.join("2026-09-25/mine.txt")).unwrap(), "rescued");
@@ -472,19 +466,19 @@ async fn removing_a_held_account_forgets_its_folder_through_the_helper() {
     .unwrap();
     let d = Daemon::start_in(config, dir).await;
     let held = konedrive_dbus::account_path("ba9876543210").unwrap();
-    let sync = d.sync(&held).await;
-    assert_eq!(sync.root_state().await.unwrap(), "error");
+    let sync = d.sync(&held).await.folder;
+    assert_eq!(sync.state().await.unwrap(), "error");
     assert!(sync.last_error().await.unwrap().contains("held back"), "{}", sync.last_error().await.unwrap());
     let recorded = || std::fs::read_to_string(d.config.path().join("config.toml")).unwrap();
 
     assert_eq!(refusal(d.manager.remove(&held.as_ref()).await), "org.konedrive.Error.NoHelper");
-    assert_eq!(d.manager.accounts().await.unwrap().len(), 2, "nothing changed");
+    assert_eq!(d.manager.list().await.unwrap().len(), 2, "nothing changed");
     assert!(recorded().contains(root_id), "the folder's record stays: {}", recorded());
 
     let (helper, _socket) = d.connect_helper().await;
     d.manager.remove(&held.as_ref()).await.unwrap();
     assert_eq!(helper.seen(), vec!["UnregisterRoot"], "forgotten through the helper");
-    assert_eq!(d.manager.accounts().await.unwrap().len(), 1);
+    assert_eq!(d.manager.list().await.unwrap().len(), 1);
     assert!(!recorded().contains(root_id), "{}", recorded());
 }
 
@@ -543,22 +537,22 @@ async fn a_version_1_configuration_starts_as_personal_with_its_folder() {
     let daemon = start_daemon(&bus, config.path(), endpoints(&server), Arc::clone(&wallet), Duration::from_secs(5)).await;
 
     let client = bus.connect().await;
-    let manager = Accounts1Proxy::new(&client).await.unwrap();
-    let accounts = manager.accounts().await.unwrap();
+    let manager = AccountsProxy::new(&client).await.unwrap();
+    let accounts = manager.list().await.unwrap();
     assert_eq!(accounts.len(), 1);
     assert_eq!(manager.client_id().await.unwrap(), CLIENT_ID);
-    let account = Account1Proxy::builder(&client)
+    let account = AccountProxy::builder(&client)
         .path(accounts[0].clone())
         .unwrap()
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await
         .unwrap();
-    let sync = Sync1Proxy::new(&client, accounts[0].clone()).await.unwrap();
+    let sync = FolderProxy::new(&client, accounts[0].clone()).await.unwrap();
     assert_eq!(account.label().await.unwrap(), "Personal");
     assert_eq!(account.state().await.unwrap(), "signed-in", "the wallet's token of before counts");
-    assert_eq!(sync.root_path().await.unwrap(), folder.display().to_string());
-    assert_eq!(sync.root_state().await.unwrap(), "no-interception");
+    assert_eq!(sync.path().await.unwrap(), folder.display().to_string());
+    assert_eq!(sync.state().await.unwrap(), "no-interception");
 
     let id = account.id().await.unwrap();
     let moved = paths.account(&id).unwrap();
@@ -606,12 +600,12 @@ async fn a_version_1_onedrive_folder_is_held_then_brought_up_at_the_first_connec
     let daemon = start_daemon_with(&bus, config.path(), options).await;
 
     let client = bus.connect().await;
-    let path = Accounts1Proxy::new(&client).await.unwrap().accounts().await.unwrap().remove(0);
+    let path = AccountsProxy::new(&client).await.unwrap().list().await.unwrap().remove(0);
     let id = path.as_str().rsplit('/').next().unwrap().to_owned();
     let sync =
-        Sync1Proxy::builder(&client).path(path).unwrap().cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
-    assert_eq!(sync.root_path().await.unwrap(), folder.display().to_string());
-    assert_eq!(sync.root_state().await.unwrap(), "error", "held until the helper is back");
+        FolderProxy::builder(&client).path(path).unwrap().cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
+    assert_eq!(sync.path().await.unwrap(), folder.display().to_string());
+    assert_eq!(sync.state().await.unwrap(), "error", "held until the helper is back");
     assert!(sync.last_error().await.unwrap().contains("helper is not connected"), "{}", sync.last_error().await.unwrap());
     assert_eq!(daemon.manager.config().account(&id).unwrap().drive_id, "D1", "the folder's drive is the account's");
 

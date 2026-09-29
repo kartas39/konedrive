@@ -22,7 +22,7 @@ namespace
 const QString ClientId = QStringLiteral("0f8fad5b-d9cb-469f-a165-70867728950e");
 }
 
-/// The manager's side of the window: DaemonController (Accounts1),
+/// The manager's side of the window: DaemonController (Accounts),
 /// AccountsModel following Accounts, CurrentAccount and its remembered
 /// choice, and the Add dialog's one step. XDG_CONFIG_HOME is a temporary
 /// directory, so konedriverc is never the user's.
@@ -115,7 +115,7 @@ private Q_SLOTS:
         QCOMPARE(model.at(0)->status()->text(), QStringLiteral("The KOneDrive service is not running"));
     }
 
-    /// HelperState (dbus/org.konedrive.Accounts1.xml) reaches the window and
+    /// HelperState (dbus/org.konedrive.Accounts.xml) reaches the window and
     /// drives helperTrouble (what StatusPage's helper card and every
     /// account's status key off) and helperInstruction (what that card and
     /// the NoHelper prompt say to do about it).
@@ -210,9 +210,8 @@ private Q_SLOTS:
 
         auto *family = m_daemon->object(1);
         family->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
-        family->sync->set({{QStringLiteral("RootPath"), QStringLiteral("/home/u/Family")},
-                           {QStringLiteral("RootState"), QStringLiteral("ready")},
-                           {QStringLiteral("ConflictCount"), QVariant::fromValue<uint>(1)}});
+        family->sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/Family")}, {QStringLiteral("State"), QStringLiteral("ready")}});
+        family->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
         QTRY_VERIFY(current.othersNeedAttention());
         QCOMPARE(model.data(model.index(1, 0), AccountsModel::IconNameRole).toString(), QStringLiteral("state-warning"));
 
@@ -288,7 +287,7 @@ private Q_SLOTS:
         QCOMPARE(model.addError(), QString());
     }
 
-    /// Accounts1.Add's rules, checked before the daemon is asked.
+    /// Accounts.Add's rules, checked before the daemon is asked.
     void labelProblems()
     {
         start({QStringLiteral("Personal")});

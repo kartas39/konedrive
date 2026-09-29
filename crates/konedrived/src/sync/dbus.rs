@@ -1,7 +1,7 @@
-//! `org.konedrive.Sync1`, one per account on the account's object
-//! `/org/konedrive/Accounts/<id>`, beside its `Account1`
-//! (definition: `dbus/org.konedrive.Sync1.xml`). The per-file calls are
-//! `org.konedrive.Files1`'s, routed by path (`crate::accounts`).
+//! The interfaces of one account's folder — `org.konedrive.Folder`, `Transfers`,
+//! `UploadQueue`, `Conflicts`, `LocalScan` and `ActivityLog` — on the account's object
+//! `/org/konedrive/Accounts/<id>`, beside its `Account` (definitions: `dbus/*.xml`).
+//! The per-file calls are `org.konedrive.Files`'s, routed by path (`crate::accounts`).
 //!
 //! Follows the same split as `crate::dbus`/`crate::account`: this module is
 //! the thin zbus wrapper, and `SyncService` (in `sync/mod.rs`) does the
@@ -13,7 +13,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use konedrive_dbus::SYNC_INTERFACE_NAME;
+use konedrive_dbus::{
+    CONFLICTS_INTERFACE_NAME, FOLDER_INTERFACE_NAME, LOCAL_SCAN_INTERFACE_NAME, TRANSFERS_INTERFACE_NAME,
+    UPLOAD_QUEUE_INTERFACE_NAME,
+};
 use tokio::sync::{broadcast, watch};
 use tokio::task::JoinHandle;
 use zbus::object_server::{InterfaceRef, SignalEmitter};
@@ -27,17 +30,25 @@ use super::{published_error, published_state, SyncError, SyncService, SyncSnapsh
 /// a second.
 pub const COALESCE: Duration = Duration::from_millis(250);
 
-pub struct Sync1 {
-    service: Arc<SyncService>,
+/// The interfaces of one account's folder, each over the same `SyncService`
+/// (definitions: `dbus/org.konedrive.{Folder,Transfers,UploadQueue,Conflicts,LocalScan,ActivityLog}.xml`).
+macro_rules! over_the_service {
+    ($($name:ident),*) => {$(
+        pub struct $name {
+            service: Arc<SyncService>,
+        }
+
+        impl $name {
+            pub fn new(service: Arc<SyncService>) -> Self {
+                Self { service }
+            }
+        }
+    )*};
 }
 
-impl Sync1 {
-    pub fn new(service: Arc<SyncService>) -> Self {
-        Self { service }
-    }
-}
+over_the_service!(Folder, Transfers, UploadQueue, Conflicts, LocalScan, ActivityLog);
 
-/// Every way `Sync1` can refuse, as a D-Bus error *name* rather than a
+/// Every way the folder's interfaces (and `Files`) can refuse, as a D-Bus error *name* rather than a
 /// sentence (asks for named errors on refusals the user can act
 /// on).
 ///
@@ -65,23 +76,23 @@ pub enum SyncFault {
     AlreadyRegistered(String),
     NotSignedIn(String),
     NoSource(String),
-    /// `DismissConflict` of a path that names no conflict; the message
+    /// `Conflicts.Dismiss` of a path that names no conflict; the message
     /// names the path.
     NoConflict(String),
     /// A free-up of something "Always keep on this device" keeps here:
     /// `FreeUp` of a path a folder above it pins, or `Dehydrate` of a pinned
     /// file. The message is "<path> is pinned by <folder>: unpin it first".
     NotAllowed(String),
-    /// `RegisterRoot` or `RegisterRootWithoutInterception` of a folder that
+    /// `Register` or `RegisterWithoutInterception` of a folder that
     /// is, is inside, or contains another account's folder; the message
     /// names that account's label.
     Overlaps(String),
-    /// `Accounts1.Remove` of a path that names no account.
+    /// `Accounts.Remove` of a path that names no account.
     NoAccount(String),
     /// A free-up of a file whose change waits to be uploaded (write design
     /// §3.8): freeing it up would lose that change. The message names it.
     NotUploaded(String),
-    /// `UnregisterRoot`, or `Accounts1.Remove`, while changes wait to be uploaded: the folder's
+    /// `Unregister`, or `Accounts.Remove`, while changes wait to be uploaded: the folder's
     /// record holding them would go. The message says how many.
     PendingUploads(String),
     /// Everything with no name of its own: an I/O failure, mostly.
@@ -90,25 +101,25 @@ pub enum SyncFault {
 
 type Result<T> = std::result::Result<T, SyncFault>;
 
-#[interface(name = "org.konedrive.Sync1")]
-impl Sync1 {
-    async fn register_root(&self, path: &str) -> Result<()> {
+#[interface(name = "org.konedrive.Folder")]
+impl Folder {
+    async fn register(&self, path: &str) -> Result<()> {
         self.service.register_root(Path::new(path)).await.map_err(to_fault)
     }
 
     /// Binds a folder with **nothing intercepting opens inside it**.
-    /// Separate from `RegisterRoot`, rather than a flag on it, so
+    /// Separate from `Register`, rather than a flag on it, so
     /// that nobody enters this mode without naming it: a placeholder nobody
-    /// intercepts reads as zeros, which `RootState = no-interception` and
+    /// intercepts reads as zeros, which `State = no-interception` and
     /// `LastError` then say in as many words.
-    async fn register_root_without_interception(&self, path: &str) -> Result<()> {
+    async fn register_without_interception(&self, path: &str) -> Result<()> {
         self.service
             .register_root_without_interception(Path::new(path))
             .await
             .map_err(to_fault)
     }
 
-    async fn unregister_root(&self) -> Result<()> {
+    async fn unregister(&self) -> Result<()> {
         self.service.unregister_root().await.map_err(to_fault)
     }
 
@@ -126,47 +137,10 @@ impl Sync1 {
         self.service.skipped().await.map_err(to_fault)
     }
 
-    /// The newest `limit` events, newest first: (unix time, kind, full path,
-    /// detail).
-    async fn recent_activity(&self, limit: u32) -> Result<Vec<(i64, String, String, String)>> {
-        let events = self.service.recent_activity(limit).await.map_err(to_fault)?;
-        Ok(events.into_iter().map(|e| (e.at, e.kind, e.path, e.detail)).collect())
-    }
-
-    /// One per event, as it is recorded; the same fields as
-    /// `RecentActivity`.
-    #[zbus(signal)]
-    async fn activity_added(
-        emitter: &SignalEmitter<'_>,
-        time: i64,
-        kind: &str,
-        path: &str,
-        detail: &str,
-    ) -> zbus::Result<()>;
-
-    /// (unix time, original full path, full path of the kept version, how it
-    /// was kept: `rescued` or `copy`), newest first; one whose kept file is
-    /// gone is dropped.
-    async fn conflicts(&self) -> Result<Vec<(i64, String, String, String)>> {
-        let rows = self.service.conflicts().await.map_err(to_fault)?;
-        Ok(rows.into_iter().map(|c| (c.at, c.original, c.rescued, c.kind.as_str().to_owned())).collect())
-    }
-
-    async fn dismiss_conflict(&self, rescued_path: &str) -> Result<()> {
-        self.service.dismiss_conflict(rescued_path).await.map_err(to_fault)
-    }
-
     #[zbus(out_args("files", "bytes", "busy"))]
     async fn free_up_space(&self) -> Result<(u32, u64, u32)> {
         let freed = self.service.free_up_space().await.map_err(to_fault)?;
         Ok((freed.files, freed.bytes, freed.busy))
-    }
-
-    /// The changes waiting to be uploaded, oldest first, at most `limit` (0 for
-    /// all): (seq, kind, full path, state, bytes sent, bytes in all, reason,
-    /// next try).
-    async fn outbox(&self, limit: u32) -> Result<Vec<(u64, String, String, String, u64, u64, String, i64)>> {
-        self.service.outbox(limit).await.map_err(to_fault)
     }
 
     /// Nothing is uploaded, and OneDrive is not asked for changes, for
@@ -189,43 +163,16 @@ impl Sync1 {
         self.ignore_patterns_changed(&emitter).await.map_err(SyncFault::ZBus)
     }
 
-    /// The removals the mass-delete guard held go ahead; how many.
-    async fn confirm_deletes(&self) -> Result<u32> {
-        self.service.confirm_deletes().await.map_err(to_fault)
-    }
-
-    /// The removals the mass-delete guard held are dropped, and their items
-    /// placed again; how many.
-    async fn restore_deletes(&self) -> Result<u32> {
-        self.service.restore_deletes().await.map_err(to_fault)
-    }
-
-    /// What stays on this computer and why: (full path, reason).
-    async fn not_uploaded(&self) -> Result<Vec<(String, String)>> {
-        self.service.not_uploaded().await.map_err(to_fault)
-    }
-
-    /// What is kept back, one row per reason: (group, reason, count, bytes).
-    async fn not_uploaded_summary(&self) -> Result<Vec<(String, String, u32, u64)>> {
-        self.service.not_uploaded_summary().await.map_err(to_fault)
-    }
-
-    /// The files kept back for one reason, at most `limit` (0 for all), and how many there are.
-    #[zbus(out_args("items", "total"))]
-    async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32)> {
-        self.service.not_uploaded_files(reason, limit).await.map_err(to_fault)
-    }
-
     #[zbus(property)]
-    /// From the published state, as `RootState` and `LastError` are: a
+    /// From the published state, as `State` and `LastError` are: a
     /// folder that could not be brought up reads
     /// `error` and still says which folder it is.
-    async fn root_path(&self) -> String {
+    async fn path(&self) -> String {
         self.service.state().get().root_path
     }
 
     #[zbus(property)]
-    async fn root_state(&self) -> String {
+    async fn state(&self) -> String {
         self.service.root_state()
     }
 
@@ -235,7 +182,7 @@ impl Sync1 {
     }
 
     #[zbus(property)]
-    async fn root_source(&self) -> String {
+    async fn source(&self) -> String {
         self.service.root_source()
     }
 
@@ -264,11 +211,6 @@ impl Sync1 {
         self.service.status().1
     }
 
-    #[zbus(property)]
-    async fn conflict_count(&self) -> u32 {
-        self.service.status().2
-    }
-
     /// Files and folders with a pin of their own.
     #[zbus(property)]
     async fn pinned_count(&self) -> u32 {
@@ -276,70 +218,8 @@ impl Sync1 {
     }
 
     #[zbus(property)]
-    async fn transfers(&self) -> Vec<(String, u64, u64)> {
-        self.service.transfers()
-    }
-
-    /// Changes waiting to be uploaded (not blocked, not held).
-    #[zbus(property)]
-    async fn pending_count(&self) -> u32 {
-        self.service.state().get().pending_count
-    }
-
-    /// The size of the files those changes send.
-    #[zbus(property)]
-    async fn pending_bytes(&self) -> u64 {
-        self.service.state().get().pending_bytes
-    }
-
-    /// Changes that need the user to go up.
-    #[zbus(property)]
-    async fn blocked_count(&self) -> u32 {
-        self.service.state().get().blocked_count
-    }
-
-    /// Removals the mass-delete guard holds for `ConfirmDeletes` or
-    /// `RestoreDeletes`.
-    #[zbus(property)]
-    async fn held_count(&self) -> u32 {
-        self.service.state().get().held_count
-    }
-
-    /// OneDrive is full: no content goes up (issue #2).
-    #[zbus(property)]
-    async fn quota_full(&self) -> bool {
-        self.service.state().get().quota_full
-    }
-
-    #[zbus(property)]
-    async fn space_waiting_count(&self) -> u32 {
-        self.service.state().get().space_waiting_count
-    }
-
-    #[zbus(property)]
-    async fn space_waiting_bytes(&self) -> u64 {
-        self.service.state().get().space_waiting_bytes
-    }
-
-    #[zbus(property)]
-    async fn too_big_count(&self) -> u32 {
-        self.service.state().get().too_big_count
-    }
-
-    #[zbus(property)]
-    async fn quota_state(&self) -> String {
-        self.service.state().get().quota_state
-    }
-
-    #[zbus(property)]
-    async fn free_space(&self) -> u64 {
-        self.service.state().get().free_space
-    }
-
-    /// Uploads under way, shaped as `Transfers`.
-    #[zbus(property)]
-    async fn uploads(&self) -> Vec<(String, u64, u64)> {
-        self.service.state().get().uploads
+    async fn ignore_patterns(&self) -> Vec<String> {
+        self.service.ignore_patterns()
     }
 
     #[zbus(property)]
@@ -352,15 +232,19 @@ impl Sync1 {
     async fn paused_until(&self) -> i64 {
         self.service.state().get().paused_until.unwrap_or(0)
     }
+}
 
+#[interface(name = "org.konedrive.Transfers")]
+impl Transfers {
     #[zbus(property)]
-    async fn ignore_patterns(&self) -> Vec<String> {
-        self.service.ignore_patterns()
+    async fn downloads(&self) -> Vec<(String, u64, u64)> {
+        self.service.transfers()
     }
 
+    /// Uploads under way, shaped as `Downloads`.
     #[zbus(property)]
-    async fn machine_name(&self) -> String {
-        self.service.machine_name()
+    async fn uploads(&self) -> Vec<(String, u64, u64)> {
+        self.service.state().get().uploads
     }
 
     /// Bytes a second downloaded, the average of the last 3 s.
@@ -401,13 +285,13 @@ impl Sync1 {
 
     /// Large transfers (100 MiB and up) under way now, files being opened included.
     #[zbus(property)]
-    async fn large_transfers(&self) -> u32 {
+    async fn large_streams(&self) -> u32 {
         self.service.state().get().throughput.large
     }
 
     /// How many large transfers may run at once (`[transfers] large` in `config.toml`).
     #[zbus(property)]
-    async fn large_limit(&self) -> u32 {
+    async fn large_stream_limit(&self) -> u32 {
         self.service.state().get().throughput.large_limit
     }
 
@@ -466,55 +350,190 @@ impl Sync1 {
     async fn upload_time_left(&self) -> u32 {
         self.service.state().get().queue.up.time_left
     }
+}
 
+#[interface(name = "org.konedrive.UploadQueue")]
+impl UploadQueue {
+    /// The changes waiting to be uploaded, oldest first, at most `limit` (0 for
+    /// all): (seq, kind, full path, state, bytes sent, bytes in all, reason,
+    /// next try).
+    async fn changes(&self, limit: u32) -> Result<Vec<(u64, String, String, String, u64, u64, String, i64)>> {
+        self.service.outbox(limit).await.map_err(to_fault)
+    }
+
+    /// The removals the mass-delete guard held go ahead; how many.
+    async fn confirm_deletes(&self) -> Result<u32> {
+        self.service.confirm_deletes().await.map_err(to_fault)
+    }
+
+    /// The removals the mass-delete guard held are dropped, and their items
+    /// placed again; how many.
+    async fn restore_deletes(&self) -> Result<u32> {
+        self.service.restore_deletes().await.map_err(to_fault)
+    }
+
+    /// What stays on this computer and why: (full path, reason).
+    async fn not_uploaded(&self) -> Result<Vec<(String, String)>> {
+        self.service.not_uploaded().await.map_err(to_fault)
+    }
+
+    /// What is kept back, one row per reason: (group, reason, count, bytes).
+    async fn not_uploaded_summary(&self) -> Result<Vec<(String, String, u32, u64)>> {
+        self.service.not_uploaded_summary().await.map_err(to_fault)
+    }
+
+    /// The files kept back for one reason, at most `limit` (0 for all), and how many there are.
+    #[zbus(out_args("items", "total"))]
+    async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32)> {
+        self.service.not_uploaded_files(reason, limit).await.map_err(to_fault)
+    }
+
+    /// Changes waiting to be uploaded (not blocked, not held).
+    #[zbus(property)]
+    async fn pending_count(&self) -> u32 {
+        self.service.state().get().pending_count
+    }
+
+    /// The size of the files those changes send.
+    #[zbus(property)]
+    async fn pending_bytes(&self) -> u64 {
+        self.service.state().get().pending_bytes
+    }
+
+    /// Changes that need the user to go up.
+    #[zbus(property)]
+    async fn blocked_count(&self) -> u32 {
+        self.service.state().get().blocked_count
+    }
+
+    /// Removals the mass-delete guard holds for `ConfirmDeletes` or
+    /// `RestoreDeletes`.
+    #[zbus(property)]
+    async fn held_count(&self) -> u32 {
+        self.service.state().get().held_count
+    }
+
+    /// OneDrive is full: no content goes up (issue #2).
+    #[zbus(property)]
+    async fn quota_full(&self) -> bool {
+        self.service.state().get().quota_full
+    }
+
+    #[zbus(property)]
+    async fn quota_waiting_count(&self) -> u32 {
+        self.service.state().get().space_waiting_count
+    }
+
+    #[zbus(property)]
+    async fn quota_waiting_bytes(&self) -> u64 {
+        self.service.state().get().space_waiting_bytes
+    }
+
+    #[zbus(property)]
+    async fn too_big_count(&self) -> u32 {
+        self.service.state().get().too_big_count
+    }
+
+    #[zbus(property)]
+    async fn quota_state(&self) -> String {
+        self.service.state().get().quota_state
+    }
+
+    #[zbus(property)]
+    async fn quota_remaining(&self) -> u64 {
+        self.service.state().get().free_space
+    }
+}
+
+#[interface(name = "org.konedrive.Conflicts")]
+impl Conflicts {
+    /// (unix time, original full path, full path of the kept version, how it
+    /// was kept: `rescued` or `copy`), newest first; one whose kept file is
+    /// gone is dropped.
+    async fn list(&self) -> Result<Vec<(i64, String, String, String)>> {
+        let rows = self.service.conflicts().await.map_err(to_fault)?;
+        Ok(rows.into_iter().map(|c| (c.at, c.original, c.rescued, c.kind.as_str().to_owned())).collect())
+    }
+
+    async fn dismiss(&self, rescued_path: &str) -> Result<()> {
+        self.service.dismiss_conflict(rescued_path).await.map_err(to_fault)
+    }
+
+    #[zbus(property)]
+    async fn count(&self) -> u32 {
+        self.service.status().2
+    }
+
+    #[zbus(property)]
+    async fn machine_name(&self) -> String {
+        self.service.machine_name()
+    }
+}
+
+#[interface(name = "org.konedrive.LocalScan")]
+impl LocalScan {
     /// The Full local scan (issue #8): `running`, `idle`, or `none` for a read-only folder.
     #[zbus(property)]
-    async fn scan_state(&self) -> String {
+    async fn state(&self) -> String {
         self.service.state().get().scan.state.as_str().to_owned()
     }
 
     /// Why the running (or the last) scan runs: start, read-write, helper-back, overflow,
     /// ignore-list, periodic.
     #[zbus(property)]
-    async fn scan_reason(&self) -> String {
+    async fn reason(&self) -> String {
         self.service.state().get().scan.reason
     }
 
     /// Unix seconds when it started; 0 before the first.
     #[zbus(property)]
-    async fn scan_started(&self) -> i64 {
+    async fn started(&self) -> i64 {
         self.service.state().get().scan.started
     }
 
     /// Directories it has seen so far.
     #[zbus(property)]
-    async fn scan_directories(&self) -> u64 {
+    async fn directories(&self) -> u64 {
         self.service.state().get().scan.directories
     }
 
     /// Files (and other entries that are not directories) it has seen so far.
     #[zbus(property)]
-    async fn scan_files(&self) -> u64 {
+    async fn files(&self) -> u64 {
         self.service.state().get().scan.files
     }
 
     /// About how many items it will see: the items the base had placed when it started.
     #[zbus(property)]
-    async fn scan_expected(&self) -> u64 {
+    async fn expected(&self) -> u64 {
         self.service.state().get().scan.expected
     }
 
     /// Unix seconds when the last scan finished; 0 for none since the daemon started.
     #[zbus(property)]
-    async fn scan_finished(&self) -> i64 {
+    async fn finished(&self) -> i64 {
         self.service.state().get().scan.finished
     }
 
     /// How long the last finished scan took, in seconds.
     #[zbus(property)]
-    async fn scan_took(&self) -> u32 {
+    async fn took(&self) -> u32 {
         self.service.state().get().scan.took
     }
+}
+
+#[interface(name = "org.konedrive.ActivityLog")]
+impl ActivityLog {
+    /// The newest `limit` events, newest first: (unix time, kind, full path,
+    /// detail).
+    async fn recent(&self, limit: u32) -> Result<Vec<(i64, String, String, String)>> {
+        let events = self.service.recent_activity(limit).await.map_err(to_fault)?;
+        Ok(events.into_iter().map(|e| (e.at, e.kind, e.path, e.detail)).collect())
+    }
+
+    /// One per event, as it is recorded; the same fields as `Recent`.
+    #[zbus(signal)]
+    async fn added(emitter: &SignalEmitter<'_>, time: i64, kind: &str, path: &str, detail: &str) -> zbus::Result<()>;
 }
 
 /// Every refusal keeps its own name; only the ones with nothing a caller
@@ -545,75 +564,90 @@ pub(crate) fn to_fault(error: SyncError) -> SyncFault {
     }
 }
 
-/// Serves one account's `Sync1` at `path` and starts its signals; the tasks
+/// Serves one account's folder — `Folder`, `Transfers`, `UploadQueue`, `Conflicts`,
+/// `LocalScan` and `ActivityLog` — at `path` and starts their signals; the tasks
 /// that send them, to stop when the account goes.
 ///
 /// At startup this runs before the bus name is claimed
 /// (`crate::accounts::serve`): `main` used to claim the name, then connect
-/// to the helper (up to 30 s), then attach this interface, so a
-/// D-Bus-activated client calling `Sync1` in that window got
+/// to the helper (up to 30 s), then attach the folder's interface, so a
+/// D-Bus-activated client calling it in that window got
 /// `UnknownInterface` from a daemon that was already on the bus. Nothing
 /// that can fail, and nothing that can be slow, is left between the
-/// interface and the name.
+/// interfaces and the name.
 pub async fn export(
     connection: &Connection,
     path: &ObjectPath<'_>,
     service: Arc<SyncService>,
 ) -> zbus::Result<Vec<JoinHandle<()>>> {
-    connection.object_server().at(path, Sync1::new(Arc::clone(&service))).await?;
+    let server = connection.object_server();
+    server.at(path, Folder::new(Arc::clone(&service))).await?;
+    server.at(path, Transfers::new(Arc::clone(&service))).await?;
+    server.at(path, UploadQueue::new(Arc::clone(&service))).await?;
+    server.at(path, Conflicts::new(Arc::clone(&service))).await?;
+    server.at(path, LocalScan::new(Arc::clone(&service))).await?;
+    server.at(path, ActivityLog::new(Arc::clone(&service))).await?;
     start_signals(connection, path, service).await
 }
 
-/// Takes one account's `Sync1` off the bus (`Accounts1.Remove`).
+/// Takes one account's folder off the bus (`Accounts.Remove`).
 pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()> {
-    connection.object_server().remove::<Sync1, _>(path).await.map(drop)
+    let server = connection.object_server();
+    server.remove::<ActivityLog, _>(path).await?;
+    server.remove::<LocalScan, _>(path).await?;
+    server.remove::<Conflicts, _>(path).await?;
+    server.remove::<UploadQueue, _>(path).await?;
+    server.remove::<Transfers, _>(path).await?;
+    server.remove::<Folder, _>(path).await.map(drop)
 }
 
 /// Turns `SyncService`'s state changes into `PropertiesChanged`, the same
 /// `StateHandle` → `PropertiesChanged` mechanism `crate::dbus::export` uses
-/// for `Account1`.
+/// for `Account`; each under the interface that holds the property.
 async fn start_signals(
     connection: &Connection,
     path: &ObjectPath<'_>,
     service: Arc<SyncService>,
 ) -> zbus::Result<Vec<JoinHandle<()>>> {
-    let iface = connection.object_server().interface::<_, Sync1>(path).await?;
+    let server = connection.object_server();
+    let folder = server.interface::<_, Folder>(path).await?;
+    let queue = server.interface::<_, UploadQueue>(path).await?;
     // Captured before spawning (not inside the task): otherwise a state
-    // change landing between attaching the interface and the task's first
+    // change landing between attaching the interfaces and the task's first
     // poll would be absorbed into this baseline instead of being emitted as
     // a PropertiesChanged signal — see `crate::dbus::serve`'s identical
-    // comment for `Account1`.
+    // comment for `Account`.
     let mut changes = service.state().subscribe();
     let mut previous = changes.borrow_and_update().clone();
-    // A second subscription (`InterfaceRef` is `Clone`; taken before the
-    // first loop moves `iface`) so the counters — and the status properties
+    // A second subscription so the counters — and the status properties
     // of — can be coalesced on their own schedule: a listing
     // changes the counters with every page, and a download its transfer with
-    // every read, far more often than `RootState`, `RootPath` and
+    // every read, far more often than `State`, `Path` and
     // `LastError` change, and neither may hold those up.
     let mut counters = service.state().subscribe();
     let mut transfers = service.report().transfers.subscribe();
     let shown = Coalesced::of(&counters.borrow_and_update(), &transfers.borrow_and_update());
-    let counters_iface = iface.clone();
+    // Every interface of the folder is on the same object: one emitter sends for all.
+    let counters_emitter = folder.signal_emitter().to_owned();
     // Taken here too, for the same reason as `changes`: an event recorded
     // between here and the task's first poll is still sent.
     let mut added = service.report().activity.subscribe();
-    let activity_iface = iface.clone();
+    let activity_emitter = folder.signal_emitter().to_owned();
     // The queue totals, counted from the rest into the state (issue #16).
     let totals = tokio::spawn(super::totals::run(service.state().clone(), service.report().transfers.clone()));
     let states = tokio::spawn(async move {
         while changes.changed().await.is_ok() {
             let current = changes.borrow_and_update().clone();
-            if let Err(e) = emit_changes(&iface, &previous, &current).await {
-                tracing::warn!("cannot emit PropertiesChanged for {SYNC_INTERFACE_NAME}: {e}");
+            if let Err(e) = emit_changes(&folder, &queue, &previous, &current).await {
+                tracing::warn!("cannot emit PropertiesChanged for the folder: {e}");
             }
             previous = current;
         }
     });
     let coalesced = tokio::spawn(coalesce(counters, transfers, shown, move |old, new| {
-        let iface = counters_iface.clone();
+        let emitter = counters_emitter.clone();
         async move {
-            if let Err(e) = emit_coalesced(&iface, &old, &new).await {
+            if let Err(e) = emit_coalesced(&emitter, &old, &new).await {
                 tracing::warn!("cannot emit PropertiesChanged for the sync counters: {e}");
             }
         }
@@ -622,14 +656,13 @@ async fn start_signals(
         loop {
             match added.recv().await {
                 Ok(e) => {
-                    let emitter = activity_iface.signal_emitter();
-                    if let Err(err) = Sync1::activity_added(emitter, e.at, &e.kind, &e.path, &e.detail).await {
-                        tracing::warn!("cannot emit ActivityAdded: {err}");
+                    if let Err(err) = ActivityLog::added(&activity_emitter, e.at, &e.kind, &e.path, &e.detail).await {
+                        tracing::warn!("cannot emit ActivityLog.Added: {err}");
                     }
                 }
-                // `RecentActivity` still has them; only the live signal is lost.
+                // `Recent` still has them; only the live signal is lost.
                 Err(broadcast::error::RecvError::Lagged(missed)) => {
-                    tracing::warn!("{missed} ActivityAdded signal(s) were not sent: too many events at once");
+                    tracing::warn!("{missed} ActivityLog.Added signal(s) were not sent: too many events at once");
                 }
                 Err(broadcast::error::RecvError::Closed) => return,
             }
@@ -649,7 +682,7 @@ pub(crate) struct Coalesced {
     local_bytes: u64,
     conflict_count: u32,
     pinned_count: u32,
-    transfers: Vec<(String, u64, u64)>,
+    downloads: Vec<(String, u64, u64)>,
     pending_count: u32,
     pending_bytes: u64,
     blocked_count: u32,
@@ -665,6 +698,9 @@ pub(crate) struct Coalesced {
     scan: super::local_scan::LocalScan,
 }
 
+/// The properties that changed, by interface, then by name, with their values now.
+pub(crate) type Changed = BTreeMap<&'static str, HashMap<&'static str, zbus::zvariant::Value<'static>>>;
+
 impl Coalesced {
     fn of(s: &SyncSnapshot, transfers: &BTreeMap<u64, Transfer>) -> Self {
         Self {
@@ -675,7 +711,7 @@ impl Coalesced {
             local_bytes: s.local_bytes,
             conflict_count: s.conflict_count,
             pinned_count: s.pinned_count,
-            transfers: transfers.values().map(|t| (t.path.clone(), t.done, t.total)).collect(),
+            downloads: transfers.values().map(|t| (t.path.clone(), t.done, t.total)).collect(),
             pending_count: s.pending_count,
             pending_bytes: s.pending_bytes,
             blocked_count: s.blocked_count,
@@ -692,90 +728,88 @@ impl Coalesced {
         }
     }
 
-    /// The properties that differ from `old`, by name, with their values now.
-    fn changed_since(&self, old: &Self) -> HashMap<&'static str, zbus::zvariant::Value<'static>> {
-        let mut changed: HashMap<&'static str, zbus::zvariant::Value<'static>> = HashMap::new();
+    /// The properties that differ from `old`, under the interface that holds each, with
+    /// their values now. An interface with nothing changed is not there.
+    fn changed_since(&self, old: &Self) -> Changed {
+        let mut changed = Changed::new();
+        let mut put = |interface: &'static str, name: &'static str, value: zbus::zvariant::Value<'static>| {
+            changed.entry(interface).or_default().insert(name, value);
+        };
+        let folder = FOLDER_INTERFACE_NAME;
         if old.items_listed != self.items_listed {
-            changed.insert("ItemsListed", self.items_listed.into());
+            put(folder, "ItemsListed", self.items_listed.into());
         }
         if old.items_placed != self.items_placed {
-            changed.insert("ItemsPlaced", self.items_placed.into());
+            put(folder, "ItemsPlaced", self.items_placed.into());
         }
         if old.skipped_count != self.skipped_count {
-            changed.insert("SkippedCount", self.skipped_count.into());
+            put(folder, "SkippedCount", self.skipped_count.into());
         }
         if old.last_checked != self.last_checked {
-            changed.insert("LastChecked", self.last_checked.into());
+            put(folder, "LastChecked", self.last_checked.into());
         }
         if old.local_bytes != self.local_bytes {
-            changed.insert("LocalBytes", self.local_bytes.into());
-        }
-        if old.conflict_count != self.conflict_count {
-            changed.insert("ConflictCount", self.conflict_count.into());
+            put(folder, "LocalBytes", self.local_bytes.into());
         }
         if old.pinned_count != self.pinned_count {
-            changed.insert("PinnedCount", self.pinned_count.into());
+            put(folder, "PinnedCount", self.pinned_count.into());
         }
-        if old.transfers != self.transfers {
-            changed.insert("Transfers", self.transfers.clone().into());
+        if old.conflict_count != self.conflict_count {
+            put(CONFLICTS_INTERFACE_NAME, "Count", self.conflict_count.into());
         }
+        let queue = UPLOAD_QUEUE_INTERFACE_NAME;
         if old.pending_count != self.pending_count {
-            changed.insert("PendingCount", self.pending_count.into());
+            put(queue, "PendingCount", self.pending_count.into());
         }
         if old.pending_bytes != self.pending_bytes {
-            changed.insert("PendingBytes", self.pending_bytes.into());
+            put(queue, "PendingBytes", self.pending_bytes.into());
         }
         if old.blocked_count != self.blocked_count {
-            changed.insert("BlockedCount", self.blocked_count.into());
+            put(queue, "BlockedCount", self.blocked_count.into());
         }
         if old.held_count != self.held_count {
-            changed.insert("HeldCount", self.held_count.into());
-        }
-        if old.uploads != self.uploads {
-            changed.insert("Uploads", self.uploads.clone().into());
+            put(queue, "HeldCount", self.held_count.into());
         }
         if old.space_waiting_count != self.space_waiting_count {
-            changed.insert("SpaceWaitingCount", self.space_waiting_count.into());
+            put(queue, "QuotaWaitingCount", self.space_waiting_count.into());
         }
         if old.space_waiting_bytes != self.space_waiting_bytes {
-            changed.insert("SpaceWaitingBytes", self.space_waiting_bytes.into());
+            put(queue, "QuotaWaitingBytes", self.space_waiting_bytes.into());
         }
         if old.too_big_count != self.too_big_count {
-            changed.insert("TooBigCount", self.too_big_count.into());
+            put(queue, "TooBigCount", self.too_big_count.into());
         }
         if old.quota_state != self.quota_state {
-            changed.insert("QuotaState", self.quota_state.clone().into());
+            put(queue, "QuotaState", self.quota_state.clone().into());
         }
         if old.free_space != self.free_space {
-            changed.insert("FreeSpace", self.free_space.into());
+            put(queue, "QuotaRemaining", self.free_space.into());
+        }
+        let moving = TRANSFERS_INTERFACE_NAME;
+        if old.downloads != self.downloads {
+            put(moving, "Downloads", self.downloads.clone().into());
+        }
+        if old.uploads != self.uploads {
+            put(moving, "Uploads", self.uploads.clone().into());
         }
         let (was, now) = (old.throughput, self.throughput);
-        if was.down_speed != now.down_speed {
-            changed.insert("DownloadSpeed", now.down_speed.into());
+        for (name, before, after) in [("DownloadSpeed", was.down_speed, now.down_speed), ("UploadSpeed", was.up_speed, now.up_speed)] {
+            if before != after {
+                put(moving, name, after.into());
+            }
         }
-        if was.up_speed != now.up_speed {
-            changed.insert("UploadSpeed", now.up_speed.into());
-        }
-        if was.active_down != now.active_down {
-            changed.insert("ActiveDownloads", now.active_down.into());
-        }
-        if was.active_up != now.active_up {
-            changed.insert("ActiveUploads", now.active_up.into());
-        }
-        if was.size != now.size {
-            changed.insert("PoolSize", now.size.into());
-        }
-        if was.ceiling != now.ceiling {
-            changed.insert("PoolCeiling", now.ceiling.into());
-        }
-        if was.large != now.large {
-            changed.insert("LargeTransfers", now.large.into());
-        }
-        if was.large_limit != now.large_limit {
-            changed.insert("LargeLimit", now.large_limit.into());
-        }
-        if was.retry_after != now.retry_after {
-            changed.insert("RetryAfter", now.retry_after.into());
+        for (name, before, after) in [
+            ("ActiveDownloads", was.active_down, now.active_down),
+            ("ActiveUploads", was.active_up, now.active_up),
+            ("PoolSize", was.size, now.size),
+            ("PoolCeiling", was.ceiling, now.ceiling),
+            ("LargeStreams", was.large, now.large),
+            ("LargeStreamLimit", was.large_limit, now.large_limit),
+            ("RetryAfter", was.retry_after, now.retry_after),
+        ] {
+            if before != after {
+                put(moving, name, after.into());
+            }
         }
         let (was, now) = (old.queue, self.queue);
         for (name, before, after) in [
@@ -785,7 +819,7 @@ impl Coalesced {
             ("UploadDoneBytes", was.up.done_bytes, now.up.done_bytes),
         ] {
             if before != after {
-                changed.insert(name, after.into());
+                put(moving, name, after.into());
             }
         }
         for (name, before, after) in [
@@ -795,33 +829,34 @@ impl Coalesced {
             ("UploadTimeLeft", was.up.time_left, now.up.time_left),
         ] {
             if before != after {
-                changed.insert(name, after.into());
+                put(moving, name, after.into());
             }
         }
+        let scan = LOCAL_SCAN_INTERFACE_NAME;
         let (was, now) = (&old.scan, &self.scan);
         if was.state != now.state {
-            changed.insert("ScanState", now.state.as_str().to_owned().into());
+            put(scan, "State", now.state.as_str().to_owned().into());
         }
         if was.reason != now.reason {
-            changed.insert("ScanReason", now.reason.clone().into());
+            put(scan, "Reason", now.reason.clone().into());
         }
         if was.started != now.started {
-            changed.insert("ScanStarted", now.started.into());
+            put(scan, "Started", now.started.into());
         }
         if was.directories != now.directories {
-            changed.insert("ScanDirectories", now.directories.into());
+            put(scan, "Directories", now.directories.into());
         }
         if was.files != now.files {
-            changed.insert("ScanFiles", now.files.into());
+            put(scan, "Files", now.files.into());
         }
         if was.expected != now.expected {
-            changed.insert("ScanExpected", now.expected.into());
+            put(scan, "Expected", now.expected.into());
         }
         if was.finished != now.finished {
-            changed.insert("ScanFinished", now.finished.into());
+            put(scan, "Finished", now.finished.into());
         }
         if was.took != now.took {
-            changed.insert("ScanTook", now.took.into());
+            put(scan, "Took", now.took.into());
         }
         changed
     }
@@ -829,9 +864,9 @@ impl Coalesced {
 
 /// Hands `emit` what changed — the value last sent and the one now — at most
 /// once per [`COALESCE`]: a change during the wait is sent when it is over,
-/// together with every other, as one message. Nothing is sent for a change
-/// that leaves all of it as it was (a `RootState` change, say). Returns when
-/// either side goes away.
+/// together with every other, as one message per interface. Nothing is sent
+/// for a change that leaves all of it as it was (a `State` change, say).
+/// Returns when either side goes away.
 pub(crate) async fn coalesce<F, Fut>(
     mut state: watch::Receiver<SyncSnapshot>,
     mut transfers: watch::Receiver<BTreeMap<u64, Transfer>>,
@@ -856,68 +891,67 @@ pub(crate) async fn coalesce<F, Fut>(
 }
 
 async fn emit_changes(
-    iface: &InterfaceRef<Sync1>,
+    folder: &InterfaceRef<Folder>,
+    queue: &InterfaceRef<UploadQueue>,
     old: &SyncSnapshot,
     new: &SyncSnapshot,
 ) -> zbus::Result<()> {
-    let emitter = iface.signal_emitter();
-    let sync1 = iface.get().await;
+    let emitter = folder.signal_emitter();
+    let folder = folder.get().await;
     if old.root_path != new.root_path {
-        sync1.root_path_changed(emitter).await?;
+        folder.path_changed(emitter).await?;
         // The source is decided when a folder is registered and
         // kept with it for good, so it only ever changes alongside the path.
-        sync1.root_source_changed(emitter).await?;
+        folder.source_changed(emitter).await?;
     }
     // What is published is computed from the registration and the sync
     // together, so that is what is compared.
     if published_state(old) != published_state(new) {
-        sync1.root_state_changed(emitter).await?;
+        folder.state_changed(emitter).await?;
     }
     if published_error(old) != published_error(new) {
-        sync1.last_error_changed(emitter).await?;
+        folder.last_error_changed(emitter).await?;
     }
     // Not coalesced: a pause and a resume within one coalescing window would
     // leave a client that read in between with the pause for good.
     if old.paused_until != new.paused_until {
-        sync1.paused_changed(emitter).await?;
-        sync1.paused_until_changed(emitter).await?;
+        folder.paused_changed(emitter).await?;
+        folder.paused_until_changed(emitter).await?;
     }
     // Not coalesced either: the tray says once that OneDrive is full.
     if old.quota_full != new.quota_full {
-        sync1.quota_full_changed(emitter).await?;
+        queue.get().await.quota_full_changed(queue.signal_emitter()).await?;
     }
-    // `HelperState` itself is `Accounts1`'s now; a change of it shows here
+    // `HelperState` itself is `Accounts`'s; a change of it shows here
     // only as the `LastError` it changes (the comparison above).
     Ok(())
 }
 
 /// As [`emit_changes`], for the counters (`ItemsListed`, `ItemsPlaced`,
-/// `SkippedCount`) and the status properties (`LastChecked`, `LocalBytes`,
-/// `ConflictCount`, `PinnedCount`, `Transfers`) only — kept separate so their own
-/// coalescing ([`coalesce`]: at most four `PropertiesChanged` a second,
+/// `SkippedCount`), the status properties (`LastChecked`, `LocalBytes`,
+/// `Conflicts.Count`, `PinnedCount`), the transfers and the queue — kept separate so their own
+/// coalescing ([`coalesce`]: at most four `PropertiesChanged` a second per interface,
 /// since a listing changes the counters with every page and a download its
-/// transfer with every read) never holds up `RootState`, `RootPath` or
+/// transfer with every read) never holds up `State`, `Path` or
 /// `LastError`.
 ///
-/// Sent as a single `PropertiesChanged` signal carrying every property that
+/// Sent as one `PropertiesChanged` signal per interface carrying every property of it that
 /// changed since the last tick, through `fdo::Properties::properties_changed`
 /// directly rather than the per-property `*_changed` helpers each
 /// property's own `#[zbus(property)]` generates: calling those separately
 /// would put up to eight signals on the bus per tick — eight times the ≤4-a-
 /// second asks for, not one within it.
-async fn emit_coalesced(iface: &InterfaceRef<Sync1>, old: &Coalesced, new: &Coalesced) -> zbus::Result<()> {
-    let changed = new.changed_since(old);
-    if changed.is_empty() {
-        return Ok(());
+async fn emit_coalesced(emitter: &SignalEmitter<'_>, old: &Coalesced, new: &Coalesced) -> zbus::Result<()> {
+    for (interface, changed) in new.changed_since(old) {
+        zbus::fdo::Properties::properties_changed(
+            emitter,
+            zbus::names::InterfaceName::from_static_str(interface).expect("a valid interface name"),
+            changed,
+            std::borrow::Cow::Borrowed(&[]),
+        )
+        .await?;
     }
-    zbus::fdo::Properties::properties_changed(
-        iface.signal_emitter(),
-        zbus::names::InterfaceName::from_static_str(SYNC_INTERFACE_NAME)
-            .expect("SYNC_INTERFACE_NAME is a valid interface name"),
-        changed,
-        std::borrow::Cow::Borrowed(&[]),
-    )
-    .await
+    Ok(())
 }
 
 #[cfg(test)]
@@ -925,10 +959,10 @@ mod tests {
     use std::sync::Mutex;
 
     use super::*;
-    use crate::sync::activity::Transfers;
+    use crate::sync::activity::Transfers as Downloads;
     use crate::sync::SyncStateHandle;
 
-    /// A download moves its `Transfers` entry on with every
+    /// A download moves its `Downloads` entry on with every
     /// read, and a listing the counters with every page, but what goes on
     /// the bus is at most four messages a second — each carrying everything
     /// that changed — and the last value always arrives. A hundred changes
@@ -936,7 +970,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_hundred_changes_in_a_second_are_at_most_five_messages() {
         let state = SyncStateHandle::new(SyncSnapshot::default());
-        let transfers = Transfers::default();
+        let transfers = Downloads::default();
         let sent: Arc<Mutex<Vec<Coalesced>>> = Arc::default();
         let log = Arc::clone(&sent);
         tokio::spawn(coalesce(state.subscribe(), transfers.subscribe(), Coalesced::default(), move |_, new| {
@@ -957,10 +991,10 @@ mod tests {
 
         tokio::time::sleep(COALESCE * 2).await;
         let last = sent.lock().unwrap().last().cloned().unwrap();
-        assert_eq!((last.transfers, last.items_listed), (vec![("/r/f.bin".to_owned(), 1000, 1000)], 100));
+        assert_eq!((last.downloads, last.items_listed), (vec![("/r/f.bin".to_owned(), 1000, 1000)], 100));
 
         drop(entry);
         tokio::time::sleep(COALESCE * 2).await;
-        assert_eq!(sent.lock().unwrap().last().unwrap().transfers, Vec::new(), "an ended download leaves the list");
+        assert_eq!(sent.lock().unwrap().last().unwrap().downloads, Vec::new(), "an ended download leaves the list");
     }
 }

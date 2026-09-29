@@ -6,7 +6,7 @@
 
 #include <memory>
 
-/// One account's Account1, at its own path, from the fake daemon on the private bus.
+/// One account's Account, at its own path, from the fake daemon on the private bus.
 class AccountControllerTest : public QObject
 {
     Q_OBJECT
@@ -228,7 +228,7 @@ private Q_SLOTS:
         controller.refreshAccountInfo();
         controller.signOut();
         QTRY_VERIFY(m_daemon->account->calls.contains(QStringLiteral("SignOut")));
-        QVERIFY(m_daemon->account->calls.contains(QStringLiteral("RefreshAccountInfo")));
+        QVERIFY(m_daemon->account->calls.contains(QStringLiteral("RefreshInfo")));
     }
 };
 

@@ -85,7 +85,7 @@ FormCard.FormCardPage {
 
     // The helper serves every account: nothing keeps a folder in step, and
     // nothing downloads on open, while this is anything but "connected"
-    // (dbus/org.konedrive.Accounts1.xml).
+    // (dbus/org.konedrive.Accounts.xml).
     FormCard.FormCard {
         objectName: "helperCard"
         Layout.topMargin: Kirigami.Units.largeSpacing

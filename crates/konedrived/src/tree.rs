@@ -346,7 +346,7 @@ pub struct ConflictRow {
     pub kind: ConflictKind,
 }
 
-/// How a local version was kept (`Conflicts()`'s fourth field).
+/// How a local version was kept (`Conflicts.List()`'s fourth field).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictKind {
     /// Moved out of the way, out of the folder (the read phase's rescue).

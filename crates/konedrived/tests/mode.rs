@@ -1,7 +1,7 @@
 //! The per-account mode (`docs/design/writes.md` §2), against a fake Microsoft (wiremock) and
 //! over a private bus. The development gate refuses by default; read-only → read-write is
 //! written only once the grant arrives; a cancelled, refused, narrower or foreign sign-in
-//! changes nothing; read-write → read-only is a subset refresh; `Dev1`'s token stays
+//! changes nothing; read-write → read-only is a subset refresh; `TokenExport`'s token stays
 //! read-only; a read-write account whose token cannot write runs read-only.
 
 mod common;
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
-use konedrive_dbus::accounts::{Account1Proxy, Accounts1Proxy, Dev1Proxy};
+use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, TokenExportProxy};
 use konedrive_dbus::error_name;
 use konedrive_dbus::testing::TestBus;
 use konedrived::account::{
@@ -104,8 +104,8 @@ struct Setup {
     server: MockServer,
     wallet: Arc<MemoryWallet>,
     daemon: konedrived::accounts::Daemon,
-    account: Account1Proxy<'static>,
-    dev: Dev1Proxy<'static>,
+    account: AccountProxy<'static>,
+    export: TokenExportProxy<'static>,
     service: Arc<AccountService>,
     id: String,
     _dir: tempfile::TempDir,
@@ -151,18 +151,18 @@ async fn signed_in_with(allowed: &[&str], code: &str, wide: bool) -> Setup {
         })
         .unwrap();
     let client = bus.connect().await;
-    let manager = Accounts1Proxy::new(&client).await.unwrap();
+    let manager = AccountsProxy::new(&client).await.unwrap();
     manager.set_client_id(CLIENT_ID).await.unwrap();
     let path = manager.add("Test").await.unwrap();
     let id = path.as_str().rsplit('/').next().unwrap().to_owned();
-    let account = Account1Proxy::builder(&client)
+    let account = AccountProxy::builder(&client)
         .path(path.clone())
         .unwrap()
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await
         .unwrap();
-    let dev = Dev1Proxy::new(&client, path).await.unwrap();
+    let export = TokenExportProxy::new(&client, path).await.unwrap();
     let url = account.begin_sign_in().await.unwrap();
     assert_eq!(simulate_browser(&url, &format!("code={code}")).await.status(), 200);
     let proxy = &account;
@@ -179,10 +179,10 @@ async fn signed_in_with(allowed: &[&str], code: &str, wide: bool) -> Setup {
     assert!(recorded(), "the sign-in records the drive");
     eventually("the account's email", || async move { proxy.email().await.unwrap() == "test@outlook.com" }).await;
     assert_eq!(account.mode().await.unwrap(), "read-only");
-    Setup { server, wallet, daemon, account, dev, service, id, _dir: dir, _bus: bus }
+    Setup { server, wallet, daemon, account, export, service, id, _dir: dir, _bus: bus }
 }
 
-async fn wait_for_error(account: &Account1Proxy<'static>, words: &str) -> String {
+async fn wait_for_error(account: &AccountProxy<'static>, words: &str) -> String {
     eventually(words, || async move { account.last_error().await.unwrap().contains(words) }).await;
     account.last_error().await.unwrap()
 }
@@ -195,7 +195,7 @@ async fn the_gate_refuses_read_write_by_default() {
     let s = signed_in(&[]).await;
     let refused = s.account.set_mode("read-write", false).await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
-    let refused = s.dev.read_write_access_token().await.unwrap_err();
+    let refused = s.export.read_write().await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
     assert_eq!((s.configured(), s.account.mode().await.unwrap().as_str()), (Mode::ReadOnly, "read-only"));
     assert_eq!(s.account.last_error().await.unwrap(), "");
@@ -205,7 +205,7 @@ async fn the_gate_refuses_read_write_by_default() {
         Ok::<_, ConfigError>(())
     })
     .unwrap();
-    s.account.refresh_account_info().await.unwrap();
+    s.account.refresh_info().await.unwrap();
     assert_eq!(wait_for_error(&s.account, "write_test_drive_ids").await, GATE_KEEPS_READ_ONLY);
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
     s.service.tokens().invalidate().await;
@@ -218,7 +218,7 @@ async fn the_gate_refuses_read_write_by_default() {
 
 /// Read-only → read-write: the sign-in asks for `Files.ReadWrite`, and nothing is written
 /// until its token response grants it; then the refresh token is the new one, the mode is
-/// written and published, and every refresh asks for `Files.ReadWrite`. `Dev1.AccessToken`
+/// written and published, and every refresh asks for `Files.ReadWrite`. `TokenExport.ReadOnly`
 /// still hands out a `Files.Read` token, from a subset refresh; the harness's token can
 /// write. Read-write → read-only needs no sign-in: the next refresh asks for `Files.Read`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -242,9 +242,9 @@ async fn read_write_is_written_only_once_the_grant_arrives_and_read_only_is_a_su
     let cache = Paths::in_dir(s._dir.path()).account(&s.id).unwrap().account_cache;
     assert_eq!(account_cache::load(&cache).unwrap().granted_scopes, READ_WRITE, "kept with the account");
 
-    assert_eq!(s.dev.access_token().await.unwrap(), "AT-RO", "Dev1's token stays read-only");
+    assert_eq!(s.export.read_only().await.unwrap(), "AT-RO", "TokenExport's token stays read-only");
     assert_eq!(refreshes(&s.server).await, vec!["Files.Read User.Read offline_access"]);
-    assert_eq!(s.dev.read_write_access_token().await.unwrap(), "AT2");
+    assert_eq!(s.export.read_write().await.unwrap(), "AT2");
     s.service.tokens().invalidate().await;
     assert_eq!(s.service.tokens().access_token().await.unwrap(), "AT-RW");
     assert_eq!(refreshes(&s.server).await.last().unwrap(), READ_WRITE, "every refresh asks for the mode's scope");
@@ -255,7 +255,7 @@ async fn read_write_is_written_only_once_the_grant_arrives_and_read_only_is_a_su
     assert_eq!(s.configured(), Mode::ReadOnly);
     assert_eq!(s.service.tokens().access_token().await.unwrap(), "AT-RO", "the token that could write is gone");
     assert_eq!(refreshes(&s.server).await.last().unwrap(), "Files.Read User.Read offline_access");
-    let refused = s.dev.read_write_access_token().await.unwrap_err();
+    let refused = s.export.read_write().await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.konedrive.Error.ModeNotGranted"), "{refused:?}");
     assert_eq!(s.account.state().await.unwrap(), "signed-in");
 }
@@ -429,7 +429,7 @@ async fn a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate()
 
 /// A read-only request that Microsoft answers with a token that can write —
 /// consent it still holds — for an account `config.toml` sets to read-write by hand and the
-/// gate does not let through. The account stays read-only and says so; neither `Dev1` token
+/// gate does not let through. The account stays read-only and says so; neither `TokenExport` token
 /// is handed out; the wide token is used to read only.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_read_only_request_answered_with_write_access_stays_read_only() {
@@ -442,12 +442,12 @@ async fn a_read_only_request_answered_with_write_access_stays_read_only() {
             Ok::<_, ConfigError>(())
         })
         .unwrap();
-    s.account.refresh_account_info().await.unwrap();
+    s.account.refresh_info().await.unwrap();
     wait_for_error(&s.account, "account.live.com/consent/Manage").await;
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
-    let refused = s.dev.read_write_access_token().await.unwrap_err();
+    let refused = s.export.read_write().await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
-    let refused = s.dev.access_token().await.unwrap_err();
+    let refused = s.export.read_only().await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.konedrive.Error.Failed"), "never a token that can write: {refused:?}");
     s.service.tokens().invalidate().await;
     assert_eq!(s.service.tokens().access_token().await.unwrap(), "AT-WIDE", "used to read");
@@ -457,7 +457,7 @@ async fn a_read_only_request_answered_with_write_access_stays_read_only() {
 }
 
 /// `config.toml` recording another drive than the one the account's token reaches
-/// — a hand edit — refuses `Dev1.ReadWriteAccessToken`, whose token is asked which drive it
+/// — a hand edit — refuses `TokenExport.ReadWrite`, whose token is asked which drive it
 /// reaches, turns the account read-only, and drops the next refresh to `Files.Read`; the
 /// account info's own look at the drive keeps it so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -474,13 +474,13 @@ async fn a_token_reaching_another_drive_than_the_recorded_one_is_never_read_writ
             Ok::<_, ConfigError>(())
         })
         .unwrap();
-    let refused = s.dev.read_write_access_token().await.unwrap_err();
+    let refused = s.export.read_write().await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
     assert!(s.account.last_error().await.unwrap().contains("reaches the OneDrive drive D1"));
     assert_eq!(s.service.tokens().access_token().await.unwrap(), "AT-RO", "the token that could write is not used");
     assert_eq!(refreshes(&s.server).await.last().unwrap(), "Files.Read User.Read offline_access");
-    s.account.refresh_account_info().await.unwrap();
+    s.account.refresh_info().await.unwrap();
     wait_for_error(&s.account, "config.toml records drive D3").await;
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
 }
@@ -499,9 +499,9 @@ async fn a_drive_taken_off_the_list_while_running_is_read_only_at_once() {
     let text = std::fs::read_to_string(s.config().file()).unwrap();
     assert!(text.contains("write_test_drive_ids = [\"D1\"]"), "{text}");
     std::fs::write(s.config().file(), text.replace("write_test_drive_ids = [\"D1\"]", "write_test_drive_ids = []")).unwrap();
-    let refused = s.dev.read_write_access_token().await.unwrap_err();
+    let refused = s.export.read_write().await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
-    s.account.refresh_account_info().await.unwrap();
+    s.account.refresh_info().await.unwrap();
     assert_eq!(wait_for_error(&s.account, "write_test_drive_ids").await, GATE_KEEPS_READ_ONLY);
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
     assert_eq!(s.service.tokens().access_token().await.unwrap(), "AT-RO");
@@ -542,14 +542,14 @@ async fn the_mode_and_the_gate_are_read_together_and_fail_closed() {
     let text = std::fs::read_to_string(s.config().file()).unwrap();
 
     std::fs::write(s.config().file(), "config_version = 2\nthis is not [toml\n").unwrap();
-    s.account.refresh_account_info().await.unwrap();
+    s.account.refresh_info().await.unwrap();
     assert_eq!(wait_for_error(&s.account, "cannot be read").await, CONFIG_UNREADABLE);
     assert_eq!(s.account.mode().await.unwrap(), "read-only", "fails closed");
 
     assert!(text.contains("mode = \"read-write\""), "{text}");
     std::fs::write(s.config().file(), text.replace("mode = \"read-write\"", "mode = \"read-only\"")).unwrap();
     assert_eq!(s.service.configured_mode(), Mode::ReadOnly, "the mode as the file says now");
-    s.account.refresh_account_info().await.unwrap();
+    s.account.refresh_info().await.unwrap();
     eventually("the reason gone", || async move { !account.last_error().await.unwrap().contains("cannot be read") }).await;
     assert_eq!(s.account.mode().await.unwrap(), "read-only");
 }

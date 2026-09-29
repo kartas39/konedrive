@@ -16,7 +16,7 @@ class SyncControllerTest : public QObject
 
 private:
     std::unique_ptr<FakeDaemon> m_daemon;
-    FakeSync1 *m_fake = nullptr;
+    FakeSync *m_fake = nullptr;
 
     void startFake()
     {
@@ -45,13 +45,38 @@ private Q_SLOTS:
         startFake();
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        m_fake->set({{QStringLiteral("RootPath"), QStringLiteral("/home/u/OneDrive")},
-                     {QStringLiteral("RootState"), QStringLiteral("listing")},
-                     {QStringLiteral("RootSource"), QStringLiteral("onedrive")},
-                     {QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12480)}});
+        m_fake->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
+                             {QStringLiteral("State"), QStringLiteral("listing")},
+                             {QStringLiteral("Source"), QStringLiteral("onedrive")},
+                             {QStringLiteral("ItemsListed"), QVariant::fromValue<qulonglong>(12480)}});
         QTRY_COMPARE(controller.itemsListed(), 12480ULL);
         QCOMPARE(controller.rootState(), QStringLiteral("listing"));
         QCOMPARE(controller.rootSource(), QStringLiteral("onedrive"));
+    }
+
+    /// Each of the folder's interfaces is read and followed on its own: a change of
+    /// LocalScan's State is the scan's, never the folder's State of the same name, and a
+    /// change of Transfers and of Conflicts reaches the window too.
+    void followsEveryInterfaceOfTheFolder()
+    {
+        startFake();
+        m_fake->scan->set({{QStringLiteral("Reason"), QStringLiteral("overflow")}});
+        SyncController controller(fake::FirstAccount);
+        QTRY_VERIFY(controller.serviceAvailable());
+        QCOMPARE(controller.scanReason(), QStringLiteral("overflow")); // from GetAll
+        QCOMPARE(controller.poolSize(), 16u);
+
+        m_fake->folder->set({{QStringLiteral("State"), QStringLiteral("ready")}});
+        m_fake->scan->set({{QStringLiteral("State"), QStringLiteral("running")}, {QStringLiteral("Files"), QVariant::fromValue<qulonglong>(7)}});
+        QTRY_COMPARE(controller.scanState(), QStringLiteral("running"));
+        QCOMPARE(controller.scanFiles(), 7ULL);
+        QCOMPARE(controller.rootState(), QStringLiteral("ready"));
+
+        m_fake->transfers->set({{QStringLiteral("PoolSize"), QVariant::fromValue<uint>(8)}, {QStringLiteral("LargeStreams"), QVariant::fromValue<uint>(2)}});
+        QTRY_COMPARE(controller.poolSize(), 8u);
+        QCOMPARE(controller.largeTransfers(), 2u);
+        m_fake->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(3)}});
+        QTRY_COMPARE(controller.conflictCount(), 3u);
     }
 
     /// What waits to go up, and the controls over it: the counts, pause and
@@ -74,9 +99,9 @@ private Q_SLOTS:
         QCOMPARE(controller.ignorePatterns(), (QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}));
         QCOMPARE(controller.heldCount(), 1u);
 
-        m_fake->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(1)},
-                     {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(10)},
-                     {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(1)}});
+        m_fake->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(1)},
+                            {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(10)},
+                            {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(1)}});
         QTRY_COMPARE(controller.blockedCount(), 1u);
         QCOMPARE(controller.pendingCount(), 1u);
         QCOMPARE(controller.pendingBytes(), 10ULL);
@@ -119,7 +144,7 @@ private Q_SLOTS:
         const auto more = m_fake->calls.count(QStringLiteral("NotUploadedSummary")) - asked;
         QVERIFY2(more >= 1 && more <= 2, qPrintable(QString::number(more)));
         // The window never asks for every row.
-        QVERIFY(!m_fake->calls.contains(QStringLiteral("Outbox")));
+        QVERIFY(!m_fake->calls.contains(QStringLiteral("Changes")));
         QVERIFY(!m_fake->calls.contains(QStringLiteral("NotUploaded")));
     }
 
@@ -144,7 +169,7 @@ private Q_SLOTS:
         QTRY_VERIFY(controller.serviceAvailable());
         controller.chooseFolder(QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive")));
         QTRY_COMPARE(controller.rootPath(), QStringLiteral("/home/u/OneDrive"));
-        QVERIFY(m_fake->calls.contains(QStringLiteral("RegisterRoot:/home/u/OneDrive")));
+        QVERIFY(m_fake->calls.contains(QStringLiteral("Register:/home/u/OneDrive")));
     }
 
     /// Without the helper the window asks before registering a folder whose
@@ -161,11 +186,11 @@ private Q_SLOTS:
         QTRY_VERIFY(controller.serviceAvailable());
         controller.chooseFolder(QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive")));
         QTRY_COMPARE(controller.pendingFolder(), QStringLiteral("/home/u/OneDrive"));
-        QCOMPARE(m_fake->calls.count(QStringLiteral("RegisterRoot:/home/u/OneDrive")), 1);
+        QCOMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 1);
 
         // Retrying while the helper is still missing changes nothing.
         controller.retryRegistration();
-        QTRY_COMPARE(m_fake->calls.count(QStringLiteral("RegisterRoot:/home/u/OneDrive")), 2);
+        QTRY_COMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 2);
         QCOMPARE(controller.pendingFolder(), QStringLiteral("/home/u/OneDrive"));
 
         // The helper connects while the prompt is up; "Try Again" retries
@@ -174,8 +199,8 @@ private Q_SLOTS:
         controller.retryRegistration();
         QTRY_COMPARE(controller.pendingFolder(), QString());
         QCOMPARE(controller.rootState(), QStringLiteral("listing"));
-        QCOMPARE(m_fake->calls.count(QStringLiteral("RegisterRoot:/home/u/OneDrive")), 3);
-        QVERIFY(!m_fake->calls.contains(QStringLiteral("RegisterRootWithoutInterception:/home/u/OneDrive")));
+        QCOMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 3);
+        QVERIFY(!m_fake->calls.contains(QStringLiteral("RegisterWithoutInterception:/home/u/OneDrive")));
     }
 
     void listsWhatIsSkippedWithWhy()
@@ -212,7 +237,7 @@ private Q_SLOTS:
         QTRY_VERIFY(controller.serviceAvailable());
         controller.refresh();
         controller.forget();
-        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("UnregisterRoot")));
+        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Unregister")));
         QVERIFY(m_fake->calls.contains(QStringLiteral("Refresh")));
     }
 
@@ -222,24 +247,24 @@ private Q_SLOTS:
         startFake();
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
-        m_fake->set({{QStringLiteral("LastChecked"), QVariant::fromValue<qlonglong>(1758700000)},
-                     {QStringLiteral("LocalBytes"), QVariant::fromValue<qulonglong>(1288490188)},
-                     {QStringLiteral("ConflictCount"), QVariant::fromValue<uint>(2)}});
+        m_fake->folder->set({{QStringLiteral("LastChecked"), QVariant::fromValue<qlonglong>(1758700000)},
+                             {QStringLiteral("LocalBytes"), QVariant::fromValue<qulonglong>(1288490188)}});
+        m_fake->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
         QTRY_COMPARE(controller.lastChecked(), 1758700000LL);
         QCOMPARE(controller.localBytes(), 1288490188ULL);
         QCOMPARE(controller.conflictCount(), 2U);
     }
 
-    /// PinnedCount (dbus/org.konedrive.Sync1.xml) reaches the window, both
+    /// PinnedCount (dbus/org.konedrive.Folder.xml) reaches the window, both
     /// from GetAll at start and from a PropertiesChanged that follows.
     void followsPinnedCount()
     {
         startFake();
-        m_fake->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(3)}});
+        m_fake->folder->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(3)}});
         SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.pinnedCount(), 3U);
 
-        m_fake->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(5)}});
+        m_fake->folder->set({{QStringLiteral("PinnedCount"), QVariant::fromValue<uint>(5)}});
         QTRY_COMPARE(controller.pinnedCount(), 5U);
     }
 
@@ -266,7 +291,7 @@ private Q_SLOTS:
         QCOMPARE(reset.count(), 0);
     }
 
-    /// The "Recent" list: RecentActivity(50) at start, then each ActivityAdded
+    /// The "Recent" list: Recent(50) at start, then each ActivityLog.Added
     /// on top, newest first.
     void recentActivityThenLiveEventsNewestFirst()
     {
@@ -275,7 +300,7 @@ private Q_SLOTS:
                        {100, QStringLiteral("listed"), QStringLiteral("/home/u/OneDrive"), QStringLiteral("12 items")}};
         SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.activity()->count(), 2);
-        QVERIFY(m_fake->calls.contains(QStringLiteral("RecentActivity:50")));
+        QVERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
         QCOMPARE(text(controller.activity(), 0, ActivityModel::PathRole), QStringLiteral("/home/u/OneDrive/b.txt"));
 
         QSignalSpy added(&controller, &SyncController::activityAdded);
@@ -294,13 +319,13 @@ private Q_SLOTS:
         startFake();
         m_fake->conflictList = {{200, QStringLiteral("/home/u/OneDrive/doc.odt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/2/doc.odt")},
                                 {100, QStringLiteral("/home/u/OneDrive/a.txt"), QStringLiteral("/home/u/.local/share/konedrive/rescued/1/a.txt")}};
-        m_fake->set({{QStringLiteral("ConflictCount"), QVariant::fromValue<uint>(2)}});
+        m_fake->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(2)}});
         SyncController controller(fake::FirstAccount);
         QTRY_COMPARE(controller.conflicts()->count(), 2);
 
         controller.dismissConflict(QStringLiteral("/home/u/.local/share/konedrive/rescued/2/doc.odt"));
         QTRY_COMPARE(controller.conflicts()->count(), 1);
-        QVERIFY(m_fake->calls.contains(QStringLiteral("DismissConflict:/home/u/.local/share/konedrive/rescued/2/doc.odt")));
+        QVERIFY(m_fake->calls.contains(QStringLiteral("Dismiss:/home/u/.local/share/konedrive/rescued/2/doc.odt")));
         QCOMPARE(text(controller.conflicts(), 0, ConflictModel::OriginalRole), QStringLiteral("/home/u/OneDrive/a.txt"));
         QCOMPARE(controller.actionError(), QString());
     }
@@ -313,7 +338,7 @@ private Q_SLOTS:
         QTRY_VERIFY(controller.serviceAvailable());
         QCOMPARE(controller.conflicts()->count(), 0);
         m_fake->conflictList = {{100, QStringLiteral("/home/u/OneDrive/a.txt"), QStringLiteral("/r/1/a.txt")}};
-        m_fake->set({{QStringLiteral("ConflictCount"), QVariant::fromValue<uint>(1)}});
+        m_fake->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
         QTRY_COMPARE(controller.conflicts()->count(), 1);
     }
 
@@ -346,7 +371,7 @@ private Q_SLOTS:
         QVERIFY2(controller.freeUpResult().startsWith(QStringLiteral("Freed 2 files")), qPrintable(controller.freeUpResult()));
     }
 
-    /// Live events that arrive while RecentActivity() is on its way are kept
+    /// Live events that arrive while ActivityLog.Recent() is on its way are kept
     /// when its answer lands, once each (review B3).
     void liveEventsDuringALoadAreKeptOnce()
     {
@@ -354,7 +379,7 @@ private Q_SLOTS:
         m_fake->log = {{100, QStringLiteral("listed"), QStringLiteral("/home/u/OneDrive"), QStringLiteral("12 items")}};
         m_fake->holdActivity = true;
         SyncController controller(fake::FirstAccount);
-        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("RecentActivity:50")));
+        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
 
         QSignalSpy added(&controller, &SyncController::activityAdded);
         // Signalled before the daemon stored it: the answer will lack it.
@@ -374,14 +399,14 @@ private Q_SLOTS:
     }
 
     /// M9: the daemon stores an event before it signals it, so a
-    /// RecentActivity() reply already on its way can already include it; the
-    /// ActivityAdded that follows for that same event must not list it twice.
+    /// ActivityLog.Recent() reply already on its way can already include it; the
+    /// ActivityLog.Added that follows for that same event must not list it twice.
     void aLiveEventAlreadyInTheReplyIsNotListedTwice()
     {
         startFake();
         m_fake->holdActivity = true;
         SyncController controller(fake::FirstAccount);
-        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("RecentActivity:50")));
+        QTRY_VERIFY(m_fake->calls.contains(QStringLiteral("Recent:50")));
 
         // Stored (as the daemon always does before signalling) and already in
         // what the held reply will answer with.

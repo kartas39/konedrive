@@ -2,10 +2,15 @@
 //!
 //! The daemon, under [`SERVICE_NAME`], serves:
 //!
-//! - [`ACCOUNTS_PATH`]: `org.konedrive.Accounts1`, `org.konedrive.Files1` and
+//! - [`ACCOUNTS_PATH`]: `org.konedrive.Accounts`, `org.konedrive.Files` and
 //!   `org.freedesktop.DBus.ObjectManager`;
-//! - one object per account, [`account_path`]: `org.konedrive.Account1`,
-//!   `org.konedrive.Sync1` and `org.konedrive.Dev1`.
+//! - one object per account, [`account_path`]: `org.konedrive.Account` (the
+//!   sign-in and the quota), its folder's `org.konedrive.Folder`,
+//!   `org.konedrive.Transfers`, `org.konedrive.UploadQueue`,
+//!   `org.konedrive.Conflicts`, `org.konedrive.LocalScan` and
+//!   `org.konedrive.ActivityLog`, and `org.konedrive.TokenExport`.
+//!
+//! No name carries a version: the daemon and every client of it ship together.
 //!
 //! Their proxies are in [`accounts`]. Nothing is served at
 //! `/org/konedrive/Daemon`, the single-account object of earlier versions.
@@ -17,15 +22,20 @@ use zbus::zvariant::OwnedObjectPath;
 
 pub const SERVICE_NAME: &str = "org.konedrive.Daemon";
 
-/// The account manager: `Accounts1`, `Files1` and the `ObjectManager` of the
+/// The account manager: `Accounts`, `Files` and the `ObjectManager` of the
 /// account objects below it.
 pub const ACCOUNTS_PATH: &str = "/org/konedrive/Accounts";
 
-pub const ACCOUNTS_INTERFACE_NAME: &str = "org.konedrive.Accounts1";
-pub const FILES_INTERFACE_NAME: &str = "org.konedrive.Files1";
-pub const ACCOUNT_INTERFACE_NAME: &str = "org.konedrive.Account1";
-pub const SYNC_INTERFACE_NAME: &str = "org.konedrive.Sync1";
-pub const DEV_INTERFACE_NAME: &str = "org.konedrive.Dev1";
+pub const ACCOUNTS_INTERFACE_NAME: &str = "org.konedrive.Accounts";
+pub const FILES_INTERFACE_NAME: &str = "org.konedrive.Files";
+pub const ACCOUNT_INTERFACE_NAME: &str = "org.konedrive.Account";
+pub const TOKEN_EXPORT_INTERFACE_NAME: &str = "org.konedrive.TokenExport";
+pub const FOLDER_INTERFACE_NAME: &str = "org.konedrive.Folder";
+pub const TRANSFERS_INTERFACE_NAME: &str = "org.konedrive.Transfers";
+pub const UPLOAD_QUEUE_INTERFACE_NAME: &str = "org.konedrive.UploadQueue";
+pub const CONFLICTS_INTERFACE_NAME: &str = "org.konedrive.Conflicts";
+pub const LOCAL_SCAN_INTERFACE_NAME: &str = "org.konedrive.LocalScan";
+pub const ACTIVITY_LOG_INTERFACE_NAME: &str = "org.konedrive.ActivityLog";
 
 /// The object path of the account `id`: `/org/konedrive/Accounts/<id>`.
 ///
@@ -46,7 +56,7 @@ pub fn account_path(id: &str) -> Option<OwnedObjectPath> {
 /// `<prefix>.NotHydrated` rather than on the message.
 pub const ERROR_PREFIX: &str = "org.konedrive.Error";
 
-/// What to tell a person about the helper in each `Accounts1.HelperState`
+/// What to tell a person about the helper in each `Accounts.HelperState`
 /// that is not `connected`: what it means and how to start it. One wording
 /// for the daemon's `LastError` and the CLI's `Helper:` line alike. `None` for
 /// `connected`, and for anything this build does not know.

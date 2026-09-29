@@ -159,7 +159,7 @@ impl TokenManager {
         Ok((response.access_token, granted))
     }
 
-    /// An access token that can change nothing (`docs/design/writes.md` §8.2; SECURITY.md): `Dev1.AccessToken`'s,
+    /// An access token that can change nothing (`docs/design/writes.md` §8.2; SECURITY.md): `TokenExport.ReadOnly`'s,
     /// whatever the account's mode. The account's own token when it is read-only already;
     /// otherwise one obtained by a refresh that asks for `Files.Read` only — a subset of what
     /// was granted, which Microsoft allows — kept apart from the account's own, which stays
@@ -380,7 +380,7 @@ mod tests {
         assert_eq!(tokens.access_token().await.unwrap(), "AT-RO", "cached from then on");
     }
 
-    /// `Dev1`'s token (`docs/design/writes.md` §8.2; SECURITY.md): a token that can write is never handed out. A
+    /// `TokenExport`'s token (`docs/design/writes.md` §8.2; SECURITY.md): a token that can write is never handed out. A
     /// read-write account's comes from a refresh that asks for `Files.Read` only, and the
     /// account's own token stays cached as it was; a read-only token is handed out as is.
     #[tokio::test]

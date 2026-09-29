@@ -242,7 +242,7 @@ void Notifier::onAccountChanged()
         m_signOutAsked = false;
         return;
     }
-    // Accounts1.Remove signs the account out, then unexports it and drops it
+    // Accounts.Remove signs the account out, then unexports it and drops it
     // from Accounts: the row goes, and this Notifier with it, before the
     // notice is due. A sign-out that is news stays signed out until then.
     m_signOutTimer->start(m_signOutDelayMs);

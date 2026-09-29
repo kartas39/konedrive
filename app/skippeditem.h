@@ -5,7 +5,7 @@
 #include <QMetaType>
 #include <QString>
 
-/// One entry of org.konedrive.Sync1.Skipped(): (full path, reason).
+/// One entry of org.konedrive.Folder.Skipped() and of UploadQueue.NotUploaded(): (full path, reason).
 struct KonedriveSkippedItem {
     QString path;
     QString reason;

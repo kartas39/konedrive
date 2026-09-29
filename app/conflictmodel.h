@@ -5,7 +5,7 @@
 #include <QAbstractListModel>
 
 /// The window's "Conflicts" list: local versions the sync moved out of the
-/// way (Sync1's Conflicts()), newest first, the first `Shown` of them; `total`
+/// way (Conflicts.List()), newest first, the first `Shown` of them; `total`
 /// counts them all. Rows are kept by the path the file was moved to, and a
 /// refresh applies what changed at once — one removal, one insertion and one
 /// dataChanged, or else one reset — never row by row.

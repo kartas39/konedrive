@@ -385,7 +385,7 @@ pub struct OutboxCounts {
     pub blocked: u32,
     /// Removals held by the mass-delete guard.
     pub held: u32,
-    /// `SpaceWaitingCount`, `SpaceWaitingBytes`: while OneDrive is full,
+    /// `QuotaWaitingCount`, `QuotaWaitingBytes`: while OneDrive is full,
     /// the changes that send content, which wait for space.
     pub space_waiting: u32,
     pub space_waiting_bytes: u64,
@@ -550,7 +550,7 @@ impl OutboxWorker {
         });
     }
 
-    /// The quota was read elsewhere (`RefreshAccountInfo`): *full* is
+    /// The quota was read elsewhere (`RefreshInfo`): *full* is
     /// decided again, and the waiting files that fit now go ([`space`]).
     pub fn quota_read(&self, quota: &crate::drive::DriveQuota) {
         // Applied as a task of its own: it writes the rows it lets go.

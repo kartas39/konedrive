@@ -1,0 +1,60 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- /org/konedrive/Accounts/<id>: what this account's folder moves now —
+       the downloads and uploads under way, their speed, the transfer pool
+       and the queue totals. -->
+  <interface name="org.konedrive.Transfers">
+    <!-- Downloads under way: (full path, bytes done, bytes total). Coalesced
+         to a few changes a second. -->
+    <property name="Downloads" type="a(stt)" access="read">
+      <annotation name="org.qtproject.QtDBus.QtTypeName" value="KonedriveTransferList"/>
+    </property>
+    <!-- Uploads under way: (full path, bytes sent, bytes total). Coalesced
+         to a few changes a second. -->
+    <property name="Uploads" type="a(stt)" access="read">
+      <annotation name="org.qtproject.QtDBus.QtTypeName" value="KonedriveTransferList"/>
+    </property>
+    <!-- The account's transfers, published once a second while anything
+         moves or OneDrive's Retry-After runs: bytes a second downloaded and
+         uploaded (the average of the last 3 s), the transfer slots held by
+         downloads (files being opened, pinned files, replacements,
+         thumbnails) and by uploads, and the account's transfer pool: how many
+         requests it has in flight at most now, which adapts to OneDrive's
+         throttling, and its ceiling ([transfers] max in config.toml); the
+         large transfers (files of 100 MiB and up, files being opened
+         included) under way and how many may run at once ([transfers] large);
+         and the seconds left of OneDrive's Retry-After wait, during which no
+         transfer starts (0 when there is none). Coalesced with the
+         counters. -->
+    <property name="DownloadSpeed" type="t" access="read"/>
+    <property name="UploadSpeed" type="t" access="read"/>
+    <property name="ActiveDownloads" type="u" access="read"/>
+    <property name="ActiveUploads" type="u" access="read"/>
+    <property name="PoolSize" type="u" access="read"/>
+    <property name="PoolCeiling" type="u" access="read"/>
+    <property name="LargeStreams" type="u" access="read"/>
+    <property name="LargeStreamLimit" type="u" access="read"/>
+    <property name="RetryAfter" type="u" access="read"/>
+    <!-- The queue totals, each way, updated with the speeds above. Left:
+         files to download — the pinned files waiting and every download
+         under way (a file being opened or a replacement counts only while it
+         runs) — and changes to upload (UploadQueue.PendingCount; a move, a
+         delete or a new folder is a change of no bytes), with their bytes
+         less what is already moved of those under way. Done: bytes moved
+         since nothing was last left that way, or since the daemon started; 0
+         while nothing is left. Time left: seconds at the speed of the last
+         30 s; 0 when unknown — nothing moved for 10 s, OneDrive's
+         Retry-After, and for uploads a pause. What is kept back
+         (UploadQueue.BlockedCount, HeldCount, QuotaWaitingCount,
+         TooBigCount) is not left. Coalesced with the counters. -->
+    <property name="DownloadLeftCount" type="u" access="read"/>
+    <property name="DownloadLeftBytes" type="t" access="read"/>
+    <property name="DownloadDoneBytes" type="t" access="read"/>
+    <property name="DownloadTimeLeft" type="u" access="read"/>
+    <property name="UploadLeftCount" type="u" access="read"/>
+    <property name="UploadLeftBytes" type="t" access="read"/>
+    <property name="UploadDoneBytes" type="t" access="read"/>
+    <property name="UploadTimeLeft" type="u" access="read"/>
+  </interface>
+</node>

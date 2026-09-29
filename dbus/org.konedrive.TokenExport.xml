@@ -2,13 +2,13 @@
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node>
   <!-- /org/konedrive/Accounts/<id>. Development only. -->
-  <interface name="org.konedrive.Dev1">
+  <interface name="org.konedrive.TokenExport">
     <!-- An access token of this account that can change nothing: about an
          hour of Files.Read on its drive, whatever the account's mode — for a
          read-write account, one obtained by a refresh that asks for
          Files.Read only. Never the refresh token, which stays in the wallet.
          Refused NotSignedIn when there is none. -->
-    <method name="AccessToken">
+    <method name="ReadOnly">
       <arg name="token" type="s" direction="out"/>
     </method>
     <!-- For the test-account harness only: this account's current access
@@ -16,7 +16,7 @@
          WritesNotAllowed unless the account's drive is in
          write_test_drive_ids in config.toml, ModeNotGranted unless the
          account is read-write, and NotSignedIn when there is no token. -->
-    <method name="ReadWriteAccessToken">
+    <method name="ReadWrite">
       <arg name="token" type="s" direction="out"/>
     </method>
   </interface>

@@ -380,7 +380,7 @@ fn the_summary_answers_while_an_apply_holds_the_store() {
     within("the summary during an apply", took, Duration::from_millis(100));
 }
 
-/// `Outbox(21)` and `NotUploadedFiles(reason, 20)` with 30 000 rows.
+/// `Changes(21)` and `NotUploadedFiles(reason, 20)` with 30 000 rows.
 #[test]
 #[ignore]
 fn the_first_rows_and_files_of_a_reason() {
@@ -389,7 +389,7 @@ fn the_first_rows_and_files_of_a_reason() {
     let store = store_at(dir.path(), &[]);
     store.call_blocking(move |s| s.bench_insert(&mixed_rows())).unwrap();
     let root = Path::new("/nowhere/OneDrive");
-    let (entries, first) = timed("Outbox(21) of 30 000", || {
+    let (entries, first) = timed("Changes(21) of 30 000", || {
         let rows = store.read_blocking(|s| s.outbox_first(21)).unwrap();
         crate::sync::outbox_api::entries(rows, root, &[], false, false)
     });
@@ -398,7 +398,7 @@ fn the_first_rows_and_files_of_a_reason() {
         store.read_blocking(|s| crate::sync::kept_back::files(s, root, false, "name-characters", 20)).unwrap()
     });
     assert_eq!((files.len(), total), (20, 1000));
-    within("Outbox(21)", first, Duration::from_millis(50));
+    within("Changes(21)", first, Duration::from_millis(50));
     within("NotUploadedFiles", second, Duration::from_millis(50));
 }
 
@@ -664,7 +664,7 @@ fn the_conflicts_at_the_end_of_a_cycle() {
     activity.attach(store.clone(), Path::new("/nowhere/OneDrive"));
     let (_, took) = timed("the conflicts looked over at the end of a cycle, 2 000", || activity.prune());
     assert_eq!(state.get().conflict_count, 2000);
-    // No budget: `Conflicts()` on the bus looks at every one.
+    // No budget: `Conflicts.List()` on the bus looks at every one.
     let (all, _) = timed("Conflicts(), 2 000", || activity.conflicts().unwrap());
     assert_eq!(all.len(), 2000);
     within("the conflicts at the end of a cycle", took, Duration::from_millis(50));

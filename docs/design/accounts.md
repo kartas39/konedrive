@@ -48,8 +48,9 @@ konedrived
  ├─ ConfigStore ────── config.toml: one owner, one lock, every write through it
  ├─ HelperHub ──────── the one link to konedrive-helper, its supervisor, HelperState,
  │                      the per-inode locks, the fill-on-open loop and its router
- ├─ AccountManager ─── /org/konedrive/Accounts: Accounts1, Files1, ObjectManager
- │    └─ Account <id> ── /org/konedrive/Accounts/<id>: Account1, Sync1, Dev1
+ ├─ AccountManager ─── /org/konedrive/Accounts: Accounts, Files, ObjectManager
+ │    └─ Account <id> ── /org/konedrive/Accounts/<id>: Account, Folder, Transfers, UploadQueue,
+    │                                              Conflicts, LocalScan, ActivityLog, TokenExport
  │         ├─ AccountService  sign-in, tokens, its wallet item, its drive
  │         └─ SyncService     its folder: registration, listing, tree store, activity,
  │                            conflicts, pins, replacements, thumbnails, Baloo
@@ -95,8 +96,8 @@ fill requests. On loss it tells every account at once.
 
 Shared by every account of the daemon:
 
-- the link, and `HelperState`, which is published once, on `Accounts1`; each account's
-  `Sync1.LastError` still begins with the helper's advice while its folder waits for the helper;
+- the link, and `HelperState`, which is published once, on `Accounts`; each account's
+  `Folder.LastError` still begins with the helper's advice while its folder waits for the helper;
 - the per-inode lock table: an inode belongs to one account only, so one table serves them all;
 - the four slots of the fill-on-open loop, and the helper's credit of 64 requests per connection.
 
@@ -129,12 +130,12 @@ accounts. The hub decides, in this order, and stops at the first answer:
 4. **None.** The request is answered `EIO`, and the next open tries again (limitations log F44).
 
 Routing never guesses. Its answer selects the account's content source and its report
-(`Transfers`, activity, `LocalBytes`).
+(`Transfers.Downloads`, activity, `LocalBytes`).
 
 ### 3.5 Which account a path belongs to
 
 The per-file calls — `Hydrate`, `Dehydrate`, `ItemState`, `Pin`, `Unpin` and `FreeUp` — are on the
-daemon-wide `org.konedrive.Files1`, because the Dolphin plugin and `konedrivectl` know a path, not
+daemon-wide `org.konedrive.Files`, because the Dolphin plugin and `konedrivectl` know a path, not
 an account. The account is the one whose folder is a component prefix of the path with its
 directory part resolved — through `..`, and through a symbolic link such as `/home` to `/var/home`
 or a link from one account's folder into another's — or, only when that cannot be resolved, of the
@@ -212,17 +213,17 @@ save over the other's change (limitations log F37, closed).
 
 **What cannot be read is never overwritten.** A file that cannot be parsed, or that a newer version
 wrote (`config_version` above 2), *poisons* the store for the life of the process: no account is
-loaded, every write is refused, and `Accounts1.LastError` names the file and the reason. A later
+loaded, every write is refused, and `Accounts.LastError` names the file and the reason. A later
 start with the file fixed loads it — or migrates it — then.
 
 **Validation at load.** Accounts are checked in file order, and nothing is rewritten:
 
 - an account whose id is not 12 lowercase hexadecimal characters, or repeats an earlier account's
-  id, is not loaded at all: it could name neither an object nor a directory. `Accounts1.LastError`
+  id, is not loaded at all: it could name neither an object nor a directory. `Accounts.LastError`
   says so;
 - an account whose label (in any case), drive, folder root id or folder path collides with an
   earlier account's — a folder that is, is inside, or contains an earlier one — is loaded and shown
-  but *held back*: its folder is not brought up, its `RootState` is `error`, its `LastError` names
+  but *held back*: its folder is not brought up, its `Folder.State` is `error`, its `LastError` names
   the collision, and a registration is refused (limitations log F48);
 - a `mode` other than `read-only` or `read-write` loads as `read-only`, is logged, and is written
   back as `read-only` with the next change; a `read-write` the write gate does not let through
@@ -263,10 +264,10 @@ show. The access token stays in the daemon's memory, one per account ([sync.md](
 
 | Object | Interfaces |
 |---|---|
-| `/org/konedrive/Accounts` | `org.konedrive.Accounts1`, `org.konedrive.Files1`, `org.freedesktop.DBus.ObjectManager` |
-| `/org/konedrive/Accounts/<id>` | `org.konedrive.Account1`, `org.konedrive.Sync1`, `org.konedrive.Dev1` |
+| `/org/konedrive/Accounts` | `org.konedrive.Accounts`, `org.konedrive.Files`, `org.freedesktop.DBus.ObjectManager` |
+| `/org/konedrive/Accounts/<id>` | `org.konedrive.Account`, `org.konedrive.Folder`, `org.konedrive.Transfers`, `org.konedrive.UploadQueue`, `org.konedrive.Conflicts`, `org.konedrive.LocalScan`, `org.konedrive.ActivityLog`, `org.konedrive.TokenExport` |
 
-`Accounts1.Accounts` lists the account objects in account order and changes with
+`Accounts.List` lists the account objects in account order and changes with
 `PropertiesChanged`. The `ObjectManager` announces each account object with `InterfacesAdded` once
 it is on the bus and `InterfacesRemoved` when it goes, which is what generic tools (`busctl`,
 D-Spy) understand; konedrive's own clients follow `Accounts`. The members are in
@@ -288,7 +289,7 @@ As before ([sync.md](sync.md) §12.3), each cycle of a OneDrive folder begins wi
 on its own account's token, and compares the drive id with the account's `drive_id` in
 `config.toml` and with the copy in its tree store. A mismatch is a blocking error, never a listing.
 An account with no drive recorded yet — a migrated one whose folder never recorded it — records it
-from its first successful `GET /me/drive`: its first cycle, or `RefreshAccountInfo`, which reads
+from its first successful `GET /me/drive`: its first cycle, or `RefreshInfo`, which reads
 the drive id and the quota from the same request. A drive another account has already is never
 recorded a second time: the cycle is then a blocking error naming that account, and nothing is
 listed into the folder.
@@ -319,7 +320,7 @@ label.
 
 ### 6.3 At registration: a folder belongs to one account
 
-- **No nesting.** `RegisterRoot` and `RegisterRootWithoutInterception` refuse, with `Overlaps`, a
+- **No nesting.** `Folder.Register` and `RegisterWithoutInterception` refuse, with `Overlaps`, a
   folder that is, is inside, or contains another account's folder — registered, held back, or only
   recorded in `config.toml` — comparing the resolved paths by component and the directories by
   device and inode. The message names the other account. The helper would refuse the intercepted
@@ -344,7 +345,7 @@ label.
 
 ### 7.1 The client id
 
-Every account signs in with one Entra application, `Accounts1.ClientId`. konedrive ships its own
+Every account signs in with one Entra application, `Accounts.ClientId`. konedrive ships its own
 (`DEFAULT_CLIENT_ID`), so signing in needs nothing from the user; `config.toml`'s `client_id`
 overrides it for anyone who registers their own. `SetClientId` accepts the canonical GUID form
 only, and is refused while any account is signing in or signed in, as it was for the single
@@ -352,10 +353,10 @@ account.
 
 ### 7.2 Add
 
-`Accounts1.Add(label)` adds a signed-out, read-only account with no folder and no drive, after every
+`Accounts.Add(label)` adds a signed-out, read-only account with no folder and no drive, after every
 other, and answers its object path; the object is on the bus by the time the call answers, and
 `Accounts` changes. A label the rules refuse (§2) is `InvalidArgs`, with the reason. Signing in
-(`Account1.BeginSignIn`) and choosing a folder (`Sync1.RegisterRoot`) are separate calls, made on the
+(`Account.BeginSignIn`) and choosing a folder (`Folder.Register`) are separate calls, made on the
 account's own object as they were for the single account.
 
 The window's **Sign in…** makes several calls in a row, not one transaction: `Add` with a temporary
@@ -366,9 +367,9 @@ already has (limitations log A15).
 
 ### 7.3 Remove
 
-`Accounts1.Remove(account)`:
+`Accounts.Remove(account)`:
 
-1. forgets the account's folder exactly as `Sync1.UnregisterRoot` does — so it is refused
+1. forgets the account's folder exactly as `Folder.Unregister` does — so it is refused
    `NoHelper`, before anything changes, for an intercepted folder while no helper is connected
    ([hydration.md](hydration.md) §14.5). That holds for an account held back at load (§4.1) too:
    its folder was never brought up, but one it registered with interception in an earlier session
@@ -428,7 +429,7 @@ A store whose write-ahead log survives the close (another process has it open), 
 taken, is left where it is and logged: the account lists its drive again into a new store, and the
 activity log and conflict list of before are lost (limitations log F40). An unexpected error — a
 directory that cannot be created, a refused rename — keeps the flag for the next start and shows in
-`Accounts1.LastError`.
+`Accounts.LastError`.
 
 Every step is idempotent — a source that is gone means the step is done — so the next start
 finishes whatever a crash interrupted:
@@ -475,13 +476,13 @@ log F41).
   ([desktop.md](desktop.md) §6, §7).
 - **Places** has one entry per account folder, named `OneDrive — <label>`
   ([desktop.md](desktop.md) §4).
-- **The Dolphin plugins** call `Files1`, which finds the account by path; the emblems read each
+- **The Dolphin plugins** call `Files`, which finds the account by path; the emblems read each
   file's attributes, as before, and need no account at all ([desktop.md](desktop.md) §10).
 - **The command line** chooses the account with the global option `--account <id | label |
   email>`, or `KONEDRIVE_ACCOUNT`; with one account, it needs neither. It has `account list`,
   `account add`, `account rename` and `account remove`; `status` and `sync status` show every
   account when none is chosen; and the path commands (`sync hydrate`, `dehydrate`, `state`, `pin`,
-  `unpin`, `free`) go through `Files1`, where the path decides the account
+  `unpin`, `free`) go through `Files`, where the path decides the account
   ([desktop.md](desktop.md) §3; limitations log F50, F51). `login` with no account at all first
   adds one called `Personal`, so the single-account setup — `login`, `sync register` — works as it
   did; `set-client-id` is needed only to override the built-in client id. A name that fits more
@@ -503,7 +504,7 @@ $ konedrivectl --account family login
 Every account has a mode, `read-only` or `read-write`, stored in `config.toml`; a new account is
 read-only. [writes.md](writes.md) §2 has what the mode changes in the folder; in short:
 
-- **The mode it runs in.** `Account1.Mode` is `read-write` only while `config.toml` says so, the
+- **The mode it runs in.** `Account.Mode` is `read-write` only while `config.toml` says so, the
   write gate lets the account's drive through, the drive its token was last seen to reach is that
   drive, and the scopes its last token response granted — the scopes and the drive kept in
   `account.json` — include `Files.ReadWrite`. Otherwise it is `read-only`, and when `config.toml`
@@ -512,7 +513,7 @@ read-only. [writes.md](writes.md) §2 has what the mode changes in the folder; i
   for `Files.ReadWrite User.Read offline_access`, at the sign-in and at every refresh
   ([sync.md](sync.md) §12.1). A read-only account keeps asking for `Files.Read`, a subset of any
   grant, so Microsoft keeps refusing its writes even when its grant is wider.
-- **To read-write**, `Account1.SetMode("read-write", false)` answers a sign-in URL, and the sign-in
+- **To read-write**, `Account.SetMode("read-write", false)` answers a sign-in URL, and the sign-in
   asks for `Files.ReadWrite`, pinned to the account (its password asked for again, its email filled
   in). Only when its token response grants that, for this account's own drive, are the new refresh
   token stored and `mode = "read-write"` written; a cancelled, refused or foreign sign-in changes

@@ -41,7 +41,7 @@ impl From<ConfigError> for AccountError {
     }
 }
 
-/// Why `Account1.SetMode` or a `Dev1` token was refused (`docs/design/writes.md` §11), each under its own
+/// Why `Account.SetMode` or a `TokenExport` token was refused (`docs/design/writes.md` §11), each under its own
 /// D-Bus error name.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ModeError {
@@ -126,7 +126,7 @@ fn is_mode_message(text: &str) -> bool {
 pub trait PendingUploads: Send + Sync {
     async fn pending_uploads(&self) -> u64;
     async fn drop_pending_uploads(&self);
-    /// The account's quota was just read (`RefreshAccountInfo`): a full OneDrive, or a file
+    /// The account's quota was just read (`RefreshInfo`): a full OneDrive, or a file
     /// too big for what was left, is decided again by it (issue #2).
     fn quota_read(&self, _quota: &crate::drive::DriveQuota) {}
 }
@@ -166,7 +166,7 @@ pub struct AccountService {
     /// The daemon's other accounts, for the identity guard (§8.2). Empty until a
     /// [`Siblings`] adds this account.
     siblings: std::sync::Mutex<Option<Arc<Siblings>>>,
-    /// Set by `Accounts1.Remove`: no sign-in is begun or stored from then on.
+    /// Set by `Accounts.Remove`: no sign-in is begun or stored from then on.
     retired: std::sync::atomic::AtomicBool,
 }
 
@@ -264,7 +264,7 @@ impl AccountService {
         &self.id
     }
 
-    /// `Account1.Mode`: the mode the account runs in (`docs/design/writes.md` §2). Read-write only while
+    /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2). Read-write only while
     /// `config.toml` says so, the gate lets its drive through, and its last token carried
     /// `Files.ReadWrite`; [`recompute_mode`](Self::recompute_mode) keeps it.
     pub fn mode(&self) -> Mode {
@@ -401,7 +401,7 @@ impl AccountService {
     /// Keeps what a token may be used for in the state and in `account.json`: what it was
     /// granted, but never more than was asked for. A read-only request answered
     /// with a token that can write — consent Microsoft still holds — is logged, shown in
-    /// `LastError`, and used to read only; `Dev1` hands such a token to nobody.
+    /// `LastError`, and used to read only; `TokenExport` hands such a token to nobody.
     fn record_granted(&self, asked: &str, granted: &str) {
         let wider = is_read_only(asked) && !is_read_only(granted);
         let usable = if wider { asked } else { granted };
@@ -498,7 +498,7 @@ impl AccountService {
     }
 
     /// Sets the client id every account signs in with, when this account is signed out: the
-    /// single-account form of `Accounts1.SetClientId`, whose manager checks every account
+    /// single-account form of `Accounts.SetClientId`, whose manager checks every account
     /// and then calls [`use_client_id`](Self::use_client_id) on each.
     pub fn set_client_id(&self, id: &str) -> Result<(), AccountError> {
         let id = id.trim();
@@ -521,7 +521,7 @@ impl AccountService {
         self.state.update(|s| s.client_id = id.to_owned());
     }
 
-    /// `Account1.SetLabel`: the rules of `config::check_label`, `InvalidLabel` otherwise.
+    /// `Account.SetLabel`: the rules of `config::check_label`, `InvalidLabel` otherwise.
     pub fn set_label(&self, label: &str) -> Result<(), AccountError> {
         let label = self.config.set_label(&self.id, label)?;
         self.state.update(|s| s.label = label);
@@ -609,7 +609,7 @@ impl AccountService {
         });
     }
 
-    /// `Accounts1.Remove`'s sign-out: the account retired first, so that no sign-in is
+    /// `Accounts.Remove`'s sign-out: the account retired first, so that no sign-in is
     /// begun or stored from then on — one under way is superseded by the sign-out, and one
     /// whose exchange ends later finds the account retired — then signed out as
     /// [`sign_out`](Self::sign_out) signs out.
@@ -940,7 +940,7 @@ impl AccountService {
         };
         let unsettled = self.settle_siblings().await;
         let session = self.session.lock().await;
-        // A retired account (`Accounts1.Remove`) stores nothing, whatever the browser said.
+        // A retired account (`Accounts.Remove`) stores nothing, whatever the browser said.
         if session.generation != generation || self.is_retired() {
             return;
         }
@@ -991,7 +991,7 @@ impl AccountService {
         });
     }
 
-    /// `Account1.SetMode` (`docs/design/writes.md` §2): switches the account to `mode` — `read-only` or
+    /// `Account.SetMode` (`docs/design/writes.md` §2): switches the account to `mode` — `read-only` or
     /// `read-write` — and answers the URL of the sign-in the switch needs, empty when it
     /// needs none.
     ///
@@ -1225,13 +1225,13 @@ impl AccountService {
         Ok(())
     }
 
-    /// `Dev1.AccessToken` (`docs/design/writes.md` §8.2; SECURITY.md): a token that can change nothing, whatever the
+    /// `TokenExport.ReadOnly` (`docs/design/writes.md` §8.2; SECURITY.md): a token that can change nothing, whatever the
     /// account's mode.
     pub async fn read_only_token(&self) -> Result<String, AuthError> {
         self.tokens.read_only_token().await
     }
 
-    /// `Dev1.ReadWriteAccessToken`, for the test-account harness only (`docs/design/writes.md` §8.2, §12; SECURITY.md):
+    /// `TokenExport.ReadWrite`, for the test-account harness only (`docs/design/writes.md` §8.2, §12; SECURITY.md):
     /// refused `WritesNotAllowed` unless the gate lets the account's drive through, and
     /// `ModeNotGranted` unless the account is read-write and its token carries
     /// `Files.ReadWrite`. The token itself is then asked which drive it reaches

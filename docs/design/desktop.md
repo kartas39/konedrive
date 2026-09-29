@@ -19,26 +19,31 @@ plugins. The daemon's own work is in [hydration.md](hydration.md) and [sync.md](
 
 ### 2.1 Names
 
-Session bus, service `org.konedrive.Daemon`, five interfaces on two kinds of object:
+Session bus, service `org.konedrive.Daemon`, eleven interfaces on two kinds of object:
 
 | Object | Interfaces |
 |---|---|
-| `/org/konedrive/Accounts` | `org.konedrive.Accounts1` (the accounts, the client id, the helper), `org.konedrive.Files1` (the per-file calls, routed by path), `org.freedesktop.DBus.ObjectManager` |
-| `/org/konedrive/Accounts/<id>`, one per account | `org.konedrive.Account1` (its sign-in), `org.konedrive.Sync1` (its folder), `org.konedrive.Dev1` |
+| `/org/konedrive/Accounts` | `org.konedrive.Accounts` (the accounts, the client id, the helper), `org.konedrive.Files` (the per-file calls, routed by path), `org.freedesktop.DBus.ObjectManager` |
+| `/org/konedrive/Accounts/<id>`, one per account | `org.konedrive.Account` (its sign-in); its folder's `org.konedrive.Folder` (the folder itself), `org.konedrive.Transfers` (what moves now), `org.konedrive.UploadQueue` (what waits to go up), `org.konedrive.Conflicts`, `org.konedrive.LocalScan` and `org.konedrive.ActivityLog`; `org.konedrive.TokenExport` |
 
-The definitions are in `dbus/*.xml`, and a test keeps each in step with the live interface. The
-daemon is D-Bus activated (`SystemdService=konedrived.service`), so the first call from any client
-starts it. Every object is on the bus before the name is claimed, so no client sees a
-half-registered daemon. Nothing answers at `/org/konedrive/Daemon`, the object of the
-single-account versions ([accounts.md](accounts.md) §5).
+No name carries a version: the daemon, the window, the Dolphin plugin and `konedrivectl` ship
+together in one package, and a member does not repeat its interface's name (`Conflicts.List`, not
+`Conflicts.Conflicts`). The definitions are in `dbus/*.xml`, one file per interface, and a test
+keeps each in step with the live interface. The daemon is D-Bus activated
+(`SystemdService=konedrived.service`), so the first call from any client starts it. Every object is
+on the bus before the name is claimed, so no client sees a half-registered daemon. Nothing answers
+at `/org/konedrive/Daemon`, the object of the single-account versions ([accounts.md](accounts.md)
+§5).
 
-Properties change through `PropertiesChanged`. Counters, status and `Transfers` are coalesced: at
-most one signal per 250 ms, so a drive of hundreds of thousands of items cannot flood the bus.
+Properties change through `PropertiesChanged`, each under the interface that holds it: one change
+of the state that touches several interfaces sends one signal for each. Counters, status and the
+transfers are coalesced: at most one signal per interface per 250 ms, so a drive of hundreds of
+thousands of items cannot flood the bus.
 
-The manager's interfaces, `Accounts1` and `Files1`, are in §2.8 and §2.9; each account's in §2.2
+The manager's interfaces, `Accounts` and `Files`, are in §2.8 and §2.9; each account's in §2.2
 to §2.7.
 
-### 2.2 `Account1`, per account
+### 2.2 `Account`, per account
 
 | Member | Meaning |
 |---|---|
@@ -50,62 +55,105 @@ to §2.7.
 | `DisplayName`, `Email` (`s`) | from `GET /me` |
 | `QuotaUsed`, `QuotaTotal` (`t`) | bytes, from `GET /me/drive` |
 | `BeginSignIn() → s url` | starts the loopback listener and returns the authorization URL; the caller opens it ([sync.md](sync.md) §12.1) |
-| `CancelSignIn()`, `SignOut()`, `RefreshAccountInfo()` | as named; `SignOut` deletes the refresh token |
+| `CancelSignIn()`, `SignOut()`, `RefreshInfo()` | as named; `SignOut` deletes the refresh token; `RefreshInfo` reads the name, the address and the quota again |
 | `SetLabel(s)` | renames the account; `InvalidArgs` for a label the rules refuse |
 | `SetMode(s mode, b force) → s sign_in_url` | switches to `read-only` or `read-write` ([accounts.md](accounts.md) §10); the URL of the sign-in a switch to read-write needs, empty when none is needed. Refused `WritesNotAllowed` by the write gate, `NotSignedIn`, `PendingUploads` unless `force`, `InvalidArgs` for another mode. A switch to read-write ends in `Mode` turning `read-write`, or in `LastError` saying why not (limitations log F64) |
 
-Neither the refresh token nor the access token is ever exposed through `Account1`.
+Neither the refresh token nor the access token is ever exposed through `Account`; `TokenExport`
+(§2.7) is a development build's.
 
-### 2.3 `Sync1` methods, per account
+### 2.3 The folder's methods, per account
+
+`Folder`:
 
 | Method | Does |
 |---|---|
-| `RegisterRoot(s path)` | binds an empty folder to the account's drive, with the helper intercepting ([hydration.md](hydration.md) §14.1); refused `Overlaps` for a folder that is, is inside, or contains another account's, and `NotEmpty` for one that carries another account's drive ([accounts.md](accounts.md) §6.3) |
-| `RegisterRootWithoutInterception(s path)` | the developer's local folder, with nothing intercepting ([hydration.md](hydration.md) §14.3); refused `Overlaps` in the same way |
-| `UnregisterRoot()` | Forget: leaves every file as it is ([hydration.md](hydration.md) §14.5) |
+| `Register(s path)` | binds an empty folder to the account's drive, with the helper intercepting ([hydration.md](hydration.md) §14.1); refused `Overlaps` for a folder that is, is inside, or contains another account's, and `NotEmpty` for one that carries another account's drive ([accounts.md](accounts.md) §6.3) |
+| `RegisterWithoutInterception(s path)` | the developer's local folder, with nothing intercepting ([hydration.md](hydration.md) §14.3); refused `Overlaps` in the same way |
+| `Unregister()` | Forget: leaves every file as it is ([hydration.md](hydration.md) §14.5) |
 | `PopulateFromDirectory(s source_dir) → t created` | fills a local folder with placeholders mirroring a directory; refused on a OneDrive folder |
 | `Refresh()` | runs a sync cycle now, tries the changes in backoff, and reads the quota again (which may end a full OneDrive); refused `NoHelper` while the folder waits for the helper |
 | `Skipped() → a(ss)` | (path, reason) for everything in OneDrive that is not in the folder ([sync.md](sync.md) §7.5) |
-| `RecentActivity(u limit) → a(xsss)` | (time, kind, path, detail), newest first |
-| `Conflicts() → a(xss)` | (time, original path, rescued path) ([sync.md](sync.md) §10.3) |
-| `DismissConflict(s rescued_path)` | takes one conflict off the list; the file stays where it is |
 | `FreeUpSpace() → (u files, t bytes, u busy)` | frees up every downloaded file that is not in use; files open somewhere or busy with a download are skipped and counted, never waited for; a file whose change waits to be uploaded is left, and counted as busy |
-| `Outbox(u limit) → a(tsssttsx)` | the changes waiting to be uploaded, oldest first (0: all): seq, kind (`create`, `mkdir`, `update`, `move`, `delete`, `move-out`), path, state (`waiting`, `ready`, `running`, `retry`, `blocked`, `held`; while the account is paused, every row but a blocked or held one reads `paused`, with no reason and no next try), bytes sent, bytes in all, reason, next try; `Unsupported` for a folder not connected to OneDrive |
 | `Pause(u seconds)`, `Resume()` | pause the account — no upload, no poll, no thumbnails; fills on open, `Hydrate` and detection go on — for `seconds`, or until `Resume` when 0; the pause outlasts a daemon restart |
 | `SetIgnorePatterns(as)` | the names of the user's own files that are never uploaded (shell globs on a name); written to `config.toml`, then the whole folder is scanned again; `InvalidArgs` for an empty pattern or one holding "/" |
+
+`UploadQueue`:
+
+| Method | Does |
+|---|---|
+| `Changes(u limit) → a(tsssttsx)` | the changes waiting to be uploaded, oldest first (0: all): seq, kind (`create`, `mkdir`, `update`, `move`, `delete`, `move-out`), path, state (`waiting`, `ready`, `running`, `retry`, `blocked`, `held`; while the account is paused, every row but a blocked or held one reads `paused`, with no reason and no next try), bytes sent, bytes in all, reason, next try; `Unsupported` for a folder not connected to OneDrive |
 | `ConfirmDeletes() → u`, `RestoreDeletes() → u` | the mass-delete guard's two answers: the held removals go ahead, or are dropped and the items placed again; how many rows |
 | `NotUploaded() → a(ss)` | (path, reason) for what stays on this computer: what is never uploaded (`symlink`, `hard-link`, `not-downloaded`, …) and every blocked change (`name-characters`, `forbidden`, …) |
 | `NotUploadedSummary() → a(ssut)` | what is kept back, one row per reason: group, reason, count, bytes. Groups, in order: `one-action` (one action fixes every file: `waiting-for-space`, which while OneDrive is full also counts every change that sends content; `too-big`, every `too-big:<needed>:<free>` summed as one; `forbidden`; and `quota-exceeded` from an older version, until a start converts it), `per-file` (a name OneDrive refuses, `too-large`, `refused` — every `refused: <message>` summed as one), `never` (symlinks, pipes, sockets, devices, `other-device`, `reserved-name`, `hard-link`), `waiting` (goes up by itself: open for writing, locked, …, and any reason the daemon does not know). Everything `NotUploaded` lists, plus the changes waiting or in backoff with a reason, and the `ready` ones waiting for space; held removals are not. The table is `crates/konedrived/src/sync/kept_back.rs` |
 | `NotUploadedFiles(s reason, u limit) → (a(ss) items, u total)` | the files of one reason as the summary names it, by path, at most `limit` (0: all): (path, reason as stored — a refused one keeps OneDrive's message); and how many there are |
 
-### 2.4 `Sync1` properties and signals, per account
+`Conflicts`:
+
+| Method | Does |
+|---|---|
+| `List() → a(xsss)` | (time, original path, path of the kept version, how it was kept: `rescued` or `copy`) ([sync.md](sync.md) §10.3) |
+| `Dismiss(s rescued_path)` | takes one conflict off the list; the file stays where it is |
+
+`ActivityLog`:
+
+| Method | Does |
+|---|---|
+| `Recent(u limit) → a(xsss)` | (time, kind, path, detail), newest first |
+
+### 2.4 The folder's properties and signals, per account
+
+`Folder`:
 
 | Property | Meaning |
 |---|---|
-| `RootPath` (`s`) | the registered folder, empty when none |
-| `RootState` (`s`) | `none`, `listing`, `ready`, `no-interception` or `error` (§2.5) |
-| `RootSource` (`s`) | `onedrive`, `local`, or empty ([sync.md](sync.md) §3) |
+| `Path` (`s`) | the registered folder, empty when none |
+| `State` (`s`) | `none`, `listing`, `ready`, `no-interception` or `error` (§2.5) |
+| `Source` (`s`) | `onedrive`, `local`, or empty ([sync.md](sync.md) §3) |
 | `LastError` (`s`) | what needs attention, in words: the registration's trouble and the sync's, joined; while the folder waits for the helper, it begins with the helper's advice (§2.5) |
 | `ItemsListed`, `ItemsPlaced`, `SkippedCount` (`t`) | the listing's progress ([sync.md](sync.md) §7.5) |
 | `LastChecked` (`x`) | Unix time of the last successful cycle; 0 for never |
 | `LocalBytes` (`t`) | the space the folder's files take on disk (`st_blocks × 512`), measured by a walk after each cycle and at most every 5 s after a download or free-up |
-| `ConflictCount` (`u`) | how many conflicts are listed |
 | `PinnedCount` (`u`) | how many files and folders carry a pin of their own ([pinning.md](pinning.md) §7) |
-| `Transfers` (`a(stt)`) | each download under way as (path, bytes done, bytes total): fills on open, `Hydrate`, pinned downloads and replacements; not thumbnails |
+| `IgnorePatterns` (`as`) | the ignore list; read-only |
+| `Paused` (`b`), `PausedUntil` (`x`) | whether the account is paused, and when the pause ends by itself (0: until `Resume`) |
+
+`Transfers`:
+
+| Property | Meaning |
+|---|---|
+| `Downloads` (`a(stt)`) | each download under way as (path, bytes done, bytes total): fills on open, `Hydrate`, pinned downloads and replacements; not thumbnails |
 | `Uploads` (`a(stt)`) | each upload under way, the same way |
+| `DownloadSpeed` (`t`), `UploadSpeed` (`t`), `ActiveDownloads` (`u`), `ActiveUploads` (`u`), `PoolSize` (`u`), `PoolCeiling` (`u`), `LargeStreams` (`u`), `LargeStreamLimit` (`u`), `RetryAfter` (`u`) | the account's transfer pool ([hydration.md](hydration.md) §6.4), updated once a second while anything moves or OneDrive's `Retry-After` runs: bytes a second each way (the average of the last 3 s), the slots downloads and uploads hold, the pool's size now and its ceiling (`[transfers] max`), the large transfers (100 MiB and up) under way and how many may run at once (`[transfers] large`), and the seconds left of OneDrive's `Retry-After` wait (0: none) |
+| `DownloadLeftCount` (`u`), `DownloadLeftBytes` (`t`), `DownloadDoneBytes` (`t`), `DownloadTimeLeft` (`u`), and the same four for uploads | the queue totals (issue #16): files left to download and changes left to upload, their bytes less what is moved of those under way, the bytes done since nothing was last left that way, and the seconds left at the speed of the last 30 s (0: unknown) |
+
+`UploadQueue`:
+
+| Property | Meaning |
+|---|---|
 | `PendingCount` (`u`), `PendingBytes` (`t`) | the changes waiting to be uploaded, neither blocked nor held, and the size of what they send |
 | `BlockedCount` (`u`) | the changes that need the user before they can go up (see `NotUploaded`); removals the mass-delete guard holds are not counted |
-| `HeldCount` (`u`) | the removals the mass-delete guard holds, waiting for `ConfirmDeletes` or `RestoreDeletes`; `held` rows in `Outbox()` |
+| `HeldCount` (`u`) | the removals the mass-delete guard holds, waiting for `ConfirmDeletes` or `RestoreDeletes`; `held` rows in `Changes()` |
 | `QuotaFull` (`b`) | OneDrive is full: no content goes up until a quota read finds space ([writes.md](writes.md) §6.4) |
-| `SpaceWaitingCount` (`u`), `SpaceWaitingBytes` (`t`) | while full, the changes that send content, and the size of their files |
-| `TooBigCount` (`u`) | files refused as too big for the space left; each is `ready` in `Outbox()` with reason `too-big:<needed>:<free>` |
-| `QuotaState` (`s`), `FreeSpace` (`t`) | Graph's `quota.state` and `quota.remaining` as last read (by `Refresh`, `RefreshAccountInfo` or the outbox), less what was uploaded since; empty and 0 until read |
-| `Paused` (`b`), `PausedUntil` (`x`) | whether the account is paused, and when the pause ends by itself (0: until `Resume`) |
-| `DownloadSpeed` (`t`), `UploadSpeed` (`t`), `ActiveDownloads` (`u`), `ActiveUploads` (`u`), `PoolSize` (`u`), `PoolCeiling` (`u`), `LargeTransfers` (`u`), `LargeLimit` (`u`), `RetryAfter` (`u`) | the account's transfer pool ([hydration.md](hydration.md) §6.4), updated once a second while anything moves or OneDrive's `Retry-After` runs: bytes a second each way (the average of the last 3 s), the slots downloads and uploads hold, the pool's size now and its ceiling (`[transfers] max`), the large transfers (100 MiB and up) under way and how many may run at once (`[transfers] large`), and the seconds left of OneDrive's `Retry-After` wait (0: none) |
-| `ScanState` (`s`), `ScanReason` (`s`), `ScanStarted` (`x`), `ScanDirectories` (`t`), `ScanFiles` (`t`), `ScanExpected` (`t`), `ScanFinished` (`x`), `ScanTook` (`u`) | the Full local scan of a read-write folder ([writes.md](writes.md) §3.1): `running`, `idle`, or `none` for a read-only folder; why it runs (`start`, `read-write`, `helper-back`, `overflow`, `ignore-list`, `periodic`); when it started; the directories and the files (every entry that is not a directory) it has seen so far; about how many items it will see — the items the base had placed when it started, not the disk's count, so never a percentage; when the last one finished (0: none since the daemon started) and how long it took, in seconds. While idle, the reason, start and counts are the last scan's. The small examinations after each change are not reported. Updated at most once a second while a scan runs, and once when it ends |
-| `IgnorePatterns` (`as`), `MachineName` (`s`) | the ignore list, and the name copies of files changed on both sides are named after ("Report-`<MachineName>`.docx"): `machine_name` in `config.toml`, or the host's name; read-only |
+| `QuotaWaitingCount` (`u`), `QuotaWaitingBytes` (`t`) | while full, the changes that send content, and the size of their files |
+| `TooBigCount` (`u`) | files refused as too big for the space left; each is `ready` in `Changes()` with reason `too-big:<needed>:<free>` |
+| `QuotaState` (`s`), `QuotaRemaining` (`t`) | Graph's `quota.state` and `quota.remaining` as last read (by `Folder.Refresh`, `Account.RefreshInfo` or the queue), less what was uploaded since; empty and 0 until read |
 
-The signal `ActivityAdded(x time, s kind, s path, s detail)` announces each event as it is recorded.
+`Conflicts`:
+
+| Property | Meaning |
+|---|---|
+| `Count` (`u`) | how many conflicts are listed |
+| `MachineName` (`s`) | the name copies of files changed on both sides are named after ("Report-`<MachineName>`.docx"): `machine_name` in `config.toml`, or the host's name |
+
+`LocalScan`:
+
+| Property | Meaning |
+|---|---|
+| `State` (`s`), `Reason` (`s`), `Started` (`x`), `Directories` (`t`), `Files` (`t`), `Expected` (`t`), `Finished` (`x`), `Took` (`u`) | the Full local scan of a read-write folder ([writes.md](writes.md) §3.1): `running`, `idle`, or `none` for a read-only folder; why it runs (`start`, `read-write`, `helper-back`, `overflow`, `ignore-list`, `periodic`); when it started; the directories and the files (every entry that is not a directory) it has seen so far; about how many items it will see — the items the base had placed when it started, not the disk's count, so never a percentage; when the last one finished (0: none since the daemon started) and how long it took, in seconds. While idle, the reason, start and counts are the last scan's. The small examinations after each change are not reported. Updated at most once a second while a scan runs, and once when it ends |
+
+The signal `ActivityLog.Added(x time, s kind, s path, s detail)` announces each event as it is
+recorded.
 The kinds are `downloaded`, `freed`, `added`, `updated`, `removed`, `moved`, `listed`, `conflict`,
 `failed` (a download) and `update-failed` (a changed file could not be replaced here). For a full
 disk, the detail is exactly "not enough disk space" in either failure kind. A read-write account
@@ -119,9 +167,9 @@ log is a summary, not a record of every file: a first listing or a Full reconcil
 event ("12 345 items"), an incremental cycle logs at most 50 events of each kind plus one "and N
 more", and `FreeUpSpace` is one `freed` event (limitations log F25).
 
-### 2.5 `RootState` and `HelperState`
+### 2.5 `Folder.State` and `HelperState`
 
-`RootState` is computed, never stored — one state, one source of truth:
+`Folder.State` is computed, never stored — one state, one source of truth:
 
 - `none` — no folder is registered;
 - `error` — the registration or the sync is in trouble: signed out, another account than the store
@@ -131,7 +179,7 @@ more", and `FreeUpSpace` is one `freed` event (limitations log F25).
 - `listing` — a first or post-`410` listing is under way (only ever in place of `ready`);
 - `ready` or `no-interception` — the registration's own mode.
 
-`HelperState` says what the daemon knows of the helper. It is on `Accounts1`, not on each account,
+`HelperState` says what the daemon knows of the helper. It is on `Accounts`, not on each account,
 because one link serves every account ([accounts.md](accounts.md) §3.3). While the daemon holds the
 link, `connected`. Otherwise it asks systemd — read-only, over the system bus, with no privilege —
 for `konedrive-helper.service`: not found is `not-installed`; inactive is `stopped`; failed, or a
@@ -140,7 +188,7 @@ running while the daemon has no link yet, is `unknown`. It is asked again when t
 returns and every 30 s while there is none. The sentence for each state — how to install, start or
 diagnose the helper — is written once, in `konedrive_dbus::helper_advice`, for the daemon's
 `LastError`, the CLI and the window alike; each account whose folder waits for the helper begins
-its `Sync1.LastError` with it.
+its `Folder.LastError` with it.
 
 ### 2.6 Errors
 
@@ -154,19 +202,19 @@ account's token does not carry `Files.ReadWrite`), `PendingUploads` (a switch to
 changes wait to be uploaded), and `Failed` for everything without a name of its own (an I/O failure). Registration refusals come
 in the order `NotSignedIn`, `AlreadyRegistered`, `NoHelper`, `Overlaps`, then the folder checks.
 `Add`, `SetLabel` and `SetClientId` refuse a label or an id with the bus's own `InvalidArgs`, and
-`Accounts1` refuses with the bus's `Failed` a call that is not possible now — a client id changed
+`Accounts` refuses with the bus's `Failed` a call that is not possible now — a client id changed
 while an account is signed in, or anything while `config.toml` cannot be read: nothing needs to
 tell those reasons apart.
 
-### 2.7 `Dev1`, per account
+### 2.7 `TokenExport`, per account
 
-`AccessToken() → s` returns an access token of the account for a test run in the VM — about an
+`ReadOnly() → s` returns an access token of the account for a test run in the VM — about an
 hour of `Files.Read` on that account's drive, whatever its mode, never the refresh token
-([sync.md](sync.md) §12.2). `ReadWriteAccessToken() → s`, for the test-account harness only, returns
+([sync.md](sync.md) §12.2). `ReadWrite() → s`, for the test-account harness only, returns
 one that can change files: refused `WritesNotAllowed` for an account the write gate does not let
 through, `ModeNotGranted` for one that is not read-write.
 
-### 2.8 `Accounts1`
+### 2.8 `Accounts`
 
 | Member | Meaning |
 |---|---|
@@ -175,14 +223,14 @@ through, `ModeNotGranted` for one that is not read-write.
 | `HelperState` (`s`) | `connected`, `not-installed`, `stopped`, `failed` or `unknown`: one helper serves every account (§2.5) |
 | `LastError` (`s`) | trouble that belongs to no account: `config.toml` cannot be read or was written by a newer version, a migration step failed, an account could not be loaded; empty when none |
 | `Add(s label) → o` | adds a signed-out, read-only account with no folder and returns its object ([accounts.md](accounts.md) §7.2); `InvalidArgs` for a label the rules refuse |
-| `Remove(o account)` | forgets the account's folder as `UnregisterRoot` does, signs it out, deletes its refresh token, cached name and quota and tree store, and takes its object off the bus; the folder's files and the rescued files stay ([accounts.md](accounts.md) §7.3) |
+| `Remove(o account)` | forgets the account's folder as `Folder.Unregister` does, signs it out, deletes its refresh token, cached name and quota and tree store, and takes its object off the bus; the folder's files and the rescued files stay ([accounts.md](accounts.md) §7.3) |
 | `SetClientId(s)` | overrides the built-in client id with one of the caller's own (a custom Entra registration); validates and stores it, `InvalidArgs` for a malformed one, and refused while any account is signing in or signed in |
 
 The same object is an `org.freedesktop.DBus.ObjectManager`: `InterfacesAdded` when an account's
 object is on the bus, `InterfacesRemoved` when it goes, and `GetManagedObjects` for tools. The
 window and the CLI follow `Accounts` instead.
 
-### 2.9 `Files1`
+### 2.9 `Files`
 
 The calls on one file or on chosen paths, each routed by path to the account whose folder holds it
 ([accounts.md](accounts.md) §3.5). A path in no account's folder is refused `OutsideRoot`.
@@ -219,12 +267,12 @@ F51).
 
 | Command | Account | Does |
 |---|---|---|
-| `account list` | all | a table of every account in account order: id, label, email, sign-in state, mode, and the folder with its `RootState` |
-| `account add <label>` | — | `Accounts1.Add`: a signed-out account with no folder; prints its id |
-| `account rename <account> <label>` | the argument | `Account1.SetLabel` |
-| `account remove <account>` | the argument | `Accounts1.Remove`, without asking; then says what was deleted and what was kept |
-| `account mode [read-only\|read-write] [--force]` | chosen | shows the mode (and `LastError`), or switches it with `Account1.SetMode`: read-write opens the browser like `login` and waits until `Mode` is `read-write` or `LastError` says why not; read-only is refused while changes wait to be uploaded, unless `--force` |
-| `set-client-id <id>` | — | `Accounts1.SetClientId`, overriding the built-in client id for every account with the caller's own; a refusal names the accounts still signed in |
+| `account list` | all | a table of every account in account order: id, label, email, sign-in state, mode, and the folder with its `Folder.State` |
+| `account add <label>` | — | `Accounts.Add`: a signed-out account with no folder; prints its id |
+| `account rename <account> <label>` | the argument | `Account.SetLabel` |
+| `account remove <account>` | the argument | `Accounts.Remove`, without asking; then says what was deleted and what was kept |
+| `account mode [read-only\|read-write] [--force]` | chosen | shows the mode (and `LastError`), or switches it with `Account.SetMode`: read-write opens the browser like `login` and waits until `Mode` is `read-write` or `LastError` says why not; read-only is refused while changes wait to be uploaded, unless `--force` |
+| `set-client-id <id>` | — | `Accounts.SetClientId`, overriding the built-in client id for every account with the caller's own; a refusal names the accounts still signed in |
 | `login` | chosen | `BeginSignIn`, opens the browser and waits. With no account at all and none named, it first adds one called `Personal` |
 | `logout` | chosen | signs the account out and deletes its token |
 | `status` | chosen, or all | the account's sign-in state and mode; with several accounts and none named, every account under its label, the `Client ID:` line once above them |
@@ -232,22 +280,22 @@ F51).
 | `sync register-without-interception <path>` | chosen | the developer's local folder, named after its cost on purpose |
 | `sync forget` | chosen | Forget |
 | `sync populate-from <dir>` | chosen | fills a local folder from a directory |
-| `sync hydrate <path>`, `sync dehydrate <path>`, `sync state <path>` | by path | one file, through `Files1` |
-| `sync pin`, `sync unpin`, `sync free` `<paths…>` | by path | pinning ([pinning.md](pinning.md) §8), through `Files1` |
+| `sync hydrate <path>`, `sync dehydrate <path>`, `sync state <path>` | by path | one file, through `Files` |
+| `sync pin`, `sync unpin`, `sync free` `<paths…>` | by path | pinning ([pinning.md](pinning.md) §8), through `Files` |
 | `sync status` | chosen, or all | the folder, its state, source and counts, "Last checked", "On this computer", whether opens are intercepted; for a OneDrive folder, "Local scan:" — `running — 1 234 folders and 45 678 files, of about 50 000 (2 min, after the switch to read-write)`, `last finished 5 min ago (took 40 s)`, `not yet since the daemon started`, or `none — read-only`; "Waiting to download: 1 234 files (48.2 GiB)" (`DownloadLeftCount`, `DownloadLeftBytes`) beside "Waiting to upload"; with several accounts and none named, every account's folder under its label. The `Helper:` line, with what to do, is printed once, above them |
 | `sync skipped` | chosen | what is not in the folder, and why |
 | `sync refresh` | chosen | a cycle now |
 | `sync activity [--limit N]`, `sync transfers` | chosen | recent events; for each way one line — how many files move now, what is left, its size and about how long, what this run has done, and how fast ("Downloading: 12 now, 1 234 files left (48.2 GiB, about 12 min), 3.1 GiB done, 8.4 MiB/s"; uploads are counted in changes; what is left and done only while anything is left, the time only when known) — the transfer pool ("Pool: 15 of 64 (large: 3 of 4)", ending "— OneDrive asked to wait 30 s" during a `Retry-After`), and the downloads and uploads under way |
 | `sync conflicts`, `sync dismiss <rescued path>` | chosen | the conflicts |
 | `sync free-up-space` | chosen | frees up every downloaded file not in use |
-| `sync outbox [--all]` | chosen | `sync transfers`'s "Uploading:" line first, then `Outbox`: the changes waiting to be uploaded, each with its state and why it waits; the first 50 without `--all` |
+| `sync outbox [--all]` | chosen | `sync transfers`'s "Uploading:" line first, then `UploadQueue.Changes`: the changes waiting to be uploaded, each with its state and why it waits; the first 50 without `--all` |
 | `sync pause [--for <duration>]`, `sync resume` | chosen | `Pause` for `30m`, `2h`, `1d`, `1h30m`…, or until `sync resume`; `Resume` |
 | `sync ignore [list\|add <pattern>\|remove <pattern>]` | chosen | shows the ignore list (`IgnorePatterns`), or changes it with `SetIgnorePatterns` |
 | `sync not-uploaded [--all]` | chosen | `NotUploadedSummary`: each group and its reasons with their counts and sizes, then (`NotUploadedFiles`) the files of the per-file reasons, the first 20 of each; `--all` lists every file of every reason |
 | `sync deletes confirm\|restore` | chosen | `ConfirmDeletes` or `RestoreDeletes`: the mass-delete guard's two answers |
 | `dev export-access-token --out <file> [--read-write]` | chosen | writes an access token of the account to a `0600` file, atomically, never through a symlink: a read-only one, or with `--read-write` one that can change files, which only a test account the write gate lets through gets |
 
-The path commands go through `Files1`, so the path decides the account. When one is refused
+The path commands go through `Files`, so the path decides the account. When one is refused
 `OutsideRoot`, the CLI reads every account's folder to say where the path is not, which is its own
 view of the routing rule (limitations log F50).
 
@@ -266,7 +314,7 @@ app's:
 | Page | Shows |
 |---|---|
 | **Status** | the status line, the folder and its item count, "On this computer: …", "Free Up Space…", "Refresh Now", "Open in File Manager", and a card with the helper's instruction while it is not `connected`. For a OneDrive folder: the mode ("Read-only" or "Changes upload"), the local scan in one line — "Checking local files: 1234 folders and 45678 files, of about 50000 — started 2 min ago, after the switch to read-write" while one runs, "Local files last checked 5 min ago (took 40 s)" once one has finished, "Local files not checked yet" before; no line for a read-only folder — "N changes waiting to upload" with the size to send (to the Activity page), "N changes cannot be uploaded" while any are blocked (to Not Uploaded), removals the mass-delete guard holds with "Restore Them" and "Delete in OneDrive Too", and "Pause Syncing…" (for 2, 8 or 24 hours, or until resumed) or, while paused, "Paused until 14:00" with "Resume" |
-| **Activity** | two mini cards side by side, "Downloading" and "Uploading": each the speed, "N files downloading" (or "uploading"), while anything is left that way a line "1 234 files left · 48.2 GiB · about 12 min" (the Uploading card counts changes: "6 changes left · …"; the time only when known) with, smaller, "3.1 GiB done" (`Sync1`'s queue totals, issue #16), and one chart of the last two minutes (one sample a second, kept by the window) with two lines on two scales — speed on the left axis, the files moving that way on the right — each in its own colour, with a small legend ("Speed", and "Files downloading" or "Files uploading"); dimmed with "no transfers" while idle (KQuickCharts); below both, the shared pool once, "Pool: 25 of 64 (large: 3 of 4)", adding "— OneDrive asked to wait 30 s" (counting down) during a `Retry-After`; then "Downloading now" and "Uploading now" (each file with a progress bar and its size), "Waiting to upload" while the Not Uploaded page lists anything: only its link, "N changes kept back — see Not Uploaded" (N: what that page counts; what is left to upload is in the Uploading card; no row per file), and "Recent" (the newest 50 events; clicking one shows the file in Dolphin) |
+| **Activity** | two mini cards side by side, "Downloading" and "Uploading": each the speed, "N files downloading" (or "uploading"), while anything is left that way a line "1 234 files left · 48.2 GiB · about 12 min" (the Uploading card counts changes: "6 changes left · …"; the time only when known) with, smaller, "3.1 GiB done" (`Transfers`' queue totals, issue #16), and one chart of the last two minutes (one sample a second, kept by the window) with two lines on two scales — speed on the left axis, the files moving that way on the right — each in its own colour, with a small legend ("Speed", and "Files downloading" or "Files uploading"); dimmed with "no transfers" while idle (KQuickCharts); below both, the shared pool once, "Pool: 25 of 64 (large: 3 of 4)", adding "— OneDrive asked to wait 30 s" (counting down) during a `Retry-After`; then "Downloading now" and "Uploading now" (each file with a progress bar and its size), "Waiting to upload" while the Not Uploaded page lists anything: only its link, "N changes kept back — see Not Uploaded" (N: what that page counts; what is left to upload is in the Uploading card; no row per file), and "Recent" (the newest 50 events; clicking one shows the file in Dolphin) |
 | **Conflicts** | each rescued file: the file, where it was, where it is now, when; "Show in Folder" and "Dismiss". A file changed on both sides kept a copy beside it instead: which name is whose, "Show Both" (both files selected in Dolphin) and "Dismiss". The newest 200, then "and N more" naming `konedrivectl sync conflicts`; a changed list is taken in one step (one removal, one insertion and one change, or one reset), never row by row. Always present, with a count badge (the chosen account's) while there are conflicts, and "No conflicts" otherwise |
 | **Not in the Folder** | the skipped items and why, in the same words as `sync skipped` (a test keeps the two in step): the first 200, then "and N more" naming `konedrivectl sync skipped`. Read when shown, and while shown at most once a second however often `SkippedCount` moves |
 
@@ -304,13 +352,13 @@ named, it is chosen and the folder picker opens at once: a sign-in exists to syn
 dialog says at once why it will not do (A14).
 
 **Remove Account…** asks first — "Your files stay in `<folder>`. Files that were never downloaded
-are left as empty placeholders." — and then calls `Accounts1.Remove`.
+are left as empty placeholders." — and then calls `Accounts.Remove`.
 
 **The helper** serves every account, so its card shows on the Status page of whichever account is
-chosen. Trouble that belongs to no account (`Accounts1.LastError`) shows above it.
+chosen. Trouble that belongs to no account (`Accounts.LastError`) shows above it.
 
 **Upload changes made on this computer** is the account's mode: on is read-write, and it shows
-`Account1.Mode`, the mode the account runs in. Turned on, a dialog first says that the browser opens
+`Account.Mode`, the mode the account runs in. Turned on, a dialog first says that the browser opens
 for a sign-in allowing KOneDrive to change files, and what uploading means (new files, edits,
 renames, moves and deletions go up; deleted files go to OneDrive's recycle bin); then
 `SetMode("read-write", false)`, whose sign-in URL opens as Sign In's does. While that sign-in waits,
@@ -321,14 +369,14 @@ account in this version (the write gate), sign in first, sign in again (limitati
 
 **Held removals.** The mass-delete guard holds a large delete until the user decides. The window
 follows `HeldCount` for the Status page, the tray and the `massDelete` notification, and reads
-`Outbox()` for the list when a count changes, when `Paused` changes, or when the Activity page is
+`Changes()` for the list when a count changes, when `Paused` changes, or when the Activity page is
 shown (limitations log A20).
 
 The **status line** reads, for example, "Up to date · checked 20 s ago", "Listing your OneDrive:
 N items so far", "Downloading 3 files", "Uploading 1 file", "3 changes waiting to upload", "Paused
 until 14:00", "1 changed file was moved out of the way", "Signed out of OneDrive", "No OneDrive
 folder yet", or the error, refreshed every 10 s. The window does not offer
-the no-interception mode: a folder is registered only through `RegisterRoot`.
+the no-interception mode: a folder is registered only through `Folder.Register`.
 
 **Places.** Each account's folder has an entry in Dolphin's Places panel and in file dialogs, named
 `OneDrive — <label>` — with one account too, so that a second account renames nothing. The entry is
@@ -374,7 +422,7 @@ account with an intercepted folder.
 - **Click.** Opens the window; on the account that needs attention when exactly one does, and
   otherwise on the account the window last showed.
 
-The tray reads each account's state from its `RootState`, `ConflictCount` and `LastError` and from
+The tray reads each account's state from its `Folder.State`, `Conflicts.Count` and `Folder.LastError` and from
 `HelperState`; a few of those readings still depend on exact wording from the daemon (limitations
 log A2, A17).
 
@@ -408,16 +456,16 @@ A1). The app runs at login in the tray, so that is the exception.
 
 ## 7. Download and upload progress in Plasma
 
-The app watches `Transfers`. A transfer still running **2 s** after it first appears is reported to
+The app watches `Transfers.Downloads`. A transfer still running **2 s** after it first appears is reported to
 Plasma as a `KJob` through `KUiServerV2JobTracker` — the mechanism Dolphin's own copy progress
 uses — titled "Downloading from OneDrive", with the file name, bytes done of total, and speed.
 Shorter transfers never show. At most **5** jobs are visible at once; the rest are summed into one,
-"and N more files". Each account's `Transfers` is watched on its own: with several accounts, the
+"and N more files". Each account's `Downloads` is watched on its own: with several accounts, the
 cap of 5 and the summary are per account, and a job's title names the account, "Downloading from
 OneDrive — Family" (limitations log A18).
 
-The daemon removes a transfer from `Transfers` before it signals the transfer's failure, and the
-coalesced property can also arrive after the failure. So a job whose transfer leaves `Transfers` is
+The daemon removes a transfer from `Downloads` before it signals the transfer's failure, and the
+coalesced property can also arrive after the failure. So a job whose transfer leaves `Downloads` is
 held for a **1.5 s** grace window: a `failed` or `update-failed` event naming the same path inside
 it fails the job with the reason, and otherwise the job finishes as a success (limitations log A11).
 A daemon restart ends every job with an error. The "Show download and upload progress" switch in
@@ -542,7 +590,7 @@ Checking it calls `Pin`; unchecking it calls `Unpin`, which only removes the pin
 downloaded, as on Windows (D-A). "Free up space" is shown for any folder in the root, or a file
 that is downloaded or explicitly pinned, and disabled for a selection with anything pinned only by
 a folder above it; it calls `FreeUp` (D-B). A selection is one asynchronous D-Bus call (`Pin`,
-`Unpin` or `FreeUp`, on `Files1` at `/org/konedrive/Accounts`) with no reply timeout, since
+`Unpin` or `FreeUp`, on `Files` at `/org/konedrive/Accounts`) with no reply timeout, since
 downloads can take minutes; the daemon finds each path's account, so a selection may span the
 folders of several accounts ([accounts.md](accounts.md) §3.5). A click starts a
 stopped daemon through D-Bus activation, as any KDE service would, rather than reporting that it is

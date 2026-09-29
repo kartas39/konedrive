@@ -1,42 +1,45 @@
 //! The client proxies of the multiple-accounts contract (definitions:
-//! `dbus/org.konedrive.{Accounts1,Files1,Account1,Sync1,Dev1}.xml`).
+//! `dbus/org.konedrive.*.xml`, one file per interface).
 //!
-//! [`Accounts1Proxy`] and [`Files1Proxy`] have a default path,
-//! [`ACCOUNTS_PATH`](crate::ACCOUNTS_PATH). [`Account1Proxy`], [`Sync1Proxy`]
-//! and [`Dev1Proxy`] have none: each is built with one account's path, an
-//! entry of [`Accounts1Proxy::accounts`] or [`account_path`](crate::account_path):
+//! [`AccountsProxy`] and [`FilesProxy`] have a default path,
+//! [`ACCOUNTS_PATH`](crate::ACCOUNTS_PATH). The proxies of an account's object —
+//! [`AccountProxy`], [`FolderProxy`], [`TransfersProxy`], [`UploadQueueProxy`],
+//! [`ConflictsProxy`], [`LocalScanProxy`], [`ActivityLogProxy`] and
+//! [`TokenExportProxy`] — have none: each is built with one account's path, an
+//! entry of [`AccountsProxy::list`] or [`account_path`](crate::account_path).
+//! [`FolderProxies`] builds the six of an account's folder at once:
 //!
 //! ```no_run
 //! # async fn example(conn: &zbus::Connection) -> zbus::Result<()> {
-//! use konedrive_dbus::accounts::{Accounts1Proxy, Sync1Proxy};
+//! use konedrive_dbus::accounts::{AccountsProxy, FolderProxy};
 //!
-//! let manager = Accounts1Proxy::new(conn).await?;
-//! for path in manager.accounts().await? {
-//!     let sync = Sync1Proxy::new(conn, path).await?;
-//!     println!("{}", sync.root_path().await?);
+//! let manager = AccountsProxy::new(conn).await?;
+//! for path in manager.list().await? {
+//!     let folder = FolderProxy::new(conn, path).await?;
+//!     println!("{}", folder.path().await?);
 //! }
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! The same object as `Accounts1` serves `org.freedesktop.DBus.ObjectManager`:
+//! The same object as `Accounts` serves `org.freedesktop.DBus.ObjectManager`:
 //! `zbus::fdo::ObjectManagerProxy` at [`ACCOUNTS_PATH`](crate::ACCOUNTS_PATH).
 
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
 /// `/org/konedrive/Accounts`: the accounts of this user.
 #[zbus::proxy(
-    interface = "org.konedrive.Accounts1",
+    interface = "org.konedrive.Accounts",
     default_service = "org.konedrive.Daemon",
     default_path = "/org/konedrive/Accounts",
     gen_blocking = false
 )]
-pub trait Accounts1 {
+pub trait Accounts {
     /// Adds a signed-out, read-only account with no folder; its object path.
     /// Refused `InvalidArgs` for a label that breaks the rules
-    /// (`dbus/org.konedrive.Accounts1.xml`).
+    /// (`dbus/org.konedrive.Accounts.xml`).
     fn add(&self, label: &str) -> zbus::Result<OwnedObjectPath>;
-    /// Forgets the account's folder as `Sync1.UnregisterRoot` does, deletes
+    /// Forgets the account's folder as `Folder.Unregister` does, deletes
     /// its token, cache and tree store, and removes the object. Refused
     /// `NoAccount` for a path that names no account.
     fn remove(&self, account: &ObjectPath<'_>) -> zbus::Result<()>;
@@ -45,7 +48,7 @@ pub trait Accounts1 {
 
     /// Every account's object path, in the order the accounts were added.
     #[zbus(property)]
-    fn accounts(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
+    fn list(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
     #[zbus(property)]
     fn client_id(&self) -> zbus::Result<String>;
     /// The privileged helper as the daemon sees it: `connected`,
@@ -62,12 +65,12 @@ pub trait Accounts1 {
 /// account whose folder holds it. A path in no account's folder is refused
 /// `OutsideRoot`; `item_state` answers `not-managed`.
 #[zbus::proxy(
-    interface = "org.konedrive.Files1",
+    interface = "org.konedrive.Files",
     default_service = "org.konedrive.Daemon",
     default_path = "/org/konedrive/Accounts",
     gen_blocking = false
 )]
-pub trait Files1 {
+pub trait Files {
     fn hydrate(&self, path: &str) -> zbus::Result<()>;
     fn dehydrate(&self, path: &str) -> zbus::Result<()>;
     fn item_state(&self, path: &str) -> zbus::Result<String>;
@@ -87,21 +90,21 @@ pub trait Files1 {
 
 /// `/org/konedrive/Accounts/<id>`: one Microsoft account.
 #[zbus::proxy(
-    interface = "org.konedrive.Account1",
+    interface = "org.konedrive.Account",
     default_service = "org.konedrive.Daemon",
     gen_blocking = false
 )]
-pub trait Account1 {
+pub trait Account {
     fn begin_sign_in(&self) -> zbus::Result<String>;
     fn cancel_sign_in(&self) -> zbus::Result<()>;
     fn sign_out(&self) -> zbus::Result<()>;
-    fn refresh_account_info(&self) -> zbus::Result<()>;
-    /// Same rules as [`Accounts1Proxy::add`].
+    fn refresh_info(&self) -> zbus::Result<()>;
+    /// Same rules as [`AccountsProxy::add`].
     fn set_label(&self, label: &str) -> zbus::Result<()>;
     /// Switches the mode to `read-only` or `read-write`; the URL of the
     /// sign-in the switch needs, empty when it needs none. Refused
     /// `WritesNotAllowed` (the development gate), `NotSignedIn`, or
-    /// `PendingUploads` unless `force` (`dbus/org.konedrive.Account1.xml`).
+    /// `PendingUploads` unless `force` (`dbus/org.konedrive.Account.xml`).
     fn set_mode(&self, mode: &str, force: bool) -> zbus::Result<String>;
 
     /// The last element of the object path.
@@ -129,31 +132,21 @@ pub trait Account1 {
 
 /// `/org/konedrive/Accounts/<id>`: that account's folder.
 #[zbus::proxy(
-    interface = "org.konedrive.Sync1",
+    interface = "org.konedrive.Folder",
     default_service = "org.konedrive.Daemon",
     gen_blocking = false
 )]
-pub trait Sync1 {
+pub trait Folder {
     /// Refused `Overlaps` for a folder that is, is inside, or contains
     /// another account's folder.
-    fn register_root(&self, path: &str) -> zbus::Result<()>;
-    fn register_root_without_interception(&self, path: &str) -> zbus::Result<()>;
-    fn unregister_root(&self) -> zbus::Result<()>;
+    fn register(&self, path: &str) -> zbus::Result<()>;
+    fn register_without_interception(&self, path: &str) -> zbus::Result<()>;
+    fn unregister(&self) -> zbus::Result<()>;
     fn populate_from_directory(&self, source_dir: &str) -> zbus::Result<u64>;
     fn refresh(&self) -> zbus::Result<()>;
     fn skipped(&self) -> zbus::Result<Vec<(String, String)>>;
-    /// (unix time, kind, full path, detail), newest first.
-    fn recent_activity(&self, limit: u32) -> zbus::Result<Vec<(i64, String, String, String)>>;
-    /// (unix time, original full path, full path it was moved to).
-    fn conflicts(&self) -> zbus::Result<Vec<(i64, String, String, String)>>;
-    fn dismiss_conflict(&self, rescued_path: &str) -> zbus::Result<()>;
     /// (files freed, bytes freed, files kept because they were in use).
     fn free_up_space(&self) -> zbus::Result<(u32, u64, u32)>;
-    /// The changes waiting to be uploaded, oldest first, at most `limit` (0
-    /// for all): (seq, kind, full path, state, bytes sent, bytes in all,
-    /// reason, next try).
-    #[allow(clippy::type_complexity)]
-    fn outbox(&self, limit: u32) -> zbus::Result<Vec<(u64, String, String, String, u64, u64, String, i64)>>;
     /// Nothing is uploaded, and OneDrive is not asked, for `seconds` — or
     /// until [`resume`](Self::resume) when 0.
     fn pause(&self, seconds: u32) -> zbus::Result<()>;
@@ -161,30 +154,17 @@ pub trait Sync1 {
     /// Refused `org.freedesktop.DBus.Error.InvalidArgs` for a pattern that
     /// cannot match a name.
     fn set_ignore_patterns(&self, patterns: &[&str]) -> zbus::Result<()>;
-    /// The held removals go ahead; how many.
-    fn confirm_deletes(&self) -> zbus::Result<u32>;
-    /// The held removals are dropped and their items placed again; how many.
-    fn restore_deletes(&self) -> zbus::Result<u32>;
-    /// What stays on this computer and why: (full path, reason).
-    fn not_uploaded(&self) -> zbus::Result<Vec<(String, String)>>;
-    /// What is kept back, one row per reason: (group, reason, count, bytes).
-    /// Groups: one-action, per-file, never, waiting, in that order.
-    fn not_uploaded_summary(&self) -> zbus::Result<Vec<(String, String, u32, u64)>>;
-    /// The files kept back for `reason` (as the summary names it), at most
-    /// `limit` (0 for all), each with its reason as stored; and how many there are.
-    fn not_uploaded_files(&self, reason: &str, limit: u32) -> zbus::Result<(Vec<(String, String)>, u32)>;
-
-    #[zbus(signal)]
-    fn activity_added(&self, time: i64, kind: String, path: String, detail: String) -> zbus::Result<()>;
 
     #[zbus(property)]
-    fn root_path(&self) -> zbus::Result<String>;
+    fn path(&self) -> zbus::Result<String>;
+    /// `none`, `listing`, `ready`, `no-interception` or `error`.
     #[zbus(property)]
-    fn root_state(&self) -> zbus::Result<String>;
+    fn state(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn last_error(&self) -> zbus::Result<String>;
+    /// `onedrive`, `local`, or empty for none.
     #[zbus(property)]
-    fn root_source(&self) -> zbus::Result<String>;
+    fn source(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn items_listed(&self) -> zbus::Result<u64>;
     #[zbus(property)]
@@ -197,55 +177,31 @@ pub trait Sync1 {
     /// What the folder's files take on disk (`st_blocks * 512`).
     #[zbus(property)]
     fn local_bytes(&self) -> zbus::Result<u64>;
-    #[zbus(property)]
-    fn conflict_count(&self) -> zbus::Result<u32>;
     /// Files and folders with an "Always keep on this device" pin of their own.
     #[zbus(property)]
     fn pinned_count(&self) -> zbus::Result<u32>;
-    /// Downloads under way: (full path, bytes done, bytes total).
     #[zbus(property)]
-    fn transfers(&self) -> zbus::Result<Vec<(String, u64, u64)>>;
-    /// Changes waiting to be uploaded, and the size of what they send.
-    #[zbus(property)]
-    fn pending_count(&self) -> zbus::Result<u32>;
-    #[zbus(property)]
-    fn pending_bytes(&self) -> zbus::Result<u64>;
-    /// Changes that need the user before they can go up.
-    #[zbus(property)]
-    fn blocked_count(&self) -> zbus::Result<u32>;
-    /// Removals held by the mass-delete guard: `confirm_deletes` or
-    /// `restore_deletes` decides them.
-    #[zbus(property)]
-    fn held_count(&self) -> zbus::Result<u32>;
-    /// OneDrive is full: no content goes up until a quota read finds space.
-    #[zbus(property)]
-    fn quota_full(&self) -> zbus::Result<bool>;
-    /// While full: the changes that send content, and their size.
-    #[zbus(property)]
-    fn space_waiting_count(&self) -> zbus::Result<u32>;
-    #[zbus(property)]
-    fn space_waiting_bytes(&self) -> zbus::Result<u64>;
-    /// Files refused as too big for the space left.
-    #[zbus(property)]
-    fn too_big_count(&self) -> zbus::Result<u32>;
-    /// Graph's `quota.state` as last read; empty until read.
-    #[zbus(property)]
-    fn quota_state(&self) -> zbus::Result<String>;
-    /// Graph's `quota.remaining` as last read, less what went up since.
-    #[zbus(property)]
-    fn free_space(&self) -> zbus::Result<u64>;
-    /// Uploads under way: (full path, bytes sent, bytes total).
-    #[zbus(property)]
-    fn uploads(&self) -> zbus::Result<Vec<(String, u64, u64)>>;
+    fn ignore_patterns(&self) -> zbus::Result<Vec<String>>;
     #[zbus(property)]
     fn paused(&self) -> zbus::Result<bool>;
     /// Unix seconds when the pause ends by itself; 0 until resumed, or not paused.
     #[zbus(property)]
     fn paused_until(&self) -> zbus::Result<i64>;
+}
+
+/// `/org/konedrive/Accounts/<id>`: what that account's folder moves now.
+#[zbus::proxy(
+    interface = "org.konedrive.Transfers",
+    default_service = "org.konedrive.Daemon",
+    gen_blocking = false
+)]
+pub trait Transfers {
+    /// Downloads under way: (full path, bytes done, bytes total).
     #[zbus(property)]
-    fn ignore_patterns(&self) -> zbus::Result<Vec<String>>;
+    fn downloads(&self) -> zbus::Result<Vec<(String, u64, u64)>>;
+    /// Uploads under way: (full path, bytes sent, bytes total).
     #[zbus(property)]
-    fn machine_name(&self) -> zbus::Result<String>;
+    fn uploads(&self) -> zbus::Result<Vec<(String, u64, u64)>>;
     /// Bytes a second downloaded and uploaded, the average of the last 3 s.
     #[zbus(property)]
     fn download_speed(&self) -> zbus::Result<u64>;
@@ -263,9 +219,9 @@ pub trait Sync1 {
     fn pool_ceiling(&self) -> zbus::Result<u32>;
     /// Large transfers (100 MiB and up) under way now, and how many may run at once.
     #[zbus(property)]
-    fn large_transfers(&self) -> zbus::Result<u32>;
+    fn large_streams(&self) -> zbus::Result<u32>;
     #[zbus(property)]
-    fn large_limit(&self) -> zbus::Result<u32>;
+    fn large_stream_limit(&self) -> zbus::Result<u32>;
     /// Seconds left of OneDrive's `Retry-After` wait; 0 when there is none.
     #[zbus(property)]
     fn retry_after(&self) -> zbus::Result<u32>;
@@ -287,52 +243,189 @@ pub trait Sync1 {
     fn upload_done_bytes(&self) -> zbus::Result<u64>;
     #[zbus(property)]
     fn upload_time_left(&self) -> zbus::Result<u32>;
-    /// The Full local scan: `running`, `idle`, or `none` for a read-only folder.
+}
+
+/// `/org/konedrive/Accounts/<id>`: the changes made in that account's folder that wait
+/// to be uploaded, and what is kept back.
+#[zbus::proxy(
+    interface = "org.konedrive.UploadQueue",
+    default_service = "org.konedrive.Daemon",
+    gen_blocking = false
+)]
+pub trait UploadQueue {
+    /// The changes waiting to be uploaded, oldest first, at most `limit` (0
+    /// for all): (seq, kind, full path, state, bytes sent, bytes in all,
+    /// reason, next try).
+    #[allow(clippy::type_complexity)]
+    fn changes(&self, limit: u32) -> zbus::Result<Vec<(u64, String, String, String, u64, u64, String, i64)>>;
+    /// The held removals go ahead; how many.
+    fn confirm_deletes(&self) -> zbus::Result<u32>;
+    /// The held removals are dropped and their items placed again; how many.
+    fn restore_deletes(&self) -> zbus::Result<u32>;
+    /// What stays on this computer and why: (full path, reason).
+    fn not_uploaded(&self) -> zbus::Result<Vec<(String, String)>>;
+    /// What is kept back, one row per reason: (group, reason, count, bytes).
+    /// Groups: one-action, per-file, never, waiting, in that order.
+    fn not_uploaded_summary(&self) -> zbus::Result<Vec<(String, String, u32, u64)>>;
+    /// The files kept back for `reason` (as the summary names it), at most
+    /// `limit` (0 for all), each with its reason as stored; and how many there are.
+    fn not_uploaded_files(&self, reason: &str, limit: u32) -> zbus::Result<(Vec<(String, String)>, u32)>;
+
+    /// Changes waiting to be uploaded, and the size of what they send.
     #[zbus(property)]
-    fn scan_state(&self) -> zbus::Result<String>;
+    fn pending_count(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn pending_bytes(&self) -> zbus::Result<u64>;
+    /// Changes that need the user before they can go up.
+    #[zbus(property)]
+    fn blocked_count(&self) -> zbus::Result<u32>;
+    /// Removals held by the mass-delete guard: `confirm_deletes` or
+    /// `restore_deletes` decides them.
+    #[zbus(property)]
+    fn held_count(&self) -> zbus::Result<u32>;
+    /// OneDrive is full: no content goes up until a quota read finds space.
+    #[zbus(property)]
+    fn quota_full(&self) -> zbus::Result<bool>;
+    /// While full: the changes that send content, and their size.
+    #[zbus(property)]
+    fn quota_waiting_count(&self) -> zbus::Result<u32>;
+    #[zbus(property)]
+    fn quota_waiting_bytes(&self) -> zbus::Result<u64>;
+    /// Files refused as too big for the space left.
+    #[zbus(property)]
+    fn too_big_count(&self) -> zbus::Result<u32>;
+    /// Graph's `quota.state` as last read; empty until read.
+    #[zbus(property)]
+    fn quota_state(&self) -> zbus::Result<String>;
+    /// Graph's `quota.remaining` as last read, less what went up since.
+    #[zbus(property)]
+    fn quota_remaining(&self) -> zbus::Result<u64>;
+}
+
+/// `/org/konedrive/Accounts/<id>`: the local versions that account's folder kept.
+#[zbus::proxy(
+    interface = "org.konedrive.Conflicts",
+    default_service = "org.konedrive.Daemon",
+    gen_blocking = false
+)]
+pub trait Conflicts {
+    /// (unix time, original full path, full path of the kept version, how it was kept).
+    fn list(&self) -> zbus::Result<Vec<(i64, String, String, String)>>;
+    fn dismiss(&self, rescued_path: &str) -> zbus::Result<()>;
+
+    #[zbus(property)]
+    fn count(&self) -> zbus::Result<u32>;
+    /// What a copy of a file changed on both sides is named after.
+    #[zbus(property)]
+    fn machine_name(&self) -> zbus::Result<String>;
+}
+
+/// `/org/konedrive/Accounts/<id>`: the Full local scan of that account's folder.
+#[zbus::proxy(
+    interface = "org.konedrive.LocalScan",
+    default_service = "org.konedrive.Daemon",
+    gen_blocking = false
+)]
+pub trait LocalScan {
+    /// `running`, `idle`, or `none` for a read-only folder.
+    #[zbus(property)]
+    fn state(&self) -> zbus::Result<String>;
     /// Why it runs: start, read-write, helper-back, overflow, ignore-list, periodic.
     #[zbus(property)]
-    fn scan_reason(&self) -> zbus::Result<String>;
+    fn reason(&self) -> zbus::Result<String>;
     /// Unix seconds when it started.
     #[zbus(property)]
-    fn scan_started(&self) -> zbus::Result<i64>;
+    fn started(&self) -> zbus::Result<i64>;
     /// Directories and files seen so far.
     #[zbus(property)]
-    fn scan_directories(&self) -> zbus::Result<u64>;
+    fn directories(&self) -> zbus::Result<u64>;
     #[zbus(property)]
-    fn scan_files(&self) -> zbus::Result<u64>;
+    fn files(&self) -> zbus::Result<u64>;
     /// About how many items it will see (the base's count, not the disk's).
     #[zbus(property)]
-    fn scan_expected(&self) -> zbus::Result<u64>;
+    fn expected(&self) -> zbus::Result<u64>;
     /// Unix seconds when the last scan finished (0: none yet), and how long it took.
     #[zbus(property)]
-    fn scan_finished(&self) -> zbus::Result<i64>;
+    fn finished(&self) -> zbus::Result<i64>;
     #[zbus(property)]
-    fn scan_took(&self) -> zbus::Result<u32>;
+    fn took(&self) -> zbus::Result<u32>;
+}
+
+/// `/org/konedrive/Accounts/<id>`: what happened in that account's folder.
+#[zbus::proxy(
+    interface = "org.konedrive.ActivityLog",
+    default_service = "org.konedrive.Daemon",
+    gen_blocking = false
+)]
+pub trait ActivityLog {
+    /// (unix time, kind, full path, detail), newest first.
+    fn recent(&self, limit: u32) -> zbus::Result<Vec<(i64, String, String, String)>>;
+
+    #[zbus(signal)]
+    fn added(&self, time: i64, kind: String, path: String, detail: String) -> zbus::Result<()>;
+}
+
+/// The six proxies of one account's folder, on one path.
+#[derive(Clone)]
+pub struct FolderProxies<'a> {
+    pub folder: FolderProxy<'a>,
+    pub transfers: TransfersProxy<'a>,
+    pub queue: UploadQueueProxy<'a>,
+    pub conflicts: ConflictsProxy<'a>,
+    pub scan: LocalScanProxy<'a>,
+    pub activity: ActivityLogProxy<'a>,
+}
+
+impl FolderProxies<'static> {
+    /// The proxies of the folder of the account at `path`, caching properties as zbus does.
+    pub async fn new(conn: &zbus::Connection, path: OwnedObjectPath) -> zbus::Result<Self> {
+        Self::build(conn, path, zbus::proxy::CacheProperties::Lazily).await
+    }
+
+    /// As [`new`](Self::new), each property read from the daemon every time.
+    pub async fn uncached(conn: &zbus::Connection, path: OwnedObjectPath) -> zbus::Result<Self> {
+        Self::build(conn, path, zbus::proxy::CacheProperties::No).await
+    }
+
+    async fn build(
+        conn: &zbus::Connection,
+        path: OwnedObjectPath,
+        cache: zbus::proxy::CacheProperties,
+    ) -> zbus::Result<Self> {
+        Ok(Self {
+            folder: FolderProxy::builder(conn).path(path.clone())?.cache_properties(cache).build().await?,
+            transfers: TransfersProxy::builder(conn).path(path.clone())?.cache_properties(cache).build().await?,
+            queue: UploadQueueProxy::builder(conn).path(path.clone())?.cache_properties(cache).build().await?,
+            conflicts: ConflictsProxy::builder(conn).path(path.clone())?.cache_properties(cache).build().await?,
+            scan: LocalScanProxy::builder(conn).path(path.clone())?.cache_properties(cache).build().await?,
+            activity: ActivityLogProxy::builder(conn).path(path)?.cache_properties(cache).build().await?,
+        })
+    }
 }
 
 /// `/org/konedrive/Accounts/<id>`: development only.
 #[zbus::proxy(
-    interface = "org.konedrive.Dev1",
+    interface = "org.konedrive.TokenExport",
     default_service = "org.konedrive.Daemon",
     gen_blocking = false
 )]
-pub trait Dev1 {
+pub trait TokenExport {
     /// An access token of this account that can change nothing, whatever
     /// its mode. Refused `NotSignedIn` when there is none.
-    fn access_token(&self) -> zbus::Result<String>;
+    fn read_only(&self) -> zbus::Result<String>;
     /// The test-account harness's token, which can change files. Refused
     /// `WritesNotAllowed` for an account the development gate does not let
     /// through, `ModeNotGranted` for one that is not read-write.
-    fn read_write_access_token(&self) -> zbus::Result<String>;
+    fn read_write(&self) -> zbus::Result<String>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{
-        ACCOUNTS_INTERFACE_NAME, ACCOUNTS_PATH, ACCOUNT_INTERFACE_NAME, DEV_INTERFACE_NAME, FILES_INTERFACE_NAME,
-        SERVICE_NAME, SYNC_INTERFACE_NAME,
+        ACCOUNTS_INTERFACE_NAME, ACCOUNTS_PATH, ACCOUNT_INTERFACE_NAME, ACTIVITY_LOG_INTERFACE_NAME,
+        CONFLICTS_INTERFACE_NAME, FILES_INTERFACE_NAME, FOLDER_INTERFACE_NAME, LOCAL_SCAN_INTERFACE_NAME, SERVICE_NAME,
+        TOKEN_EXPORT_INTERFACE_NAME, TRANSFERS_INTERFACE_NAME, UPLOAD_QUEUE_INTERFACE_NAME,
     };
     use zbus::proxy::Defaults;
 
@@ -355,10 +448,15 @@ mod tests {
             )
         };
         let account = |interface: &str| (interface.to_owned(), SERVICE_NAME.to_owned(), None);
-        assert_eq!(defaults::<Accounts1Proxy>(), manager(ACCOUNTS_INTERFACE_NAME));
-        assert_eq!(defaults::<Files1Proxy>(), manager(FILES_INTERFACE_NAME));
-        assert_eq!(defaults::<Account1Proxy>(), account(ACCOUNT_INTERFACE_NAME));
-        assert_eq!(defaults::<Sync1Proxy>(), account(SYNC_INTERFACE_NAME));
-        assert_eq!(defaults::<Dev1Proxy>(), account(DEV_INTERFACE_NAME));
+        assert_eq!(defaults::<AccountsProxy>(), manager(ACCOUNTS_INTERFACE_NAME));
+        assert_eq!(defaults::<FilesProxy>(), manager(FILES_INTERFACE_NAME));
+        assert_eq!(defaults::<AccountProxy>(), account(ACCOUNT_INTERFACE_NAME));
+        assert_eq!(defaults::<FolderProxy>(), account(FOLDER_INTERFACE_NAME));
+        assert_eq!(defaults::<TransfersProxy>(), account(TRANSFERS_INTERFACE_NAME));
+        assert_eq!(defaults::<UploadQueueProxy>(), account(UPLOAD_QUEUE_INTERFACE_NAME));
+        assert_eq!(defaults::<ConflictsProxy>(), account(CONFLICTS_INTERFACE_NAME));
+        assert_eq!(defaults::<LocalScanProxy>(), account(LOCAL_SCAN_INTERFACE_NAME));
+        assert_eq!(defaults::<ActivityLogProxy>(), account(ACTIVITY_LOG_INTERFACE_NAME));
+        assert_eq!(defaults::<TokenExportProxy>(), account(TOKEN_EXPORT_INTERFACE_NAME));
     }
 }
