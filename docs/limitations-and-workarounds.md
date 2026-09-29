@@ -2340,13 +2340,20 @@ application must never read zeros where real content should be.
   Now every session is persisted and listed before its first byte, a refused fragment goes again to
   the same session, a session given up is cancelled (a failed cancel stays listed and is retried at
   the worker's next runs), and a `409` whose name a listed session holds is never taken for another
-  file. What is left: (1) a session opened before this fix, or one a crash cut off between its
-  opening and its persisting (a moment), is known to nothing: its placeholder holds the name until
-  the session expires, and a new file's replay meets it as someone else's empty file — a conflict
-  copy, as before. The empty files the bug left on the test account are removed by hand; nothing
-  here recognises them. (2) The fake OneDrive models the placeholder from the test account's
-  observation and another client's report; the placeholders stay out of its delta feed, and
-  whether a session's expiry removes it in OneDrive is assumed, not measured. (3) A refused fragment
+  file. What is left: (1) a new file's place is recorded before its session is opened (issue #84),
+  so a stop between the opening and its persisting leaves a placeholder this folder knows: a `409`
+  there from an empty file created at or after the recording (less 5 minutes for clocks, a guess)
+  deletes it and creates again. Whether OneDrive lets an open session's placeholder be deleted is
+  unmeasured: if it refuses, the placeholder holds the name until its session expires, and the row
+  waits (`upload-session-open`) — no copy. Someone else's empty file created at that name after the
+  recording, while the row still tries, would be taken for ours and deleted (to the recycle bin,
+  guarded by its eTag); a holder whose `createdDateTime` is not given is never taken for ours. A
+  session opened before sessions were listed or openings recorded is known to nothing, and still
+  makes a copy; the conflict copies the bug left are removed by hand. (2) The fake OneDrive models
+  the placeholder from the test account's observation and another client's report; the
+  placeholders stay out of its delta feed, and whether a session's expiry removes it in OneDrive is
+  assumed, not measured; a delete of a placeholder is modelled both ways (it ends the session, or
+  is refused `403`). (3) A refused fragment
   is waited out in place, up to the throttle rule's attempts (5, each up to 5 minutes; a timeout
   is up to 10 minutes per send): the row holds its transfer slot meanwhile. (4) A fragment is sent
   again only after the session's status says it still expects it; a status request that is itself
@@ -2414,6 +2421,7 @@ application must never read zeros where real content should be.
 | A fill's checkpoint, every N bytes (`CHECKPOINT_EVERY`) | 16 MiB | **guess** |
 | `Retry-After` wait when Graph throttles (`429`/`503`) | default 10 s, capped at 300 s, 5 attempts before giving up | **guess** (`RetryPolicy::default`) |
 | Upload sessions given up, cancelled per run of the worker (`CANCELS_PER_LOOK`) / after a failed cancel, not again before (`CANCEL_AGAIN`) / cancelled at once by a forced switch to read-only (`DROPPED_CANCELS`) | 32 / 60 s / 256 | **guess** (issue #47, F172) |
+| A placeholder taken for a recorded opening's: created at or after the recording less (`CLOCK_SLACK`) | 5 min | **guess** (issue #84, F172) |
 | Upload fragment, and the most sent in one request (`CHUNK_SIZE`, `SMALL_UPLOAD_MAX`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
 | One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |
 | Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (write design §6.2) |

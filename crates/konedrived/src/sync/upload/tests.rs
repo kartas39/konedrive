@@ -338,6 +338,7 @@ fn every_crash_point_is_replayed_to_the_same_end() {
     let big: Vec<u8> = (0..(700 * 1024)).map(|i| (i % 253) as u8).collect();
     let cases: Vec<(&str, Fault)> = vec![
         ("create", Fault::AfterSend),
+        ("create", Fault::SessionNotPersisted),
         ("create", Fault::CommitStep1Partial),
         ("create", Fault::AfterCommitStep1),
         ("update", Fault::AfterSend),
@@ -390,13 +391,15 @@ fn every_crash_point_is_replayed_to_the_same_end() {
         w.h.drain(&engine);
         assert_eq!(w.rows()[0].state, OutboxState::Running, "{what} {fault:?}: stopped at the step");
         if fault == Fault::SessionNotPersisted {
-            // The session nothing knows of holds the name with its placeholder
-            // until it expires (issue #47, limitations log F172).
-            w.cloud(|c| c.expire_sessions());
+            // The session's URL is lost, its place recorded (issue #84): its
+            // placeholder holds the name, and is found to be this folder's.
+            assert_eq!(w.cloud(|c| c.placeholders()), vec![rel], "{what}");
         }
 
         w.run();
         assert!(w.rows().is_empty(), "{what} {fault:?}: {:?}", w.summary());
+        assert!(!w.h.host.kinds().contains(&kind::CONFLICT.to_owned()), "{what} {fault:?}: no conflict copy");
+        assert!(w.cloud(|c| c.placeholders()).is_empty(), "{what} {fault:?}: no placeholder left");
         assert_eq!(w.cloud(|c| c.paths()), expect, "{what} {fault:?}");
         if !rel.is_empty() {
             assert_committed(&w, rel, rel);

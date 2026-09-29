@@ -501,9 +501,21 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
   resumed by its next run (or cancelled there, if the content changed), another row's still sending
   is waited for (`upload-session-open`), and any other is cancelled and the create goes again. Only
   without such a session does §6.2's `409` rule decide.
+- **The place is recorded before the session is opened** (issue #84). Before a new file's
+  `createUploadSession`, its row records the place it is about to take (parent id, name, the time;
+  `upload_openings`). The session's URL replaces the record once it is persisted; a definite refusal
+  to open (`404`, `400`) clears it; recorded again at the same place, it keeps its first time; it
+  goes when its row leaves the outbox, and outlasts a restart. A stop between the opening and its
+  persisting so leaves a placeholder this folder still knows of.
+- **A `409` at a recorded place.** With no listed session there but an opening recorded, the holder
+  is read: an empty file created at or after the recording, less 5 minutes for the clocks, is that
+  opening's placeholder. It is deleted (with its eTag) and the create goes again; if OneDrive
+  refuses the delete, the row waits (`upload-session-open`) until the orphan session expires and
+  frees the name. Never a copy. A holder with content, one created earlier, or one whose time is
+  not given is someone else's: §6.2's `409` rule decides.
 
-A session opened before this was kept, or whose persisting a crash cut off, is known to nothing: its
-placeholder holds the name until the session expires (limitations log F172).
+A session opened before sessions were listed, or before openings were recorded, is known to
+nothing: its placeholder holds the name until the session expires (limitations log F172).
 
 ### 6.2 What the answers mean
 
@@ -582,7 +594,7 @@ big, and notifies once when full starts.
 1. The file is quiet; its size and time are the **snapshot**, stored in the row.
 2. The session is created, and its URL, expiry and `session_next = 0` persisted before the first
    byte, the session listed (§6.1). A crash before that leaves an orphan session, which expires on
-   its own; until then its placeholder holds a new file's name (F172).
+   its own; a new file's recorded place tells its placeholder as this folder's (§6.1, F172).
 3. Each fragment is read into one buffer, fed to the hash, sent, and on `202` its progress
    persisted. Memory does not grow with the file. Before each fragment the file is looked for under
    its row's names: removed (or moved where no row looks), the upload stops there and ends as §5.2
@@ -774,7 +786,7 @@ is answered by content hash or by place, never by guessing.
 |---|---|---|
 | after the event, before the row | nothing in the outbox; the change on disk | the bring-up's Full local scan finds it (all but an edit that kept size and time, §4.6) |
 | a small upload sent, no answer | the row `running`, its `session_url` | the status answers `404`: the item's hash equal, adopted |
-| a session created, not persisted | nothing about it | a new session; the orphan expires — a new file's replay meets its placeholder as `409` and makes a copy until then (F172) |
+| a session created, not persisted | a new file's recorded place, no URL | a new session; the orphan expires — a new file's replay meets its placeholder as `409`, deletes it and creates again, or waits for the orphan to expire if OneDrive refuses the delete; never a copy (§6.1, F172) |
 | mid-session | `session_url`, `session_next` | the session's status, then on |
 | the last fragment sent, no answer | `session_url` | the status answers `404`: the item's hash equal, adopted |
 | the last request sent, no answer, then the file removed | the row `running`, no object | the name looked up: an item of this size and time, unknown here, goes to the recycle bin; the rows leave (§5.2) |

@@ -42,6 +42,11 @@ pub struct DriveItem {
     pub file_system_info: Option<FileSystemInfo>,
     #[serde(default)]
     pub last_modified_date_time: Option<String>,
+    /// When the item was made in OneDrive (its own clock): tells a new
+    /// file's placeholder this folder may have left from someone else's
+    /// older file (issue #84).
+    #[serde(default)]
+    pub created_date_time: Option<String>,
     #[serde(default, rename = "@microsoft.graph.downloadUrl")]
     pub download_url: Option<String>,
 }

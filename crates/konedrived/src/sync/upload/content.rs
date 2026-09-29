@@ -22,6 +22,7 @@ use super::engine::{now, Engine, Fail, Outcome};
 use super::local::{self, Found, Read, Snap, SYNC_UPLOADING};
 use super::steps::{answer_row, blocking, cancel_session, commit_row, copy, follow_cloud, local_name, locate, never_uploaded, parent_of, taken, temporary, upload_as_new, wanted_name, Ours, Taken};
 use super::{kind, reason, space, Fault};
+use crate::drive::item::parse_graph_time;
 use crate::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
 use crate::quickxor::QuickXor;
 use crate::sync::disk::Disk;
@@ -29,6 +30,10 @@ use crate::sync::local::examine::OPEN_FOR_WRITING;
 use crate::sync::local::{names, QUIET, RECHECK};
 use crate::sync::InodeKey;
 use crate::tree::outbox::{Base, OutboxKind, OutboxRow};
+
+/// How far OneDrive's clock may be behind this machine's when a placeholder's
+/// creation time is compared with the recorded opening (issue #84).
+const CLOCK_SLACK: i64 = 5 * 60;
 
 /// A new file's row whose upload OneDrive holds with other content, and
 /// could not be deleted yet: `hash-mismatch:<item id>`.
@@ -218,11 +223,15 @@ impl Job<'_> {
     /// its cancel not gone through — is cancelled now, and the create goes
     /// again. `None`: no session of ours holds the name, and [`taken`]
     /// decides, as for any `409`.
+    ///
+    /// No listed session, but an opening recorded there whose URL never came
+    /// (a stop between the request and its persisting, issue #84):
+    /// [`Job::opened_placeholder`].
     async fn own_placeholder(&self) -> Result<Option<Outcome>, Fail> {
         let (parent, name, seq) = (self.parent.to_owned(), self.name.to_owned(), self.row.seq);
         let held = self.e.store().call(move |s| s.upload_sessions_at(&parent, &name)).await?;
         if held.is_empty() {
-            return Ok(None);
+            return self.opened_placeholder().await;
         }
         let mut outcome = Outcome::again();
         for (url, by) in held {
@@ -238,6 +247,44 @@ impl Job<'_> {
         }
         tracing::info!("{} is held in OneDrive by an upload session of this folder, not by another file", self.found.rel.display());
         Ok(Some(outcome))
+    }
+
+    /// A `409` at a place where this folder recorded an opening whose URL
+    /// never came (issue #84): the holder is an empty file made at or after
+    /// the recording (less [`CLOCK_SLACK`]) → it is that opening's
+    /// placeholder. It is deleted, and the create goes again; a delete
+    /// OneDrive refuses leaves the row waiting until the orphan session
+    /// expires and frees the name. Never a copy. Any other holder — with
+    /// content, older, or its time unknown — is someone else's: `None`, and
+    /// [`taken`] decides.
+    async fn opened_placeholder(&self) -> Result<Option<Outcome>, Fail> {
+        let (parent, name) = (self.parent.to_owned(), self.name.to_owned());
+        let Some(at) = self.e.store().call(move |s| s.upload_opening_at(&parent, &name)).await? else { return Ok(None) };
+        let holder = match self.e.cfg.drive.child(self.parent, self.name).await {
+            Ok(holder) => holder,
+            Err(DriveError::NotFound) => return Ok(Some(Outcome::again())),
+            Err(err) => return Err(err.into()),
+        };
+        let created = holder.created_date_time.as_deref().and_then(parse_graph_time);
+        let empty = holder.file.is_some() && holder.size == Some(0);
+        if !empty || !created.is_some_and(|c| c >= at - CLOCK_SLACK) {
+            return Ok(None);
+        }
+        let guard = holder.e_tag.clone().or(holder.c_tag.clone()).unwrap_or_default();
+        match self.e.cfg.drive.delete_item(&holder.id, &guard).await {
+            Ok(()) | Err(WriteError::NotFound) => {
+                tracing::info!("{} was held in OneDrive by the placeholder of an upload session this folder opened: deleted", self.found.rel.display());
+                Ok(Some(Outcome::again()))
+            }
+            Err(err @ (WriteError::Throttled { .. } | WriteError::Transient(_) | WriteError::SignedOut)) => Err(err.into()),
+            Err(err) => {
+                tracing::info!(
+                    "{} is held in OneDrive by the placeholder of an upload session this folder opened, not deleted ({err}): it waits for the session to expire",
+                    self.found.rel.display()
+                );
+                Ok(Some(Outcome::backoff(reason::SESSION_OPEN)))
+            }
+        }
     }
 
     async fn update(&self) -> Result<Outcome, Fail> {
@@ -483,19 +530,35 @@ impl Job<'_> {
 
     /// Opens a session for this content and persists it, listed with the
     /// place a new file's session holds, before any byte is sent (issue
-    /// #47). `Err` inside: OneDrive's refusal to open it.
+    /// #47). A new file's place is recorded before the request (issue #84):
+    /// a stop before the URL is persisted leaves a placeholder this folder
+    /// still knows of ([`Job::own_placeholder`]). `Err` inside: OneDrive's
+    /// refusal to open it.
     async fn open(&self, target: UploadTarget<'_>) -> Result<Result<String, WriteError>, Fail> {
-        let opened = match self.e.cfg.drive.create_upload_session(target, self.snap.size, self.snap.sec).await {
-            Ok(opened) => opened,
-            Err(err) => return Ok(Err(err)),
-        };
-        // A crash here leaves a session nothing knows of: its placeholder
-        // holds a new file's name until it expires (limitations log F172).
-        self.e.fault(Fault::SessionNotPersisted)?;
         let place = match target {
             UploadTarget::New { parent_id, name } => Some((parent_id.to_owned(), name.to_owned())),
             UploadTarget::Existing { .. } => None,
         };
+        let seq = self.row.seq;
+        if let Some((parent, name)) = place.clone() {
+            self.e.store().call(move |s| s.outbox_record_opening(seq, &parent, &name, now())).await?;
+        }
+        let opened = match self.e.cfg.drive.create_upload_session(target, self.snap.size, self.snap.sec).await {
+            Ok(opened) => opened,
+            Err(err) => {
+                // Refused for certain, and no placeholder anywhere: the folder
+                // is gone, or the request itself is refused. A `409` keeps the
+                // record: what holds the name may be an earlier opening's.
+                if place.is_some() && matches!(err, WriteError::NotFound | WriteError::Refused(_)) {
+                    self.e.store().call(move |s| s.outbox_opening_refused(seq)).await?;
+                }
+                return Ok(Err(err));
+            }
+        };
+        // A crash here leaves a session nothing knows of but its recorded
+        // place: its placeholder holds a new file's name until it expires or
+        // is deleted (limitations log F172).
+        self.e.fault(Fault::SessionNotPersisted)?;
         let (seq, url, expires) = (self.row.seq, opened.url.clone(), opened.expires);
         self.e
             .store()
