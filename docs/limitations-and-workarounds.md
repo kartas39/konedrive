@@ -2446,6 +2446,9 @@ application must never read zeros where real content should be.
   missing socket, and `free_up_space_frees_what_is_not_in_use_and_counts_what_is` frees nothing.
   `/tmp`, `/var/tmp` and the runner's temporary directory are short enough; a directory deep in a
   worktree is not. Measured (#43). The daemon's real socket path is short and fixed.
+- **D19.** The window's `accountsmodeltest::theChoiceIsRemembered` failed once in a full `ctest`
+  run of the app (with `HOME` and the XDG directories in a temporary directory) and passed alone and
+  on the next run; nothing it touches changed in #39. Seen once; not chased.
 
 ---
 
