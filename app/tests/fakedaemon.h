@@ -373,6 +373,8 @@ public:
     /// RecentActivity(), newest first.
     KonedriveActivityList log;
     KonedriveConflictList conflictList;
+    /// Skipped().
+    KonedriveSkippedList skippedList{{QStringLiteral("/home/u/OneDrive/Personal Vault"), QStringLiteral("personal-vault")}};
     uint freedFiles = 0;
     qulonglong freedBytes = 0;
     uint busyFiles = 0;
@@ -415,7 +417,11 @@ public Q_SLOTS:
             message.setDelayedReply(true); // never answered
         }
     }
-    KonedriveSkippedList Skipped() { return {{QStringLiteral("/home/u/OneDrive/Personal Vault"), QStringLiteral("personal-vault")}}; }
+    KonedriveSkippedList Skipped()
+    {
+        calls << QStringLiteral("Skipped");
+        return skippedList;
+    }
     KonedriveActivityList RecentActivity(uint limit, const QDBusMessage &message)
     {
         calls << QStringLiteral("RecentActivity:") + QString::number(limit);

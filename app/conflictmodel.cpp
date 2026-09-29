@@ -1,6 +1,7 @@
 #include "conflictmodel.h"
 
 #include <QFileInfo>
+#include <QHash>
 #include <QSet>
 
 #include <algorithm>
@@ -59,10 +60,10 @@ QHash<int, QByteArray> ConflictModel::roleNames() const
 
 void ConflictModel::setConflicts(const KonedriveConflictList &conflicts)
 {
-    const int before = count();
+    const int beforeCount = count();
+    const int beforeTotal = m_total;
 
-    // Newest first, and each moved file once: rows are keyed by that path,
-    // and a key seen twice would put the walk below out of step.
+    // Newest first, and each moved file once: rows are keyed by that path.
     KonedriveConflictList wanted;
     QSet<QString> keys;
     KonedriveConflictList sorted = conflicts;
@@ -75,55 +76,103 @@ void ConflictModel::setConflicts(const KonedriveConflictList &conflicts)
             wanted << conflict;
         }
     }
-
-    for (int row = count() - 1; row >= 0; --row) {
-        if (!keys.contains(m_rows.at(row).rescued)) {
-            beginRemoveRows(QModelIndex(), row, row);
-            m_rows.removeAt(row);
-            endRemoveRows();
-        }
+    m_total = static_cast<int>(wanted.size());
+    if (wanted.size() > Shown) {
+        wanted.resize(Shown);
     }
 
-    // What is left should be in `wanted`'s order already; if a time changed
-    // and it is not, start over rather than insert a row twice.
-    QSet<QString> kept;
-    for (const KonedriveConflict &row : std::as_const(m_rows)) {
-        kept.insert(row.rescued);
-    }
-    QStringList keptInWantedOrder;
-    for (const KonedriveConflict &conflict : std::as_const(wanted)) {
-        if (kept.contains(conflict.rescued)) {
-            keptInWantedOrder << conflict.rescued;
-        }
-    }
+    // One diff, never row by row. The rows that went, if they are one run,
+    // go in one removal; the new ones, if they are one run, come in one
+    // insertion; the rows kept take their new fields in one dataChanged. A
+    // dismissed conflict is one removal (plus, past `Shown`, the next one
+    // appended), new ones on top one insertion — the view keeps its place.
+    // Anything else (a time that changed the order, several runs) is one
+    // reset.
+    QHash<QString, int> oldRow;
     for (int row = 0; row < count(); ++row) {
-        if (m_rows.at(row).rescued != keptInWantedOrder.at(row)) {
-            beginResetModel();
-            m_rows = wanted;
-            endResetModel();
-            if (count() != before) {
-                Q_EMIT countChanged();
-            }
-            return;
-        }
+        oldRow.insert(m_rows.at(row).rescued, row);
     }
-
-    // Walk both, inserting what is new where it belongs.
-    for (int row = 0; row < wanted.size(); ++row) {
-        const KonedriveConflict &conflict = wanted.at(row);
-        if (row < count() && m_rows.at(row).rescued == conflict.rescued) {
-            if (m_rows.at(row).time != conflict.time || m_rows.at(row).original != conflict.original || m_rows.at(row).kind != conflict.kind) {
-                m_rows[row] = conflict;
-                Q_EMIT dataChanged(index(row), index(row));
+    QSet<QString> newKeys;
+    for (const KonedriveConflict &conflict : std::as_const(wanted)) {
+        newKeys.insert(conflict.rescued);
+    }
+    // One run of rows [first, first + length) in `rows` for which `in` holds, or none.
+    const auto run = [](const KonedriveConflictList &rows, auto in, int &first, int &length) {
+        first = -1;
+        length = 0;
+        int last = -1;
+        for (int row = 0; row < rows.size(); ++row) {
+            if (in(rows.at(row))) {
+                if (first < 0) {
+                    first = row;
+                }
+                last = row;
+                ++length;
             }
+        }
+        return length == 0 || last - first + 1 == length;
+    };
+    int removeFirst = 0;
+    int removeCount = 0;
+    int insertFirst = 0;
+    int insertCount = 0;
+    const auto went = [&newKeys](const KonedriveConflict &row) {
+        return !newKeys.contains(row.rescued);
+    };
+    const auto isNew = [&oldRow](const KonedriveConflict &row) {
+        return !oldRow.contains(row.rescued);
+    };
+    bool oneDiff = run(m_rows, went, removeFirst, removeCount) && run(wanted, isNew, insertFirst, insertCount);
+    // The rows kept must be in the same order on both sides.
+    int firstChanged = -1;
+    int lastChanged = -1;
+    int keptOld = 0;
+    for (int row = 0; oneDiff && row < wanted.size(); ++row) {
+        const auto it = oldRow.constFind(wanted.at(row).rescued);
+        if (it == oldRow.constEnd()) {
             continue;
         }
-        beginInsertRows(QModelIndex(), row, row);
-        m_rows.insert(row, conflict);
-        endInsertRows();
+        while (keptOld < count() && went(m_rows.at(keptOld))) {
+            ++keptOld;
+        }
+        if (*it != keptOld) {
+            oneDiff = false;
+            break;
+        }
+        const KonedriveConflict &was = m_rows.at(keptOld++);
+        const KonedriveConflict &is = wanted.at(row);
+        if (was.time != is.time || was.original != is.original || was.kind != is.kind) {
+            if (firstChanged < 0) {
+                firstChanged = row;
+            }
+            lastChanged = row;
+        }
     }
 
-    if (count() != before) {
+    if (!oneDiff) {
+        beginResetModel();
+        m_rows = wanted;
+        endResetModel();
+    } else {
+        if (removeCount > 0) {
+            beginRemoveRows(QModelIndex(), removeFirst, removeFirst + removeCount - 1);
+            m_rows.remove(removeFirst, removeCount);
+            endRemoveRows();
+        }
+        // What is left is `wanted` less its one new run, so that run goes
+        // in where it stands in `wanted`.
+        if (insertCount > 0) {
+            beginInsertRows(QModelIndex(), insertFirst, insertFirst + insertCount - 1);
+            m_rows = wanted;
+            endInsertRows();
+        }
+        m_rows = wanted;
+        if (firstChanged >= 0) {
+            Q_EMIT dataChanged(index(firstChanged), index(lastChanged));
+        }
+    }
+
+    if (count() != beforeCount || m_total != beforeTotal) {
         Q_EMIT countChanged();
     }
 }

@@ -126,7 +126,7 @@ private Q_SLOTS:
     }
 
     /// Conflicts are kept by the path the file was moved to, newest first: a
-    /// refresh inserts what is new and removes what went.
+    /// refresh inserts what is new and removes what went, each in one step.
     void conflictsInsertAndRemoveByRescuedPath()
     {
         ConflictModel model;
@@ -150,11 +150,74 @@ private Q_SLOTS:
         QCOMPARE(inserted.first().at(1).toInt(), 1);
         QCOMPARE(at(model, 1, ConflictModel::OriginalRole).toString(), QStringLiteral("/d/b.txt"));
 
+        // Two rows gone together: one removal.
         model.setConflicts({{100, QStringLiteral("/d/a.txt"), QStringLiteral("/r/1/a.txt")}});
         QCOMPARE(model.count(), 1);
-        QCOMPARE(removed.count(), 2);
+        QCOMPARE(removed.count(), 1);
+        QCOMPARE(removed.first().at(1).toInt(), 0);
+        QCOMPARE(removed.first().at(2).toInt(), 1);
         QCOMPARE(at(model, 0, ConflictModel::TimeRole).toLongLong(), 100LL);
         QCOMPARE(reset.count(), 0);
+    }
+
+    /// Issue #39: 5 000 conflicts are 200 rows and a total; a dismiss is one
+    /// removal and the next row appended, new ones on top one insertion and the
+    /// last row pushed out, the same list nothing — never one signal per row.
+    void thousandsOfConflictsChangeInOneStep()
+    {
+        ConflictModel model;
+        QAbstractItemModelTester tester(&model, QAbstractItemModelTester::FailureReportingMode::QtTest);
+        const auto conflict = [](int i) {
+            return KonedriveConflict{i, QStringLiteral("/d/%1.txt").arg(i), QStringLiteral("/r/%1.txt").arg(i), QStringLiteral("rescued")};
+        };
+        KonedriveConflictList all;
+        for (int i = 0; i < 5000; ++i) {
+            all << conflict(i);
+        }
+        model.setConflicts(all);
+        QCOMPARE(model.count(), ConflictModel::Shown);
+        QCOMPARE(model.total(), 5000);
+        QCOMPARE(at(model, 0, ConflictModel::TimeRole).toLongLong(), 4999LL);
+
+        QSignalSpy inserted(&model, &QAbstractItemModel::rowsInserted);
+        QSignalSpy removed(&model, &QAbstractItemModel::rowsRemoved);
+        QSignalSpy changed(&model, &QAbstractItemModel::dataChanged);
+        QSignalSpy reset(&model, &QAbstractItemModel::modelReset);
+        QSignalSpy counted(&model, &ConflictModel::countChanged);
+        model.setConflicts(all);
+        QCOMPARE(inserted.count() + removed.count() + changed.count() + reset.count() + counted.count(), 0);
+
+        // Dismissed: row 10 (time 4989) goes; the 201st comes in at the end.
+        all.removeAt(4989);
+        model.setConflicts(all);
+        QCOMPARE(removed.count(), 1);
+        QCOMPARE(removed.first().at(1).toInt(), 10);
+        QCOMPARE(removed.first().at(2).toInt(), 10);
+        QCOMPARE(inserted.count(), 1);
+        QCOMPARE(inserted.first().at(1).toInt(), ConflictModel::Shown - 1);
+        QCOMPARE(model.total(), 4999);
+        QCOMPARE(counted.count(), 1);
+
+        // Three new ones on top push the last three out.
+        removed.clear();
+        inserted.clear();
+        all << conflict(6000) << conflict(6001) << conflict(6002);
+        model.setConflicts(all);
+        QCOMPARE(inserted.count(), 1);
+        QCOMPARE(inserted.first().at(1).toInt(), 0);
+        QCOMPARE(inserted.first().at(2).toInt(), 2);
+        QCOMPARE(removed.count(), 1);
+        QCOMPARE(removed.first().at(2).toInt(), ConflictModel::Shown - 1);
+        QCOMPARE(at(model, 0, ConflictModel::TimeRole).toLongLong(), 6002LL);
+        QCOMPARE(model.count(), ConflictModel::Shown);
+        QCOMPARE(model.total(), 5002);
+
+        // A time that reorders the rows: one reset.
+        all[all.size() - 3].time = 4998;
+        model.setConflicts(all);
+        QCOMPARE(reset.count(), 1);
+        QCOMPARE(at(model, 4, ConflictModel::RescuedRole).toString(), QStringLiteral("/r/6000.txt"));
+        QCOMPARE(changed.count(), 0);
     }
 
     /// A reply that names one moved file twice lists it once, and the next
