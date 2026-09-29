@@ -106,7 +106,7 @@ private Q_SLOTS:
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
-        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        engine.loadFromModule("org.konedrive.app.window", "Main");
         QVERIFY(!engine.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         QVERIFY(window);
@@ -178,7 +178,7 @@ private Q_SLOTS:
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
-        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        engine.loadFromModule("org.konedrive.app.window", "Main");
         QVERIFY(!engine.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         QVERIFY(window);
@@ -245,7 +245,7 @@ private Q_SLOTS:
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
-        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        engine.loadFromModule("org.konedrive.app.window", "Main");
         QVERIFY(!engine.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         QVERIFY(window);
@@ -308,7 +308,7 @@ private Q_SLOTS:
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
-        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        engine.loadFromModule("org.konedrive.app.window", "Main");
         QVERIFY(!engine.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         QVERIFY(window);
@@ -360,7 +360,7 @@ private Q_SLOTS:
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
-        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        engine.loadFromModule("org.konedrive.app.window", "Main");
         QVERIFY(!engine.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         QVERIFY(window);
@@ -431,7 +431,7 @@ private Q_SLOTS:
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
-        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        engine.loadFromModule("org.konedrive.app.window", "Main");
         QVERIFY(!engine.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         QVERIFY(window);
@@ -527,7 +527,7 @@ private Q_SLOTS:
 
         QQmlApplicationEngine engine;
         KLocalization::setupLocalizedContext(&engine);
-        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        engine.loadFromModule("org.konedrive.app.window", "Main");
         QVERIFY(!engine.rootObjects().isEmpty());
         auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
         QVERIFY(window);
