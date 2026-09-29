@@ -353,7 +353,9 @@ Instead:
 
 A program already reading the old version keeps it to the end; the next open gets the new one. The
 old file is not held open during the download, so freeing it up meanwhile still works; step 4 then
-finds it changed and gives up. At most 2 replacements download at once, in the background, reported in `Transfers` like any download.
+finds it changed and gives up. Replacements wait in one queue, worked by 8 tasks at most (issue
+#39), each download in a background slot of the account's transfer pool, reported in `Transfers`
+like any download; a delta changing thousands of files starts those few tasks, not one each.
 In a read-write folder, where a program may be writing the old file, step 4 first takes a write
 lease on it, granted only while nobody has it open; a refusal leaves the replacement for a later
 cycle (limitations log F110).
@@ -538,4 +540,4 @@ The limitations log has the full list. The ones specific to this document: the w
 listed even when only part of it matters, since Graph lists from the root (limitations log W15);
 the activity log keeps 200 events and summarises large changes (F24, F25); a delta is held in memory
 whole before it is staged (D11); and the numbers here — 60 s, the retry steps, 5000 changes,
-16 MiB checkpoints, 2 replacements — are chosen, not measured (limitations log §5).
+16 MiB checkpoints, 8 replacement workers — are chosen, not measured (limitations log §5).

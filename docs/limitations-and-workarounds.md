@@ -2283,6 +2283,17 @@ application must never read zeros where real content should be.
   often `SkippedCount` changes. LIMIT (chosen) · measured
   (`tree::tests::counts_and_the_skipped_list_see_only_what_is_reachable`, the app's
   `dialogstest::thousandsSkippedAndConflictsAreAFewRows`). Open.
+- **F169. Replacements go through one queue worked by 8 tasks** (`sync/listing.rs`,
+  `REPLACE_WORKERS`; `pool.rs`, `Waiters`; issue #39) — a delta changing 30 000 downloaded files
+  used to start 30 000 tasks, each a waiter of the transfer pool, whose line was searched from its
+  start at every grant: quadratic (1.3 s to grant 30 000 in turn, now 5 ms,
+  `bench::the_pool_with_30000_waiters`). The pool now keeps its waiters by id and in one line per
+  class and size, and the replacements wait in the listing's own queue, which 8 tasks (a guess)
+  work through: no more than 8 replacements download at once, even when the pool would give more
+  slots. The queue holds one entry per file (a newer version of a file under way waits in its
+  `InFlight`, as before), and a stop drops what is left in it: the next cycle finds those files
+  again. LIMIT (chosen) · measured
+  (`pool::tests::thirty_thousand_waiters_are_granted_in_order_and_one_gives_up`). Open.
 ---
 
 ## 5. Provisional numbers
@@ -2316,6 +2327,7 @@ application must never read zeros where real content should be.
 | Window's transfer charts | the last 2 min, one sample a second | **guess** |
 | Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |
 | Thumbnail candidates looked at per query / per store call (`THUMB_PAGE`, `THUMB_SCAN`) | 500 / 5 000 | **guess** (`crates/konedrived/src/tree.rs`, issue #39) |
+| Replacements downloading at once (`REPLACE_WORKERS`) | 8, each also in a pool slot | **guess** (`crates/konedrived/src/sync/listing.rs`, issue #39) |
 | Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
 | Shortest time between two `LocalBytes` walks | 5 s | **guess** |
 | Shortest time between two coalesced `PropertiesChanged` (counters, status, `Transfers`) | 250 ms, at most 4 signals a second | the design's four a second |

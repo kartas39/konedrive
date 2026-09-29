@@ -22,7 +22,7 @@
 //! that the folder fills as the drive is listed and a listing stopped
 //! part-way resumes where it stopped. See [`Listing::list_placing`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -221,13 +221,20 @@ pub struct Listing {
     /// Replacements that failed ("the status says why"), tried
     /// again after every cycle until they succeed or are no longer needed.
     failed_replacements: std::sync::Mutex<HashMap<String, (Replacement, String)>>,
+    /// The replacement workers ([`REPLACE_WORKERS`] at most, issue #39).
     replacements: std::sync::Mutex<JoinSet<()>>,
+    /// The replacements waiting for a worker, and how many workers run.
+    queued_replacements: std::sync::Mutex<(VecDeque<Replacement>, usize)>,
     cancel_replacements: CancellationToken,
     /// Read-write mode: the outbox commit count the last cycle's fetch
     /// started at; items the outbox committed after it are looked at again
     /// by the next cycle.
     revisit_from: std::sync::atomic::AtomicI64,
 }
+
+/// Replacements at once (issue #39): the queue's workers. A guess; each
+/// also waits for a slot of the account's transfer pool.
+pub const REPLACE_WORKERS: usize = 8;
 
 /// A replacement under way: the version it fetches, and a newer version of
 /// the same file that arrived meanwhile, fetched when it ends.
@@ -363,6 +370,7 @@ impl Listing {
             replacing: std::sync::Mutex::new(HashMap::new()),
             failed_replacements: std::sync::Mutex::new(HashMap::new()),
             replacements: std::sync::Mutex::new(JoinSet::new()),
+            queued_replacements: std::sync::Mutex::new((VecDeque::new(), 0)),
             cancel_replacements: CancellationToken::new(),
             revisit_from: std::sync::atomic::AtomicI64::new(0),
         })
@@ -931,13 +939,17 @@ impl Listing {
     /// §7.3), and retries those that failed. A newer version of a file whose
     /// replacement is under way is fetched when that one ends; a failed one
     /// is retried only when no fresher replacement of the file stands for it.
+    /// They wait in one queue, worked by at most [`REPLACE_WORKERS`] tasks
+    /// (issue #39): a delta changing thousands of files starts a few tasks,
+    /// not one each.
     fn spawn_replacements(self: &Arc<Self>, fresh: Vec<Replacement>) {
+        let fresh_ids: HashSet<&str> = fresh.iter().map(|r| r.id.as_str()).collect();
         let retries: Vec<Replacement> = self
             .failed_replacements
             .lock()
             .unwrap()
             .values()
-            .filter(|(failed, _)| !fresh.iter().any(|r| r.id == failed.id))
+            .filter(|(failed, _)| !fresh_ids.contains(failed.id.as_str()))
             .map(|(failed, _)| failed.clone())
             .collect();
         let mut start = Vec::new();
@@ -961,33 +973,70 @@ impl Listing {
                 }
             }
         }
-        for replacement in start {
-            self.start_replacement(replacement);
-        }
+        self.queue_replacements(start);
     }
 
-    fn start_replacement(self: &Arc<Self>, replacement: Replacement) {
-        let this = Arc::clone(self);
+    /// Queues `replacements`, each already in `replacing`, and starts
+    /// workers for them up to [`REPLACE_WORKERS`].
+    fn queue_replacements(self: &Arc<Self>, replacements: Vec<Replacement>) {
+        if replacements.is_empty() {
+            return;
+        }
+        let starting = {
+            let mut queued = self.queued_replacements.lock().unwrap();
+            queued.0.extend(replacements);
+            let starting = REPLACE_WORKERS.saturating_sub(queued.1).min(queued.0.len());
+            queued.1 += starting;
+            starting
+        };
+        if starting == 0 {
+            return;
+        }
         let mut tasks = self.replacements.lock().unwrap();
         // Finished ones are kept only for `join_replacements`.
         while tasks.try_join_next().is_some() {}
-        tasks.spawn(async move {
-            // Cut short by `Poller::stop`: no outcome, and nothing after it.
-            let outcome = this.cancel_replacements.run_until_cancelled(this.replace_one(&replacement)).await;
+        for _ in 0..starting {
+            let this = Arc::clone(self);
+            tasks.spawn(async move { this.replace_queued().await });
+        }
+    }
+
+    /// A replacement worker: takes the next file from the queue until it is
+    /// empty. Cut short by `Poller::stop`: what is left in the queue goes
+    /// with no outcome.
+    async fn replace_queued(self: Arc<Self>) {
+        loop {
+            let replacement = {
+                let mut queued = self.queued_replacements.lock().unwrap();
+                match queued.0.pop_front().filter(|_| !self.cancel_replacements.is_cancelled()) {
+                    Some(replacement) => replacement,
+                    None => {
+                        let left: Vec<Replacement> = queued.0.drain(..).collect();
+                        queued.1 -= 1;
+                        drop(queued);
+                        let mut replacing = self.replacing.lock().unwrap();
+                        for replacement in left {
+                            replacing.remove(&replacement.id);
+                        }
+                        return;
+                    }
+                }
+            };
+            let outcome = self.cancel_replacements.run_until_cancelled(self.replace_one(&replacement)).await;
             let stopped = outcome.is_none();
             if let Some((outcome, event)) = outcome {
                 // A failure retried after every cycle is said once, not a
                 // minute (I1).
-                let news = this.record_replacement(&replacement, outcome);
+                let news = self.record_replacement(&replacement, outcome);
                 if let Some(event) = event {
                     if news {
-                        this.ctx.report.activity.record(vec![event]).await;
+                        self.ctx.report.activity.record(vec![event]).await;
                     }
-                    this.ctx.report.space.kick();
+                    self.ctx.report.space.kick();
                 }
             }
             let next = {
-                let mut replacing = this.replacing.lock().unwrap();
+                let mut replacing = self.replacing.lock().unwrap();
                 let next = replacing.remove(&replacement.id).and_then(|running| running.next).filter(|_| !stopped);
                 if let Some(next) = &next {
                     replacing.insert(next.id.clone(), InFlight { ctag: next.ctag.clone(), next: None });
@@ -995,9 +1044,9 @@ impl Listing {
                 next
             };
             if let Some(next) = next {
-                this.start_replacement(next);
+                self.queued_replacements.lock().unwrap().0.push_back(next);
             }
-        });
+        }
     }
 
     /// Replaces one file, shown in `Transfers` while it downloads (spec
