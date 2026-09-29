@@ -3168,7 +3168,7 @@ The RPM packages, `konedrive` and `konedrive-kde`, from `packaging/rpm/konedrive
   is refused `UnknownInterface`, and the window reads the service as not running, until that program is restarted (log out and in, or quit and start it). Nothing in the
   folder is touched.
 - **R12. The window's QML is compiled into the binary, because Qt's disk cache kept a same-day
-  build's.** WORKAROUND · measured · fixed (#88). The window's QML used to be a plain resource
+  build's.** WORKAROUND · measured · mitigated (fixed by #88). The window's QML used to be a plain resource
   (`qt_add_resources`), compiled at its first load into Qt's disk cache,
   `~/.cache/konedrive/qmlcache`. Qt keeps using a resource file's cached unit for as long as the
   executable's modification time is unchanged, and rpmbuild sets every file's time to the

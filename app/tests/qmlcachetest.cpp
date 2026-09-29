@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QCryptographicHash>
 #include <QDir>
+#include <QDirIterator>
 #include <QFile>
 #include <QFileInfo>
 #include <QQmlApplicationEngine>
@@ -91,18 +92,16 @@ private Q_SLOTS:
         }
         QTest::qWait(200);
 
-        const QString module = QStringLiteral(":/qt/qml/org/konedrive/app/window/");
-        const QStringList files{QStringLiteral("Main.qml"),
-                                QStringLiteral("qml/StatusPage.qml"),
-                                QStringLiteral("qml/ActivityPage.qml"),
-                                QStringLiteral("qml/ConflictsPage.qml"),
-                                QStringLiteral("qml/SkippedPage.qml"),
-                                QStringLiteral("qml/NotUploadedPage.qml"),
-                                QStringLiteral("qml/AccountPage.qml"),
-                                QStringLiteral("qml/SettingsPage.qml"),
-                                QStringLiteral("qml/AccountSwitcher.qml")};
-        for (const QString &file : files) {
-            QVERIFY2(!QFileInfo::exists(unitFor(module + file)), qPrintable(file + QStringLiteral(" was compiled at run time")));
+        // Every file of the module, so a page added later is checked too.
+        QStringList files;
+        QDirIterator it(QStringLiteral(":/qt/qml/org/konedrive/app/window"), {QStringLiteral("*.qml")}, QDir::Files,
+                        QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            files << it.next();
+        }
+        QVERIFY(!files.isEmpty());
+        for (const QString &file : std::as_const(files)) {
+            QVERIFY2(!QFileInfo::exists(unitFor(file)), qPrintable(file + QStringLiteral(" was compiled at run time")));
         }
 
         fake.stop();
