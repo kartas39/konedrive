@@ -19,6 +19,7 @@ pub mod quickxor;
 pub mod quota;
 pub mod secret;
 pub mod state;
+pub mod stop;
 pub mod sync;
 pub mod token;
 pub mod tree;

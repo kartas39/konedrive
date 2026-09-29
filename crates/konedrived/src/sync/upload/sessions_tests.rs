@@ -176,3 +176,97 @@ fn a_409_from_another_file_still_makes_a_copy() {
     assert_eq!(conflicts(&w), 1);
     assert_eq!(w.cloud(|c| (c.placeholders().len(), c.open_sessions())), (0, 0));
 }
+
+/// `a.txt` queued, and the daemon stopped between opening its session and
+/// persisting it (issue #84): the session's URL is lost, its place recorded,
+/// its placeholder holds the name.
+fn opened_and_lost(w: &World, content: &[u8]) {
+    w.write("a.txt", content);
+    w.examine(&[("", "a.txt")]);
+    let engine = w.h.engine();
+    engine.arm(Fault::SessionNotPersisted);
+    w.h.drain(&engine);
+    assert_eq!(w.rows()[0].session_url, None);
+    assert_eq!(w.cloud(|c| c.placeholders()), vec!["a.txt"]);
+}
+
+fn opening_at(w: &World, name: &str) -> Option<i64> {
+    let name = name.to_owned();
+    w.store.call_blocking(move |s| s.upload_opening_at(fake::ROOT, &name)).unwrap()
+}
+
+/// A row waiting in backoff, due now.
+fn due(w: &World) {
+    let seq = w.rows()[0].seq;
+    w.store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Ready, None, None)).unwrap();
+}
+
+/// OneDrive refuses to delete the lost session's placeholder: the row waits
+/// (`upload-session-open`), no copy is made; once the session expires and
+/// frees the name, the file goes up under it.
+#[test]
+fn a_placeholder_onedrive_will_not_delete_makes_the_row_wait_not_a_copy() {
+    let w = World::new(&[]);
+    opened_and_lost(&w, b"hello");
+    w.cloud(|c| c.refuse_placeholder_delete = true);
+    w.run();
+    assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
+    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::SESSION_OPEN));
+    assert_eq!(w.cloud(|c| c.placeholders()), vec!["a.txt"]);
+    assert_eq!(conflicts(&w), 0);
+    assert!(!w.path("a-fedora.txt").exists());
+
+    w.cloud(|c| c.expire_sessions());
+    due(&w);
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["a.txt"]);
+    assert_eq!(w.content("a.txt").unwrap(), b"hello");
+    assert_eq!(conflicts(&w), 0);
+    assert_committed(&w, "a.txt", "a.txt");
+}
+
+/// At a place with an opening recorded, a `409` from a file with content, or
+/// from an empty file made before the recording, is someone else's: a
+/// conflict copy, as for any `409`. Nothing of theirs is deleted.
+#[test]
+fn a_409_at_a_recorded_place_from_someone_elses_file_is_still_a_conflict() {
+    for (theirs, age) in [(&b"theirs"[..], 0), (&b""[..], 3600)] {
+        let w = World::new(&[]);
+        w.write("a.txt", b"mine");
+        w.examine(&[("", "a.txt")]);
+        w.cloud(|c| {
+            c.add_file("X", fake::ROOT, "a.txt", theirs);
+            c.created.insert("X".into(), crate::sync::activity::unix_now() - age);
+        });
+        w.run();
+        assert!(w.rows().is_empty(), "{age}: {:?}", w.summary());
+        assert_eq!(w.cloud(|c| c.paths()), vec!["a-fedora.txt", "a.txt"], "{age}");
+        assert_eq!(w.content("a.txt").unwrap(), theirs, "{age}");
+        assert_eq!(w.id_at("a.txt").as_deref(), Some("X"), "{age}: never deleted");
+        assert_eq!(w.content("a-fedora.txt").unwrap(), b"mine");
+        assert_eq!(conflicts(&w), 1, "{age}");
+    }
+}
+
+/// The recorded place outlasts a restart, and goes when its row leaves the
+/// outbox — committed, or never uploaded.
+#[test]
+fn a_recorded_opening_outlasts_a_restart_and_goes_with_its_row() {
+    for removed in [false, true] {
+        let w = World::new(&[]);
+        opened_and_lost(&w, b"hello");
+        let recorded = opening_at(&w, "A.TXT").expect("recorded, compared without case");
+        // A new start on the same store.
+        let _ = w.h.engine();
+        assert_eq!(opening_at(&w, "a.txt"), Some(recorded), "removed {removed}");
+        if removed {
+            std::fs::remove_file(w.path("a.txt")).unwrap();
+            w.examine(&[("", "a.txt")]);
+        }
+        w.run();
+        assert!(w.rows().is_empty(), "removed {removed}: {:?}", w.summary());
+        assert_eq!(opening_at(&w, "a.txt"), None, "removed {removed}");
+        assert_eq!(conflicts(&w), 0);
+    }
+}

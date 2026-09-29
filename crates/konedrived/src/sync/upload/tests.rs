@@ -338,6 +338,7 @@ fn every_crash_point_is_replayed_to_the_same_end() {
     let big: Vec<u8> = (0..(700 * 1024)).map(|i| (i % 253) as u8).collect();
     let cases: Vec<(&str, Fault)> = vec![
         ("create", Fault::AfterSend),
+        ("create", Fault::SessionNotPersisted),
         ("create", Fault::CommitStep1Partial),
         ("create", Fault::AfterCommitStep1),
         ("update", Fault::AfterSend),
@@ -390,13 +391,15 @@ fn every_crash_point_is_replayed_to_the_same_end() {
         w.h.drain(&engine);
         assert_eq!(w.rows()[0].state, OutboxState::Running, "{what} {fault:?}: stopped at the step");
         if fault == Fault::SessionNotPersisted {
-            // The session nothing knows of holds the name with its placeholder
-            // until it expires (issue #47, limitations log F172).
-            w.cloud(|c| c.expire_sessions());
+            // The session's URL is lost, its place recorded (issue #84): its
+            // placeholder holds the name, and is found to be this folder's.
+            assert_eq!(w.cloud(|c| c.placeholders()), vec![rel], "{what}");
         }
 
         w.run();
         assert!(w.rows().is_empty(), "{what} {fault:?}: {:?}", w.summary());
+        assert!(!w.h.host.kinds().contains(&kind::CONFLICT.to_owned()), "{what} {fault:?}: no conflict copy");
+        assert!(w.cloud(|c| c.placeholders()).is_empty(), "{what} {fault:?}: no placeholder left");
         assert_eq!(w.cloud(|c| c.paths()), expect, "{what} {fault:?}");
         if !rel.is_empty() {
             assert_committed(&w, rel, rel);
@@ -1010,6 +1013,40 @@ fn the_worker_runs_until_stopped() {
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     assert!(!worker.status().started);
     assert_committed(&w, "a.txt", "a.txt");
+}
+
+/// Issue #84, the daemon's stop while a new file's session is being opened:
+/// the worker takes nothing more, waits for the answer and persists the
+/// session before its task ends; the upload in fragments stops before its
+/// first fragment, and the next start resumes the same session.
+#[test]
+fn a_stop_while_a_session_opens_waits_for_it_and_persists_it() {
+    let w = World::new(&[]);
+    let content: Vec<u8> = (0..(1024 * 1024 + 77)).map(|i| (i % 251) as u8).collect();
+    w.write("big.bin", &content);
+    w.examine(&[("", "big.bin")]);
+    w.cloud(|c| c.delay("POST", "createUploadSession", Duration::from_millis(400), 1));
+    let worker = OutboxWorker::new(w.h.config());
+    w.h.runtime.block_on(async {
+        worker.start();
+        let mut waited = 0;
+        while w.cloud(|c| c.count("POST", "createUploadSession")) == 0 && waited < 500 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            waited += 1;
+        }
+        assert_eq!(w.cloud(|c| c.count("POST", "createUploadSession")), 1, "the opening is in flight");
+        worker.close().await;
+    });
+    let row = w.rows().remove(0);
+    assert_eq!(row.state, OutboxState::Ready, "{:?}", row.reason);
+    assert!(row.session_url.is_some(), "the session is persisted");
+    assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 0, "nothing sent after the stop");
+
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/"))), (1, 4), "resumed, not opened again");
+    assert_eq!(w.content("big.bin").unwrap(), content);
+    assert!(!w.h.host.kinds().contains(&kind::CONFLICT.to_owned()));
 }
 
 /// Four independent small files run at once, and a child waits for its

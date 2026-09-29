@@ -469,7 +469,9 @@ pub enum Fault {
 /// [`start`]: OutboxWorker::start
 pub struct OutboxWorker {
     engine: Arc<Engine>,
-    task: Mutex<Option<(CancellationToken, tokio::task::JoinHandle<()>)>>,
+    /// The run's token and task; the task is taken by [`close`](Self::close)
+    /// to be waited for there.
+    task: Mutex<Option<(CancellationToken, Option<tokio::task::JoinHandle<()>>)>>,
 }
 
 impl OutboxWorker {
@@ -490,7 +492,7 @@ impl OutboxWorker {
         let token = cancel.clone();
         engine.set_started(true);
         let handle = tokio::spawn(async move { engine.run(token).await });
-        *task = Some((cancel, handle));
+        *task = Some((cancel, Some(handle)));
     }
 
     /// Stops the worker and waits for it. A request under way is cut off;
@@ -499,9 +501,27 @@ impl OutboxWorker {
         let task = self.task.lock().unwrap_or_else(|p| p.into_inner()).take();
         if let Some((cancel, handle)) = task {
             cancel.cancel();
-            let _ = handle.await;
+            if let Some(handle) = handle {
+                let _ = handle.await;
+            }
         }
         self.engine.set_started(false);
+    }
+
+    /// The daemon is stopping (issue #84): no row is taken any more, and
+    /// the rows in flight finish what they sent — an opened session is
+    /// persisted, an upload in fragments stops after the fragment in flight.
+    /// The future ends once the worker has; the caller bounds the wait
+    /// (`crate::stop`), and whatever is still in flight then is cut as
+    /// [`stop`](Self::stop) cuts it. For good: not started again.
+    pub fn close(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        self.engine.close();
+        let handle = self.task.lock().unwrap_or_else(|p| p.into_inner()).as_mut().and_then(|(_, handle)| handle.take());
+        async move {
+            if let Some(handle) = handle {
+                let _ = handle.await;
+            }
+        }
     }
 
     /// Looks at the outbox now: new rows, or anything that may have unblocked

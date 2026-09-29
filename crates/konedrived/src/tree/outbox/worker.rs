@@ -198,8 +198,41 @@ impl TreeStore {
             "UPDATE outbox SET session_url = ?2, session_expires = ?3, session_next = 0 WHERE seq = ?1",
             params![seq, url, expires],
         )?;
+        tx.execute("DELETE FROM upload_openings WHERE seq = ?1", [seq])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Row `seq` is about to open a new file's session at (`parent`, `name`)
+    /// (issue #84): recorded before the request, so that a stop before its
+    /// URL is persisted still knows the empty placeholder it may leave there.
+    /// Recorded again at the same place, it keeps its first time: the
+    /// placeholder of an earlier opening is as much this row's.
+    pub fn outbox_record_opening(&self, seq: i64, parent: &str, name: &str, now: i64) -> Result<(), TreeError> {
+        self.conn.execute(
+            "INSERT INTO upload_openings (seq, parent, name, at) VALUES (?1, ?2, ?3, ?4)
+               ON CONFLICT(seq) DO UPDATE SET
+                 at = CASE WHEN parent = excluded.parent AND name = excluded.name THEN at ELSE excluded.at END,
+                 parent = excluded.parent, name = excluded.name",
+            params![seq, parent, name, now],
+        )?;
+        Ok(())
+    }
+
+    /// Row `seq`'s opening was refused for certain: no placeholder of it.
+    pub fn outbox_opening_refused(&self, seq: i64) -> Result<(), TreeError> {
+        self.conn.execute("DELETE FROM upload_openings WHERE seq = ?1", [seq])?;
+        Ok(())
+    }
+
+    /// The earliest time an opening recorded at `name` (without case) in
+    /// `parent`, whose URL never came: from then on an empty placeholder
+    /// there may be this folder's.
+    pub fn upload_opening_at(&self, parent: &str, name: &str) -> Result<Option<i64>, TreeError> {
+        let mut statement = self.conn.prepare("SELECT name, at FROM upload_openings WHERE parent = ?1")?;
+        let lower = name.to_lowercase();
+        let rows = statement.query_map([parent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().filter(|(n, _)| n.to_lowercase() == lower).map(|(_, at)| at).min())
     }
 
     /// Row `seq`'s session completed, or is gone: the row and the list

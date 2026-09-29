@@ -122,6 +122,15 @@ pub struct Cloud {
     /// a fragment of the path, how long, how many times) — proves two
     /// requests are in flight together without changing what either answers.
     delays: Vec<(String, String, Duration, u32)>,
+    /// When items were made (`createdDateTime`, Unix seconds): every
+    /// placeholder and every file a request made, at the wall clock; others
+    /// as a test sets them. None for an item not in it.
+    pub created: HashMap<String, i64>,
+    /// A delete of a session's placeholder (`DELETE /items/{its id}`) is
+    /// refused `403` while set; otherwise it deletes the placeholder and ends
+    /// its session. What OneDrive does is unmeasured (issue #84): both are
+    /// modelled.
+    pub refuse_placeholder_delete: bool,
     /// The space left, when the drive has a quota: content larger is refused
     /// `507` as it lands, and `GET me/drive` says it (`remaining`, and
     /// `state` `exceeded` at 0). No quota at all while `None`.
@@ -349,6 +358,9 @@ impl Cloud {
             "size": item.size,
             "fileSystemInfo": { "lastModifiedDateTime": format_graph_time(item.mtime) },
         });
+        if let Some(created) = self.created.get(&item.id) {
+            value["createdDateTime"] = json!(format_graph_time(*created));
+        }
         match &item.parent {
             Some(parent) => value["parentReference"] = json!({ "id": parent, "driveId": "D" }),
             None => value["root"] = json!({}),
@@ -537,6 +549,17 @@ impl Cloud {
     }
 
     fn delete(&mut self, id: &str, if_match: Option<&str>) -> ResponseTemplate {
+        if let Some((sid, placeholder)) = self.placeholders.iter().find(|(_, p)| p.id == id).map(|(sid, p)| (sid.clone(), p.clone())) {
+            if !Self::guard(&placeholder, if_match) {
+                return error(412, "preconditionFailed");
+            }
+            if self.refuse_placeholder_delete {
+                return error(403, "accessDenied");
+            }
+            self.placeholders.remove(&sid);
+            self.sessions.remove(&sid);
+            return ResponseTemplate::new(204);
+        }
         let Some(item) = self.items.get(id).cloned() else { return error(404, "itemNotFound") };
         if !Self::guard(&item, if_match) {
             return error(412, "preconditionFailed");
@@ -578,6 +601,7 @@ impl Cloud {
                 ctag: format!("c-{id}"),
                 mtime: 0,
             };
+            self.created.insert(id.clone(), crate::sync::activity::unix_now());
             self.placeholders.insert(sid.clone(), placeholder);
         }
         self.sessions.insert(sid.clone(), Session { target, size, data: Vec::new(), mtime });
@@ -624,6 +648,7 @@ impl Cloud {
                 }
                 let id = self.new_id();
                 let (etag, ctag) = (self.tag("e", &id), self.tag("c", &id));
+                self.created.insert(id.clone(), crate::sync::activity::unix_now());
                 self.add(FakeItem {
                     id: id.clone(),
                     parent: Some(parent.clone()),

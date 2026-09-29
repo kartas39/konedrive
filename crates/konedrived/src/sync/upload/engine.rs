@@ -239,6 +239,11 @@ pub(crate) struct Engine {
     /// The counts are wanted again though the outbox did not change (OneDrive
     /// turned full, or not).
     recount: Notify,
+    /// The daemon is stopping (issue #84): no row is taken any more, an
+    /// upload in fragments stops after the fragment in flight, and the
+    /// worker's run ends once the rows in flight have. For good: a worker
+    /// closed is not started again.
+    closing: CancellationToken,
 }
 
 /// The `user.konedrive.sync` value for a row's file (§9).
@@ -289,7 +294,20 @@ impl Engine {
             protection: Mutex::new(super::move_out::Protection::default()),
             quota_lock: tokio::sync::Mutex::new(()),
             recount: Notify::new(),
+            closing: CancellationToken::new(),
         }
+    }
+
+    /// The daemon is stopping: nothing new is taken, and what is in flight
+    /// finishes its request (issue #84). See [`Engine::closing`].
+    pub(super) fn close(&self) {
+        self.closing.cancel();
+        self.wake();
+    }
+
+    /// Whether the daemon is stopping ([`close`](Self::close)).
+    pub(super) fn closing(&self) -> bool {
+        self.closing.is_cancelled()
     }
 
     pub(super) fn shared(&self) -> MutexGuard<'_, Shared> {
@@ -489,6 +507,9 @@ impl Engine {
     }
 
     fn may_start(&self) -> bool {
+        if self.closing() {
+            return false;
+        }
         let paused = self.stopped();
         let now = now();
         let ready = {
@@ -1007,20 +1028,25 @@ impl Engine {
 
     /// The worker's life: drain, then sleep until woken or something falls
     /// due.
+    ///
+    /// Closed ([`close`](Self::close)), it ends once the rows in flight have.
     pub(super) async fn run(self: Arc<Self>, cancel: CancellationToken) {
-        let tally = tokio::spawn(Arc::clone(&self).tally(cancel.clone()));
+        let stop_tally = CancellationToken::new();
+        let tally = tokio::spawn(Arc::clone(&self).tally(stop_tally.clone()));
         loop {
             self.drain(&cancel).await;
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled() || self.closing() {
                 break;
             }
             let wait = self.next_due().await;
             tokio::select! {
                 _ = cancel.cancelled() => break,
+                _ = self.closing.cancelled() => break,
                 _ = self.wake.notified() => {}
                 _ = tokio::time::sleep(wait) => {}
             }
         }
+        stop_tally.cancel();
         let _ = tally.await;
     }
 }

@@ -91,8 +91,17 @@ const INDEXES: &str = "
 /// cancelled ([`TreeStore::upload_sessions_given_up`]). Created on every open,
 /// like the indexes; a session a store of an earlier version persisted is
 /// listed then, with no place.
+///
+/// And the openings (issue #84): the place a new file's session is about to
+/// take, recorded before the request that opens it, so that a stop before its
+/// URL is persisted still knows the placeholder it may have left. One per row;
+/// the URL replaces it (`outbox_open_session`), and it goes with its row.
 const SESSIONS: &str = "
     CREATE TABLE IF NOT EXISTS upload_sessions (url TEXT PRIMARY KEY, parent TEXT, name TEXT, opened INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS upload_openings (seq INTEGER PRIMARY KEY, parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS upload_openings_parent ON upload_openings(parent);
+    CREATE TRIGGER IF NOT EXISTS upload_openings_leave AFTER DELETE ON outbox
+        BEGIN DELETE FROM upload_openings WHERE seq = OLD.seq; END;
     CREATE INDEX IF NOT EXISTS upload_sessions_parent ON upload_sessions(parent);
     CREATE INDEX IF NOT EXISTS outbox_session ON outbox(session_url) WHERE session_url IS NOT NULL;
     INSERT OR IGNORE INTO upload_sessions (url, parent, name, opened)

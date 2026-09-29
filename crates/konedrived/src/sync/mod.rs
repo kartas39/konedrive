@@ -2404,8 +2404,18 @@ impl SyncService {
         self.state.update(|s| s.sync_trouble = Some(SyncTrouble { text, blocking: true }));
     }
 
-    /// Stops the sync and waits for it: a Forget's, and tests'. (The daemon
-    /// has no orderly shutdown; nothing stops the sync when it exits.)
+    /// The daemon is stopping (issue #84): the outbox worker, if one runs,
+    /// takes nothing more and lets the requests in flight return. The future
+    /// ends when it has; the caller bounds the wait (`crate::stop`).
+    pub fn close_outbox(&self) -> Option<impl std::future::Future<Output = ()> + Send + 'static> {
+        self.syncing.lock().unwrap().as_ref().and_then(|s| s.outbox.as_ref()).map(|outbox| outbox.close())
+    }
+
+    /// Stops the sync and waits for it: a Forget's, and tests'. (At the
+    /// daemon's stop only the outbox is wound down, [`close_outbox`]; the
+    /// rest ends with the process.)
+    ///
+    /// [`close_outbox`]: Self::close_outbox
     /// Whether one was running. Once this returns, no clone of the tree store
     /// is left with the sync (see `store`).
     pub async fn stop_sync(&self) -> bool {
