@@ -95,7 +95,7 @@ export CARGO_HOME="$PWD/.cargo-home"
 export CARGO_TARGET_DIR="$PWD/target"
 cargo build --release --offline --locked \
     -p konedrived -p konedrivectl -p konedrive-helper \
-    %{?with_dev_tools:--features konedrivectl/dev-tools}
+    %{?with_dev_tools:--features konedrived/dev-tools,konedrivectl/dev-tools}
 # The helper's test hooks are all named KONEDRIVE_FAULT_*; a release helper has
 # none. scripts/install-helper.sh refuses such a binary the same way.
 if grep -aq KONEDRIVE_FAULT_ target/release/konedrive-helper; then
