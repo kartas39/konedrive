@@ -53,6 +53,9 @@ async fn main() -> anyhow::Result<()> {
     ));
     // `HelperState` follows the link, and systemd every 30 s without one.
     tokio::spawn(sync::hub::watch(Arc::clone(&hub)));
+    // Every account holds back by itself on a metered connection or on battery, as its
+    // settings say (`sync::conditions`).
+    tokio::spawn(sync::conditions::watch(Arc::clone(&hub)));
     // Every OneDrive folder is brought up to date the moment the network is back.
     tokio::spawn(sync::network::watch(hub));
 

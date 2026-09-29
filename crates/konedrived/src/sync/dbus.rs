@@ -182,6 +182,19 @@ impl Folder {
         self.on_battery_changed(&emitter).await.map_err(SyncFault::ZBus)
     }
 
+    /// Lifts the automatic hold now, until a source or the account's `PauseOnMetered` /
+    /// `OnBattery` changes.
+    async fn sync_anyway(&self) -> Result<()> {
+        self.service.sync_anyway().map_err(to_fault)
+    }
+
+    /// Why the account holds back by itself now: `metered`, `on-battery`, `power-saver`, or
+    /// empty.
+    #[zbus(property)]
+    async fn held_back(&self) -> String {
+        self.service.state().get().held_back
+    }
+
     #[zbus(property)]
     async fn thumbnails(&self) -> bool {
         self.service.run_settings().thumbnails
@@ -957,6 +970,9 @@ async fn emit_changes(
     if old.paused_until != new.paused_until {
         folder.paused_changed(emitter).await?;
         folder.paused_until_changed(emitter).await?;
+    }
+    if old.held_back != new.held_back {
+        folder.held_back_changed(emitter).await?;
     }
     // Not coalesced either: the tray says once that OneDrive is full.
     if old.quota_full != new.quota_full {

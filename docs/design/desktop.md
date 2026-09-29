@@ -77,6 +77,7 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `FreeUpSpace() → (u files, t bytes, u busy)` | frees up every downloaded file that is not in use; files open somewhere or busy with a download are skipped and counted, never waited for; a file whose change waits to be uploaded is left, and counted as busy |
 | `Pause(u seconds)`, `Resume()` | pause the account — no upload, no poll, no thumbnails; fills on open, `Hydrate` and detection go on — for `seconds`, or until `Resume` when 0; the pause outlasts a daemon restart |
 | `SetIgnorePatterns(as)` | the names of the user's own files that are never uploaded (shell globs on a name); written to `config.toml`, then the whole folder is scanned again; `InvalidArgs` for an empty pattern or one holding "/" |
+| `SyncAnyway()` | lifts the automatic hold ([writes.md](writes.md) §11) now, until a source or the account's `pause_on_metered` / `on_battery` changes; not kept across a restart; `Unsupported` for a folder not connected to OneDrive |
 | `SetThumbnails(b)`, `SetPauseOnMetered(b)`, `SetOnBattery(s)` | the account's sync settings (§8, [writes.md](writes.md) §11): whether Graph's thumbnails are fetched; whether the account holds back on a metered connection; what it does on battery — `sync`, `power-saver` or `pause` (`InvalidArgs` for anything else). Each is written to the account's section of `config.toml` (`thumbnails`, `pause_on_metered`, `on_battery`) and taken at once; `Unsupported` for a folder not connected to OneDrive |
 
 `UploadQueue`:
@@ -118,6 +119,7 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `PinnedCount` (`u`) | how many files and folders carry a pin of their own ([pinning.md](pinning.md) §7) |
 | `IgnorePatterns` (`as`) | the ignore list; read-only |
 | `Paused` (`b`), `PausedUntil` (`x`) | whether the account is paused, and when the pause ends by itself (0: until `Resume`) |
+| `HeldBack` (`s`) | why the account holds its background work back by itself: `metered`, `on-battery`, `power-saver`, or empty ([writes.md](writes.md) §11); never the user's pause, which `Paused` shows |
 | `Thumbnails` (`b`), `PauseOnMetered` (`b`), `OnBattery` (`s`) | the account's sync settings; absent from `config.toml`, `true`, `true` and `power-saver` (an `on_battery` the daemon does not know reads `power-saver`, with a warning in the log) |
 
 `Transfers`:
@@ -291,7 +293,7 @@ F51).
 | `sync populate-from <dir>` | chosen | fills a local folder from a directory |
 | `sync hydrate <path>`, `sync dehydrate <path>`, `sync state <path>` | by path | one file, through `Files` |
 | `sync pin`, `sync unpin`, `sync free` `<paths…>` | by path | pinning ([pinning.md](pinning.md) §8), through `Files` |
-| `sync status` | chosen, or all | the folder, its state, source and counts, "Last checked", "On this computer", whether opens are intercepted; for a OneDrive folder, "Local scan:" — `running — 1 234 folders and 45 678 files, of about 50 000 (2 min, after the switch to read-write)`, `last finished 5 min ago (took 40 s)`, `not yet since the daemon started`, or `none — read-only`; "Waiting to download: 1 234 files (48.2 GiB)" (`DownloadLeftCount`, `DownloadLeftBytes`) beside "Waiting to upload"; with several accounts and none named, every account's folder under its label. The `Helper:` line, with what to do, is printed once, above them |
+| `sync status` | chosen, or all | the folder, its state, source and counts, "Last checked", "On this computer", whether opens are intercepted; for a OneDrive folder, "Local scan:" — `running — 1 234 folders and 45 678 files, of about 50 000 (2 min, after the switch to read-write)`, `last finished 5 min ago (took 40 s)`, `not yet since the daemon started`, or `none — read-only`; "Waiting to download: 1 234 files (48.2 GiB)" (`DownloadLeftCount`, `DownloadLeftBytes`) beside "Waiting to upload"; while the account holds back by itself, "Paused by itself: metered connection" (or "on battery", "power-saver mode") with how to `sync anyway`; with several accounts and none named, every account's folder under its label. The `Helper:` line, with what to do, is printed once, above them |
 | `sync skipped` | chosen | what is not in the folder, and why |
 | `sync refresh` | chosen | a cycle now |
 | `sync activity [--limit N]`, `sync transfers` | chosen | recent events; for each way one line — how many files move now, what is left, its size and about how long, what this run has done, and how fast ("Downloading: 12 now, 1 234 files left (48.2 GiB, about 12 min), 3.1 GiB done, 8.4 MiB/s"; uploads are counted in changes; what is left and done only while anything is left, the time only when known) — the transfer pool ("Pool: 7 of 32 · large files: 1 (4 of 4 streams)": the slots in use of the pool's size — shown as it is when above it, "Pool: 18 of 16 · …" — then the large files and their streams of the limit; ending "— OneDrive asked to wait 30 s" during a `Retry-After`), and the downloads and uploads under way |
@@ -299,6 +301,7 @@ F51).
 | `sync free-up-space` | chosen | frees up every downloaded file not in use |
 | `sync outbox [--all]` | chosen | `sync transfers`'s "Uploading:" line first, then `UploadQueue.Changes`: the changes waiting to be uploaded, each with its state and why it waits; the first 50 without `--all` |
 | `sync pause [--for <duration>]`, `sync resume` | chosen | `Pause` for `30m`, `2h`, `1d`, `1h30m`…, or until `sync resume`; `Resume` |
+| `sync anyway` | chosen | `SyncAnyway`: syncs now though the account holds back by itself, until the connection, the battery or the power profile changes |
 | `sync ignore [list\|add <pattern>\|remove <pattern>]` | chosen | shows the ignore list (`IgnorePatterns`), or changes it with `SetIgnorePatterns` |
 | `sync thumbnails [on\|off]`, `sync on-metered [pause\|sync]`, `sync on-battery [sync\|power-saver\|pause]` | chosen | shows the sync setting, or changes it (`SetThumbnails`, `SetPauseOnMetered` — `pause` is on — and `SetOnBattery`) |
 | `sync not-uploaded [--all]` | chosen | `NotUploadedSummary`: each group and its reasons with their counts and sizes, then (`NotUploadedFiles`) the files of the per-file reasons, the first 20 of each; `--all` lists every file of every reason |

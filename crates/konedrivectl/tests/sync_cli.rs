@@ -1609,6 +1609,31 @@ async fn binary_shows_and_changes_the_sync_settings() {
     assert_eq!(run(addr, &["sync", "thumbnails", "maybe"]).status.code(), Some(2));
 }
 
+/// Issue #57: while the account holds back by itself, `sync status` says why; `sync anyway`
+/// lifts the hold, and the line goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it() {
+    let (f, _graph) = harness_onedrive().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/f.txt").is_file()).await;
+    let addr = f._bus.address();
+    let line = |status: &str| status.lines().find(|l| l.starts_with("Paused by itself:")).map(str::to_owned);
+
+    assert_eq!(out_text(&run(addr, &["sync", "anyway"])).trim(), "Not paused by itself: nothing to lift.");
+    f.service.set_conditions(konedrived::sync::running::Conditions { metered: true, ..Default::default() });
+    let status = out_text(&run(addr, &["sync", "status"]));
+    let said = line(&status).unwrap_or_else(|| panic!("{status}"));
+    assert!(said.contains("metered connection (`konedrivectl sync anyway` syncs now)"), "{said}");
+    assert!(!status.lines().any(|l| l.starts_with("Paused until:")), "not the user's pause: {status}");
+
+    let out = run(addr, &["sync", "anyway"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).starts_with("Syncing anyway (metered connection)"), "{}", out_text(&out));
+    assert_eq!(line(&out_text(&run(addr, &["sync", "status"]))), None);
+}
+
 /// A folder not connected to OneDrive has no sync settings.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_sync_settings_of_a_local_folder_say_it_has_none() {

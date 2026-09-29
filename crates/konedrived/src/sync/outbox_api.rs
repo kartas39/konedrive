@@ -130,17 +130,33 @@ impl SyncService {
     /// looks at the pause before each cycle. A timed pause gets a timer that
     /// does this again when it ends. Called whenever the pause may have
     /// changed: `Pause`, `Resume`, a sync starting, the timer.
+    ///
+    /// The automatic hold (`running`) is shown as `HeldBack` the same way, with or without
+    /// a sync running; when the hold or the pause ends, what they held back goes at once.
     pub(super) fn show_pause(&self) {
-        let Some(store) = self.store.lock().unwrap().clone() else { return };
+        // Only a OneDrive folder has background work to hold back.
+        let held = match self.require_onedrive() {
+            Ok(_) => self.running.held().map(|h| h.as_str().to_owned()).unwrap_or_default(),
+            Err(_) => String::new(),
+        };
+        let store = self.store.lock().unwrap().clone();
+        let Some(store) = store else {
+            self.state.update(|s| s.held_back = held.clone());
+            self.pool.set_paused(!held.is_empty());
+            return;
+        };
         self.pause_shown.fetch_add(1, Ordering::SeqCst);
         let paused = super::running::user_pause(&store);
         let stopped = self.running.stopped(&store);
-        let before = self.state.get().paused_until;
-        self.state.update(|s| s.paused_until = paused);
+        let before = self.state.get();
+        self.state.update(|s| {
+            s.paused_until = paused;
+            s.held_back = held.clone();
+        });
         // The transfer pool hands out nothing but opens while the account's background
         // work stops (`running`).
         let was_stopped = self.pool.set_paused(stopped);
-        if before != paused || was_stopped != stopped {
+        if before.paused_until != paused || before.held_back != held || was_stopped != stopped {
             self.wake_outbox();
             self.nudge();
         }
@@ -197,18 +213,22 @@ impl SyncService {
         }
         if end {
             self.state.update(|s| s.paused_until = None);
-            self.pool.set_paused(false);
+            // A hold still on keeps the pool held back.
+            self.pool.set_paused(self.running.held().is_some());
         }
         *timer = None;
         true
     }
 
-    /// The folder is forgotten: so is its pause, on the bus.
+    /// The folder is forgotten: so are its pause and its hold, on the bus.
     pub(super) fn forget_pause(&self) {
         if let Some(timer) = self.pause_timer.lock().unwrap().take() {
             timer.abort();
         }
-        self.state.update(|s| s.paused_until = None);
+        self.state.update(|s| {
+            s.paused_until = None;
+            s.held_back.clear();
+        });
         self.pool.set_paused(false);
     }
 
@@ -237,7 +257,8 @@ impl SyncService {
         let rows = self.read_outbox(move |s| if limit == 0 { s.outbox_rows() } else { s.outbox_first(limit as usize) }).await?;
         let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
         let state = self.state.get();
-        let (uploads, paused, full) = (state.uploads, state.paused_until.is_some(), state.quota_full);
+        let (paused, full) = (state.stopped(), state.quota_full);
+        let uploads = state.uploads;
         tokio::task::spawn_blocking(move || entries(rows, &root, &uploads, paused, full))
             .await
             .map_err(|e| SyncError::Io(format!("the outbox task failed: {e}")))

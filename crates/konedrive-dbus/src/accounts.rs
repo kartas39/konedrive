@@ -166,6 +166,8 @@ pub trait Folder {
     /// `sync`, `power-saver` or `pause`; refused `org.freedesktop.DBus.Error.InvalidArgs`
     /// otherwise.
     fn set_on_battery(&self, choice: &str) -> zbus::Result<()>;
+    /// Lifts the automatic hold until a source or the hold's settings change.
+    fn sync_anyway(&self) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn path(&self) -> zbus::Result<String>;
@@ -208,6 +210,9 @@ pub trait Folder {
     /// `sync`, `power-saver` or `pause`.
     #[zbus(property)]
     fn on_battery(&self) -> zbus::Result<String>;
+    /// Why the account holds back by itself: `metered`, `on-battery`, `power-saver`, or empty.
+    #[zbus(property)]
+    fn held_back(&self) -> zbus::Result<String>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: what that account's folder moves now.

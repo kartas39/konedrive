@@ -378,6 +378,10 @@ pub async fn sync_status_text(proxy: &FolderProxies<'_>, helper: Option<&str>, p
             let until = proxy.folder.paused_until().await?;
             out.push_str(&format!("{:<W$}{}\n", "Paused until:", paused_text(until, prefix)));
         }
+        let held = proxy.folder.held_back().await?;
+        if !held.is_empty() {
+            out.push_str(&format!("{:<W$}{} (`{prefix} sync anyway` syncs now)\n", "Paused by itself:", held_text(&held)));
+        }
     }
     if !path.is_empty() {
         out.push_str(&format!("{:<W$}{}\n", "On this computer:", human_bytes(proxy.folder.local_bytes().await?)));
@@ -548,6 +552,16 @@ pub fn paused_text(until: i64, prefix: &str) -> String {
         format!("resumed (`{prefix} sync resume`)")
     } else {
         format!("{} (`{prefix} sync resume` ends it now)", local_time(until))
+    }
+}
+
+/// Why an account holds back by itself (`Folder.HeldBack`), as `sync status` says it.
+pub fn held_text(reason: &str) -> &str {
+    match reason {
+        "metered" => "metered connection",
+        "on-battery" => "on battery",
+        "power-saver" => "power-saver mode",
+        other => other,
     }
 }
 
@@ -757,6 +771,8 @@ pub enum SyncAction<'a> {
     Ignore,
     /// `sync thumbnails`, `sync on-metered`, `sync on-battery`: an account's sync settings.
     Settings,
+    /// `sync anyway`.
+    Anyway,
     NotUploaded,
     Deletes,
 }
@@ -789,6 +805,7 @@ impl SyncAction<'_> {
             Self::Resume => "resuming the sync".to_owned(),
             Self::Ignore => "changing the ignore list".to_owned(),
             Self::Settings => "changing the sync settings".to_owned(),
+            Self::Anyway => "syncing anyway".to_owned(),
             Self::NotUploaded => "listing what is not uploaded".to_owned(),
             Self::Deletes => "deciding on the large delete".to_owned(),
         }
@@ -817,6 +834,7 @@ impl SyncAction<'_> {
             | Self::Resume
             | Self::Ignore
             | Self::Settings
+            | Self::Anyway
             | Self::NotUploaded
             | Self::Deletes => "",
         }
@@ -1108,7 +1126,7 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
         (Some("Unsupported"), Outbox | Pause | Resume | Ignore | NotUploaded | Deletes) => {
             "this folder is not connected to OneDrive, so nothing is uploaded from it".to_owned()
         }
-        (Some("Unsupported"), Settings) => {
+        (Some("Unsupported"), Settings | Anyway) => {
             "this folder is not connected to OneDrive, so it has no sync settings".to_owned()
         }
         (Some("NoRoot"), Outbox | Pause | Resume | Ignore | NotUploaded | Deletes) => {

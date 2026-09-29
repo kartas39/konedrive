@@ -111,6 +111,11 @@
     <method name="SetOnBattery">
       <arg name="choice" type="s" direction="in"/>
     </method>
+    <!-- Lifts the automatic hold (HeldBack) now, until the network's Metered,
+         UPower's OnBattery or the power profile changes, or the account's
+         PauseOnMetered / OnBattery does. Not kept across a restart. Refused
+         Unsupported for a folder not connected to OneDrive. -->
+    <method name="SyncAnyway"/>
     <property name="Path" type="s" access="read"/>
     <!-- none | listing | ready | no-interception | error -->
     <property name="State" type="s" access="read"/>
@@ -146,6 +151,13 @@
     <property name="PausedUntil" type="x" access="read"/>
     <!-- See SetThumbnails, SetPauseOnMetered and SetOnBattery; true, true
          and "power-saver" until they are called. -->
+    <!-- Why the account holds its background work back by itself: "metered"
+         (a metered connection and PauseOnMetered), "on-battery" (on battery
+         and OnBattery "pause"), "power-saver" (on battery in the power-saver
+         profile and OnBattery "power-saver"), or empty. It stops what Pause
+         stops, but is not the user's pause: Paused stays false, and it is
+         worked out again from the machine's state after a restart. -->
+    <property name="HeldBack" type="s" access="read"/>
     <property name="Thumbnails" type="b" access="read"/>
     <property name="PauseOnMetered" type="b" access="read"/>
     <property name="OnBattery" type="s" access="read"/>

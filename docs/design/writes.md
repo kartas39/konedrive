@@ -795,7 +795,8 @@ Per account: on `org.konedrive.UploadQueue`, `Changes`, `ConfirmDeletes`/`Restor
 `PendingBytes`, `BlockedCount`, `HeldCount`, `QuotaFull`, `QuotaWaitingCount`, `QuotaWaitingBytes`,
 `TooBigCount` (§6.4); on `org.konedrive.Folder`, `Pause`/`Resume`,
 `SetIgnorePatterns`, `Paused`, `PausedUntil` and `IgnorePatterns`, and the sync settings
-`SetThumbnails`, `SetPauseOnMetered`, `SetOnBattery`, `Thumbnails`, `PauseOnMetered`, `OnBattery`;
+`SetThumbnails`, `SetPauseOnMetered`, `SetOnBattery`, `Thumbnails`, `PauseOnMetered`, `OnBattery`,
+and the automatic hold's `HeldBack` and `SyncAnyway`;
 `Transfers.Uploads`;
 `Conflicts.MachineName`; and the Full local scan's `org.konedrive.LocalScan` — `State`, `Reason`,
 `Started`, `Directories`, `Files`, `Expected`, `Finished`, `Took` (§4.6);
@@ -819,11 +820,40 @@ read-write connection to it: every other part of the daemon sends it jobs over a
 waits for the answer (`store.call`), so a long store operation delays only the store's own queue,
 never the async runtime or the bus.
 
-**What runs is decided in one place** per account (`sync/running.rs`), from the user's pause and
-the thumbnail setting (desktop.md §8). The transfer pool, the outbox worker (before each row and
-between fragments), the poll and the replacements it runs, and the thumbnail filler all ask it,
-never the tree store; `Paused`, `PausedUntil` and the queue totals' "no time left" follow what it
-publishes. Thumbnails off stop only the thumbnail requests.
+**What runs is decided in one place** per account (`sync/running.rs`), from the user's pause, the
+automatic hold (below) and the thumbnail setting (desktop.md §8). The transfer pool, the outbox
+worker (before each row and between fragments), the poll and the replacements it runs, and the
+thumbnail filler all ask it, never the tree store; `Paused`, `PausedUntil`, `HeldBack`, the rows of
+`Changes()` and the queue totals' "no time left" follow what it publishes. A pause and a hold stop
+the same work (the table below); thumbnails off stop only the thumbnail requests.
+
+**The automatic hold** (issue #57) holds an account back by itself:
+
+- on a **metered connection** — NetworkManager's `Metered` on `/org/freedesktop/NetworkManager`
+  is `1` (yes) or `3` (guessed yes; limitations log F176) — while the account's `pause_on_metered`
+  is on (the default);
+- **on battery** — UPower's `OnBattery` on `/org/freedesktop/UPower` — as the account's
+  `on_battery` says: `sync`, the battery changes nothing; `power-saver` (the default), while the
+  power profile (`ActiveProfile` of `org.freedesktop.UPower.PowerProfiles`, or of the older
+  `net.hadess.PowerProfiles` when that is the name present) is `power-saver`; `pause`, always. On
+  mains power the battery never holds an account back, whatever the profile.
+
+One watcher for the daemon (`sync/conditions.rs`, as `sync/network.rs` is) reads the three
+sources at the start and follows each one's `PropertiesChanged`, and the hub tells every account,
+and any that joins later, what they say. A source that is missing or cannot be read is no reason
+to hold back, logged once at `info` (limitations log F175). `HeldBack` says why an account holds
+back now — `metered`, `on-battery`, `power-saver`, or empty; with a network and a battery reason
+at once, `metered`.
+
+The hold is not the user's pause: it is not written to the store, never changes `Paused` or
+`PausedUntil`, and does not outlast a restart — after one it is worked out again from the sources.
+A pause and a hold can both be on, and the account runs only when neither is: `Resume` alone does
+not start an account while it holds back, nor does the hold's end alone while it is paused. When
+the hold ends, what it held back goes at once, as after `Resume`. `SyncAnyway()` (`sync anyway`,
+the window's **Sync anyway**) lifts it now, until a source changes (the network's `Metered`,
+`OnBattery` or the profile) or the account's `pause_on_metered` / `on_battery` does; the hold is
+then worked out again. It is not kept across a restart, and a folder not connected to OneDrive
+refuses it `Unsupported`, as it does the settings.
 
 **Pause** stops the account's outbox, its poll (so no cycle and no replacement), its pinned
 downloads (the pool gives no slot but for opens) and its thumbnails;

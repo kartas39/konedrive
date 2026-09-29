@@ -191,6 +191,9 @@ enum SyncCmd {
     },
     /// Resume syncing now
     Resume,
+    /// Sync now though the account paused by itself (a metered connection, the battery),
+    /// until the connection, the battery or the power profile changes
+    Anyway,
     /// Show or change whether OneDrive's thumbnails of images and videos are downloaded.
     /// Off, Dolphin downloads a cloud-only file in full to show its preview while its
     /// previews are on
@@ -935,6 +938,17 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<
         SyncCmd::Resume => {
             explained(daemon, chosen, proxy, SyncAction::Resume, proxy.folder.resume().await).await?;
             println!("{tag}Resumed.");
+        }
+        SyncCmd::Anyway => {
+            let held = proxy.folder.held_back().await?;
+            explained(daemon, chosen, proxy, SyncAction::Anyway, proxy.folder.sync_anyway().await).await?;
+            match held.as_str() {
+                "" => println!("{tag}Not paused by itself: nothing to lift."),
+                reason => println!(
+                    "{tag}Syncing anyway ({}) until the connection, the battery or the power profile changes.",
+                    konedrivectl::held_text(reason)
+                ),
+            }
         }
         SyncCmd::Thumbnails { state } => match state.as_deref() {
             None => println!("{tag}{}", konedrivectl::thumbnails_text(proxy.folder.thumbnails().await?)),
