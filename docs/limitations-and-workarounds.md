@@ -2294,6 +2294,24 @@ application must never read zeros where real content should be.
   `InFlight`, as before), and a stop drops what is left in it: the next cycle finds those files
   again. LIMIT (chosen) · measured
   (`pool::tests::thirty_thousand_waiters_are_granted_in_order_and_one_gives_up`). Open.
+- **F170. The conflicts are looked over 200 at a time; the window shows 200** (`sync/activity.rs`,
+  `prune`, `PRUNE_BATCH`; `app/conflictmodel.cpp`, `app/qml/ConflictsPage.qml`; issue #39) — at
+  each cycle's end, and after a conflict is added or dismissed, the next 200 conflicts (a guess), in
+  the order of their rescued paths from where the last look stopped, are read on the store's
+  read-only connection, each `lstat`ed, and those gone dropped in one transaction; `ConflictCount`
+  is then what is on record. So with more than 200 conflicts, a rescued file removed by hand drops
+  off within a few cycles rather than at the next one, and `ConflictCount` can count it until
+  then. `Conflicts()` still looks at every one (3.4 ms at 2 000) and sets the count right. The
+  window's Conflicts page lists the newest 200 (a guess), then "and N more" with
+  `konedrivectl sync conflicts`; the rest cannot be reached from the window. Its model takes a new
+  list as one removal, one insertion and one change, or else one reset — a reset (several
+  scattered dismissals, a time that reorders the rows) takes the list back to its top. Both pages
+  have a fixed height, since a page waiting in the window's hidden holder would otherwise take the
+  whole list's height and build every row. LIMIT (chosen) · measured
+  (`sync::activity::tests::conflicts_are_looked_over_a_batch_at_a_time`,
+  `bench::the_conflicts_at_the_end_of_a_cycle`, the app's
+  `modelstest::thousandsOfConflictsChangeInOneStep`,
+  `dialogstest::thousandsSkippedAndConflictsAreAFewRows`). Open.
 ---
 
 ## 5. Provisional numbers
@@ -2328,6 +2346,7 @@ application must never read zeros where real content should be.
 | Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |
 | Thumbnail candidates looked at per query / per store call (`THUMB_PAGE`, `THUMB_SCAN`) | 500 / 5 000 | **guess** (`crates/konedrived/src/tree.rs`, issue #39) |
 | Replacements downloading at once (`REPLACE_WORKERS`) | 8, each also in a pool slot | **guess** (`crates/konedrived/src/sync/listing.rs`, issue #39) |
+| Conflicts looked over per cycle (`PRUNE_BATCH`) / rows the window's Skipped and Conflicts pages list / how often the Skipped page asks again | 200 / 200 / at most once a second | **guess** (`crates/konedrived/src/sync/activity.rs`, `app/qml/SkippedPage.qml`, `app/conflictmodel.h`; issue #39) |
 | Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
 | Shortest time between two `LocalBytes` walks | 5 s | **guess** |
 | Shortest time between two coalesced `PropertiesChanged` (counters, status, `Transfers`) | 250 ms, at most 4 signals a second | the design's four a second |

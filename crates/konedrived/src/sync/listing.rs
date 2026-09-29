@@ -498,8 +498,9 @@ impl Listing {
         self.on_store(turn, move |s| s.set_meta("last_checked", Some(&now.to_string()))).await?;
         self.ctx.state.update(|s| s.last_checked = now);
         // A conflict whose rescued file is gone drops off by itself (spec
-        // §16.1), whether or not anyone asks for the list. Not through
-        // `on_store`: the activity log takes the store's lock itself.
+        // §16.1), whether or not anyone asks for the list: a batch of them
+        // looked over each cycle (issue #39). Not through `on_store`: the
+        // activity log takes the store's lock itself.
         let (report, held) = (self.ctx.report.clone(), Arc::clone(turn));
         if let Err(e) = tokio::task::spawn_blocking(move || {
             let _turn = held;

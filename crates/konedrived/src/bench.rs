@@ -664,6 +664,9 @@ fn the_conflicts_at_the_end_of_a_cycle() {
     activity.attach(store.clone(), Path::new("/nowhere/OneDrive"));
     let (_, took) = timed("the conflicts looked over at the end of a cycle, 2 000", || activity.prune());
     assert_eq!(state.get().conflict_count, 2000);
+    // No budget: `Conflicts()` on the bus looks at every one.
+    let (all, _) = timed("Conflicts(), 2 000", || activity.conflicts().unwrap());
+    assert_eq!(all.len(), 2000);
     within("the conflicts at the end of a cycle", took, Duration::from_millis(50));
 }
 

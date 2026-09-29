@@ -415,7 +415,11 @@ as files of zeros — the cloud still has them.
 Each rescue is recorded as a **conflict** — time, original path, rescued path — in the tree store,
 and announced as a `conflict` activity event. `Conflicts()` lists them, `DismissConflict()` takes
 one off the list without touching the file, and a conflict whose rescued file no longer exists
-drops off by itself. `ConflictCount` feeds the tray's "needs attention" state. A conflict is
+drops off by itself: `Conflicts()` looks at every one, and each cycle's end looks over the next 200
+in the order of their rescued paths, round the list, dropping what is gone in one transaction
+(issue #39, limitations log F170). The window's Conflicts page shows the newest 200, then "and N
+more" with `konedrivectl sync conflicts`, and takes a changed list in one step rather than row by
+row. `ConflictCount` feeds the tray's "needs attention" state. A conflict is
 recorded when its reconcile commits; a reconcile that fails with an error records none of the
 rescues it already made — those files are in the rescue directory and the daemon's log (limitations
 log F28).

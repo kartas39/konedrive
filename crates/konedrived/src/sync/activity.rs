@@ -238,8 +238,20 @@ pub fn capped(events: Vec<Event>, per_kind: usize, root: &str) -> Vec<Event> {
 /// (`SyncSnapshot::root_path`): a download that ends after its folder was
 /// forgotten — `Hydrate` does not hold the lifecycle lock — records nothing,
 /// in memory or in the next folder's store.
+/// Conflicts looked over at the end of each cycle ([`Activity::prune`], a
+/// guess): the whole list, a batch at a time.
+pub const PRUNE_BATCH: usize = 200;
+
+/// Whether the file at `path` is still there, by `lstat`: anything but "not
+/// found" says it is.
+fn there(path: &str) -> bool {
+    !matches!(std::fs::symlink_metadata(path), Err(e) if e.kind() == io::ErrorKind::NotFound)
+}
+
 pub struct Activity {
     backing: Mutex<Backing>,
+    /// The rescued path the last [`prune`](Self::prune) stopped at.
+    pruned_to: Mutex<String>,
     added: broadcast::Sender<Event>,
     state: SyncStateHandle,
 }
@@ -260,7 +272,7 @@ fn inside(root: &str, path: &str) -> bool {
 impl Activity {
     pub fn new(state: SyncStateHandle) -> Self {
         let (added, _) = broadcast::channel(1024);
-        Self { backing: Mutex::new(Backing { store: None, memory: VecDeque::new() }), added, state }
+        Self { backing: Mutex::new(Backing { store: None, memory: VecDeque::new() }), pruned_to: Mutex::new(String::new()), added, state }
     }
 
     /// Every event recorded from now on, as it is recorded.
@@ -392,22 +404,19 @@ impl Activity {
     /// The conflicts whose rescued file is still there, newest first; the
     /// rest are dropped (a conflict whose file is gone drops off
     /// by itself). Whether it is there is asked with `lstat`, never an open.
-    /// `ConflictCount` follows. Blocking.
+    /// `ConflictCount` follows. Read on the store's read-only connection,
+    /// and what is gone dropped in one job (issue #39). Blocking.
     pub fn conflicts(&self) -> Result<Vec<ConflictRow>, TreeError> {
         let kept = {
             let backing = self.backing();
             let Some(store) = backing.store.as_ref() else {
                 return Ok(Vec::new());
             };
-            let rows = store.call_blocking(move |s| s.conflicts())?;
-            let mut kept = Vec::with_capacity(rows.len());
-            for row in rows {
-                match std::fs::symlink_metadata(&row.rescued) {
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        store.call_blocking(move |s| s.remove_conflict(&row.rescued))?;
-                    }
-                    _ => kept.push(row),
-                }
+            let rows = store.read_blocking(|s| s.conflicts())?;
+            let (kept, gone): (Vec<ConflictRow>, Vec<ConflictRow>) = rows.into_iter().partition(|row| there(&row.rescued));
+            if !gone.is_empty() {
+                let gone: Vec<String> = gone.into_iter().map(|row| row.rescued).collect();
+                store.call_blocking(move |s| s.remove_conflicts(&gone))?;
             }
             kept
         };
@@ -416,11 +425,41 @@ impl Activity {
         Ok(kept)
     }
 
-    /// [`conflicts`](Self::conflicts), for its side effects only: the rows
-    /// whose file is gone dropped, and `ConflictCount` set. Blocking.
+    /// Looks over the next [`PRUNE_BATCH`] conflicts, in the order of their
+    /// rescued paths from where the last look stopped — the whole list, a
+    /// batch at a time, round and round (issue #39) — drops those whose file
+    /// is gone in one job, and sets `ConflictCount` to what is left on
+    /// record. Blocking.
     pub fn prune(&self) {
-        if let Err(e) = self.conflicts() {
-            tracing::warn!("cannot read the conflicts: {e}");
+        let counted = {
+            let backing = self.backing();
+            let Some(store) = backing.store.as_ref() else { return };
+            let after = std::mem::take(&mut *self.pruned_to.lock().unwrap_or_else(|p| p.into_inner()));
+            let looked = {
+                let after = after.clone();
+                store.read_blocking(move |s| s.conflicts_after(&after, PRUNE_BATCH))
+            };
+            let batch = match looked {
+                Ok(batch) => batch,
+                Err(e) => {
+                    tracing::warn!("cannot read the conflicts: {e}");
+                    return;
+                }
+            };
+            if batch.len() == PRUNE_BATCH {
+                *self.pruned_to.lock().unwrap_or_else(|p| p.into_inner()) = batch[PRUNE_BATCH - 1].rescued.clone();
+            }
+            let gone: Vec<String> = batch.into_iter().filter(|row| !there(&row.rescued)).map(|row| row.rescued).collect();
+            store.call_blocking(move |s| {
+                if !gone.is_empty() {
+                    s.remove_conflicts(&gone)?;
+                }
+                s.conflict_count()
+            })
+        };
+        match counted {
+            Ok(count) => self.state.update(|s| s.conflict_count = u32::try_from(count).unwrap_or(u32::MAX)),
+            Err(e) => tracing::warn!("cannot read the conflicts: {e}"),
         }
     }
 
@@ -801,6 +840,39 @@ mod tests {
 
     fn event_at(kind: &str, path: &str) -> Event {
         Event { at: 1, kind: kind.into(), path: path.into(), detail: String::new() }
+    }
+
+    /// Issue #39: the end of a cycle looks over the conflicts a batch at a
+    /// time, round the list, dropping those whose file is gone; the list on
+    /// the bus still looks at every one.
+    #[test]
+    fn conflicts_are_looked_over_a_batch_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::tree::Store::new(crate::tree::TreeStore::open(&dir.path().join("tree.sqlite")).unwrap());
+        let rows: Vec<ConflictRow> = (0..450)
+            .map(|i| {
+                let rescued = dir.path().join(format!("c{i:03}"));
+                // Every tenth file is gone already.
+                if i % 10 != 0 {
+                    File::create(&rescued).unwrap();
+                }
+                ConflictRow { at: i, original: format!("/r/c{i:03}"), rescued: rescued.display().to_string(), kind: crate::tree::ConflictKind::Rescued }
+            })
+            .collect();
+        store.call_blocking(move |s| s.add_conflicts(&rows)).unwrap();
+        let state = SyncStateHandle::new(SyncSnapshot::default());
+        let activity = Activity::new(state.clone());
+        activity.attach(store.clone(), Path::new("/r"));
+        assert_eq!(state.get().conflict_count, 450 - 20, "the first batch of 200 dropped its 20 gone");
+        activity.prune();
+        assert_eq!(state.get().conflict_count, 450 - 40);
+        activity.prune();
+        assert_eq!(state.get().conflict_count, 450 - 45, "the last 50, and round again");
+        activity.prune();
+        assert_eq!(state.get().conflict_count, 405);
+        std::fs::remove_file(dir.path().join("c449")).unwrap();
+        assert_eq!(activity.conflicts().unwrap().len(), 404, "the bus's list looks at every one");
+        assert_eq!(state.get().conflict_count, 404);
     }
 
     /// The cap on its own: the first `per_kind` of each kind in
