@@ -932,7 +932,7 @@ application must never read zeros where real content should be.
   what it means for an update by id; `If-Match` is the guard. (2) No session request carries `fileSize`: a personal drive answers it with `400
   invalidRequest` (measured on the test account, 2026-09-25), although Microsoft documents it. A
   full drive therefore shows itself only when a fragment is refused. The test-account harness
-  still reads `fileSize` for its per-file cap, and needs the size from `Content-Range` instead. (3) An empty file's time is a second request (a `PATCH` after the `PUT`); when that one
+  takes a session's size from its first fragment's `Content-Range` (F130). (3) An empty file's time is a second request (a `PATCH` after the `PUT`); when that one
   fails, the file is up with OneDrive's time, and a warning is logged. (4) A `401` or `403` from an
   upload URL is read as the session having ended, like a `404`. The outbox worker
   (`konedrived/src/sync/upload/`) is its caller.
@@ -1880,16 +1880,24 @@ application must never read zeros where real content should be.
   hand** (`tests/write-account/`; `docs/design/writes.md` §12.1) — `konedrive-write-test` sends
   every request, konedrive's own `DriveClient`'s included, through a proxy on `127.0.0.1`. Its
   guard admits a write only once the drive both tokens reach is the one named, is on the gate's
-  list, has less than 1 GiB in use and fewer than 1000 items; then only a write naming an item
+  list, has less than 1 GiB in use and fewer than 1000 items (unless `--large-test-drive` says it
+  is a large test account: then its size is not checked, and a delta check starts from the feed's
+  latest link); then only a write naming an item
   inside `/konedrive-write-test/<run id>/` (learnt from OneDrive's own answers) or making that
   folder, within 64 MiB per file, 200 MiB and 500 requests per run. After its first refusal it
-  admits nothing but the cleanup. What it leaves: (1) reads are not confined: the preflight lists
+  admits nothing but the cleanup. A session request declares no `fileSize` (F39 (2)), so a
+  session's size is fixed by its first fragment's `Content-Range`, under the same per-file cap.
+  `--only placeholders` runs only the placeholder checks (F172), which need no read-only token.
+  What it leaves: (1) reads are not confined: the preflight lists
   the drive to count its items, and stops at 1000; (2) the top folder `/konedrive-write-test` stays,
   empty, after a run; (3) a run cut short from outside (Ctrl-C, a lost network, the machine off)
   leaves its run folder in OneDrive, to be deleted by hand; the cleanup keeps 10 of the 500 requests
   for itself; (4) the harness cannot tell where a token came from: that the write token is the test
   account's rests on the drive-id checks, the look of the drive, and the daemon handing out
-  `--read-write` tokens only for drives on the list; the token files are deleted by hand; (5) Graph
+  `--read-write` tokens only for drives on the list; the token files are deleted by hand. With
+  `--large-test-drive` the look of the drive no longer backs the list: a real account put on
+  `write_test_drive_ids` by mistake would be let through, and only the run-folder confinement
+  would stand between the run and its files; (5) Graph
   restores an item from the recycle bin only with `Files.ReadWrite.All`, which konedrive does not
   ask for, so unless the restore is allowed the recycle-bin check ends `LOOK`, to be confirmed on
   onedrive.live.com; (6) the delta check waits up to a minute for OneDrive's feed to catch up, and a
@@ -2333,37 +2341,74 @@ application must never read zeros where real content should be.
   (8)). A replacement's new inode is still recorded on its own. LIMIT (chosen) · measured. Open.
 - **F172. An open upload session holds its name with an empty file** (`drive/upload.rs`,
   `sync/upload/content.rs`, `steps.rs`, `cancel_session`; `tree/outbox/worker.rs`,
-  `upload_sessions`; write design §6.1; issue #47) — until a new file's session completes or is
-  cancelled, OneDrive keeps a 0-byte file under its name, created at the session's opening, and
-  refuses a second session of that name `409`. Measured on the test account: 25 of ~27 000 files
-  became false conflict copies when a throttled one-request upload was retried with a new session.
-  Now every session is persisted and listed before its first byte, a refused fragment goes again to
-  the same session, a session given up is cancelled (a failed cancel stays listed and is retried at
-  the worker's next runs), and a `409` whose name a listed session holds is never taken for another
-  file. What is left: (1) a new file's place is recorded before its session is opened (issue #84),
-  so a stop between the opening and its persisting leaves a placeholder this folder knows: a `409`
-  there from an empty file created at or after the recording (less 5 minutes for clocks, a guess)
-  deletes it and creates again. Whether OneDrive lets an open session's placeholder be deleted is
-  unmeasured: if it refuses, the placeholder holds the name until its session expires, and the row
-  waits (`upload-session-open`) — no copy. Someone else's empty file created at that name after the
-  recording, while the row still tries, would be taken for ours and deleted (to the recycle bin,
-  guarded by its eTag); a holder whose `createdDateTime` is not given is never taken for ours. A
-  session opened before sessions were listed or openings recorded is known to nothing, and still
-  makes a copy; the conflict copies the bug left are removed by hand. (2) The fake OneDrive models
-  the placeholder from the test account's observation and another client's report; the
-  placeholders stay out of its delta feed, and whether a session's expiry removes it in OneDrive is
-  assumed, not measured; a delete of a placeholder is modelled both ways (it ends the session, or
-  is refused `403`). (3) A refused fragment
-  is waited out in place, up to the throttle rule's attempts (5, each up to 5 minutes; a timeout
-  is up to 10 minutes per send): the row holds its transfer slot meanwhile. (4) A fragment is sent
-  again only after the session's status says it still expects it; a status request that is itself
-  refused ends the row's run with the session kept. (5) A session no row points at is cancelled at
-  the worker's runs, at most 32 per run, and after a failed cancel not before a minute; one left
-  when the account is forgotten (the store deleted) is not cancelled, and expires. (6) A cancel is a
+  `upload_sessions`; write design §6.1, §6.2; issues #47, #84, #89) — until a new file's session
+  completes or is cancelled, OneDrive keeps a 0-byte file under its name, created at the session's
+  opening, and refuses a second session of that name `409`. Measured on the test account: 25 of ~27
+  000 files became false conflict copies when a throttled one-request upload was retried with a new
+  session. Now every session is persisted and listed before its first byte, a refused fragment goes
+  again to the same session, a session given up is cancelled (a failed cancel stays listed and is
+  retried at the worker's next runs), and a `409` whose name a listed session holds is never taken
+  for another file. What is left: (1) a new file's place is recorded before its session is opened
+  (issue #84), so a stop between the opening and its persisting leaves a placeholder this folder
+  knows: a `409` there from an empty file the feed never listed, created in the record's window
+  (below; 5 minutes for clocks, a guess), deletes it and creates again. OneDrive lets an open
+  session's placeholder be deleted, and the delete ends the session (measured, below); if it ever
+  refuses, the row waits (`upload-session-open`) — no copy. Any answer to an opening but an unknown
+  outcome is certain and clears the record that attempt made (that request made no placeholder,
+  issue #89), so only a record carried from an earlier attempt whose outcome was unknown is ever
+  compared; once resolved (our placeholder deleted, the name free, or the holder not ours) it is
+  cleared. An unknown outcome, in the code, is an answer typed `Transient` — a timeout, a lost
+  connection, a `5xx` other than `503`, an answer that could not be read, a failure before sending —
+  or a stop. What remains: an empty file the feed never listed, made at that name within one
+  record's window — its first recording to its latest attempt with an unknown outcome, each widened
+  by 5 minutes (a time between two records' windows is in neither) — someone else's, or another
+  device's placeholder opened in that window — would be taken for ours and deleted (to the recycle
+  bin, guarded by its eTag; for a placeholder, the delete ends that device's upload); a record is
+  also kept while the holder's `createdDateTime` is not given (never taken for ours), a read or the
+  delete fails for now, or the delete is refused. A record whose row leaves the outbox (the file
+  removed or replaced) or moves to another place before it is resolved is kept without a row, so the
+  next row at that name still finds our placeholder; such a record goes after 7 days (a guess),
+  after which our placeholder, if still there, holds the name as an unknown one would. The records
+  at a place are cleared together once one is resolved: two rows taking one OneDrive name at once
+  (`a.txt` and `A.txt` on a case-sensitive filesystem) can clear each other's live record, and a
+  later retry of the other then waits (`name-held-by-an-upload`) instead of deleting its own
+  placeholder. A placeholder nothing here recorded — a session opened before sessions were listed or
+  openings recorded, one another device is filling, one abandoned by another device or an older
+  version — holds the name and the row waits (`name-held-by-an-upload`, issue #89) until the name is
+  free or the holder has content (then a real conflict is still a copy); it is never copied around
+  and never deleted. One abandoned is never removed by the daemon, so its row waits until it is
+  deleted outside konedrive (there is no command for it); how long OneDrive keeps an abandoned one
+  is not known (it outlived a day). Any empty file the delta feed has not listed is taken for a
+  placeholder: a real empty file made in OneDrive at that name is waited for too, for a cycle or
+  two, until the feed lists it (a holder in a listing being staged counts as listed). An empty local
+  file over another device's placeholder adopts it (both hashes are all zeros); if that session is
+  then cancelled or abandoned, the placeholder disappears with no delete in the feed, and the local
+  empty file stays linked to an item that no longer exists until it is next changed here. Only empty
+  files; left as is. The placeholders and the conflict copies the bug left before are removed by
+  hand. (2) What a placeholder is, measured on the test account (2026-09-29, `konedrive-write-test
+  --only placeholders`): an item of size 0 with a `file` facet whose quickXorHash is all zeros,
+  created by konedrive's application id, its `fileSystemInfo` time its creation time (the time the
+  session request sends is applied only when the last fragment completes, to the same item id);
+  readable by its name and in its folder's listing, never in the delta feed; a session request
+  carrying `description` is refused `400`, and `createdBy` names the application and the user, no
+  device, so nothing in OneDrive says which machine opened a session; nothing about it changes while
+  its session is used or left idle (eTag, cTag, times, size after a 10 MiB fragment and after 120 s;
+  no `pendingOperations`), so a live session's placeholder cannot be told from an abandoned one's; a
+  second session for its name and a rename onto it are refused `409 nameAlreadyExists`; a delete
+  with its eTag goes through, frees the name at once, and ends the session; a cancelled session's
+  placeholder is gone at once. Placeholders left by sessions abandoned on 2026-09-28 were still
+  there a day later: how long an abandoned one lives is not known. The fake OneDrive models a delete
+  of a placeholder both ways (it ends the session, or is refused `403`). (3) A refused fragment is
+  waited out in place, up to the throttle rule's attempts (5, each up to 5 minutes; a timeout is up
+  to 10 minutes per send): the row holds its transfer slot meanwhile. (4) A fragment is sent again
+  only after the session's status says it still expects it; a status request that is itself refused
+  ends the row's run with the session kept. (5) A session no row points at is cancelled at the
+  worker's runs, at most 32 per run, and after a failed cancel not before a minute; one left when
+  the account is forgotten (the store deleted) is not cancelled, and expires. (6) A cancel is a
   `DELETE` of our own session's URL, sent even while the account is read-only when a forced switch
   drops the rows; the worker's own look runs only while it may send. FRAGILE · measured with the
-  fake OneDrive (`sync::upload::tests::sessions::*`, `drive::upload::tests::a_throttled_fragment_…`),
-  reasoned for OneDrive itself (F131). Open.
+  fake OneDrive (`sync::upload::tests::sessions::*`,
+  `drive::upload::tests::a_throttled_fragment_…`), reasoned for OneDrive itself (F131). Open.
 - **F173. One quota per account, cached only at a read** (`quota.rs`, `account.rs`
   `keep_quota`, `sync/upload/space.rs`; issue #78) — `Account`'s `QuotaUsed`, `QuotaTotal`,
   `QuotaRemaining` and `QuotaState` are the only copy: the account's info and the uploads' space
@@ -2438,7 +2483,8 @@ application must never read zeros where real content should be.
 | `Retry-After` wait when Graph throttles (`429`/`503`) | default 10 s, capped at 300 s, 5 attempts before giving up | **guess** (`RetryPolicy::default`) |
 | Upload sessions given up, cancelled per run of the worker (`CANCELS_PER_LOOK`) / after a failed cancel, not again before (`CANCEL_AGAIN`) / cancelled at once by a forced switch to read-only (`DROPPED_CANCELS`) | 32 / 60 s / 256 | **guess** (issue #47, F172) |
 | The daemon's stop: the longest wait for the requests in flight (`STOP_BOUND`) | 10 s | **guess** (issue #84, F177) |
-| A placeholder taken for a recorded opening's: created at or after the recording less (`CLOCK_SLACK`) | 5 min | **guess** (issue #84, F172) |
+| A placeholder taken for a recorded opening's: created between the first recording and the latest attempt with an unknown outcome, each widened by (`CLOCK_SLACK`) | 5 min | **guess** (issues #84, #89, F172) |
+| A record of an opening whose row left, kept without a row (`OPENING_LEFT_KEEP`) | 7 days | **guess** (issue #89, F172) |
 | Upload fragment, and the most sent in one request (`CHUNK_SIZE`, `SMALL_UPLOAD_MAX`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
 | One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |
 | Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (write design §6.2) |

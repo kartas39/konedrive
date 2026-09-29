@@ -152,6 +152,11 @@ pub mod reason {
     /// sends, or one given up whose cancel has not gone through yet. Tried
     /// again later, never taken for someone else's file.
     pub const SESSION_OPEN: &str = "upload-session-open";
+    /// The row's name in OneDrive is held by an empty file the delta feed
+    /// never listed: an upload session's placeholder — another device's, or
+    /// one abandoned (issue #89). Never copied around, never deleted; tried
+    /// again later, until the name is free or the holder has content.
+    pub const NAME_HELD: &str = "name-held-by-an-upload";
 }
 
 /// The activity kinds the worker writes (§9; the outbox on the bus adds them to the D-Bus
@@ -222,6 +227,11 @@ pub(crate) async fn cancel_session(store: &Store, drive: &DriveClient, url: &str
 /// and pointed at by no row. Stops at the first cancel that fails; whether
 /// none did.
 pub async fn cancel_given_up(store: &Store, drive: &DriveClient, limit: usize) -> bool {
+    // With the look, the records of openings whose row left long ago go (issue #89).
+    let now = crate::sync::activity::unix_now();
+    if let Err(e) = store.call(move |s| s.upload_openings_expire(now)).await {
+        tracing::warn!("cannot expire the upload openings: {e}");
+    }
     let urls = match store.call(move |s| s.upload_sessions_given_up(limit)).await {
         Ok(urls) => urls,
         Err(e) => {
