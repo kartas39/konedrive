@@ -269,9 +269,11 @@ pub fn tree_moved_in_marked_and_uploaded(ctx: &Ctx, checks: &mut Checks) -> Resu
 /// fragments not sent yet, the whole content in OneDrive.
 pub fn stopped_mid_session_resumes(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     with_world(ctx, "session", Seed { folders: &[], files: &[] }, |w| {
-        // The second fragment is throttled for a minute: the session is half sent when the
-        // daemon goes.
-        w.graph.with(|c| c.throttle("PUT", "upload/", 1, 60, 1));
+        // The second fragment is throttled once: the session is half sent when the daemon
+        // goes. `Retry-After` is kept short: the account's transfer pool hands out no slot for
+        // the whole of it (#22), and it outlives a stop and start of the sync, so a minute
+        // would outlast the wait below.
+        w.graph.with(|c| c.throttle("PUT", "upload/", 1, 5, 1));
         let size = 25 * 1024 * 1024;
         let content: Vec<u8> = (0..size).map(|i| (i % 253) as u8).collect();
         let staged = w.base.join("big.bin");
