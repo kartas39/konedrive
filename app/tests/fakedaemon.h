@@ -228,6 +228,10 @@ class FakeFolder : public FakeFolderInterface
     Q_PROPERTY(QStringList IgnorePatterns READ ignorePatterns)
     Q_PROPERTY(bool Paused READ paused)
     Q_PROPERTY(qlonglong PausedUntil READ pausedUntil)
+    Q_PROPERTY(QString HeldBack READ heldBack)
+    Q_PROPERTY(bool Thumbnails READ thumbnails)
+    Q_PROPERTY(bool PauseOnMetered READ pauseOnMetered)
+    Q_PROPERTY(QString OnBattery READ onBattery)
 
 public:
     FakeFolder(QObject *parent, FakeSync *sync)
@@ -248,6 +252,10 @@ public:
                                   {QStringLiteral("IgnorePatterns"), QStringList{QStringLiteral("*.tmp"), QStringLiteral("~*")}},
                                   {QStringLiteral("Paused"), false},
                                   {QStringLiteral("PausedUntil"), QVariant::fromValue<qlonglong>(0)},
+                                  {QStringLiteral("HeldBack"), QString()},
+                                  {QStringLiteral("Thumbnails"), true},
+                                  {QStringLiteral("PauseOnMetered"), true},
+                                  {QStringLiteral("OnBattery"), QStringLiteral("power-saver")},
                               })
     {
     }
@@ -265,6 +273,10 @@ public:
     QStringList ignorePatterns() const { return value("IgnorePatterns").toStringList(); }
     bool paused() const { return value("Paused").toBool(); }
     qlonglong pausedUntil() const { return value("PausedUntil").toLongLong(); }
+    QString heldBack() const { return value("HeldBack").toString(); }
+    bool thumbnails() const { return value("Thumbnails").toBool(); }
+    bool pauseOnMetered() const { return value("PauseOnMetered").toBool(); }
+    QString onBattery() const { return value("OnBattery").toString(); }
 
 public Q_SLOTS:
     void Register(const QString &path, const QDBusMessage &message);
@@ -277,6 +289,11 @@ public Q_SLOTS:
     void Pause(uint seconds);
     void Resume();
     void SetIgnorePatterns(const QStringList &patterns, const QDBusMessage &message);
+    void SyncAnyway();
+    void SetThumbnails(bool on);
+    void SetPauseOnMetered(bool on);
+    /// Refused InvalidArgs for anything but sync, power-saver or pause, as the daemon does.
+    void SetOnBattery(const QString &choice, const QDBusMessage &message);
 };
 
 class FakeTransfers : public FakeFolderInterface
@@ -694,6 +711,35 @@ inline void FakeFolder::SetIgnorePatterns(const QStringList &patterns, const QDB
         }
     }
     set({{QStringLiteral("IgnorePatterns"), patterns}});
+}
+
+inline void FakeFolder::SyncAnyway()
+{
+    m_sync->calls << QStringLiteral("SyncAnyway");
+    set({{QStringLiteral("HeldBack"), QString()}});
+}
+
+inline void FakeFolder::SetThumbnails(bool on)
+{
+    m_sync->calls << QStringLiteral("SetThumbnails:") + (on ? QStringLiteral("on") : QStringLiteral("off"));
+    set({{QStringLiteral("Thumbnails"), on}});
+}
+
+inline void FakeFolder::SetPauseOnMetered(bool on)
+{
+    m_sync->calls << QStringLiteral("SetPauseOnMetered:") + (on ? QStringLiteral("on") : QStringLiteral("off"));
+    set({{QStringLiteral("PauseOnMetered"), on}});
+}
+
+inline void FakeFolder::SetOnBattery(const QString &choice, const QDBusMessage &message)
+{
+    m_sync->calls << QStringLiteral("SetOnBattery:") + choice;
+    if (choice != QLatin1String("sync") && choice != QLatin1String("power-saver") && choice != QLatin1String("pause")) {
+        message.setDelayedReply(true);
+        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("not a choice: ") + choice));
+        return;
+    }
+    set({{QStringLiteral("OnBattery"), choice}});
 }
 
 inline KonedriveOutboxList FakeUploadQueue::Changes(uint limit)
