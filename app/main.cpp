@@ -87,7 +87,7 @@ int main(int argc, char *argv[])
 
     QQmlApplicationEngine engine;
     KLocalization::setupLocalizedContext(&engine);
-    engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+    engine.loadFromModule("org.konedrive.app.window", "Main");
     if (engine.rootObjects().isEmpty()) {
         return 1;
     }

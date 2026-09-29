@@ -4,8 +4,6 @@ import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.konedrive.app
 
-import "qml"
-
 /// The window: pages chosen from a sidebar on the left, which folds into a
 /// drawer behind a menu button when the window is narrow. The account
 /// switcher heads the sidebar; the pages under it show the account chosen

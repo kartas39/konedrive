@@ -74,8 +74,16 @@ find_package(Qt6 ${QT_MIN_VERSION} REQUIRED COMPONENTS Qml Quick QuickControls2)
 find_package(KF6 ${KF_MIN_VERSION} REQUIRED COMPONENTS CoreAddons I18n Kirigami)
 find_package(KF6KirigamiAddons 1.0 REQUIRED)
 
-add_executable(konedrive main.cpp)
-target_compile_definitions(konedrive PRIVATE KONEDRIVE_VERSION="${KONEDRIVE_VERSION}")
+# The window's QML, a module of its own that qmlcachegen compiles into the
+# binary: the window never runs a unit from Qt's disk cache, which trusts a
+# resource file's unit for as long as the executable's modification time is
+# unchanged, and a package's is that of its changelog day (docs/limitations-
+# and-workarounds.md, R12). The C++ types stay registered imperatively in
+# org.konedrive.app (qmlregistration.h), which the files import; qmlcachegen
+# cannot see them, and compiles what uses them to bytecode only.
+qt_policy(SET QTP0001 NEW)
+qt_policy(SET QTP0004 NEW)
+qt_add_library(konedrive_window STATIC)
 set(KONEDRIVE_QML
     Main.qml
     qml/StatusPage.qml
@@ -86,9 +94,18 @@ set(KONEDRIVE_QML
     qml/AccountPage.qml
     qml/SettingsPage.qml
     qml/AccountSwitcher.qml)
-qt_add_resources(konedrive "konedrive_qml" PREFIX "/" FILES ${KONEDRIVE_QML})
+qt_add_qml_module(konedrive_window
+    URI org.konedrive.app.window
+    VERSION 1.0
+    OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/qml/org/konedrive/app/window
+    QML_FILES ${KONEDRIVE_QML})
+target_link_libraries(konedrive_window PRIVATE Qt6::Qml Qt6::Quick)
+
+add_executable(konedrive main.cpp)
+target_compile_definitions(konedrive PRIVATE KONEDRIVE_VERSION="${KONEDRIVE_VERSION}")
 target_link_libraries(konedrive PRIVATE
     konedrive_core
+    konedrive_windowplugin
     Qt6::Qml Qt6::Quick Qt6::QuickControls2 Qt6::Widgets
     KF6::CoreAddons KF6::I18n KF6::I18nQml KF6::DBusAddons KF6::WindowSystem)
 install(TARGETS konedrive ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
@@ -133,8 +150,14 @@ if(BUILD_TESTING)
 
     # Loads Main.qml as the app does, to see what its dialogs act on.
     konedrive_test(dialogstest)
-    target_link_libraries(dialogstest PRIVATE Qt6::Qml Qt6::Quick Qt6::QuickControls2 KF6::I18nQml)
-    qt_add_resources(dialogstest "dialogstest_qml" PREFIX "/" FILES ${KONEDRIVE_QML})
+    target_link_libraries(dialogstest PRIVATE konedrive_windowplugin Qt6::Qml Qt6::Quick Qt6::QuickControls2 KF6::I18nQml)
+
+    # Loads the window with Qt's disk cache on, in an empty cache of its own:
+    # the window's files leave no unit there, since they are in the binary.
+    konedrive_test(qmlcachetest)
+    target_link_libraries(qmlcachetest PRIVATE konedrive_windowplugin Qt6::Qml Qt6::Quick Qt6::QuickControls2 KF6::I18nQml)
+    # A file outside the module, so the test sees the cache written at all.
+    qt_add_resources(qmlcachetest "qmlcachetest_qml" PREFIX "/" FILES tests/CacheProbe.qml)
 
     # Starts the real program twice on the private bus.
     konedrive_test(singleinstancetest)
