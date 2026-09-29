@@ -113,7 +113,7 @@ pub struct Config {
     /// Every account, in the order it was added.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountConfig>,
-    /// `[transfers]`: the transfer pools' emergency ceiling and large-file limit. Not in the
+    /// `[transfers]`: the transfer pools' emergency ceiling and large-stream limit. Not in the
     /// window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfers: Option<TransfersConfig>,
@@ -127,8 +127,10 @@ pub struct TransfersConfig {
     /// 1–256.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<i64>,
-    /// Large files ([`crate::pool::LARGE_FROM`] and up) one account transfers at once;
-    /// [`crate::pool::DEFAULT_LARGE`] when missing. Clamped into 1…`max`.
+    /// The streams of large sync transfers (files of [`crate::pool::LARGE_FROM`] and up; a
+    /// download in parts runs several) one account runs at once; a file being opened is outside
+    /// the limit and its count (issue #50). [`crate::pool::DEFAULT_LARGE`] when missing.
+    /// Clamped into 1…`max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub large: Option<i64>,
 }
@@ -147,7 +149,8 @@ impl Config {
         clamped
     }
 
-    /// Each account's large-file limit: `[transfers] large`, clamped into 1…the ceiling
+    /// Each account's large-stream limit (the streams of large sync transfers, never an
+    /// open): `[transfers] large`, clamped into 1…the ceiling
     /// ([`transfer_ceiling`](Self::transfer_ceiling)) with a warning when it is outside, or
     /// [`crate::pool::DEFAULT_LARGE`] (never above the ceiling).
     pub fn transfer_large(&self) -> usize {

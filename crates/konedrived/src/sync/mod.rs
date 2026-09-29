@@ -263,7 +263,7 @@ async fn serve(
             // Only what is shown: the name the kernel has for
             // the file right now, read before `answer_request` takes the fd.
             let shown = fd_path(&fd);
-            let tracked = Tracked::new(Arc::clone(&source), report.transfers.clone(), shown.clone());
+            let tracked = Tracked::opening(Arc::clone(&source), report.transfers.clone(), shown.clone());
             // A panic anywhere in the fill — including inside a
             // `ContentSource` we did not write — must not become an
             // unanswerable event in the kernel. Unwinding out of here would
@@ -609,9 +609,10 @@ pub struct SyncSnapshot {
     pub too_big_count: u32,
     /// Their size: not on the bus, but taken off what is left to upload ([`totals`]).
     pub too_big_bytes: u64,
-    /// `DownloadSpeed`, `UploadSpeed`, `ActiveDownloads`, `ActiveUploads`, `PoolSize`,
-    /// `PoolCeiling`, `LargeStreams`, `LargeStreamLimit`, `RetryAfter`: the account's transfer
-    /// pool, once a second while anything moves or a `Retry-After` runs.
+    /// `DownloadSpeed`, `UploadSpeed`, `PoolInUse`, `PoolSize`, `PoolCeiling`, `LargeStreams`,
+    /// `LargeStreamLimit`, `RetryAfter`: the account's transfer pool, once a second while
+    /// anything moves or a `Retry-After` runs. `ActiveDownloads`, `ActiveUploads` and
+    /// `LargeFiles` count the files of `Transfers.Downloads` and `Uploads` instead (issue #50).
     pub throughput: crate::pool::Throughput,
     /// The pinned files waiting to download (not those under way), and their size
     /// ([`pin::Pins`]).
@@ -3125,8 +3126,13 @@ impl SyncService {
         };
 
         let fd: std::os::fd::OwnedFd = file.into();
-        // Shown in `Transfers` while it downloads.
-        let tracked = Tracked::new(source, self.report.transfers.clone(), shown.clone());
+        // Shown in `Transfers.Downloads` while it downloads; `Hydrate` (an open, for the pool)
+        // as a file being opened.
+        let tracked = if class == Some(crate::pool::Class::Open) {
+            Tracked::opening(source, self.report.transfers.clone(), shown.clone())
+        } else {
+            Tracked::new(source, self.report.transfers.clone(), shown.clone())
+        };
         let filled = match &split {
             Some(split) => source::hydrate_in_parts(fd, &tracked, clearance.as_ref(), split).await,
             None => source::hydrate_with(fd, &tracked, clearance.as_ref()).await,
@@ -3597,6 +3603,13 @@ impl SyncService {
     /// `Transfers`: every download under way, as (path, bytes done, total).
     pub fn transfers(&self) -> Vec<(String, u64, u64)> {
         self.report.transfers.list().into_iter().map(|t| (t.path, t.done, t.total)).collect()
+    }
+
+    /// `Transfers.LargeFiles` (issue #50): the large files the sync moves now, each once, the
+    /// files being opened left out ([`activity::large_files`]).
+    pub fn large_files(&self) -> u32 {
+        let downloads = self.report.transfers.subscribe().borrow().clone();
+        activity::large_files(&downloads, &self.state.get().uploads)
     }
 
     /// The file's own state, or `not-managed` for anything that is not a

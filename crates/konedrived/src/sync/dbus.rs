@@ -259,16 +259,31 @@ impl Transfers {
         self.service.state().get().throughput.up_speed
     }
 
-    /// Transfer slots held by downloads now.
+    /// Files downloading now: the entries of `Downloads`, each file once however many
+    /// streams it runs (issue #50).
     #[zbus(property)]
     async fn active_downloads(&self) -> u32 {
-        self.service.state().get().throughput.active_down
+        u32::try_from(self.service.transfers().len()).unwrap_or(u32::MAX)
     }
 
-    /// Transfer slots held by uploads now.
+    /// Files uploading now: the entries of `Uploads`.
     #[zbus(property)]
     async fn active_uploads(&self) -> u32 {
-        self.service.state().get().throughput.active_up
+        u32::try_from(self.service.state().get().uploads.len()).unwrap_or(u32::MAX)
+    }
+
+    /// Every slot of the pool held now, all four classes, the opens' reserve included: may be
+    /// above `PoolSize` (issue #50).
+    #[zbus(property)]
+    async fn pool_in_use(&self) -> u32 {
+        self.service.state().get().throughput.in_use
+    }
+
+    /// The large files (100 MiB and up) the sync moves now, each once however many streams it
+    /// runs; files being opened left out (issue #50).
+    #[zbus(property)]
+    async fn large_files(&self) -> u32 {
+        self.service.large_files()
     }
 
     /// The size of the account's transfer pool now.
@@ -283,13 +298,15 @@ impl Transfers {
         self.service.state().get().throughput.ceiling
     }
 
-    /// Large transfers (100 MiB and up) under way now, files being opened included.
+    /// The streams of large sync transfers (100 MiB and up) under way now; a file being opened
+    /// is never one.
     #[zbus(property)]
     async fn large_streams(&self) -> u32 {
         self.service.state().get().throughput.large
     }
 
-    /// How many large transfers may run at once (`[transfers] large` in `config.toml`).
+    /// How many streams of large sync transfers may run at once (`[transfers] large` in
+    /// `config.toml`).
     #[zbus(property)]
     async fn large_stream_limit(&self) -> u32 {
         self.service.state().get().throughput.large_limit
@@ -678,6 +695,10 @@ pub(crate) struct Coalesced {
     blocked_count: u32,
     held_count: u32,
     uploads: Vec<(String, u64, u64)>,
+    /// Files moving each way now, and the large files among them the sync moves (issue #50).
+    active_downloads: u32,
+    active_uploads: u32,
+    large_files: u32,
     space_waiting_count: u32,
     space_waiting_bytes: u64,
     too_big_count: u32,
@@ -705,6 +726,9 @@ impl Coalesced {
             blocked_count: s.blocked_count,
             held_count: s.held_count,
             uploads: s.uploads.clone(),
+            active_downloads: u32::try_from(transfers.len()).unwrap_or(u32::MAX),
+            active_uploads: u32::try_from(s.uploads.len()).unwrap_or(u32::MAX),
+            large_files: super::activity::large_files(transfers, &s.uploads),
             space_waiting_count: s.space_waiting_count,
             space_waiting_bytes: s.space_waiting_bytes,
             too_big_count: s.too_big_count,
@@ -779,8 +803,10 @@ impl Coalesced {
             }
         }
         for (name, before, after) in [
-            ("ActiveDownloads", was.active_down, now.active_down),
-            ("ActiveUploads", was.active_up, now.active_up),
+            ("ActiveDownloads", old.active_downloads, self.active_downloads),
+            ("ActiveUploads", old.active_uploads, self.active_uploads),
+            ("LargeFiles", old.large_files, self.large_files),
+            ("PoolInUse", was.in_use, now.in_use),
             ("PoolSize", was.size, now.size),
             ("PoolCeiling", was.ceiling, now.ceiling),
             ("LargeStreams", was.large, now.large),

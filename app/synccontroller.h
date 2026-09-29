@@ -80,16 +80,20 @@ class SyncController : public QObject
     Q_PROPERTY(QString machineName READ machineName NOTIFY syncChanged)
     /// Uploads under way (Transfers.Uploads).
     Q_PROPERTY(TransferModel *uploads READ uploads CONSTANT)
-    /// The account's transfer pool (Transfers' DownloadSpeed, UploadSpeed, ActiveDownloads,
-    /// ActiveUploads, PoolSize, PoolCeiling, LargeStreams, LargeStreamLimit, RetryAfter): bytes a
-    /// second, slots held, the pool now, the large transfers under way and their limit, and
-    /// the seconds left of OneDrive's Retry-After (0: none).
+    /// The account's transfers and pool (Transfers' DownloadSpeed, UploadSpeed, ActiveDownloads,
+    /// ActiveUploads, PoolInUse, PoolSize, PoolCeiling, LargeFiles, LargeStreams,
+    /// LargeStreamLimit, RetryAfter): bytes a second, the files moving each way now (each
+    /// once), the slots in use (may be above the size), the pool now and its ceiling, the large
+    /// files the sync moves, the streams of large sync transfers and their limit
+    /// (largeTransfers, largeLimit), and the seconds left of OneDrive's Retry-After (0: none).
     Q_PROPERTY(qulonglong downloadSpeed READ downloadSpeed NOTIFY syncChanged)
     Q_PROPERTY(qulonglong uploadSpeed READ uploadSpeed NOTIFY syncChanged)
     Q_PROPERTY(uint activeDownloads READ activeDownloads NOTIFY syncChanged)
     Q_PROPERTY(uint activeUploads READ activeUploads NOTIFY syncChanged)
+    Q_PROPERTY(uint poolInUse READ poolInUse NOTIFY syncChanged)
     Q_PROPERTY(uint poolSize READ poolSize NOTIFY syncChanged)
     Q_PROPERTY(uint poolCeiling READ poolCeiling NOTIFY syncChanged)
+    Q_PROPERTY(uint largeFiles READ largeFiles NOTIFY syncChanged)
     Q_PROPERTY(uint largeTransfers READ largeTransfers NOTIFY syncChanged)
     Q_PROPERTY(uint largeLimit READ largeLimit NOTIFY syncChanged)
     Q_PROPERTY(uint retryAfter READ retryAfter NOTIFY syncChanged)
@@ -189,8 +193,10 @@ public:
     qulonglong uploadSpeed() const { return m_uploadSpeed; }
     uint activeDownloads() const { return m_activeDownloads; }
     uint activeUploads() const { return m_activeUploads; }
+    uint poolInUse() const { return m_poolInUse; }
     uint poolSize() const { return m_poolSize; }
     uint poolCeiling() const { return m_poolCeiling; }
+    uint largeFiles() const { return m_largeFiles; }
     uint largeTransfers() const { return m_largeTransfers; }
     uint largeLimit() const { return m_largeLimit; }
     uint retryAfter() const { return m_retryAfter; }
@@ -359,8 +365,10 @@ private:
     qulonglong m_uploadSpeed = 0;
     uint m_activeDownloads = 0;
     uint m_activeUploads = 0;
+    uint m_poolInUse = 0;
     uint m_poolSize = 0;
     uint m_poolCeiling = 0;
+    uint m_largeFiles = 0;
     uint m_largeTransfers = 0;
     uint m_largeLimit = 0;
     uint m_retryAfter = 0;

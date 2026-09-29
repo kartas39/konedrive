@@ -289,8 +289,10 @@ class FakeTransfers : public FakeFolderInterface
     Q_PROPERTY(qulonglong UploadSpeed READ uploadSpeed)
     Q_PROPERTY(uint ActiveDownloads READ activeDownloads)
     Q_PROPERTY(uint ActiveUploads READ activeUploads)
+    Q_PROPERTY(uint PoolInUse READ poolInUse)
     Q_PROPERTY(uint PoolSize READ poolSize)
     Q_PROPERTY(uint PoolCeiling READ poolCeiling)
+    Q_PROPERTY(uint LargeFiles READ largeFiles)
     Q_PROPERTY(uint LargeStreams READ largeStreams)
     Q_PROPERTY(uint LargeStreamLimit READ largeStreamLimit)
     Q_PROPERTY(uint RetryAfter READ retryAfter)
@@ -313,8 +315,10 @@ public:
                                   {QStringLiteral("UploadSpeed"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("ActiveDownloads"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("ActiveUploads"), QVariant::fromValue<uint>(0)},
+                                  {QStringLiteral("PoolInUse"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("PoolSize"), QVariant::fromValue<uint>(16)},
                                   {QStringLiteral("PoolCeiling"), QVariant::fromValue<uint>(64)},
+                                  {QStringLiteral("LargeFiles"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("LargeStreams"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("LargeStreamLimit"), QVariant::fromValue<uint>(4)},
                                   {QStringLiteral("RetryAfter"), QVariant::fromValue<uint>(0)},
@@ -336,8 +340,10 @@ public:
     qulonglong uploadSpeed() const { return value("UploadSpeed").toULongLong(); }
     uint activeDownloads() const { return value("ActiveDownloads").toUInt(); }
     uint activeUploads() const { return value("ActiveUploads").toUInt(); }
+    uint poolInUse() const { return value("PoolInUse").toUInt(); }
     uint poolSize() const { return value("PoolSize").toUInt(); }
     uint poolCeiling() const { return value("PoolCeiling").toUInt(); }
+    uint largeFiles() const { return value("LargeFiles").toUInt(); }
     uint largeStreams() const { return value("LargeStreams").toUInt(); }
     uint largeStreamLimit() const { return value("LargeStreamLimit").toUInt(); }
     uint retryAfter() const { return value("RetryAfter").toUInt(); }

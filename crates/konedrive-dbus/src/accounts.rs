@@ -213,17 +213,24 @@ pub trait Transfers {
     fn download_speed(&self) -> zbus::Result<u64>;
     #[zbus(property)]
     fn upload_speed(&self) -> zbus::Result<u64>;
-    /// Transfer slots held by downloads and by uploads now.
+    /// Files downloading and uploading now: the entries of `downloads` and `uploads`.
     #[zbus(property)]
     fn active_downloads(&self) -> zbus::Result<u32>;
     #[zbus(property)]
     fn active_uploads(&self) -> zbus::Result<u32>;
+    /// Every slot of the pool held now, the opens' reserve included (may be above the size).
+    #[zbus(property)]
+    fn pool_in_use(&self) -> zbus::Result<u32>;
     /// The account's transfer pool now, and its ceiling.
     #[zbus(property)]
     fn pool_size(&self) -> zbus::Result<u32>;
     #[zbus(property)]
     fn pool_ceiling(&self) -> zbus::Result<u32>;
-    /// Large transfers (100 MiB and up) under way now, and how many may run at once.
+    /// The large files (100 MiB and up) the sync moves now, each once; files being opened
+    /// left out.
+    #[zbus(property)]
+    fn large_files(&self) -> zbus::Result<u32>;
+    /// The streams of large sync transfers under way now, and how many may run at once.
     #[zbus(property)]
     fn large_streams(&self) -> zbus::Result<u32>;
     #[zbus(property)]

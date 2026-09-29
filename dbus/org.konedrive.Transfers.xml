@@ -17,22 +17,29 @@
     </property>
     <!-- The account's transfers, published once a second while anything
          moves or OneDrive's Retry-After runs: bytes a second downloaded and
-         uploaded (the average of the last 3 s), the transfer slots held by
-         downloads (files being opened, pinned files, replacements,
-         thumbnails) and by uploads, and the account's transfer pool: how many
-         requests it has in flight at most now, which adapts to OneDrive's
-         throttling, and its ceiling ([transfers] max in config.toml); the
-         large transfers (files of 100 MiB and up, files being opened
-         included) under way and how many may run at once ([transfers] large);
-         and the seconds left of OneDrive's Retry-After wait, during which no
-         transfer starts (0 when there is none). Coalesced with the
-         counters. -->
+         uploaded (the average of the last 3 s); the files downloading and
+         uploading now: the entries of Downloads and of Uploads, each file
+         once however many streams it runs (no thumbnail is a file
+         downloading); and the account's transfer pool: every slot held now
+         (PoolInUse: downloads, uploads, metadata operations and files being
+         opened, the opens' reserve included, so it may be above the size),
+         how many requests it has in flight at most now (PoolSize), which
+         adapts to OneDrive's throttling, and its ceiling ([transfers] max in
+         config.toml); the large files (100 MiB and up) the sync moves now,
+         each once, files being opened left out (LargeFiles); the streams of
+         large sync transfers under way (a download in parts runs several; a
+         file being opened is never one) and how many may run at once
+         ([transfers] large); and the seconds left of OneDrive's Retry-After
+         wait, during which no transfer starts (0 when there is none).
+         Coalesced with the counters. -->
     <property name="DownloadSpeed" type="t" access="read"/>
     <property name="UploadSpeed" type="t" access="read"/>
     <property name="ActiveDownloads" type="u" access="read"/>
     <property name="ActiveUploads" type="u" access="read"/>
+    <property name="PoolInUse" type="u" access="read"/>
     <property name="PoolSize" type="u" access="read"/>
     <property name="PoolCeiling" type="u" access="read"/>
+    <property name="LargeFiles" type="u" access="read"/>
     <property name="LargeStreams" type="u" access="read"/>
     <property name="LargeStreamLimit" type="u" access="read"/>
     <property name="RetryAfter" type="u" access="read"/>

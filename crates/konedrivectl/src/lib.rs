@@ -1428,21 +1428,26 @@ pub struct QueueTotals {
     pub time_left: u32,
 }
 
-/// What `sync transfers` says first: the account's transfer pool (`Transfers`'
-/// `ActiveDownloads`, `DownloadSpeed`, `ActiveUploads`, `UploadSpeed`, `PoolSize`,
-/// `PoolCeiling`, `LargeStreams`, `LargeStreamLimit`, `RetryAfter`) and the queue totals.
+/// What `sync transfers` says first: the files moving each way and the account's transfer
+/// pool (`Transfers`' `ActiveDownloads`, `DownloadSpeed`, `ActiveUploads`, `UploadSpeed`,
+/// `PoolInUse`, `PoolSize`, `LargeFiles`, `LargeStreams`, `LargeStreamLimit`, `RetryAfter`)
+/// and the queue totals.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransferSummary {
+    /// Files downloading and uploading now, each once.
     pub active_downloads: u32,
     pub download_speed: u64,
     pub downloads: QueueTotals,
     pub active_uploads: u32,
     pub upload_speed: u64,
     pub uploads: QueueTotals,
+    /// Slots held now, and the pool's size: in use may be above the size.
+    pub pool_in_use: u32,
     pub pool_size: u32,
-    pub pool_ceiling: u32,
-    pub large_transfers: u32,
-    pub large_limit: u32,
+    /// Large files the sync moves now; the streams of large sync transfers, and their limit.
+    pub large_files: u32,
+    pub large_streams: u32,
+    pub large_stream_limit: u32,
     /// Seconds left of OneDrive's `Retry-After`; 0 when there is none.
     pub retry_after: u32,
 }
@@ -1466,20 +1471,24 @@ pub async fn transfer_summary(proxy: &FolderProxies<'_>) -> zbus::Result<Transfe
             done_bytes: proxy.transfers.upload_done_bytes().await?,
             time_left: proxy.transfers.upload_time_left().await?,
         },
+        pool_in_use: proxy.transfers.pool_in_use().await?,
         pool_size: proxy.transfers.pool_size().await?,
-        pool_ceiling: proxy.transfers.pool_ceiling().await?,
-        large_transfers: proxy.transfers.large_streams().await?,
-        large_limit: proxy.transfers.large_stream_limit().await?,
+        large_files: proxy.transfers.large_files().await?,
+        large_streams: proxy.transfers.large_streams().await?,
+        large_stream_limit: proxy.transfers.large_stream_limit().await?,
         retry_after: proxy.transfers.retry_after().await?,
     })
 }
 
-/// The pool's line, as the window shows it too: "Pool: 15 of 64 (large: 3 of 4)", with
-/// "— OneDrive asked to wait 30 s" during a `Retry-After`.
+/// The pool's line, as the window shows it too (issue #50): the slots in use of the pool's
+/// size, then the large files and their streams — "Pool: 7 of 32 · large files: 1 (4 of 4
+/// streams)" — with "— OneDrive asked to wait 30 s" during a `Retry-After`. In use may be
+/// above the size (an open's reserve; slots still held after a throttle halved the pool), and
+/// is shown as it is.
 pub fn pool_text(summary: &TransferSummary) -> String {
     let mut line = format!(
-        "Pool: {} of {} (large: {} of {})",
-        summary.pool_size, summary.pool_ceiling, summary.large_transfers, summary.large_limit
+        "Pool: {} of {} · large files: {} ({} of {} streams)",
+        summary.pool_in_use, summary.pool_size, summary.large_files, summary.large_streams, summary.large_stream_limit
     );
     if summary.retry_after > 0 {
         line.push_str(&format!(" — OneDrive asked to wait {} s", summary.retry_after));
@@ -2266,6 +2275,8 @@ mod tests {
         assert_eq!(quota_text("", 0, false), "");
     }
 
+    /// The pool line (issue #50): the slots in use of the pool's size, then the large files
+    /// and their streams; in use above the size is shown as it is.
     #[test]
     fn transfers_start_with_the_pool_summary() {
         let summary = super::TransferSummary {
@@ -2273,20 +2284,23 @@ mod tests {
             download_speed: 8_808_038,
             active_uploads: 3,
             upload_speed: 1_258_291,
-            pool_size: 15,
-            pool_ceiling: 64,
-            large_transfers: 3,
-            large_limit: 4,
+            pool_in_use: 7,
+            pool_size: 32,
+            large_files: 1,
+            large_streams: 4,
+            large_stream_limit: 4,
             retry_after: 0,
             ..Default::default()
         };
         let text = super::transfers_text(&summary, &[], &[]);
         assert_eq!(
             text,
-            "Downloading: 12 now, 8.4 MiB/s\nUploading:    3 now, 1.2 MiB/s\nPool: 15 of 64 (large: 3 of 4)\nNothing is downloading or uploading.\n"
+            "Downloading: 12 now, 8.4 MiB/s\nUploading:    3 now, 1.2 MiB/s\nPool: 7 of 32 · large files: 1 (4 of 4 streams)\nNothing is downloading or uploading.\n"
         );
         let waiting = super::TransferSummary { retry_after: 30, ..summary };
-        assert_eq!(super::pool_text(&waiting), "Pool: 15 of 64 (large: 3 of 4) — OneDrive asked to wait 30 s");
+        assert_eq!(super::pool_text(&waiting), "Pool: 7 of 32 · large files: 1 (4 of 4 streams) — OneDrive asked to wait 30 s");
+        let over = super::TransferSummary { pool_in_use: 18, pool_size: 16, ..summary };
+        assert!(super::pool_text(&over).starts_with("Pool: 18 of 16 · "), "{}", super::pool_text(&over));
     }
 
     /// Issue #16: each summary line says what is left — files down, changes up — its size and

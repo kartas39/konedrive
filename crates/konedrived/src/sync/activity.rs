@@ -481,13 +481,25 @@ impl Activity {
     }
 }
 
-/// One download under way, as `Transfers` publishes it: (full path, bytes
-/// done, bytes total).
+/// One download under way, as `Transfers.Downloads` publishes it: (full path,
+/// bytes done, bytes total); and whether it is a file being opened (or
+/// `Hydrate`), which `LargeFiles` leaves out (issue #50).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Transfer {
     pub path: String,
     pub done: u64,
     pub total: u64,
+    pub open: bool,
+}
+
+/// `Transfers.LargeFiles` (issue #50): the large files ([`LARGE_FROM`](crate::pool::LARGE_FROM)
+/// and up) the sync moves now, each once however many streams it runs — the downloads of that
+/// size but the files being opened, and the uploads of that size.
+pub fn large_files(downloads: &BTreeMap<u64, Transfer>, uploads: &[(String, u64, u64)]) -> u32 {
+    let large = |total: u64| total >= crate::pool::LARGE_FROM;
+    let down = downloads.values().filter(|t| !t.open && large(t.total)).count();
+    let up = uploads.iter().filter(|(_, _, total)| large(*total)).count();
+    u32::try_from(down + up).unwrap_or(u32::MAX)
 }
 
 /// The downloads under way (`Transfers`): fills on open,
@@ -511,9 +523,14 @@ impl Default for Transfers {
 impl Transfers {
     /// A download of `path`, `total` bytes as far as is known yet.
     pub fn start(&self, path: String, total: u64) -> TransferEntry {
+        self.start_as(path, total, false)
+    }
+
+    /// As [`start`](Self::start), for a file being opened (or `Hydrate`) when `open`.
+    pub fn start_as(&self, path: String, total: u64, open: bool) -> TransferEntry {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
         self.tx.send_modify(|all| {
-            all.insert(id, Transfer { path, done: 0, total });
+            all.insert(id, Transfer { path, done: 0, total, open });
         });
         TransferEntry { handle: TransferHandle { id, transfers: self.clone() } }
     }
@@ -593,12 +610,20 @@ pub struct Tracked {
     source: Arc<dyn ContentSource>,
     transfers: Transfers,
     path: String,
+    /// A file being opened, or `Hydrate` (the pool's `Class::Open`).
+    open: bool,
     entry: OnceLock<TransferEntry>,
 }
 
 impl Tracked {
     pub fn new(source: Arc<dyn ContentSource>, transfers: Transfers, path: impl Into<String>) -> Self {
-        Self { source, transfers, path: path.into(), entry: OnceLock::new() }
+        Self { source, transfers, path: path.into(), open: false, entry: OnceLock::new() }
+    }
+
+    /// As [`new`](Self::new), for a file being opened or `Hydrate`: its entry says so, and
+    /// `LargeFiles` leaves it out.
+    pub fn opening(source: Arc<dyn ContentSource>, transfers: Transfers, path: impl Into<String>) -> Self {
+        Self { open: true, ..Self::new(source, transfers, path) }
     }
 
     /// The size of what was downloaded, if anything was asked for at all.
@@ -610,7 +635,7 @@ impl Tracked {
 #[async_trait]
 impl ContentSource for Tracked {
     async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
-        let entry = self.entry.get_or_init(|| self.transfers.start(self.path.clone(), 0));
+        let entry = self.entry.get_or_init(|| self.transfers.start_as(self.path.clone(), 0, self.open));
         let Fetched { served_from, size, mtime, version, stream } = self.source.fetch(item_id, from, end).await?;
         if end.is_some() {
             // A piece of a download in parts: the file is shown once, and the
@@ -836,6 +861,20 @@ mod tests {
     use std::sync::atomic::Ordering::SeqCst;
 
     use super::*;
+
+    /// `LargeFiles` (issue #50): each large download once, a file being opened left out, and
+    /// the large uploads; small ones are not large files.
+    #[test]
+    fn large_files_are_the_large_downloads_but_opens_and_the_large_uploads() {
+        let transfers = Transfers::default();
+        let large = crate::pool::LARGE_FROM;
+        let _pinned = transfers.start("/r/pinned.iso".into(), large);
+        let _opened = transfers.start_as("/r/opened.iso".into(), large, true);
+        let _small = transfers.start("/r/small.txt".into(), 10);
+        let uploads = vec![("/r/up.iso".to_owned(), 0, large + 1), ("/r/up.txt".to_owned(), 0, 10)];
+        let downloads = transfers.subscribe().borrow().clone();
+        assert_eq!(large_files(&downloads, &uploads), 2);
+    }
     use crate::sync::SyncSnapshot;
 
     fn event_at(kind: &str, path: &str) -> Event {

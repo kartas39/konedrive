@@ -74,18 +74,21 @@ Each download goes through the ordinary fill path, `SyncService::fill_now` — t
 hash, checkpointed, shown in `Transfers.Downloads` while it runs, and recorded as `downloaded` or `failed`
 in the activity log. Each takes a background slot of the account's transfer pool
 ([hydration.md](hydration.md) §6.4), so an open never waits behind a big pinned folder. A large
-file (100 MiB and up, by its placeholder's size) also waits for the pool's large-file limit; small
-and large files wait apart, so a large one held by that limit lets the small ones behind it go.
+file (100 MiB and up, by its placeholder's size) also waits for the pool's large-stream limit
+(`[transfers] large`, which limits the streams of large sync transfers; a file being opened is
+outside it and its count); small and large files wait apart, so a large one held by that limit
+lets the small ones behind it go.
 An open of a file whose pinned download is already running waits on that same
 download, rather than starting a second one — as opening a file twice always does.
 
 **A large file in parts.** A large pinned file downloads in pieces of 256 MiB over several streams
 at once ([hydration.md](hydration.md) §7.5): its own slot is its first stream's, and it adds a
 stream for each large slot that is free and that nothing waits for, sharing them evenly with the
-other large files in parts — one large file alone runs in up to 4 streams (`[transfers] large`),
-two in 2 each, four or more in 1 each. An extra stream gives its slot back after its piece when a
-file in the queue, a small file or an upload waits for one. The file shows once in `Transfers.Downloads`,
-with its overall progress.
+other large files in parts — one large file alone runs in up to 4 streams (`[transfers] large`,
+the streams of large sync transfers), two in 2 each, four or more in 1 each. An extra stream gives
+its slot back after its piece when a file in the queue, a small file or an upload waits for one.
+The file shows once in `Transfers.Downloads`, with its overall progress: one file in
+`ActiveDownloads` and `LargeFiles`, its streams in `LargeStreams`.
 
 Just before a queued file is downloaded, the queue asks again whether it is still pinned. A file
 whose pin was taken off since it was queued (§5) is passed over. A Forget drops the queue and

@@ -75,6 +75,17 @@ private Q_SLOTS:
         m_fake->transfers->set({{QStringLiteral("PoolSize"), QVariant::fromValue<uint>(8)}, {QStringLiteral("LargeStreams"), QVariant::fromValue<uint>(2)}});
         QTRY_COMPARE(controller.poolSize(), 8u);
         QCOMPARE(controller.largeTransfers(), 2u);
+
+        // The pool line's numbers (issue #50): the slots in use (above the size here: an
+        // open's reserve), the large files, their streams and the streams' limit.
+        m_fake->transfers->set({{QStringLiteral("PoolInUse"), QVariant::fromValue<uint>(10)},
+                                {QStringLiteral("LargeFiles"), QVariant::fromValue<uint>(1)},
+                                {QStringLiteral("LargeStreams"), QVariant::fromValue<uint>(4)},
+                                {QStringLiteral("LargeStreamLimit"), QVariant::fromValue<uint>(4)}});
+        QTRY_COMPARE(controller.poolInUse(), 10u);
+        QCOMPARE(controller.largeFiles(), 1u);
+        QCOMPARE(controller.largeTransfers(), 4u);
+        QCOMPARE(controller.largeLimit(), 4u);
         m_fake->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(3)}});
         QTRY_COMPARE(controller.conflictCount(), 3u);
     }

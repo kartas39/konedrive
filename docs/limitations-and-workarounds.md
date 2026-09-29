@@ -1964,9 +1964,11 @@ application must never read zeros where real content should be.
   pinned file is queued (a newer, larger version that lands meanwhile keeps the old class), when a
   replacement is issued (the new version's size from the delta), and when a file is opened; an
   upload when its row is taken (a file growing while it waits is classed by the size then). A
-  file being opened is counted among the large transfers under way but never held by the limit,
-  so the pool line can read "large: 5 of 4". FRAGILE (a wrong class costs speed, never data) ·
-  measured by unit tests (`pool::tests::at_most_four_large_transfers_run_while_small_ones_keep_going`,
+  file being opened is outside the large-stream limit and its count (issue #50): never marked
+  large, so `LargeStreams` never exceeds `LargeStreamLimit` because of an open. FRAGILE (a wrong
+  class costs speed, never data) · measured by unit tests
+  (`pool::tests::at_most_four_large_transfers_run_while_small_ones_keep_going`,
+  `pool::tests::an_open_is_outside_the_large_stream_limit_and_its_count`,
   `sync::pin::tests::a_large_file_waiting_for_the_limit_does_not_hold_up_the_small_ones`). Open.
 - **F148. Pinned downloads go in alphabetical order batch by batch, small and large apart**
   (`sync/pin.rs`, `folder_order`) — each sweep or pin queues its files folder by folder (a
@@ -2364,6 +2366,19 @@ application must never read zeros where real content should be.
   `PropertiesChanged` of `Account` per file at most; (4) the space check may reuse any read of the
   last 10 s for a refusal — the account's included — so a read the account made just before space
   was freed elsewhere decides one refusal more. FRAGILE · reasoned · open.
+- **F174. The files moving and the pool line count from two sources** (`sync/activity.rs`
+  `large_files`, `sync/dbus.rs`, `pool.rs`; issue #50) — `ActiveDownloads`, `ActiveUploads` and
+  `LargeFiles` count the entries of `Transfers.Downloads` and `Uploads`; `PoolInUse` and
+  `LargeStreams` count the pool's slots. So: (1) a download shows only from its first request
+  (its entry is made at the first fetch), so a file waiting for a slot is not "downloading", and
+  its size, which decides whether it is a large file, is known only then; (2) whether a download
+  is a file being opened is decided when its entry is made — an open that waits for a pinned
+  download of the same file already under way leaves that download counted as a sync transfer in
+  `LargeFiles`, and `Hydrate` counts as an open; (3) the counts follow the lists (coalesced to
+  250 ms) while the pool's numbers are published once a second, so one pool line can mix two
+  moments; (4) a metadata operation holds a slot in `PoolInUse` but is no file in either card.
+  FRAGILE · measured by unit tests (`sync::activity::tests::large_files_are_the_large_downloads_but_opens_and_the_large_uploads`,
+  `sync::source::parts::tests::a_download_in_parts_is_one_file_and_its_streams`) · open.
 ---
 
 ## 5. Provisional numbers
@@ -2388,7 +2403,7 @@ application must never read zeros where real content should be.
 | Transfer pool: start (`START`) / ceiling (`[transfers] max`, `DEFAULT_CEILING`, clamped to 1–256) | 16 / 32, each account's pool separately | **guess** |
 | Transfer pool growth | +1 slot per successful transfer while work waits and every slot is busy; +1 per round (as many successes as slots) at and above the size the last `429`/`503` came at | **guess** |
 | Transfer pool: throttle level forgotten after (`THROTTLE_MEMORY`) / a throttle within the wait (+1 s, `BURST_GRACE`) is the same burst / no slot for, without `Retry-After` (`DEFAULT_THROTTLE_WAIT`) | 5 min / halves once / 10 s | **guess** |
-| A large file, from (`LARGE_FROM`) / large transfers at once per account (`[transfers] large`, `DEFAULT_LARGE`, clamped to 1…`max`), files being opened not held | 100 MiB / 4 | **guess** |
+| A large file, from (`LARGE_FROM`) / streams of large sync transfers at once per account (`[transfers] large`, `DEFAULT_LARGE`, clamped to 1…`max`), files being opened outside it | 100 MiB / 4 | **guess** |
 | Slots above the pool only a file being opened may take (`RESERVE`) | 2 | **guess** |
 | A large pinned download's piece (`sync::source::parts::PIECE`) / how often a download in parts looks for a free slot to add a stream in (`LOOK_AGAIN`) | 256 MiB / 100 ms | **guess** (issue #28): large enough that a request's round trip is nothing beside it, small enough that the streams share a file's end |
 | Speed shown (`DownloadSpeed`, `UploadSpeed`): the average of (`SPEED_SPAN`) / published every | 3 s / 1 s while anything moves or a `Retry-After` runs, and until nothing has moved for 10 s | **guess** |
