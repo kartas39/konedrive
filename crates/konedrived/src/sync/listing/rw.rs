@@ -24,7 +24,6 @@
 //! the watcher keeps — lets rows wait for a folder made again, and says the
 //! cycle went through, so that the outbox worker sends (§4.9).
 
-use std::collections::BTreeSet;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -39,7 +38,7 @@ use crate::sync::disk::{rescue_base, rescue_stamp, Disk};
 use crate::sync::local::Batch;
 use crate::sync::materialize::{Applied, ApplyError, Materializer, Rw, Scope};
 use crate::tree::outbox::OutboxRow;
-use crate::tree::{classify, Change, Table};
+use crate::tree::{classify, Change};
 
 /// A read-write folder's cycle: what it shares with the folder's outbox
 /// worker and watcher.
@@ -140,26 +139,7 @@ impl Listing {
                 let tree = self.tree_lock(cancel).await?;
                 let changes = self.guard_delta(turn, changes, fetch_seq, cancel).await?;
                 let since = self.revisit_from.load(Ordering::SeqCst);
-                let staged = self
-                    .on_store(turn, move |s| {
-                        let deferred = s.live_deferred()?;
-                        let rows: BTreeSet<String> = s.outbox_rows()?.into_iter().filter_map(|row| row.item_id).collect();
-                        let revisit = s.committed_items_since(since)?;
-                        let unplaced = s.unplaced(Table::Items)?;
-                        let waiting = deferred.iter().all(|c| rows.contains(c.id()));
-                        if !full_requested && changes.is_empty() && waiting && revisit.is_empty() && unplaced.is_empty() {
-                            return Ok(None);
-                        }
-                        let consumed: Vec<String> = deferred.iter().map(|c| c.id().to_owned()).collect();
-                        s.begin_staging(true)?;
-                        s.stage(&deferred)?;
-                        s.stage(&changes)?;
-                        let mut ids: BTreeSet<String> = s.changed_ids()?.into_iter().collect();
-                        ids.extend(revisit);
-                        ids.extend(s.unplaced(Table::Staging)?);
-                        Ok(Some((ids.into_iter().collect::<Vec<_>>(), consumed)))
-                    })
-                    .await?;
+                let staged = self.on_store(turn, move |s| s.stage_rw(&changes, since, full_requested)).await?;
                 let Some((ids, consumed)) = staged else {
                     self.on_store(turn, move |s| s.set_meta("delta_link", Some(&link))).await?;
                     return Ok((Reconciled::default(), count));

@@ -1,4 +1,5 @@
-//! The outbox at scale (issue #38): a bench, never run by `cargo test`. Each
+//! The outbox (issue #38) and the cloud side (issue #39) at scale: a bench,
+//! never run by `cargo test`. Each
 //! operation is an ignored test on a temporary store and a temporary folder;
 //! it prints its time and fails when its budget is exceeded:
 //!
@@ -6,8 +7,10 @@
 //! cargo test -p konedrived --release --lib bench:: -- --ignored --nocapture --test-threads 1
 //! ```
 //!
-//! The sizes are the issue's: 30 000 queued changes, 100 000 items, a
-//! directory of 30 000 entries of which 27 000 are new files.
+//! The sizes are the issues': 30 000 queued changes, 100 000 items, a
+//! directory of 30 000 entries of which 27 000 are new files; a delta of
+//! 30 000 changed files, 5 000 skipped files, 2 000 conflicts, 20 000 images
+//! without thumbnails and 30 000 transfers waiting for a slot.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -449,4 +452,280 @@ fn a_whole_table_read() {
     store.call_blocking(move |s| s.bench_insert(&mixed_rows())).unwrap();
     let (rows, _) = timed("every row of 30 000", || store.call_blocking(move |s| s.outbox_rows()).unwrap());
     assert_eq!(rows.len(), 30_000);
+}
+
+// The cloud side (issue #39).
+
+/// 100 000 items: 100 folders of 1 000 files, every fifth file an image —
+/// 20 000 images — and every twentieth skipped for its name — 5 000.
+fn big_tree() -> Vec<Change> {
+    let mut changes = Vec::with_capacity(100_100);
+    for d in 0..100 {
+        changes.push(Change::Upsert(item(&format!("D{d:02}"), Some("R"), &format!("d{d:02}"), Kind::Folder)));
+        for i in 0..1000 {
+            let mut row = item(&format!("F{d:02}-{i:03}"), Some(&format!("D{d:02}")), &format!("f{i:03}.jpg"), Kind::File);
+            if i % 5 == 0 {
+                row.mime = Some("image/jpeg".into());
+            }
+            if i % 20 == 1 {
+                row.placement = Placement::Skipped(crate::tree::SkipReason::NameTooLong);
+            }
+            changes.push(Change::Upsert(row));
+        }
+    }
+    changes
+}
+
+/// A store on disk holding [`big_tree`], every placed item with its local
+/// object on record, as a folder placed in full has them.
+fn big_store(dir: &Path) -> Store {
+    let store = store_at(dir, &big_tree());
+    store
+        .call_blocking(|s| s.bench_sql("UPDATE items SET local_handle = CAST(id AS BLOB) WHERE placement = 'placed' AND id != 'R'"))
+        .unwrap();
+    store
+}
+
+/// `n` files of the tree, changed in OneDrive: a new version each.
+fn changed_files(n: usize) -> Vec<Change> {
+    (0..n)
+        .map(|k| {
+            let (d, i) = (k % 100, (k / 100) % 1000);
+            let mut row = item(&format!("F{d:02}-{i:03}"), Some(&format!("D{d:02}")), &format!("f{i:03}.jpg"), Kind::File);
+            row.ctag = Some(format!("c2-{d}-{i}"));
+            row.etag = Some(format!("e2-{d}-{i}"));
+            row.size = 7;
+            if i % 5 == 0 {
+                row.mime = Some("image/jpeg".into());
+            }
+            if i % 20 == 1 {
+                row.placement = Placement::Skipped(crate::tree::SkipReason::NameTooLong);
+            }
+            Change::Upsert(row)
+        })
+        .collect()
+}
+
+/// What the reconcile asks the store of each changed id (`Materializer::changed`):
+/// where it is and was, and its row in both trees.
+fn materializer_reads(store: &Store, ids: &[String]) {
+    use crate::tree::Table;
+    for id in ids {
+        let id = id.clone();
+        let (a, b, c) = (id.clone(), id.clone(), id.clone());
+        store.call_blocking(move |s| s.locate(Table::Staging, &a)).unwrap();
+        store.call_blocking(move |s| s.locate(Table::Items, &b)).unwrap();
+        store.call_blocking(move |s| s.get(Table::Items, &c)).unwrap();
+        store.call_blocking(move |s| s.get(Table::Staging, &id)).unwrap();
+    }
+}
+
+/// A read-only folder's delta cycle, its store work only (`Listing::sync_once`
+/// and `reconcile`): stage, what changed, the reconcile's reads, the swap,
+/// the counts.
+fn read_only_cycle(store: &Store, changes: Vec<Change>) {
+    store
+        .call_blocking(move |s| {
+            s.begin_staging(true)?;
+            s.stage(&changes)
+        })
+        .unwrap();
+    let ids = store.call_blocking(|s| s.changed_ids()).unwrap();
+    materializer_reads(store, &ids);
+    store.call_blocking(|s| s.commit_staging("link-2")).unwrap();
+    store.call_blocking(|s| s.counts(crate::tree::Table::Items)).unwrap();
+}
+
+/// A read-write folder's delta cycle, its store work only (`sync::listing::rw`).
+fn read_write_cycle(store: &Store, changes: Vec<Change>) {
+    let staged = store.call_blocking(move |s| s.stage_rw(&changes, 0, false)).unwrap();
+    let Some((ids, consumed)) = staged else { return };
+    store
+        .call_blocking(|s| crate::sync::materialize::Rw::read(s, "bench".into(), false, crate::sync::local::IgnoreList::default()))
+        .unwrap();
+    materializer_reads(store, &ids);
+    let changed = store.call_blocking(|s| s.changed_ids()).unwrap();
+    assert!(changed.len() <= ids.len());
+    store.call_blocking(move |s| s.commit_staging_deferring("link-2", &consumed, &[], &[], 0)).unwrap();
+    store.call_blocking(|s| s.outbox_drop_removed()).unwrap();
+    store.call_blocking(|s| s.counts(crate::tree::Table::Items)).unwrap();
+}
+
+/// A delta changing 10 files of 100 000 items, both kinds of folder.
+#[test]
+#[ignore]
+fn a_delta_cycle_changing_10_files() {
+    guard();
+    let dir = tempfile::tempdir().unwrap();
+    let store = big_store(dir.path());
+    let (_, read_only) = timed("delta cycle, 10 of 100 000 changed, read-only folder", || read_only_cycle(&store, changed_files(10)));
+    let dir = tempfile::tempdir().unwrap();
+    let store = big_store(dir.path());
+    let (_, read_write) = timed("delta cycle, 10 of 100 000 changed, read-write folder", || read_write_cycle(&store, changed_files(10)));
+    within("a delta of 10, read-only", read_only, Duration::from_millis(200));
+    within("a delta of 10, read-write", read_write, Duration::from_millis(200));
+}
+
+/// A delta changing 30 000 files of 100 000 items: the store's work, not the
+/// downloads.
+#[test]
+#[ignore]
+fn a_delta_cycle_changing_30000_files() {
+    guard();
+    let dir = tempfile::tempdir().unwrap();
+    let store = big_store(dir.path());
+    let (_, read_only) = timed("delta cycle, 30 000 of 100 000 changed, read-only folder", || read_only_cycle(&store, changed_files(30_000)));
+    let dir = tempfile::tempdir().unwrap();
+    let store = big_store(dir.path());
+    let (_, read_write) = timed("delta cycle, 30 000 of 100 000 changed, read-write folder", || read_write_cycle(&store, changed_files(30_000)));
+    within("a delta of 30 000, read-only", read_only, Duration::from_secs(5));
+    within("a delta of 30 000, read-write", read_write, Duration::from_secs(5));
+}
+
+/// A read-write cycle with nothing new: 100 000 items, 30 000 changes queued.
+#[test]
+#[ignore]
+fn an_idle_read_write_cycle() {
+    guard();
+    let dir = tempfile::tempdir().unwrap();
+    let store = big_store(dir.path());
+    store.call_blocking(move |s| s.bench_insert(&mixed_rows())).unwrap();
+    let (staged, took) = timed("idle read-write cycle, 100 000 items, 30 000 queued", || store.call_blocking(|s| s.stage_rw(&[], 0, false)).unwrap());
+    assert!(staged.is_none(), "nothing to do");
+    within("an idle read-write cycle", took, Duration::from_millis(50));
+}
+
+/// A batch of 200 thumbnails to make, half-way through 20 000 images.
+#[test]
+#[ignore]
+fn a_thumbnail_batch() {
+    guard();
+    let dir = tempfile::tempdir().unwrap();
+    let store = big_store(dir.path());
+    // The first 10 000 images (by id) have their thumbnails.
+    store
+        .call_blocking(|s| {
+            s.bench_sql(
+                "UPDATE items SET thumb_key = ctag || '|' || (SELECT p.name FROM items p WHERE p.id = items.parent_id) || '/' || name || '|' || mtime
+                  WHERE mime = 'image/jpeg' AND id < 'F50'",
+            )
+        })
+        .unwrap();
+    let (batch, took) =
+        timed("one thumbnail batch of 200, 10 000 of 20 000 made", || store.call_blocking(|s| s.thumbnail_candidates(200, crate::sync::thumbs::thumb_key)).unwrap());
+    assert_eq!(batch.len(), 200);
+    assert!(batch.iter().all(|(row, _)| row.id.as_str() >= "F50"), "those made are not made again");
+    within("a thumbnail batch", took, Duration::from_millis(100));
+}
+
+/// `Skipped()` with 5 000 skipped files among 100 000 items.
+#[test]
+#[ignore]
+fn the_skipped_list() {
+    guard();
+    let dir = tempfile::tempdir().unwrap();
+    let store = big_store(dir.path());
+    let (skipped, took) = timed("Skipped() of 5 000", || store.call_blocking(|s| s.skipped(crate::tree::Table::Items)).unwrap());
+    assert_eq!(skipped.len(), 5000);
+    within("Skipped()", took, Duration::from_millis(100));
+}
+
+/// The conflicts looked over at the end of a cycle: 2 000, every file there.
+#[test]
+#[ignore]
+fn the_conflicts_at_the_end_of_a_cycle() {
+    guard();
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(dir.path(), &[]);
+    let rescued = dir.path().join("rescued");
+    std::fs::create_dir(&rescued).unwrap();
+    let rows: Vec<crate::tree::ConflictRow> = (0..2000)
+        .map(|i| {
+            let file = rescued.join(format!("c{i:04}.txt"));
+            std::fs::write(&file, b"x").unwrap();
+            crate::tree::ConflictRow {
+                at: TIME + i,
+                original: format!("/nowhere/OneDrive/c{i:04}.txt"),
+                rescued: file.display().to_string(),
+                kind: crate::tree::ConflictKind::Rescued,
+            }
+        })
+        .collect();
+    store.call_blocking(move |s| s.add_conflicts(&rows)).unwrap();
+    let state = crate::sync::SyncStateHandle::new(crate::sync::SyncSnapshot::default());
+    let activity = crate::sync::activity::Activity::new(state.clone());
+    activity.attach(store.clone(), Path::new("/nowhere/OneDrive"));
+    let (_, took) = timed("the conflicts looked over at the end of a cycle, 2 000", || activity.prune());
+    assert_eq!(state.get().conflict_count, 2000);
+    within("the conflicts at the end of a cycle", took, Duration::from_millis(50));
+}
+
+/// A grant, a release, a waiter polled again and one given up, with 30 000
+/// downloads and one upload waiting for a slot.
+#[test]
+#[ignore]
+fn the_pool_with_30000_waiters() {
+    use crate::pool::{Class, TransferPool};
+    use std::future::Future;
+    use std::task::{Context, Poll};
+    guard();
+    let pool = TransferPool::starting_at(16, 32);
+    let mut held: Vec<_> = (0..16).map(|_| pool.try_acquire(Class::Download).unwrap()).collect();
+    let waker = futures_util::task::noop_waker();
+    let mut cx = Context::from_waker(&waker);
+    let mut waiting: Vec<_> = (0..30_000)
+        .map(|_| {
+            let mut acquire = Box::pin(pool.acquire(Class::Download));
+            assert!(acquire.as_mut().poll(&mut cx).is_pending());
+            acquire
+        })
+        .collect();
+    let mut upload = Box::pin(pool.acquire(Class::Upload));
+    assert!(upload.as_mut().poll(&mut cx).is_pending());
+    let mut worst = Duration::ZERO;
+    // Downloads and uploads take turns: the upload behind 30 000 downloads first.
+    let (_, took) = timed("a release that grants the upload, 30 000 waiting", || drop(held.pop()));
+    worst = worst.max(took);
+    let (slot, took) = timed("the upload takes its slot", || upload.as_mut().poll(&mut cx));
+    let Poll::Ready(slot) = slot else { panic!("the upload was granted") };
+    held.push(slot);
+    worst = worst.max(took);
+    let (_, took) = timed("a release that grants a download", || drop(held.remove(0)));
+    worst = worst.max(took);
+    let (slot, took) = timed("the download granted takes its slot", || waiting[0].as_mut().poll(&mut cx));
+    let Poll::Ready(slot) = slot else { panic!("the first download was granted") };
+    held.push(slot);
+    worst = worst.max(took);
+    let (_, took) = timed("the last waiter polled again", || assert!(waiting[29_999].as_mut().poll(&mut cx).is_pending()));
+    worst = worst.max(took);
+    let (_, took) = timed("a waiter in the middle gives up", || drop(waiting.remove(15_000)));
+    worst = worst.max(took);
+    // Every waiter in turn: a release, and the one granted takes its slot.
+    let (_, drained) = timed("30 000 waiters granted one after another", || {
+        for acquire in waiting.iter_mut().skip(1) {
+            drop(held.remove(0));
+            let Poll::Ready(slot) = acquire.as_mut().poll(&mut cx) else { panic!("granted in turn") };
+            held.push(slot);
+        }
+    });
+    println!("bench: of which one grant and release: {:.4} ms", drained.as_secs_f64() * 1000.0 / 29_998.0);
+    within("a pool grant or release", worst, Duration::from_millis(1));
+}
+
+/// Recording where 100 000 placed items are, as a Full placement does.
+#[test]
+#[ignore]
+fn recording_a_full_placement() {
+    guard();
+    let dir = tempfile::tempdir().unwrap();
+    let store = store_at(dir.path(), &big_tree());
+    let (_, took) = timed("recording 100 000 placed items", || {
+        for n in 0..100_000u64 {
+            let (d, i) = (n / 1000, n % 1000);
+            let id = format!("F{d:02}-{i:03}");
+            let handle = object(n).handle.unwrap();
+            store.call_blocking(move |s| s.set_local_handle(&id, Some(&handle))).unwrap();
+        }
+    });
+    within("recording a full placement", took, Duration::from_secs(5));
 }

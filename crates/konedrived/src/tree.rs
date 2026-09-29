@@ -803,6 +803,13 @@ impl TreeStore {
         Ok(out)
     }
 
+    /// Runs `sql` as it is: the bench seeds a large store fast.
+    #[cfg(test)]
+    pub fn bench_sql(&self, sql: &str) -> Result<(), TreeError> {
+        self.conn.execute_batch(sql)?;
+        Ok(())
+    }
+
     /// Records what a cached thumbnail of `id` was made for (`key`), so the
     /// next cycle does not make it again.
     pub fn set_thumb_key(&self, id: &str, key: &str) -> Result<(), TreeError> {

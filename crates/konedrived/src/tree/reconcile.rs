@@ -289,6 +289,31 @@ impl TreeStore {
         Ok(n)
     }
 
+    /// A read-write cycle's delta, staged (`sync::listing::rw`): what waits
+    /// is staged again before `changes`. The ids to reconcile — what the new
+    /// tree changes, what the outbox committed after commit count `since`,
+    /// and what has no local object on record — and the deferred changes
+    /// consumed; `None`, with nothing staged, when there is nothing to do and
+    /// no `full` reconcile is asked for.
+    pub fn stage_rw(&mut self, changes: &[Change], since: i64, full: bool) -> Result<Option<(Vec<String>, Vec<String>)>, TreeError> {
+        let deferred = self.live_deferred()?;
+        let rows: std::collections::BTreeSet<String> = self.outbox_rows()?.into_iter().filter_map(|row| row.item_id).collect();
+        let revisit = self.committed_items_since(since)?;
+        let unplaced = self.unplaced(Table::Items)?;
+        let waiting = deferred.iter().all(|c| rows.contains(c.id()));
+        if !full && changes.is_empty() && waiting && revisit.is_empty() && unplaced.is_empty() {
+            return Ok(None);
+        }
+        let consumed: Vec<String> = deferred.iter().map(|c| c.id().to_owned()).collect();
+        self.begin_staging(true)?;
+        self.stage(&deferred)?;
+        self.stage(changes)?;
+        let mut ids: std::collections::BTreeSet<String> = self.changed_ids()?.into_iter().collect();
+        ids.extend(revisit);
+        ids.extend(self.unplaced(Table::Staging)?);
+        Ok(Some((ids.into_iter().collect(), consumed)))
+    }
+
     /// Stages `changes` on top of what `staging` holds: the fresh versions a
     /// stale-delta guard fetched (§3.7).
     pub fn stage_over(&mut self, changes: &[Change]) -> Result<(), TreeError> {
