@@ -131,6 +131,10 @@ pub struct Cloud {
     /// its session. What OneDrive does is unmeasured (issue #84): both are
     /// modelled.
     pub refuse_placeholder_delete: bool,
+    /// Requests carried out whose answer is lost (a timeout after OneDrive
+    /// acted): (method, a fragment of the path, how many times), answered
+    /// `504`.
+    lost: Vec<(String, String, u32)>,
     /// The space left, when the drive has a quota: content larger is refused
     /// `507` as it lands, and `GET me/drive` says it (`remaining`, and
     /// `state` `exceeded` at 0). No quota at all while `None`.
@@ -304,6 +308,44 @@ impl Cloud {
     /// How many times the quota was read (`GET me/drive`).
     pub fn quota_reads(&self) -> usize {
         self.log.iter().filter(|(m, p)| m == "GET" && p == "me/drive").count()
+    }
+
+    /// An upload session for a new file at (`parent`, `name`) opened by
+    /// another device (or abandoned by an older version): its placeholder
+    /// holds the name, and nothing of this folder knows it — made `age`
+    /// seconds ago. Its id.
+    pub fn open_elsewhere(&mut self, parent: &str, name: &str, age: i64) -> String {
+        self.open_session(Target::New { parent: parent.into(), name: name.into() }, &json!({ "item": {} }));
+        self.created.insert(format!("P{}", self.counter), crate::sync::activity::unix_now() - age);
+        format!("s{}", self.counter)
+    }
+
+    /// That device's session `sid` completes with `content`: the file lands
+    /// at the placeholder's name.
+    pub fn complete_elsewhere(&mut self, sid: &str, content: &[u8]) {
+        let session = self.sessions.remove(sid).expect("no such session");
+        self.placeholders.remove(sid);
+        assert!(self.land(&session.target, content.to_vec(), 0).is_ok(), "landed");
+    }
+
+    /// That device cancels its session `sid`: the name is free.
+    pub fn cancel_elsewhere(&mut self, sid: &str) {
+        self.sessions.remove(sid).expect("no such session");
+        self.placeholders.remove(sid);
+    }
+
+    /// The next `times` requests of `method` whose path holds `fragment` are
+    /// carried out, and their answer lost: `504`.
+    pub fn lose_answers(&mut self, method: &str, fragment: &str, times: u32) {
+        self.lost.push((method.into(), fragment.into(), times));
+    }
+
+    fn answer_lost(&mut self, request: &Request) -> bool {
+        let method = request.method.to_string();
+        let joined = request.url.path_segments().map(|s| s.map(decode).collect::<Vec<_>>().join("/")).unwrap_or_default();
+        let Some(lost) = self.lost.iter_mut().find(|(m, f, left)| *m == method && joined.contains(f.as_str()) && *left > 0) else { return false };
+        lost.2 -= 1;
+        true
     }
 
     /// Every open upload session expires: its URL answers `404` from now on.
@@ -723,7 +765,10 @@ struct Responder(Arc<Mutex<Cloud>>);
 
 impl Respond for Responder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
-        self.0.lock().unwrap().handle(request)
+        let mut cloud = self.0.lock().unwrap();
+        let lost = cloud.answer_lost(request);
+        let answer = cloud.handle(request);
+        if lost { error(504, "gatewayTimeout") } else { answer }
     }
 }
 

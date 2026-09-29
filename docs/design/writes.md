@@ -502,17 +502,42 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
   is waited for (`upload-session-open`), and any other is cancelled and the create goes again. Only
   without such a session does §6.2's `409` rule decide.
 - **The place is recorded before the session is opened** (issue #84). Before a new file's
-  `createUploadSession`, its row records the place it is about to take (parent id, name, the time;
-  `upload_openings`). The session's URL replaces the record once it is persisted; a definite refusal
-  to open (`404`, `400`) clears it; recorded again at the same place, it keeps its first time; it
-  goes when its row leaves the outbox, and outlasts a restart. A stop between the opening and its
-  persisting so leaves a placeholder this folder still knows of.
-- **A `409` at a recorded place.** With no listed session there but an opening recorded, the holder
-  is read: an empty file created at or after the recording, less 5 minutes for the clocks, is that
-  opening's placeholder. It is deleted (with its eTag) and the create goes again; if OneDrive
-  refuses the delete, the row waits (`upload-session-open`) until the orphan session expires and
-  frees the name. Never a copy. A holder with content, one created earlier, or one whose time is
-  not given is someone else's: §6.2's `409` rule decides.
+  `createUploadSession`, its row records the place it is about to take (parent id, name;
+  `upload_openings`), with its first time and the time of its latest attempt whose outcome is
+  unknown. The session's URL replaces the record once it is persisted. The outcome of an opening is
+  unknown only after an answer typed `Transient` — a timeout, a lost connection, a `5xx` other than
+  `503`, an answer that could not be read, a failure before sending — or a stop. Any other answer
+  (`409`, `404`, `400`, `401`, `403`, `423`, `429`, `503`, `507`) is certain — that request made no
+  placeholder — and clears the record the attempt made (issue #89); a record carried from an earlier
+  attempt whose outcome was unknown is kept through it, as it was before the attempt, since that
+  attempt's placeholder may still hold the name. Recorded again at the same place (the name compared
+  without case), a record keeps its first time; it outlasts a restart. One whose row leaves the
+  outbox, or moves to another place, before it is resolved is kept without a row (issue #89) — our
+  placeholder may still hold the name, and the next row there finds it — for 7 days at most. A stop
+  between the opening and its persisting so leaves a placeholder this folder still knows of.
+- **A `409` at a recorded place.** With no listed session there but openings recorded — carried from
+  earlier attempts whose outcome was unknown, never the one just answered `409` — the holder is
+  read. An empty file the delta feed never listed (neither the items table nor a listing being
+  staged knows it), created within one record's window — from its first recording to its latest
+  attempt whose outcome was unknown, each widened by 5 minutes for the clocks — is that opening's
+  placeholder; a time between two records' windows is in neither. It is deleted (with its eTag;
+  OneDrive lets it, and the delete ends the session — measured, limitations log F172) and the create
+  goes again; a delete OneDrive refuses leaves the row waiting (`upload-session-open`) until the
+  name is free. Never a copy. A holder with content, one listed, one created outside every window,
+  or one whose time is not given is not taken for ours: §6.2's `409` rule decides. At most one
+  placeholder of ours holds a name, so the records at the place, with a row or without, are cleared
+  once resolved: the placeholder deleted (or found gone), the name found free, or the holder not
+  ours (with content, listed, or outside every window). They are kept only while the holder's time
+  is not given, a read or the delete fails for now, or the delete is refused — so a later `409`
+  never compares with an old time.
+- **A placeholder not ours is never deleted** (issue #89). Nothing in OneDrive says which machine
+  opened a session, and nothing about a placeholder changes while its session is used or idle, so a
+  live session cannot be told from an abandoned one; a delete of a placeholder ends its session, so
+  deleting one another device is filling would kill that device's upload. Only this folder's own
+  records make a placeholder ours: a listed session's, or an empty file the feed never listed,
+  created within the window of one recorded opening carried from an earlier attempt whose outcome
+  was unknown, and not yet resolved. A `409` answered to this very attempt's opening is never that.
+  Any other placeholder holds its name, and the row waits (§6.2).
 
 - **The daemon's stop** (issue #84). On SIGTERM (systemd's stop, a package upgrade) or SIGINT the
   outbox workers take no more rows; the rows in flight finish the request they sent — an opened
@@ -522,7 +547,8 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
   it. A second signal exits at once.
 
 A session opened before sessions were listed, or before openings were recorded, is known to
-nothing: its placeholder holds the name until the session expires (limitations log F172).
+nothing: its placeholder holds the name, and the row waits for it as for another device's (§6.2;
+limitations log F172).
 
 ### 6.2 What the answers mean
 
@@ -530,7 +556,7 @@ nothing: its placeholder holds the name until the session expires (limitations l
 |---|---|
 | `200`, `201` | the commit (§5.4) |
 | `202` | a fragment accepted: `session_next` persisted, the next one sent |
-| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours (it is this content already), a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3); anything else makes the file here a copy (§7) |
+| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours (it is this content already), a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3). What would be a copy but is an empty file neither the items table (the delta feed's mirror) nor a listing being staged knows is, as far as anything here can tell, an upload session's placeholder (never in the feed): never a copy, never deleted — the row waits (`name-held-by-an-upload`, the usual backoff) until the name is free, or the holder has content or the feed lists it, and then decides again (issue #89). This holds for every `409`: a create, a move or rename, a folder's `mkdir`. An empty file the feed listed is a real file. Anything else makes the file here a copy (§7) |
 | `412` | the item is read again: the same hash as ours means done already; the base's cTag means only its metadata changed, and the request goes again with the fresh eTag; otherwise §7 |
 | `404` | gone in OneDrive: §7 |
 | `404` from an upload URL | the session ended: the item is read and adopted if its hash is ours, else a new session from zero |
@@ -638,7 +664,8 @@ characters.
 
 **Both new at one name** (create/create): the same hash is adopted, no copy and nothing sent;
 another hash gets a copy. A name that differs only in case is the same name to OneDrive, and gets a
-copy. Two new folders of one name merge, their contents meeting file by file under these rules.
+copy. An empty file at the name that the delta feed has not listed is never a conflict: it is taken
+for an upload's placeholder, and the row waits (§6.2). Two new folders of one name merge, their contents meeting file by file under these rules.
 
 **Folders.** A folder deleted here is deleted whole in OneDrive — one `DELETE` of the folder itself,
 unguarded — whatever it gained or changed there meanwhile, as on Windows: the recycle bin is the
@@ -931,7 +958,8 @@ every guard holds**:
 
 1. `--graph-test-drive` is the drive both tokens reach (`GET /me/drive`), and is listed in
    `write_test_drive_ids` in the `config.toml` given with `--daemon-config`;
-2. the drive looks like a test account: less than 1 GiB in use and fewer than 1000 items;
+2. the drive looks like a test account: less than 1 GiB in use and fewer than 1000 items — unless
+   `--large-test-drive` says the test account holds more (limitations log F130);
 3. every write stays in `/konedrive-write-test/<run id>/`, which the run makes and puts into the
    recycle bin at the end. Every request goes through a proxy on `127.0.0.1` whose guard asserts,
    before it sends anything, that the item the request names, or the parent of what it makes, lies
@@ -961,6 +989,16 @@ cargo run -p konedrive-write-test -- --graph-test-drive <id> \
     --graph-token /tmp/kd-rw.token --graph-read-only-token /tmp/kd-ro.token \
     --daemon-config ~/.config/konedrive/config.toml
 rm /tmp/kd-rw.token /tmp/kd-ro.token
+```
+
+Only the placeholder checks (limitations log F172), which need no read-only token, on a test
+account that holds more than 1 GiB:
+
+```
+konedrivectl --account Test dev export-access-token --read-write --out /tmp/kd-rw.token
+cargo run -p konedrive-write-test -- --graph-test-drive <id> --graph-token /tmp/kd-rw.token \
+    --daemon-config ~/.config/konedrive/config.toml --large-test-drive --only placeholders
+rm /tmp/kd-rw.token
 ```
 
 The second export is the check of the switch back: it is the token of the refresh that followed

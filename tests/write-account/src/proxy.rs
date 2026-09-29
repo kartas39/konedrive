@@ -160,7 +160,7 @@ async fn handle(shared: &Shared, request: hyper::Request<Incoming>) -> Response<
 fn rewrite(shared: &Shared, value: &mut Value, request_body: &[u8]) {
     let Some(object) = value.as_object_mut() else { return };
     if let Some(Value::String(url)) = object.get("uploadUrl") {
-        let size = declared_size(request_body).unwrap_or(0);
+        let size = declared_size(request_body);
         let key = shared.guard.open_session(url.clone(), size);
         object.insert("uploadUrl".into(), Value::String(format!("{}/upload/{key}", shared.origin)));
     }

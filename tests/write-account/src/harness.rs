@@ -10,6 +10,7 @@ use konedrived::token::StaticToken;
 use serde_json::Value;
 use url::Url;
 
+use crate::args::Only;
 use crate::checks::{self, Outcome};
 use crate::guard::{Caps, Guard, MIB, TOP};
 use crate::proxy;
@@ -29,8 +30,8 @@ pub struct Options {
     /// From `konedrivectl dev export-access-token --read-write` (guard 5).
     pub token: String,
     /// From `konedrivectl dev export-access-token`, after the account was switched back to
-    /// read-only.
-    pub read_only_token: String,
+    /// read-only; none when `--only` picks checks that do not use it.
+    pub read_only_token: Option<String>,
     /// `--graph-test-drive`.
     pub test_drive: String,
     /// The daemon's `config.toml`, for `write_test_drive_ids`.
@@ -39,6 +40,10 @@ pub struct Options {
     pub run_id: String,
     /// How long the delta check waits for OneDrive to report the run's changes.
     pub delta_wait: Duration,
+    /// `--large-test-drive`: guard 2's size limits are not applied.
+    pub large: bool,
+    /// `--only`.
+    pub only: Option<Only>,
 }
 
 /// How a run ended.
@@ -96,6 +101,12 @@ impl Api {
         Self::answer(self.http.get(self.url(segments)?).bearer_auth(&self.token)).await
     }
 
+    pub async fn get_query(&self, segments: &[&str], query: &str) -> Result<(u16, Value), String> {
+        let mut url = self.url(segments)?;
+        url.set_query(Some(query));
+        Self::answer(self.http.get(url).bearer_auth(&self.token)).await
+    }
+
     pub async fn post(&self, segments: &[&str], body: &Value) -> Result<(u16, Value), String> {
         Self::answer(self.http.post(self.url(segments)?).bearer_auth(&self.token).json(body)).await
     }
@@ -116,7 +127,7 @@ pub async fn run(options: Options) -> Ended {
             options.test_drive
         ));
     }
-    if options.token == options.read_only_token {
+    if options.read_only_token.as_ref() == Some(&options.token) {
         return Ended::Refused("the read-only token is the read-write one: export it after the switch back to read-only".into());
     }
     let guard = Arc::new(Guard::new(options.caps, options.run_id.clone()));
@@ -125,14 +136,18 @@ pub async fn run(options: Options) -> Ended {
         Err(e) => return Ended::Refused(format!("the guard's proxy did not start: {e}")),
     };
     let client = |token: &str| DriveClient::new(proxy.base.clone(), Arc::new(StaticToken::new(token)));
-    let (drive, read_only) = match (client(&options.token), client(&options.read_only_token)) {
-        (Ok(drive), Ok(read_only)) => (drive, read_only),
-        (Err(e), _) | (_, Err(e)) => return Ended::Refused(format!("no Graph client: {e}")),
+    let drive = match client(&options.token) {
+        Ok(drive) => drive,
+        Err(e) => return Ended::Refused(format!("no Graph client: {e}")),
+    };
+    let read_only = match options.read_only_token.as_deref().map(client).transpose() {
+        Ok(read_only) => read_only,
+        Err(e) => return Ended::Refused(format!("no Graph client: {e}")),
     };
     let api = Api::new(proxy.base.clone(), &options.token);
-    let read_only_api = Api::new(proxy.base.clone(), &options.read_only_token);
+    let read_only_api = options.read_only_token.as_deref().map(|token| Api::new(proxy.base.clone(), token));
 
-    let preflight = match preflight(&options, &api, &read_only_api, &drive).await {
+    let preflight = match preflight(&options, &api, read_only_api.as_ref(), &drive).await {
         Ok(preflight) => preflight,
         Err(why) => return Ended::Refused(why),
     };
@@ -160,7 +175,10 @@ pub async fn run(options: Options) -> Ended {
         let made = checks.is_empty();
         let mut run = checks::Run::new(drive, read_only, api, Arc::clone(&guard), folder, &options, preflight.delta_link);
         if made {
-            checks = run.all().await;
+            checks = match options.only {
+                None => run.all().await,
+                Some(Only::Placeholders) => run.placeholders().await,
+            };
         }
         let outcome = run.cleanup().await;
         checks::show(CLEANUP, &outcome);
@@ -171,8 +189,9 @@ pub async fn run(options: Options) -> Ended {
 }
 
 /// Guards 1 and 2, with reads only: the drive both tokens reach is the one named, and it looks
-/// like a test account. Then the root's id, which the guard needs to let the run folder be made.
-async fn preflight(options: &Options, api: &Api, read_only: &Api, drive: &DriveClient) -> Result<Preflight, String> {
+/// like a test account (unless `--large-test-drive` says it is a large one). Then the root's id,
+/// which the guard needs to let the run folder be made.
+async fn preflight(options: &Options, api: &Api, read_only: Option<&Api>, drive: &DriveClient) -> Result<Preflight, String> {
     let (status, me) = api.get(&["me", "drive"]).await?;
     if status != 200 {
         return Err(format!("GET /me/drive answered {status}"));
@@ -185,20 +204,36 @@ async fn preflight(options: &Options, api: &Api, read_only: &Api, drive: &DriveC
         .pointer("/quota/used")
         .and_then(Value::as_u64)
         .ok_or("GET /me/drive gave no quota.used: a test account cannot be told from another")?;
-    if used >= MAX_QUOTA_USED {
+    if used >= MAX_QUOTA_USED && !options.large {
         return Err(format!(
             "the drive has {:.1} MiB in use: a test account holds less than {} MiB",
             used as f64 / MIB as f64,
             MAX_QUOTA_USED / MIB
         ));
     }
-    let (status, me) = read_only.get(&["me", "drive"]).await?;
-    let read_only_id = me.get("id").and_then(Value::as_str).unwrap_or_default();
-    if status != 200 || read_only_id != options.test_drive {
-        return Err(format!(
-            "the read-only token reaches drive {read_only_id:?} (GET /me/drive answered {status}), not --graph-test-drive {}",
-            options.test_drive
-        ));
+    if let Some(read_only) = read_only {
+        let (status, me) = read_only.get(&["me", "drive"]).await?;
+        let read_only_id = me.get("id").and_then(Value::as_str).unwrap_or_default();
+        if status != 200 || read_only_id != options.test_drive {
+            return Err(format!(
+                "the read-only token reaches drive {read_only_id:?} (GET /me/drive answered {status}), not --graph-test-drive {}",
+                options.test_drive
+            ));
+        }
+    }
+    if options.large {
+        // Not counted: the delta check starts from now.
+        let (status, latest) = api.get_query(&["me", "drive", "root", "delta"], "token=latest").await?;
+        let delta_link = latest.get("@odata.deltaLink").and_then(Value::as_str).unwrap_or_default().to_owned();
+        if status != 200 || delta_link.is_empty() {
+            return Err(format!("the delta feed's latest link: GET answered {status}"));
+        }
+        let root = drive.item("root").await.map_err(|e| format!("reading the drive's root: {e}"))?;
+        println!(
+            "  preflight: drive {id}, as named and allowed; {:.1} MiB in use, a large test account (--large-test-drive)",
+            used as f64 / MIB as f64
+        );
+        return Ok(Preflight { root: root.id, delta_link });
     }
     let mut from = DeltaFrom::Start;
     let mut items: u64 = 0;
