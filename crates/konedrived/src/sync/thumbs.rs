@@ -7,6 +7,12 @@
 //! Only `normal`, `large` and `x-large` (up to 512 px) are filled: one Graph
 //! request per image (`c512x512`), scaled down locally to the smaller sizes.
 //! `xx-large` (1024 px) is not filled — see limitations log entry K15.
+//!
+//! Every answer that settles whether an item has a usable thumbnail is
+//! recorded (its `thumb_key`), so the item is asked for again only once it
+//! changes; only a passing trouble — no answer, `401`, `408`, `429`, 5xx — is
+//! tried again at the next drain (issue #80). A `406` at `c512x512` is asked
+//! once more at Graph's named size `large` before it counts as a refusal.
 
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -18,7 +24,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::root::SyncRoot;
-use crate::drive::DriveClient;
+use crate::drive::{DriveClient, Thumbnail};
 use crate::tree::{Row, Store};
 
 /// The cache directories KIO consults, and the longest edge of each
@@ -27,6 +33,10 @@ use crate::tree::{Row, Store};
 pub const SIZES: &[(&str, u32)] = &[("normal", 128), ("large", 256), ("x-large", 512)];
 /// The one size asked of Graph; the smaller ones are scaled from it.
 const GRAPH_SIZE: &str = "c512x512";
+/// Asked instead when Graph answers [`GRAPH_SIZE`] with `406 Not Acceptable`,
+/// as it does for some items: Graph's named size, up to 800 px, scaled down
+/// the same way.
+const FALLBACK_SIZE: &str = "large";
 /// The decode limits a thumbnail's bytes are read under:
 /// `DriveClient::thumbnail` already caps the body at 8 MiB, but a small body
 /// can still decompress into a huge image (a decompression bomb), so the
@@ -193,7 +203,10 @@ impl One {
     /// Asks Graph for the thumbnail of `row` and caches it; whether one was written.
     async fn make(self, row: Row, rel: PathBuf, mut slot: crate::pool::Slot) -> bool {
         let key = thumb_key(&row, &rel);
-        let fetched = self.drive.thumbnail(&row.id, GRAPH_SIZE).await;
+        let mut fetched = self.drive.thumbnail(&row.id, GRAPH_SIZE).await;
+        if matches!(fetched, Ok(Thumbnail::Refused(reqwest::StatusCode::NOT_ACCEPTABLE))) {
+            fetched = self.drive.thumbnail(&row.id, FALLBACK_SIZE).await;
+        }
         if fetched.is_ok() {
             slot.succeeded();
         }
@@ -201,12 +214,12 @@ impl One {
         let mut written = false;
         // Whether to record `key` for this item: true for anything that
         // settles the question of whether it has a usable thumbnail
-        // (a real write, a 404, an oversized/refused body, bytes that
+        // (a real write, a 404, a refusal, an oversized body, bytes that
         // will not decode) and for a local I/O problem, which would fail
-        // the same way at once (issue #39); false for a network hiccup,
-        // tried again at the next drain.
+        // the same way at once (issue #39); false for a passing trouble
+        // (`DriveClient::thumbnail`'s `Err`), tried again at the next drain.
         let settle = match fetched {
-            Ok(Some(bytes)) => {
+            Ok(Thumbnail::Image(bytes)) => {
                 let (cache, file, mtime) = (self.cache.clone(), self.folder.join(&rel), row.mtime);
                 match tokio::task::spawn_blocking(move || write_thumbnail(&cache, &file, mtime, &bytes)).await {
                     Ok(Ok(())) => {
@@ -227,7 +240,13 @@ impl One {
                     }
                 }
             }
-            Ok(None) => true,
+            Ok(Thumbnail::None) => true,
+            Ok(Thumbnail::Refused(status)) => {
+                // Once per version of the item: recorded, so not asked again
+                // until it changes.
+                tracing::info!("OneDrive refuses a thumbnail of {}: {status}", rel.display());
+                true
+            }
             Err(e) => {
                 tracing::info!("no thumbnail for {} this time: {e}", rel.display());
                 false
@@ -386,7 +405,9 @@ mod tests {
 
     impl World {
         fn filler(&self) -> ThumbnailFiller {
-            let drive = crate::drive::DriveClient::new(Url::parse(&format!("{}/", self.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap();
+            // Short throttle waits, so a `503` is given up on in milliseconds.
+            let retry = crate::drive::RetryPolicy { attempts: 2, default_wait: Duration::from_millis(10), max_wait: Duration::from_millis(50) };
+            let drive = crate::drive::DriveClient::new(Url::parse(&format!("{}/", self.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap().with_retry(retry);
             let root = SyncRoot { path: self.folder.path().canonicalize().unwrap(), root_id: "r".into() };
             ThumbnailFiller::new(drive, self.store.clone(), root, self.cache.path().to_path_buf())
         }
@@ -614,5 +635,111 @@ mod tests {
         let outcome = filler.run_once(&CancellationToken::new(), 100).await;
         ponger.await.unwrap();
         assert_eq!(outcome.written, 1);
+    }
+
+    fn thumb_path(id: &str, size: &str) -> String {
+        format!("/me/drive/items/{id}/thumbnails/0/{size}/content")
+    }
+
+    /// Issue #80: Graph refuses `c512x512` for some items with `406`; its
+    /// named size `large` is asked once instead, and scaled down the same way.
+    #[tokio::test]
+    async fn a_406_is_asked_again_at_graphs_named_size() {
+        let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
+        Mock::given(method("GET")).and(path(thumb_path("P", "c512x512")))
+            .respond_with(ResponseTemplate::new(406))
+            .expect(1)
+            .mount(&w.server).await;
+        Mock::given(method("GET")).and(path(thumb_path("P", "large")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(800, 600)))
+            .expect(1)
+            .mount(&w.server).await;
+        let filler = w.filler();
+        assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 1);
+        let png = w.cached("x-large", &w.folder.path().join("p.jpg"));
+        let info = png::Decoder::new(std::io::BufReader::new(std::fs::File::open(png).unwrap())).read_info().unwrap().info().clone();
+        assert_eq!((info.width, info.height), (512, 384), "scaled down to the largest size filled");
+        assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.taken, 0);
+    }
+
+    /// Issue #80: refused at both sizes, the item is recorded, and the next
+    /// drain does not ask for it again.
+    #[tokio::test]
+    async fn a_406_refused_at_both_sizes_is_recorded() {
+        let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
+        Mock::given(method("GET")).and(path(thumb_path("P", "c512x512")))
+            .respond_with(ResponseTemplate::new(406))
+            .expect(1)
+            .mount(&w.server).await;
+        Mock::given(method("GET")).and(path(thumb_path("P", "large")))
+            .respond_with(ResponseTemplate::new(406))
+            .expect(1)
+            .mount(&w.server).await;
+        let filler = w.filler();
+        assert_eq!(filler.drain(&CancellationToken::new(), 100).await, RunOutcome { taken: 1, written: 0 });
+        assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 0, "not asked for again");
+    }
+
+    /// Issue #80: any other 4xx is final at once — no second size, no retry.
+    #[tokio::test]
+    async fn a_403_is_recorded_at_once() {
+        let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
+        Mock::given(method("GET")).and(path(thumb_path("P", "c512x512")))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(1)
+            .mount(&w.server).await;
+        Mock::given(method("GET")).and(path(thumb_path("P", "large")))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(8, 8)))
+            .expect(0)
+            .mount(&w.server).await;
+        let filler = w.filler();
+        filler.drain(&CancellationToken::new(), 100).await;
+        assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 0);
+    }
+
+    /// Issue #80: a passing trouble — a sign-in trouble, a server error, a
+    /// dropped connection — is not recorded: the next drain asks again.
+    #[tokio::test]
+    async fn a_passing_trouble_is_asked_again_at_the_next_drain() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let dropped = format!("http://{}/blob", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        let w = world(&[photo("A", "a.jpg", "image/jpeg"), photo("B", "b.jpg", "image/jpeg"), photo("C", "c.jpg", "image/jpeg")]).await;
+        Mock::given(method("GET")).and(path(thumb_path("A", "c512x512")))
+            .respond_with(ResponseTemplate::new(401))
+            .mount(&w.server).await;
+        Mock::given(method("GET")).and(path(thumb_path("B", "c512x512")))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&w.server).await;
+        Mock::given(method("GET")).and(path(thumb_path("C", "c512x512")))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", dropped.as_str()))
+            .mount(&w.server).await;
+        let filler = w.filler();
+        assert_eq!(filler.drain(&CancellationToken::new(), 100).await, RunOutcome { taken: 3, written: 0 });
+        assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 3, "none of them recorded");
+        let asked_large = w.server.received_requests().await.unwrap().iter().any(|r| r.url.path().ends_with("/large/content"));
+        assert!(!asked_large, "only a 406 is asked at the other size");
+    }
+
+    /// Issue #80: a recorded refusal holds only for that version of the
+    /// item; once it changes, it is asked for again.
+    #[tokio::test]
+    async fn a_refused_item_is_asked_again_once_it_changes() {
+        let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
+        Mock::given(method("GET")).and(path(thumb_path("P", "c512x512")))
+            .respond_with(ResponseTemplate::new(403))
+            .expect(2)
+            .mount(&w.server).await;
+        let filler = w.filler();
+        filler.drain(&CancellationToken::new(), 100).await;
+        assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 0);
+        let Change::Upsert(mut row) = photo("P", "p.jpg", "image/jpeg") else { unreachable!() };
+        row.ctag = Some("c2".into());
+        w.store.call(move |s| { s.begin_staging(true)?; s.stage(&[Change::Upsert(row)])?; s.commit_staging("L2") }).await.unwrap();
+        assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 1, "a new version is asked for");
     }
 }
