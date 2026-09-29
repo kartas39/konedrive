@@ -2206,9 +2206,122 @@ application must never read zeros where real content should be.
   (`outbox_drop_all`, `write_mode`); `Outbox(0)` and `NotUploaded()`, unbounded by their
   signatures; restoring or confirming held deletes (their rows); a quota read that lets waiting
   files go (the waiting rows only, each sized from its snapshot, its recorded size or the disk);
-  and, outside this issue (#39), the read-write cycle's reads in `listing/rw.rs` and
-  `materialize/rw.rs`. The counts that only needed a number (`held_back`, `PendingUploads`, a
+  and the read-write reconcile's plan (`Rw::read`, `materialize/rw.rs`), once per cycle that
+  changes anything — never an idle one (F165). The counts that only needed a number (`held_back`, `PendingUploads`, a
   Forget's count, a read-only start) are `count(*)`. LIMIT (chosen) · measured. Open.
+- **F164. The cloud side's budgets at scale are guesses, measured once on one machine**
+  (`konedrived/src/bench.rs`; issue #39) — the sizes designed for are 100 000 items, a delta
+  changing 30 000 files, 5 000 skipped files, 2 000 conflicts, 20 000 images without thumbnails and
+  30 000 transfers waiting for a slot. The budgets (a delta of 10 changes 200 ms of store work, a
+  delta of 30 000 changes 5 s, an idle read-write cycle 50 ms, a thumbnail batch 100 ms,
+  `Skipped()` 100 ms, the conflicts at a cycle's end 50 ms, a pool grant or release 1 ms,
+  recording a full placement 5 s) are guesses of what keeps the daemon responsive. The bench
+  measures the store's work as the cycle asks for it — staging, the reconcile's reads of each
+  changed id, the swap, the counts — not the reconcile's own work on disk, nor the downloads. Like
+  F158 it is an ignored test run by hand (`cargo test -p konedrived --release --lib bench:: --
+  --ignored`, with `HOME`, the XDG directories and the session bus pointed at a temporary
+  directory), measured on a 16-thread desktop with `/tmp` on tmpfs. A delta of 30 000 changes is the
+  closest to its budget: most of it is the reconcile's four store calls per changed id, each a
+  hand-over to the store's thread (F162). PROVISIONAL (guess) · measured. Open.
+- **F165. A delta is staged over `items`; a full listing is staged whole** (`tree.rs`, `Source`,
+  `stage`, `commit_staging`; issue #39) — `staging` holds only the rows a delta writes and
+  `staging_gone` the ids it removes, and the swap writes those alone, so a cycle's store work
+  follows the size of the delta, not of the tree. Costs and edges: (1) every read of the new tree
+  looks in `staging` and `staging_gone` before `items` — two index lookups where there was one, and
+  each recursive walk of it (a path, what is below a folder) is written with two steps, one per
+  table: a walk over a `UNION ALL` of the two would make SQLite read both whole at every step;
+  (2) a full listing (no delta link, an expired feed) still stages every row and its swap rewrites
+  `items` whole: it has read the whole drive anyway; (3) the rows a delta stages equal to the base
+  (a deferred change staged again, an entry sent twice) are written back unchanged at the swap;
+  (4) an item is looked at again when `items` has no local handle for it, found through an index of
+  such rows, each placed or not by one query for the lot: on a filesystem that gives no handles
+  every item has none, and every cycle of a read-write folder reads them all and reconciles them —
+  as before; (5) a store written by a daemon before this one and stopped between staging and swap
+  holds a whole copy in `staging`, read as a delta over `items` (the same tree) until the next
+  cycle empties it; (6) the read-write reconcile's plan (`Rw::read`) still reads every outbox row
+  once per cycle that changes anything, about 30 ms at 30 000 rows. LIMIT (chosen) · measured
+  (`tree::tests::a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree`,
+  `a_delta_laid_over_items_removes_and_changes_what_it_says`, `bench::a_delta_cycle_changing_*`,
+  `bench::an_idle_read_write_cycle`). Open.
+- **F166. Thumbnails are picked a page at a time, and each is looked at once per drain**
+  (`tree.rs`, `thumbnail_candidates`; `sync/thumbs.rs`, `drain`; issue #39) — the candidates are
+  placed images and videos whose `thumb_key` is missing or not the cTag, path and time they have
+  now, worked out in SQL: the key is written by `thumb_key` in Rust and compared in SQL, so the two
+  must build the same string (`<cTag>|<path>|<mtime>`; a test makes a thumbnail and expects no
+  second request). They are read in id order, 500 ids a query (`THUMB_PAGE`) and at most 5 000
+  ids in one store call (`THUMB_SCAN`), both guesses; each batch of 200 goes on from the last id
+  it took. Costs: (1) a drain looks at each candidate once: one Graph failed for this time (a
+  network error, a `5xx`) waits for the next drain — the next cycle's kick, or ten minutes; (2) a
+  thumbnail that cannot be written into the cache here (a full disk, a cache that is not a
+  directory) is recorded like a 404 and not asked for again until the file changes — before, it
+  was not recorded, and a batch of 200 such failures kept the drain asking for the same 200 in a
+  loop; (3) with every thumbnail made, a drain still reads every candidate's page and path once
+  (about 16 ms per 5 000 at 20 000 images, `bench::a_thumbnail_batch`). LIMIT (chosen) · measured
+  (`sync::thumbs::tests::batches_go_on_where_the_last_stopped`,
+  `a_batch_of_local_failures_ends_the_drain`). Open.
+- **F167. The counts are walked once per cycle that may have changed the tree** (`tree.rs`,
+  `counts`; `sync/listing.rs`; `sync/local/examine.rs`; issue #39) — `ItemsPlaced` and
+  `SkippedCount` need a walk of the whole tree from the root; it runs after a cycle with changes in
+  its delta, a Full reconcile or a listing, never after one with nothing new, and at a first
+  listing's start and end only: in between, `ItemsListed` and `ItemsPlaced` grow by what each page
+  listed and placed, so while a page-by-page listing runs they can differ a little from the tree
+  (an entry listed twice, one placed with its folder on a later page), until the end sets them
+  right. Uploads write rows into `items` between cycles; the counts follow at the next cycle with
+  changes, which the uploads' own echo in the delta is. The mass-delete guard walks the tree only
+  when a batch removes between `MASS_DELETE_FLOOR` and `MASS_DELETE_ITEMS` items, where the share
+  decides. The walk costs about 80 ms at 100 000 items, most of a 10-change cycle's store work
+  (`bench::a_delta_cycle_changing_10_files`). LIMIT (chosen) · measured. Open.
+- **F168. `Skipped()` climbs from the skipped rows; the window shows 200** (`tree.rs`, `skipped`;
+  `app/qml/SkippedPage.qml`; issue #39) — one query starts from an index of the rows not placed
+  and climbs each one's folders to the root, carrying its path, on the read-only connection (so
+  it answers with what was last committed, like F161); 15 ms for 5 000 skipped among 100 000 items
+  (`bench::the_skipped_list`). The D-Bus reply and `konedrivectl sync skipped` still carry every
+  entry (P9). A skipped item whose folders never reach the root (an orphan) is not listed, as
+  before. The window's page shows the first 200 (a guess) in a list that builds only the rows in
+  sight, then "and N more" with the command that prints them all: the rest cannot be reached from
+  the window. It asks again when shown, and while shown at most once a second (a guess) however
+  often `SkippedCount` changes. LIMIT (chosen) · measured
+  (`tree::tests::counts_and_the_skipped_list_see_only_what_is_reachable`, the app's
+  `dialogstest::thousandsSkippedAndConflictsAreAFewRows`). Open.
+- **F169. Replacements go through one queue worked by 8 tasks** (`sync/listing.rs`,
+  `REPLACE_WORKERS`; `pool.rs`, `Waiters`; issue #39) — a delta changing 30 000 downloaded files
+  used to start 30 000 tasks, each a waiter of the transfer pool, whose line was searched from its
+  start at every grant: quadratic (1.3 s to grant 30 000 in turn, now 5 ms,
+  `bench::the_pool_with_30000_waiters`). The pool now keeps its waiters by id and in one line per
+  class and size, and the replacements wait in the listing's own queue, which 8 tasks (a guess)
+  work through: no more than 8 replacements download at once, even when the pool would give more
+  slots. The queue holds one entry per file (a newer version of a file under way waits in its
+  `InFlight`, as before), and a stop drops what is left in it: the next cycle finds those files
+  again. LIMIT (chosen) · measured
+  (`pool::tests::thirty_thousand_waiters_are_granted_in_order_and_one_gives_up`). Open.
+- **F170. The conflicts are looked over 200 at a time; the window shows 200** (`sync/activity.rs`,
+  `prune`, `PRUNE_BATCH`; `app/conflictmodel.cpp`, `app/qml/ConflictsPage.qml`; issue #39) — at
+  each cycle's end, and after a conflict is added or dismissed, the next 200 conflicts (a guess), in
+  the order of their rescued paths from where the last look stopped, are read on the store's
+  read-only connection, each `lstat`ed, and those gone dropped in one transaction; `ConflictCount`
+  is then what is on record. So with more than 200 conflicts, a rescued file removed by hand drops
+  off within a few cycles rather than at the next one, and `ConflictCount` can count it until
+  then. `Conflicts()` still looks at every one (3.4 ms at 2 000) and sets the count right. The
+  window's Conflicts page lists the newest 200 (a guess), then "and N more" with
+  `konedrivectl sync conflicts`; the rest cannot be reached from the window. Its model takes a new
+  list as one removal, one insertion and one change, or else one reset — a reset (several
+  scattered dismissals, a time that reorders the rows) takes the list back to its top. Both pages
+  have a fixed height, since a page waiting in the window's hidden holder would otherwise take the
+  whole list's height and build every row. LIMIT (chosen) · measured
+  (`sync::activity::tests::conflicts_are_looked_over_a_batch_at_a_time`,
+  `bench::the_conflicts_at_the_end_of_a_cycle`, the app's
+  `modelstest::thousandsOfConflictsChangeInOneStep`,
+  `dialogstest::thousandsSkippedAndConflictsAreAFewRows`). Open.
+- **F171. A reconcile records what it placed 500 at a time** (`sync/materialize.rs`,
+  `record_placed`, `PLACED_BATCH`; issue #39) — the inode each placed item was made as used to be
+  written by two committed `UPDATE`s and a job of its own per item (3 s for a full placement of
+  100 000 items); it is now noted in the run and written 500 at a time (a guess) in one
+  transaction, and whatever is left at the end of the run, also a run that fails (0.4 s,
+  `bench::recording_a_full_placement`). Until its batch is written, an item placed in this run has
+  no local object on record: nothing reads that before the run ends — the cycle holds the tree
+  lock across the reconcile, so no examination runs meanwhile — but a crash in between leaves up to
+  500 placed items without one, which the next read-write cycle looks at again and records (F82
+  (8)). A replacement's new inode is still recorded on its own. LIMIT (chosen) · measured. Open.
 ---
 
 ## 5. Provisional numbers
@@ -2241,6 +2354,10 @@ application must never read zeros where real content should be.
 | Hydration requests taken off the helper's queue at once (`FILL_ADMISSION`) | 64, the helper's credit; each then waits for its account's pool | pinned by a test |
 | Window's transfer charts | the last 2 min, one sample a second | **guess** |
 | Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |
+| Thumbnail candidates looked at per query / per store call (`THUMB_PAGE`, `THUMB_SCAN`) | 500 / 5 000 | **guess** (`crates/konedrived/src/tree.rs`, issue #39) |
+| Replacements downloading at once (`REPLACE_WORKERS`) | 8, each also in a pool slot | **guess** (`crates/konedrived/src/sync/listing.rs`, issue #39) |
+| Placed items recorded in one transaction (`PLACED_BATCH`) | 500 | **guess** (`crates/konedrived/src/sync/materialize.rs`, issue #39) |
+| Conflicts looked over per cycle (`PRUNE_BATCH`) / rows the window's Skipped and Conflicts pages list / how often the Skipped page asks again | 200 / 200 / at most once a second | **guess** (`crates/konedrived/src/sync/activity.rs`, `app/qml/SkippedPage.qml`, `app/conflictmodel.h`; issue #39) |
 | Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
 | Shortest time between two `LocalBytes` walks | 5 s | **guess** |
 | Shortest time between two coalesced `PropertiesChanged` (counters, status, `Transfers`) | 250 ms, at most 4 signals a second | the design's four a second |
@@ -2329,6 +2446,9 @@ application must never read zeros where real content should be.
   missing socket, and `free_up_space_frees_what_is_not_in_use_and_counts_what_is` frees nothing.
   `/tmp`, `/var/tmp` and the runner's temporary directory are short enough; a directory deep in a
   worktree is not. Measured (#43). The daemon's real socket path is short and fixed.
+- **D19.** The window's `accountsmodeltest::theChoiceIsRemembered` failed once in a full `ctest`
+  run of the app (with `HOME` and the XDG directories in a temporary directory) and passed alone and
+  on the next run; nothing it touches changed in #39. Seen once; not chased.
 
 ---
 

@@ -22,7 +22,7 @@
 //! that the folder fills as the drive is listed and a listing stopped
 //! part-way resumes where it stopped. See [`Listing::list_placing`].
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -221,13 +221,20 @@ pub struct Listing {
     /// Replacements that failed ("the status says why"), tried
     /// again after every cycle until they succeed or are no longer needed.
     failed_replacements: std::sync::Mutex<HashMap<String, (Replacement, String)>>,
+    /// The replacement workers ([`REPLACE_WORKERS`] at most, issue #39).
     replacements: std::sync::Mutex<JoinSet<()>>,
+    /// The replacements waiting for a worker, and how many workers run.
+    queued_replacements: std::sync::Mutex<(VecDeque<Replacement>, usize)>,
     cancel_replacements: CancellationToken,
     /// Read-write mode: the outbox commit count the last cycle's fetch
     /// started at; items the outbox committed after it are looked at again
     /// by the next cycle.
     revisit_from: std::sync::atomic::AtomicI64,
 }
+
+/// Replacements at once (issue #39): the queue's workers. A guess; each
+/// also waits for a slot of the account's transfer pool.
+pub const REPLACE_WORKERS: usize = 8;
 
 /// A replacement under way: the version it fetches, and a newer version of
 /// the same file that arrived meanwhile, fetched when it ends.
@@ -363,6 +370,7 @@ impl Listing {
             replacing: std::sync::Mutex::new(HashMap::new()),
             failed_replacements: std::sync::Mutex::new(HashMap::new()),
             replacements: std::sync::Mutex::new(JoinSet::new()),
+            queued_replacements: std::sync::Mutex::new((VecDeque::new(), 0)),
             cancel_replacements: CancellationToken::new(),
             revisit_from: std::sync::atomic::AtomicI64::new(0),
         })
@@ -436,6 +444,9 @@ impl Listing {
             }
             (None, None) => self.list_all(turn, cancel).await?,
         };
+        // Whether this cycle may have changed the tree: its counts are
+        // published then, and not in an idle cycle (issue #39).
+        let listed = matches!(fetched, Fetched::Listed { .. } | Fetched::Placed(_));
         let (reconciled, changes) = match (fetched, fetch_seq) {
             (Fetched::Placed(placed), _) => (placed, 0),
             (fetched, Some(seq)) => {
@@ -478,15 +489,18 @@ impl Listing {
             self.needs_full.store(true, Ordering::SeqCst);
         }
         let Reconciled { applied, full } = reconciled;
-        self.publish_counts(turn).await?;
+        if listed || full || full_requested || changes > 0 {
+            self.publish_counts(turn).await?;
+        }
         // `LastChecked`: this cycle succeeded. Kept in the store,
         // so a restart still knows when the folder was last in step.
         let now = activity::unix_now();
         self.on_store(turn, move |s| s.set_meta("last_checked", Some(&now.to_string()))).await?;
         self.ctx.state.update(|s| s.last_checked = now);
         // A conflict whose rescued file is gone drops off by itself (spec
-        // §16.1), whether or not anyone asks for the list. Not through
-        // `on_store`: the activity log takes the store's lock itself.
+        // §16.1), whether or not anyone asks for the list: a batch of them
+        // looked over each cycle (issue #39). Not through `on_store`: the
+        // activity log takes the store's lock itself.
         let (report, held) = (self.ctx.report.clone(), Arc::clone(turn));
         if let Err(e) = tokio::task::spawn_blocking(move || {
             let _turn = held;
@@ -673,14 +687,21 @@ impl Listing {
         // However the listing ends — also when its future is dropped.
         let _said = OnDrop(Some(|| self.ctx.state.update(|s| s.listing = false)));
         // Read-write mode: the outbox's commit count when `staging` was last made from `items`.
-        let mut staged_at = Some(
-            self.on_store(turn, |s| {
+        let (seq, counts) = self
+            .on_store(turn, |s| {
                 s.begin_staging(true)?;
-                s.outbox_seq()
+                Ok((s.outbox_seq()?, s.counts()?))
             })
-            .await?,
-        );
-        self.publish_counts(turn).await?;
+            .await?;
+        let mut staged_at = Some(seq);
+        // The counts are walked once here and once at the end; in between,
+        // each page adds what it listed and placed (issue #39).
+        let (mut listed, mut shown) = (counts.listed, counts.placed);
+        self.ctx.state.update(|s| {
+            s.items_listed = counts.listed;
+            s.items_placed = counts.placed;
+            s.skipped_count = counts.skipped;
+        });
         let mut placed = Reconciled::default();
         let mut full = true;
         let mut handed_over = false;
@@ -703,6 +724,7 @@ impl Listing {
             };
             resuming = false;
             let changes: Vec<Change> = page.items.iter().map(classify).collect();
+            listed += changes.iter().filter(|c| matches!(c, Change::Upsert(_))).count() as u64;
             let staged = changes.clone();
             // Read-write mode: the tree lock from this page's staging to its commit,
             // and `staging` made again from `items` under it when an outbox commit wrote
@@ -745,8 +767,12 @@ impl Listing {
             // Still Full until a page is placed at all: none is before the
             // drive's root has come.
             full &= !done.full;
+            shown += done.applied.created;
             placed.add(done);
-            self.publish_counts(turn).await?;
+            self.ctx.state.update(|s| {
+                s.items_listed = listed;
+                s.items_placed = shown;
+            });
             match next {
                 Some(next) => from = DeltaFrom::Link(next),
                 None => {
@@ -901,7 +927,7 @@ impl Listing {
     }
 
     async fn publish_counts(&self, turn: &Turn) -> Result<(), CycleError> {
-        let counts = self.on_store(turn, |s| s.counts(Table::Items)).await?;
+        let counts = self.on_store(turn, |s| s.counts()).await?;
         self.ctx.state.update(|s| {
             s.items_listed = counts.listed;
             s.items_placed = counts.placed;
@@ -914,13 +940,17 @@ impl Listing {
     /// §7.3), and retries those that failed. A newer version of a file whose
     /// replacement is under way is fetched when that one ends; a failed one
     /// is retried only when no fresher replacement of the file stands for it.
+    /// They wait in one queue, worked by at most [`REPLACE_WORKERS`] tasks
+    /// (issue #39): a delta changing thousands of files starts a few tasks,
+    /// not one each.
     fn spawn_replacements(self: &Arc<Self>, fresh: Vec<Replacement>) {
+        let fresh_ids: HashSet<&str> = fresh.iter().map(|r| r.id.as_str()).collect();
         let retries: Vec<Replacement> = self
             .failed_replacements
             .lock()
             .unwrap()
             .values()
-            .filter(|(failed, _)| !fresh.iter().any(|r| r.id == failed.id))
+            .filter(|(failed, _)| !fresh_ids.contains(failed.id.as_str()))
             .map(|(failed, _)| failed.clone())
             .collect();
         let mut start = Vec::new();
@@ -944,33 +974,70 @@ impl Listing {
                 }
             }
         }
-        for replacement in start {
-            self.start_replacement(replacement);
-        }
+        self.queue_replacements(start);
     }
 
-    fn start_replacement(self: &Arc<Self>, replacement: Replacement) {
-        let this = Arc::clone(self);
+    /// Queues `replacements`, each already in `replacing`, and starts
+    /// workers for them up to [`REPLACE_WORKERS`].
+    fn queue_replacements(self: &Arc<Self>, replacements: Vec<Replacement>) {
+        if replacements.is_empty() {
+            return;
+        }
+        let starting = {
+            let mut queued = self.queued_replacements.lock().unwrap();
+            queued.0.extend(replacements);
+            let starting = REPLACE_WORKERS.saturating_sub(queued.1).min(queued.0.len());
+            queued.1 += starting;
+            starting
+        };
+        if starting == 0 {
+            return;
+        }
         let mut tasks = self.replacements.lock().unwrap();
         // Finished ones are kept only for `join_replacements`.
         while tasks.try_join_next().is_some() {}
-        tasks.spawn(async move {
-            // Cut short by `Poller::stop`: no outcome, and nothing after it.
-            let outcome = this.cancel_replacements.run_until_cancelled(this.replace_one(&replacement)).await;
+        for _ in 0..starting {
+            let this = Arc::clone(self);
+            tasks.spawn(async move { this.replace_queued().await });
+        }
+    }
+
+    /// A replacement worker: takes the next file from the queue until it is
+    /// empty. Cut short by `Poller::stop`: what is left in the queue goes
+    /// with no outcome.
+    async fn replace_queued(self: Arc<Self>) {
+        loop {
+            let replacement = {
+                let mut queued = self.queued_replacements.lock().unwrap();
+                match queued.0.pop_front().filter(|_| !self.cancel_replacements.is_cancelled()) {
+                    Some(replacement) => replacement,
+                    None => {
+                        let left: Vec<Replacement> = queued.0.drain(..).collect();
+                        queued.1 -= 1;
+                        drop(queued);
+                        let mut replacing = self.replacing.lock().unwrap();
+                        for replacement in left {
+                            replacing.remove(&replacement.id);
+                        }
+                        return;
+                    }
+                }
+            };
+            let outcome = self.cancel_replacements.run_until_cancelled(self.replace_one(&replacement)).await;
             let stopped = outcome.is_none();
             if let Some((outcome, event)) = outcome {
                 // A failure retried after every cycle is said once, not a
                 // minute (I1).
-                let news = this.record_replacement(&replacement, outcome);
+                let news = self.record_replacement(&replacement, outcome);
                 if let Some(event) = event {
                     if news {
-                        this.ctx.report.activity.record(vec![event]).await;
+                        self.ctx.report.activity.record(vec![event]).await;
                     }
-                    this.ctx.report.space.kick();
+                    self.ctx.report.space.kick();
                 }
             }
             let next = {
-                let mut replacing = this.replacing.lock().unwrap();
+                let mut replacing = self.replacing.lock().unwrap();
                 let next = replacing.remove(&replacement.id).and_then(|running| running.next).filter(|_| !stopped);
                 if let Some(next) = &next {
                     replacing.insert(next.id.clone(), InFlight { ctag: next.ctag.clone(), next: None });
@@ -978,9 +1045,9 @@ impl Listing {
                 next
             };
             if let Some(next) = next {
-                this.start_replacement(next);
+                self.queued_replacements.lock().unwrap().0.push_back(next);
             }
-        });
+        }
     }
 
     /// Replaces one file, shown in `Transfers` while it downloads (spec
@@ -1137,8 +1204,8 @@ fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Appl
     let folder = root.display().to_string();
     let mut events = match said {
         Said::Listed => {
-            let listed = match store.call_blocking(move |s| s.counts(Table::Items)) {
-                Ok(counts) => counts.listed,
+            let listed = match store.call_blocking(move |s| s.listed_count()) {
+                Ok(listed) => listed,
                 Err(e) => {
                     tracing::warn!("cannot count what was listed: {e}");
                     0

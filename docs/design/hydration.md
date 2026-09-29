@@ -376,7 +376,9 @@ large one waiting for the limit lets the small ones behind it go. A file being o
 A file being opened goes first: it may use two reserve slots above the pool, and while any open
 waits or runs no background work takes a new slot. Then metadata changes, then background
 downloads and uploads, one to each in turn. A pause holds back everything but opens. Every number
-is a guess (limitations log, section 5; F143–F148).
+is a guess (limitations log, section 5; F143–F148). The waiters are kept by id, and those not
+granted yet in one line per class and size in the order they came, so that a grant, a release or a
+waiter giving up finds its waiter without a search, however many wait (issue #39, F169).
 
 A request is taken off the daemon's request queue — at most as many at once as the helper's
 credit (§10.3), so they never pile up as tasks that each hold an event descriptor — routed to its

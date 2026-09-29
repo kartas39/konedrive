@@ -50,7 +50,7 @@ use crate::sync::activity::Kind as EventKind;
 use crate::sync::disk::{Probe, Scanned, HOLDING, NEW_PREFIX};
 use crate::sync::local::{names, IgnoreList};
 use crate::sync::upload::copy_name;
-use crate::tree::outbox::{is_under, OutboxOp, SWAP_PREFIX};
+use crate::tree::outbox::{OutboxOp, SWAP_PREFIX};
 use crate::tree::{Kind, Placement, Table, TreeError, TreeStore};
 
 /// What a read-write folder's reconcile needs to know besides the tree.
@@ -64,7 +64,9 @@ pub struct Rw {
     pub removing: HashSet<String>,
     /// Where rows with no item id stand — a `create` or a `mkdir` not landed
     /// yet: an object there without an id is the outbox's, not in the way.
-    pub pending: Vec<PathBuf>,
+    /// Each such place and every folder above it, so that a look is one
+    /// lookup (issue #39).
+    pub pending: HashSet<PathBuf>,
     /// Items placed again where missing: new in OneDrive, a file whose
     /// content changed there, an item with no local object on record — and
     /// every folder above them.
@@ -91,7 +93,7 @@ impl Rw {
         let mut rw = Rw { machine, upload_differences, ignore, ..Rw::default() };
         for row in s.outbox_rows()? {
             let Some(id) = row.item_id.clone() else {
-                rw.pending.push(row.rel.clone());
+                rw.pending.extend(row.rel.ancestors().map(Path::to_path_buf));
                 continue;
             };
             let folder = s.get(Table::Items, &id)?.is_some_and(|r| r.kind == Kind::Folder);
@@ -173,7 +175,7 @@ impl Rw {
 
     /// Whether a row with no item id stands at `rel`, or below it.
     pub(super) fn pending_at(&self, rel: &Path) -> bool {
-        self.pending.iter().any(|p| p == rel || is_under(p, rel))
+        self.pending.contains(rel)
     }
 
     /// Whether the cloud has something to put at item `id`'s name that the

@@ -64,10 +64,7 @@ pub struct ThumbnailFiller {
 }
 
 /// What one `run_once` did: `taken` is how many candidates it
-/// looked at, `written` how many thumbnails it actually wrote. A batch of
-/// exactly `limit` candidates may have more waiting behind it even when few
-/// of them were writable (a 404, a body over the cap...), so a draining loop
-/// must key off `taken`, not `written`.
+/// looked at, `written` how many thumbnails it actually wrote.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RunOutcome {
     pub taken: usize,
@@ -82,8 +79,9 @@ enum FillError {
     /// Recorded like a 404 — asking Graph again would only get the same
     /// bytes back.
     Undecodable(String),
-    /// A local problem: disk, permissions, a vanished cache directory. Not
-    /// recorded, so the next cycle tries again.
+    /// A local problem: disk, permissions, a vanished cache directory.
+    /// Recorded like the rest (issue #39): a batch of them ends the drain,
+    /// and the item is asked for again once it changes.
     Io(String),
 }
 
@@ -95,11 +93,18 @@ impl ThumbnailFiller {
     /// Makes up to `limit` missing thumbnails, each request in a background slot of the
     /// account's transfer pool, as many at once as the pool gives.
     pub async fn run_once(&self, cancel: &CancellationToken, limit: usize) -> RunOutcome {
-        let candidates = match self.store.call(move |s| s.thumbnail_candidates(limit, thumb_key)).await {
-            Ok(candidates) => candidates,
+        self.run_from(cancel, limit, String::new()).await.0
+    }
+
+    /// [`run_once`](Self::run_once) over the candidates after id `after`;
+    /// with the id the next batch goes on from, `None` once every candidate
+    /// has been looked at.
+    async fn run_from(&self, cancel: &CancellationToken, limit: usize, after: String) -> (RunOutcome, Option<String>) {
+        let (candidates, next) = match self.store.call(move |s| s.thumbnail_candidates(&after, limit)).await {
+            Ok(found) => found,
             Err(e) => {
                 tracing::warn!("cannot list the thumbnails to make: {e}");
-                return RunOutcome::default();
+                return (RunOutcome::default(), None);
             }
         };
         let taken = candidates.len();
@@ -130,27 +135,31 @@ impl ThumbnailFiller {
         while let Some(done) = running.join_next().await {
             written += usize::from(done.unwrap_or(false));
         }
-        RunOutcome { taken, written }
+        (RunOutcome { taken, written }, next)
     }
 
-    /// Calls `run_once` until a batch comes back with fewer than `limit`
-    /// candidates — the sign nothing more is waiting right now — or
+    /// Batches of up to `limit`, each going on where the last stopped
+    /// (issue #39), until every candidate has been looked at once — a
+    /// candidate that failed this time waits for the next drain — or
     /// cancellation.
     async fn drain(&self, cancel: &CancellationToken, limit: usize) -> RunOutcome {
         let mut total = RunOutcome::default();
-        loop {
-            let outcome = self.run_once(cancel, limit).await;
+        let mut after = Some(String::new());
+        while let Some(from) = after {
+            let (outcome, next) = self.run_from(cancel, limit, from).await;
             total.taken += outcome.taken;
             total.written += outcome.written;
-            if outcome.taken < limit || cancel.is_cancelled() {
-                return total;
+            if cancel.is_cancelled() {
+                break;
             }
+            after = next;
         }
+        total
     }
 
     /// Runs in the background: after every cycle (`kick`), and every ten
     /// minutes in case a kick was missed, draining 200 thumbnails at a time
-    /// per `run_once` until a batch is not full.
+    /// until every candidate has been looked at.
     pub fn spawn(self, kick: Arc<Notify>, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
@@ -193,8 +202,9 @@ impl One {
         // Whether to record `key` for this item: true for anything that
         // settles the question of whether it has a usable thumbnail
         // (a real write, a 404, an oversized/refused body, bytes that
-        // will not decode); false for a condition worth trying again
-        // (a network hiccup, a local I/O problem).
+        // will not decode) and for a local I/O problem, which would fail
+        // the same way at once (issue #39); false for a network hiccup,
+        // tried again at the next drain.
         let settle = match fetched {
             Ok(Some(bytes)) => {
                 let (cache, file, mtime) = (self.cache.clone(), self.folder.join(&rel), row.mtime);
@@ -209,7 +219,7 @@ impl One {
                     }
                     Ok(Err(FillError::Io(reason))) => {
                         tracing::warn!("cannot cache the thumbnail of {}: {reason}", rel.display());
-                        false
+                        true
                     }
                     Err(e) => {
                         tracing::warn!("the thumbnail task for {} failed: {e}", rel.display());
@@ -509,6 +519,47 @@ mod tests {
         let outcome = filler.drain(&CancellationToken::new(), 200).await;
         assert_eq!(outcome.taken, 201, "every candidate was looked at, not just the first full batch");
         assert_eq!(outcome.written, 200, "everything but the 404 was written");
+    }
+
+    /// Issue #39: batches go on where the last one stopped — each candidate
+    /// is looked at once per drain, the ones Graph fails for this time
+    /// included — and the next drain starts from the beginning again.
+    #[tokio::test]
+    async fn batches_go_on_where_the_last_stopped() {
+        let items: Vec<Change> = (0..5).map(|i| photo(&format!("P{i}"), &format!("p{i}.jpg"), "image/jpeg")).collect();
+        let w = world(&items).await;
+        // Every request fails in a way worth trying again (a server error).
+        Mock::given(method("GET")).and(path_regex(r"^/me/drive/items/P\d/thumbnails/0/c512x512/content$"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&w.server).await;
+        let filler = w.filler();
+        let (first, next) = filler.run_from(&CancellationToken::new(), 2, String::new()).await;
+        assert_eq!((first.taken, next.as_deref()), (2, Some("P1")));
+        let (second, next) = filler.run_from(&CancellationToken::new(), 2, next.unwrap()).await;
+        assert_eq!((second.taken, next.as_deref()), (2, Some("P3")), "not P0 and P1 again");
+        let total = filler.drain(&CancellationToken::new(), 2).await;
+        assert_eq!(total.taken, 5, "a drain looks at each once, and ends");
+    }
+
+    /// Issue #39: a thumbnail that cannot be cached here (the cache is not a
+    /// directory) is recorded like the other failures: a batch of them ends
+    /// the drain, and the item is not asked for again until it changes.
+    #[tokio::test]
+    async fn a_batch_of_local_failures_ends_the_drain() {
+        let items: Vec<Change> = (0..3).map(|i| photo(&format!("P{i}"), &format!("p{i}.jpg"), "image/jpeg")).collect();
+        let w = world(&items).await;
+        Mock::given(method("GET")).and(path_regex(r"^/me/drive/items/P\d/thumbnails/0/c512x512/content$"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(8, 8)))
+            .expect(3)
+            .mount(&w.server).await;
+        let cache = w.cache.path().join("not-a-directory");
+        std::fs::write(&cache, b"").unwrap();
+        let drive = crate::drive::DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap();
+        let root = SyncRoot { path: w.folder.path().canonicalize().unwrap(), root_id: "r".into() };
+        let filler = ThumbnailFiller::new(drive, w.store.clone(), root, cache);
+        let total = filler.drain(&CancellationToken::new(), 2).await;
+        assert_eq!((total.taken, total.written), (3, 0));
+        assert_eq!(filler.drain(&CancellationToken::new(), 2).await.taken, 0, "recorded: not asked for again");
     }
 
     /// A deterministic replacement for the old timing-based

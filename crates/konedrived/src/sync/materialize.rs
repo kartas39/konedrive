@@ -193,7 +193,13 @@ struct Run {
     /// Read-write mode, Changed scope: items not found where the base has
     /// them (deleted or moved here, not examined yet).
     missing: HashSet<String>,
+    /// The inodes items were placed as, not recorded yet: written
+    /// [`PLACED_BATCH`] at a time, and at the end of the run (issue #39).
+    placed: Vec<(String, konedrive_fs::handle::FileHandle)>,
 }
+
+/// Placed items recorded in one transaction (issue #39; a guess).
+pub const PLACED_BATCH: usize = 500;
 
 impl Run {
     /// Notes what a Changed scope did to `rel`; a Full scope notes nothing
@@ -256,6 +262,38 @@ impl Materializer {
     }
 
     fn apply_run(&self, scope: Scope, run: &mut Run) -> Result<(), ApplyError> {
+        let result = self.apply_run_placing(scope, run);
+        // What was placed is recorded, whatever became of the run.
+        let recorded = self.record_placed_now(run);
+        result.and(recorded)
+    }
+
+    /// Notes the inode item `id` was just placed as, `name` in `dir`, by
+    /// name, opening nothing; recorded with the rest of its batch. A
+    /// filesystem that gives no handles leaves it unrecorded (see
+    /// `local::record_placed`).
+    fn record_placed(&self, run: &mut Run, dir: &File, name: &OsStr, id: &str) -> Result<(), ApplyError> {
+        match konedrive_fs::handle::FileHandle::at(dir, name) {
+            Ok(handle) => run.placed.push((id.to_owned(), handle)),
+            Err(e) => tracing::debug!("no file handle for {}: {e}", name.to_string_lossy()),
+        }
+        if run.placed.len() >= PLACED_BATCH {
+            self.record_placed_now(run)?;
+        }
+        Ok(())
+    }
+
+    /// Records the placements noted so far, in one transaction.
+    fn record_placed_now(&self, run: &mut Run) -> Result<(), ApplyError> {
+        if run.placed.is_empty() {
+            return Ok(());
+        }
+        let placed = std::mem::take(&mut run.placed);
+        self.store.call_blocking(move |s| s.set_local_handles(&placed))?;
+        Ok(())
+    }
+
+    fn apply_run_placing(&self, scope: Scope, run: &mut Run) -> Result<(), ApplyError> {
         match (scope, &self.rw) {
             (Scope::Full, None) => self.full(run)?,
             (Scope::Changed(ids), None) => self.changed(ids, run)?,
@@ -441,7 +479,7 @@ impl Materializer {
                     // Found where it belongs: its object, if none is recorded
                     // (a rebuilt base, a forgotten one), is this one.
                     if rw.unplaced.contains(&row.id) {
-                        super::local::record_placed(&self.store, &dir, name, &row.id);
+                        self.record_placed(run, &dir, name, &row.id)?;
                     }
                 }
                 if !is_folder {
@@ -499,7 +537,7 @@ impl Materializer {
                         self.mark(&waiting, &rel)?;
                     }
                     self.disk.rename(&holding, OsStr::new(&row.id), &dir, name)?;
-                    super::local::record_placed(&self.store, &dir, name, &row.id);
+                    self.record_placed(run, &dir, name, &row.id)?;
                     run.out.moved += 1;
                     let from = run.moved_from.get(&row.id).cloned();
                     run.note(EventKind::Moved, &rel, from);
@@ -529,7 +567,7 @@ impl Materializer {
                 let made = self.labelled_dir(dir, &temp, row, rel, run)?;
                 self.mark(&made, rel)?;
                 self.disk.rename(dir, OsStr::new(&temp), dir, OsStr::new(&row.name))?;
-                super::local::record_placed(&self.store, dir, OsStr::new(&row.name), &row.id);
+                self.record_placed(run, dir, OsStr::new(&row.name), &row.id)?;
                 run.made.push(rel.to_path_buf());
             }
             Kind::File => {
@@ -541,7 +579,7 @@ impl Materializer {
                     mode: if self.disk.locked() { LOCKED_FILE_MODE } else { OPEN_FILE_MODE },
                 };
                 self.disk.writable(dir, || placeholder::create_placeholder_with(dir, &row.name, &spec))?;
-                super::local::record_placed(&self.store, dir, OsStr::new(&row.name), &row.id);
+                self.record_placed(run, dir, OsStr::new(&row.name), &row.id)?;
                 self.note_if_pinned(rel, run);
             }
         }

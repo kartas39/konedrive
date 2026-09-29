@@ -267,8 +267,13 @@ app's:
 |---|---|
 | **Status** | the status line, the folder and its item count, "On this computer: …", "Free Up Space…", "Refresh Now", "Open in File Manager", and a card with the helper's instruction while it is not `connected`. For a OneDrive folder: the mode ("Read-only" or "Changes upload"), the local scan in one line — "Checking local files: 1234 folders and 45678 files, of about 50000 — started 2 min ago, after the switch to read-write" while one runs, "Local files last checked 5 min ago (took 40 s)" once one has finished, "Local files not checked yet" before; no line for a read-only folder — "N changes waiting to upload" with the size to send (to the Activity page), "N changes cannot be uploaded" while any are blocked (to Not Uploaded), removals the mass-delete guard holds with "Restore Them" and "Delete in OneDrive Too", and "Pause Syncing…" (for 2, 8 or 24 hours, or until resumed) or, while paused, "Paused until 14:00" with "Resume" |
 | **Activity** | two mini cards side by side, "Downloading" and "Uploading": each the speed, "N files downloading" (or "uploading"), while anything is left that way a line "1 234 files left · 48.2 GiB · about 12 min" (the Uploading card counts changes: "6 changes left · …"; the time only when known) with, smaller, "3.1 GiB done" (`Sync1`'s queue totals, issue #16), and one chart of the last two minutes (one sample a second, kept by the window) with two lines on two scales — speed on the left axis, the files moving that way on the right — each in its own colour, with a small legend ("Speed", and "Files downloading" or "Files uploading"); dimmed with "no transfers" while idle (KQuickCharts); below both, the shared pool once, "Pool: 25 of 64 (large: 3 of 4)", adding "— OneDrive asked to wait 30 s" (counting down) during a `Retry-After`; then "Downloading now" and "Uploading now" (each file with a progress bar and its size), "Waiting to upload" while the Not Uploaded page lists anything: only its link, "N changes kept back — see Not Uploaded" (N: what that page counts; what is left to upload is in the Uploading card; no row per file), and "Recent" (the newest 50 events; clicking one shows the file in Dolphin) |
-| **Conflicts** | each rescued file: the file, where it was, where it is now, when; "Show in Folder" and "Dismiss". A file changed on both sides kept a copy beside it instead: which name is whose, "Show Both" (both files selected in Dolphin) and "Dismiss". Always present, with a count badge (the chosen account's) while there are conflicts, and "No conflicts" otherwise |
-| **Not in the Folder** | the skipped items and why, in the same words as `sync skipped` (a test keeps the two in step) |
+| **Conflicts** | each rescued file: the file, where it was, where it is now, when; "Show in Folder" and "Dismiss". A file changed on both sides kept a copy beside it instead: which name is whose, "Show Both" (both files selected in Dolphin) and "Dismiss". The newest 200, then "and N more" naming `konedrivectl sync conflicts`; a changed list is taken in one step (one removal, one insertion and one change, or one reset), never row by row. Always present, with a count badge (the chosen account's) while there are conflicts, and "No conflicts" otherwise |
+| **Not in the Folder** | the skipped items and why, in the same words as `sync skipped` (a test keeps the two in step): the first 200, then "and N more" naming `konedrivectl sync skipped`. Read when shown, and while shown at most once a second however often `SkippedCount` moves |
+
+The Conflicts and Not in the Folder pages list their rows in a `ListView`, which builds only the
+rows in sight, so thousands of entries cost a handful of delegates; both keep a fixed height, since
+a page waiting in the window's hidden holder would otherwise take the whole list's height and build
+every row (issue #39, limitations log F168, F170).
 | **Not Uploaded** | what stays on this computer and why (`NotUploadedSummary()`), in four groups: "Needs You" (a reason one action fixes: its count, size and button — "Refresh" for a full OneDrive, "Sign In Again" for a sign-in that does not allow writes), "Needs You for Each File" (each reason with its count; opened, its files — `NotUploadedFiles(reason, 20)`, asked only then — each with its reason, OneDrive's own words for a refused one; clicking one shows it in Dolphin; past 20, "and N more" names `konedrivectl sync not-uploaded --all`), "Never Uploaded" (a line per reason with its count) and "Waiting" (one line, "N changes wait and will go up by themselves", its reasons when opened). Read when shown and when a count moves while it is, at most once a second. A count badge while changes are blocked |
 | **Account** | the account's name with "Rename…"; the switch "Upload changes made on this computer" (below); sign in or out, the Microsoft account's name, email and quota; the folder, with "Choose Folder…" and "Forget Folder"; for a OneDrive folder, "Uploading": this computer's name for copies (`MachineName`, read-only: `machine_name` in `config.toml`) and the ignore list, with "Add" and a remove button per pattern (`SetIgnorePatterns`); and "Remove Account…" |
 | **Settings** | "Start at login", "Show download and upload progress", "Show in Places", "Quit KOneDrive" |
@@ -440,14 +445,20 @@ file. Listing a folder opens nothing.
 - for each placed image or video (by the item's MIME type) with no current thumbnail, it asks Graph
   for one thumbnail, `c512x512`, and writes it to `x-large` as it is and scaled down to `large`
   and `normal`, each tagged with the file's URI and the placeholder's time;
-- it runs after each listing cycle and every 10 minutes regardless, up to 200 items per run, one
-  each request in a background slot of the account's transfer pool ([hydration.md](hydration.md)
-  §6.4), like any background download;
+- it runs after each listing cycle and every 10 minutes regardless, draining in batches of up to
+  200 items, each request in a background slot of the account's transfer pool
+  ([hydration.md](hydration.md) §6.4), like any background download. The store picks the
+  candidates in SQL — placed images and videos whose `thumb_key` is missing or not the one for what
+  they are now — in item id order, 500 ids a query with each page's paths found in one recursive
+  query, at most 5 000 ids a call; each batch goes on from where the last one stopped, and a drain
+  ends once every candidate has been looked at, so the next drain starts from the beginning again
+  (issue #39, limitations log F166);
 - `thumb_key` in the tree store records the cTag, path and time a thumbnail was made for, so a file
   is fetched again only when its content, name or time changes (a rename needs a new cache entry,
   because the cache is keyed by URI and checked against the time);
-- a missing thumbnail, a body over 8 MiB, or an image over 4096 × 4096 px or 64 MiB of decoder
-  memory is recorded like a 404 and never asked for again.
+- a missing thumbnail, a body over 8 MiB, an image over 4096 × 4096 px or 64 MiB of decoder
+  memory, or a thumbnail that cannot be written into the cache here is recorded like a 404 and not
+  asked for again until the file changes.
 
 `xx-large` (1024 px) is **not** filled: it would be a second request per image at roughly four
 times the bytes, for a size Dolphin asks for only at maximum zoom on a HiDPI screen, and upscaling

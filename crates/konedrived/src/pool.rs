@@ -26,7 +26,7 @@
 //!
 //! Every number here is a guess (the limitations log, section 5).
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
@@ -146,11 +146,42 @@ pub struct Throughput {
 type Observer = Arc<dyn Fn(Throughput) + Send + Sync>;
 
 struct Waiter {
-    id: u64,
     class: Class,
     large: bool,
     granted: bool,
     waker: Option<Waker>,
+}
+
+/// Who waits for a slot (issue #39): every waiter by its id, and those not
+/// granted yet in line by class and size, in the order they came (ids
+/// only grow). A grant, a release and a waiter that gives up find their
+/// waiter without a search.
+#[derive(Default)]
+struct Waiters {
+    by_id: HashMap<u64, Waiter>,
+    /// `[class][large]`.
+    line: [[BTreeSet<u64>; 2]; 4],
+}
+
+impl Waiters {
+    fn add(&mut self, id: u64, class: Class, large: bool) {
+        self.by_id.insert(id, Waiter { class, large, granted: false, waker: None });
+        self.line[class.index()][usize::from(large)].insert(id);
+    }
+
+    /// Takes waiter `id` out, whether granted or not.
+    fn remove(&mut self, id: u64) -> Option<Waiter> {
+        let waiter = self.by_id.remove(&id)?;
+        if !waiter.granted {
+            self.line[waiter.class.index()][usize::from(waiter.large)].remove(&id);
+        }
+        Some(waiter)
+    }
+
+    /// Whether any waiter has not been granted a slot yet.
+    fn queued(&self) -> bool {
+        self.line.iter().flatten().any(|line| !line.is_empty())
+    }
 }
 
 struct Inner {
@@ -163,7 +194,7 @@ struct Inner {
     held: [usize; 4],
     /// Of those, large ones.
     large_held: usize,
-    waiters: VecDeque<Waiter>,
+    waiters: Waiters,
     next_id: u64,
     /// Whose turn it is when downloads and uploads both wait.
     turn: Direction,
@@ -215,7 +246,7 @@ impl TransferPool {
                 credit: 0,
                 held: [0; 4],
                 large_held: 0,
-                waiters: VecDeque::new(),
+                waiters: Waiters::default(),
                 next_id: 0,
                 turn: Direction::Down,
                 paused: false,
@@ -273,7 +304,7 @@ impl TransferPool {
     /// one. An extra stream of a download in parts takes only a slot nothing waits for, and
     /// gives its slot back when something does (issue #28).
     pub fn waiting(&self) -> bool {
-        self.lock().waiters.iter().any(|w| !w.granted)
+        self.lock().waiters.queued()
     }
 
     /// "Pause syncing": no new slot for anything but opens.
@@ -319,10 +350,9 @@ impl TransferPool {
         let mut inner = self.lock();
         let id = inner.next_id;
         inner.next_id += 1;
-        inner.waiters.push_back(Waiter { id, class, large, granted: false, waker: None });
+        inner.waiters.add(id, class, large);
         let wake = self.dispatch(&mut inner);
-        let at = inner.waiters.iter().position(|w| w.id == id).expect("the waiter was just added");
-        let granted = inner.waiters.remove(at).is_some_and(|w| w.granted);
+        let granted = inner.waiters.remove(id).is_some_and(|w| w.granted);
         drop(inner);
         wake_all(wake);
         granted.then(|| self.slot(class, large))
@@ -538,21 +568,25 @@ fn wake_all(wake: Vec<Waker>) {
 
 /// The first waiter of `class` that may have a slot: a large one only while the large-file
 /// limit leaves room, unless it is an open.
-fn first(inner: &Inner, class: Class) -> Option<usize> {
+fn first(inner: &Inner, class: Class) -> Option<u64> {
     let large_free = inner.large_held < inner.large_limit;
-    inner
-        .waiters
-        .iter()
-        .position(|w| !w.granted && w.class == class && (!w.large || class == Class::Open || large_free))
+    let [small, large] = &inner.waiters.line[class.index()];
+    let small = small.first().copied();
+    let large = large.first().copied().filter(|_| class == Class::Open || large_free);
+    match (small, large) {
+        (Some(s), Some(l)) => Some(s.min(l)),
+        (s, l) => s.or(l),
+    }
 }
 
-fn grant(inner: &mut Inner, at: usize, wake: &mut Vec<Waker>) {
-    let waiter = &mut inner.waiters[at];
+fn grant(inner: &mut Inner, id: u64, wake: &mut Vec<Waker>) {
+    let waiter = inner.waiters.by_id.get_mut(&id).expect("a waiter in line is known by its id");
     waiter.granted = true;
     let (class, large) = (waiter.class, waiter.large);
     if let Some(waker) = waiter.waker.take() {
         wake.push(waker);
     }
+    inner.waiters.line[class.index()][usize::from(large)].remove(&id);
     inner.held[class.index()] += 1;
     if large {
         inner.large_held += 1;
@@ -567,7 +601,7 @@ fn grow(inner: &mut Inner) {
         inner.throttle_level = None;
     }
     let busy = inner.held.iter().sum::<usize>() >= inner.size;
-    let queued = inner.waiters.iter().any(|w| !w.granted);
+    let queued = inner.waiters.queued();
     if !busy || !queued || inner.size >= inner.ceiling {
         return;
     }
@@ -709,18 +743,18 @@ impl Future for Acquire {
                 None => {
                     let id = inner.next_id;
                     inner.next_id += 1;
-                    inner.waiters.push_back(Waiter { id, class: this.class, large: this.large, granted: false, waker: None });
+                    inner.waiters.add(id, this.class, this.large);
                     this.id = Some(id);
                     wake = this.pool.dispatch(&mut inner);
                     id
                 }
             };
-            let at = inner.waiters.iter().position(|w| w.id == id).expect("a waiter stays until it is done");
-            if inner.waiters[at].granted {
-                inner.waiters.remove(at);
+            let waiter = inner.waiters.by_id.get_mut(&id).expect("a waiter stays until it is done");
+            if waiter.granted {
+                inner.waiters.remove(id);
                 (true, wake)
             } else {
-                inner.waiters[at].waker = Some(cx.waker().clone());
+                waiter.waker = Some(cx.waker().clone());
                 (false, wake)
             }
         };
@@ -739,8 +773,7 @@ impl Drop for Acquire {
         let Some(id) = self.id.filter(|_| !self.done) else { return };
         let wake = {
             let mut inner = self.pool.lock();
-            let Some(at) = inner.waiters.iter().position(|w| w.id == id) else { return };
-            let waiter = inner.waiters.remove(at).expect("found just now");
+            let Some(waiter) = inner.waiters.remove(id) else { return };
             if waiter.granted {
                 inner.held[waiter.class.index()] -= 1;
                 if waiter.large {
@@ -785,6 +818,26 @@ mod tests {
             Poll::Ready(slot) => Some(slot),
             Poll::Pending => None,
         }
+    }
+
+    /// Issue #39: among 30 000 waiters the pool grants in the order they came, and one in
+    /// the middle that gives up leaves the line as it was around it.
+    #[test]
+    fn thirty_thousand_waiters_are_granted_in_order_and_one_gives_up() {
+        let pool = TransferPool::starting_at(1, 1);
+        let mut held = take(&pool, Class::Download, 1);
+        let mut waiting: Vec<Option<Pin<Box<Acquire>>>> = (0..30_000).map(|_| Some(queue(&pool, Class::Download))).collect();
+        drop(waiting[15_000].take());
+        for n in (0..30_000).filter(|&n| n != 15_000) {
+            drop(held.pop());
+            for later in [n + 1, 29_999].into_iter().filter(|&l| l != 15_000 && l > n && l < 30_000) {
+                assert!(ready(waiting[later].as_mut().unwrap()).is_none(), "{later} waits behind {n}");
+            }
+            let slot = ready(waiting[n].as_mut().unwrap()).unwrap_or_else(|| panic!("{n} is next"));
+            held.push(slot);
+            waiting[n] = None;
+        }
+        assert!(!pool.waiting());
     }
 
     /// One success, with work waiting and every slot busy, is one slot more; a success

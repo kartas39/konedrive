@@ -1835,7 +1835,6 @@ impl Run<'_, '_> {
     /// before the row that takes it, otherwise shallowest first, in the order
     /// found.
     fn finish(mut self) -> Result<Examined, ExamineError> {
-        let total = self.store(|s| s.counts(Table::Items))?.placed;
         let confirmed: HashSet<String> = self.rows.iter().filter(|r| r.kind.removes() && r.confirmed).filter_map(|r| r.item_id.clone()).collect();
         let waiting: Vec<OutboxRow> = self
             .rows
@@ -1857,8 +1856,12 @@ impl Run<'_, '_> {
             self.count_removed(id, &mut removed)?;
         }
         let n = removed.len() as u64;
-        if fresh && (n > MASS_DELETE_ITEMS || (n >= MASS_DELETE_FLOOR && n * 100 > total * MASS_DELETE_PERCENT)) {
-            tracing::warn!("{n} of {total} items would be removed from OneDrive; held until confirmed");
+        // The items in the folder — a walk of the whole tree — counted only
+        // when the share decides (issue #39).
+        let trips = fresh
+            && (n > MASS_DELETE_ITEMS || (n >= MASS_DELETE_FLOOR && n * 100 > self.store(|s| s.counts())?.placed * MASS_DELETE_PERCENT));
+        if trips {
+            tracing::warn!("{n} items would be removed from OneDrive; held until confirmed");
             for d in self.detections.iter_mut().filter(|d| d.kind.removes() && d.item_id.as_ref().is_some_and(|id| !confirmed.contains(id))) {
                 d.state = OutboxState::Held;
                 d.reason = Some(MASS_DELETE.into());

@@ -242,7 +242,7 @@ impl TreeStore {
     /// mkdir that uploads the local object as new — in one transaction.
     pub fn outbox_orphan(&mut self, id: &str, seq: i64, amend: impl FnOnce(&mut OutboxRow), activity: Option<&ActivityRow>) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        apply(&tx, Table::Items, &[Change::Delete(id.to_owned())])?;
+        apply(&tx, crate::tree::Source::Items, &[Change::Delete(id.to_owned())])?;
         let local_seq = next_local_seq(&tx)?;
         crate::tree::reconcile::tombstone(&tx, &[id], local_seq)?;
         amend_in(&tx, seq, amend)?;

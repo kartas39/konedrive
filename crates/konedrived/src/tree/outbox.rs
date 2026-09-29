@@ -1266,7 +1266,7 @@ impl TreeStore {
                 }
             }
             Committed::Gone { item_id } => {
-                apply(&tx, Table::Items, &[Change::Delete(item_id.to_owned())])?;
+                apply(&tx, crate::tree::Source::Items, &[Change::Delete(item_id.to_owned())])?;
                 // A delta fetched before this delete must not bring it back.
                 super::reconcile::tombstone(&tx, &[item_id], local_seq)?;
             }
@@ -1300,6 +1300,23 @@ impl TreeStore {
     /// keeps it.
     pub fn set_local_handle(&self, id: &str, handle: Option<&FileHandle>) -> Result<(), TreeError> {
         set_local_handle(&self.conn, id, handle)
+    }
+
+    /// Records the inodes `placed` items are now, in one transaction (issue
+    /// #39): a placement's batch.
+    pub fn set_local_handles(&mut self, placed: &[(String, FileHandle)]) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut items = tx.prepare_cached("UPDATE items SET local_handle = ?2 WHERE id = ?1")?;
+            let mut staging = tx.prepare_cached("UPDATE staging SET local_handle = ?2 WHERE id = ?1")?;
+            for (id, handle) in placed {
+                let stored = handle.encode();
+                items.execute(params![id, stored])?;
+                staging.execute(params![id, stored])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Every item forgets its local object, in both tables: the handles were

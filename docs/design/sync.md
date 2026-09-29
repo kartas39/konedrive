@@ -123,7 +123,11 @@ CREATE TABLE items (                -- the tree the folder was last made to matc
   local_handle BLOB,                -- the file handle of the inode the item was placed as
   local_seq INTEGER NOT NULL DEFAULT 0);  -- the upload that last wrote the row
 CREATE INDEX items_parent ON items(parent_id);
-CREATE TABLE staging (…same columns…);   -- the tree a cycle is building
+CREATE INDEX items_seq ON items(local_seq);                                   -- recent upload commits
+CREATE INDEX items_unplaced ON items(id) WHERE local_handle IS NULL AND placement = 'placed';
+CREATE INDEX items_skipped ON items(id) WHERE placement != 'placed';
+CREATE TABLE staging (…same columns…);   -- what a cycle's new tree writes (§6.1)
+CREATE TABLE staging_gone (id TEXT PRIMARY KEY);                              -- what it removes
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
   -- schema_version, drive_id, root_item_id, delta_link, listing_next, last_checked, …
 CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -164,13 +168,23 @@ read-only drops them first ([writes.md](writes.md) §2.2).
 1. **Check the account** (§12.3).
 2. **Fetch.** Changes since the stored delta link, or a full listing when there is none. The Graph
    phase writes only `staging` and `meta`.
-3. **Stage.** The changes are applied to a copy of `items` in `staging`.
-4. **Reconcile** the folder against `staging` (§7).
-5. **Swap.** In one transaction, `staging` replaces `items` and the new delta link is stored.
+3. **Stage.** The changes are laid over `items`: `staging` takes each row the delta writes, whole
+   (copied from `items` first, local columns and all, then changed), and `staging_gone` each id it
+   removes, a removed folder's contents included. `items` is not written. The new tree is
+   `staging`, then `items` for every id neither table names; the ids the delta changed are read from
+   `staging` and `staging_gone` alone. A full listing, which may leave anything out, is staged
+   whole instead: `staging` is then the new tree by itself (`meta` `staging_whole`).
+4. **Reconcile** the folder against the new tree (§7).
+5. **Swap.** In one transaction, the rows in `staging` are written into `items` (keeping the
+   thumbnail key, local handle and upload commit `items` has where the staged row has none), the
+   ids in `staging_gone` removed from it, both tables emptied, and the new delta link stored. A
+   delta's swap writes only what it changed; a full listing's replaces every row.
 
-A crash before the swap leaves `items` and the delta link as they were; the next cycle asks for the
-same changes and reconciles again, and the reconcile is idempotent: an item already where the tree
-wants it is left alone. After the swap the cycle publishes the counts, records `last_checked`,
+A crash before the swap leaves `items` and the delta link as they were — nothing but `staging`,
+`staging_gone` and `meta` was written — and the next cycle empties the two tables, asks for the
+same changes and reconciles again. The swap is one transaction, so a crash in it leaves the old tree
+or the new one, never a mix. The reconcile is idempotent: an item already where the tree wants it is
+left alone. After the swap the cycle publishes the counts, records `last_checked`,
 drops conflicts whose rescued file is gone, and starts the replacements the reconcile queued (§9).
 
 A read-write folder's cycle holds the tree lock its uploads commit under from staging to the swap,
@@ -285,6 +299,14 @@ folders, so the contents of a skipped folder make `ItemsPlaced + SkippedCount` s
 `ItemsListed` by design (limitations log F32). `LastChecked` moving is the signal that a cycle has
 finished.
 
+The three counts are walked from the tree once per cycle that may have changed it — one with
+changes in its delta, a Full reconcile, a listing — and not in a cycle with nothing new (issue #39,
+limitations log F167). `Skipped()` is one query that starts from an index of the skipped rows and
+climbs each one's chain of folders to the root, carrying its path, on the store's read-only
+connection; it still returns every entry. The window's page shows the first 200 of them, then
+"and N more" with the command that prints them all, and asks again at most once a second while a
+listing changes `SkippedCount` (limitations log F168).
+
 ## 8. The first listing, page by page
 
 A full listing of a large drive takes minutes. Staged whole, the folder would stay empty until one
@@ -297,8 +319,9 @@ nothing in the folder carrying an item id — is placed as it arrives:
   `@odata.nextLink` as `listing_next`;
 - an item whose parent has not arrived yet is committed as a row with no place, and placed when its
   folder comes — across a stop too;
-- `ItemsListed` and `ItemsPlaced` rise page by page, and the lifecycle lock is taken per page, never
-  across a Graph request.
+- `ItemsListed` and `ItemsPlaced` rise page by page — by what each page listed and placed, walked
+  from the tree only at the listing's start and end — and the lifecycle lock is taken per page,
+  never across a Graph request.
 
 A listing stopped part-way (a crash, a stop, a failure) resumes from `listing_next` and asks for no
 committed page again; the first page each cycle places is reconciled Full, finding by id whatever
@@ -330,7 +353,9 @@ Instead:
 
 A program already reading the old version keeps it to the end; the next open gets the new one. The
 old file is not held open during the download, so freeing it up meanwhile still works; step 4 then
-finds it changed and gives up. At most 2 replacements download at once, in the background, reported in `Transfers` like any download.
+finds it changed and gives up. Replacements wait in one queue, worked by 8 tasks at most (issue
+#39), each download in a background slot of the account's transfer pool, reported in `Transfers`
+like any download; a delta changing thousands of files starts those few tasks, not one each.
 In a read-write folder, where a program may be writing the old file, step 4 first takes a write
 lease on it, granted only while nobody has it open; a refusal leaves the replacement for a later
 cycle (limitations log F110).
@@ -390,7 +415,11 @@ as files of zeros — the cloud still has them.
 Each rescue is recorded as a **conflict** — time, original path, rescued path — in the tree store,
 and announced as a `conflict` activity event. `Conflicts()` lists them, `DismissConflict()` takes
 one off the list without touching the file, and a conflict whose rescued file no longer exists
-drops off by itself. `ConflictCount` feeds the tray's "needs attention" state. A conflict is
+drops off by itself: `Conflicts()` looks at every one, and each cycle's end looks over the next 200
+in the order of their rescued paths, round the list, dropping what is gone in one transaction
+(issue #39, limitations log F170). The window's Conflicts page shows the newest 200, then "and N
+more" with `konedrivectl sync conflicts`, and takes a changed list in one step rather than row by
+row. `ConflictCount` feeds the tray's "needs attention" state. A conflict is
 recorded when its reconcile commits; a reconcile that fails with an error records none of the
 rescues it already made — those files are in the rescue directory and the daemon's log (limitations
 log F28).
@@ -499,7 +528,7 @@ Signing in again nudges a cycle at once, which brings the folder up to date.
 
 | Interrupted during | What the next run finds | What it does |
 |---|---|---|
-| Fetching or staging | the old `items` and delta link | asks for the same changes again |
+| Fetching or staging | the old `items` and delta link; `staging` part-filled | empties `staging` and asks for the same changes again |
 | Reconcile | a folder part-way between two trees, perhaps a holding directory | a Full reconcile at the next start places everything by item id |
 | The swap | either the old tree and link, or the new ones — one transaction | continues from whichever it is |
 | A page of the first listing | `items` and `listing_next` up to the last committed page | resumes from `listing_next`, reconciling the first page Full |
@@ -515,4 +544,4 @@ The limitations log has the full list. The ones specific to this document: the w
 listed even when only part of it matters, since Graph lists from the root (limitations log W15);
 the activity log keeps 200 events and summarises large changes (F24, F25); a delta is held in memory
 whole before it is staged (D11); and the numbers here — 60 s, the retry steps, 5000 changes,
-16 MiB checkpoints, 2 replacements — are chosen, not measured (limitations log §5).
+16 MiB checkpoints, 8 replacement workers — are chosen, not measured (limitations log §5).

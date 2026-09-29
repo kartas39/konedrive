@@ -2995,7 +2995,9 @@ impl SyncService {
         let Some(store) = self.store.lock().unwrap().clone() else { return Ok(Vec::new()) };
         let skipped = tokio::task::spawn_blocking(move || {
             let _lifecycle = lifecycle;
-            store.call_blocking(move |s| s.skipped(crate::tree::Table::Items))
+            // One query, on the read-only connection (issue #39): the cycle's
+            // work is not held up behind it.
+            store.read_blocking(|s| s.skipped())
         })
         .await
         .map_err(|e| SyncError::Io(format!("the store task failed: {e}")))?
