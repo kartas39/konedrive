@@ -5242,8 +5242,11 @@ mod tests {
 
     /// `FreeUpSpace`: every downloaded file freed up through the
     /// per-file path, except one that is open — counted as busy, left as it
-    /// is, and no error. The bytes are the blocks given back. And a Forget of
-    /// the folder takes its activity with it.
+    /// is, and no error. The bytes are the blocks given back, as `stat`
+    /// reads them before and after: how many a 64 KiB file takes is the
+    /// filesystem's own business (btrfs gives it 64 KiB, the runner's ext4
+    /// 68), so the activity is checked against that, not a fixed figure.
+    /// And a Forget of the folder takes its activity with it.
     #[tokio::test]
     async fn free_up_space_frees_what_is_not_in_use_and_counts_what_is() {
         let (service, root_dir, _dir) = local_folder(&[("a.bin", 64 * 1024, true), ("b.bin", 64 * 1024, true)]).await;
@@ -5253,12 +5256,14 @@ mod tests {
 
         let freed = service.free_up_space().await.unwrap();
 
-        assert_eq!(freed, FreedUp { files: 1, bytes: (before - data_blocks(&a)) * 512, busy: 1, modified: 0, pinned: 0 });
+        let given_back = (before - data_blocks(&a)) * 512;
+        assert_eq!(freed, FreedUp { files: 1, bytes: given_back, busy: 1, modified: 0, pinned: 0 });
         assert!(freed.bytes >= 64 * 1024, "{freed:?}");
         assert_eq!(service.item_state(&a).await, "online-only");
         assert_eq!(service.item_state(&b).await, "hydrated", "an open file is left as it is");
         let folder = root_dir.path().display().to_string();
-        assert_eq!(activity_of(&service).await.pop().unwrap(), ("freed".to_owned(), folder, "1 file, 64.0 KiB".to_owned()));
+        let detail = format!("1 file, {}", activity::human_size(given_back));
+        assert_eq!(activity_of(&service).await.pop().unwrap(), ("freed".to_owned(), folder, detail));
 
         service.unregister_root().await.unwrap();
         assert!(activity_of(&service).await.is_empty(), "a Forget drops the activity");
@@ -6716,13 +6721,18 @@ mod tests {
         service.hydrate_now(&file).await.unwrap();
         assert_eq!(std::fs::read(&file).unwrap(), vec![4u8; 4096]);
         assert_eq!(service.item_state(&file).await, "hydrated");
+        use std::os::unix::fs::MetadataExt;
+        let hydrated = std::fs::metadata(&file).unwrap().blocks();
         service.dehydrate(&file).await.unwrap();
         assert_eq!(service.item_state(&file).await, "online-only");
 
-        use std::os::unix::fs::MetadataExt;
         let meta = std::fs::metadata(&file).unwrap();
         assert_eq!(meta.len(), 4096, "the size survives");
-        assert!(meta.blocks() < 8, "the content is gone");
+        // Every block of the 4 KiB of content is given back (8 sectors of
+        // 512 bytes). Whatever else the file holds — ext4 counts an external
+        // xattr block in `st_blocks`, btrfs does not — stays and is not the
+        // content.
+        assert!(meta.blocks() + 8 <= hydrated, "the content is gone: {hydrated} -> {} blocks", meta.blocks());
     }
 
     // --- Startup and the helper supervisor ----------

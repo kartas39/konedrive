@@ -978,9 +978,13 @@ fn the_worker_runs_until_stopped() {
     assert_committed(&w, "a.txt", "a.txt");
 }
 
-/// Four independent small files run at once (`Limits::small_slots`), and a
-/// child waits for its parent's `mkdir`: the row only sends once the folder
-/// it goes into is in OneDrive.
+/// Four independent small files run at once, and a child waits for its
+/// parent's `mkdir`: the row only sends once the folder it goes into is in
+/// OneDrive. What is checked is that all four are in flight together, not how
+/// many uploads there are at that moment: nothing caps them at four (the
+/// account's transfer pool starts at 16 slots), and the child's own upload,
+/// which starts as soon as its `mkdir` is answered, runs while the four are
+/// still held — a sample that falls during it counts five.
 #[test]
 fn four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir() {
     let w = World::new(&[]);
@@ -994,39 +998,42 @@ fn four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir() {
     assert_eq!(w.rows().len(), 6, "{:?}", w.summary());
 
     // Each small file opens an upload session first (`POST
-    // createUploadSession`); held open long enough for the poll below to
-    // catch all four at once, without holding up the mkdir or the child
-    // behind it.
+    // createUploadSession`), answered late here: each of the four stays in
+    // flight for at least that long from its start, a margin far wider than
+    // the worker takes to start the other three. It holds up neither the
+    // mkdir nor the child behind it.
     w.cloud(|c| {
         for name in names {
-            c.delay("POST", name, Duration::from_millis(150), 1);
+            c.delay("POST", name, Duration::from_secs(1), 1);
         }
     });
 
     let worker = OutboxWorker::new(w.h.config());
-    let peak = w.h.runtime.block_on(async {
+    let (together, seen) = w.h.runtime.block_on(async {
         worker.start();
         worker.wake();
-        let mut peak = 0;
+        let mut seen = Vec::new();
+        let mut together = false;
         let mut waited = 0;
-        while waited < 300 {
-            peak = peak.max(worker.status().uploads.len());
-            if peak >= 4 {
+        while waited < 500 {
+            seen = worker.status().uploads.into_iter().map(|u| u.rel).collect::<Vec<_>>();
+            together = names.iter().all(|name| seen.iter().any(|rel| rel == Path::new(name)));
+            if together {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
             waited += 1;
         }
         waited = 0;
-        while !crate::tree::off_runtime(|| w.rows()).is_empty() && waited < 300 {
+        while !crate::tree::off_runtime(|| w.rows()).is_empty() && waited < 500 {
             tokio::time::sleep(Duration::from_millis(10)).await;
             waited += 1;
         }
         worker.stop().await;
-        peak
+        (together, seen)
     });
 
-    assert_eq!(peak, 4, "four independent small files were in flight together");
+    assert!(together, "the four independent small files were never in flight together; last seen: {seen:?}");
     assert!(w.rows().is_empty(), "{:?}", w.summary());
     for (rel, path) in [("a.txt", "a.txt"), ("b.txt", "b.txt"), ("c.txt", "c.txt"), ("d.txt", "d.txt"), ("dir", "dir"), ("dir/child.txt", "dir/child.txt")] {
         assert_committed(&w, rel, path);

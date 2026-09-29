@@ -2432,11 +2432,20 @@ application must never read zeros where real content should be.
   failed once in a full `cargo test --workspace` while other builds loaded the machine (load 6), and
   passes alone: it waits at most 2.5 s for `RootState` to read `listing`, behind a delta answer held
   for 2 s, so a slow bring-up misses the window. A read-only folder's path; seen once; not chased.
-- **D17.** `konedrived` `sync::upload::tests::four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir`
-  and `sync::tests::onedrive::refresh_starts_a_sync_that_could_not_start_or_says_why` failed once
-  each in a full `cargo test --workspace` while other worktrees' builds loaded the machine, and pass
-  alone and in the whole `konedrived` run: the first samples `Uploads` every 10 ms behind 150 ms
-  delays. Seen once (issue #3's run); not chased.
+- **D17.** `konedrived` `sync::tests::onedrive::refresh_starts_a_sync_that_could_not_start_or_says_why`
+  failed once in a full `cargo test --workspace` while other worktrees' builds loaded the machine,
+  and passes alone and in the whole `konedrived` run. Seen once (issue #3's run); not chased.
+  `sync::upload::tests::four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir`, which
+  failed with it, was a wrong test, fixed in #43: it expected exactly four uploads at once, a cap
+  the transfer pool removed (#22, 16 slots to start with), and saw five whenever a sample fell
+  during the child's own quick upload, which starts once its `mkdir` is answered, while the four
+  are still held. It now checks that the four are in flight together, behind 1 s delays.
+- **D18.** Tests that give the daemon a helper socket inside a temporary directory (`no-helper.sock`
+  in `sync::tests::local_folder`) need a short `TMPDIR`: past about 80 characters the socket's path
+  no longer fits a Unix socket address (108 bytes), the connection fails with another error than a
+  missing socket, and `free_up_space_frees_what_is_not_in_use_and_counts_what_is` frees nothing.
+  `/tmp`, `/var/tmp` and the runner's temporary directory are short enough; a directory deep in a
+  worktree is not. Measured (#43). The daemon's real socket path is short and fixed.
 
 ---
 
@@ -3024,6 +3033,19 @@ The RPM packages, `konedrive` and `konedrive-kde`, from `packaging/rpm/konedrive
   a third push while one run builds and one waits cancels the waiting one. Nothing is lost — the
   next release is built from the newer commit, which holds the older one — but no release carries
   the cancelled commit alone.
+- **R10. The tests run on Ubuntu, the RPMs are built on Fedora.** FRAGILE · reasoned · mitigated.
+  The release workflow runs the daemon's unit tests directly on GitHub's `ubuntu-latest` runner, as
+  its unprivileged user, and builds the RPMs in a `fedora:44` container (`docs/releasing.md`): a
+  container's seccomp profile refuses `fanotify_init`, which the watcher's tests need. So the tests
+  run on another distribution, kernel and filesystem (ext4) than the users', with a rustup
+  toolchain pinned in the workflow (`RUST_VERSION`) to Fedora 44's `rust` package; the build job
+  stops if the container's `rustc` differs, so a Fedora update of the package stops every release
+  until the pin is moved. The runner's setup (not the tests) uses `sudo` to install `dbus-daemon`
+  and to lift Ubuntu's AppArmor restriction on unprivileged user namespaces, which
+  `a_subtree_on_another_filesystem_is_counted_and_logged` needs; if they are still unavailable, that
+  test says so on its output and passes without its check, as it did before. Tests that assumed
+  btrfs's block allocation now read what the filesystem allocated (`st_blocks`). The tests that need
+  root, and the VM suite, do not run in the workflow (#44).
 
 ---
 
