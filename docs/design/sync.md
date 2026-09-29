@@ -299,6 +299,14 @@ folders, so the contents of a skipped folder make `ItemsPlaced + SkippedCount` s
 `ItemsListed` by design (limitations log F32). `LastChecked` moving is the signal that a cycle has
 finished.
 
+The three counts are walked from the tree once per cycle that may have changed it — one with
+changes in its delta, a Full reconcile, a listing — and not in a cycle with nothing new (issue #39,
+limitations log F167). `Skipped()` is one query that starts from an index of the skipped rows and
+climbs each one's chain of folders to the root, carrying its path, on the store's read-only
+connection; it still returns every entry. The window's page shows the first 200 of them, then
+"and N more" with the command that prints them all, and asks again at most once a second while a
+listing changes `SkippedCount` (limitations log F168).
+
 ## 8. The first listing, page by page
 
 A full listing of a large drive takes minutes. Staged whole, the folder would stay empty until one
@@ -311,8 +319,9 @@ nothing in the folder carrying an item id — is placed as it arrives:
   `@odata.nextLink` as `listing_next`;
 - an item whose parent has not arrived yet is committed as a row with no place, and placed when its
   folder comes — across a stop too;
-- `ItemsListed` and `ItemsPlaced` rise page by page, and the lifecycle lock is taken per page, never
-  across a Graph request.
+- `ItemsListed` and `ItemsPlaced` rise page by page — by what each page listed and placed, walked
+  from the tree only at the listing's start and end — and the lifecycle lock is taken per page,
+  never across a Graph request.
 
 A listing stopped part-way (a crash, a stop, a failure) resumes from `listing_next` and asks for no
 committed page again; the first page each cycle places is reconciled Full, finding by id whatever

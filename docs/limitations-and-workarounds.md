@@ -2259,6 +2259,30 @@ application must never read zeros where real content should be.
   (about 16 ms per 5 000 at 20 000 images, `bench::a_thumbnail_batch`). LIMIT (chosen) · measured
   (`sync::thumbs::tests::batches_go_on_where_the_last_stopped`,
   `a_batch_of_local_failures_ends_the_drain`). Open.
+- **F167. The counts are walked once per cycle that may have changed the tree** (`tree.rs`,
+  `counts`; `sync/listing.rs`; `sync/local/examine.rs`; issue #39) — `ItemsPlaced` and
+  `SkippedCount` need a walk of the whole tree from the root; it runs after a cycle with changes in
+  its delta, a Full reconcile or a listing, never after one with nothing new, and at a first
+  listing's start and end only: in between, `ItemsListed` and `ItemsPlaced` grow by what each page
+  listed and placed, so while a page-by-page listing runs they can differ a little from the tree
+  (an entry listed twice, one placed with its folder on a later page), until the end sets them
+  right. Uploads write rows into `items` between cycles; the counts follow at the next cycle with
+  changes, which the uploads' own echo in the delta is. The mass-delete guard walks the tree only
+  when a batch removes between `MASS_DELETE_FLOOR` and `MASS_DELETE_ITEMS` items, where the share
+  decides. The walk costs about 80 ms at 100 000 items, most of a 10-change cycle's store work
+  (`bench::a_delta_cycle_changing_10_files`). LIMIT (chosen) · measured. Open.
+- **F168. `Skipped()` climbs from the skipped rows; the window shows 200** (`tree.rs`, `skipped`;
+  `app/qml/SkippedPage.qml`; issue #39) — one query starts from an index of the rows not placed
+  and climbs each one's folders to the root, carrying its path, on the read-only connection (so
+  it answers with what was last committed, like F161); 15 ms for 5 000 skipped among 100 000 items
+  (`bench::the_skipped_list`). The D-Bus reply and `konedrivectl sync skipped` still carry every
+  entry (P9). A skipped item whose folders never reach the root (an orphan) is not listed, as
+  before. The window's page shows the first 200 (a guess) in a list that builds only the rows in
+  sight, then "and N more" with the command that prints them all: the rest cannot be reached from
+  the window. It asks again when shown, and while shown at most once a second (a guess) however
+  often `SkippedCount` changes. LIMIT (chosen) · measured
+  (`tree::tests::counts_and_the_skipped_list_see_only_what_is_reachable`, the app's
+  `dialogstest::thousandsSkippedAndConflictsAreAFewRows`). Open.
 ---
 
 ## 5. Provisional numbers

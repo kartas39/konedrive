@@ -533,7 +533,7 @@ fn read_only_cycle(store: &Store, changes: Vec<Change>) {
     let ids = store.call_blocking(|s| s.changed_ids()).unwrap();
     materializer_reads(store, &ids);
     store.call_blocking(|s| s.commit_staging("link-2")).unwrap();
-    store.call_blocking(|s| s.counts(crate::tree::Table::Items)).unwrap();
+    store.call_blocking(|s| s.counts()).unwrap();
 }
 
 /// A read-write folder's delta cycle, its store work only (`sync::listing::rw`).
@@ -548,7 +548,7 @@ fn read_write_cycle(store: &Store, changes: Vec<Change>) {
     assert!(changed.len() <= ids.len());
     store.call_blocking(move |s| s.commit_staging_deferring("link-2", &consumed, &[], &[], 0)).unwrap();
     store.call_blocking(|s| s.outbox_drop_removed()).unwrap();
-    store.call_blocking(|s| s.counts(crate::tree::Table::Items)).unwrap();
+    store.call_blocking(|s| s.counts()).unwrap();
 }
 
 /// A delta changing 10 files of 100 000 items, both kinds of folder.
@@ -632,7 +632,7 @@ fn the_skipped_list() {
     guard();
     let dir = tempfile::tempdir().unwrap();
     let store = big_store(dir.path());
-    let (skipped, took) = timed("Skipped() of 5 000", || store.call_blocking(|s| s.skipped(crate::tree::Table::Items)).unwrap());
+    let (skipped, took) = timed("Skipped() of 5 000", || store.call_blocking(|s| s.skipped()).unwrap());
     assert_eq!(skipped.len(), 5000);
     within("Skipped()", took, Duration::from_millis(100));
 }

@@ -847,53 +847,55 @@ impl TreeStore {
         Ok(ids)
     }
 
-    pub fn counts(&self, table: Table) -> Result<Counts, TreeError> {
+    /// Every item but the root: what is listed, counted without a walk.
+    pub fn listed_count(&self) -> Result<u64, TreeError> {
+        let root = self.root_item_id()?.unwrap_or_default();
+        let listed: i64 = self.conn.query_row("SELECT count(*) FROM items WHERE id != ?1", [&root], |row| row.get(0))?;
+        Ok(listed as u64)
+    }
+
+    /// What is listed, placed and skipped in `items`: a walk of the whole
+    /// tree, asked for once per cycle that changed it (issue #39).
+    pub fn counts(&self) -> Result<Counts, TreeError> {
         let Some(root) = self.root_item_id()? else {
             return Ok(Counts::default());
         };
-        let t = table.name();
-        let listed: i64 = self.conn.query_row(&format!("SELECT count(*) FROM {t} WHERE id != ?1"), [&root], |row| row.get(0))?;
+        let listed = self.listed_count()?;
         let (placed, skipped): (i64, i64) = self.conn.query_row(
             &format!(
                 "WITH RECURSIVE placed(id, depth) AS (
                      SELECT ?1, 0
                      UNION ALL
-                     SELECT c.id, p.depth + 1 FROM {t} c JOIN placed p ON c.parent_id = p.id
+                     SELECT c.id, p.depth + 1 FROM items c JOIN placed p ON c.parent_id = p.id
                       WHERE c.placement = 'placed' AND p.depth < {MAX_CHAIN})
                  SELECT (SELECT count(*) - 1 FROM placed),
-                        (SELECT count(*) FROM {t} s JOIN placed p ON s.parent_id = p.id WHERE s.placement != 'placed')"
+                        (SELECT count(*) FROM items s JOIN placed p ON s.parent_id = p.id WHERE s.placement != 'placed')"
             ),
             [&root],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        Ok(Counts { listed: listed as u64, placed: placed as u64, skipped: skipped as u64 })
+        Ok(Counts { listed, placed: placed as u64, skipped: skipped as u64 })
     }
 
     /// The skipped items `Skipped()` lists: those whose own folder is in the
-    /// folder. What is inside a skipped folder is covered by that folder's line.
-    pub fn skipped(&self, table: Table) -> Result<Vec<(PathBuf, SkipReason)>, TreeError> {
+    /// folder. What is inside a skipped folder is covered by that folder's
+    /// line. One query, from the index of skipped items up to the root
+    /// (issue #39).
+    pub fn skipped(&self) -> Result<Vec<(PathBuf, SkipReason)>, TreeError> {
         let Some(root) = self.root_item_id()? else {
             return Ok(Vec::new());
         };
-        let t = table.name();
-        let ids: Vec<(String, String)> = {
-            let mut statement = self.conn.prepare(&format!(
-                "WITH RECURSIVE placed(id, depth) AS (
-                     SELECT ?1, 0
-                     UNION ALL
-                     SELECT c.id, p.depth + 1 FROM {t} c JOIN placed p ON c.parent_id = p.id
-                      WHERE c.placement = 'placed' AND p.depth < {MAX_CHAIN})
-                 SELECT s.id, s.placement FROM {t} s JOIN placed p ON s.parent_id = p.id
-                  WHERE s.placement != 'placed'"
-            ))?;
-            let rows = statement.query_map([&root], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<Result<_, _>>()?;
-            rows
-        };
+        let sql = chains_then(
+            Source::Items,
+            "SELECT id, parent_id, name, placement FROM items WHERE placement != 'placed'",
+            "SELECT c.path, i.placement FROM chain c JOIN items i ON i.id = c.start WHERE c.parent_id = ?1 AND c.above",
+        );
+        let mut statement = self.conn.prepare_cached(&sql)?;
         let mut out = Vec::new();
-        for (id, placement) in ids {
-            let Placement::Skipped(reason) = Placement::decode(&placement) else { continue };
-            if let Some(located) = self.locate(table, &id)? {
-                out.push((located.rel, reason));
+        for row in statement.query_map([&root], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
+            let (path, placement) = row?;
+            if let Placement::Skipped(reason) = Placement::decode(&placement) {
+                out.push((PathBuf::from(path), reason));
             }
         }
         out.sort();
@@ -1740,9 +1742,9 @@ mod tests {
             file("VF", "V", "secret.txt"),
             Change::Upsert(Row { placement: Placement::Skipped(SkipReason::NameTooLong), ..match file("N", "D", "n") { Change::Upsert(r) => r, _ => unreachable!() } }),
         ]);
-        assert_eq!(store.counts(Table::Items).unwrap(), Counts { listed: 5, placed: 2, skipped: 2 });
+        assert_eq!(store.counts().unwrap(), Counts { listed: 5, placed: 2, skipped: 2 });
         assert_eq!(
-            store.skipped(Table::Items).unwrap(),
+            store.skipped().unwrap(),
             vec![(PathBuf::from("Personal Vault"), SkipReason::PersonalVault), (PathBuf::from("docs/n"), SkipReason::NameTooLong)],
             "what is inside a skipped folder is not listed item by item"
         );

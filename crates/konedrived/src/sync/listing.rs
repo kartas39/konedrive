@@ -436,6 +436,9 @@ impl Listing {
             }
             (None, None) => self.list_all(turn, cancel).await?,
         };
+        // Whether this cycle may have changed the tree: its counts are
+        // published then, and not in an idle cycle (issue #39).
+        let listed = matches!(fetched, Fetched::Listed { .. } | Fetched::Placed(_));
         let (reconciled, changes) = match (fetched, fetch_seq) {
             (Fetched::Placed(placed), _) => (placed, 0),
             (fetched, Some(seq)) => {
@@ -478,7 +481,9 @@ impl Listing {
             self.needs_full.store(true, Ordering::SeqCst);
         }
         let Reconciled { applied, full } = reconciled;
-        self.publish_counts(turn).await?;
+        if listed || full || full_requested || changes > 0 {
+            self.publish_counts(turn).await?;
+        }
         // `LastChecked`: this cycle succeeded. Kept in the store,
         // so a restart still knows when the folder was last in step.
         let now = activity::unix_now();
@@ -673,14 +678,21 @@ impl Listing {
         // However the listing ends — also when its future is dropped.
         let _said = OnDrop(Some(|| self.ctx.state.update(|s| s.listing = false)));
         // Read-write mode: the outbox's commit count when `staging` was last made from `items`.
-        let mut staged_at = Some(
-            self.on_store(turn, |s| {
+        let (seq, counts) = self
+            .on_store(turn, |s| {
                 s.begin_staging(true)?;
-                s.outbox_seq()
+                Ok((s.outbox_seq()?, s.counts()?))
             })
-            .await?,
-        );
-        self.publish_counts(turn).await?;
+            .await?;
+        let mut staged_at = Some(seq);
+        // The counts are walked once here and once at the end; in between,
+        // each page adds what it listed and placed (issue #39).
+        let (mut listed, mut shown) = (counts.listed, counts.placed);
+        self.ctx.state.update(|s| {
+            s.items_listed = counts.listed;
+            s.items_placed = counts.placed;
+            s.skipped_count = counts.skipped;
+        });
         let mut placed = Reconciled::default();
         let mut full = true;
         let mut handed_over = false;
@@ -703,6 +715,7 @@ impl Listing {
             };
             resuming = false;
             let changes: Vec<Change> = page.items.iter().map(classify).collect();
+            listed += changes.iter().filter(|c| matches!(c, Change::Upsert(_))).count() as u64;
             let staged = changes.clone();
             // Read-write mode: the tree lock from this page's staging to its commit,
             // and `staging` made again from `items` under it when an outbox commit wrote
@@ -745,8 +758,12 @@ impl Listing {
             // Still Full until a page is placed at all: none is before the
             // drive's root has come.
             full &= !done.full;
+            shown += done.applied.created;
             placed.add(done);
-            self.publish_counts(turn).await?;
+            self.ctx.state.update(|s| {
+                s.items_listed = listed;
+                s.items_placed = shown;
+            });
             match next {
                 Some(next) => from = DeltaFrom::Link(next),
                 None => {
@@ -901,7 +918,7 @@ impl Listing {
     }
 
     async fn publish_counts(&self, turn: &Turn) -> Result<(), CycleError> {
-        let counts = self.on_store(turn, |s| s.counts(Table::Items)).await?;
+        let counts = self.on_store(turn, |s| s.counts()).await?;
         self.ctx.state.update(|s| {
             s.items_listed = counts.listed;
             s.items_placed = counts.placed;
@@ -1137,8 +1154,8 @@ fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Appl
     let folder = root.display().to_string();
     let mut events = match said {
         Said::Listed => {
-            let listed = match store.call_blocking(move |s| s.counts(Table::Items)) {
-                Ok(counts) => counts.listed,
+            let listed = match store.call_blocking(move |s| s.listed_count()) {
+                Ok(listed) => listed,
                 Err(e) => {
                     tracing::warn!("cannot count what was listed: {e}");
                     0
