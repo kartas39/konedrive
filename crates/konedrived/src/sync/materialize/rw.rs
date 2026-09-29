@@ -340,7 +340,7 @@ impl Materializer {
         let mut queue = std::collections::VecDeque::from([(self.root_item_id.clone(), PathBuf::new())]);
         while let Some((id, rel)) = queue.pop_front() {
             self.check_cancel()?;
-            let children = self.store.with(|s| s.children(Table::Staging, &id))?;
+            let children = self.store.call_blocking(move |s| s.children(Table::Staging, &id))?;
             for row in children {
                 if row.placement != Placement::Placed || rw.removing.contains(&row.id) {
                     continue;
@@ -362,16 +362,16 @@ impl Materializer {
     }
 
     fn where_it_was(&self, entry: &Scanned, id: &str) -> Result<Was, ApplyError> {
-        let staged = self.store.with(|s| s.get(Table::Staging, id))?;
+        let staged = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?;
         if staged.as_ref().is_some_and(|row| row.name.starts_with(SWAP_PREFIX)) {
             return Ok(Was::Swapped);
         }
-        let Some(base) = self.store.with(|s| s.get(Table::Items, id))? else {
+        let Some(base) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Items, &id) })? else {
             // Not the base's: one this very placement left (a cycle stopped
             // before its swap) is put where the tree has it; anything else is
             // a file from elsewhere — another folder, another account — the
             // user's, which the examination takes as new (§3.4 rule 6).
-            let placed = self.store.with(|s| s.locate(Table::Staging, id))?.is_some_and(|l| l.placed);
+            let placed = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed);
             return Ok(if staged.is_some() && placed { Was::Moved } else { Was::Stranger });
         };
         let at_base = base.placement == Placement::Placed
@@ -381,7 +381,7 @@ impl Materializer {
         if !at_base {
             return Ok(Was::Elsewhere);
         }
-        let placed = self.store.with(|s| s.locate(Table::Staging, id))?.is_some_and(|l| l.placed);
+        let placed = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed);
         Ok(if staged.is_some() && placed { Was::Moved } else { Was::Removed })
     }
 
@@ -397,10 +397,10 @@ impl Materializer {
         let mut scope: HashSet<String> = ids.iter().cloned().collect();
         scope.remove(&self.root_item_id);
         for id in &ids {
-            let new = self.store.with(|s| s.locate(Table::Staging, id))?;
-            let old = self.store.with(|s| s.locate(Table::Items, id))?;
+            let new = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?;
+            let old = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Items, &id) })?;
             if new.as_ref().is_some_and(|l| l.placed) && !old.as_ref().is_some_and(|l| l.placed) {
-                scope.extend(self.store.with(|s| s.descendants(Table::Staging, id))?);
+                scope.extend(self.store.call_blocking({ let id = id.to_owned(); move |s| s.descendants(Table::Staging, &id) })?);
             }
         }
         run.scope = Some(scope.clone());
@@ -408,7 +408,7 @@ impl Materializer {
         // Phase 1, by where things are now, deepest first.
         let mut here = Vec::new();
         for id in &scope {
-            if let Some(old) = self.store.with(|s| s.locate(Table::Items, id))?.filter(|l| l.placed) {
+            if let Some(old) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Items, &id) })?.filter(|l| l.placed) {
                 here.push((id.clone(), old));
             }
         }
@@ -434,19 +434,19 @@ impl Materializer {
                 // removal waits: the examination takes the local change
                 // on, and the outbox meets OneDrive's side (§6).
                 run.missing.insert(id.clone());
-                if !self.store.with(|s| s.locate(Table::Staging, id))?.is_some_and(|l| l.placed) {
+                if !self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed) {
                     run.out.unsettled.insert(id.clone());
                 }
                 continue;
             }
-            let old_row = self.store.with(|s| s.get(Table::Items, id))?;
-            let new_row = self.store.with(|s| s.get(Table::Staging, id))?;
+            let old_row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Items, &id) })?;
+            let new_row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?;
             let stays = matches!((&old_row, &new_row), (Some(o), Some(n))
                 if n.placement == Placement::Placed && n.parent_id == o.parent_id && n.name == o.name);
             if stays {
                 continue;
             }
-            if self.store.with(|s| s.locate(Table::Staging, id))?.is_some_and(|l| l.placed) {
+            if self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed) {
                 self.to_holding(&old.rel, id, run)?;
             } else {
                 self.remove_in_place(rw, parent, name, run)?;
@@ -456,8 +456,8 @@ impl Materializer {
         // Phase 2, by where things belong, shallowest first.
         let mut there = Vec::new();
         for id in &scope {
-            let row = self.store.with(|s| s.get(Table::Staging, id))?;
-            let new = self.store.with(|s| s.locate(Table::Staging, id))?;
+            let row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?;
+            let new = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?;
             if let (Some(row), Some(new)) = (row, new) {
                 if new.placed {
                     there.push((row, new));
@@ -504,7 +504,7 @@ impl Materializer {
         if rw.held.contains(other) || rw.removing.contains(other) || run.left.contains(other) {
             return Ok(true);
         }
-        let base = self.store.with(|s| s.locate(Table::Items, other))?;
+        let base = self.store.call_blocking({ let other = other.to_owned(); move |s| s.locate(Table::Items, &other) })?;
         Ok(!base.is_some_and(|l| l.placed && l.rel == rel))
     }
 
@@ -522,8 +522,8 @@ impl Materializer {
         if !rw.revive.contains(&row.id) {
             return Ok(false);
         }
-        if self.store.with(|s| s.local_handle(&row.id))?.is_some() {
-            let base = self.store.with(|s| s.locate(Table::Items, &row.id))?.filter(|l| l.placed).map(|l| l.rel);
+        if self.store.call_blocking({ let row_id = row.id.clone(); move |s| s.local_handle(&row_id) })?.is_some() {
+            let base = self.store.call_blocking({ let row_id = row.id.clone(); move |s| s.locate(Table::Items, &row_id) })?.filter(|l| l.placed).map(|l| l.rel);
             run.out.examine.push((base.unwrap_or_else(|| rel.to_path_buf()), false));
             return Ok(false);
         }
@@ -533,9 +533,10 @@ impl Materializer {
     /// `id` and everything the base or the new tree has below it wait.
     fn unsettle_tree(&self, id: &str, run: &mut Run) -> Result<(), ApplyError> {
         run.out.unsettled.insert(id.to_owned());
-        let below = self.store.with(|s| {
-            let mut ids = s.descendants(Table::Staging, id)?;
-            ids.extend(s.descendants(Table::Items, id)?);
+        let folder = id.to_owned();
+        let below = self.store.call_blocking(move |s| {
+            let mut ids = s.descendants(Table::Staging, &folder)?;
+            ids.extend(s.descendants(Table::Items, &folder)?);
             Ok(ids)
         })?;
         run.out.unsettled.extend(below);
@@ -574,13 +575,13 @@ impl Materializer {
                 // An id the base does not have: a file from elsewhere — another
                 // folder, another account whose outbox may still have to fetch
                 // it (§4.5) — never ours to remove; the examination decides.
-                if self.store.with(|s| s.get(Table::Items, &id))?.is_none() {
+                if self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Items, &id) })?.is_none() {
                     run.out.examine.push((rel, is_dir));
                     return Ok(Removal::Busy);
                 }
                 // Moved here, and still placed elsewhere by the tree: its own
                 // change, not this folder's.
-                if self.store.with(|s| s.locate(Table::Staging, &id))?.is_some_and(|l| l.placed && l.rel != rel) {
+                if self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed && l.rel != rel) {
                     run.out.unsettled.insert(id);
                     return Ok(Removal::Busy);
                 }
@@ -688,7 +689,8 @@ impl Materializer {
         }
         let copy_rel = rel.with_file_name(&copy);
         if is_dir {
-            self.store.with(|s| s.outbox_apply(&[OutboxOp::Rebase { from: rel.to_path_buf(), to: copy_rel.clone() }], 0))?;
+            let rebase = [OutboxOp::Rebase { from: rel.to_path_buf(), to: copy_rel.clone() }];
+            self.store.call_blocking(move |s| s.outbox_apply(&rebase, 0))?;
         }
         tracing::info!("{} changed here and in OneDrive: the local version is kept as {}", rel.display(), copy_rel.display());
         run.out.copies.push(Copied { original: rel.to_path_buf(), copy: copy_rel.clone() });
@@ -709,7 +711,7 @@ impl Materializer {
             self.check_cancel()?;
             let id = name.to_str().map(str::to_owned);
             let placed = match &id {
-                Some(id) => self.store.with(|s| s.locate(Table::Staging, id))?.is_some_and(|l| l.placed),
+                Some(id) => self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed),
                 None => false,
             };
             if !placed && self.finish_new_folder(&holding, &name, id.as_deref(), run)? {
@@ -743,7 +745,7 @@ impl Materializer {
             return Ok(false);
         }
         let from = run.moved_from.get(id).cloned();
-        if from.as_ref().is_some_and(|f| !is_new_name(f)) || self.store.with(|s| Ok(s.get(Table::Items, id)?.is_some() || s.get(Table::Staging, id)?.is_some()))? {
+        if from.as_ref().is_some_and(|f| !is_new_name(f)) || self.store.call_blocking({ let id = id.to_owned(); move |s| Ok(s.get(Table::Items, &id)?.is_some() || s.get(Table::Staging, &id)?.is_some()) })? {
             return Ok(false);
         }
         let parent = from.as_ref().and_then(|f| f.parent()).map(Path::to_path_buf).unwrap_or_default();
@@ -767,7 +769,7 @@ impl Materializer {
         let mut places: Vec<PathBuf> = back.into_iter().filter(|b| !is_new_name(b)).collect();
         if let Some(id) = id {
             for table in [Table::Items, Table::Staging] {
-                if let Some(at) = self.store.with(|s| s.locate(table, id))?.filter(|l| l.placed && !l.rel.as_os_str().is_empty()) {
+                if let Some(at) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(table, &id) })?.filter(|l| l.placed && !l.rel.as_os_str().is_empty()) {
                     places.push(at.rel);
                 }
             }

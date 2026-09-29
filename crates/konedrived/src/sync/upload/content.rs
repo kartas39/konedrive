@@ -33,7 +33,7 @@ const BAD_ITEM: &str = "hash-mismatch:";
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
     let local = local_name(&row)?;
-    let Some(found) = locate(e, disk, &row)?.filter(|f| !f.is_dir) else {
+    let Some(found) = locate(e, disk, &row).await?.filter(|f| !f.is_dir) else {
         return removed(e, disk, &row).await;
     };
     // Taken while it waits for space only to see whether its file is gone
@@ -59,13 +59,14 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     // The snapshot and the session belong together: a session opened for
     // other content goes in the same transaction, before any request.
     let session = row.session_url.clone().filter(|_| row.snapshot.as_deref() == Some(snap.text().as_str()));
-    if let Some(stale) = e.store().with(|s| s.outbox_take_snapshot(row.seq, &snap.text()))? {
+    let (seq, text) = (row.seq, snap.text());
+    if let Some(stale) = e.store().call(move |s| s.outbox_take_snapshot(seq, &text)).await? {
         if let Err(err) = e.cfg.drive.cancel_upload(&stale).await {
             tracing::debug!("an upload session opened for other content was not cancelled: {err}");
         }
     }
     e.upload_progress(row.seq, 0, snap.size);
-    let Some(parent) = parent_of(e, disk, &row)? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
+    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
     let name = wanted_name(&row, &local);
     let job = Job { e, disk, row: &row, found: &found, file: &file, snap, parent: &parent, name: &name, session };
     match row.kind {
@@ -95,7 +96,8 @@ async fn removed(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Outcome, Fa
         }
     }
     tracing::info!("the new version of {} is not uploaded: the file was removed here", row.rel.display());
-    e.store().with(|s| s.outbox_drop(row.seq, None, None, None))?;
+    let seq = row.seq;
+    e.store().call(move |s| s.outbox_drop(seq, None, None, None)).await?;
     Ok(Outcome::Done)
 }
 
@@ -122,7 +124,7 @@ enum Stop {
 /// - **The file removed** (issue #36): under none of the row's names, as
 ///   [`locate`] looks for it — the same test as a run's start. A move whose
 ///   row is recorded is found under its new name, and the upload goes on.
-fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<Stop>, Fail> {
+async fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<Stop>, Fail> {
     if super::paused(e.store()).is_some() {
         return Ok(Some(Stop::Wait(Outcome::wait(reason::PAUSED, std::time::Duration::ZERO))));
     }
@@ -132,7 +134,7 @@ fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Op
     if let Err(why) = e.cfg.host.may_write() {
         return Ok(Some(Stop::Wait(Outcome::wait(&format!("not allowed now: {why}"), std::time::Duration::ZERO))));
     }
-    if locate(e, disk, row)?.filter(|f| !f.is_dir).is_none() {
+    if locate(e, disk, row).await?.filter(|f| !f.is_dir).is_none() {
         return Ok(Some(Stop::Removed));
     }
     Ok(None)
@@ -191,7 +193,7 @@ impl Job<'_> {
                 let hash = self.hash(sent.hash).await?;
                 match taken(self.e, self.row, self.parent, self.name, Ours::File(&hash)).await? {
                     Taken::Free => Ok(Outcome::again()),
-                    Taken::Temporary(swap) => temporary(self.e, self.row, self.parent, &swap),
+                    Taken::Temporary(swap) => temporary(self.e, self.row, self.parent, &swap).await,
                     // The same content is there: its own earlier request, or
                     // create/create with equal files (§6). Nothing is sent.
                     Taken::Adopt(item) => self.commit(*item).await,
@@ -222,7 +224,7 @@ impl Job<'_> {
                 Ok(item) => guard = item.e_tag.unwrap_or(guard),
                 Err(WriteError::NameExists) => match taken(self.e, row, self.parent, self.name, Ours::Item(id)).await? {
                     Taken::Free => return Ok(Outcome::again()),
-                    Taken::Temporary(swap) => return temporary(self.e, row, self.parent, &swap),
+                    Taken::Temporary(swap) => return temporary(self.e, row, self.parent, &swap).await,
                     Taken::Adopt(item) => guard = item.e_tag.unwrap_or(guard),
                     Taken::Copy => return copy(self.e, self.disk, row, self.found, self.parent, None).await,
                 },
@@ -283,10 +285,11 @@ impl Job<'_> {
         if same_content || (remote.c_tag.is_some() && remote.c_tag == base.ctag) {
             let moved_there = remote_parent != base.parent || Some(remote_name.as_str()) != base.name.as_deref();
             let _tree = self.e.cfg.tree_lock.lock().await;
-            let followed = if moved_there { follow_cloud(self.e, self.disk, self.found, &remote)? } else { None };
+            let followed = if moved_there { follow_cloud(self.e, self.disk, self.found, &remote).await? } else { None };
             let fresh = Base { etag: remote.e_tag.clone(), ctag: base.ctag.clone(), parent: remote_parent.clone(), name: Some(remote_name.clone()) };
-            self.e.store().with(|s| {
-                s.outbox_amend(row.seq, |next| {
+            let seq = row.seq;
+            self.e.store().call(move |s| {
+                s.outbox_amend(seq, |next| {
                     if let Some(to_rel) = followed {
                         next.rel = to_rel;
                         next.target_parent = remote_parent;
@@ -297,7 +300,7 @@ impl Job<'_> {
                     next.session_expires = None;
                     next.session_next = None;
                 })
-            })?;
+            }).await?;
             return Ok(Outcome::again());
         }
         copy(self.e, self.disk, row, self.found, self.parent, Some(id)).await
@@ -361,8 +364,9 @@ impl Job<'_> {
         Ok(Sent { hash: Some(hasher.finish_base64()), answer })
     }
 
-    fn forget_session(&self) -> Result<(), Fail> {
-        Ok(self.e.store().with(|s| s.outbox_set_session(self.row.seq, None, None, None))?)
+    async fn forget_session(&self) -> Result<(), Fail> {
+        let seq = self.row.seq;
+        Ok(self.e.store().call(move |s| s.outbox_set_session(seq, None, None, None)).await?)
     }
 
     /// `DELETE <uploadUrl>`: the content changed while it went up (§4.3).
@@ -370,7 +374,7 @@ impl Job<'_> {
         if let Err(err) = self.e.cfg.drive.cancel_upload(url).await {
             tracing::debug!("an abandoned upload session was not cancelled: {err}");
         }
-        self.forget_session()
+        self.forget_session().await
     }
 
     /// The item the target names, as OneDrive has it now.
@@ -396,7 +400,7 @@ impl Job<'_> {
                 return Ok(Some(Sent { hash: Some(hash), answer: Ok(item) }));
             }
         }
-        self.forget_session()?;
+        self.forget_session().await?;
         Ok(None)
     }
 
@@ -432,7 +436,8 @@ impl Job<'_> {
                     };
                     // A crash here leaves an orphan session, which expires.
                     e.fault(Fault::SessionNotPersisted)?;
-                    e.store().with(|s| s.outbox_set_session(seq, Some(&opened.url), opened.expires, Some(0)))?;
+                    let (url, expires) = (opened.url.clone(), opened.expires);
+                    e.store().call(move |s| s.outbox_set_session(seq, Some(&url), expires, Some(0))).await?;
                     (opened.url, 0)
                 }
             };
@@ -440,7 +445,7 @@ impl Job<'_> {
             self.hash_prefix(&mut hasher, next).await?;
             let mut fragments = 0;
             loop {
-                match stop_between_fragments(e, self.disk, self.row)? {
+                match stop_between_fragments(e, self.disk, self.row).await? {
                     Some(Stop::Wait(stop)) => {
                         tracing::info!("the upload of {} stops at {next} of {size} bytes; its session is kept", self.found.rel.display());
                         return Err(Fail::Now(stop));
@@ -448,7 +453,7 @@ impl Job<'_> {
                     Some(Stop::Removed) => {
                         tracing::info!("the upload of {} stops at {next} of {size} bytes: the file was removed", self.found.rel.display());
                         // The row as it is now: with the session just used.
-                        let now = e.store().with(|s| s.outbox_row(seq))?;
+                        let now = e.store().call(move |s| s.outbox_row(seq)).await?;
                         let Some(now) = now else { return Err(Fail::Now(Outcome::Done)) };
                         return Err(Fail::Now(removed(e, self.disk, &now).await?));
                     }
@@ -499,7 +504,8 @@ impl Job<'_> {
                             self.hash_prefix(&mut hasher, progress.next).await?;
                         }
                         next = progress.next;
-                        e.store().with(|s| s.outbox_set_session(seq, Some(&url), progress.expires, Some(next)))?;
+                        let (kept, expires) = (url.clone(), progress.expires);
+                        e.store().call(move |s| s.outbox_set_session(seq, Some(&kept), expires, Some(next))).await?;
                         e.upload_progress(seq, next, size);
                         fragments += 1;
                         e.fault(Fault::MidSession(fragments))?;
@@ -521,7 +527,7 @@ impl Job<'_> {
                         break;
                     }
                     Err(err @ (WriteError::NameExists | WriteError::Changed | WriteError::NotFound)) => {
-                        self.forget_session()?;
+                        self.forget_session().await?;
                         return Ok(Sent { hash: None, answer: Err(err) });
                     }
                     // The session stays, to be resumed.
@@ -537,7 +543,7 @@ impl Job<'_> {
     /// the version it made — a new file's is deleted first, so that the
     /// name is free again.
     async fn finish(&self, item: DriveItem, hash: Option<String>) -> Result<Outcome, Fail> {
-        self.forget_session()?;
+        self.forget_session().await?;
         let differs = matches!((hash.as_deref(), item.quick_xor_hash()), (Some(ours), Some(theirs)) if ours != theirs);
         if !differs {
             return self.commit(item).await;
@@ -559,7 +565,8 @@ impl Job<'_> {
             parent: item.parent_reference.as_ref().and_then(|p| p.id.clone()),
             name: item.name.clone(),
         };
-        self.e.store().with(|s| s.outbox_amend(self.row.seq, |next| next.base = Some(made)))?;
+        let seq = self.row.seq;
+        self.e.store().call(move |s| s.outbox_amend(seq, |next| next.base = Some(made))).await?;
         Ok(Outcome::backoff(reason::HASH))
     }
 
@@ -594,7 +601,7 @@ impl Job<'_> {
         self.e.fault(Fault::AfterCommitStep1)?;
         self.e.space_used(self.snap.size);
         let event = self.e.event(kind::UPLOADED, &self.found.rel, crate::sync::activity::human_size(self.snap.size));
-        commit_row(self.e, self.row, &answer, self.found.inode.handle.as_ref(), self.parent, event)?;
+        commit_row(self.e, self.row, &answer, self.found.inode.handle.as_ref(), self.parent, event).await?;
         Ok(Outcome::Done)
     }
 }

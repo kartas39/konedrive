@@ -2127,6 +2127,88 @@ application must never read zeros where real content should be.
   `an_update_removed_mid_upload_ends_and_the_delete_behind_it_runs`,
   `an_update_whose_file_is_gone_at_its_start_ends_and_the_delete_behind_it_runs`,
   `a_file_renamed_mid_upload_with_the_rename_recorded_goes_on`). Open.
+- **F158. The outbox's budgets at scale are guesses, measured once on one machine**
+  (`konedrived/src/bench.rs`; issue #38) — the sizes designed for are 30 000 queued changes,
+  100 000 items and a directory of 30 000 entries with 27 000 new files. The budgets (an
+  examination batch 3 s, a Full local scan 10 s on tmpfs, a pick 50 ms and 200 ms in the worst
+  case, a step's own store work 10 ms, a bus answer during an apply 100 ms, `Outbox(21)` and
+  `NotUploadedFiles(…, 20)` 50 ms, a lookup by handle 1 ms, a folder's rename 100 ms) are guesses
+  of what keeps the daemon responsive, and the bench is an ignored test run by hand
+  (`cargo test -p konedrived --release --lib bench:: -- --ignored`, with `HOME`, the XDG
+  directories and the session bus pointed at a temporary directory — it refuses otherwise), not in
+  CI: a regression shows only when someone runs it. Measured on a 16-thread desktop with `/tmp` on
+  tmpfs; a slower disk or CPU is not measured. The Full local scan (about 7.5 s) is the closest to
+  its budget; most of it is the disk's own reading of 130 000 entries. PROVISIONAL (guess) ·
+  measured. Open.
+- **F159. The worker picks rows a hundred at a time, and stops looking at 32** (`tree/outbox/pick.rs`,
+  `PORTION`; `sync/upload/engine.rs`, `PICK_WANT`; issue #38) — both numbers are guesses. A pick
+  reads due rows in portions of 100 until 32 can run or the queue ends; a queue whose due rows all
+  wait on one late row is read to its end on every pick (about 140 ms at 100 000 rows), once per
+  wake of the worker. After 8 portions, rule 1 is asked only of rows whose item id, handle or
+  inode another row shares, found by three walks of the indexes (`PORTIONS_ASKED`, a guess). A
+  row reached through a chain is fetched and asked on its own. Rule 4's graph is built at every
+  pick from the rows that free a name; when there are none (the usual case) that is one query of
+  a partial index; when there are, the rows they wait for are walked too, which for a folder's
+  removal with many rows inside costs one point query per row, per pick. PROVISIONAL (guess) ·
+  measured (`bench::picking_*`). Open.
+- **F160. The counts and the Not Uploaded summary lag the outbox by up to a second** (`sync/upload/engine.rs`,
+  `tally`, `TALLY_EVERY`; issue #38) — they are summed again after a committed change to the
+  outbox, at most once a second (a guess), and at the end of each drain; `PendingCount` and the
+  summary can show the state of a second ago. The summary is answered from memory only while the
+  worker runs; otherwise it is summed on the call, through the read-only connection. The change
+  is noticed through SQLite's update hook on the store's connection and signalled by the store's
+  thread once the job that made it has run; a write through another connection (a store opened on its own, as a
+  Forget's count does) is not noticed until the next change. A row written before this version
+  has no recorded size: `PendingBytes` and the summary count 0 bytes for it until its snapshot is
+  written or it is detected again (the next Full local scan). Things never uploaded (`local_skipped`)
+  likewise. LIMIT (chosen) · measured (`sync::tests::…::the_bus_answers_while_the_store_is_held`).
+  Open.
+- **F161. The bus's lists read the last committed state** (`tree.rs`, `Store::read`; issue #38) —
+  `Outbox(limit)`, `NotUploadedFiles`, `NotUploaded()` and the summary summed on the call go
+  through a second, read-only SQLite connection, so a change being recorded right now (an
+  examination's apply) is not listed until it commits. `NotUploadedFiles` asks one query per
+  group of rows (kind, state and reason) with its own `LIMIT`, then sorts: a reason with many
+  groups (each `too-big:<needs>:<free>` is its own) asks that many queries. A name that is not
+  UTF-8 is stored as bytes and sorts after every text name in SQL, so with a `LIMIT` such a file
+  may be left out of the first page where a sort of full paths would have put it in. A free-up's
+  check of waiting changes keeps the shared connection: a change being recorded is waited for,
+  not missed. LIMIT (chosen) · reasoned. Open.
+- **F162. One thread owns each tree store; everyone sends it jobs** (`tree.rs`, `Store`, `Owner`;
+  issue #38) — the store's read-write connection lives on one thread of its own, the only one
+  that holds a read-write connection to it; async code sends it jobs with `store.call(…).await`,
+  plain threads (the examiner, the materializer, a `spawn_blocking` body) with
+  `store.call_blocking(…)`, over a channel of 1 024 jobs (`QUEUE`, a guess: a full channel makes
+  senders wait), each answered through a one-shot reply. Jobs run one at a time, in the order they
+  arrive; a job holds its own transaction, and work that spans jobs keeps using the tree lock. A
+  long job (an examination's apply, a cycle's commit) delays only the jobs behind it, never the
+  async runtime or the D-Bus dispatcher; the bus's reads go to a read-only connection with a
+  thread of its own. Costs and edges: (1) each call is a hand-over between threads (about 10 µs);
+  the examination asks an item's row, recorded object and place in one job to keep a Full local
+  scan of 100 000 items near 8 s (`bench::full_scan_of_100000_items_and_30000_rows`), up from
+  7.5 s; (2) a job's closure must own what it uses (`'static`), so callers clone ids and rows into
+  it; (3) a job that calls the store would wait for itself: it panics in debug and test builds
+  and is an error otherwise; (4) a job that panics answers its caller with an error, its
+  transaction rolled back, and the thread goes on; (5) `call_blocking` on an async runtime's
+  thread panics (tokio refuses to block there), in every build — a missed conversion shows in the
+  tests; (6) the pause is kept in the store's memory as well as in `meta`, so that it is read
+  without a job; a timed pause that ran out is taken off `meta` by a job nobody waits for; (7) a
+  few blocking helpers (the activity log, `claimed_elsewhere`, `renew_handles`) stay blocking and
+  are called from plain threads only; (8) a Forget's count with no sync running opens the store
+  read-only; `migrate.rs` opens it before any store is. The VM suite's scenarios (`tests/vm`) are
+  converted, but that crate does not build on `dev` for a reason of its own
+  (`ExamineSink` gained a field `watch.rs` does not set); not fixed here. LIMIT (chosen) · measured
+  (`tree::tests::a_long_job_does_not_starve_the_runtime`, `jobs_run_in_arrival_order`,
+  `a_panicking_job_is_an_error_and_the_next_job_runs`, `a_call_from_inside_a_job_is_caught`). Open.
+- **F163. Whole-table reads kept, and when they run** (issue #38) — each reads every outbox row,
+  about 28 ms at 30 000 rows (`bench::a_whole_table_read`): the examination's own start (once per
+  batch, to build its maps); the worker's first marks after it starts, and after more than
+  100 000 changed rows went unread (`OutboxChanges`, `DIRTY_MAX`); a forced switch to read-only
+  (`outbox_drop_all`, `write_mode`); `Outbox(0)` and `NotUploaded()`, unbounded by their
+  signatures; restoring or confirming held deletes (their rows); a quota read that lets waiting
+  files go (the waiting rows only, each sized from its snapshot, its recorded size or the disk);
+  and, outside this issue (#39), the read-write cycle's reads in `listing/rw.rs` and
+  `materialize/rw.rs`. The counts that only needed a number (`held_back`, `PendingUploads`, a
+  Forget's count, a read-only start) are `count(*)`. LIMIT (chosen) · measured. Open.
 ---
 
 ## 5. Provisional numbers
@@ -2181,6 +2263,11 @@ application must never read zeros where real content should be.
 | Less free space than this is none: the account is full (`space::NO_SPACE`) | 1 MiB | **guess** (issue #2) |
 | A quota read shared by refusals of rows running together (`space::REUSE`) | 10 s | **guess** |
 | A row rewritten and sent again at once before it backs off (`AGAIN_LIMIT`) / the worker's idle look at the outbox | 20 / every 300 s | **guess** |
+| Due rows a pick reads at a time (`PORTION`) / rows it looks for before it stops reading (`PICK_WANT`) / portions before rule 1 is asked only of rows that share a key (`PORTIONS_ASKED`) | 100 / 32 / 8 | **guess** (F159) |
+| The counts and the Not Uploaded summary summed again at most every (`TALLY_EVERY`) | 1 s | **guess** (F160) |
+| Changed outbox rows remembered one by one for the marks (`DIRTY_MAX`) | 100 000; past it, every row once | **guess** (F163) |
+| The outbox's budgets at scale (`bench.rs`) | see F158 | **guess** |
+| Jobs a tree store's channel holds before a sender waits (`tree::QUEUE`) | 1 024 | **guess** (F162) |
 
 ---
 

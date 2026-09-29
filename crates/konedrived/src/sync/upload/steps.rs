@@ -74,9 +74,9 @@ pub(super) fn swap_name(row: &OutboxRow) -> String {
 
 /// The item id of the directory `dir` (relative to the root), read from the
 /// disk: the root's is the drive's root.
-pub(super) fn dir_id(e: &Engine, disk: &Disk, dir: &Path) -> Result<Option<String>, Fail> {
+pub(super) async fn dir_id(e: &Engine, disk: &Disk, dir: &Path) -> Result<Option<String>, Fail> {
     if dir.as_os_str().is_empty() {
-        return Ok(e.store().with(|s| s.root_item_id())?);
+        return Ok(e.store().call(|s| s.root_item_id()).await?);
     }
     let Some(name) = dir.file_name() else { return Ok(None) };
     let parent = match disk.dir(dir.parent().unwrap_or(Path::new(""))) {
@@ -93,21 +93,23 @@ pub(super) fn dir_id(e: &Engine, disk: &Disk, dir: &Path) -> Result<Option<Strin
 /// The folder in OneDrive the row's item goes into: the one the examination
 /// named, or — where that folder was still to be made — the one its
 /// directory is now.
-pub(super) fn parent_of(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<String>, Fail> {
+pub(super) async fn parent_of(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<String>, Fail> {
     if let Some(parent) = &row.target_parent {
         return Ok(Some(parent.clone()));
     }
-    dir_id(e, disk, row.rel.parent().unwrap_or(Path::new("")))
+    dir_id(e, disk, row.rel.parent().unwrap_or(Path::new(""))).await
 }
 
 /// The row's local object: where the row saw it, or where a row behind it
 /// saw it since. `None` when it is in neither place.
-pub(super) fn locate(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<Found>, Fail> {
-    let others = e.store().with(|s| match (&row.item_id, &row.inode) {
+pub(super) async fn locate(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<Found>, Fail> {
+    let (item_id, inode) = (row.item_id.clone(), row.inode.clone());
+    let others = e.store().call(move |s| match (&item_id, &inode) {
         (Some(id), _) => s.outbox_for_item(id),
         (None, Some(inode)) => s.outbox_for_inode(inode),
         _ => Ok(Vec::new()),
-    })?;
+    })
+    .await?;
     let places = std::iter::once(row.rel.clone()).chain(others.into_iter().filter(|r| r.seq != row.seq).map(|r| r.rel));
     for rel in places {
         if let Some(found) = local::find(disk, &rel)? {
@@ -138,12 +140,13 @@ fn place(item: &DriveItem) -> (Option<String>, String) {
 
 /// Commit step 2 (§3.5), or its temporary form: the item landed under a
 /// temporary name, and a `move` row takes it on to the local name.
-pub(super) fn commit_row(e: &Engine, row: &OutboxRow, answer: &Row, handle: Option<&FileHandle>, parent: &str, event: ActivityRow) -> Result<(), Fail> {
+pub(super) async fn commit_row(e: &Engine, row: &OutboxRow, answer: &Row, handle: Option<&FileHandle>, parent: &str, event: ActivityRow) -> Result<(), Fail> {
+    let (seq, answer, handle, parent, stored) = (row.seq, answer.clone(), handle.cloned(), parent.to_owned(), event.clone());
     if in_swap(row) {
         let final_name = local_name(row)?;
-        e.store().with(|s| s.outbox_commit_temporary(row.seq, answer, handle, parent, &final_name, Some(&event)))?;
+        e.store().call(move |s| s.outbox_commit_temporary(seq, &answer, handle.as_ref(), &parent, &final_name, Some(&stored))).await?;
     } else {
-        e.store().with(|s| s.outbox_commit(row.seq, Committed::Item { row: answer, handle }, Some(&event)))?;
+        e.store().call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: handle.as_ref() }, Some(&stored))).await?;
     }
     e.cfg.host.activity(&event);
     Ok(())
@@ -199,7 +202,9 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
         // Its own temporary name: a replay adopts what it made there.
         return Ok(if is_ours { Taken::Adopt(Box::new(holder)) } else { Taken::Temporary(format!("{name}-{}", row.seq)) });
     }
-    let rows = e.store().with(|s| s.outbox_rows())?;
+    // The live rows of the item that holds the name: all that is asked of them.
+    let held_by = holder.id.clone();
+    let rows = e.store().call(move |s| s.outbox_for_item(&held_by)).await?;
     let lower = name.to_lowercase();
     let freed = rows.iter().any(|r| {
         r.seq != row.seq
@@ -213,13 +218,17 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
         return Ok(Taken::Temporary(swap_name(row)));
     }
     let known_here = !own_item
-        && (rows.iter().any(|r| r.item_id.as_deref() == Some(holder.id.as_str())) || e.store().with(|s| s.local_handle(&holder.id))?.is_some());
+        && (rows.iter().any(|r| r.item_id.as_deref() == Some(holder.id.as_str())) || {
+            let held_by = holder.id.clone();
+            e.store().call(move |s| s.local_handle(&held_by)).await?.is_some()
+        });
     Ok(if is_ours && !known_here { Taken::Adopt(Box::new(holder)) } else { Taken::Copy })
 }
 
 /// The row goes to `swap` first (saved before it is sent, WR7).
-pub(super) fn temporary(e: &Engine, row: &OutboxRow, parent: &str, swap: &str) -> Result<Outcome, Fail> {
-    e.store().with(|s| s.outbox_set_target(row.seq, Some(parent), Some(swap)))?;
+pub(super) async fn temporary(e: &Engine, row: &OutboxRow, parent: &str, swap: &str) -> Result<Outcome, Fail> {
+    let (seq, parent, swap) = (row.seq, parent.to_owned(), swap.to_owned());
+    e.store().call(move |s| s.outbox_set_target(seq, Some(&parent), Some(&swap))).await?;
     Ok(Outcome::again())
 }
 
@@ -267,9 +276,11 @@ pub(super) async fn copy(e: &Engine, disk: &Disk, row: &OutboxRow, found: &Found
                 next.base = None;
             }
         };
-        e.store().with(|s| s.outbox_copied(row.seq, amend, forget, now(), &original, &copy_path, Some(&event)))?;
+        let (seq, forget, stored) = (row.seq, forget.map(str::to_owned), event.clone());
+        e.store().call(move |s| s.outbox_copied(seq, amend, forget.as_deref(), now(), &original, &copy_path, Some(&stored))).await?;
         if found.is_dir {
-            e.store().with(|s| s.outbox_apply(&[OutboxOp::Rebase { from: found.rel.clone(), to: copy_rel.clone() }], now()))?;
+            let rebase = [OutboxOp::Rebase { from: found.rel.clone(), to: copy_rel.clone() }];
+            e.store().call(move |s| s.outbox_apply(&rebase, now())).await?;
         }
         (event, copy_rel)
     };
@@ -291,13 +302,13 @@ pub(super) async fn copy(e: &Engine, disk: &Disk, row: &OutboxRow, found: &Found
 /// step of this very row, I1), a name OneDrive keeps but Linux cannot, or
 /// one OneDrive refuses. The local place then stands. The caller holds the
 /// tree lock.
-pub(super) fn follow_cloud(e: &Engine, disk: &Disk, found: &Found, remote: &DriveItem) -> Result<Option<PathBuf>, Fail> {
+pub(super) async fn follow_cloud(e: &Engine, disk: &Disk, found: &Found, remote: &DriveItem) -> Result<Option<PathBuf>, Fail> {
     let (Some(parent), name) = place(remote) else { return Ok(None) };
     let placeable = matches!(classify(remote), Change::Upsert(row) if row.placement == Placement::Placed);
     if !placeable || name.starts_with(RESERVED_PREFIX) || names::refused(OsStr::new(&name)).is_some() {
         return Ok(None);
     }
-    let Some(dir_rel) = e.store().with(|s| s.locate(Table::Items, &parent))?.filter(|l| l.placed).map(|l| l.rel) else {
+    let Some(dir_rel) = e.store().call(move |s| s.locate(Table::Items, &parent)).await?.filter(|l| l.placed).map(|l| l.rel) else {
         return Ok(None);
     };
     let to_rel = dir_rel.join(&name);
@@ -307,7 +318,8 @@ pub(super) fn follow_cloud(e: &Engine, disk: &Disk, found: &Found, remote: &Driv
     match disk.dir(&dir_rel).and_then(|to| disk.rename(&found.dir, &found.name, &to, OsStr::new(&name))) {
         Ok(()) => {
             if found.is_dir {
-                e.store().with(|s| s.outbox_apply(&[OutboxOp::Rebase { from: found.rel.clone(), to: to_rel.clone() }], now()))?;
+                let rebase = [OutboxOp::Rebase { from: found.rel.clone(), to: to_rel.clone() }];
+                e.store().call(move |s| s.outbox_apply(&rebase, now())).await?;
             }
             tracing::info!("{} was renamed in OneDrive first: it is {} here too", found.rel.display(), to_rel.display());
             Ok(Some(to_rel))
@@ -348,7 +360,8 @@ pub(super) async fn upload_as_new(e: &Engine, row: &OutboxRow, found: &Found, pa
         next.session_next = None;
     };
     let event = e.event(kind::RESTORED, &found.rel, "deleted in OneDrive while it was changed here: uploaded again");
-    e.store().with(|s| s.outbox_orphan(id, row.seq, amend, Some(&event)))?;
+    let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
+    e.store().call(move |s| s.outbox_orphan(&id, seq, amend, Some(&stored))).await?;
     e.cfg.host.activity(&event);
     e.cfg.host.cycle_wanted();
     Ok(Outcome::again())
@@ -356,8 +369,8 @@ pub(super) async fn upload_as_new(e: &Engine, row: &OutboxRow, found: &Found, pa
 
 async fn mkdir(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
     let local = local_name(&row)?;
-    let Some(found) = locate(e, disk, &row)?.filter(|f| f.is_dir) else { return never_uploaded(e, disk, &row).await };
-    let Some(parent) = parent_of(e, disk, &row)? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
+    let Some(found) = locate(e, disk, &row).await?.filter(|f| f.is_dir) else { return never_uploaded(e, disk, &row).await };
+    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
     let name = wanted_name(&row, &local);
     // Opened before the request, as a file's content is: the commit marks the
     // directory that was made, wherever it is by then — renamed, or removed.
@@ -369,7 +382,7 @@ async fn mkdir(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
         }
         Err(WriteError::NameExists) => match taken(e, &row, &parent, &name, Ours::Folder).await? {
             Taken::Free => Ok(Outcome::again()),
-            Taken::Temporary(swap) => temporary(e, &row, &parent, &swap),
+            Taken::Temporary(swap) => temporary(e, &row, &parent, &swap).await,
             // A folder of that name: adopted, and the contents merge file by
             // file (§4.2).
             Taken::Adopt(item) => commit_dir(e, &row, &found, dir, &item, &parent).await,
@@ -395,16 +408,16 @@ async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::Fi
     blocking(move || local::commit_dir(&dir, &id)).await?;
     e.fault(Fault::AfterCommitStep1)?;
     let event = e.event(kind::UPLOADED, &found.rel, "folder");
-    commit_row(e, row, &answer, found.inode.handle.as_ref(), parent, event)?;
+    commit_row(e, row, &answer, found.inode.handle.as_ref(), parent, event).await?;
     Ok(Outcome::Done)
 }
 
 async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
     let (Some(id), Some(base)) = (row.item_id.clone(), row.base.clone()) else { return Ok(Outcome::blocked("no-item")) };
     let local = local_name(&row)?;
-    let Some(parent) = parent_of(e, disk, &row)? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
+    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
     let name = wanted_name(&row, &local);
-    let found = locate(e, disk, &row)?;
+    let found = locate(e, disk, &row).await?;
     let Some(guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked("no-guard")) };
     let change = ItemChange {
         name: (Some(name.as_str()) != base.name.as_deref()).then_some(name.as_str()),
@@ -420,7 +433,7 @@ async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
             return commit_move(e, &row, found.as_ref(), &remote, &parent).await;
         }
         // Where the base has it already: nothing to send.
-        e.store().with(|s| s.outbox_drop(row.seq, None, None, None))?;
+        e.store().call(move |s| s.outbox_drop(row.seq, None, None, None)).await?;
         return Ok(Outcome::Done);
     }
     match e.cfg.drive.update_item(&id, &guard, &change).await {
@@ -430,7 +443,7 @@ async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
         }
         Err(WriteError::NameExists) => match taken(e, &row, &parent, &name, Ours::Item(&id)).await? {
             Taken::Free => Ok(Outcome::again()),
-            Taken::Temporary(swap) => temporary(e, &row, &parent, &swap),
+            Taken::Temporary(swap) => temporary(e, &row, &parent, &swap).await,
             Taken::Adopt(item) => commit_move(e, &row, found.as_ref(), &item, &parent).await,
             Taken::Copy => match &found {
                 Some(found) => copy(e, disk, &row, found, &parent, None).await,
@@ -452,12 +465,13 @@ async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
                 // Moved there as well: the first to reach OneDrive wins (§6).
                 if let Some(found) = &found {
                     let _tree = e.cfg.tree_lock.lock().await;
-                    if let Some(to_rel) = follow_cloud(e, disk, found, &remote)? {
+                    if let Some(to_rel) = follow_cloud(e, disk, found, &remote).await? {
                         let answer = answer_row(&remote, None)?;
                         let handle = found.inode.handle.clone();
                         local::mark(disk, &to_rel, None);
                         let event = e.event("moved", &to_rel, format!("renamed in OneDrive first; was {} here", found.rel.display()));
-                        e.store().with(|s| s.outbox_commit(row.seq, Committed::Item { row: &answer, handle: handle.as_ref() }, Some(&event)))?;
+                        let (seq, stored) = (row.seq, event.clone());
+                        e.store().call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: handle.as_ref() }, Some(&stored))).await?;
                         e.cfg.host.activity(&event);
                         return Ok(Outcome::Done);
                     }
@@ -467,7 +481,8 @@ async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
             // such as its own temporary name): the move goes again against
             // the fresh eTag; the delta brings the content (§6).
             let fresh = Base { etag: remote.e_tag.clone(), ctag: base.ctag.clone(), parent: remote_parent, name: Some(remote_name) };
-            e.store().with(|s| s.outbox_amend(row.seq, |next| next.base = Some(fresh)))?;
+            let seq = row.seq;
+            e.store().call(move |s| s.outbox_amend(seq, |next| next.base = Some(fresh))).await?;
             Ok(Outcome::again())
         }
         Err(WriteError::NotFound) => move_gone(e, disk, &row, found.as_ref(), &id, &parent).await,
@@ -478,7 +493,10 @@ async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
 async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &DriveItem, parent: &str) -> Result<Outcome, Fail> {
     let answer = answer_row(item, Some(parent))?;
     let was = match &row.item_id {
-        Some(id) => e.store().with(|s| s.locate(Table::Items, id))?.map(|l| l.rel.display().to_string()).unwrap_or_default(),
+        Some(id) => {
+            let id = id.clone();
+            e.store().call(move |s| s.locate(Table::Items, &id)).await?
+        }.map(|l| l.rel.display().to_string()).unwrap_or_default(),
         None => String::new(),
     };
     let _tree = e.cfg.tree_lock.lock().await;
@@ -488,7 +506,7 @@ async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &
         local::clear_mark(found);
     }
     let event = e.event(kind::CLOUD_MOVED, rel, was);
-    commit_row(e, row, &answer, handle.as_ref(), parent, event)?;
+    commit_row(e, row, &answer, handle.as_ref(), parent, event).await?;
     Ok(Outcome::Done)
 }
 
@@ -516,7 +534,8 @@ async fn move_gone(e: &Engine, disk: &Disk, row: &OutboxRow, found: Option<&Foun
             }
             drop(lease);
             let event = e.event(kind::CLOUD_DELETED, &found.rel, "deleted in OneDrive; the placeholder here went too");
-            e.store().with(|s| s.outbox_commit(row.seq, Committed::Gone { item_id: id }, Some(&event)))?;
+            let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
+            e.store().call(move |s| s.outbox_commit(seq, Committed::Gone { item_id: &id }, Some(&stored))).await?;
             e.cfg.host.activity(&event);
             Ok(Outcome::Done)
         }
@@ -529,11 +548,13 @@ pub(super) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result<Outcome, F
     let Some(id) = row.item_id.clone() else {
         // Never in OneDrive (its create never landed): nothing to delete.
         tracing::info!("{} was never uploaded: its delete leaves the outbox", row.rel.display());
-        e.store().with(|s| s.outbox_drop(row.seq, None, None, None))?;
+        let seq = row.seq;
+        e.store().call(move |s| s.outbox_drop(seq, None, None, None)).await?;
         return Ok(Outcome::Done);
     };
     let base = row.base.clone().unwrap_or_default();
-    let folder = e.store().with(|s| s.get(Table::Items, &id))?.is_some_and(|item| item.kind == Kind::Folder);
+    let asked = id.clone();
+    let folder = e.store().call(move |s| s.get(Table::Items, &asked)).await?.is_some_and(|item| item.kind == Kind::Folder);
     if folder {
         return delete_folder(e, &row, &id).await;
     }
@@ -554,7 +575,8 @@ pub(super) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result<Outcome, F
 async fn gone(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcome, Fail> {
     let event = e.event(kind::CLOUD_DELETED, &row.rel, why);
     let _tree = e.cfg.tree_lock.lock().await;
-    e.store().with(|s| s.outbox_commit(row.seq, Committed::Gone { item_id: id }, Some(&event)))?;
+    let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
+    e.store().call(move |s| s.outbox_commit(seq, Committed::Gone { item_id: &id }, Some(&stored))).await?;
     e.cfg.host.activity(&event);
     Ok(Outcome::Done)
 }
@@ -567,7 +589,8 @@ async fn restored(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Ou
     let event = e.event(kind::RESTORED, &row.rel, why);
     {
         let _tree = e.cfg.tree_lock.lock().await;
-        e.store().with(|s| s.outbox_drop(row.seq, None, Some(id), Some(&event)))?;
+        let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
+        e.store().call(move |s| s.outbox_drop(seq, None, Some(&id), Some(&stored))).await?;
     }
     e.cfg.host.activity(&event);
     e.cfg.host.full_cycle_wanted();
@@ -624,7 +647,10 @@ async fn delete_folder(e: &Engine, row: &OutboxRow, id: &str) -> Result<Outcome,
 /// reached OneDrive. Except where it may have: see [`landed_away`].
 pub(super) async fn never_uploaded(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Outcome, Fail> {
     let behind: Vec<i64> = match &row.inode {
-        Some(inode) => e.store().with(|s| s.outbox_for_inode(inode))?.into_iter().filter(|r| r.seq > row.seq).map(|r| r.seq).collect(),
+        Some(inode) => {
+            let inode = inode.clone();
+            e.store().call(move |s| s.outbox_for_inode(&inode)).await?
+        }.into_iter().filter(|r| r.seq > row.seq).map(|r| r.seq).collect(),
         None => Vec::new(),
     };
     if let Some(url) = &row.session_url {
@@ -639,7 +665,8 @@ pub(super) async fn never_uploaded(e: &Engine, disk: &Disk, row: &OutboxRow) -> 
     };
     tracing::info!("{} is not uploaded: {detail}", row.rel.display());
     let event = e.event(kind::NOT_UPLOADED, &row.rel, detail);
-    e.store().with(|s| s.outbox_drop_unsent(row.seq, &behind, Some(&event)))?;
+    let (seq, stored) = (row.seq, event.clone());
+    e.store().call(move |s| s.outbox_drop_unsent(seq, &behind, Some(&stored))).await?;
     e.cfg.host.activity(&event);
     Ok(Outcome::Done)
 }
@@ -664,7 +691,7 @@ async fn landed_away(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<bool, F
     let Ok(local) = local_name(row) else { return Ok(false) };
     // The parent gone here as well, with no id recorded: its own delete
     // takes whatever is inside it in OneDrive.
-    let Some(parent) = parent_of(e, disk, row)? else { return Ok(false) };
+    let Some(parent) = parent_of(e, disk, row).await? else { return Ok(false) };
     let name = wanted_name(row, &local);
     let Taken::Adopt(item) = taken(e, row, &parent, &name, Ours::Sent { size, mtime }).await? else { return Ok(false) };
     let guard = item.e_tag.clone().or(item.c_tag.clone()).unwrap_or_default();

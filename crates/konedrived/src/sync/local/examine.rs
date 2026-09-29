@@ -55,7 +55,7 @@ use crate::drive::item::RESERVED_PREFIX;
 use crate::sync::disk::{Disk, HOLDING, NEW_PREFIX};
 use crate::sync::{InodeKey, InodeLocks};
 use crate::tree::outbox::{is_under, Base, Detection, Inode, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState};
-use crate::tree::{Kind, Placement, Row, Store, Table, TreeError};
+use crate::tree::{Kind, Located, Placement, Row, Store, Table, TreeError};
 
 /// A row's reason while a writer has the file open (§4.3).
 pub const OPEN_FOR_WRITING: &str = "open-for-writing";
@@ -144,7 +144,7 @@ impl Examiner<'_> {
 
     /// [`examine`](Self::examine), telling `progress` how a Full local scan goes.
     pub fn examine_reporting(&self, batch: &Batch, progress: Option<&dyn ScanProgress>) -> Result<Examined, ExamineError> {
-        let (root_id, complete) = self.store.with(|s| Ok((s.root_item_id()?, s.delta_link()?.is_some() && s.listing_next()?.is_none())))?;
+        let (root_id, complete) = self.store.call_blocking(move |s| Ok((s.root_item_id()?, s.delta_link()?.is_some() && s.listing_next()?.is_none())))?;
         let root_id = root_id.filter(|_| complete).ok_or(ExamineError::NoBase)?;
         let root = self.disk.dir(Path::new(""))?;
         let stat = nix::sys::stat::fstat(&root).map_err(io::Error::from)?;
@@ -170,7 +170,7 @@ impl Examiner<'_> {
             _ => (batch, false),
         };
         let handles_current = super::liveness::handles_current(self.store, &root);
-        let rows = self.store.with(|s| s.outbox_rows())?;
+        let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
         if let Some(progress) = progress {
             progress.started();
         }
@@ -189,6 +189,7 @@ impl Examiner<'_> {
             named: BTreeMap::new(),
             unreadable: HashSet::new(),
             base: HashMap::new(),
+            recorded: HashMap::new(),
             expected: HashMap::new(),
             chosen: HashMap::new(),
             decided: HashSet::new(),
@@ -273,14 +274,18 @@ struct Run<'e, 'a> {
     /// Whether the recorded handles are this filesystem's: `ESTALE` is gone
     /// only then (the move-out step).
     handles_current: bool,
-    /// The live rows before this examination.
-    rows: Vec<OutboxRow>,
+    /// The live rows before this examination, and what they are looked up by.
+    rows: Rows,
     entries: Vec<Entry>,
     at: HashMap<PathBuf, usize>,
     whole: BTreeSet<PathBuf>,
     named: BTreeMap<PathBuf, BTreeSet<OsString>>,
     unreadable: HashSet<PathBuf>,
     base: HashMap<String, Option<Row>>,
+    /// Item id → the local object the base records (`items.local_handle`),
+    /// and where the base places the item: asked with the item's row, in one
+    /// job of the store's thread (issue #38).
+    recorded: HashMap<String, (Option<FileHandle>, Option<Located>)>,
     expected: HashMap<String, Expect>,
     /// Item id → the entry that is the item.
     chosen: HashMap<String, usize>,
@@ -298,6 +303,141 @@ struct Run<'e, 'a> {
     detections: Vec<Detection>,
     ops: Vec<OutboxOp>,
     out: Examined,
+}
+
+/// The live rows as an examination looks them up (issue #38): by item, by
+/// local object, by place, by parent directory, built once per run, so that
+/// no step walks every row for each entry, item or directory.
+struct Rows {
+    /// In `seq` order.
+    all: Vec<OutboxRow>,
+    /// Item id → its rows, oldest first.
+    by_item: HashMap<String, Vec<usize>>,
+    /// Rows without an item id, by the handle of their object...
+    by_handle: HashMap<FileHandle, Vec<usize>>,
+    /// ... and by its inode.
+    by_inode: HashMap<(u64, u64), Vec<usize>>,
+    /// Every row by its place, in path order: what is below a directory is
+    /// one range.
+    by_rel: BTreeMap<PathBuf, Vec<usize>>,
+    /// Running `mkdir` rows without an item id.
+    making: Vec<usize>,
+}
+
+impl Rows {
+    fn new(all: Vec<OutboxRow>) -> Self {
+        let mut rows = Rows {
+            all,
+            by_item: HashMap::new(),
+            by_handle: HashMap::new(),
+            by_inode: HashMap::new(),
+            by_rel: BTreeMap::new(),
+            making: Vec::new(),
+        };
+        for (i, row) in rows.all.iter().enumerate() {
+            rows.by_rel.entry(row.rel.clone()).or_default().push(i);
+            match (&row.item_id, &row.inode) {
+                (Some(id), _) => rows.by_item.entry(id.clone()).or_default().push(i),
+                (None, Some(inode)) => {
+                    if let Some(handle) = &inode.handle {
+                        rows.by_handle.entry(handle.clone()).or_default().push(i);
+                    }
+                    rows.by_inode.entry((inode.dev, inode.ino)).or_default().push(i);
+                    if row.kind == OutboxKind::Mkdir && row.state == OutboxState::Running {
+                        rows.making.push(i);
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        rows
+    }
+
+    fn iter(&self) -> std::slice::Iter<'_, OutboxRow> {
+        self.all.iter()
+    }
+
+    /// The live rows of item `id`, oldest first.
+    fn of_item(&self, id: &str) -> impl DoubleEndedIterator<Item = &OutboxRow> + '_ {
+        self.by_item.get(id).into_iter().flatten().map(|&i| &self.all[i])
+    }
+
+    /// The rows without an item id whose object is `e`'s ([`Inode::same_object`]), oldest first.
+    fn of_object(&self, e: &Entry) -> Vec<&OutboxRow> {
+        let mut found: Vec<usize> = Vec::new();
+        if let Some(handle) = &e.handle {
+            found.extend(self.by_handle.get(handle).into_iter().flatten());
+        }
+        found.extend(self.by_inode.get(&(e.dev, e.ino)).into_iter().flatten());
+        found.sort_unstable();
+        found.dedup();
+        found
+            .into_iter()
+            .map(|i| &self.all[i])
+            .filter(|row| {
+                row.inode.as_ref().is_some_and(|i| match (&i.handle, &e.handle) {
+                    (Some(a), Some(b)) => a == b,
+                    _ => i.dev == e.dev && i.ino == e.ino,
+                })
+            })
+            .collect()
+    }
+
+    /// The rows at `rel` exactly.
+    fn at(&self, rel: &Path) -> impl Iterator<Item = &OutboxRow> + '_ {
+        self.by_rel.get(rel).into_iter().flatten().map(|&i| &self.all[i])
+    }
+
+    /// The rows strictly below `dir`, in `seq` order.
+    fn under(&self, dir: &Path) -> Vec<&OutboxRow> {
+        let mut found: Vec<usize> = self
+            .by_rel
+            .range::<Path, _>((std::ops::Bound::Excluded(dir), std::ops::Bound::Unbounded))
+            .take_while(|(rel, _)| rel.starts_with(dir))
+            .flat_map(|(_, list)| list.iter().copied())
+            .collect();
+        found.sort_unstable();
+        found.into_iter().map(|i| &self.all[i]).collect()
+    }
+
+    /// The rows whose place is directly in `dir`, in `seq` order.
+    fn in_dir(&self, dir: &Path) -> Vec<&OutboxRow> {
+        self.under(dir).into_iter().filter(|row| row.rel.parent() == Some(dir)).collect()
+    }
+}
+
+/// The objects of the entries listed, to tell whether a pending row's object
+/// was seen ([`Inode::same_object`]) without comparing it with every entry.
+struct Objects {
+    handles: HashSet<FileHandle>,
+    /// Every entry's inode, and those of entries with no handle.
+    inodes: HashSet<(u64, u64)>,
+    unhandled: HashSet<(u64, u64)>,
+}
+
+impl Objects {
+    fn of(entries: &[Entry]) -> Self {
+        let mut objects = Objects { handles: HashSet::new(), inodes: HashSet::new(), unhandled: HashSet::new() };
+        for e in entries {
+            objects.inodes.insert((e.dev, e.ino));
+            match &e.handle {
+                Some(handle) => {
+                    objects.handles.insert(handle.clone());
+                }
+                None => {
+                    objects.unhandled.insert((e.dev, e.ino));
+                }
+            }
+        }
+        objects
+    }
+
+    fn seen(&self, inode: &Inode) -> bool {
+        match &inode.handle {
+            Some(handle) => self.handles.contains(handle) || self.unhandled.contains(&(inode.dev, inode.ino)),
+            None => self.inodes.contains(&(inode.dev, inode.ino)),
+        }
+    }
 }
 
 fn depth(rel: &Path) -> usize {
@@ -330,36 +470,51 @@ fn object(handle: FileHandle) -> Inode {
 }
 
 impl Run<'_, '_> {
-    fn store<T>(&self, f: impl FnOnce(&mut crate::tree::TreeStore) -> Result<T, TreeError>) -> Result<T, TreeError> {
-        self.ex.store.with(f)
+    fn store<T: Send + 'static>(&self, f: impl FnOnce(&mut crate::tree::TreeStore) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
+        self.ex.store.call_blocking(f)
     }
 
     fn base_row(&mut self, id: &str) -> Result<Option<Row>, TreeError> {
         if let Some(row) = self.base.get(id) {
             return Ok(row.clone());
         }
-        let row = self.store(|s| s.get(Table::Items, id))?;
-        self.base.insert(id.to_owned(), row.clone());
-        Ok(row)
+        self.facts(id)?;
+        Ok(self.base.get(id).cloned().flatten())
     }
 
-    /// The live rows of item `id`, oldest first.
-    fn rows_of(&self, id: &str) -> Vec<&OutboxRow> {
-        self.rows.iter().filter(|row| row.item_id.as_deref() == Some(id)).collect()
+    /// Item `id`'s row, recorded object and place in the base, in one job.
+    fn facts(&mut self, id: &str) -> Result<(), TreeError> {
+        let asked = id.to_owned();
+        let (row, handle, located) = self.store(move |s| Ok((s.get(Table::Items, &asked)?, s.local_handle(&asked)?, s.locate(Table::Items, &asked)?)))?;
+        self.base.entry(id.to_owned()).or_insert(row);
+        self.recorded.insert(id.to_owned(), (handle, located));
+        Ok(())
+    }
+
+    /// The local object the base records for item `id`.
+    fn local_handle(&mut self, id: &str) -> Result<Option<FileHandle>, TreeError> {
+        if !self.recorded.contains_key(id) {
+            self.facts(id)?;
+        }
+        Ok(self.recorded.get(id).and_then(|(handle, _)| handle.clone()))
+    }
+
+    /// Where the base places item `id`.
+    fn located(&mut self, id: &str) -> Result<Option<Located>, TreeError> {
+        if !self.recorded.contains_key(id) {
+            self.facts(id)?;
+        }
+        Ok(self.recorded.get(id).and_then(|(_, located)| located.clone()))
     }
 
     /// The live row of a local object with no item id yet.
     fn pending_row(&self, e: &Entry) -> Option<&OutboxRow> {
-        let inode = e.inode();
-        self.rows.iter().rev().find(|row| row.item_id.is_none() && row.inode.as_ref().is_some_and(|i| i.same_object(&inode)))
+        self.rows.of_object(e).last().copied()
     }
 
     /// Whether the worker is creating `e`'s object in OneDrive right now.
     fn being_created(&self, e: &Entry) -> bool {
-        let inode = e.inode();
-        self.rows
-            .iter()
-            .any(|row| row.item_id.is_none() && row.state == OutboxState::Running && row.inode.as_ref().is_some_and(|i| i.same_object(&inode)))
+        self.rows.of_object(e).iter().any(|row| row.state == OutboxState::Running)
     }
 
     /// Where item `id` should be: where its live row last saw it, or else
@@ -375,9 +530,10 @@ impl Run<'_, '_> {
         if let Some(expect) = self.expected.get(id) {
             return Ok(expect.clone());
         }
-        let expect = match self.rows_of(id).last() {
-            Some(row) if row.kind.removes() => Expect::Nowhere,
-            Some(row) => Expect::At(row.rel.clone()),
+        let last = self.rows.of_item(id).next_back().map(|row| (row.kind.removes(), row.rel.clone()));
+        let expect = match last {
+            Some((true, _)) => Expect::Nowhere,
+            Some((false, rel)) => Expect::At(rel),
             None => match self.base_row(id)? {
                 None => Expect::Unknown,
                 Some(row) if row.placement != Placement::Placed => Expect::Nowhere,
@@ -455,7 +611,7 @@ impl Run<'_, '_> {
         let Some(id) = &e.id else { return Ok(true) };
         match self.base_row(id)? {
             Some(row) if row.kind == Kind::Folder => {
-                let recorded = self.store(|s| s.local_handle(id))?;
+                let recorded = self.local_handle(id)?;
                 Ok(recorded.is_some() && e.handle.is_some() && recorded != e.handle)
             }
             _ => Ok(true),
@@ -600,12 +756,13 @@ impl Run<'_, '_> {
     /// Where the item or pending row an event's object handle names is
     /// expected: the place to look.
     fn expected_of_handle(&mut self, handle: &FileHandle) -> Result<Option<PathBuf>, TreeError> {
-        if let Some(item) = self.store(|s| s.item_by_handle(handle))? {
+        if let Some(item) = self.store({ let handle = handle.to_owned(); move |s| s.item_by_handle(&handle) })? {
             if let Expect::At(rel) = self.expected(&item.id)? {
                 return Ok(Some(rel));
             }
         }
-        Ok(self.store(|s| s.outbox_by_handle(handle))?.map(|row| row.rel))
+        let handle = handle.clone();
+        Ok(self.store(move |s| s.outbox_by_handle(&handle))?.map(|row| row.rel))
     }
 
     /// An item seen away from where it is expected is looked for there too:
@@ -780,7 +937,7 @@ impl Run<'_, '_> {
     fn resolve(&mut self, id: &str, entries: &[usize]) -> Result<Option<usize>, ExamineError> {
         let Some(base) = self.base_row(id)? else {
             // Unknown to the base.
-            let placing = self.store(|s| s.get(Table::Staging, id))?.is_some();
+            let placing = self.store({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?.is_some();
             for &i in entries {
                 let e = self.entries[i].clone();
                 if placing {
@@ -819,13 +976,13 @@ impl Run<'_, '_> {
         for group in &mut groups {
             group.sort_by(|&a, &b| self.entries[a].rel.cmp(&self.entries[b].rel));
         }
-        let recorded = self.store(|s| s.local_handle(id))?;
+        let recorded = self.local_handle(id)?;
         let expect = self.expected(id)?;
         let expected_rel = match &expect {
             Expect::At(rel) => Some(rel.clone()),
             _ => None,
         };
-        let base_rel = self.store(|s| s.locate(Table::Items, id))?.filter(|l| l.placed).map(|l| l.rel);
+        let base_rel = self.located(id)?.filter(|l| l.placed).map(|l| l.rel);
         let is_at = |run: &Self, g: &[usize], rel: &Option<PathBuf>| rel.as_ref().is_some_and(|r| g.iter().any(|&i| &run.entries[i].rel == r));
         let original = recorded.as_ref().and_then(|h| groups.iter().position(|g| self.entries[g[0]].handle.as_ref() == Some(h)));
 
@@ -1024,6 +1181,7 @@ impl Run<'_, '_> {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: (e.ty == Type::File).then_some(e.size),
         }
     }
 
@@ -1031,7 +1189,7 @@ impl Run<'_, '_> {
     fn found(&mut self, id: &str, i: usize, batch: &Batch) -> Result<(), ExamineError> {
         let e = self.entries[i].clone();
         let Some(base) = self.base_row(id)? else { return Ok(()) };
-        let recorded = self.store(|s| s.local_handle(id))?;
+        let recorded = self.local_handle(id)?;
         if e.handle.is_some() && e.handle != recorded {
             self.ops.push(OutboxOp::SetHandle { item_id: id.to_owned(), handle: e.handle.clone() });
         }
@@ -1068,7 +1226,7 @@ impl Run<'_, '_> {
         }
         let at_base = d.target_parent.as_deref() == base.parent_id.as_deref() && d.target_name.as_deref() == Some(base.name.as_str());
         // In place, unchanged or unknown, with no row: nothing to record.
-        if d.kind == OutboxKind::Move && at_base && self.rows_of(id).is_empty() {
+        if d.kind == OutboxKind::Move && at_base && self.rows.of_item(id).next().is_none() {
             return Ok(());
         }
         self.detections.push(d);
@@ -1098,7 +1256,7 @@ impl Run<'_, '_> {
 
     fn hydrated(&mut self, id: &str, base: &Row, e: &Entry, batch: &Batch) -> Result<Content, ExamineError> {
         let now = snapshot(e.size, e.mtime.0, e.mtime.1);
-        if self.rows_of(id).iter().any(|row| row.state == OutboxState::Running && row.snapshot.as_deref() == Some(now.as_str())) {
+        if self.rows.of_item(id).any(|row| row.state == OutboxState::Running && row.snapshot.as_deref() == Some(now.as_str())) {
             // Being uploaded as it is now.
             return Ok(Content::Unknown);
         }
@@ -1216,6 +1374,7 @@ impl Run<'_, '_> {
     /// Rule 7: base items (and pending rows) expected in the examined
     /// places and not found anywhere in the batch.
     fn missing(&mut self) -> Result<(), ExamineError> {
+        let objects = Objects::of(&self.entries);
         let mut places: Vec<(PathBuf, Option<BTreeSet<OsString>>)> = self.whole.iter().map(|d| (d.clone(), None)).collect();
         places.extend(self.named.iter().map(|(d, n)| (d.clone(), Some(n.clone()))));
         for (dir, names) in places {
@@ -1224,7 +1383,7 @@ impl Run<'_, '_> {
             };
             let mut items: Vec<(String, PathBuf)> = Vec::new();
             if let Some(parent) = self.dir_id(&dir) {
-                for child in self.store(|s| s.children(Table::Items, &parent))? {
+                for child in self.store({ let parent = parent.to_owned(); move |s| s.children(Table::Items, &parent) })? {
                     if child.placement != Placement::Placed {
                         continue;
                     }
@@ -1237,13 +1396,14 @@ impl Run<'_, '_> {
                 }
             }
             let mut pending: Vec<OutboxRow> = Vec::new();
-            for row in &self.rows {
-                if row.kind.removes() || row.rel.parent() != Some(dir.as_path()) || !in_scope(self, &row.rel) {
+            let listed: HashSet<String> = items.iter().map(|(id, _)| id.clone()).collect();
+            for row in self.rows.in_dir(&dir) {
+                if row.kind.removes() || !in_scope(self, &row.rel) {
                     continue;
                 }
                 match &row.item_id {
                     Some(id) => {
-                        if !items.iter().any(|(i, _)| i == id) && self.rows_of(id).last().map(|r| r.seq) == Some(row.seq) {
+                        if !listed.contains(id) && self.rows.of_item(id).next_back().map(|r| r.seq) == Some(row.seq) {
                             items.push((id.clone(), row.rel.clone()));
                         }
                     }
@@ -1256,7 +1416,7 @@ impl Run<'_, '_> {
                 }
             }
             for row in pending {
-                let seen = row.inode.as_ref().is_some_and(|inode| self.entries.iter().any(|e| e.inode().same_object(inode)));
+                let seen = row.inode.as_ref().is_some_and(|inode| objects.seen(inode));
                 if !seen {
                     self.missing_pending(&row)?;
                 }
@@ -1272,7 +1432,7 @@ impl Run<'_, '_> {
         if row.kind != OutboxKind::Mkdir {
             return Ok(());
         }
-        let inside: Vec<OutboxRow> = self.rows.iter().filter(|r| is_under(&r.rel, &row.rel)).cloned().collect();
+        let inside: Vec<OutboxRow> = self.rows.under(&row.rel).into_iter().cloned().collect();
         for r in inside {
             match &r.item_id {
                 None => self.gone_pending(&r),
@@ -1306,6 +1466,7 @@ impl Run<'_, '_> {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: None,
         });
     }
 
@@ -1324,7 +1485,7 @@ impl Run<'_, '_> {
                 }
             }
         }
-        let Some(handle) = self.store(|s| s.local_handle(id))? else {
+        let Some(handle) = self.local_handle(id)? else {
             // A rebuilt base cannot prove a delete (WR4).
             self.hold_back(id, Settle::Unproven, true);
             return Ok(());
@@ -1384,9 +1545,13 @@ impl Run<'_, '_> {
                     return Ok(Settle::Unproven);
                 }
             }
-            let inside: HashSet<String> = self.store(|s| s.descendants(Table::Items, id))?.into_iter().collect();
-            let rows: Vec<OutboxRow> =
-                self.rows.iter().filter(|r| is_under(&r.rel, rel) || r.item_id.as_ref().is_some_and(|i| inside.contains(i))).cloned().collect();
+            let inside: HashSet<String> = self.store({ let id = id.to_owned(); move |s| s.descendants(Table::Items, &id) })?.into_iter().collect();
+            let mut rows: Vec<OutboxRow> = self.rows.under(rel).into_iter().cloned().collect();
+            let mut taken: HashSet<i64> = rows.iter().map(|r| r.seq).collect();
+            for id in &inside {
+                rows.extend(self.rows.of_item(id).filter(|r| taken.insert(r.seq)).cloned());
+            }
+            rows.sort_by_key(|r| r.seq);
             for r in rows {
                 if r.state == OutboxState::Running {
                     match r.item_id.clone() {
@@ -1433,6 +1598,7 @@ impl Run<'_, '_> {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: None,
         });
         Ok(Settle::Done)
     }
@@ -1451,7 +1617,7 @@ impl Run<'_, '_> {
         let mut settled = Settle::Done;
         let mut queue: VecDeque<String> = VecDeque::from([folder.to_owned()]);
         while let Some(parent) = queue.pop_front() {
-            for child in self.store(|s| s.children(Table::Items, &parent))? {
+            for child in self.store({ let parent = parent.to_owned(); move |s| s.children(Table::Items, &parent) })? {
                 if child.placement != Placement::Placed {
                     continue;
                 }
@@ -1469,7 +1635,7 @@ impl Run<'_, '_> {
                     // A row of its own takes it elsewhere.
                     continue;
                 }
-                let Some(handle) = self.store(|s| s.local_handle(&id))? else {
+                let Some(handle) = self.local_handle(&id)? else {
                     settled = settled.max(Settle::Unproven);
                     continue;
                 };
@@ -1524,12 +1690,11 @@ impl Run<'_, '_> {
     /// now: a running `mkdir` of its object.
     fn dir_being_made(&self, rel: &Path) -> bool {
         use std::os::unix::fs::MetadataExt;
-        let running = |row: &&OutboxRow| row.kind == OutboxKind::Mkdir && row.item_id.is_none() && row.state == OutboxState::Running;
-        if !self.rows.iter().any(|row| running(&row)) {
+        if self.rows.making.is_empty() {
             return false;
         }
         let Ok(meta) = self.ex.disk.dir(rel).and_then(|dir| dir.metadata()) else { return false };
-        self.rows.iter().filter(running).any(|row| row.inode.as_ref().is_some_and(|i| i.dev == meta.dev() && i.ino == meta.ino()))
+        self.rows.making.iter().map(|&i| &self.rows.all[i]).any(|row| row.inode.as_ref().is_some_and(|i| i.dev == meta.dev() && i.ino == meta.ino()))
     }
 
     /// Rules 3–5: an entry without an item id.
@@ -1556,6 +1721,7 @@ impl Run<'_, '_> {
                     state: OutboxState::Ready,
                     reason: None,
                     next_try: None,
+                    size: None,
                 });
             } else if let Some(row) = pending.filter(|r| matches!(r.kind, OutboxKind::Create | OutboxKind::Mkdir)) {
                 self.ops.push(OutboxOp::Remove(row.seq));
@@ -1564,12 +1730,8 @@ impl Run<'_, '_> {
             // along: their folder is never made in OneDrive (the outbox on the bus).
             // One being made keeps them: it is an item already.
             if e.ty == Type::Dir && !being_created {
-                let inside: Vec<i64> = self
-                    .rows
-                    .iter()
-                    .filter(|r| r.item_id.is_none() && r.state != OutboxState::Running && is_under(&r.rel, &e.rel))
-                    .map(|r| r.seq)
-                    .collect();
+                let inside: Vec<i64> =
+                    self.rows.under(&e.rel).into_iter().filter(|r| r.item_id.is_none() && r.state != OutboxState::Running).map(|r| r.seq).collect();
                 self.ops.extend(inside.into_iter().map(OutboxOp::Remove));
             }
             return Ok(());
@@ -1578,11 +1740,8 @@ impl Run<'_, '_> {
         // A file over a name whose delete is still pending: save-by-rename
         // across batches (§3.5).
         if !is_dir && pending.is_none() {
-            let delete = self
-                .rows
-                .iter()
-                .find(|r| r.kind == OutboxKind::Delete && r.state != OutboxState::Running && r.rel == e.rel && r.item_id.is_some())
-                .cloned();
+            let delete =
+                self.rows.at(&e.rel).find(|r| r.kind == OutboxKind::Delete && r.state != OutboxState::Running && r.item_id.is_some()).cloned();
             if let Some(row) = delete {
                 let id = row.item_id.clone().expect("filtered above");
                 if let Some(base) = self.base_row(&id)?.filter(|b| b.kind == Kind::File) {
@@ -1603,6 +1762,7 @@ impl Run<'_, '_> {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: (!is_dir).then_some(e.size),
         };
         if let Some(row) = &pending {
             if is_dir && row.rel != e.rel {
@@ -1639,7 +1799,15 @@ impl Run<'_, '_> {
             }
         }
         let skipped = std::mem::take(&mut self.skipped);
-        self.ops.extend(skipped.into_iter().map(|(rel, reason)| OutboxOp::Skip { rel, reason }));
+        let ops: Vec<OutboxOp> = skipped
+            .into_iter()
+            .map(|(rel, reason)| {
+                // A file's size, for the sums of what is kept back; nothing for the rest.
+                let size = self.at.get(&rel).map(|&i| &self.entries[i]).filter(|e| e.ty == Type::File).map_or(0, |e| e.size);
+                OutboxOp::Skip { rel, reason, size }
+            })
+            .collect();
+        self.ops.extend(ops);
         Ok(())
     }
 
@@ -1649,7 +1817,7 @@ impl Run<'_, '_> {
             return Ok(());
         }
         if self.base_row(id)?.is_some_and(|base| base.kind == Kind::Folder) {
-            removed.extend(self.store(|s| s.descendants(Table::Items, id))?);
+            removed.extend(self.store({ let id = id.to_owned(); move |s| s.descendants(Table::Items, &id) })?);
         }
         Ok(())
     }
@@ -1709,7 +1877,7 @@ impl Run<'_, '_> {
         ops.extend(detections.into_iter().map(OutboxOp::Record));
         ops.extend(rest);
         let now = self.ex.now;
-        self.out.applied = self.ex.store.with(|s| s.outbox_apply(&ops, now))?;
+        self.out.applied = self.ex.store.call_blocking(move |s| s.outbox_apply(&ops, now))?;
         Ok(self.out)
     }
 }

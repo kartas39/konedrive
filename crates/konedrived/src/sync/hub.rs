@@ -119,9 +119,10 @@ impl HelperHub {
         let drive = id.split_once('!').map(|(drive, _)| drive.to_owned());
         self.accounts().into_iter().filter(|a| !std::ptr::eq(Arc::as_ptr(a), me.as_ptr())).any(|other| {
             let Some(store) = other.store.lock().unwrap().clone() else { return false };
+            let (id, drive) = (id.to_owned(), drive.clone());
             store
-                .with(|s| {
-                    let known = s.get(crate::tree::Table::Items, id)?.is_some() || s.get(crate::tree::Table::Staging, id)?.is_some();
+                .call_blocking(move |s| {
+                    let known = s.get(crate::tree::Table::Items, &id)?.is_some() || s.get(crate::tree::Table::Staging, &id)?.is_some();
                     let ours = drive.as_deref().is_some_and(|d| s.meta("drive_id").ok().flatten().is_some_and(|m| m.eq_ignore_ascii_case(d)));
                     Ok(known || ours)
                 })
@@ -356,7 +357,7 @@ async fn by_item_id(candidates: Vec<Arc<SyncService>>, fd: &OwnedFd) -> Option<A
         let id = id.clone();
         let known = tokio::task::spawn_blocking(move || {
             let _lifecycle = lifecycle;
-            store.with(|s| {
+            store.call_blocking(move |s| {
                 Ok(s.get(crate::tree::Table::Items, &id)?.is_some() || s.get(crate::tree::Table::Staging, &id)?.is_some())
             })
         })
@@ -552,7 +553,7 @@ mod tests {
                 placement: Placement::Placed,
             };
             let store = Store::new(TreeStore::in_memory().unwrap());
-            store.with(|s| s.commit_page(&[Change::Upsert(row)], "next")).unwrap();
+            crate::tree::off_runtime(|| store.call_blocking(move |s| s.commit_page(&[Change::Upsert(row)], "next"))).unwrap();
             store
         };
         *a.store.lock().unwrap() = Some(store("ITEM-A"));
@@ -612,16 +613,17 @@ mod tests {
         };
         let store = Store::new(TreeStore::in_memory().unwrap());
         store
-            .with(|s| {
+            .call(move |s| {
                 s.commit_page(&[Change::Upsert(row)], "next")?;
                 s.set_meta("drive_id", Some("abc123"))
-            })
+            }).await
             .unwrap();
         *a.store.lock().unwrap() = Some(store);
-        assert!(hub.claimed_elsewhere(&of_b, "ITEM-S"), "A's tree knows it");
-        assert!(hub.claimed_elsewhere(&of_b, "ABC123!42"), "the id names A's drive");
-        assert!(!hub.claimed_elsewhere(&of_b, "DEF456!42"));
-        assert!(!hub.claimed_elsewhere(&of_a, "ITEM-S"));
+        let claimed = |of: &Weak<SyncService>, id: &str| crate::tree::off_runtime(|| hub.claimed_elsewhere(of, id));
+        assert!(claimed(&of_b, "ITEM-S"), "A's tree knows it");
+        assert!(claimed(&of_b, "ABC123!42"), "the id names A's drive");
+        assert!(!claimed(&of_b, "DEF456!42"));
+        assert!(!claimed(&of_a, "ITEM-S"));
     }
 
     /// Review M3: one candidate by device is the answer only while every other account's

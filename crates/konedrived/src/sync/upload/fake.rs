@@ -677,7 +677,7 @@ impl FakeGraph {
     #[cfg(test)]
     pub async fn from_store(store: &Store) -> Self {
         let graph = Self::start().await;
-        let rows = store.with(|s| s.all_items()).unwrap();
+        let rows = store.call(move |s| s.all_items()).await.unwrap();
         graph.with(|cloud| {
             for row in rows {
                 cloud.add(FakeItem {
@@ -799,6 +799,11 @@ impl Harness {
     /// A worker as a new daemon start would build it.
     pub fn engine(&self) -> Arc<Engine> {
         Arc::new(Engine::new(self.config()))
+    }
+
+    /// Runs `future` on the harness's runtime.
+    pub fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
+        self.runtime.block_on(future)
     }
 
     pub fn drain(&self, engine: &Arc<Engine>) {

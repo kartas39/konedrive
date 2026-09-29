@@ -92,7 +92,10 @@ pub(super) struct Space {
     next_check: i64,
     /// A read is wanted whatever the rows say: the outbox held waiting rows
     /// at start-up.
-    wanted: bool,
+    pub(super) wanted: bool,
+    /// The start's look at the outbox is done ([`Space::start`]): the first
+    /// drain does it, off the constructor.
+    pub(super) started: bool,
     /// Waiting rows taken, since the last quota read, to see whether their
     /// file is gone, and found it was not ([`Engine::space_holds`]): not
     /// taken again for that until the next read.
@@ -108,19 +111,32 @@ impl Space {
     /// The space as a start finds it: rows a previous version blocked on a
     /// full OneDrive become waiting rows, and the quota is read once before
     /// they go. Rows waiting for space keep the worker full until then.
-    pub(super) fn start(store: &Store) -> Self {
-        let converted = store.with(|s| s.outbox_space_convert(super::reason::QUOTA, WAITING)).unwrap_or_else(|e| {
+    pub(super) async fn start(store: &Store) -> Self {
+        let converted = store.call(move |s| s.outbox_space_convert(super::reason::QUOTA, WAITING)).await.unwrap_or_else(|e| {
             tracing::warn!("cannot convert the outbox's rows blocked on a full OneDrive: {e}");
             0
         });
         if converted > 0 {
             tracing::info!("{converted} change(s) blocked on a full OneDrive wait for space now");
         }
-        let rows = store.with(|s| s.outbox_rows()).unwrap_or_default();
-        let full = rows.iter().any(|r| r.reason.as_deref() == Some(WAITING));
-        let wanted = full || rows.iter().any(|r| waits(r.reason.as_deref()));
-        Self { full, wanted, ..Self::default() }
+        let groups = store.call(move |s| s.outbox_groups()).await.unwrap_or_default();
+        let full = groups.iter().any(|g| g.reason().as_deref() == Some(WAITING));
+        let wanted = full || groups.iter().any(|g| waits(g.reason().as_deref()));
+        Self { full, wanted, started: true, ..Self::default() }
     }
+}
+
+/// Whether `row` may be taken as the space stands (`full`, and the waiting
+/// rows `looked` at since the last quota read). A `create` that waits for
+/// space is taken all the same when a removal of its object stands behind it
+/// (`removed`): a file removed before its upload finished leaves the outbox at
+/// once (issue #27), full or not. Its run sends no content: it ends if the
+/// file is gone, and waits on if not ([`Engine::space_holds`]).
+pub(super) fn allows(row: &OutboxRow, full: bool, looked: &HashSet<i64>, removed: impl FnOnce() -> Result<bool, TreeError>) -> Result<bool, TreeError> {
+    if !waits(row.reason.as_deref()) && !(full && row.kind.sends_content()) {
+        return Ok(true);
+    }
+    Ok(row.kind == crate::tree::outbox::OutboxKind::Create && !looked.contains(&row.seq) && removed()?)
 }
 
 /// The size a waiting row sends: its snapshot's, or the file's now.
@@ -129,6 +145,7 @@ fn size_of(row: &OutboxRow, disk: Option<&Disk>) -> u64 {
         .as_deref()
         .and_then(|s| s.split(' ').next())
         .and_then(|s| s.parse().ok())
+        .or(row.size)
         .or_else(|| disk.and_then(|d| local::size_at(d, &row.rel)))
         .unwrap_or(0)
 }
@@ -147,17 +164,11 @@ impl Engine {
         }
     }
 
-    /// Whether `row` may be taken as the space stands. A `create` that waits
-    /// for space is taken all the same when a removal of its object stands
-    /// behind it (`removed`): a file removed before its
-    /// upload finished leaves the outbox at once (issue #27), full or not.
-    /// Its run sends no content: it ends if the file is gone, and waits on
-    /// if not ([`Engine::space_holds`]).
-    pub(super) fn space_allows(&self, row: &OutboxRow, full: bool, removed: impl FnOnce() -> bool) -> bool {
-        if !waits(row.reason.as_deref()) && !(full && row.kind.sends_content()) {
-            return true;
-        }
-        removed() && !self.shared().space.looked.contains(&row.seq)
+    /// What a pick needs to know of the space: whether OneDrive is full, and
+    /// the waiting rows already looked at since the last quota read.
+    pub(super) fn space_seen(&self) -> (bool, HashSet<i64>) {
+        let shared = self.shared();
+        (shared.space.full, shared.space.looked.clone())
     }
 
     /// The reason a content row taken while it waits for space waits on
@@ -206,7 +217,7 @@ impl Engine {
         match self.read_quota(true).await {
             Some((quota, fresh)) => {
                 if fresh {
-                    self.apply_quota(&quota);
+                    self.apply_quota(&quota).await;
                 }
                 if no_space(&quota) {
                     self.turn_full();
@@ -228,6 +239,8 @@ impl Engine {
         if !shared.space.full {
             tracing::warn!("OneDrive is full: nothing more is uploaded until there is space again");
             shared.space.full = true;
+            drop(shared);
+            self.recount_soon();
         }
     }
 
@@ -235,7 +248,7 @@ impl Engine {
     /// read, a refusal): *full* or not, and every waiting file that fits now
     /// is free to go; one that does not stays *too big*, with the free space
     /// said again. A quota that says nothing of the space is ignored.
-    pub(super) fn apply_quota(&self, quota: &DriveQuota) {
+    pub(crate) async fn apply_quota(&self, quota: &DriveQuota) {
         if !known(quota) {
             return;
         }
@@ -249,6 +262,9 @@ impl Engine {
             } else if full && !space.full {
                 tracing::warn!("OneDrive is full: nothing more is uploaded until there is space again");
             }
+            if space.full != full {
+                self.recount_soon();
+            }
             space.full = full;
             space.free = quota.remaining;
             space.last = Some((quota.clone(), now));
@@ -257,7 +273,7 @@ impl Engine {
             space.looked.clear();
         }
         if !full {
-            if let Err(e) = self.release_fitting(quota.remaining.unwrap_or(0)) {
+            if let Err(e) = self.release_fitting(quota.remaining.unwrap_or(0)).await {
                 tracing::warn!("cannot let the files waiting for space go: {e}");
             }
         }
@@ -267,14 +283,15 @@ impl Engine {
 
     /// Every row waiting for space whose file fits in `free` goes again;
     /// the rest are *too big* for it.
-    fn release_fitting(&self, free: u64) -> Result<(), TreeError> {
-        let rows = self.store().with(|s| s.outbox_rows())?;
+    async fn release_fitting(&self, free: u64) -> Result<(), TreeError> {
+        let rows = self.store().call(move |s| s.outbox_waiting_for_space()).await?;
         let disk = Disk::open(&self.cfg.root, false).ok();
         for row in rows.iter().filter(|r| r.state == OutboxState::Ready && waits(r.reason.as_deref())) {
             let size = size_of(row, disk.as_ref());
             let reason = (size > free).then(|| too_big(size, free));
             if reason != row.reason {
-                self.store().with(|s| s.outbox_set_state(row.seq, OutboxState::Ready, reason.as_deref(), None))?;
+                let seq = row.seq;
+                self.store().call(move |s| s.outbox_set_state(seq, OutboxState::Ready, reason.as_deref(), None)).await?;
             }
         }
         Ok(())
@@ -295,7 +312,7 @@ impl Engine {
             return;
         }
         match self.read_quota(false).await {
-            Some((quota, _)) => self.apply_quota(&quota),
+            Some((quota, _)) => self.apply_quota(&quota).await,
             None => self.shared().space.next_check = now + QUOTA_RECHECK.as_secs() as i64,
         }
     }

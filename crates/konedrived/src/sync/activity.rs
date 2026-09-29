@@ -282,7 +282,7 @@ impl Activity {
             let held: Vec<Event> =
                 backing.memory.drain(..).rev().filter(|event| Path::new(&event.path).starts_with(root)).collect();
             if !held.is_empty() {
-                if let Err(e) = store.with(|s| s.add_activity(&held)) {
+                if let Err(e) = store.call_blocking(move |s| s.add_activity(&held)) {
                     tracing::warn!("cannot keep the activity recorded so far: {e}");
                 }
             }
@@ -319,7 +319,8 @@ impl Activity {
             }
             match backing.store.as_ref() {
                 Some(store) => {
-                    if let Err(e) = store.with(|s| s.add_activity(&kept)) {
+                    let stored = kept.clone();
+                    if let Err(e) = store.call_blocking(move |s| s.add_activity(&stored)) {
                         tracing::warn!("cannot record {} activity event(s): {e}", kept.len());
                     }
                 }
@@ -367,7 +368,7 @@ impl Activity {
     pub fn recent(&self, limit: usize) -> Result<Vec<Event>, TreeError> {
         let backing = self.backing();
         match backing.store.as_ref() {
-            Some(store) => store.with(|s| s.recent_activity(limit)),
+            Some(store) => store.call_blocking(move |s| s.recent_activity(limit)),
             None => Ok(backing.memory.iter().take(limit.min(ACTIVITY_KEPT)).cloned().collect()),
         }
     }
@@ -379,8 +380,9 @@ impl Activity {
         if !rows.is_empty() {
             let backing = self.backing();
             if let Some(store) = backing.store.as_ref() {
-                if let Err(e) = store.with(|s| s.add_conflicts(&rows)) {
-                    tracing::warn!("cannot record {} conflict(s): {e}", rows.len());
+                let n = rows.len();
+                if let Err(e) = store.call_blocking(move |s| s.add_conflicts(&rows)) {
+                    tracing::warn!("cannot record {n} conflict(s): {e}");
                 }
             }
         }
@@ -397,12 +399,12 @@ impl Activity {
             let Some(store) = backing.store.as_ref() else {
                 return Ok(Vec::new());
             };
-            let rows = store.with(|s| s.conflicts())?;
+            let rows = store.call_blocking(move |s| s.conflicts())?;
             let mut kept = Vec::with_capacity(rows.len());
             for row in rows {
                 match std::fs::symlink_metadata(&row.rescued) {
                     Err(e) if e.kind() == io::ErrorKind::NotFound => {
-                        store.with(|s| s.remove_conflict(&row.rescued))?;
+                        store.call_blocking(move |s| s.remove_conflict(&row.rescued))?;
                     }
                     _ => kept.push(row),
                 }
@@ -428,7 +430,10 @@ impl Activity {
         let removed = {
             let backing = self.backing();
             match backing.store.as_ref() {
-                Some(store) => store.with(|s| s.remove_conflict(rescued))?,
+                Some(store) => {
+                    let rescued = rescued.to_owned();
+                    store.call_blocking(move |s| s.remove_conflict(&rescued))?
+                }
                 None => false,
             }
         };

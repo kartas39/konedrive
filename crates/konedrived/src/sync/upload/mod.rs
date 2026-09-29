@@ -1,7 +1,7 @@
 //! The outbox worker (`docs/design/writes.md` §5, §6, §10, §7): sends
 //! the outbox's rows to OneDrive, one step each, and commits each answer.
 //!
-//! **Order.** Rows run as [`TreeStore::outbox_dependencies`] allows, in `seq`
+//! **Order.** Rows run as the outbox's four rules allow ([`TreeStore::outbox_pick`]), in `seq`
 //! order: metadata rows (`mkdir`, `move`, `delete`) one at a time, content
 //! rows (`create`, `update`) beside them, each in a slot of the account's
 //! transfer pool (`crate::pool`), small or large alike. A row is `running` from the moment it is taken until its commit, so
@@ -32,7 +32,7 @@
 //! watcher and stops it with it (`sync::write_mode`); the watcher's
 //! examination wakes it whenever it records rows.
 //!
-//! [`TreeStore::outbox_dependencies`]: crate::tree::TreeStore::outbox_dependencies
+//! [`TreeStore::outbox_pick`]: crate::tree::TreeStore::outbox_pick
 //! [`TreeStore::outbox_commit`]: crate::tree::TreeStore::outbox_commit
 
 mod content;
@@ -72,7 +72,6 @@ pub fn clear_marks(root: &SyncRoot, rows: &[crate::tree::outbox::OutboxRow]) {
 use crate::drive::DriveClient;
 use crate::sync::root::SyncRoot;
 use crate::sync::InodeLocks;
-use crate::tree::outbox::PAUSED_UNTIL;
 use crate::tree::{ActivityRow, Store, TreeError};
 
 pub(crate) use engine::Engine;
@@ -169,6 +168,8 @@ pub trait OutboxHost: Send + Sync {
     fn activity(&self, _event: &ActivityRow) {}
     /// The worker's status changed: its counts, its uploads, its trouble.
     fn status(&self, _status: &WorkerStatus) {}
+    /// What is kept back, summed again (`NotUploadedSummary()`, issue #38).
+    fn kept_back(&self, _summary: &[crate::sync::kept_back::SummaryRow]) {}
     /// OneDrive changed under a row (§6), or a folder a row needs is gone
     /// there: a delta cycle should run soon, so that the base catches up and
     /// the reconcile places what came back. The delta carries it: a plain
@@ -186,6 +187,21 @@ pub trait OutboxHost: Send + Sync {
     /// the bus).
     fn full_cycle_wanted(&self) {
         self.cycle_wanted();
+    }
+}
+
+/// Runs `work` — the store's jobs and what follows them — as a task of the
+/// runtime it is asked on, without waiting for it; asked on a plain thread
+/// (tests), on a runtime of its own, to its end.
+fn detach(work: impl std::future::Future<Output = ()> + Send + 'static) {
+    match tokio::runtime::Handle::try_current() {
+        Ok(runtime) => {
+            runtime.spawn(work);
+        }
+        Err(_) => match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(runtime) => runtime.block_on(work),
+            Err(e) => tracing::warn!("no runtime for the outbox's work: {e}"),
+        },
     }
 }
 
@@ -294,11 +310,12 @@ impl Default for WorkerStatus {
 /// `Some(until)` while paused, unix seconds, 0 meaning until resumed. A
 /// timed pause that has run out is taken off here. Kept in the store's
 /// `meta`, so it survives a restart.
+/// Answered from the store's memory of it ([`Store::pause`]), never by a job:
+/// callable from anywhere.
 pub fn paused(store: &Store) -> Option<i64> {
-    let value = store.with(|s| s.meta(PAUSED_UNTIL)).ok().flatten()?;
-    let until: i64 = value.parse().unwrap_or(0);
+    let until = store.pause()?;
     if until != 0 && until <= engine::now() {
-        let _ = store.with(|s| s.set_meta(PAUSED_UNTIL, None));
+        store.pause_ended(until);
         return None;
     }
     Some(until)
@@ -306,8 +323,13 @@ pub fn paused(store: &Store) -> Option<i64> {
 
 /// Pauses the account whose tree store is `store` until `until` (unix
 /// seconds, 0 for until resumed), or resumes it (`None`).
-pub fn set_paused(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
-    store.with(|s| s.set_meta(PAUSED_UNTIL, until.map(|u| u.to_string()).as_deref()))
+pub async fn set_paused(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
+    store.set_pause(until).await
+}
+
+/// [`set_paused`] for plain threads.
+pub fn set_paused_blocking(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
+    store.set_pause_blocking(until)
 }
 
 /// What the outbox holds, for `PendingCount`, `PendingBytes` and
@@ -333,17 +355,44 @@ pub struct OutboxCounts {
 }
 
 impl OutboxCounts {
-    /// Counts a pending `row` of `size` bytes where it waits for space.
-    fn add_space(&mut self, row: &crate::tree::outbox::OutboxRow, full: bool, size: u64) {
-        let reason = row.reason.as_deref();
+    /// The counts of the outbox whose rows are `groups` ([`TreeStore::outbox_groups`]),
+    /// `full` while OneDrive is full.
+    ///
+    /// [`TreeStore::outbox_groups`]: crate::tree::TreeStore::outbox_groups
+    pub fn of(groups: &[crate::tree::outbox::OutboxGroup], full: bool) -> Self {
+        use crate::tree::outbox::OutboxState;
+        let mut counts = OutboxCounts::default();
+        for group in groups {
+            let n = u32::try_from(group.count).unwrap_or(u32::MAX);
+            match group.state() {
+                OutboxState::Blocked => counts.blocked = counts.blocked.saturating_add(n),
+                OutboxState::Held => counts.held = counts.held.saturating_add(n),
+                _ => {
+                    counts.pending = counts.pending.saturating_add(n);
+                    counts.pending_bytes = counts.pending_bytes.saturating_add(group.bytes);
+                    counts.add_space(group.kind(), group.reason().as_deref(), full, n, group.bytes);
+                }
+            }
+        }
+        counts
+    }
+
+    /// Counts `n` pending rows of `kind` and `reason`, of `bytes` in all, where they wait for space.
+    fn add_space(&mut self, kind: crate::tree::outbox::OutboxKind, reason: Option<&str>, full: bool, n: u32, bytes: u64) {
         if reason.is_some_and(|r| space::parse_too_big(r).is_some()) {
-            self.too_big += 1;
-            self.too_big_bytes += size;
-        } else if full && row.kind.sends_content() || reason == Some(space::WAITING) {
-            self.space_waiting += 1;
-            self.space_waiting_bytes += size;
+            self.too_big = self.too_big.saturating_add(n);
+            self.too_big_bytes = self.too_big_bytes.saturating_add(bytes);
+        } else if full && kind.sends_content() || reason == Some(space::WAITING) {
+            self.space_waiting = self.space_waiting.saturating_add(n);
+            self.space_waiting_bytes = self.space_waiting_bytes.saturating_add(bytes);
         }
     }
+}
+
+/// The counts of the outbox in `store`, `full` while OneDrive is full: one
+/// SQL sum, nothing read from the disk.
+pub fn outbox_counts(store: &crate::tree::TreeStore, full: bool) -> Result<OutboxCounts, TreeError> {
+    Ok(OutboxCounts::of(&store.outbox_groups()?, full))
 }
 
 /// A point where the worker can be made to stop as if the daemon had died
@@ -431,7 +480,8 @@ impl OutboxWorker {
     /// NetworkManager's word. Going online, the host runs a delta cycle
     /// first (§4.9) and then calls this.
     pub fn set_online(&self, online: bool) {
-        self.engine.set_online(online);
+        let engine = Arc::clone(&self.engine);
+        detach(async move { engine.set_online(online).await });
     }
 
     /// Sends nothing until [`cycle_done`](Self::cycle_done): a folder's
@@ -444,25 +494,43 @@ impl OutboxWorker {
 
     /// A delta cycle went through.
     pub fn cycle_done(&self) {
-        self.engine.cycle_done();
+        let engine = Arc::clone(&self.engine);
+        detach(async move { engine.cycle_done().await });
     }
 
     /// After a sign-in: rows blocked by `403` are ready again, and the
     /// worker sends again.
-    pub fn signed_in(&self) -> Result<(), TreeError> {
-        self.engine.signed_in()
+    pub fn signed_in(&self) {
+        let engine = Arc::clone(&self.engine);
+        detach(async move {
+            if let Err(e) = engine.signed_in().await {
+                tracing::warn!("cannot let the rows a sign-in held go: {e}");
+            }
+        });
     }
 
     /// The quota was read elsewhere (`RefreshAccountInfo`): *full* is
     /// decided again, and the waiting files that fit now go ([`space`]).
     pub fn quota_read(&self, quota: &crate::drive::DriveQuota) {
-        self.engine.apply_quota(quota);
+        // Applied as a task of its own: it writes the rows it lets go.
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime) => {
+                let (engine, quota) = (Arc::clone(&self.engine), quota.clone());
+                runtime.spawn(async move { engine.apply_quota(&quota).await });
+            }
+            Err(_) => tracing::warn!("a quota read with no runtime to apply it on is ignored"),
+        }
     }
 
 
     /// `Refresh()`: rows in backoff are tried now.
-    pub fn retry_now(&self) -> Result<(), TreeError> {
-        self.engine.retry_now()
+    pub fn retry_now(&self) {
+        let engine = Arc::clone(&self.engine);
+        detach(async move {
+            if let Err(e) = engine.retry_now().await {
+                tracing::warn!("cannot make the outbox's waiting rows due: {e}");
+            }
+        });
     }
 
     /// The helper is back, with none of its marks (`docs/design/writes.md` §10): what
@@ -477,12 +545,6 @@ impl OutboxWorker {
 
     pub fn subscribe(&self) -> watch::Receiver<WorkerStatus> {
         self.engine.subscribe()
-    }
-
-    /// `PendingCount`, `PendingBytes`, `BlockedCount`: read from the store
-    /// (and the files' sizes) when asked.
-    pub fn counts(&self) -> Result<OutboxCounts, TreeError> {
-        self.engine.counts()
     }
 
     /// Arms a fault point (tests and the VM suite only).

@@ -312,7 +312,7 @@ impl Materializer {
         let mut queue = VecDeque::from([(self.root_item_id.clone(), PathBuf::new())]);
         while let Some((id, rel)) = queue.pop_front() {
             self.check_cancel()?;
-            let children = self.store.with(|s| s.children(Table::Staging, &id))?;
+            let children = self.store.call_blocking(move |s| s.children(Table::Staging, &id))?;
             for row in children {
                 if row.placement != Placement::Placed {
                     continue;
@@ -327,7 +327,7 @@ impl Materializer {
     }
 
     fn is_misplaced(&self, entry: &Scanned, id: &str) -> Result<bool, ApplyError> {
-        let Some(row) = self.store.with(|s| s.get(Table::Staging, id))? else {
+        let Some(row) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })? else {
             return Ok(true);
         };
         Ok(row.placement != Placement::Placed
@@ -347,11 +347,11 @@ impl Materializer {
         // folder itself, never something to move.
         scope.remove(&self.root_item_id);
         for id in &ids {
-            let new = self.store.with(|s| s.locate(Table::Staging, id))?;
-            let old = self.store.with(|s| s.locate(Table::Items, id))?;
+            let new = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?;
+            let old = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Items, &id) })?;
             let comes_into_view = new.as_ref().is_some_and(|l| l.placed) && !old.as_ref().is_some_and(|l| l.placed);
             if comes_into_view {
-                scope.extend(self.store.with(|s| s.descendants(Table::Staging, id))?);
+                scope.extend(self.store.call_blocking({ let id = id.to_owned(); move |s| s.descendants(Table::Staging, &id) })?);
             }
         }
         run.scope = Some(scope.clone());
@@ -359,7 +359,7 @@ impl Materializer {
         // Phase 1, by where things are now, deepest first.
         let mut here = Vec::new();
         for id in &scope {
-            if let Some(old) = self.store.with(|s| s.locate(Table::Items, id))?.filter(|l| l.placed) {
+            if let Some(old) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Items, &id) })?.filter(|l| l.placed) {
                 here.push((id.clone(), old));
             }
         }
@@ -373,8 +373,8 @@ impl Materializer {
                 Probe::Managed { id: found, .. } if &found == id => {}
                 other => return Err(ApplyError::NeedFull(format!("{} should be {id} and is {other:?}", old.rel.display()))),
             }
-            let old_row = self.store.with(|s| s.get(Table::Items, id))?;
-            let new_row = self.store.with(|s| s.get(Table::Staging, id))?;
+            let old_row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Items, &id) })?;
+            let new_row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?;
             let stays = matches!((&old_row, &new_row), (Some(o), Some(n))
                 if n.placement == Placement::Placed && n.parent_id == o.parent_id && n.name == o.name);
             if !stays {
@@ -385,8 +385,8 @@ impl Materializer {
         // Phase 2, by where things belong, shallowest first.
         let mut there = Vec::new();
         for id in &scope {
-            let row = self.store.with(|s| s.get(Table::Staging, id))?;
-            let new = self.store.with(|s| s.locate(Table::Staging, id))?;
+            let row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?;
+            let new = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?;
             if let (Some(row), Some(new)) = (row, new) {
                 if new.placed {
                     there.push((row, new));
@@ -719,7 +719,7 @@ impl Materializer {
     /// this folder's tree does not know, and another account claims.
     fn claimed_elsewhere(&self, id: &str) -> Result<bool, ApplyError> {
         let Some(claimed) = &self.claimed else { return Ok(false) };
-        let known = self.store.with(|s| Ok(s.get(Table::Items, id)?.is_some() || s.get(Table::Staging, id)?.is_some()))?;
+        let known = self.store.call_blocking({ let id = id.to_owned(); move |s| Ok(s.get(Table::Items, &id)?.is_some() || s.get(Table::Staging, &id)?.is_some()) })?;
         Ok(!known && claimed(id))
     }
 
@@ -799,7 +799,7 @@ impl Materializer {
                 if let Some(rw) = &self.rw {
                     // An outbox row recorded since the cycle began: the
                     // worker's guard settles it (§3.7, excluded).
-                    if !self.store.with(|s| s.outbox_for_item(&row.id))?.is_empty() {
+                    if !self.store.call_blocking({ let row_id = row.id.clone(); move |s| s.outbox_for_item(&row_id) })?.is_empty() {
                         run.out.unsettled.insert(row.id.clone());
                         return Ok(());
                     }
@@ -1198,7 +1198,8 @@ async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSour
         // The base takes the version the file now holds (the read-write reconcile must, items 1 and 4).
         let ctag = placeholder::read_ctag(&new).ok().flatten();
         let handle = konedrive_fs::handle::FileHandle::of(&new).ok();
-        if let Err(e) = leased.store.with(|s| s.land_deferred(&r.id, ctag.as_deref(), handle.as_ref())) {
+        let id = r.id.clone();
+        if let Err(e) = leased.store.call(move |s| s.land_deferred(&id, ctag.as_deref(), handle.as_ref())).await {
             tracing::warn!("{}: the new version is in place, and its base waits for the next cycle: {e}", r.rel.display());
         }
     }
@@ -1328,15 +1329,15 @@ mod tests {
 
         /// A full listing of `changes`, reconciled and committed.
         fn listed(&self, changes: &[Change], locked: bool) -> Applied {
-            self.store.with(|s| { s.begin_staging(false)?; s.stage(changes) }).unwrap();
+            { let changes = changes.to_vec(); self.store.call_blocking(move |s| { s.begin_staging(false)?; s.stage(&changes) }).unwrap(); }
             let applied = self.materializer(locked, None).apply(Scope::Full).unwrap();
-            self.store.with(|s| s.commit_staging("link-1")).unwrap();
+            self.store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
             applied
         }
 
         /// A delta on top of what is committed, reconciled in the Changed scope.
         fn delta(&self, changes: &[Change], locked: bool) -> Result<Applied, ApplyError> {
-            self.store.with(|s| { s.begin_staging(true)?; s.stage(changes) }).unwrap();
+            { let changes = changes.to_vec(); self.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&changes) }).unwrap(); }
             let ids = changes.iter().map(|c| c.id().to_owned()).collect();
             self.materializer(locked, None).apply(Scope::Changed(ids))
         }
@@ -1345,10 +1346,10 @@ mod tests {
         /// itself runs on a blocking thread, since it may wait on the
         /// runtime it is itself running on (`Materializer::mark`).
         async fn listed_async(&self, locked: bool) -> Applied {
-            self.store.with(|s| { s.begin_staging(false)?; s.stage(&tree()) }).unwrap();
+            self.store.call(move |s| { s.begin_staging(false)?; s.stage(&tree()) }).await.unwrap();
             let m = self.materializer(locked, None);
             let applied = tokio::task::spawn_blocking(move || m.apply(Scope::Full)).await.unwrap().unwrap();
-            self.store.with(|s| s.commit_staging("link-1")).unwrap();
+            self.store.call(move |s| s.commit_staging("link-1")).await.unwrap();
             applied
         }
 
@@ -1574,7 +1575,7 @@ mod tests {
         let path = f.path("docs/f.txt");
         let m = f.materializer(false, None);
         let _held = m.locks.try_lock(crate::sync::InodeKey::of(&File::open(&path).unwrap()).unwrap()).unwrap();
-        f.store.with(|s| { s.begin_staging(true)?; s.stage(&[changed("F", "D", "f.txt", 8192, "c2")]) }).unwrap();
+        f.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[changed("F", "D", "f.txt", 8192, "c2")]) }).unwrap();
         let applied = m.apply(Scope::Changed(vec!["F".into()])).unwrap();
         assert_eq!((applied.updated, applied.deferred), (0, 1));
         assert_eq!(std::fs::metadata(&path).unwrap().len(), 4096);
@@ -1844,7 +1845,7 @@ mod tests {
         let f = fixture();
         f.listed(&tree(), false);
         let before = ino(&f.path("docs/deep/g.txt"));
-        f.store.with(|s| { s.begin_staging(true)?; s.stage(&[folder("E", "R", "deep"), file("G", "E", "g2.txt")]) }).unwrap();
+        f.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[folder("E", "R", "deep"), file("G", "E", "g2.txt")]) }).unwrap();
         f.materializer(false, None).apply(Scope::Full).unwrap();
         assert_eq!(ino(&f.path("deep/g2.txt")), before);
         assert!(!f.path("docs/deep").exists());
@@ -1993,7 +1994,7 @@ mod tests {
         std::fs::rename(f.path("docs/f.txt"), f.path("f-in-the-wrong-place")).unwrap();
         std::fs::write(f.path("docs/new.txt"), b"mine").unwrap();
         std::fs::rename(f.path("docs/deep"), f.path("docs/.konedrive-new-E")).unwrap();
-        f.store.with(|s| { s.begin_staging(true)?; s.stage(&[file("N", "D", "new.txt")]) }).unwrap();
+        f.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[file("N", "D", "new.txt")]) }).unwrap();
         let applied = f.materializer(false, None).apply(Scope::Full).unwrap();
         assert_eq!(id_at(&f.path("docs/f.txt")).as_deref(), Some("F"));
         assert_eq!(id_at(&f.path("docs/deep")).as_deref(), Some("E"));
@@ -2028,7 +2029,7 @@ mod tests {
         drop(leftover);
         assert!(f.path("docs/.konedrive-new-F").exists());
 
-        f.store.with(|s| { s.begin_staging(true)?; s.stage(&[file("F", "D", "renamed.txt")]) }).unwrap();
+        f.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[file("F", "D", "renamed.txt")]) }).unwrap();
         let applied = f.materializer(false, None).apply(Scope::Full).unwrap();
         assert!(!f.path("docs/.konedrive-new-F").exists(), "the leftover is gone");
         assert_eq!(id_at(&f.path("docs/renamed.txt")).as_deref(), Some("F"));
@@ -2039,7 +2040,7 @@ mod tests {
     #[test]
     fn a_cancelled_reconcile_stops() {
         let f = fixture();
-        f.store.with(|s| { s.begin_staging(false)?; s.stage(&tree()) }).unwrap();
+        f.store.call_blocking(move |s| { s.begin_staging(false)?; s.stage(&tree()) }).unwrap();
         let m = f.materializer(false, None);
         m.cancel.cancel();
         assert!(matches!(m.apply(Scope::Full), Err(ApplyError::Cancelled)));
@@ -2053,7 +2054,7 @@ mod tests {
         let socket = sockets.path().join("helper.sock");
         let marks = marking_helper(socket.clone());
         let link = f.handle().block_on(HelperLink::connect(&socket)).unwrap().0;
-        f.store.with(|s| { s.begin_staging(false)?; s.stage(&tree()) }).unwrap();
+        f.store.call_blocking(move |s| { s.begin_staging(false)?; s.stage(&tree()) }).unwrap();
         f.materializer(true, Some(link)).apply(Scope::Full).unwrap();
         let seen: Vec<Marked> = marks.try_iter().collect();
         assert_eq!(seen.len(), 2, "docs and docs/deep were marked");
@@ -2073,7 +2074,7 @@ mod tests {
         let refusing = sockets.path().join("refusing.sock");
         let _refused = helper_answering(refusing.clone(), libc::EIO);
         let link = f.handle().block_on(HelperLink::connect(&refusing)).unwrap().0;
-        f.store.with(|s| { s.begin_staging(false)?; s.stage(&[root_row(), folder("D", "R", "docs"), file("F", "D", "f.txt")]) }).unwrap();
+        f.store.call_blocking(move |s| { s.begin_staging(false)?; s.stage(&[root_row(), folder("D", "R", "docs"), file("F", "D", "f.txt")]) }).unwrap();
         let err = f.materializer(true, Some(link)).apply(Scope::Full).unwrap_err();
         assert!(matches!(err, ApplyError::Mark(..)), "{err:?}");
         let unmarked = ino(&f.path(".konedrive-new-D"));
@@ -2101,7 +2102,7 @@ mod tests {
         let refusing = sockets.path().join("refusing.sock");
         let _refused = helper_answering(refusing.clone(), libc::EIO);
         let link = f.handle().block_on(HelperLink::connect(&refusing)).unwrap().0;
-        f.store.with(|s| { s.begin_staging(true)?; s.stage(&[file("F", "D", "renamed.txt")]) }).unwrap();
+        f.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[file("F", "D", "renamed.txt")]) }).unwrap();
         let err = f.materializer(true, Some(link)).apply(Scope::Changed(vec!["F".into()])).unwrap_err();
         assert!(matches!(err, ApplyError::Mark(..)), "{err:?}");
         let holding = ino(&f.path(".konedrive-holding"));

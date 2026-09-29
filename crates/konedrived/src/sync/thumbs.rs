@@ -95,7 +95,7 @@ impl ThumbnailFiller {
     /// Makes up to `limit` missing thumbnails, each request in a background slot of the
     /// account's transfer pool, as many at once as the pool gives.
     pub async fn run_once(&self, cancel: &CancellationToken, limit: usize) -> RunOutcome {
-        let candidates = match self.store.run(move |s| s.thumbnail_candidates(limit, thumb_key)).await {
+        let candidates = match self.store.call(move |s| s.thumbnail_candidates(limit, thumb_key)).await {
             Ok(candidates) => candidates,
             Err(e) => {
                 tracing::warn!("cannot list the thumbnails to make: {e}");
@@ -162,7 +162,7 @@ impl ThumbnailFiller {
                 // Paused (`docs/design/writes.md` §11): no thumbnails either; the next kick
                 // after the pause ends drains what waits.
                 let store = self.store.clone();
-                let paused = tokio::task::spawn_blocking(move || crate::sync::upload::paused(&store).is_some()).await.unwrap_or(false);
+                let paused = crate::sync::upload::paused(&store).is_some();
                 if paused {
                     continue;
                 }
@@ -225,7 +225,7 @@ impl One {
         };
         if settle {
             let id = row.id.clone();
-            if let Err(e) = self.store.run(move |s| s.set_thumb_key(&id, &key)).await {
+            if let Err(e) = self.store.call(move |s| s.set_thumb_key(&id, &key)).await {
                 tracing::warn!("cannot record the thumbnail of {}: {e}", rel.display());
             }
         }
@@ -360,7 +360,7 @@ mod tests {
         let root = Change::Root(Row { id: "R".into(), parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed });
         let mut changes = vec![root];
         changes.extend_from_slice(items);
-        store.run(move |s| { s.begin_staging(false)?; s.stage(&changes)?; s.commit_staging("L") }).await.unwrap();
+        store.call(move |s| { s.begin_staging(false)?; s.stage(&changes)?; s.commit_staging("L") }).await.unwrap();
         for item in items {
             if let Change::Upsert(row) = item {
                 let path = folder.path().join(&row.name);
@@ -448,7 +448,7 @@ mod tests {
         let filler = w.filler();
         filler.run_once(&CancellationToken::new(), 100).await;
         std::fs::rename(w.folder.path().join("p.jpg"), w.folder.path().join("q.jpg")).unwrap();
-        w.store.run(|s| { s.begin_staging(true)?; s.stage(&[photo("P", "q.jpg", "image/jpeg")])?; s.commit_staging("L2") }).await.unwrap();
+        w.store.call(|s| { s.begin_staging(true)?; s.stage(&[photo("P", "q.jpg", "image/jpeg")])?; s.commit_staging("L2") }).await.unwrap();
         assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 1);
         assert!(w.cached("normal", &w.folder.path().join("q.jpg")).is_file());
     }
@@ -467,7 +467,7 @@ mod tests {
         // A full listing builds `staging` from nothing: only the commit's own
         // update can carry the thumbnail's key across.
         let root = Change::Root(Row { id: "R".into(), parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed });
-        w.store.run(move |s| { s.begin_staging(false)?; s.stage(&[root, photo("P", "p.jpg", "image/jpeg")])?; s.commit_staging("L2") }).await.unwrap();
+        w.store.call(move |s| { s.begin_staging(false)?; s.stage(&[root, photo("P", "p.jpg", "image/jpeg")])?; s.commit_staging("L2") }).await.unwrap();
         assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 0);
     }
 

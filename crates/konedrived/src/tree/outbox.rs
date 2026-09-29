@@ -31,10 +31,19 @@ use konedrive_fs::handle::FileHandle;
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{apply, upsert, ActivityRow, Change, Kind, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN, ROW_COLUMNS};
+use super::{apply, upsert, ActivityRow, Change, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN, ROW_COLUMNS};
+#[cfg(test)]
+use super::Kind;
 
+/// Which rows run next.
+mod pick;
+/// What the outbox holds, summed.
+mod sums;
 /// The outbox worker's own transactions.
 mod worker;
+
+pub use pick::{due, Pick, Picked, PORTION};
+pub use sums::{OutboxGroup, SkippedGroup};
 
 /// A name the outbox worker gives an item in OneDrive while the name its
 /// row takes is still another item's (§4.4, F55 (7)).
@@ -61,6 +70,111 @@ pub(super) const SCHEMA: &str = "
     CREATE INDEX outbox_item ON outbox(item_id);
     CREATE TABLE local_skipped (rel TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);";
 
+/// The outbox's lookups (issue #38): by local object, by handle, by place, by
+/// what is due, by the folder a row goes into, by kind, and the rows that free a name
+/// in OneDrive (a partial index: removals, and moves away from the base place).
+/// Created on every open (`IF NOT EXISTS`), so a store made before them gains
+/// them without a rebuild.
+const INDEXES: &str = "
+    CREATE INDEX IF NOT EXISTS outbox_object ON outbox(dev, ino);
+    CREATE INDEX IF NOT EXISTS outbox_handle ON outbox(handle);
+    CREATE INDEX IF NOT EXISTS outbox_rel ON outbox(rel);
+    CREATE INDEX IF NOT EXISTS outbox_due ON outbox(state, next_try, seq);
+    CREATE INDEX IF NOT EXISTS outbox_target_parent ON outbox(target_parent);
+    CREATE INDEX IF NOT EXISTS outbox_kind ON outbox(kind);
+    CREATE INDEX IF NOT EXISTS outbox_frees ON outbox(seq) WHERE FREES;";
+
+/// The rows the partial index `outbox_frees` holds: those with a base place
+/// they leave. [`frees`] decides among them.
+const FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AND (base_parent IS NOT target_parent OR base_name IS NOT target_name)";
+
+/// Columns added to schema 3 without a rebuild (issue #38): the size of what a
+/// row sends, and of what is never uploaded, as the examination saw it — so
+/// that counts and sums never read the disk.
+const ADDED: [(&str, &str); 2] = [("outbox", "size"), ("local_skipped", "size")];
+
+/// Brings a schema-3 store up to what this daemon uses: the added columns
+/// and the indexes.
+pub(super) fn upgrade(conn: &Connection) -> Result<(), TreeError> {
+    for (table, column) in ADDED {
+        let has = conn.prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"))?.exists([column])?;
+        if !has {
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} INTEGER"))?;
+        }
+    }
+    conn.execute_batch(&INDEXES.replace("FREES", FREES))?;
+    Ok(())
+}
+
+/// How many changed rows are remembered one by one; past it, a reader of
+/// the changes looks at every row once.
+const DIRTY_MAX: usize = 100_000;
+
+/// What changed in the outbox (issue #38), told by SQLite's update hook on
+/// the store's connection: a count of changes to `outbox` and `local_skipped`,
+/// the `seq` of each outbox row written or removed since last asked, and a
+/// signal once the change is committed ([`Store::with`](super::Store::with)).
+#[derive(Debug)]
+pub struct OutboxChanges {
+    generation: std::sync::atomic::AtomicU64,
+    dirty: std::sync::Mutex<(HashSet<i64>, bool)>,
+    committed: tokio::sync::watch::Sender<u64>,
+}
+
+impl Default for OutboxChanges {
+    fn default() -> Self {
+        Self { generation: Default::default(), dirty: Default::default(), committed: tokio::sync::watch::channel(0).0 }
+    }
+}
+
+impl OutboxChanges {
+    /// Changes so far.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn touched(&self, seq: Option<i64>) {
+        self.generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(seq) = seq {
+            let mut dirty = self.dirty.lock().unwrap_or_else(|p| p.into_inner());
+            if dirty.0.len() < DIRTY_MAX {
+                dirty.0.insert(seq);
+            } else {
+                dirty.1 = true;
+            }
+        }
+    }
+
+    /// The outbox rows written or removed since the last call: `None` when
+    /// too many to remember (look at them all).
+    pub fn take_dirty(&self) -> Option<HashSet<i64>> {
+        let mut dirty = self.dirty.lock().unwrap_or_else(|p| p.into_inner());
+        let (seqs, overflow) = std::mem::take(&mut *dirty);
+        (!overflow).then_some(seqs)
+    }
+
+    /// Tells the subscribers a change is committed.
+    pub(super) fn committed(&self) {
+        self.committed.send_replace(self.generation());
+    }
+
+    /// Changed whenever a change to the outbox is committed through the shared store.
+    pub fn subscribe(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.committed.subscribe()
+    }
+}
+
+/// Hooks `changes` to the connection's writes.
+pub(super) fn watch(conn: &Connection, changes: &std::sync::Arc<OutboxChanges>) -> Result<(), TreeError> {
+    let changes = std::sync::Arc::clone(changes);
+    conn.update_hook(Some(move |_: rusqlite::hooks::Action, _: &str, table: &str, rowid: i64| match table {
+        "outbox" => changes.touched(Some(rowid)),
+        "local_skipped" => changes.touched(None),
+        _ => {}
+    }))?;
+    Ok(())
+}
+
 /// The `meta` key counting outbox commits: `items.local_seq` of the row a
 /// commit writes (the stale-delta guard, §3.7).
 pub const OUTBOX_SEQ: &str = "outbox_seq";
@@ -68,7 +182,7 @@ pub const OUTBOX_SEQ: &str = "outbox_seq";
 pub const PAUSED_UNTIL: &str = "paused_until";
 
 const OUTBOX_COLUMNS: &str = "seq, kind, item_id, dev, ino, rel, base_etag, base_ctag, base_parent, base_name, \
-     target_parent, target_name, state, reason, attempts, next_try, snapshot, session_url, session_expires, session_next, handle, confirmed";
+     target_parent, target_name, state, reason, attempts, next_try, snapshot, session_url, session_expires, session_next, handle, confirmed, size";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum OutboxKind {
@@ -196,6 +310,10 @@ pub struct OutboxRow {
     /// A removal the user confirmed through the mass-delete guard: never
     /// counted or held again.
     pub confirmed: bool,
+    /// The file's size when the change was detected: what the counts and
+    /// sums say until the row's snapshot does. `None` for a row written
+    /// before it was recorded, and for what sends no content.
+    pub size: Option<u64>,
 }
 
 impl OutboxRow {
@@ -225,6 +343,8 @@ pub struct Detection {
     pub state: OutboxState,
     pub reason: Option<String>,
     pub next_try: Option<i64>,
+    /// The file's size as the examination saw it.
+    pub size: Option<u64>,
 }
 
 impl Detection {
@@ -260,8 +380,9 @@ pub enum OutboxOp {
     Remove(i64),
     /// The inode the item is now (a scan's refresh).
     SetHandle { item_id: String, handle: Option<FileHandle> },
-    /// Something never uploaded, listed under "Not uploaded" (§3.4 rule 2).
-    Skip { rel: PathBuf, reason: String },
+    /// Something never uploaded, listed under "Not uploaded" (§3.4 rule 2),
+    /// with its size when it is a file.
+    Skip { rel: PathBuf, reason: String, size: u64 },
     Unskip(PathBuf),
     /// The mass-delete guard holds a removal already waiting (unless it
     /// runs already).
@@ -382,12 +503,14 @@ fn circles(graph: &HashMap<i64, Vec<i64>>) -> Vec<HashSet<i64>> {
 
 /// One local object, as rows are grouped by it: its handle, or its inode
 /// where there is none.
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum ObjectKey {
     Handle(Vec<u8>),
     Inode(u64, u64),
 }
 
+#[cfg(test)]
 impl ObjectKey {
     fn of(inode: &Inode) -> Self {
         match &inode.handle {
@@ -469,11 +592,13 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
         session_expires: row.get(18)?,
         session_next: row.get::<_, Option<i64>>(19)?.map(|n| n as u64),
         confirmed: row.get::<_, i64>(21)? != 0,
+        size: row.get::<_, Option<i64>>(22)?.map(|n| n.max(0) as u64),
     })
 }
 
 fn rows_where(conn: &Connection, filter: &str, params: impl rusqlite::Params) -> Result<Vec<OutboxRow>, TreeError> {
-    let mut statement = conn.prepare(&format!("SELECT {OUTBOX_COLUMNS} FROM outbox {filter} ORDER BY seq"))?;
+    let order = if filter.contains("ORDER BY") { "" } else { " ORDER BY seq" };
+    let mut statement = conn.prepare_cached(&format!("SELECT {OUTBOX_COLUMNS} FROM outbox {filter}{order}"))?;
     let rows = statement.query_map(params, outbox_row)?.collect::<Result<Vec<_>, _>>()?;
     Ok(rows)
 }
@@ -490,15 +615,42 @@ fn item_gone(tx: &rusqlite::Transaction<'_>, id: &str) -> bool {
 }
 
 /// The live rows of the item or local object `d` is about, oldest first.
+/// An object is found through its inode or its handle, both indexed, and
+/// then compared as [`Inode::same_object`] does.
 fn rows_for(conn: &Connection, item_id: Option<&str>, inode: Option<&Inode>) -> Result<Vec<OutboxRow>, TreeError> {
     match (item_id, inode) {
         (Some(id), _) => rows_where(conn, "WHERE item_id = ?1", [id]),
-        (None, Some(inode)) => Ok(rows_where(conn, "WHERE item_id IS NULL", [])?
-            .into_iter()
-            .filter(|row| row.inode.as_ref().is_some_and(|i| i.same_object(inode)))
-            .collect()),
+        (None, Some(inode)) => Ok(rows_where(
+            conn,
+            // `+item_id`: not the item index, which every row without an id shares.
+            "WHERE +item_id IS NULL AND ((dev = ?1 AND ino = ?2) OR handle = ?3)",
+            params![inode.dev as i64, inode.ino as i64, inode.handle.as_ref().map(FileHandle::encode)],
+        )?
+        .into_iter()
+        .filter(|row| row.inode.as_ref().is_some_and(|i| i.same_object(inode)))
+        .collect()),
         (None, None) => Ok(Vec::new()),
     }
+}
+
+/// The rows whose place is strictly below `dir`, oldest first: a range of the
+/// `rel` index — the text form, and the bytes form of a name that is not UTF-8
+/// ([`path_value`]) — checked again with [`is_under`].
+fn rows_under(conn: &Connection, dir: &Path) -> Result<Vec<OutboxRow>, TreeError> {
+    if dir.as_os_str().is_empty() {
+        return Ok(all_rows(conn)?.into_iter().filter(|row| is_under(&row.rel, dir)).collect());
+    }
+    let bytes = dir.as_os_str().as_bytes();
+    let (mut low, mut high) = (bytes.to_vec(), bytes.to_vec());
+    low.push(b'/');
+    high.push(b'/' + 1);
+    let mut rows = rows_where(conn, "WHERE rel >= ?1 AND rel < ?2", params![Value::Blob(low.clone()), Value::Blob(high.clone())])?;
+    if let (Ok(low), Ok(high)) = (String::from_utf8(low), String::from_utf8(high)) {
+        rows.extend(rows_where(conn, "WHERE rel >= ?1 AND rel < ?2", params![low, high])?);
+    }
+    rows.retain(|row| is_under(&row.rel, dir));
+    rows.sort_by_key(|row| row.seq);
+    Ok(rows)
 }
 
 fn insert(conn: &Connection, row: &OutboxRow) -> Result<i64, TreeError> {
@@ -510,8 +662,8 @@ fn insert(conn: &Connection, row: &OutboxRow) -> Result<i64, TreeError> {
     conn.execute(
         "INSERT INTO outbox (kind, item_id, dev, ino, rel, base_etag, base_ctag, base_parent, base_name,
                              target_parent, target_name, state, reason, attempts, next_try, snapshot,
-                             session_url, session_expires, session_next, handle, confirmed)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+                             session_url, session_expires, session_next, handle, confirmed, size)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
             row.kind.as_str(),
             row.item_id,
@@ -534,6 +686,7 @@ fn insert(conn: &Connection, row: &OutboxRow) -> Result<i64, TreeError> {
             row.session_next.map(|n| n as i64),
             handle,
             row.confirmed as i64,
+            row.size.map(|n| n as i64),
         ],
     )?;
     Ok(conn.last_insert_rowid())
@@ -549,7 +702,7 @@ fn rewrite(conn: &Connection, row: &OutboxRow) -> Result<(), TreeError> {
         "UPDATE outbox SET kind = ?2, item_id = ?3, dev = ?4, ino = ?5, rel = ?6, base_etag = ?7, base_ctag = ?8,
                 base_parent = ?9, base_name = ?10, target_parent = ?11, target_name = ?12, state = ?13, reason = ?14,
                 attempts = ?15, next_try = ?16, snapshot = ?17, session_url = ?18, session_expires = ?19,
-                session_next = ?20, handle = ?21, confirmed = ?22
+                session_next = ?20, handle = ?21, confirmed = ?22, size = ?23
           WHERE seq = ?1",
         params![
             row.seq,
@@ -574,6 +727,7 @@ fn rewrite(conn: &Connection, row: &OutboxRow) -> Result<(), TreeError> {
             row.session_next.map(|n| n as i64),
             handle,
             row.confirmed as i64,
+            row.size.map(|n| n as i64),
         ],
     )?;
     Ok(())
@@ -601,6 +755,7 @@ fn new_row(d: &Detection, kind: OutboxKind, base: Option<Base>) -> OutboxRow {
         session_expires: None,
         session_next: None,
         confirmed: false,
+        size: d.size,
     }
 }
 
@@ -636,6 +791,7 @@ fn merge(existing: &OutboxRow, d: &Detection) -> Option<OutboxRow> {
     row.item_id = existing.item_id.clone().or_else(|| d.item_id.clone());
     row.inode = d.inode.clone().or_else(|| existing.inode.clone());
     row.attempts = existing.attempts;
+    row.size = d.size.or(existing.size);
     // A confirmed removal stays confirmed while it is still one.
     row.confirmed = existing.confirmed && kind.removes();
     if row.confirmed && d.state == OutboxState::Held {
@@ -733,11 +889,10 @@ fn record(conn: &Connection, d: &Detection) -> Result<Recorded, TreeError> {
 }
 
 fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
-    for row in all_rows(conn)? {
+    let mut update = conn.prepare_cached("UPDATE outbox SET rel = ?2 WHERE seq = ?1")?;
+    for row in rows_under(conn, from)? {
         if let Ok(rest) = row.rel.strip_prefix(from) {
-            if is_under(&row.rel, from) {
-                conn.execute("UPDATE outbox SET rel = ?2 WHERE seq = ?1", params![row.seq, path_value(&to.join(rest))])?;
-            }
+            update.execute(params![row.seq, path_value(&to.join(rest))])?;
         }
     }
     Ok(())
@@ -771,11 +926,11 @@ impl TreeStore {
                     }
                 }
                 OutboxOp::SetHandle { item_id, handle } => set_local_handle(&tx, item_id, handle.as_ref())?,
-                OutboxOp::Skip { rel, reason } => {
+                OutboxOp::Skip { rel, reason, size } => {
                     tx.execute(
-                        "INSERT INTO local_skipped (rel, reason, at) VALUES (?1, ?2, ?3)
-                         ON CONFLICT(rel) DO UPDATE SET reason = excluded.reason",
-                        params![path_value(rel), reason, now],
+                        "INSERT INTO local_skipped (rel, reason, at, size) VALUES (?1, ?2, ?3, ?4)
+                         ON CONFLICT(rel) DO UPDATE SET reason = excluded.reason, size = excluded.size",
+                        params![path_value(rel), reason, now, *size as i64],
                     )?;
                 }
                 OutboxOp::Hold { seq, reason } => {
@@ -791,7 +946,8 @@ impl TreeStore {
         }
         out.queued.sort_unstable();
         out.queued.dedup();
-        out.queued.retain(|seq| !out.removed.contains(seq));
+        let removed: HashSet<i64> = out.removed.iter().copied().collect();
+        out.queued.retain(|seq| !removed.contains(seq));
         tx.commit()?;
         Ok(out)
     }
@@ -832,11 +988,13 @@ impl TreeStore {
 
     /// Rows strictly below `rel`.
     pub fn outbox_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
-        Ok(all_rows(&self.conn)?.into_iter().filter(|row| is_under(&row.rel, rel)).collect())
+        rows_under(&self.conn, rel)
     }
 
     /// Every row's blockers: the live rows it waits for (the module's four
-    /// rules). Computed for all rows at once.
+    /// rules), computed for all rows at once, as the worker did before issue
+    /// #38: what the tests hold the point queries of [`pick`] to.
+    #[cfg(test)]
     pub fn outbox_dependencies(&self) -> Result<HashMap<i64, Vec<i64>>, TreeError> {
         let rows = all_rows(&self.conn)?;
         let mut deps: HashMap<i64, Vec<i64>> = rows.iter().map(|row| (row.seq, Vec::new())).collect();
@@ -962,27 +1120,6 @@ impl TreeStore {
             list.dedup();
         }
         Ok(deps)
-    }
-
-    /// The rows `seq` waits for.
-    pub fn outbox_blockers(&self, seq: i64) -> Result<Vec<i64>, TreeError> {
-        Ok(self.outbox_dependencies()?.remove(&seq).unwrap_or_default())
-    }
-
-    /// The rows that can run now, in `seq` order: `ready`, or `retry` whose
-    /// time has come, with nothing to wait for. Which of them run at once is
-    /// the worker's (metadata rows one at a time, §3.5).
-    pub fn outbox_runnable(&self, now: i64) -> Result<Vec<OutboxRow>, TreeError> {
-        let deps = self.outbox_dependencies()?;
-        Ok(all_rows(&self.conn)?
-            .into_iter()
-            .filter(|row| match row.state {
-                OutboxState::Ready => true,
-                OutboxState::Retry => row.next_try.is_none_or(|at| at <= now),
-                _ => false,
-            })
-            .filter(|row| deps.get(&row.seq).is_none_or(Vec::is_empty))
-            .collect())
     }
 
     pub fn outbox_set_state(&self, seq: i64, state: OutboxState, reason: Option<&str>, next_try: Option<i64>) -> Result<(), TreeError> {
@@ -1239,6 +1376,7 @@ mod tests {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: None,
         }
     }
 
@@ -1486,12 +1624,12 @@ mod tests {
     fn a_path_that_is_not_utf8_is_kept_as_it_is() {
         let mut s = store(&[]);
         let rel = PathBuf::from(OsStr::from_bytes(b"dir/caf\xe9.txt"));
-        s.outbox_apply(&[OutboxOp::Skip { rel: rel.clone(), reason: "fifo".into() }], 5).unwrap();
+        s.outbox_apply(&[OutboxOp::Skip { rel: rel.clone(), reason: "fifo".into(), size: 0 }], 5).unwrap();
         s.outbox_record(&Detection { rel: rel.clone(), ..detect(OutboxKind::Create, None, Some(inode(4)), "x", None) }).unwrap();
         s.outbox_apply(&[OutboxOp::Rebase { from: "dir".into(), to: "moved".into() }], 5).unwrap();
         assert_eq!(s.outbox_rows().unwrap()[0].rel, PathBuf::from(OsStr::from_bytes(b"moved/caf\xe9.txt")));
         assert_eq!(s.local_skipped().unwrap(), vec![LocalSkipped { rel: rel.clone(), reason: "fifo".into(), at: 5 }]);
-        s.outbox_apply(&[OutboxOp::Skip { rel: rel.clone(), reason: "socket".into() }], 9).unwrap();
+        s.outbox_apply(&[OutboxOp::Skip { rel: rel.clone(), reason: "socket".into(), size: 0 }], 9).unwrap();
         assert_eq!(s.local_skipped().unwrap()[0].at, 5, "listed once, when first seen");
         s.outbox_apply(&[OutboxOp::Unskip(rel)], 9).unwrap();
         assert!(s.local_skipped().unwrap().is_empty());

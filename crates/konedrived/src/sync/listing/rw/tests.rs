@@ -109,7 +109,7 @@ async fn world() -> World {
     let store = Store::new(TreeStore::in_memory().unwrap());
     let state = SyncStateHandle::new(SyncSnapshot { root_path: folder.display().to_string(), ..SyncSnapshot::default() });
     let report = Report::new(state.clone());
-    report.activity.attach(store.clone(), &folder);
+    crate::tree::off_runtime(|| report.activity.attach(store.clone(), &folder));
     let pins = Pins::detached(state.clone());
     let helper_dir = tempfile::tempdir().unwrap();
     let socket_path = helper_dir.path().join("helper.sock");
@@ -235,11 +235,11 @@ impl World {
     }
 
     fn base(&self, id: &str) -> Option<crate::tree::Row> {
-        self.store.with(|s| s.get(Table::Items, id)).unwrap()
+        { let id = id.to_owned(); crate::tree::off_runtime(|| self.store.call_blocking(move |s| s.get(Table::Items, &id))).unwrap() }
     }
 
     fn deferred(&self, id: &str) -> Option<Change> {
-        self.store.with(|s| s.deferred(id)).unwrap()
+        { let id = id.to_owned(); crate::tree::off_runtime(|| self.store.call_blocking(move |s| s.deferred(&id))).unwrap() }
     }
 
     fn cloud_ctag(&self, id: &str) -> String {
@@ -263,8 +263,9 @@ impl World {
             state: OutboxState::Ready,
             reason: None,
             next_try: None,
+            size: None,
         };
-        match self.store.with(|s| s.outbox_record(&detection)).unwrap() {
+        match crate::tree::off_runtime(|| self.store.call_blocking(move |s| s.outbox_record(&detection))).unwrap() {
             Recorded::Inserted(seq) | Recorded::Merged(seq) => seq,
             other => panic!("{other:?}"),
         }
@@ -281,7 +282,7 @@ impl World {
         write_version(&self.path(rel), content, answer.ctag.as_deref().unwrap());
         let seq = self.row(OutboxKind::Update, id, rel);
         let handle = FileHandle::of(&File::open(self.path(rel)).unwrap()).unwrap();
-        self.store.with(|s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: Some(&handle) }, None)).unwrap();
+        self.store.call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: Some(&handle) }, None)).await.unwrap();
     }
 }
 
@@ -375,7 +376,7 @@ async fn a_delta_fetched_before_a_commit_does_not_undo_it() {
     assert_eq!(w.base("F").unwrap().ctag.as_deref(), Some(w.cloud_ctag("F").as_str()), "the base took it as it landed");
     assert!(w.deferred("F").is_none());
     let handle = FileHandle::of(&File::open(w.path("docs/f.txt")).unwrap()).unwrap();
-    assert_eq!(w.store.with(|s| s.local_handle("F")).unwrap(), Some(handle), "the new version's inode is the item's");
+    assert_eq!(w.store.call(move |s| s.local_handle("F")).await.unwrap(), Some(handle), "the new version's inode is the item's");
 }
 
 /// WR6, §3.7 echo: the outbox's own create, edit and delete come back in the
@@ -421,7 +422,7 @@ async fn the_outbox_own_changes_coming_back_in_the_delta_change_nothing() {
     assert!(w.graph.with(|c| c.bin.contains_key(&id)));
     let report = w.cycle(&listing).await;
     assert!(report.applied.changes.is_empty() && !new.exists() && w.base(&id).is_none());
-    let said: Vec<String> = w.report.activity.recent(100).unwrap().into_iter().filter(|e| e.path.ends_with("new.txt")).map(|e| e.kind).collect();
+    let said: Vec<String> = crate::tree::off_runtime(|| w.report.activity.recent(100)).unwrap().into_iter().filter(|e| e.path.ends_with("new.txt")).map(|e| e.kind).collect();
     assert!(said.iter().all(|kind| kind != "added" && kind != "updated" && kind != "removed"), "{said:?}");
 }
 
@@ -507,7 +508,7 @@ async fn a_file_older_than_what_the_outbox_committed_is_replaced() {
     {
         let _tree = w.tree_lock.lock().await;
         let seq = w.row(OutboxKind::Update, "F", "docs/f.txt");
-        w.store.with(|s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: None }, None)).unwrap();
+        w.store.call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: None }, None)).await.unwrap();
     }
     let report = w.cycle(&listing).await;
     assert_eq!(report.applied.replacements.len(), 1, "{report:?}");
@@ -528,7 +529,7 @@ async fn a_replacement_records_its_new_inode_in_a_read_only_folder_too() {
     w.cycle(&listing).await;
     assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"two");
     let handle = FileHandle::of(&File::open(w.path("docs/f.txt")).unwrap()).unwrap();
-    assert_eq!(w.store.with(|s| s.local_handle("F")).unwrap(), Some(handle));
+    assert_eq!(w.store.call(move |s| s.local_handle("F")).await.unwrap(), Some(handle));
     Disk::open(&w.root, false).unwrap().unlock_tree().unwrap();
 }
 
@@ -581,7 +582,7 @@ async fn a_change_that_waited_for_a_row_is_applied_once_the_row_is_gone() {
     assert_eq!(w.base("F").unwrap().name, "f.txt");
     assert!(w.deferred("F").is_some());
 
-    w.store.with(|s| s.outbox_drop(seq, None, None, None)).unwrap();
+    w.store.call(move |s| s.outbox_drop(seq, None, None, None)).await.unwrap();
     w.cycle(&listing).await;
     assert_eq!(id_at(&w.path("docs/renamed.txt")).as_deref(), Some("F"));
     assert!(!w.path("docs/f.txt").exists());
@@ -607,7 +608,7 @@ async fn a_folder_removed_in_onedrive_with_local_work_in_it_is_made_again() {
     assert_eq!(report.applied.recreated, vec!["D".to_owned()]);
     assert_eq!(id_at(&w.path("docs")), None);
     assert!(!w.path("docs/f.txt").exists() && w.path("docs/mine.txt").exists());
-    let rows = w.store.with(|s| s.outbox_rows()).unwrap();
+    let rows = w.store.call(move |s| s.outbox_rows()).await.unwrap();
     assert!(rows.iter().all(|row| row.target_parent.is_none()), "{rows:?}");
 
     let hinted = std::mem::take(&mut *w.examined.lock().unwrap());
@@ -749,7 +750,7 @@ async fn a_changed_pass_handing_over_with_something_in_holding_keeps_it_in_the_f
     assert_eq!(id_at(&w.path("papers")).as_deref(), Some("D"), "the local rename is left to the examination");
 
     let examined = w.scan_and_upload().await;
-    let rows = w.store.with(|s| s.outbox_rows()).unwrap();
+    let rows = w.store.call(move |s| s.outbox_rows()).await.unwrap();
     assert!(!rows.iter().any(|r| r.kind.removes()), "{rows:?}: {:?}", examined.applied);
     assert_eq!(w.deletes(), 0, "nothing deleted in OneDrive");
     assert!(w.graph.with(|c| c.bin.is_empty()));
@@ -780,7 +781,7 @@ async fn a_placeholder_moved_out_and_changed_in_onedrive_is_downloaded_where_it_
     assert!(xattr::get(outside.join("top.txt"), XATTR_ITEM_ID).unwrap().is_none(), "the user's own file now");
     assert_eq!(w.deletes(), 1, "one DELETE, answered 412: OneDrive's change wins");
     assert!(w.graph.with(|c| c.item("T").is_some() && c.bin.is_empty()), "nothing deleted in OneDrive");
-    assert!(w.store.with(|s| s.outbox_rows()).unwrap().is_empty());
+    assert!(w.store.call(move |s| s.outbox_rows()).await.unwrap().is_empty());
 
     w.cycle(&listing).await;
     assert_eq!(id_at(&w.path("top.txt")).as_deref(), Some("T"), "placed again once the examination decided");
@@ -807,9 +808,9 @@ async fn what_a_stop_left_in_the_holding_directory_goes_back_into_the_folder() {
     assert_eq!(id_at(&w.path("top.txt")).as_deref(), Some("T"), "put back where the base has it");
     assert!(!w.path(".konedrive-holding").exists());
 
-    w.store.with(|s| s.outbox_drop_all()).unwrap();
+    w.store.call(move |s| s.outbox_drop_all()).await.unwrap();
     let examined = w.scan_and_upload().await;
-    assert!(examined.applied.queued.is_empty(), "{:?}", w.store.with(|s| s.outbox_rows()).unwrap());
+    assert!(examined.applied.queued.is_empty(), "{:?}", w.store.call(move |s| s.outbox_rows()).await.unwrap());
     assert_eq!(w.deletes(), 0, "nothing deleted in OneDrive");
 }
 
@@ -856,7 +857,7 @@ async fn an_item_moved_in_onedrive_into_a_folder_deleted_here_is_not_moved_back(
     let mut batch = Batch::new();
     batch.name(Path::new(""), OsStr::new("docs"));
     w.examine(batch).await;
-    assert!(w.store.with(|s| s.outbox_rows()).unwrap().iter().any(|r| r.kind == OutboxKind::Delete && r.item_id.as_deref() == Some("D")));
+    assert!(w.store.call(move |s| s.outbox_rows()).await.unwrap().iter().any(|r| r.kind == OutboxKind::Delete && r.item_id.as_deref() == Some("D")));
     w.graph.with(|c| c.rename("T", "D", "top.txt"));
     w.cycle(&listing).await;
     assert!(w.path("top.txt").exists());
@@ -865,7 +866,7 @@ async fn an_item_moved_in_onedrive_into_a_folder_deleted_here_is_not_moved_back(
     let mut batch = Batch::new();
     batch.name(Path::new(""), OsStr::new("top.txt"));
     w.examine(batch).await;
-    let rows = w.store.with(|s| s.outbox_rows()).unwrap();
+    let rows = w.store.call(move |s| s.outbox_rows()).await.unwrap();
     assert!(!rows.iter().any(|r| r.item_id.as_deref() == Some("T")), "a row that moves OneDrive's item back: {rows:?}");
 }
 
@@ -883,18 +884,18 @@ async fn a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped() {
     let mut batch = Batch::new();
     batch.name(Path::new(""), OsStr::new("docs"));
     w.examine(batch).await;
-    let seq = w.store.with(|s| s.outbox_rows()).unwrap().into_iter().find(|r| r.item_id.as_deref() == Some("D")).unwrap().seq;
+    let seq = w.store.call(move |s| s.outbox_rows()).await.unwrap().into_iter().find(|r| r.item_id.as_deref() == Some("D")).unwrap().seq;
     // The mass-delete guard's decision, without tripping its threshold.
-    w.store.with(|s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
-    assert_eq!(OutboxWorker::new(w.config()).counts().unwrap().held, 1);
+    w.store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).await.unwrap();
+    assert_eq!(w.store.call(move |s| crate::sync::upload::outbox_counts(s, false)).await.unwrap().held, 1);
 
     // `docs` is deleted in OneDrive too, from another device.
     w.graph.with(|c| c.trash("D"));
     w.cycle(&listing).await;
 
-    let rows = w.store.with(|s| s.outbox_rows()).unwrap();
+    let rows = w.store.call(move |s| s.outbox_rows()).await.unwrap();
     assert!(rows.is_empty(), "the held delete has nothing left to delete: {rows:?}");
-    assert_eq!(OutboxWorker::new(w.config()).counts().unwrap().held, 0);
+    assert_eq!(w.store.call(move |s| crate::sync::upload::outbox_counts(s, false)).await.unwrap().held, 0);
     assert_eq!(w.deletes(), 0, "never sent to OneDrive");
     let dropped = w.dropped.lock().unwrap().clone();
     assert_eq!(dropped.len(), 1);
@@ -927,7 +928,7 @@ async fn a_delta_that_brings_an_upload_before_its_commit_changes_nothing() {
     engine.arm(crate::sync::upload::Fault::AfterSend);
     engine.drain(&CancellationToken::new()).await;
     assert!(w.graph.with(|c| c.at("docs/new.txt").is_some()) && w.graph.with(|c| c.item("F").unwrap().content == b"one and mine"));
-    let rows = w.store.with(|s| s.outbox_rows()).unwrap();
+    let rows = w.store.call(move |s| s.outbox_rows()).await.unwrap();
     assert!(rows.iter().all(|r| r.state == OutboxState::Running), "{rows:?}");
 
     let report = w.cycle(&listing).await;
@@ -936,12 +937,12 @@ async fn a_delta_that_brings_an_upload_before_its_commit_changes_nothing() {
     assert_eq!(id_at(&w.path("docs/new.txt")), None, "still the outbox's to commit");
 
     w.upload().await;
-    assert!(w.store.with(|s| s.outbox_rows()).unwrap().is_empty());
+    assert!(w.store.call(move |s| s.outbox_rows()).await.unwrap().is_empty());
     let report = w.cycle(&listing).await;
     assert!(report.applied.replacements.is_empty() && report.applied.copies.is_empty() && report.applied.changes.is_empty(), "{report:?}");
     assert_eq!(std::fs::metadata(w.path("docs/f.txt")).unwrap().ino(), f_ino);
     assert_eq!(std::fs::metadata(w.path("docs/new.txt")).unwrap().ino(), new_ino);
     assert!(id_at(&w.path("docs/new.txt")).is_some());
-    assert!(w.store.with(|s| s.deferred_ids()).unwrap().is_empty());
+    assert!(w.store.call(move |s| s.deferred_ids()).await.unwrap().is_empty());
     assert_eq!(w.graph.with(|c| c.paths()).len(), 4, "no copy in OneDrive: {:?}", w.graph.with(|c| c.paths()));
 }

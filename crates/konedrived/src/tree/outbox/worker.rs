@@ -172,6 +172,7 @@ impl TreeStore {
                     session_expires: None,
                     session_next: None,
                     confirmed: false,
+                    size: None,
                 },
             )?;
         }
@@ -329,6 +330,17 @@ impl TreeStore {
     /// Rows in backoff are due now (`Refresh()`).
     pub fn outbox_retry_now(&self) -> Result<usize, TreeError> {
         Ok(self.conn.execute("UPDATE outbox SET next_try = 0 WHERE state IN ('retry', 'waiting')", [])?)
+    }
+
+    /// Rows written as they are, without merging: the bench seeds a large outbox fast.
+    #[cfg(test)]
+    pub fn bench_insert(&mut self, rows: &[OutboxRow]) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        for row in rows {
+            insert(&tx, row)?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Every item of the base, for tests that seed a fake OneDrive from it.

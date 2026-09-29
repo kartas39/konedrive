@@ -225,7 +225,7 @@ pub fn other_device_not_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
         placement: Placement::Placed,
     };
     store
-        .with(|s| {
+        .call_blocking(move |s| {
             s.begin_staging(false)?;
             s.stage(&[Change::Root(top)])?;
             s.commit_staging("w4-link")
@@ -247,7 +247,7 @@ pub fn other_device_not_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
     config.timing = Timing { quiet: QUIET, ceiling: Duration::from_secs(5), retry: Duration::from_secs(1), ..Timing::default() };
     let watcher = Watcher::start(config, Box::new(sink)).map_err(|e| format!("the watcher did not start: {e}"))?;
     let rows = || -> Result<Vec<String>, String> {
-        let rows = store.with(|s| s.outbox_rows()).map_err(|e| e.to_string())?;
+        let rows = store.call_blocking(move |s| s.outbox_rows()).map_err(|e| e.to_string())?;
         Ok(rows.iter().map(|r| format!("{:?} {}", r.kind, r.rel.display())).collect())
     };
     let outcome = (|| {
@@ -259,7 +259,7 @@ pub fn other_device_not_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
             return Err(format!("rows {:?}; only plain.txt may be uploaded", rows()?));
         }
         let skipped: Vec<(String, String)> = store
-            .with(|s| s.local_skipped())
+            .call_blocking(move |s| s.local_skipped())
             .map_err(|e| e.to_string())?
             .into_iter()
             .map(|s| (s.rel.display().to_string(), s.reason))

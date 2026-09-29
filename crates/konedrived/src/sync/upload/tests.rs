@@ -76,7 +76,7 @@ impl World {
         let mut all = vec![Change::Root(row("R", None, "", Kind::Folder, b""))];
         all.extend_from_slice(changes);
         store
-            .with(|s| {
+            .call_blocking(move |s| {
                 s.begin_staging(false)?;
                 s.stage(&all)
             })
@@ -97,7 +97,7 @@ impl World {
             };
             materializer.apply(Scope::Full).unwrap();
         }
-        store.with(|s| s.commit_staging("link-1")).unwrap();
+        store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
         let locks = InodeLocks::new();
         let h = Harness::new(&root, &store, &locks);
         World { _dir: dir, root, store, liveness: FakeLiveness::new(), locks, h }
@@ -123,7 +123,7 @@ impl World {
     }
 
     fn rows(&self) -> Vec<OutboxRow> {
-        self.store.with(|s| s.outbox_rows()).unwrap()
+        crate::tree::off_runtime(|| self.store.call_blocking(move |s| s.outbox_rows())).unwrap()
     }
 
     fn summary(&self) -> Vec<(OutboxKind, String, OutboxState)> {
@@ -172,7 +172,7 @@ impl World {
     }
 
     fn base(&self, id: &str) -> Option<Row> {
-        self.store.with(|s| s.get(Table::Items, id)).unwrap()
+        { let id = id.to_owned(); self.store.call_blocking(move |s| s.get(Table::Items, &id)).unwrap() }
     }
 
     /// The cloud's content at `path`.
@@ -201,7 +201,7 @@ fn assert_committed(w: &World, rel: &str, cloud_path: &str) {
     }
     assert_eq!(w.attr(rel, XATTR_SYNC), None, "{rel}");
     let base = w.base(&id).unwrap();
-    assert_eq!(w.store.with(|s| s.local_handle(&id)).unwrap(), Some(w.handle(rel)), "{rel}");
+    assert_eq!(w.store.call_blocking(move |s| s.local_handle(&id)).unwrap(), Some(w.handle(rel)), "{rel}");
     assert_eq!(Some(base.name.as_str()), cloud_path.rsplit('/').next());
 }
 
@@ -227,7 +227,7 @@ fn new_folders_and_files_go_up_and_are_committed() {
         assert_committed(&w, rel, path);
     }
     assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::UPLOADED).count(), 5);
-    assert_eq!(w.store.with(|s| s.outbox_seq()).unwrap(), 5);
+    assert_eq!(w.store.call_blocking(move |s| s.outbox_seq()).unwrap(), 5);
     // Echo, locally: the next examination of everything finds nothing to send.
     w.examine_batch(&Batch::full());
     assert!(w.rows().is_empty(), "{:?}", w.summary());
@@ -280,7 +280,7 @@ fn an_edit_of_an_outdated_download_is_guarded_by_its_ctag() {
     w.cloud(|c| c.edit("A", b"newer"));
     let newer = w.cloud(|c| c.item("A").cloned().unwrap());
     w.store
-        .with(|s| {
+        .call_blocking(move |s| {
             let mut base = s.get(Table::Items, "A")?.unwrap();
             base.etag = Some(newer.etag.clone());
             base.ctag = Some(newer.ctag.clone());
@@ -417,8 +417,8 @@ fn conflicts_keep_both_and_the_first_rename_wins() {
     assert_committed(&w, "a-fedora.txt", "a-fedora.txt");
     assert!(!w.path("a.txt").exists(), "the cloud's version is placed at the name by the reconcile");
     let copy = w.path("a-fedora.txt").display().to_string();
-    assert_eq!(w.store.with(|s| s.conflict_kind(&copy)).unwrap().as_deref(), Some("copy"));
-    assert_eq!(w.store.with(|s| s.local_handle("A")).unwrap(), None, "never taken for a delete");
+    assert_eq!(w.store.call_blocking(move |s| s.conflict_kind(&copy)).unwrap().as_deref(), Some("copy"));
+    assert_eq!(w.store.call_blocking(move |s| s.local_handle("A")).unwrap(), None, "never taken for a delete");
     assert!(w.h.host.kinds().contains(&kind::CONFLICT.to_owned()));
     assert!(w.h.host.cycles.load(Ordering::SeqCst) > 0);
     // the outbox on the bus: the delta carries OneDrive's version; no Full
@@ -512,7 +512,7 @@ fn conflicts_keep_both_and_the_first_rename_wins() {
     // rename: the content the user deleted, deleted with the fresh eTag;
     // delete: done.
     assert_eq!(w.cloud(|c| c.paths()), vec!["a.txt"]);
-    assert_eq!(w.store.with(|s| s.local_handle("A")).unwrap(), None);
+    assert_eq!(w.store.call_blocking(move |s| s.local_handle("A")).unwrap(), None);
     assert!(w.base("A").is_some() && w.base("B").is_none() && w.base("C").is_none());
     assert!(w.h.host.kinds().contains(&kind::RESTORED.to_owned()));
     assert!(w.h.host.fulls.load(Ordering::SeqCst) > 0, "placed again by a Full reconcile");
@@ -632,16 +632,16 @@ fn pause_offline_sign_in_and_blocked_rows() {
     w.h.drain(&restarted);
     assert!(restarted.status().paused, "the pause survives a restart");
     restarted.resume().unwrap();
-    restarted.set_online(false);
+    w.h.block_on(restarted.set_online(false));
     w.h.drain(&restarted);
     assert_eq!(w.cloud(|c| c.log.len()), 0);
-    restarted.set_online(true);
+    w.h.block_on(restarted.set_online(true));
     w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(403), 1));
     w.h.drain(&restarted);
     assert!(restarted.status().needs_sign_in);
     assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Blocked)]);
     assert_eq!(w.attr("a.txt", XATTR_SYNC).as_deref(), Some("blocked"));
-    restarted.signed_in().unwrap();
+    w.h.block_on(restarted.signed_in()).unwrap();
     w.h.drain(&restarted);
     assert!(w.rows().is_empty());
     assert_eq!(w.attr("a.txt", XATTR_SYNC), None);
@@ -664,14 +664,14 @@ fn pause_offline_sign_in_and_blocked_rows() {
     assert_eq!(state("open.txt").map(|s| s.0), Some(OutboxState::Waiting));
     assert_eq!(w.attr("refused.txt", XATTR_SYNC).as_deref(), Some("blocked"));
     assert_eq!(w.attr("open.txt", XATTR_SYNC).as_deref(), Some("pending"));
-    let counts = restarted.counts().unwrap();
+    let counts = restarted.status().counts;
     assert_eq!((counts.pending, counts.blocked, counts.pending_bytes), (2, 1, 2));
     assert_eq!((counts.space_waiting, restarted.status().quota_full), (2, true));
     assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::UPLOAD_FAILED).count(), 2, "forbidden, refused: once each; full: none per file");
     drop(writer);
     w.cloud(|c| c.free = Some(10 << 20));
     refresh(&w, &restarted);
-    restarted.retry_now().unwrap();
+    w.h.block_on(restarted.retry_now()).unwrap();
     w.h.drain(&restarted);
     assert_eq!(w.summary(), vec![(Create, "refused.txt".into(), OutboxState::Blocked)]);
     assert_committed(&w, "full.txt", "full.txt");
@@ -681,7 +681,7 @@ fn pause_offline_sign_in_and_blocked_rows() {
 /// `Refresh()`'s quota read (`SyncService::refresh_quota`), applied.
 fn refresh(w: &World, engine: &Arc<Engine>) {
     let quota = w.h.runtime.block_on(w.h.graph.client().quota()).unwrap();
-    engine.apply_quota(&quota);
+    w.h.block_on(engine.apply_quota(&quota));
 }
 
 /// The contents of every request that sent `name`'s content.
@@ -712,7 +712,7 @@ fn a_full_onedrive_sends_no_content_but_moves_and_deletes_go() {
     assert_eq!(content_requests(&w, "n1.txt") + content_requests(&w, "n2.txt"), 1, "one refusal, then nothing more");
     assert_eq!(reason_of(&w, "n1.txt").as_deref(), Some(space::WAITING));
     assert!(w.rows().iter().all(|r| r.state == OutboxState::Ready), "{:?}", w.summary());
-    let counts = engine.counts().unwrap();
+    let counts = engine.status().counts;
     assert_eq!((counts.space_waiting, counts.space_waiting_bytes, counts.blocked), (2, 6, 0));
 
     w.rename("old.txt", "moved.txt");
@@ -751,7 +751,7 @@ fn a_file_too_big_for_the_space_left_waits_alone() {
     assert_committed(&w, "b.txt", "b.txt");
     let reason = reason_of(&w, "big.bin").unwrap();
     assert_eq!(space::parse_too_big(&reason).map(|(needs, _)| needs), Some(big.len() as u64), "{reason}");
-    assert_eq!(engine.counts().unwrap().too_big, 1);
+    assert_eq!(engine.status().counts.too_big, 1);
     let sent = content_requests(&w, "big.bin");
 
     w.h.drain(&engine);
@@ -778,7 +778,7 @@ fn a_file_too_big_for_the_space_left_waits_alone() {
 fn a_file_not_refused_goes_whatever_the_known_free_space_says() {
     let w = World::new(&[]);
     let engine = w.h.engine();
-    engine.apply_quota(&crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(space::NO_SPACE + 1), state: "critical".into() });
+    w.h.block_on(engine.apply_quota(&crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(space::NO_SPACE + 1), state: "critical".into() }));
     w.write("big.bin", &vec![1u8; 1536 * 1024]);
     w.examine(&[("", "big.bin")]);
     w.h.drain(&engine);
@@ -794,9 +794,10 @@ fn rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start() {
     w.write("full.txt", b"f");
     w.examine(&[("", "full.txt")]);
     let seq = w.rows()[0].seq;
-    w.store.with(|s| s.outbox_set_state(seq, OutboxState::Blocked, Some(reason::QUOTA), Some(engine::now() + 1800))).unwrap();
+    w.store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some(reason::QUOTA), Some(engine::now() + 1800))).unwrap();
     w.cloud(|c| c.free = Some(10 << 20));
     let engine = w.h.engine();
+    w.h.block_on(engine.space_start());
     assert!(engine.space_full(), "waiting rows keep the worker full until the quota is read");
     assert_eq!(w.rows()[0].state, OutboxState::Ready);
     w.h.drain(&engine);
@@ -824,7 +825,7 @@ fn a_file_removed_while_it_waits_for_space_leaves_the_outbox() {
     assert_eq!(w.summary(), vec![(Create, "big.bin".into(), OutboxState::Running), (OutboxKind::Delete, "big.bin".into(), OutboxState::Ready)]);
 
     let engine = w.h.engine();
-    engine.apply_quota(&crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() });
+    w.h.block_on(engine.apply_quota(&crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() }));
     let from = w.cloud(|c| c.log.len());
     w.h.drain(&engine);
     assert!(w.rows().is_empty(), "{:?}", w.summary());
@@ -875,7 +876,7 @@ fn a_full_onedrive_stops_a_session_after_its_fragment_and_space_resumes_it() {
     w.examine(&[("", "big.bin")]);
     let engine = w.h.engine();
     let exceeded = crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() };
-    drain_stopped_mid_request(&w, &engine, "PUT", "upload/", || engine.apply_quota(&exceeded));
+    drain_stopped_mid_request(&w, &engine, "PUT", "upload/", || w.h.block_on(engine.apply_quota(&exceeded)));
     assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 1, "no fragment after the one in flight");
     let row = w.rows().remove(0);
     assert_eq!((row.state, row.reason.as_deref()), (OutboxState::Ready, Some(space::WAITING)));
@@ -963,7 +964,7 @@ fn the_worker_runs_until_stopped() {
         worker.start();
         assert!(worker.status().started);
         w.write("a.txt", b"a");
-        w.examine(&[("", "a.txt")]);
+        crate::tree::off_runtime(|| w.examine(&[("", "a.txt")]));
         worker.wake();
         let mut waited = 0;
         while !w.rows().is_empty() && waited < 200 {
@@ -1017,7 +1018,7 @@ fn four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir() {
             waited += 1;
         }
         waited = 0;
-        while !w.rows().is_empty() && waited < 300 {
+        while !crate::tree::off_runtime(|| w.rows()).is_empty() && waited < 300 {
             tokio::time::sleep(Duration::from_millis(10)).await;
             waited += 1;
         }
@@ -1060,7 +1061,7 @@ fn a_row_through_a_temporary_name_keeps_the_users_name_after_a_retry() {
         let of = |id: &str| w.rows().into_iter().find(|r| r.item_id.as_deref() == Some(id)).unwrap();
         // B's move is held back, so that A's row meets b still taken.
         let b_seq = of("B").seq;
-        w.store.with(|s| s.outbox_set_state(b_seq, OutboxState::Held, None, None)).unwrap();
+        w.store.call_blocking(move |s| s.outbox_set_state(b_seq, OutboxState::Held, None, None)).unwrap();
         let engine = w.h.engine();
         if edited {
             w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(429).insert_header("Retry-After", "1"), 1));
@@ -1073,11 +1074,11 @@ fn a_row_through_a_temporary_name_keeps_the_users_name_after_a_retry() {
         assert!(w.cloud(|c| c.item("A").unwrap().name.starts_with(SWAP_PREFIX)), "the PATCH to the temporary name landed");
         if !edited {
             // Backed off, then examined: the merge keeps the temporary name.
-            w.store.with(|s| s.outbox_set_state(a.seq, OutboxState::Retry, Some("test"), Some(0))).unwrap();
+            w.store.call_blocking(move |s| s.outbox_set_state(a.seq, OutboxState::Retry, Some("test"), Some(0))).unwrap();
             w.examine(&[("", "a"), ("", "b")]);
             assert_eq!(of("A").target_name, a.target_name, "a replay looks for it there");
         }
-        w.store.with(|s| s.outbox_set_state(b_seq, OutboxState::Ready, None, None)).unwrap();
+        w.store.call_blocking(move |s| s.outbox_set_state(b_seq, OutboxState::Ready, None, None)).unwrap();
         w.run();
         assert!(w.rows().is_empty(), "{edited}: {:?}", w.summary());
         let here: Vec<String> = std::fs::read_dir(&w.root.path).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
@@ -1143,7 +1144,7 @@ fn delete_commits_wait_for_the_cycles_swap() {
     w.examine(&[("", "a.txt")]);
     w.cloud(|c| c.edit("A", b"theirs"));
     let lock = w.h.runtime.block_on(Arc::clone(&w.h.tree_lock).lock_owned());
-    w.store.with(|s| s.begin_staging(true)).unwrap();
+    w.store.call_blocking(move |s| s.begin_staging(true)).unwrap();
     let engine = w.h.engine();
     let task = w.h.runtime.spawn({
         let engine = Arc::clone(&engine);
@@ -1156,11 +1157,11 @@ fn delete_commits_wait_for_the_cycles_swap() {
     }
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(w.rows().len(), 1, "the drop waits for the cycle");
-    w.store.with(|s| s.commit_staging("link-2")).unwrap();
+    w.store.call_blocking(move |s| s.commit_staging("link-2")).unwrap();
     drop(lock);
     w.h.runtime.block_on(task).unwrap();
     assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.store.with(|s| s.local_handle("A")).unwrap(), None, "forgotten after the swap, not before");
+    assert_eq!(w.store.call_blocking(move |s| s.local_handle("A")).unwrap(), None, "forgotten after the swap, not before");
     assert!(w.cloud(|c| c.item("A").is_some() && c.bin.is_empty()));
 }
 
@@ -1231,7 +1232,7 @@ fn a_file_replaced_while_its_create_goes_up_and_then_deleted_is_deleted_in_onedr
     std::fs::copy(&outside, w.path("d/renamed-n.bin")).unwrap();
     upload.finish(&w);
     let id = w.id_at("d/renamed-n.bin").expect("created");
-    assert!(w.store.with(|s| s.local_handle(&id)).unwrap().is_some(), "committed with the object that was sent");
+    assert!(w.store.call_blocking(move |s| s.local_handle(&id)).unwrap().is_some(), "committed with the object that was sent");
 
     std::fs::remove_file(w.path("d/renamed-n.bin")).unwrap();
     let out = w.examine(&[("d", "renamed-n.bin")]);

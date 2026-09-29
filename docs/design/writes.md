@@ -390,6 +390,31 @@ A row that then meets its name still taken (`409`), by an item a live row is fre
 through a temporary name, `.konedrive-swap-<id>`, saved in the row before the request, and a
 final `move` row follows once the name is free. Swaps (`a` ↔ `b`) go the same way.
 
+**How the next rows are picked** (issue #38). The worker never reads the whole queue for a step.
+It reads the rows that are due — `ready`, `retry` whose time has come, `waiting` whose look is due,
+`running` rows nobody holds after a crash — in `seq` order, about a hundred at a time, and asks
+each one's waits by point queries on the outbox's indexes: rule 1 by item id and by local object
+(handle, or inode where there is none), rule 2 by the place of its directory, rule 3 by one walk of
+what the base has inside the folder, joined to the outbox by item id — only for a folder's
+removal. Rule 4 needs the whole picture of the names, but only of the rows that free or take one:
+the removals and the moves away from the base place (a partial index), and the rows that take a
+name one of those frees (by their target folder). Its circles are looked for in the graph those
+rows and what they wait for make.
+
+A row that waits is followed to the head of its wait chain — its blocker, that row's blocker, and
+so on, each row visited once per pick. The head is either **ready**, and runs, which is what
+unblocks the chain; **running**, and its end wakes the worker, which picks again; **waiting for a
+time** (`retry`, `waiting`), and the worker sleeps until the earliest such time; or **waiting for
+the user** (held deletes, a refused name, a full OneDrive, a move-out waiting for the helper), shown
+on the Not Uploaded page. Portions are read until enough runnable rows are found or the queue ends,
+so a portion in which every row waits — a thousand files behind the `mkdir` of their folder, which
+came last — never stops the worker.
+
+**The invariant.** When nothing in the outbox can run, it is because something runs, something
+waits for a time, or something waits for the user. Nothing else may leave the queue standing; a
+pick that finds due rows and none of these reports them as stalled, in the log
+(`tree/outbox/pick.rs`).
+
 Metadata rows (`mkdir`, `move`, `delete`) run one at a time; content rows beside them, each in a
 slot of the account's transfer pool, which adapts to OneDrive's throttling
 ([hydration.md](hydration.md) §6.4); `move-out` rows one at a time. Metadata rows and move-outs take
@@ -734,6 +759,19 @@ the activity kinds `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, 
 error `NotUploaded`, which "Free up space" gets for a file with changes not uploaded yet. On
 `Account1`: `SetMode` and `Mode`. [desktop.md](desktop.md) has each member, the commands and the
 window's pages.
+
+**Answers from memory.** The counts (`PendingCount`, `PendingBytes`, `BlockedCount`, `HeldCount`,
+the space counts of §6.4, the queue totals) and the Not Uploaded summary are kept in memory by the
+daemon and answered from there. They are summed again by SQL — one `GROUP BY` over the rows' kind,
+state and reason, sizes from the row's snapshot or from the size the examination recorded — after
+the outbox changes, at most once a second. The lists (`Outbox(limit)`, `NotUploadedFiles(reason,
+limit)`, `NotUploaded()`) are read with a `LIMIT` through a second, read-only connection to the tree
+store, which in WAL mode reads the last committed state and never waits for a writer: an
+examination recording thousands of rows, or a cycle's commit, never makes the bus wait. No answer
+reads a file's size from the disk. The tree store itself is owned by one thread per account, the only one with a
+read-write connection to it: every other part of the daemon sends it jobs over a channel and
+waits for the answer (`store.call`), so a long store operation delays only the store's own queue,
+never the async runtime or the bus.
 
 **Pause** stops the account's outbox, its poll (so no cycle and no replacement) and its thumbnails;
 fills on open, `Hydrate` and the watcher go on, so rows keep collecting. It is kept in the tree

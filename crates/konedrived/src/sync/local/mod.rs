@@ -76,7 +76,27 @@ pub fn snapshot(size: u64, mtime_sec: i64, mtime_nsec: i64) -> String {
 pub fn record_placed(store: &Store, dir: &File, name: &OsStr, id: &str) {
     match FileHandle::at(dir, name) {
         Ok(handle) => {
-            if let Err(e) = store.with(|s| s.set_local_handle(id, Some(&handle))) {
+            let item = id.to_owned();
+            if let Err(e) = store.call_blocking(move |s| s.set_local_handle(&item, Some(&handle))) {
+                tracing::warn!("cannot record where {id} was placed: {e}");
+            }
+        }
+        Err(e) => tracing::debug!("no file handle for {}: {e}", name.to_string_lossy()),
+    }
+}
+
+/// [`record_replaced`] for async code.
+pub async fn record_replaced_async(disk: &Disk, store: &Store, id: &str, rel: &Path) {
+    let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else { return };
+    let Ok(dir) = disk.dir(parent) else { return };
+    let there = xattr::get(entry::proc_path(&dir).join(name), konedrive_fs::placeholder::XATTR_ITEM_ID).ok().flatten();
+    if there.as_deref() != Some(id.as_bytes()) {
+        return;
+    }
+    match FileHandle::at(&dir, name) {
+        Ok(handle) => {
+            let item = id.to_owned();
+            if let Err(e) = store.call(move |s| s.set_local_handle(&item, Some(&handle))).await {
                 tracing::warn!("cannot record where {id} was placed: {e}");
             }
         }

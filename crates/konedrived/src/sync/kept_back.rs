@@ -14,7 +14,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use super::upload::{reason, space};
-use crate::tree::outbox::{LocalSkipped, OutboxRow, OutboxState};
+use crate::tree::outbox::{OutboxGroup, OutboxKind, OutboxState, SkippedGroup};
+use crate::tree::{TreeError, TreeStore};
 
 /// What the user can do about a reason, in the order the window shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -92,24 +93,16 @@ pub fn group_of(key: &str) -> Group {
     Group::Waiting
 }
 
-/// One thing kept back: its full path, its reason as stored, and the key it
-/// is summed under.
-struct Kept {
-    path: String,
-    reason: String,
-    key: String,
-}
-
-/// The reason an outbox row is kept back for, if it is: blocked, or waiting
-/// (or in backoff) with a reason; ready but waiting for space
-/// (`waiting-for-space`, `too-big:…`); and, while OneDrive is `full`, a
-/// change that sends content and says nothing else waits for space, as
-/// `Outbox()` shows it. Held removals have their own question (the
+/// The reason rows of `kind`, `state` and `reason` are kept back for, if
+/// they are: blocked, or waiting (or in backoff) with a reason; ready but
+/// waiting for space (`waiting-for-space`, `too-big:…`); and, while OneDrive
+/// is `full`, a change that sends content and says nothing else waits for
+/// space, as `Outbox()` shows it. Held removals have their own question (the
 /// mass-delete guard), and a row running is not kept back.
-fn kept_reason(row: &OutboxRow, full: bool) -> Option<String> {
-    let said = row.reason.clone().filter(|r| !r.is_empty());
-    let for_space = || (full && row.kind.sends_content()).then(|| space::WAITING.to_owned());
-    match row.state {
+pub fn kept_reason(kind: OutboxKind, state: OutboxState, reason: Option<&str>, full: bool) -> Option<String> {
+    let said = reason.filter(|r| !r.is_empty()).map(str::to_owned);
+    let for_space = || (full && kind.sends_content()).then(|| space::WAITING.to_owned());
+    match state {
         OutboxState::Blocked => Some(said.unwrap_or_else(|| "blocked".into())),
         OutboxState::Waiting | OutboxState::Retry => said.or_else(for_space),
         OutboxState::Ready => match said {
@@ -120,60 +113,60 @@ fn kept_reason(row: &OutboxRow, full: bool) -> Option<String> {
     }
 }
 
-/// Every thing kept back, with its size when `sized` (lstat for a file's
-/// row without a snapshot: off the runtime).
-fn kept(skipped: &[LocalSkipped], rows: &[OutboxRow], root: &Path, full: bool, sized: bool) -> Vec<(Kept, u64)> {
-    let mut out = Vec::with_capacity(skipped.len() + rows.len());
-    for s in skipped {
-        let full = root.join(&s.rel);
-        let bytes = if sized { std::fs::symlink_metadata(&full).ok().filter(|m| m.is_file()).map_or(0, |m| m.len()) } else { 0 };
-        out.push((Kept { path: full.display().to_string(), key: reason_key(&s.reason).to_owned(), reason: s.reason.clone() }, bytes));
-    }
-    for (row, reason) in rows.iter().filter_map(|r| kept_reason(r, full).map(|why| (r, why))) {
-        let full = root.join(&row.rel);
-        let bytes = if sized && row.kind.sends_content() {
-            row.snapshot
-                .as_deref()
-                .and_then(|s| s.split(' ').next())
-                .and_then(|s| s.parse().ok())
-                .or_else(|| std::fs::symlink_metadata(&full).ok().filter(|m| m.is_file()).map(|m| m.len()))
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        out.push((Kept { path: full.display().to_string(), key: reason_key(&reason).to_owned(), reason }, bytes));
-    }
-    out
+fn kept_group(group: &OutboxGroup, full: bool) -> Option<String> {
+    kept_reason(group.kind(), group.state(), group.reason().as_deref(), full)
 }
 
 /// One row of `NotUploadedSummary()`: (group, reason, count, bytes).
 pub type SummaryRow = (String, String, u32, u64);
 
 /// `NotUploadedSummary()`: one row per reason, in the groups' order, then by
-/// reason; `full` while OneDrive is full ([`kept_reason`]).
-pub fn summary(skipped: &[LocalSkipped], rows: &[OutboxRow], root: &Path, full: bool) -> Vec<SummaryRow> {
-    let mut by: BTreeMap<(Group, String), (u32, u64)> = BTreeMap::new();
-    for (k, bytes) in kept(skipped, rows, root, full, true) {
-        let entry = by.entry((group_of(&k.key), k.key)).or_default();
-        entry.0 = entry.0.saturating_add(1);
+/// reason; `full` while OneDrive is full ([`kept_reason`]). From the store's
+/// sums: nothing read from the disk.
+pub fn summary(skipped: &[SkippedGroup], groups: &[OutboxGroup], full: bool) -> Vec<SummaryRow> {
+    let mut by: BTreeMap<(Group, String), (u64, u64)> = BTreeMap::new();
+    let mut add = |reason: &str, count: u64, bytes: u64| {
+        let key = reason_key(reason).to_owned();
+        let entry = by.entry((group_of(&key), key)).or_default();
+        entry.0 = entry.0.saturating_add(count);
         entry.1 = entry.1.saturating_add(bytes);
+    };
+    for s in skipped {
+        add(&s.reason, s.count, s.bytes);
     }
-    by.into_iter().map(|((group, key), (count, bytes))| (group.as_str().to_owned(), key, count, bytes)).collect()
+    for g in groups {
+        if let Some(reason) = kept_group(g, full) {
+            add(&reason, g.count, g.bytes);
+        }
+    }
+    by.into_iter()
+        .map(|((group, key), (count, bytes))| (group.as_str().to_owned(), key, u32::try_from(count).unwrap_or(u32::MAX), bytes))
+        .collect()
 }
 
 /// `NotUploadedFiles(reason, limit)`: the files kept back for `reason` (a
 /// key as the summary gives it), by path, at most `limit` (0 for all), each
 /// with its reason as stored (a `400`'s carries the service's message); and
-/// how many there are.
-pub fn files(skipped: &[LocalSkipped], rows: &[OutboxRow], root: &Path, full: bool, reason: &str, limit: u32) -> (Vec<(String, String)>, u32) {
-    let mut all: Vec<(String, String)> =
-        kept(skipped, rows, root, full, false).into_iter().filter(|(k, _)| k.key == reason).map(|(k, _)| (k.path, k.reason)).collect();
-    let total = u32::try_from(all.len()).unwrap_or(u32::MAX);
+/// how many there are. Read with a `LIMIT` per group of rows.
+pub fn files(store: &TreeStore, root: &Path, full: bool, reason: &str, limit: u32) -> Result<(Vec<(String, String)>, u32), TreeError> {
+    let groups = store.outbox_groups()?;
+    let kept: Vec<(&OutboxGroup, String)> =
+        groups.iter().filter_map(|g| kept_group(g, full).map(|why| (g, why))).filter(|(_, why)| reason_key(why) == reason).collect();
+    let skipped: Vec<SkippedGroup> = store.skipped_groups()?.into_iter().filter(|s| reason_key(&s.reason) == reason).collect();
+    let total = kept.iter().map(|(g, _)| g.count).chain(skipped.iter().map(|s| s.count)).sum::<u64>();
+    let of: Vec<&OutboxGroup> = kept.iter().map(|(g, _)| *g).collect();
+    let mut all: Vec<(String, String)> = store
+        .outbox_places_of(&of, limit)?
+        .into_iter()
+        .map(|(rel, n)| (root.join(rel).display().to_string(), kept[n].1.clone()))
+        .collect();
+    let reasons: Vec<&str> = skipped.iter().map(|s| s.reason.as_str()).collect();
+    all.extend(store.skipped_places_of(&reasons, limit)?.into_iter().map(|(rel, why)| (root.join(rel).display().to_string(), why)));
     all.sort();
     if limit > 0 {
         all.truncate(limit as usize);
     }
-    (all, total)
+    Ok((all, u32::try_from(total).unwrap_or(u32::MAX)))
 }
 
 #[cfg(test)]
@@ -197,6 +190,7 @@ mod tests {
             state,
             reason: reason.map(str::to_owned),
             next_try: None,
+            size: None,
         })
     }
 
@@ -218,12 +212,12 @@ mod tests {
         ops.push(create("open.odt", OutboxState::Waiting, Some("open-for-writing")));
         ops.push(create("queued.txt", OutboxState::Ready, None));
         ops.push(create("strange.txt", OutboxState::Retry, Some("something-new")));
-        ops.push(OutboxOp::Skip { rel: PathBuf::from("link"), reason: "symlink".into() });
+        ops.push(OutboxOp::Skip { rel: PathBuf::from("link"), reason: "symlink".into(), size: 0 });
         store.outbox_apply(&ops, 1).unwrap();
-        let (skipped, rows) = (store.local_skipped().unwrap(), store.outbox_rows().unwrap());
+        let (skipped, rows) = (store.skipped_groups().unwrap(), store.outbox_groups().unwrap());
         let root = Path::new("/nowhere/OneDrive");
 
-        let got = summary(&skipped, &rows, root, false);
+        let got = summary(&skipped, &rows, false);
         let shown: Vec<(&str, &str, u32)> = got.iter().map(|(g, r, n, _)| (g.as_str(), r.as_str(), *n)).collect();
         assert_eq!(
             shown,
@@ -239,18 +233,18 @@ mod tests {
             ]
         );
 
-        let (items, total) = files(&skipped, &rows, root, false, space::WAITING, 20);
+        let (items, total) = files(&store, root, false, space::WAITING, 20).unwrap();
         assert_eq!((items.len(), total), (20, 5000));
         assert_eq!(items[0], ("/nowhere/OneDrive/big/00000.bin".to_owned(), space::WAITING.to_owned()));
-        let (items, _) = files(&skipped, &rows, root, false, "too-big", 0);
+        let (items, _) = files(&store, root, false, "too-big", 0).unwrap();
         assert_eq!(items[0], ("/nowhere/OneDrive/huge1.iso".to_owned(), "too-big:300:20".to_owned()));
-        let waiting = |full| summary(&skipped, &rows, root, full).into_iter().find(|(_, r, _, _)| r == space::WAITING).map(|(_, _, n, _)| n);
+        let waiting = |full| summary(&skipped, &rows, full).into_iter().find(|(_, r, _, _)| r == space::WAITING).map(|(_, _, n, _)| n);
         assert_eq!((waiting(false), waiting(true)), (Some(5000), Some(5001)), "queued.txt waits for space while full");
-        let (items, total) = files(&skipped, &rows, root, false, "name-characters", 0);
+        let (items, total) = files(&store, root, false, "name-characters", 0).unwrap();
         assert_eq!(total, 2);
         assert_eq!(items.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), vec!["/nowhere/OneDrive/a:b.txt", "/nowhere/OneDrive/c?d.txt"]);
-        let (items, _) = files(&skipped, &rows, root, false, "refused", 20);
+        let (items, _) = files(&store, root, false, "refused", 20).unwrap();
         assert_eq!(items, vec![("/nowhere/OneDrive/odd.txt".to_owned(), "refused: The name is not allowed".to_owned())]);
-        assert_eq!(files(&skipped, &rows, root, false, "no-such", 20), (vec![], 0));
+        assert_eq!(files(&store, root, false, "no-such", 20).unwrap(), (vec![], 0));
     }
 }
