@@ -242,6 +242,7 @@ pub fn other_device_not_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
         on_rows: None,
         on_handles: None,
         tree_lock: None,
+        scan: None,
     };
     let mut config = WatchConfig::new(root, Arc::new(Mutex::new(None)), ctx.runtime.handle().clone());
     config.timing = Timing { quiet: QUIET, ceiling: Duration::from_secs(5), retry: Duration::from_secs(1), ..Timing::default() };
