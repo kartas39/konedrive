@@ -163,6 +163,9 @@ async fn to_v2(v1: V1Config, paths: &Paths, legacy_token: impl Future<Output = b
             root,
             ignore: None,
             machine_name: String::new(),
+            thumbnails: None,
+            pause_on_metered: None,
+            on_battery: None,
         }]
     } else {
         Vec::new()
@@ -459,6 +462,9 @@ mod tests {
                 }),
                 ignore: None,
                 machine_name: String::new(),
+                thumbnails: None,
+                pause_on_metered: None,
+                on_battery: None,
             }
         );
         assert_eq!(store.last_error(), "");

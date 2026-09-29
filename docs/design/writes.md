@@ -794,7 +794,9 @@ Per account: on `org.konedrive.UploadQueue`, `Changes`, `ConfirmDeletes`/`Restor
 `NotUploaded`, `NotUploadedSummary`, `NotUploadedFiles` and the properties `PendingCount`,
 `PendingBytes`, `BlockedCount`, `HeldCount`, `QuotaFull`, `QuotaWaitingCount`, `QuotaWaitingBytes`,
 `TooBigCount` (§6.4); on `org.konedrive.Folder`, `Pause`/`Resume`,
-`SetIgnorePatterns`, `Paused`, `PausedUntil` and `IgnorePatterns`; `Transfers.Uploads`;
+`SetIgnorePatterns`, `Paused`, `PausedUntil` and `IgnorePatterns`, and the sync settings
+`SetThumbnails`, `SetPauseOnMetered`, `SetOnBattery`, `Thumbnails`, `PauseOnMetered`, `OnBattery`;
+`Transfers.Uploads`;
 `Conflicts.MachineName`; and the Full local scan's `org.konedrive.LocalScan` — `State`, `Reason`,
 `Started`, `Directories`, `Files`, `Expected`, `Finished`, `Took` (§4.6);
 the activity kinds `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, `restored` and
@@ -817,7 +819,14 @@ read-write connection to it: every other part of the daemon sends it jobs over a
 waits for the answer (`store.call`), so a long store operation delays only the store's own queue,
 never the async runtime or the bus.
 
-**Pause** stops the account's outbox, its poll (so no cycle and no replacement) and its thumbnails;
+**What runs is decided in one place** per account (`sync/running.rs`), from the user's pause and
+the thumbnail setting (desktop.md §8). The transfer pool, the outbox worker (before each row and
+between fragments), the poll and the replacements it runs, and the thumbnail filler all ask it,
+never the tree store; `Paused`, `PausedUntil` and the queue totals' "no time left" follow what it
+publishes. Thumbnails off stop only the thumbnail requests.
+
+**Pause** stops the account's outbox, its poll (so no cycle and no replacement), its pinned
+downloads (the pool gives no slot but for opens) and its thumbnails;
 fills on open, `Hydrate` and the watcher go on, so rows keep collecting. It is kept in the tree
 store, so it outlasts a restart, and a timed pause ends by itself. The tray's "Pause Syncing" pauses
 every account. What it does to work already under way:

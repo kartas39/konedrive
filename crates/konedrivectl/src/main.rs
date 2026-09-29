@@ -191,6 +191,24 @@ enum SyncCmd {
     },
     /// Resume syncing now
     Resume,
+    /// Show or change whether OneDrive's thumbnails of images and videos are downloaded.
+    /// Off, Dolphin downloads a cloud-only file in full to show its preview while its
+    /// previews are on
+    Thumbnails {
+        #[arg(value_parser = ["on", "off"])]
+        state: Option<String>,
+    },
+    /// Show or change what the account does on a metered connection: pause, or sync as usual
+    OnMetered {
+        #[arg(value_parser = ["pause", "sync"])]
+        choice: Option<String>,
+    },
+    /// Show or change what the account does on battery: sync as usual, pause in power-saver
+    /// mode, or pause
+    OnBattery {
+        #[arg(value_parser = ["sync", "power-saver", "pause"])]
+        choice: Option<String>,
+    },
     /// Show or change the names of local files that are never uploaded (shell
     /// globs, matched against a name)
     Ignore {
@@ -918,6 +936,29 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<
             explained(daemon, chosen, proxy, SyncAction::Resume, proxy.folder.resume().await).await?;
             println!("{tag}Resumed.");
         }
+        SyncCmd::Thumbnails { state } => match state.as_deref() {
+            None => println!("{tag}{}", konedrivectl::thumbnails_text(proxy.folder.thumbnails().await?)),
+            Some(state) => {
+                let on = state == "on";
+                explained(daemon, chosen, proxy, SyncAction::Settings, proxy.folder.set_thumbnails(on).await).await?;
+                println!("{tag}{}", konedrivectl::thumbnails_text(on));
+            }
+        },
+        SyncCmd::OnMetered { choice } => match choice.as_deref() {
+            None => println!("{tag}{}", konedrivectl::on_metered_text(proxy.folder.pause_on_metered().await?)),
+            Some(choice) => {
+                let pause = choice == "pause";
+                explained(daemon, chosen, proxy, SyncAction::Settings, proxy.folder.set_pause_on_metered(pause).await).await?;
+                println!("{tag}{}", konedrivectl::on_metered_text(pause));
+            }
+        },
+        SyncCmd::OnBattery { choice } => match choice.as_deref() {
+            None => println!("{tag}{}", konedrivectl::on_battery_text(&proxy.folder.on_battery().await?)),
+            Some(choice) => {
+                explained(daemon, chosen, proxy, SyncAction::Settings, proxy.folder.set_on_battery(choice).await).await?;
+                println!("{tag}{}", konedrivectl::on_battery_text(choice));
+            }
+        },
         SyncCmd::Ignore { action } => {
             let patterns = proxy.folder.ignore_patterns().await?;
             let changed = match action {

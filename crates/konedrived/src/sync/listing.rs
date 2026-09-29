@@ -103,6 +103,9 @@ pub struct ListingContext {
     pub writes: Option<Writes>,
     /// The daemon's other parts a cycle asks or tells; `None` in tests.
     pub neighbours: Option<Neighbours>,
+    /// What background work runs now (`sync::running`): the poll and the replacements it
+    /// runs stop while the account's work does.
+    pub running: Arc<crate::sync::running::Running>,
 }
 
 /// What a cycle asks of, or tells, the rest of the daemon.
@@ -526,8 +529,7 @@ impl Listing {
         }
         // Paused (`docs/design/writes.md` §11): no replacement starts; the next cycle after
         // the pause is Full, and finds them again.
-        let store = self.ctx.store.clone();
-        let paused = crate::sync::upload::paused(&store).is_some();
+        let paused = self.ctx.running.stopped(&self.ctx.store);
         if paused && !applied.replacements.is_empty() {
             self.needs_full.store(true, Ordering::SeqCst);
         } else {
@@ -1325,10 +1327,14 @@ async fn run(listing: Arc<Listing>, schedule: Schedule, refresh: Arc<Notify>, ca
     loop {
         // Paused (`docs/design/writes.md` §11): OneDrive is not asked, so nothing is
         // replaced either, until the pause ends or `Resume()` nudges.
-        let store = listing.ctx.store.clone();
-        let paused = crate::sync::upload::paused(&store);
-        if let Some(until) = paused {
-            let left = if until == 0 { schedule.interval } else { Duration::from_secs((until - crate::sync::activity::unix_now()).max(1) as u64) };
+        // The same for anything else that stops the account's background work.
+        if let Some(stop) = listing.ctx.running.stop(&listing.ctx.store) {
+            let left = match stop {
+                crate::sync::running::Stop::Paused(until) if until > 0 => {
+                    Duration::from_secs((until - crate::sync::activity::unix_now()).max(1) as u64)
+                }
+                _ => schedule.interval,
+            };
             tokio::select! {
                 () = tokio::time::sleep(left.min(schedule.interval)) => {}
                 () = refresh.notified() => {}
@@ -1501,6 +1507,7 @@ mod tests {
                 locked: true,
                 writes: None,
                 neighbours: None,
+                running: Arc::default(),
             }
         }
 

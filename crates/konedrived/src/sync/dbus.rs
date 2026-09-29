@@ -163,6 +163,40 @@ impl Folder {
         self.ignore_patterns_changed(&emitter).await.map_err(SyncFault::ZBus)
     }
 
+    /// Whether Graph's thumbnails of images and videos are fetched; written to `config.toml`.
+    async fn set_thumbnails(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
+        self.service.change_run_settings(move |s| s.thumbnails = on).await.map_err(to_fault)?;
+        self.thumbnails_changed(&emitter).await.map_err(SyncFault::ZBus)
+    }
+
+    /// Whether the account holds back on a metered connection; written to `config.toml`.
+    async fn set_pause_on_metered(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
+        self.service.change_run_settings(move |s| s.pause_on_metered = on).await.map_err(to_fault)?;
+        self.pause_on_metered_changed(&emitter).await.map_err(SyncFault::ZBus)
+    }
+
+    /// `sync`, `power-saver` or `pause`; refused `InvalidArgs` otherwise. Written to
+    /// `config.toml`.
+    async fn set_on_battery(&self, choice: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
+        self.service.set_on_battery(choice).await.map_err(to_fault)?;
+        self.on_battery_changed(&emitter).await.map_err(SyncFault::ZBus)
+    }
+
+    #[zbus(property)]
+    async fn thumbnails(&self) -> bool {
+        self.service.run_settings().thumbnails
+    }
+
+    #[zbus(property)]
+    async fn pause_on_metered(&self) -> bool {
+        self.service.run_settings().pause_on_metered
+    }
+
+    #[zbus(property)]
+    async fn on_battery(&self) -> String {
+        self.service.run_settings().on_battery.as_str().to_owned()
+    }
+
     #[zbus(property)]
     /// From the published state, as `State` and `LastError` are: a
     /// folder that could not be brought up reads

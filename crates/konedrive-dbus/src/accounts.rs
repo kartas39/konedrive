@@ -160,6 +160,12 @@ pub trait Folder {
     /// Refused `org.freedesktop.DBus.Error.InvalidArgs` for a pattern that
     /// cannot match a name.
     fn set_ignore_patterns(&self, patterns: &[&str]) -> zbus::Result<()>;
+    /// Written to `config.toml`; refused `Unsupported` for a folder not connected to OneDrive.
+    fn set_thumbnails(&self, on: bool) -> zbus::Result<()>;
+    fn set_pause_on_metered(&self, on: bool) -> zbus::Result<()>;
+    /// `sync`, `power-saver` or `pause`; refused `org.freedesktop.DBus.Error.InvalidArgs`
+    /// otherwise.
+    fn set_on_battery(&self, choice: &str) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn path(&self) -> zbus::Result<String>;
@@ -193,6 +199,15 @@ pub trait Folder {
     /// Unix seconds when the pause ends by itself; 0 until resumed, or not paused.
     #[zbus(property)]
     fn paused_until(&self) -> zbus::Result<i64>;
+    /// Whether Graph's thumbnails of images and videos are fetched.
+    #[zbus(property)]
+    fn thumbnails(&self) -> zbus::Result<bool>;
+    /// Whether the account holds back on a metered connection.
+    #[zbus(property)]
+    fn pause_on_metered(&self) -> zbus::Result<bool>;
+    /// `sync`, `power-saver` or `pause`.
+    #[zbus(property)]
+    fn on_battery(&self) -> zbus::Result<String>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: what that account's folder moves now.

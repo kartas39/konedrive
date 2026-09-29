@@ -124,7 +124,7 @@ enum Stop {
 ///   [`locate`] looks for it — the same test as a run's start. A move whose
 ///   row is recorded is found under its new name, and the upload goes on.
 async fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<Stop>, Fail> {
-    if super::paused(e.store()).is_some() {
+    if e.stopped() {
         return Ok(Some(Stop::Wait(Outcome::wait(reason::PAUSED, std::time::Duration::ZERO))));
     }
     if e.space_full() {

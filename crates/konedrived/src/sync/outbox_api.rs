@@ -133,12 +133,14 @@ impl SyncService {
     pub(super) fn show_pause(&self) {
         let Some(store) = self.store.lock().unwrap().clone() else { return };
         self.pause_shown.fetch_add(1, Ordering::SeqCst);
-        let paused = upload::paused(&store);
+        let paused = super::running::user_pause(&store);
+        let stopped = self.running.stopped(&store);
         let before = self.state.get().paused_until;
         self.state.update(|s| s.paused_until = paused);
-        // The transfer pool hands out nothing but opens while paused.
-        self.pool.set_paused(paused.is_some());
-        if before != paused {
+        // The transfer pool hands out nothing but opens while the account's background
+        // work stops (`running`).
+        let was_stopped = self.pool.set_paused(stopped);
+        if before != paused || was_stopped != stopped {
             self.wake_outbox();
             self.nudge();
         }
@@ -171,7 +173,7 @@ impl SyncService {
                 let Some(service) = me.upgrade() else { return };
                 let store = service.store.lock().unwrap().clone();
                 let Some(store) = store else { return };
-                let still = upload::paused(&store);
+                let still = super::running::user_pause(&store);
                 if still.is_none() && service.pause_timer_done(seen, true) {
                     service.wake_outbox();
                     service.nudge();
@@ -531,6 +533,14 @@ impl OutboxHost for Host {
     fn full_cycle_wanted(&self) {
         if let Some(service) = self.sync.upgrade() {
             service.nudge_full();
+        }
+    }
+
+    /// The one place that decides what runs (`running`).
+    fn stopped(&self, store: &Store) -> bool {
+        match self.sync.upgrade() {
+            Some(service) => service.running.stopped(store),
+            None => super::running::user_pause(store).is_some(),
         }
     }
 

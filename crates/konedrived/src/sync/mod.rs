@@ -22,6 +22,7 @@ pub mod network;
 pub mod outbox_api;
 pub mod pin;
 pub mod root;
+pub mod running;
 pub mod source;
 pub mod thumbs;
 pub mod totals;
@@ -1049,6 +1050,9 @@ pub struct SyncService {
     /// The large pinned files downloading in parts, and how many streams each has: who is
     /// due the next free large slot of `pool` (`source::parts`, issue #28).
     parts: Arc<source::Share>,
+    /// What background work runs now (`running`): the one place every reader of the pause
+    /// asks, with the account's settings from `config.toml`.
+    running: Arc<running::Running>,
 }
 
 /// A OneDrive folder's sync while it runs.
@@ -1200,6 +1204,9 @@ impl SyncService {
                 }),
                 account,
                 ignore: outbox_api::configured_ignore(persist.as_ref()),
+                running: Arc::new(running::Running::new(
+                    persist.as_ref().and_then(|p| p.store.account(&p.account)).map(|a| running::Settings::of(&a)).unwrap_or_default(),
+                )),
                 pause_timer: Mutex::new(None),
                 pause_shown: std::sync::atomic::AtomicU64::new(0),
                 kept_back: Mutex::new(None),
@@ -2317,6 +2324,7 @@ impl SyncService {
             // Another account's objects are never removed here, and the
             // account hears of a drive that is not the folder's (m2).
             neighbours: Some(self.neighbours()),
+            running: Arc::clone(&self.running),
         });
         let schedule = self.schedule.lock().unwrap().clone();
         // Checked again and kept in one critical section: a second start that
@@ -2343,7 +2351,8 @@ impl SyncService {
                 // never holds up the reconcile. None at all without a cache to fill.
                 let thumbnails = paths.thumbnails.clone().map(|cache| {
                     let cancel = CancellationToken::new();
-                    let task = thumbs::ThumbnailFiller::new(drive, store, reg.root.clone(), cache).spawn(kick, cancel.clone());
+                    let task = thumbs::ThumbnailFiller::new(drive, store, reg.root.clone(), cache, Arc::clone(&self.running))
+                        .spawn(kick, cancel.clone());
                     (task, cancel)
                 });
                 let walked = watcher.as_ref().map(write_mode::Watcher::walked);
@@ -9505,6 +9514,53 @@ mod tests {
             assert!(service.state().get().paused_until.is_some());
             service.unregister_root().await.unwrap();
             assert_eq!(service.state().get().paused_until, None);
+        }
+
+        /// Issues #57, #80: each sync setting is absent from `config.toml` until set, reads
+        /// its default then, is written when set and taken at once — thumbnails off stop
+        /// nothing else — and is read back by the next start. `SetOnBattery` refuses what is
+        /// not a choice; a local folder has no settings to set.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_sync_settings_are_kept_in_config_toml_and_taken_at_once() {
+            use crate::config::OnBattery;
+            let local = world().await;
+            let other = service(&local, true);
+            other.register_root_without_interception(local.folder.path()).await.unwrap();
+            assert!(matches!(other.change_run_settings(|s| s.thumbnails = false).await, Err(SyncError::Unsupported(_))));
+
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            // Read afresh each time: what the file holds now.
+            let written = || {
+                let persist = persist(&w.config.path().join("config.toml"));
+                persist.store.account(&persist.account).unwrap()
+            };
+            assert_eq!(service.run_settings(), running::Settings::default(), "absent means the default");
+            assert_eq!((written().thumbnails, written().pause_on_metered, written().on_battery), (None, None, None));
+
+            service.change_run_settings(|s| s.thumbnails = false).await.unwrap();
+            assert!(!service.run_settings().thumbnails);
+            assert_eq!(written().thumbnails, Some(false));
+            assert_eq!(written().pause_on_metered, None, "only what changed is written");
+            let store = service.store.lock().unwrap().clone().unwrap();
+            assert!(!service.running.stopped(&store) && !service.running.thumbnails_go(&store), "thumbnails off stop nothing else");
+
+            service.change_run_settings(|s| s.pause_on_metered = false).await.unwrap();
+            assert_eq!(written().pause_on_metered, Some(false));
+            service.set_on_battery("pause").await.unwrap();
+            assert_eq!(service.run_settings().on_battery, OnBattery::Pause);
+            assert_eq!(written().on_battery.as_deref(), Some("pause"));
+            assert!(matches!(service.set_on_battery("whenever").await, Err(SyncError::InvalidArgs(_))));
+            assert_eq!(service.run_settings().on_battery, OnBattery::Pause, "a refusal changes nothing");
+
+            service.stop_sync().await;
+            service.set_link(None);
+            drop(service);
+            let restarted = connected(&w, true).await;
+            assert_eq!(restarted.run_settings(), running::Settings { thumbnails: false, pause_on_metered: false, on_battery: OnBattery::Pause });
+
         }
 
         /// the outbox on the bus, `SetIgnorePatterns`: the list is written to `config.toml`, read

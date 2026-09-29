@@ -77,6 +77,7 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `FreeUpSpace() → (u files, t bytes, u busy)` | frees up every downloaded file that is not in use; files open somewhere or busy with a download are skipped and counted, never waited for; a file whose change waits to be uploaded is left, and counted as busy |
 | `Pause(u seconds)`, `Resume()` | pause the account — no upload, no poll, no thumbnails; fills on open, `Hydrate` and detection go on — for `seconds`, or until `Resume` when 0; the pause outlasts a daemon restart |
 | `SetIgnorePatterns(as)` | the names of the user's own files that are never uploaded (shell globs on a name); written to `config.toml`, then the whole folder is scanned again; `InvalidArgs` for an empty pattern or one holding "/" |
+| `SetThumbnails(b)`, `SetPauseOnMetered(b)`, `SetOnBattery(s)` | the account's sync settings (§8, [writes.md](writes.md) §11): whether Graph's thumbnails are fetched; whether the account holds back on a metered connection; what it does on battery — `sync`, `power-saver` or `pause` (`InvalidArgs` for anything else). Each is written to the account's section of `config.toml` (`thumbnails`, `pause_on_metered`, `on_battery`) and taken at once; `Unsupported` for a folder not connected to OneDrive |
 
 `UploadQueue`:
 
@@ -117,6 +118,7 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `PinnedCount` (`u`) | how many files and folders carry a pin of their own ([pinning.md](pinning.md) §7) |
 | `IgnorePatterns` (`as`) | the ignore list; read-only |
 | `Paused` (`b`), `PausedUntil` (`x`) | whether the account is paused, and when the pause ends by itself (0: until `Resume`) |
+| `Thumbnails` (`b`), `PauseOnMetered` (`b`), `OnBattery` (`s`) | the account's sync settings; absent from `config.toml`, `true`, `true` and `power-saver` (an `on_battery` the daemon does not know reads `power-saver`, with a warning in the log) |
 
 `Transfers`:
 
@@ -298,6 +300,7 @@ F51).
 | `sync outbox [--all]` | chosen | `sync transfers`'s "Uploading:" line first, then `UploadQueue.Changes`: the changes waiting to be uploaded, each with its state and why it waits; the first 50 without `--all` |
 | `sync pause [--for <duration>]`, `sync resume` | chosen | `Pause` for `30m`, `2h`, `1d`, `1h30m`…, or until `sync resume`; `Resume` |
 | `sync ignore [list\|add <pattern>\|remove <pattern>]` | chosen | shows the ignore list (`IgnorePatterns`), or changes it with `SetIgnorePatterns` |
+| `sync thumbnails [on\|off]`, `sync on-metered [pause\|sync]`, `sync on-battery [sync\|power-saver\|pause]` | chosen | shows the sync setting, or changes it (`SetThumbnails`, `SetPauseOnMetered` — `pause` is on — and `SetOnBattery`) |
 | `sync not-uploaded [--all]` | chosen | `NotUploadedSummary`: each group and its reasons with their counts and sizes, then (`NotUploadedFiles`) the files of the per-file reasons, the first 20 of each; `--all` lists every file of every reason |
 | `sync deletes confirm\|restore` | chosen | `ConfirmDeletes` or `RestoreDeletes`: the mass-delete guard's two answers |
 | `dev export-access-token --out <file> [--read-write]` | chosen | a development build's only (`dev-tools`); writes an access token of the account to a `0600` file, atomically, never through a symlink: a read-only one, or with `--read-write` one that can change files, which only a test account the write gate lets through gets |
@@ -526,6 +529,14 @@ file. Listing a folder opens nothing.
 times the bytes, for a size Dolphin asks for only at maximum zoom on a HiDPI screen, and upscaling
 the 512 px answer would look blurred. At that zoom KIO makes its own thumbnail, which downloads the
 file (limitations log K15).
+
+**The setting.** Thumbnails are fetched per account, on by default (`Folder.Thumbnails`,
+`SetThumbnails`, `sync thumbnails`, the account page's "Download thumbnails"). Off, the filler asks
+Graph for nothing while everything else runs, and Dolphin, with its previews on, downloads every
+cloud-only image or video it previews in full, as it would any other file; the thumbnails already
+in the cache stay. Turned on again, the filler asks at once for every item without a recorded
+thumbnail. The filler also asks nothing while the account's background work stops — a pause, or
+a hold ([writes.md](writes.md) §11) — and stops a drain under way between two requests.
 
 **What still opens a file.** Type detection is a separate problem that a thumbnail does not solve:
 for a name with no extension, or an ambiguous one like `.bin`, KIO reads the first bytes to learn

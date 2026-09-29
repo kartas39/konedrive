@@ -514,6 +514,34 @@ pub fn quota_text(state: &str, free: u64, full: bool) -> String {
     format!("OneDrive: {} free (quota {state}).\n", human_bytes(free))
 }
 
+/// `sync thumbnails`' answer.
+pub fn thumbnails_text(on: bool) -> &'static str {
+    if on {
+        "Thumbnails: on — OneDrive's previews of images and videos are downloaded."
+    } else {
+        "Thumbnails: off — Dolphin downloads a cloud-only file in full to show its preview while its previews are on."
+    }
+}
+
+/// `sync on-metered`'s answer.
+pub fn on_metered_text(pause: bool) -> &'static str {
+    if pause {
+        "On a metered connection: pause."
+    } else {
+        "On a metered connection: sync as usual."
+    }
+}
+
+/// `sync on-battery`'s answer, for `sync`, `power-saver` or `pause`.
+pub fn on_battery_text(choice: &str) -> String {
+    match choice {
+        "sync" => "On battery: sync as usual.".to_owned(),
+        "power-saver" => "On battery: pause in power-saver mode.".to_owned(),
+        "pause" => "On battery: pause.".to_owned(),
+        other => format!("On battery: {other}."),
+    }
+}
+
 /// `sync status`'s `Paused until:` line.
 pub fn paused_text(until: i64, prefix: &str) -> String {
     if until == 0 {
@@ -727,6 +755,8 @@ pub enum SyncAction<'a> {
     Pause,
     Resume,
     Ignore,
+    /// `sync thumbnails`, `sync on-metered`, `sync on-battery`: an account's sync settings.
+    Settings,
     NotUploaded,
     Deletes,
 }
@@ -758,6 +788,7 @@ impl SyncAction<'_> {
             Self::Pause => "pausing the sync".to_owned(),
             Self::Resume => "resuming the sync".to_owned(),
             Self::Ignore => "changing the ignore list".to_owned(),
+            Self::Settings => "changing the sync settings".to_owned(),
             Self::NotUploaded => "listing what is not uploaded".to_owned(),
             Self::Deletes => "deciding on the large delete".to_owned(),
         }
@@ -785,6 +816,7 @@ impl SyncAction<'_> {
             | Self::Pause
             | Self::Resume
             | Self::Ignore
+            | Self::Settings
             | Self::NotUploaded
             | Self::Deletes => "",
         }
@@ -1075,6 +1107,9 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
         ),
         (Some("Unsupported"), Outbox | Pause | Resume | Ignore | NotUploaded | Deletes) => {
             "this folder is not connected to OneDrive, so nothing is uploaded from it".to_owned()
+        }
+        (Some("Unsupported"), Settings) => {
+            "this folder is not connected to OneDrive, so it has no sync settings".to_owned()
         }
         (Some("NoRoot"), Outbox | Pause | Resume | Ignore | NotUploaded | Deletes) => {
             "the folder's sync has not started yet; try again in a moment".to_owned()
