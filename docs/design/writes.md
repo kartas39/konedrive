@@ -326,6 +326,7 @@ CREATE TABLE local_skipped (rel TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEG
 -- items and staging: + local_handle BLOB, local_seq INTEGER (the outbox commit that last wrote the row)
 -- conflicts: + kind ('rescued' | 'copy')
 -- outbox_gone, deferred: the reconcile's (§9)
+-- upload_sessions (url, parent, name, opened): the sessions open until completed or cancelled (§6.1)
 -- meta: + outbox_seq, paused_until, handles_root
 ```
 
@@ -457,7 +458,7 @@ Windows ([decisions.md](decisions.md), "A folder delete is the whole folder, as 
 |---|---|---|
 | a new empty file | `PUT /items/{parent}:/{name}:/content?@microsoft.graph.conflictBehavior=fail`, then a `PATCH` of its time | `conflictBehavior=fail` in the URL: a `PUT`'s default is to replace |
 | an emptied file | `PUT /items/{id}/content`, then the `PATCH` | `If-Match: <base eTag>` |
-| a new file, 1 B – 10 MiB | `POST /items/{parent}:/{name}:/createUploadSession` with `conflictBehavior: fail`, its name and `fileSystemInfo`, then one `PUT` of the whole body | `conflictBehavior: fail` |
+| a new file, 1 B – 10 MiB | `POST /items/{parent}:/{name}:/createUploadSession` with `conflictBehavior: fail`, its name and `fileSystemInfo`, the session persisted, then one `PUT` of the whole body | `conflictBehavior: fail` |
 | a changed file, 1 B – 10 MiB | `POST /items/{id}/createUploadSession` with `fileSystemInfo`, one `PUT` | `If-Match: <base eTag>` |
 | over 10 MiB | the same session, in fragments of 10 MiB (32 × 320 KiB) | as above |
 | a new folder | `POST /items/{parent}/children` | `conflictBehavior: fail` |
@@ -474,13 +475,43 @@ and would need a `PATCH` for the time anyway, so the session costs no extra requ
 drive refuses it with `400 invalidRequest` (measured on the test account), so a full drive shows
 itself when a fragment is refused. Requests to an upload URL never carry the account's token.
 
+**An open session holds its name** (issue #47): until it completes or is cancelled, a new file's
+session leaves an empty file (0 bytes) under its name in OneDrive, which a second session of that
+name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
+
+- **Every session is persisted** as soon as it is opened, a small file's one-fragment session too:
+  in one transaction, the row's `session_url` and the store's list of open sessions
+  (`upload_sessions`, with the parent and name a new file's session holds), before its first `PUT`.
+- **A refused fragment goes again to the same session.** A `429` or `503` on a session's `PUT`, a
+  dropped connection or a timeout waits for `Retry-After` (or the policy's wait), asks the session
+  where it stands, and sends the same fragment again — a small file's one fragment and a large
+  file's alike — up to the throttle rule's attempts in all. Refused still, the row fails for now
+  (a throttle still pauses the account, §6.2) and keeps its session for its next run, which resumes
+  it. A new session is opened only when the old one is gone (`404`) or the file is no longer the
+  snapshot it was opened for.
+- **A session given up is always cancelled** (`DELETE` of the upload URL), whatever the reason: the
+  content changed, the file was removed (§5.2), a conflict copy, a fragment refused for good, the
+  row leaving the outbox, a forced switch to read-only (§2). The session leaves the list only once
+  its cancel went through or it is found gone; a session no row points at any more is cancelled at
+  every run of the worker, the start's included (after a cancel that failed, not before a minute),
+  and by the forced switch to read-only itself — so a row may leave the outbox while its session
+  still waits to be cancelled.
+- **A `409` from our own placeholder.** When a new file's create meets `409` and a listed session
+  holds that name, the holder is that session's placeholder, never another file: this row's own is
+  resumed by its next run (or cancelled there, if the content changed), another row's still sending
+  is waited for (`upload-session-open`), and any other is cancelled and the create goes again. Only
+  without such a session does §6.2's `409` rule decide.
+
+A session opened before this was kept, or whose persisting a crash cut off, is known to nothing: its
+placeholder holds the name until the session expires (limitations log F172).
+
 ### 6.2 What the answers mean
 
 | Answer | Action |
 |---|---|
 | `200`, `201` | the commit (§5.4) |
 | `202` | a fragment accepted: `session_next` persisted, the next one sent |
-| `409` | the item at that name is read. A create adopts it when its hash is ours (it is this content already), a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3); anything else makes the file here a copy (§7) |
+| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours (it is this content already), a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3); anything else makes the file here a copy (§7) |
 | `412` | the item is read again: the same hash as ours means done already; the base's cTag means only its metadata changed, and the request goes again with the fresh eTag; otherwise §7 |
 | `404` | gone in OneDrive: §7 |
 | `404` from an upload URL | the session ended: the item is read and adopted if its hash is ours, else a new session from zero |
@@ -490,7 +521,7 @@ itself when a fragment is refused. Requests to an upload URL never carry the acc
 | `400` | `blocked`, with the service's message |
 | `401` | the token refreshed once |
 | `403` | `blocked` (`forbidden`), and `LastError` says to sign in again; a new sign-in releases the rows |
-| `429`, `503` | the whole account's worker waits until `Retry-After` (in seconds or as an HTTP date, at most an hour; without one, 10 s doubling) |
+| `429`, `503` | a fragment to an upload session is sent again to the same session first (§6.1); then, or for any other request, the whole account's worker waits until `Retry-After` (in seconds or as an HTTP date, at most an hour; without one, 10 s doubling) |
 | another `5xx`, the network | the row retries after 1 s, doubling to an hour |
 
 No row is ever dropped for failing; `upload-failed` is recorded once per row and reason (a row
@@ -546,7 +577,8 @@ big, and notifies once when full starts.
 
 1. The file is quiet; its size and time are the **snapshot**, stored in the row.
 2. The session is created, and its URL, expiry and `session_next = 0` persisted before the first
-   byte. A crash before that leaves an orphan session, which expires on its own.
+   byte, the session listed (§6.1). A crash before that leaves an orphan session, which expires on
+   its own; until then its placeholder holds a new file's name (F172).
 3. Each fragment is read into one buffer, fed to the hash, sent, and on `202` its progress
    persisted. Memory does not grow with the file. Before each fragment the file is looked for under
    its row's names: removed (or moved where no row looks), the upload stops there and ends as §5.2
@@ -737,8 +769,8 @@ is answered by content hash or by place, never by guessing.
 | Crashed | The next start finds | It does |
 |---|---|---|
 | after the event, before the row | nothing in the outbox; the change on disk | the bring-up's Full local scan finds it (all but an edit that kept size and time, §4.6) |
-| a small upload sent, no answer | the row `running` | replays: a create meets `409`, an update `412`; the same hash is adopted |
-| a session created, not persisted | nothing about it | a new session; the orphan expires |
+| a small upload sent, no answer | the row `running`, its `session_url` | the status answers `404`: the item's hash equal, adopted |
+| a session created, not persisted | nothing about it | a new session; the orphan expires — a new file's replay meets its placeholder as `409` and makes a copy until then (F172) |
 | mid-session | `session_url`, `session_next` | the session's status, then on |
 | the last fragment sent, no answer | `session_url` | the status answers `404`: the item's hash equal, adopted |
 | the last request sent, no answer, then the file removed | the row `running`, no object | the name looked up: an item of this size and time, unknown here, goes to the recycle bin; the rows leave (§5.2) |

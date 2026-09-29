@@ -431,6 +431,13 @@ impl SyncService {
         })
         .await;
         drop(tree);
+        // The upload sessions of the rows dropped are given up: cancelled now, so that no
+        // empty placeholder keeps a name in OneDrive (issue #47). One that fails stays listed
+        // for the worker of a later read-write start.
+        let drive = self.drive.lock().unwrap().clone();
+        if let Some(drive) = drive {
+            upload::cancel_given_up(&store, &drive, DROPPED_CANCELS).await;
+        }
         self.clear_outbox_counts();
         // What moves out of the folder left outside it is tidied.
         self.forget_moved_out();
@@ -453,6 +460,10 @@ impl SyncService {
         }
     }
 }
+
+/// The upload sessions a forced switch to read-only cancels at most, beyond what the pool
+/// runs at once (issue #47).
+const DROPPED_CANCELS: usize = 256;
 
 /// How long the switch to read-only waits for the watcher to hand over what it holds.
 const FLUSH_WITHIN: Duration = Duration::from_secs(30);

@@ -285,14 +285,22 @@ pub(super) async fn copy(e: &Engine, disk: &Disk, row: &OutboxRow, found: &Found
         (event, copy_rel)
     };
     if let Some(url) = &row.session_url {
-        if let Err(err) = e.cfg.drive.cancel_upload(url).await {
-            tracing::debug!("an abandoned upload session was not cancelled: {err}");
-        }
+        cancel_session(e, url).await?;
     }
     tracing::info!("{} was changed in OneDrive too: the local version is kept as {}", found.rel.display(), copy_rel.display());
     e.cfg.host.activity(&event);
     e.cfg.host.cycle_wanted();
     Ok(Outcome::again())
+}
+
+/// Cancels an upload session given up (issue #47): the content changed, the
+/// file went, the row became something else — its empty placeholder holds
+/// the name in OneDrive until then. Cancelled, or gone already, it leaves the
+/// list of sessions; a cancel that fails keeps it there, and a later run
+/// cancels it ([`Engine::cancel_given_up`]), once no row points at it. Whether
+/// it was cancelled.
+pub(super) async fn cancel_session(e: &Engine, url: &str) -> Result<bool, Fail> {
+    Ok(super::cancel_session(e.store(), &e.cfg.drive, url).await?)
 }
 
 /// Rename × rename (§6): the first to reach OneDrive wins, so the local
@@ -654,9 +662,7 @@ pub(super) async fn never_uploaded(e: &Engine, disk: &Disk, row: &OutboxRow) -> 
         None => Vec::new(),
     };
     if let Some(url) = &row.session_url {
-        if let Err(err) = e.cfg.drive.cancel_upload(url).await {
-            tracing::debug!("the upload session of a removed file was not cancelled: {err}");
-        }
+        cancel_session(e, url).await?;
     }
     let detail = if landed_away(e, disk, row).await? {
         "removed here before its upload finished; what reached OneDrive went to its recycle bin"

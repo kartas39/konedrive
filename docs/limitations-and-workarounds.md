@@ -2322,6 +2322,32 @@ application must never read zeros where real content should be.
   lock across the reconcile, so no examination runs meanwhile — but a crash in between leaves up to
   500 placed items without one, which the next read-write cycle looks at again and records (F82
   (8)). A replacement's new inode is still recorded on its own. LIMIT (chosen) · measured. Open.
+- **F172. An open upload session holds its name with an empty file** (`drive/upload.rs`,
+  `sync/upload/content.rs`, `steps.rs`, `cancel_session`; `tree/outbox/worker.rs`,
+  `upload_sessions`; write design §6.1; issue #47) — until a new file's session completes or is
+  cancelled, OneDrive keeps a 0-byte file under its name, created at the session's opening, and
+  refuses a second session of that name `409`. Measured on the test account: 25 of ~27 000 files
+  became false conflict copies when a throttled one-request upload was retried with a new session.
+  Now every session is persisted and listed before its first byte, a refused fragment goes again to
+  the same session, a session given up is cancelled (a failed cancel stays listed and is retried at
+  the worker's next runs), and a `409` whose name a listed session holds is never taken for another
+  file. What is left: (1) a session opened before this fix, or one a crash cut off between its
+  opening and its persisting (a moment), is known to nothing: its placeholder holds the name until
+  the session expires, and a new file's replay meets it as someone else's empty file — a conflict
+  copy, as before. The empty files the bug left on the test account are removed by hand; nothing
+  here recognises them. (2) The fake OneDrive models the placeholder from the test account's
+  observation and another client's report; the placeholders stay out of its delta feed, and
+  whether a session's expiry removes it in OneDrive is assumed, not measured. (3) A refused fragment
+  is waited out in place, up to the throttle rule's attempts (5, each up to 5 minutes; a timeout
+  is up to 10 minutes per send): the row holds its transfer slot meanwhile. (4) A fragment is sent
+  again only after the session's status says it still expects it; a status request that is itself
+  refused ends the row's run with the session kept. (5) A session no row points at is cancelled at
+  the worker's runs, at most 32 per run, and after a failed cancel not before a minute; one left
+  when the account is forgotten (the store deleted) is not cancelled, and expires. (6) A cancel is a
+  `DELETE` of our own session's URL, sent even while the account is read-only when a forced switch
+  drops the rows; the worker's own look runs only while it may send. FRAGILE · measured with the
+  fake OneDrive (`sync::upload::tests::sessions::*`, `drive::upload::tests::a_throttled_fragment_…`),
+  reasoned for OneDrive itself (F131). Open.
 ---
 
 ## 5. Provisional numbers
@@ -2338,6 +2364,7 @@ application must never read zeros where real content should be.
 | Sync interval / waits after failures in a row | 60 s / 5, 15, 30 s | 60 s is the design's; the retry steps are a **guess** |
 | A fill's checkpoint, every N bytes (`CHECKPOINT_EVERY`) | 16 MiB | **guess** |
 | `Retry-After` wait when Graph throttles (`429`/`503`) | default 10 s, capped at 300 s, 5 attempts before giving up | **guess** (`RetryPolicy::default`) |
+| Upload sessions given up, cancelled per run of the worker (`CANCELS_PER_LOOK`) / after a failed cancel, not again before (`CANCEL_AGAIN`) / cancelled at once by a forced switch to read-only (`DROPPED_CANCELS`) | 32 / 60 s / 256 | **guess** (issue #47, F172) |
 | Upload fragment, and the most sent in one request (`CHUNK_SIZE`, `SMALL_UPLOAD_MAX`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
 | One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |
 | Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (write design §6.2) |

@@ -3,8 +3,9 @@
 //! wiremock server, answering the requests `DriveClient` makes as Graph
 //! documents them — `If-Match` on eTag or cTag, `409` on a name taken
 //! (without case), a folder's cTag changing with anything below it, deletes
-//! to a recycle bin, upload sessions with `Content-Range`. Never a real
-//! network.
+//! to a recycle bin, upload sessions with `Content-Range` — a new file's
+//! session holding its name with an empty placeholder until it completes or
+//! is cancelled, as OneDrive's does (issue #47). Never a real network.
 
 use std::collections::{BTreeMap, HashMap};
 #[cfg(test)]
@@ -95,6 +96,11 @@ pub struct Cloud {
     /// OneDrive's recycle bin.
     pub bin: BTreeMap<String, FakeItem>,
     sessions: HashMap<String, Session>,
+    /// The empty file an open session of a new file holds its name with, by
+    /// session: `child` finds it, and a new file of that name is refused
+    /// `409` (`conflictBehavior: fail`), until the session completes or is
+    /// cancelled. Not in the delta feed.
+    placeholders: HashMap<String, FakeItem>,
     counter: u64,
     base: String,
     /// Scripted answers: (method, a fragment of the path, the answer, how many times).
@@ -110,8 +116,8 @@ pub struct Cloud {
     /// that repeats what did not change (an opt-in; Graph may do it).
     pub full_deltas: bool,
     /// Throttled requests: (method, a fragment of the path, how many to let
-    /// through first, `Retry-After` seconds, how many to throttle).
-    throttles: Vec<(String, String, u32, u32, u32)>,
+    /// through first, `Retry-After` seconds, how many to throttle, the status).
+    throttles: Vec<(String, String, u32, u32, u32, u16)>,
     /// Requests answered late, otherwise as they normally would be: (method,
     /// a fragment of the path, how long, how many times) — proves two
     /// requests are in flight together without changing what either answers.
@@ -194,7 +200,10 @@ impl Cloud {
 
     fn child_named(&self, parent: &str, name: &str, except: Option<&str>) -> Option<&FakeItem> {
         let lower = name.to_lowercase();
-        self.items.values().find(|i| i.parent.as_deref() == Some(parent) && i.name.to_lowercase() == lower && Some(i.id.as_str()) != except)
+        self.items
+            .values()
+            .chain(self.placeholders.values())
+            .find(|i| i.parent.as_deref() == Some(parent) && i.name.to_lowercase() == lower && Some(i.id.as_str()) != except)
     }
 
     /// A change inside a folder changes its cTag, and its parents' (§3.6).
@@ -242,7 +251,32 @@ impl Cloud {
     /// with `Retry-After: seconds` — once `pass` of them went through, `times`
     /// times: the VM suite's way of holding an upload session half sent.
     pub fn throttle(&mut self, method: &str, fragment: &str, pass: u32, seconds: u32, times: u32) {
-        self.throttles.push((method.into(), fragment.into(), pass, seconds, times));
+        self.throttles.push((method.into(), fragment.into(), pass, seconds, times, 503));
+    }
+
+    /// As [`throttle`](Self::throttle), answering `429 Too Many Requests`.
+    pub fn throttle_429(&mut self, method: &str, fragment: &str, pass: u32, seconds: u32, times: u32) {
+        self.throttles.push((method.into(), fragment.into(), pass, seconds, times, 429));
+    }
+
+    /// The names the open sessions' empty placeholders hold, `a/b/c` below
+    /// the root, sorted.
+    pub fn placeholders(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .placeholders
+            .values()
+            .map(|p| match p.parent.as_deref().and_then(|parent| self.path_of(parent)) {
+                Some(dir) if !dir.is_empty() => format!("{dir}/{}", p.name),
+                _ => p.name.clone(),
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// How many upload sessions are open.
+    pub fn open_sessions(&self) -> usize {
+        self.sessions.len()
     }
 
     /// The next `times` requests of `method` whose path holds `fragment`
@@ -266,6 +300,7 @@ impl Cloud {
     /// Every open upload session expires: its URL answers `404` from now on.
     pub fn expire_sessions(&mut self) {
         self.sessions.clear();
+        self.placeholders.clear();
     }
 
     pub fn count(&self, method: &str, fragment: &str) -> usize {
@@ -358,12 +393,13 @@ impl Cloud {
         let segments: Vec<String> = request.url.path_segments().map(|s| s.map(decode).collect()).unwrap_or_default();
         let joined = segments.join("/");
         self.log.push((method.clone(), joined.clone()));
-        if let Some(throttle) = self.throttles.iter_mut().find(|(m, f, _, _, left)| *m == method && joined.contains(f.as_str()) && *left > 0) {
+        if let Some(throttle) = self.throttles.iter_mut().find(|(m, f, _, _, left, _)| *m == method && joined.contains(f.as_str()) && *left > 0) {
             if throttle.2 > 0 {
                 throttle.2 -= 1;
             } else {
                 throttle.4 -= 1;
-                return error(503, "serviceNotAvailable").insert_header("Retry-After", throttle.3.to_string().as_str());
+                let code = if throttle.5 == 429 { "activityLimitReached" } else { "serviceNotAvailable" };
+                return error(throttle.5, code).insert_header("Retry-After", throttle.3.to_string().as_str());
             }
         }
         if let Some(scripted) = self.script.iter_mut().find(|(m, f, _, left)| *m == method && joined.contains(f.as_str()) && *left > 0) {
@@ -410,6 +446,7 @@ impl Cloud {
             },
             ("DELETE", ["upload", sid]) => {
                 self.sessions.remove(*sid);
+                self.placeholders.remove(*sid);
                 ResponseTemplate::new(204)
             }
             // the read-write reconcile's cycles: the account's drive, the delta feed, the bytes.
@@ -527,6 +564,22 @@ impl Cloud {
         let mtime = body["item"]["fileSystemInfo"]["lastModifiedDateTime"].as_str().and_then(crate::drive::item::parse_graph_time).unwrap_or(0);
         self.counter += 1;
         let sid = format!("s{}", self.counter);
+        if let Target::New { parent, name } = &target {
+            let id = format!("P{}", self.counter);
+            let placeholder = FakeItem {
+                id: id.clone(),
+                parent: Some(parent.clone()),
+                name: name.clone(),
+                folder: false,
+                content: Vec::new(),
+                hash: Some(qx(b"")),
+                size: 0,
+                etag: format!("e-{id}"),
+                ctag: format!("c-{id}"),
+                mtime: 0,
+            };
+            self.placeholders.insert(sid.clone(), placeholder);
+        }
         self.sessions.insert(sid.clone(), Session { target, size, data: Vec::new(), mtime });
         ResponseTemplate::new(200).set_body_json(json!({
             "uploadUrl": format!("{}/upload/{sid}", self.base),
@@ -614,6 +667,8 @@ impl Cloud {
             }));
         }
         let session = self.sessions.remove(sid).expect("checked");
+        // The session's own placeholder becomes the file.
+        self.placeholders.remove(sid);
         match self.land(&session.target, session.data, session.mtime) {
             Ok((status, id)) => self.answer(status, &id),
             Err(answer) => answer,

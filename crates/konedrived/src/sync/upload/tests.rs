@@ -389,6 +389,11 @@ fn every_crash_point_is_replayed_to_the_same_end() {
         engine.arm(fault);
         w.h.drain(&engine);
         assert_eq!(w.rows()[0].state, OutboxState::Running, "{what} {fault:?}: stopped at the step");
+        if fault == Fault::SessionNotPersisted {
+            // The session nothing knows of holds the name with its placeholder
+            // until it expires (issue #47, limitations log F172).
+            w.cloud(|c| c.expire_sessions());
+        }
 
         w.run();
         assert!(w.rows().is_empty(), "{what} {fault:?}: {:?}", w.summary());
@@ -1315,3 +1320,6 @@ fn renames_moves_and_removals_reach_onedrive_as_the_disk_is() {
 /// A file or folder removed before its upload finished (issue #27).
 #[path = "removed_tests.rs"]
 mod removed;
+
+#[path = "sessions_tests.rs"]
+mod sessions;

@@ -40,6 +40,13 @@ const IDLE_CHECK: i64 = 300;
 /// A row rewritten and sent again at once more often than this backs off.
 const AGAIN_LIMIT: u32 = 20;
 
+/// Upload sessions given up that one look cancels at most (issue #47).
+const CANCELS_PER_LOOK: usize = 32;
+
+/// After a cancel that failed, the sessions given up are looked at again no
+/// sooner than this (issue #47; provisional).
+const CANCEL_AGAIN: i64 = 60;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Class {
     /// `mkdir`, `move`, `delete`: one at a time (§3.5).
@@ -213,6 +220,9 @@ pub(super) struct Shared {
     network_back: bool,
     /// What is known of the space in OneDrive (issue #2).
     pub(super) space: space::Space,
+    /// No session given up is cancelled before this (Unix seconds): a
+    /// cancel failed (issue #47).
+    cancel_after: i64,
 }
 
 pub(crate) struct Engine {
@@ -271,6 +281,7 @@ impl Engine {
                 waits: Picked::default(),
                 counts: OutboxCounts::default(),
                 space,
+                cancel_after: 0,
             }),
             status,
             wake: Notify::new(),
@@ -712,6 +723,7 @@ impl Engine {
         // too big, once after a start that found waiting rows).
         if self.may_start() {
             self.space_check(now()).await;
+            self.cancel_given_up().await;
         }
         let mut set: JoinSet<(i64, Outcome)> = JoinSet::new();
         let mut tasks: HashMap<tokio::task::Id, i64> = HashMap::new();
@@ -834,6 +846,20 @@ impl Engine {
         self.mark_rows_blocking(&disk).await;
         self.recount().await;
         self.publish();
+    }
+
+    /// Cancels the upload sessions given up (issue #47): listed, and pointed
+    /// at by no row — the row left the outbox, moved on to other content, or
+    /// its own cancel failed. At every drain the worker may send in, the
+    /// start's included; a cancel that fails stops the look, and the next
+    /// one waits [`CANCEL_AGAIN`].
+    pub(super) async fn cancel_given_up(&self) {
+        if self.shared().cancel_after > now() {
+            return;
+        }
+        if !super::cancel_given_up(self.store(), &self.cfg.drive, CANCELS_PER_LOOK).await {
+            self.shared().cancel_after = now() + CANCEL_AGAIN;
+        }
     }
 
     /// [`settle`](Self::settle) off the async runtime.
