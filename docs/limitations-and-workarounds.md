@@ -2413,6 +2413,13 @@ application must never read zeros where real content should be.
   bound. Only the outbox is wound down: the poller, a fill and the rest end with the process, as
   before. A second signal exits at once. GUESS · tested with the fake OneDrive and a paused clock.
   Open.
+- **F178. An uploaded file's page cache is dropped only by advice** (`sync/upload/local.rs`
+  `drop_cache`; issue #84) — once a file's content went up whole (its one request, or a session's
+  last fragment), `posix_fadvise(POSIX_FADV_DONTNEED)` on the descriptor it was read from tells the
+  kernel its pages will not be read again: a 100 GiB upload had filled 13–27 GiB of page cache that
+  systemd charges to the daemon. The call is advisory — the kernel may keep pages, and pages another
+  process holds stay — and an upload stopped part way leaves what it read. Downloads are left
+  alone. Not measured on the user's machine. Open.
 ---
 
 ## 5. Provisional numbers

@@ -192,6 +192,17 @@ pub(super) enum Read {
     Changed,
 }
 
+/// The file's content went up whole (issue #84): its pages in the page
+/// cache will not be read again for it, and the kernel is told so
+/// (`POSIX_FADV_DONTNEED`), so that a bulk upload does not fill the cache
+/// systemd charges to the daemon. Advisory: the kernel may keep them, and a
+/// failure changes nothing but the cache.
+pub(super) fn drop_cache(file: &File) {
+    if let Err(e) = nix::fcntl::posix_fadvise(file.as_fd(), 0, 0, nix::fcntl::PosixFadviseAdvice::POSIX_FADV_DONTNEED) {
+        tracing::debug!("the page cache of an uploaded file is kept: {e}");
+    }
+}
+
 /// `len` bytes at `offset`, under a read lease, from a file still downloaded
 /// or unmanaged and still as the snapshot says.
 pub(super) fn read(file: &File, offset: u64, len: usize, snap: Snap) -> io::Result<Read> {

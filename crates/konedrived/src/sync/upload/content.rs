@@ -484,6 +484,7 @@ impl Job<'_> {
                 match drive.upload_chunk(&url, from as u64, size, bytes[from..].to_vec()).await {
                     Ok(ChunkOutcome::Done(item)) => {
                         self.e.upload_progress(self.row.seq, size, size);
+                        local::drop_cache(self.file);
                         self.e.fault(Fault::AfterSend)?;
                         return Ok(Sent { hash: Some(hash), answer: Ok(*item) });
                     }
@@ -721,6 +722,7 @@ impl Job<'_> {
                     }
                     Ok(ChunkOutcome::Done(item)) => {
                         e.upload_progress(seq, size, size);
+                        local::drop_cache(self.file);
                         e.fault(Fault::AfterSend)?;
                         return Ok(Sent { hash: Some(hasher.finish_base64()), answer: Ok(*item) });
                     }
