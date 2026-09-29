@@ -809,7 +809,7 @@ refresh keeps a read-only account's tokens unable to write even if its grant wer
 
 **Trade-off.** Switching to read-write needs a sign-in of its own, for `Files.ReadWrite`.
 
-### An access-token export for test runs, in every build
+### An access-token export for test runs, in development builds only
 
 **Decision.** `TokenExport.ReadOnly()` and `konedrivectl dev export-access-token` hand out an access
 token (about an hour of read access), never the refresh token, written atomically to a `0600`
@@ -818,13 +818,17 @@ asks for `Files.Read` only. `--read-write` (`TokenExport.ReadWrite()`) hands out
 write, for the test-account harness, and only for an account the write gate lets through.
 
 **Why.** A test run in the VM needs to speak to Graph without a sign-in of its own, and the refresh
-token must never leave the Secret Service. A per-user development install needs it, so it is not
-gated behind a build flag. A read-write account's token can change the whole drive, so the export
-never grants write access unless asked, and never for an account that is not a test account.
+token must never leave the Secret Service. Only the tests need it — the VM tests against real Graph,
+the stress tests and the test-account harness check OneDrive directly, past the daemon — so it is
+built only with the cargo feature `dev-tools` (issue #79), which `scripts/dev-install.sh` uses: the
+released package has neither the interface nor `konedrivectl dev`, and its `%build` fails if the
+daemon names `org.konedrive.TokenExport`. A read-write account's token can change the whole drive,
+so the export never grants write access unless asked, and never for an account that is not a test
+account.
 
-**Trade-off.** Any process of the same user on the session bus can obtain an hour of read access —
-no more than it has by opening files in the folder; a Flatpak app is filtered by its bus proxy
-(limitations log W11).
+**Trade-off.** On a development install, any process of the same user on the session bus can
+obtain an hour of read access — no more than it has by opening files in the folder; a Flatpak app
+is filtered by its bus proxy (limitations log W11).
 
 ### An account is its drive
 

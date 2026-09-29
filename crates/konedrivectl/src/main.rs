@@ -4,7 +4,9 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand};
-use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, FilesProxy, FolderProxies, TokenExportProxy};
+#[cfg(feature = "dev-tools")]
+use konedrive_dbus::accounts::TokenExportProxy;
+use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, FilesProxy, FolderProxies};
 use konedrivectl::{AccountAction, AccountInfo, AccountRow, Source, SyncAction, ACCOUNT_VARIABLE, FIRST_LABEL};
 use zbus::zvariant::OwnedObjectPath;
 
@@ -58,7 +60,8 @@ enum Cmd {
         #[command(subcommand)]
         command: SyncCmd,
     },
-    /// Development tools
+    /// Development tools: only in a development build (the `dev-tools` feature)
+    #[cfg(feature = "dev-tools")]
     Dev {
         #[command(subcommand)]
         command: DevCmd,
@@ -118,6 +121,7 @@ enum AccountCmd {
     },
 }
 
+#[cfg(feature = "dev-tools")]
 #[derive(Subcommand)]
 enum DevCmd {
     /// Write an access token of the account — about an hour of read access, never the
@@ -331,6 +335,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         }
         Cmd::Status => status(&daemon, option).await,
         Cmd::Sync { command } => sync(&daemon, option, command).await,
+        #[cfg(feature = "dev-tools")]
         Cmd::Dev { command } => dev(&daemon, option, command).await,
     }
 }
@@ -689,6 +694,8 @@ async fn sync_status(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()
     Ok(())
 }
 
+/// `dev`: only in a development build, as the daemon's `TokenExport` is (limitations log W11).
+#[cfg(feature = "dev-tools")]
 async fn dev(daemon: &Daemon, option: Option<&str>, command: DevCmd) -> anyhow::Result<()> {
     match command {
         DevCmd::ExportAccessToken { out, read_write } => {

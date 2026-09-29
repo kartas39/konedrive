@@ -1312,13 +1312,14 @@ async fn binary_refresh_of_a_local_folder_says_it_is_not_connected_to_onedrive()
     assert!(text.contains("not connected to OneDrive"), "{text}");
 }
 
-// --- `dev export-access-token` --------------------------------------------
+// --- `dev export-access-token`, a development build's (`dev-tools`) -------
 
 /// I1: an existing file at `--out` is replaced by a new inode, not
 /// truncated in place. An fd opened before the export — the shape the
 /// used to reproduce the bug — proves it: it must keep reading the
 /// *old* content, byte for byte, forever, because `rename(2)` never touches
 /// the inode a still-open fd already holds.
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_exports_the_access_token_and_nothing_else_readable_only_by_the_user() {
     use std::io::Read;
@@ -1352,6 +1353,7 @@ async fn binary_exports_the_access_token_and_nothing_else_readable_only_by_the_u
 /// I1: `--out` naming a symlink — the 's exact reproduction — must
 /// have the link itself replaced by `rename(2)`, never the file it points
 /// to opened and truncated.
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_export_access_token_replaces_a_symlink_without_touching_its_target() {
     use std::os::unix::fs::PermissionsExt;
@@ -1382,6 +1384,7 @@ async fn binary_export_access_token_replaces_a_symlink_without_touching_its_targ
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "do not touch", "the old target must be untouched");
 }
 
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_export_access_token_refused_while_signed_out_names_the_reason() {
     let f = harness_signed_out().await;

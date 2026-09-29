@@ -884,7 +884,10 @@ every guard holds**:
    hands out only for a drive on the same list, and both token files must be `0600` and the user's.
 
 Every flag is required; without one it does not start. It needs no root and no VM, and touches
-nothing but the two token files, the `config.toml` it is given, and the network.
+nothing but the two token files, the `config.toml` it is given, and the network. The tokens need a
+development build of the daemon and `konedrivectl` — the `dev-tools` feature, which
+`scripts/dev-install.sh` builds with: the released package has neither `org.konedrive.TokenExport`
+nor `konedrivectl dev` (limitations log W11).
 
 Once, before the first run: add the test account and sign it in as the test Microsoft account; its
 drive id is then the `drive_id` of its section in `~/.config/konedrive/config.toml`. Add that id by

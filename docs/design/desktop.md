@@ -205,9 +205,10 @@ in the order `NotSignedIn`, `AlreadyRegistered`, `NoHelper`, `Overlaps`, then th
 while an account is signed in, or anything while `config.toml` cannot be read: nothing needs to
 tell those reasons apart.
 
-### 2.7 `TokenExport`, per account
+### 2.7 `TokenExport`, per account, in a development build
 
-`ReadOnly() → s` returns an access token of the account for a test run in the VM — about an
+Served only by a daemon built with the `dev-tools` feature (`scripts/dev-install.sh`); the
+released package has no such interface (limitations log W11). `ReadOnly() → s` returns an access token of the account for a test run in the VM — about an
 hour of `Files.Read` on that account's drive, whatever its mode, never the refresh token
 ([sync.md](sync.md) §12.2). `ReadWrite() → s`, for the test-account harness only, returns
 one that can change files: refused `WritesNotAllowed` for an account the write gate does not let
@@ -292,7 +293,7 @@ F51).
 | `sync ignore [list\|add <pattern>\|remove <pattern>]` | chosen | shows the ignore list (`IgnorePatterns`), or changes it with `SetIgnorePatterns` |
 | `sync not-uploaded [--all]` | chosen | `NotUploadedSummary`: each group and its reasons with their counts and sizes, then (`NotUploadedFiles`) the files of the per-file reasons, the first 20 of each; `--all` lists every file of every reason |
 | `sync deletes confirm\|restore` | chosen | `ConfirmDeletes` or `RestoreDeletes`: the mass-delete guard's two answers |
-| `dev export-access-token --out <file> [--read-write]` | chosen | writes an access token of the account to a `0600` file, atomically, never through a symlink: a read-only one, or with `--read-write` one that can change files, which only a test account the write gate lets through gets |
+| `dev export-access-token --out <file> [--read-write]` | chosen | a development build's only (`dev-tools`); writes an access token of the account to a `0600` file, atomically, never through a symlink: a read-only one, or with `--read-write` one that can change files, which only a test account the write gate lets through gets |
 
 The path commands go through `Files`, so the path decides the account. When one is refused
 `OutsideRoot`, the CLI reads every account's folder to say where the path is not, which is its own

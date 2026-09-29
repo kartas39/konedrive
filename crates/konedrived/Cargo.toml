@@ -14,6 +14,11 @@ publish = false
 # OneDrive (`sync::upload::fake`, on wiremock), which the suite's write scenarios
 # run the daemon against inside the VM.
 fault-injection = ["dep:wiremock"]
+# Development builds only (issue #79): each account's `org.konedrive.TokenExport`, which
+# hands out access tokens for the VM tests against real Graph, the stress tests and the
+# test-account harness. Off by default: the released package has no such interface, and
+# its `%build` refuses a daemon that names it. `scripts/dev-install.sh` turns it on.
+dev-tools = []
 
 [dependencies]
 anyhow.workspace = true

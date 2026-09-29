@@ -84,7 +84,8 @@ shows whether it is online-only, downloading or downloaded, and "Download" and
 # The Rust workspace, offline. The vendored .cargo/config.toml replaces
 # crates.io with vendor/. Cargo's home and output stay in the build directory.
 # RUSTFLAGS come from Fedora's build flags. No --features: fault-injection is
-# the VM suite's alone and must never ship (limitations log W8).
+# the VM suite's alone and must never ship (limitations log W8), and dev-tools
+# (the token export) is a development build's alone (W11).
 export CARGO_HOME="$PWD/.cargo-home"
 export CARGO_TARGET_DIR="$PWD/target"
 cargo build --release --offline --locked \
@@ -93,6 +94,12 @@ cargo build --release --offline --locked \
 # none. scripts/install-helper.sh refuses such a binary the same way.
 if grep -aq KONEDRIVE_FAULT_ target/release/konedrive-helper; then
     echo "konedrive-helper was built with the fault-injection feature" >&2
+    exit 1
+fi
+# A released daemon hands out no access token: only a development build
+# (dev-tools) serves org.konedrive.TokenExport.
+if grep -aq org.konedrive.TokenExport target/release/konedrived; then
+    echo "konedrived was built with the dev-tools feature" >&2
     exit 1
 fi
 

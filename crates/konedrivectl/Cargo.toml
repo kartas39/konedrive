@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# Development builds only (issue #79): `konedrivectl dev`, the token export, beside the
+# daemon's `org.konedrive.TokenExport`. Off by default, as the daemon's is; its tests run the
+# daemon with the same feature.
+dev-tools = ["konedrived/dev-tools"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true

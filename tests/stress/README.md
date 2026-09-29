@@ -28,6 +28,9 @@ konedrivectl --account <test-account> account mode read-write   # once, by hand,
 python3 tests/stress/stress_uploads.py --account <test-account>
 ```
 
+Its checks against OneDrive take a token from `konedrivectl dev export-access-token`, which only
+a development install has (`scripts/dev-install.sh`, the `dev-tools` feature).
+
 - `--account` is required — there is no "the only account there is" fallback here, unlike
   `konedrivectl` itself. The run refuses immediately, before touching anything, unless
   `account mode` for that account already says `read-write`.

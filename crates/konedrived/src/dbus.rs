@@ -197,11 +197,14 @@ impl std::fmt::Display for SetModeFault {
 
 impl std::error::Error for SetModeFault {}
 
-/// `org.konedrive.TokenExport`: development only.
+/// `org.konedrive.TokenExport`: only in a development build (the `dev-tools` feature); a
+/// release has neither the interface nor `konedrivectl dev` (limitations log W11).
+#[cfg(feature = "dev-tools")]
 pub struct TokenExport {
     service: Arc<AccountService>,
 }
 
+#[cfg(feature = "dev-tools")]
 #[zbus::interface(name = "org.konedrive.TokenExport")]
 impl TokenExport {
     /// An access token of this account that can change nothing, whatever its mode (write
@@ -222,7 +225,7 @@ impl TokenExport {
     }
 }
 
-/// Serves one account's `Account` and `TokenExport` at `path`, and turns its state changes into
+/// Serves one account's `Account` (and, in a development build, `TokenExport`) at `path`, and turns its state changes into
 /// `PropertiesChanged`; the task that sends them, to stop when the account goes.
 ///
 /// At startup this runs before the bus name is claimed (`crate::accounts::serve`), and
@@ -236,6 +239,7 @@ pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc
     let mut previous = changes.borrow_and_update().clone();
     let server = connection.object_server();
     server.at(path, Account { service: Arc::clone(&service) }).await?;
+    #[cfg(feature = "dev-tools")]
     server.at(path, TokenExport { service: Arc::clone(&service) }).await?;
     let iface = server.interface::<_, Account>(path).await?;
     Ok(tokio::spawn(async move {
@@ -252,6 +256,7 @@ pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc
 /// Takes one account's `Account` and `TokenExport` off the bus (`Accounts.Remove`).
 pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()> {
     let server = connection.object_server();
+    #[cfg(feature = "dev-tools")]
     server.remove::<TokenExport, _>(path).await?;
     server.remove::<Account, _>(path).await.map(drop)
 }

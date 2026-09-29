@@ -305,7 +305,11 @@ pub(crate) fn graph_mode(helper_binary: &Path, token_file: &Path, guard: Option<
     let token = match std::fs::read_to_string(token_file) {
         Ok(token) => token.trim().to_owned(),
         Err(e) => {
-            println!("FAIL cannot read the access token at {}: {e}", token_file.display());
+            println!(
+                "FAIL cannot read the access token at {}: {e} (write one with `konedrivectl dev export-access-token`, \
+                 which only a development install has: scripts/dev-install.sh)",
+                token_file.display()
+            );
             return 1;
         }
     };

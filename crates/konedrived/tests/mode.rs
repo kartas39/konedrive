@@ -105,6 +105,8 @@ struct Setup {
     wallet: Arc<MemoryWallet>,
     daemon: konedrived::accounts::Daemon,
     account: AccountProxy<'static>,
+    /// Served only by a development build (the `dev-tools` feature).
+    #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
     export: TokenExportProxy<'static>,
     service: Arc<AccountService>,
     id: String,
@@ -195,8 +197,11 @@ async fn the_gate_refuses_read_write_by_default() {
     let s = signed_in(&[]).await;
     let refused = s.account.set_mode("read-write", false).await.unwrap_err();
     assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
-    let refused = s.export.read_write().await.unwrap_err();
-    assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
+    #[cfg(feature = "dev-tools")]
+    {
+        let refused = s.export.read_write().await.unwrap_err();
+        assert_eq!(error_name(&refused), Some("org.konedrive.Error.WritesNotAllowed"), "{refused:?}");
+    }
     assert_eq!((s.configured(), s.account.mode().await.unwrap().as_str()), (Mode::ReadOnly, "read-only"));
     assert_eq!(s.account.last_error().await.unwrap(), "");
 
@@ -221,6 +226,7 @@ async fn the_gate_refuses_read_write_by_default() {
 /// written and published, and every refresh asks for `Files.ReadWrite`. `TokenExport.ReadOnly`
 /// still hands out a `Files.Read` token, from a subset refresh; the harness's token can
 /// write. Read-write → read-only needs no sign-in: the next refresh asks for `Files.Read`.
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn read_write_is_written_only_once_the_grant_arrives_and_read_only_is_a_subset_refresh() {
     let s = signed_in(&["D1"]).await;
@@ -431,6 +437,7 @@ async fn a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate()
 /// consent it still holds — for an account `config.toml` sets to read-write by hand and the
 /// gate does not let through. The account stays read-only and says so; neither `TokenExport` token
 /// is handed out; the wide token is used to read only.
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_read_only_request_answered_with_write_access_stays_read_only() {
     let s = signed_in_with(&[], "wide-code", true).await;
@@ -460,6 +467,7 @@ async fn a_read_only_request_answered_with_write_access_stays_read_only() {
 /// — a hand edit — refuses `TokenExport.ReadWrite`, whose token is asked which drive it
 /// reaches, turns the account read-only, and drops the next refresh to `Files.Read`; the
 /// account info's own look at the drive keeps it so.
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_token_reaching_another_drive_than_the_recorded_one_is_never_read_write() {
     let s = signed_in(&["D1", "D3"]).await;
@@ -488,6 +496,7 @@ async fn a_token_reaching_another_drive_than_the_recorded_one_is_never_read_writ
 /// The drive taken off `write_test_drive_ids` by hand while the daemon runs counts
 /// at once: the harness's token is refused, the account turns read-only at its next look, and
 /// its next refresh asks for `Files.Read`.
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_drive_taken_off_the_list_while_running_is_read_only_at_once() {
     let s = signed_in(&["D1"]).await;

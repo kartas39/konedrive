@@ -493,7 +493,9 @@ refuses the sign-in if that drive is not this account's, or is already another a
   `invalid_grant` (consent revoked, session expired) deletes the account's refresh token and signs
   it out: `LastError` says to sign in again, a download on open in its folder fails `EIO`, and the
   folder reports that it is signed out.
-- **For test runs only**, each account's `org.konedrive.TokenExport.ReadOnly()` hands out an access
+- **For test runs only**, in a development build (the `dev-tools` feature,
+  `scripts/dev-install.sh`; the released package has none of it), each account's
+  `org.konedrive.TokenExport.ReadOnly()` hands out an access
   token of that account — about an hour of `Files.Read`, whatever its mode: a read-write account's
   comes from a refresh that asks for `Files.Read` only — never the refresh token;
   `konedrivectl dev export-access-token` writes the chosen account's (`--account`) atomically to a

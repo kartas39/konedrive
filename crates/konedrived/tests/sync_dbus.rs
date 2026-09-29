@@ -23,9 +23,10 @@ use std::time::Duration;
 
 use common::{introspect, signature_lines, start_daemon};
 use futures_util::StreamExt;
+#[cfg(feature = "dev-tools")]
+use konedrive_dbus::accounts::TokenExportProxy;
 use konedrive_dbus::accounts::{
     AccountsProxy, ActivityLogProxy, ConflictsProxy, FilesProxy, FolderProxies, FolderProxy, LocalScanProxy,
-    TokenExportProxy,
 };
 use konedrive_dbus::testing::TestBus;
 use konedrive_dbus::{
@@ -44,17 +45,20 @@ use nix::sys::socket::{
 };
 use zbus::zvariant::OwnedObjectPath;
 
-/// Each interface of the account's object but `Account`'s (`tests/dbus_api.rs`), with its
-/// checked-in definition.
-const XML: [(&str, &str); 7] = [
+/// Each interface of the account's object but `Account`'s (`tests/dbus_api.rs`) and
+/// `TokenExport`'s, with its checked-in definition.
+const XML: [(&str, &str); 6] = [
     (FOLDER_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Folder.xml"))),
     (TRANSFERS_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Transfers.xml"))),
     (UPLOAD_QUEUE_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.UploadQueue.xml"))),
     (CONFLICTS_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Conflicts.xml"))),
     (LOCAL_SCAN_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.LocalScan.xml"))),
     (ACTIVITY_LOG_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.ActivityLog.xml"))),
-    (TOKEN_EXPORT_INTERFACE_NAME, include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.TokenExport.xml"))),
 ];
+
+/// Served only by a development build (the `dev-tools` feature).
+#[cfg(feature = "dev-tools")]
+const TOKEN_EXPORT_XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.TokenExport.xml"));
 
 struct Setup {
     /// The account's folder.
@@ -349,8 +353,14 @@ async fn introspection_matches_the_checked_in_xml() {
     for (interface, xml) in XML {
         assert_eq!(signature_lines(&live, interface), signature_lines(xml, interface), "{interface}");
     }
+    #[cfg(feature = "dev-tools")]
+    assert_eq!(signature_lines(&live, TOKEN_EXPORT_INTERFACE_NAME), signature_lines(TOKEN_EXPORT_XML, TOKEN_EXPORT_INTERFACE_NAME));
+    // A release build hands out no token at all (issue #79).
+    #[cfg(not(feature = "dev-tools"))]
+    assert!(!live.contains(TOKEN_EXPORT_INTERFACE_NAME), "{live}");
 }
 
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nothing_to_export_while_signed_out() {
     let f = setup().await;

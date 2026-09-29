@@ -164,11 +164,13 @@ Treat a compromised helper as a compromised root.
 Each Microsoft account's refresh token is stored in KWallet (through the Secret Service D-Bus API),
 as an item of its own. The daemon reads it from KWallet to get a short-lived access token for that
 account, uses that access token to talk to Microsoft Graph, and never writes the refresh token to
-disk, to a log, or anywhere else. Each account's `TokenExport` D-Bus interface hands out a short-lived
-(about one hour), read-only access token of that account for test runs, whatever the account's
-mode, never the refresh token; see `docs/limitations-and-workarounds.md`, W11. A token that can
-change files (`TokenExport.ReadWrite`) is handed out only for a test account listed in
-`write_test_drive_ids`, the write phase's development gate (F60). Removing an account deletes its
+disk, to a log, or anywhere else. In a development build only (the `dev-tools` cargo feature,
+which `scripts/dev-install.sh` uses), each account's `TokenExport` D-Bus interface hands out a
+short-lived (about one hour), read-only access token of that account for test runs, whatever the
+account's mode, never the refresh token; see `docs/limitations-and-workarounds.md`, W11. The
+released package has neither that interface nor `konedrivectl dev`, and its build fails if the
+daemon names the interface. A token that can change files (`TokenExport.ReadWrite`) is handed out
+only for a test account listed in `write_test_drive_ids`, the write phase's development gate (F60). Removing an account deletes its
 refresh token. An upload session's URL, which lets anyone holding it write that one file until it
 expires, is kept only in the account's tree store (mode `0600`), never logged and never published
 over D-Bus, and the account's token is never sent to it.

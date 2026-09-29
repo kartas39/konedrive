@@ -10,6 +10,11 @@
 #        tests/vm/run.sh scenarios [args...] # the suite, all three FS, one VM
 #        tests/vm/run.sh measure [args...]   # the measurement mode
 #        tests/vm/run.sh unit                # the shipped systemd unit, under systemd
+#        tests/vm/run.sh quick --graph-token <file> --graph-folder <folder>
+#                                            # against the real account; the token comes
+#                                            # from `konedrivectl dev export-access-token`,
+#                                            # which only a development install has
+#                                            # (scripts/dev-install.sh, the dev-tools feature)
 #
 # `quick` is the normal run, every time: one filesystem (the user's own,
 # btrfs), one VM, so the loop is short. `full` runs only when the user asks for
