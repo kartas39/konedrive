@@ -147,6 +147,11 @@ pub mod reason {
     /// fragment it was sending, its session kept (`docs/design/writes.md` §11).
     /// Waiting, never a failure.
     pub const PAUSED: &str = "paused";
+    /// A new file's name is held in OneDrive by the empty placeholder of an
+    /// upload session of this folder (issue #47): one another row still
+    /// sends, or one given up whose cancel has not gone through yet. Tried
+    /// again later, never taken for someone else's file.
+    pub const SESSION_OPEN: &str = "upload-session-open";
 }
 
 /// The activity kinds the worker writes (§9; the outbox on the bus adds them to the D-Bus
@@ -188,6 +193,42 @@ pub trait OutboxHost: Send + Sync {
     fn full_cycle_wanted(&self) {
         self.cycle_wanted();
     }
+}
+
+/// Cancels upload session `url`, given up (issue #47): cancelled, or gone
+/// already, it leaves the store's list of sessions; a cancel that fails keeps
+/// it there, for a later look ([`cancel_given_up`]). Whether it was cancelled.
+pub(crate) async fn cancel_session(store: &Store, drive: &DriveClient, url: &str) -> Result<bool, TreeError> {
+    match drive.cancel_upload(url).await {
+        Ok(()) => {
+            let url = url.to_owned();
+            store.call(move |s| s.upload_session_closed(&url)).await?;
+            Ok(true)
+        }
+        Err(err) => {
+            tracing::info!("an upload session given up was not cancelled; it is cancelled later: {err}");
+            Ok(false)
+        }
+    }
+}
+
+/// Cancels up to `limit` of the upload sessions given up (issue #47): listed,
+/// and pointed at by no row. Stops at the first cancel that fails; whether
+/// none did.
+pub async fn cancel_given_up(store: &Store, drive: &DriveClient, limit: usize) -> bool {
+    let urls = match store.call(move |s| s.upload_sessions_given_up(limit)).await {
+        Ok(urls) => urls,
+        Err(e) => {
+            tracing::warn!("cannot read the upload sessions to cancel: {e}");
+            return false;
+        }
+    };
+    for url in urls {
+        if !matches!(cancel_session(store, drive, &url).await, Ok(true)) {
+            return false;
+        }
+    }
+    true
 }
 
 /// Runs `work` — the store's jobs and what follows them — as a task of the

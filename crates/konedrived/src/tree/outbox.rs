@@ -84,6 +84,20 @@ const INDEXES: &str = "
     CREATE INDEX IF NOT EXISTS outbox_kind ON outbox(kind);
     CREATE INDEX IF NOT EXISTS outbox_frees ON outbox(seq) WHERE FREES;";
 
+/// The upload sessions opened and not yet completed, cancelled or found gone
+/// (issue #47), with the place a new file's session holds in OneDrive with its
+/// empty placeholder until then. A row points at its session
+/// (`session_url`); one no row points at any more was given up, and is
+/// cancelled ([`TreeStore::upload_sessions_given_up`]). Created on every open,
+/// like the indexes; a session a store of an earlier version persisted is
+/// listed then, with no place.
+const SESSIONS: &str = "
+    CREATE TABLE IF NOT EXISTS upload_sessions (url TEXT PRIMARY KEY, parent TEXT, name TEXT, opened INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS upload_sessions_parent ON upload_sessions(parent);
+    CREATE INDEX IF NOT EXISTS outbox_session ON outbox(session_url) WHERE session_url IS NOT NULL;
+    INSERT OR IGNORE INTO upload_sessions (url, parent, name, opened)
+        SELECT session_url, NULL, NULL, 0 FROM outbox WHERE session_url IS NOT NULL;";
+
 /// The rows the partial index `outbox_frees` holds: those with a base place
 /// they leave. [`frees`] decides among them.
 const FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AND (base_parent IS NOT target_parent OR base_name IS NOT target_name)";
@@ -103,6 +117,7 @@ pub(super) fn upgrade(conn: &Connection) -> Result<(), TreeError> {
         }
     }
     conn.execute_batch(&INDEXES.replace("FREES", FREES))?;
+    conn.execute_batch(SESSIONS)?;
     Ok(())
 }
 

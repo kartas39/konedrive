@@ -1,12 +1,20 @@
 //! Microsoft Graph's upload sessions (the write design's §3.6 and §4.8): every
 //! non-empty file goes through one, so that a new file carries
 //! `conflictBehavior: fail`, a changed one `If-Match`, and both their time as
-//! `fileSystemInfo`. Up to [`SMALL_UPLOAD_MAX`] the whole body is one request
-//! ([`DriveClient::upload_small`]); above it the caller sends [`CHUNK_SIZE`]
-//! fragments one at a time, persisting where the session is after each, and
-//! resumes from [`DriveClient::upload_status`] after an interruption. An empty
-//! file, which a session cannot carry, is a `PUT` followed by a `PATCH` for
-//! its time.
+//! `fileSystemInfo`. The caller opens the session
+//! ([`DriveClient::create_upload_session`]), persists it before its first
+//! byte, and sends the file as fragments of at most [`CHUNK_SIZE`] — one
+//! fragment up to [`SMALL_UPLOAD_MAX`] — resuming from
+//! [`DriveClient::upload_status`] after an interruption. An empty file, which
+//! a session cannot carry, is a `PUT` followed by a `PATCH` for its time
+//! ([`DriveClient::upload_empty`]).
+//!
+//! An open session holds its name in OneDrive with an empty placeholder until
+//! it completes or is cancelled (issue #47), so a session is never simply
+//! dropped: a fragment OneDrive refuses for now (`429`, `503`, a dropped
+//! connection, a timeout) is sent again to the same session
+//! ([`DriveClient::upload_chunk`]), and a session given up is cancelled
+//! ([`DriveClient::cancel_upload`]).
 //!
 //! The upload URL is pre-authenticated: it never gets the account's token
 //! (Microsoft: that can cause a `401`), and, being a credential for that one
@@ -116,32 +124,6 @@ impl ProgressBody {
 }
 
 impl DriveClient {
-    /// Uploads a whole file of at most [`SMALL_UPLOAD_MAX`] bytes with its
-    /// time (`modified`, Unix seconds): an empty one by `PUT`, any other as a
-    /// one-request session.
-    pub async fn upload_small(
-        &self,
-        target: UploadTarget<'_>,
-        content: Vec<u8>,
-        modified: i64,
-    ) -> Result<DriveItem, WriteError> {
-        let size = content.len() as u64;
-        if size == 0 {
-            return self.upload_empty(target, modified).await;
-        }
-        if size > SMALL_UPLOAD_MAX {
-            return Err(WriteError::Failed(format!("{size} bytes do not go in one request: send them in fragments")));
-        }
-        let session = self.create_upload_session(target, size, modified).await?;
-        match self.upload_chunk(&session.url, 0, size, content).await? {
-            ChunkOutcome::Done(item) => Ok(*item),
-            ChunkOutcome::More(progress) => Err(WriteError::Transient(format!(
-                "the upload session still expects bytes from {} after the whole file",
-                progress.next
-            ))),
-        }
-    }
-
     /// Opens a session for `size` bytes. The session request carries the
     /// guard and the time, but not the size: a personal drive answers
     /// `fileSize` with `400 invalidRequest` (measured on a test account,
@@ -201,6 +183,16 @@ impl DriveClient {
     /// Every fragment but the last must be a multiple of [`FRAGMENT_UNIT`];
     /// one that is not is refused before anything is sent. A fragment the
     /// session already has (`416`) is answered with where the session stands.
+    ///
+    /// A fragment refused for now — `429` or `503`, a dropped connection, a
+    /// timeout — goes again to the same session (issue #47): after
+    /// `Retry-After` (or the policy's wait) the session is asked where it
+    /// stands, and the fragment is sent again if it still expects it, up to
+    /// the policy's `attempts` sends in all. A session that moved on
+    /// meanwhile is answered with where it stands; one that ended (the last
+    /// fragment went in, the answer lost) is [`WriteError::SessionGone`]. If
+    /// the fragment still does not go through, that refusal comes back and
+    /// the session stays open: the caller keeps it for its next run.
     pub async fn upload_chunk(
         &self,
         session_url: &str,
@@ -218,24 +210,49 @@ impl DriveClient {
                 "a fragment of {len} bytes: each must be under 60 MiB, and all but the last a multiple of 320 KiB"
             )));
         }
-        // The body goes out in pieces, each counted into the pool's speed as it is taken.
-        let request = self
-            .upload
-            .put(session_url_of(session_url)?)
-            .header(header::CONTENT_RANGE, format!("bytes {offset}-{}/{total}", end - 1))
-            .header(header::CONTENT_LENGTH, len.to_string())
-            .body(self.metered(chunk));
-        let response = send_to_session(request).await?;
-        self.answered(&response);
-        match response.status() {
-            StatusCode::ACCEPTED => {
-                let body = progress_from(response).await?;
-                Ok(ChunkOutcome::More(SessionProgress { next: body.next().unwrap_or(end), expires: body.expires() }))
+        let chunk = Arc::new(chunk);
+        let mut sent = 0;
+        loop {
+            sent += 1;
+            // The body goes out in pieces, each counted into the pool's speed as it is taken.
+            let request = self
+                .upload
+                .put(session_url_of(session_url)?)
+                .header(header::CONTENT_RANGE, format!("bytes {offset}-{}/{total}", end - 1))
+                .header(header::CONTENT_LENGTH, len.to_string())
+                .body(self.metered(Arc::clone(&chunk)));
+            let (refusal, wait) = match send_to_session(request).await {
+                Ok(response) => {
+                    self.answered(&response);
+                    match response.status() {
+                        StatusCode::ACCEPTED => {
+                            let body = progress_from(response).await?;
+                            return Ok(ChunkOutcome::More(SessionProgress { next: body.next().unwrap_or(end), expires: body.expires() }));
+                        }
+                        StatusCode::OK | StatusCode::CREATED => {
+                            return item_from(response).await.map(|item| ChunkOutcome::Done(Box::new(item)));
+                        }
+                        StatusCode::RANGE_NOT_SATISFIABLE => return self.upload_status(session_url).await.map(ChunkOutcome::More),
+                        status if session_ended(status) => return Err(WriteError::SessionGone),
+                        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
+                            let wait = self.wait_for(&response);
+                            (error_from(response).await, wait)
+                        }
+                        _ => return Err(error_from(response).await),
+                    }
+                }
+                // A dropped connection, a timeout: the fragment may or may not have gone in.
+                Err(lost) => (lost, self.retry.default_wait.min(self.retry.max_wait)),
+            };
+            if sent >= self.retry.attempts {
+                return Err(refusal);
             }
-            StatusCode::OK | StatusCode::CREATED => item_from(response).await.map(|item| ChunkOutcome::Done(Box::new(item))),
-            StatusCode::RANGE_NOT_SATISFIABLE => self.upload_status(session_url).await.map(ChunkOutcome::More),
-            status if session_ended(status) => Err(WriteError::SessionGone),
-            _ => Err(error_from(response).await),
+            tracing::debug!("a fragment at {offset} was not taken ({refusal}); it goes again to the same session");
+            tokio::time::sleep(wait).await;
+            let progress = self.upload_status(session_url).await?;
+            if progress.next != offset {
+                return Ok(ChunkOutcome::More(progress));
+            }
         }
     }
 
@@ -272,7 +289,7 @@ impl DriveClient {
     /// is `replace`, or by `If-Match` — then `PATCH` its time. The content is
     /// what matters: a failed `PATCH` is logged and the `PUT`'s answer
     /// returned, leaving OneDrive's own time on the item.
-    async fn upload_empty(&self, target: UploadTarget<'_>, modified: i64) -> Result<DriveItem, WriteError> {
+    pub async fn upload_empty(&self, target: UploadTarget<'_>, modified: i64) -> Result<DriveItem, WriteError> {
         let (url, if_match) = match target {
             UploadTarget::New { parent_id, name } => {
                 let mut url = self.child_url(parent_id, name, Some("content"))?;
@@ -312,7 +329,7 @@ impl DriveClient {
 impl DriveClient {
     /// `chunk` as a request body that goes out in pieces of [`METER_PIECE`], each counted
     /// into the pool's upload speed as it is taken.
-    fn metered(&self, chunk: Vec<u8>) -> reqwest::Body {
+    fn metered(&self, chunk: Arc<Vec<u8>>) -> reqwest::Body {
         let pool = Arc::clone(self.pool());
         let len = chunk.len();
         let pieces = futures_util::stream::iter((0..len).step_by(METER_PIECE).map(move |at| {
@@ -362,6 +379,7 @@ mod tests {
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
+    use crate::drive::RetryPolicy;
     use crate::token::StaticToken;
 
     /// 2024-05-01T10:00:00Z, and a day later.
@@ -374,7 +392,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_small_new_file_is_one_session_and_one_put_without_the_token() {
+    async fn a_new_file_is_one_session_and_its_put_goes_without_the_token() {
         let graph = MockServer::start().await;
         let up = MockServer::start().await;
         Mock::given(method("POST"))
@@ -392,7 +410,11 @@ mod tests {
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "N", "name": "a b#.txt", "size": 5, "eTag": "e1"})))
             .mount(&up).await;
         let target = UploadTarget::New { parent_id: "P!1", name: "a b#.txt" };
-        let item = client(&graph).upload_small(target, b"hello".to_vec(), MAY_1).await.unwrap();
+        let drive = client(&graph);
+        let session = drive.create_upload_session(target, 5, MAY_1).await.unwrap();
+        let ChunkOutcome::Done(item) = drive.upload_chunk(&session.url, 0, 5, b"hello".to_vec()).await.unwrap() else {
+            panic!("one fragment is the whole file")
+        };
         assert_eq!(item.id, "N");
         let sent = up.received_requests().await.unwrap();
         assert_eq!(sent[0].body, b"hello");
@@ -430,7 +452,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "E", "size": 0, "eTag": "e2"})))
             .mount(&graph).await;
         let target = UploadTarget::New { parent_id: "P", name: "empty.txt" };
-        let item = client(&graph).upload_small(target, Vec::new(), MAY_1).await.unwrap();
+        let item = client(&graph).upload_empty(target, MAY_1).await.unwrap();
         assert_eq!(item.e_tag.as_deref(), Some("e2"), "the answer after the time was set");
         let put = &graph.received_requests().await.unwrap()[0];
         let lengths: Vec<_> = put.headers.get_all("content-length").iter().collect();
@@ -493,5 +515,42 @@ mod tests {
         let err = drive.upload_chunk(&url, 0, 10, vec![0; 10]).await.unwrap_err();
         assert!(matches!(err, WriteError::SessionGone), "{err:?}");
         drive.cancel_upload(&url).await.unwrap();
+    }
+
+    /// Issue #47: a fragment refused `429` goes again to the same session once
+    /// the session says it still expects it; refused every time, the refusal
+    /// comes back after the policy's attempts and the session is left open.
+    #[tokio::test]
+    async fn a_throttled_fragment_goes_again_to_the_same_session() {
+        let up = MockServer::start().await;
+        Mock::given(method("PUT")).and(path("/up/s6"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "1"))
+            .up_to_n_times(1)
+            .mount(&up).await;
+        Mock::given(method("PUT")).and(path("/up/s6"))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({"id": "T", "size": 5})))
+            .mount(&up).await;
+        Mock::given(method("GET")).and(path("/up/s6"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"nextExpectedRanges": ["0-"]})))
+            .mount(&up).await;
+        let drive = client(&up).with_retry(RetryPolicy { attempts: 3, default_wait: Duration::from_millis(5), max_wait: Duration::from_millis(20) });
+        let url = format!("{}/up/s6", up.uri());
+        let ChunkOutcome::Done(item) = drive.upload_chunk(&url, 0, 5, b"hello".to_vec()).await.unwrap() else {
+            panic!("the fragment went in the second time")
+        };
+        assert_eq!(item.id, "T");
+        let sent: Vec<String> = up.received_requests().await.unwrap().iter().map(|r| r.method.to_string()).collect();
+        assert_eq!(sent, ["PUT", "GET", "PUT"], "asked where the session stands, then sent again");
+
+        let refusing = MockServer::start().await;
+        Mock::given(method("PUT")).respond_with(ResponseTemplate::new(503)).mount(&refusing).await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"nextExpectedRanges": ["0-"]})))
+            .mount(&refusing).await;
+        let drive = client(&refusing).with_retry(RetryPolicy { attempts: 2, default_wait: Duration::from_millis(5), max_wait: Duration::from_millis(20) });
+        let err = drive.upload_chunk(&format!("{}/up/s7", refusing.uri()), 0, 5, b"hello".to_vec()).await.unwrap_err();
+        assert!(matches!(err, WriteError::Throttled { .. }), "{err:?}");
+        let methods: Vec<String> = refusing.received_requests().await.unwrap().iter().map(|r| r.method.to_string()).collect();
+        assert_eq!(methods, ["PUT", "GET", "PUT"], "two sends in all, and no cancel");
     }
 }

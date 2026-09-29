@@ -182,6 +182,73 @@ impl TreeStore {
         Ok(local_seq)
     }
 
+    /// Row `seq` opened the upload session `url` (issue #47): listed, with
+    /// the place `place` (parent id, name) a new file's session holds, and the
+    /// row's session from now on, at offset 0 — in one transaction, before
+    /// any byte is sent. A row gone meanwhile leaves the session listed and
+    /// pointed at by nothing: given up, and cancelled.
+    pub fn outbox_open_session(&mut self, seq: i64, url: &str, expires: Option<i64>, place: Option<(&str, &str)>, now: i64) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        let (parent, name) = place.unzip();
+        tx.execute(
+            "INSERT OR REPLACE INTO upload_sessions (url, parent, name, opened) VALUES (?1, ?2, ?3, ?4)",
+            params![url, parent, name, now],
+        )?;
+        tx.execute(
+            "UPDATE outbox SET session_url = ?2, session_expires = ?3, session_next = 0 WHERE seq = ?1",
+            params![seq, url, expires],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Row `seq`'s session completed, or is gone: the row and the list
+    /// forget it, with nothing to cancel.
+    pub fn outbox_session_ended(&mut self, seq: i64) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        let url: Option<Option<String>> = tx.query_row("SELECT session_url FROM outbox WHERE seq = ?1", [seq], |r| r.get(0)).optional()?;
+        if let Some(url) = url.flatten() {
+            tx.execute("DELETE FROM upload_sessions WHERE url = ?1", [&url])?;
+        }
+        tx.execute("UPDATE outbox SET session_url = NULL, session_expires = NULL, session_next = NULL WHERE seq = ?1", [seq])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Session `url` was cancelled, or found gone: off the list.
+    pub fn upload_session_closed(&self, url: &str) -> Result<(), TreeError> {
+        self.conn.execute("DELETE FROM upload_sessions WHERE url = ?1", [url])?;
+        Ok(())
+    }
+
+    /// Up to `limit` listed sessions no row points at any more: given up —
+    /// the content changed, the file went, the row left the outbox, or a
+    /// cancel failed — and so to be cancelled.
+    pub fn upload_sessions_given_up(&self, limit: usize) -> Result<Vec<String>, TreeError> {
+        let mut statement = self.conn.prepare(
+            "SELECT url FROM upload_sessions u
+               WHERE NOT EXISTS (SELECT 1 FROM outbox o WHERE o.session_url = u.url)
+               ORDER BY opened LIMIT ?1",
+        )?;
+        let urls = statement.query_map([limit as i64], |r| r.get(0))?.collect::<Result<Vec<String>, _>>()?;
+        Ok(urls)
+    }
+
+    /// The listed sessions of a new file named `name` (without case) in
+    /// `parent`, each with the row that points at it, if any: what holds
+    /// that name in OneDrive with an empty placeholder.
+    pub fn upload_sessions_at(&self, parent: &str, name: &str) -> Result<Vec<(String, Option<i64>)>, TreeError> {
+        let mut statement = self.conn.prepare(
+            "SELECT url, name, (SELECT seq FROM outbox o WHERE o.session_url = u.url LIMIT 1)
+               FROM upload_sessions u WHERE parent = ?1",
+        )?;
+        let lower = name.to_lowercase();
+        let rows = statement
+            .query_map([parent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<i64>>(2)?)))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.into_iter().filter(|(_, n, _)| n.as_deref().is_some_and(|n| n.to_lowercase() == lower)).map(|(url, _, seq)| (url, seq)).collect())
+    }
+
     /// Row `seq` goes without a commit: OneDrive decided otherwise (§6: a
     /// delete of something changed there). In one transaction: the base takes
     /// `base` if given; `forget` (an item) and what is inside it lose their
