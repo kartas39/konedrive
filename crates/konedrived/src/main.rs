@@ -6,7 +6,9 @@ use konedrived::accounts::{self, Options};
 use konedrived::config::Paths;
 use konedrived::oauth::Endpoints;
 use konedrived::secret::SecretServiceWallet;
+use konedrived::stop;
 use konedrived::sync::{self, baloo::Baloo};
+use futures_util::FutureExt;
 use tracing_subscriber::EnvFilter;
 
 const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(5 * 60);
@@ -19,6 +21,9 @@ async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
+    // Before anything is sent: from now on SIGTERM and SIGINT stop the
+    // daemon through `stop`, not by themselves.
+    let mut signals = stop::Signals::install()?;
     let paths = Paths::from_xdg()?;
     let options = Options {
         endpoints: Endpoints::microsoft(),
@@ -37,6 +42,7 @@ async fn main() -> anyhow::Result<()> {
     // the connection would drop the bus name and every object with it.
     let daemon = accounts::start(zbus::connection::Builder::session()?, paths, options).await?;
     let hub = Arc::clone(daemon.manager.hub());
+    let stopping = Arc::clone(&hub);
     // HS1: with no link, `HelperState` says what systemd says of the
     // helper's unit (read-only, on the system bus). The one place that asks
     // the real systemd.
@@ -61,6 +67,16 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("konedrived ready");
     let _connection = daemon.connection;
-    std::future::pending::<()>().await;
-    Ok(())
+    signals.next().await;
+    // The stop (issue #84): nothing new is sent, and the requests in flight
+    // get a bounded time to return and be persisted; a second signal ends it.
+    tracing::info!("stopping: the uploads in flight get up to {} s", stop::STOP_BOUND.as_secs());
+    let closing: Vec<_> = stopping.accounts().iter().filter_map(|sync| sync.close_outbox()).collect();
+    match stop::wind_down(futures_util::future::join_all(closing).map(|_| ()), stop::STOP_BOUND, signals.next()).await {
+        stop::Ended::Finished => tracing::info!("stopped"),
+        stop::Ended::Bound => tracing::warn!("stopped: requests still in flight are cut"),
+        stop::Ended::Again => tracing::warn!("stopped at once by a second signal"),
+    }
+    // Not through the runtime's drop, which would wait for blocking tasks.
+    std::process::exit(0)
 }

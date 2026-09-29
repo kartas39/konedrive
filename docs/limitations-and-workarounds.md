@@ -2404,6 +2404,15 @@ application must never read zeros where real content should be.
   for a phone's hotspot it recognises) holds the account back like 1 ("yes"), and 4 ("guessed
   no") does not: a capped connection NetworkManager does not recognise is not metered for
   konedrive until the user marks it so in the connection's settings. Reasoned · open.
+- **F177. A stop waits 10 s at most for the requests in flight** (`stop.rs`, `main.rs`,
+  `sync/upload` `OutboxWorker::close`; write design §6.1; issue #84) — on SIGTERM or SIGINT the
+  outbox workers take nothing more and the daemon waits for the rows in flight, then exits with
+  `process::exit` (the runtime's drop would wait for blocking tasks). The bound is a guess: a
+  fragment of 10 MiB on a slow line takes longer, and is cut and sent again at the next start (its
+  session kept); a one-request upload in flight is let finish, its commit included, within the
+  bound. Only the outbox is wound down: the poller, a fill and the rest end with the process, as
+  before. A second signal exits at once. GUESS · tested with the fake OneDrive and a paused clock.
+  Open.
 ---
 
 ## 5. Provisional numbers
@@ -2421,6 +2430,7 @@ application must never read zeros where real content should be.
 | A fill's checkpoint, every N bytes (`CHECKPOINT_EVERY`) | 16 MiB | **guess** |
 | `Retry-After` wait when Graph throttles (`429`/`503`) | default 10 s, capped at 300 s, 5 attempts before giving up | **guess** (`RetryPolicy::default`) |
 | Upload sessions given up, cancelled per run of the worker (`CANCELS_PER_LOOK`) / after a failed cancel, not again before (`CANCEL_AGAIN`) / cancelled at once by a forced switch to read-only (`DROPPED_CANCELS`) | 32 / 60 s / 256 | **guess** (issue #47, F172) |
+| The daemon's stop: the longest wait for the requests in flight (`STOP_BOUND`) | 10 s | **guess** (issue #84, F177) |
 | A placeholder taken for a recorded opening's: created at or after the recording less (`CLOCK_SLACK`) | 5 min | **guess** (issue #84, F172) |
 | Upload fragment, and the most sent in one request (`CHUNK_SIZE`, `SMALL_UPLOAD_MAX`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
 | One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |

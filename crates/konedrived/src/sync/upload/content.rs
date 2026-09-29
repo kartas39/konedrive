@@ -121,6 +121,7 @@ enum Stop {
 ///
 /// - **Paused** (`docs/design/writes.md` §11): waiting, reason
 ///   [`reason::PAUSED`], due again as soon as the pause ends. No failure.
+/// - **The daemon stopping** (issue #84): ready, resumed at the next start.
 /// - **OneDrive full** (a refusal of another row, `space`): ready in its
 ///   place, reason [`space::WAITING`], taken again once a quota read shows
 ///   space.
@@ -131,6 +132,11 @@ enum Stop {
 async fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<Stop>, Fail> {
     if e.stopped() {
         return Ok(Some(Stop::Wait(Outcome::wait(reason::PAUSED, std::time::Duration::ZERO))));
+    }
+    // The daemon is stopping (issue #84): the session is persisted, and the
+    // next start resumes it.
+    if e.closing() {
+        return Ok(Some(Stop::Wait(Outcome::again())));
     }
     if e.space_full() {
         return Ok(Some(Stop::Wait(Outcome::Space(space::WAITING.into()))));

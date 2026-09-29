@@ -514,6 +514,13 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
   frees the name. Never a copy. A holder with content, one created earlier, or one whose time is
   not given is someone else's: §6.2's `409` rule decides.
 
+- **The daemon's stop** (issue #84). On SIGTERM (systemd's stop, a package upgrade) or SIGINT the
+  outbox workers take no more rows; the rows in flight finish the request they sent — an opened
+  session is persisted, an upload in fragments stops after the fragment in flight with its session
+  kept, a one-request upload completes — and the daemon exits once they have, or after 10 s at
+  most (`stop::STOP_BOUND`). What is still in flight then is cut, and the recorded place covers
+  it. A second signal exits at once.
+
 A session opened before sessions were listed, or before openings were recorded, is known to
 nothing: its placeholder holds the name until the session expires (limitations log F172).
 
