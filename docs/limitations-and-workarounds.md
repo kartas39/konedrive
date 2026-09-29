@@ -2350,19 +2350,27 @@ application must never read zeros where real content should be.
   the worker's next runs), and a `409` whose name a listed session holds is never taken for another
   file. What is left: (1) a new file's place is recorded before its session is opened (issue #84),
   so a stop between the opening and its persisting leaves a placeholder this folder knows: a `409`
-  there from an empty file created at or after the recording (less 5 minutes for clocks, a guess)
-  deletes it and creates again. OneDrive lets an open session's placeholder be deleted, and the
+  there from an empty file the feed never listed, created in the record's window (below; 5 minutes
+  for clocks, a guess), deletes it and creates again. OneDrive lets an open session's placeholder be deleted, and the
   delete ends the session (measured, below); if it ever refuses, the row waits
-  (`upload-session-open`) — no copy. Any answer to an opening but a timeout or a lost connection
-  is certain and clears the record that attempt made (that request made no placeholder, issue
-  #89), so only a record carried from an earlier attempt whose outcome was unknown (a timeout or a
-  lost connection, or a stop) is ever compared; once resolved (our placeholder deleted, the name
-  free, or the holder not ours) it is cleared. What remains: between that unknown outcome and the
-  next `409` there — normally the row's next try — someone else's empty file, or another device's
-  placeholder, created at that name at or after the recording (less 5 minutes) would be taken for
-  ours and deleted (to the recycle bin, guarded by its eTag; for a placeholder, the delete ends
-  that device's upload); a record is also kept while the holder's `createdDateTime` is not given
-  (never taken for ours), a read or the delete fails for now, or the delete is refused. A placeholder nothing here recorded — a session opened
+  (`upload-session-open`) — no copy. Any answer to an opening but an unknown outcome is certain
+  and clears the record that attempt made (that request made no placeholder, issue #89), so only
+  a record carried from an earlier attempt whose outcome was unknown is ever compared; once resolved (our placeholder deleted, the name
+  free, or the holder not ours) it is cleared. An unknown outcome, in the code, is an answer typed
+  `Transient` — a timeout, a lost connection, a `5xx` other than `503`, an answer that could not be
+  read, a failure before sending — or a stop. What remains: an empty file the feed never listed,
+  made at that name between the first recording and the latest attempt with an unknown outcome
+  (each widened by 5 minutes) — someone else's, or another device's placeholder opened in that
+  window — would be taken for ours and deleted (to the recycle bin, guarded by its eTag; for a
+  placeholder, the delete ends that device's upload); a record is also kept while the holder's
+  `createdDateTime` is not given (never taken for ours), a read or the delete fails for now, or
+  the delete is refused. A record whose row leaves the outbox (the file removed or replaced) or
+  moves to another place before it is resolved is kept without a row, so the next row at that
+  name still finds our placeholder; such a record goes after 7 days (a guess), after which our
+  placeholder, if still there, holds the name as an unknown one would. The records at a place are
+  cleared together once one is resolved: two rows taking one OneDrive name at once (`a.txt` and
+  `A.txt` on a case-sensitive filesystem) can clear each other's live record, and a later retry of
+  the other then waits (`name-held-by-an-upload`) instead of deleting its own placeholder. A placeholder nothing here recorded — a session opened
   before sessions were listed or openings recorded, one another device is filling, one abandoned
   by another device or an older version — holds the name and the row waits
   (`name-held-by-an-upload`, issue #89) until the name is free or the holder has content (then a
@@ -2474,7 +2482,8 @@ application must never read zeros where real content should be.
 | `Retry-After` wait when Graph throttles (`429`/`503`) | default 10 s, capped at 300 s, 5 attempts before giving up | **guess** (`RetryPolicy::default`) |
 | Upload sessions given up, cancelled per run of the worker (`CANCELS_PER_LOOK`) / after a failed cancel, not again before (`CANCEL_AGAIN`) / cancelled at once by a forced switch to read-only (`DROPPED_CANCELS`) | 32 / 60 s / 256 | **guess** (issue #47, F172) |
 | The daemon's stop: the longest wait for the requests in flight (`STOP_BOUND`) | 10 s | **guess** (issue #84, F177) |
-| A placeholder taken for a recorded opening's: created at or after the recording less (`CLOCK_SLACK`) | 5 min | **guess** (issue #84, F172) |
+| A placeholder taken for a recorded opening's: created between the first recording and the latest attempt with an unknown outcome, each widened by (`CLOCK_SLACK`) | 5 min | **guess** (issues #84, #89, F172) |
+| A record of an opening whose row left, kept without a row (`OPENING_LEFT_KEEP`) | 7 days | **guess** (issue #89, F172) |
 | Upload fragment, and the most sent in one request (`CHUNK_SIZE`, `SMALL_UPLOAD_MAX`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
 | One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |
 | Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (write design §6.2) |

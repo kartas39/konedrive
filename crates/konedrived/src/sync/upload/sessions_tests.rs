@@ -251,10 +251,12 @@ fn a_409_to_a_fresh_opening_from_a_listed_file_is_still_a_conflict() {
     }
 }
 
-/// The recorded place outlasts a restart, and goes when its row leaves the
-/// outbox — committed, or never uploaded.
+/// The recorded place outlasts a restart. It goes once the row resolves it
+/// (its placeholder deleted, the file committed); a row that leaves before
+/// — its file removed — leaves it behind, without a row, since our
+/// placeholder may still hold the name (issue #89).
 #[test]
-fn a_recorded_opening_outlasts_a_restart_and_goes_with_its_row() {
+fn a_recorded_opening_outlasts_a_restart_and_a_row_that_left() {
     for removed in [false, true] {
         let w = World::new(&[]);
         opened_and_lost(&w, b"hello");
@@ -268,7 +270,7 @@ fn a_recorded_opening_outlasts_a_restart_and_goes_with_its_row() {
         }
         w.run();
         assert!(w.rows().is_empty(), "removed {removed}: {:?}", w.summary());
-        assert_eq!(opening_at(&w, "a.txt"), None, "removed {removed}");
+        assert_eq!(opening_at(&w, "a.txt").is_some(), removed, "removed {removed}");
         assert_eq!(conflicts(&w), 0);
     }
 }
@@ -443,18 +445,25 @@ fn a_move_or_mkdir_onto_our_own_sessions_name_waits() {
     }
 }
 
-/// The record of an opening: made (`false`) or carried (`true`) — the same
+/// The record of an opening: made (`None`) or carried (`Some`) — the same
 /// row at the same place, the name compared without case, keeping its first
-/// time; at another place it starts again.
+/// time; at another place it starts again, and the old one is kept without
+/// a row.
 #[test]
 fn an_opening_record_is_carried_at_the_same_place_without_case() {
     let w = World::new(&[]);
-    let record = |name: &'static str, at: i64| w.store.call_blocking(move |s| s.outbox_record_opening(7, fake::ROOT, name, at)).unwrap();
+    let record = |name: &'static str, at: i64| w.store.call_blocking(move |s| s.outbox_record_opening(7, fake::ROOT, name, at)).unwrap().is_some();
     assert!(!record("a.txt", 100));
     assert!(record("A.txt", 200), "the same name to OneDrive");
     assert_eq!(opening_at(&w, "a.txt"), Some(100));
     assert!(!record("b.txt", 300));
-    assert_eq!((opening_at(&w, "a.txt"), opening_at(&w, "b.txt")), (None, Some(300)));
+    assert_eq!((opening_at(&w, "a.txt"), opening_at(&w, "b.txt")), (Some(100), Some(300)));
+    // Kept without a row for a week, then gone (left at 300 here).
+    let keep = crate::tree::outbox::OPENING_LEFT_KEEP;
+    w.store.call_blocking(move |s| s.upload_openings_expire(300 + keep)).unwrap();
+    assert_eq!(opening_at(&w, "a.txt"), Some(100));
+    w.store.call_blocking(move |s| s.upload_openings_expire(301 + keep)).unwrap();
+    assert_eq!(opening_at(&w, "a.txt"), None);
 }
 
 /// A timeout or a lost connection (a `5xx` here) leaves the opening's
@@ -474,7 +483,7 @@ fn only_an_unknown_outcome_keeps_the_opening_record() {
         if kept {
             let seq = w.rows()[0].seq;
             let carried = w.store.call_blocking(move |s| s.outbox_record_opening(seq, fake::ROOT, "a.txt", 0)).unwrap();
-            assert!(carried, "{status}: the retry carries it");
+            assert!(carried.is_some(), "{status}: the retry carries it");
             assert_eq!(opening_at(&w, "a.txt"), at);
         }
     }
@@ -541,4 +550,83 @@ fn a_resolved_record_never_deletes_a_later_placeholder() {
     assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
     assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions(), c.count("DELETE", "items/"))), (vec!["a.txt".to_owned()], 1, 1));
     assert_eq!(conflicts(&w), 0);
+}
+
+/// A timeout after OneDrive opened the session (issue #89): the record is
+/// kept. The row then leaves (the file replaced by another inode), and its
+/// record stays without a row: the new row at the name finds our placeholder
+/// through it, deletes it, and goes up under its name — no copy, no endless
+/// wait.
+#[test]
+fn a_record_whose_row_left_still_finds_our_placeholder() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"first");
+    w.examine(&[("", "a.txt")]);
+    w.cloud(|c| c.lose_answers("POST", "createUploadSession", 1));
+    w.run();
+    assert_eq!(w.cloud(|c| c.placeholders()), vec!["a.txt"], "OneDrive opened it");
+    let first = w.rows()[0].seq;
+    assert!(opening_at(&w, "a.txt").is_some());
+
+    std::fs::remove_file(w.path("a.txt")).unwrap();
+    w.write("b.tmp", b"second");
+    w.rename("b.tmp", "a.txt");
+    w.examine(&[("", "a.txt"), ("", "b.tmp")]);
+    assert!(w.rows().iter().all(|r| r.seq != first), "the row left: {:?}", w.summary());
+    assert!(opening_at(&w, "a.txt").is_some(), "kept without its row");
+
+    due_all(&w);
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["a.txt"]);
+    assert_eq!(w.content("a.txt").unwrap(), b"second");
+    assert_eq!(conflicts(&w), 0);
+    assert_eq!(opening_at(&w, "a.txt"), None, "resolved");
+}
+
+/// Every row due now.
+fn due_all(w: &World) {
+    for row in w.rows() {
+        let seq = row.seq;
+        w.store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Ready, None, None)).unwrap();
+    }
+}
+
+/// A carried record takes for ours only an empty holder made up to the
+/// latest attempt whose outcome was not known (plus the clock slack): one
+/// made later is another device's — never deleted, the row waits.
+#[test]
+fn a_carried_record_never_takes_a_later_placeholder_for_ours() {
+    let w = World::new(&[]);
+    opened_and_lost(&w, b"mine");
+    w.cloud(|c| {
+        c.expire_sessions();
+        c.open_elsewhere(fake::ROOT, "a.txt", -(crate::sync::upload::content::CLOCK_SLACK + 60));
+    });
+    w.run();
+    assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
+    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.cloud(|c| (c.placeholders().len(), c.count("DELETE", "items/"))), (1, 0));
+    assert_eq!(opening_at(&w, "a.txt"), None, "resolved");
+}
+
+/// A carried record and an empty holder the delta feed listed (renamed to
+/// the name in OneDrive since): never ours, never deleted — a copy, as for
+/// any listed file.
+#[test]
+fn a_carried_record_never_takes_a_listed_file_for_ours() {
+    let w = World::new(&[file("X", "R", "x.txt", b"")]);
+    opened_and_lost(&w, b"mine");
+    w.cloud(|c| {
+        c.expire_sessions();
+        c.rename("X", fake::ROOT, "a.txt");
+        c.created.insert("X".into(), crate::sync::activity::unix_now());
+    });
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.id_at("a.txt").as_deref(), Some("X"));
+    assert_eq!(w.content("a-fedora.txt").unwrap(), b"mine");
+    assert_eq!(w.cloud(|c| c.count("DELETE", "items/")), 0);
+    assert_eq!(conflicts(&w), 1);
+    assert_eq!(opening_at(&w, "a.txt"), None);
 }

@@ -94,18 +94,34 @@ const INDEXES: &str = "
 ///
 /// And the openings (issue #84): the place a new file's session is about to
 /// take, recorded before the request that opens it, so that a stop before its
-/// URL is persisted still knows the placeholder it may have left. One per row;
-/// the URL replaces it (`outbox_open_session`), and it goes with its row.
+/// URL is persisted still knows the placeholder it may have left. One per row
+/// (`at` its first time, `last` the latest attempt whose outcome is not
+/// known; an older store's rows have no `last`, read as `at`); the URL
+/// replaces it (`outbox_open_session`). A record exists only while an
+/// attempt's outcome is unknown, so one whose row leaves, or moves to another
+/// place, is kept without a row (`upload_openings_left`, issue #89) until a
+/// `409` there resolves it, or for [`OPENING_LEFT_KEEP`].
 const SESSIONS: &str = "
     CREATE TABLE IF NOT EXISTS upload_sessions (url TEXT PRIMARY KEY, parent TEXT, name TEXT, opened INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS upload_openings (seq INTEGER PRIMARY KEY, parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS upload_openings (seq INTEGER PRIMARY KEY, parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER);
     CREATE INDEX IF NOT EXISTS upload_openings_parent ON upload_openings(parent);
-    CREATE TRIGGER IF NOT EXISTS upload_openings_leave AFTER DELETE ON outbox
-        BEGIN DELETE FROM upload_openings WHERE seq = OLD.seq; END;
+    CREATE TABLE IF NOT EXISTS upload_openings_left (parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER NOT NULL, left_at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS upload_openings_left_parent ON upload_openings_left(parent);
+    DROP TRIGGER IF EXISTS upload_openings_leave;
+    CREATE TRIGGER IF NOT EXISTS upload_openings_left_behind AFTER DELETE ON outbox
+        BEGIN
+            INSERT INTO upload_openings_left (parent, name, at, last, left_at)
+                SELECT parent, name, at, COALESCE(last, at), CAST(strftime('%s', 'now') AS INTEGER) FROM upload_openings WHERE seq = OLD.seq;
+            DELETE FROM upload_openings WHERE seq = OLD.seq;
+        END;
     CREATE INDEX IF NOT EXISTS upload_sessions_parent ON upload_sessions(parent);
     CREATE INDEX IF NOT EXISTS outbox_session ON outbox(session_url) WHERE session_url IS NOT NULL;
     INSERT OR IGNORE INTO upload_sessions (url, parent, name, opened)
         SELECT session_url, NULL, NULL, 0 FROM outbox WHERE session_url IS NOT NULL;";
+
+/// How long a record of an opening whose row left is kept (issue #89): a
+/// guess, longer than an abandoned placeholder was seen to live (a day).
+pub const OPENING_LEFT_KEEP: i64 = 7 * 24 * 3600;
 
 /// The rows the partial index `outbox_frees` holds: those with a base place
 /// they leave. [`frees`] decides among them.
@@ -126,6 +142,11 @@ pub(super) fn upgrade(conn: &Connection) -> Result<(), TreeError> {
         }
     }
     conn.execute_batch(&INDEXES.replace("FREES", FREES))?;
+    let has_last = conn.prepare("SELECT 1 FROM pragma_table_info('upload_openings') WHERE name = 'last'")?.exists([])?;
+    let has_table = conn.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'upload_openings'")?.exists([])?;
+    if has_table && !has_last {
+        conn.execute_batch("ALTER TABLE upload_openings ADD COLUMN last INTEGER")?;
+    }
     conn.execute_batch(SESSIONS)?;
     Ok(())
 }

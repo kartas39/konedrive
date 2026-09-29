@@ -206,57 +206,97 @@ impl TreeStore {
     /// Row `seq` is about to open a new file's session at (`parent`, `name`)
     /// (issue #84): recorded before the request, so that a stop before its
     /// URL is persisted still knows the empty placeholder it may leave there.
-    /// Recorded again at the same place, it keeps its first time: the
-    /// placeholder of an earlier opening is as much this row's. `true`: a
-    /// record of an earlier attempt at the same place was already there
-    /// (carried); `false`: this call made it.
-    pub fn outbox_record_opening(&self, seq: i64, parent: &str, name: &str, now: i64) -> Result<bool, TreeError> {
-        // Names compared without case, as OneDrive does (and as
-        // `upload_opening_at`): in Rust, since SQLite's `lower` is ASCII only.
-        let earlier: Option<(String, String, i64)> = self
+    /// Recorded again at the same place (the name without case, as OneDrive
+    /// compares), it keeps its first time: the placeholder of an earlier
+    /// opening is as much this row's. The attempt's time is `last` until its
+    /// answer says otherwise. `Some(last)`: carried — a record of an earlier
+    /// attempt here, its latest unknown outcome at `last`; `None`: this call
+    /// made it. A record at another place is kept without a row.
+    pub fn outbox_record_opening(&self, seq: i64, parent: &str, name: &str, now: i64) -> Result<Option<i64>, TreeError> {
+        // In Rust, since SQLite's `lower` is ASCII only.
+        let earlier: Option<(String, String, i64, i64)> = self
             .conn
-            .query_row("SELECT parent, name, at FROM upload_openings WHERE seq = ?1", [seq], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .query_row("SELECT parent, name, at, COALESCE(last, at) FROM upload_openings WHERE seq = ?1", [seq], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
             .optional()?;
-        let carried = earlier.as_ref().is_some_and(|(p, n, _)| p == parent && n.to_lowercase() == name.to_lowercase());
-        let at = match earlier {
-            Some((_, _, at)) if carried => at,
-            _ => now,
+        let (at, carried) = match earlier {
+            Some((p, n, at, last)) if p == parent && n.to_lowercase() == name.to_lowercase() => (at, Some(last)),
+            Some((p, n, at, last)) => {
+                self.conn.execute(
+                    "INSERT INTO upload_openings_left (parent, name, at, last, left_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![p, n, at, last, now],
+                )?;
+                (now, None)
+            }
+            None => (now, None),
         };
         self.conn.execute(
-            "INSERT INTO upload_openings (seq, parent, name, at) VALUES (?1, ?2, ?3, ?4)
-               ON CONFLICT(seq) DO UPDATE SET parent = excluded.parent, name = excluded.name, at = excluded.at",
-            params![seq, parent, name, at],
+            "INSERT INTO upload_openings (seq, parent, name, at, last) VALUES (?1, ?2, ?3, ?4, ?5)
+               ON CONFLICT(seq) DO UPDATE SET parent = excluded.parent, name = excluded.name, at = excluded.at, last = excluded.last",
+            params![seq, parent, name, at, now],
         )?;
         Ok(carried)
     }
 
-    /// Row `seq`'s opening was refused for certain: no placeholder of it.
-    pub fn outbox_opening_refused(&self, seq: i64) -> Result<(), TreeError> {
-        self.conn.execute("DELETE FROM upload_openings WHERE seq = ?1", [seq])?;
+    /// Row `seq`'s opening was answered for certain: no placeholder of it.
+    /// A record this attempt made goes; a carried one (`carried`, its last
+    /// unknown outcome) is kept as it was before the attempt.
+    pub fn outbox_opening_answered(&self, seq: i64, carried: Option<i64>) -> Result<(), TreeError> {
+        match carried {
+            Some(last) => self.conn.execute("UPDATE upload_openings SET last = ?2 WHERE seq = ?1", params![seq, last])?,
+            None => self.conn.execute("DELETE FROM upload_openings WHERE seq = ?1", [seq])?,
+        };
         Ok(())
     }
 
-    /// The openings recorded at `name` (without case) in `parent` are
-    /// resolved — their placeholder deleted, the name free, or its holder not
-    /// theirs: every one goes.
+    /// The openings recorded at `name` (without case) in `parent`, with a
+    /// row or without, are resolved — their placeholder deleted, the name
+    /// free, or its holder not theirs: every one goes.
     pub fn upload_openings_clear_at(&self, parent: &str, name: &str) -> Result<(), TreeError> {
-        let mut statement = self.conn.prepare("SELECT seq, name FROM upload_openings WHERE parent = ?1")?;
         let lower = name.to_lowercase();
-        let rows = statement.query_map([parent], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
-        for (seq, _) in rows.into_iter().filter(|(_, n)| n.to_lowercase() == lower) {
-            self.conn.execute("DELETE FROM upload_openings WHERE seq = ?1", [seq])?;
+        for table in ["upload_openings", "upload_openings_left"] {
+            let mut statement = self.conn.prepare(&format!("SELECT rowid, name FROM {table} WHERE parent = ?1"))?;
+            let rows = statement.query_map([parent], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+            for (rowid, _) in rows.into_iter().filter(|(_, n)| n.to_lowercase() == lower) {
+                self.conn.execute(&format!("DELETE FROM {table} WHERE rowid = ?1"), [rowid])?;
+            }
         }
         Ok(())
     }
 
-    /// The earliest time an opening recorded at `name` (without case) in
-    /// `parent`, whose URL never came: from then on an empty placeholder
-    /// there may be this folder's.
-    pub fn upload_opening_at(&self, parent: &str, name: &str) -> Result<Option<i64>, TreeError> {
-        let mut statement = self.conn.prepare("SELECT name, at FROM upload_openings WHERE parent = ?1")?;
+    /// Records without a row older than [`OPENING_LEFT_KEEP`](super::OPENING_LEFT_KEEP) go.
+    pub fn upload_openings_expire(&self, now: i64) -> Result<(), TreeError> {
+        self.conn.execute("DELETE FROM upload_openings_left WHERE left_at < ?1", [now - super::OPENING_LEFT_KEEP])?;
+        Ok(())
+    }
+
+    /// The window of the openings recorded at `name` (without case) in
+    /// `parent`, with a row or without, whose URL never came: from the
+    /// earliest first time to the latest attempt whose outcome is not known.
+    /// Only in it may an empty placeholder there be this folder's.
+    pub fn upload_opening_window(&self, parent: &str, name: &str) -> Result<Option<(i64, i64)>, TreeError> {
         let lower = name.to_lowercase();
-        let rows = statement.query_map([parent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
-        Ok(rows.into_iter().filter(|(n, _)| n.to_lowercase() == lower).map(|(_, at)| at).min())
+        let mut window: Option<(i64, i64)> = None;
+        for sql in [
+            "SELECT name, at, COALESCE(last, at) FROM upload_openings WHERE parent = ?1",
+            "SELECT name, at, last FROM upload_openings_left WHERE parent = ?1",
+        ] {
+            let mut statement = self.conn.prepare(sql)?;
+            let rows = statement
+                .query_map([parent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
+                .collect::<Result<Vec<_>, _>>()?;
+            for (_, at, last) in rows.into_iter().filter(|(n, _, _)| n.to_lowercase() == lower) {
+                window = Some(window.map_or((at, last), |(a, l)| (a.min(at), l.max(last))));
+            }
+        }
+        Ok(window)
+    }
+
+    /// The earliest time of the openings recorded at `name` (without case)
+    /// in `parent`: [`upload_opening_window`](Self::upload_opening_window)'s start.
+    pub fn upload_opening_at(&self, parent: &str, name: &str) -> Result<Option<i64>, TreeError> {
+        Ok(self.upload_opening_window(parent, name)?.map(|(at, _)| at))
     }
 
     /// Row `seq`'s session completed, or is gone: the row and the list

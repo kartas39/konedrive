@@ -30,10 +30,11 @@ use crate::sync::local::examine::OPEN_FOR_WRITING;
 use crate::sync::local::{names, QUIET, RECHECK};
 use crate::sync::InodeKey;
 use crate::tree::outbox::{Base, OutboxKind, OutboxRow};
+use crate::tree::Table;
 
 /// How far OneDrive's clock may be behind this machine's when a placeholder's
 /// creation time is compared with the recorded opening (issue #84).
-const CLOCK_SLACK: i64 = 5 * 60;
+pub(super) const CLOCK_SLACK: i64 = 5 * 60;
 
 /// A new file's row whose upload OneDrive holds with other content, and
 /// could not be deleted yet: `hash-mismatch:<item id>`.
@@ -258,13 +259,15 @@ impl Job<'_> {
 
     /// A `409` at a place where this folder recorded an opening whose URL
     /// never came (issue #84) — carried from an earlier attempt whose outcome
-    /// was not known, since a certain answer to the attempt that made the
-    /// record clears it (issue #89): the holder is an empty file made at or
-    /// after the recording (less [`CLOCK_SLACK`]) → it is that opening's
-    /// placeholder. It is deleted, and the create goes again; a delete
+    /// was not known, with its row or left by it, since a certain answer to
+    /// the attempt that made the record clears it (issue #89): the holder is
+    /// an empty file the delta feed never listed, made between the first
+    /// recording and the latest attempt whose outcome was not known (each
+    /// widened by [`CLOCK_SLACK`]) → it is that opening's placeholder. It is deleted, and the create goes again; a delete
     /// OneDrive refuses leaves the row waiting (`upload-session-open`). Never
-    /// a copy. Any other holder — with content, older, or its time unknown —
-    /// is not taken for ours: `None`, and [`taken`] decides.
+    /// a copy. Any other holder — with content, listed, older, later, or its
+    /// time unknown — is not taken for ours:
+    /// `None`, and [`taken`] decides.
     ///
     /// Once resolved — the placeholder deleted, the name found free, or the
     /// holder not ours (at most one placeholder of ours holds a name) — the
@@ -273,7 +276,7 @@ impl Job<'_> {
     /// given, a read or a delete fails for now, or the delete is refused.
     async fn opened_placeholder(&self) -> Result<Option<Outcome>, Fail> {
         let (parent, name) = (self.parent.to_owned(), self.name.to_owned());
-        let Some(at) = self.e.store().call(move |s| s.upload_opening_at(&parent, &name)).await? else { return Ok(None) };
+        let Some((first, last)) = self.e.store().call(move |s| s.upload_opening_window(&parent, &name)).await? else { return Ok(None) };
         let holder = match self.e.cfg.drive.child(self.parent, self.name).await {
             Ok(holder) => holder,
             Err(DriveError::NotFound) => {
@@ -284,7 +287,9 @@ impl Job<'_> {
         };
         let Some(created) = holder.created_date_time.as_deref().and_then(parse_graph_time) else { return Ok(None) };
         let empty = holder.file.is_some() && holder.size == Some(0);
-        if !empty || created < at - CLOCK_SLACK {
+        let id = holder.id.clone();
+        let listed = self.e.store().call(move |s| Ok(s.get(Table::Items, &id)?.is_some() || s.get(Table::Staging, &id)?.is_some())).await?;
+        if listed || !empty || created < first - CLOCK_SLACK || created > last + CLOCK_SLACK {
             self.resolved().await?;
             return Ok(None);
         }
@@ -568,21 +573,22 @@ impl Job<'_> {
             UploadTarget::Existing { .. } => None,
         };
         let seq = self.row.seq;
-        let mut carried = false;
+        let mut carried = None;
         if let Some((parent, name)) = place.clone() {
             carried = self.e.store().call(move |s| s.outbox_record_opening(seq, &parent, &name, now())).await?;
         }
         let opened = match self.e.cfg.drive.create_upload_session(target, self.snap.size, self.snap.sec).await {
             Ok(opened) => opened,
             Err(err) => {
-                // Any answer but a timeout or a lost connection is certain:
-                // this request made no placeholder (issue #89), and the record
-                // this call made goes. One carried from an earlier attempt
-                // whose outcome was not known is kept: what holds the name may
-                // be that attempt's placeholder.
-                let certain = !matches!(err, WriteError::Transient(_));
-                if place.is_some() && certain && !carried {
-                    self.e.store().call(move |s| s.outbox_opening_refused(seq)).await?;
+                // Any answer but `Transient` (a timeout, a lost connection, a
+                // `5xx` other than `503`, an unreadable answer, a failure
+                // before sending) is certain: this request made no
+                // placeholder (issue #89). The record this call made goes; one
+                // carried from an earlier attempt whose outcome was not known
+                // is kept as it was — what holds the name may be that
+                // attempt's placeholder.
+                if place.is_some() && !matches!(err, WriteError::Transient(_)) {
+                    self.e.store().call(move |s| s.outbox_opening_answered(seq, carried)).await?;
                 }
                 return Ok(Err(err));
             }

@@ -227,6 +227,11 @@ pub(crate) async fn cancel_session(store: &Store, drive: &DriveClient, url: &str
 /// and pointed at by no row. Stops at the first cancel that fails; whether
 /// none did.
 pub async fn cancel_given_up(store: &Store, drive: &DriveClient, limit: usize) -> bool {
+    // With the look, the records of openings whose row left long ago go (issue #89).
+    let now = crate::sync::activity::unix_now();
+    if let Err(e) = store.call(move |s| s.upload_openings_expire(now)).await {
+        tracing::warn!("cannot expire the upload openings: {e}");
+    }
     let urls = match store.call(move |s| s.upload_sessions_given_up(limit)).await {
         Ok(urls) => urls,
         Err(e) => {
