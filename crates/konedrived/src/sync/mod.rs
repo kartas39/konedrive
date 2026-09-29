@@ -6719,13 +6719,18 @@ mod tests {
         service.hydrate_now(&file).await.unwrap();
         assert_eq!(std::fs::read(&file).unwrap(), vec![4u8; 4096]);
         assert_eq!(service.item_state(&file).await, "hydrated");
+        use std::os::unix::fs::MetadataExt;
+        let hydrated = std::fs::metadata(&file).unwrap().blocks();
         service.dehydrate(&file).await.unwrap();
         assert_eq!(service.item_state(&file).await, "online-only");
 
-        use std::os::unix::fs::MetadataExt;
         let meta = std::fs::metadata(&file).unwrap();
         assert_eq!(meta.len(), 4096, "the size survives");
-        assert!(meta.blocks() < 8, "the content is gone");
+        // Every block of the 4 KiB of content is given back (8 sectors of
+        // 512 bytes). Whatever else the file holds — ext4 counts an external
+        // xattr block in `st_blocks`, btrfs does not — stays and is not the
+        // content.
+        assert!(meta.blocks() + 8 <= hydrated, "the content is gone: {hydrated} -> {} blocks", meta.blocks());
     }
 
     // --- Startup and the helper supervisor ----------
