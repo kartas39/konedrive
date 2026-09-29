@@ -114,7 +114,9 @@ fn route(rel: &str) -> Route {
 
 struct Session {
     url: String,
-    size: u64,
+    /// The file's size: declared by the session request, or else (a personal drive refuses
+    /// `fileSize`) fixed by the first fragment's `Content-Range`.
+    size: Option<u64>,
 }
 
 struct State {
@@ -206,8 +208,8 @@ impl Guard {
     }
 
     /// Registers the upload URL OneDrive answered a session request with, for a file of `size`
-    /// bytes, and answers the key the proxy hands out in its place.
-    pub fn open_session(&self, url: String, size: u64) -> String {
+    /// bytes when the request declared it, and answers the key the proxy hands out in its place.
+    pub fn open_session(&self, url: String, size: Option<u64>) -> String {
         let mut state = self.state();
         let key = format!("s{}", state.sessions.len() + 1);
         state.sessions.insert(key.clone(), Session { url, size });
@@ -257,6 +259,13 @@ impl Guard {
                     .content_range
                     .and_then(content_range)
                     .ok_or("a fragment without a readable Content-Range")?;
+                let size = match size {
+                    Some(size) => size,
+                    None if total > self.caps.per_file => {
+                        return Err(format!("a file of {total} bytes is over the cap of {} per file", self.caps.per_file))
+                    }
+                    None => total,
+                };
                 if total != size || last >= total || last + 1 - first != request.body.len() as u64 {
                     return Err(format!(
                         "a fragment of bytes {first}-{last}/{total}, {} bytes long, does not fit its session of {size} bytes",
@@ -264,6 +273,9 @@ impl Guard {
                     ));
                 }
                 self.content(state, request.body.len() as u64)?;
+                if let Some(session) = state.sessions.get_mut(key) {
+                    session.size = Some(size);
+                }
                 Ok(Forward::Upload(url))
             }
             ref method => Err(format!("{method} to an upload URL is not a request this run makes now")),
@@ -427,14 +439,16 @@ impl Guard {
         Ok(Forward::Graph)
     }
 
-    /// A session request's `item`, whose `fileSize` must be given and within the cap.
+    /// A session request's `item`, whose `fileSize`, if given, must be within the cap. A
+    /// personal drive refuses `fileSize` (`400`), so the cap is then applied to the first
+    /// fragment's `Content-Range` instead.
     fn session_item(&self, body: &[u8], what: &str) -> Result<Map<String, Value>, String> {
         let mut body = object(body, what)?;
         let item = match body.remove("item") {
             Some(Value::Object(item)) if body.is_empty() => item,
             _ => return Err(format!("{what}: a session request is one item")),
         };
-        let size = item.get("fileSize").and_then(Value::as_u64).ok_or_else(|| format!("{what}: no fileSize"))?;
+        let size = item.get("fileSize").and_then(Value::as_u64).unwrap_or(0);
         if size > self.caps.per_file {
             return Err(format!("{what}: a file of {size} bytes is over the cap of {} per file", self.caps.per_file));
         }

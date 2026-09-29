@@ -85,7 +85,8 @@ macro_rules! step {
 
 pub struct Run {
     drive: DriveClient,
-    read_only: DriveClient,
+    /// None when `--only` picks checks that do not use it.
+    read_only: Option<DriveClient>,
     api: Api,
     guard: Arc<Guard>,
     folder: String,
@@ -101,7 +102,7 @@ pub struct Run {
 impl Run {
     pub fn new(
         drive: DriveClient,
-        read_only: DriveClient,
+        read_only: Option<DriveClient>,
         api: Api,
         guard: Arc<Guard>,
         folder: String,
@@ -170,7 +171,7 @@ impl Run {
     }
 
     async fn new_file(&mut self, parent: &str, name: &str, content: Vec<u8>, time: i64) -> Result<DriveItem, WriteError> {
-        let item = self.drive.upload_small(UploadTarget::New { parent_id: parent, name }, content, time).await?;
+        let item = send(&self.drive, UploadTarget::New { parent_id: parent, name }, content, time).await?;
         self.note(&item);
         Ok(item)
     }
@@ -181,7 +182,7 @@ impl Run {
     }
 
     async fn replace(&mut self, id: &str, if_match: &str, content: Vec<u8>, time: i64) -> Result<DriveItem, WriteError> {
-        let item = self.drive.upload_small(UploadTarget::Existing { id, if_match }, content, time).await?;
+        let item = send(&self.drive, UploadTarget::Existing { id, if_match }, content, time).await?;
         self.note(&item);
         Ok(item)
     }
@@ -236,7 +237,7 @@ impl Run {
         }
     }
 
-    /// §3.6: a file up to 10 MiB goes in a one-request session, carrying its time.
+    /// §3.6: a file up to 10 MiB goes in a session of one fragment, carrying its time.
     async fn small_file(&mut self) -> Outcome {
         let content = self.content(100 * 1024);
         let hash = quickxor(&content);
@@ -411,7 +412,8 @@ impl Run {
     /// The consent check (limitations log F66): the token konedrive hands out after the switch
     /// back to read-only can only read, and OneDrive enforces it.
     async fn read_only_token(&mut self) -> Outcome {
-        match self.read_only.create_folder(&self.folder, "read-only-probe").await {
+        let Some(read_only) = &self.read_only else { return Fail("no read-only token was given".into()) };
+        match read_only.create_folder(&self.folder, "read-only-probe").await {
             Err(WriteError::Forbidden) => Pass("a write with it was refused 403".into()),
             Ok(_) => Fail("it made a folder: the switch back to read-only left a token that can write".into()),
             Err(e) => Fail(format!("expected 403, got: {e}")),
@@ -472,6 +474,20 @@ impl Run {
     }
 }
 
+/// A file's content as the outbox worker sends it (issue #47): an empty file in one `PUT`, any
+/// other in a session of one fragment.
+pub async fn send(drive: &DriveClient, target: UploadTarget<'_>, content: Vec<u8>, time: i64) -> Result<DriveItem, WriteError> {
+    if content.is_empty() {
+        return drive.upload_empty(target, time).await;
+    }
+    let total = content.len() as u64;
+    let session = drive.create_upload_session(target, total, time).await?;
+    match drive.upload_chunk(&session.url, 0, total, content).await? {
+        ChunkOutcome::Done(item) => Ok(*item),
+        ChunkOutcome::More(progress) => Err(WriteError::Transient(format!("a one-fragment session expects byte {}", progress.next))),
+    }
+}
+
 /// The delta feed from `link` to its end, the latest state of each item.
 async fn follow(drive: &DriveClient, link: &str) -> Result<HashMap<String, DriveItem>, DriveError> {
     let mut from = DeltaFrom::Link(link.to_owned());
@@ -491,3 +507,6 @@ async fn follow(drive: &DriveClient, link: &str) -> Result<HashMap<String, Drive
 fn message(answer: &Value) -> String {
     answer.pointer("/error/message").and_then(Value::as_str).unwrap_or("no message").to_owned()
 }
+
+// After `step!`, which it uses.
+mod placeholders;

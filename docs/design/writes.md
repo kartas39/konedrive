@@ -931,7 +931,8 @@ every guard holds**:
 
 1. `--graph-test-drive` is the drive both tokens reach (`GET /me/drive`), and is listed in
    `write_test_drive_ids` in the `config.toml` given with `--daemon-config`;
-2. the drive looks like a test account: less than 1 GiB in use and fewer than 1000 items;
+2. the drive looks like a test account: less than 1 GiB in use and fewer than 1000 items — unless
+   `--large-test-drive` says the test account holds more (limitations log F130);
 3. every write stays in `/konedrive-write-test/<run id>/`, which the run makes and puts into the
    recycle bin at the end. Every request goes through a proxy on `127.0.0.1` whose guard asserts,
    before it sends anything, that the item the request names, or the parent of what it makes, lies
@@ -961,6 +962,16 @@ cargo run -p konedrive-write-test -- --graph-test-drive <id> \
     --graph-token /tmp/kd-rw.token --graph-read-only-token /tmp/kd-ro.token \
     --daemon-config ~/.config/konedrive/config.toml
 rm /tmp/kd-rw.token /tmp/kd-ro.token
+```
+
+Only the placeholder checks (limitations log F172), which need no read-only token, on a test
+account that holds more than 1 GiB:
+
+```
+konedrivectl --account Test dev export-access-token --read-write --out /tmp/kd-rw.token
+cargo run -p konedrive-write-test -- --graph-test-drive <id> --graph-token /tmp/kd-rw.token \
+    --daemon-config ~/.config/konedrive/config.toml --large-test-drive --only placeholders
+rm /tmp/kd-rw.token
 ```
 
 The second export is the check of the switch back: it is the token of the refresh that followed

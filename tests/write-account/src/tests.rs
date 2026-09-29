@@ -26,12 +26,14 @@ fn options(server: &MockServer, allowed: &[&str]) -> Options {
     Options {
         upstream: Url::parse(&format!("{}/", server.uri())).unwrap(),
         token: "RW".into(),
-        read_only_token: "RO".into(),
+        read_only_token: Some("RO".into()),
         test_drive: DRIVE.into(),
         config,
         caps: Caps::default(),
         run_id: "run-1".into(),
         delta_wait: Duration::from_millis(10),
+        large: false,
+        only: None,
     }
 }
 
@@ -131,7 +133,7 @@ async fn a_read_only_token_that_reaches_another_drive_is_refused() {
 async fn the_same_token_twice_is_refused_before_any_request() {
     let server = MockServer::start().await;
     let mut options = options(&server, &[DRIVE]);
-    options.read_only_token = options.token.clone();
+    options.read_only_token = Some(options.token.clone());
     let why = refused(options).await;
     assert!(why.contains("read-only token is the read-write one"), "{why}");
     assert_eq!(reads_only(&server).await, 0);
@@ -326,18 +328,34 @@ fn the_run_stops_at_its_byte_cap() {
     let guard = armed(Caps { per_file: 10, per_run: 25, requests: 500 });
     let content = [7u8; 10];
     for (n, url) in ["https://up.example/1", "https://up.example/2"].into_iter().enumerate() {
-        let key = guard.open_session(url.into(), 10);
+        let key = guard.open_session(url.into(), Some(10));
         assert_eq!(guard.admit(&fragment(&key, "bytes 0-9/10", &content)), Ok(Forward::Upload(url.into())), "session {n}");
     }
-    let key = guard.open_session("https://up.example/3".into(), 10);
+    let key = guard.open_session("https://up.example/3".into(), Some(10));
     assert!(guard.admit(&fragment(&key, "bytes 0-9/10", &content)).unwrap_err().contains("cap of 25"));
     assert_eq!(guard.usage().1, 20);
     // A fragment that does not fit its session, and a URL the run was not given.
     let guard = armed(Caps::default());
-    let key = guard.open_session("https://up.example/1".into(), 10);
+    let key = guard.open_session("https://up.example/1".into(), Some(10));
     assert!(guard.admit(&fragment(&key, "bytes 0-9/11", &content)).is_err());
     let guard = armed(Caps::default());
     assert!(guard.admit(&fragment("s9", "bytes 0-9/10", &content)).is_err());
+}
+
+/// A personal drive refuses `fileSize`, so a session declares none: its first fragment fixes
+/// the size, under the same cap.
+#[test]
+fn a_session_without_a_declared_size_takes_its_first_fragments() {
+    let guard = armed(Caps { per_file: 20, per_run: 500, requests: 500 });
+    let body = json!({ "item": { "@microsoft.graph.conflictBehavior": "fail", "name": "x.bin" } }).to_string();
+    assert!(guard.admit(&graph(&Method::POST, "me/drive/items/RUN:/x.bin:/createUploadSession", None, body.as_bytes())).is_ok());
+    let url = "https://up.example/1";
+    let key = guard.open_session(url.into(), None);
+    assert_eq!(guard.admit(&fragment(&key, "bytes 0-9/20", &[7u8; 10])), Ok(Forward::Upload(url.into())));
+    assert!(guard.admit(&fragment(&key, "bytes 10-19/30", &[7u8; 10])).is_err(), "the size is fixed by the first fragment");
+    let guard = armed(Caps { per_file: 20, per_run: 500, requests: 500 });
+    let key = guard.open_session(url.into(), None);
+    assert!(guard.admit(&fragment(&key, "bytes 0-9/21", &[7u8; 10])).unwrap_err().contains("per file"));
 }
 
 #[test]
@@ -429,18 +447,15 @@ async fn an_upload_goes_through_the_guard_and_never_carries_the_token() {
         .await;
     let (guard, _proxy, drive) = bootstrapped(&server).await;
     let target = UploadTarget::New { parent_id: "RUN", name: "small.bin" };
-    assert_eq!(drive.upload_small(target, vec![7; 100], 1_700_000_000).await.unwrap().id, "S");
+    assert_eq!(checks::send(&drive, target, vec![7; 100], 1_700_000_000).await.unwrap().id, "S");
     let requests = server.received_requests().await.unwrap();
     let put = requests.iter().find(|r| r.url.path() == "/session/1").expect("the fragment reached the session");
     assert!(put.headers.get("authorization").is_none(), "the token went to the upload URL");
     assert_eq!(put.headers.get("content-range").unwrap(), "bytes 0-99/100");
     assert_eq!(guard.usage().1, 100);
     assert!(guard.is_inside("S"), "learnt from the session's answer");
-    // A file over the cap is refused before its session is asked for.
-    let big = UploadTarget::New { parent_id: "RUN", name: "big.bin" };
-    assert!(drive.create_upload_session(big, 64 * MIB + 1, 1_700_000_000).await.is_err());
-    let requests = server.received_requests().await.unwrap();
-    assert!(!writes(&requests).iter().any(|w| w.contains("big.bin")), "{:?}", writes(&requests));
+    // A file over the cap: a session declares no size (a personal drive refuses fileSize), so
+    // its first fragment is refused instead (a_session_without_a_declared_size_takes_its_first_fragments).
 }
 
 // The command line and the files it names.
