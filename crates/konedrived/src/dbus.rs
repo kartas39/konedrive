@@ -1,7 +1,7 @@
-//! `org.konedrive.Account1` and `org.konedrive.Dev1`, one of each per account on the
+//! `org.konedrive.Account` and `org.konedrive.TokenExport`, one of each per account on the
 //! account's object `/org/konedrive/Accounts/<id>` (definitions: `dbus/*.xml`). The
 //! accounts themselves, and the client id every account signs in with, are
-//! `org.konedrive.Accounts1`'s (`crate::accounts`).
+//! `org.konedrive.Accounts`'s (`crate::accounts`).
 
 use std::sync::Arc;
 
@@ -13,12 +13,12 @@ use zbus::{fdo, interface, Connection};
 use crate::account::{AccountError, AccountService, ModeError};
 use crate::state::AccountSnapshot;
 
-pub struct Account1 {
+pub struct Account {
     service: Arc<AccountService>,
 }
 
-#[interface(name = "org.konedrive.Account1")]
-impl Account1 {
+#[interface(name = "org.konedrive.Account")]
+impl Account {
     async fn begin_sign_in(&self) -> fdo::Result<String> {
         self.service.begin_sign_in().await.map_err(to_fdo)
     }
@@ -31,12 +31,12 @@ impl Account1 {
         self.service.sign_out().await.map_err(to_fdo)
     }
 
-    async fn refresh_account_info(&self) {
+    async fn refresh_info(&self) {
         let service = Arc::clone(&self.service);
         tokio::spawn(async move { service.refresh_account_info().await });
     }
 
-    /// The rules of `Accounts1.Add`; `InvalidArgs` otherwise.
+    /// The rules of `Accounts.Add`; `InvalidArgs` otherwise.
     async fn set_label(&self, label: &str) -> fdo::Result<()> {
         self.service.set_label(label).map_err(to_fdo)
     }
@@ -94,6 +94,18 @@ impl Account1 {
     async fn quota_total(&self) -> u64 {
         self.service.state().get().quota_total
     }
+
+    /// Graph's `quota.remaining` as last read, less what went up since (`crate::quota`).
+    #[zbus(property)]
+    async fn quota_remaining(&self) -> u64 {
+        self.service.state().get().quota_remaining
+    }
+
+    /// Graph's `quota.state` as last read: `normal`, `nearing`, `critical`, `exceeded`.
+    #[zbus(property)]
+    async fn quota_state(&self) -> String {
+        self.service.state().get().quota_state
+    }
 }
 
 fn to_fdo(error: AccountError) -> fdo::Error {
@@ -103,7 +115,7 @@ fn to_fdo(error: AccountError) -> fdo::Error {
     }
 }
 
-/// The named refusals of `SetMode` and `Dev1` (`docs/design/writes.md` §11).
+/// The named refusals of `SetMode` and `TokenExport` (`docs/design/writes.md` §11).
 #[derive(Debug, zbus::DBusError)]
 #[zbus(prefix = "org.konedrive.Error")]
 pub enum ModeFault {
@@ -185,16 +197,19 @@ impl std::fmt::Display for SetModeFault {
 
 impl std::error::Error for SetModeFault {}
 
-/// `org.konedrive.Dev1`: development only.
-pub struct Dev1 {
+/// `org.konedrive.TokenExport`: only in a development build (the `dev-tools` feature); a
+/// release has neither the interface nor `konedrivectl dev` (limitations log W11).
+#[cfg(feature = "dev-tools")]
+pub struct TokenExport {
     service: Arc<AccountService>,
 }
 
-#[zbus::interface(name = "org.konedrive.Dev1")]
-impl Dev1 {
+#[cfg(feature = "dev-tools")]
+#[zbus::interface(name = "org.konedrive.TokenExport")]
+impl TokenExport {
     /// An access token of this account that can change nothing, whatever its mode (write
     /// design §10) — never the refresh token.
-    async fn access_token(&self) -> std::result::Result<String, ModeFault> {
+    async fn read_only(&self) -> std::result::Result<String, ModeFault> {
         match self.service.read_only_token().await {
             Ok(token) => Ok(token),
             Err(crate::token::AuthError::SignedOut) => Err(ModeFault::NotSignedIn("nobody is signed in".into())),
@@ -205,12 +220,12 @@ impl Dev1 {
     /// The test-account harness's token, which can change files: refused `WritesNotAllowed`
     /// for an account the gate does not let through, and `ModeNotGranted` for one that is
     /// not read-write.
-    async fn read_write_access_token(&self) -> std::result::Result<String, ModeFault> {
+    async fn read_write(&self) -> std::result::Result<String, ModeFault> {
         self.service.read_write_token().await.map_err(ModeFault::from)
     }
 }
 
-/// Serves one account's `Account1` and `Dev1` at `path`, and turns its state changes into
+/// Serves one account's `Account` (and, in a development build, `TokenExport`) at `path`, and turns its state changes into
 /// `PropertiesChanged`; the task that sends them, to stop when the account goes.
 ///
 /// At startup this runs before the bus name is claimed (`crate::accounts::serve`), and
@@ -223,9 +238,10 @@ pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc
     let mut changes = service.state().subscribe();
     let mut previous = changes.borrow_and_update().clone();
     let server = connection.object_server();
-    server.at(path, Account1 { service: Arc::clone(&service) }).await?;
-    server.at(path, Dev1 { service: Arc::clone(&service) }).await?;
-    let iface = server.interface::<_, Account1>(path).await?;
+    server.at(path, Account { service: Arc::clone(&service) }).await?;
+    #[cfg(feature = "dev-tools")]
+    server.at(path, TokenExport { service: Arc::clone(&service) }).await?;
+    let iface = server.interface::<_, Account>(path).await?;
     Ok(tokio::spawn(async move {
         while changes.changed().await.is_ok() {
             let current = changes.borrow_and_update().clone();
@@ -237,15 +253,16 @@ pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc
     }))
 }
 
-/// Takes one account's `Account1` and `Dev1` off the bus (`Accounts1.Remove`).
+/// Takes one account's `Account` and `TokenExport` off the bus (`Accounts.Remove`).
 pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()> {
     let server = connection.object_server();
-    server.remove::<Dev1, _>(path).await?;
-    server.remove::<Account1, _>(path).await.map(drop)
+    #[cfg(feature = "dev-tools")]
+    server.remove::<TokenExport, _>(path).await?;
+    server.remove::<Account, _>(path).await.map(drop)
 }
 
 async fn emit_changes(
-    iface: &InterfaceRef<Account1>,
+    iface: &InterfaceRef<Account>,
     old: &AccountSnapshot,
     new: &AccountSnapshot,
 ) -> zbus::Result<()> {
@@ -271,6 +288,12 @@ async fn emit_changes(
     }
     if old.quota_total != new.quota_total {
         account.quota_total_changed(emitter).await?;
+    }
+    if old.quota_remaining != new.quota_remaining {
+        account.quota_remaining_changed(emitter).await?;
+    }
+    if old.quota_state != new.quota_state {
+        account.quota_state_changed(emitter).await?;
     }
     if old.mode != new.mode {
         account.mode_changed(emitter).await?;

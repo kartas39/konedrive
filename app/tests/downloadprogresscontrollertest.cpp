@@ -54,7 +54,7 @@ public:
 };
 
 /// DownloadProgressController: a fake Transfers source
-/// (FakeDaemon's FakeSync1, through the real SyncController) and a recording
+/// (FakeDaemon's FakeSync, through the real SyncController) and a recording
 /// job tracker, with an injected clock and no real waiting for the 2 s
 /// promotion or the 5-job cap.
 class DownloadProgressControllerTest : public QObject
@@ -383,7 +383,7 @@ private Q_SLOTS:
     }
 
     /// The real daemon drops the transfer from Transfers before
-    /// the ActivityAdded(failed) for it goes out (crates/konedrived/src/sync/mod.rs
+    /// the ActivityLog.Added(failed) for it goes out (crates/konedrived/src/sync/mod.rs
     /// ~202, then the helper round trip). A removal must not finish the job
     /// at once: it is held for a 1.5 s grace window, and a matching failure
     /// inside that window still fails it.

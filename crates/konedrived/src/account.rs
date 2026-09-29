@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::account_cache::{self, AccountInfo};
+use crate::quota::Quota;
 use crate::config::{is_valid_client_id, AccountPaths, Config, ConfigError, ConfigStore, Mode, Paths, MIGRATED_LABEL};
 use crate::graph::{GraphClient, GraphError};
 use crate::loopback::{Callback, LoopbackError, LoopbackListener};
@@ -41,7 +42,7 @@ impl From<ConfigError> for AccountError {
     }
 }
 
-/// Why `Account1.SetMode` or a `Dev1` token was refused (`docs/design/writes.md` §11), each under its own
+/// Why `Account.SetMode` or a `TokenExport` token was refused (`docs/design/writes.md` §11), each under its own
 /// D-Bus error name.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ModeError {
@@ -126,7 +127,7 @@ fn is_mode_message(text: &str) -> bool {
 pub trait PendingUploads: Send + Sync {
     async fn pending_uploads(&self) -> u64;
     async fn drop_pending_uploads(&self);
-    /// The account's quota was just read (`RefreshAccountInfo`): a full OneDrive, or a file
+    /// The account's quota was just read (`RefreshInfo`): a full OneDrive, or a file
     /// too big for what was left, is decided again by it (issue #2).
     fn quota_read(&self, _quota: &crate::drive::DriveQuota) {}
 }
@@ -151,9 +152,12 @@ pub struct AccountService {
     state: StateHandle,
     /// `account.json`: the cached name and quota, and what the last token was valid for.
     cache: PathBuf,
-    /// Held across every read-modify-write of `account.json`: a refresh's granted scopes and
-    /// `refresh_account_info`'s name and quota each keep the other's.
-    cache_lock: std::sync::Mutex<()>,
+    /// Held across every read-modify-write of `account.json`: a refresh's granted scopes,
+    /// `refresh_account_info`'s name and every read of the quota each keep the others'.
+    cache_lock: Arc<std::sync::Mutex<()>>,
+    /// The account's one quota (`crate::quota`), in `state`, kept in `account.json` at every
+    /// read, whoever reads it.
+    quota: Quota,
     /// The account's folder, as the mode switch asks it about waiting uploads. Empty until
     /// the accounts manager wires the folder up, and in tests without one.
     uploads: std::sync::Mutex<Option<Weak<dyn PendingUploads>>>,
@@ -166,7 +170,7 @@ pub struct AccountService {
     /// The daemon's other accounts, for the identity guard (§8.2). Empty until a
     /// [`Siblings`] adds this account.
     siblings: std::sync::Mutex<Option<Arc<Siblings>>>,
-    /// Set by `Accounts1.Remove`: no sign-in is begun or stored from then on.
+    /// Set by `Accounts.Remove`: no sign-in is begun or stored from then on.
     retired: std::sync::atomic::AtomicBool,
 }
 
@@ -213,12 +217,15 @@ impl AccountService {
             ..AccountSnapshot::default()
         });
         let tokens = Arc::new(TokenManager::new(secrets.clone(), state.clone()));
+        let cache_lock = Arc::new(std::sync::Mutex::new(()));
+        let quota = Quota::new(state.clone(), Some(keep_quota(paths.account_cache.clone(), Arc::clone(&cache_lock))));
         let service = Arc::new(Self {
             id: id.to_owned(),
             config,
             state,
             cache: paths.account_cache,
-            cache_lock: std::sync::Mutex::new(()),
+            cache_lock,
+            quota,
             uploads: std::sync::Mutex::new(None),
             endpoints,
             http,
@@ -264,7 +271,7 @@ impl AccountService {
         &self.id
     }
 
-    /// `Account1.Mode`: the mode the account runs in (`docs/design/writes.md` §2). Read-write only while
+    /// `Account.Mode`: the mode the account runs in (`docs/design/writes.md` §2). Read-write only while
     /// `config.toml` says so, the gate lets its drive through, and its last token carried
     /// `Files.ReadWrite`; [`recompute_mode`](Self::recompute_mode) keeps it.
     pub fn mode(&self) -> Mode {
@@ -299,6 +306,11 @@ impl AccountService {
 
     pub fn state(&self) -> &StateHandle {
         &self.state
+    }
+
+    /// The account's one quota, which its folder's uploads read and adjust too.
+    pub fn quota(&self) -> &Quota {
+        &self.quota
     }
 
     /// Access tokens for Graph callers.
@@ -401,7 +413,7 @@ impl AccountService {
     /// Keeps what a token may be used for in the state and in `account.json`: what it was
     /// granted, but never more than was asked for. A read-only request answered
     /// with a token that can write — consent Microsoft still holds — is logged, shown in
-    /// `LastError`, and used to read only; `Dev1` hands such a token to nobody.
+    /// `LastError`, and used to read only; `TokenExport` hands such a token to nobody.
     fn record_granted(&self, asked: &str, granted: &str) {
         let wider = is_read_only(asked) && !is_read_only(granted);
         let usable = if wider { asked } else { granted };
@@ -498,7 +510,7 @@ impl AccountService {
     }
 
     /// Sets the client id every account signs in with, when this account is signed out: the
-    /// single-account form of `Accounts1.SetClientId`, whose manager checks every account
+    /// single-account form of `Accounts.SetClientId`, whose manager checks every account
     /// and then calls [`use_client_id`](Self::use_client_id) on each.
     pub fn set_client_id(&self, id: &str) -> Result<(), AccountError> {
         let id = id.trim();
@@ -521,7 +533,7 @@ impl AccountService {
         self.state.update(|s| s.client_id = id.to_owned());
     }
 
-    /// `Account1.SetLabel`: the rules of `config::check_label`, `InvalidLabel` otherwise.
+    /// `Account.SetLabel`: the rules of `config::check_label`, `InvalidLabel` otherwise.
     pub fn set_label(&self, label: &str) -> Result<(), AccountError> {
         let label = self.config.set_label(&self.id, label)?;
         self.state.update(|s| s.label = label);
@@ -609,7 +621,7 @@ impl AccountService {
         });
     }
 
-    /// `Accounts1.Remove`'s sign-out: the account retired first, so that no sign-in is
+    /// `Accounts.Remove`'s sign-out: the account retired first, so that no sign-in is
     /// begun or stored from then on — one under way is superseded by the sign-out, and one
     /// whose exchange ends later finds the account retired — then signed out as
     /// [`sign_out`](Self::sign_out) signs out.
@@ -669,15 +681,7 @@ impl AccountService {
                 return;
             }
         };
-        let info = AccountInfo {
-            display_name: profile.display_name,
-            email: profile.email,
-            quota_used: drive.quota.used,
-            quota_total: drive.quota.total,
-            fetched_at: unix_now(),
-            granted_scopes: String::new(),
-            drive_id: String::new(),
-        };
+        let (display_name, email) = (profile.display_name, profile.email);
         // Same lock `sign_out` holds for its whole call: if a sign-out is in progress (or
         // ran to completion while the Graph calls above were in flight), either this waits
         // until it is done and then sees `SignedOut` below, or it beats a sign-out that is
@@ -691,24 +695,32 @@ impl AccountService {
         if let Err(e) = self.record_drive(&drive.id) {
             tracing::warn!("cannot record the drive of account {:?}: {e}", self.id);
         }
-        self.secrets.describe(&info.email);
-        {
-            // The granted scopes as the last refresh left them, and the drive the token was
-            // just seen to reach, kept beside the name and quota.
-            let _cache = self.cache_lock.lock().unwrap();
-            let granted_scopes = self.state.get().granted_scopes;
-            let info = AccountInfo { granted_scopes, drive_id: drive.id.clone(), ..info.clone() };
-            if let Err(e) = account_cache::save(&self.cache, &info) {
-                tracing::warn!("cannot write the account cache: {e}");
-            }
-        }
+        self.secrets.describe(&email);
+        // The granted scopes as the last refresh left them, and the drive the token was just
+        // seen to reach, kept beside the name; the quota is kept by its own read, below.
+        let granted_scopes = self.state.get().granted_scopes;
+        self.save_cache(|info| {
+            info.display_name = display_name.clone();
+            info.email = email.clone();
+            info.fetched_at = unix_now();
+            info.granted_scopes = granted_scopes;
+            info.drive_id = drive.id.clone();
+        });
+        let mut signed_in = false;
         self.state.update(|s| {
             if s.state == SignInState::SignedIn {
-                apply_info(s, &info);
+                signed_in = true;
+                s.display_name = display_name.clone();
+                s.email = email.clone();
                 s.live_drive = drive.id.clone();
                 s.last_error.clear();
             }
         });
+        // One quota for the account: this read is the one `QuotaRemaining` shows, and the one
+        // the uploads' space check next uses when it may reuse a read.
+        if signed_in {
+            self.quota.read(&drive.quota);
+        }
         // Says again why a read-write account runs read-only, if it does: the drive may have
         // just been recorded, or be another than config.toml's, and the line above cleared the
         // reason. A drive that is not the recorded one turns a read-write account read-only.
@@ -940,7 +952,7 @@ impl AccountService {
         };
         let unsettled = self.settle_siblings().await;
         let session = self.session.lock().await;
-        // A retired account (`Accounts1.Remove`) stores nothing, whatever the browser said.
+        // A retired account (`Accounts.Remove`) stores nothing, whatever the browser said.
         if session.generation != generation || self.is_retired() {
             return;
         }
@@ -991,7 +1003,7 @@ impl AccountService {
         });
     }
 
-    /// `Account1.SetMode` (`docs/design/writes.md` §2): switches the account to `mode` — `read-only` or
+    /// `Account.SetMode` (`docs/design/writes.md` §2): switches the account to `mode` — `read-only` or
     /// `read-write` — and answers the URL of the sign-in the switch needs, empty when it
     /// needs none.
     ///
@@ -1225,13 +1237,13 @@ impl AccountService {
         Ok(())
     }
 
-    /// `Dev1.AccessToken` (`docs/design/writes.md` §8.2; SECURITY.md): a token that can change nothing, whatever the
+    /// `TokenExport.ReadOnly` (`docs/design/writes.md` §8.2; SECURITY.md): a token that can change nothing, whatever the
     /// account's mode.
     pub async fn read_only_token(&self) -> Result<String, AuthError> {
         self.tokens.read_only_token().await
     }
 
-    /// `Dev1.ReadWriteAccessToken`, for the test-account harness only (`docs/design/writes.md` §8.2, §12; SECURITY.md):
+    /// `TokenExport.ReadWrite`, for the test-account harness only (`docs/design/writes.md` §8.2, §12; SECURITY.md):
     /// refused `WritesNotAllowed` unless the gate lets the account's drive through, and
     /// `ModeNotGranted` unless the account is read-write and its token carries
     /// `Files.ReadWrite`. The token itself is then asked which drive it reaches
@@ -1322,6 +1334,30 @@ fn apply_info(s: &mut AccountSnapshot, info: &AccountInfo) {
     s.email = info.email.clone();
     s.quota_used = info.quota_used;
     s.quota_total = info.quota_total;
+    s.quota_remaining = info.quota_remaining;
+    s.quota_state = info.quota_state.clone();
+    s.quota_read_at = info.quota_read_at;
+}
+
+/// What keeps the account's quota across restarts: at every read, its four figures and the
+/// time into `account.json` (`cache`, under `lock`), while the account is signed in — a read
+/// that lands after a sign-out, which deletes the file, writes nothing.
+fn keep_quota(cache: PathBuf, lock: Arc<std::sync::Mutex<()>>) -> crate::quota::Keep {
+    Arc::new(move |s: &AccountSnapshot| {
+        if s.state != SignInState::SignedIn {
+            return;
+        }
+        let _cache = lock.lock().unwrap();
+        let mut info = account_cache::load(&cache).unwrap_or_default();
+        info.quota_used = s.quota_used;
+        info.quota_total = s.quota_total;
+        info.quota_remaining = s.quota_remaining;
+        info.quota_state = s.quota_state.clone();
+        info.quota_read_at = s.quota_read_at;
+        if let Err(e) = account_cache::save(&cache, &info) {
+            tracing::warn!("cannot write the account cache: {e}");
+        }
+    })
 }
 
 /// What a retired account answers a sign-in.

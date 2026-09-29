@@ -1,0 +1,35 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- /org/konedrive/Accounts/<id>: what happened in this account's folder. -->
+  <interface name="org.konedrive.ActivityLog">
+    <!-- The last events, newest first, at most `limit` (the daemon keeps
+         200): (unix time, kind, full path, detail). Kinds: downloaded,
+         freed, added, updated, removed, moved, listed, conflict, failed (a download),
+         update-failed (a changed file could not be replaced here). For
+         ENOSPC the detail is exactly "not enough disk space".
+         A listing or Full reconcile is one "listed" event. A read-write
+         account adds: uploaded (new or changed content, or a folder made
+         here; detail: the size, or "folder"), cloud-moved (moved or renamed
+         here; detail: where it was), cloud-deleted (deleted here, to
+         OneDrive's recycle bin), upload-failed (a change that needs the user:
+         once per change and reason; detail: the reason), restored (OneDrive's
+         version kept or put back where both sides changed; detail: why),
+         not-uploaded (made here and removed here before its upload
+         finished: never uploaded; detail: why).
+         A copy of a file changed on both sides is a "conflict" whose detail
+         is the copy's full path. -->
+    <method name="Recent">
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="events" type="a(xsss)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveActivityList"/>
+    </method>
+    <!-- One per event, as it happens; the same fields as Recent. -->
+    <signal name="Added">
+      <arg name="time" type="x"/>
+      <arg name="kind" type="s"/>
+      <arg name="path" type="s"/>
+      <arg name="detail" type="s"/>
+    </signal>
+  </interface>
+</node>

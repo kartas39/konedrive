@@ -138,7 +138,7 @@ private:
     QTemporaryDir m_dir;
 };
 
-/// Stands in for konedrived's `org.konedrive.Files1` at
+/// Stands in for konedrived's `org.konedrive.Files` at
 /// `/org/konedrive/Accounts` on the private session bus, on a connection of
 /// its own -- so calls to it really cross the bus.
 ///
@@ -149,7 +149,7 @@ private:
 class FakeSync : public QObject, protected QDBusContext
 {
     Q_OBJECT
-    Q_CLASSINFO("D-Bus Interface", "org.konedrive.Files1")
+    Q_CLASSINFO("D-Bus Interface", "org.konedrive.Files")
 
 public:
     struct Answer {

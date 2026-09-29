@@ -44,7 +44,7 @@ private:
     AccountStatus *m_status;
 };
 
-/// The accounts, in the order they were added (Accounts1.Accounts): one row
+/// The accounts, in the order they were added (Accounts.Accounts): one row
 /// per account, each with its own AccountController, SyncController and
 /// AccountStatus. Rows follow the daemon's list; while the daemon is away the
 /// last list stays, each account's controllers saying the service is gone.
@@ -95,7 +95,7 @@ public:
     /// Runs `setUp` for every account there is and every one that comes.
     void onEachAccount(std::function<void(AccountItem *)> setUp);
 
-    /// Why `label` cannot name an account (Accounts1.Add's rules: trimmed,
+    /// Why `label` cannot name an account (Accounts.Add's rules: trimmed,
     /// 1–40 characters, no "/" or control character, not 12 hexadecimal
     /// digits in any case (an account id's look), unique regardless of case
     /// among the accounts other than `exceptPath`); empty when it can. "@"
@@ -111,13 +111,13 @@ public:
     /// — until it is signed in, renamed to its email (SetLabel) and shown;
     /// accountAdded(path) then, and the window opens the folder picker.
     /// Cancelled, refused, or already added under another account: the
-    /// draft is removed (Accounts1.Remove) and nothing is left.
+    /// draft is removed (Accounts.Remove) and nothing is left.
     Q_INVOKABLE void addAccount(const QString &clientId = QString());
     /// Gives up the sign-in under way, if any: the draft is removed.
     Q_INVOKABLE void cancelAdd();
     /// Forgets the last Sign In's failure (the dialog opens clean).
     Q_INVOKABLE void clearAddError();
-    /// Accounts1.Remove; a refusal lands in DaemonController::actionError.
+    /// Accounts.Remove; a refusal lands in DaemonController::actionError.
     Q_INVOKABLE void removeAccount(const QString &path);
     /// "Try Again" when the service was not running: every controller re-reads.
     Q_INVOKABLE void retry();

@@ -1,5 +1,5 @@
 //! Queue totals (issue #16): how much is left to download and to upload, how much of this
-//! run is done, and about how long the rest takes — per account, each way. `Sync1`
+//! run is done, and about how long the rest takes — per account, each way. `Transfers`
 //! publishes them as `DownloadLeftCount`, `DownloadLeftBytes`, `DownloadDoneBytes`,
 //! `DownloadTimeLeft`, and the same four for uploads.
 //!
@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use super::activity::{Transfer, Transfers};
 use super::{SyncSnapshot, SyncStateHandle};
 
-/// One direction's totals, as `Sync1` publishes them.
+/// One direction's totals, as `Transfers` publishes them.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Totals {
     /// Files (downloads) or changes (uploads) left.

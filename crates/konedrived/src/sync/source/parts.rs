@@ -729,6 +729,31 @@ mod tests {
         assert_eq!(pool.large_held(), 1, "only the first stream's slot is still held");
     }
 
+    /// A download in parts is one file (issue #50): one entry of `Transfers.Downloads`, so it
+    /// counts once in `ActiveDownloads` and in `LargeFiles`, and its streams in `LargeStreams`.
+    #[tokio::test]
+    async fn a_download_in_parts_is_one_file_and_its_streams() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = content(4 * 1024 * KIB, 5);
+        let file = placeholder(dir.path(), "f.bin", data.len() as u64);
+        let source: Arc<dyn ContentSource> = Arc::new(Ranged { delay: Duration::from_millis(2), ..Ranged::new("c1", data.clone()) });
+        let transfers = crate::sync::activity::Transfers::default();
+        let tracked = Arc::new(crate::sync::activity::Tracked::new(source, transfers.clone(), "/r/f.bin"));
+        let (pool, _first) = pool_of_four();
+        let share = Share::new();
+        let split = Split::with_piece(Arc::clone(&pool), Arc::clone(&share), 64 * KIB);
+
+        let filling = {
+            let (tracked, split, file) = (Arc::clone(&tracked), split.clone(), file.try_clone().unwrap());
+            tokio::spawn(async move { fill(&file, &*tracked, &split).await })
+        };
+        until("four streams", || share.streams() == [4]).await;
+        assert_eq!(transfers.list().len(), 1, "one file however many streams it runs");
+        assert_eq!(pool.large_held(), 4, "its streams");
+        assert_eq!(filling.await.unwrap(), 0);
+        assert_eq!(read_back(&file), data);
+    }
+
     /// Two large files share the large slots evenly, two streams each; a transfer that
     /// starts waiting for a slot — the second large file, then a small one — gets one once an
     /// extra stream's piece ends, without waiting for a file to finish.

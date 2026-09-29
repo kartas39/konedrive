@@ -128,8 +128,9 @@ folders, and known to no tree store, is denied `EIO`; the next open retries (lim
 ### Per-file calls go to one interface, routed by path
 
 **Decision.** `Hydrate`, `Dehydrate`, `ItemState`, `Pin`, `Unpin` and `FreeUp` are on the
-daemon-wide `org.konedrive.Files1`, which finds each path's account by its folder. Each account's
-`Sync1` keeps what concerns its folder as a whole.
+daemon-wide `org.konedrive.Files`, which finds each path's account by its folder. Each account's
+`org.konedrive.Folder` keeps what concerns its folder as a whole, beside the folder's `Transfers`,
+`UploadQueue`, `Conflicts`, `LocalScan` and `ActivityLog`.
 
 **Why.** The Dolphin plugin and `konedrivectl` know a path, not an account. Making every client
 find the account first would repeat the routing in each of them, and a selection in Dolphin may
@@ -478,7 +479,7 @@ rescued into, and its cycles fail until it is moved (limitations log F16).
 ### No OneDrive sync without the helper
 
 **Decision.** A OneDrive folder is registered only with the helper connected, and its cycles run
-only while the folder is intercepted and linked; `RegisterRootWithoutInterception` always makes a
+only while the folder is intercepted and linked; `Folder.RegisterWithoutInterception` always makes a
 local folder. The daemon publishes the helper's state from systemd with instructions.
 
 **Why.** Placeholders that nothing intercepts read as zeros; a folder full of them is worse than an
@@ -774,7 +775,7 @@ view to trust.
 
 **Decision.** konedrive signs in with its own Microsoft Entra application registration, built into
 the daemon (`DEFAULT_CLIENT_ID`). Nobody registers an app or enters a client ID to use konedrive.
-`config.toml`'s `client_id`, set with `konedrivectl set-client-id` or `Accounts1.SetClientId`,
+`config.toml`'s `client_id`, set with `konedrivectl set-client-id` or `Accounts.SetClientId`,
 overrides it for anyone who wants to sign in with their own registration instead.
 
 **Why.** A public client's id is not a secret: it is sent in every sign-in URL, so there is nothing
@@ -808,22 +809,26 @@ refresh keeps a read-only account's tokens unable to write even if its grant wer
 
 **Trade-off.** Switching to read-write needs a sign-in of its own, for `Files.ReadWrite`.
 
-### An access-token export for test runs, in every build
+### An access-token export for test runs, in development builds only
 
-**Decision.** `Dev1.AccessToken()` and `konedrivectl dev export-access-token` hand out an access
+**Decision.** `TokenExport.ReadOnly()` and `konedrivectl dev export-access-token` hand out an access
 token (about an hour of read access), never the refresh token, written atomically to a `0600`
 file. It is read-only whatever the account's mode: a read-write account's comes from a refresh that
-asks for `Files.Read` only. `--read-write` (`Dev1.ReadWriteAccessToken()`) hands out one that can
+asks for `Files.Read` only. `--read-write` (`TokenExport.ReadWrite()`) hands out one that can
 write, for the test-account harness, and only for an account the write gate lets through.
 
 **Why.** A test run in the VM needs to speak to Graph without a sign-in of its own, and the refresh
-token must never leave the Secret Service. A per-user development install needs it, so it is not
-gated behind a build flag. A read-write account's token can change the whole drive, so the export
-never grants write access unless asked, and never for an account that is not a test account.
+token must never leave the Secret Service. Only the tests need it — the VM tests against real Graph,
+the stress tests and the test-account harness check OneDrive directly, past the daemon — so it is
+built only with the cargo feature `dev-tools` (issue #79), which `scripts/dev-install.sh` uses: the
+released package has neither the interface nor `konedrivectl dev`, and its `%build` fails if the
+daemon names `org.konedrive.TokenExport`. A read-write account's token can change the whole drive,
+so the export never grants write access unless asked, and never for an account that is not a test
+account.
 
-**Trade-off.** Any process of the same user on the session bus can obtain an hour of read access —
-no more than it has by opening files in the folder; a Flatpak app is filtered by its bus proxy
-(limitations log W11).
+**Trade-off.** On a development install, any process of the same user on the session bus can
+obtain an hour of read access — no more than it has by opening files in the folder; a Flatpak app
+is filtered by its bus proxy (limitations log W11).
 
 ### An account is its drive
 
@@ -893,9 +898,9 @@ both are deleted at sign-out.
 ### The mode, and the write gate
 
 **Decision.** Every account has a mode, `read-only` or `read-write`, stored in `config.toml`, a new
-account read-only. `Account1.Mode` publishes the mode it *runs* in: read-write only while
+account read-only. `Account.Mode` publishes the mode it *runs* in: read-write only while
 `config.toml` says so, the write gate lets its drive through, and its last token was granted
-`Files.ReadWrite`. `Account1.SetMode` switches it, and writes read-write only once a sign-in has
+`Files.ReadWrite`. `Account.SetMode` switches it, and writes read-write only once a sign-in has
 granted that. While uploads are being developed, the gate — `write_test_drive_ids` in
 `config.toml`, empty by default — refuses read-write for every account but the test account's. It
 refuses `SetMode("read-write")` and the export of a token that can write, and it decides the mode
@@ -954,7 +959,7 @@ announced; the window's lists still show everything (limitations log A1).
 ### Events have kinds; the app never parses wording
 
 **Decision.** A failed replacement is its own activity kind, `update-failed`, distinct from a failed
-download. A rescue is carried as a conflict (`Conflicts()`, `ConflictCount`, `conflict` events),
+download. A rescue is carried as a conflict (`Conflicts.List()`, `Conflicts.Count`, `conflict` events),
 not as a note in `LastError`. Refusals are D-Bus error names.
 
 **Why.** A heuristic on the daemon's wording breaks on any rewording. Carrying the rescue as text in

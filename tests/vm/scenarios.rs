@@ -3880,7 +3880,7 @@ fn two_accounts_steps(
     let fetches = ctx.fetches();
     let mut trace: Vec<String> = Vec::new();
 
-    // Two accounts, as `Accounts1.Add` makes them, each signed in by hand: nothing here
+    // Two accounts, as `Accounts.Add` makes them, each signed in by hand: nothing here
     // reaches Microsoft, and with no drive (`onedrive: false`) a folder registered while
     // signed in is a local one — intercepted, and filled from a directory.
     let mut sides = Vec::new();
@@ -3935,7 +3935,7 @@ fn two_accounts_steps(
         }
     }
 
-    // Account A removed, as `Accounts1.Remove` removes it.
+    // Account A removed, as `Accounts.Remove` removes it.
     let (a, b) = (&sides[0], &sides[1]);
     let root_id = |side: &AccountSide| side.account.sync.root().map(|r| r.root_id).unwrap_or_default();
     let (a_root, b_root) = (root_id(a), root_id(b));

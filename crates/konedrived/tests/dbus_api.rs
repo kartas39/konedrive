@@ -1,5 +1,5 @@
-//! `org.konedrive.Account1` over a private test bus, on the account object the manager
-//! exports (`/org/konedrive/Accounts/<id>`); the client id is `Accounts1`'s.
+//! `org.konedrive.Account` over a private test bus, on the account object the manager
+//! exports (`/org/konedrive/Accounts/<id>`); the client id is `Accounts`'s.
 
 mod common;
 
@@ -7,17 +7,17 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::*;
-use konedrive_dbus::accounts::{Account1Proxy, Accounts1Proxy};
+use konedrive_dbus::accounts::{AccountProxy, AccountsProxy};
 use konedrive_dbus::testing::TestBus;
 use konedrive_dbus::ACCOUNT_INTERFACE_NAME;
 use konedrived::secret::{MemoryWallet, Slot};
 use wiremock::MockServer;
 
-const XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Account1.xml"));
+const XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Account.xml"));
 
 struct Setup {
-    manager: Accounts1Proxy<'static>,
-    proxy: Account1Proxy<'static>,
+    manager: AccountsProxy<'static>,
+    proxy: AccountProxy<'static>,
     id: String,
     wallet: Arc<MemoryWallet>,
     client: zbus::Connection,
@@ -36,10 +36,10 @@ async fn setup(sign_in_timeout: Duration) -> Setup {
     let wallet = Arc::new(MemoryWallet::default());
     let daemon = start_daemon(&bus, dir.path(), endpoints(&server), wallet.clone(), sign_in_timeout).await;
     let client = bus.connect().await;
-    let manager = Accounts1Proxy::new(&client).await.unwrap();
+    let manager = AccountsProxy::new(&client).await.unwrap();
     let path = manager.add("Personal").await.unwrap();
     let id = path.as_str().rsplit('/').next().unwrap().to_owned();
-    let proxy = Account1Proxy::new(&client, path).await.unwrap();
+    let proxy = AccountProxy::new(&client, path).await.unwrap();
     Setup { manager, proxy, id, wallet, client, _daemon: daemon, _server: server, _dir: dir, _bus: bus }
 }
 

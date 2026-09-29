@@ -507,7 +507,7 @@ impl TreeStore {
         rows_where(&self.conn, "WHERE kind = 'move-out'", [])
     }
 
-    /// The first `limit` rows, in `seq` order (`Outbox(limit)`).
+    /// The first `limit` rows, in `seq` order (`Changes(limit)`).
     pub fn outbox_first(&self, limit: usize) -> Result<Vec<OutboxRow>, TreeError> {
         rows_where(&self.conn, "ORDER BY seq LIMIT ?1", [limit.min(i64::MAX as usize) as i64])
     }

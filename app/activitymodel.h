@@ -14,7 +14,7 @@ enum class ActivityFailure {
     Upload,
 };
 
-/// Reads a Sync1 activity event by its kind: `failed` (a download) is
+/// Reads an ActivityLog event by its kind: `failed` (a download) is
 /// Download, `update-failed` (the replacement of a file changed in OneDrive)
 /// is Update, and either with the exact detail "not enough disk space" is
 /// DiskFull; `upload-failed` is Upload. Every other kind is None.
@@ -26,7 +26,7 @@ ActivityFailure classifyFailure(const QString &kind, const QString &detail);
 /// and the `conflict` event carry no kind, so the folder tells them apart.
 bool isConflictCopy(const QString &original, const QString &other);
 
-/// The window's "Recent" list: RecentActivity() plus every ActivityAdded
+/// The window's "Recent" list: ActivityLog.Recent() plus every ActivityLog.Added
 /// since, newest first, at most Capacity rows.
 class ActivityModel : public QAbstractListModel
 {

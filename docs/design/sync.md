@@ -49,21 +49,21 @@ All of this runs in the daemon, as the user, once for each account.
 An account has at most one registered folder. It has a **source**, recorded in `config.toml` as
 `source` in the account's `[accounts.root]`:
 
-- **`onedrive`** — made by `RegisterRoot` while signed in and with the helper connected. It shows
+- **`onedrive`** — made by `Folder.Register` while signed in and with the helper connected. It shows
   the drive and is kept in step with it.
-- **`local`** — made by `RegisterRootWithoutInterception`, always, and by `RegisterRoot` while
+- **`local`** — made by `RegisterWithoutInterception`, always, and by `Register` while
   signed out. It is filled from a local directory with `PopulateFromDirectory` and never talks to
   Graph ([hydration.md](hydration.md) §14.3).
 
 The source is decided at registration and kept: a local folder stays local after a sign-in, and a
 OneDrive folder stays OneDrive after a sign-out (it then reports that it is signed out). Changing it
-takes a Forget and a new registration (limitations log F20). `Sync1.RootSource` publishes it, so
+takes a Forget and a new registration (limitations log F20). `Folder.Source` publishes it, so
 clients need not infer it.
 
 **No OneDrive sync without the helper.** A OneDrive folder's cycle runs only while the folder is
 intercepted and the daemon holds a link to the helper; otherwise it is refused `NoHelper` before
 Graph is asked, and nothing is placed or updated. Placing placeholders nobody intercepts would hand
-zeros to whatever opens them. While a folder waits for the helper, `RootState` is `error` and
+zeros to whatever opens them. While a folder waits for the helper, `Folder.State` is `error` and
 `LastError` begins with what to do: install the helper, start it, or look at why it failed
 ([desktop.md](desktop.md) §2.5).
 
@@ -88,7 +88,7 @@ The poller runs a cycle at once when the folder's sync starts, then every **60 s
 `Refresh()`; and at once when NetworkManager reports global connectivity again (limitations log
 F21). After a failed cycle it retries after 5, 15 and 30 s, then at the ordinary interval. A cycle
 is also nudged when the account becomes signed in. Cycles of one folder never overlap. While the
-account is paused (`Sync1.Pause`) no cycle runs; the pause is kept in the tree store and outlasts a
+account is paused (`Folder.Pause`) no cycle runs; the pause is kept in the tree store and outlasts a
 restart ([writes.md](writes.md) §11).
 
 ### 4.3 Throttling and errors
@@ -354,7 +354,7 @@ Instead:
 A program already reading the old version keeps it to the end; the next open gets the new one. The
 old file is not held open during the download, so freeing it up meanwhile still works; step 4 then
 finds it changed and gives up. Replacements wait in one queue, worked by 8 tasks at most (issue
-#39), each download in a background slot of the account's transfer pool, reported in `Transfers`
+#39), each download in a background slot of the account's transfer pool, reported in `Transfers.Downloads`
 like any download; a delta changing thousands of files starts those few tasks, not one each.
 In a read-write folder, where a program may be writing the old file, step 4 first takes a write
 lease on it, granted only while nobody has it open; a refusal leaves the replacement for a later
@@ -413,13 +413,13 @@ as files of zeros — the cloud still has them.
 ### 10.3 Conflicts
 
 Each rescue is recorded as a **conflict** — time, original path, rescued path — in the tree store,
-and announced as a `conflict` activity event. `Conflicts()` lists them, `DismissConflict()` takes
+and announced as a `conflict` activity event. `Conflicts.List()` lists them, `Conflicts.Dismiss()` takes
 one off the list without touching the file, and a conflict whose rescued file no longer exists
-drops off by itself: `Conflicts()` looks at every one, and each cycle's end looks over the next 200
+drops off by itself: `List()` looks at every one, and each cycle's end looks over the next 200
 in the order of their rescued paths, round the list, dropping what is gone in one transaction
 (issue #39, limitations log F170). The window's Conflicts page shows the newest 200, then "and N
 more" with `konedrivectl sync conflicts`, and takes a changed list in one step rather than row by
-row. `ConflictCount` feeds the tray's "needs attention" state. A conflict is
+row. `Conflicts.Count` feeds the tray's "needs attention" state. A conflict is
 recorded when its reconcile commits; a reconcile that fails with an error records none of the
 rescues it already made — those files are in the rescue directory and the daemon's log (limitations
 log F28).
@@ -467,7 +467,7 @@ for desktop applications (RFC 8252). Password and second factor stay in the brow
 embedded web view. The authority is `login.microsoftonline.com/consumers`: personal accounts only
 (limitations log F49). The listener accepts only `GET /` carrying `code` and the expected `state`,
 answers anything else with 404, is single use, and closes after five minutes. Each user registers
-their own Entra application and gives its client id to the daemon (`Accounts1.SetClientId`); every
+their own Entra application and gives its client id to the daemon (`Accounts.SetClientId`); every
 account signs in with it, and the README has the steps.
 
 The scope is the account's mode's: `Files.Read User.Read offline_access` for a read-only account,
@@ -493,13 +493,15 @@ refuses the sign-in if that drive is not this account's, or is already another a
   `invalid_grant` (consent revoked, session expired) deletes the account's refresh token and signs
   it out: `LastError` says to sign in again, a download on open in its folder fails `EIO`, and the
   folder reports that it is signed out.
-- **For test runs only**, each account's `org.konedrive.Dev1.AccessToken()` hands out an access
+- **For test runs only**, in a development build (the `dev-tools` feature,
+  `scripts/dev-install.sh`; the released package has none of it), each account's
+  `org.konedrive.TokenExport.ReadOnly()` hands out an access
   token of that account — about an hour of `Files.Read`, whatever its mode: a read-write account's
   comes from a refresh that asks for `Files.Read` only — never the refresh token;
   `konedrivectl dev export-access-token` writes the chosen account's (`--account`) atomically to a
   `0600` file. Any process of the same user on the session bus can obtain that hour of read access, which
   is no more than it has by opening files in the folder (limitations log W11). With `--read-write`
-  (`Dev1.ReadWriteAccessToken()`) it hands out a token that can write, for the test-account harness
+  (`TokenExport.ReadWrite()`) it hands out a token that can write, for the test-account harness
   only, and only for a read-write account the write gate lets through ([writes.md](writes.md)
   §12.1).
 
@@ -520,7 +522,7 @@ it ([accounts.md](accounts.md) §6.3).
 ### 12.4 What a signed-out folder does
 
 A OneDrive folder whose account is signed out keeps its files. Its cycles fail at the account check
-without changing anything, and `RootState` reads `error` with "signed out: sign in again to keep
+without changing anything, and `Folder.State` reads `error` with "signed out: sign in again to keep
 this folder in step with OneDrive". Downloaded files keep working; placeholders fail `EIO` on open.
 Signing in again nudges a cycle at once, which brings the folder up to date.
 

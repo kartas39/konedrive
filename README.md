@@ -537,6 +537,8 @@ A run against your actual OneDrive account is also possible. It lists your whole
 VM, as placeholders (names and sizes, no content: the daemon cannot list just one folder), but it
 opens and downloads files only inside one folder you name, each under a size cap, and fetches no
 thumbnails. The token is the chosen account's: with several accounts, name it with `--account`.
+It needs a development install (`scripts/dev-install.sh`, which builds with the `dev-tools`
+feature): the released package does not hand out tokens.
 
 ```
 konedrivectl dev export-access-token --out /tmp/konedrive-token   # about an hour of read access

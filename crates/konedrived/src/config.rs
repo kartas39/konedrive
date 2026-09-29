@@ -113,7 +113,7 @@ pub struct Config {
     /// Every account, in the order it was added.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountConfig>,
-    /// `[transfers]`: the transfer pools' emergency ceiling and large-file limit. Not in the
+    /// `[transfers]`: the transfer pools' emergency ceiling and large-stream limit. Not in the
     /// window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transfers: Option<TransfersConfig>,
@@ -127,8 +127,10 @@ pub struct TransfersConfig {
     /// 1–256.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<i64>,
-    /// Large files ([`crate::pool::LARGE_FROM`] and up) one account transfers at once;
-    /// [`crate::pool::DEFAULT_LARGE`] when missing. Clamped into 1…`max`.
+    /// The streams of large sync transfers (files of [`crate::pool::LARGE_FROM`] and up; a
+    /// download in parts runs several) one account runs at once; a file being opened is outside
+    /// the limit and its count (issue #50). [`crate::pool::DEFAULT_LARGE`] when missing.
+    /// Clamped into 1…`max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub large: Option<i64>,
 }
@@ -147,7 +149,8 @@ impl Config {
         clamped
     }
 
-    /// Each account's large-file limit: `[transfers] large`, clamped into 1…the ceiling
+    /// Each account's large-stream limit (the streams of large sync transfers, never an
+    /// open): `[transfers] large`, clamped into 1…the ceiling
     /// ([`transfer_ceiling`](Self::transfer_ceiling)) with a warning when it is outside, or
     /// [`crate::pool::DEFAULT_LARGE`] (never above the ceiling).
     pub fn transfer_large(&self) -> usize {
@@ -279,7 +282,7 @@ pub enum Mode {
 }
 
 impl Mode {
-    /// As `config.toml`, `Account1.Mode` and `Account1.SetMode` spell it.
+    /// As `config.toml`, `Account.Mode` and `Account.SetMode` spell it.
     pub fn as_str(self) -> &'static str {
         match self {
             Mode::ReadOnly => "read-only",
@@ -338,7 +341,7 @@ pub fn new_account_id<'a>(taken: impl IntoIterator<Item = &'a str> + Clone) -> S
     }
 }
 
-/// Checks a label against the rules of `Accounts1.Add` and `Account1.SetLabel`, and returns
+/// Checks a label against the rules of `Accounts.Add` and `Account.SetLabel`, and returns
 /// it trimmed: 1–40 characters, no `/`, not 12 hexadecimal digits in any case (so it is
 /// never taken for an id in `--account`), no control characters, and no other account's
 /// label (`except` is the account being renamed), whatever the case. `@` is allowed: an
@@ -465,7 +468,7 @@ impl From<ConfigError> for String {
 ///
 /// An unreadable file is never overwritten: the store is then *poisoned* for the life of
 /// the process — it has no accounts, refuses every write, and says why in
-/// [`last_error`](Self::last_error) (`Accounts1.LastError`). A later start with the file
+/// [`last_error`](Self::last_error) (`Accounts.LastError`). A later start with the file
 /// fixed loads, or migrates, it then.
 ///
 /// The calls do blocking file I/O on a small file, as the single-account code did.
@@ -581,7 +584,7 @@ impl ConfigStore {
         self.lock().poisoned.is_some()
     }
 
-    /// `Accounts1.LastError`: why the file could not be loaded, or which migration step
+    /// `Accounts.LastError`: why the file could not be loaded, or which migration step
     /// failed. Empty when there is nothing.
     pub fn last_error(&self) -> String {
         self.lock().last_error.clone()
@@ -638,7 +641,7 @@ impl ConfigStore {
         })
     }
 
-    /// `Accounts1.SetClientId`'s write. The rule that no account may be signing in or
+    /// `Accounts.SetClientId`'s write. The rule that no account may be signing in or
     /// signed in is the caller's.
     pub fn set_client_id(&self, id: &str) -> Result<(), ConfigError> {
         let id = id.trim();
@@ -651,7 +654,7 @@ impl ConfigStore {
         })
     }
 
-    /// `Accounts1.Add`: a read-only account with no folder and no drive yet, after every
+    /// `Accounts.Add`: a read-only account with no folder and no drive yet, after every
     /// other, under a fresh id.
     pub fn add_account(&self, label: &str) -> Result<AccountConfig, ConfigError> {
         self.update(|config| {
@@ -674,7 +677,7 @@ impl ConfigStore {
         })
     }
 
-    /// `Account1.SetLabel`: returns the label as stored (trimmed).
+    /// `Account.SetLabel`: returns the label as stored (trimmed).
     pub fn set_label(&self, id: &str, label: &str) -> Result<String, ConfigError> {
         self.update(|config| {
             let label = check_label(label, config, Some(id)).map_err(ConfigError::InvalidLabel)?;
@@ -685,7 +688,7 @@ impl ConfigStore {
     }
 
     /// Takes the account's section out of the file and returns it. Its files, token and
-    /// folder are the caller's to deal with (`Accounts1.Remove`).
+    /// folder are the caller's to deal with (`Accounts.Remove`).
     pub fn remove_account(&self, id: &str) -> Result<AccountConfig, ConfigError> {
         self.update(|config| {
             let at = config.accounts.iter().position(|a| a.id == id).ok_or_else(|| ConfigError::NoAccount(id.to_owned()))?;

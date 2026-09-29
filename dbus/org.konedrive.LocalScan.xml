@@ -1,0 +1,32 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- /org/konedrive/Accounts/<id>: the Full local scan of this account's
+       read-write folder: every directory walked, for what changed while
+       nothing watched (a start of its sync, the switch to read-write, the
+       helper back, an overflow of the notification queue, the ignore list
+       changed, or the periodic scan while part of the folder cannot be
+       watched). The small examinations after each change are not reported.
+       Published at most once a second while a scan runs, and once when it
+       ends; coalesced with the counters. -->
+  <interface name="org.konedrive.LocalScan">
+    <!-- running, idle, or none (a read-only folder has no local scan). -->
+    <property name="State" type="s" access="read"/>
+    <!-- start, read-write, helper-back, overflow, ignore-list, periodic. -->
+    <property name="Reason" type="s" access="read"/>
+    <!-- Unix seconds. -->
+    <property name="Started" type="x" access="read"/>
+    <!-- Directories and Files: what it has seen so far (every entry that is
+         not a directory is a file here), the root not counted. Expected:
+         about how many items it will see — the items the folder's base had
+         placed when it started, not a count of the disk; never a
+         percentage. While idle these are the last scan's. -->
+    <property name="Directories" type="t" access="read"/>
+    <property name="Files" type="t" access="read"/>
+    <property name="Expected" type="t" access="read"/>
+    <!-- Unix seconds when the last scan finished, 0 for none since the
+         daemon started; Took: how long it took, in seconds. -->
+    <property name="Finished" type="x" access="read"/>
+    <property name="Took" type="u" access="read"/>
+  </interface>
+</node>

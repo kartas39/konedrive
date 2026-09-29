@@ -900,7 +900,7 @@ impl Listing {
                 applied.rescued = first_pass;
             }
             // Where each rescued file went is a conflict: a row
-            // in `Conflicts()`, `ConflictCount` and a `conflict` event, which
+            // in `Conflicts.List()`, `Conflicts.Count` and a `conflict` event, which
             // `record` below writes. It is not a problem, so `LastError` no
             // longer says it. A page's are written with the page, not at the
             // end of the listing: a listing that never ends must still say

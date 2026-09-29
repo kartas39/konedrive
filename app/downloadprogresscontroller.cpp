@@ -129,7 +129,7 @@ void DownloadProgressController::onActivityAdded(qlonglong, const QString &kind,
     if (!failure) {
         return;
     }
-    // Whichever of the two arrives first wins: an ActivityAdded that names a
+    // Whichever of the two arrives first wins: an ActivityLog.Added that names a
     // tracked path finishes it with an error right away; a Transfers update
     // that removes an untouched path finishes it as a plain success. A
     // failure that arrives after its path is already gone is a no-op.
@@ -191,7 +191,7 @@ void DownloadProgressController::reconcile()
         }
         if (it->job || it->inOverflow) {
             // Shown already: hold it, since the real daemon drops a failed
-            // transfer from Transfers before ActivityAdded(failed) for it
+            // transfer from Transfers before ActivityLog.Added(failed) for it
             // goes out. finishPath (via checkNow or a matching activity)
             // decides success or failure once the window is settled.
             it->pendingRemoval = true;

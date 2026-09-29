@@ -18,13 +18,17 @@
 
 #include <functional>
 
-class OrgKonedriveSync1Interface;
+class OrgKonedriveActivityLogInterface;
+class OrgKonedriveConflictsInterface;
+class OrgKonedriveFolderInterface;
+class OrgKonedriveUploadQueueInterface;
 class QDBusServiceWatcher;
 class QTimer;
 
-/// Presents one account's org.konedrive.Sync1 (at /org/konedrive/Accounts/<id>)
-/// to QML: that account's folder. The helper, which serves every account, is
-/// DaemonController's. Never blocks the GUI thread.
+/// Presents one account's folder (at /org/konedrive/Accounts/<id>) to QML: its
+/// org.konedrive.Folder, Transfers, UploadQueue, Conflicts, LocalScan and
+/// ActivityLog. The helper, which serves every account, is DaemonController's.
+/// Never blocks the GUI thread.
 class SyncController : public QObject
 {
     Q_OBJECT
@@ -74,22 +78,26 @@ class SyncController : public QObject
     Q_PROPERTY(QStringList ignorePatterns READ ignorePatterns NOTIFY syncChanged)
     /// What a copy of a file changed on both sides is named after: "Report-<machine>.docx".
     Q_PROPERTY(QString machineName READ machineName NOTIFY syncChanged)
-    /// Uploads under way (Sync1's Uploads).
+    /// Uploads under way (Transfers.Uploads).
     Q_PROPERTY(TransferModel *uploads READ uploads CONSTANT)
-    /// The account's transfer pool (Sync1's DownloadSpeed, UploadSpeed, ActiveDownloads,
-    /// ActiveUploads, PoolSize, PoolCeiling, LargeTransfers, LargeLimit, RetryAfter): bytes a
-    /// second, slots held, the pool now, the large transfers under way and their limit, and
-    /// the seconds left of OneDrive's Retry-After (0: none).
+    /// The account's transfers and pool (Transfers' DownloadSpeed, UploadSpeed, ActiveDownloads,
+    /// ActiveUploads, PoolInUse, PoolSize, PoolCeiling, LargeFiles, LargeStreams,
+    /// LargeStreamLimit, RetryAfter): bytes a second, the files moving each way now (each
+    /// once), the slots in use (may be above the size), the pool now and its ceiling, the large
+    /// files the sync moves, the streams of large sync transfers and their limit
+    /// (largeTransfers, largeLimit), and the seconds left of OneDrive's Retry-After (0: none).
     Q_PROPERTY(qulonglong downloadSpeed READ downloadSpeed NOTIFY syncChanged)
     Q_PROPERTY(qulonglong uploadSpeed READ uploadSpeed NOTIFY syncChanged)
     Q_PROPERTY(uint activeDownloads READ activeDownloads NOTIFY syncChanged)
     Q_PROPERTY(uint activeUploads READ activeUploads NOTIFY syncChanged)
+    Q_PROPERTY(uint poolInUse READ poolInUse NOTIFY syncChanged)
     Q_PROPERTY(uint poolSize READ poolSize NOTIFY syncChanged)
     Q_PROPERTY(uint poolCeiling READ poolCeiling NOTIFY syncChanged)
+    Q_PROPERTY(uint largeFiles READ largeFiles NOTIFY syncChanged)
     Q_PROPERTY(uint largeTransfers READ largeTransfers NOTIFY syncChanged)
     Q_PROPERTY(uint largeLimit READ largeLimit NOTIFY syncChanged)
     Q_PROPERTY(uint retryAfter READ retryAfter NOTIFY syncChanged)
-    /// The queue totals, each way (Sync1's DownloadLeftCount, DownloadLeftBytes,
+    /// The queue totals, each way (Transfers' DownloadLeftCount, DownloadLeftBytes,
     /// DownloadDoneBytes, DownloadTimeLeft and the same four for uploads): files left to
     /// download and changes left to upload, their bytes, the bytes done in this run, and
     /// the seconds left (0: unknown).
@@ -101,7 +109,7 @@ class SyncController : public QObject
     Q_PROPERTY(qulonglong uploadLeftBytes READ uploadLeftBytes NOTIFY syncChanged)
     Q_PROPERTY(qulonglong uploadDoneBytes READ uploadDoneBytes NOTIFY syncChanged)
     Q_PROPERTY(uint uploadTimeLeft READ uploadTimeLeft NOTIFY syncChanged)
-    /// The Full local scan (Sync1's Scan* properties): "running", "idle", or "none" for a
+    /// The Full local scan (LocalScan's properties): "running", "idle", or "none" for a
     /// read-only folder; why it runs; when it started (unix seconds); the directories and
     /// files seen so far; about how many items it will see (the base's count); when the
     /// last one finished (0: not yet) and how long it took, in seconds.
@@ -135,7 +143,14 @@ class SyncController : public QObject
 public:
     static constexpr int PerFileCap = 20;
     static const QString ServiceName;
-    static const QString InterfaceName;
+    static const QString FolderInterface;
+    static const QString TransfersInterface;
+    static const QString UploadQueueInterface;
+    static const QString ConflictsInterface;
+    static const QString LocalScanInterface;
+    static const QString ActivityLogInterface;
+    /// Every interface whose properties the controller shows, each read with GetAll.
+    static const QStringList PropertyInterfaces;
 
     explicit SyncController(const QString &path, QObject *parent = nullptr);
     SyncController(const QDBusConnection &bus, const QString &path, QObject *parent = nullptr);
@@ -178,8 +193,10 @@ public:
     qulonglong uploadSpeed() const { return m_uploadSpeed; }
     uint activeDownloads() const { return m_activeDownloads; }
     uint activeUploads() const { return m_activeUploads; }
+    uint poolInUse() const { return m_poolInUse; }
     uint poolSize() const { return m_poolSize; }
     uint poolCeiling() const { return m_poolCeiling; }
+    uint largeFiles() const { return m_largeFiles; }
     uint largeTransfers() const { return m_largeTransfers; }
     uint largeLimit() const { return m_largeLimit; }
     uint retryAfter() const { return m_retryAfter; }
@@ -211,30 +228,30 @@ public:
     QVariantMap notUploadedFiles() const { return m_notUploadedFiles; }
     int perFileCap() const { return PerFileCap; }
 
-    /// RegisterRoot; a NoHelper refusal is kept as `pendingFolder` for the
+    /// Folder.Register; a NoHelper refusal is kept as `pendingFolder` for the
     /// window to prompt about — never registered without interception, since
     /// an unhydrated file then reads as zeros for good (no-interception stays
     /// a daemon/CLI-only mode; docs/design/decisions.md).
     Q_INVOKABLE void chooseFolder(const QUrl &folder);
-    /// "Try Again" on the NoHelper prompt: retries RegisterRoot(pendingFolder).
+    /// "Try Again" on the NoHelper prompt: retries Register(pendingFolder).
     Q_INVOKABLE void retryRegistration();
     Q_INVOKABLE void cancelPending();
     Q_INVOKABLE void forget();
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void loadSkipped();
     Q_INVOKABLE void openFolder();
-    /// RecentActivity(ActivityModel::Capacity) into `activity`.
+    /// ActivityLog.Recent(ActivityModel::Capacity) into `activity`.
     Q_INVOKABLE void loadActivity();
-    /// Conflicts() into `conflicts`.
+    /// Conflicts.List() into `conflicts`.
     Q_INVOKABLE void loadConflicts();
-    /// DismissConflict, then Conflicts() again.
+    /// Conflicts.Dismiss, then List() again.
     Q_INVOKABLE void dismissConflict(const QString &rescuedPath);
     /// FreeUpSpace; the outcome lands in `freeUpResult`.
     Q_INVOKABLE void freeUpSpace();
     Q_INVOKABLE void clearFreeUpResult();
     /// Opens the file manager on the file's folder with the file selected.
     Q_INVOKABLE void showInFolder(const QString &path);
-    /// Re-reads every Sync1 property (GetAll). "Try Again" on the service-down
+    /// Re-reads every property of the folder's interfaces (GetAll). "Try Again" on the service-down
     /// card calls this alongside AccountController::retry.
     Q_INVOKABLE void retry();
 
@@ -275,7 +292,7 @@ Q_SIGNALS:
     void notUploadedChanged();
     void historyChanged();
     void notUploadedFilesChanged();
-    /// One ActivityAdded from the daemon, as it happens.
+    /// One ActivityLog.Added from the daemon, as it happens.
     void activityAdded(qlonglong time, const QString &kind, const QString &path, const QString &detail);
 
 private Q_SLOTS:
@@ -284,7 +301,8 @@ private Q_SLOTS:
 
 private:
     void fetchAll();
-    void applyProperties(const QVariantMap &properties);
+    /// The properties of `interfaceName` (one of PropertyInterfaces), from GetAll or PropertiesChanged.
+    void applyProperties(const QString &interfaceName, const QVariantMap &properties);
     void setServiceAvailable(bool available);
     void setActionError(const QString &message);
     void setPendingFolder(const QString &folder);
@@ -301,7 +319,12 @@ private:
 
     QDBusConnection m_bus;
     QString m_path;
-    OrgKonedriveSync1Interface *m_iface;
+    OrgKonedriveFolderInterface *m_folder;
+    OrgKonedriveUploadQueueInterface *m_queue;
+    OrgKonedriveConflictsInterface *m_conflictsIface;
+    OrgKonedriveActivityLogInterface *m_activityLog;
+    /// fetchAll() calls so far: a GetAll answer of an older one is not counted.
+    int m_fetches = 0;
     QDBusServiceWatcher *m_watcher;
     bool m_serviceAvailable = false;
     QString m_rootPath;
@@ -342,8 +365,10 @@ private:
     qulonglong m_uploadSpeed = 0;
     uint m_activeDownloads = 0;
     uint m_activeUploads = 0;
+    uint m_poolInUse = 0;
     uint m_poolSize = 0;
     uint m_poolCeiling = 0;
+    uint m_largeFiles = 0;
     uint m_largeTransfers = 0;
     uint m_largeLimit = 0;
     uint m_retryAfter = 0;
@@ -374,7 +399,7 @@ private:
     /// loadNotUploaded() put off to the end of the second since the last one.
     QTimer *m_notUploadedSoon;
     QElapsedTimer m_notUploadedLast;
-    /// RecentActivity() calls on their way, and the live events since the first of them.
+    /// Recent() calls on their way, and the live events since the first of them.
     int m_activityLoads = 0;
     KonedriveActivityList m_liveDuringLoad;
 };

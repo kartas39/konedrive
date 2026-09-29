@@ -211,6 +211,7 @@ impl Base {
             tree_lock: Arc::new(tokio::sync::Mutex::new(())),
             host: Arc::new(NoHost),
             limits: Limits::default(),
+            quota: konedrived::quota::Quota::detached(),
             moved_out: Some(MoveOuts {
                 helper: Arc::new(Linked(Arc::clone(&self.link))),
                 filler: Arc::new(SourceFill(Arc::clone(&ctx.source) as Arc<dyn ContentSource>)),

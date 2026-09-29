@@ -16,9 +16,13 @@
 //!
 //! A waiting row stays `ready` in its place in the outbox, with no timer of
 //! its own; only its reason says it waits. A quota read — `Refresh`,
-//! `RefreshAccountInfo`, and every [`QUOTA_RECHECK`] while full or while a
+//! `RefreshInfo`, and every [`QUOTA_RECHECK`] while full or while a
 //! file is too big — ends *full* when there is space again and frees the
 //! files that now fit.
+//!
+//! The quota itself is the account's one (`crate::quota`, served by
+//! `Account`): the worker reads into it, takes what it uploads off it, and
+//! keeps no copy of its own.
 
 use std::collections::HashSet;
 use std::time::Duration;
@@ -84,10 +88,6 @@ pub fn no_space(quota: &DriveQuota) -> bool {
 pub(super) struct Space {
     /// No content goes up.
     pub full: bool,
-    /// The last quota read, and when (unix seconds).
-    last: Option<(DriveQuota, i64)>,
-    /// Graph's `remaining` as last read, less what went up since.
-    pub free: Option<u64>,
     /// The next automatic read, while one is wanted.
     next_check: i64,
     /// A read is wanted whatever the rows say: the outbox held waiting rows
@@ -103,11 +103,6 @@ pub(super) struct Space {
 }
 
 impl Space {
-    /// Graph's `quota.state` as last read.
-    pub(super) fn state(&self) -> String {
-        self.last.as_ref().map(|(q, _)| q.state.clone()).unwrap_or_default()
-    }
-
     /// The space as a start finds it: rows a previous version blocked on a
     /// full OneDrive become waiting rows, and the quota is read once before
     /// they go. Rows waiting for space keep the worker full until then.
@@ -156,12 +151,9 @@ impl Engine {
         self.shared().space.full
     }
 
-    /// `bytes` went up: the free space known shrinks by as much.
+    /// `bytes` went up: the account's quota says as much (`crate::quota`).
     pub(super) fn space_used(&self, bytes: u64) {
-        let mut shared = self.shared();
-        if let Some(free) = shared.space.free.as_mut() {
-            *free = free.saturating_sub(bytes);
-        }
+        self.cfg.quota.uploaded(bytes);
     }
 
     /// What a pick needs to know of the space: whether OneDrive is full, and
@@ -187,14 +179,13 @@ impl Engine {
         why
     }
 
-    /// The quota, read now — or, `reuse`, the read of a moment ago, which a
-    /// refusal of another row made (`false` then: it was applied already).
+    /// The quota, read now — or, `reuse`, the account's read of a moment
+    /// ago, which a refusal of another row, `Refresh` or the account's info
+    /// made (`false` then: it was applied already).
     async fn read_quota(&self, reuse: bool) -> Option<(DriveQuota, bool)> {
         let _one = self.quota_lock.lock().await;
-        if let Some((quota, at)) = self.shared().space.last.clone().filter(|_| reuse) {
-            if now() - at < REUSE {
-                return Some((quota, false));
-            }
+        if let Some(quota) = self.cfg.quota.read_within(REUSE).filter(|q| reuse && known(q)) {
+            return Some((quota, false));
         }
         match self.cfg.drive.quota().await {
             Ok(quota) if known(&quota) => Some((quota, true)),
@@ -244,11 +235,22 @@ impl Engine {
         }
     }
 
-    /// A quota just read (`Refresh`, `RefreshAccountInfo`, the automatic
-    /// read, a refusal): *full* or not, and every waiting file that fits now
-    /// is free to go; one that does not stays *too big*, with the free space
-    /// said again. A quota that says nothing of the space is ignored.
+    /// A quota the worker just read (the automatic read, a refusal): into
+    /// the account's quota, then decided by ([`decide_quota`](Self::decide_quota)).
     pub(crate) async fn apply_quota(&self, quota: &DriveQuota) {
+        if !known(quota) {
+            return;
+        }
+        self.cfg.quota.read(quota);
+        self.decide_quota(quota).await;
+    }
+
+    /// A quota just read, into the account's quota already (`Refresh`,
+    /// `RefreshInfo`, [`apply_quota`](Self::apply_quota)): *full* or not, and
+    /// every waiting file that fits now is free to go; one that does not
+    /// stays *too big*, with the free space said again. A quota that says
+    /// nothing of the space is ignored.
+    pub(crate) async fn decide_quota(&self, quota: &DriveQuota) {
         if !known(quota) {
             return;
         }
@@ -266,8 +268,6 @@ impl Engine {
                 self.recount_soon();
             }
             space.full = full;
-            space.free = quota.remaining;
-            space.last = Some((quota.clone(), now));
             space.next_check = now + QUOTA_RECHECK.as_secs() as i64;
             space.wanted = false;
             space.looked.clear();

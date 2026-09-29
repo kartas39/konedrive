@@ -11,8 +11,17 @@ use crate::config::write_atomic;
 pub struct AccountInfo {
     pub display_name: String,
     pub email: String,
+    /// The account's quota as last read (`crate::quota`), whoever read it; `quota_read_at`,
+    /// when (unix seconds). `remaining`, `state` and the time are missing in a file written
+    /// before they were kept, which reads as not read.
     pub quota_used: u64,
     pub quota_total: u64,
+    #[serde(default)]
+    pub quota_remaining: u64,
+    #[serde(default)]
+    pub quota_state: String,
+    #[serde(default)]
+    pub quota_read_at: i64,
     /// Unix time in seconds.
     pub fetched_at: u64,
     /// The last token response's `scope` (`docs/design/writes.md` §2): what decides, at the next start,
@@ -55,6 +64,9 @@ mod tests {
             email: "ann@example.com".into(),
             quota_used: 1,
             quota_total: 2,
+            quota_remaining: 1,
+            quota_state: "normal".into(),
+            quota_read_at: 3,
             fetched_at: 3,
             granted_scopes: "Files.Read User.Read".into(),
             drive_id: "D1".into(),

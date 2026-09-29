@@ -7,9 +7,8 @@
        whose folder is a component prefix of it. Routing never opens the
        file. A path in no account's folder is
        refused OutsideRoot (ItemState answers "not-managed"). Once routed,
-       each call does what it did on Sync1 before this interface, in that
-       account's folder. -->
-  <interface name="org.konedrive.Files1">
+       each call acts in that account's folder. -->
+  <interface name="org.konedrive.Files">
     <!-- Downloads one file now. A file already downloaded is left as it is.
          A file in any state but online-only may still carry the helper's
          ignore mark, which has to be cleared before a download that could

@@ -1,5 +1,5 @@
 //! The folder's side of the account's mode (`docs/design/writes.md` §2, §2.2): a OneDrive folder follows
-//! the mode its account runs in (`Account1.Mode`). Read-only keeps it under the lock, as the
+//! the mode its account runs in (`Account.Mode`). Read-only keeps it under the lock, as the
 //! read phase did; read-write lifts the lock, looks for local changes and uploads them.
 //!
 //! A switch stops the folder's sync, changes the mode under the lifecycle lock, walks the
@@ -252,6 +252,7 @@ impl SyncService {
             // Moves out of the folder: the helper over this account's link, fills
             // through its source, and the hub's router.
             moved_out: Some(self.move_outs()),
+            quota: self.quota(),
         });
         // The folder's first delta cycle runs before the outbox (`docs/design/writes.md` §3).
         worker.wait_for_cycle(false);
@@ -521,7 +522,7 @@ impl SyncService {
 
     /// How many changes wait in this folder's tree store — the running
     /// sync's, or with none running, the one on disk its next sync opens — for a Forget and
-    /// `Accounts1.Remove`, which would delete them with the store. Only read, so it needs no
+    /// `Accounts.Remove`, which would delete them with the store. Only read, so it needs no
     /// lock. A running store that cannot be read refuses; one on disk that cannot be opened
     /// holds nothing a sync could send (it is rebuilt empty).
     pub(super) async fn changes_in_store(&self) -> Result<u64, SyncError> {
@@ -553,7 +554,7 @@ impl SyncService {
 
 #[async_trait::async_trait]
 impl PendingUploads for SyncService {
-    /// `RefreshAccountInfo` read the quota: the outbox decides by it whether OneDrive is
+    /// `RefreshInfo` read the quota: the outbox decides by it whether OneDrive is
     /// still full (issue #2).
     fn quota_read(&self, quota: &crate::drive::DriveQuota) {
         self.quota_seen(quota);

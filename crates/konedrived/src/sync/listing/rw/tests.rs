@@ -213,6 +213,7 @@ impl World {
             host: Arc::new(NoHost),
             limits: Limits { small_max: 320 * 1024, chunk: 320 * 1024 },
             moved_out: None,
+            quota: crate::quota::Quota::detached(),
         }
     }
 

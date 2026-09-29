@@ -12,11 +12,13 @@
 //!   is handed out for the whole `Retry-After`. The size it came at is remembered for
 //!   [`THROTTLE_MEMORY`]: at and above it the pool grows by one per round only.
 //!
-//! A **large** transfer (a file of [`LARGE_FROM`] or more) fills the link on its own: at most
-//! `[transfers] large` ([`DEFAULT_LARGE`]) of them run at once, each in a slot of the pool; a
-//! large one waiting for that limit lets the small ones behind it go. A file being opened is not
-//! held by it (it still counts as a large transfer under way). A large pinned download in parts
-//! holds one large slot per stream (`sync::source::parts`, issue #28): its extra streams take only
+//! A **large** sync transfer (a file of [`LARGE_FROM`] or more, of any class but
+//! [`Class::Open`]) fills the link on its own: `[transfers] large` ([`DEFAULT_LARGE`]) limits the
+//! streams of large sync transfers that run at once, each in a slot of the pool; a large one
+//! waiting for that limit lets the small ones behind it go. A file being opened is outside the
+//! limit and its count (issue #50): it is never marked large, neither waits for the limit nor
+//! takes room in it, and still takes a slot of the pool. A large pinned download in parts holds
+//! one large slot per stream (`sync::source::parts`, issue #28): its extra streams take only
 //! slots nothing waits for ([`TransferPool::waiting`]), and give them back when something does.
 //!
 //! Who gets a free slot: a file being opened first — it may also take [`RESERVE`] slots above
@@ -121,13 +123,13 @@ pub struct Throughput {
     /// Bytes a second, the average of the last [`SPEED_SPAN`].
     pub down_speed: u64,
     pub up_speed: u64,
-    /// Slots held by downloads (opens and background) and by uploads.
-    pub active_down: u32,
-    pub active_up: u32,
+    /// Every slot held now, of all four classes, the opens' reserve included: may be above
+    /// `size` (issue #50).
+    pub in_use: u32,
     pub size: u32,
     pub ceiling: u32,
-    /// Large transfers under way (openings included, and each stream of a download in parts),
-    /// and how many may run at once.
+    /// The streams of large sync transfers under way (each stream of a download in parts; never
+    /// a file being opened), and how many may run at once.
     pub large: u32,
     pub large_limit: u32,
     /// Seconds left of OneDrive's `Retry-After`, during which no slot is handed out; 0 when
@@ -187,12 +189,12 @@ impl Waiters {
 struct Inner {
     size: usize,
     ceiling: usize,
-    /// Large transfers at once, openings aside.
+    /// Streams of large sync transfers at once; an open is never one.
     large_limit: usize,
     /// Successes counted towards the next slot of slow growth.
     credit: usize,
     held: [usize; 4],
-    /// Of those, large ones.
+    /// Of those, the streams of large sync transfers.
     large_held: usize,
     waiters: Waiters,
     next_id: u64,
@@ -295,7 +297,7 @@ impl TransferPool {
         self.lock().held[class.index()]
     }
 
-    /// Large transfers under way now, openings included.
+    /// Streams of large sync transfers under way now; a file being opened is never one.
     pub fn large_held(&self) -> usize {
         self.lock().large_held
     }
@@ -333,10 +335,10 @@ impl TransferPool {
         self.acquire_sized(class, Size::Small)
     }
 
-    /// Waits for a slot of `class` for a transfer of `size`: a large one also waits for the
-    /// large-file limit, unless it is an open.
+    /// Waits for a slot of `class` for a transfer of `size`: a large sync transfer also waits
+    /// for the large-stream limit. An open is never large ([`is_large`]).
     pub fn acquire_sized(&self, class: Class, size: Size) -> Acquire {
-        Acquire { pool: self.arc(), class, large: size == Size::Large, id: None, done: false }
+        Acquire { pool: self.arc(), class, large: is_large(class, size), id: None, done: false }
     }
 
     /// A small slot of `class` if one would be handed out now, without waiting in line.
@@ -346,7 +348,7 @@ impl TransferPool {
 
     /// A slot of `class` for a transfer of `size`, if one would be handed out now.
     pub fn try_acquire_sized(&self, class: Class, size: Size) -> Option<Slot> {
-        let large = size == Size::Large;
+        let large = is_large(class, size);
         let mut inner = self.lock();
         let id = inner.next_id;
         inner.next_id += 1;
@@ -560,19 +562,25 @@ impl TransferPool {
     }
 }
 
+/// Whether a transfer of `class` and `size` counts against the large-stream limit: a large
+/// one of any class but [`Class::Open`]. A file being opened is outside the limit and its count.
+fn is_large(class: Class, size: Size) -> bool {
+    size == Size::Large && class != Class::Open
+}
+
 fn wake_all(wake: Vec<Waker>) {
     for waker in wake {
         waker.wake();
     }
 }
 
-/// The first waiter of `class` that may have a slot: a large one only while the large-file
-/// limit leaves room, unless it is an open.
+/// The first waiter of `class` that may have a slot: a large one only while the large-stream
+/// limit leaves room (an open is never large).
 fn first(inner: &Inner, class: Class) -> Option<u64> {
     let large_free = inner.large_held < inner.large_limit;
     let [small, large] = &inner.waiters.line[class.index()];
     let small = small.first().copied();
-    let large = large.first().copied().filter(|_| class == Class::Open || large_free);
+    let large = large.first().copied().filter(|_| large_free);
     match (small, large) {
         (Some(s), Some(l)) => Some(s.min(l)),
         (s, l) => s.or(l),
@@ -641,8 +649,7 @@ fn throughput_of(inner: &Inner, now: Instant) -> Throughput {
     Throughput {
         down_speed: per_second(sums[0]),
         up_speed: per_second(sums[1]),
-        active_down: (inner.held[Class::Open.index()] + inner.held[Class::Download.index()]) as u32,
-        active_up: inner.held[Class::Upload.index()] as u32,
+        in_use: inner.held.iter().sum::<usize>() as u32,
         size: inner.size as u32,
         ceiling: inner.ceiling as u32,
         large: inner.large_held as u32,
@@ -1052,15 +1059,33 @@ mod tests {
         assert_eq!(pool.large_held(), DEFAULT_LARGE);
     }
 
-    /// A file being opened is not held by the large-file limit, though it counts among the
-    /// large transfers under way.
+    /// A file being opened is outside the large-stream limit and its count (issue #50): an
+    /// open of a large file goes at once, takes no room in the limit, and is not among the
+    /// large streams; it still takes a slot of the pool.
     #[test]
-    fn an_open_is_not_held_by_the_large_file_limit() {
+    fn an_open_is_outside_the_large_stream_limit_and_its_count() {
         let pool = TransferPool::starting_at(16, 64);
         let _large = take_sized(&pool, Class::Download, Size::Large, DEFAULT_LARGE);
         let open = pool.try_acquire_sized(Class::Open, Size::Large);
         assert!(open.is_some(), "an open of a large file goes at once");
-        assert_eq!(pool.large_held(), DEFAULT_LARGE + 1);
+        assert_eq!(open.as_ref().unwrap().size(), Size::Small, "never marked large");
+        assert_eq!(pool.large_held(), DEFAULT_LARGE);
+        assert_eq!((pool.throughput().large, pool.throughput().in_use), (DEFAULT_LARGE as u32, DEFAULT_LARGE as u32 + 1));
+        drop(_large);
+        let _opens = take_sized(&pool, Class::Open, Size::Large, 2);
+        assert_eq!((pool.large_held(), pool.throughput().in_use), (0, 3), "opens take slots, no room in the limit");
+    }
+
+    /// `in_use` is every slot held, of all four classes — a metadata one among them — and
+    /// counts an open's reserve above the pool's size (issue #50).
+    #[test]
+    fn the_slots_in_use_are_every_class_and_the_reserve() {
+        let pool = TransferPool::starting_at(4, 64);
+        let _held =
+            [take(&pool, Class::Metadata, 1), take(&pool, Class::Download, 1), take(&pool, Class::Upload, 1), take(&pool, Class::Open, 1)];
+        assert_eq!((pool.throughput().in_use, pool.throughput().size), (4, 4));
+        let _reserve = take(&pool, Class::Open, RESERVE);
+        assert_eq!(pool.throughput().in_use, 4 + RESERVE as u32, "above the size: the opens' reserve");
     }
 
     /// `[transfers] large` sets the limit, kept within 1 and the ceiling.

@@ -9,10 +9,10 @@
 
 #include <functional>
 
-class OrgKonedriveAccount1Interface;
+class OrgKonedriveAccountInterface;
 class QDBusServiceWatcher;
 
-/// Presents one account's org.konedrive.Account1 (at /org/konedrive/Accounts/<id>)
+/// Presents one account's org.konedrive.Account (at /org/konedrive/Accounts/<id>)
 /// to QML. Never blocks the GUI thread.
 class AccountController : public QObject
 {
@@ -23,7 +23,7 @@ class AccountController : public QObject
     Q_PROPERTY(QString id READ id CONSTANT)
     /// What people see and type; the id until the daemon has said.
     Q_PROPERTY(QString label READ label NOTIFY accountChanged)
-    /// The mode the account runs in (Account1.Mode): "read-only", or "read-write" while
+    /// The mode the account runs in (Account.Mode): "read-only", or "read-write" while
     /// changes made on this computer are uploaded.
     Q_PROPERTY(QString mode READ mode NOTIFY accountChanged)
     /// The mode a switch under way goes to, empty when none is: from setMode() until the
@@ -32,7 +32,7 @@ class AccountController : public QObject
     Q_PROPERTY(QString switchingTo READ switchingTo NOTIFY modeSwitchChanged)
     /// A switch to read-write waits for its sign-in, whose link is signInUrl: until Mode
     /// turns "read-write", LastError says why not, the account leaves "signed-in", or
-    /// cancelModeSwitch(). Account1 says nothing while it waits (limitations log F64).
+    /// cancelModeSwitch(). Account says nothing while it waits (limitations log F64).
     Q_PROPERTY(bool modeSignInPending READ modeSignInPending NOTIFY modeSwitchChanged)
     Q_PROPERTY(QString state READ state NOTIFY accountChanged)
     Q_PROPERTY(QString lastError READ lastError NOTIFY accountChanged)
@@ -67,7 +67,7 @@ public:
     QString actionError() const { return m_actionError; }
 
     Q_INVOKABLE void retry();
-    /// SetLabel; the daemon checks it (Accounts1.Add's rules).
+    /// SetLabel; the daemon checks it (Accounts.Add's rules).
     Q_INVOKABLE void setLabel(const QString &label);
     Q_INVOKABLE void signIn();
     Q_INVOKABLE void cancelSignIn();
@@ -114,7 +114,7 @@ private:
     QDBusConnection m_bus;
     QString m_path;
     QString m_id;
-    OrgKonedriveAccount1Interface *m_iface;
+    OrgKonedriveAccountInterface *m_iface;
     QDBusServiceWatcher *m_watcher;
     bool m_serviceAvailable = false;
     QString m_label;

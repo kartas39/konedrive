@@ -143,7 +143,7 @@ FormCard.FormCardPage {
         }
         FormCard.FormDelegateSeparator {}
         // The mode: on is read-write. It shows the mode the account runs in
-        // (Account1.Mode), or the one a switch under way goes to.
+        // (Account.Mode), or the one a switch under way goes to.
         FormCard.FormSwitchDelegate {
             id: uploadSwitch
             objectName: "uploadSwitch"

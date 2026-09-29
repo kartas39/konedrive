@@ -1,0 +1,99 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- /org/konedrive/Accounts/<id>: the changes made in this account's
+       folder that wait to be uploaded, and what is kept back. -->
+  <interface name="org.konedrive.UploadQueue">
+    <!-- The changes waiting to be uploaded, oldest first, at most `limit`
+         (0 for all): (seq, kind, full path, state, bytes sent, bytes in all,
+         reason, next try in unix seconds or 0). Kinds: create, mkdir,
+         update, move, delete, move-out. States: waiting (not quiet: open
+         for writing), ready, running, retry (in backoff until next try),
+         blocked (needs the user; the reason says why), held (a large delete
+         waiting for ConfirmDeletes or RestoreDeletes). Refused Unsupported
+         for a folder that is not connected to OneDrive, and NoRoot before its
+         sync has started; ConfirmDeletes, RestoreDeletes and NotUploaded
+         refuse the same. -->
+    <method name="Changes">
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="rows" type="a(tsssttsx)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveOutboxList"/>
+    </method>
+    <!-- A delete of many items (the mass-delete guard: rows held) goes
+         ahead; how many rows were released. Every removal held at the moment
+         of the call goes, one held after the caller last read HeldCount
+         included. -->
+    <method name="ConfirmDeletes">
+      <arg name="released" type="u" direction="out"/>
+    </method>
+    <!-- A delete of many items is taken back: the held rows are dropped and
+         the items placed again from OneDrive at once (a cycle with a full
+         reconcile follows); how many rows were dropped. Nothing is deleted in
+         OneDrive. -->
+    <method name="RestoreDeletes">
+      <arg name="dropped" type="u" direction="out"/>
+    </method>
+    <!-- What stays on this computer and why, as (full path, reason):
+         symlink, fifo, socket, device, other-device (on another
+         filesystem mounted inside the folder, or a nested Btrfs subvolume),
+         reserved-name, not-downloaded (a
+         file from elsewhere that is not downloaded), hard-link; and every
+         blocked change with its reason: name-characters, name-spaces,
+         name-reserved, name-not-utf8, too-large, forbidden,
+         "refused: <OneDrive's message>". -->
+    <method name="NotUploaded">
+      <arg name="items" type="a(ss)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>
+    </method>
+    <!-- What is kept back, one row per reason: (group, reason, count, bytes
+         of the files). Everything NotUploaded lists, and the changes that
+         wait with a reason (open for writing, locked, ...); removals held by
+         the mass-delete guard are not. Groups, in this order:
+         one-action (one action fixes every file: quota-exceeded, forbidden),
+         per-file (each file needs the user: name-characters, name-spaces,
+         name-reserved, name-not-utf8, too-large, refused — every
+         "refused: <message>" is summed as refused), never (never uploaded:
+         symlink, fifo, socket, device, other-device, reserved-name,
+         hard-link), waiting (goes up by itself; also every reason the
+         daemon does not know). Refused as NotUploaded is. -->
+    <method name="NotUploadedSummary">
+      <arg name="reasons" type="a(ssut)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveKeptBackList"/>
+    </method>
+    <!-- The files kept back for `reason` (as NotUploadedSummary names it),
+         by path, at most `limit` (0 for all): (full path, reason as stored,
+         "refused: <OneDrive's message>" for a refused one); and how many
+         there are in all. Refused as NotUploaded is. -->
+    <method name="NotUploadedFiles">
+      <arg name="reason" type="s" direction="in"/>
+      <arg name="limit" type="u" direction="in"/>
+      <arg name="items" type="a(ss)" direction="out"/>
+      <arg name="total" type="u" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>
+    </method>
+    <!-- Changes waiting to be uploaded (neither blocked nor held), and the
+         size of the files they send. Coalesced to a few changes a second. -->
+    <property name="PendingCount" type="u" access="read"/>
+    <property name="PendingBytes" type="t" access="read"/>
+    <!-- Changes that need the user before they can go up (see NotUploaded). -->
+    <property name="BlockedCount" type="u" access="read"/>
+    <!-- Removals the mass-delete guard holds: a delete of many items (more
+         than 500, or more than 20 % of the folder once 10 or more) waits for
+         ConfirmDeletes or RestoreDeletes. Neither pending nor blocked.
+         Coalesced with the counts above. -->
+    <property name="HeldCount" type="u" access="read"/>
+    <!-- OneDrive is full (quota state "exceeded", or less than 1 MiB free):
+         no content goes up until Folder.Refresh, or the automatic check
+         every 30 minutes, finds space again. Moves, renames, deletes and new
+         folders still go. Not coalesced. -->
+    <property name="QuotaFull" type="b" access="read"/>
+    <!-- While QuotaFull: the changes that send content, which wait for
+         space, and the size of their files. Coalesced with the counts above. -->
+    <property name="QuotaWaitingCount" type="u" access="read"/>
+    <property name="QuotaWaitingBytes" type="t" access="read"/>
+    <!-- Files OneDrive refused as too big for the space left: each waits,
+         in Changes with reason "too-big:<bytes needed>:<bytes free>", until a
+         quota read (Account.QuotaRemaining) shows it fits. Coalesced with the counts above. -->
+    <property name="TooBigCount" type="u" access="read"/>
+  </interface>
+</node>

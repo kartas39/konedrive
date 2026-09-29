@@ -3,11 +3,11 @@
 //! The daemon serves one object per account (`konedrive_dbus::account_path`) below the
 //! accounts manager (`konedrive_dbus::ACCOUNTS_PATH`). A command acts on one account, chosen
 //! as [`choose`] says; `status` and `sync status` show every account when none is chosen; the
-//! commands that take a path go through `Files1`, which finds the account by the path.
+//! commands that take a path go through `Files`, which finds the account by the path.
 
 use std::time::Duration;
 
-use konedrive_dbus::accounts::{Account1Proxy, Sync1Proxy};
+use konedrive_dbus::accounts::{AccountProxy, FolderProxies};
 use konedrive_dbus::{error_name, ERROR_PREFIX};
 use zbus::zvariant::OwnedObjectPath;
 
@@ -197,13 +197,13 @@ pub struct AccountRow {
     pub email: String,
     pub state: String,
     pub mode: String,
-    /// `RootPath`: empty with no folder.
+    /// `Folder.Path`: empty with no folder.
     pub folder: String,
     pub root_state: String,
 }
 
 /// `account list` (design §5.2): a table of every account, in the order they were added —
-/// id, label, email, sign-in state, mode, and the folder with its `RootState`.
+/// id, label, email, sign-in state, mode, and the folder with its `Folder.State`.
 pub fn account_list_text(rows: &[AccountRow]) -> String {
     if rows.is_empty() {
         return format!(
@@ -239,7 +239,7 @@ pub fn indented(text: &str) -> String {
     text.lines().map(|line| if line.is_empty() { "\n".to_owned() } else { format!("  {line}\n") }).collect()
 }
 
-/// `status`'s `Client ID:` line: `Accounts1.ClientId`, one for every account.
+/// `status`'s `Client ID:` line: `Accounts.ClientId`, one for every account.
 pub fn client_id_line(client_id: &str) -> String {
     let shown = if client_id.is_empty() { "(not set)" } else { client_id };
     format!("{:<12}{shown}\n", "Client ID:")
@@ -248,7 +248,7 @@ pub fn client_id_line(client_id: &str) -> String {
 /// `status` for one account. `client_id` is `Some` when this account is all `status` shows:
 /// its label and the client ID are printed with it. When `status` shows several, the client
 /// ID is printed once above them and each block is headed by its label: `None`.
-pub async fn status_text(proxy: &Account1Proxy<'_>, client_id: Option<&str>) -> zbus::Result<String> {
+pub async fn status_text(proxy: &AccountProxy<'_>, client_id: Option<&str>) -> zbus::Result<String> {
     let state = proxy.state().await?;
     let mut out = String::new();
     if let Some(client_id) = client_id {
@@ -283,7 +283,7 @@ pub async fn status_text(proxy: &Account1Proxy<'_>, client_id: Option<&str>) -> 
 /// The account status's layout, with a wider label column: `Always on this
 /// device:` is the longest label.
 ///
-/// `RootState` is `none` on an ordinary machine that has never registered a
+/// `Folder.State` is `none` on an ordinary machine that has never registered a
 /// folder — this prints as an unremarkable "(none)", not an error. `error`
 /// means a root is registered but something needs attention (startup
 /// recovery could not finish, or could not even run, including a recovery
@@ -298,7 +298,7 @@ pub async fn status_text(proxy: &Account1Proxy<'_>, client_id: Option<&str>) -> 
 /// every time, not left to the user's memory or to whatever `LastError`
 /// happens to say.
 ///
-/// `Helper:` says how the privileged helper stands (`Accounts1.HelperState`,
+/// `Helper:` says how the privileged helper stands (`Accounts.HelperState`,
 /// HS4, passed in as `helper`) and, when it is not connected, how to install,
 /// start or look at it — whether or not a folder is registered. One helper
 /// serves every account, so when `sync status` shows several, it prints that
@@ -311,10 +311,10 @@ pub async fn status_text(proxy: &Account1Proxy<'_>, client_id: Option<&str>) -> 
 /// `Conflicts:` says how many local versions were moved out of the way,
 /// when there are any: they are not a problem, so `LastError` does not carry
 /// them.
-pub async fn sync_status_text(proxy: &Sync1Proxy<'_>, helper: Option<&str>, prefix: &str) -> zbus::Result<String> {
+pub async fn sync_status_text(proxy: &FolderProxies<'_>, helper: Option<&str>, prefix: &str) -> zbus::Result<String> {
     const W: usize = SYNC_STATUS_WIDTH;
-    let path = proxy.root_path().await?;
-    let state = proxy.root_state().await?;
+    let path = proxy.folder.path().await?;
+    let state = proxy.folder.state().await?;
     let shown = if path.is_empty() { "(none)" } else { path.as_str() };
     let mut out = format!("{:<W$}{shown}\n", "Folder:");
     out.push_str(&format!("{:<W$}{state}\n", "State:"));
@@ -324,66 +324,66 @@ pub async fn sync_status_text(proxy: &Sync1Proxy<'_>, helper: Option<&str>, pref
     if let Some(helper) = helper {
         out.push_str(&helper_line(helper));
     }
-    let last_error = proxy.last_error().await?;
+    let last_error = proxy.folder.last_error().await?;
     if !last_error.is_empty() {
         out.push_str(&format!("{:<W$}{last_error}\n", "Last error:"));
     }
-    if proxy.root_source().await? == "onedrive" {
+    if proxy.folder.source().await? == "onedrive" {
         let (listed, placed, skipped) =
-            (proxy.items_listed().await?, proxy.items_placed().await?, proxy.skipped_count().await?);
+            (proxy.folder.items_listed().await?, proxy.folder.items_placed().await?, proxy.folder.skipped_count().await?);
         out.push_str(&format!("{:<W$}{listed} in OneDrive, {placed} in the folder\n", "Items:"));
         if skipped > 0 {
             out.push_str(&format!("{:<W$}{skipped} (see `{prefix} sync skipped`)\n", "Skipped:"));
         }
-        let checked = checked_text(proxy.last_checked().await?, unix_now());
+        let checked = checked_text(proxy.folder.last_checked().await?, unix_now());
         out.push_str(&format!("{:<W$}{checked}\n", "Last checked:"));
         let mode = account_mode(proxy).await;
         out.push_str(&format!("{:<W$}{}\n", "Mode:", mode_text(&mode)));
-        let (down, down_bytes) = (proxy.download_left_count().await?, proxy.download_left_bytes().await?);
+        let (down, down_bytes) = (proxy.transfers.download_left_count().await?, proxy.transfers.download_left_bytes().await?);
         out.push_str(&format!("{:<W$}{}\n", "Waiting to download:", waiting_download_text(down, down_bytes)));
         let scan = LocalScan {
-            state: proxy.scan_state().await?,
-            reason: proxy.scan_reason().await?,
-            started: proxy.scan_started().await?,
-            directories: proxy.scan_directories().await?,
-            files: proxy.scan_files().await?,
-            expected: proxy.scan_expected().await?,
-            finished: proxy.scan_finished().await?,
-            took: proxy.scan_took().await?,
+            state: proxy.scan.state().await?,
+            reason: proxy.scan.reason().await?,
+            started: proxy.scan.started().await?,
+            directories: proxy.scan.directories().await?,
+            files: proxy.scan.files().await?,
+            expected: proxy.scan.expected().await?,
+            finished: proxy.scan.finished().await?,
+            took: proxy.scan.took().await?,
         };
         out.push_str(&format!("{:<W$}{}\n", "Local scan:", local_scan_text(&scan, unix_now())));
-        let (pending, bytes, blocked) = (proxy.pending_count().await?, proxy.pending_bytes().await?, proxy.blocked_count().await?);
+        let (pending, bytes, blocked) = (proxy.queue.pending_count().await?, proxy.queue.pending_bytes().await?, proxy.queue.blocked_count().await?);
         if mode == "read-write" || pending > 0 || blocked > 0 {
             out.push_str(&format!("{:<W$}{}\n", "Waiting to upload:", waiting_text(pending, bytes)));
         }
         if blocked > 0 {
             out.push_str(&format!("{:<W$}{blocked} (see `{prefix} sync not-uploaded`)\n", "Blocked:"));
         }
-        if proxy.quota_full().await? {
-            let (count, bytes) = (proxy.space_waiting_count().await?, proxy.space_waiting_bytes().await?);
+        if proxy.queue.quota_full().await? {
+            let (count, bytes) = (proxy.queue.quota_waiting_count().await?, proxy.queue.quota_waiting_bytes().await?);
             out.push_str(&format!("{:<W$}{}\n", "Waiting for space:", space_waiting_text(count, bytes)));
         }
-        let too_big = proxy.too_big_count().await?;
+        let too_big = proxy.queue.too_big_count().await?;
         if too_big > 0 {
             out.push_str(&format!("{:<W$}{too_big} (see `{prefix} sync outbox`)\n", "Too big for the space:"));
         }
-        let held = proxy.held_count().await?;
+        let held = proxy.queue.held_count().await?;
         if held > 0 {
             out.push_str(&format!(
                 "{:<W$}{held} deletions (`{prefix} sync deletes confirm` or `{prefix} sync deletes restore`)\n",
                 "Held for confirmation:"
             ));
         }
-        if proxy.paused().await? {
-            let until = proxy.paused_until().await?;
+        if proxy.folder.paused().await? {
+            let until = proxy.folder.paused_until().await?;
             out.push_str(&format!("{:<W$}{}\n", "Paused until:", paused_text(until, prefix)));
         }
     }
     if !path.is_empty() {
-        out.push_str(&format!("{:<W$}{}\n", "On this computer:", human_bytes(proxy.local_bytes().await?)));
-        out.push_str(&format!("{:<W$}{}\n", "Always on this device:", proxy.pinned_count().await?));
+        out.push_str(&format!("{:<W$}{}\n", "On this computer:", human_bytes(proxy.folder.local_bytes().await?)));
+        out.push_str(&format!("{:<W$}{}\n", "Always on this device:", proxy.folder.pinned_count().await?));
     }
-    let conflicts = proxy.conflict_count().await?;
+    let conflicts = proxy.conflicts.count().await?;
     if conflicts > 0 {
         out.push_str(&format!("{:<W$}{conflicts} (see `{prefix} sync conflicts`)\n", "Conflicts:"));
     }
@@ -394,12 +394,12 @@ pub async fn sync_status_text(proxy: &Sync1Proxy<'_>, helper: Option<&str>, pref
 /// longest label.
 const SYNC_STATUS_WIDTH: usize = 24;
 
-/// `Account1.Mode` of the account whose `Sync1` is `proxy` (the same object);
+/// `Account.Mode` of the account whose folder is `proxy` (the same object);
 /// empty when it cannot be read.
-async fn account_mode(proxy: &Sync1Proxy<'_>) -> String {
-    let inner = proxy.inner();
+async fn account_mode(proxy: &FolderProxies<'_>) -> String {
+    let inner = proxy.folder.inner();
     let account = async {
-        konedrive_dbus::accounts::Account1Proxy::builder(inner.connection())
+        konedrive_dbus::accounts::AccountProxy::builder(inner.connection())
             .path(inner.path().to_owned())?
             .build()
             .await?
@@ -418,7 +418,7 @@ pub fn mode_text(mode: &str) -> String {
     }
 }
 
-/// The Full local scan as `Sync1`'s `Scan*` properties say it (issue #8).
+/// The Full local scan as `LocalScan`'s properties say it (issue #8).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalScan {
     pub state: String,
@@ -593,7 +593,7 @@ fn too_big(reason: &str) -> Option<(u64, u64)> {
     Some((needs.parse().ok()?, free.parse().ok()?))
 }
 
-/// One row of `Sync1.Outbox()`: (seq, kind, full path, state, bytes sent, bytes
+/// One row of `UploadQueue.Changes()`: (seq, kind, full path, state, bytes sent, bytes
 /// in all, reason, next try).
 pub type OutboxRow = (u64, String, String, String, u64, u64, String, i64);
 
@@ -720,7 +720,7 @@ pub enum SyncAction<'a> {
     Unpin(&'a str),
     /// The path refused ([`refused_path`]), or the paths given, joined with ", ".
     Free(&'a str),
-    /// `account remove`, with the account's label: `Accounts1.Remove` forgets the
+    /// `account remove`, with the account's label: `Accounts.Remove` forgets the
     /// folder as `Forget` does, and is refused under the same names.
     Remove(&'a str),
     Outbox,
@@ -791,13 +791,13 @@ impl SyncAction<'_> {
     }
 }
 
-/// What to tell a person when a `Sync1` call made for `action` failed.
+/// What to tell a person when a folder call made for `action` failed.
 ///
 /// Matches the D-Bus error **name** (`konedrive_dbus::error_name`), never the
-/// message: every refusal `Sync1` makes arrives under
+/// message: every refusal the folder makes arrives under
 /// `konedrive_dbus::ERROR_PREFIX`, and each gets a sentence saying what
 /// happened to the user's file and what they can do about it. `root` is the
-/// registered folder (`RootPath`, possibly empty), which two refusals name.
+/// registered folder (`Folder.Path`, possibly empty), which two refusals name.
 ///
 /// The daemon's own message is kept only where it is the specific part:
 /// `Unsupported` (which filesystem feature is missing) and anything with no
@@ -813,9 +813,9 @@ pub fn explain_sync_error(action: SyncAction<'_>, error: &zbus::Error, root: &st
 }
 
 /// What the CLI knows of the daemon besides a refusal, read after it: the
-/// folder of the account the refusal is about (`RootPath`: the chosen
+/// folder of the account the refusal is about (`Folder.Path`: the chosen
 /// account's, or for a path, the folder that holds it), what it shows
-/// (`RootSource`), the helper (`Accounts1.HelperState`), and for a path, every
+/// (`RootSource`), the helper (`Accounts.HelperState`), and for a path, every
 /// account's folder. Any of them may be empty.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Context<'a> {
@@ -871,7 +871,7 @@ pub fn refusal_text_in(action: SyncAction<'_>, name: Option<&str>, detail: &str,
         return text;
     }
     match (refusal, action) {
-        // `Files1` refuses a path in no account's folder before any account
+        // `Files` refuses a path in no account's folder before any account
         // sees it; with no folder at all, that is `NoRoot`'s situation.
         (Some("OutsideRoot"), _) if path_command && context.root.is_empty() => {
             return match context.folders {
@@ -959,7 +959,7 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
              with local files, use `{prefix} sync register-without-interception {path}`: without \
              the helper, files that are not downloaded read as zeros until you hydrate them"
         ),
-        // `Accounts1.Remove` forgets the folder first, under Forget's rule.
+        // `Accounts.Remove` forgets the folder first, under Forget's rule.
         (Some("NoHelper"), Remove(label)) => format!(
             "the konedrive helper is not connected, so the account {label} was not removed and \
              nothing was changed. Removing it forgets its folder{folder}, and forgetting a folder \
@@ -1177,9 +1177,9 @@ pub fn skip_reason_text(reason: &str) -> &'static str {
     }
 }
 
-/// What to tell a person when `Dev1.AccessToken()` failed — matched by the
+/// What to tell a person when `TokenExport.ReadOnly()` failed — matched by the
 /// D-Bus error name, never the message, the same discipline
-/// [`explain_sync_error`] uses for `Sync1`. Being signed out is worth its
+/// [`explain_sync_error`] uses for the folder. Being signed out is worth its
 /// own sentence, since the fix (`konedrivectl login`) is not what the
 /// daemon's own message says; a locked wallet or a network error already
 /// says what is wrong on its own, so its text is kept as is.
@@ -1222,24 +1222,24 @@ const WITHOUT_READ_WRITE: &str = "Without --read-write, the export gives a read-
 /// forgets a folder, and is a [`SyncAction`].)
 #[derive(Debug, Clone, Copy)]
 pub enum AccountAction<'a> {
-    /// `Accounts1.Add`, with the label asked for.
+    /// `Accounts.Add`, with the label asked for.
     Add(&'a str),
-    /// `Account1.SetLabel`: the account's label, and the one asked for.
+    /// `Account.SetLabel`: the account's label, and the one asked for.
     Rename(&'a str, &'a str),
-    /// `Accounts1.SetClientId`: the id given, and the labels of the accounts
+    /// `Accounts.SetClientId`: the id given, and the labels of the accounts
     /// signed in or signing in when it was refused.
     SetClientId(&'a str, &'a [String]),
-    /// `Account1.BeginSignIn`, with the account's label.
+    /// `Account.BeginSignIn`, with the account's label.
     SignIn(&'a str),
-    /// `Account1.SignOut`, with the account's label.
+    /// `Account.SignOut`, with the account's label.
     SignOut(&'a str),
-    /// `Account1.SetMode`: the account's label, the mode asked for, and how a command
+    /// `Account.SetMode`: the account's label, the mode asked for, and how a command
     /// suggested about the account starts ([`command_prefix`]).
     SetMode(&'a str, &'a str, &'a str),
 }
 
-/// What to tell a person when a call on the accounts failed: `Accounts1.Add`,
-/// `Accounts1.SetClientId`, `Account1.SetLabel`, `BeginSignIn` or `SignOut`.
+/// What to tell a person when a call on the accounts failed: `Accounts.Add`,
+/// `Accounts.SetClientId`, `Account.SetLabel`, `BeginSignIn` or `SignOut`.
 /// These refuse under the bus's own names — `InvalidArgs` for a label or a
 /// client id the rules refuse, `Failed` for the rest — so the name decides,
 /// and the daemon's message is kept as the reason.
@@ -1415,7 +1415,7 @@ pub fn activity_text(events: &[(i64, String, String, String)]) -> String {
     out
 }
 
-/// One direction's queue totals (issue #16): `Sync1`'s `DownloadLeftCount`,
+/// One direction's queue totals (issue #16): `Transfers`' `DownloadLeftCount`,
 /// `DownloadLeftBytes`, `DownloadDoneBytes`, `DownloadTimeLeft`, or the same four for uploads.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct QueueTotals {
@@ -1428,58 +1428,67 @@ pub struct QueueTotals {
     pub time_left: u32,
 }
 
-/// What `sync transfers` says first: the account's transfer pool (`Sync1`'s
-/// `ActiveDownloads`, `DownloadSpeed`, `ActiveUploads`, `UploadSpeed`, `PoolSize`,
-/// `PoolCeiling`, `LargeTransfers`, `LargeLimit`, `RetryAfter`) and the queue totals.
+/// What `sync transfers` says first: the files moving each way and the account's transfer
+/// pool (`Transfers`' `ActiveDownloads`, `DownloadSpeed`, `ActiveUploads`, `UploadSpeed`,
+/// `PoolInUse`, `PoolSize`, `LargeFiles`, `LargeStreams`, `LargeStreamLimit`, `RetryAfter`)
+/// and the queue totals.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TransferSummary {
+    /// Files downloading and uploading now, each once.
     pub active_downloads: u32,
     pub download_speed: u64,
     pub downloads: QueueTotals,
     pub active_uploads: u32,
     pub upload_speed: u64,
     pub uploads: QueueTotals,
+    /// Slots held now, and the pool's size: in use may be above the size.
+    pub pool_in_use: u32,
     pub pool_size: u32,
-    pub pool_ceiling: u32,
-    pub large_transfers: u32,
-    pub large_limit: u32,
+    /// Large files the sync moves now; the streams of large sync transfers, and their limit.
+    pub large_files: u32,
+    pub large_streams: u32,
+    pub large_stream_limit: u32,
     /// Seconds left of OneDrive's `Retry-After`; 0 when there is none.
     pub retry_after: u32,
 }
 
-/// Reads a [`TransferSummary`] from `Sync1`.
-pub async fn transfer_summary(proxy: &Sync1Proxy<'_>) -> zbus::Result<TransferSummary> {
+/// Reads a [`TransferSummary`] from `Transfers`.
+pub async fn transfer_summary(proxy: &FolderProxies<'_>) -> zbus::Result<TransferSummary> {
     Ok(TransferSummary {
-        active_downloads: proxy.active_downloads().await?,
-        download_speed: proxy.download_speed().await?,
+        active_downloads: proxy.transfers.active_downloads().await?,
+        download_speed: proxy.transfers.download_speed().await?,
         downloads: QueueTotals {
-            left_count: proxy.download_left_count().await?,
-            left_bytes: proxy.download_left_bytes().await?,
-            done_bytes: proxy.download_done_bytes().await?,
-            time_left: proxy.download_time_left().await?,
+            left_count: proxy.transfers.download_left_count().await?,
+            left_bytes: proxy.transfers.download_left_bytes().await?,
+            done_bytes: proxy.transfers.download_done_bytes().await?,
+            time_left: proxy.transfers.download_time_left().await?,
         },
-        active_uploads: proxy.active_uploads().await?,
-        upload_speed: proxy.upload_speed().await?,
+        active_uploads: proxy.transfers.active_uploads().await?,
+        upload_speed: proxy.transfers.upload_speed().await?,
         uploads: QueueTotals {
-            left_count: proxy.upload_left_count().await?,
-            left_bytes: proxy.upload_left_bytes().await?,
-            done_bytes: proxy.upload_done_bytes().await?,
-            time_left: proxy.upload_time_left().await?,
+            left_count: proxy.transfers.upload_left_count().await?,
+            left_bytes: proxy.transfers.upload_left_bytes().await?,
+            done_bytes: proxy.transfers.upload_done_bytes().await?,
+            time_left: proxy.transfers.upload_time_left().await?,
         },
-        pool_size: proxy.pool_size().await?,
-        pool_ceiling: proxy.pool_ceiling().await?,
-        large_transfers: proxy.large_transfers().await?,
-        large_limit: proxy.large_limit().await?,
-        retry_after: proxy.retry_after().await?,
+        pool_in_use: proxy.transfers.pool_in_use().await?,
+        pool_size: proxy.transfers.pool_size().await?,
+        large_files: proxy.transfers.large_files().await?,
+        large_streams: proxy.transfers.large_streams().await?,
+        large_stream_limit: proxy.transfers.large_stream_limit().await?,
+        retry_after: proxy.transfers.retry_after().await?,
     })
 }
 
-/// The pool's line, as the window shows it too: "Pool: 15 of 64 (large: 3 of 4)", with
-/// "— OneDrive asked to wait 30 s" during a `Retry-After`.
+/// The pool's line, as the window shows it too (issue #50): the slots in use of the pool's
+/// size, then the large files and their streams — "Pool: 7 of 32 · large files: 1 (4 of 4
+/// streams)" — with "— OneDrive asked to wait 30 s" during a `Retry-After`. In use may be
+/// above the size (an open's reserve; slots still held after a throttle halved the pool), and
+/// is shown as it is.
 pub fn pool_text(summary: &TransferSummary) -> String {
     let mut line = format!(
-        "Pool: {} of {} (large: {} of {})",
-        summary.pool_size, summary.pool_ceiling, summary.large_transfers, summary.large_limit
+        "Pool: {} of {} · large files: {} ({} of {} streams)",
+        summary.pool_in_use, summary.pool_size, summary.large_files, summary.large_streams, summary.large_stream_limit
     );
     if summary.retry_after > 0 {
         line.push_str(&format!(" — OneDrive asked to wait {} s", summary.retry_after));
@@ -1565,7 +1574,7 @@ pub fn transfers_text(summary: &TransferSummary, downloads: &[(String, u64, u64)
     out
 }
 
-/// One row of `Sync1.Conflicts()`: (unix time, original full path, full path
+/// One row of `Conflicts.List()`: (unix time, original full path, full path
 /// of the kept version, how it was kept: `rescued` or `copy`).
 pub type ConflictRow = (i64, String, String, String);
 
@@ -1760,7 +1769,7 @@ pub fn human_bytes(bytes: u64) -> String {
 /// `read-write`, `Err` with `LastError` when the switch did not go through. The account stays
 /// `signed-in` throughout, so `State` cannot tell; it is polled for the same reason
 /// [`wait_for_sign_in`] polls.
-pub async fn wait_for_read_write(proxy: &Account1Proxy<'_>) -> anyhow::Result<()> {
+pub async fn wait_for_read_write(proxy: &AccountProxy<'_>) -> anyhow::Result<()> {
     loop {
         if proxy.mode().await? == "read-write" {
             return Ok(());
@@ -1788,7 +1797,7 @@ pub async fn wait_for_read_write(proxy: &Account1Proxy<'_>) -> anyhow::Result<()
 /// already happened. `BeginSignIn` sets the state to `signing-in` before it replies, so the
 /// very first poll here is guaranteed to observe either `signing-in` or the terminal state -
 /// there is no window in which the relevant transition can be missed.
-pub async fn wait_for_sign_in(proxy: &Account1Proxy<'_>) -> anyhow::Result<()> {
+pub async fn wait_for_sign_in(proxy: &AccountProxy<'_>) -> anyhow::Result<()> {
     loop {
         let state = proxy.state().await?;
         if state != "signing-in" {
@@ -1951,7 +1960,7 @@ mod tests {
         assert_eq!(shell_word("Ann's work"), r"'Ann'\''s work'");
     }
 
-    /// `Files1` refuses a path in no account's folder `OutsideRoot`: with no
+    /// `Files` refuses a path in no account's folder `OutsideRoot`: with no
     /// folder at all, that is said as `NoRoot` is; with folders, they are named.
     #[test]
     fn a_path_in_no_folder_is_told_which_folders_there_are() {
@@ -2266,6 +2275,8 @@ mod tests {
         assert_eq!(quota_text("", 0, false), "");
     }
 
+    /// The pool line (issue #50): the slots in use of the pool's size, then the large files
+    /// and their streams; in use above the size is shown as it is.
     #[test]
     fn transfers_start_with_the_pool_summary() {
         let summary = super::TransferSummary {
@@ -2273,20 +2284,23 @@ mod tests {
             download_speed: 8_808_038,
             active_uploads: 3,
             upload_speed: 1_258_291,
-            pool_size: 15,
-            pool_ceiling: 64,
-            large_transfers: 3,
-            large_limit: 4,
+            pool_in_use: 7,
+            pool_size: 32,
+            large_files: 1,
+            large_streams: 4,
+            large_stream_limit: 4,
             retry_after: 0,
             ..Default::default()
         };
         let text = super::transfers_text(&summary, &[], &[]);
         assert_eq!(
             text,
-            "Downloading: 12 now, 8.4 MiB/s\nUploading:    3 now, 1.2 MiB/s\nPool: 15 of 64 (large: 3 of 4)\nNothing is downloading or uploading.\n"
+            "Downloading: 12 now, 8.4 MiB/s\nUploading:    3 now, 1.2 MiB/s\nPool: 7 of 32 · large files: 1 (4 of 4 streams)\nNothing is downloading or uploading.\n"
         );
         let waiting = super::TransferSummary { retry_after: 30, ..summary };
-        assert_eq!(super::pool_text(&waiting), "Pool: 15 of 64 (large: 3 of 4) — OneDrive asked to wait 30 s");
+        assert_eq!(super::pool_text(&waiting), "Pool: 7 of 32 · large files: 1 (4 of 4 streams) — OneDrive asked to wait 30 s");
+        let over = super::TransferSummary { pool_in_use: 18, pool_size: 16, ..summary };
+        assert!(super::pool_text(&over).starts_with("Pool: 18 of 16 · "), "{}", super::pool_text(&over));
     }
 
     /// Issue #16: each summary line says what is left — files down, changes up — its size and

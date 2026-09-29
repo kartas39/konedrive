@@ -1,6 +1,6 @@
 #include "accountcontroller.h"
 
-#include "account1interface.h"
+#include "accountinterface.h"
 
 #include <KLocalizedString>
 
@@ -12,7 +12,7 @@
 #include <QGuiApplication>
 
 const QString AccountController::ServiceName = QStringLiteral("org.konedrive.Daemon");
-const QString AccountController::InterfaceName = QStringLiteral("org.konedrive.Account1");
+const QString AccountController::InterfaceName = QStringLiteral("org.konedrive.Account");
 
 namespace
 {
@@ -30,7 +30,7 @@ AccountController::AccountController(const QDBusConnection &bus, const QString &
     , m_bus(bus)
     , m_path(path)
     , m_id(path.section(QLatin1Char('/'), -1))
-    , m_iface(new OrgKonedriveAccount1Interface(ServiceName, path, bus, this))
+    , m_iface(new OrgKonedriveAccountInterface(ServiceName, path, bus, this))
     , m_watcher(new QDBusServiceWatcher(ServiceName, bus, QDBusServiceWatcher::WatchForOwnerChange, this))
 {
     m_bus.connect(ServiceName,
@@ -201,7 +201,7 @@ void AccountController::signOut()
 
 void AccountController::refreshAccountInfo()
 {
-    call(m_iface->RefreshAccountInfo());
+    call(m_iface->RefreshInfo());
 }
 
 void AccountController::copySignInUrl()

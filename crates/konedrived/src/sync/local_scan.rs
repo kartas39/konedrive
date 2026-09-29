@@ -1,4 +1,4 @@
-//! How the Full local scan goes, for `Sync1` (issue #8): whether one runs, why, since when
+//! How the Full local scan goes, for `org.konedrive.LocalScan` (issue #8): whether one runs, why, since when
 //! and what it has seen so far, and when the last one finished. Only a read-write folder
 //! has a watcher, and so a local scan; a read-only one says `none`.
 //!
@@ -16,7 +16,7 @@ use crate::config::Mode;
 /// A running scan's counts reach the state at most this often.
 pub const PUBLISH_EVERY: Duration = Duration::from_secs(1);
 
-/// `Sync1.ScanState`.
+/// `LocalScan.State`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ScanState {
     /// A read-only folder: no watcher, no local scan.
@@ -36,7 +36,7 @@ impl ScanState {
     }
 }
 
-/// The folder's local scan, as `Sync1`'s `Scan*` properties publish it. While idle, the
+/// The folder's local scan, as `LocalScan`'s properties publish it. While idle, the
 /// reason, the start and the counts are the last scan's.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocalScan {

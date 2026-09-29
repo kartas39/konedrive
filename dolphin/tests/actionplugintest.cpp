@@ -584,7 +584,7 @@ private Q_SLOTS:
         }
         QVERIFY(QDBusConnection::sessionBus().interface()->activatableServiceNames().value().contains(DaemonService));
         const QDBusMessage probe = QDBusConnection::sessionBus().call(
-            QDBusMessage::createMethodCall(DaemonService, QStringLiteral("/org/konedrive/Accounts"), QStringLiteral("org.konedrive.Files1"), QStringLiteral("Pin"))
+            QDBusMessage::createMethodCall(DaemonService, QStringLiteral("/org/konedrive/Accounts"), QStringLiteral("org.konedrive.Files"), QStringLiteral("Pin"))
             << QStringList{QStringLiteral("/nonexistent")});
         qInfo("the bus answers a failed start with %s", qPrintable(probe.errorName()));
 

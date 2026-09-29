@@ -2,14 +2,16 @@
  "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
 <node>
   <!-- /org/konedrive/Accounts: the accounts of this user. The same object
-       implements org.konedrive.Files1 and org.freedesktop.DBus.ObjectManager,
+       implements org.konedrive.Files and org.freedesktop.DBus.ObjectManager,
        which announces each account object below it (InterfacesAdded once it
        is exported, InterfacesRemoved when it goes). Each account is the
-       object /org/konedrive/Accounts/<id>, with org.konedrive.Account1,
-       org.konedrive.Sync1 and org.konedrive.Dev1. Personal Microsoft
-       accounts only in this version. Nothing is served at
-       /org/konedrive/Daemon any more. -->
-  <interface name="org.konedrive.Accounts1">
+       object /org/konedrive/Accounts/<id>, with org.konedrive.Account,
+       org.konedrive.Folder, org.konedrive.Transfers,
+       org.konedrive.UploadQueue, org.konedrive.Conflicts,
+       org.konedrive.LocalScan, org.konedrive.ActivityLog and
+       org.konedrive.TokenExport. Personal Microsoft accounts only in this
+       version. Nothing is served at /org/konedrive/Daemon any more. -->
+  <interface name="org.konedrive.Accounts">
     <!-- Adds a signed-out, read-only account with no folder, and returns its
          object path. InvalidArgs for a label that is empty, longer than 40
          characters, contains "/", "@" or a control character, or is already
@@ -19,13 +21,13 @@
       <arg name="label" type="s" direction="in"/>
       <arg name="account" type="o" direction="out"/>
     </method>
-    <!-- Removes an account: forgets its folder exactly as Sync1.UnregisterRoot
+    <!-- Removes an account: forgets its folder exactly as Folder.Unregister
          does (so refused NoHelper under the same rule, before anything
          changes), cancels a sign-in under way, deletes its refresh token, its
          cached name and quota and its tree store, then removes the object.
          The folder's files and the rescued files are kept. NoAccount for a
          path that names no account. Refused PendingUploads, as
-         Sync1.UnregisterRoot is, while changes made here wait to be
+         Folder.Unregister is, while changes made here wait to be
          uploaded. -->
     <method name="Remove">
       <arg name="account" type="o" direction="in"/>
@@ -38,7 +40,7 @@
     </method>
     <!-- Every account, in the order it was added: the order of the window's
          switcher, the tray's tooltip and `konedrivectl account list`. -->
-    <property name="Accounts" type="ao" access="read"/>
+    <property name="List" type="ao" access="read"/>
     <property name="ClientId" type="s" access="read"/>
     <!-- The privileged helper, as the daemon sees it: "connected" (files
          download when opened), "not-installed" (no konedrive-helper service
@@ -46,8 +48,8 @@
          konedrive-helper), "failed" (the service failed: systemctl status
          konedrive-helper), "unknown" (systemd cannot be asked, or the helper
          has started but the daemon has no link to it yet). A OneDrive
-         folder is kept in step only while this is "connected". Moved here
-         from Sync1: one helper serves every account. -->
+         folder is kept in step only while this is "connected". Here rather
+         than on each account: one helper serves every account. -->
     <property name="HelperState" type="s" access="read"/>
     <!-- Trouble that belongs to no account: config.toml cannot be read, or
          was written by a newer version, or a migration step failed. Empty

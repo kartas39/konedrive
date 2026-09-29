@@ -1,6 +1,7 @@
 //! The accounts of one daemon (design §2, §4): the manager at `/org/konedrive/Accounts` —
-//! `org.konedrive.Accounts1`, `org.konedrive.Files1` and the `ObjectManager` — and, for each
-//! account, its `Account1`, `Sync1` and `Dev1` at `/org/konedrive/Accounts/<id>`.
+//! `org.konedrive.Accounts`, `org.konedrive.Files` and the `ObjectManager` — and, for each
+//! account, its `Account`, its folder's interfaces (`Folder`, `Transfers`, `UploadQueue`,
+//! `Conflicts`, `LocalScan`, `ActivityLog`) and `TokenExport` at `/org/konedrive/Accounts/<id>`.
 //!
 //! [`start`] is the daemon's startup, in the order of design §2.2: `config.toml` loaded and
 //! migrated, the files of a migrated account moved, every account brought up to where no
@@ -70,7 +71,7 @@ pub enum ManagerError {
     Failed(String),
     #[error("there is no account {0}")]
     NoAccount(String),
-    /// What the account's folder refused, under `Sync1`'s names (`NoHelper`, …).
+    /// What the account's folder refused, under the folder's names (`NoHelper`, …).
     #[error(transparent)]
     Sync(#[from] SyncError),
 }
@@ -130,7 +131,7 @@ impl AccountManager {
         self.accounts().into_iter().find(|a| a.path.as_str() == path.as_str())
     }
 
-    /// `Accounts1.Accounts`.
+    /// `Accounts.List`.
     pub fn paths(&self) -> Vec<OwnedObjectPath> {
         self.accounts().iter().map(|a| a.path.clone()).collect()
     }
@@ -139,7 +140,7 @@ impl AccountManager {
     /// the session restored from the wallet and the cache, and an intercepted folder held
     /// until the helper is back. An account that repeats an earlier one's id, label, drive
     /// or folder is loaded but held back (§3.1); one whose id cannot name an object or a
-    /// directory, or repeats an id, is not loaded at all, and `Accounts1.LastError` says so.
+    /// directory, or repeats an id, is not loaded at all, and `Accounts.LastError` says so.
     pub async fn load(&self) {
         let config = self.config.snapshot();
         for (entry, held) in config.accounts.iter().zip(config.holds()) {
@@ -188,6 +189,8 @@ impl AccountManager {
         self.siblings.add(&account);
         let persist = Persist { store: Arc::clone(&self.config), account: entry.id.clone() };
         let sync = SyncService::on_hub(&self.hub, Some(account.state().clone()), Some(persist));
+        // One quota for the account, whoever reads it (issue #78).
+        sync.set_quota(account.quota().clone());
         let config = self.config.snapshot();
         sync.set_transfer_limits(config.transfer_ceiling(), config.transfer_large());
         // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2).
@@ -250,7 +253,7 @@ impl AccountManager {
         }
     }
 
-    /// `Accounts1.Add`: a signed-out, read-only account with no folder, after every other,
+    /// `Accounts.Add`: a signed-out, read-only account with no folder, after every other,
     /// on the bus from the moment it is listed.
     pub async fn add(&self, label: &str, connection: &Connection) -> Result<Arc<Account>, ManagerError> {
         let _changing = self.changing.lock().await;
@@ -272,8 +275,8 @@ impl AccountManager {
         Ok(account)
     }
 
-    /// `Accounts1.Remove` (design §4.2): the folder forgotten exactly as
-    /// `Sync1.UnregisterRoot` forgets it — refused, before anything changes, under the same
+    /// `Accounts.Remove` (design §4.2): the folder forgotten exactly as
+    /// `Folder.Unregister` forgets it — refused, before anything changes, under the same
     /// rule (`NoHelper` for an intercepted folder with no helper) — then a sign-in under way
     /// cancelled, the refresh token, the cached name and quota and the tree store deleted,
     /// the account taken out of `config.toml`, and its object off the bus. The folder's
@@ -303,7 +306,7 @@ impl AccountManager {
         Ok(())
     }
 
-    /// `Accounts1.SetClientId`: refused while any account is signing in or signed in.
+    /// `Accounts.SetClientId`: refused while any account is signing in or signed in.
     pub async fn set_client_id(&self, id: &str) -> Result<(), ManagerError> {
         let _changing = self.changing.lock().await;
         let id = id.trim();
@@ -322,7 +325,7 @@ impl AccountManager {
         Ok(())
     }
 
-    /// The account whose folder holds `path` (design §2.5), for `Files1`: the one whose
+    /// The account whose folder holds `path` (design §2.5), for `Files`: the one whose
     /// folder is a component prefix of it, taken as given, or else with its directory part
     /// resolved — a folder reached through a link (`/home` → `/var/home`). The file itself
     /// is never opened.
@@ -367,7 +370,7 @@ impl AccountManager {
 }
 
 /// Makes `account`'s folder follow the mode the account runs in (`docs/design/writes.md` §2): it starts
-/// in the account's mode now, and a task switches it whenever `Account1.Mode` changes. The
+/// in the account's mode now, and a task switches it whenever `Account.Mode` changes. The
 /// task goes with the account's other tasks when it is removed.
 fn follow_mode(account: &Account) {
     let changes = account.account.state().subscribe();
@@ -396,7 +399,7 @@ fn outside(path: &str) -> SyncFault {
     SyncFault::OutsideRoot(format!("{path} is in no account's folder"))
 }
 
-/// How `Accounts1` refuses: under `Sync1`'s names for what an account's folder refused
+/// How `Accounts` refuses: under the folder's names for what an account's folder refused
 /// (`NoHelper`, …) and `NoAccount`, and under the bus's own `InvalidArgs` and `Failed` for a
 /// label, a client id or `config.toml`.
 #[derive(Debug)]
@@ -453,13 +456,13 @@ impl From<ManagerError> for ManagerFault {
     }
 }
 
-/// `org.konedrive.Accounts1` (`dbus/org.konedrive.Accounts1.xml`).
-pub struct Accounts1 {
+/// `org.konedrive.Accounts` (`dbus/org.konedrive.Accounts.xml`).
+pub struct Accounts {
     manager: Arc<AccountManager>,
 }
 
-#[interface(name = "org.konedrive.Accounts1")]
-impl Accounts1 {
+#[interface(name = "org.konedrive.Accounts")]
+impl Accounts {
     async fn add(
         &self,
         label: &str,
@@ -467,7 +470,7 @@ impl Accounts1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> Result<OwnedObjectPath, ManagerFault> {
         let account = self.manager.add(label, connection).await?;
-        self.accounts_changed(&emitter).await?;
+        self.list_changed(&emitter).await?;
         Ok(account.path.clone())
     }
 
@@ -478,7 +481,7 @@ impl Accounts1 {
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> Result<(), ManagerFault> {
         self.manager.remove(&account, connection).await?;
-        self.accounts_changed(&emitter).await?;
+        self.list_changed(&emitter).await?;
         Ok(())
     }
 
@@ -489,7 +492,7 @@ impl Accounts1 {
     }
 
     #[zbus(property)]
-    async fn accounts(&self) -> Vec<OwnedObjectPath> {
+    async fn list(&self) -> Vec<OwnedObjectPath> {
         self.manager.paths()
     }
 
@@ -509,15 +512,15 @@ impl Accounts1 {
     }
 }
 
-/// `org.konedrive.Files1` (`dbus/org.konedrive.Files1.xml`): the per-file calls, each
+/// `org.konedrive.Files` (`dbus/org.konedrive.Files.xml`): the per-file calls, each
 /// routed by path to the account whose folder holds it.
-pub struct Files1 {
+pub struct Files {
     manager: Arc<AccountManager>,
 }
 
 
-#[interface(name = "org.konedrive.Files1")]
-impl Files1 {
+#[interface(name = "org.konedrive.Files")]
+impl Files {
     async fn hydrate(&self, path: &str) -> Result<(), SyncFault> {
         let account = self.manager.route(Path::new(path)).await.ok_or_else(|| outside(path))?;
         account.sync.hydrate_now(Path::new(path)).await.map_err(to_fault)
@@ -661,13 +664,13 @@ pub async fn start_on(
 async fn serve(connection: &Connection, manager: &Arc<AccountManager>) -> zbus::Result<()> {
     let server = connection.object_server();
     server.at(ACCOUNTS_PATH, fdo::ObjectManager).await?;
-    server.at(ACCOUNTS_PATH, Accounts1 { manager: Arc::clone(manager) }).await?;
-    server.at(ACCOUNTS_PATH, Files1 { manager: Arc::clone(manager) }).await?;
+    server.at(ACCOUNTS_PATH, Accounts { manager: Arc::clone(manager) }).await?;
+    server.at(ACCOUNTS_PATH, Files { manager: Arc::clone(manager) }).await?;
     for account in manager.accounts() {
         manager.export(connection, &account).await?;
     }
-    // `HelperState` is the hub's: every change of it is `Accounts1`'s to announce.
-    let iface = server.interface::<_, Accounts1>(ACCOUNTS_PATH).await?;
+    // `HelperState` is the hub's: every change of it is `Accounts`'s to announce.
+    let iface = server.interface::<_, Accounts>(ACCOUNTS_PATH).await?;
     let mut helper = manager.hub.subscribe();
     helper.borrow_and_update();
     tokio::spawn(async move {

@@ -24,7 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use common::{err_text, out_text, run};
-use konedrive_dbus::accounts::{Files1Proxy, Sync1Proxy};
+use konedrive_dbus::accounts::{FilesProxy, FolderProxies};
 use konedrive_dbus::testing::TestBus;
 use konedrive_fs::placeholder::{write_state, State};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
@@ -49,10 +49,10 @@ async fn wait_for(mut pred: impl FnMut() -> bool) {
 }
 
 struct Harness {
-    /// The account's `Sync1`.
-    proxy: Sync1Proxy<'static>,
-    /// `Files1`: the calls on a path.
-    files: Files1Proxy<'static>,
+    /// The account's folder.
+    proxy: FolderProxies<'static>,
+    /// `Files`: the calls on a path.
+    files: FilesProxy<'static>,
     dir: tempfile::TempDir,
     /// The daemon-side service itself, for the one test that has to take
     /// its helper away mid-run (`set_link(None)`), which nothing on the bus
@@ -147,8 +147,8 @@ async fn build_harness(with_helper: bool, signed_in: bool, refuse_clear_ignore: 
     }
 
     let client = bus.connect().await;
-    let proxy = Sync1Proxy::new(&client, account.path.clone()).await.unwrap();
-    let files = Files1Proxy::new(&client).await.unwrap();
+    let proxy = FolderProxies::new(&client, account.path.clone()).await.unwrap();
+    let files = FilesProxy::new(&client).await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     Harness {
         proxy,
@@ -214,7 +214,7 @@ async fn status_text_reports_no_folder_then_the_registered_one() {
 
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     // `f.proxy` is a caching proxy (the same one `sync_status_text` is handed
     // in `main.rs`, built fresh per CLI invocation there); its properties
     // update from the `PropertiesChanged` signal `sync::dbus::attach` emits,
@@ -222,9 +222,9 @@ async fn status_text_reports_no_folder_then_the_registered_one() {
     // test just awaited, so it is not yet guaranteed to have landed. Poll
     // rather than assert immediately — the same reason `status.rs` polls for
     // `client_id` after `SetClientId`, and `wait_for_sign_in`'s doc comment
-    // spells out for `Account1`.
+    // spells out for `Account`.
     for _ in 0..500 {
-        if f.proxy.root_state().await.unwrap() == "ready" {
+        if f.proxy.folder.state().await.unwrap() == "ready" {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -242,7 +242,7 @@ async fn a_refusal_surfaces_as_an_error_not_a_success() {
     std::fs::create_dir(&root).unwrap();
     std::fs::write(root.join("x"), b"x").unwrap();
 
-    let error = f.proxy.register_root(root.to_str().unwrap()).await.unwrap_err();
+    let error = f.proxy.folder.register(root.to_str().unwrap()).await.unwrap_err();
     assert!(format!("{error}").contains("empty"), "{error}");
 }
 
@@ -269,7 +269,7 @@ fn stuck_root(root_dir: &std::path::Path) -> PathBuf {
     path
 }
 
-/// C2: nothing before this test drove `RootState = error` with a non-empty
+/// C2: nothing before this test drove `Folder.State = error` with a non-empty
 /// `LastError` through `sync_status_text` — the fake helper used everywhere
 /// else in this file acks every request, so ordinary recovery never fails.
 /// `stuck_root`, with a helper that refuses `ClearIgnore`, forces it.
@@ -282,7 +282,7 @@ async fn status_text_shows_a_recovery_failure_as_error_not_a_success() {
 
     // `SyncService::bind`'s own doc comment: a per-file recovery failure
     // does not fail the call, so this must still return `Ok(())`.
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
 
     let text = konedrivectl::sync_status_text(&f.proxy, None, "konedrivectl").await.unwrap();
     assert!(text.contains("error"), "the state must read error: {text}");
@@ -451,7 +451,7 @@ async fn binary_register_refusal_never_prints_a_bare_success() {
 }
 
 /// C1, at the binary a user actually runs: `register_root` returns `Ok(())`
-/// even when startup recovery could not reset every file (`RootState`
+/// even when startup recovery could not reset every file (`Folder.State`
 /// flips to `error` instead) — before this task's fix, `main.rs` printed
 /// "Folder registered: {path}" and exited 0 regardless, which is exactly
 /// the failure C1 describes: the one thing this interface exists to make
@@ -483,7 +483,7 @@ async fn binary_register_does_not_print_bare_success_when_recovery_failed() {
 
 // --- Named refusals, explained ------------------------------------------
 //
-// Every refusal `Sync1` can make arrives as its own D-Bus error name under
+// Every refusal the folder can make arrives as its own D-Bus error name under
 // `konedrive_dbus::ERROR_PREFIX`. Until these tests, `konedrivectl` read
 // none of them: every refusal reached the terminal as anyhow's rendering of
 // the raw `zbus::Error` — `Error: org.konedrive.Error.ModifiedLocally: the
@@ -518,8 +518,8 @@ async fn populated(f: &Harness) -> PathBuf {
     std::fs::write(source.join("doc.bin"), vec![7u8; 8192]).unwrap();
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
-    f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     root.join("doc.bin")
 }
 
@@ -641,7 +641,7 @@ async fn binary_a_second_register_names_the_folder_already_registered() {
     let addr = f._bus.address();
     let first = f.dir.path().join("OneDrive");
     std::fs::create_dir(&first).unwrap();
-    f.proxy.register_root(first.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(first.to_str().unwrap()).await.unwrap();
     let second = f.dir.path().join("Another");
     std::fs::create_dir(&second).unwrap();
 
@@ -668,7 +668,7 @@ async fn binary_hydrate_with_no_source_says_to_populate_first() {
     let addr = f._bus.address();
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     let file = root.join("doc.bin");
     std::fs::write(&file, b"x").unwrap();
 
@@ -744,7 +744,7 @@ async fn binary_remove_without_the_helper_changes_nothing() {
     let f = harness().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     f.service.set_link(None);
 
     let told = refused(f._bus.address(), &["account", "remove", "Personal"]);
@@ -807,7 +807,7 @@ async fn binary_status_says_plainly_that_nothing_intercepts_opens() {
     let addr = f._bus.address();
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root_without_interception(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register_without_interception(root.to_str().unwrap()).await.unwrap();
 
     let out = run(addr, &["sync", "status"]);
     assert!(out.status.success(), "{out:?}");
@@ -829,7 +829,7 @@ async fn binary_status_of_an_intercepted_folder_does_not_warn_of_zeros() {
     let addr = f._bus.address();
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
 
     let out = run(addr, &["sync", "status"]);
     assert!(out.status.success(), "{out:?}");
@@ -850,7 +850,7 @@ async fn binary_skipped_lists_what_is_not_in_the_folder_and_why() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     wait_for(|| root.join("docs/f.txt").is_file()).await;
 
     let out = run(f._bus.address(), &["sync", "skipped"]);
@@ -861,7 +861,7 @@ async fn binary_skipped_lists_what_is_not_in_the_folder_and_why() {
 }
 
 /// The daemon's own wiring (`accounts.rs`, `sync::write_mode::follow`) makes a
-/// registered OneDrive folder follow `Account1.Mode`: read-write takes the read-only lock off,
+/// registered OneDrive folder follow `Account.Mode`: read-write takes the read-only lock off,
 /// read-only puts it back. (How `SetMode` turns `Mode` is `konedrived`'s `tests/mode.rs`.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_folder_follows_the_accounts_mode() {
@@ -870,7 +870,7 @@ async fn the_folder_follows_the_accounts_mode() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     let file = root.join("docs/f.txt");
     let modes = || {
         let mode = |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o7777;
@@ -893,7 +893,7 @@ async fn binary_status_says_a_read_only_folder_has_no_local_scan() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     wait_for(|| root.join("docs/f.txt").is_file()).await;
     let text = out_text(&run(f._bus.address(), &["sync", "status"]));
     let line = text.lines().find(|l| l.starts_with("Local scan:")).unwrap_or_else(|| panic!("{text}"));
@@ -922,7 +922,7 @@ async fn binary_skipped_of_a_local_folder_says_it_is_not_connected_to_onedrive()
     let f = harness().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
 
     let out = run(f._bus.address(), &["sync", "skipped"]);
     assert!(out.status.success(), "{out:?}");
@@ -934,7 +934,7 @@ async fn binary_skipped_of_a_local_folder_says_it_is_not_connected_to_onedrive()
 /// incomplete — pages not listed yet have not reported what they skip — so
 /// the output has to say that rather than let the (possibly empty) list
 /// read as final. The delta response is delayed well past the time the
-/// subprocess needs to start and call `sync skipped`, so `RootState` is
+/// subprocess needs to start and call `sync skipped`, so `Folder.State` is
 /// still `listing` for the whole call.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_partial() {
@@ -972,14 +972,14 @@ async fn binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_
     });
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     for _ in 0..250 {
-        if f.proxy.root_state().await.unwrap() == "listing" {
+        if f.proxy.folder.state().await.unwrap() == "listing" {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(f.proxy.root_state().await.unwrap(), "listing", "the delay must still be in effect");
+    assert_eq!(f.proxy.folder.state().await.unwrap(), "listing", "the delay must still be in effect");
 
     let out = run(f._bus.address(), &["sync", "skipped"]);
     assert!(out.status.success(), "{out:?}");
@@ -991,7 +991,7 @@ async fn binary_status_of_a_onedrive_folder_counts_its_items_and_says_it_is_read
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     wait_for(|| root.join("docs/f.txt").is_file()).await;
     tokio::time::sleep(std::time::Duration::from_millis(500)).await; // counters are coalesced
 
@@ -1025,8 +1025,8 @@ async fn downloaded_files(f: &Harness, names: &[&str]) -> PathBuf {
     for name in names {
         std::fs::write(source.join(name), vec![6u8; 64 * 1024]).unwrap();
     }
-    f.proxy.register_root_without_interception(root.to_str().unwrap()).await.unwrap();
-    f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register_without_interception(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     for name in names {
         f.files.hydrate(root.join(name).to_str().unwrap()).await.unwrap();
     }
@@ -1069,7 +1069,7 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let addr = f._bus.address();
     let out = run(addr, &["sync", "transfers"]);
     assert!(out.status.success(), "{out:?}");
-    let idle = "Downloading:  0 now, 0 B/s\nUploading:    0 now, 0 B/s\nPool: 16 of 32 (large: 0 of 4)\nNothing is downloading or uploading.";
+    let idle = "Downloading:  0 now, 0 B/s\nUploading:    0 now, 0 B/s\nPool: 0 of 16 · large files: 0 (0 of 4 streams)\nNothing is downloading or uploading.";
     assert_eq!(out_text(&out).trim(), idle);
 
     let entry = f.service.report().transfers.start("/home/u/OneDrive/big.bin".into(), 4 << 20);
@@ -1079,7 +1079,8 @@ async fn binary_transfers_lists_the_downloads_under_way() {
     let out = run(addr, &["sync", "transfers"]);
     let text = out_text(&out);
     assert!(out.status.success(), "{out:?}");
-    assert!(text.starts_with("Downloading:  0 now, 1 file left (3.0 MiB), 0 B done, 0 B/s\n"), "{text}");
+    // "N now" counts files, not slots (issue #50): the one downloading, which holds none here.
+    assert!(text.starts_with("Downloading:  1 now, 1 file left (3.0 MiB), 0 B done, 0 B/s\n"), "{text}");
     let list = text.lines().nth(3).unwrap_or_default();
     assert!(list.starts_with("down ") && list.contains("/home/u/OneDrive/big.bin") && list.contains("25%") && list.contains("4.0 MiB"), "{text}");
     drop(entry);
@@ -1137,7 +1138,7 @@ async fn binary_remove_says_where_the_listed_rescues_are() {
     let f = harness_with_helper(false).await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root_without_interception(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register_without_interception(root.to_str().unwrap()).await.unwrap();
     let batch = f.dir.path().join("elsewhere/2023-11-14T22-13-20Z");
     let rescued = batch.join("docs/f.txt");
     std::fs::create_dir_all(rescued.parent().unwrap()).unwrap();
@@ -1196,8 +1197,8 @@ async fn docs_to_pin(f: &Harness) -> (PathBuf, PathBuf, PathBuf) {
     for name in ["docs/a.bin", "docs/b.bin"] {
         std::fs::write(source.join(name), vec![4u8; 64 * 1024]).unwrap();
     }
-    f.proxy.register_root_without_interception(root.to_str().unwrap()).await.unwrap();
-    f.proxy.populate_from_directory(source.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register_without_interception(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.populate_from_directory(source.to_str().unwrap()).await.unwrap();
     (root.join("docs"), root.join("docs/a.bin"), root.join("docs/b.bin"))
 }
 
@@ -1252,7 +1253,7 @@ async fn binary_unpin_stops_keeping_a_folder_and_leaves_its_files() {
     assert!(out_text(&out).starts_with("No longer kept on this device."), "{}", out_text(&out));
     assert_eq!(xattr::get(&docs, "user.konedrive.pin").unwrap(), None);
     assert_eq!((state(&a), state(&b)), (b"hydrated".to_vec(), b"hydrated".to_vec()), "the files stay");
-    assert_eq!(f.proxy.pinned_count().await.unwrap(), 0);
+    assert_eq!(f.proxy.folder.pinned_count().await.unwrap(), 0);
 }
 
 /// `sync status` says when the folder was last checked with OneDrive, and
@@ -1263,7 +1264,7 @@ async fn binary_status_says_when_it_last_checked_and_what_the_folder_takes() {
     let addr = f._bus.address();
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     wait_for(|| f.service.status().0 > 0).await;
 
     let text = out_text(&run(addr, &["sync", "status"]));
@@ -1290,7 +1291,7 @@ async fn binary_refresh_asks_onedrive_now() {
     let (f, graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     wait_for(|| root.join("docs/f.txt").is_file()).await;
     let before = graph.received_requests().await.unwrap().len();
 
@@ -1306,19 +1307,20 @@ async fn binary_refresh_of_a_local_folder_says_it_is_not_connected_to_onedrive()
     let f = harness().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
 
     let text = refused(f._bus.address(), &["sync", "refresh"]);
     assert!(text.contains("not connected to OneDrive"), "{text}");
 }
 
-// --- `dev export-access-token` --------------------------------------------
+// --- `dev export-access-token`, a development build's (`dev-tools`) -------
 
 /// I1: an existing file at `--out` is replaced by a new inode, not
 /// truncated in place. An fd opened before the export — the shape the
 /// used to reproduce the bug — proves it: it must keep reading the
 /// *old* content, byte for byte, forever, because `rename(2)` never touches
 /// the inode a still-open fd already holds.
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_exports_the_access_token_and_nothing_else_readable_only_by_the_user() {
     use std::io::Read;
@@ -1352,6 +1354,7 @@ async fn binary_exports_the_access_token_and_nothing_else_readable_only_by_the_u
 /// I1: `--out` naming a symlink — the 's exact reproduction — must
 /// have the link itself replaced by `rename(2)`, never the file it points
 /// to opened and truncated.
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_export_access_token_replaces_a_symlink_without_touching_its_target() {
     use std::os::unix::fs::PermissionsExt;
@@ -1382,6 +1385,7 @@ async fn binary_export_access_token_replaces_a_symlink_without_touching_its_targ
     assert_eq!(std::fs::read_to_string(&target).unwrap(), "do not touch", "the old target must be untouched");
 }
 
+#[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_export_access_token_refused_while_signed_out_names_the_reason() {
     let f = harness_signed_out().await;
@@ -1533,7 +1537,7 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     wait_for(|| root.join("docs/f.txt").is_file()).await;
     let addr = f._bus.address();
 
@@ -1545,7 +1549,7 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
         let proxy = &f.proxy;
         async move {
             for _ in 0..100 {
-                if proxy.paused().await.unwrap() == wanted {
+                if proxy.folder.paused().await.unwrap() == wanted {
                     return true;
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(20)).await;
@@ -1567,7 +1571,7 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     assert!(out.status.success(), "{out:?}");
     assert!(out_text(&run(addr, &["sync", "ignore"])).lines().any(|l| l == "*.bak"));
     assert!(run(addr, &["sync", "ignore", "remove", "*.bak"]).status.success());
-    assert!(!f.proxy.ignore_patterns().await.unwrap().contains(&"*.bak".to_owned()));
+    assert!(!f.proxy.folder.ignore_patterns().await.unwrap().contains(&"*.bak".to_owned()));
     assert_eq!(run(addr, &["sync", "ignore", "remove", "*.bak"]).status.code(), Some(2));
 
     assert_eq!(out_text(&run(addr, &["sync", "outbox"])).trim(), "Uploading:    0 now, 0 B/s\nNothing is waiting to upload.");
@@ -1582,7 +1586,7 @@ async fn binary_outbox_of_a_local_folder_says_nothing_is_uploaded_from_it() {
     let f = harness().await;
     let root = f.dir.path().join("local");
     std::fs::create_dir(&root).unwrap();
-    f.proxy.register_root(root.to_str().unwrap()).await.unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     let out = run(f._bus.address(), &["sync", "outbox"]);
     assert!(!out.status.success(), "{out:?}");
     assert!(err_text(&out).contains("not connected to OneDrive, so nothing is uploaded from it"), "{}", err_text(&out));

@@ -1,0 +1,127 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- /org/konedrive/Accounts/<id>: this account's folder. Calls on one
+       file or on chosen paths (Hydrate, Dehydrate, ItemState, Pin, Unpin,
+       FreeUp) are org.konedrive.Files's, routed by path; the helper's state
+       is Accounts.HelperState. The same object serves what moves
+       (org.konedrive.Transfers), what waits to go up
+       (org.konedrive.UploadQueue), the conflicts (org.konedrive.Conflicts),
+       the local scan (org.konedrive.LocalScan) and the events
+       (org.konedrive.ActivityLog). -->
+  <interface name="org.konedrive.Folder">
+    <!-- Refused Overlaps when the folder is, is inside, or contains another
+         account's folder (the message names that account), and NotEmpty
+         when the folder carries user.konedrive.drive naming another drive
+         than this account's; otherwise as before. -->
+    <method name="Register">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <!-- The developer's mode: registers a folder with nothing intercepting
+         opens inside it. The folder is always local — filled with
+         PopulateFromDirectory, never from OneDrive; a OneDrive folder needs
+         the helper. Files in it read as zeros until they are explicitly
+         hydrated. State then reports "no-interception" and LastError
+         says so. Made while no helper is connected, the folder switches to
+         interception by itself when the helper connects (State becomes
+         "ready"); made while one is connected, it stays without. Refused
+         Overlaps as Register is. -->
+    <method name="RegisterWithoutInterception">
+      <arg name="path" type="s" direction="in"/>
+    </method>
+    <!-- Forgets the folder; its files are left as they are. A folder
+         registered with interception is forgotten through the helper or
+         not at all: with no helper connected this is refused NoHelper.
+         Refused PendingUploads while changes made here wait to be uploaded
+         (UploadQueue.PendingCount, BlockedCount, HeldCount), before
+         anything changes: the folder's record holding them would go. They
+         go once uploaded, or are dropped by
+         Account.SetMode("read-only", true). -->
+    <method name="Unregister"/>
+    <method name="PopulateFromDirectory">
+      <arg name="source_dir" type="s" direction="in"/>
+      <arg name="created" type="t" direction="out"/>
+    </method>
+    <!-- Asks OneDrive for changes now rather than within the minute, and
+         tries the changes waiting to be uploaded that are in backoff now.
+         Reads the quota again (Account.QuotaRemaining, QuotaState, ...): with
+         space again, a full OneDrive ends (UploadQueue.QuotaFull), and the
+         files too big before go up once they fit.
+         Refused Unsupported for a folder that is not connected to OneDrive.
+         While paused, OneDrive is not asked. -->
+    <method name="Refresh"/>
+    <!-- Everything in OneDrive that is not in the folder, as (full path,
+         reason): name-too-long, personal-vault, shared, onenote,
+         reserved-name, unsupported. What is inside a skipped folder is
+         covered by the folder's own entry. -->
+    <method name="Skipped">
+      <arg name="items" type="a(ss)" direction="out"/>
+      <!-- For Qt's generator (app/skippeditem.h); ignored by everything else. -->
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>
+    </method>
+    <!-- Frees every downloaded file under the folder that is not in use:
+         how many files, how many bytes, how many were skipped as busy. A
+         file with a change waiting to be uploaded is left, and counted as
+         busy. -->
+    <method name="FreeUpSpace">
+      <arg name="files" type="u" direction="out"/>
+      <arg name="bytes" type="t" direction="out"/>
+      <arg name="busy" type="u" direction="out"/>
+    </method>
+    <!-- Pauses the account: nothing is uploaded, OneDrive is not asked for
+         changes (so nothing is replaced), and no thumbnail is fetched, for
+         `seconds` — or until Resume when 0. Opening a file still downloads
+         it, Hydrate still works, and changes made here are still found and
+         wait. The pause outlasts a restart of the daemon. Refused
+         Unsupported for a folder that is not connected to OneDrive, and
+         NoRoot before its sync has started; Resume refuses the same. -->
+    <method name="Pause">
+      <arg name="seconds" type="u" direction="in"/>
+    </method>
+    <method name="Resume"/>
+    <!-- The names of local files that are never uploaded, as shell globs
+         matched against a name (not a path), case-sensitively; they apply
+         only to files that did not come from OneDrive. Written to
+         config.toml; a scan of the whole folder follows, so a name no longer
+         ignored is uploaded, and a directory newly ignored takes the changes
+         waiting inside it along. Refused
+         org.freedesktop.DBus.Error.InvalidArgs for an empty pattern, one
+         holding "/" or a NUL, and one longer than 255 bytes. -->
+    <method name="SetIgnorePatterns">
+      <arg name="patterns" type="as" direction="in"/>
+    </method>
+    <property name="Path" type="s" access="read"/>
+    <!-- none | listing | ready | no-interception | error -->
+    <property name="State" type="s" access="read"/>
+    <!-- Every current problem, joined with ". ". While a changed file cannot
+         be replaced here, one part reads "N file(s) changed in OneDrive could
+         not be updated here yet: <reason>" — the window keys its attention
+         state on "could not be updated". While this folder waits for the
+         helper, it begins with the helper's advice for
+         Accounts.HelperState. -->
+    <property name="LastError" type="s" access="read"/>
+    <!-- "onedrive": the folder shows this account's drive (Account.Mode
+         says whether changes made here go up). "local": filled with
+         PopulateFromDirectory. Empty: none. -->
+    <property name="Source" type="s" access="read"/>
+    <!-- Items in OneDrive (the root not counted), items in the folder, and
+         skipped items: see Skipped(). Coalesced to a few changes a second. -->
+    <property name="ItemsListed" type="t" access="read"/>
+    <property name="ItemsPlaced" type="t" access="read"/>
+    <property name="SkippedCount" type="t" access="read"/>
+    <!-- Unix seconds of the last successful check with OneDrive; 0 = never. -->
+    <property name="LastChecked" type="x" access="read"/>
+    <!-- Bytes the folder's files take on this disk (st_blocks * 512): a
+         placeholder counts as what it occupies, not its size. -->
+    <property name="LocalBytes" type="t" access="read"/>
+    <!-- How many files and folders carry their own "Always keep on this
+         device" pin. -->
+    <property name="PinnedCount" type="u" access="read"/>
+    <!-- See SetIgnorePatterns; the defaults until it is called. -->
+    <property name="IgnorePatterns" type="as" access="read"/>
+    <property name="Paused" type="b" access="read"/>
+    <!-- Unix seconds when the pause ends by itself; 0 while paused until
+         Resume, and while not paused. -->
+    <property name="PausedUntil" type="x" access="read"/>
+  </interface>
+</node>

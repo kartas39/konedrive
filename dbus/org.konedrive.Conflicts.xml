@@ -1,0 +1,27 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <!-- /org/konedrive/Accounts/<id>: the local versions this account's folder
+       kept where a file changed in OneDrive, and how a kept copy is named. -->
+  <interface name="org.konedrive.Conflicts">
+    <!-- Local versions kept because the file changed or was removed in
+         OneDrive: (unix time, original full path, full path of the kept
+         version, how it was kept). The kind is "rescued": moved out of the
+         way, out of the folder; or "copy": in a read-write folder, a file
+         changed on both sides kept as a copy beside the original, and
+         uploaded. One whose kept file is gone is dropped. -->
+    <method name="List">
+      <arg name="conflicts" type="a(xsss)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveConflictList"/>
+    </method>
+    <!-- Removes a conflict from the list; the file itself is not touched. -->
+    <method name="Dismiss">
+      <arg name="rescued_path" type="s" direction="in"/>
+    </method>
+    <property name="Count" type="u" access="read"/>
+    <!-- What a copy of a file changed on both sides is named after:
+         "Report-<MachineName>.docx". machine_name in config.toml, or the
+         host's name. -->
+    <property name="MachineName" type="s" access="read"/>
+  </interface>
+</node>

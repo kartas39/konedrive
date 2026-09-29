@@ -285,6 +285,9 @@ pub struct WorkerConfig {
     /// The helper and the fills `move-out` rows need; `None` leaves
     /// them waiting.
     pub moved_out: Option<move_out::MoveOuts>,
+    /// The account's one quota (`crate::quota`): what the space check reads
+    /// and adjusts, keeping no copy of its own ([`space`]).
+    pub quota: crate::quota::Quota,
 }
 
 /// One upload under way.
@@ -321,10 +324,6 @@ pub struct WorkerStatus {
     pub counts: OutboxCounts,
     /// `QuotaFull`: OneDrive is full, and no content goes up ([`space`]).
     pub quota_full: bool,
-    /// Graph's `quota.remaining` as last read, less what went up since.
-    pub free_space: Option<u64>,
-    /// Graph's `quota.state` as last read; empty until one is.
-    pub quota_state: String,
 }
 
 impl Default for WorkerStatus {
@@ -341,8 +340,6 @@ impl Default for WorkerStatus {
             uploads: Vec::new(),
             counts: OutboxCounts::default(),
             quota_full: false,
-            free_space: None,
-            quota_state: String::new(),
         }
     }
 }
@@ -385,7 +382,7 @@ pub struct OutboxCounts {
     pub blocked: u32,
     /// Removals held by the mass-delete guard.
     pub held: u32,
-    /// `SpaceWaitingCount`, `SpaceWaitingBytes`: while OneDrive is full,
+    /// `QuotaWaitingCount`, `QuotaWaitingBytes`: while OneDrive is full,
     /// the changes that send content, which wait for space.
     pub space_waiting: u32,
     pub space_waiting_bytes: u64,
@@ -550,14 +547,15 @@ impl OutboxWorker {
         });
     }
 
-    /// The quota was read elsewhere (`RefreshAccountInfo`): *full* is
-    /// decided again, and the waiting files that fit now go ([`space`]).
+    /// The quota was read elsewhere (`RefreshInfo`, `Refresh`), into the
+    /// account's quota already: *full* is decided again by it, and the
+    /// waiting files that fit now go ([`space`]).
     pub fn quota_read(&self, quota: &crate::drive::DriveQuota) {
         // Applied as a task of its own: it writes the rows it lets go.
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {
                 let (engine, quota) = (Arc::clone(&self.engine), quota.clone());
-                runtime.spawn(async move { engine.apply_quota(&quota).await });
+                runtime.spawn(async move { engine.decide_quota(&quota).await });
             }
             Err(_) => tracing::warn!("a quota read with no runtime to apply it on is ignored"),
         }

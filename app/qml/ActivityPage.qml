@@ -292,9 +292,9 @@ FormCard.FormCardPage {
             if (!page.sync) {
                 return "";
             }
-            const pool = i18nc("@info the account's transfer pool: slots now, ceiling, large transfers now, their limit",
-                               "Pool: %1 of %2 (large: %3 of %4)",
-                               page.sync.poolSize, page.sync.poolCeiling, page.sync.largeTransfers, page.sync.largeLimit);
+            const pool = i18nc("@info the account's transfer pool: %1 slots in use now (may be above %2), %2 the pool's size now, %3 large files moving now, %4 the streams of large files now, %5 how many such streams may run at once",
+                               "Pool: %1 of %2 · large files: %3 (%4 of %5 streams)",
+                               page.sync.poolInUse, page.sync.poolSize, page.sync.largeFiles, page.sync.largeTransfers, page.sync.largeLimit);
             return page.sync.retryAfter > 0
                 ? i18nc("@info the pool line during OneDrive's Retry-After, seconds left", "%1 — OneDrive asked to wait %2 s", pool, page.sync.retryAfter)
                 : pool;

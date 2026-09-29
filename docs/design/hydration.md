@@ -368,10 +368,13 @@ throttles an account as a whole with `429`/`503` — so it finds its own level:
   per round only, until five minutes pass without one.
 
 A **large** file (100 MiB and up, by its placeholder's size, or the local file's for an upload)
-fills the link on its own: at most `[transfers] large` (4 by default, clamped to 1…`max`) large
-transfers run at once per account, each in a pool slot; the other slots go to small files, and a
-large one waiting for the limit lets the small ones behind it go. A file being opened, and
-`Hydrate`, is never held by it.
+fills the link on its own: `[transfers] large` (4 by default, clamped to 1…`max`) limits the
+streams of large **sync transfers** that run at once per account — pinned downloads, replacements
+and uploads, each stream in a pool slot (a download in parts runs several, §7.5); the other slots
+go to small files, and a large one waiting for the limit lets the small ones behind it go. A file
+being opened, and `Hydrate`, is outside the limit and its count (issue #50): it is never marked
+large, neither waits for the limit nor takes room in it, and is not among `LargeStreams`; it still
+takes a slot of the pool and counts in `PoolInUse`.
 
 A file being opened goes first: it may use two reserve slots above the pool, and while any open
 waits or runs no background work takes a new slot. Then metadata changes, then background
@@ -489,8 +492,9 @@ large file in parts with the fewest streams. After each piece an extra stream gi
 if any transfer waits for one (a large file in the queue, a small file, an upload), or if another
 file in parts has two streams fewer. So with `[transfers] large = 4` and nothing else waiting, one
 large file runs in up to 4 streams, two in 2 each, four or more in 1 each. Each stream holds one
-slot of the pool, and `large: N of 4` counts streams; `Transfers` shows the file once, with its
-overall progress. `429`/`503` and the pool's `Retry-After` wait apply to each stream as to any
+slot of the pool, and `LargeStreams` ("4 of 4 streams" on the pool line) counts streams;
+`Transfers.Downloads` shows the file once, with its overall progress, so it is one file in
+`ActiveDownloads` and in `LargeFiles`. `429`/`503` and the pool's `Retry-After` wait apply to each stream as to any
 transfer. An open of the file waits for the whole fill, as always (§6.4).
 
 **Checking.** QuickXorHash is positional: each byte's contribution depends only on its offset. Each
@@ -585,7 +589,7 @@ to, its files are left as found and counted `deferred`, and recovered the moment
 
 The report distinguishes `scanned`, `reset`, `failed`, `skipped` (a subtree on another filesystem),
 `busy` and `deferred`, so that "nothing needed fixing" and "nothing could be fixed" do not read
-alike. `failed > 0` publishes `RootState = error`; the other counters put a note in `LastError`.
+alike. `failed > 0` publishes `Folder.State = error`; the other counters put a note in `LastError`.
 
 ## 10. The helper–daemon link
 
@@ -753,7 +757,7 @@ every open waiting at that moment.
 
 ### 14.1 Registering a folder
 
-`RegisterRoot(path)` binds an **empty** directory to the account's drive. It is refused, with a
+`Folder.Register(path)` binds an **empty** directory to the account's drive. It is refused, with a
 named error, when the account is not signed in (`NotSignedIn`), when it already has a folder
 (`AlreadyRegistered` — each account keeps one), when no helper is connected (`NoHelper`: a
 placeholder nobody intercepts reads as zeros), when the folder is, is inside, or contains another
@@ -764,14 +768,14 @@ another account, which is refused `NotEmpty` ([accounts.md](accounts.md) §6.3).
 
 The registration is written to `config.toml` *before* the helper is told, and refused if it cannot
 be; a failure after the helper may have stored it is undone at the helper and in `config.toml` —
-or, when the helper cannot confirm it let go, kept intercepted with `RootState = error`, because a
+or, when the helper cannot confirm it let go, kept intercepted with `Folder.State = error`, because a
 folder the helper may hold must never be one the daemon treats as unintercepted. A `config.toml`
 that exists but cannot be read is never overwritten with defaults. Calls that change the
 registration take turns under a lifecycle lock.
 
 At startup, and after every reconnect, the daemon re-registers the root with the helper and then
 recovers it (§9). A restored intercepted root is held as registered before the helper is back —
-`RootState = error`, saying the helper is not connected — so it answers `AlreadyRegistered` to a
+`Folder.State = error`, saying the helper is not connected — so it answers `AlreadyRegistered` to a
 second registration and `NoHelper` to a Forget.
 
 ### 14.2 Filesystem requirements and the probe
@@ -794,7 +798,7 @@ the probe's write would fail (limitations log F31).
 
 ### 14.3 Without interception (developer's mode)
 
-`RegisterRootWithoutInterception(path)` makes a folder with the same checks and the same
+`Folder.RegisterWithoutInterception(path)` makes a folder with the same checks and the same
 placeholders, but **nothing intercepts opens**: files read as zeros until they are downloaded by
 hand with `Hydrate`. It needs no helper and no sign-in, and it always makes a *local* folder, filled
 from a local directory with `PopulateFromDirectory` — never one that shows OneDrive
@@ -819,7 +823,7 @@ root, in which case the folder stays intercepted with its sync stopped until the
 
 ### 14.5 Forget
 
-`UnregisterRoot` forgets the folder and leaves every file exactly as it is. An intercepted folder is
+`Folder.Unregister` forgets the folder and leaves every file exactly as it is. An intercepted folder is
 forgotten **through the helper or not at all**: with no link it is refused `NoHelper`, because
 dropping it locally while the helper keeps its marks would leave placeholders that answer `EIO` with
 no daemon to fill them. Forget also takes the read-only lock off ([sync.md](sync.md) §11), drops the

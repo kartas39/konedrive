@@ -1,6 +1,9 @@
 #include "synccontroller.h"
 
-#include "sync1interface.h"
+#include "activityloginterface.h"
+#include "conflictsinterface.h"
+#include "folderinterface.h"
+#include "uploadqueueinterface.h"
 
 #include <QDBusArgument>
 #include <QDBusError>
@@ -17,6 +20,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <memory>
 
 namespace
 {
@@ -43,7 +47,13 @@ QString whyText(const QString &reason)
 }
 
 const QString SyncController::ServiceName = QStringLiteral("org.konedrive.Daemon");
-const QString SyncController::InterfaceName = QStringLiteral("org.konedrive.Sync1");
+const QString SyncController::FolderInterface = QStringLiteral("org.konedrive.Folder");
+const QString SyncController::TransfersInterface = QStringLiteral("org.konedrive.Transfers");
+const QString SyncController::UploadQueueInterface = QStringLiteral("org.konedrive.UploadQueue");
+const QString SyncController::ConflictsInterface = QStringLiteral("org.konedrive.Conflicts");
+const QString SyncController::LocalScanInterface = QStringLiteral("org.konedrive.LocalScan");
+const QString SyncController::ActivityLogInterface = QStringLiteral("org.konedrive.ActivityLog");
+const QStringList SyncController::PropertyInterfaces = {FolderInterface, TransfersInterface, UploadQueueInterface, ConflictsInterface, LocalScanInterface};
 
 SyncController::SyncController(const QString &path, QObject *parent)
     : SyncController(QDBusConnection::sessionBus(), path, parent)
@@ -54,7 +64,10 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
     : QObject(parent)
     , m_bus(bus)
     , m_path(path)
-    , m_iface(new OrgKonedriveSync1Interface(ServiceName, path, bus, this))
+    , m_folder(new OrgKonedriveFolderInterface(ServiceName, path, bus, this))
+    , m_queue(new OrgKonedriveUploadQueueInterface(ServiceName, path, bus, this))
+    , m_conflictsIface(new OrgKonedriveConflictsInterface(ServiceName, path, bus, this))
+    , m_activityLog(new OrgKonedriveActivityLogInterface(ServiceName, path, bus, this))
     , m_watcher(new QDBusServiceWatcher(ServiceName, bus, QDBusServiceWatcher::WatchForOwnerChange, this))
     , m_transfers(new TransferModel(this))
     , m_activity(new ActivityModel(this))
@@ -86,7 +99,7 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
                   QStringLiteral("PropertiesChanged"),
                   this,
                   SLOT(onPropertiesChanged(QString, QVariantMap, QStringList)));
-    m_bus.connect(ServiceName, m_path, InterfaceName, QStringLiteral("ActivityAdded"), this, SLOT(onActivityAdded(qlonglong, QString, QString, QString)));
+    m_bus.connect(ServiceName, m_path, ActivityLogInterface, QStringLiteral("Added"), this, SLOT(onActivityAdded(qlonglong, QString, QString, QString)));
     connect(m_watcher, &QDBusServiceWatcher::serviceOwnerChanged, this, [this](const QString &, const QString &, const QString &newOwner) {
         if (newOwner.isEmpty()) {
             setServiceAvailable(false);
@@ -95,7 +108,7 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
             m_transfers->setTransfers({});
             m_downloadSpeed = m_uploadSpeed = 0;
             m_activeDownloads = m_activeUploads = 0;
-            m_largeTransfers = m_retryAfter = 0;
+            m_poolInUse = m_largeFiles = m_largeTransfers = m_retryAfter = 0;
             m_downloadLeftCount = m_uploadLeftCount = 0;
             m_downloadLeftBytes = m_downloadDoneBytes = m_uploadLeftBytes = m_uploadDoneBytes = 0;
             m_downloadTimeLeft = m_uploadTimeLeft = 0;
@@ -110,35 +123,50 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
 
 void SyncController::fetchAll()
 {
-    auto message = QDBusMessage::createMethodCall(ServiceName, m_path, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("GetAll"));
-    message << InterfaceName;
-    auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(message), this);
-    connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
-        w->deleteLater();
-        const QDBusPendingReply<QVariantMap> reply = *w;
-        if (reply.isError()) {
-            setServiceAvailable(false);
-            return;
-        }
-        applyProperties(reply.value());
-        setServiceAvailable(true);
-        loadActivity();
-        loadConflicts();
-    });
+    // One GetAll per interface; the service is there once every one has answered, and
+    // not while any failed. The answers of an earlier fetchAll() still apply their
+    // values, but only this one's decide.
+    const int fetch = ++m_fetches;
+    auto left = std::make_shared<int>(int(PropertyInterfaces.size()));
+    auto failed = std::make_shared<bool>(false);
+    for (const QString &interfaceName : PropertyInterfaces) {
+        auto message = QDBusMessage::createMethodCall(ServiceName, m_path, QStringLiteral("org.freedesktop.DBus.Properties"), QStringLiteral("GetAll"));
+        message << interfaceName;
+        auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(message), this);
+        connect(watcher, &QDBusPendingCallWatcher::finished, this, [this, interfaceName, fetch, left, failed](QDBusPendingCallWatcher *w) {
+            w->deleteLater();
+            const QDBusPendingReply<QVariantMap> reply = *w;
+            if (reply.isError()) {
+                *failed = true;
+            } else {
+                applyProperties(interfaceName, reply.value());
+            }
+            if (--*left > 0 || fetch != m_fetches) {
+                return;
+            }
+            if (*failed) {
+                setServiceAvailable(false);
+                return;
+            }
+            setServiceAvailable(true);
+            loadActivity();
+            loadConflicts();
+        });
+    }
 }
 
 void SyncController::onPropertiesChanged(const QString &interfaceName, const QVariantMap &changed, const QStringList &invalidated)
 {
-    if (interfaceName != InterfaceName) {
+    if (!PropertyInterfaces.contains(interfaceName)) {
         return;
     }
-    applyProperties(changed);
+    applyProperties(interfaceName, changed);
     if (!invalidated.isEmpty()) {
         fetchAll();
     }
 }
 
-void SyncController::applyProperties(const QVariantMap &p)
+void SyncController::applyProperties(const QString &interfaceName, const QVariantMap &p)
 {
     const auto text = [&p](const char *key, QString &field) {
         if (const auto it = p.constFind(QLatin1String(key)); it != p.constEnd()) {
@@ -150,100 +178,90 @@ void SyncController::applyProperties(const QVariantMap &p)
             field = it->toULongLong();
         }
     };
-    const QString previousRoot = m_rootPath;
-    const uint previousConflicts = m_conflictCount;
-    text("RootPath", m_rootPath);
-    text("RootState", m_rootState);
-    text("RootSource", m_rootSource);
-    text("LastError", m_lastError);
-    number("ItemsListed", m_itemsListed);
-    number("ItemsPlaced", m_itemsPlaced);
-    number("SkippedCount", m_skippedCount);
-    number("LocalBytes", m_localBytes);
-    if (const auto it = p.constFind(QLatin1String("LastChecked")); it != p.constEnd()) {
-        m_lastChecked = it->toLongLong();
-    }
-    if (const auto it = p.constFind(QLatin1String("ConflictCount")); it != p.constEnd()) {
-        m_conflictCount = it->toUInt();
-    }
-    if (const auto it = p.constFind(QLatin1String("PinnedCount")); it != p.constEnd()) {
-        m_pinnedCount = it->toUInt();
-    }
-    // A structured value inside a{sv} arrives as a QDBusArgument.
-    const auto transfers = [](const QVariant &value) {
-        return value.canConvert<QDBusArgument>() ? qdbus_cast<KonedriveTransferList>(value.value<QDBusArgument>()) : value.value<KonedriveTransferList>();
-    };
-    if (const auto it = p.constFind(QLatin1String("Transfers")); it != p.constEnd()) {
-        m_transfers->setTransfers(transfers(*it));
-    }
-    if (const auto it = p.constFind(QLatin1String("Uploads")); it != p.constEnd()) {
-        m_uploads->setTransfers(transfers(*it));
-    }
-    if (const auto it = p.constFind(QLatin1String("PendingCount")); it != p.constEnd()) {
-        m_pendingCount = it->toUInt();
-    }
-    number("PendingBytes", m_pendingBytes);
-    if (const auto it = p.constFind(QLatin1String("BlockedCount")); it != p.constEnd()) {
-        m_blockedCount = it->toUInt();
-    }
-    if (const auto it = p.constFind(QLatin1String("HeldCount")); it != p.constEnd()) {
-        m_heldCount = it->toUInt();
-    }
-    if (const auto it = p.constFind(QLatin1String("QuotaFull")); it != p.constEnd()) {
-        m_quotaFull = it->toBool();
-    }
-    if (const auto it = p.constFind(QLatin1String("SpaceWaitingCount")); it != p.constEnd()) {
-        m_spaceWaitingCount = it->toUInt();
-    }
-    number("SpaceWaitingBytes", m_spaceWaitingBytes);
-    if (const auto it = p.constFind(QLatin1String("TooBigCount")); it != p.constEnd()) {
-        m_tooBigCount = it->toUInt();
-    }
-    if (const auto it = p.constFind(QLatin1String("Paused")); it != p.constEnd()) {
-        m_paused = it->toBool();
-    }
-    if (const auto it = p.constFind(QLatin1String("PausedUntil")); it != p.constEnd()) {
-        m_pausedUntil = it->toLongLong();
-    }
-    if (const auto it = p.constFind(QLatin1String("IgnorePatterns")); it != p.constEnd()) {
-        m_ignorePatterns = it->toStringList();
-    }
-    text("MachineName", m_machineName);
-    number("DownloadSpeed", m_downloadSpeed);
-    number("UploadSpeed", m_uploadSpeed);
     const auto count = [&p](const char *key, uint &field) {
         if (const auto it = p.constFind(QLatin1String(key)); it != p.constEnd()) {
             field = it->toUInt();
         }
     };
-    count("ActiveDownloads", m_activeDownloads);
-    count("ActiveUploads", m_activeUploads);
-    count("PoolSize", m_poolSize);
-    count("PoolCeiling", m_poolCeiling);
-    count("LargeTransfers", m_largeTransfers);
-    count("LargeLimit", m_largeLimit);
-    count("RetryAfter", m_retryAfter);
-    count("DownloadLeftCount", m_downloadLeftCount);
-    number("DownloadLeftBytes", m_downloadLeftBytes);
-    number("DownloadDoneBytes", m_downloadDoneBytes);
-    count("DownloadTimeLeft", m_downloadTimeLeft);
-    count("UploadLeftCount", m_uploadLeftCount);
-    number("UploadLeftBytes", m_uploadLeftBytes);
-    number("UploadDoneBytes", m_uploadDoneBytes);
-    count("UploadTimeLeft", m_uploadTimeLeft);
-    text("ScanState", m_scanState);
-    text("ScanReason", m_scanReason);
     const auto time = [&p](const char *key, qlonglong &field) {
         if (const auto it = p.constFind(QLatin1String(key)); it != p.constEnd()) {
             field = it->toLongLong();
         }
     };
-    time("ScanStarted", m_scanStarted);
-    number("ScanDirectories", m_scanDirectories);
-    number("ScanFiles", m_scanFiles);
-    number("ScanExpected", m_scanExpected);
-    time("ScanFinished", m_scanFinished);
-    count("ScanTook", m_scanTook);
+    const QString previousRoot = m_rootPath;
+    const uint previousConflicts = m_conflictCount;
+    if (interfaceName == FolderInterface) {
+        text("Path", m_rootPath);
+        text("State", m_rootState);
+        text("Source", m_rootSource);
+        text("LastError", m_lastError);
+        number("ItemsListed", m_itemsListed);
+        number("ItemsPlaced", m_itemsPlaced);
+        number("SkippedCount", m_skippedCount);
+        number("LocalBytes", m_localBytes);
+        time("LastChecked", m_lastChecked);
+        count("PinnedCount", m_pinnedCount);
+        if (const auto it = p.constFind(QLatin1String("Paused")); it != p.constEnd()) {
+            m_paused = it->toBool();
+        }
+        time("PausedUntil", m_pausedUntil);
+        if (const auto it = p.constFind(QLatin1String("IgnorePatterns")); it != p.constEnd()) {
+            m_ignorePatterns = it->toStringList();
+        }
+    } else if (interfaceName == TransfersInterface) {
+        // A structured value inside a{sv} arrives as a QDBusArgument.
+        const auto transfers = [](const QVariant &value) {
+            return value.canConvert<QDBusArgument>() ? qdbus_cast<KonedriveTransferList>(value.value<QDBusArgument>()) : value.value<KonedriveTransferList>();
+        };
+        if (const auto it = p.constFind(QLatin1String("Downloads")); it != p.constEnd()) {
+            m_transfers->setTransfers(transfers(*it));
+        }
+        if (const auto it = p.constFind(QLatin1String("Uploads")); it != p.constEnd()) {
+            m_uploads->setTransfers(transfers(*it));
+        }
+        number("DownloadSpeed", m_downloadSpeed);
+        number("UploadSpeed", m_uploadSpeed);
+        count("ActiveDownloads", m_activeDownloads);
+        count("ActiveUploads", m_activeUploads);
+        count("PoolInUse", m_poolInUse);
+        count("PoolSize", m_poolSize);
+        count("PoolCeiling", m_poolCeiling);
+        count("LargeFiles", m_largeFiles);
+        count("LargeStreams", m_largeTransfers);
+        count("LargeStreamLimit", m_largeLimit);
+        count("RetryAfter", m_retryAfter);
+        count("DownloadLeftCount", m_downloadLeftCount);
+        number("DownloadLeftBytes", m_downloadLeftBytes);
+        number("DownloadDoneBytes", m_downloadDoneBytes);
+        count("DownloadTimeLeft", m_downloadTimeLeft);
+        count("UploadLeftCount", m_uploadLeftCount);
+        number("UploadLeftBytes", m_uploadLeftBytes);
+        number("UploadDoneBytes", m_uploadDoneBytes);
+        count("UploadTimeLeft", m_uploadTimeLeft);
+    } else if (interfaceName == UploadQueueInterface) {
+        count("PendingCount", m_pendingCount);
+        number("PendingBytes", m_pendingBytes);
+        count("BlockedCount", m_blockedCount);
+        count("HeldCount", m_heldCount);
+        if (const auto it = p.constFind(QLatin1String("QuotaFull")); it != p.constEnd()) {
+            m_quotaFull = it->toBool();
+        }
+        count("QuotaWaitingCount", m_spaceWaitingCount);
+        number("QuotaWaitingBytes", m_spaceWaitingBytes);
+        count("TooBigCount", m_tooBigCount);
+    } else if (interfaceName == ConflictsInterface) {
+        count("Count", m_conflictCount);
+        text("MachineName", m_machineName);
+    } else if (interfaceName == LocalScanInterface) {
+        text("State", m_scanState);
+        text("Reason", m_scanReason);
+        time("Started", m_scanStarted);
+        number("Directories", m_scanDirectories);
+        number("Files", m_scanFiles);
+        number("Expected", m_scanExpected);
+        time("Finished", m_scanFinished);
+        count("Took", m_scanTook);
+    }
     Q_EMIT syncChanged();
 
     // GetAll's own answer loads the lists (fetchAll); a change on the way loads them again.
@@ -285,7 +303,7 @@ void SyncController::sampleHistory()
 void SyncController::onActivityAdded(qlonglong time, const QString &kind, const QString &path, const QString &detail)
 {
     const KonedriveActivity event{time, kind, path, detail};
-    // M9: the daemon stores an event before it signals it, so a RecentActivity()
+    // M9: the daemon stores an event before it signals it, so a Recent()
     // reply already on its way back can already hold this one (loadActivity's
     // merge only guards the opposite order). Prepending it again would list
     // it twice.
@@ -293,7 +311,7 @@ void SyncController::onActivityAdded(qlonglong time, const QString &kind, const 
         m_activity->prepend(event);
     }
     if (m_activityLoads > 0) {
-        // RecentActivity() is on its way and may not have this one.
+        // Recent() is on its way and may not have this one.
         m_liveDuringLoad << event;
     }
     Q_EMIT activityAdded(time, kind, path, detail);
@@ -365,10 +383,10 @@ void SyncController::quietly(const QDBusPendingCall &pending, std::function<void
 void SyncController::chooseFolder(const QUrl &folder)
 {
     const QString path = folder.toLocalFile();
-    // M6: no timeout, as FreeUpSpace has — RegisterRoot can take a while
+    // M6: no timeout, as FreeUpSpace has — Register can take a while
     // (the initial listing starts under it), so it bypasses the generated
-    // proxy (whose timeout is shared with every other call on m_iface).
-    auto message = QDBusMessage::createMethodCall(ServiceName, m_path, InterfaceName, QStringLiteral("RegisterRoot"));
+    // proxy (whose timeout is shared with every other call on m_folder).
+    auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("Register"));
     message << path;
     call(
         m_bus.asyncCall(message, std::numeric_limits<int>::max()),
@@ -391,9 +409,9 @@ void SyncController::retryRegistration()
     if (m_pendingFolder.isEmpty()) {
         return;
     }
-    // Retries RegisterRoot(path); on the same NoHelper refusal, pendingFolder
+    // Retries Register(path); on the same NoHelper refusal, pendingFolder
     // simply stays as it was (I3: the window never falls back to
-    // RegisterRootWithoutInterception on its own).
+    // RegisterWithoutInterception on its own).
     chooseFolder(QUrl::fromLocalFile(m_pendingFolder));
 }
 
@@ -404,8 +422,8 @@ void SyncController::cancelPending()
 
 void SyncController::forget()
 {
-    // M6: no timeout, as RegisterRoot and FreeUpSpace have.
-    const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, InterfaceName, QStringLiteral("UnregisterRoot"));
+    // M6: no timeout, as Register and FreeUpSpace have.
+    const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("Unregister"));
     call(m_bus.asyncCall(message, std::numeric_limits<int>::max()), {}, [this](const QDBusError &error) {
         if (error.name() != QLatin1String("org.konedrive.Error.PendingUploads")) {
             return false;
@@ -417,7 +435,7 @@ void SyncController::forget()
 
 void SyncController::refresh()
 {
-    call(m_iface->Refresh());
+    call(m_folder->Refresh());
 }
 
 void SyncController::loadSkipped()
@@ -426,7 +444,7 @@ void SyncController::loadSkipped()
     // whenever it is shown or skippedCount changes) must never wipe out an
     // actionError the user has not seen yet.
     call(
-        m_iface->Skipped(),
+        m_folder->Skipped(),
         [this](const QDBusPendingCall &pending) {
             const QDBusPendingReply<KonedriveSkippedList> reply = pending;
             m_skipped.clear();
@@ -449,12 +467,12 @@ void SyncController::openFolder()
 void SyncController::loadActivity()
 {
     ++m_activityLoads;
-    auto *watcher = new QDBusPendingCallWatcher(m_iface->RecentActivity(ActivityModel::Capacity), this);
+    auto *watcher = new QDBusPendingCallWatcher(m_activityLog->Recent(ActivityModel::Capacity), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
         w->deleteLater();
         --m_activityLoads;
         const QDBusPendingReply<KonedriveActivityList> reply = *w;
-        // A daemon without RecentActivity (older than) leaves the list as it is.
+        // A daemon without Recent (older than) leaves the list as it is.
         if (!reply.isError()) {
             // The answer, plus what was signalled while it was on its way and
             // is not in it (signalled before stored), each once.
@@ -477,7 +495,7 @@ void SyncController::loadActivity()
 
 void SyncController::loadConflicts()
 {
-    quietly(m_iface->Conflicts(), [this](const QDBusPendingCall &pending) {
+    quietly(m_conflictsIface->List(), [this](const QDBusPendingCall &pending) {
         const QDBusPendingReply<KonedriveConflictList> reply = pending;
         m_conflicts->setConflicts(reply.value());
     });
@@ -485,7 +503,7 @@ void SyncController::loadConflicts()
 
 void SyncController::dismissConflict(const QString &rescuedPath)
 {
-    call(m_iface->DismissConflict(rescuedPath), [this](const QDBusPendingCall &) {
+    call(m_conflictsIface->Dismiss(rescuedPath), [this](const QDBusPendingCall &) {
         loadConflicts();
     });
 }
@@ -500,7 +518,7 @@ void SyncController::freeUpSpace()
     Q_EMIT freeUpResultChanged();
     // Dehydrating a large folder can take minutes: no D-Bus timeout (INT_MAX
     // is libdbus's "infinite"), where the generated proxy would give up at 25 s.
-    const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, InterfaceName, QStringLiteral("FreeUpSpace"));
+    const auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("FreeUpSpace"));
     auto *watcher = new QDBusPendingCallWatcher(m_bus.asyncCall(message, std::numeric_limits<int>::max()), this);
     connect(watcher, &QDBusPendingCallWatcher::finished, this, [this](QDBusPendingCallWatcher *w) {
         w->deleteLater();
@@ -532,7 +550,10 @@ void SyncController::clearFreeUpResult()
 
 void SyncController::setCallTimeout(int ms)
 {
-    m_iface->setTimeout(ms);
+    m_folder->setTimeout(ms);
+    m_queue->setTimeout(ms);
+    m_conflictsIface->setTimeout(ms);
+    m_activityLog->setTimeout(ms);
 }
 
 void SyncController::showInFolder(const QString &path)
@@ -549,18 +570,18 @@ void SyncController::retry()
 
 void SyncController::pause(uint seconds)
 {
-    call(m_iface->Pause(seconds));
+    call(m_folder->Pause(seconds));
 }
 
 void SyncController::resume()
 {
-    call(m_iface->Resume());
+    call(m_folder->Resume());
 }
 
 void SyncController::setIgnorePatterns(const QStringList &patterns)
 {
     // It runs a scan of the whole folder before it answers: no timeout.
-    auto message = QDBusMessage::createMethodCall(ServiceName, m_path, InterfaceName, QStringLiteral("SetIgnorePatterns"));
+    auto message = QDBusMessage::createMethodCall(ServiceName, m_path, FolderInterface, QStringLiteral("SetIgnorePatterns"));
     message << patterns;
     call(m_bus.asyncCall(message, std::numeric_limits<int>::max()));
 }
@@ -584,12 +605,12 @@ void SyncController::removeIgnorePattern(const QString &pattern)
 
 void SyncController::confirmDeletes()
 {
-    call(m_iface->ConfirmDeletes());
+    call(m_queue->ConfirmDeletes());
 }
 
 void SyncController::restoreDeletes()
 {
-    call(m_iface->RestoreDeletes());
+    call(m_queue->RestoreDeletes());
 }
 
 void SyncController::loadNotUploaded()
@@ -597,7 +618,7 @@ void SyncController::loadNotUploaded()
     if (!m_serviceAvailable || m_notUploadedSoon->isActive()) {
         return;
     }
-    // With thousands of changes kept back the daemon reads its whole outbox
+    // With thousands of changes kept back the daemon reads its whole queue
     // for this: once a second at most, however often the counts move.
     if (m_notUploadedLast.isValid() && m_notUploadedLast.elapsed() < 1000) {
         m_notUploadedSoon->start(int(1000 - m_notUploadedLast.elapsed()));
@@ -606,7 +627,7 @@ void SyncController::loadNotUploaded()
     m_notUploadedLast.start();
     // Refused Unsupported for a folder not connected to OneDrive, and
     // UnknownMethod by an older daemon: nothing is shown as kept back.
-    quietly(m_iface->NotUploadedSummary(), [this](const QDBusPendingCall &pending) {
+    quietly(m_queue->NotUploadedSummary(), [this](const QDBusPendingCall &pending) {
         const QDBusPendingReply<KonedriveKeptBackList> reply = pending;
         m_notUploadedSummary.clear();
         m_blockedBytes = 0;
@@ -658,7 +679,7 @@ void SyncController::loadNotUploadedFiles(const QString &reason)
     if (!m_serviceAvailable) {
         return;
     }
-    quietly(m_iface->NotUploadedFiles(reason, PerFileCap), [this, reason](const QDBusPendingCall &pending) {
+    quietly(m_queue->NotUploadedFiles(reason, PerFileCap), [this, reason](const QDBusPendingCall &pending) {
         const QDBusPendingReply<KonedriveSkippedList, uint> reply = pending;
         QVariantList items;
         for (const KonedriveSkippedItem &item : reply.argumentAt<0>()) {

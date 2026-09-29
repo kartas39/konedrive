@@ -1,7 +1,7 @@
 //! Design test 12: `konedrivectl` with several accounts, against the daemon over a private
 //! bus — the `account` commands; an account chosen by id, label or email, with `--account` or
 //! `KONEDRIVE_ACCOUNT`, and a command that needs one refused with exit status 2 when there are
-//! several and none is chosen; the path commands, routed by `Files1` whichever account holds
+//! several and none is chosen; the path commands, routed by `Files` whichever account holds
 //! the path, and refusing `--account`; `status` and `sync status` over every account; and
 //! `login` with no account at all, which adds `Personal`.
 
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{err_text, out_text, run_env};
-use konedrive_dbus::accounts::{Account1Proxy, Accounts1Proxy};
+use konedrive_dbus::accounts::{AccountProxy, AccountsProxy};
 use konedrive_dbus::testing::TestBus;
 
 const CLIENT_ID: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -213,7 +213,7 @@ async fn login_with_no_account_adds_personal() {
     let config = tempfile::tempdir().unwrap();
     let _daemon = common::start_daemon(&bus, config.path()).await;
     let client = bus.connect().await;
-    let manager = Accounts1Proxy::builder(&client)
+    let manager = AccountsProxy::builder(&client)
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await
@@ -221,7 +221,7 @@ async fn login_with_no_account_adds_personal() {
 
     let (_, told) = failed(&bus, &["login"], &[]);
     assert!(told.contains("konedrivectl set-client-id <id>"), "{told}");
-    assert!(manager.accounts().await.unwrap().is_empty(), "nothing is added without a client ID");
+    assert!(manager.list().await.unwrap().is_empty(), "nothing is added without a client ID");
     manager.set_client_id(CLIENT_ID).await.unwrap();
 
     let browser = tempfile::tempdir().unwrap();
@@ -241,8 +241,8 @@ async fn login_with_no_account_adds_personal() {
 
     let mut account = None;
     for _ in 0..250 {
-        if let Some(path) = manager.accounts().await.unwrap().first() {
-            let proxy = Account1Proxy::builder(&client)
+        if let Some(path) = manager.list().await.unwrap().first() {
+            let proxy = AccountProxy::builder(&client)
                 .path(path.clone())
                 .unwrap()
                 .cache_properties(zbus::proxy::CacheProperties::No)
@@ -268,5 +268,5 @@ async fn login_with_no_account_adds_personal() {
     let url = std::fs::read_to_string(&opened).unwrap();
     assert!(said.contains(&url) && url.contains(CLIENT_ID), "the address is printed and opened: {said}");
     assert!(err_text(&out).contains("cancelled"), "{}", err_text(&out));
-    assert_eq!(manager.accounts().await.unwrap().len(), 1);
+    assert_eq!(manager.list().await.unwrap().len(), 1);
 }

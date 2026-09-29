@@ -26,15 +26,17 @@ include(KDECompilerSettings NO_POLICY_SCOPE)
 
 find_package(Qt6 ${QT_MIN_VERSION} REQUIRED COMPONENTS Core Gui DBus Widgets Test)
 
-set(KONEDRIVE_ACCOUNTS_XML ${CMAKE_CURRENT_SOURCE_DIR}/../dbus/org.konedrive.Accounts1.xml)
-qt_add_dbus_interface(konedrive_dbus_SRCS ${KONEDRIVE_ACCOUNTS_XML} accounts1interface)
-
-set(KONEDRIVE_DBUS_XML ${CMAKE_CURRENT_SOURCE_DIR}/../dbus/org.konedrive.Account1.xml)
-qt_add_dbus_interface(konedrive_dbus_SRCS ${KONEDRIVE_DBUS_XML} account1interface)
-
-set(KONEDRIVE_SYNC_XML ${CMAKE_CURRENT_SOURCE_DIR}/../dbus/org.konedrive.Sync1.xml)
-set_source_files_properties(${KONEDRIVE_SYNC_XML} PROPERTIES INCLUDE synctypes.h)
-qt_add_dbus_interface(konedrive_dbus_SRCS ${KONEDRIVE_SYNC_XML} sync1interface)
+set(KONEDRIVE_DBUS_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../dbus)
+qt_add_dbus_interface(konedrive_dbus_SRCS ${KONEDRIVE_DBUS_DIR}/org.konedrive.Accounts.xml accountsinterface)
+qt_add_dbus_interface(konedrive_dbus_SRCS ${KONEDRIVE_DBUS_DIR}/org.konedrive.Account.xml accountinterface)
+# The interfaces of an account's folder the window calls; Transfers and LocalScan
+# only have properties, which SyncController reads with GetAll.
+foreach(folder_interface Folder UploadQueue Conflicts ActivityLog)
+    set(folder_xml ${KONEDRIVE_DBUS_DIR}/org.konedrive.${folder_interface}.xml)
+    set_source_files_properties(${folder_xml} PROPERTIES INCLUDE synctypes.h)
+    string(TOLOWER ${folder_interface} folder_basename)
+    qt_add_dbus_interface(konedrive_dbus_SRCS ${folder_xml} ${folder_basename}interface)
+endforeach()
 
 find_package(KF6 ${KF_MIN_VERSION} REQUIRED COMPONENTS
     I18n Config Notifications StatusNotifierItem DBusAddons KIO WindowSystem JobWidgets)

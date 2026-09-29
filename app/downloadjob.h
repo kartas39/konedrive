@@ -6,7 +6,7 @@
 
 /// One download shown to Plasma, the same mechanism Dolphin's copy
 /// progress uses. Never started with start(): DownloadProgressController
-/// drives its progress from Sync1's Transfers, so it is created already
+/// drives its progress from Transfers.Downloads, so it is created already
 /// running and only ever finished by.
 class DownloadJob : public KJob
 {
@@ -39,7 +39,7 @@ public:
 
     /// The transfer left Transfers: done.
     void finishSuccess();
-    /// A failed/update-failed ActivityAdded named this job's file.
+    /// A failed/update-failed ActivityLog.Added named this job's file.
     void finishError(const QString &reason);
 
 protected:

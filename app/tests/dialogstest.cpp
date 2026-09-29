@@ -85,16 +85,16 @@ private Q_SLOTS:
         FakeDaemon fake({QStringLiteral("Personal"), QStringLiteral("Family")});
         for (FakeAccountObject *object : std::as_const(fake.objects)) {
             object->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
-            object->sync->set({{QStringLiteral("RootPath"), QString(QStringLiteral("/home/u/") + object->account->label())},
-                               {QStringLiteral("RootState"), QStringLiteral("ready")},
-                               {QStringLiteral("RootSource"), QStringLiteral("onedrive")}});
+            object->sync->folder->set({{QStringLiteral("Path"), QString(QStringLiteral("/home/u/") + object->account->label())},
+                                       {QStringLiteral("State"), QStringLiteral("ready")},
+                                       {QStringLiteral("Source"), QStringLiteral("onedrive")}});
         }
         QVERIFY(fake.start());
         // Paths, not the fake's objects: a removed account's object is deleted.
         const QString personal = fake.object(0)->path;
         const QString family = fake.object(1)->path;
-        FakeSync1 *personalSync = fake.object(0)->sync;
-        FakeSync1 *familySync = fake.object(1)->sync;
+        FakeSync *personalSync = fake.object(0)->sync;
+        FakeSync *familySync = fake.object(1)->sync;
 
         Autostart autostart;
         DownloadProgressSettings progress;
@@ -163,9 +163,9 @@ private Q_SLOTS:
     {
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
-        fake.sync->set({{QStringLiteral("RootPath"), QStringLiteral("/home/u/OneDrive")},
-                        {QStringLiteral("RootState"), QStringLiteral("ready")},
-                        {QStringLiteral("RootSource"), QStringLiteral("onedrive")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")}});
         QVERIFY(fake.start());
 
         Autostart autostart;
@@ -231,15 +231,15 @@ private Q_SLOTS:
     {
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Mode"), QStringLiteral("read-write")}});
-        fake.sync->set({{QStringLiteral("RootPath"), QStringLiteral("/home/u/OneDrive")},
-                        {QStringLiteral("RootState"), QStringLiteral("ready")},
-                        {QStringLiteral("RootSource"), QStringLiteral("onedrive")},
-                        {QStringLiteral("ScanState"), QStringLiteral("running")},
-                        {QStringLiteral("ScanReason"), QStringLiteral("read-write")},
-                        {QStringLiteral("ScanStarted"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 125)},
-                        {QStringLiteral("ScanDirectories"), QVariant::fromValue<qulonglong>(12)},
-                        {QStringLiteral("ScanFiles"), QVariant::fromValue<qulonglong>(345)},
-                        {QStringLiteral("ScanExpected"), QVariant::fromValue<qulonglong>(500)}});
+        fake.sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("running")},
+                              {QStringLiteral("Reason"), QStringLiteral("read-write")},
+                              {QStringLiteral("Started"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 125)},
+                              {QStringLiteral("Directories"), QVariant::fromValue<qulonglong>(12)},
+                              {QStringLiteral("Files"), QVariant::fromValue<qulonglong>(345)},
+                              {QStringLiteral("Expected"), QVariant::fromValue<qulonglong>(500)}});
         QVERIFY(fake.start());
 
         Autostart autostart;
@@ -266,13 +266,13 @@ private Q_SLOTS:
         QCOMPARE(line->property("text").toString(),
                  QStringLiteral("Checking local files: 12 folders and 345 files, of about 500 — started 2 min ago, after the switch to read-write"));
 
-        fake.sync->set({{QStringLiteral("ScanState"), QStringLiteral("idle")},
-                        {QStringLiteral("ScanFinished"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 300)},
-                        {QStringLiteral("ScanTook"), QVariant::fromValue<uint>(40)}});
+        fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("idle")},
+                              {QStringLiteral("Finished"), QVariant::fromValue<qlonglong>(QDateTime::currentSecsSinceEpoch() - 300)},
+                              {QStringLiteral("Took"), QVariant::fromValue<uint>(40)}});
         QTRY_COMPARE(line->property("text").toString(), QStringLiteral("Local files last checked 5 min ago (took 40 s)"));
 
         fake.account->set({{QStringLiteral("Mode"), QStringLiteral("read-only")}});
-        fake.sync->set({{QStringLiteral("ScanState"), QStringLiteral("none")}});
+        fake.sync->scan->set({{QStringLiteral("State"), QStringLiteral("none")}});
         QTRY_VERIFY(!line->isVisible());
         fake.stop();
     }
@@ -286,20 +286,20 @@ private Q_SLOTS:
         const QString root = QStringLiteral("/home/u/OneDrive");
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Mode"), QStringLiteral("read-write")}});
-        fake.sync->set({{QStringLiteral("RootPath"), root},
-                        {QStringLiteral("RootState"), QStringLiteral("ready")},
-                        {QStringLiteral("RootSource"), QStringLiteral("onedrive")},
-                        {QStringLiteral("PendingCount"), QVariant::fromValue<uint>(2)},
-                        {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(1024)},
-                        {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(5003)},
-                        {QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(1234)},
-                        {QStringLiteral("DownloadLeftBytes"), QVariant::fromValue<qulonglong>(3ULL << 30)},
-                        {QStringLiteral("DownloadDoneBytes"), QVariant::fromValue<qulonglong>(1ULL << 30)},
-                        {QStringLiteral("DownloadTimeLeft"), QVariant::fromValue<uint>(720)},
-                        {QStringLiteral("UploadLeftCount"), QVariant::fromValue<uint>(2)},
-                        {QStringLiteral("UploadLeftBytes"), QVariant::fromValue<qulonglong>(1024)},
-                        {QStringLiteral("UploadDoneBytes"), QVariant::fromValue<qulonglong>(0)},
-                        {QStringLiteral("UploadTimeLeft"), QVariant::fromValue<uint>(0)}});
+        fake.sync->folder->set({{QStringLiteral("Path"), root},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        fake.sync->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(2)},
+                               {QStringLiteral("PendingBytes"), QVariant::fromValue<qulonglong>(1024)},
+                               {QStringLiteral("BlockedCount"), QVariant::fromValue<uint>(5003)}});
+        fake.sync->transfers->set({{QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(1234)},
+                                   {QStringLiteral("DownloadLeftBytes"), QVariant::fromValue<qulonglong>(3ULL << 30)},
+                                   {QStringLiteral("DownloadDoneBytes"), QVariant::fromValue<qulonglong>(1ULL << 30)},
+                                   {QStringLiteral("DownloadTimeLeft"), QVariant::fromValue<uint>(720)},
+                                   {QStringLiteral("UploadLeftCount"), QVariant::fromValue<uint>(2)},
+                                   {QStringLiteral("UploadLeftBytes"), QVariant::fromValue<qulonglong>(1024)},
+                                   {QStringLiteral("UploadDoneBytes"), QVariant::fromValue<qulonglong>(0)},
+                                   {QStringLiteral("UploadTimeLeft"), QVariant::fromValue<uint>(0)}});
         fake.sync->keptBack = {{QStringLiteral("one-action"), QStringLiteral("quota-exceeded"), 5000, 5000ULL << 20},
                                {QStringLiteral("per-file"), QStringLiteral("name-characters"), 3, 30}};
         KonedriveSkippedList quota;
@@ -378,12 +378,12 @@ private Q_SLOTS:
         QVERIFY(itemsSaying(activity, QString()) <= 10);
 
         // Nothing left: the lines go.
-        fake.sync->set({{QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(0)}});
+        fake.sync->transfers->set({{QStringLiteral("DownloadLeftCount"), QVariant::fromValue<uint>(0)}});
         QTRY_VERIFY(text("downloadingCardLeft").isEmpty());
         QVERIFY(text("downloadingCardDone").isEmpty());
         QVERIFY(!text("uploadingCardLeft").isEmpty());
 
-        QVERIFY(!fake.sync->calls.contains(QStringLiteral("Outbox")));
+        QVERIFY(!fake.sync->calls.contains(QStringLiteral("Changes")));
         QVERIFY(!fake.sync->calls.contains(QStringLiteral("NotUploaded")));
         fake.stop();
     }
@@ -397,11 +397,11 @@ private Q_SLOTS:
         const QString root = QStringLiteral("/home/u/OneDrive");
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
-        fake.sync->set({{QStringLiteral("RootPath"), root},
-                        {QStringLiteral("RootState"), QStringLiteral("ready")},
-                        {QStringLiteral("RootSource"), QStringLiteral("onedrive")},
-                        {QStringLiteral("SkippedCount"), QVariant::fromValue<qulonglong>(5000)},
-                        {QStringLiteral("ConflictCount"), QVariant::fromValue<uint>(5000)}});
+        fake.sync->folder->set({{QStringLiteral("Path"), root},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")},
+                                {QStringLiteral("SkippedCount"), QVariant::fromValue<qulonglong>(5000)}});
+        fake.sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(5000)}});
         fake.sync->skippedList.clear();
         for (int i = 0; i < 5000; ++i) {
             fake.sync->skippedList << KonedriveSkippedItem{root + QStringLiteral("/Shared/%1").arg(i), QStringLiteral("shared")};
@@ -450,7 +450,7 @@ private Q_SLOTS:
         // Three listing pages in a row: one more Skipped() a second later.
         const auto asked = fake.sync->calls.count(QStringLiteral("Skipped"));
         for (qulonglong count = 5001; count <= 5003; ++count) {
-            fake.sync->set({{QStringLiteral("SkippedCount"), QVariant::fromValue(count)}});
+            fake.sync->folder->set({{QStringLiteral("SkippedCount"), QVariant::fromValue(count)}});
         }
         QTRY_COMPARE(sync->skippedCount(), 5003ULL);
         QTest::qWait(300);
