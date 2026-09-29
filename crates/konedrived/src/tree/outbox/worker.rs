@@ -207,8 +207,15 @@ impl TreeStore {
     /// (issue #84): recorded before the request, so that a stop before its
     /// URL is persisted still knows the empty placeholder it may leave there.
     /// Recorded again at the same place, it keeps its first time: the
-    /// placeholder of an earlier opening is as much this row's.
-    pub fn outbox_record_opening(&self, seq: i64, parent: &str, name: &str, now: i64) -> Result<(), TreeError> {
+    /// placeholder of an earlier opening is as much this row's. `true`: a
+    /// record of an earlier attempt at the same place was already there
+    /// (carried); `false`: this call made it.
+    pub fn outbox_record_opening(&self, seq: i64, parent: &str, name: &str, now: i64) -> Result<bool, TreeError> {
+        let carried = self
+            .conn
+            .query_row("SELECT 1 FROM upload_openings WHERE seq = ?1 AND parent = ?2 AND name = ?3", params![seq, parent, name], |_| Ok(()))
+            .optional()?
+            .is_some();
         self.conn.execute(
             "INSERT INTO upload_openings (seq, parent, name, at) VALUES (?1, ?2, ?3, ?4)
                ON CONFLICT(seq) DO UPDATE SET
@@ -216,7 +223,7 @@ impl TreeStore {
                  parent = excluded.parent, name = excluded.name",
             params![seq, parent, name, now],
         )?;
-        Ok(())
+        Ok(carried)
     }
 
     /// Row `seq`'s opening was refused for certain: no placeholder of it.

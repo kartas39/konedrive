@@ -288,7 +288,7 @@ fn a_name_held_by_an_unknown_placeholder_waits_and_is_never_a_copy() {
             let at = format!("{what} completed {completed}");
             let w = World::new(&[file("A", "R", "a.txt", b"old")]);
             let (name, copy_name) = if what == "mkdir" { ("dir", "dir-fedora") } else { ("b.txt", "b-fedora.txt") };
-            let sid = w.cloud(|c| c.open_elsewhere(fake::ROOT, name));
+            let sid = w.cloud(|c| c.open_elsewhere(fake::ROOT, name, 3600));
             match what {
                 "create" => {
                     w.write("b.txt", b"mine");
@@ -356,7 +356,7 @@ fn an_empty_file_the_feed_listed_is_still_a_conflict() {
 #[test]
 fn an_empty_file_over_an_unknown_placeholder_is_adopted() {
     let w = World::new(&[]);
-    w.cloud(|c| c.open_elsewhere(fake::ROOT, "a.txt"));
+    w.cloud(|c| c.open_elsewhere(fake::ROOT, "a.txt", 3600));
     w.write("a.txt", b"");
     w.examine(&[("", "a.txt")]);
     w.run();
@@ -364,4 +364,82 @@ fn an_empty_file_over_an_unknown_placeholder_is_adopted() {
     assert_eq!(conflicts(&w), 0);
     assert_eq!(w.cloud(|c| c.count("DELETE", "items/")), 0);
     assert!(!w.path("a-fedora.txt").exists());
+}
+
+/// Another device opened a session at the name a few seconds before this
+/// folder's create (issue #89): the create's own opening got `409`, so it
+/// made no placeholder, and its record goes — the holder is never taken for
+/// ours, never deleted. The row waits; that device's session goes on.
+#[test]
+fn a_placeholder_opened_elsewhere_just_before_is_never_deleted() {
+    let w = World::new(&[]);
+    w.cloud(|c| c.open_elsewhere(fake::ROOT, "a.txt", 5));
+    w.write("a.txt", b"mine");
+    w.examine(&[("", "a.txt")]);
+    w.run();
+    assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
+    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(opening_at(&w, "a.txt"), None, "a 409 to this opening clears its record");
+    assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions())), (vec!["a.txt".to_owned()], 1));
+    assert_eq!(w.cloud(|c| c.count("DELETE", "items/")), 0);
+    assert_eq!(conflicts(&w), 0);
+}
+
+/// A changed file also renamed onto a name an unknown placeholder holds
+/// (the move before the content, `update`): the row waits, no copy, nothing
+/// deleted; once the name is free, both go through.
+#[test]
+fn a_changed_and_renamed_file_waits_for_a_held_name() {
+    let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+    w.hydrate("a.txt", b"old");
+    w.edit("a.txt", b"mine");
+    w.rename("a.txt", "b.txt");
+    w.examine(&[("", "a.txt"), ("", "b.txt")]);
+    let sid = w.cloud(|c| c.open_elsewhere(fake::ROOT, "b.txt", 3600));
+    w.run();
+    let rows = w.rows();
+    assert_eq!(rows.len(), 1, "{:?}", w.summary());
+    assert_eq!(rows[0].kind, Update, "one update carrying the move");
+    assert_eq!(rows[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions())), (vec!["b.txt".to_owned()], 1));
+    assert_eq!(w.cloud(|c| c.count("DELETE", "items/")), 0);
+    assert_eq!(conflicts(&w), 0);
+
+    w.cloud(|c| c.cancel_elsewhere(&sid));
+    due(&w);
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.id_at("b.txt").as_deref(), Some("A"));
+    assert_eq!(w.content("b.txt").unwrap(), b"mine");
+    assert_eq!(conflicts(&w), 0);
+}
+
+/// A move and a `mkdir` onto a name this folder's own listed session holds
+/// (another row still sending it; the name differs only in case, one name
+/// to OneDrive): the row waits, and that session is left to finish.
+#[test]
+fn a_move_or_mkdir_onto_our_own_sessions_name_waits() {
+    for what in ["move", "mkdir"] {
+        let w = World::new(&[file("X", "R", "x.txt", b"old")]);
+        let session = refused_for_now(&w, b"hello");
+        if what == "move" {
+            w.rename("x.txt", "A.TXT");
+            w.examine(&[("", "x.txt"), ("", "A.TXT")]);
+        } else {
+            std::fs::create_dir(w.path("A.TXT")).unwrap();
+            w.examine(&[("", "A.TXT")]);
+        }
+        // The other row is refused again: its session stays open.
+        w.cloud(|c| c.throttle_429("PUT", "upload/", 0, 0, 2));
+        w.run();
+        let rows = w.rows();
+        assert_eq!(rows.len(), 2, "{what}: {:?}", w.summary());
+        let mine = rows.iter().find(|r| r.rel.to_str() == Some("A.TXT")).unwrap();
+        assert_eq!(mine.reason.as_deref(), Some(reason::NAME_HELD), "{what}");
+        let other = rows.iter().find(|r| r.rel.to_str() == Some("a.txt")).unwrap();
+        assert_eq!(other.session_url.as_deref(), Some(session.as_str()), "{what}: its session untouched");
+        assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions())), (vec!["a.txt".to_owned()], 1), "{what}");
+        assert_eq!(w.cloud(|c| (c.count("DELETE", "upload/"), c.count("DELETE", "items/"))), (0, 0), "{what}");
+        assert_eq!(conflicts(&w), 0, "{what}");
+    }
 }

@@ -194,7 +194,8 @@ pub(super) enum Taken {
 ///
 /// What would otherwise be a copy is [`Taken::Held`] when the holder is an
 /// empty file the items table (the delta feed's mirror) does not know: an
-/// upload session's placeholder is never in the feed, and nothing in OneDrive
+/// upload session's placeholder is never in the feed (nor in a listing being
+/// staged), and nothing in OneDrive
 /// tells a live session from an abandoned one, or whose it is (issue #89). An
 /// empty file the feed listed is a real file, and decided as any other.
 pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str, ours: Ours<'_>) -> Result<Taken, Fail> {
@@ -239,7 +240,8 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
     }
     if holder.file.is_some() && holder.size == Some(0) {
         let id = holder.id.clone();
-        if e.store().call(move |s| s.get(Table::Items, &id)).await?.is_none() {
+        let known = e.store().call(move |s| Ok(s.get(Table::Items, &id)?.is_some() || s.get(Table::Staging, &id)?.is_some())).await?;
+        if !known {
             return Ok(Taken::Held);
         }
     }

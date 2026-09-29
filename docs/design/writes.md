@@ -504,10 +504,14 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
 - **The place is recorded before the session is opened** (issue #84). Before a new file's
   `createUploadSession`, its row records the place it is about to take (parent id, name, the time;
   `upload_openings`). The session's URL replaces the record once it is persisted; a definite refusal
-  to open (`404`, `400`) clears it; recorded again at the same place, it keeps its first time; it
+  to open (`404`, `400`) clears it, and so does a `409` answered to the opening that made the record
+  (that request made no placeholder, issue #89); a record carried from an earlier attempt whose
+  outcome was not known (a stop, a timeout) is kept through a `409`; recorded again at the same
+  place, it keeps its first time; it
   goes when its row leaves the outbox, and outlasts a restart. A stop between the opening and its
   persisting so leaves a placeholder this folder still knows of.
-- **A `409` at a recorded place.** With no listed session there but an opening recorded, the holder
+- **A `409` at a recorded place.** With no listed session there but an opening recorded — carried
+  from an earlier attempt whose outcome was not known, never the one just answered `409` — the holder
   is read: an empty file created at or after the recording, less 5 minutes for the clocks, is that
   opening's placeholder. It is deleted (with its eTag; OneDrive lets it, and the delete ends the
   session — measured, limitations log F172) and the create goes again; a delete OneDrive refuses
@@ -518,8 +522,10 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
   opened a session, and nothing about a placeholder changes while its session is used or idle, so
   a live session cannot be told from an abandoned one; a delete of a placeholder ends its session,
   so deleting one another device is filling would kill that device's upload. Only this folder's
-  own records (the listed sessions, the recorded openings) make a placeholder ours; any other
-  holds its name, and the row waits (§6.2).
+  own records make a placeholder ours: a listed session's, or an empty file created at or after a
+  recorded opening carried from an earlier attempt whose outcome was not known (less the 5 minutes
+  of clock slack). A `409` answered to this very attempt's opening is never that. Any other
+  placeholder holds its name, and the row waits (§6.2).
 
 - **The daemon's stop** (issue #84). On SIGTERM (systemd's stop, a package upgrade) or SIGINT the
   outbox workers take no more rows; the rows in flight finish the request they sent — an opened
@@ -538,7 +544,7 @@ limitations log F172).
 |---|---|
 | `200`, `201` | the commit (§5.4) |
 | `202` | a fragment accepted: `session_next` persisted, the next one sent |
-| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours (it is this content already), a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3). What would be a copy but is an empty file the items table (the delta feed's mirror) does not know is, as far as anything here can tell, an upload session's placeholder (never in the feed): never a copy, never deleted — the row waits (`name-held-by-an-upload`, the usual backoff) until the name is free, or the holder has content or the feed lists it, and then decides again (issue #89). This holds for every `409`: a create, a move or rename, a folder's `mkdir`. An empty file the feed listed is a real file. Anything else makes the file here a copy (§7) |
+| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours (it is this content already), a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3). What would be a copy but is an empty file neither the items table (the delta feed's mirror) nor a listing being staged knows is, as far as anything here can tell, an upload session's placeholder (never in the feed): never a copy, never deleted — the row waits (`name-held-by-an-upload`, the usual backoff) until the name is free, or the holder has content or the feed lists it, and then decides again (issue #89). This holds for every `409`: a create, a move or rename, a folder's `mkdir`. An empty file the feed listed is a real file. Anything else makes the file here a copy (§7) |
 | `412` | the item is read again: the same hash as ours means done already; the base's cTag means only its metadata changed, and the request goes again with the fresh eTag; otherwise §7 |
 | `404` | gone in OneDrive: §7 |
 | `404` from an upload URL | the session ended: the item is read and adopted if its hash is ours, else a new session from zero |

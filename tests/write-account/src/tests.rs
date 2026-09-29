@@ -195,6 +195,66 @@ async fn a_test_account_passes_the_preflight_and_first_makes_its_folder() {
     assert_eq!(writes, ["POST /me/drive/items/ROOT/children"]);
 }
 
+/// `--large-test-drive`: a drive over 1 GiB, with many items, passes guard 2's size limits. The
+/// drive is not walked: the delta link is the feed's latest (`token=latest`).
+#[tokio::test]
+async fn a_large_test_drive_passes_the_preflight_from_the_latest_delta_link() {
+    let server = MockServer::start().await;
+    me(&server, "RW", DRIVE, Some(3 << 30)).await;
+    me(&server, "RO", DRIVE, Some(3 << 30)).await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive/root/delta"))
+        .and(query_param("token", "latest"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "value": [],
+            "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L", server.uri()),
+        })))
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // Were the drive walked, it would list too many items for guard 2.
+    listing(&server, 1500, 500).await;
+    root(&server).await;
+    let mut options = options(&server, &[DRIVE]);
+    options.large = true;
+    let Ended::Ran(report) = harness::run(options).await else { panic!("refused") };
+    assert!(report.refused.is_none(), "{report:?}");
+    let requests = server.received_requests().await.unwrap();
+    let deltas: Vec<Option<String>> = requests.iter().filter(|r| r.url.path() == "/me/drive/root/delta").map(|r| r.url.query().map(str::to_owned)).collect();
+    assert_eq!(deltas, [Some("token=latest".to_owned())], "only the latest link, never a walk");
+    let writes: Vec<String> =
+        requests.iter().filter(|r| r.method.as_str() != "GET").map(|r| format!("{} {}", r.method, r.url.path())).collect();
+    assert_eq!(writes, ["POST /me/drive/items/ROOT/children"]);
+}
+
+/// `--large-test-drive` lifts only the size limits: a drive not on the allow-list, or a token
+/// reaching another drive, is still refused.
+#[tokio::test]
+async fn a_large_test_drive_is_still_held_to_guard_1() {
+    let server = MockServer::start().await;
+    let mut not_allowed = options(&server, &["ANOTHER-DRIVE"]);
+    not_allowed.large = true;
+    let why = refused(not_allowed).await;
+    assert!(why.contains("write_test_drive_ids"), "{why}");
+    assert_eq!(reads_only(&server).await, 0);
+
+    me(&server, "RW", "THE-REAL-ONE", Some(3 << 30)).await;
+    me(&server, "RO", DRIVE, Some(3 << 30)).await;
+    let mut other = options(&server, &[DRIVE]);
+    other.large = true;
+    let why = refused(other).await;
+    assert!(why.contains("THE-REAL-ONE"), "{why}");
+
+    let server = MockServer::start().await;
+    me(&server, "RW", DRIVE, Some(3 << 30)).await;
+    me(&server, "RO", "THE-REAL-ONE", Some(3 << 30)).await;
+    let mut other = options(&server, &[DRIVE]);
+    other.large = true;
+    let why = refused(other).await;
+    assert!(why.contains("read-only token") && why.contains("THE-REAL-ONE"), "{why}");
+    assert_eq!(reads_only(&server).await, 2);
+}
+
 // Guards 3 and 4, on the guard itself.
 
 fn graph<'a>(method: &'a Method, rel: &'a str, query: Option<&'a str>, body: &'a [u8]) -> Request<'a> {

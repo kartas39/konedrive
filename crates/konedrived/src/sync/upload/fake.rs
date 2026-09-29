@@ -308,11 +308,11 @@ impl Cloud {
 
     /// An upload session for a new file at (`parent`, `name`) opened by
     /// another device (or abandoned by an older version): its placeholder
-    /// holds the name, and nothing of this folder knows it — made an hour
-    /// ago, before any opening this folder records there. Its id.
-    pub fn open_elsewhere(&mut self, parent: &str, name: &str) -> String {
+    /// holds the name, and nothing of this folder knows it — made `age`
+    /// seconds ago. Its id.
+    pub fn open_elsewhere(&mut self, parent: &str, name: &str, age: i64) -> String {
         self.open_session(Target::New { parent: parent.into(), name: name.into() }, &json!({ "item": {} }));
-        self.created.insert(format!("P{}", self.counter), crate::sync::activity::unix_now() - 3600);
+        self.created.insert(format!("P{}", self.counter), crate::sync::activity::unix_now() - age);
         format!("s{}", self.counter)
     }
 

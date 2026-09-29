@@ -2353,11 +2353,13 @@ application must never read zeros where real content should be.
   there from an empty file created at or after the recording (less 5 minutes for clocks, a guess)
   deletes it and creates again. OneDrive lets an open session's placeholder be deleted, and the
   delete ends the session (measured, below); if it ever refuses, the row waits
-  (`upload-session-open`) — no copy. Someone else's empty file created at that name after the
-  recording, while the row still tries — or another device's placeholder opened there then, or up
-  to 5 minutes before it — would be taken for ours and deleted (to the recycle bin, guarded by its
-  eTag; for a placeholder, the delete ends that device's upload); a holder whose `createdDateTime`
-  is not given is never taken for ours. A placeholder nothing here recorded — a session opened
+  (`upload-session-open`) — no copy. A `409` answered to the attempt that made the record clears
+  it (that request made no placeholder, issue #89), so only a record carried from an earlier
+  attempt whose outcome was not known (a stop, a timeout) is ever compared. What remains: while
+  such a record is kept, someone else's empty file, or another device's placeholder, created at
+  that name at or after the recording (less 5 minutes), would be taken for ours and deleted (to the
+  recycle bin, guarded by its eTag; for a placeholder, the delete ends that device's upload); a
+  holder whose `createdDateTime` is not given is never taken for ours. A placeholder nothing here recorded — a session opened
   before sessions were listed or openings recorded, one another device is filling, one abandoned
   by another device or an older version — holds the name and the row waits
   (`name-held-by-an-upload`, issue #89) until the name is free or the holder has content (then a
@@ -2365,8 +2367,12 @@ application must never read zeros where real content should be.
   never removed by the daemon, so its row waits until it is deleted outside konedrive (there is no
   command for it); how long OneDrive keeps an abandoned one is not known (it outlived a day). Any
   empty file the delta feed has not listed is taken for a placeholder: a real empty file made in
-  OneDrive at that name is waited for too, for a cycle or two, until the feed lists it. The
-  placeholders and the conflict copies the bug left before are removed by hand. (2) What a placeholder is,
+  OneDrive at that name is waited for too, for a cycle or two, until the feed lists it (a holder
+  in a listing being staged counts as listed). An empty local file over another device's
+  placeholder adopts it (both hashes are all zeros); if that session is then cancelled or
+  abandoned, the placeholder disappears with no delete in the feed, and the local empty file stays
+  linked to an item that no longer exists until it is next changed here. Only empty files; left as
+  is. The placeholders and the conflict copies the bug left before are removed by hand. (2) What a placeholder is,
   measured on the test account (2026-09-29, `konedrive-write-test --only placeholders`): an item
   of size 0 with a `file` facet whose quickXorHash is all zeros, created by konedrive's application
   id, its `fileSystemInfo` time its creation time (the time the session request sends is applied

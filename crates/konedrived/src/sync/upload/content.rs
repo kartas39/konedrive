@@ -257,7 +257,8 @@ impl Job<'_> {
     }
 
     /// A `409` at a place where this folder recorded an opening whose URL
-    /// never came (issue #84): the holder is an empty file made at or after
+    /// never came (issue #84) — carried from an earlier attempt, since a
+    /// `409` to the attempt that made the record clears it (issue #89): the holder is an empty file made at or after
     /// the recording (less [`CLOCK_SLACK`]) → it is that opening's
     /// placeholder. It is deleted, and the create goes again; a delete
     /// OneDrive refuses leaves the row waiting until the orphan session
@@ -549,16 +550,21 @@ impl Job<'_> {
             UploadTarget::Existing { .. } => None,
         };
         let seq = self.row.seq;
+        let mut carried = false;
         if let Some((parent, name)) = place.clone() {
-            self.e.store().call(move |s| s.outbox_record_opening(seq, &parent, &name, now())).await?;
+            carried = self.e.store().call(move |s| s.outbox_record_opening(seq, &parent, &name, now())).await?;
         }
         let opened = match self.e.cfg.drive.create_upload_session(target, self.snap.size, self.snap.sec).await {
             Ok(opened) => opened,
             Err(err) => {
                 // Refused for certain, and no placeholder anywhere: the folder
-                // is gone, or the request itself is refused. A `409` keeps the
-                // record: what holds the name may be an earlier opening's.
-                if place.is_some() && matches!(err, WriteError::NotFound | WriteError::Refused(_)) {
+                // is gone, or the request itself is refused. A `409` is as
+                // certain — this request made no placeholder (issue #89) — and
+                // clears a record this call made; one carried from an earlier
+                // attempt whose outcome was not known is kept: what holds the
+                // name may be that attempt's placeholder.
+                let certain = matches!(err, WriteError::NotFound | WriteError::Refused(_)) || (matches!(err, WriteError::NameExists) && !carried);
+                if place.is_some() && certain {
                     self.e.store().call(move |s| s.outbox_opening_refused(seq)).await?;
                 }
                 return Ok(Err(err));
