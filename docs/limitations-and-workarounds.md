@@ -403,8 +403,11 @@ application must never read zeros where real content should be.
   off by default, on `konedrived` and `konedrivectl`; without it the daemon does not serve the
   interface and `konedrivectl` has no `dev` command. `scripts/dev-install.sh` builds with it, so
   the runs that need a token — the VM tests against real Graph, the stress tests, the test-account
-  harness — need a daemon installed that way. The released package is built without it, and its
-  `%build` fails if the built `konedrived` names `org.konedrive.TokenExport`. The CLI writes the token through a temporary file in the same directory as `--out`,
+  harness — need a daemon installed that way, or a local development package
+  (`scripts/build-rpm.sh --dev-tools`, `rpmbuild --with dev_tools`), which the developer's own
+  machine runs. The released package is built without it (`--dev-tools` is refused with
+  `--version`), and its `%build` fails if the built `konedrived` names
+  `org.konedrive.TokenExport`. The CLI writes the token through a temporary file in the same directory as `--out`,
   created with `O_CREAT | O_EXCL | O_NOFOLLOW` at mode 0600 from the instant it exists, then
   `fsync`ed and renamed over `--out` — so the bytes are never observable at a looser mode, a symlink
   at `--out` is replaced rather than written through, and a reader who already had the old `--out`
