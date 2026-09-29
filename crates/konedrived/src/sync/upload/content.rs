@@ -261,13 +261,14 @@ impl Job<'_> {
     /// never came (issue #84) — carried from an earlier attempt whose outcome
     /// was not known, with its row or left by it, since a certain answer to
     /// the attempt that made the record clears it (issue #89): the holder is
-    /// an empty file the delta feed never listed, made between the first
-    /// recording and the latest attempt whose outcome was not known (each
-    /// widened by [`CLOCK_SLACK`]) → it is that opening's placeholder. It is deleted, and the create goes again; a delete
+    /// an empty file the delta feed never listed, made within one record's
+    /// window — its first recording to its latest attempt whose outcome was
+    /// not known, each widened by [`CLOCK_SLACK`]: it is that opening's
+    /// placeholder. It is deleted, and the create goes again; a delete
     /// OneDrive refuses leaves the row waiting (`upload-session-open`). Never
-    /// a copy. Any other holder — with content, listed, older, later, or its
-    /// time unknown — is not taken for ours:
-    /// `None`, and [`taken`] decides.
+    /// a copy. Any other holder — with content, listed, outside every
+    /// window, or its time unknown — is not taken for ours: `None`, and
+    /// [`taken`] decides.
     ///
     /// Once resolved — the placeholder deleted, the name found free, or the
     /// holder not ours (at most one placeholder of ours holds a name) — the
@@ -276,7 +277,10 @@ impl Job<'_> {
     /// given, a read or a delete fails for now, or the delete is refused.
     async fn opened_placeholder(&self) -> Result<Option<Outcome>, Fail> {
         let (parent, name) = (self.parent.to_owned(), self.name.to_owned());
-        let Some((first, last)) = self.e.store().call(move |s| s.upload_opening_window(&parent, &name)).await? else { return Ok(None) };
+        let windows = self.e.store().call(move |s| s.upload_opening_windows(&parent, &name)).await?;
+        if windows.is_empty() {
+            return Ok(None);
+        }
         let holder = match self.e.cfg.drive.child(self.parent, self.name).await {
             Ok(holder) => holder,
             Err(DriveError::NotFound) => {
@@ -289,7 +293,8 @@ impl Job<'_> {
         let empty = holder.file.is_some() && holder.size == Some(0);
         let id = holder.id.clone();
         let listed = self.e.store().call(move |s| Ok(s.get(Table::Items, &id)?.is_some() || s.get(Table::Staging, &id)?.is_some())).await?;
-        if listed || !empty || created < first - CLOCK_SLACK || created > last + CLOCK_SLACK {
+        let within = windows.iter().any(|(at, last)| at - CLOCK_SLACK <= created && created <= last + CLOCK_SLACK);
+        if listed || !empty || !within {
             self.resolved().await?;
             return Ok(None);
         }

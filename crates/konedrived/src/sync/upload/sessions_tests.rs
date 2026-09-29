@@ -630,3 +630,48 @@ fn a_carried_record_never_takes_a_listed_file_for_ours() {
     assert_eq!(conflicts(&w), 1);
     assert_eq!(opening_at(&w, "a.txt"), None);
 }
+
+/// Two records at one name — one left by its row long ago, one carried now
+/// — are two windows, never one: a placeholder another device made between
+/// them is not ours, never deleted; the row waits (issue #89).
+#[test]
+fn a_placeholder_between_two_records_windows_is_not_ours() {
+    let w = World::new(&[]);
+    let long_ago = crate::sync::activity::unix_now() - 7200;
+    // Row 900's record at `a.txt`, left behind when it moves elsewhere.
+    w.store
+        .call_blocking(move |s| {
+            s.outbox_record_opening(900, fake::ROOT, "a.txt", long_ago)?;
+            s.outbox_record_opening(900, fake::ROOT, "elsewhere.txt", long_ago + 1)
+        })
+        .unwrap();
+    opened_and_lost(&w, b"mine");
+    w.cloud(|c| {
+        c.expire_sessions();
+        c.open_elsewhere(fake::ROOT, "a.txt", 3600);
+    });
+    w.run();
+    assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
+    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.cloud(|c| (c.placeholders().len(), c.count("DELETE", "items/"))), (1, 0));
+    assert_eq!(conflicts(&w), 0);
+}
+
+/// A certain answer to a carried record's retry puts its latest unknown
+/// outcome back: a placeholder made after that (plus the slack), though
+/// before the retry, is not ours — the row waits, nothing deleted.
+#[test]
+fn a_certain_answer_keeps_a_carried_records_last_unknown_time() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"mine");
+    w.examine(&[("", "a.txt")]);
+    let seq = w.rows()[0].seq;
+    let then = crate::sync::activity::unix_now() - 3600;
+    w.store.call_blocking(move |s| s.outbox_record_opening(seq, fake::ROOT, "a.txt", then)).unwrap();
+    w.cloud(|c| c.open_elsewhere(fake::ROOT, "a.txt", 1800));
+    w.run();
+    assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
+    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.cloud(|c| (c.placeholders().len(), c.count("DELETE", "items/"))), (1, 0));
+    assert_eq!(conflicts(&w), 0);
+}

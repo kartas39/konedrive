@@ -1442,6 +1442,32 @@ mod tests {
         }
     }
 
+    /// A store of the version before issue #89 — `upload_openings` without
+    /// `last`, the trigger that deleted a record with its row — brought up to
+    /// date: a record whose row leaves is kept without it, and its missing
+    /// `last` reads as its first time.
+    #[test]
+    fn an_older_stores_openings_are_upgraded() {
+        let mut s = store(&[]);
+        s.conn
+            .execute_batch(
+                "DROP TRIGGER upload_openings_left_behind; DROP TABLE upload_openings_left; DROP TABLE upload_openings;
+                 CREATE TABLE upload_openings (seq INTEGER PRIMARY KEY, parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL);
+                 CREATE TRIGGER upload_openings_leave AFTER DELETE ON outbox BEGIN DELETE FROM upload_openings WHERE seq = OLD.seq; END;",
+            )
+            .unwrap();
+        let Recorded::Inserted(seq) = s.outbox_record(&detect(OutboxKind::Create, None, Some(inode(1)), "a.txt", Some("R"))).unwrap() else { panic!() };
+        s.conn.execute("INSERT INTO upload_openings (seq, parent, name, at) VALUES (?1, 'R', 'a.txt', 100)", [seq]).unwrap();
+        upgrade(&s.conn).unwrap();
+        assert_eq!(s.upload_opening_windows("R", "a.txt").unwrap(), [(100, 100)]);
+        let old_trigger: bool = s.conn.prepare("SELECT 1 FROM sqlite_master WHERE name = 'upload_openings_leave'").unwrap().exists([]).unwrap();
+        assert!(!old_trigger);
+        s.outbox_drop(seq, None, None, None).unwrap();
+        let left: i64 = s.conn.query_row("SELECT COUNT(*) FROM upload_openings_left", [], |r| r.get(0)).unwrap();
+        assert_eq!(left, 1, "kept without its row");
+        assert_eq!(s.upload_opening_windows("R", "A.TXT").unwrap(), [(100, 100)]);
+    }
+
     fn kinds(store: &TreeStore) -> Vec<(OutboxKind, String)> {
         store.outbox_rows().unwrap().into_iter().map(|r| (r.kind, r.rel.display().to_string())).collect()
     }

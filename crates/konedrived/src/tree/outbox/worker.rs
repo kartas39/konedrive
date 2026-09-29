@@ -271,13 +271,14 @@ impl TreeStore {
         Ok(())
     }
 
-    /// The window of the openings recorded at `name` (without case) in
-    /// `parent`, with a row or without, whose URL never came: from the
-    /// earliest first time to the latest attempt whose outcome is not known.
-    /// Only in it may an empty placeholder there be this folder's.
-    pub fn upload_opening_window(&self, parent: &str, name: &str) -> Result<Option<(i64, i64)>, TreeError> {
+    /// The windows of the openings recorded at `name` (without case) in
+    /// `parent`, with a row or without, whose URL never came: each record's
+    /// first time and its latest attempt whose outcome is not known. Only
+    /// within one of them may an empty placeholder there be this folder's —
+    /// never between two (issue #89).
+    pub fn upload_opening_windows(&self, parent: &str, name: &str) -> Result<Vec<(i64, i64)>, TreeError> {
         let lower = name.to_lowercase();
-        let mut window: Option<(i64, i64)> = None;
+        let mut windows = Vec::new();
         for sql in [
             "SELECT name, at, COALESCE(last, at) FROM upload_openings WHERE parent = ?1",
             "SELECT name, at, last FROM upload_openings_left WHERE parent = ?1",
@@ -286,17 +287,15 @@ impl TreeStore {
             let rows = statement
                 .query_map([parent], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))?
                 .collect::<Result<Vec<_>, _>>()?;
-            for (_, at, last) in rows.into_iter().filter(|(n, _, _)| n.to_lowercase() == lower) {
-                window = Some(window.map_or((at, last), |(a, l)| (a.min(at), l.max(last))));
-            }
+            windows.extend(rows.into_iter().filter(|(n, _, _)| n.to_lowercase() == lower).map(|(_, at, last)| (at, last)));
         }
-        Ok(window)
+        Ok(windows)
     }
 
     /// The earliest time of the openings recorded at `name` (without case)
-    /// in `parent`: [`upload_opening_window`](Self::upload_opening_window)'s start.
+    /// in `parent`.
     pub fn upload_opening_at(&self, parent: &str, name: &str) -> Result<Option<i64>, TreeError> {
-        Ok(self.upload_opening_window(parent, name)?.map(|(at, _)| at))
+        Ok(self.upload_opening_windows(parent, name)?.into_iter().map(|(at, _)| at).min())
     }
 
     /// Row `seq`'s session completed, or is gone: the row and the list
