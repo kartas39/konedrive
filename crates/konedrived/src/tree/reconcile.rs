@@ -30,6 +30,10 @@ pub(super) const TABLES: &str = "
         quickxor TEXT, mime TEXT, placement TEXT);
     CREATE TABLE IF NOT EXISTS outbox_gone (id TEXT PRIMARY KEY, local_seq INTEGER NOT NULL);";
 
+/// A read-write cycle's delta, staged ([`TreeStore::stage_rw`]): the ids
+/// to reconcile, and the deferred changes consumed.
+pub type RwStaged = (Vec<String>, Vec<String>);
+
 /// What the outbox committed for an item after some commit count: Graph's
 /// answer (its eTag), or a delete.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -306,7 +310,7 @@ impl TreeStore {
     /// An idle cycle reads nothing whole (issue #39): the deferred changes,
     /// the outbox by item id, `items` by `local_seq` and by what has no
     /// local object, each through an index.
-    pub fn stage_rw(&mut self, changes: &[Change], since: i64, full: bool) -> Result<Option<(Vec<String>, Vec<String>)>, TreeError> {
+    pub fn stage_rw(&mut self, changes: &[Change], since: i64, full: bool) -> Result<Option<RwStaged>, TreeError> {
         let deferred = self.live_deferred()?;
         let waiting = {
             let mut row_of = self.conn.prepare_cached("SELECT 1 FROM outbox WHERE item_id = ?1 LIMIT 1")?;

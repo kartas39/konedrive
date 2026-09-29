@@ -160,6 +160,10 @@ fn chains_then(source: Source, start: &str, then: &str) -> String {
     )
 }
 
+/// Thumbnails to make, with their paths, and the id to go on from
+/// ([`TreeStore::thumbnail_candidates`]).
+pub type ThumbnailBatch = (Vec<(Row, PathBuf)>, Option<String>);
+
 /// One item's place, as [`chains_sql`] finds it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chain {
@@ -1010,7 +1014,7 @@ impl TreeStore {
     /// [`THUMB_PAGE`] at a time and at most [`THUMB_SCAN`] in one call. Each
     /// page is filtered and its paths found in one query. Also the id to go
     /// on from, `None` once the last candidate has been looked at.
-    pub fn thumbnail_candidates(&self, after: &str, limit: usize) -> Result<(Vec<(Row, PathBuf)>, Option<String>), TreeError> {
+    pub fn thumbnail_candidates(&self, after: &str, limit: usize) -> Result<ThumbnailBatch, TreeError> {
         if limit == 0 {
             return Ok((Vec::new(), Some(after.to_owned())));
         }
