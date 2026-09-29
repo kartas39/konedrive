@@ -76,6 +76,19 @@ pub struct Download {
     pub stream: Box<dyn AsyncRead + Send + Unpin>,
 }
 
+/// What Graph answered for a thumbnail, once the answer is final for this
+/// version of the item ([`DriveClient::thumbnail`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Thumbnail {
+    /// The thumbnail's bytes, not yet decoded.
+    Image(Vec<u8>),
+    /// Graph has none (`404`), or its body is over [`MAX_THUMBNAIL_BYTES`].
+    None,
+    /// Any other `4xx` but `401`, `408` and `429`: Graph will not make one
+    /// at this size (`406` for some items at `c512x512`).
+    Refused(StatusCode),
+}
+
 /// The cap on `thumbnail`'s body: far more than any
 /// real `c512x512` JPEG, small enough to bound memory against an oversized
 /// or malicious answer.
@@ -323,14 +336,17 @@ impl DriveClient {
     }
 
     /// Graph's own thumbnail of an item at `size` (`c512x512`: fits in 512
-    /// by 512, aspect kept) — `None` when Graph has none for it, or when
-    /// its answer is too large to be worth decoding (recorded by the
-    /// caller the same as a 404, never retried). Graph may
+    /// by 512, aspect kept; `large`: Graph's named size, up to 800 px).
+    /// Answers that settle the question for this version of the item come
+    /// back as `Ok` — the bytes, [`Thumbnail::None`] (a 404, or a body too
+    /// large to be worth decoding) or [`Thumbnail::Refused`] (any other 4xx
+    /// but `401`, `408` and `429`); a passing trouble (no answer, `401`,
+    /// `408`, `429`, 5xx) is an `Err`, worth asking again later. Graph may
     /// redirect to the bytes on another host (a CDN, not Graph): followed by
     /// hand, on the `content` client — which never redirects on its own,
     /// same as `content_url`/`download` — so the bearer token is never
     /// sent past Graph itself.
-    pub async fn thumbnail(&self, id: &str, size: &str) -> Result<Option<Vec<u8>>, DriveError> {
+    pub async fn thumbnail(&self, id: &str, size: &str) -> Result<Thumbnail, DriveError> {
         let mut url = self.item_url(id, Some("thumbnails"))?;
         url.path_segments_mut().map_err(|()| DriveError::Failed("the Graph base URL cannot take a path".into()))?.push("0").push(size).push("content");
         let response = self.send(|token| self.content.get(url.clone()).bearer_auth(token)).await?;
@@ -349,7 +365,11 @@ impl DriveClient {
         };
         match response.status() {
             status if status.is_success() => self.bounded_thumbnail_body(response).await,
-            StatusCode::NOT_FOUND => Ok(None),
+            StatusCode::NOT_FOUND => Ok(Thumbnail::None),
+            status @ (StatusCode::UNAUTHORIZED | StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS) => {
+                Err(DriveError::Transient(format!("a thumbnail returned {status}")))
+            }
+            status if status.is_client_error() => Ok(Thumbnail::Refused(status)),
             status if status.is_server_error() => Err(DriveError::Transient(format!("a thumbnail returned {status}"))),
             status => Err(DriveError::Failed(format!("a thumbnail returned {status}"))),
         }
@@ -361,20 +381,20 @@ impl DriveClient {
     /// `Content-Length`), comes back as `None` rather than an error — a
     /// body this size for a `c512x512` request is not a transient condition
     /// worth retrying, so the caller treats it exactly like a 404.
-    async fn bounded_thumbnail_body(&self, response: reqwest::Response) -> Result<Option<Vec<u8>>, DriveError> {
+    async fn bounded_thumbnail_body(&self, response: reqwest::Response) -> Result<Thumbnail, DriveError> {
         if response.content_length().is_some_and(|len| len > MAX_THUMBNAIL_BYTES) {
-            return Ok(None);
+            return Ok(Thumbnail::None);
         }
         let mut stream = response.bytes_stream();
         let mut buf = Vec::new();
-        while let Some(chunk) = stream.try_next().await.map_err(|e| DriveError::Transient(e.to_string()))? {
+        while let Some(chunk) = stream.try_next().await.map_err(|e| DriveError::Transient(e.without_url().to_string()))? {
             self.pool.moved(Direction::Down, chunk.len() as u64);
             buf.extend_from_slice(&chunk);
             if buf.len() as u64 > MAX_THUMBNAIL_BYTES {
-                return Ok(None);
+                return Ok(Thumbnail::None);
             }
         }
-        Ok(Some(buf))
+        Ok(Thumbnail::Image(buf))
     }
 
     async fn get_json<T: DeserializeOwned>(&self, url: Url) -> Result<T, DriveError> {
@@ -383,7 +403,7 @@ impl DriveClient {
             status if status.is_success() => response
                 .json()
                 .await
-                .map_err(|e| DriveError::Transient(format!("an unreadable answer from Graph: {e}"))),
+                .map_err(|e| DriveError::Transient(format!("an unreadable answer from Graph: {}", e.without_url()))),
             StatusCode::NOT_FOUND => Err(DriveError::NotFound),
             StatusCode::GONE => Err(resync(response).await),
             status if status.is_server_error() => Err(DriveError::Transient(format!("Graph returned {status}"))),
@@ -402,7 +422,7 @@ impl DriveClient {
             let response = request(&token)
                 .send()
                 .await
-                .map_err(|e| DriveError::Transient(format!("cannot reach Microsoft Graph: {e}")))?;
+                .map_err(|e| DriveError::Transient(format!("cannot reach Microsoft Graph: {}", e.without_url())))?;
             match response.status() {
                 StatusCode::UNAUTHORIZED if !renewed => {
                     renewed = true;
@@ -435,7 +455,7 @@ impl DriveClient {
             let response = request()
                 .send()
                 .await
-                .map_err(|e| DriveError::Transient(format!("cannot reach OneDrive: {e}")))?;
+                .map_err(|e| DriveError::Transient(format!("cannot reach OneDrive: {}", e.without_url())))?;
             match response.status() {
                 StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
                     throttled += 1;
@@ -465,7 +485,7 @@ impl DriveClient {
         let stream = response
             .bytes_stream()
             .inspect_ok(move |chunk| pool.moved(Direction::Down, chunk.len() as u64))
-            .map_err(std::io::Error::other);
+            .map_err(|e| std::io::Error::other(e.without_url()));
         Box::new(tokio_util::io::StreamReader::new(Box::pin(stream)))
     }
 
@@ -519,7 +539,7 @@ impl DriveClient {
     fn same_host(&self, link: &str) -> Result<Url, DriveError> {
         let url = Url::parse(link).map_err(|e| DriveError::Failed(format!("a link from Graph cannot be parsed: {e}")))?;
         if url.scheme() != self.base.scheme() || url.host_str() != self.base.host_str() || url.port_or_known_default() != self.base.port_or_known_default() {
-            return Err(DriveError::Failed(format!("refusing to follow a link to another host: {link}")));
+            return Err(DriveError::Failed(format!("refusing to follow a link to another host: {}", url.host_str().unwrap_or("none"))));
         }
         Ok(url)
     }
@@ -803,7 +823,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_bytes(b"jpeg-bytes".to_vec()))
             .mount(&cdn).await;
         let bytes = client(&server).thumbnail("P", "c512x512").await.unwrap();
-        assert_eq!(bytes, Some(b"jpeg-bytes".to_vec()));
+        assert_eq!(bytes, Thumbnail::Image(b"jpeg-bytes".to_vec()));
         let received = cdn.received_requests().await.unwrap();
         assert_eq!(received.len(), 1);
         assert!(received[0].headers.get("authorization").is_none(), "the token must not reach the CDN");
@@ -819,7 +839,52 @@ mod tests {
         Mock::given(method("GET")).and(path("/me/drive/items/P/thumbnails/0/c512x512/content"))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(oversized))
             .mount(&server).await;
-        assert!(client(&server).thumbnail("P", "c512x512").await.unwrap().is_none());
+        assert_eq!(client(&server).thumbnail("P", "c512x512").await.unwrap(), Thumbnail::None);
+    }
+
+    /// A pre-authenticated URL on a listener that takes each connection
+    /// and drops it at once: a network error, with a secret in the query.
+    async fn dropping_url() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/blob?tempauth=SECRET", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        url
+    }
+
+    fn assert_no_url(message: &str, url: &str) {
+        let host = Url::parse(url).unwrap().host_str().unwrap().to_owned();
+        for part in ["tempauth", "SECRET", "/blob", host.as_str()] {
+            assert!(!message.contains(part), "{part:?} in {message:?}");
+        }
+    }
+
+    /// Issue #80: a network error on the thumbnail's redirect names no URL,
+    /// so a pre-authenticated one never reaches the journal.
+    #[tokio::test]
+    async fn a_network_error_on_a_thumbnail_redirect_carries_no_url() {
+        let server = MockServer::start().await;
+        let url = dropping_url().await;
+        Mock::given(method("GET")).and(path("/me/drive/items/P/thumbnails/0/c512x512/content"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", url.as_str()))
+            .mount(&server).await;
+        let err = client(&server).thumbnail("P", "c512x512").await.unwrap_err();
+        assert!(matches!(err, DriveError::Transient(_)), "{err:?}");
+        assert_no_url(&err.to_string(), &url);
+        assert_no_url(&format!("{err:?}"), &url);
+    }
+
+    /// Issue #80: the same for a download's pre-authenticated URL.
+    #[tokio::test]
+    async fn a_network_error_on_a_download_carries_no_url() {
+        let server = MockServer::start().await;
+        let url = dropping_url().await;
+        let Err(err) = client(&server).download(&url, 0, None).await else { panic!("a dropped connection downloaded") };
+        assert!(matches!(err, DriveError::Transient(_)), "{err:?}");
+        assert_no_url(&err.to_string(), &url);
     }
 
     #[tokio::test]

@@ -511,9 +511,16 @@ file. Listing a folder opens nothing.
 - `thumb_key` in the tree store records the cTag, path and time a thumbnail was made for, so a file
   is fetched again only when its content, name or time changes (a rename needs a new cache entry,
   because the cache is keyed by URI and checked against the time);
-- a missing thumbnail, a body over 8 MiB, an image over 4096 × 4096 px or 64 MiB of decoder
-  memory, or a thumbnail that cannot be written into the cache here is recorded like a 404 and not
-  asked for again until the file changes.
+- every answer that settles whether the item has a usable thumbnail is recorded in `thumb_key`, and
+  the item is not asked for again until the file changes: a thumbnail written; a 404; any other 4xx
+  but `401`, `408` and `429`; a body over 8 MiB; an image over 4096 × 4096 px or 64 MiB of decoder
+  memory; a thumbnail that cannot be written into the cache here. A final refusal is logged once,
+  at `info`, with its status;
+- only a passing trouble is tried again at the next drain: no answer, `401` (a sign-in trouble, not
+  the item's), `408`, `429` (after the pool's throttle wait) and 5xx (issue #80);
+- Graph refuses `c512x512` for some items with `406`: the item is then asked once for Graph's
+  named size `large` (up to 800 px), scaled down the same way, and that answer is final under the
+  same rules. An item refused at both sizes has no thumbnail from the cloud (limitations log K27).
 
 `xx-large` (1024 px) is **not** filled: it would be a second request per image at roughly four
 times the bytes, for a size Dolphin asks for only at maximum zoom on a HiDPI screen, and upscaling
