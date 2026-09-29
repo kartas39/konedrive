@@ -2243,6 +2243,22 @@ application must never read zeros where real content should be.
   (`tree::tests::a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree`,
   `a_delta_laid_over_items_removes_and_changes_what_it_says`, `bench::a_delta_cycle_changing_*`,
   `bench::an_idle_read_write_cycle`). Open.
+- **F166. Thumbnails are picked a page at a time, and each is looked at once per drain**
+  (`tree.rs`, `thumbnail_candidates`; `sync/thumbs.rs`, `drain`; issue #39) — the candidates are
+  placed images and videos whose `thumb_key` is missing or not the cTag, path and time they have
+  now, worked out in SQL: the key is written by `thumb_key` in Rust and compared in SQL, so the two
+  must build the same string (`<cTag>|<path>|<mtime>`; a test makes a thumbnail and expects no
+  second request). They are read in id order, 500 ids a query (`THUMB_PAGE`) and at most 5 000
+  ids in one store call (`THUMB_SCAN`), both guesses; each batch of 200 goes on from the last id
+  it took. Costs: (1) a drain looks at each candidate once: one Graph failed for this time (a
+  network error, a `5xx`) waits for the next drain — the next cycle's kick, or ten minutes; (2) a
+  thumbnail that cannot be written into the cache here (a full disk, a cache that is not a
+  directory) is recorded like a 404 and not asked for again until the file changes — before, it
+  was not recorded, and a batch of 200 such failures kept the drain asking for the same 200 in a
+  loop; (3) with every thumbnail made, a drain still reads every candidate's page and path once
+  (about 16 ms per 5 000 at 20 000 images, `bench::a_thumbnail_batch`). LIMIT (chosen) · measured
+  (`sync::thumbs::tests::batches_go_on_where_the_last_stopped`,
+  `a_batch_of_local_failures_ends_the_drain`). Open.
 ---
 
 ## 5. Provisional numbers
@@ -2275,6 +2291,7 @@ application must never read zeros where real content should be.
 | Hydration requests taken off the helper's queue at once (`FILL_ADMISSION`) | 64, the helper's credit; each then waits for its account's pool | pinned by a test |
 | Window's transfer charts | the last 2 min, one sample a second | **guess** |
 | Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |
+| Thumbnail candidates looked at per query / per store call (`THUMB_PAGE`, `THUMB_SCAN`) | 500 / 5 000 | **guess** (`crates/konedrived/src/tree.rs`, issue #39) |
 | Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
 | Shortest time between two `LocalBytes` walks | 5 s | **guess** |
 | Shortest time between two coalesced `PropertiesChanged` (counters, status, `Transfers`) | 250 ms, at most 4 signals a second | the design's four a second |

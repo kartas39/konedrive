@@ -43,6 +43,11 @@ pub const SCHEMA_VERSION: &str = "3";
 /// How many activity events the store keeps: the oldest go.
 pub const ACTIVITY_KEPT: usize = 200;
 
+/// Thumbnail candidates looked at by one query, and in one call
+/// ([`TreeStore::thumbnail_candidates`]; guesses, issue #39).
+pub const THUMB_PAGE: usize = 500;
+pub const THUMB_SCAN: usize = 5000;
+
 /// A chain of parents longer than this is a cycle or corruption, not a drive.
 const MAX_CHAIN: usize = konedrive_fs::MAX_DEPTH + 2;
 
@@ -133,12 +138,19 @@ fn below_sql(source: Source) -> String {
 /// (below the root) is placed, and whether it is itself. An item whose
 /// chain does not reach the root is left out. One query for the lot.
 fn chains_sql(source: Source, start: &str) -> String {
+    chains_then(source, start, "SELECT start, path, above, own FROM chain WHERE parent_id = ?1")
+}
+
+/// [`chains_sql`] with a query of its own over `chain(start, parent_id,
+/// path, above, own)`: a row whose `parent_id` is the root (`?1`) has its
+/// whole path.
+fn chains_then(source: Source, start: &str, then: &str) -> String {
     format!(
         "WITH RECURSIVE chain(start, parent_id, path, above, own, depth) AS (
              SELECT id, parent_id, name, 1, placement = 'placed', 0 FROM ({start}) WHERE id != ?1
              UNION ALL
              {step})
-         SELECT start, path, above, own FROM chain WHERE parent_id = ?1",
+         {then}",
         step = source.step(
             "c.start, p.parent_id, p.name || '/' || c.path, c.above AND p.placement = 'placed', c.own, c.depth + 1",
             "chain",
@@ -957,28 +969,57 @@ impl TreeStore {
     }
 
     /// Placed images and videos whose cached thumbnail was not made for what
-    /// they are now (`key`, see `sync::thumbs::thumb_key`), with their paths.
-    pub fn thumbnail_candidates(&self, limit: usize, key: impl Fn(&Row, &Path) -> String) -> Result<Vec<(Row, PathBuf)>, TreeError> {
-        let sql = format!(
-            "SELECT {ROW_COLUMNS}, thumb_key FROM items
+    /// they are now (`thumb_key`, which `sync::thumbs::thumb_key` writes: the
+    /// cTag, the path and the time), with their paths: up to `limit` of them,
+    /// looking at the candidates after id `after` in id order (issue #39),
+    /// [`THUMB_PAGE`] at a time and at most [`THUMB_SCAN`] in one call. Each
+    /// page is filtered and its paths found in one query. Also the id to go
+    /// on from, `None` once the last candidate has been looked at.
+    pub fn thumbnail_candidates(&self, after: &str, limit: usize) -> Result<(Vec<(Row, PathBuf)>, Option<String>), TreeError> {
+        if limit == 0 {
+            return Ok((Vec::new(), Some(after.to_owned())));
+        }
+        const PAGE: &str = "SELECT id, parent_id, name, placement FROM items
               WHERE kind = 'file' AND placement = 'placed' AND ctag IS NOT NULL
-                AND (mime LIKE 'image/%' OR mime LIKE 'video/%')"
+                AND (mime LIKE 'image/%' OR mime LIKE 'video/%') AND id > ?2
+              ORDER BY id LIMIT ?3";
+        let Some(root) = self.root_item_id()? else { return Ok((Vec::new(), None)) };
+        let wanted = format!(
+            "SELECT {}, c.path FROM chain c JOIN items i ON i.id = c.start
+              WHERE c.parent_id = ?1 AND c.above AND c.own
+                AND (i.thumb_key IS NULL OR i.thumb_key != i.ctag || '|' || c.path || '|' || i.mtime)
+              ORDER BY i.id",
+            ROW_COLUMNS.split(", ").map(|c| format!("i.{c}")).collect::<Vec<_>>().join(", ")
         );
-        let mut statement = self.conn.prepare(&sql)?;
-        let rows: Vec<(Row, Option<String>)> = statement
-            .query_map([], |r| Ok((row_from(r)?, r.get(11)?)))?
-            .collect::<Result<_, _>>()?;
+        let sql = chains_then(Source::Items, PAGE, &wanted);
         let mut out = Vec::new();
-        for (row, made_for) in rows {
-            let Some(located) = self.locate(Table::Items, &row.id)?.filter(|l| l.placed) else { continue };
-            if made_for.as_deref() != Some(key(&row, &located.rel).as_str()) {
-                out.push((row, located.rel));
+        let mut from = after.to_owned();
+        let mut scanned = 0;
+        loop {
+            let (last, n): (Option<String>, usize) = self.conn.prepare_cached(&format!("SELECT max(id), count(*) FROM ({PAGE})"))?.query_row(
+                params![root, from, THUMB_PAGE as i64],
+                |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)),
+            )?;
+            let Some(last) = last else { return Ok((out, None)) };
+            let mut statement = self.conn.prepare_cached(&sql)?;
+            let found = statement.query_map(params![root, from, THUMB_PAGE as i64], |r| Ok((row_from(r)?, PathBuf::from(r.get::<_, String>(11)?))))?;
+            for candidate in found {
+                out.push(candidate?);
                 if out.len() == limit {
-                    break;
+                    // The next call looks at the rest of the page again.
+                    let taken = out[limit - 1].0.id.clone();
+                    return Ok((out, Some(taken)));
                 }
             }
+            scanned += n;
+            if n < THUMB_PAGE {
+                return Ok((out, None));
+            }
+            from = last;
+            if scanned >= THUMB_SCAN {
+                return Ok((out, Some(from)));
+            }
         }
-        Ok(out)
     }
 
     /// Runs `sql` as it is: the bench seeds a large store fast.

@@ -440,14 +440,20 @@ file. Listing a folder opens nothing.
 - for each placed image or video (by the item's MIME type) with no current thumbnail, it asks Graph
   for one thumbnail, `c512x512`, and writes it to `x-large` as it is and scaled down to `large`
   and `normal`, each tagged with the file's URI and the placeholder's time;
-- it runs after each listing cycle and every 10 minutes regardless, up to 200 items per run, one
-  each request in a background slot of the account's transfer pool ([hydration.md](hydration.md)
-  §6.4), like any background download;
+- it runs after each listing cycle and every 10 minutes regardless, draining in batches of up to
+  200 items, each request in a background slot of the account's transfer pool
+  ([hydration.md](hydration.md) §6.4), like any background download. The store picks the
+  candidates in SQL — placed images and videos whose `thumb_key` is missing or not the one for what
+  they are now — in item id order, 500 ids a query with each page's paths found in one recursive
+  query, at most 5 000 ids a call; each batch goes on from where the last one stopped, and a drain
+  ends once every candidate has been looked at, so the next drain starts from the beginning again
+  (issue #39, limitations log F166);
 - `thumb_key` in the tree store records the cTag, path and time a thumbnail was made for, so a file
   is fetched again only when its content, name or time changes (a rename needs a new cache entry,
   because the cache is keyed by URI and checked against the time);
-- a missing thumbnail, a body over 8 MiB, or an image over 4096 × 4096 px or 64 MiB of decoder
-  memory is recorded like a 404 and never asked for again.
+- a missing thumbnail, a body over 8 MiB, an image over 4096 × 4096 px or 64 MiB of decoder
+  memory, or a thumbnail that cannot be written into the cache here is recorded like a 404 and not
+  asked for again until the file changes.
 
 `xx-large` (1024 px) is **not** filled: it would be a second request per image at roughly four
 times the bytes, for a size Dolphin asks for only at maximum zoom on a HiDPI screen, and upscaling

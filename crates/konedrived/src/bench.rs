@@ -611,11 +611,18 @@ fn a_thumbnail_batch() {
             )
         })
         .unwrap();
-    let (batch, took) =
-        timed("one thumbnail batch of 200, 10 000 of 20 000 made", || store.call_blocking(|s| s.thumbnail_candidates(200, crate::sync::thumbs::thumb_key)).unwrap());
+    // A drain half-way: its next batch goes on from where the last stopped.
+    let ((batch, next), took) = timed("one thumbnail batch of 200, 10 000 of 20 000 made, going on", || {
+        store.call_blocking(|s| s.thumbnail_candidates("F49-999", 200)).unwrap()
+    });
     assert_eq!(batch.len(), 200);
+    assert!(next.is_some());
     assert!(batch.iter().all(|(row, _)| row.id.as_str() >= "F50"), "those made are not made again");
-    within("a thumbnail batch", took, Duration::from_millis(100));
+    // A new drain starts from the beginning: one call looks at so many.
+    let ((batch, next), from_start) =
+        timed("one thumbnail batch, 10 000 of 20 000 made, from the start", || store.call_blocking(|s| s.thumbnail_candidates("", 200)).unwrap());
+    assert!(batch.is_empty() && next.is_some(), "those made are passed over, a call at a time");
+    within("a thumbnail batch", took.max(from_start), Duration::from_millis(100));
 }
 
 /// `Skipped()` with 5 000 skipped files among 100 000 items.
