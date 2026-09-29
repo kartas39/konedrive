@@ -178,7 +178,7 @@ impl DriveClient {
             let response = request(&token)
                 .send()
                 .await
-                .map_err(|e| WriteError::Transient(format!("cannot reach Microsoft Graph: {e}")))?;
+                .map_err(|e| WriteError::Transient(format!("cannot reach Microsoft Graph: {}", e.without_url())))?;
             if response.status() == StatusCode::UNAUTHORIZED && !renewed {
                 renewed = true;
                 self.tokens.invalidate().await;
@@ -211,7 +211,7 @@ pub(super) async fn item_from(response: reqwest::Response) -> Result<DriveItem, 
     response
         .json()
         .await
-        .map_err(|e| WriteError::Transient(format!("an unreadable answer from Graph: {e}")))
+        .map_err(|e| WriteError::Transient(format!("an unreadable answer from Graph: {}", e.without_url())))
 }
 
 #[derive(Deserialize)]

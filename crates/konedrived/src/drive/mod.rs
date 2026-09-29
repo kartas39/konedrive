@@ -387,7 +387,7 @@ impl DriveClient {
         }
         let mut stream = response.bytes_stream();
         let mut buf = Vec::new();
-        while let Some(chunk) = stream.try_next().await.map_err(|e| DriveError::Transient(e.to_string()))? {
+        while let Some(chunk) = stream.try_next().await.map_err(|e| DriveError::Transient(e.without_url().to_string()))? {
             self.pool.moved(Direction::Down, chunk.len() as u64);
             buf.extend_from_slice(&chunk);
             if buf.len() as u64 > MAX_THUMBNAIL_BYTES {
@@ -403,7 +403,7 @@ impl DriveClient {
             status if status.is_success() => response
                 .json()
                 .await
-                .map_err(|e| DriveError::Transient(format!("an unreadable answer from Graph: {e}"))),
+                .map_err(|e| DriveError::Transient(format!("an unreadable answer from Graph: {}", e.without_url()))),
             StatusCode::NOT_FOUND => Err(DriveError::NotFound),
             StatusCode::GONE => Err(resync(response).await),
             status if status.is_server_error() => Err(DriveError::Transient(format!("Graph returned {status}"))),
@@ -422,7 +422,7 @@ impl DriveClient {
             let response = request(&token)
                 .send()
                 .await
-                .map_err(|e| DriveError::Transient(format!("cannot reach Microsoft Graph: {e}")))?;
+                .map_err(|e| DriveError::Transient(format!("cannot reach Microsoft Graph: {}", e.without_url())))?;
             match response.status() {
                 StatusCode::UNAUTHORIZED if !renewed => {
                     renewed = true;
@@ -455,7 +455,7 @@ impl DriveClient {
             let response = request()
                 .send()
                 .await
-                .map_err(|e| DriveError::Transient(format!("cannot reach OneDrive: {e}")))?;
+                .map_err(|e| DriveError::Transient(format!("cannot reach OneDrive: {}", e.without_url())))?;
             match response.status() {
                 StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => {
                     throttled += 1;
@@ -485,7 +485,7 @@ impl DriveClient {
         let stream = response
             .bytes_stream()
             .inspect_ok(move |chunk| pool.moved(Direction::Down, chunk.len() as u64))
-            .map_err(std::io::Error::other);
+            .map_err(|e| std::io::Error::other(e.without_url()));
         Box::new(tokio_util::io::StreamReader::new(Box::pin(stream)))
     }
 
@@ -539,7 +539,7 @@ impl DriveClient {
     fn same_host(&self, link: &str) -> Result<Url, DriveError> {
         let url = Url::parse(link).map_err(|e| DriveError::Failed(format!("a link from Graph cannot be parsed: {e}")))?;
         if url.scheme() != self.base.scheme() || url.host_str() != self.base.host_str() || url.port_or_known_default() != self.base.port_or_known_default() {
-            return Err(DriveError::Failed(format!("refusing to follow a link to another host: {link}")));
+            return Err(DriveError::Failed(format!("refusing to follow a link to another host: {}", url.host_str().unwrap_or("none"))));
         }
         Ok(url)
     }
@@ -840,6 +840,51 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_bytes(oversized))
             .mount(&server).await;
         assert_eq!(client(&server).thumbnail("P", "c512x512").await.unwrap(), Thumbnail::None);
+    }
+
+    /// A pre-authenticated URL on a listener that takes each connection
+    /// and drops it at once: a network error, with a secret in the query.
+    async fn dropping_url() -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/blob?tempauth=SECRET", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((socket, _)) = listener.accept().await {
+                drop(socket);
+            }
+        });
+        url
+    }
+
+    fn assert_no_url(message: &str, url: &str) {
+        let host = Url::parse(url).unwrap().host_str().unwrap().to_owned();
+        for part in ["tempauth", "SECRET", "/blob", host.as_str()] {
+            assert!(!message.contains(part), "{part:?} in {message:?}");
+        }
+    }
+
+    /// Issue #80: a network error on the thumbnail's redirect names no URL,
+    /// so a pre-authenticated one never reaches the journal.
+    #[tokio::test]
+    async fn a_network_error_on_a_thumbnail_redirect_carries_no_url() {
+        let server = MockServer::start().await;
+        let url = dropping_url().await;
+        Mock::given(method("GET")).and(path("/me/drive/items/P/thumbnails/0/c512x512/content"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", url.as_str()))
+            .mount(&server).await;
+        let err = client(&server).thumbnail("P", "c512x512").await.unwrap_err();
+        assert!(matches!(err, DriveError::Transient(_)), "{err:?}");
+        assert_no_url(&err.to_string(), &url);
+        assert_no_url(&format!("{err:?}"), &url);
+    }
+
+    /// Issue #80: the same for a download's pre-authenticated URL.
+    #[tokio::test]
+    async fn a_network_error_on_a_download_carries_no_url() {
+        let server = MockServer::start().await;
+        let url = dropping_url().await;
+        let Err(err) = client(&server).download(&url, 0, None).await else { panic!("a dropped connection downloaded") };
+        assert!(matches!(err, DriveError::Transient(_)), "{err:?}");
+        assert_no_url(&err.to_string(), &url);
     }
 
     #[tokio::test]

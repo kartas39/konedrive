@@ -171,7 +171,10 @@ change files (`Dev1.ReadWriteAccessToken`) is handed out only for a test account
 `write_test_drive_ids`, the write phase's development gate (F60). Removing an account deletes its
 refresh token. An upload session's URL, which lets anyone holding it write that one file until it
 expires, is kept only in the account's tree store (mode `0600`), never logged and never published
-over D-Bus, and the account's token is never sent to it.
+over D-Bus, and the account's token is never sent to it. No token and no URL reaches a log or an
+error message: every request error the daemon turns into text leaves its URL out, so a
+pre-authenticated download or thumbnail link (whose query lets anyone holding it read that file
+until it expires) and a redirect's `Location` never reach the journal.
 
 ## Reporting a vulnerability
 

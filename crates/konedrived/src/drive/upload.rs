@@ -172,7 +172,7 @@ impl DriveClient {
         let session: SessionBody = response
             .json()
             .await
-            .map_err(|e| WriteError::Transient(format!("an unreadable upload session from Graph: {e}")))?;
+            .map_err(|e| WriteError::Transient(format!("an unreadable upload session from Graph: {}", e.without_url())))?;
         Ok(UploadSession {
             url: session.upload_url,
             expires: session.expiration_date_time.as_deref().and_then(parse_graph_time),

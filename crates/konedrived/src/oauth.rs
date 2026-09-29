@@ -203,13 +203,13 @@ impl OAuthClient {
             .form(form)
             .send()
             .await
-            .map_err(|e| OAuthError::Transient(format!("cannot reach Microsoft: {e}")))?;
+            .map_err(|e| OAuthError::Transient(format!("cannot reach Microsoft: {}", e.without_url())))?;
         let status = response.status();
         if status.is_success() {
             return response
                 .json::<TokenResponse>()
                 .await
-                .map_err(|e| OAuthError::Transient(format!("unreadable token response: {e}")));
+                .map_err(|e| OAuthError::Transient(format!("unreadable token response: {}", e.without_url())));
         }
         if status.is_server_error() {
             return Err(OAuthError::Transient(format!("token endpoint returned {status}")));
@@ -217,7 +217,7 @@ impl OAuthClient {
         let body: ErrorBody = response
             .json()
             .await
-            .map_err(|e| OAuthError::Transient(format!("unreadable error response ({status}): {e}")))?;
+            .map_err(|e| OAuthError::Transient(format!("unreadable error response ({status}): {}", e.without_url())))?;
         if body.error == "invalid_grant" {
             Err(OAuthError::InvalidGrant(body.error_description))
         } else {
