@@ -33,10 +33,15 @@ pub async fn start_daemon(bus: &TestBus, dir: &Path) -> konedrived::accounts::Da
 }
 
 /// The `konedrivectl` binary on the bus at `bus_addr`, as a user's shell runs it, with
-/// `env` added — and never the `KONEDRIVE_ACCOUNT` of the shell running the tests.
+/// `env` added — and never the `KONEDRIVE_ACCOUNT` of the shell running the tests. It never
+/// opens a browser (`KONEDRIVE_NO_BROWSER`, issue #21).
 pub fn run_env(bus_addr: &str, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_konedrivectl"));
-    command.args(args).env("DBUS_SESSION_BUS_ADDRESS", bus_addr).env_remove(konedrivectl::ACCOUNT_VARIABLE);
+    command
+        .args(args)
+        .env("DBUS_SESSION_BUS_ADDRESS", bus_addr)
+        .env_remove(konedrivectl::ACCOUNT_VARIABLE)
+        .env(konedrivectl::NO_BROWSER_VARIABLE, "1");
     for (name, value) in env {
         command.env(name, value);
     }

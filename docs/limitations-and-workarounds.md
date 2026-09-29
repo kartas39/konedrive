@@ -2596,6 +2596,17 @@ application must never read zeros where real content should be.
 - **D19.** The window's `accountsmodeltest::theChoiceIsRemembered` failed once in a full `ctest`
   run of the app (with `HOME` and the XDG directories in a temporary directory) and passed alone and
   on the next run; nothing it touches changed in #39. Seen once; not chased.
+- **D20. A failed upload's reason is one of four coarse keys** (#87). A step that fails with an
+  error no step settles stores `network`, `local-error`, `index-error` or `upload-error`
+  (`sync/upload/engine.rs` `outcome_of`), never the error's own text. The window and `konedrivectl`
+  show only that key's sentence; the detail is in the journal alone, in one `warn` line per row and
+  key (the file's path, the key, the error with any `http(s)://` address cut to `<url>`). Rows
+  stored before this change keep their old raw text until their next try, and are shown as waiting
+  meanwhile.
+- **D21. `konedrivectl` opens no browser when stdout is not a terminal** (#21). `login` and
+  `account mode read-write` open the sign-in page only when stdout is a terminal and
+  `KONEDRIVE_NO_BROWSER` is unset or empty, so tests never open one; `konedrivectl login | tee log`
+  opens none either. The address is printed every time, to be opened by hand.
 
 ---
 

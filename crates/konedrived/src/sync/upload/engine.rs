@@ -66,7 +66,9 @@ pub(super) enum Outcome {
     /// transaction: nothing more to write.
     Done,
     /// Back in line.
-    Again { state: OutboxState, reason: Option<String>, next_try: Option<i64>, backoff: bool },
+    /// `detail` is a failure's own text, for the journal only (issue #87):
+    /// never the row's reason.
+    Again { state: OutboxState, reason: Option<String>, next_try: Option<i64>, backoff: bool, detail: Option<String> },
     /// OneDrive asked the whole account to wait (§4.10).
     Throttled(Option<Duration>),
     SignedOut,
@@ -86,25 +88,32 @@ impl Outcome {
     /// Ready again at once: the row was rewritten (a fresh guard, a
     /// temporary name, a copy) and runs as it now is.
     pub fn again() -> Self {
-        Outcome::Again { state: OutboxState::Ready, reason: None, next_try: None, backoff: false }
+        Outcome::Again { state: OutboxState::Ready, reason: None, next_try: None, backoff: false, detail: None }
     }
 
     /// Waiting (not quiet): looked at again after `after`.
     pub fn wait(reason: &str, after: Duration) -> Self {
-        Outcome::Again { state: OutboxState::Waiting, reason: Some(reason.into()), next_try: Some(now() + after.as_secs() as i64), backoff: false }
+        Outcome::Again { state: OutboxState::Waiting, reason: Some(reason.into()), next_try: Some(now() + after.as_secs() as i64), backoff: false, detail: None }
     }
 
     pub fn later(reason: &str, after: Duration) -> Self {
-        Outcome::Again { state: OutboxState::Retry, reason: Some(reason.into()), next_try: Some(now() + after.as_secs() as i64), backoff: false }
+        Outcome::Again { state: OutboxState::Retry, reason: Some(reason.into()), next_try: Some(now() + after.as_secs() as i64), backoff: false, detail: None }
     }
 
     /// In backoff: 1 s doubling to an hour with each attempt.
     pub fn backoff(reason: impl Into<String>) -> Self {
-        Outcome::Again { state: OutboxState::Retry, reason: Some(reason.into()), next_try: None, backoff: true }
+        Outcome::Again { state: OutboxState::Retry, reason: Some(reason.into()), next_try: None, backoff: true, detail: None }
+    }
+
+    /// In backoff for a failure: `key` is one of the reason keys for a
+    /// failure ([`reason::NETWORK`] and the others), `detail` the error's
+    /// own text, which only the journal gets (issue #87).
+    pub fn failed(key: &str, detail: impl ToString) -> Self {
+        Outcome::Again { state: OutboxState::Retry, reason: Some(key.into()), next_try: None, backoff: true, detail: Some(detail.to_string()) }
     }
 
     pub fn blocked(reason: impl Into<String>) -> Self {
-        Outcome::Again { state: OutboxState::Blocked, reason: Some(reason.into()), next_try: None, backoff: false }
+        Outcome::Again { state: OutboxState::Blocked, reason: Some(reason.into()), next_try: None, backoff: false, detail: None }
     }
 }
 
@@ -157,8 +166,8 @@ pub(super) fn outcome_of(fail: Fail) -> Outcome {
     match fail {
         Fail::Now(outcome) => outcome,
         Fail::Crashed => Outcome::Crashed,
-        Fail::Store(e) => Outcome::backoff(e.to_string()),
-        Fail::Io(e) => Outcome::backoff(e.to_string()),
+        Fail::Store(e) => Outcome::failed(reason::STORE, e),
+        Fail::Io(e) => Outcome::failed(reason::LOCAL_IO, e),
         Fail::Write(e) => match e {
             WriteError::QuotaExceeded => Outcome::NoSpace,
             WriteError::Throttled { retry_after } => Outcome::Throttled(retry_after),
@@ -166,9 +175,26 @@ pub(super) fn outcome_of(fail: Fail) -> Outcome {
             WriteError::Forbidden => Outcome::Forbidden,
             WriteError::SignedOut => Outcome::SignedOut,
             WriteError::Refused(message) => Outcome::blocked(format!("{}: {message}", reason::REFUSED)),
-            other => Outcome::backoff(other.to_string()),
+            e @ WriteError::Transient(_) => Outcome::failed(reason::NETWORK, e),
+            // `Failed`, and a `412`, `409`, `404` or ended session no step settled.
+            other => Outcome::failed(reason::FAILED, other),
         },
     }
+}
+
+/// `text` with every `http://…` and `https://…` cut out, up to the next
+/// whitespace: the journal gets no address (issue #87).
+pub(super) fn without_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = [rest.find("http://"), rest.find("https://")].into_iter().flatten().min() {
+        out.push_str(&rest[..at]);
+        out.push_str("<url>");
+        rest = &rest[at..];
+        rest = &rest[rest.find(char::is_whitespace).unwrap_or(rest.len())..];
+    }
+    out.push_str(rest);
+    out
 }
 
 struct InFlight {
@@ -862,7 +888,7 @@ impl Engine {
                         if let Some(seq) = tasks.remove(&e.id()) {
                             // Replayed later, in backoff, never at once.
                             tracing::error!("outbox row {seq} failed: {e}; it is tried again later");
-                            self.settle_blocking(seq, Outcome::backoff("the step failed")).await;
+                            self.settle_blocking(seq, Outcome::backoff(reason::FAILED)).await;
                         }
                     }
                     None => {}
@@ -912,7 +938,7 @@ impl Engine {
                 self.shared().throttle_step = THROTTLE_FIRST;
                 Ok(())
             }
-            Outcome::Again { state, reason, next_try, backoff } => (|| {
+            Outcome::Again { state, reason, next_try, backoff, detail } => (|| {
                 let (mut state, mut reason, mut next_try) = (state, reason, next_try);
                 if backoff {
                     next_try = Some(now + backoff_after(store.call_blocking(move |s| s.outbox_count_attempt(seq))?));
@@ -928,6 +954,11 @@ impl Engine {
                 }
                 let written = reason.clone();
                 store.call_blocking(move |s| s.outbox_set_state(seq, state, written.as_deref(), next_try))?;
+                // Once per row and key, as the event: a long network drop
+                // writes one line, not one per retry.
+                if let Some(detail) = detail.filter(|_| reason != before) {
+                    tracing::warn!("{} is tried again later ({}): {}", rel.display(), reason.as_deref().unwrap_or_default(), without_urls(&detail));
+                }
                 if state == OutboxState::Blocked && reason != before {
                     self.activity(self.event(kind::UPLOAD_FAILED, &rel, reason.unwrap_or_default()));
                 }

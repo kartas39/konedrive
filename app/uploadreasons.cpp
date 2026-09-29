@@ -56,6 +56,18 @@ QString uploadReasonText(const QString &reason)
     if (reason == QLatin1String("locked")) {
         return i18n("Locked in OneDrive (open for co-authoring): tried again later.");
     }
+    if (reason == QLatin1String("network")) {
+        return i18n("OneDrive could not be reached: tried again later.");
+    }
+    if (reason == QLatin1String("local-error")) {
+        return i18n("The local file could not be read: tried again later.");
+    }
+    if (reason == QLatin1String("index-error")) {
+        return i18n("KOneDrive's local index failed: tried again later.");
+    }
+    if (reason == QLatin1String("upload-error")) {
+        return i18n("The upload failed: tried again later.");
+    }
     if (reason == QLatin1String("refused")) {
         return i18n("Refused by OneDrive.");
     }
