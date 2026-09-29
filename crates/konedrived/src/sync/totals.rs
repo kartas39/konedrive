@@ -15,7 +15,7 @@
 //!   left that way, or since the daemon started; 0 while nothing is left.
 //! - **Time left.** The bytes left over the pool's average speed (`pool::AVERAGE_SPAN`); none
 //!   while nothing has moved that way for `pool::STILL_AFTER` (the average is 0 then), while
-//!   OneDrive's `Retry-After` runs, and — for uploads — while syncing is paused.
+//!   OneDrive's `Retry-After` runs, and — for uploads — while syncing is paused or held back.
 //!
 //! [`run`] counts them into the published state at most once a
 //! [`PUBLISH_EVERY`](crate::pool::PUBLISH_EVERY), as the pool publishes its speeds.
@@ -68,7 +68,7 @@ impl Counter {
         let throttled = pool.retry_after > 0;
         QueueTotals {
             down: self.direction(0, down, pool.down_moved, pool.down_average, throttled),
-            up: self.direction(1, up, pool.up_moved, pool.up_average, throttled || s.paused_until.is_some()),
+            up: self.direction(1, up, pool.up_moved, pool.up_average, throttled || s.stopped()),
         }
     }
 

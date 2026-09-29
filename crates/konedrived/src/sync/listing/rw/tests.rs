@@ -181,6 +181,7 @@ impl World {
             locked: false,
             writes: None,
             neighbours: None,
+            running: Arc::default(),
         }
     }
 

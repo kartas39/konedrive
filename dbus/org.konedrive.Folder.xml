@@ -90,6 +90,32 @@
     <method name="SetIgnorePatterns">
       <arg name="patterns" type="as" direction="in"/>
     </method>
+    <!-- The account's sync settings (issues #57, #80): each is written to
+         the account's section of config.toml and taken at once, and each is
+         refused Unsupported for a folder not connected to OneDrive, as Pause
+         is. SetThumbnails: whether Graph's thumbnails of images and videos
+         are fetched (off, Dolphin downloads a cloud-only file in full to
+         show its preview while its previews are on); turned on again, the
+         items without one are asked for. -->
+    <method name="SetThumbnails">
+      <arg name="on" type="b" direction="in"/>
+    </method>
+    <!-- Whether the account holds back on a metered connection. -->
+    <method name="SetPauseOnMetered">
+      <arg name="on" type="b" direction="in"/>
+    </method>
+    <!-- What the account does on battery: "sync" (nothing), "power-saver"
+         (holds back while on battery in the power-saver profile) or "pause"
+         (holds back whenever on battery). Refused
+         org.freedesktop.DBus.Error.InvalidArgs for anything else. -->
+    <method name="SetOnBattery">
+      <arg name="choice" type="s" direction="in"/>
+    </method>
+    <!-- Lifts the automatic hold (HeldBack) now, until the network's Metered,
+         UPower's OnBattery or the power profile changes, or the account's
+         PauseOnMetered / OnBattery does. Not kept across a restart. Refused
+         Unsupported for a folder not connected to OneDrive. -->
+    <method name="SyncAnyway"/>
     <property name="Path" type="s" access="read"/>
     <!-- none | listing | ready | no-interception | error -->
     <property name="State" type="s" access="read"/>
@@ -123,5 +149,17 @@
     <!-- Unix seconds when the pause ends by itself; 0 while paused until
          Resume, and while not paused. -->
     <property name="PausedUntil" type="x" access="read"/>
+    <!-- See SetThumbnails, SetPauseOnMetered and SetOnBattery; true, true
+         and "power-saver" until they are called. -->
+    <!-- Why the account holds its background work back by itself: "metered"
+         (a metered connection and PauseOnMetered), "on-battery" (on battery
+         and OnBattery "pause"), "power-saver" (on battery in the power-saver
+         profile and OnBattery "power-saver"), or empty. It stops what Pause
+         stops, but is not the user's pause: Paused stays false, and it is
+         worked out again from the machine's state after a restart. -->
+    <property name="HeldBack" type="s" access="read"/>
+    <property name="Thumbnails" type="b" access="read"/>
+    <property name="PauseOnMetered" type="b" access="read"/>
+    <property name="OnBattery" type="s" access="read"/>
   </interface>
 </node>

@@ -2382,6 +2382,21 @@ application must never read zeros where real content should be.
   moments; (4) a metadata operation holds a slot in `PoolInUse` but is no file in either card.
   FRAGILE · measured by unit tests (`sync::activity::tests::large_files_are_the_large_downloads_but_opens_and_the_large_uploads`,
   `sync::source::parts::tests::a_download_in_parts_is_one_file_and_its_streams`) · open.
+- **F175. Without NetworkManager, UPower or power-profiles-daemon, no hold for that source**
+  (`sync/conditions.rs`; issue #57) — the automatic hold reads NetworkManager's `Metered`, UPower's
+  `OnBattery` and the power profile's `ActiveProfile` on the system bus. A source that is missing
+  or cannot be read counts as "no reason to hold back" (not metered, on mains, another profile),
+  logged once at `info`: on a machine without NetworkManager an account never holds back on a
+  metered connection, and without UPower never for the battery. A source that starts after the
+  daemon is not read until its first `PropertiesChanged`; the daemon's next start reads it. The
+  older `net.hadess.PowerProfiles` name is chosen only when it is present at the daemon's start
+  and the newer one is not. FRAGILE · measured with fakes on a private bus
+  (`sync::conditions::tests::*`) · open.
+- **F176. NetworkManager's guess of a metered connection is trusted as it is**
+  (`sync/conditions.rs`; issue #57) — `Metered` = 3 ("guessed yes", as NetworkManager guesses
+  for a phone's hotspot it recognises) holds the account back like 1 ("yes"), and 4 ("guessed
+  no") does not: a capped connection NetworkManager does not recognise is not metered for
+  konedrive until the user marks it so in the connection's settings. Reasoned · open.
 ---
 
 ## 5. Provisional numbers

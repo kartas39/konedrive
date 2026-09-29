@@ -24,6 +24,7 @@ use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::root::SyncRoot;
+use super::running::Running;
 use crate::drive::{DriveClient, Thumbnail};
 use crate::tree::{Row, Store};
 
@@ -71,6 +72,9 @@ pub struct ThumbnailFiller {
     store: Store,
     root: SyncRoot,
     cache: PathBuf,
+    /// Whether thumbnails are asked for now: the account's setting, and its pause
+    /// (`sync::running`).
+    running: Arc<Running>,
 }
 
 /// What one `run_once` did: `taken` is how many candidates it
@@ -96,8 +100,8 @@ enum FillError {
 }
 
 impl ThumbnailFiller {
-    pub fn new(drive: DriveClient, store: Store, root: SyncRoot, cache: PathBuf) -> Self {
-        Self { drive, store, root, cache }
+    pub fn new(drive: DriveClient, store: Store, root: SyncRoot, cache: PathBuf, running: Arc<Running>) -> Self {
+        Self { drive, store, root, cache, running }
     }
 
     /// Makes up to `limit` missing thumbnails, each request in a background slot of the
@@ -121,6 +125,11 @@ impl ThumbnailFiller {
         let mut running = tokio::task::JoinSet::new();
         let mut written = 0;
         for (row, rel) in candidates {
+            // Turned off or paused meanwhile: no more requests; what was not asked waits
+            // for the next drain.
+            if !self.running.thumbnails_go(&self.store) {
+                break;
+            }
             // The wait for a slot, and the request — which can wait out Graph's
             // `Retry-After`, up to 300 s, four times — give way to a stop: a
             // Forget, or a switch to interception under the lifecycle lock,
@@ -159,7 +168,7 @@ impl ThumbnailFiller {
             let (outcome, next) = self.run_from(cancel, limit, from).await;
             total.taken += outcome.taken;
             total.written += outcome.written;
-            if cancel.is_cancelled() {
+            if cancel.is_cancelled() || !self.running.thumbnails_go(&self.store) {
                 break;
             }
             after = next;
@@ -167,22 +176,21 @@ impl ThumbnailFiller {
         total
     }
 
-    /// Runs in the background: after every cycle (`kick`), and every ten
-    /// minutes in case a kick was missed, draining 200 thumbnails at a time
-    /// until every candidate has been looked at.
+    /// Runs in the background: after every cycle (`kick`), when thumbnails are
+    /// turned on again, and every ten minutes in case a kick was missed, draining
+    /// 200 thumbnails at a time until every candidate has been looked at.
     pub fn spawn(self, kick: Arc<Notify>, cancel: CancellationToken) -> tokio::task::JoinHandle<()> {
         tokio::spawn(async move {
             loop {
                 tokio::select! {
                     () = kick.notified() => {}
+                    () = self.running.thumbnails_turned_on() => {}
                     () = tokio::time::sleep(Duration::from_secs(600)) => {}
                     () = cancel.cancelled() => return,
                 }
-                // Paused (`docs/design/writes.md` §11): no thumbnails either; the next kick
-                // after the pause ends drains what waits.
-                let store = self.store.clone();
-                let paused = crate::sync::upload::paused(&store).is_some();
-                if paused {
+                // Turned off, or paused (`docs/design/writes.md` §11): no request; the
+                // next kick after the pause ends, or turning them on, drains what waits.
+                if !self.running.thumbnails_go(&self.store) {
                     continue;
                 }
                 self.drain(&cancel, 200).await;
@@ -409,7 +417,7 @@ mod tests {
             let retry = crate::drive::RetryPolicy { attempts: 2, default_wait: Duration::from_millis(10), max_wait: Duration::from_millis(50) };
             let drive = crate::drive::DriveClient::new(Url::parse(&format!("{}/", self.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap().with_retry(retry);
             let root = SyncRoot { path: self.folder.path().canonicalize().unwrap(), root_id: "r".into() };
-            ThumbnailFiller::new(drive, self.store.clone(), root, self.cache.path().to_path_buf())
+            ThumbnailFiller::new(drive, self.store.clone(), root, self.cache.path().to_path_buf(), Arc::default())
         }
 
         fn cached(&self, dir: &str, file: &std::path::Path) -> std::path::PathBuf {
@@ -577,7 +585,7 @@ mod tests {
         std::fs::write(&cache, b"").unwrap();
         let drive = crate::drive::DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap();
         let root = SyncRoot { path: w.folder.path().canonicalize().unwrap(), root_id: "r".into() };
-        let filler = ThumbnailFiller::new(drive, w.store.clone(), root, cache);
+        let filler = ThumbnailFiller::new(drive, w.store.clone(), root, cache, Arc::default());
         let total = filler.drain(&CancellationToken::new(), 2).await;
         assert_eq!((total.taken, total.written), (3, 0));
         assert_eq!(filler.drain(&CancellationToken::new(), 2).await.taken, 0, "recorded: not asked for again");
@@ -741,5 +749,38 @@ mod tests {
         row.ctag = Some("c2".into());
         w.store.call(move |s| { s.begin_staging(true)?; s.stage(&[Change::Upsert(row)])?; s.commit_staging("L2") }).await.unwrap();
         assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 1, "a new version is asked for");
+    }
+
+    /// Issue #80: with thumbnails off the filler asks Graph for nothing, kick or not, and
+    /// nothing else stops; turned on again, it asks for the items without one at once.
+    #[tokio::test]
+    async fn thumbnails_off_ask_for_nothing_and_on_again_ask_for_what_is_missing() {
+        let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
+        Mock::given(method("GET")).and(path(thumb_path("P", "c512x512")))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-type", "image/jpeg").set_body_bytes(jpeg(64, 64)))
+            .expect(1)
+            .mount(&w.server).await;
+        let running = Arc::new(Running::default());
+        running.change(|s| s.thumbnails = false);
+        let filler = ThumbnailFiller { running: Arc::clone(&running), ..w.filler() };
+        assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.written, 0);
+        let (kick, cancel) = (Arc::new(Notify::new()), CancellationToken::new());
+        let task = filler.spawn(Arc::clone(&kick), cancel.clone());
+        kick.notify_one();
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(w.server.received_requests().await.unwrap().is_empty(), "off: no request");
+        assert!(!running.stopped(&w.store), "the rest of the account runs");
+
+        running.change(|s| s.thumbnails = true);
+        let cached = w.cached("normal", &w.folder.path().join("p.jpg"));
+        for _ in 0..200 {
+            if cached.exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert!(cached.exists(), "on again, the missing one is asked for without a kick");
+        cancel.cancel();
+        task.await.unwrap();
     }
 }

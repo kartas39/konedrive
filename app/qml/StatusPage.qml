@@ -402,6 +402,36 @@ FormCard.FormCardPage {
             icon.name: "edit-delete"
             onClicked: page.sync.confirmDeletes()
         }
+        // The account holds back by itself (HeldBack): a metered connection, the
+        // battery. Not the user's pause, which the line below shows as before.
+        FormCard.FormTextDelegate {
+            objectName: "heldBackLine"
+            visible: page.oneDrive && page.sync.heldBack.length > 0
+            text: {
+                switch (page.sync ? page.sync.heldBack : "") {
+                case "metered":
+                    return i18n("Paused: metered connection");
+                case "on-battery":
+                    return i18n("Paused: on battery");
+                case "power-saver":
+                    return i18n("Paused: power-saver mode");
+                default:
+                    return i18n("Paused by itself");
+                }
+            }
+            description: i18n("Nothing is uploaded or downloaded in the background, as the account's sync settings say. Files still download when you open them.")
+            leading: Kirigami.Icon {
+                source: "media-playback-pause"
+                implicitWidth: Kirigami.Units.iconSizes.medium
+                implicitHeight: Kirigami.Units.iconSizes.medium
+            }
+            trailing: QQC2.Button {
+                objectName: "syncAnywayButton"
+                text: i18nc("@action:button", "Sync Anyway")
+                icon.name: "media-playback-start"
+                onClicked: page.sync.syncAnyway()
+            }
+        }
         // Pause and resume, as Windows offers them.
         FormCard.FormTextDelegate {
             objectName: "pausedLine"

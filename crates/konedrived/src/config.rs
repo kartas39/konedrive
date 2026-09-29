@@ -218,6 +218,74 @@ pub struct AccountConfig {
     /// (`sync::upload::default_machine_name`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub machine_name: String,
+    /// Whether Graph's thumbnails of the account's images and videos are fetched
+    /// (issue #80); `None` for yes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnails: Option<bool>,
+    /// Whether the account holds its background work back on a metered connection
+    /// (issue #57, `docs/design/writes.md` §11); `None` for yes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_on_metered: Option<bool>,
+    /// What the account does on battery (issue #57): `sync`, `power-saver` or `pause`;
+    /// `None` for `power-saver`. Kept as written, so that a value this version does not know
+    /// cannot make the whole file unreadable ([`AccountConfig::on_battery`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_battery: Option<String>,
+}
+
+impl AccountConfig {
+    /// `thumbnails`, absent meaning on.
+    pub fn thumbnails_on(&self) -> bool {
+        self.thumbnails.unwrap_or(true)
+    }
+
+    /// `pause_on_metered`, absent meaning on.
+    pub fn pauses_on_metered(&self) -> bool {
+        self.pause_on_metered.unwrap_or(true)
+    }
+
+    /// `on_battery`, absent meaning `power-saver`; any other value is `power-saver` too,
+    /// with a warning in the log.
+    pub fn on_battery(&self) -> OnBattery {
+        match self.on_battery.as_deref() {
+            None => OnBattery::default(),
+            Some(text) => OnBattery::parse(text).unwrap_or_else(|| {
+                tracing::warn!("on_battery = {text:?} in config.toml is not sync, power-saver or pause; using power-saver");
+                OnBattery::default()
+            }),
+        }
+    }
+}
+
+/// What an account does on battery (issue #57, `docs/design/writes.md` §11).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum OnBattery {
+    /// The battery changes nothing.
+    Sync,
+    /// Holds back while on battery and the power profile is `power-saver`.
+    #[default]
+    PowerSaver,
+    /// Holds back whenever on battery.
+    Pause,
+}
+
+impl OnBattery {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text {
+            "sync" => Some(Self::Sync),
+            "power-saver" => Some(Self::PowerSaver),
+            "pause" => Some(Self::Pause),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sync => "sync",
+            Self::PowerSaver => "power-saver",
+            Self::Pause => "pause",
+        }
+    }
 }
 
 fn is_false(value: &bool) -> bool {
@@ -671,6 +739,9 @@ impl ConfigStore {
                 root: None,
                 ignore: None,
                 machine_name: String::new(),
+                thumbnails: None,
+                pause_on_metered: None,
+                on_battery: None,
             };
             config.accounts.push(account.clone());
             Ok(account)
@@ -837,6 +908,9 @@ mod tests {
             root: None,
             ignore: None,
             machine_name: String::new(),
+            thumbnails: None,
+            pause_on_metered: None,
+            on_battery: None,
         }
     }
 

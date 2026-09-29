@@ -335,9 +335,16 @@ impl Engine {
         self.wake.notify_one();
     }
 
-    /// `Some(until)` while paused (0: until resumed).
+    /// `Some(until)` while the user paused the account (0: until resumed): what the status
+    /// shows, and when a timed pause ends.
     fn paused(&self) -> Option<i64> {
         super::paused(self.store())
+    }
+
+    /// Whether nothing may be sent now: asked of the account's one place (`sync::running`)
+    /// through the host.
+    pub(super) fn stopped(&self) -> bool {
+        self.cfg.host.stopped(self.store())
     }
 
     pub(super) fn pause(&self, for_: Option<Duration>) -> Result<(), TreeError> {
@@ -482,7 +489,7 @@ impl Engine {
     }
 
     fn may_start(&self) -> bool {
-        let paused = self.paused().is_some();
+        let paused = self.stopped();
         let now = now();
         let ready = {
             let shared = self.shared();

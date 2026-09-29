@@ -309,17 +309,18 @@ impl TransferPool {
         self.lock().waiters.queued()
     }
 
-    /// "Pause syncing": no new slot for anything but opens.
-    pub fn set_paused(&self, paused: bool) {
+    /// "Pause syncing": no new slot for anything but opens. Whether it was paused before.
+    pub fn set_paused(&self, paused: bool) -> bool {
         let wake = {
             let mut inner = self.lock();
             if inner.paused == paused {
-                return;
+                return paused;
             }
             inner.paused = paused;
             self.dispatch(&mut inner)
         };
         wake_all(wake);
+        !paused
     }
 
     /// Where the throughput goes: called at once with what it is now, then once a second

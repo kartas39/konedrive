@@ -1579,6 +1579,73 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     assert_eq!(out_text(&run(addr, &["sync", "deletes", "confirm"])).trim(), "No delete is waiting for confirmation.");
 }
 
+/// Issues #57, #80: `sync thumbnails`, `sync on-metered` and `sync on-battery` print the
+/// setting without an argument and change it with one; a choice that is none is a usage
+/// error, and a local folder has no settings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_shows_and_changes_the_sync_settings() {
+    let (f, _graph) = harness_onedrive().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/f.txt").is_file()).await;
+    let addr = f._bus.address();
+
+    assert!(out_text(&run(addr, &["sync", "thumbnails"])).starts_with("Thumbnails: on"));
+    let out = run(addr, &["sync", "thumbnails", "off"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).starts_with("Thumbnails: off — Dolphin downloads"), "{}", out_text(&out));
+    assert!(!f.proxy.folder.thumbnails().await.unwrap());
+    assert!(out_text(&run(addr, &["sync", "thumbnails"])).starts_with("Thumbnails: off"));
+
+    assert_eq!(out_text(&run(addr, &["sync", "on-metered"])).trim(), "On a metered connection: pause.");
+    assert_eq!(out_text(&run(addr, &["sync", "on-metered", "sync"])).trim(), "On a metered connection: sync as usual.");
+    assert!(!f.proxy.folder.pause_on_metered().await.unwrap());
+
+    assert_eq!(out_text(&run(addr, &["sync", "on-battery"])).trim(), "On battery: pause in power-saver mode.");
+    assert_eq!(out_text(&run(addr, &["sync", "on-battery", "pause"])).trim(), "On battery: pause.");
+    assert_eq!(f.proxy.folder.on_battery().await.unwrap(), "pause");
+    assert_eq!(run(addr, &["sync", "on-battery", "sometimes"]).status.code(), Some(2));
+    assert_eq!(run(addr, &["sync", "thumbnails", "maybe"]).status.code(), Some(2));
+}
+
+/// Issue #57: while the account holds back by itself, `sync status` says why; `sync anyway`
+/// lifts the hold, and the line goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it() {
+    let (f, _graph) = harness_onedrive().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/f.txt").is_file()).await;
+    let addr = f._bus.address();
+    let line = |status: &str| status.lines().find(|l| l.starts_with("Paused by itself:")).map(str::to_owned);
+
+    assert_eq!(out_text(&run(addr, &["sync", "anyway"])).trim(), "Not paused by itself: nothing to lift.");
+    f.service.set_conditions(konedrived::sync::running::Conditions { metered: true, ..Default::default() });
+    let status = out_text(&run(addr, &["sync", "status"]));
+    let said = line(&status).unwrap_or_else(|| panic!("{status}"));
+    assert!(said.contains("metered connection (`konedrivectl sync anyway` syncs now)"), "{said}");
+    assert!(!status.lines().any(|l| l.starts_with("Paused until:")), "not the user's pause: {status}");
+
+    let out = run(addr, &["sync", "anyway"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).starts_with("Syncing anyway (metered connection)"), "{}", out_text(&out));
+    assert_eq!(line(&out_text(&run(addr, &["sync", "status"]))), None);
+}
+
+/// A folder not connected to OneDrive has no sync settings.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_sync_settings_of_a_local_folder_say_it_has_none() {
+    let f = harness().await;
+    let root = f.dir.path().join("local");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    let out = run(f._bus.address(), &["sync", "thumbnails", "off"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(err_text(&out).contains("not connected to OneDrive, so it has no sync settings"), "{}", err_text(&out));
+}
+
 /// A folder not connected to OneDrive uploads nothing: the outbox commands say
 /// so, by the refusal's name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

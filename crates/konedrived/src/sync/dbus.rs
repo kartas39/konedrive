@@ -163,6 +163,53 @@ impl Folder {
         self.ignore_patterns_changed(&emitter).await.map_err(SyncFault::ZBus)
     }
 
+    /// Whether Graph's thumbnails of images and videos are fetched; written to `config.toml`.
+    async fn set_thumbnails(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
+        self.service.change_run_settings(move |s| s.thumbnails = on).await.map_err(to_fault)?;
+        self.thumbnails_changed(&emitter).await.map_err(SyncFault::ZBus)
+    }
+
+    /// Whether the account holds back on a metered connection; written to `config.toml`.
+    async fn set_pause_on_metered(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
+        self.service.change_run_settings(move |s| s.pause_on_metered = on).await.map_err(to_fault)?;
+        self.pause_on_metered_changed(&emitter).await.map_err(SyncFault::ZBus)
+    }
+
+    /// `sync`, `power-saver` or `pause`; refused `InvalidArgs` otherwise. Written to
+    /// `config.toml`.
+    async fn set_on_battery(&self, choice: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
+        self.service.set_on_battery(choice).await.map_err(to_fault)?;
+        self.on_battery_changed(&emitter).await.map_err(SyncFault::ZBus)
+    }
+
+    /// Lifts the automatic hold now, until a source or the account's `PauseOnMetered` /
+    /// `OnBattery` changes.
+    async fn sync_anyway(&self) -> Result<()> {
+        self.service.sync_anyway().map_err(to_fault)
+    }
+
+    /// Why the account holds back by itself now: `metered`, `on-battery`, `power-saver`, or
+    /// empty.
+    #[zbus(property)]
+    async fn held_back(&self) -> String {
+        self.service.state().get().held_back
+    }
+
+    #[zbus(property)]
+    async fn thumbnails(&self) -> bool {
+        self.service.run_settings().thumbnails
+    }
+
+    #[zbus(property)]
+    async fn pause_on_metered(&self) -> bool {
+        self.service.run_settings().pause_on_metered
+    }
+
+    #[zbus(property)]
+    async fn on_battery(&self) -> String {
+        self.service.run_settings().on_battery.as_str().to_owned()
+    }
+
     #[zbus(property)]
     /// From the published state, as `State` and `LastError` are: a
     /// folder that could not be brought up reads
@@ -923,6 +970,9 @@ async fn emit_changes(
     if old.paused_until != new.paused_until {
         folder.paused_changed(emitter).await?;
         folder.paused_until_changed(emitter).await?;
+    }
+    if old.held_back != new.held_back {
+        folder.held_back_changed(emitter).await?;
     }
     // Not coalesced either: the tray says once that OneDrive is full.
     if old.quota_full != new.quota_full {

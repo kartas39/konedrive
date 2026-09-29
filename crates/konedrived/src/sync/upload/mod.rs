@@ -180,6 +180,12 @@ pub trait OutboxHost: Send + Sync {
     /// the reconcile places what came back. The delta carries it: a plain
     /// cycle, not a Full reconcile, which scans the whole folder.
     fn cycle_wanted(&self) {}
+    /// Whether the account's background work stops now (`sync::running`): the user's pause,
+    /// kept in `store`, or what else the account's one place decides. Asked before each row
+    /// is taken, and between the fragments of an upload.
+    fn stopped(&self, store: &Store) -> bool {
+        paused(store).is_some()
+    }
     /// Whether the account may change OneDrive now (`docs/design/writes.md` §2): asked
     /// before each row is taken, and between the fragments of an upload. `Err` says why not:
     /// nothing more is sent then, and the rows wait.

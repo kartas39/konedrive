@@ -69,6 +69,9 @@ pub struct HelperHub {
     /// is now — outside every folder, or inside another account's (write
     /// design §4.6, §8.5).
     moved_out: Mutex<Vec<(Weak<SyncService>, HashSet<String>)>>,
+    /// What the machine's sources say (`sync::conditions`): every account is told, and one
+    /// that joins later is told what they say then.
+    conditions: Mutex<super::running::Conditions>,
 }
 
 impl HelperHub {
@@ -90,6 +93,7 @@ impl HelperHub {
             accounts: Mutex::new(Vec::new()),
             registering: tokio::sync::Mutex::new(()),
             moved_out: Mutex::new(Vec::new()),
+            conditions: Mutex::new(super::running::Conditions::default()),
         })
     }
 
@@ -235,7 +239,32 @@ impl HelperHub {
         let mut accounts = self.accounts.lock().unwrap();
         accounts.retain(|a| a.strong_count() > 0);
         accounts.push(Arc::downgrade(&account));
+        // Under the accounts' lock, as `set_conditions` tells them: none is missed.
+        account.set_conditions(*self.conditions.lock().unwrap());
         account
+    }
+
+    /// What the machine's sources say now: every account works its hold out again.
+    pub fn set_conditions(&self, conditions: super::running::Conditions) {
+        let accounts = {
+            let _accounts = self.accounts.lock().unwrap();
+            let mut kept = self.conditions.lock().unwrap();
+            if *kept == conditions {
+                return;
+            }
+            *kept = conditions;
+            drop(kept);
+            _accounts.iter().filter_map(Weak::upgrade).collect::<Vec<_>>()
+        };
+        tracing::info!(
+            "the machine is {}metered, on {}{}",
+            if conditions.metered { "" } else { "not " },
+            if conditions.on_battery { "battery" } else { "mains power" },
+            if conditions.power_saver { ", in power-saver mode" } else { "" }
+        );
+        for account in accounts {
+            account.set_conditions(conditions);
+        }
     }
 
     /// `account` is not one of the hub's any more (an account removed).

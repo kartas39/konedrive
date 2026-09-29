@@ -224,6 +224,114 @@ private Q_SLOTS:
         fake.stop();
     }
 
+    /// Issues #57, #80: the account page's sync settings show what the daemon says and set
+    /// it; the thumbnails line shows while they are off.
+    void theSyncSettings()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("account")));
+        auto *thumbnails = window->findChild<QQuickItem *>(QStringLiteral("thumbnailsSwitch"));
+        auto *offLine = window->findChild<QQuickItem *>(QStringLiteral("thumbnailsOffLine"));
+        auto *metered = window->findChild<QQuickItem *>(QStringLiteral("meteredSwitch"));
+        auto *battery = window->findChild<QQuickItem *>(QStringLiteral("batteryCombo"));
+        QVERIFY(thumbnails && offLine && metered && battery);
+        QTRY_VERIFY(thumbnails->isVisible());
+        QVERIFY(thumbnails->property("checked").toBool());
+        QVERIFY(!offLine->isVisible());
+        QVERIFY(metered->property("checked").toBool());
+        QCOMPARE(battery->property("currentIndex").toInt(), 1);
+
+        // A switch turned by the user asks the daemon; the daemon's answer is what shows.
+        thumbnails->setProperty("checked", false);
+        QMetaObject::invokeMethod(thumbnails, "toggled");
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SetThumbnails:off")));
+        QTRY_VERIFY(!thumbnails->property("checked").toBool());
+        QTRY_VERIFY(offLine->isVisible());
+        metered->setProperty("checked", false);
+        QMetaObject::invokeMethod(metered, "toggled");
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SetPauseOnMetered:off")));
+        QTRY_VERIFY(!metered->property("checked").toBool());
+        QMetaObject::invokeMethod(battery, "activated", Q_ARG(int, 2));
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SetOnBattery:pause")));
+        QTRY_COMPARE(battery->property("currentIndex").toInt(), 2);
+
+        // Changed elsewhere (konedrivectl), the page follows.
+        fake.sync->folder->set({{QStringLiteral("Thumbnails"), true}, {QStringLiteral("OnBattery"), QStringLiteral("sync")}});
+        QTRY_VERIFY(thumbnails->property("checked").toBool());
+        QTRY_VERIFY(!offLine->isVisible());
+        QTRY_COMPARE(battery->property("currentIndex").toInt(), 0);
+        fake.stop();
+    }
+
+    /// Issue #57: while the account holds back by itself, the Status page says why, beside
+    /// a Sync Anyway button; the user's own pause is not shown for it.
+    void theStatusPageShowsAHold()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")},
+                                {QStringLiteral("HeldBack"), QStringLiteral("metered")}});
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.load(QUrl(QStringLiteral("qrc:/Main.qml")));
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("status")));
+        auto *held = window->findChild<QQuickItem *>(QStringLiteral("heldBackLine"));
+        auto *anyway = window->findChild<QObject *>(QStringLiteral("syncAnywayButton"));
+        auto *paused = window->findChild<QQuickItem *>(QStringLiteral("pausedLine"));
+        QVERIFY(held && anyway && paused);
+        QTRY_VERIFY(held->isVisible());
+        QCOMPARE(held->property("text").toString(), QStringLiteral("Paused: metered connection"));
+        QVERIFY(!paused->isVisible());
+
+        fake.sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("power-saver")}});
+        QTRY_COMPARE(held->property("text").toString(), QStringLiteral("Paused: power-saver mode"));
+        QMetaObject::invokeMethod(anyway, "clicked");
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SyncAnyway")));
+        QTRY_VERIFY(!held->isVisible());
+        fake.stop();
+    }
+
     /// Issue #8: the Status page says how the local scan goes — how far a running one got,
     /// of about how many, since when and why; then when the last one finished; and nothing
     /// for a read-only folder.

@@ -7,6 +7,7 @@
 
 pub mod activity;
 pub mod baloo;
+pub mod conditions;
 pub mod dbus;
 pub mod disk;
 pub mod graph_source;
@@ -22,6 +23,7 @@ pub mod network;
 pub mod outbox_api;
 pub mod pin;
 pub mod root;
+pub mod running;
 pub mod source;
 pub mod thumbs;
 pub mod totals;
@@ -598,6 +600,9 @@ pub struct SyncSnapshot {
     /// `Paused` and `PausedUntil`: `Some(until)` while paused, unix seconds,
     /// 0 meaning until resumed (`outbox_api`).
     pub paused_until: Option<i64>,
+    /// `HeldBack`: why the account holds its background work back by itself
+    /// (`running::Hold`), empty when it does not.
+    pub held_back: String,
     /// `Transfers.Uploads`: (full path, bytes sent, bytes in all), as `Downloads`.
     pub uploads: Vec<(String, u64, u64)>,
     /// `QuotaFull`: OneDrive is full and no content goes up (issue #2).
@@ -623,6 +628,13 @@ pub struct SyncSnapshot {
     /// `LocalScan`'s `State`, `Reason`, `Started`, `Directories`, `Files`,
     /// `Expected`, `Finished`, `Took`: the Full local scan (issue #8).
     pub scan: local_scan::LocalScan,
+}
+
+impl SyncSnapshot {
+    /// Whether the account's background work stops: paused by the user, or held back.
+    pub fn stopped(&self) -> bool {
+        self.paused_until.is_some() || !self.held_back.is_empty()
+    }
 }
 
 impl Default for SyncSnapshot {
@@ -651,6 +663,7 @@ impl Default for SyncSnapshot {
             blocked_count: 0,
             held_count: 0,
             paused_until: None,
+            held_back: String::new(),
             uploads: Vec::new(),
             quota_full: false,
             space_waiting_count: 0,
@@ -1049,6 +1062,9 @@ pub struct SyncService {
     /// The large pinned files downloading in parts, and how many streams each has: who is
     /// due the next free large slot of `pool` (`source::parts`, issue #28).
     parts: Arc<source::Share>,
+    /// What background work runs now (`running`): the one place every reader of the pause
+    /// asks, with the account's settings from `config.toml`.
+    running: Arc<running::Running>,
 }
 
 /// A OneDrive folder's sync while it runs.
@@ -1200,6 +1216,9 @@ impl SyncService {
                 }),
                 account,
                 ignore: outbox_api::configured_ignore(persist.as_ref()),
+                running: Arc::new(running::Running::new(
+                    persist.as_ref().and_then(|p| p.store.account(&p.account)).map(|a| running::Settings::of(&a)).unwrap_or_default(),
+                )),
                 pause_timer: Mutex::new(None),
                 pause_shown: std::sync::atomic::AtomicU64::new(0),
                 kept_back: Mutex::new(None),
@@ -2317,6 +2336,7 @@ impl SyncService {
             // Another account's objects are never removed here, and the
             // account hears of a drive that is not the folder's (m2).
             neighbours: Some(self.neighbours()),
+            running: Arc::clone(&self.running),
         });
         let schedule = self.schedule.lock().unwrap().clone();
         // Checked again and kept in one critical section: a second start that
@@ -2343,7 +2363,8 @@ impl SyncService {
                 // never holds up the reconcile. None at all without a cache to fill.
                 let thumbnails = paths.thumbnails.clone().map(|cache| {
                     let cancel = CancellationToken::new();
-                    let task = thumbs::ThumbnailFiller::new(drive, store, reg.root.clone(), cache).spawn(kick, cancel.clone());
+                    let task = thumbs::ThumbnailFiller::new(drive, store, reg.root.clone(), cache, Arc::clone(&self.running))
+                        .spawn(kick, cancel.clone());
                     (task, cancel)
                 });
                 let walked = watcher.as_ref().map(write_mode::Watcher::walked);
@@ -8175,6 +8196,18 @@ mod tests {
             tokens: Arc<dyn TokenSource>,
         ) -> Arc<SyncService> {
             let service = SyncService::new(link, Some(account), Some(persist(&w.config.path().join("config.toml"))));
+            wire(w, service, tokens)
+        }
+
+        /// A signed-in service on `hub`, wired as [`service_with`] wires one: a restart of
+        /// the daemon whose hub knows what the machine's sources say.
+        fn service_on(w: &World, hub: &Arc<hub::HelperHub>) -> Arc<SyncService> {
+            let service = SyncService::on_hub(hub, Some(account(true)), Some(persist(&w.config.path().join("config.toml"))));
+            wire(w, service, Arc::new(StaticToken::new("T")))
+        }
+
+        /// [`service_with`]'s wiring.
+        fn wire(w: &World, service: Arc<SyncService>, tokens: Arc<dyn TokenSource>) -> Arc<SyncService> {
             let drive = DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), tokens)
                 .unwrap()
                 .with_retry(RetryPolicy { attempts: 2, default_wait: Duration::from_millis(5), max_wait: Duration::from_millis(10) });
@@ -9505,6 +9538,185 @@ mod tests {
             assert!(service.state().get().paused_until.is_some());
             service.unregister_root().await.unwrap();
             assert_eq!(service.state().get().paused_until, None);
+        }
+
+        /// Issues #57, #80: each sync setting is absent from `config.toml` until set, reads
+        /// its default then, is written when set and taken at once — thumbnails off stop
+        /// nothing else — and is read back by the next start. `SetOnBattery` refuses what is
+        /// not a choice; a local folder has no settings to set.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_sync_settings_are_kept_in_config_toml_and_taken_at_once() {
+            use crate::config::OnBattery;
+            let local = world().await;
+            let other = service(&local, true);
+            other.register_root_without_interception(local.folder.path()).await.unwrap();
+            assert!(matches!(other.change_run_settings(|s| s.thumbnails = false).await, Err(SyncError::Unsupported(_))));
+
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            // Read afresh each time: what the file holds now.
+            let written = || {
+                let persist = persist(&w.config.path().join("config.toml"));
+                persist.store.account(&persist.account).unwrap()
+            };
+            assert_eq!(service.run_settings(), running::Settings::default(), "absent means the default");
+            assert_eq!((written().thumbnails, written().pause_on_metered, written().on_battery), (None, None, None));
+
+            service.change_run_settings(|s| s.thumbnails = false).await.unwrap();
+            assert!(!service.run_settings().thumbnails);
+            assert_eq!(written().thumbnails, Some(false));
+            assert_eq!(written().pause_on_metered, None, "only what changed is written");
+            let store = service.store.lock().unwrap().clone().unwrap();
+            assert!(!service.running.stopped(&store) && !service.running.thumbnails_go(&store), "thumbnails off stop nothing else");
+
+            service.change_run_settings(|s| s.pause_on_metered = false).await.unwrap();
+            assert_eq!(written().pause_on_metered, Some(false));
+            service.set_on_battery("pause").await.unwrap();
+            assert_eq!(service.run_settings().on_battery, OnBattery::Pause);
+            assert_eq!(written().on_battery.as_deref(), Some("pause"));
+            assert!(matches!(service.set_on_battery("whenever").await, Err(SyncError::InvalidArgs(_))));
+            assert_eq!(service.run_settings().on_battery, OnBattery::Pause, "a refusal changes nothing");
+
+            service.stop_sync().await;
+            service.set_link(None);
+            drop(service);
+            let restarted = connected(&w, true).await;
+            assert_eq!(restarted.run_settings(), running::Settings { thumbnails: false, pause_on_metered: false, on_battery: OnBattery::Pause });
+
+        }
+
+        /// Issue #57: on a metered connection the account holds back — no upload, no poll, no
+        /// pinned download or thumbnail (the pool gives no slot but for opens) — while an open
+        /// still gets its slot, `HeldBack` says why and `Paused` stays false; when the
+        /// connection is no longer metered, what waited goes at once.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_metered_connection_holds_the_account_back_until_it_ends() {
+            use crate::account::PendingUploads;
+            use crate::config::Mode;
+            use crate::pool::{Class, Size};
+            use wiremock::matchers::path_regex;
+            let w = world().await;
+            Mock::given(method("POST"))
+                .and(path_regex("/me/drive/items/D:/new.txt:/createUploadSession$"))
+                .respond_with(ResponseTemplate::new(500))
+                .mount(&w.server)
+                .await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let_write(&service);
+            service.follow_mode(Mode::ReadWrite).await;
+            let before = deltas(&w).await;
+            wait_for_deltas(&w, before).await;
+
+            service.set_conditions(running::Conditions { metered: true, ..running::Conditions::default() });
+            assert_eq!(service.state().get().held_back, "metered");
+            assert_eq!(service.state().get().paused_until, None, "a hold is not the user's pause");
+            let store = service.store.lock().unwrap().clone().unwrap();
+            assert!(!service.running.thumbnails_go(&store), "no thumbnails");
+            assert!(service.pool.try_acquire_sized(Class::Download, Size::Small).is_none(), "no pinned download");
+            assert!(service.pool.try_acquire_sized(Class::Open, Size::Small).is_some(), "an open still downloads");
+            let made = std::process::Command::new("sh").args(["-c", "echo new > docs/new.txt"]).current_dir(w.folder.path()).status().unwrap();
+            assert!(made.success());
+            let seen = deltas(&w).await;
+            service.refresh().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            assert_eq!(deltas(&w).await, seen, "OneDrive is not asked");
+            assert_eq!(service.pending_uploads().await, 1, "the change waits");
+            let asked = || async { w.server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() == "POST").count() };
+            assert_eq!(asked().await, 0, "nothing is uploaded");
+            assert!(service.outbox(0).await.unwrap().iter().all(|row| row.3 == "paused"), "the rows read paused");
+
+            service.set_conditions(running::Conditions::default());
+            assert_eq!(service.state().get().held_back, "");
+            wait_for_deltas(&w, seen).await;
+            for _ in 0..250 {
+                if asked().await > 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            assert!(asked().await > 0, "the upload is tried at once");
+            service.stop_sync().await;
+        }
+
+        /// Issue #57: the user's pause and a hold are both on — `Resume` alone does not start
+        /// the account while the hold is on, nor does the hold's end alone while the pause is.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn the_account_runs_only_when_neither_a_pause_nor_a_hold_is_on() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let metered = running::Conditions { metered: true, ..running::Conditions::default() };
+            let quiet = |what: &'static str| {
+                let (w, service) = (&w, &service);
+                async move {
+                    let seen = deltas(w).await;
+                    service.refresh().await.unwrap();
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    assert_eq!(deltas(w).await, seen, "{what}");
+                }
+            };
+
+            service.pause_syncing(0).await.unwrap();
+            service.set_conditions(metered);
+            service.resume_syncing().await.unwrap();
+            quiet("resumed, still held").await;
+            service.pause_syncing(0).await.unwrap();
+            service.set_conditions(running::Conditions::default());
+            quiet("the hold ended, still paused").await;
+            let seen = deltas(&w).await;
+            service.resume_syncing().await.unwrap();
+            wait_for_deltas(&w, seen).await;
+            service.stop_sync().await;
+        }
+
+        /// Issue #57: `SyncAnyway` lifts the hold at once, until a source or the account's
+        /// hold setting changes; then the hold is worked out again. After a restart with the
+        /// condition still on, the account is held again and `Paused` stays false.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn sync_anyway_lifts_the_hold_until_something_changes_and_a_restart_holds_again() {
+            use crate::config::OnBattery;
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            let on_battery = running::Conditions { on_battery: true, ..running::Conditions::default() };
+            service.set_on_battery("pause").await.unwrap();
+            service.set_conditions(on_battery);
+            assert_eq!(service.state().get().held_back, "on-battery");
+
+            let seen = deltas(&w).await;
+            service.sync_anyway().unwrap();
+            assert_eq!(service.state().get().held_back, "");
+            wait_for_deltas(&w, seen).await;
+            service.set_conditions(running::Conditions { power_saver: true, ..on_battery });
+            assert_eq!(service.state().get().held_back, "on-battery", "the profile changed: held again");
+
+            service.sync_anyway().unwrap();
+            service.change_run_settings(|s| s.on_battery = OnBattery::PowerSaver).await.unwrap();
+            assert_eq!(service.state().get().held_back, "power-saver", "the setting changed: worked out again");
+            service.change_run_settings(|s| s.on_battery = OnBattery::Sync).await.unwrap();
+            assert_eq!(service.state().get().held_back, "", "sync on battery");
+            service.set_on_battery("pause").await.unwrap();
+
+            service.stop_sync().await;
+            service.set_link(None);
+            drop(service);
+            let hub = hub::HelperHub::with_link(Some(link(&w).await));
+            hub.set_conditions(on_battery);
+            let restarted = service_on(&w, &hub);
+            restarted.restore().await;
+            let seen = deltas(&w).await;
+            restarted.resume().await;
+            wait_until("held again after a restart", || restarted.state().get().held_back == "on-battery").await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            assert_eq!(deltas(&w).await, seen, "and asks OneDrive for nothing");
+            assert_eq!(restarted.state().get().paused_until, None, "and not paused");
+            restarted.stop_sync().await;
         }
 
         /// the outbox on the bus, `SetIgnorePatterns`: the list is written to `config.toml`, read
