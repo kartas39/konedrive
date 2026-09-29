@@ -252,6 +252,7 @@ impl SyncService {
             // Moves out of the folder: the helper over this account's link, fills
             // through its source, and the hub's router.
             moved_out: Some(self.move_outs()),
+            quota: self.quota(),
         });
         // The folder's first delta cycle runs before the outbox (`docs/design/writes.md` §3).
         worker.wait_for_cycle(false);

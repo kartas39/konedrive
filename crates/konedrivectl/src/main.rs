@@ -873,8 +873,9 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<
         SyncCmd::Refresh => {
             explained(daemon, chosen, proxy, SyncAction::Refresh, proxy.folder.refresh().await).await?;
             println!("{tag}Asked OneDrive for changes.");
-            // `Refresh` read the quota again: what it read.
-            let (state, free, full) = (proxy.queue.quota_state().await?, proxy.queue.quota_remaining().await?, proxy.queue.quota_full().await?);
+            // `Refresh` read the quota again, the account's one: what it read.
+            let account = daemon.account(&chosen.account.path).await?;
+            let (state, free, full) = (account.quota_state().await?, account.quota_remaining().await?, proxy.queue.quota_full().await?);
             print!("{}", konedrivectl::quota_text(&state, free, full));
         }
         SyncCmd::Activity { limit } => {

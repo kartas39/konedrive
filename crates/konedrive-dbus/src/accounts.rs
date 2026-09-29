@@ -124,10 +124,16 @@ pub trait Account {
     fn display_name(&self) -> zbus::Result<String>;
     #[zbus(property)]
     fn email(&self) -> zbus::Result<String>;
+    /// The account's one quota, whoever read it: bytes used and in all, Graph's
+    /// `quota.remaining` less what went up since, and `quota.state`; 0 and empty until read.
     #[zbus(property)]
     fn quota_used(&self) -> zbus::Result<u64>;
     #[zbus(property)]
     fn quota_total(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn quota_remaining(&self) -> zbus::Result<u64>;
+    #[zbus(property)]
+    fn quota_state(&self) -> zbus::Result<String>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: that account's folder.
@@ -294,12 +300,6 @@ pub trait UploadQueue {
     /// Files refused as too big for the space left.
     #[zbus(property)]
     fn too_big_count(&self) -> zbus::Result<u32>;
-    /// Graph's `quota.state` as last read; empty until read.
-    #[zbus(property)]
-    fn quota_state(&self) -> zbus::Result<String>;
-    /// Graph's `quota.remaining` as last read, less what went up since.
-    #[zbus(property)]
-    fn quota_remaining(&self) -> zbus::Result<u64>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: the local versions that account's folder kept.

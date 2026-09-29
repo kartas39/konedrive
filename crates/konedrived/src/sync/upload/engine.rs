@@ -442,8 +442,6 @@ impl Engine {
             uploads: uploads.into_iter().map(|(_, u)| u).collect(),
             counts: shared.counts,
             quota_full: shared.space.full,
-            free_space: shared.space.free,
-            quota_state: shared.space.state(),
         }
     }
 

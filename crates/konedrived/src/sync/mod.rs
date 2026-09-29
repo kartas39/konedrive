@@ -602,11 +602,6 @@ pub struct SyncSnapshot {
     pub uploads: Vec<(String, u64, u64)>,
     /// `QuotaFull`: OneDrive is full and no content goes up (issue #2).
     pub quota_full: bool,
-    /// `QuotaState` and `QuotaRemaining`: Graph's `quota.state` and
-    /// `quota.remaining` as last read (less what went up since); empty and 0
-    /// until a read.
-    pub quota_state: String,
-    pub free_space: u64,
     /// `QuotaWaitingCount`, `QuotaWaitingBytes`: while full, the changes
     /// that send content; `TooBigCount`: files too big for the space left.
     pub space_waiting_count: u32,
@@ -657,8 +652,6 @@ impl Default for SyncSnapshot {
             paused_until: None,
             uploads: Vec::new(),
             quota_full: false,
-            quota_state: String::new(),
-            free_space: 0,
             space_waiting_count: 0,
             space_waiting_bytes: 0,
             too_big_count: 0,
@@ -942,6 +935,10 @@ pub struct SyncService {
     /// refuses `RegisterRoot` when nobody is signed in, and
     /// this is what it asks. `None` only where nothing wired it up.
     account: Option<StateHandle>,
+    /// The account's one quota (`crate::quota`), which the outbox's space check reads and
+    /// adjusts ([`set_quota`](Self::set_quota)): until one is set, the quota kept in
+    /// `account`'s state, or one of its own without an account.
+    quota: Mutex<crate::quota::Quota>,
     /// Where the registered root is persisted, so it survives a restart
     /// (§3.1): the account's entry in `config.toml`. `None` disables
     /// persistence entirely.
@@ -1196,6 +1193,10 @@ impl SyncService {
                 parts: source::Share::new(),
                 hub: Arc::clone(hub),
                 link: hub.link_cell(),
+                quota: Mutex::new(match &account {
+                    Some(account) => crate::quota::Quota::new(account.clone(), None),
+                    None => crate::quota::Quota::detached(),
+                }),
                 account,
                 ignore: outbox_api::configured_ignore(persist.as_ref()),
                 pause_timer: Mutex::new(None),
@@ -1224,6 +1225,17 @@ impl SyncService {
                 drive_seen: Mutex::new(None),
             })
         })
+    }
+
+    /// The account's quota, which the uploads' space check reads and adjusts: the one
+    /// `Account` serves (`AccountService::quota`).
+    pub fn set_quota(&self, quota: crate::quota::Quota) {
+        *self.quota.lock().unwrap() = quota;
+    }
+
+    /// The account's quota.
+    pub fn quota(&self) -> crate::quota::Quota {
+        self.quota.lock().unwrap().clone()
     }
 
     /// The link to the helper this account shares with the daemon's others.

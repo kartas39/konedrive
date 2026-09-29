@@ -816,6 +816,9 @@ pub(crate) struct Harness {
     pub limits: Limits,
     /// The helper and the fills a `move-out` row needs; `None` by default.
     pub moved_out: Mutex<Option<super::move_out::MoveOuts>>,
+    /// The account's one quota, which every start shares, as the daemon's
+    /// workers share their account's.
+    pub quota: crate::quota::Quota,
 }
 
 #[cfg(test)]
@@ -834,6 +837,7 @@ impl Harness {
             locks: locks.clone(),
             limits: Limits { small_max: 320 * 1024, chunk: 320 * 1024 },
             moved_out: Mutex::new(None),
+            quota: crate::quota::Quota::detached(),
         }
     }
 
@@ -848,6 +852,7 @@ impl Harness {
             host: self.host.clone(),
             limits: self.limits,
             moved_out: self.moved_out.lock().unwrap().clone(),
+            quota: self.quota.clone(),
         }
     }
 

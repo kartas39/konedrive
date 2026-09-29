@@ -44,7 +44,7 @@
     </method>
     <!-- Asks OneDrive for changes now rather than within the minute, and
          tries the changes waiting to be uploaded that are in backoff now.
-         Reads the quota again (UploadQueue.QuotaState, QuotaRemaining): with
+         Reads the quota again (Account.QuotaRemaining, QuotaState, ...): with
          space again, a full OneDrive ends (UploadQueue.QuotaFull), and the
          files too big before go up once they fit.
          Refused Unsupported for a folder that is not connected to OneDrive.

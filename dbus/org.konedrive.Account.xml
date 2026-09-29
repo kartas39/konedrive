@@ -57,7 +57,19 @@
     <property name="LastError" type="s" access="read"/>
     <property name="DisplayName" type="s" access="read"/>
     <property name="Email" type="s" access="read"/>
+    <!-- The account's one quota, whoever reads it: the account's info (a
+         sign-in, RefreshInfo) or the uploads' space check (Folder.Refresh,
+         an upload OneDrive refused for lack of space, the check every 30
+         minutes while full or while a file is too big). Every read updates
+         all four; what it did not give keeps its last value. Between reads
+         the bytes uploaded come off QuotaRemaining and are added to
+         QuotaUsed. Bytes: used and total; QuotaRemaining is Graph's
+         quota.remaining, never total - used. QuotaState is Graph's
+         quota.state: normal, nearing, critical or exceeded. 0 and empty until
+         read; kept across restarts. -->
     <property name="QuotaUsed" type="t" access="read"/>
     <property name="QuotaTotal" type="t" access="read"/>
+    <property name="QuotaRemaining" type="t" access="read"/>
+    <property name="QuotaState" type="s" access="read"/>
   </interface>
 </node>

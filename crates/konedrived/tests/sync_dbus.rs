@@ -736,6 +736,43 @@ async fn each_property_changes_under_its_own_interface() {
     );
 }
 
+/// One quota per account (issue #78): what the folder's uploads read shows in `Account`'s
+/// four quota properties, with their `PropertiesChanged` — the uploads keep no copy of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_folders_quota_read_is_the_accounts_quota() {
+    let f = setup().await;
+    let account = konedrive_dbus::accounts::AccountProxy::builder(&f.client)
+        .path(f.path.clone())
+        .unwrap()
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .unwrap();
+    let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
+        .destination(SERVICE_NAME)
+        .unwrap()
+        .path(f.path.clone())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let mut changes = properties.receive_properties_changed().await.unwrap();
+
+    f.sync.quota().read(&konedrived::drive::DriveQuota { total: 100, used: 40, remaining: Some(60), state: "nearing".into() });
+
+    assert_eq!(
+        changed_on(&mut changes, konedrive_dbus::ACCOUNT_INTERFACE_NAME, Duration::from_millis(600)).await,
+        vec!["QuotaRemaining", "QuotaState", "QuotaTotal", "QuotaUsed"]
+    );
+    assert_eq!(
+        (account.quota_used().await.unwrap(), account.quota_total().await.unwrap(), account.quota_remaining().await.unwrap()),
+        (40, 100, 60)
+    );
+    assert_eq!(account.quota_state().await.unwrap(), "nearing");
+    f.sync.quota().uploaded(10);
+    assert_eq!((account.quota_used().await.unwrap(), account.quota_remaining().await.unwrap()), (50, 50));
+}
+
 /// The Full local scan on the bus (issue #8): a read-only folder has none, and a scan's
 /// progress travels with the counters, in one message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

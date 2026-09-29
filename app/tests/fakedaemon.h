@@ -71,6 +71,8 @@ class FakeAccount : public QDBusAbstractAdaptor
     Q_PROPERTY(QString Email READ email)
     Q_PROPERTY(qulonglong QuotaUsed READ quotaUsed)
     Q_PROPERTY(qulonglong QuotaTotal READ quotaTotal)
+    Q_PROPERTY(qulonglong QuotaRemaining READ quotaRemaining)
+    Q_PROPERTY(QString QuotaState READ quotaState)
 
 public:
     FakeAccount(QObject *parent, const QDBusConnection &bus, const QString &path, const QString &id, const QString &label)
@@ -91,6 +93,8 @@ public:
     QString email() const { return m_properties.value(QStringLiteral("Email")).toString(); }
     qulonglong quotaUsed() const { return m_properties.value(QStringLiteral("QuotaUsed")).toULongLong(); }
     qulonglong quotaTotal() const { return m_properties.value(QStringLiteral("QuotaTotal")).toULongLong(); }
+    qulonglong quotaRemaining() const { return m_properties.value(QStringLiteral("QuotaRemaining")).toULongLong(); }
+    QString quotaState() const { return m_properties.value(QStringLiteral("QuotaState")).toString(); }
 
     void set(const QVariantMap &changes)
     {
@@ -184,6 +188,8 @@ private:
         {QStringLiteral("Email"), QString()},
         {QStringLiteral("QuotaUsed"), QVariant::fromValue<qulonglong>(0)},
         {QStringLiteral("QuotaTotal"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("QuotaRemaining"), QVariant::fromValue<qulonglong>(0)},
+        {QStringLiteral("QuotaState"), QString()},
     };
 };
 
@@ -373,8 +379,6 @@ class FakeUploadQueue : public FakeFolderInterface
     Q_PROPERTY(uint QuotaWaitingCount READ quotaWaitingCount)
     Q_PROPERTY(qulonglong QuotaWaitingBytes READ quotaWaitingBytes)
     Q_PROPERTY(uint TooBigCount READ tooBigCount)
-    Q_PROPERTY(QString QuotaState READ quotaState)
-    Q_PROPERTY(qulonglong QuotaRemaining READ quotaRemaining)
 
 public:
     FakeUploadQueue(QObject *parent, FakeSync *sync)
@@ -390,8 +394,6 @@ public:
                                   {QStringLiteral("QuotaWaitingCount"), QVariant::fromValue<uint>(0)},
                                   {QStringLiteral("QuotaWaitingBytes"), QVariant::fromValue<qulonglong>(0)},
                                   {QStringLiteral("TooBigCount"), QVariant::fromValue<uint>(0)},
-                                  {QStringLiteral("QuotaState"), QString()},
-                                  {QStringLiteral("QuotaRemaining"), QVariant::fromValue<qulonglong>(0)},
                               })
     {
     }
@@ -404,8 +406,6 @@ public:
     uint quotaWaitingCount() const { return value("QuotaWaitingCount").toUInt(); }
     qulonglong quotaWaitingBytes() const { return value("QuotaWaitingBytes").toULongLong(); }
     uint tooBigCount() const { return value("TooBigCount").toUInt(); }
-    QString quotaState() const { return value("QuotaState").toString(); }
-    qulonglong quotaRemaining() const { return value("QuotaRemaining").toULongLong(); }
 
 public Q_SLOTS:
     KonedriveOutboxList Changes(uint limit);

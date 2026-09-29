@@ -777,6 +777,35 @@ fn a_file_too_big_for_the_space_left_waits_alone() {
     assert_committed(&w, "big.bin", "big.bin");
 }
 
+/// The quota is the account's one (issue #78): a read the account's info made a moment
+/// ago is what a refusal uses instead of asking again, a read the worker makes shows in it,
+/// and what goes up comes off what is left and onto what is used.
+#[test]
+fn the_worker_reads_and_adjusts_the_accounts_one_quota() {
+    let w = World::new(&[]);
+    let quota = |s: &crate::state::AccountSnapshot| (s.quota_used, s.quota_total, s.quota_remaining, s.quota_state.clone());
+    w.h.quota.read(&crate::drive::DriveQuota { total: 10 << 20, used: 1 << 20, remaining: Some(1280 * 1024), state: "normal".into() });
+    let big = vec![7u8; 1536 * 1024];
+    w.cloud(|c| c.free = Some(1280 * 1024));
+    w.write("big.bin", &big);
+    w.write("a.txt", b"abc");
+    w.examine(&[("", "big.bin"), ("", "a.txt")]);
+    let engine = w.run();
+    assert_eq!(w.cloud(|c| c.quota_reads()), 0, "the account's read of a moment ago decided the refusal");
+    let reason = reason_of(&w, "big.bin").unwrap();
+    assert_eq!(space::parse_too_big(&reason).map(|(needs, _)| needs), Some(big.len() as u64), "{reason}");
+    assert_eq!(quota(&w.h.quota.state().get()), ((1 << 20) + 3, 10 << 20, 1280 * 1024 - 3, "normal".into()), "a.txt went up");
+
+    w.cloud(|c| c.free = Some(5 << 20));
+    w.h.runtime.block_on(engine.space_check(engine::now() + 31 * 60));
+    assert_eq!(w.cloud(|c| c.quota_reads()), 1);
+    assert_eq!(quota(&w.h.quota.state().get()), ((1 << 20) + 3, 10 << 20, 5 << 20, "normal".into()), "the worker's read");
+    w.h.drain(&engine);
+    assert_committed(&w, "big.bin", "big.bin");
+    let used = (1 << 20) + 3 + big.len() as u64;
+    assert_eq!(quota(&w.h.quota.state().get()), (used, 10 << 20, (5 << 20) - big.len() as u64, "normal".into()));
+}
+
 /// Issue #2: outside full, a file never refused is sent even when the free
 /// space known says it does not fit — OneDrive has the last word.
 #[test]

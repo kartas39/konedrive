@@ -334,6 +334,9 @@ async fn startup_restores_session_from_wallet_and_cache() {
             email: "cached@example.com".into(),
             quota_used: 1,
             quota_total: 2,
+            quota_remaining: 3,
+            quota_state: "nearing".into(),
+            quota_read_at: 100,
             fetched_at: 0,
             granted_scopes: String::new(),
             drive_id: String::new(),
@@ -348,9 +351,18 @@ async fn startup_restores_session_from_wallet_and_cache() {
     let s = svc.state().get();
     assert_eq!(s.state, SignInState::SignedIn);
     assert_eq!(s.display_name, "Cached User");
+    // The quota survives the restart through the cache, all four figures of it.
+    assert_eq!((s.quota_used, s.quota_total, s.quota_remaining, s.quota_state.as_str()), (1, 2, 3, "nearing"));
 
     wait_for(svc.state(), |s| s.display_name == "Test User").await;
     assert_eq!(store.current().as_deref(), Some("RT1"));
+    // The refresh's read gave used and total, not what is left nor the state: those keep
+    // their last values, and the cache has the quota as it stands now.
+    let s = wait_for(svc.state(), |s| s.quota_total == 5368709120).await;
+    assert_eq!((s.quota_used, s.quota_remaining, s.quota_state.as_str()), (1073741824, 3, "nearing"));
+    let cached = account_cache::load(&paths.account(&account.id).unwrap().account_cache).unwrap();
+    assert_eq!((cached.quota_used, cached.quota_total, cached.quota_remaining, cached.quota_state.as_str()), (1073741824, 5368709120, 3, "nearing"));
+    assert!(cached.quota_read_at > 100);
 }
 
 #[tokio::test]

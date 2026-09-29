@@ -531,7 +531,11 @@ waiting for space records none: `QuotaFull` says it once for the account).
 
 **Free space** is Graph's `quota.remaining`, never `total - used`; `quota.state` is `normal`,
 `nearing`, `critical` or `exceeded`. Between two reads the bytes uploaded are taken off
-`remaining`, so the figure shown (`QuotaRemaining`) does not go stale.
+`remaining`, so the figure shown (`Account.QuotaRemaining`) does not go stale. There is one quota
+per account, `Account`'s: the space check reads into it and takes what it uploads off it, and the
+account's own reads (a sign-in, `RefreshInfo`) update it too, so the Account page's figures and the
+uploads' are the same. A refusal within 10 s of any read, the account's included, uses that read
+instead of asking again.
 
 **A refusal** (`507`, `quotaLimitReached`) reads the quota at once — one request; refusals of rows
 running together share a read of the last 10 s. Then:
@@ -567,7 +571,7 @@ rows in their places, the worker counts as full while any such row waits, and th
 once before anything sends content.
 
 **What shows it**: `UploadQueue.QuotaFull`, `QuotaWaitingCount`/`QuotaWaitingBytes` (while full, the
-changes that send content), `TooBigCount`, `QuotaState` and `QuotaRemaining`; one line on the Status
+changes that send content), `TooBigCount`, and `Account.QuotaState` and `QuotaRemaining`; one line on the Status
 page and in `konedrivectl sync status` instead of a row per file; on the Not Uploaded page and in
 `sync not-uploaded` (`NotUploadedSummary`), `waiting-for-space` and `too-big` are each one line in
 "Needs you — one action", with Refresh; the tray needs attention while full or while a file is too
@@ -789,14 +793,15 @@ is answered by content hash or by place, never by guessing.
 Per account: on `org.konedrive.UploadQueue`, `Changes`, `ConfirmDeletes`/`RestoreDeletes`,
 `NotUploaded`, `NotUploadedSummary`, `NotUploadedFiles` and the properties `PendingCount`,
 `PendingBytes`, `BlockedCount`, `HeldCount`, `QuotaFull`, `QuotaWaitingCount`, `QuotaWaitingBytes`,
-`TooBigCount`, `QuotaState`, `QuotaRemaining` (§6.4); on `org.konedrive.Folder`, `Pause`/`Resume`,
+`TooBigCount` (§6.4); on `org.konedrive.Folder`, `Pause`/`Resume`,
 `SetIgnorePatterns`, `Paused`, `PausedUntil` and `IgnorePatterns`; `Transfers.Uploads`;
 `Conflicts.MachineName`; and the Full local scan's `org.konedrive.LocalScan` — `State`, `Reason`,
 `Started`, `Directories`, `Files`, `Expected`, `Finished`, `Took` (§4.6);
 the activity kinds `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, `restored` and
 `not-uploaded`; the
 error `NotUploaded`, which "Free up space" gets for a file with changes not uploaded yet. On
-`Account`: `SetMode` and `Mode`. [desktop.md](desktop.md) has each member, the commands and the
+`Account`: `SetMode`, `Mode`, and the quota (`QuotaUsed`, `QuotaTotal`, `QuotaRemaining`,
+`QuotaState`, §6.4). [desktop.md](desktop.md) has each member, the commands and the
 window's pages.
 
 **Answers from memory.** The counts (`PendingCount`, `PendingBytes`, `BlockedCount`, `HeldCount`,

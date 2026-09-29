@@ -7,6 +7,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{oneshot, Mutex};
 
 use crate::account_cache::{self, AccountInfo};
+use crate::quota::Quota;
 use crate::config::{is_valid_client_id, AccountPaths, Config, ConfigError, ConfigStore, Mode, Paths, MIGRATED_LABEL};
 use crate::graph::{GraphClient, GraphError};
 use crate::loopback::{Callback, LoopbackError, LoopbackListener};
@@ -151,9 +152,12 @@ pub struct AccountService {
     state: StateHandle,
     /// `account.json`: the cached name and quota, and what the last token was valid for.
     cache: PathBuf,
-    /// Held across every read-modify-write of `account.json`: a refresh's granted scopes and
-    /// `refresh_account_info`'s name and quota each keep the other's.
-    cache_lock: std::sync::Mutex<()>,
+    /// Held across every read-modify-write of `account.json`: a refresh's granted scopes,
+    /// `refresh_account_info`'s name and every read of the quota each keep the others'.
+    cache_lock: Arc<std::sync::Mutex<()>>,
+    /// The account's one quota (`crate::quota`), in `state`, kept in `account.json` at every
+    /// read, whoever reads it.
+    quota: Quota,
     /// The account's folder, as the mode switch asks it about waiting uploads. Empty until
     /// the accounts manager wires the folder up, and in tests without one.
     uploads: std::sync::Mutex<Option<Weak<dyn PendingUploads>>>,
@@ -213,12 +217,15 @@ impl AccountService {
             ..AccountSnapshot::default()
         });
         let tokens = Arc::new(TokenManager::new(secrets.clone(), state.clone()));
+        let cache_lock = Arc::new(std::sync::Mutex::new(()));
+        let quota = Quota::new(state.clone(), Some(keep_quota(paths.account_cache.clone(), Arc::clone(&cache_lock))));
         let service = Arc::new(Self {
             id: id.to_owned(),
             config,
             state,
             cache: paths.account_cache,
-            cache_lock: std::sync::Mutex::new(()),
+            cache_lock,
+            quota,
             uploads: std::sync::Mutex::new(None),
             endpoints,
             http,
@@ -299,6 +306,11 @@ impl AccountService {
 
     pub fn state(&self) -> &StateHandle {
         &self.state
+    }
+
+    /// The account's one quota, which its folder's uploads read and adjust too.
+    pub fn quota(&self) -> &Quota {
+        &self.quota
     }
 
     /// Access tokens for Graph callers.
@@ -669,15 +681,7 @@ impl AccountService {
                 return;
             }
         };
-        let info = AccountInfo {
-            display_name: profile.display_name,
-            email: profile.email,
-            quota_used: drive.quota.used,
-            quota_total: drive.quota.total,
-            fetched_at: unix_now(),
-            granted_scopes: String::new(),
-            drive_id: String::new(),
-        };
+        let (display_name, email) = (profile.display_name, profile.email);
         // Same lock `sign_out` holds for its whole call: if a sign-out is in progress (or
         // ran to completion while the Graph calls above were in flight), either this waits
         // until it is done and then sees `SignedOut` below, or it beats a sign-out that is
@@ -691,24 +695,32 @@ impl AccountService {
         if let Err(e) = self.record_drive(&drive.id) {
             tracing::warn!("cannot record the drive of account {:?}: {e}", self.id);
         }
-        self.secrets.describe(&info.email);
-        {
-            // The granted scopes as the last refresh left them, and the drive the token was
-            // just seen to reach, kept beside the name and quota.
-            let _cache = self.cache_lock.lock().unwrap();
-            let granted_scopes = self.state.get().granted_scopes;
-            let info = AccountInfo { granted_scopes, drive_id: drive.id.clone(), ..info.clone() };
-            if let Err(e) = account_cache::save(&self.cache, &info) {
-                tracing::warn!("cannot write the account cache: {e}");
-            }
-        }
+        self.secrets.describe(&email);
+        // The granted scopes as the last refresh left them, and the drive the token was just
+        // seen to reach, kept beside the name; the quota is kept by its own read, below.
+        let granted_scopes = self.state.get().granted_scopes;
+        self.save_cache(|info| {
+            info.display_name = display_name.clone();
+            info.email = email.clone();
+            info.fetched_at = unix_now();
+            info.granted_scopes = granted_scopes;
+            info.drive_id = drive.id.clone();
+        });
+        let mut signed_in = false;
         self.state.update(|s| {
             if s.state == SignInState::SignedIn {
-                apply_info(s, &info);
+                signed_in = true;
+                s.display_name = display_name.clone();
+                s.email = email.clone();
                 s.live_drive = drive.id.clone();
                 s.last_error.clear();
             }
         });
+        // One quota for the account: this read is the one `QuotaRemaining` shows, and the one
+        // the uploads' space check next uses when it may reuse a read.
+        if signed_in {
+            self.quota.read(&drive.quota);
+        }
         // Says again why a read-write account runs read-only, if it does: the drive may have
         // just been recorded, or be another than config.toml's, and the line above cleared the
         // reason. A drive that is not the recorded one turns a read-write account read-only.
@@ -1322,6 +1334,30 @@ fn apply_info(s: &mut AccountSnapshot, info: &AccountInfo) {
     s.email = info.email.clone();
     s.quota_used = info.quota_used;
     s.quota_total = info.quota_total;
+    s.quota_remaining = info.quota_remaining;
+    s.quota_state = info.quota_state.clone();
+    s.quota_read_at = info.quota_read_at;
+}
+
+/// What keeps the account's quota across restarts: at every read, its four figures and the
+/// time into `account.json` (`cache`, under `lock`), while the account is signed in — a read
+/// that lands after a sign-out, which deletes the file, writes nothing.
+fn keep_quota(cache: PathBuf, lock: Arc<std::sync::Mutex<()>>) -> crate::quota::Keep {
+    Arc::new(move |s: &AccountSnapshot| {
+        if s.state != SignInState::SignedIn {
+            return;
+        }
+        let _cache = lock.lock().unwrap();
+        let mut info = account_cache::load(&cache).unwrap_or_default();
+        info.quota_used = s.quota_used;
+        info.quota_total = s.quota_total;
+        info.quota_remaining = s.quota_remaining;
+        info.quota_state = s.quota_state.clone();
+        info.quota_read_at = s.quota_read_at;
+        if let Err(e) = account_cache::save(&cache, &info) {
+            tracing::warn!("cannot write the account cache: {e}");
+        }
+    })
 }
 
 /// What a retired account answers a sign-in.

@@ -16,6 +16,7 @@ pub mod oauth;
 pub mod pkce;
 pub mod pool;
 pub mod quickxor;
+pub mod quota;
 pub mod secret;
 pub mod state;
 pub mod sync;

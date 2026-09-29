@@ -433,16 +433,6 @@ impl UploadQueue {
     async fn too_big_count(&self) -> u32 {
         self.service.state().get().too_big_count
     }
-
-    #[zbus(property)]
-    async fn quota_state(&self) -> String {
-        self.service.state().get().quota_state
-    }
-
-    #[zbus(property)]
-    async fn quota_remaining(&self) -> u64 {
-        self.service.state().get().free_space
-    }
 }
 
 #[interface(name = "org.konedrive.Conflicts")]
@@ -691,8 +681,6 @@ pub(crate) struct Coalesced {
     space_waiting_count: u32,
     space_waiting_bytes: u64,
     too_big_count: u32,
-    quota_state: String,
-    free_space: u64,
     throughput: crate::pool::Throughput,
     queue: super::totals::QueueTotals,
     scan: super::local_scan::LocalScan,
@@ -720,8 +708,6 @@ impl Coalesced {
             space_waiting_count: s.space_waiting_count,
             space_waiting_bytes: s.space_waiting_bytes,
             too_big_count: s.too_big_count,
-            quota_state: s.quota_state.clone(),
-            free_space: s.free_space,
             throughput: s.throughput,
             queue: s.queue,
             scan: s.scan.clone(),
@@ -778,12 +764,6 @@ impl Coalesced {
         }
         if old.too_big_count != self.too_big_count {
             put(queue, "TooBigCount", self.too_big_count.into());
-        }
-        if old.quota_state != self.quota_state {
-            put(queue, "QuotaState", self.quota_state.clone().into());
-        }
-        if old.free_space != self.free_space {
-            put(queue, "QuotaRemaining", self.free_space.into());
         }
         let moving = TRANSFERS_INTERFACE_NAME;
         if old.downloads != self.downloads {

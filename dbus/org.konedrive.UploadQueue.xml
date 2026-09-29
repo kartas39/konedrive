@@ -93,13 +93,7 @@
     <property name="QuotaWaitingBytes" type="t" access="read"/>
     <!-- Files OneDrive refused as too big for the space left: each waits,
          in Changes with reason "too-big:<bytes needed>:<bytes free>", until a
-         quota read shows it fits. Coalesced with the counts above. -->
+         quota read (Account.QuotaRemaining) shows it fits. Coalesced with the counts above. -->
     <property name="TooBigCount" type="u" access="read"/>
-    <!-- The quota as last read: Graph's quota.state (normal, nearing,
-         critical, exceeded; empty until read) and quota.remaining, less
-         what was uploaded since (0 until read). Coalesced with the counts
-         above. -->
-    <property name="QuotaState" type="s" access="read"/>
-    <property name="QuotaRemaining" type="t" access="read"/>
   </interface>
 </node>

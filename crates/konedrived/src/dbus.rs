@@ -94,6 +94,18 @@ impl Account {
     async fn quota_total(&self) -> u64 {
         self.service.state().get().quota_total
     }
+
+    /// Graph's `quota.remaining` as last read, less what went up since (`crate::quota`).
+    #[zbus(property)]
+    async fn quota_remaining(&self) -> u64 {
+        self.service.state().get().quota_remaining
+    }
+
+    /// Graph's `quota.state` as last read: `normal`, `nearing`, `critical`, `exceeded`.
+    #[zbus(property)]
+    async fn quota_state(&self) -> String {
+        self.service.state().get().quota_state
+    }
 }
 
 fn to_fdo(error: AccountError) -> fdo::Error {
@@ -271,6 +283,12 @@ async fn emit_changes(
     }
     if old.quota_total != new.quota_total {
         account.quota_total_changed(emitter).await?;
+    }
+    if old.quota_remaining != new.quota_remaining {
+        account.quota_remaining_changed(emitter).await?;
+    }
+    if old.quota_state != new.quota_state {
+        account.quota_state_changed(emitter).await?;
     }
     if old.mode != new.mode {
         account.mode_changed(emitter).await?;

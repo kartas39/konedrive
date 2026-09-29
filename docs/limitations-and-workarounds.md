@@ -2348,6 +2348,18 @@ application must never read zeros where real content should be.
   drops the rows; the worker's own look runs only while it may send. FRAGILE · measured with the
   fake OneDrive (`sync::upload::tests::sessions::*`, `drive::upload::tests::a_throttled_fragment_…`),
   reasoned for OneDrive itself (F131). Open.
+- **F173. One quota per account, cached only at a read** (`quota.rs`, `account.rs`
+  `keep_quota`, `sync/upload/space.rs`; issue #78) — `Account`'s `QuotaUsed`, `QuotaTotal`,
+  `QuotaRemaining` and `QuotaState` are the only copy: the account's info and the uploads' space
+  check both read into it, and each upload takes its size off `QuotaRemaining` and adds it to
+  `QuotaUsed`. What is left: (1) `account.json` is written at each read, not at each upload, so
+  after a restart the figures are the last read's until the next one (at the account's first
+  refresh); (2) a read that gives no total (Graph left it out) keeps used and total as they were,
+  and one that gives no `remaining` keeps the last one; (3) each upload changes two properties at
+  once, sent as they change rather than coalesced: a bulk upload of small files sends two
+  `PropertiesChanged` of `Account` per file at most; (4) the space check may reuse any read of the
+  last 10 s for a refusal — the account's included — so a read the account made just before space
+  was freed elsewhere decides one refusal more. FRAGILE · reasoned · open.
 ---
 
 ## 5. Provisional numbers

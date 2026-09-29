@@ -53,7 +53,7 @@ to §2.7.
 | `State` (`s`) | `signed-out`, `signing-in` or `signed-in` |
 | `LastError` (`s`) | the reason for the most recent failure, a sign-in refused as another account's included ([accounts.md](accounts.md) §6.2); empty when none |
 | `DisplayName`, `Email` (`s`) | from `GET /me` |
-| `QuotaUsed`, `QuotaTotal` (`t`) | bytes, from `GET /me/drive` |
+| `QuotaUsed`, `QuotaTotal`, `QuotaRemaining` (`t`), `QuotaState` (`s`) | the account's one quota: bytes used and in all, Graph's `quota.remaining` (never `total - used`) and `quota.state` (`normal`, `nearing`, `critical`, `exceeded`), from `GET /me/drive`, whoever reads it — the account's info (a sign-in, `RefreshInfo`) or the uploads' space check (`Folder.Refresh`, a refused upload, the check every 30 minutes; [writes.md](writes.md) §6.4). Every read updates all four, and what it did not give keeps its last value; between reads the bytes uploaded come off `QuotaRemaining` and are added to `QuotaUsed`. 0 and empty until read; kept in `account.json` across restarts |
 | `BeginSignIn() → s url` | starts the loopback listener and returns the authorization URL; the caller opens it ([sync.md](sync.md) §12.1) |
 | `CancelSignIn()`, `SignOut()`, `RefreshInfo()` | as named; `SignOut` deletes the refresh token; `RefreshInfo` reads the name, the address and the quota again |
 | `SetLabel(s)` | renames the account; `InvalidArgs` for a label the rules refuse |
@@ -137,7 +137,6 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `QuotaFull` (`b`) | OneDrive is full: no content goes up until a quota read finds space ([writes.md](writes.md) §6.4) |
 | `QuotaWaitingCount` (`u`), `QuotaWaitingBytes` (`t`) | while full, the changes that send content, and the size of their files |
 | `TooBigCount` (`u`) | files refused as too big for the space left; each is `ready` in `Changes()` with reason `too-big:<needed>:<free>` |
-| `QuotaState` (`s`), `QuotaRemaining` (`t`) | Graph's `quota.state` and `quota.remaining` as last read (by `Folder.Refresh`, `Account.RefreshInfo` or the queue), less what was uploaded since; empty and 0 until read |
 
 `Conflicts`:
 

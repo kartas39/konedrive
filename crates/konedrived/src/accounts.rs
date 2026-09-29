@@ -189,6 +189,8 @@ impl AccountManager {
         self.siblings.add(&account);
         let persist = Persist { store: Arc::clone(&self.config), account: entry.id.clone() };
         let sync = SyncService::on_hub(&self.hub, Some(account.state().clone()), Some(persist));
+        // One quota for the account, whoever reads it (issue #78).
+        sync.set_quota(account.quota().clone());
         let config = self.config.snapshot();
         sync.set_transfer_limits(config.transfer_ceiling(), config.transfer_large());
         // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2).
