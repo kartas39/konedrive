@@ -20,7 +20,7 @@ use konedrive_fs::placeholder::{self, State};
 
 use super::engine::{now, Engine, Fail, Outcome};
 use super::local::{self, Found, Read, Snap, SYNC_UPLOADING};
-use super::steps::{answer_row, blocking, cancel_session, commit_row, copy, follow_cloud, local_name, locate, never_uploaded, parent_of, taken, temporary, upload_as_new, wanted_name, Ours, Taken};
+use super::steps::{answer_row, blocking, cancel_session, commit_row, copy, follow_cloud, held, local_name, locate, never_uploaded, parent_of, taken, temporary, upload_as_new, wanted_name, Ours, Taken};
 use super::{kind, reason, space, Fault};
 use crate::drive::item::parse_graph_time;
 use crate::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
@@ -210,6 +210,7 @@ impl Job<'_> {
                     // The same content is there: its own earlier request, or
                     // create/create with equal files (§6). Nothing is sent.
                     Taken::Adopt(item) => self.commit(*item).await,
+                    Taken::Held => Ok(held(self.row)),
                     Taken::Copy => copy(self.e, self.disk, self.row, self.found, self.parent, None).await,
                 }
             }
@@ -311,6 +312,7 @@ impl Job<'_> {
                     Taken::Free => return Ok(Outcome::again()),
                     Taken::Temporary(swap) => return temporary(self.e, row, self.parent, &swap).await,
                     Taken::Adopt(item) => guard = item.e_tag.unwrap_or(guard),
+                    Taken::Held => return Ok(held(row)),
                     Taken::Copy => return copy(self.e, self.disk, row, self.found, self.parent, None).await,
                 },
                 Err(WriteError::Changed) => match self.landed(id, &base).await? {

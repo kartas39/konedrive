@@ -2341,7 +2341,7 @@ application must never read zeros where real content should be.
   (8)). A replacement's new inode is still recorded on its own. LIMIT (chosen) · measured. Open.
 - **F172. An open upload session holds its name with an empty file** (`drive/upload.rs`,
   `sync/upload/content.rs`, `steps.rs`, `cancel_session`; `tree/outbox/worker.rs`,
-  `upload_sessions`; write design §6.1; issue #47) — until a new file's session completes or is
+  `upload_sessions`; write design §6.1, §6.2; issues #47, #84, #89) — until a new file's session completes or is
   cancelled, OneDrive keeps a 0-byte file under its name, created at the session's opening, and
   refuses a second session of that name `409`. Measured on the test account: 25 of ~27 000 files
   became false conflict copies when a throttled one-request upload was retried with a new session.
@@ -2354,10 +2354,19 @@ application must never read zeros where real content should be.
   deletes it and creates again. OneDrive lets an open session's placeholder be deleted, and the
   delete ends the session (measured, below); if it ever refuses, the row waits
   (`upload-session-open`) — no copy. Someone else's empty file created at that name after the
-  recording, while the row still tries, would be taken for ours and deleted (to the recycle bin,
-  guarded by its eTag); a holder whose `createdDateTime` is not given is never taken for ours. A
-  session opened before sessions were listed or openings recorded is known to nothing, and still
-  makes a copy; the conflict copies the bug left are removed by hand. (2) What a placeholder is,
+  recording, while the row still tries — or another device's placeholder opened there then, or up
+  to 5 minutes before it — would be taken for ours and deleted (to the recycle bin, guarded by its
+  eTag; for a placeholder, the delete ends that device's upload); a holder whose `createdDateTime`
+  is not given is never taken for ours. A placeholder nothing here recorded — a session opened
+  before sessions were listed or openings recorded, one another device is filling, one abandoned
+  by another device or an older version — holds the name and the row waits
+  (`name-held-by-an-upload`, issue #89) until the name is free or the holder has content (then a
+  real conflict is still a copy); it is never copied around and never deleted. One abandoned is
+  never removed by the daemon, so its row waits until it is deleted outside konedrive (there is no
+  command for it); how long OneDrive keeps an abandoned one is not known (it outlived a day). Any
+  empty file the delta feed has not listed is taken for a placeholder: a real empty file made in
+  OneDrive at that name is waited for too, for a cycle or two, until the feed lists it. The
+  placeholders and the conflict copies the bug left before are removed by hand. (2) What a placeholder is,
   measured on the test account (2026-09-29, `konedrive-write-test --only placeholders`): an item
   of size 0 with a `file` facet whose quickXorHash is all zeros, created by konedrive's application
   id, its `fileSystemInfo` time its creation time (the time the session request sends is applied

@@ -228,15 +228,18 @@ fn a_placeholder_onedrive_will_not_delete_makes_the_row_wait_not_a_copy() {
 
 /// At a place with an opening recorded, a `409` from a file with content, or
 /// from an empty file made before the recording, is someone else's: a
-/// conflict copy, as for any `409`. Nothing of theirs is deleted.
+/// conflict copy, as for any `409`. Nothing of theirs is deleted. (The file
+/// is one the delta feed listed — as `x.txt`, renamed in OneDrive since: an
+/// empty file it never listed would be waited for, issue #89.)
 #[test]
 fn a_409_at_a_recorded_place_from_someone_elses_file_is_still_a_conflict() {
     for (theirs, age) in [(&b"theirs"[..], 0), (&b""[..], 3600)] {
-        let w = World::new(&[]);
+        let w = World::new(&[file("X", "R", "x.txt", theirs)]);
         w.write("a.txt", b"mine");
         w.examine(&[("", "a.txt")]);
         w.cloud(|c| {
-            c.add_file("X", fake::ROOT, "a.txt", theirs);
+            c.edit("X", theirs);
+            c.rename("X", fake::ROOT, "a.txt");
             c.created.insert("X".into(), crate::sync::activity::unix_now() - age);
         });
         w.run();
@@ -269,4 +272,96 @@ fn a_recorded_opening_outlasts_a_restart_and_goes_with_its_row() {
         assert_eq!(opening_at(&w, "a.txt"), None, "removed {removed}");
         assert_eq!(conflicts(&w), 0);
     }
+}
+
+/// Issue #89: a name held by the placeholder of an upload session nothing
+/// here recorded — another device's, or one an older version abandoned.
+/// For a new file, a rename onto the name, and a folder's `mkdir`: the row
+/// waits (`name-held-by-an-upload`), no copy is made and the placeholder is
+/// never deleted (a delete would end that session). Once the session
+/// completes with other content, that is someone else's file: a copy, as for
+/// any `409`. Once it is cancelled, the row goes through under its name.
+#[test]
+fn a_name_held_by_an_unknown_placeholder_waits_and_is_never_a_copy() {
+    for what in ["create", "rename", "mkdir"] {
+        for completed in [false, true] {
+            let at = format!("{what} completed {completed}");
+            let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+            let (name, copy_name) = if what == "mkdir" { ("dir", "dir-fedora") } else { ("b.txt", "b-fedora.txt") };
+            let sid = w.cloud(|c| c.open_elsewhere(fake::ROOT, name));
+            match what {
+                "create" => {
+                    w.write("b.txt", b"mine");
+                    w.examine(&[("", "b.txt")]);
+                }
+                "rename" => {
+                    w.rename("a.txt", "b.txt");
+                    w.examine(&[("", "a.txt"), ("", "b.txt")]);
+                }
+                _ => {
+                    std::fs::create_dir(w.path("dir")).unwrap();
+                    w.examine(&[("", "dir")]);
+                }
+            }
+            w.run();
+            assert_eq!(w.rows().len(), 1, "{at}: {:?}", w.summary());
+            assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD), "{at}");
+            assert_eq!(w.cloud(|c| c.placeholders()), vec![name.to_owned()], "{at}: never deleted");
+            assert_eq!(w.cloud(|c| c.open_sessions()), 1, "{at}: its session goes on");
+            assert_eq!(conflicts(&w), 0, "{at}");
+            assert!(!w.path(copy_name).exists(), "{at}");
+
+            if completed {
+                w.cloud(|c| c.complete_elsewhere(&sid, b"theirs"));
+            } else {
+                w.cloud(|c| c.cancel_elsewhere(&sid));
+            }
+            due(&w);
+            w.run();
+            assert!(w.rows().is_empty(), "{at}: {:?}", w.summary());
+            if completed {
+                assert_eq!(w.content(name).unwrap(), b"theirs", "{at}");
+                assert!(w.id_at(copy_name).is_some(), "{at}: kept beside it");
+                assert_eq!(conflicts(&w), 1, "{at}");
+            } else {
+                assert!(w.id_at(name).is_some(), "{at}");
+                assert_eq!(conflicts(&w), 0, "{at}");
+                if what != "rename" {
+                    assert_committed(&w, name, name);
+                }
+            }
+        }
+    }
+}
+
+/// An empty file the delta feed listed is a real file, never waited for: a
+/// new file at its name (it was renamed there in OneDrive, the feed not
+/// brought yet) is a conflict copy, as today.
+#[test]
+fn an_empty_file_the_feed_listed_is_still_a_conflict() {
+    let w = World::new(&[file("X", "R", "x.txt", b"")]);
+    w.write("a.txt", b"mine");
+    w.examine(&[("", "a.txt")]);
+    w.cloud(|c| c.rename("X", fake::ROOT, "a.txt"));
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["a-fedora.txt", "a.txt"]);
+    assert_eq!(w.id_at("a.txt").as_deref(), Some("X"));
+    assert_eq!(w.content("a-fedora.txt").unwrap(), b"mine");
+    assert_eq!(conflicts(&w), 1);
+}
+
+/// An empty local file over an unknown placeholder: the same content (both
+/// empty), adopted as today — no wait, no copy, nothing deleted.
+#[test]
+fn an_empty_file_over_an_unknown_placeholder_is_adopted() {
+    let w = World::new(&[]);
+    w.cloud(|c| c.open_elsewhere(fake::ROOT, "a.txt"));
+    w.write("a.txt", b"");
+    w.examine(&[("", "a.txt")]);
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(conflicts(&w), 0);
+    assert_eq!(w.cloud(|c| c.count("DELETE", "items/")), 0);
+    assert!(!w.path("a-fedora.txt").exists());
 }

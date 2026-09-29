@@ -509,10 +509,17 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
   persisting so leaves a placeholder this folder still knows of.
 - **A `409` at a recorded place.** With no listed session there but an opening recorded, the holder
   is read: an empty file created at or after the recording, less 5 minutes for the clocks, is that
-  opening's placeholder. It is deleted (with its eTag) and the create goes again; if OneDrive
-  refuses the delete, the row waits (`upload-session-open`) until the orphan session expires and
-  frees the name. Never a copy. A holder with content, one created earlier, or one whose time is
-  not given is someone else's: §6.2's `409` rule decides.
+  opening's placeholder. It is deleted (with its eTag; OneDrive lets it, and the delete ends the
+  session — measured, limitations log F172) and the create goes again; a delete OneDrive refuses
+  leaves the row waiting (`upload-session-open`) until the name is free. Never a copy. A holder
+  with content, one created earlier, or one whose time is not given is not taken for ours: §6.2's
+  `409` rule decides.
+- **A placeholder not ours is never deleted** (issue #89). Nothing in OneDrive says which machine
+  opened a session, and nothing about a placeholder changes while its session is used or idle, so
+  a live session cannot be told from an abandoned one; a delete of a placeholder ends its session,
+  so deleting one another device is filling would kill that device's upload. Only this folder's
+  own records (the listed sessions, the recorded openings) make a placeholder ours; any other
+  holds its name, and the row waits (§6.2).
 
 - **The daemon's stop** (issue #84). On SIGTERM (systemd's stop, a package upgrade) or SIGINT the
   outbox workers take no more rows; the rows in flight finish the request they sent — an opened
@@ -522,7 +529,8 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
   it. A second signal exits at once.
 
 A session opened before sessions were listed, or before openings were recorded, is known to
-nothing: its placeholder holds the name until the session expires (limitations log F172).
+nothing: its placeholder holds the name, and the row waits for it as for another device's (§6.2;
+limitations log F172).
 
 ### 6.2 What the answers mean
 
@@ -530,7 +538,7 @@ nothing: its placeholder holds the name until the session expires (limitations l
 |---|---|
 | `200`, `201` | the commit (§5.4) |
 | `202` | a fragment accepted: `session_next` persisted, the next one sent |
-| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours (it is this content already), a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3); anything else makes the file here a copy (§7) |
+| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours (it is this content already), a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3). What would be a copy but is an empty file the items table (the delta feed's mirror) does not know is, as far as anything here can tell, an upload session's placeholder (never in the feed): never a copy, never deleted — the row waits (`name-held-by-an-upload`, the usual backoff) until the name is free, or the holder has content or the feed lists it, and then decides again (issue #89). This holds for every `409`: a create, a move or rename, a folder's `mkdir`. An empty file the feed listed is a real file. Anything else makes the file here a copy (§7) |
 | `412` | the item is read again: the same hash as ours means done already; the base's cTag means only its metadata changed, and the request goes again with the fresh eTag; otherwise §7 |
 | `404` | gone in OneDrive: §7 |
 | `404` from an upload URL | the session ended: the item is read and adopted if its hash is ours, else a new session from zero |
@@ -638,7 +646,8 @@ characters.
 
 **Both new at one name** (create/create): the same hash is adopted, no copy and nothing sent;
 another hash gets a copy. A name that differs only in case is the same name to OneDrive, and gets a
-copy. Two new folders of one name merge, their contents meeting file by file under these rules.
+copy. An empty file at the name that the delta feed has not listed is never a conflict: it is taken
+for an upload's placeholder, and the row waits (§6.2). Two new folders of one name merge, their contents meeting file by file under these rules.
 
 **Folders.** A folder deleted here is deleted whole in OneDrive — one `DELETE` of the folder itself,
 unguarded — whatever it gained or changed there meanwhile, as on Windows: the recycle bin is the

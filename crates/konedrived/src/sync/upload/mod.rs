@@ -152,6 +152,11 @@ pub mod reason {
     /// sends, or one given up whose cancel has not gone through yet. Tried
     /// again later, never taken for someone else's file.
     pub const SESSION_OPEN: &str = "upload-session-open";
+    /// The row's name in OneDrive is held by an empty file the delta feed
+    /// never listed: an upload session's placeholder — another device's, or
+    /// one abandoned (issue #89). Never copied around, never deleted; tried
+    /// again later, until the name is free or the holder has content.
+    pub const NAME_HELD: &str = "name-held-by-an-upload";
 }
 
 /// The activity kinds the worker writes (§9; the outbox on the bus adds them to the D-Bus

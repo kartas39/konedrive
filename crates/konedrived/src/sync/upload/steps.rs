@@ -173,6 +173,12 @@ pub(super) enum Taken {
     /// What stands there is what the row makes: its own earlier request, or
     /// the same content (§5, §6 create/create).
     Adopt(Box<DriveItem>),
+    /// An empty file the delta feed never listed: as far as anything here
+    /// can tell, the placeholder of an upload session — another device's,
+    /// one abandoned, or one of this folder's (issue #89). Never copied
+    /// around, never deleted (a delete ends its session): the row waits
+    /// ([`reason::NAME_HELD`]).
+    Held,
     /// Something else: keep both (§6).
     Copy,
 }
@@ -185,6 +191,12 @@ pub(super) enum Taken {
 /// replay still adopts its own folder. An item this machine already knows
 /// (one with a live row, or placed here) is never adopted by another local
 /// object: that would give two objects one id.
+///
+/// What would otherwise be a copy is [`Taken::Held`] when the holder is an
+/// empty file the items table (the delta feed's mirror) does not know: an
+/// upload session's placeholder is never in the feed, and nothing in OneDrive
+/// tells a live session from an abandoned one, or whose it is (issue #89). An
+/// empty file the feed listed is a real file, and decided as any other.
 pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str, ours: Ours<'_>) -> Result<Taken, Fail> {
     let holder = match e.cfg.drive.child(parent, name).await {
         Ok(holder) => holder,
@@ -222,7 +234,22 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
             let held_by = holder.id.clone();
             e.store().call(move |s| s.local_handle(&held_by)).await?.is_some()
         });
-    Ok(if is_ours && !known_here { Taken::Adopt(Box::new(holder)) } else { Taken::Copy })
+    if is_ours && !known_here {
+        return Ok(Taken::Adopt(Box::new(holder)));
+    }
+    if holder.file.is_some() && holder.size == Some(0) {
+        let id = holder.id.clone();
+        if e.store().call(move |s| s.get(Table::Items, &id)).await?.is_none() {
+            return Ok(Taken::Held);
+        }
+    }
+    Ok(Taken::Copy)
+}
+
+/// [`Taken::Held`]: the row waits for the name, with the usual backoff.
+pub(super) fn held(row: &OutboxRow) -> Outcome {
+    tracing::info!("{}: its name in OneDrive is held by an unfinished upload (another device, or one abandoned); waiting", row.rel.display());
+    Outcome::backoff(reason::NAME_HELD)
 }
 
 /// The row goes to `swap` first (saved before it is sent, WR7).
@@ -394,6 +421,7 @@ async fn mkdir(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
             // A folder of that name: adopted, and the contents merge file by
             // file (§4.2).
             Taken::Adopt(item) => commit_dir(e, &row, &found, dir, &item, &parent).await,
+            Taken::Held => Ok(held(&row)),
             Taken::Copy => copy(e, disk, &row, &found, &parent, None).await,
         },
         Err(WriteError::NotFound) => {
@@ -453,6 +481,7 @@ async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
             Taken::Free => Ok(Outcome::again()),
             Taken::Temporary(swap) => temporary(e, &row, &parent, &swap).await,
             Taken::Adopt(item) => commit_move(e, &row, found.as_ref(), &item, &parent).await,
+            Taken::Held => Ok(held(&row)),
             Taken::Copy => match &found {
                 Some(found) => copy(e, disk, &row, found, &parent, None).await,
                 None => Ok(Outcome::later(reason::NOT_FOUND, RECHECK)),

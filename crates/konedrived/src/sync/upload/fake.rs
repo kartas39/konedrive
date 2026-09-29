@@ -306,6 +306,30 @@ impl Cloud {
         self.log.iter().filter(|(m, p)| m == "GET" && p == "me/drive").count()
     }
 
+    /// An upload session for a new file at (`parent`, `name`) opened by
+    /// another device (or abandoned by an older version): its placeholder
+    /// holds the name, and nothing of this folder knows it — made an hour
+    /// ago, before any opening this folder records there. Its id.
+    pub fn open_elsewhere(&mut self, parent: &str, name: &str) -> String {
+        self.open_session(Target::New { parent: parent.into(), name: name.into() }, &json!({ "item": {} }));
+        self.created.insert(format!("P{}", self.counter), crate::sync::activity::unix_now() - 3600);
+        format!("s{}", self.counter)
+    }
+
+    /// That device's session `sid` completes with `content`: the file lands
+    /// at the placeholder's name.
+    pub fn complete_elsewhere(&mut self, sid: &str, content: &[u8]) {
+        let session = self.sessions.remove(sid).expect("no such session");
+        self.placeholders.remove(sid);
+        assert!(self.land(&session.target, content.to_vec(), 0).is_ok(), "landed");
+    }
+
+    /// That device cancels its session `sid`: the name is free.
+    pub fn cancel_elsewhere(&mut self, sid: &str) {
+        self.sessions.remove(sid).expect("no such session");
+        self.placeholders.remove(sid);
+    }
+
     /// Every open upload session expires: its URL answers `404` from now on.
     pub fn expire_sessions(&mut self) {
         self.sessions.clear();
