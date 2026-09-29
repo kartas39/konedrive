@@ -2312,6 +2312,16 @@ application must never read zeros where real content should be.
   `bench::the_conflicts_at_the_end_of_a_cycle`, the app's
   `modelstest::thousandsOfConflictsChangeInOneStep`,
   `dialogstest::thousandsSkippedAndConflictsAreAFewRows`). Open.
+- **F171. A reconcile records what it placed 500 at a time** (`sync/materialize.rs`,
+  `record_placed`, `PLACED_BATCH`; issue #39) — the inode each placed item was made as used to be
+  written by two committed `UPDATE`s and a job of its own per item (3 s for a full placement of
+  100 000 items); it is now noted in the run and written 500 at a time (a guess) in one
+  transaction, and whatever is left at the end of the run, also a run that fails (0.4 s,
+  `bench::recording_a_full_placement`). Until its batch is written, an item placed in this run has
+  no local object on record: nothing reads that before the run ends — the cycle holds the tree
+  lock across the reconcile, so no examination runs meanwhile — but a crash in between leaves up to
+  500 placed items without one, which the next read-write cycle looks at again and records (F82
+  (8)). A replacement's new inode is still recorded on its own. LIMIT (chosen) · measured. Open.
 ---
 
 ## 5. Provisional numbers
@@ -2346,6 +2356,7 @@ application must never read zeros where real content should be.
 | Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |
 | Thumbnail candidates looked at per query / per store call (`THUMB_PAGE`, `THUMB_SCAN`) | 500 / 5 000 | **guess** (`crates/konedrived/src/tree.rs`, issue #39) |
 | Replacements downloading at once (`REPLACE_WORKERS`) | 8, each also in a pool slot | **guess** (`crates/konedrived/src/sync/listing.rs`, issue #39) |
+| Placed items recorded in one transaction (`PLACED_BATCH`) | 500 | **guess** (`crates/konedrived/src/sync/materialize.rs`, issue #39) |
 | Conflicts looked over per cycle (`PRUNE_BATCH`) / rows the window's Skipped and Conflicts pages list / how often the Skipped page asks again | 200 / 200 / at most once a second | **guess** (`crates/konedrived/src/sync/activity.rs`, `app/qml/SkippedPage.qml`, `app/conflictmodel.h`; issue #39) |
 | Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
 | Shortest time between two `LocalBytes` walks | 5 s | **guess** |

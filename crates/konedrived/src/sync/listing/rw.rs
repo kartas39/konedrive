@@ -269,12 +269,14 @@ impl Listing {
                         .filter(|id| !plan.removing.contains(*id) && (plan.held.contains(*id) || applied.unsettled.contains(*id)))
                         .cloned()
                         .collect();
+                    let deferred: std::collections::HashSet<&String> = defer.iter().collect();
                     // Only the content waits where the disk took the rest.
                     let content: Vec<String> = changed
                         .iter()
-                        .filter(|id| !plan.removing.contains(*id) && !defer.contains(id) && applied.content_waits.contains(*id))
+                        .filter(|id| !plan.removing.contains(*id) && !deferred.contains(id) && applied.content_waits.contains(*id))
                         .cloned()
                         .collect();
+                    drop(deferred);
                     if !defer.is_empty() || !content.is_empty() {
                         tracing::debug!("{} change(s) wait for the folder to take them", defer.len() + content.len());
                     }

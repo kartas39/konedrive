@@ -729,12 +729,16 @@ fn recording_a_full_placement() {
     guard();
     let dir = tempfile::tempdir().unwrap();
     let store = store_at(dir.path(), &big_tree());
+    // As the reconcile records them: a batch at a time, one transaction each.
     let (_, took) = timed("recording 100 000 placed items", || {
+        let mut placed = Vec::new();
         for n in 0..100_000u64 {
             let (d, i) = (n / 1000, n % 1000);
-            let id = format!("F{d:02}-{i:03}");
-            let handle = object(n).handle.unwrap();
-            store.call_blocking(move |s| s.set_local_handle(&id, Some(&handle))).unwrap();
+            placed.push((format!("F{d:02}-{i:03}"), object(n).handle.unwrap()));
+            if placed.len() == crate::sync::materialize::PLACED_BATCH || n == 99_999 {
+                let batch = std::mem::take(&mut placed);
+                store.call_blocking(move |s| s.set_local_handles(&batch)).unwrap();
+            }
         }
     });
     within("recording a full placement", took, Duration::from_secs(5));
