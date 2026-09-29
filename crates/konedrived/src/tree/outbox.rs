@@ -1266,7 +1266,7 @@ impl TreeStore {
                 }
             }
             Committed::Gone { item_id } => {
-                apply(&tx, Table::Items, &[Change::Delete(item_id.to_owned())])?;
+                apply(&tx, crate::tree::Source::Items, &[Change::Delete(item_id.to_owned())])?;
                 // A delta fetched before this delete must not bring it back.
                 super::reconcile::tombstone(&tx, &[item_id], local_seq)?;
             }

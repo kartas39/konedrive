@@ -3,11 +3,19 @@
 //! on the files are that — so it is rebuilt from a full listing whenever it
 //! cannot be used, and losing it costs one listing, never data.
 //!
-//! `items` is the tree the folder was last made to match; `staging` is the
-//! tree a cycle is building. The folder is reconciled against `staging`, and
-//! only then does `staging` replace `items`, so a crash in between
-//! leaves `items` and the delta link as they were and the next cycle asks for
-//! the same changes again.
+//! `items` is the tree the folder was last made to match; [`Table::Staging`]
+//! is the tree a cycle is building. The folder is reconciled against the new
+//! tree, and only then does it replace `items`, in one transaction, so a
+//! crash in between leaves `items` and the delta link as they were and the
+//! next cycle asks for the same changes again.
+//!
+//! A delta's new tree is `items` with the delta laid over it (issue #39):
+//! the table `staging` holds only the rows the delta writes, each a whole
+//! row, and `staging_gone` the ids it removes. Reading the new tree reads
+//! `staging` first and `items` for the rest; the swap writes those rows and
+//! removes those ids, nothing else. A full listing, which may leave out
+//! anything, is staged whole instead: `staging` is then the new tree by
+//! itself (`meta` [`STAGING_WHOLE`]), and the swap replaces every row.
 //!
 //! A folder's first listing is the one exception: each page goes
 //! into `items` as soon as it is placed, with the link to the next page
@@ -41,10 +49,115 @@ const MAX_CHAIN: usize = konedrive_fs::MAX_DEPTH + 2;
 /// The `meta` key of a first listing's resume point.
 pub const LISTING_NEXT: &str = "listing_next";
 
+/// The `meta` key set while `staging` holds a whole new tree (a full
+/// listing) rather than a delta laid over `items`.
+pub const STAGING_WHOLE: &str = "staging_whole";
+
 /// Every column, for copies between `items` and `staging`: the local ones
 /// (`thumb_key`, `local_handle`, `local_seq`) travel with the row.
 const COLUMNS: &str = "id, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, thumb_key, local_handle, local_seq";
 const ROW_COLUMNS: &str = "id, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement";
+
+/// Created on every open (`IF NOT EXISTS`, issue #39): what a delta removes
+/// from the tree while it is staged, and the indexes that keep a cycle from
+/// reading the whole tree — the outbox's recent commits, what has no local
+/// object on record, what is skipped.
+const SCALE: &str = "
+    CREATE TABLE IF NOT EXISTS staging_gone (id TEXT PRIMARY KEY);
+    CREATE INDEX IF NOT EXISTS items_seq ON items(local_seq);
+    CREATE INDEX IF NOT EXISTS items_unplaced ON items(id) WHERE local_handle IS NULL AND placement = 'placed';
+    CREATE INDEX IF NOT EXISTS items_skipped ON items(id) WHERE placement != 'placed';";
+
+/// An `items` row `p` the delta laid over it leaves as it is.
+const UNTOUCHED: &str =
+    "NOT EXISTS (SELECT 1 FROM staging s WHERE s.id = p.id) AND NOT EXISTS (SELECT 1 FROM staging_gone g WHERE g.id = p.id)";
+
+/// Where the rows of a tree are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Source {
+    /// `items`.
+    Items,
+    /// `staging` alone: a full listing staged whole.
+    Whole,
+    /// `staging` over `items`, less `staging_gone`: a delta staged.
+    Overlay,
+}
+
+impl Source {
+    /// The tree as a table expression, for a query SQLite can push its
+    /// `WHERE` into (a point or index lookup) — never for a join or a
+    /// recursion, which would read it whole; see [`Source::step`].
+    fn rows(self) -> String {
+        match self {
+            Source::Items => "items".into(),
+            Source::Whole => "staging".into(),
+            Source::Overlay => {
+                format!("(SELECT {COLUMNS} FROM staging UNION ALL SELECT {COLUMNS} FROM items p WHERE {UNTOUCHED})")
+            }
+        }
+    }
+
+    /// One recursive step of a CTE over the tree: `select` reads `p`, the
+    /// tree's row, and `c`, the CTE's, joined `on`, where `filter` holds.
+    fn step(self, select: &str, cte: &str, on: &str, filter: &str) -> String {
+        match self {
+            Source::Items | Source::Whole => {
+                let t = if self == Source::Items { "items" } else { "staging" };
+                format!("SELECT {select} FROM {cte} c JOIN {t} p ON {on} WHERE {filter}")
+            }
+            Source::Overlay => format!(
+                "SELECT {select} FROM {cte} c JOIN staging p ON {on} WHERE {filter}
+                 UNION ALL
+                 SELECT {select} FROM {cte} c JOIN items p ON {on} WHERE {filter} AND {UNTOUCHED}"
+            ),
+        }
+    }
+}
+
+/// Everything below `?1` in the tree, as a query of ids.
+fn below_sql(source: Source) -> String {
+    format!(
+        "WITH RECURSIVE below(id, depth) AS (
+             SELECT id, 1 FROM {rows} WHERE parent_id = ?1
+             UNION ALL
+             {step})
+         SELECT id FROM below",
+        rows = source.rows(),
+        step = source.step("p.id, c.depth + 1", "below", "p.parent_id = c.id", &format!("c.depth < {MAX_CHAIN}"))
+    )
+}
+
+/// Where each item `start` selects is (`id, parent_id, name, placement` of
+/// the tree's rows, with `?1` the drive's root): `(id, path, above,
+/// own)` — the chain of names from the root, whether every folder above it
+/// (below the root) is placed, and whether it is itself. An item whose
+/// chain does not reach the root is left out. One query for the lot.
+fn chains_sql(source: Source, start: &str) -> String {
+    format!(
+        "WITH RECURSIVE chain(start, parent_id, path, above, own, depth) AS (
+             SELECT id, parent_id, name, 1, placement = 'placed', 0 FROM ({start}) WHERE id != ?1
+             UNION ALL
+             {step})
+         SELECT start, path, above, own FROM chain WHERE parent_id = ?1",
+        step = source.step(
+            "c.start, p.parent_id, p.name || '/' || c.path, c.above AND p.placement = 'placed', c.own, c.depth + 1",
+            "chain",
+            "p.id = c.parent_id",
+            &format!("c.depth < {MAX_CHAIN} AND c.parent_id != ?1")
+        )
+    )
+}
+
+/// One item's place, as [`chains_sql`] finds it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Chain {
+    pub id: String,
+    pub rel: PathBuf,
+    /// Every folder above it (below the root) is placed.
+    pub above: bool,
+    /// It is placed itself.
+    pub own: bool,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum TreeError {
@@ -330,6 +443,8 @@ pub struct TreeStore {
     conn: Connection,
     /// Where it is on disk; `None` in memory.
     path: Option<PathBuf>,
+    /// `staging` holds a whole new tree ([`STAGING_WHOLE`]), not a delta.
+    whole: bool,
     /// What changed in the outbox since it was last asked (issue #38).
     changes: std::sync::Arc<outbox::OutboxChanges>,
 }
@@ -388,7 +503,7 @@ impl TreeStore {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.set_prepared_statement_cache_capacity(64);
-        Ok(Self { conn, path: None, changes: Default::default() })
+        Ok(Self { conn, path: None, whole: false, changes: Default::default() })
     }
 
     /// Creates the schema in a store with no table at all, in one
@@ -446,12 +561,14 @@ impl TreeStore {
         // The read-write cycle's own tables, added to schema 3 without a
         // rebuild: a store made before them gains them here.
         conn.execute_batch(reconcile::TABLES)?;
+        conn.execute_batch(SCALE)?;
         outbox::upgrade(&conn)?;
+        let whole = conn.query_row("SELECT 1 FROM meta WHERE key = ?1", [STAGING_WHOLE], |_| Ok(())).optional()?.is_some();
         // The outbox's point queries run thousands of times in one examination.
         conn.set_prepared_statement_cache_capacity(64);
         let changes = std::sync::Arc::new(outbox::OutboxChanges::default());
         outbox::watch(&conn, &changes)?;
-        Ok(Self { conn, path: None, changes })
+        Ok(Self { conn, path: None, whole, changes })
     }
 
     pub fn meta(&self, key: &str) -> Result<Option<String>, TreeError> {
@@ -491,9 +608,19 @@ impl TreeStore {
         self.set_meta(LISTING_NEXT, Some(""))
     }
 
+    /// Where `table`'s rows are.
+    fn source(&self, table: Table) -> Source {
+        match (table, self.whole) {
+            (Table::Items, _) => Source::Items,
+            (Table::Staging, true) => Source::Whole,
+            (Table::Staging, false) => Source::Overlay,
+        }
+    }
+
     /// Whether `table` holds no row at all, the root's included.
     pub fn is_empty(&self, table: Table) -> Result<bool, TreeError> {
-        let any: Option<i64> = self.conn.query_row(&format!("SELECT 1 FROM {} LIMIT 1", table.name()), [], |row| row.get(0)).optional()?;
+        let sql = format!("SELECT 1 FROM {} LIMIT 1", self.source(table).rows());
+        let any: Option<i64> = self.conn.query_row(&sql, [], |row| row.get(0)).optional()?;
         Ok(any.is_none())
     }
 
@@ -502,30 +629,18 @@ impl TreeStore {
     }
 
     pub fn get(&self, table: Table, id: &str) -> Result<Option<Row>, TreeError> {
-        let sql = format!("SELECT {ROW_COLUMNS} FROM {} WHERE id = ?1", table.name());
-        Ok(self.conn.query_row(&sql, [id], row_from).optional()?)
+        get_row(&self.conn, self.source(table), id)
     }
 
     pub fn children(&self, table: Table, id: &str) -> Result<Vec<Row>, TreeError> {
-        let sql = format!("SELECT {ROW_COLUMNS} FROM {} WHERE parent_id = ?1 ORDER BY name", table.name());
-        let mut statement = self.conn.prepare(&sql)?;
+        let sql = format!("SELECT {ROW_COLUMNS} FROM {} WHERE parent_id = ?1 ORDER BY name", self.source(table).rows());
+        let mut statement = self.conn.prepare_cached(&sql)?;
         let rows = statement.query_map([id], row_from)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
     pub fn descendants(&self, table: Table, id: &str) -> Result<Vec<String>, TreeError> {
-        let sql = format!(
-            "WITH RECURSIVE below(id, depth) AS (
-                 SELECT id, 1 FROM {t} WHERE parent_id = ?1
-                 UNION ALL
-                 SELECT c.id, b.depth + 1 FROM {t} c JOIN below b ON c.parent_id = b.id WHERE b.depth < {max})
-             SELECT id FROM below",
-            t = table.name(),
-            max = MAX_CHAIN
-        );
-        let mut statement = self.conn.prepare(&sql)?;
-        let ids = statement.query_map([id], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
-        Ok(ids)
+        descendants_in(&self.conn, self.source(table), id)
     }
 
     /// Where `id` is: the chain of names from the root. `None` for an item that
@@ -533,17 +648,17 @@ impl TreeStore {
     /// its parent never arrived, or the chain is a cycle.
     pub fn locate(&self, table: Table, id: &str) -> Result<Option<Located>, TreeError> {
         let root = self.root_item_id()?;
+        let source = self.source(table);
         let sql = format!(
             "WITH RECURSIVE chain(id, parent_id, name, placement, depth) AS (
-                 SELECT id, parent_id, name, placement, 0 FROM {t} WHERE id = ?1
+                 SELECT id, parent_id, name, placement, 0 FROM {rows} WHERE id = ?1
                  UNION ALL
-                 SELECT p.id, p.parent_id, p.name, p.placement, c.depth + 1
-                   FROM {t} p JOIN chain c ON p.id = c.parent_id WHERE c.depth < {max})
+                 {step})
              SELECT id, parent_id, name, placement FROM chain ORDER BY depth DESC",
-            t = table.name(),
-            max = MAX_CHAIN
+            rows = source.rows(),
+            step = source.step("p.id, p.parent_id, p.name, p.placement, c.depth + 1", "chain", "p.id = c.parent_id", &format!("c.depth < {MAX_CHAIN}"))
         );
-        let mut statement = self.conn.prepare(&sql)?;
+        let mut statement = self.conn.prepare_cached(&sql)?;
         let chain: Vec<(String, Option<String>, String, String)> = statement
             .query_map([id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)))?
             .collect::<Result<_, _>>()?;
@@ -561,52 +676,99 @@ impl TreeStore {
         }))
     }
 
-    /// Starts building a tree in `staging`: empty for a full listing, a copy of
-    /// `items` for a delta to be applied on top.
+    /// Where each item `start` selects is — a query of `id, parent_id, name,
+    /// placement` over `table`'s rows, with `params` from `?2` on (`?1` is
+    /// the drive's root) — in one query ([`chains_sql`]). Items whose chain
+    /// does not reach the root are left out.
+    pub(crate) fn chains(&self, table: Table, start: &str, params: &[&dyn rusqlite::ToSql]) -> Result<Vec<Chain>, TreeError> {
+        let Some(root) = self.root_item_id()? else { return Ok(Vec::new()) };
+        let sql = chains_sql(self.source(table), start);
+        let mut all: Vec<&dyn rusqlite::ToSql> = vec![&root];
+        all.extend_from_slice(params);
+        let mut statement = self.conn.prepare_cached(&sql)?;
+        let chains = statement
+            .query_map(all.as_slice(), |r| {
+                Ok(Chain { id: r.get(0)?, rel: PathBuf::from(r.get::<_, String>(1)?), above: r.get(2)?, own: r.get(3)? })
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(chains)
+    }
+
+    /// Starts building a new tree: a full listing's from nothing
+    /// (`copy_items` false), or a delta's over `items`, which it leaves as it
+    /// is until the swap.
     pub fn begin_staging(&mut self, copy_items: bool) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         tx.execute("DELETE FROM staging", [])?;
+        tx.execute("DELETE FROM staging_gone", [])?;
         if copy_items {
-            tx.execute(&format!("INSERT INTO staging ({COLUMNS}) SELECT {COLUMNS} FROM items"), [])?;
+            tx.execute("DELETE FROM meta WHERE key = ?1", [STAGING_WHOLE])?;
+        } else {
+            tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?1, '1')", [STAGING_WHOLE])?;
         }
         tx.commit()?;
+        self.whole = !copy_items;
         Ok(())
     }
 
-    /// Applies delta entries to `staging`, in order. Deleting a folder takes
-    /// whatever is still inside it in `staging` — an item the feed moved out
-    /// before, or moves out after, survives (the order of a batch is
-    /// not the order of events).
+    /// Applies delta entries to the new tree, in order. Deleting a folder
+    /// takes whatever is still inside it in the new tree — an item the feed
+    /// moved out before, or moves out after, survives (the order of a batch
+    /// is not the order of events).
     pub fn stage(&mut self, changes: &[Change]) -> Result<(), TreeError> {
+        let source = self.source(Table::Staging);
         let tx = self.conn.transaction()?;
-        apply(&tx, Table::Staging, changes)?;
+        apply(&tx, source, changes)?;
         tx.commit()?;
         Ok(())
     }
 
-    /// `staging` becomes `items`, with the link to ask from next time. The
-    /// version a cached thumbnail was made for travels along.
+    /// The new tree becomes `items`, with the link to ask from next time, in
+    /// one transaction. A delta's swap writes only the rows it staged and
+    /// removes only what it removed (issue #39); a full listing's replaces
+    /// every row. The version a cached thumbnail was made for, the local
+    /// inode and the last outbox commit travel along: a row staged without
+    /// them keeps what `items` has.
     pub fn commit_staging(&mut self, delta_link: &str) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        tx.execute(
-            "UPDATE staging SET thumb_key = (SELECT i.thumb_key FROM items i WHERE i.id = staging.id)
-              WHERE thumb_key IS NULL",
-            [],
-        )?;
-        // So do the local inode and the last outbox commit, which a full
-        // listing (staged from nothing) does not carry.
-        tx.execute(
-            "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id)
-              WHERE local_handle IS NULL",
-            [],
-        )?;
-        tx.execute(
-            "UPDATE staging SET local_seq = MAX(local_seq, COALESCE((SELECT i.local_seq FROM items i WHERE i.id = staging.id), 0))",
-            [],
-        )?;
-        tx.execute("DELETE FROM items", [])?;
-        tx.execute(&format!("INSERT INTO items ({COLUMNS}) SELECT {COLUMNS} FROM staging"), [])?;
+        if self.whole {
+            tx.execute(
+                "UPDATE staging SET thumb_key = (SELECT i.thumb_key FROM items i WHERE i.id = staging.id)
+                  WHERE thumb_key IS NULL",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id)
+                  WHERE local_handle IS NULL",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE staging SET local_seq = MAX(local_seq, COALESCE((SELECT i.local_seq FROM items i WHERE i.id = staging.id), 0))",
+                [],
+            )?;
+            tx.execute("DELETE FROM items", [])?;
+            tx.execute(&format!("INSERT INTO items ({COLUMNS}) SELECT {COLUMNS} FROM staging"), [])?;
+        } else {
+            tx.execute(
+                &format!(
+                    "INSERT INTO items ({COLUMNS})
+                     SELECT s.id, s.parent_id, s.name, s.kind, s.size, s.mtime, s.etag, s.ctag, s.quickxor, s.mime, s.placement,
+                            COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, i.local_handle),
+                            MAX(s.local_seq, COALESCE(i.local_seq, 0))
+                       FROM staging s LEFT JOIN items i ON i.id = s.id WHERE true
+                     ON CONFLICT(id) DO UPDATE SET
+                       parent_id = excluded.parent_id, name = excluded.name, kind = excluded.kind,
+                       size = excluded.size, mtime = excluded.mtime, etag = excluded.etag, ctag = excluded.ctag,
+                       quickxor = excluded.quickxor, mime = excluded.mime, placement = excluded.placement,
+                       thumb_key = excluded.thumb_key, local_handle = excluded.local_handle, local_seq = excluded.local_seq"
+                ),
+                [],
+            )?;
+            tx.execute("DELETE FROM items WHERE id IN (SELECT id FROM staging_gone)", [])?;
+        }
         tx.execute("DELETE FROM staging", [])?;
+        tx.execute("DELETE FROM staging_gone", [])?;
+        tx.execute("DELETE FROM meta WHERE key = ?1", [STAGING_WHOLE])?;
         tx.execute(
             "INSERT INTO meta (key, value) VALUES ('delta_link', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -615,27 +777,32 @@ impl TreeStore {
         // A first listing placed page by page ends here too.
         tx.execute("DELETE FROM meta WHERE key = ?1", [LISTING_NEXT])?;
         tx.commit()?;
+        self.whole = false;
         Ok(())
     }
 
     /// One page of a first listing, placed: its entries applied to
-    /// `items` as [`stage`](Self::stage) applies them to `staging`, and
+    /// `items` as [`stage`](Self::stage) applies them to the new tree, and
     /// `next`, the link to the page after it, kept as where the listing goes
     /// on from — in one transaction, so that a listing stopped anywhere
     /// resumes with every page placed so far and asks for none of them
     /// again. Entries whose folder has not come yet go in too; they are
-    /// placed when it comes.
+    /// placed when it comes. A delta staged over `items` is done with: the
+    /// new tree is `items` again.
     pub fn commit_page(&mut self, changes: &[Change], next: &str) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        apply(&tx, Table::Items, changes)?;
+        apply(&tx, Source::Items, changes)?;
         // The handles the placement recorded in `staging` for items that
         // were not in `items` yet.
         tx.execute(
-            "UPDATE items SET local_handle = (SELECT s.local_handle FROM staging s WHERE s.id = items.id)
-              WHERE local_handle IS NULL
-                AND EXISTS (SELECT 1 FROM staging s WHERE s.id = items.id AND s.local_handle IS NOT NULL)",
+            "UPDATE items SET local_handle = s.local_handle FROM staging s
+              WHERE s.id = items.id AND items.local_handle IS NULL AND s.local_handle IS NOT NULL",
             [],
         )?;
+        if !self.whole {
+            tx.execute("DELETE FROM staging", [])?;
+            tx.execute("DELETE FROM staging_gone", [])?;
+        }
         tx.execute(
             "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![LISTING_NEXT, next],
@@ -644,14 +811,25 @@ impl TreeStore {
         Ok(())
     }
 
-    /// Ids that differ between `items` and `staging` — added, removed or
-    /// changed in any column but `thumb_key`.
+    /// Ids that differ between `items` and the new tree — added, removed or
+    /// changed in any column but the local ones. For a delta, read from what
+    /// it staged alone.
     pub fn changed_ids(&self) -> Result<Vec<String>, TreeError> {
-        let sql = format!(
-            "SELECT id FROM (SELECT {ROW_COLUMNS} FROM staging EXCEPT SELECT {ROW_COLUMNS} FROM items)
+        let sql = if self.whole {
+            format!(
+                "SELECT id FROM (SELECT {ROW_COLUMNS} FROM staging EXCEPT SELECT {ROW_COLUMNS} FROM items)
+                 UNION
+                 SELECT id FROM (SELECT {ROW_COLUMNS} FROM items EXCEPT SELECT {ROW_COLUMNS} FROM staging)"
+            )
+        } else {
+            "SELECT s.id FROM staging s LEFT JOIN items i ON i.id = s.id
+              WHERE i.id IS NULL OR s.parent_id IS NOT i.parent_id OR s.name IS NOT i.name OR s.kind IS NOT i.kind
+                 OR s.size IS NOT i.size OR s.mtime IS NOT i.mtime OR s.etag IS NOT i.etag OR s.ctag IS NOT i.ctag
+                 OR s.quickxor IS NOT i.quickxor OR s.mime IS NOT i.mime OR s.placement IS NOT i.placement
              UNION
-             SELECT id FROM (SELECT {ROW_COLUMNS} FROM items EXCEPT SELECT {ROW_COLUMNS} FROM staging)"
-        );
+             SELECT id FROM staging_gone"
+                .to_owned()
+        };
         let mut statement = self.conn.prepare(&sql)?;
         let ids = statement.query_map([], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
@@ -836,13 +1014,28 @@ fn row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<Row> {
     })
 }
 
-/// Delta entries applied to `table`, in order (see [`TreeStore::stage`]).
-fn apply(tx: &rusqlite::Transaction<'_>, table: Table, changes: &[Change]) -> Result<(), TreeError> {
-    let t = table.name();
+/// A row of the tree `source`.
+fn get_row(conn: &Connection, source: Source, id: &str) -> Result<Option<Row>, TreeError> {
+    let sql = format!("SELECT {ROW_COLUMNS} FROM {} WHERE id = ?1", source.rows());
+    Ok(conn.prepare_cached(&sql)?.query_row([id], row_from).optional()?)
+}
+
+/// Everything below `id` in the tree `source`.
+fn descendants_in(conn: &Connection, source: Source, id: &str) -> Result<Vec<String>, TreeError> {
+    let mut statement = conn.prepare_cached(&below_sql(source))?;
+    let ids = statement.query_map([id], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
+    Ok(ids)
+}
+
+/// Delta entries applied to the tree `source`, in order (see
+/// [`TreeStore::stage`]). Over `items` (a delta staged), a row written is
+/// first copied from `items`, local columns and all, and then changed; a row
+/// removed is noted in `staging_gone` when `items` has it.
+fn apply(tx: &rusqlite::Transaction<'_>, source: Source, changes: &[Change]) -> Result<(), TreeError> {
     for change in changes {
         match change {
             Change::Root(row) => {
-                upsert(tx, table, row)?;
+                write(tx, source, row)?;
                 // Written with the row, as soon as it is staged, rather
                 // than deferred to `commit_staging` — the materializer
                 // reconciles `staging` against the folder before the
@@ -854,40 +1047,69 @@ fn apply(tx: &rusqlite::Transaction<'_>, table: Table, changes: &[Change]) -> Re
                     [&row.id],
                 )?;
             }
-            Change::Upsert(row) => {
-                upsert(tx, table, row)?;
-            }
-            Change::Delete(id) => {
-                tx.execute(
-                    &format!(
-                        "WITH RECURSIVE below(id, depth) AS (
-                             SELECT id, 1 FROM {t} WHERE parent_id = ?1
-                             UNION ALL
-                             SELECT c.id, b.depth + 1 FROM {t} c JOIN below b ON c.parent_id = b.id
-                              WHERE b.depth < {MAX_CHAIN})
-                         DELETE FROM {t} WHERE id IN (SELECT id FROM below)"
-                    ),
-                    [id],
-                )?;
-                tx.execute(&format!("DELETE FROM {t} WHERE id = ?1"), [id])?;
-            }
+            Change::Upsert(row) => write(tx, source, row)?,
+            Change::Delete(id) => match source {
+                Source::Items | Source::Whole => {
+                    let t = if source == Source::Items { "items" } else { "staging" };
+                    tx.execute(
+                        &format!(
+                            "WITH RECURSIVE below(id, depth) AS (
+                                 SELECT id, 1 FROM {t} WHERE parent_id = ?1
+                                 UNION ALL
+                                 SELECT c.id, b.depth + 1 FROM {t} c JOIN below b ON c.parent_id = b.id
+                                  WHERE b.depth < {MAX_CHAIN})
+                             DELETE FROM {t} WHERE id IN (SELECT id FROM below)"
+                        ),
+                        [id],
+                    )?;
+                    tx.execute(&format!("DELETE FROM {t} WHERE id = ?1"), [id])?;
+                }
+                Source::Overlay => {
+                    let mut gone = descendants_in(tx, source, id)?;
+                    gone.push(id.clone());
+                    let mut unstage = tx.prepare_cached("DELETE FROM staging WHERE id = ?1")?;
+                    let mut note = tx.prepare_cached("INSERT OR IGNORE INTO staging_gone (id) SELECT id FROM items WHERE id = ?1")?;
+                    for id in &gone {
+                        unstage.execute([id])?;
+                        note.execute([id])?;
+                    }
+                }
+            },
+        }
+    }
+    Ok(())
+}
+
+/// `row` written into the tree `source` (see [`apply`]).
+fn write(tx: &rusqlite::Transaction<'_>, source: Source, row: &Row) -> Result<(), TreeError> {
+    match source {
+        Source::Items => {
+            upsert(tx, Table::Items, row)?;
+        }
+        Source::Whole => {
+            upsert(tx, Table::Staging, row)?;
+        }
+        Source::Overlay => {
+            tx.prepare_cached(&format!("INSERT OR IGNORE INTO staging ({COLUMNS}) SELECT {COLUMNS} FROM items WHERE id = ?1"))?
+                .execute([&row.id])?;
+            tx.prepare_cached("DELETE FROM staging_gone WHERE id = ?1")?.execute([&row.id])?;
+            upsert(tx, Table::Staging, row)?;
         }
     }
     Ok(())
 }
 
 fn upsert(tx: &rusqlite::Transaction<'_>, table: Table, row: &Row) -> rusqlite::Result<usize> {
-    tx.execute(
-        &format!(
+    tx.prepare_cached(&format!(
             "INSERT INTO {} (id, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
                parent_id = excluded.parent_id, name = excluded.name, kind = excluded.kind,
                size = excluded.size, mtime = excluded.mtime, etag = excluded.etag, ctag = excluded.ctag,
                quickxor = excluded.quickxor, mime = excluded.mime, placement = excluded.placement",
-            table.name()
-        ),
-        params![
+        table.name()
+    ))?
+    .execute(params![
             row.id,
             row.parent_id,
             row.name,
@@ -899,8 +1121,7 @@ fn upsert(tx: &rusqlite::Transaction<'_>, table: Table, row: &Row) -> rusqlite::
             row.quickxor,
             row.mime,
             row.placement.encode()
-        ],
-    )
+        ])
 }
 
 /// Runs `f` on a plain thread of its own and waits for it: for tests that
@@ -1252,6 +1473,13 @@ mod tests {
         assert_eq!(TreeStore::open(&path).unwrap().meta("queued").unwrap().as_deref(), Some("kept"));
     }
 
+    impl TreeStore {
+        /// Rows in `staging` and `staging_gone` themselves.
+        fn staged_rows(&self) -> i64 {
+            self.conn.query_row("SELECT (SELECT count(*) FROM staging) + (SELECT count(*) FROM staging_gone)", [], |r| r.get(0)).unwrap()
+        }
+    }
+
     fn item(value: serde_json::Value) -> DriveItem {
         serde_json::from_value(value).unwrap()
     }
@@ -1346,7 +1574,7 @@ mod tests {
         assert!(store.get(Table::Staging, "A").unwrap().is_some());
         store.commit_staging("link-1").unwrap();
         assert!(store.get(Table::Items, "A").unwrap().is_some());
-        assert!(store.get(Table::Staging, "A").unwrap().is_none());
+        assert_eq!(store.staged_rows(), 0, "the staged rows are gone into items");
         assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
         assert_eq!(store.root_item_id().unwrap().as_deref(), Some("R"));
     }
@@ -1369,7 +1597,7 @@ mod tests {
         assert!(store.get(Table::Items, "F").unwrap().is_none(), "what was inside the deleted folder goes with it");
         assert!(store.get(Table::Items, "G").unwrap().is_some());
         assert_eq!(store.listing_next().unwrap().as_deref(), Some("next-3"));
-        assert!(store.get(Table::Staging, "G").unwrap().is_none(), "staging is not written");
+        assert_eq!(store.staged_rows(), 0, "staging is not written");
     }
 
     /// An entry whose folder has not come yet is committed all the same, not
@@ -1490,6 +1718,65 @@ mod tests {
         let mut ids = store.changed_ids().unwrap();
         ids.sort();
         assert_eq!(ids, vec!["F".to_owned(), "G".to_owned(), "N".to_owned()]);
+    }
+
+    /// Issue #39: a delta changing 10 of 100 000 items stages those 10 and
+    /// the swap writes those 10 — not the whole tree; until the swap `items`
+    /// is the old tree, also after a crash (the store dropped and opened
+    /// again), and the next cycle stages afresh over it.
+    #[test]
+    fn a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tree.sqlite");
+        let mut tree = vec![root()];
+        for d in 0..100 {
+            tree.push(folder(&format!("D{d}"), "R", &format!("d{d}")));
+            tree.extend((0..999).map(|i| file(&format!("F{d}-{i}"), &format!("D{d}"), &format!("f{i}"))));
+        }
+        let delta: Vec<Change> = (0..10).map(|i| file(&format!("F7-{i}"), "D7", &format!("renamed{i}"))).collect();
+        {
+            let mut store = TreeStore::open(&path).unwrap();
+            store.begin_staging(false).unwrap();
+            store.stage(&tree).unwrap();
+            store.commit_staging("link-1").unwrap();
+            store.begin_staging(true).unwrap();
+            store.stage(&delta).unwrap();
+            assert_eq!(store.staged_rows(), 10, "only the delta's rows are staged");
+            assert_eq!(store.changed_ids().unwrap().len(), 10);
+            assert_eq!(store.locate(Table::Staging, "F7-3").unwrap().unwrap().rel, PathBuf::from("d7/renamed3"));
+            assert_eq!(store.locate(Table::Items, "F7-3").unwrap().unwrap().rel, PathBuf::from("d7/f3"));
+            // The daemon dies here.
+        }
+        let mut store = TreeStore::open(&path).unwrap();
+        assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
+        assert_eq!(store.get(Table::Items, "F7-3").unwrap().unwrap().name, "f3", "the old tree");
+        store.begin_staging(true).unwrap();
+        assert_eq!(store.staged_rows(), 0, "the next cycle stages afresh");
+        store.stage(&delta).unwrap();
+        let before = store.conn.total_changes();
+        store.commit_staging("link-2").unwrap();
+        let written = store.conn.total_changes() - before;
+        assert!(written < 40, "the swap wrote {written} rows");
+        assert_eq!(store.get(Table::Items, "F7-3").unwrap().unwrap().name, "renamed3");
+        assert_eq!(store.get(Table::Items, "F7-99").unwrap().unwrap().name, "f99");
+        assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-2"));
+    }
+
+    /// A delta that removes a folder, and a row it stages that equals the
+    /// base: the removal takes what is inside, and the equal row is no change.
+    #[test]
+    fn a_delta_laid_over_items_removes_and_changes_what_it_says() {
+        let mut store = committed(&[root(), folder("D", "R", "d"), file("F", "D", "f"), file("K", "R", "k")]);
+        store.begin_staging(true).unwrap();
+        store.stage(&[Change::Delete("D".into()), file("K", "R", "k")]).unwrap();
+        assert!(store.get(Table::Staging, "F").unwrap().is_none());
+        assert!(store.descendants(Table::Staging, "R").unwrap() == vec!["K".to_owned()]);
+        let mut ids = store.changed_ids().unwrap();
+        ids.sort();
+        assert_eq!(ids, vec!["D".to_owned(), "F".to_owned()], "K is staged as it was");
+        store.commit_staging("link-2").unwrap();
+        assert!(store.get(Table::Items, "F").unwrap().is_none());
+        assert!(store.get(Table::Items, "K").unwrap().is_some());
     }
 
     #[test]

@@ -678,6 +678,12 @@ examination holds, so none of them sees another's changes half made. The outbox,
 for a cycle at its start and whenever the network comes back, so the base catches up with OneDrive
 before any guard is sent (limitations log F117).
 
+**An idle cycle.** A cycle whose delta is empty, with no deferred change that can go (each still
+has an outbox row), no outbox commit since the last cycle and nothing placed without a local object
+on record, stages nothing and only stores the new link. Asking that reads the deferred changes, the
+outbox by item id, and `items` through its `local_seq` index and its index of placed rows with no
+local handle — never a whole table (issue #39; limitations log F165).
+
 **The stale-delta guard.** A delta fetched before an outbox commit can carry an older version of
 the item the commit wrote. The cycle records `outbox_seq` when its fetch begins; an entry about an
 item the outbox committed or deleted since (`items.local_seq`, and the tombstones in `outbox_gone`)

@@ -2206,9 +2206,43 @@ application must never read zeros where real content should be.
   (`outbox_drop_all`, `write_mode`); `Outbox(0)` and `NotUploaded()`, unbounded by their
   signatures; restoring or confirming held deletes (their rows); a quota read that lets waiting
   files go (the waiting rows only, each sized from its snapshot, its recorded size or the disk);
-  and, outside this issue (#39), the read-write cycle's reads in `listing/rw.rs` and
-  `materialize/rw.rs`. The counts that only needed a number (`held_back`, `PendingUploads`, a
+  and the read-write reconcile's plan (`Rw::read`, `materialize/rw.rs`), once per cycle that
+  changes anything — never an idle one (F165). The counts that only needed a number (`held_back`, `PendingUploads`, a
   Forget's count, a read-only start) are `count(*)`. LIMIT (chosen) · measured. Open.
+- **F164. The cloud side's budgets at scale are guesses, measured once on one machine**
+  (`konedrived/src/bench.rs`; issue #39) — the sizes designed for are 100 000 items, a delta
+  changing 30 000 files, 5 000 skipped files, 2 000 conflicts, 20 000 images without thumbnails and
+  30 000 transfers waiting for a slot. The budgets (a delta of 10 changes 200 ms of store work, a
+  delta of 30 000 changes 5 s, an idle read-write cycle 50 ms, a thumbnail batch 100 ms,
+  `Skipped()` 100 ms, the conflicts at a cycle's end 50 ms, a pool grant or release 1 ms,
+  recording a full placement 5 s) are guesses of what keeps the daemon responsive. The bench
+  measures the store's work as the cycle asks for it — staging, the reconcile's reads of each
+  changed id, the swap, the counts — not the reconcile's own work on disk, nor the downloads. Like
+  F158 it is an ignored test run by hand (`cargo test -p konedrived --release --lib bench:: --
+  --ignored`, with `HOME`, the XDG directories and the session bus pointed at a temporary
+  directory), measured on a 16-thread desktop with `/tmp` on tmpfs. A delta of 30 000 changes is the
+  closest to its budget: most of it is the reconcile's four store calls per changed id, each a
+  hand-over to the store's thread (F162). PROVISIONAL (guess) · measured. Open.
+- **F165. A delta is staged over `items`; a full listing is staged whole** (`tree.rs`, `Source`,
+  `stage`, `commit_staging`; issue #39) — `staging` holds only the rows a delta writes and
+  `staging_gone` the ids it removes, and the swap writes those alone, so a cycle's store work
+  follows the size of the delta, not of the tree. Costs and edges: (1) every read of the new tree
+  looks in `staging` and `staging_gone` before `items` — two index lookups where there was one, and
+  each recursive walk of it (a path, what is below a folder) is written with two steps, one per
+  table: a walk over a `UNION ALL` of the two would make SQLite read both whole at every step;
+  (2) a full listing (no delta link, an expired feed) still stages every row and its swap rewrites
+  `items` whole: it has read the whole drive anyway; (3) the rows a delta stages equal to the base
+  (a deferred change staged again, an entry sent twice) are written back unchanged at the swap;
+  (4) an item is looked at again when `items` has no local handle for it, found through an index of
+  such rows, each placed or not by one query for the lot: on a filesystem that gives no handles
+  every item has none, and every cycle of a read-write folder reads them all and reconciles them —
+  as before; (5) a store written by a daemon before this one and stopped between staging and swap
+  holds a whole copy in `staging`, read as a delta over `items` (the same tree) until the next
+  cycle empties it; (6) the read-write reconcile's plan (`Rw::read`) still reads every outbox row
+  once per cycle that changes anything, about 30 ms at 30 000 rows. LIMIT (chosen) · measured
+  (`tree::tests::a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree`,
+  `a_delta_laid_over_items_removes_and_changes_what_it_says`, `bench::a_delta_cycle_changing_*`,
+  `bench::an_idle_read_write_cycle`). Open.
 ---
 
 ## 5. Provisional numbers

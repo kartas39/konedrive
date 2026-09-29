@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, OptionalExtension};
 
-use super::{apply, row_from, upsert, Change, Kind, Placement, Row, Table, TreeError, TreeStore, COLUMNS, MAX_CHAIN, ROW_COLUMNS};
+use super::{apply, get_row, upsert, Change, Kind, Placement, Row, Source, Table, TreeError, TreeStore, COLUMNS};
 
 /// Created on every open (`IF NOT EXISTS`), so a schema-3 store made before
 /// the read-write reconcile gains them without a rebuild.
@@ -123,7 +123,7 @@ impl TreeStore {
     pub fn apply_deferred(&mut self) -> Result<usize, TreeError> {
         let changes = self.live_deferred()?;
         let tx = self.conn.transaction()?;
-        apply(&tx, Table::Items, &changes)?;
+        apply(&tx, Source::Items, &changes)?;
         tx.execute("DELETE FROM deferred", [])?;
         tx.execute("DELETE FROM outbox_gone", [])?;
         tx.commit()?;
@@ -154,27 +154,29 @@ impl TreeStore {
     /// Items `table` places — the item and every folder above it placed —
     /// with no local object recorded: never placed here, or forgotten by the
     /// outbox (F82 (8)) or a restore of held deletes. The root is not one.
+    /// Read from those with no local object alone (an index of `items`, and
+    /// what a delta staged), each placed or not by one query for the lot
+    /// (issue #39): no walk of the whole tree.
     pub fn unplaced(&self, table: Table) -> Result<Vec<String>, TreeError> {
-        let Some(root) = self.root_item_id()? else { return Ok(Vec::new()) };
-        let t = table.name();
-        let sql = format!(
-            "WITH RECURSIVE placed(id, depth) AS (
-                 SELECT ?1, 0
+        let start = match self.source(table) {
+            Source::Items => "SELECT id, parent_id, name, placement FROM items WHERE local_handle IS NULL AND placement = 'placed'".to_owned(),
+            Source::Whole => "SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND placement = 'placed'".to_owned(),
+            Source::Overlay => format!(
+                "SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND placement = 'placed'
                  UNION ALL
-                 SELECT c.id, p.depth + 1 FROM {t} c JOIN placed p ON c.parent_id = p.id
-                  WHERE c.placement = 'placed' AND p.depth < {MAX_CHAIN})
-             SELECT s.id FROM {t} s JOIN placed p ON s.id = p.id WHERE s.local_handle IS NULL AND s.id != ?1"
-        );
-        let mut statement = self.conn.prepare(&sql)?;
-        let ids = statement.query_map([&root], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
-        Ok(ids)
+                 SELECT id, parent_id, name, placement FROM items p
+                  WHERE local_handle IS NULL AND placement = 'placed' AND {}",
+                super::UNTOUCHED
+            ),
+        };
+        Ok(self.chains(table, &start, &[])?.into_iter().filter(|c| c.above && c.own).map(|c| c.id).collect())
     }
 
     /// Items the outbox wrote after commit count `seq` (`local_seq`): a read-write
     /// cycle looks at them again, so that the disk follows what the outbox
     /// committed (F82 (7): a move adopted with a newer cTag).
     pub fn committed_items_since(&self, seq: i64) -> Result<Vec<String>, TreeError> {
-        let mut statement = self.conn.prepare("SELECT id FROM items WHERE local_seq > ?1")?;
+        let mut statement = self.conn.prepare_cached("SELECT id FROM items WHERE local_seq > ?1")?;
         let ids = statement.query_map([seq], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
     }
@@ -192,6 +194,7 @@ impl TreeStore {
     /// Tombstones up to `seq` are dropped: a fetch that started after
     /// them already carries the deletes.
     pub fn commit_staging_deferring(&mut self, delta_link: &str, consumed: &[String], defer: &[String], content: &[String], seq: i64) -> Result<(), TreeError> {
+        let source = self.source(Table::Staging);
         {
             let tx = self.conn.transaction()?;
             for id in consumed {
@@ -206,7 +209,7 @@ impl TreeStore {
                     |r| r.get(0),
                 )?;
                 let seq = seq.max(committed);
-                let staged = tx.query_row(&format!("SELECT {ROW_COLUMNS} FROM staging WHERE id = ?1"), [id], row_from).optional()?;
+                let staged = get_row(&tx, source, id)?;
                 match staged {
                     Some(row) => tx.execute(
                         "INSERT OR REPLACE INTO deferred (id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement)
@@ -228,7 +231,11 @@ impl TreeStore {
                     )?,
                     None => tx.execute("INSERT OR REPLACE INTO deferred (id, seq, gone) VALUES (?1, ?2, 1)", params![id, seq])?,
                 };
-                if whole {
+                if whole && source == Source::Overlay {
+                    // Staged over `items`: what it has shows through again.
+                    tx.execute("DELETE FROM staging WHERE id = ?1", [id])?;
+                    tx.execute("DELETE FROM staging_gone WHERE id = ?1", [id])?;
+                } else if whole {
                     tx.execute("DELETE FROM staging WHERE id = ?1", [id])?;
                     tx.execute(&format!("INSERT INTO staging ({COLUMNS}) SELECT {COLUMNS} FROM items WHERE id = ?1"), [id])?;
                 } else {
@@ -295,12 +302,25 @@ impl TreeStore {
     /// and what has no local object on record — and the deferred changes
     /// consumed; `None`, with nothing staged, when there is nothing to do and
     /// no `full` reconcile is asked for.
+    ///
+    /// An idle cycle reads nothing whole (issue #39): the deferred changes,
+    /// the outbox by item id, `items` by `local_seq` and by what has no
+    /// local object, each through an index.
     pub fn stage_rw(&mut self, changes: &[Change], since: i64, full: bool) -> Result<Option<(Vec<String>, Vec<String>)>, TreeError> {
         let deferred = self.live_deferred()?;
-        let rows: std::collections::BTreeSet<String> = self.outbox_rows()?.into_iter().filter_map(|row| row.item_id).collect();
+        let waiting = {
+            let mut row_of = self.conn.prepare_cached("SELECT 1 FROM outbox WHERE item_id = ?1 LIMIT 1")?;
+            let mut waiting = true;
+            for change in &deferred {
+                if !row_of.exists([change.id()])? {
+                    waiting = false;
+                    break;
+                }
+            }
+            waiting
+        };
         let revisit = self.committed_items_since(since)?;
         let unplaced = self.unplaced(Table::Items)?;
-        let waiting = deferred.iter().all(|c| rows.contains(c.id()));
         if !full && changes.is_empty() && waiting && revisit.is_empty() && unplaced.is_empty() {
             return Ok(None);
         }
@@ -317,8 +337,9 @@ impl TreeStore {
     /// Stages `changes` on top of what `staging` holds: the fresh versions a
     /// stale-delta guard fetched (§3.7).
     pub fn stage_over(&mut self, changes: &[Change]) -> Result<(), TreeError> {
+        let source = self.source(Table::Staging);
         let tx = self.conn.transaction()?;
-        apply(&tx, Table::Staging, changes)?;
+        apply(&tx, source, changes)?;
         tx.commit()?;
         Ok(())
     }

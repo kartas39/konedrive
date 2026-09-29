@@ -123,7 +123,11 @@ CREATE TABLE items (                -- the tree the folder was last made to matc
   local_handle BLOB,                -- the file handle of the inode the item was placed as
   local_seq INTEGER NOT NULL DEFAULT 0);  -- the upload that last wrote the row
 CREATE INDEX items_parent ON items(parent_id);
-CREATE TABLE staging (…same columns…);   -- the tree a cycle is building
+CREATE INDEX items_seq ON items(local_seq);                                   -- recent upload commits
+CREATE INDEX items_unplaced ON items(id) WHERE local_handle IS NULL AND placement = 'placed';
+CREATE INDEX items_skipped ON items(id) WHERE placement != 'placed';
+CREATE TABLE staging (…same columns…);   -- what a cycle's new tree writes (§6.1)
+CREATE TABLE staging_gone (id TEXT PRIMARY KEY);                              -- what it removes
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
   -- schema_version, drive_id, root_item_id, delta_link, listing_next, last_checked, …
 CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
@@ -164,13 +168,23 @@ read-only drops them first ([writes.md](writes.md) §2.2).
 1. **Check the account** (§12.3).
 2. **Fetch.** Changes since the stored delta link, or a full listing when there is none. The Graph
    phase writes only `staging` and `meta`.
-3. **Stage.** The changes are applied to a copy of `items` in `staging`.
-4. **Reconcile** the folder against `staging` (§7).
-5. **Swap.** In one transaction, `staging` replaces `items` and the new delta link is stored.
+3. **Stage.** The changes are laid over `items`: `staging` takes each row the delta writes, whole
+   (copied from `items` first, local columns and all, then changed), and `staging_gone` each id it
+   removes, a removed folder's contents included. `items` is not written. The new tree is
+   `staging`, then `items` for every id neither table names; the ids the delta changed are read from
+   `staging` and `staging_gone` alone. A full listing, which may leave anything out, is staged
+   whole instead: `staging` is then the new tree by itself (`meta` `staging_whole`).
+4. **Reconcile** the folder against the new tree (§7).
+5. **Swap.** In one transaction, the rows in `staging` are written into `items` (keeping the
+   thumbnail key, local handle and upload commit `items` has where the staged row has none), the
+   ids in `staging_gone` removed from it, both tables emptied, and the new delta link stored. A
+   delta's swap writes only what it changed; a full listing's replaces every row.
 
-A crash before the swap leaves `items` and the delta link as they were; the next cycle asks for the
-same changes and reconciles again, and the reconcile is idempotent: an item already where the tree
-wants it is left alone. After the swap the cycle publishes the counts, records `last_checked`,
+A crash before the swap leaves `items` and the delta link as they were — nothing but `staging`,
+`staging_gone` and `meta` was written — and the next cycle empties the two tables, asks for the
+same changes and reconciles again. The swap is one transaction, so a crash in it leaves the old tree
+or the new one, never a mix. The reconcile is idempotent: an item already where the tree wants it is
+left alone. After the swap the cycle publishes the counts, records `last_checked`,
 drops conflicts whose rescued file is gone, and starts the replacements the reconcile queued (§9).
 
 A read-write folder's cycle holds the tree lock its uploads commit under from staging to the swap,
@@ -499,7 +513,7 @@ Signing in again nudges a cycle at once, which brings the folder up to date.
 
 | Interrupted during | What the next run finds | What it does |
 |---|---|---|
-| Fetching or staging | the old `items` and delta link | asks for the same changes again |
+| Fetching or staging | the old `items` and delta link; `staging` part-filled | empties `staging` and asks for the same changes again |
 | Reconcile | a folder part-way between two trees, perhaps a holding directory | a Full reconcile at the next start places everything by item id |
 | The swap | either the old tree and link, or the new ones — one transaction | continues from whichever it is |
 | A page of the first listing | `items` and `listing_next` up to the last committed page | resumes from `listing_next`, reconciling the first page Full |
