@@ -40,7 +40,14 @@ async fn main() -> anyhow::Result<()> {
     // claimed: a D-Bus-activated client's first call is never answered from
     // stale state (design §2.2). Held for the life of the process: dropping
     // the connection would drop the bus name and every object with it.
-    let daemon = accounts::start(zbus::connection::Builder::session()?, paths, options).await?;
+    // A stop before the daemon is up has nothing in flight to wait for.
+    let daemon = tokio::select! {
+        daemon = accounts::start(zbus::connection::Builder::session()?, paths, options) => daemon?,
+        _ = signals.next() => {
+            tracing::info!("stopped before the daemon was up");
+            std::process::exit(0)
+        }
+    };
     let hub = Arc::clone(daemon.manager.hub());
     let stopping = Arc::clone(&hub);
     // HS1: with no link, `HelperState` says what systemd says of the
