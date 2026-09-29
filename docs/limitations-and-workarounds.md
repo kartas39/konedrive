@@ -2361,7 +2361,7 @@ application must never read zeros where real content should be.
   connection, a `5xx` other than `503`, an answer that could not be read, a failure before sending —
   or a stop. What remains: an empty file the feed never listed, made at that name within one
   record's window — its first recording to its latest attempt with an unknown outcome, each widened
-  by 5 minutes; a time between two records' windows is in neither — — someone else's, or another
+  by 5 minutes (a time between two records' windows is in neither) — someone else's, or another
   device's placeholder opened in that window — would be taken for ours and deleted (to the recycle
   bin, guarded by its eTag; for a placeholder, the delete ends that device's upload); a record is
   also kept while the holder's `createdDateTime` is not given (never taken for ours), a read or the
