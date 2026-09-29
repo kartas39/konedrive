@@ -2353,13 +2353,16 @@ application must never read zeros where real content should be.
   there from an empty file created at or after the recording (less 5 minutes for clocks, a guess)
   deletes it and creates again. OneDrive lets an open session's placeholder be deleted, and the
   delete ends the session (measured, below); if it ever refuses, the row waits
-  (`upload-session-open`) — no copy. A `409` answered to the attempt that made the record clears
-  it (that request made no placeholder, issue #89), so only a record carried from an earlier
-  attempt whose outcome was not known (a stop, a timeout) is ever compared. What remains: while
-  such a record is kept, someone else's empty file, or another device's placeholder, created at
-  that name at or after the recording (less 5 minutes), would be taken for ours and deleted (to the
-  recycle bin, guarded by its eTag; for a placeholder, the delete ends that device's upload); a
-  holder whose `createdDateTime` is not given is never taken for ours. A placeholder nothing here recorded — a session opened
+  (`upload-session-open`) — no copy. Any answer to an opening but a timeout or a lost connection
+  is certain and clears the record that attempt made (that request made no placeholder, issue
+  #89), so only a record carried from an earlier attempt whose outcome was unknown (a timeout or a
+  lost connection, or a stop) is ever compared; once resolved (our placeholder deleted, the name
+  free, or the holder not ours) it is cleared. What remains: between that unknown outcome and the
+  next `409` there — normally the row's next try — someone else's empty file, or another device's
+  placeholder, created at that name at or after the recording (less 5 minutes) would be taken for
+  ours and deleted (to the recycle bin, guarded by its eTag; for a placeholder, the delete ends
+  that device's upload); a record is also kept while the holder's `createdDateTime` is not given
+  (never taken for ours), a read or the delete fails for now, or the delete is refused. A placeholder nothing here recorded — a session opened
   before sessions were listed or openings recorded, one another device is filling, one abandoned
   by another device or an older version — holds the name and the row waits
   (`name-held-by-an-upload`, issue #89) until the name is free or the holder has content (then a

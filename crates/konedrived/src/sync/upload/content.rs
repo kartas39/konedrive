@@ -257,30 +257,41 @@ impl Job<'_> {
     }
 
     /// A `409` at a place where this folder recorded an opening whose URL
-    /// never came (issue #84) — carried from an earlier attempt, since a
-    /// `409` to the attempt that made the record clears it (issue #89): the holder is an empty file made at or after
-    /// the recording (less [`CLOCK_SLACK`]) → it is that opening's
+    /// never came (issue #84) — carried from an earlier attempt whose outcome
+    /// was not known, since a certain answer to the attempt that made the
+    /// record clears it (issue #89): the holder is an empty file made at or
+    /// after the recording (less [`CLOCK_SLACK`]) → it is that opening's
     /// placeholder. It is deleted, and the create goes again; a delete
-    /// OneDrive refuses leaves the row waiting until the orphan session
-    /// expires and frees the name. Never a copy. Any other holder — with
-    /// content, older, or its time unknown — is someone else's: `None`, and
-    /// [`taken`] decides.
+    /// OneDrive refuses leaves the row waiting (`upload-session-open`). Never
+    /// a copy. Any other holder — with content, older, or its time unknown —
+    /// is not taken for ours: `None`, and [`taken`] decides.
+    ///
+    /// Once resolved — the placeholder deleted, the name found free, or the
+    /// holder not ours (at most one placeholder of ours holds a name) — the
+    /// records at the place are cleared, so that a later `409` there never
+    /// compares with an old time. Kept only while the holder's time is not
+    /// given, a read or a delete fails for now, or the delete is refused.
     async fn opened_placeholder(&self) -> Result<Option<Outcome>, Fail> {
         let (parent, name) = (self.parent.to_owned(), self.name.to_owned());
         let Some(at) = self.e.store().call(move |s| s.upload_opening_at(&parent, &name)).await? else { return Ok(None) };
         let holder = match self.e.cfg.drive.child(self.parent, self.name).await {
             Ok(holder) => holder,
-            Err(DriveError::NotFound) => return Ok(Some(Outcome::again())),
+            Err(DriveError::NotFound) => {
+                self.resolved().await?;
+                return Ok(Some(Outcome::again()));
+            }
             Err(err) => return Err(err.into()),
         };
-        let created = holder.created_date_time.as_deref().and_then(parse_graph_time);
+        let Some(created) = holder.created_date_time.as_deref().and_then(parse_graph_time) else { return Ok(None) };
         let empty = holder.file.is_some() && holder.size == Some(0);
-        if !empty || !created.is_some_and(|c| c >= at - CLOCK_SLACK) {
+        if !empty || created < at - CLOCK_SLACK {
+            self.resolved().await?;
             return Ok(None);
         }
         let guard = holder.e_tag.clone().or(holder.c_tag.clone()).unwrap_or_default();
         match self.e.cfg.drive.delete_item(&holder.id, &guard).await {
             Ok(()) | Err(WriteError::NotFound) => {
+                self.resolved().await?;
                 tracing::info!("{} was held in OneDrive by the placeholder of an upload session this folder opened: deleted", self.found.rel.display());
                 Ok(Some(Outcome::again()))
             }
@@ -293,6 +304,13 @@ impl Job<'_> {
                 Ok(Some(Outcome::backoff(reason::SESSION_OPEN)))
             }
         }
+    }
+
+    /// The recorded openings at this place are resolved: cleared.
+    async fn resolved(&self) -> Result<(), Fail> {
+        let (parent, name) = (self.parent.to_owned(), self.name.to_owned());
+        self.e.store().call(move |s| s.upload_openings_clear_at(&parent, &name)).await?;
+        Ok(())
     }
 
     async fn update(&self) -> Result<Outcome, Fail> {
@@ -557,14 +575,13 @@ impl Job<'_> {
         let opened = match self.e.cfg.drive.create_upload_session(target, self.snap.size, self.snap.sec).await {
             Ok(opened) => opened,
             Err(err) => {
-                // Refused for certain, and no placeholder anywhere: the folder
-                // is gone, or the request itself is refused. A `409` is as
-                // certain — this request made no placeholder (issue #89) — and
-                // clears a record this call made; one carried from an earlier
-                // attempt whose outcome was not known is kept: what holds the
-                // name may be that attempt's placeholder.
-                let certain = matches!(err, WriteError::NotFound | WriteError::Refused(_)) || (matches!(err, WriteError::NameExists) && !carried);
-                if place.is_some() && certain {
+                // Any answer but a timeout or a lost connection is certain:
+                // this request made no placeholder (issue #89), and the record
+                // this call made goes. One carried from an earlier attempt
+                // whose outcome was not known is kept: what holds the name may
+                // be that attempt's placeholder.
+                let certain = !matches!(err, WriteError::Transient(_));
+                if place.is_some() && certain && !carried {
                     self.e.store().call(move |s| s.outbox_opening_refused(seq)).await?;
                 }
                 return Ok(Err(err));

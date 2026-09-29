@@ -211,17 +211,21 @@ impl TreeStore {
     /// record of an earlier attempt at the same place was already there
     /// (carried); `false`: this call made it.
     pub fn outbox_record_opening(&self, seq: i64, parent: &str, name: &str, now: i64) -> Result<bool, TreeError> {
-        let carried = self
+        // Names compared without case, as OneDrive does (and as
+        // `upload_opening_at`): in Rust, since SQLite's `lower` is ASCII only.
+        let earlier: Option<(String, String, i64)> = self
             .conn
-            .query_row("SELECT 1 FROM upload_openings WHERE seq = ?1 AND parent = ?2 AND name = ?3", params![seq, parent, name], |_| Ok(()))
-            .optional()?
-            .is_some();
+            .query_row("SELECT parent, name, at FROM upload_openings WHERE seq = ?1", [seq], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?;
+        let carried = earlier.as_ref().is_some_and(|(p, n, _)| p == parent && n.to_lowercase() == name.to_lowercase());
+        let at = match earlier {
+            Some((_, _, at)) if carried => at,
+            _ => now,
+        };
         self.conn.execute(
             "INSERT INTO upload_openings (seq, parent, name, at) VALUES (?1, ?2, ?3, ?4)
-               ON CONFLICT(seq) DO UPDATE SET
-                 at = CASE WHEN parent = excluded.parent AND name = excluded.name THEN at ELSE excluded.at END,
-                 parent = excluded.parent, name = excluded.name",
-            params![seq, parent, name, now],
+               ON CONFLICT(seq) DO UPDATE SET parent = excluded.parent, name = excluded.name, at = excluded.at",
+            params![seq, parent, name, at],
         )?;
         Ok(carried)
     }
@@ -229,6 +233,19 @@ impl TreeStore {
     /// Row `seq`'s opening was refused for certain: no placeholder of it.
     pub fn outbox_opening_refused(&self, seq: i64) -> Result<(), TreeError> {
         self.conn.execute("DELETE FROM upload_openings WHERE seq = ?1", [seq])?;
+        Ok(())
+    }
+
+    /// The openings recorded at `name` (without case) in `parent` are
+    /// resolved — their placeholder deleted, the name free, or its holder not
+    /// theirs: every one goes.
+    pub fn upload_openings_clear_at(&self, parent: &str, name: &str) -> Result<(), TreeError> {
+        let mut statement = self.conn.prepare("SELECT seq, name FROM upload_openings WHERE parent = ?1")?;
+        let lower = name.to_lowercase();
+        let rows = statement.query_map([parent], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?.collect::<Result<Vec<_>, _>>()?;
+        for (seq, _) in rows.into_iter().filter(|(_, n)| n.to_lowercase() == lower) {
+            self.conn.execute("DELETE FROM upload_openings WHERE seq = ?1", [seq])?;
+        }
         Ok(())
     }
 

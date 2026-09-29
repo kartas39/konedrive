@@ -226,13 +226,12 @@ fn a_placeholder_onedrive_will_not_delete_makes_the_row_wait_not_a_copy() {
     assert_committed(&w, "a.txt", "a.txt");
 }
 
-/// At a place with an opening recorded, a `409` from a file with content, or
-/// from an empty file made before the recording, is someone else's: a
-/// conflict copy, as for any `409`. Nothing of theirs is deleted. (The file
-/// is one the delta feed listed — as `x.txt`, renamed in OneDrive since: an
-/// empty file it never listed would be waited for, issue #89.)
+/// A `409` to a fresh opening from a file the delta feed listed (as
+/// `x.txt`, renamed in OneDrive since), with content or empty, however old:
+/// the opening's record goes with the `409`, and the file is someone else's —
+/// a conflict copy, as for any `409`. Nothing of theirs is deleted.
 #[test]
-fn a_409_at_a_recorded_place_from_someone_elses_file_is_still_a_conflict() {
+fn a_409_to_a_fresh_opening_from_a_listed_file_is_still_a_conflict() {
     for (theirs, age) in [(&b"theirs"[..], 0), (&b""[..], 3600)] {
         let w = World::new(&[file("X", "R", "x.txt", theirs)]);
         w.write("a.txt", b"mine");
@@ -442,4 +441,104 @@ fn a_move_or_mkdir_onto_our_own_sessions_name_waits() {
         assert_eq!(w.cloud(|c| (c.count("DELETE", "upload/"), c.count("DELETE", "items/"))), (0, 0), "{what}");
         assert_eq!(conflicts(&w), 0, "{what}");
     }
+}
+
+/// The record of an opening: made (`false`) or carried (`true`) — the same
+/// row at the same place, the name compared without case, keeping its first
+/// time; at another place it starts again.
+#[test]
+fn an_opening_record_is_carried_at_the_same_place_without_case() {
+    let w = World::new(&[]);
+    let record = |name: &'static str, at: i64| w.store.call_blocking(move |s| s.outbox_record_opening(7, fake::ROOT, name, at)).unwrap();
+    assert!(!record("a.txt", 100));
+    assert!(record("A.txt", 200), "the same name to OneDrive");
+    assert_eq!(opening_at(&w, "a.txt"), Some(100));
+    assert!(!record("b.txt", 300));
+    assert_eq!((opening_at(&w, "a.txt"), opening_at(&w, "b.txt")), (None, Some(300)));
+}
+
+/// A timeout or a lost connection (a `5xx` here) leaves the opening's
+/// outcome unknown: the record is kept, and the retry carries it. Any other
+/// answer is certain, and the record goes.
+#[test]
+fn only_an_unknown_outcome_keeps_the_opening_record() {
+    for (status, kept) in [(500, true), (400, false), (403, false)] {
+        let w = World::new(&[]);
+        w.write("a.txt", b"hello");
+        w.examine(&[("", "a.txt")]);
+        w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(status), 1));
+        w.run();
+        assert_eq!(w.rows().len(), 1, "{status}: {:?}", w.summary());
+        let at = opening_at(&w, "a.txt");
+        assert_eq!(at.is_some(), kept, "{status}");
+        if kept {
+            let seq = w.rows()[0].seq;
+            let carried = w.store.call_blocking(move |s| s.outbox_record_opening(seq, fake::ROOT, "a.txt", 0)).unwrap();
+            assert!(carried, "{status}: the retry carries it");
+            assert_eq!(opening_at(&w, "a.txt"), at);
+        }
+    }
+}
+
+/// A carried record (a stop lost the session's URL) and a holder with
+/// content: someone else's file — a copy, nothing deleted, and the record
+/// resolved.
+#[test]
+fn a_carried_record_and_a_holder_with_content_is_a_copy() {
+    let w = World::new(&[]);
+    opened_and_lost(&w, b"mine");
+    w.cloud(|c| {
+        c.expire_sessions();
+        c.add_file("X", fake::ROOT, "a.txt", b"theirs");
+        c.created.insert("X".into(), crate::sync::activity::unix_now());
+    });
+    w.run();
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    assert_eq!(w.id_at("a.txt").as_deref(), Some("X"));
+    assert_eq!(w.content("a-fedora.txt").unwrap(), b"mine");
+    assert_eq!(w.cloud(|c| c.count("DELETE", "items/")), 0);
+    assert_eq!(conflicts(&w), 1);
+    assert_eq!(opening_at(&w, "a.txt"), None);
+}
+
+/// A carried record and an empty holder made before it (less the clock
+/// slack): not ours, never deleted — the row waits, and the record is
+/// resolved.
+#[test]
+fn a_carried_record_and_an_older_empty_holder_waits() {
+    let w = World::new(&[]);
+    opened_and_lost(&w, b"mine");
+    w.cloud(|c| {
+        c.expire_sessions();
+        c.open_elsewhere(fake::ROOT, "a.txt", 3600);
+    });
+    w.run();
+    assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
+    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions())), (vec!["a.txt".to_owned()], 1));
+    assert_eq!(w.cloud(|c| c.count("DELETE", "items/")), 0);
+    assert_eq!(opening_at(&w, "a.txt"), None);
+}
+
+/// Once a carried record is resolved — our placeholder deleted — it goes: a
+/// placeholder another device opens at the name later is never compared
+/// with its old time, never deleted. The row waits for it.
+#[test]
+fn a_resolved_record_never_deletes_a_later_placeholder() {
+    let w = World::new(&[]);
+    opened_and_lost(&w, b"mine");
+    // Our placeholder deleted, then the next opening answered `429`.
+    w.cloud(|c| c.throttle_429("POST", "createUploadSession", 1, 0, 1));
+    w.run();
+    assert_eq!(w.cloud(|c| (c.placeholders().len(), c.count("DELETE", "items/"))), (0, 1), "ours deleted");
+    assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
+    assert_eq!(opening_at(&w, "a.txt"), None, "resolved, and a certain answer to the next opening");
+
+    w.cloud(|c| c.open_elsewhere(fake::ROOT, "a.txt", 0));
+    due(&w);
+    w.run();
+    assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
+    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions(), c.count("DELETE", "items/"))), (vec!["a.txt".to_owned()], 1, 1));
+    assert_eq!(conflicts(&w), 0);
 }

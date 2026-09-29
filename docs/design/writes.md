@@ -503,13 +503,14 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
   without such a session does §6.2's `409` rule decide.
 - **The place is recorded before the session is opened** (issue #84). Before a new file's
   `createUploadSession`, its row records the place it is about to take (parent id, name, the time;
-  `upload_openings`). The session's URL replaces the record once it is persisted; a definite refusal
-  to open (`404`, `400`) clears it, and so does a `409` answered to the opening that made the record
-  (that request made no placeholder, issue #89); a record carried from an earlier attempt whose
-  outcome was not known (a stop, a timeout) is kept through a `409`; recorded again at the same
-  place, it keeps its first time; it
-  goes when its row leaves the outbox, and outlasts a restart. A stop between the opening and its
-  persisting so leaves a placeholder this folder still knows of.
+  `upload_openings`). The session's URL replaces the record once it is persisted. The outcome of
+  an opening is unknown only after a timeout or a lost connection, or a stop; any other answer
+  (`409`, `404`, `400`, `401`, `403`, `423`, `429`, `503`, `507`) is certain — that request made no
+  placeholder — and clears the record the attempt made (issue #89). A record carried from an
+  earlier attempt whose outcome was unknown is kept through any answer, as that attempt's
+  placeholder may still hold the name. Recorded again at the same place (the name compared without
+  case), it keeps its first time; it goes when its row leaves the outbox, and outlasts a restart.
+  A stop between the opening and its persisting so leaves a placeholder this folder still knows of.
 - **A `409` at a recorded place.** With no listed session there but an opening recorded — carried
   from an earlier attempt whose outcome was not known, never the one just answered `409` — the holder
   is read: an empty file created at or after the recording, less 5 minutes for the clocks, is that
@@ -517,14 +518,19 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
   session — measured, limitations log F172) and the create goes again; a delete OneDrive refuses
   leaves the row waiting (`upload-session-open`) until the name is free. Never a copy. A holder
   with content, one created earlier, or one whose time is not given is not taken for ours: §6.2's
-  `409` rule decides.
+  `409` rule decides. At most one placeholder of ours holds a name, so the records at the place
+  are cleared once resolved: the placeholder deleted (or found gone), the name found free, or the
+  holder not ours (with content, or created earlier). They are kept only while the holder's time
+  is not given, a read or the delete fails for now, or the delete is refused — so a later `409`
+  never compares with an old time.
 - **A placeholder not ours is never deleted** (issue #89). Nothing in OneDrive says which machine
   opened a session, and nothing about a placeholder changes while its session is used or idle, so
   a live session cannot be told from an abandoned one; a delete of a placeholder ends its session,
   so deleting one another device is filling would kill that device's upload. Only this folder's
   own records make a placeholder ours: a listed session's, or an empty file created at or after a
-  recorded opening carried from an earlier attempt whose outcome was not known (less the 5 minutes
-  of clock slack). A `409` answered to this very attempt's opening is never that. Any other
+  recorded opening carried from an earlier attempt whose outcome was unknown (a timeout or a lost
+  connection, or a stop), less the 5 minutes of clock slack, and not yet resolved. A `409`
+  answered to this very attempt's opening is never that. Any other
   placeholder holds its name, and the row waits (§6.2).
 
 - **The daemon's stop** (issue #84). On SIGTERM (systemd's stop, a package upgrade) or SIGINT the
