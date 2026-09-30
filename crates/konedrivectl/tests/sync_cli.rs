@@ -1579,11 +1579,10 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     assert_eq!(out_text(&run(addr, &["sync", "deletes", "confirm"])).trim(), "No delete is waiting for confirmation.");
 }
 
-/// Issues #57, #80: `sync thumbnails`, `sync on-metered` and `sync on-battery` print the
-/// setting without an argument and change it with one; a choice that is none is a usage
-/// error, and a local folder has no settings.
+/// Issue #80: `sync thumbnails` prints the setting without an argument and changes it with
+/// one; a choice that is none is a usage error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn binary_shows_and_changes_the_sync_settings() {
+async fn binary_shows_and_changes_the_thumbnail_setting() {
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
@@ -1598,15 +1597,38 @@ async fn binary_shows_and_changes_the_sync_settings() {
     assert!(!f.proxy.folder.thumbnails().await.unwrap());
     assert!(out_text(&run(addr, &["sync", "thumbnails"])).starts_with("Thumbnails: off"));
 
-    assert_eq!(out_text(&run(addr, &["sync", "on-metered"])).trim(), "On a metered connection: pause.");
-    assert_eq!(out_text(&run(addr, &["sync", "on-metered", "sync"])).trim(), "On a metered connection: sync as usual.");
-    assert!(!f.proxy.folder.pause_on_metered().await.unwrap());
-
-    assert_eq!(out_text(&run(addr, &["sync", "on-battery"])).trim(), "On battery: pause in power-saver mode.");
-    assert_eq!(out_text(&run(addr, &["sync", "on-battery", "pause"])).trim(), "On battery: pause.");
-    assert_eq!(f.proxy.folder.on_battery().await.unwrap(), "pause");
-    assert_eq!(run(addr, &["sync", "on-battery", "sometimes"]).status.code(), Some(2));
     assert_eq!(run(addr, &["sync", "thumbnails", "maybe"]).status.code(), Some(2));
+    assert_eq!(run(addr, &["sync", "on-battery"]).status.code(), Some(2), "moved to `settings`");
+}
+
+/// Issue #95: `settings on-metered` and `settings on-battery` print the setting every account
+/// shares without an argument and change it with one — written to `config.toml` and taken by
+/// the account at once. A choice that is none, and `--account`, are usage errors.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_shows_and_changes_the_settings_every_account_shares() {
+    use konedrived::config::OnBattery;
+    let f = harness().await;
+    let addr = f._bus.address();
+    let config = || std::fs::read_to_string(f._config_dir.path().join("config.toml")).unwrap();
+
+    assert_eq!(out_text(&run(addr, &["settings", "on-metered"])).trim(), "On a metered connection: pause.");
+    let out = run(addr, &["settings", "on-metered", "sync"]);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out_text(&out).trim(), "On a metered connection: sync as usual.");
+    assert_eq!(out_text(&run(addr, &["settings", "on-metered"])).trim(), "On a metered connection: sync as usual.");
+    assert!(!f.service.hold_settings().pause_on_metered);
+    assert!(config().contains("pause_on_metered = false"), "{}", config());
+
+    assert_eq!(out_text(&run(addr, &["settings", "on-battery"])).trim(), "On battery: pause in power-saver mode.");
+    assert_eq!(out_text(&run(addr, &["settings", "on-battery", "pause"])).trim(), "On battery: pause.");
+    assert_eq!(out_text(&run(addr, &["settings", "on-battery"])).trim(), "On battery: pause.");
+    assert_eq!(f.service.hold_settings().on_battery, OnBattery::Pause);
+    assert!(config().contains("on_battery = \"pause\""), "{}", config());
+
+    assert_eq!(run(addr, &["settings", "on-battery", "sometimes"]).status.code(), Some(2));
+    let out = run(addr, &["--account", konedrivectl::FIRST_LABEL, "settings", "on-battery"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(err_text(&out).contains("one for every account"), "{}", err_text(&out));
 }
 
 /// Issue #57: while the account holds back by itself, `sync status` says why; `sync anyway`

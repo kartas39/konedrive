@@ -9550,13 +9550,11 @@ mod tests {
             assert_eq!(service.state().get().paused_until, None);
         }
 
-        /// Issues #57, #80: each sync setting is absent from `config.toml` until set, reads
-        /// its default then, is written when set and taken at once — thumbnails off stop
-        /// nothing else — and is read back by the next start. `SetOnBattery` refuses what is
-        /// not a choice; a local folder has no settings to set.
+        /// Issue #80: the thumbnail setting is absent from `config.toml` until set, reads its
+        /// default then, is written when set and taken at once — thumbnails off stop nothing
+        /// else — and is read back by the next start; a local folder has no settings to set.
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-        async fn the_sync_settings_are_kept_in_config_toml_and_taken_at_once() {
-            use crate::config::OnBattery;
+        async fn the_thumbnail_setting_is_kept_in_config_toml_and_taken_at_once() {
             let local = world().await;
             let other = service(&local, true);
             other.register_root_without_interception(local.folder.path()).await.unwrap();
@@ -9572,29 +9570,48 @@ mod tests {
                 persist.store.account(&persist.account).unwrap()
             };
             assert_eq!(service.run_settings(), running::Settings::default(), "absent means the default");
-            assert_eq!((written().thumbnails, written().pause_on_metered, written().on_battery), (None, None, None));
+            assert_eq!(written().thumbnails, None);
 
             service.change_run_settings(|s| s.thumbnails = false).await.unwrap();
             assert!(!service.run_settings().thumbnails);
             assert_eq!(written().thumbnails, Some(false));
-            assert_eq!(written().pause_on_metered, None, "only what changed is written");
             let store = service.store.lock().unwrap().clone().unwrap();
             assert!(!service.running.stopped(&store) && !service.running.thumbnails_go(&store), "thumbnails off stop nothing else");
-
-            service.change_run_settings(|s| s.pause_on_metered = false).await.unwrap();
-            assert_eq!(written().pause_on_metered, Some(false));
-            service.set_on_battery("pause").await.unwrap();
-            assert_eq!(service.run_settings().on_battery, OnBattery::Pause);
-            assert_eq!(written().on_battery.as_deref(), Some("pause"));
-            assert!(matches!(service.set_on_battery("whenever").await, Err(SyncError::InvalidArgs(_))));
-            assert_eq!(service.run_settings().on_battery, OnBattery::Pause, "a refusal changes nothing");
 
             service.stop_sync().await;
             service.set_link(None);
             drop(service);
             let restarted = connected(&w, true).await;
-            assert_eq!(restarted.run_settings(), running::Settings { thumbnails: false, pause_on_metered: false, on_battery: OnBattery::Pause });
+            assert_eq!(restarted.run_settings(), running::Settings { thumbnails: false });
+        }
 
+        /// Issue #95: the hold's settings are one pair for every account. A change on the hub
+        /// reaches every account's hold at once and ends every account's `SyncAnyway`; the
+        /// same settings told again end nothing; an account that joins later runs on them.
+        #[tokio::test]
+        async fn the_hold_settings_reach_every_account_and_end_every_sync_anyway() {
+            use crate::config::OnBattery;
+            use running::{Hold, HoldSettings};
+            let hub = hub::HelperHub::new();
+            let accounts = [SyncService::on_hub(&hub, None, None), SyncService::on_hub(&hub, None, None)];
+            hub.set_conditions(running::Conditions { metered: true, on_battery: true, power_saver: false });
+            for account in &accounts {
+                assert_eq!(account.running.held(), Some(Hold::Metered));
+                account.running.sync_anyway();
+            }
+            let ignoring_metered = HoldSettings { pause_on_metered: false, on_battery: OnBattery::Pause };
+            hub.set_hold_settings(ignoring_metered);
+            for account in &accounts {
+                assert_eq!(account.hold_settings(), ignoring_metered);
+                assert_eq!(account.running.held(), Some(Hold::OnBattery), "worked out again: the SyncAnyway ended");
+                account.running.sync_anyway();
+            }
+            hub.set_hold_settings(ignoring_metered);
+            assert!(accounts.iter().all(|a| a.running.held().is_none()), "the same again ends nothing");
+            hub.set_hold_settings(HoldSettings { on_battery: OnBattery::Sync, ..ignoring_metered });
+            assert!(accounts.iter().all(|a| a.running.held().is_none()), "sync on battery");
+            let later = SyncService::on_hub(&hub, None, None);
+            assert_eq!(later.hold_settings().on_battery, OnBattery::Sync, "a later account is told");
         }
 
         /// Issue #57: on a metered connection the account holds back — no upload, no poll, no
@@ -9684,18 +9701,20 @@ mod tests {
             service.stop_sync().await;
         }
 
-        /// Issue #57: `SyncAnyway` lifts the hold at once, until a source or the account's
-        /// hold setting changes; then the hold is worked out again. After a restart with the
+        /// Issue #57: `SyncAnyway` lifts the hold at once, until a source or the global hold
+        /// settings change; then the hold is worked out again. After a restart with the
         /// condition still on, the account is held again and `Paused` stays false.
         #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
         async fn sync_anyway_lifts_the_hold_until_something_changes_and_a_restart_holds_again() {
             use crate::config::OnBattery;
+            use running::HoldSettings;
+            let hold = |on_battery| HoldSettings { on_battery, ..HoldSettings::default() };
             let w = world().await;
             let service = connected(&w, true).await;
             service.register_root(w.folder.path()).await.unwrap();
             listed(&service).await;
             let on_battery = running::Conditions { on_battery: true, ..running::Conditions::default() };
-            service.set_on_battery("pause").await.unwrap();
+            service.set_hold_settings(hold(OnBattery::Pause));
             service.set_conditions(on_battery);
             assert_eq!(service.state().get().held_back, "on-battery");
 
@@ -9707,17 +9726,17 @@ mod tests {
             assert_eq!(service.state().get().held_back, "on-battery", "the profile changed: held again");
 
             service.sync_anyway().unwrap();
-            service.change_run_settings(|s| s.on_battery = OnBattery::PowerSaver).await.unwrap();
+            service.set_hold_settings(hold(OnBattery::PowerSaver));
             assert_eq!(service.state().get().held_back, "power-saver", "the setting changed: worked out again");
-            service.change_run_settings(|s| s.on_battery = OnBattery::Sync).await.unwrap();
+            service.set_hold_settings(hold(OnBattery::Sync));
             assert_eq!(service.state().get().held_back, "", "sync on battery");
-            service.set_on_battery("pause").await.unwrap();
 
             service.stop_sync().await;
             service.set_link(None);
             drop(service);
             let hub = hub::HelperHub::with_link(Some(link(&w).await));
             hub.set_conditions(on_battery);
+            hub.set_hold_settings(hold(OnBattery::Pause));
             let restarted = service_on(&w, &hub);
             restarted.restore().await;
             let seen = deltas(&w).await;

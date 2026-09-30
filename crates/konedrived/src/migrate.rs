@@ -9,8 +9,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::config::{
-    new_account_id, write_atomic, write_config, AccountConfig, Config, ConfigError, ConfigStore, Mode, Origin, Paths,
-    RootConfig, CONFIG_VERSION, MIGRATED_LABEL,
+    new_account_id, write_atomic, write_config, AccountConfig, Config, ConfigError, ConfigStore, Mode, OnBattery, Origin,
+    Paths, RootConfig, CONFIG_VERSION, MIGRATED_LABEL,
 };
 
 /// `config.toml`, version 1: no `config_version`, one account, one folder.
@@ -164,8 +164,8 @@ async fn to_v2(v1: V1Config, paths: &Paths, legacy_token: impl Future<Output = b
             ignore: None,
             machine_name: String::new(),
             thumbnails: None,
-            pause_on_metered: None,
-            on_battery: None,
+            old_pause_on_metered: None,
+            old_on_battery: None,
         }]
     } else {
         Vec::new()
@@ -245,6 +245,52 @@ pub fn finish_file_moves(store: &ConfigStore, paths: &Paths) {
         };
         if let Err(e) = done {
             let message = format!("moving the files of account {:?} failed: {e}", account.label);
+            tracing::error!("{message}");
+            store.note_error(message);
+        }
+    }
+}
+
+/// Issue #95, once, at a start after [`ConfigStore::open`] and before the accounts are
+/// loaded: an account's `pause_on_metered` and `on_battery` of before become the global keys,
+/// and leave the accounts. The strictest value wins, over every account and a global key
+/// already there — an account without the key counting as its default: `on_battery` takes
+/// `pause` over `power-saver` over `sync`; `pause_on_metered` is off only when every account
+/// says off. Nothing is written when no account has either key, so a second start changes
+/// nothing. A write that fails is logged and shown in [`ConfigStore::last_error`]; the keys
+/// stay for the next start, and the accounts run on the global keys meanwhile.
+pub fn move_hold_settings(store: &ConfigStore) {
+    let moved = store.update(|config| {
+        if !config.accounts.iter().any(|a| a.old_pause_on_metered.is_some() || a.old_on_battery.is_some()) {
+            return Ok::<_, ConfigError>(None);
+        }
+        let pause_on_metered =
+            config.accounts.iter().map(|a| a.old_pause_on_metered.unwrap_or(true)).chain(config.pause_on_metered).any(|on| on);
+        let on_battery = config
+            .accounts
+            .iter()
+            .map(|a| a.old_on_battery.as_deref())
+            .chain(config.on_battery.as_deref().map(Some))
+            .map(OnBattery::read)
+            .max_by_key(|choice| choice.strictness())
+            .unwrap_or_default();
+        for account in &mut config.accounts {
+            account.old_pause_on_metered = None;
+            account.old_on_battery = None;
+        }
+        config.pause_on_metered = Some(pause_on_metered);
+        config.on_battery = Some(on_battery.as_str().to_owned());
+        Ok(Some((pause_on_metered, on_battery)))
+    });
+    match moved {
+        Ok(None) => {}
+        Ok(Some((pause_on_metered, on_battery))) => tracing::info!(
+            "the accounts' pause_on_metered and on_battery moved to one setting for every account, the strictest: \
+             pause_on_metered = {pause_on_metered}, on_battery = {:?}",
+            on_battery.as_str()
+        ),
+        Err(e) => {
+            let message = format!("moving the accounts' pause_on_metered and on_battery failed: {e}");
             tracing::error!("{message}");
             store.note_error(message);
         }
@@ -463,8 +509,8 @@ mod tests {
                 ignore: None,
                 machine_name: String::new(),
                 thumbnails: None,
-                pause_on_metered: None,
-                on_battery: None,
+                old_pause_on_metered: None,
+                old_on_battery: None,
             }
         );
         assert_eq!(store.last_error(), "");
@@ -614,5 +660,51 @@ mod tests {
             assert!(!store.account(&id).unwrap().migrate_files, "{case}");
             assert_eq!(store.last_error(), "", "{case}: expected, not a failure");
         }
+    }
+
+    /// Issue #95: the accounts' own `pause_on_metered` and `on_battery` become the global
+    /// keys, the strictest value winning — an account without a key counting as its
+    /// default — and leave the accounts; the file is written once, and a second start
+    /// changes nothing.
+    #[tokio::test]
+    async fn the_accounts_hold_settings_move_to_the_global_keys_once() {
+        let account = |id: &str, keys: &str| format!("[[accounts]]\nid = \"{id}\"\nlabel = \"L{id}\"\n{keys}");
+        for (keys, pause_on_metered, on_battery) in [
+            (["pause_on_metered = false\non_battery = \"sync\"\n", "pause_on_metered = false\non_battery = \"pause\"\n"], false, "pause"),
+            (["pause_on_metered = false\non_battery = \"sync\"\n", ""], true, "power-saver"),
+            (["on_battery = \"sync\"\n", "on_battery = \"whenever\"\n"], true, "power-saver"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let paths = Paths::in_dir(dir.path());
+            let text = format!("config_version = 2\n{}{}", account("3f9a1c0e5b7d", keys[0]), account("8c21d07a44e1", keys[1]));
+            std::fs::write(&paths.config_file, &text).unwrap();
+            let store = open(&paths, None).await;
+            move_hold_settings(&store);
+            let config = store.snapshot();
+            assert_eq!((config.pause_on_metered, config.on_battery.as_deref()), (Some(pause_on_metered), Some(on_battery)), "{keys:?}");
+            let written = std::fs::read_to_string(&paths.config_file).unwrap();
+            assert_eq!(toml::from_str::<Config>(&written).unwrap(), config, "{keys:?}");
+            for entry in written.split("[[accounts]]").skip(1) {
+                assert!(!entry.contains("pause_on_metered") && !entry.contains("on_battery"), "{keys:?}: {written}");
+            }
+            assert_eq!(store.last_error(), "");
+
+            let again = open(&paths, None).await;
+            move_hold_settings(&again);
+            assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), written, "{keys:?}: the second start changes nothing");
+        }
+    }
+
+    /// A file whose accounts have neither key is not written.
+    #[tokio::test]
+    async fn nothing_to_move_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dir(dir.path());
+        let text = "config_version = 2\n\n[[accounts]]\nid = \"3f9a1c0e5b7d\"\nlabel = \"Personal\"\n";
+        std::fs::write(&paths.config_file, text).unwrap();
+        let store = open(&paths, None).await;
+        move_hold_settings(&store);
+        assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), text);
+        assert_eq!((store.snapshot().pause_on_metered, store.snapshot().on_battery), (None, None));
     }
 }

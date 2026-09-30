@@ -539,7 +539,7 @@ pub fn thumbnails_text(on: bool) -> &'static str {
     }
 }
 
-/// `sync on-metered`'s answer.
+/// `settings on-metered`'s answer.
 pub fn on_metered_text(pause: bool) -> &'static str {
     if pause {
         "On a metered connection: pause."
@@ -548,7 +548,7 @@ pub fn on_metered_text(pause: bool) -> &'static str {
     }
 }
 
-/// `sync on-battery`'s answer, for `sync`, `power-saver` or `pause`.
+/// `settings on-battery`'s answer, for `sync`, `power-saver` or `pause`.
 pub fn on_battery_text(choice: &str) -> String {
     match choice {
         "sync" => "On battery: sync as usual.".to_owned(),
@@ -785,7 +785,7 @@ pub enum SyncAction<'a> {
     Pause,
     Resume,
     Ignore,
-    /// `sync thumbnails`, `sync on-metered`, `sync on-battery`: an account's sync settings.
+    /// `sync thumbnails`: an account's own sync setting.
     Settings,
     /// `sync anyway`.
     Anyway,
@@ -1305,6 +1305,8 @@ pub enum AccountAction<'a> {
     /// `Account.SetMode`: the account's label, the mode asked for, and how a command
     /// suggested about the account starts ([`command_prefix`]).
     SetMode(&'a str, &'a str, &'a str),
+    /// `Accounts.SetPauseOnMetered` or `SetOnBattery`: a setting every account shares.
+    Settings,
 }
 
 /// What to tell a person when a call on the accounts failed: `Accounts.Add`,
@@ -1369,6 +1371,7 @@ pub fn account_refusal_text(action: AccountAction<'_>, name: Option<&str>, detai
         Rename(old, new) => format!("the account {old} was not renamed to {new:?}: {detail}"),
         SignIn(label) => format!("cannot start signing in to {label}: {detail}"),
         SignOut(label) => format!("cannot sign {label} out: {detail}"),
+        Settings => format!("the setting was not changed: {detail}"),
     }
 }
 

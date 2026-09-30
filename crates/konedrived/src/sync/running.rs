@@ -1,6 +1,6 @@
 //! What background work an account runs now (`docs/design/writes.md` §11): the one place
 //! that decides it, from the user's pause, the automatic hold (a metered connection, the
-//! battery: [`Conditions`], told by `sync::conditions`) and the account's settings. Every
+//! battery: [`Conditions`], told by `sync::conditions`) and the settings. Every
 //! reader of the pause — the transfer pool (through `SyncService::show_pause`), the outbox
 //! worker, the poll and the replacements it runs, the thumbnail filler — asks here, not
 //! the tree store.
@@ -12,34 +12,55 @@
 //!
 //! The hold is not the user's pause: it is not kept in the store, never shows as `Paused`,
 //! and is worked out again from the sources after a restart. The account runs only while
-//! neither is on. `SyncAnyway` lifts the hold until a source or the account's
+//! neither is on. `SyncAnyway` lifts the hold until a source or the global
 //! `pause_on_metered` / `on_battery` changes.
+//!
+//! The hold's two settings ([`HoldSettings`]) are one pair for the whole app (issue #95):
+//! the hub tells every account, as it tells the conditions. Thumbnails stay per account.
 
 use std::sync::Mutex;
 
 use tokio::sync::Notify;
 
-use crate::config::{AccountConfig, OnBattery};
+use crate::config::{AccountConfig, Config, OnBattery};
 use crate::tree::Store;
 
-/// An account's settings that decide what runs, as `config.toml` gives them
-/// (`Folder.Thumbnails`, `PauseOnMetered`, `OnBattery`).
+/// An account's own settings that decide what runs, as its section of `config.toml` gives
+/// them (`Folder.Thumbnails`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Settings {
     pub thumbnails: bool,
-    pub pause_on_metered: bool,
-    pub on_battery: OnBattery,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { thumbnails: true, pause_on_metered: true, on_battery: OnBattery::default() }
+        Self { thumbnails: true }
     }
 }
 
 impl Settings {
     pub fn of(account: &AccountConfig) -> Self {
-        Self { thumbnails: account.thumbnails_on(), pause_on_metered: account.pauses_on_metered(), on_battery: account.on_battery() }
+        Self { thumbnails: account.thumbnails_on() }
+    }
+}
+
+/// The settings of the hold, one pair for every account (issue #95): `config.toml`'s global
+/// `pause_on_metered` and `on_battery` (`Accounts.PauseOnMetered`, `OnBattery`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HoldSettings {
+    pub pause_on_metered: bool,
+    pub on_battery: OnBattery,
+}
+
+impl Default for HoldSettings {
+    fn default() -> Self {
+        Self { pause_on_metered: true, on_battery: OnBattery::default() }
+    }
+}
+
+impl HoldSettings {
+    pub fn of(config: &Config) -> Self {
+        Self { pause_on_metered: config.pauses_on_metered(), on_battery: config.on_battery() }
     }
 }
 
@@ -75,7 +96,7 @@ impl Hold {
 
     /// Why `settings` hold an account back under `conditions`, if they do: with a network
     /// and a battery reason at once, the network's. On mains power the battery never holds.
-    pub fn of(settings: Settings, conditions: Conditions) -> Option<Self> {
+    pub fn of(settings: HoldSettings, conditions: Conditions) -> Option<Self> {
         if conditions.metered && settings.pause_on_metered {
             return Some(Self::Metered);
         }
@@ -111,6 +132,7 @@ pub struct Running {
 #[derive(Debug, Default)]
 struct Inner {
     settings: Settings,
+    hold: HoldSettings,
     conditions: Conditions,
     /// `SyncAnyway`: the hold is lifted until the conditions or the hold's settings change.
     anyway: bool,
@@ -125,22 +147,32 @@ impl Running {
         self.inner.lock().unwrap().settings
     }
 
-    /// Takes `change` into the settings; a thumbnail setting turned on wakes the filler, and
-    /// a change of `pause_on_metered` or `on_battery` ends a `SyncAnyway`.
+    /// Takes `change` into the settings; a thumbnail setting turned on wakes the filler.
     pub fn change(&self, change: impl FnOnce(&mut Settings)) {
         let (before, after) = {
             let mut inner = self.inner.lock().unwrap();
             let before = inner.settings;
             change(&mut inner.settings);
-            let after = inner.settings;
-            if (after.pause_on_metered, after.on_battery) != (before.pause_on_metered, before.on_battery) {
-                inner.anyway = false;
-            }
-            (before, after)
+            (before, inner.settings)
         };
         if after.thumbnails && !before.thumbnails {
             self.thumbnails_on.notify_one();
         }
+    }
+
+    pub fn hold_settings(&self) -> HoldSettings {
+        self.inner.lock().unwrap().hold
+    }
+
+    /// The global hold settings now; a change ends a `SyncAnyway`. Whether anything changed.
+    pub fn set_hold_settings(&self, hold: HoldSettings) -> bool {
+        let mut inner = self.inner.lock().unwrap();
+        if inner.hold == hold {
+            return false;
+        }
+        inner.hold = hold;
+        inner.anyway = false;
+        true
     }
 
     /// What the sources say now; a change ends a `SyncAnyway`. Whether anything changed.
@@ -165,7 +197,7 @@ impl Running {
         if inner.anyway {
             return None;
         }
-        Hold::of(inner.settings, inner.conditions)
+        Hold::of(inner.hold, inner.conditions)
     }
 
     /// Why the account's background work stops now, if it does: the user's pause, kept in
@@ -197,15 +229,19 @@ pub fn user_pause(store: &Store) -> Option<i64> {
 }
 
 impl super::SyncService {
-    /// The account's settings that decide what runs (`Folder.Thumbnails`, `PauseOnMetered`,
-    /// `OnBattery`).
+    /// The account's own settings that decide what runs (`Folder.Thumbnails`).
     pub fn run_settings(&self) -> Settings {
         self.running.settings()
     }
 
-    /// `SetThumbnails`, `SetPauseOnMetered`, `SetOnBattery`: `change` is written to the
-    /// account's section of `config.toml`, and taken at once. Refused `Unsupported` for a
-    /// folder not connected to OneDrive, as `Pause` is.
+    /// The global hold settings this account runs on now, as the hub told it.
+    pub fn hold_settings(&self) -> HoldSettings {
+        self.running.hold_settings()
+    }
+
+    /// `SetThumbnails`: `change` is written to the account's section of `config.toml`, and
+    /// taken at once. Refused `Unsupported` for a folder not connected to OneDrive, as
+    /// `Pause` is.
     pub async fn change_run_settings(&self, change: impl FnOnce(&mut Settings) + Send + 'static) -> Result<(), super::SyncError> {
         self.require_onedrive()?;
         // `config.toml` and the settings in memory change together, under the file's own
@@ -224,12 +260,6 @@ impl super::SyncService {
                     change(&mut after);
                     if after.thumbnails != before.thumbnails {
                         a.thumbnails = Some(after.thumbnails);
-                    }
-                    if after.pause_on_metered != before.pause_on_metered {
-                        a.pause_on_metered = Some(after.pause_on_metered);
-                    }
-                    if after.on_battery != before.on_battery {
-                        a.on_battery = Some(after.on_battery.as_str().to_owned());
                     }
                     running.change(|s| *s = after);
                     Ok::<_, crate::config::ConfigError>(())
@@ -250,24 +280,23 @@ impl super::SyncService {
         }
     }
 
-    /// `SyncAnyway()`: the hold is lifted now, until a source or the account's
+    /// The global hold settings now (the hub's, `Accounts.SetPauseOnMetered` and
+    /// `SetOnBattery`): the hold is worked out again, and a change ends a `SyncAnyway`.
+    pub fn set_hold_settings(&self, hold: HoldSettings) {
+        if self.running.set_hold_settings(hold) {
+            self.show_pause();
+        }
+    }
+
+    /// `SyncAnyway()`: the hold is lifted now, until a source or the global
     /// `pause_on_metered` / `on_battery` changes. Not kept across a restart. Refused
-    /// `Unsupported` as the setters are.
+    /// `Unsupported` as `SetThumbnails` is.
     pub fn sync_anyway(&self) -> Result<(), super::SyncError> {
         self.require_onedrive()?;
         self.running.sync_anyway();
         tracing::info!("syncing anyway, though the account would hold back");
         self.show_pause();
         Ok(())
-    }
-
-    /// `SetOnBattery(choice)`: refused `InvalidArgs` for anything but `sync`, `power-saver`
-    /// or `pause`.
-    pub async fn set_on_battery(&self, choice: &str) -> Result<(), super::SyncError> {
-        let Some(choice) = OnBattery::parse(choice) else {
-            return Err(super::SyncError::InvalidArgs(format!("{choice:?}: not sync, power-saver or pause")));
-        };
-        self.change_run_settings(move |s| s.on_battery = choice).await
     }
 }
 
@@ -297,7 +326,7 @@ mod tests {
     /// battery reason.
     #[test]
     fn the_hold_follows_the_conditions_and_the_settings() {
-        let settings = |on_battery| Settings { on_battery, ..Settings::default() };
+        let settings = |on_battery| HoldSettings { on_battery, ..HoldSettings::default() };
         let conditions = |on_battery, power_saver| Conditions { metered: false, on_battery, power_saver };
         for (choice, on_battery, power_saver, held) in [
             (OnBattery::Sync, true, true, None),
@@ -314,7 +343,7 @@ mod tests {
         }
         let metered = Conditions { metered: true, on_battery: true, power_saver: true };
         assert_eq!(Hold::of(settings(OnBattery::Pause), metered), Some(Hold::Metered), "the network's reason first");
-        let ignoring = Settings { pause_on_metered: false, on_battery: OnBattery::Sync, ..Settings::default() };
+        let ignoring = HoldSettings { pause_on_metered: false, on_battery: OnBattery::Sync };
         assert_eq!(Hold::of(ignoring, metered), None, "pause_on_metered = false");
     }
 
@@ -335,22 +364,27 @@ mod tests {
         running.set_conditions(Conditions { on_battery: true, ..metered });
         assert_eq!(running.held(), Some(Hold::Metered), "a source changed: worked out again");
         running.sync_anyway();
-        running.change(|s| s.on_battery = OnBattery::Pause);
+        assert!(!running.set_hold_settings(HoldSettings::default()), "the same again is no change");
+        assert_eq!(running.held(), None);
+        assert!(running.set_hold_settings(HoldSettings { on_battery: OnBattery::Pause, ..HoldSettings::default() }));
         assert_eq!(running.held(), Some(Hold::Metered), "the hold's setting changed");
         crate::sync::upload::set_paused(&store, Some(0)).await.unwrap();
         assert_eq!(running.stop(&store), Some(Stop::Paused(0)), "the user's pause is said first");
     }
 
+    /// Thumbnails from the account's section, the hold's settings from the global keys
+    /// (issue #95), each with its default when absent; an unknown `on_battery` falls back.
     #[test]
-    fn settings_read_config_toml_with_its_defaults() {
+    fn settings_read_config_toml_with_their_defaults() {
         let mut account: AccountConfig = toml::from_str("id = \"a\"\nlabel = \"A\"\n").unwrap();
-        assert_eq!(Settings::of(&account), Settings::default());
-        assert_eq!(Settings::default(), Settings { thumbnails: true, pause_on_metered: true, on_battery: OnBattery::PowerSaver });
-        account.on_battery = Some("whenever".into());
-        assert_eq!(account.on_battery(), OnBattery::PowerSaver, "an unknown value falls back");
-        account.on_battery = Some("pause".into());
+        assert_eq!(Settings::of(&account), Settings { thumbnails: true });
         account.thumbnails = Some(false);
-        account.pause_on_metered = Some(false);
-        assert_eq!(Settings::of(&account), Settings { thumbnails: false, pause_on_metered: false, on_battery: OnBattery::Pause });
+        assert_eq!(Settings::of(&account), Settings { thumbnails: false });
+
+        let read = |text: &str| HoldSettings::of(&toml::from_str::<Config>(&format!("config_version = 2\n{text}")).unwrap());
+        assert_eq!(read(""), HoldSettings { pause_on_metered: true, on_battery: OnBattery::PowerSaver });
+        assert_eq!(read("pause_on_metered = false\non_battery = \"pause\""), HoldSettings { pause_on_metered: false, on_battery: OnBattery::Pause });
+        assert_eq!(read("on_battery = \"sync\"").on_battery, OnBattery::Sync);
+        assert_eq!(read("on_battery = \"whenever\"").on_battery, OnBattery::PowerSaver, "an unknown value falls back");
     }
 }

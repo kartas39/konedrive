@@ -38,10 +38,29 @@
     <method name="SetClientId">
       <arg name="id" type="s" direction="in"/>
     </method>
+    <!-- The hold's settings (issues #57, #95), one pair for every account:
+         each is written to config.toml and taken by every account at once,
+         and a change ends every account's Folder.SyncAnyway.
+         SetPauseOnMetered: whether every account holds back on a metered
+         connection. -->
+    <method name="SetPauseOnMetered">
+      <arg name="on" type="b" direction="in"/>
+    </method>
+    <!-- What every account does on battery: "sync" (nothing), "power-saver"
+         (holds back while on battery in the power-saver profile) or "pause"
+         (holds back whenever on battery). Refused
+         org.freedesktop.DBus.Error.InvalidArgs for anything else. -->
+    <method name="SetOnBattery">
+      <arg name="choice" type="s" direction="in"/>
+    </method>
     <!-- Every account, in the order it was added: the order of the window's
          switcher, the tray's tooltip and `konedrivectl account list`. -->
     <property name="List" type="ao" access="read"/>
     <property name="ClientId" type="s" access="read"/>
+    <!-- See SetPauseOnMetered and SetOnBattery; true and "power-saver" until
+         they are called. -->
+    <property name="PauseOnMetered" type="b" access="read"/>
+    <property name="OnBattery" type="s" access="read"/>
     <!-- The privileged helper, as the daemon sees it: "connected" (files
          download when opened), "not-installed" (no konedrive-helper service
          on this system), "stopped" (installed, not running: systemctl start

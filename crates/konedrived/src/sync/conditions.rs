@@ -2,8 +2,8 @@
 //! connection is metered, whether the machine runs on battery, and whether the power profile
 //! is `power-saver`. One watcher for the daemon, on the system bus, as `sync::network` is:
 //! it follows each source's `PropertiesChanged` and tells every account through the hub
-//! ([`HelperHub::set_conditions`]), each of which decides for itself by its own settings
-//! (`sync::running`).
+//! ([`HelperHub::set_conditions`]), each of which decides by the hold's settings, one pair
+//! for every account (`sync::running`).
 //!
 //! - **Metered**: NetworkManager's `Metered` on `/org/freedesktop/NetworkManager` is `1`
 //!   (yes) or `3` (guessed yes).
