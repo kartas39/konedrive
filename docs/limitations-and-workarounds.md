@@ -2481,6 +2481,28 @@ application must never read zeros where real content should be.
   its own write, so a later start cannot undo the user's choice. SHORTCUT · measured by unit tests
   (`migrate::tests::the_accounts_hold_settings_move_to_the_global_keys_once`,
   `migrate::tests::a_global_set_takes_the_keys_left_in_the_accounts`) · open.
+- **F180. The notification endpoint's lifetime is Graph's undocumented `expirationDateTime`, or a
+  guess of one hour** (`drive/socket.rs` `socket_endpoint`, `DEFAULT_LIFETIME`, `RENEW_EARLY`; issue
+  #54) — Microsoft documents only `id` and `notificationUrl` for
+  `GET /me/drive/root/subscriptions/socketIo`; the service also sends `expirationDateTime`, and
+  other clients rely on it. When it is missing or cannot be read, the endpoint is taken to live one
+  hour from when it was fetched, and is replaced 2 minutes before either. If the real lifetime is
+  shorter, the socket drops early and is opened again (the poll covers the gap). GUESS · reasoned ·
+  open.
+- **F181. The notification socket ignores proxies** (`drive/socket.rs`; issue #54) — `reqwest`
+  follows `HTTPS_PROXY`, so the endpoint's `GET` goes through a proxy, but `tokio-tungstenite`
+  opens a direct TCP connection. Without a direct route the socket fails to connect and changes
+  arrive by the poll only, every 60 s, as before issue #54. LIMIT · reasoned · open.
+- **F182. The Socket.IO client is written from the protocol and one other client, not observed
+  against the service** (`drive/socket.rs`; issue #54) — Engine.IO v4 over the websocket only (no
+  long polling, which Microsoft does not offer), the notification URL's path taken as the
+  namespace (`/notifications` today), both it and the default one joined, server pings answered,
+  and an event named `notification` in either namespace taken as a change. The event's content is
+  not read: it only says "something changed", and the caller runs a delta. Any other packet is
+  skipped (logged at `debug`); a close, a refused namespace, an unreadable frame, a binary frame or
+  no ping for `pingInterval + pingTimeout` ends the connection. Tested only against a local server
+  playing the protocol (`drive::socket::tests`); the test account's harness check is what shows the
+  service behaves so. Reasoned · open.
 ---
 
 ## 5. Provisional numbers
@@ -2548,6 +2570,7 @@ application must never read zeros where real content should be.
 | Changed outbox rows remembered one by one for the marks (`DIRTY_MAX`) | 100 000; past it, every row once | **guess** (F163) |
 | The outbox's budgets at scale (`bench.rs`) | see F158 | **guess** |
 | Jobs a tree store's channel holds before a sender waits (`tree::QUEUE`) | 1 024 | **guess** (F162) |
+| The notification endpoint's lifetime without `expirationDateTime` (`socket::DEFAULT_LIFETIME`) / replaced before its expiry by (`RENEW_EARLY`) / opening the socket, bound (`CONNECT_TIMEOUT`) / largest message taken (`MAX_MESSAGE`) | 1 h / 2 min / 30 s / 1 MiB | **guess** (issue #54, F180) |
 
 ---
 
