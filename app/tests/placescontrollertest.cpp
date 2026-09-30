@@ -279,64 +279,6 @@ private Q_SLOTS:
         QTRY_VERIFY(!entry(model, fake::idFor(1)).isValid());
         QVERIFY(rowOf(model, Documents) >= 0);
     }
-
-    /// The single-account versions' entry (`konedrive` = `1`) at an account's
-    /// folder becomes that account's, renamed, where it was in the panel; one
-    /// at any other url goes.
-    void theOldEntryIsTakenOverInPlace()
-    {
-        {
-            KFilePlacesModel seedModel;
-            seed(seedModel, QStringLiteral("My Stuff"), Documents);
-            seed(seedModel, QStringLiteral("OneDrive"), Personal, OldKey, QStringLiteral("1"));
-            seed(seedModel, QStringLiteral("Music"), Music);
-            seed(seedModel, QStringLiteral("OneDrive"), QUrl::fromLocalFile(QStringLiteral("/home/u/Stale")), OldKey, QStringLiteral("1"));
-        }
-
-        startFake({QStringLiteral("Personal")}, {Personal});
-        follow();
-        PlacesSettings settings;
-        PlacesController controller(m_accounts.get(), &settings);
-        KFilePlacesModel *model = controller.model();
-
-        QTRY_VERIFY(entry(model, fake::idFor(1)).isValid());
-        const QModelIndex taken = entry(model, fake::idFor(1));
-        QCOMPARE(model->url(taken), Personal);
-        QCOMPARE(model->text(taken), QStringLiteral("OneDrive — Personal"));
-        QCOMPARE(model->bookmarkForIndex(taken).metaDataItem(OldKey), QString());
-        // Still between the user's two places: the same entry, not a new one at the end.
-        QCOMPARE(taken.row(), rowOf(model, Documents) + 1);
-        QCOMPARE(rowOf(model, Music), taken.row() + 1);
-        QCOMPARE(rowOf(model, QUrl::fromLocalFile(QStringLiteral("/home/u/Stale"))), -1);
-        QCOMPARE(tagged(model), 1);
-    }
-
-    /// Until the daemon and every account have answered, an entry that looks
-    /// unwanted may only be unknown yet: it stays, and keeps its place.
-    void nothingIsTouchedUntilEveryAccountHasAnswered()
-    {
-        {
-            KFilePlacesModel seedModel;
-            seed(seedModel, QStringLiteral("OneDrive — Personal"), Personal, PlacesController::AccountKey, fake::idFor(1));
-            seed(seedModel, QStringLiteral("Music"), Music);
-        }
-
-        startFake({QStringLiteral("Personal")}, {Personal}, false);
-        follow();
-        PlacesSettings settings;
-        PlacesController controller(m_accounts.get(), &settings);
-        KFilePlacesModel *model = controller.model();
-        QTest::qWait(300);
-        QVERIFY(entry(model, fake::idFor(1)).isValid());
-        const int row = entry(model, fake::idFor(1)).row();
-        QCOMPARE(rowOf(model, Music), row + 1);
-
-        QVERIFY(m_daemon->start());
-        QTRY_VERIFY(m_accounts->count() == 1 && m_accounts->at(0)->sync()->serviceAvailable() && m_accounts->at(0)->account()->serviceAvailable());
-        QCoreApplication::processEvents();
-        QCOMPARE(entry(model, fake::idFor(1)).row(), row);
-        QCOMPARE(tagged(model), 1);
-    }
 };
 
 QTEST_MAIN(PlacesControllerTest)

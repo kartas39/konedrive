@@ -3128,12 +3128,14 @@ window's status, activity and conflicts, all read from the folder's interfaces (
   signs it out before its object goes away, and the wait lets the removal cancel the notice. A real
   sign-out is therefore announced 2 s late.
 - **A19. Places: one entry per account folder; the single-account entry taken over in place.**
-  Decision · measured (`renamingTheAccountRenamesItsEntry`, `theOldEntryIsTakenOverInPlace`,
-  `nothingIsTouchedUntilEveryAccountHasAnswered`). Every entry is named "OneDrive — <label>", with
-  one account too, so a second account renames nothing; renaming an account renames its entry, and
-  forgetting its folder or removing it removes the entry. An entry of the single-account versions
-  (`konedrive` = `1`) whose url is an account's folder is re-tagged to that account and renamed,
-  keeping its place in the panel; any other such entry is removed. The entries are reconciled only
+  Decision · measured (`renamingTheAccountRenamesItsEntry`); the taking over in place and the wait
+  for every account are reasoned only: their tests compared row numbers in the Places panel, which a
+  fresh KDE profile shifts by one, failed in every run of the app's tests since PR #97, and were
+  removed. Every entry is named "OneDrive — <label>", with one account too, so a second account
+  renames nothing; renaming an account renames its entry, and forgetting its folder or removing it
+  removes the entry. An entry of the single-account versions (`konedrive` = `1`) whose url is an
+  account's folder is re-tagged to that account and renamed, keeping its place in the panel; any
+  other such entry is removed. The entries are reconciled only
   once the daemon and every account have answered: until then — and while the daemon is not
   running — nothing is touched. That also ends what the single-account app did at every start,
   where its entry was removed before the daemon had answered and added back at the bottom of the
