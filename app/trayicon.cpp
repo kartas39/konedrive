@@ -77,6 +77,16 @@ TrayIcon::TrayIcon(AppStatus *status, QObject *parent)
             }
         }
     });
+    // The account's own hold (metered connection, battery): the tray is the whole app's, so
+    // its Sync Anyway is the whole app's too (writes.md §11), as `sync anyway --all`.
+    m_syncAnyway = m_menu->addAction(QIcon::fromTheme(QStringLiteral("media-playback-start")), i18nc("@action:inmenu", "Sync Anyway"));
+    connect(m_syncAnyway, &QAction::triggered, this, [this] {
+        for (AccountItem *item : m_status->accounts()->items()) {
+            if (!item->sync()->heldBack().isEmpty() && !item->sync()->paused()) {
+                item->sync()->syncAnyway();
+            }
+        }
+    });
     m_menu->addSeparator();
     m_quit = m_menu->addAction(QIcon::fromTheme(QStringLiteral("application-exit")), i18nc("@action:inmenu", "Quit"));
     m_item->setContextMenu(m_menu); // the item owns the menu
@@ -147,8 +157,10 @@ void TrayIcon::update()
     bool refreshable = false;
     bool pausable = false;
     bool paused = false;
+    bool held = false;
     for (const AccountItem *item : items) {
         paused = paused || item->sync()->paused();
+        held = held || (!item->sync()->heldBack().isEmpty() && !item->sync()->paused());
         const QString root = item->sync()->rootPath();
         if (root.isEmpty()) {
             continue;
@@ -170,6 +182,7 @@ void TrayIcon::update()
     m_pauseMenuAction->setVisible(pausable || !paused);
     m_pauseMenuAction->setEnabled(pausable);
     m_resume->setVisible(paused);
+    m_syncAnyway->setVisible(held);
 
     if (folders == m_folders) {
         return;

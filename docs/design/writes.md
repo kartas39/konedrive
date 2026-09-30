@@ -916,8 +916,11 @@ then worked out again. It is not kept across a restart, and a folder not connect
 refuses it `Unsupported`. It stays per account (`Folder.SyncAnyway`): it is an action on the
 account in front of the user — "sync this one now" — not a setting, and lifting every account's
 hold at once from one account's Status page would sync accounts the user did not look at. The
-whole app's action is `konedrivectl sync anyway --all`: it calls `SyncAnyway` on every account
-that holds back by itself and is not paused by the user, and on no other.
+whole app's action is the tray's **Sync Anyway** and `konedrivectl sync anyway --all`: each calls
+`SyncAnyway` on every account that holds back by itself and is not paused by the user, and on no
+other. The tray shows a held account as paused (`media-playback-pause`), and offers Sync Anyway
+while any account is held and not paused by the user; its Resume Syncing stays for the user's
+pause.
 
 **Pause** stops the account's outbox, its poll (so no cycle and no replacement), its notification
 socket (closed at once, opened again when the pause ends: meanwhile nothing is heard of changes

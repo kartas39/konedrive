@@ -244,8 +244,10 @@ removes it all again, apart from the helper.
   than 2 s shows in Plasma's notifications), and "Show in Places". While the helper is not
   connected, a card on the Status page says so, with the same instruction as the `Helper:` line
   of `konedrivectl sync status` (below). A tray icon
-  shows the worst state across your accounts — needs attention, signed out, syncing, synced —
-  with a line per account in its tooltip, and keeps KOneDrive running in the background so
+  shows the worst state across your accounts — needs attention, signed out, paused, syncing,
+  synced — with a line per account in its tooltip (an account that pauses by itself on a metered
+  connection or on battery shows as paused, and the tray's **Sync Anyway** lifts that for every
+  account; `konedrivectl sync anyway --all` does the same), and keeps KOneDrive running in the background so
   notifications still reach you with the window closed; with more than one account,
   notifications and download progress name the account. "Start at login" is on by default after
   the first run. Each account's folder also gets an entry named `OneDrive — <name>` in Dolphin's
@@ -274,7 +276,9 @@ removes it all again, apart from the helper.
 
 - **From the command line** — each of these acts on the chosen account, except `sync status` with
   none chosen, which shows every account's folder, and `sync hydrate`, whose path decides:
-  - `konedrivectl sync status` — the folder, its phase and item count, and the helper.
+  - `konedrivectl sync status` — the folder, its phase and item count, the helper, and how
+    changes made in OneDrive arrive: `live` (within seconds, through OneDrive's change
+    notifications) or `every minute (connecting)` while those cannot be reached.
   - `konedrivectl sync activity [--limit N]` — what happened lately: downloads, free-ups,
     changes from OneDrive, conflicts, failures.
   - `konedrivectl sync transfers` — downloads and uploads under way right now, and for each way
@@ -285,8 +289,9 @@ removes it all again, apart from the helper.
     online-only.
   - `konedrivectl sync skipped` — what OneDrive has that did not make it into the folder, and
     why (the Personal Vault, a shared folder, a OneNote notebook, a name too long for Linux).
-  - `konedrivectl sync refresh` — ask OneDrive for changes now, instead of waiting for the next
-    poll (about a minute).
+  - `konedrivectl sync refresh` — ask OneDrive for changes now. Changes made in OneDrive usually
+    arrive by themselves within seconds; the poll behind them runs every 5 minutes while they do,
+    and every minute while they cannot. The window's status line then ends in "· live".
   - `konedrivectl sync hydrate <path>` — download one file now.
   - For an account that uploads (`konedrivectl account mode read-write`):
     - `konedrivectl sync outbox [--all]` — how much is left to upload, then the changes waiting
