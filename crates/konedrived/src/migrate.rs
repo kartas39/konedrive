@@ -253,34 +253,19 @@ pub fn finish_file_moves(store: &ConfigStore, paths: &Paths) {
 
 /// Issue #95, once, at a start after [`ConfigStore::open`] and before the accounts are
 /// loaded: an account's `pause_on_metered` and `on_battery` of before become the global keys,
-/// and leave the accounts. The strictest value wins, over every account and a global key
-/// already there — an account without the key counting as its default: `on_battery` takes
-/// `pause` over `power-saver` over `sync`; `pause_on_metered` is off only when every account
-/// says off. Nothing is written when no account has either key, so a second start changes
-/// nothing. A write that fails is logged and shown in [`ConfigStore::last_error`]; the keys
-/// stay for the next start, and the accounts run on the global keys meanwhile.
+/// and leave the accounts, the strictest value winning ([`Config::take_old_hold_settings`]).
+/// Nothing is written when no account has either key, so a second start changes nothing, and
+/// nothing is tried on an unreadable file (its trouble is already in
+/// [`ConfigStore::last_error`]), as [`finish_file_moves`] does. A write that fails is logged
+/// and shown in [`ConfigStore::last_error`]; the keys stay for the next start (or the next
+/// `SetPauseOnMetered` / `SetOnBattery`), and the accounts run on the global keys meanwhile.
 pub fn move_hold_settings(store: &ConfigStore) {
+    if store.is_poisoned() {
+        return;
+    }
     let moved = store.update(|config| {
-        if !config.accounts.iter().any(|a| a.old_pause_on_metered.is_some() || a.old_on_battery.is_some()) {
-            return Ok::<_, ConfigError>(None);
-        }
-        let pause_on_metered =
-            config.accounts.iter().map(|a| a.old_pause_on_metered.unwrap_or(true)).chain(config.pause_on_metered).any(|on| on);
-        let on_battery = config
-            .accounts
-            .iter()
-            .map(|a| a.old_on_battery.as_deref())
-            .chain(config.on_battery.as_deref().map(Some))
-            .map(OnBattery::read)
-            .max_by_key(|choice| choice.strictness())
-            .unwrap_or_default();
-        for account in &mut config.accounts {
-            account.old_pause_on_metered = None;
-            account.old_on_battery = None;
-        }
-        config.pause_on_metered = Some(pause_on_metered);
-        config.on_battery = Some(on_battery.as_str().to_owned());
-        Ok(Some((pause_on_metered, on_battery)))
+        // Nothing to move changes nothing, and `update` writes nothing then.
+        Ok::<_, ConfigError>(config.take_old_hold_settings())
     });
     match moved {
         Ok(None) => {}
@@ -692,6 +677,43 @@ mod tests {
             let again = open(&paths, None).await;
             move_hold_settings(&again);
             assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), written, "{keys:?}: the second start changes nothing");
+        }
+    }
+
+    /// An unreadable file is left to its own error: the move neither writes nor adds one.
+    #[tokio::test]
+    async fn an_unreadable_file_is_not_moved() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dir(dir.path());
+        let text = "config_version = 2\n[[accounts]]\nid = \"3f9a1c0e5b7d\"\non_battery = \"pause\"\nthis is not [toml\n";
+        std::fs::write(&paths.config_file, text).unwrap();
+        let store = open(&paths, None).await;
+        assert!(store.is_poisoned());
+        let parse_error = store.last_error();
+        move_hold_settings(&store);
+        assert_eq!(store.last_error(), parse_error);
+        assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), text);
+    }
+
+    /// Keys left in an account by a move whose write failed are taken by a later
+    /// `SetPauseOnMetered` / `SetOnBattery`, so the next start's move keeps the user's choice.
+    #[tokio::test]
+    async fn a_global_set_takes_the_keys_left_in_the_accounts() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dir(dir.path());
+        let text = "config_version = 2\n[[accounts]]\nid = \"3f9a1c0e5b7d\"\nlabel = \"Personal\"\npause_on_metered = true\non_battery = \"pause\"\n";
+        std::fs::write(&paths.config_file, text).unwrap();
+        let store = open(&paths, None).await;
+        store.set_on_battery(OnBattery::Sync).unwrap();
+        store.set_pause_on_metered(false).unwrap();
+
+        let again = open(&paths, None).await;
+        move_hold_settings(&again);
+        let config = again.snapshot();
+        assert_eq!((config.pause_on_metered, config.on_battery.as_deref()), (Some(false), Some("sync")));
+        let written = std::fs::read_to_string(&paths.config_file).unwrap();
+        for entry in written.split("[[accounts]]").skip(1) {
+            assert!(!entry.contains("pause_on_metered") && !entry.contains("on_battery"), "{written}");
         }
     }
 

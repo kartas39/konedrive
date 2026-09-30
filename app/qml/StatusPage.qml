@@ -419,7 +419,7 @@ FormCard.FormCardPage {
                     return i18n("Paused by itself");
                 }
             }
-            description: i18n("Nothing is uploaded or downloaded in the background, as the account's sync settings say. Files still download when you open them.")
+            description: i18n("Nothing is uploaded or downloaded in the background, as the Sync settings on the Settings page say. Files still download when you open them.")
             leading: Kirigami.Icon {
                 source: "media-playback-pause"
                 implicitWidth: Kirigami.Units.iconSizes.medium

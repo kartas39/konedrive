@@ -467,6 +467,35 @@ pub fn check_label(label: &str, config: &Config, except: Option<&str>) -> Result
 }
 
 impl Config {
+    /// Issue #95: the accounts' `pause_on_metered` and `on_battery` of before, folded into
+    /// the global keys and taken out of the accounts. The strictest value wins, over every
+    /// account and a global key already there — an account without the key counting as its
+    /// default: `on_battery` takes `pause` over `power-saver` over `sync` (a value it does not
+    /// know reads `power-saver`); `pause_on_metered` is off only when every account says off.
+    /// `None`, changing nothing, when no account has either key.
+    pub fn take_old_hold_settings(&mut self) -> Option<(bool, OnBattery)> {
+        if !self.accounts.iter().any(|a| a.old_pause_on_metered.is_some() || a.old_on_battery.is_some()) {
+            return None;
+        }
+        let pause_on_metered =
+            self.accounts.iter().map(|a| a.old_pause_on_metered.unwrap_or(true)).chain(self.pause_on_metered).any(|on| on);
+        let on_battery = self
+            .accounts
+            .iter()
+            .map(|a| a.old_on_battery.as_deref())
+            .chain(self.on_battery.as_deref().map(Some))
+            .map(OnBattery::read)
+            .max_by_key(|choice| choice.strictness())
+            .unwrap_or_default();
+        for account in &mut self.accounts {
+            account.old_pause_on_metered = None;
+            account.old_on_battery = None;
+        }
+        self.pause_on_metered = Some(pause_on_metered);
+        self.on_battery = Some(on_battery.as_str().to_owned());
+        Some((pause_on_metered, on_battery))
+    }
+
     pub fn account(&self, id: &str) -> Option<&AccountConfig> {
         self.accounts.iter().find(|a| a.id == id)
     }
@@ -753,8 +782,11 @@ impl ConfigStore {
     }
 
     /// `Accounts.SetPauseOnMetered`'s write: one setting for every account.
+    /// Keys of an account still left (a move whose write failed) are moved first, in the
+    /// same write, so that a later start's move cannot undo the user's choice.
     pub fn set_pause_on_metered(&self, on: bool) -> Result<(), ConfigError> {
         self.update(|config| {
+            config.take_old_hold_settings();
             config.pause_on_metered = Some(on);
             Ok(())
         })
@@ -763,6 +795,7 @@ impl ConfigStore {
     /// `Accounts.SetOnBattery`'s write: one setting for every account.
     pub fn set_on_battery(&self, choice: OnBattery) -> Result<(), ConfigError> {
         self.update(|config| {
+            config.take_old_hold_settings();
             config.on_battery = Some(choice.as_str().to_owned());
             Ok(())
         })
