@@ -120,6 +120,7 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `IgnorePatterns` (`as`) | the ignore list; read-only |
 | `Paused` (`b`), `PausedUntil` (`x`) | whether the account is paused, and when the pause ends by itself (0: until `Resume`) |
 | `HeldBack` (`s`) | why the account holds its background work back by itself: `metered`, `on-battery`, `power-saver`, or empty ([writes.md](writes.md) §11); never the user's pause, which `Paused` shows |
+| `LiveChanges` (`s`) | how changes made in OneDrive reach this computer ([sync.md](sync.md) §4.2): `connected` (at once, through Graph's notification socket; the poll runs every 5 minutes), `connecting` (trying, or waiting before the next try; the poll runs every minute), `off` (paused, held back, or not a OneDrive folder) |
 | `Thumbnails` (`b`) | the account's own sync setting; `true` when absent from `config.toml` |
 
 `Transfers`:
@@ -390,8 +391,11 @@ shown (limitations log A20).
 
 The **status line** reads, for example, "Up to date · checked 20 s ago", "Listing your OneDrive:
 N items so far", "Downloading 3 files", "Uploading 1 file", "3 changes waiting to upload", "Paused
-until 14:00", "1 changed file was moved out of the way", "Signed out of OneDrive", "No OneDrive
-folder yet", or the error, refreshed every 10 s. The window does not offer
+until 14:00", "Paused: metered connection" (the account's own hold, `HeldBack`, with the Status
+page's texts), "1 changed file was moved out of the way", "Signed out of OneDrive", "No OneDrive
+folder yet", or the error, refreshed every 10 s. While `LiveChanges` is `connected`, the "· checked
+20 s ago" suffix becomes "· live", whatever comes before it ("Up to date · live"), and the line no
+longer ages. The window does not offer
 the no-interception mode: a folder is registered only through `Folder.Register`.
 
 **Places.** Each account's folder has an entry in Dolphin's Places panel and in file dialogs, named
@@ -421,7 +425,7 @@ in this order:
 |---|---|---|
 | needs attention | `state-warning` | a sync error, a conflict, a failed update, a change that cannot be uploaded, removals the mass-delete guard holds, trouble that does not stop the folder |
 | signed out | `state-offline` | signed out, OneDrive unreachable, or no folder yet |
-| paused | `media-playback-pause` | the account is paused (`Paused`) |
+| paused | `media-playback-pause` | the account is paused (`Paused`), or holds back by itself (`HeldBack`: a metered connection, the battery) |
 | syncing | `state-sync` | a listing, a download or an upload is under way, or changes wait to be uploaded |
 | synced | `state-ok` | the folder is up to date |
 
@@ -434,11 +438,15 @@ account with an intercepted folder.
 - **Menu.** "Open OneDrive Folder" with one account; with several, an "Open Folder" submenu of the
   accounts that have a folder. Then "Open KOneDrive", "Refresh Now" — every account whose folder
   shows OneDrive — "Pause Syncing" (for 2, 8 or 24 hours, or until resumed: every such account not
-  paused yet), "Resume Syncing" while any account is paused, and "Quit".
+  paused yet), "Resume Syncing" while any account is paused by the user, "Sync Anyway" while any
+  account holds back by itself and is not paused by the user — it calls `SyncAnyway` on each such
+  account and no other, as `konedrivectl sync anyway --all` does ([writes.md](writes.md) §11) —
+  and "Quit".
 - **Click.** Opens the window; on the account that needs attention when exactly one does, and
   otherwise on the account the window last showed.
 
-The tray reads each account's state from its `Folder.State`, `Conflicts.Count` and `Folder.LastError` and from
+The tray reads each account's state from its `Folder.State`, `Conflicts.Count`, `Folder.LastError`,
+`Folder.Paused` and `Folder.HeldBack` and from
 `HelperState`; a few of those readings still depend on exact wording from the daemon (limitations
 log A2, A17).
 

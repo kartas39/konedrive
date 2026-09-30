@@ -79,6 +79,10 @@ class SyncController : public QObject
     /// Why the account holds back by itself (HeldBack): "metered", "on-battery",
     /// "power-saver", or empty. Never the user's pause, which `paused` shows.
     Q_PROPERTY(QString heldBack READ heldBack NOTIFY syncChanged)
+    /// How changes made in OneDrive reach this computer (LiveChanges): "connected" (at once),
+    /// "connecting" (the poll runs every minute meanwhile), or "off" (paused, held back, not a
+    /// OneDrive folder), which is also what an older daemon without the property reads as.
+    Q_PROPERTY(QString liveChanges READ liveChanges NOTIFY syncChanged)
     /// The account's own sync setting (Thumbnails).
     Q_PROPERTY(bool thumbnails READ thumbnails NOTIFY syncChanged)
     /// What a copy of a file changed on both sides is named after: "Report-<machine>.docx".
@@ -193,6 +197,7 @@ public:
     qlonglong pausedUntil() const { return m_pausedUntil; }
     QStringList ignorePatterns() const { return m_ignorePatterns; }
     QString heldBack() const { return m_heldBack; }
+    QString liveChanges() const { return m_liveChanges; }
     bool thumbnails() const { return m_thumbnails; }
     QString machineName() const { return m_machineName; }
     TransferModel *uploads() const { return m_uploads; }
@@ -369,6 +374,7 @@ private:
     qlonglong m_pausedUntil = 0;
     QStringList m_ignorePatterns;
     QString m_heldBack;
+    QString m_liveChanges = QStringLiteral("off");
     bool m_thumbnails = true;
     QString m_machineName;
     TransferModel *m_uploads;

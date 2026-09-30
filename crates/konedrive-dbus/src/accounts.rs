@@ -215,6 +215,9 @@ pub trait Folder {
     /// Why the account holds back by itself: `metered`, `on-battery`, `power-saver`, or empty.
     #[zbus(property)]
     fn held_back(&self) -> zbus::Result<String>;
+    /// How changes made in OneDrive arrive: `connected`, `connecting` or `off`.
+    #[zbus(property)]
+    fn live_changes(&self) -> zbus::Result<String>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: what that account's folder moves now.

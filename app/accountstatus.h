@@ -17,11 +17,14 @@ class QTimer;
 class AccountStatus : public QObject
 {
     Q_OBJECT
-    /// "offline", "warning", "paused", "syncing" or "ok".
+    /// "offline", "warning", "paused", "syncing" or "ok". "paused" is the user's pause or the
+    /// account's own hold (HeldBack).
     Q_PROPERTY(QString state READ state NOTIFY changed)
     /// The icon for the state: state-offline, state-warning, media-playback-pause, state-sync, state-ok.
     Q_PROPERTY(QString iconName READ iconName NOTIFY changed)
-    /// The status line: "Up to date · checked 20 s ago", "Listing your OneDrive: N items so far", the error…
+    /// The status line: "Up to date · checked 20 s ago" ("Up to date · live" while changes
+    /// arrive through the notification socket), "Paused: metered connection" while the account
+    /// holds back by itself, "Listing your OneDrive: N items so far", the error…
     Q_PROPERTY(QString text READ text NOTIFY changed)
     /// Why the state is "warning" when the status line does not say it (a conflict, a failed update); else empty.
     Q_PROPERTY(QString attention READ attention NOTIFY changed)
@@ -47,6 +50,9 @@ public:
 
     /// The icon for a state name.
     static QString iconFor(const QString &state);
+    /// Why the account holds back by itself (HeldBack), as the Status page says it:
+    /// "Paused: metered connection", "Paused: on battery"…
+    static QString heldBackText(const QString &reason);
 
     /// "20 s ago", "3 min ago"… for a unix time, against the clock.
     Q_INVOKABLE QString ago(qint64 unixSeconds) const;

@@ -34,6 +34,7 @@ All of this runs in the daemon, as the user, once for each account.
 | Graph client | `drive/` | `/me/drive/root/delta` with its pages, item metadata, content, thumbnails; `Retry-After`; for a read-write account, the guarded writes ([writes.md](writes.md) §6) |
 | Tree store | `tree.rs` | SQLite: one row per file and folder, the delta link, the activity log, the conflicts (§5) |
 | Listing and poller | `sync/listing.rs` | One folder's sync cycles: when to run, what to fetch, which scope to reconcile, when to commit (§4, §6) |
+| Live changes | `sync/live.rs`, `drive/socket.rs` | Graph's notification socket: a cycle as soon as the drive changes (§4.2) |
 | Materializer | `sync/materialize.rs`, `sync/disk.rs` | Makes the folder match a tree (§7), rescues local work (§10), keeps the lock (§11) |
 | Graph content source | `sync/graph_source.rs` | Serves fills from Graph ([hydration.md](hydration.md) §7) |
 | Replacements | `sync/materialize.rs` | Brings a downloaded file up to a new version (§9) |
@@ -84,12 +85,46 @@ reason (§7.5). Graph does not promise a parent before its children, so a tree i
 
 ### 4.2 When a cycle runs
 
-The poller runs a cycle at once when the folder's sync starts, then every **60 s**; at once on
-`Refresh()`; and at once when NetworkManager reports global connectivity again (limitations log
-F21). After a failed cycle it retries after 5, 15 and 30 s, then at the ordinary interval. A cycle
-is also nudged when the account becomes signed in. Cycles of one folder never overlap. While the
-account is paused (`Folder.Pause`) no cycle runs; the pause is kept in the tree store and outlasts a
-restart ([writes.md](writes.md) §11).
+The poller runs a cycle at once when the folder's sync starts, then every **60 s** — every
+**5 minutes** while the notification socket is up (below); at once on `Refresh()`; at once when
+NetworkManager reports global connectivity again (limitations log F21); and at once when the
+socket says the drive changed. After a failed cycle it retries after 5, 15 and 30 s, then at the
+ordinary interval. A cycle is also nudged when the account becomes signed in. Cycles of one folder
+never overlap. While the account is paused (`Folder.Pause`) or holds back by itself (`HeldBack`) no
+cycle runs; the pause is kept in the tree store and outlasts a restart ([writes.md](writes.md) §11).
+
+**Changes as they happen** (issue #54). Next to the poller, and started and stopped with it, one
+task per account (`sync/live.rs`) keeps Graph's Socket.IO endpoint for the drive open
+(`GET /me/drive/root/subscriptions/socketIo`; the client is `drive/socket.rs`). An event only says
+that something changed — its content is not read — and the task asks the poller for a cycle 2 s
+after the first event of a burst, so a burst gives one cycle. Webhooks are not used: they need a
+public HTTPS address.
+
+- The socket is always on; there is no setting. While it is up the poll is only the safety net for
+  an event OneDrive never sent, every 5 minutes (limitations log F183). When it goes down the
+  poller is told at once, and the next cycle is due at most 60 s after the last one.
+- While the account is stopped — the user's pause or the automatic hold — no connection is kept,
+  as no cycle runs; a stop that comes while connected closes it at once, and its end opens it
+  again (the same nudge wakes the poller and the task). Changes in OneDrive are not heard of
+  meanwhile (limitations log F184).
+- The endpoint is fetched again 2 minutes before its `expirationDateTime` (an hour when Graph
+  leaves it out, F180), and the new connection is opened before the old one is closed; the
+  renewal then asks for one cycle, since the old socket was not read while the new one opened.
+  The deadline is also kept as wall-clock time: after a suspend, the first wake-up past it (a
+  ping, an event, a nudge) renews at once.
+- A connection counts as up — `connected`, the poller told, the backoff reset — only after the
+  server's first ping or 30 s of life, whichever comes first. One that ends sooner is a failure
+  like one that cannot open: no reconnect storm when the service accepts and drops at once.
+- A connection that ends or cannot open is tried again after 1, 2, 4 … 60 s. The first
+  connection up after a drop asks for one cycle: events during the gap are lost. The first failure
+  in a row is logged at `warn`, the rest at `debug`. The socket goes directly to Microsoft's
+  notification host, never through a proxy (F181): without a direct route the poll carries on
+  alone, every 60 s.
+
+`Folder.LiveChanges` says which way changes arrive: `connected`, `connecting` (trying, or waiting
+before the next try; the poll runs every 60 s), or `off` (stopped, or not a OneDrive folder).
+`konedrivectl sync status` prints it as "Changes from OneDrive: live" or "every minute
+(connecting)", and nothing while it is `off`: the pause or the hold line says why.
 
 ### 4.3 Throttling and errors
 
@@ -545,5 +580,6 @@ Signing in again nudges a cycle at once, which brings the folder up to date.
 The limitations log has the full list. The ones specific to this document: the whole drive is
 listed even when only part of it matters, since Graph lists from the root (limitations log W15);
 the activity log keeps 200 events and summarises large changes (F24, F25); a delta is held in memory
-whole before it is staged (D11); and the numbers here — 60 s, the retry steps, 5000 changes,
+whole before it is staged (D11); and the numbers here — 60 s, 5 minutes while the socket is up, the socket's 2 s debounce and its
+backoff, the retry steps, 5000 changes,
 16 MiB checkpoints, 8 replacement workers — are chosen, not measured (limitations log §5).

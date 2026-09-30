@@ -1656,6 +1656,47 @@ async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it
     assert_eq!(line(&out_text(&run(addr, &["sync", "status"]))), None);
 }
 
+/// Issue #54: `sync status` says how changes from OneDrive arrive — every minute while the
+/// socket cannot connect (this drive serves no notification endpoint), nothing while the
+/// account is held back — and `sync anyway --all` lifts the hold of every account that holds
+/// back by itself, but not the user's pause; with `--account` it is a usage error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_status_says_how_changes_arrive_and_anyway_all_lifts_every_hold() {
+    use konedrived::sync::live::LiveChanges;
+    let (f, _graph) = harness_onedrive().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/f.txt").is_file()).await;
+    let addr = f._bus.address();
+    let line = |status: &str| status.lines().find(|l| l.starts_with("Changes from OneDrive:")).map(str::to_owned);
+    let live = || f.service.state().get().live_changes;
+
+    wait_for(|| live() == LiveChanges::Connecting).await;
+    let status = out_text(&run(addr, &["sync", "status"]));
+    assert!(line(&status).is_some_and(|l| l.ends_with("every minute (connecting)")), "{status}");
+
+    let out = run(addr, &["--account", "Personal", "sync", "anyway", "--all"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert_eq!(out_text(&run(addr, &["sync", "anyway", "--all"])).trim(), "No account is paused by itself: nothing to lift.");
+
+    f.service.set_conditions(konedrived::sync::running::Conditions { metered: true, ..Default::default() });
+    wait_for(|| live() == LiveChanges::Off).await;
+    let status = out_text(&run(addr, &["sync", "status"]));
+    assert_eq!(line(&status), None, "{status}");
+
+    // The user's pause is not lifted by it.
+    assert!(run(addr, &["sync", "pause"]).status.success());
+    assert_eq!(out_text(&run(addr, &["sync", "anyway", "--all"])).trim(), "No account is paused by itself: nothing to lift.");
+    assert!(run(addr, &["sync", "resume"]).status.success());
+
+    let out = run(addr, &["sync", "anyway", "--all"]);
+    assert!(out.status.success(), "{out:?}");
+    assert!(out_text(&out).starts_with("Syncing anyway (metered connection)"), "{}", out_text(&out));
+    assert_eq!(f.service.state().get().held_back, "");
+    wait_for(|| live() == LiveChanges::Connecting).await;
+}
+
 /// A folder not connected to OneDrive has no sync settings.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_sync_settings_of_a_local_folder_say_it_has_none() {

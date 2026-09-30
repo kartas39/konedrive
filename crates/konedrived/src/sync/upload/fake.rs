@@ -5,7 +5,9 @@
 //! (without case), a folder's cTag changing with anything below it, deletes
 //! to a recycle bin, upload sessions with `Content-Range` — a new file's
 //! session holding its name with an empty placeholder until it completes or
-//! is cancelled, as OneDrive's does (issue #47). Never a real network.
+//! is cancelled, as OneDrive's does (issue #47). It serves the drive's notification
+//! endpoint and a local Engine.IO / Socket.IO websocket that sends a `notification` event
+//! whenever the drive changes (issue #54). Never a real network.
 
 use std::collections::{BTreeMap, HashMap};
 #[cfg(test)]
@@ -139,6 +141,11 @@ pub struct Cloud {
     /// `507` as it lands, and `GET me/drive` says it (`remaining`, and
     /// `state` `exceeded` at 0). No quota at all while `None`.
     pub free: Option<u64>,
+    /// The notification URL the endpoint hands out: the fake's own websocket.
+    socket_url: String,
+    /// How long, in seconds from the request, an endpoint lives: `expirationDateTime`.
+    /// Left out of the answer while `None`.
+    pub socket_lifetime: Option<i64>,
 }
 
 impl Cloud {
@@ -519,6 +526,14 @@ impl Cloud {
                 };
                 ResponseTemplate::new(200).set_body_json(body)
             }
+            // Graph's change notifications (issue #54).
+            ("GET", ["me", "drive", "root", "subscriptions", "socketIo"]) => {
+                let mut body = json!({ "id": "sub", "notificationUrl": self.socket_url });
+                if let Some(lifetime) = self.socket_lifetime {
+                    body["expirationDateTime"] = json!(format_graph_time(crate::sync::activity::unix_now() + lifetime));
+                }
+                ResponseTemplate::new(200).set_body_json(body)
+            }
             ("GET", ["dl", id]) => match self.items.get(*id) {
                 Some(item) => ResponseTemplate::new(200).set_body_bytes(item.content.clone()),
                 None => error(404, "itemNotFound"),
@@ -761,27 +776,178 @@ impl Cloud {
     }
 }
 
-struct Responder(Arc<Mutex<Cloud>>);
+struct Responder(Arc<Mutex<Cloud>>, Arc<FakeSockets>);
 
 impl Respond for Responder {
     fn respond(&self, request: &Request) -> ResponseTemplate {
         let mut cloud = self.0.lock().unwrap();
+        let before = cloud.changes.len();
         let lost = cloud.answer_lost(request);
         let answer = cloud.handle(request);
+        if cloud.changes.len() != before {
+            self.1.changed();
+        }
         if lost { error(504, "gatewayTimeout") } else { answer }
+    }
+}
+
+/// The fake's notification socket (issue #54): Engine.IO v4 over a local websocket, as
+/// Graph's Socket.IO endpoint speaks it. Every connection gets the open packet, has its
+/// namespace joins answered, gets a ping every [`PING_INTERVAL`], and a `notification` event
+/// in the namespace `/notifications` whenever the drive changes.
+pub struct FakeSockets {
+    /// Bumped with every change of the drive.
+    changes: tokio::sync::watch::Sender<u64>,
+    /// Bumped to drop every open connection, as a network failure would.
+    drops: tokio::sync::watch::Sender<u64>,
+    /// While set, a connection is closed as soon as it is accepted.
+    refuse: std::sync::atomic::AtomicBool,
+    /// What a connection gets right after the open packet ([`Early`] as a number).
+    early: std::sync::atomic::AtomicU8,
+    /// Connections accepted (refused ones too), and open now.
+    accepted: std::sync::atomic::AtomicUsize,
+    open: std::sync::atomic::AtomicUsize,
+}
+
+/// What the fake's socket does right after the open packet, to play a service that
+/// accepts a connection and drops it at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Early {
+    /// Nothing: the connection goes on as usual.
+    Nothing = 0,
+    /// Refuses the namespace (`44/notifications,{…}`).
+    Refuse = 1,
+    /// Closes the websocket.
+    Close = 2,
+}
+
+/// The fake's Engine.IO ping interval; its `pingTimeout` is the same.
+pub const PING_INTERVAL: Duration = Duration::from_secs(25);
+
+impl FakeSockets {
+    fn new() -> Self {
+        Self {
+            changes: tokio::sync::watch::channel(0).0,
+            drops: tokio::sync::watch::channel(0).0,
+            refuse: false.into(),
+            early: 0.into(),
+            accepted: 0.into(),
+            open: 0.into(),
+        }
+    }
+
+    fn changed(&self) {
+        self.changes.send_modify(|n| *n += 1);
+    }
+
+    /// Every open connection is dropped, without a close.
+    pub fn drop_all(&self) {
+        self.drops.send_modify(|n| *n += 1);
+    }
+
+    /// From now on (`true`), a connection is closed as soon as it opens; the endpoint still
+    /// answers.
+    pub fn refuse(&self, refuse: bool) {
+        self.refuse.store(refuse, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// From now on, what a connection gets right after the open packet.
+    pub fn early(&self, early: Early) {
+        self.early.store(early as u8, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Connections accepted so far.
+    pub fn accepted(&self) -> usize {
+        self.accepted.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Connections open now.
+    pub fn open(&self) -> usize {
+        self.open.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    async fn listen(self: Arc<Self>, listener: tokio::net::TcpListener) {
+        while let Ok((stream, _)) = listener.accept().await {
+            tokio::spawn(Arc::clone(&self).serve(stream));
+        }
+    }
+
+    async fn serve(self: Arc<Self>, stream: tokio::net::TcpStream) {
+        use futures_util::{SinkExt, StreamExt};
+        use std::sync::atomic::Ordering::SeqCst;
+        use tokio_tungstenite::tungstenite::Message;
+        let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else { return };
+        self.accepted.fetch_add(1, SeqCst);
+        if self.refuse.load(SeqCst) {
+            let _ = ws.close(None).await;
+            return;
+        }
+        let (mut changes, mut drops) = (self.changes.subscribe(), self.drops.subscribe());
+        changes.mark_unchanged();
+        drops.mark_unchanged();
+        let ms = PING_INTERVAL.as_millis();
+        let open = format!(r#"0{{"sid":"fake","upgrades":[],"pingInterval":{ms},"pingTimeout":{ms},"maxPayload":1000000}}"#);
+        if ws.send(Message::text(open)).await.is_err() {
+            return;
+        }
+        match self.early.load(SeqCst) {
+            1 => {
+                // The client leaves: read until it has.
+                let _ = ws.send(Message::text(r#"44/notifications,{"message":"not now"}"#)).await;
+                while let Some(Ok(_)) = ws.next().await {}
+                return;
+            }
+            2 => {
+                let _ = ws.close(None).await;
+                return;
+            }
+            _ => {}
+        }
+        self.open.fetch_add(1, SeqCst);
+        let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_INTERVAL, PING_INTERVAL);
+        loop {
+            let out = tokio::select! {
+                message = ws.next() => match message {
+                    // A namespace joined: `40` or `40/<namespace>`.
+                    Some(Ok(Message::Text(text))) if text.starts_with("40") => {
+                        let namespace = text.as_str()[2..].to_owned();
+                        let comma = if namespace.is_empty() { "" } else { "," };
+                        Message::text(format!(r#"40{namespace}{comma}{{"sid":"s"}}"#))
+                    }
+                    Some(Ok(_)) => continue,
+                    _ => break,
+                },
+                changed = changes.changed() => match changed {
+                    Ok(()) => Message::text(r#"42/notifications,["notification","{\"clientState\":null}"]"#),
+                    Err(_) => break,
+                },
+                _ = drops.changed() => break,
+                _ = ping.tick() => Message::text("2"),
+            };
+            if ws.send(out).await.is_err() {
+                break;
+            }
+        }
+        self.open.fetch_sub(1, SeqCst);
     }
 }
 
 pub struct FakeGraph {
     pub server: MockServer,
     pub cloud: Arc<Mutex<Cloud>>,
+    /// The drive's notification socket.
+    pub sockets: Arc<FakeSockets>,
 }
 
 impl FakeGraph {
     /// An empty drive: its root, `R`.
     pub async fn start() -> Self {
         let server = MockServer::start().await;
-        let cloud = Arc::new(Mutex::new(Cloud { base: server.uri(), ..Cloud::default() }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("a local port for the notification socket");
+        let socket_url = format!("http://{}/notifications?token=fake", listener.local_addr().expect("its address"));
+        let sockets = Arc::new(FakeSockets::new());
+        tokio::spawn(Arc::clone(&sockets).listen(listener));
+        let cloud = Arc::new(Mutex::new(Cloud { base: server.uri(), socket_url, socket_lifetime: Some(86_400), ..Cloud::default() }));
         cloud.lock().unwrap().add(FakeItem {
             id: ROOT.into(),
             parent: None,
@@ -794,8 +960,8 @@ impl FakeGraph {
             ctag: "c-R".into(),
             mtime: 0,
         });
-        Mock::given(any()).respond_with(Responder(Arc::clone(&cloud))).mount(&server).await;
-        Self { server, cloud }
+        Mock::given(any()).respond_with(Responder(Arc::clone(&cloud), Arc::clone(&sockets))).mount(&server).await;
+        Self { server, cloud, sockets }
     }
 
     /// A drive holding what the base holds, with the same tags and hashes.
@@ -822,8 +988,15 @@ impl FakeGraph {
         graph
     }
 
+    /// Runs `f` on the drive; a change it makes sends a notification.
     pub fn with<T>(&self, f: impl FnOnce(&mut Cloud) -> T) -> T {
-        f(&mut self.cloud.lock().unwrap())
+        let mut cloud = self.cloud.lock().unwrap();
+        let before = cloud.changes.len();
+        let out = f(&mut cloud);
+        if cloud.changes.len() != before {
+            self.sockets.changed();
+        }
+        out
     }
 
     pub fn client(&self) -> DriveClient {

@@ -6,6 +6,7 @@
 //! to read-write.
 
 pub mod item;
+pub mod socket;
 pub mod upload;
 pub mod write;
 

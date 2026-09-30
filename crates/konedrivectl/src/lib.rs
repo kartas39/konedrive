@@ -349,6 +349,9 @@ pub async fn sync_status_text(proxy: &FolderProxies<'_>, helper: Option<&str>, p
         }
         let checked = checked_text(proxy.folder.last_checked().await?, unix_now());
         out.push_str(&format!("{:<W$}{checked}\n", "Last checked:"));
+        if let Some(live) = live_text(&proxy.folder.live_changes().await?) {
+            out.push_str(&format!("{:<W$}{live}\n", "Changes from OneDrive:"));
+        }
         let mode = account_mode(proxy).await;
         out.push_str(&format!("{:<W$}{}\n", "Mode:", mode_text(&mode)));
         let (down, down_bytes) = (proxy.transfers.download_left_count().await?, proxy.transfers.download_left_bytes().await?);
@@ -564,6 +567,16 @@ pub fn paused_text(until: i64, prefix: &str) -> String {
         format!("resumed (`{prefix} sync resume`)")
     } else {
         format!("{} (`{prefix} sync resume` ends it now)", local_time(until))
+    }
+}
+
+/// How changes made in OneDrive arrive (`Folder.LiveChanges`), as `sync status` says it;
+/// nothing while `off`: the pause or the hold says why already.
+pub fn live_text(live: &str) -> Option<&'static str> {
+    match live {
+        "connected" => Some("live"),
+        "connecting" => Some("every minute (connecting)"),
+        _ => None,
     }
 }
 
@@ -1890,6 +1903,15 @@ pub async fn wait_for_sign_in(proxy: &AccountProxy<'_>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #54: `sync status` says whether changes from OneDrive arrive live, and nothing
+    /// while the socket is off (the pause or the hold says why).
+    #[test]
+    fn the_live_changes_line_says_live_or_every_minute() {
+        assert_eq!(super::live_text("connected"), Some("live"));
+        assert_eq!(super::live_text("connecting"), Some("every minute (connecting)"));
+        assert_eq!(super::live_text("off"), None);
+    }
+
     /// Issue #21: the browser opens only on a terminal, and never with the variable set.
     #[test]
     fn the_browser_opens_only_on_a_terminal_without_the_variable() {

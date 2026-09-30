@@ -178,6 +178,7 @@ pub async fn run(options: Options) -> Ended {
             checks = match options.only {
                 None => run.all().await,
                 Some(Only::Placeholders) => run.placeholders().await,
+                Some(Only::Notifications) => run.notifications().await,
             };
         }
         let outcome = run.cleanup().await;

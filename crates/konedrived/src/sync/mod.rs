@@ -16,6 +16,7 @@ pub mod helper_status;
 pub mod hub;
 pub mod kept_back;
 pub mod listing;
+pub mod live;
 pub mod local;
 pub mod local_scan;
 pub mod materialize;
@@ -603,6 +604,9 @@ pub struct SyncSnapshot {
     /// `HeldBack`: why the account holds its background work back by itself
     /// (`running::Hold`), empty when it does not.
     pub held_back: String,
+    /// `LiveChanges`: whether changes made in OneDrive arrive at once, through the
+    /// notification socket (`live`).
+    pub live_changes: live::LiveChanges,
     /// `Transfers.Uploads`: (full path, bytes sent, bytes in all), as `Downloads`.
     pub uploads: Vec<(String, u64, u64)>,
     /// `QuotaFull`: OneDrive is full and no content goes up (issue #2).
@@ -664,6 +668,7 @@ impl Default for SyncSnapshot {
             held_count: 0,
             paused_until: None,
             held_back: String::new(),
+            live_changes: live::LiveChanges::Off,
             uploads: Vec::new(),
             quota_full: false,
             space_waiting_count: 0,
@@ -807,6 +812,11 @@ impl SyncStateHandle {
     /// The queue totals, told only when they changed.
     pub fn set_queue(&self, queue: totals::QueueTotals) {
         self.tx.send_if_modified(|s| std::mem::replace(&mut s.queue, queue) != queue);
+    }
+
+    /// `LiveChanges`, told only when it changed.
+    pub fn set_live_changes(&self, live: live::LiveChanges) {
+        self.tx.send_if_modified(|s| std::mem::replace(&mut s.live_changes, live) != live);
     }
 
     pub fn subscribe(&self) -> watch::Receiver<SyncSnapshot> {
@@ -3007,6 +3017,9 @@ impl SyncService {
         match self.syncing.lock().unwrap().as_ref() {
             Some(syncing) => {
                 syncing.poller.refresh();
+                // The notification socket too: closed while stopped, opened again when not,
+                // tried again at once when the network came back (`live`).
+                syncing.poller.wake_live();
                 true
             }
             None => false,
@@ -8227,7 +8240,7 @@ mod tests {
                 rescue_dir: w.config.path().join("rescued"),
                 thumbnails: Some(w.config.path().join("thumbnails")),
             });
-            service.set_schedule(Schedule { interval: Duration::from_secs(3600), retry: vec![Duration::from_millis(50)] });
+            service.set_schedule(Schedule::polled(Duration::from_secs(3600), vec![Duration::from_millis(50)]));
             // No helper in these tests, and none running: a punch goes by "no helper at all".
             service.set_helper_socket(w.config.path().join("no-helper.sock"));
             // The fake `balooctl6` and a `baloofilerc` of the test's own
@@ -9612,6 +9625,41 @@ mod tests {
             assert!(accounts.iter().all(|a| a.running.held().is_none()), "sync on battery");
             let later = SyncService::on_hub(&hub, None, None);
             assert_eq!(later.hold_settings().on_battery, OnBattery::Sync, "a later account is told");
+        }
+
+        /// Issue #54: with the notification socket up, a change in OneDrive gives one delta
+        /// within the debounce, and `LiveChanges` says `connected`; the user's pause closes the
+        /// socket (`off`) and Resume opens it again.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+        async fn a_change_in_onedrive_arrives_through_the_socket_and_a_pause_closes_it() {
+            use crate::sync::live::{LiveChanges, Timing};
+            use crate::sync::upload::fake::{FakeGraph, ROOT};
+            let w = world().await;
+            // The fake OneDrive for its socket only; the world's own server serves the rest.
+            let graph = FakeGraph::start().await;
+            let endpoint = graph.client().socket_endpoint().await.unwrap();
+            Mock::given(method("GET")).and(path("/me/drive/root/subscriptions/socketIo"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"notificationUrl": endpoint.notification_url.as_str()})))
+                .mount(&w.server).await;
+            let service = connected(&w, true).await;
+            let live = Timing { debounce: Duration::from_millis(300), settle: Duration::from_millis(100), ..Timing::default() };
+            service.set_schedule(Schedule { live: Some(live), ..Schedule::polled(Duration::from_secs(3600), vec![Duration::from_millis(50)]) });
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            wait_until("connected", || service.state().get().live_changes == LiveChanges::Connected).await;
+            let before = deltas(&w).await;
+
+            graph.with(|c| c.add_file("X", ROOT, "x.txt", b"x"));
+            wait_for_deltas(&w, before).await;
+            tokio::time::sleep(Duration::from_millis(600)).await;
+            assert_eq!(deltas(&w).await, before + 1, "one delta for the event");
+
+            service.pause_syncing(0).await.unwrap();
+            wait_until("closed by the pause", || service.state().get().live_changes == LiveChanges::Off && graph.sockets.open() == 0).await;
+            service.resume_syncing().await.unwrap();
+            wait_until("open again", || service.state().get().live_changes == LiveChanges::Connected).await;
+            service.stop_sync().await;
+            assert_eq!(service.state().get().live_changes, LiveChanges::Off, "no sync, no socket");
         }
 
         /// Issue #57: on a metered connection the account holds back — no upload, no poll, no

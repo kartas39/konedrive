@@ -19,7 +19,7 @@ class QWindow;
 /// tooltip has a line per account (AppStatus); a click shows or hides the
 /// window — on the one account needing attention, when exactly one does —
 /// and its menu opens a folder or the window, refreshes, pauses or resumes
-/// every account, or quits.
+/// every account, lifts every account's own hold, or quits.
 class TrayIcon : public QObject
 {
     Q_OBJECT
@@ -47,8 +47,11 @@ public:
     /// OneDrive and is not paused, for 2, 8 or 24 hours or until resumed.
     QAction *pauseMenuAction() const { return m_pauseMenuAction; }
     QMenu *pauseMenu() const { return m_pauseMenu; }
-    /// "Resume Syncing": shown while any account is paused; resumes each of them.
+    /// "Resume Syncing": shown while any account is paused by the user; resumes each of them.
     QAction *resumeAction() const { return m_resume; }
+    /// "Sync Anyway": shown while any account holds back by itself (HeldBack) and is not
+    /// paused by the user; lifts the hold of each of them (konedrivectl sync anyway --all).
+    QAction *syncAnywayAction() const { return m_syncAnyway; }
     QAction *quitAction() const { return m_quit; }
 
 public Q_SLOTS:
@@ -91,6 +94,7 @@ private:
     QMenu *m_pauseMenu;
     QAction *m_pauseMenuAction;
     QAction *m_resume;
+    QAction *m_syncAnyway;
     QAction *m_quit;
     /// (label, folder) of each account that has a folder, in account order.
     QList<QPair<QString, QString>> m_folders;

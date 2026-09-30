@@ -196,6 +196,86 @@ private Q_SLOTS:
         QVERIFY(AppStatus::rank(QStringLiteral("offline")) < AppStatus::rank(QStringLiteral("paused")));
     }
 
+    /// While the notification socket is up (LiveChanges "connected") the line says "live" in
+    /// place of when it last checked, and stops ageing; otherwise it is as before.
+    void liveChangesInTheStatusLine()
+    {
+        startSynced();
+        auto *timer = m_status->findChild<QTimer *>();
+        QVERIFY(timer);
+        m_daemon->sync->folder->set({{QStringLiteral("LiveChanges"), QStringLiteral("connected")}});
+        QTRY_COMPARE(m_sync->liveChanges(), QStringLiteral("connected"));
+        QCOMPARE(m_status->text(), QStringLiteral("Up to date · live"));
+        QCOMPARE(m_status->state(), QStringLiteral("ok"));
+        QVERIFY(!timer->isActive());
+
+        m_daemon->sync->queue->set({{QStringLiteral("PendingCount"), QVariant::fromValue<uint>(2)}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("2 changes waiting to upload · live"));
+
+        m_daemon->sync->folder->set({{QStringLiteral("LiveChanges"), QStringLiteral("connecting")}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("2 changes waiting to upload · checked 20 s ago"));
+        QVERIFY(timer->isActive());
+    }
+
+    /// An account that holds back by itself (HeldBack) is paused, for its line and the tray,
+    /// and its line says why; the user's pause, when there is one too, is what the line says.
+    void aHeldAccountIsPaused()
+    {
+        startSynced();
+        TrayIcon tray(m_app.get());
+        m_daemon->sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("metered")}});
+        QTRY_COMPARE(m_status->state(), QStringLiteral("paused"));
+        QCOMPARE(m_status->text(), QStringLiteral("Paused: metered connection · checked 20 s ago"));
+        QTRY_COMPARE(m_app->state(), QStringLiteral("paused"));
+        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("media-playback-pause"));
+        QCOMPARE(tray.item()->toolTipSubTitle(), QStringLiteral("Paused: metered connection · checked 20 s ago"));
+
+        m_daemon->sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("on-battery")}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("Paused: on battery · checked 20 s ago"));
+        m_daemon->sync->folder->Pause(0);
+        QTRY_COMPARE(m_status->text(), QStringLiteral("Paused · checked 20 s ago"));
+
+        // Something that needs the user still comes first.
+        m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(1)}});
+        QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
+
+        m_daemon->sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(0)}});
+        m_daemon->sync->folder->Resume();
+        m_daemon->sync->folder->set({{QStringLiteral("HeldBack"), QString()}});
+        QTRY_COMPARE(m_status->state(), QStringLiteral("ok"));
+        QTRY_COMPARE(tray.item()->iconName(), QStringLiteral("state-ok"));
+    }
+
+    /// "Sync Anyway" in the tray: shown while an account holds back by itself and is not paused
+    /// by the user; it lifts the hold of every such account, and of no other.
+    void theTraySyncsAnywayEveryHeldAccount()
+    {
+        startSynced();
+        FakeAccountObject *family = addFamily();
+        FakeAccountObject *work = addFamily();
+        QTRY_COMPARE(m_accounts->count(), 3);
+        TrayIcon tray(m_app.get());
+        QVERIFY(!tray.syncAnywayAction()->isVisible());
+
+        // Work is paused by the user and held too: Resume Syncing is its way back.
+        work->sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("metered")}});
+        work->sync->folder->Pause(0);
+        QTRY_VERIFY(tray.resumeAction()->isVisible());
+        QVERIFY(!tray.syncAnywayAction()->isVisible());
+
+        m_daemon->sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("metered")}});
+        family->sync->folder->set({{QStringLiteral("HeldBack"), QStringLiteral("on-battery")}});
+        QTRY_VERIFY(tray.syncAnywayAction()->isVisible());
+        QVERIFY(menuTexts(tray).contains(QStringLiteral("Sync Anyway")));
+
+        tray.syncAnywayAction()->trigger();
+        QTRY_VERIFY(m_daemon->sync->calls.contains(QStringLiteral("SyncAnyway")));
+        QTRY_VERIFY(family->sync->calls.contains(QStringLiteral("SyncAnyway")));
+        QTRY_VERIFY(!tray.syncAnywayAction()->isVisible());
+        QVERIFY(!work->sync->calls.contains(QStringLiteral("SyncAnyway")));
+        QCOMPARE(work->sync->folder->heldBack(), QStringLiteral("metered"));
+    }
+
     /// A full OneDrive, and a file too big for the space left, need
     /// attention: one line for the account, not one per file (issue #2).
     void aFullOneDriveNeedsAttention()

@@ -165,6 +165,21 @@ QString AccountStatus::iconFor(const QString &state)
     return QStringLiteral("state-offline");
 }
 
+QString AccountStatus::heldBackText(const QString &reason)
+{
+    // The Status page's texts (StatusPage.qml, heldBackLine).
+    if (reason == QLatin1String("metered")) {
+        return i18n("Paused: metered connection");
+    }
+    if (reason == QLatin1String("on-battery")) {
+        return i18n("Paused: on battery");
+    }
+    if (reason == QLatin1String("power-saver")) {
+        return i18n("Paused: power-saver mode");
+    }
+    return i18n("Paused by itself");
+}
+
 QString AccountStatus::until(qint64 unixSeconds) const
 {
     const QDateTime when = QDateTime::fromSecsSinceEpoch(unixSeconds);
@@ -207,7 +222,15 @@ void AccountStatus::update()
     const QString rootState = m_sync->rootState();
     const int downloads = m_sync->transfers()->count();
     const qint64 checked = m_sync->lastChecked();
-    const QString checkedText = checked > 0 ? i18nc("@info status, %1 is a time like '20 s ago'", "checked %1", ago(checked)) : QString();
+    // While the notification socket is up, changes arrive as they happen: "live" says more
+    // than when the last poll ran, and nothing on the line ages.
+    const bool live = m_sync->liveChanges() == QLatin1String("connected");
+    QString checkedText;
+    if (live) {
+        checkedText = i18nc("@info status: changes from OneDrive arrive as they happen", "live");
+    } else if (checked > 0) {
+        checkedText = i18nc("@info status, %1 is a time like '20 s ago'", "checked %1", ago(checked));
+    }
 
     if (!m_account->serviceAvailable() || !m_sync->serviceAvailable()) {
         state = QStringLiteral("offline");
@@ -243,12 +266,15 @@ void AccountStatus::update()
         const int uploads = m_sync->uploads()->count();
         const uint pending = m_sync->pendingCount();
         const bool paused = m_sync->paused();
+        const QString heldBack = m_sync->heldBack();
         if (rootState == QLatin1String("listing")) {
             text = i18n("Listing your OneDrive: %1 items so far", m_sync->itemsListed());
         } else if (!trouble.isEmpty()) {
             text = trouble;
         } else if (paused) {
             text = m_sync->pausedUntil() > 0 ? i18n("Paused until %1", until(m_sync->pausedUntil())) : i18n("Paused");
+        } else if (!heldBack.isEmpty()) {
+            text = heldBackText(heldBack);
         } else if (downloads > 0 && uploads > 0) {
             text = i18nc("@info status: downloading N files, uploading M files",
                          "Downloading %1, uploading %2",
@@ -265,7 +291,7 @@ void AccountStatus::update()
         }
         if (rootState != QLatin1String("listing") && !checkedText.isEmpty()) {
             text = i18nc("@info status: what, then when it last checked", "%1 · %2", text, checkedText);
-            ages = true;
+            ages = !live;
         }
 
         if (m_sync->heldCount() > 0) {
@@ -294,7 +320,8 @@ void AccountStatus::update()
             // may be fine, only the helper (and so hydration on open) is not.
             state = QStringLiteral("warning");
             attention = i18n("The konedrive helper is not available: files are not kept in step, and nothing downloads when it is opened.");
-        } else if (paused) {
+        } else if (paused || !heldBack.isEmpty()) {
+            // The account's own hold ranks as the user's pause: the tray shows it paused.
             state = QStringLiteral("paused");
         } else if (!trouble.isEmpty()) {
             // M4: only "cannot reach OneDrive" looks offline; any other
