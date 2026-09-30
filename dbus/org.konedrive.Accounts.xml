@@ -74,5 +74,16 @@
          was written by a newer version, or a migration step failed. Empty
          when there is none. -->
     <property name="LastError" type="s" access="read"/>
+    <!-- The running daemon's build: its version (X.Y.Z for a release,
+         X.Y.Z-dev.N for a package built from any other commit, X.Y.Z-dev for
+         a plain cargo build) and the full hash of its commit, or "unknown"
+         (docs/releasing.md). A client built from another commit shows that
+         the daemon should be restarted. Never change while the daemon runs. -->
+    <property name="Version" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
+    <property name="Commit" type="s" access="read">
+      <annotation name="org.freedesktop.DBus.Property.EmitsChangedSignal" value="const"/>
+    </property>
   </interface>
 </node>

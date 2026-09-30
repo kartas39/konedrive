@@ -123,9 +123,10 @@ jobs:
             exit 1
           fi
 
-      # A release is X.Y.Z. A dry run takes a local build's version,
-      # X.Y.Z~dev.YYYYMMDD.SHA, which sorts below the release: installed, its
-      # RPMs do not stand in the way of the release's upgrade.
+      # A release is X.Y.Z, the version in Cargo.toml. A dry run takes a local
+      # build's version, X.Y.Z~dev.N (N: the commit count of HEAD's history,
+      # hence the full clone above), which sorts below the release: installed,
+      # its RPMs do not stand in the way of the release's upgrade.
       - name: Choose the version
         id: version
         run: |
@@ -188,7 +189,9 @@ jobs:
           path: dist
 
       # A rerun after the tag was pushed finds it on this commit and reuses
-      # it; the build job then chose the same version.
+      # it; the build job chose the same version (the file's). The tag on
+      # another commit means the version was not bumped after the last
+      # release (docs/releasing.md): the run stops.
       - name: Tag the commit
         run: |
           tag="v$VERSION"

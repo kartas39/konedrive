@@ -3,7 +3,8 @@
 #
 #     scripts/build-rpm.sh                   # both binary packages and the source RPM
 #     scripts/build-rpm.sh --sources-only    # only the two source tarballs
-#     scripts/build-rpm.sh --version X.Y.Z   # a release's version (the release workflow)
+#     scripts/build-rpm.sh --version X.Y.Z   # a release (the release workflow): X.Y.Z must be
+#                                            # the version in Cargo.toml
 #     scripts/build-rpm.sh --dev-tools       # a local development package: its daemon
 #                                            # serves the token export (limitations log W11)
 #
@@ -12,11 +13,11 @@
 # and the spec's build dependencies (`sudo dnf builddep packaging/rpm/konedrive.spec`).
 # Uncommitted changes are not packaged.
 #
-# The version: without --version, a local build's, from the git tags
-# (scripts/version.sh; run `git fetch --tags` first), such as
-# 0.1.2~dev.20260929.fad78d9, which the release 0.1.2 upgrades. It is written
-# into the build's copies of Cargo.toml, Cargo.lock and the spec; the versions
-# in git are placeholders (docs/releasing.md).
+# The version: Cargo.toml's (scripts/version.sh). Without --version, a local
+# build's, such as 0.1.2~dev.57 (57 commits in HEAD's history), which the
+# release 0.1.2 upgrades. It is written into the build's copies of Cargo.toml,
+# Cargo.lock and the spec, with HEAD's hash; the version in the spec in git is
+# a placeholder (docs/releasing.md).
 set -eu
 
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -56,14 +57,14 @@ if [ -n "$version" ]; then
         echo "--version takes a release's version, X.Y.Z, not '$version'" >&2
         exit 2
     fi
+    konedrive_check_release_version "$root" "$version" || exit 2
 else
-    if [ -z "$(konedrive_tagged_versions "$root")" ]; then
-        echo "note: no vX.Y.Z tag in this checkout; if the repository has some, run git fetch --tags." >&2
-    fi
     version=$(konedrive_local_version "$root")
 fi
-# RPM's form (`~` for a local build) and Cargo's (`-`).
+# RPM's form (`~` for a local build) and Cargo's (`-`), which is also the one
+# the window, the daemon and konedrivectl show.
 cargo_version=$(konedrive_cargo_version "$version")
+commit=$(konedrive_commit "$root")
 name=konedrive-$version
 
 if [ -n "$(git -C "$root" status --porcelain --untracked-files=no)" ]; then
@@ -76,7 +77,8 @@ mkdir -p "$top/SOURCES" "$top/SPECS" "$top/tree" "$top/vendor-stage"
 
 # The committed tree, with the version written into its copies of Cargo.toml,
 # Cargo.lock (every package without a source: the workspace's own) and the
-# spec (Version:, and a changelog entry above the others, dated with HEAD's
+# spec (Version:, the commit and build_version globals its %build hands to
+# Cargo and CMake, and a changelog entry above the others, dated with HEAD's
 # commit, in the name of the spec's newest entry). The build stops if a line
 # it expects is not there.
 tree="$top/tree/$name"
@@ -105,11 +107,16 @@ packager=$(sed -n '/^%changelog$/,$s/^\* [A-Z][a-z][a-z] [A-Z][a-z][a-z] [0-9][0
 [ -n "$packager" ] || { echo "no changelog entry to take the packager from in $spec" >&2; exit 1; }
 date=$(LC_ALL=C TZ=UTC git -C "$root" log -1 --format=%cd --date='format-local:%a %b %d %Y' HEAD)
 sha=$(git -C "$root" rev-parse --short=7 HEAD)
-awk -v version="$version" -v entry="* $date $packager - $version-1" -v sha="$sha" '
+awk -v version="$version" -v entry="* $date $packager - $version-1" -v sha="$sha" \
+    -v commit="$commit" -v shown="$cargo_version" '
     /^Version:/ { sub(/[^ ]+$/, version); print; next }
+    /^%global commit / { print "%global commit " commit; next }
+    /^%global build_version / { print "%global build_version " shown; next }
     /^%changelog$/ { print; print entry; print "- Built from commit " sha "."; print ""; next }
     { print }' "$spec" >"$top/SPECS/konedrive.spec"
 grep -qx "Version: *$version" "$top/SPECS/konedrive.spec"
+grep -qx "%global commit $commit" "$top/SPECS/konedrive.spec"
+grep -qx "%global build_version $cargo_version" "$top/SPECS/konedrive.spec"
 cp "$top/SPECS/konedrive.spec" "$tree/packaging/rpm/konedrive.spec"
 
 # Source0: that tree.

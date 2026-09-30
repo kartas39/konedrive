@@ -574,6 +574,18 @@ impl Accounts {
     async fn last_error(&self) -> String {
         self.manager.config.last_error()
     }
+
+    /// This build's version (`konedrive_dbus::version`).
+    #[zbus(property(emits_changed_signal = "const"))]
+    async fn version(&self) -> String {
+        konedrive_dbus::version::VERSION.to_owned()
+    }
+
+    /// The full hash of this build's commit, or `unknown`.
+    #[zbus(property(emits_changed_signal = "const"))]
+    async fn commit(&self) -> String {
+        konedrive_dbus::version::COMMIT.to_owned()
+    }
 }
 
 /// `org.konedrive.Files` (`dbus/org.konedrive.Files.xml`): the per-file calls, each

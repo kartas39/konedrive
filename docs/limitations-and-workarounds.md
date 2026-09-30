@@ -3280,19 +3280,25 @@ The RPM packages, `konedrive` and `konedrive-kde`, from `packaging/rpm/konedrive
   `fedora:44` container on GitHub's x86_64 runners. The RPMs name `fc44` and link Fedora 44's
   Qt and KF6 libraries; another Fedora release has to build them from a checkout. Way out: a COPR
   repository, which builds for each release and architecture.
-- **R8. The versions in git are placeholders.** FRAGILE · reasoned · mitigated. `Cargo.toml`,
-  `Cargo.lock` and the spec keep `0.1.0`; `scripts/build-rpm.sh` writes the build's version into
-  its own copies (`docs/releasing.md`), and a comment next to each says so. A build that does not
-  go through the script — `cargo build`, `scripts/dev-install.sh` — says `0.1.0`. The script
-  rewrites lines by pattern (the `version` line of `[workspace.package]`, the `version` of every
-  lock entry without a `source`, the spec's `Version:`) and stops if one it expects is missing;
-  `cargo vendor --locked` stops it if the lock file no longer fits. The window's CMake reads the
-  version from `Cargo.toml` with a regular expression, and stops configuring if it finds none.
-  The version counts only the tags the checkout has: a local build without `git fetch --tags`
-  can be numbered below a release already installed, and `dnf` then refuses it as a downgrade.
-  A release's version depends on every tag, on any branch: a stray `vX.Y.Z` tag pushed by mistake
-  moves the next release's number. A dry run is numbered as a local build, below the release that
-  would follow; two dry runs of the same commit carry the same version.
+- **R8. The version is one line in `Cargo.toml`, bumped by hand after each release.** FRAGILE ·
+  reasoned · mitigated. `[workspace.package] version` is the next release's; a build that is not a
+  release carries `X.Y.Z-dev.N` (`~dev.N` in RPM), `N` the commit count of `HEAD`'s history
+  (`docs/releasing.md`). (1) `N` counts `HEAD`'s own history: a package built from a branch can carry
+  an `N` above a later `dev` build's, and `dnf` then takes that later build for a downgrade.
+  Packages are built only from `dev` (CLAUDE.md), so this holds by rule, not by code. (2) Forgetting
+  the bump pull request after a release leaves the file at the released version: the next merge
+  into `main` builds it again, and the workflow stops at the tag step (`vX.Y.Z` exists on another
+  commit) until the file is bumped. Safe, but manual. (3) A plain `cargo build` (and
+  `scripts/dev-install.sh`) shows `X.Y.Z-dev` with no `N`, and a plain CMake build the same;
+  their commit is `git rev-parse HEAD` when the build ran (Cargo reruns the build script when
+  `HEAD`, its branch or `packed-refs` changes; CMake configures again on the same), and an
+  uncommitted change is not marked. (4) `scripts/build-rpm.sh` rewrites lines by pattern (the
+  `version` line of `[workspace.package]`, the `version` of every lock entry without a `source`,
+  the spec's `Version:` and its `%global commit` and `%global build_version`) and stops if one it
+  expects is missing; `cargo vendor --locked` stops it if the lock file no longer fits. The
+  window's CMake reads the version from `Cargo.toml` with a regular expression, and stops
+  configuring if it finds none. (5) The user agent sent to Microsoft Graph carries Cargo's own
+  version (`X.Y.Z` in a plain build, without `-dev`).
 - **R9. A merge into `main` can go without a release of its own.** LIMIT · reasoned · open. The
   release workflow runs one at a time (`concurrency`), and GitHub keeps one waiting run per group:
   a third push while one run builds and one waits cancels the waiting one. Nothing is lost — the

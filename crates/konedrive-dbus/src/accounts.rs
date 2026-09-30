@@ -70,6 +70,12 @@ pub trait Accounts {
     /// Trouble that belongs to no account; empty when there is none.
     #[zbus(property)]
     fn last_error(&self) -> zbus::Result<String>;
+    /// The daemon's version, as [`version::VERSION`](crate::version::VERSION) is this build's.
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn version(&self) -> zbus::Result<String>;
+    /// The full hash of the daemon's commit, or `unknown`.
+    #[zbus(property(emits_changed_signal = "const"))]
+    fn commit(&self) -> zbus::Result<String>;
 }
 
 /// `/org/konedrive/Accounts`: per-file calls, each routed by path to the

@@ -55,6 +55,15 @@ async fn exposes_initial_properties() {
     assert_eq!(s.manager.client_id().await.unwrap(), "");
 }
 
+/// The daemon's build, as `konedrivectl --version` and the window read it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn exposes_its_build() {
+    let s = setup(Duration::from_secs(5)).await;
+    assert_eq!(s.manager.version().await.unwrap(), konedrive_dbus::version::VERSION);
+    assert_eq!(s.manager.commit().await.unwrap(), konedrive_dbus::version::COMMIT);
+    assert!(s.manager.version().await.unwrap().starts_with(env!("CARGO_PKG_VERSION")));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn set_client_id_validates_and_notifies() {
     let s = setup(Duration::from_secs(5)).await;

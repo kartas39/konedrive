@@ -17,6 +17,7 @@
 
 pub mod accounts;
 pub mod testing;
+pub mod version;
 
 use zbus::zvariant::OwnedObjectPath;
 
