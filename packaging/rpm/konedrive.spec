@@ -16,10 +16,17 @@
 # W11). A release is never built with it.
 %bcond dev_tools 0
 
+# What the window, the daemon and konedrivectl show: the commit built, and the
+# version in Cargo's form (X.Y.Z, or X.Y.Z-dev.N for a build that is not a
+# release). Placeholders: scripts/build-rpm.sh writes both.
+%global commit unknown
+%global build_version 0.0.0-dev
+
 Name:           konedrive
-# A placeholder: scripts/build-rpm.sh writes the build's version here, and a
-# changelog entry for it, from the git tags (docs/releasing.md).
-Version:        0.1.0
+# A placeholder: scripts/build-rpm.sh writes the build's version here (from
+# Cargo.toml, the only place it is kept), and a changelog entry for it
+# (docs/releasing.md).
+Version:        0.0.0
 Release:        1%{?dist}
 Summary:        OneDrive client for KDE Plasma with files on demand
 
@@ -93,6 +100,9 @@ shows whether it is online-only, downloading or downloaded, and "Download" and
 # only with `--with dev_tools`, a local development package (W11).
 export CARGO_HOME="$PWD/.cargo-home"
 export CARGO_TARGET_DIR="$PWD/target"
+# The version and the commit the binaries show; the tree has no .git to ask.
+export KONEDRIVE_BUILD_VERSION="%{build_version}"
+export KONEDRIVE_COMMIT="%{commit}"
 cargo build --release --offline --locked \
     -p konedrived -p konedrivectl -p konedrive-helper \
     %{?with_dev_tools:--features konedrived/dev-tools,konedrivectl/dev-tools}
@@ -114,7 +124,8 @@ fi
 # The window, then the Dolphin plugins, each with Fedora's KF6 settings:
 # installed under /usr, tests off.
 pushd app
-%cmake_kf6 -DBUILD_TESTING=OFF
+%cmake_kf6 -DBUILD_TESTING=OFF \
+    -DKONEDRIVE_BUILD_VERSION="%{build_version}" -DKONEDRIVE_COMMIT="%{commit}"
 %cmake_build
 popd
 pushd dolphin

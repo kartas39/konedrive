@@ -18,6 +18,12 @@ const HELPER_BACKOFF: Duration = Duration::from_secs(1);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // The only argument there is; everything else is ignored, as it always was.
+    if std::env::args().nth(1).is_some_and(|arg| arg == "--version" || arg == "-V") {
+        use konedrive_dbus::version::{line, COMMIT, VERSION};
+        println!("{}", line("konedrived", VERSION, COMMIT));
+        return Ok(());
+    }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();

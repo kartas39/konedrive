@@ -2,7 +2,15 @@
 
 ## How a release happens
 
-Merge `dev` into `main`. Every push to `main` runs the release workflow
+By hand, two steps:
+
+1. Merge `dev` into `main`. The workflow below releases `X.Y.Z`, the version in `Cargo.toml`, and
+   tags the commit `vX.Y.Z`.
+2. At once, a one-line pull request into `dev` that moves `version` in `[workspace.package]` of the
+   root `Cargo.toml` from `X.Y.Z` to `X.Y.(Z+1)` (or to the next minor or major version, when that
+   is what comes next). No other pull request changes it (below).
+
+Every push to `main` runs the release workflow
 (`.github/workflows/release.yml`) on GitHub Actions:
 
 1. It runs the daemon's unit tests (`cargo test -p konedrived --lib --features dev-tools`, the token export included) on the runner itself (below).
@@ -21,9 +29,11 @@ time, and a running release is never cancelled. GitHub keeps only one run waitin
 though: a merge that arrives while another run already waits replaces that run, so the commit of
 the replaced run gets no release of its own — the next release holds it.
 
-A failed run can be rerun. If it failed after the tag was pushed, the rerun finds the tag on the
-commit and reuses its version, and it replaces the files of a release that already exists instead
-of making a second one.
+A failed run can be rerun. It builds the same version (the file's), finds the tag it pushed on
+the same commit and reuses it, and replaces the files of a release that already exists instead of
+making a second one. A tag `vX.Y.Z` that already exists on another commit stops the run: that is
+what happens when step 2 above was forgotten (the next merge into `main` still carries the version
+already released) — merge the bump into `dev` and `dev` into `main` again.
 
 ## Where the tests run
 
@@ -48,34 +58,55 @@ the error names (what `dnf info rust` shows in a `fedora:44` container), in a pu
 
 ## The version
 
-The version comes from the git tags `vX.Y.Z`: a release takes the highest tag in the repository,
-whatever branch it is on, and adds one to its last number. With no tag at all, the first release is
-0.1.1. `scripts/version.sh` computes it, for the workflow and for `scripts/build-rpm.sh` alike:
+**One file holds it**: `version` in `[workspace.package]` of the root `Cargo.toml`. It is the
+**next** release's version, `X.Y.Z`. Nothing else holds it: the spec's `Version:` is a placeholder
+that `scripts/build-rpm.sh` fills in, and the window's CMake reads the file. Only the bump right
+after a release (above) changes it, so feature pull requests never touch it and can merge in any
+order. `scripts/version.sh` reads it, for the workflow and for `scripts/build-rpm.sh` alike:
 
 ```
-scripts/version.sh release          # the version this commit is released as
-scripts/version.sh local            # a local build's version
-scripts/version.sh previous 0.1.2   # the tag before v0.1.2
+scripts/version.sh release          # X.Y.Z: the file's version
+scripts/version.sh local            # X.Y.Z~dev.N: any other build
+scripts/version.sh commit           # HEAD's full hash
+scripts/version.sh previous 0.1.2   # the tag before v0.1.2 (the release notes)
 ```
 
-**A new base.** To move to a new minor or major version, push a tag by hand, for example
-`git tag v0.2.0 <commit> && git push origin v0.2.0`. The next release is then 0.2.1. A tag on the
-very commit that `main` is about to build is reused, so that commit is released as 0.2.0 itself.
+**A release** is `X.Y.Z` exactly. `scripts/build-rpm.sh --version X.Y.Z` refuses any version but
+the file's. A tag only records a release; it plays no part in choosing the version.
 
-**Nothing is committed back.** The workflow writes the version into its own copies of
-`Cargo.toml` (`[workspace.package] version`), `Cargo.lock` and the spec (`Version:` and a
-`%changelog` entry); the files in git keep `0.1.0` as a placeholder. The programs show the
-build's version where they already show one: `konedrivectl --version`, the user agent sent to
-Microsoft Graph, and the window's application data (`konedrive --version`), which CMake reads
-from `Cargo.toml` when the window is configured.
+**Any other build** — a local package, a dry run — is `X.Y.Z~dev.N` in the spec (RPM's `~`) and
+`X.Y.Z-dev.N` in `Cargo.toml` and on screen (a semver pre-release; Cargo refuses `~`, RPM refuses
+`-`). `N` is the number of commits in `HEAD`'s history, `git rev-list --count HEAD`: local history
+only, no tags, no network. Every merge into `dev` is one squashed commit, so `N` grows with each,
+and RPM orders the builds as they were made:
 
-**Local builds.** `scripts/build-rpm.sh` without `--version` takes the next version with a suffix
-that sorts below it: `0.1.2~dev.20260929.fad78d9` in the spec (RPM's `~`) and
-`0.1.2-dev.20260929.fad78d9` in `Cargo.toml` (a semver pre-release; Cargo refuses `~`, RPM refuses
-`-`). The date is `HEAD`'s commit date in UTC, the hash `HEAD`'s. So the release 0.1.2 upgrades a
-local build with a plain `dnf upgrade`, and two builds of the same commit have the same version.
-Run `git fetch --tags` first: only the tags the checkout has are counted, and without them a local
-build may sort below a release already installed.
+```
+0.1.1~dev.9  <  0.1.1~dev.12  <  0.1.1  <  0.1.2~dev.1
+```
+
+A newer build upgrades an older one with a plain `dnf upgrade`, and the release `X.Y.Z` upgrades
+every `X.Y.Z~dev.N`. Packages are built only from `dev` (a branch's `N` can pass a later `dev`
+build's: limitations log R8).
+
+**What is shown**, as `Version 0.1.1-dev.57 · commit 5254595`: `konedrivectl --version` (its own
+build, then the running daemon's, and a line asking to restart the daemon when the two differ),
+`konedrived --version`, the daemon's `Version` and `Commit` properties on `org.konedrive.Accounts`,
+and the window (`konedrive --version`, from `KAboutData`, and the foot of its sidebar, with a
+second line while the running daemon is another build: `docs/design/desktop.md` §4). The rule is one for Rust
+(`crates/konedrive-dbus/build.rs`) and for CMake (`app/CMakeLists.txt`):
+
+- the version: `KONEDRIVE_BUILD_VERSION` when `scripts/build-rpm.sh` sets it (the spec's `%build`
+  exports it for Cargo and passes `-DKONEDRIVE_BUILD_VERSION=` to CMake); otherwise, a plain
+  `cargo build` or CMake build, the file's version with `-dev`, so that it never looks like a
+  release;
+- the commit: `KONEDRIVE_COMMIT` when set (the same way), else `git rev-parse HEAD` at build time,
+  else `unknown`.
+
+**Nothing is committed back.** `scripts/build-rpm.sh` writes the build's version into its own
+copies of `Cargo.toml`, `Cargo.lock` and the spec (`Version:`, the `commit` and `build_version`
+globals, and a `%changelog` entry naming the commit). The user agent sent to Microsoft Graph
+carries Cargo's version of that copy.
+
 `--dev-tools` makes a local development package whose daemon serves the token export (limitations
 log W11), for the developer's own machine; it is refused together with `--version`, and CI never
 passes it.
@@ -85,9 +116,9 @@ passes it.
 On GitHub, **Actions → Release → Run workflow**, on any branch. `dry_run` is on by default: the run
 tests, builds and keeps the RPMs as its artifacts (downloadable from the run's page for 90 days),
 and tags and releases nothing. Its RPMs carry a local build's version, not the release's: the
-next version with a suffix that sorts below it (`0.1.2~dev.20260929.fad78d9`, as
-`scripts/version.sh local` prints it), so a machine that installs them is upgraded by the release
-with a plain `dnf upgrade`. Only a release is built as `X.Y.Z`. A run by hand with `dry_run` off
+file's version with a suffix that sorts below it (`0.1.2~dev.57`, as `scripts/version.sh local`
+prints it), so a machine that installs them is upgraded by the release with a plain `dnf
+upgrade`. Only a release is built as `X.Y.Z`. A run by hand with `dry_run` off
 releases, but only from `main`; on any other branch it stays a dry run.
 
-Locally, the same build: `git fetch --tags && scripts/build-rpm.sh --version X.Y.Z`.
+Locally, the same build: `scripts/build-rpm.sh --version X.Y.Z`, with `X.Y.Z` the file's version.

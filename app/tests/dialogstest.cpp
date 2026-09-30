@@ -327,6 +327,69 @@ private Q_SLOTS:
         QVERIFY(!battery->isEnabled());
     }
 
+    /// The sidebar's foot names this build; a daemon of another build (installed, not
+    /// restarted) adds a second line, which goes once the daemon runs this build.
+    void theVersionLine()
+    {
+        FakeDaemon fake;
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_VERIFY(daemon.serviceAvailable());
+
+        QQuickItem *line = nullptr;
+        QQuickItem *service = nullptr;
+        QTRY_VERIFY((line = window->findChild<QQuickItem *>(QStringLiteral("versionLine"))));
+        QTRY_VERIFY((service = window->findChild<QQuickItem *>(QStringLiteral("serviceVersionLine"))));
+        const QString commit = QStringLiteral(KONEDRIVE_COMMIT);
+        QCOMPARE(line->property("text").toString(),
+                 QStringLiteral("Version %1 · commit %2").arg(QStringLiteral(KONEDRIVE_VERSION), commit.left(7)));
+        QVERIFY(line->isVisible());
+        // The same build: no second line.
+        QVERIFY(!service->isVisible());
+
+        // Another build comes up (installed, not restarted before).
+        fake.stop();
+        QTRY_VERIFY(!daemon.serviceAvailable());
+        QVERIFY(!service->isVisible());
+        fake.manager->setBuild(QStringLiteral("0.0.9-dev.55"), QStringLiteral("1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b"));
+        QVERIFY(fake.start());
+        QTRY_VERIFY(service->isVisible());
+        QCOMPARE(service->property("text").toString(),
+                 QStringLiteral("Service: 0.0.9-dev.55 · commit 1a2b3c4 — restart it to use this version"));
+
+        // The same version from another commit differs too.
+        fake.stop();
+        QTRY_VERIFY(!service->isVisible());
+        fake.manager->setBuild(QStringLiteral(KONEDRIVE_VERSION), QStringLiteral("1a2b3c4d5e6f1a2b3c4d5e6f1a2b3c4d5e6f1a2b"));
+        QVERIFY(fake.start());
+        QTRY_VERIFY(service->isVisible());
+
+        // Restarted on this build: the line goes.
+        fake.stop();
+        QTRY_VERIFY(!daemon.serviceAvailable());
+        fake.manager->setBuild(QStringLiteral(KONEDRIVE_VERSION), commit);
+        QVERIFY(fake.start());
+        QTRY_VERIFY(daemon.serviceAvailable());
+        QVERIFY(!service->isVisible());
+        QCOMPARE(line->property("text").toString(),
+                 QStringLiteral("Version %1 · commit %2").arg(QStringLiteral(KONEDRIVE_VERSION), commit.left(7)));
+    }
+
     /// Issue #57: while the account holds back by itself, the Status page says why, beside
     /// a Sync Anyway button; the user's own pause is not shown for it.
     void theStatusPageShowsAHold()

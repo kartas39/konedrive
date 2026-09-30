@@ -13,7 +13,8 @@ use zbus::zvariant::OwnedObjectPath;
 #[derive(Parser)]
 #[command(
     name = "konedrivectl",
-    version,
+    disable_version_flag = true,
+    arg_required_else_help = true,
     about = "Control the KOneDrive daemon",
     after_help = "Choosing the account: a command that acts on one account uses the one --account names, \
                   else the one KONEDRIVE_ACCOUNT names, else the only account there is. With several \
@@ -30,8 +31,12 @@ struct Cli {
     /// account there is
     #[arg(long, global = true, value_name = "ACCOUNT", allow_hyphen_values = true)]
     account: Option<String>,
+    /// Print this program's version and commit, then the running daemon's; says so when the
+    /// daemon runs another build and should be restarted
+    #[arg(short = 'V', long)]
+    version: bool,
     #[command(subcommand)]
-    command: Cmd,
+    command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -357,12 +362,19 @@ fn takes_no_account(command: &Cmd) -> Option<&'static str> {
 }
 
 async fn run(cli: Cli) -> anyhow::Result<()> {
-    if let (Some(_), Some(why)) = (&cli.account, takes_no_account(&cli.command)) {
+    if cli.version {
+        print_version().await;
+        return Ok(());
+    }
+    let Some(command) = cli.command else {
+        return Err(Usage("a command is needed: see konedrivectl --help".to_owned()).into());
+    };
+    if let (Some(_), Some(why)) = (&cli.account, takes_no_account(&command)) {
         return Err(Usage(format!("{why}: leave out --account")).into());
     }
     let daemon = Daemon::connect().await?;
     let option = cli.account.as_deref();
-    match cli.command {
+    match command {
         Cmd::Account { command } => account(&daemon, option, command).await,
         Cmd::SetClientId { id } => set_client_id(&daemon, &id).await,
         Cmd::Settings { command } => settings(&daemon, command).await,
@@ -379,6 +391,42 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Cmd::Sync { command } => sync(&daemon, option, command).await,
         #[cfg(feature = "dev-tools")]
         Cmd::Dev { command } => dev(&daemon, option, command).await,
+    }
+}
+
+/// `--version`: this build's line, then the running daemon's. A daemon that is not on the bus is
+/// not started (D-Bus activation) just to be asked; that is no failure.
+async fn print_version() {
+    use konedrive_dbus::version::{COMMIT, VERSION};
+    let daemon = daemon_build().await;
+    print!("{}", konedrivectl::version_text(VERSION, COMMIT, &daemon));
+}
+
+async fn daemon_build() -> konedrivectl::DaemonBuild {
+    use konedrivectl::DaemonBuild;
+    let connection = match zbus::Connection::session().await {
+        Ok(connection) => connection,
+        Err(error) => return DaemonBuild::NotRunning(format!("no session bus: {error}")),
+    };
+    let running = async {
+        let bus = zbus::fdo::DBusProxy::new(&connection).await?;
+        bus.name_has_owner(konedrive_dbus::SERVICE_NAME.try_into()?).await.map_err(zbus::Error::from)
+    };
+    match running.await {
+        Ok(true) => {}
+        Ok(false) => return DaemonBuild::NotRunning("not on the session bus".to_owned()),
+        Err(error) => return DaemonBuild::NotRunning(format!("cannot ask the session bus: {error}")),
+    }
+    let read = async {
+        let manager = AccountsProxy::builder(&connection)
+            .cache_properties(zbus::proxy::CacheProperties::No)
+            .build()
+            .await?;
+        zbus::Result::Ok((manager.version().await?, manager.commit().await?))
+    };
+    match read.await {
+        Ok((version, commit)) => DaemonBuild::Running { version, commit },
+        Err(error) => DaemonBuild::Unknown(format!("an older build, most likely: {error}")),
     }
 }
 

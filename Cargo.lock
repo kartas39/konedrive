@@ -1064,14 +1064,15 @@ dependencies = [
 
 [[package]]
 name = "konedrive-dbus"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
+ "tempfile",
  "zbus",
 ]
 
 [[package]]
 name = "konedrive-fs"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "nix",
@@ -1082,7 +1083,7 @@ dependencies = [
 
 [[package]]
 name = "konedrive-helper"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "konedrive-fs",
@@ -1098,7 +1099,7 @@ dependencies = [
 
 [[package]]
 name = "konedrive-proto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "nix",
@@ -1109,7 +1110,7 @@ dependencies = [
 
 [[package]]
 name = "konedrive-write-test"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "clap",
@@ -1130,7 +1131,7 @@ dependencies = [
 
 [[package]]
 name = "konedrivectl"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -1151,7 +1152,7 @@ dependencies = [
 
 [[package]]
 name = "konedrived"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "async-trait",

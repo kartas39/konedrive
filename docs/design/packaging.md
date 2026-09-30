@@ -39,12 +39,14 @@ name leaves room for other KDE integration later.
    them. The spec unpacks it into the source tree.
 3. `rpmbuild -ba` builds the binary packages and the source RPM.
 
-The version comes from the git tags (`scripts/version.sh`, `docs/releasing.md`): a release's
-`X.Y.Z` is given with `--version`, and a local build takes the next release's version with a
-suffix that sorts below it (`0.1.2~dev.20260929.fad78d9`). The script writes it into the copies of
-`Cargo.toml`, `Cargo.lock` and the spec (`Version:` and a `%changelog` entry) that Source0 and the
-source RPM hold; the versions in git are placeholders. It stops if a line it rewrites is not
-there, and `cargo vendor --locked` stops it if the rewritten lock file does not fit.
+The version is the one in `Cargo.toml` (`[workspace.package]`; `scripts/version.sh`,
+`docs/releasing.md`): a release's `X.Y.Z` is given with `--version`, which must be the file's,
+and any other build takes the file's version with a suffix that sorts below it and grows with the
+history (`0.1.2~dev.57`). The script writes it into the copies of `Cargo.toml`, `Cargo.lock` and
+the spec (`Version:`, the `commit` and `build_version` globals that `%build` hands to Cargo and
+CMake, and a `%changelog` entry) that Source0 and the source RPM hold; the spec's `Version:` in git
+is a placeholder. It stops if a line it rewrites is not there, and `cargo vendor --locked` stops it
+if the rewritten lock file does not fit.
 
 Releases are built the same way by `.github/workflows/release.yml`, in a `fedora:44` container, and
 published on GitHub Releases.

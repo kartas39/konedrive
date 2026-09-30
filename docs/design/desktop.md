@@ -352,6 +352,15 @@ The choice is remembered (`CurrentAccount=<id>` in `konedriverc`). With more tha
 each page's title names the account ("Status · Personal"), since a narrow window folds the sidebar
 away (limitations log A13).
 
+**The version line.** The foot of the sidebar, on every page, names the window's build, small and
+dimmed: "Version 0.1.1-dev.57 · commit 5254595" (the commit's first 7 characters;
+`docs/releasing.md`). When the daemon on the bus runs another build — its `Version` or `Commit`
+on `org.konedrive.Accounts` differs, read once each time it appears on the bus — a second line in
+the neutral (warning) colour says "Service: 0.1.1-dev.55 · commit 1a2b3c4 — restart it to use this
+version" ("Service: an older version — …" for a daemon without those properties). No second line
+while the daemon is not on the bus. Both lines can be selected and copied.
+`konedrivectl --version` says the same from a terminal.
+
 **No account yet.** Only the Status page is available, and it shows "Connect your OneDrive" with
 "Sign in…".
 

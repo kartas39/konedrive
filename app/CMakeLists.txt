@@ -1,18 +1,60 @@
 cmake_minimum_required(VERSION 3.24)
 # CMake's project version is not shown anywhere. The version the window shows
-# is Cargo's, read below, so that it is the build's (docs/releasing.md).
+# is worked out below from Cargo.toml's (docs/releasing.md).
 project(konedrive-app VERSION 0.1.0 LANGUAGES CXX)
 
-# The version in the workspace's Cargo.toml ([workspace.package]): a
-# placeholder in git, and the build's own in a package build.
+# The version in the workspace's Cargo.toml ([workspace.package]): the next
+# release's, the only place it is kept (docs/releasing.md).
 set(KONEDRIVE_CARGO_TOML ${CMAKE_CURRENT_SOURCE_DIR}/../Cargo.toml)
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${KONEDRIVE_CARGO_TOML})
 file(READ ${KONEDRIVE_CARGO_TOML} KONEDRIVE_CARGO_TOML_TEXT)
 if(NOT KONEDRIVE_CARGO_TOML_TEXT MATCHES "\\[workspace\\.package\\][^[]*\nversion = \"([^\"]+)\"")
     message(FATAL_ERROR "no version in [workspace.package] of ${KONEDRIVE_CARGO_TOML}")
 endif()
-set(KONEDRIVE_VERSION ${CMAKE_MATCH_1})
-message(STATUS "KOneDrive version: ${KONEDRIVE_VERSION}")
+set(KONEDRIVE_CARGO_VERSION ${CMAKE_MATCH_1})
+
+# What the window shows, by the same rule as the Rust binaries
+# (crates/konedrive-dbus/build.rs): the version scripts/build-rpm.sh passes
+# (X.Y.Z, or X.Y.Z-dev.N), else the file's with -dev, so that a plain build
+# never looks like a release; the commit it passes, else HEAD's, else unknown.
+# Empty cache values mean "work it out" on every configure.
+set(KONEDRIVE_BUILD_VERSION "" CACHE STRING "The version the window shows (empty: Cargo.toml's with -dev)")
+set(KONEDRIVE_COMMIT "" CACHE STRING "The commit the window shows (empty: git HEAD's, else unknown)")
+if(KONEDRIVE_BUILD_VERSION)
+    set(KONEDRIVE_VERSION ${KONEDRIVE_BUILD_VERSION})
+else()
+    set(KONEDRIVE_VERSION ${KONEDRIVE_CARGO_VERSION}-dev)
+endif()
+if(KONEDRIVE_COMMIT)
+    set(KONEDRIVE_SHOWN_COMMIT ${KONEDRIVE_COMMIT})
+else()
+    set(KONEDRIVE_SHOWN_COMMIT unknown)
+    find_package(Git QUIET)
+    if(GIT_FOUND)
+        execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            OUTPUT_VARIABLE KONEDRIVE_GIT_HEAD OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE KONEDRIVE_GIT_RESULT ERROR_QUIET)
+        if(KONEDRIVE_GIT_RESULT EQUAL 0 AND KONEDRIVE_GIT_HEAD MATCHES "^[0-9a-f]+$")
+            set(KONEDRIVE_SHOWN_COMMIT ${KONEDRIVE_GIT_HEAD})
+            # A new commit configures again: HEAD, the worktree's reflog (logs/HEAD, which every
+            # commit, checkout and reset updates, even once the branch's ref is packed), and the
+            # branch HEAD names.
+            execute_process(COMMAND ${GIT_EXECUTABLE} symbolic-ref -q HEAD
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                OUTPUT_VARIABLE branch OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+            foreach(ref HEAD logs/HEAD ${branch})
+                execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --path-format=absolute --git-path ${ref}
+                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                    OUTPUT_VARIABLE path OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+                if(EXISTS "${path}")
+                    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${path})
+                endif()
+            endforeach()
+        endif()
+    endif()
+endif()
+message(STATUS "KOneDrive version: ${KONEDRIVE_VERSION} (commit ${KONEDRIVE_SHOWN_COMMIT})")
 
 set(QT_MIN_VERSION "6.8.0")
 set(KF_MIN_VERSION "6.8.0")
@@ -67,6 +109,10 @@ target_include_directories(konedrive_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${C
 target_link_libraries(konedrive_core PUBLIC
     Qt6::Core Qt6::Gui Qt6::DBus Qt6::Widgets
     KF6::I18n KF6::ConfigCore KF6::Notifications KF6::StatusNotifierItem KF6::KIOGui KF6::KIOFileWidgets KF6::WindowSystem KF6::JobWidgets)
+# This build's version and commit: the window's version line (DaemonController)
+# and KAboutData (main.cpp).
+target_compile_definitions(konedrive_core PUBLIC
+    KONEDRIVE_VERSION="${KONEDRIVE_VERSION}" KONEDRIVE_COMMIT="${KONEDRIVE_SHOWN_COMMIT}")
 # What the autostart entry runs: the installed program, as the launcher's entry does.
 target_compile_definitions(konedrive_core PRIVATE KONEDRIVE_INSTALLED_PROGRAM="${KDE_INSTALL_FULL_BINDIR}/konedrive")
 
@@ -102,7 +148,6 @@ qt_add_qml_module(konedrive_window
 target_link_libraries(konedrive_window PRIVATE Qt6::Qml Qt6::Quick)
 
 add_executable(konedrive main.cpp)
-target_compile_definitions(konedrive PRIVATE KONEDRIVE_VERSION="${KONEDRIVE_VERSION}")
 target_link_libraries(konedrive PRIVATE
     konedrive_core
     konedrive_windowplugin

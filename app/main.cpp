@@ -42,7 +42,7 @@ int main(int argc, char *argv[])
 
     KAboutData about(QStringLiteral("konedrive"),
                      i18nc("@title", "KOneDrive"),
-                     QStringLiteral(KONEDRIVE_VERSION), // Cargo's (CMakeLists.txt)
+                     QStringLiteral(KONEDRIVE_VERSION), // the shown version (CMakeLists.txt)
                      i18n("OneDrive account for KDE"),
                      KAboutLicense::GPL_V3);
     // The project is GPL-3.0-or-later; the constructor only takes the key.
