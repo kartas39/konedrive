@@ -44,7 +44,10 @@ DaemonController::DaemonController(const QDBusConnection &bus, QObject *parent)
     , m_bus(bus)
     , m_iface(new OrgKonedriveAccountsInterface(ServiceName, ObjectPath, bus, this))
     , m_watcher(new QDBusServiceWatcher(ServiceName, bus, QDBusServiceWatcher::WatchForOwnerChange, this))
+    , m_version(QStringLiteral(KONEDRIVE_VERSION))
+    , m_commit(QStringLiteral(KONEDRIVE_COMMIT))
 {
+    connect(this, &DaemonController::serviceAvailableChanged, this, &DaemonController::daemonBuildChanged);
     m_bus.connect(ServiceName,
                   ObjectPath,
                   QStringLiteral("org.freedesktop.DBus.Properties"),
@@ -53,6 +56,7 @@ DaemonController::DaemonController(const QDBusConnection &bus, QObject *parent)
                   SLOT(onPropertiesChanged(QString, QVariantMap, QStringList)));
     connect(m_watcher, &QDBusServiceWatcher::serviceOwnerChanged, this, [this](const QString &, const QString &, const QString &newOwner) {
         if (newOwner.isEmpty()) {
+            m_daemonBuildKnown = false;
             setServiceAvailable(false);
         } else {
             fetchAll();
@@ -75,10 +79,17 @@ void DaemonController::fetchAll()
         w->deleteLater();
         const QDBusPendingReply<QVariantMap> reply = *w;
         if (reply.isError()) {
+            m_daemonBuildKnown = false;
             setServiceAvailable(false);
             return;
         }
-        applyProperties(reply.value());
+        const QVariantMap properties = reply.value();
+        // A daemon from before Version and Commit has neither: another build.
+        m_daemonVersion = properties.value(QStringLiteral("Version")).toString();
+        m_daemonCommit = properties.value(QStringLiteral("Commit")).toString();
+        m_daemonBuildKnown = true;
+        applyProperties(properties);
+        Q_EMIT daemonBuildChanged();
         setServiceAvailable(true);
     });
 }
@@ -244,4 +255,23 @@ QString DaemonController::helperInstruction() const
         return i18n("The daemon cannot reach the helper.");
     }
     return QString();
+}
+
+QString DaemonController::versionLine() const
+{
+    return i18nc("@info version, short commit hash", "Version %1 · commit %2", m_version, shortCommit(m_commit));
+}
+
+QString DaemonController::daemonBuildMismatch() const
+{
+    if (!m_serviceAvailable || !m_daemonBuildKnown || (m_daemonVersion == m_version && m_daemonCommit == m_commit)) {
+        return QString();
+    }
+    if (m_daemonVersion.isEmpty()) {
+        return i18nc("@info", "Service: an older version — restart it to use this version");
+    }
+    return i18nc("@info the running service's version, short commit hash",
+                 "Service: %1 · commit %2 — restart it to use this version",
+                 m_daemonVersion,
+                 shortCommit(m_daemonCommit));
 }

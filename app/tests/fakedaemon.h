@@ -836,6 +836,8 @@ class FakeAccounts : public QDBusAbstractAdaptor
     Q_PROPERTY(QString LastError READ lastError)
     Q_PROPERTY(bool PauseOnMetered READ pauseOnMetered)
     Q_PROPERTY(QString OnBattery READ onBattery)
+    Q_PROPERTY(QString Version READ version)
+    Q_PROPERTY(QString Commit READ commit)
 
 public:
     explicit FakeAccounts(FakeDaemon *daemon);
@@ -846,6 +848,16 @@ public:
     QString lastError() const { return m_properties.value(QStringLiteral("LastError")).toString(); }
     bool pauseOnMetered() const { return m_properties.value(QStringLiteral("PauseOnMetered")).toBool(); }
     QString onBattery() const { return m_properties.value(QStringLiteral("OnBattery")).toString(); }
+    QString version() const { return m_properties.value(QStringLiteral("Version")).toString(); }
+    QString commit() const { return m_properties.value(QStringLiteral("Commit")).toString(); }
+
+    /// The daemon's build. Constant on the bus, as the daemon's are: a window
+    /// sees a new one only once the daemon comes back (stop, then start).
+    void setBuild(const QString &version, const QString &commit)
+    {
+        m_properties.insert(QStringLiteral("Version"), version);
+        m_properties.insert(QStringLiteral("Commit"), commit);
+    }
 
     void set(const QVariantMap &changes)
     {
@@ -897,6 +909,9 @@ private:
         {QStringLiteral("LastError"), QString()},
         {QStringLiteral("PauseOnMetered"), true},
         {QStringLiteral("OnBattery"), QStringLiteral("power-saver")},
+        // By default the same build as the window's.
+        {QStringLiteral("Version"), QStringLiteral(KONEDRIVE_VERSION)},
+        {QStringLiteral("Commit"), QStringLiteral(KONEDRIVE_COMMIT)},
     };
 };
 

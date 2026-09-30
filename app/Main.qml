@@ -221,6 +221,47 @@ Kirigami.ApplicationWindow {
         Item {
             Layout.fillHeight: true
         }
+
+        // This build, on every page, for bug reports: selectable, to copy.
+        footer: ColumnLayout {
+            spacing: 0
+
+            Kirigami.Separator {
+                Layout.fillWidth: true
+            }
+            QQC2.TextArea {
+                objectName: "versionLine"
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.smallSpacing
+                Layout.rightMargin: Kirigami.Units.smallSpacing
+                Layout.topMargin: Kirigami.Units.smallSpacing
+                text: Daemon.versionLine
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
+                background: null
+                padding: 0
+                font: Kirigami.Theme.smallFont
+                opacity: 0.7
+            }
+            // The running service is another build (installed, not restarted).
+            QQC2.TextArea {
+                objectName: "serviceVersionLine"
+                Layout.fillWidth: true
+                Layout.leftMargin: Kirigami.Units.smallSpacing
+                Layout.rightMargin: Kirigami.Units.smallSpacing
+                Layout.bottomMargin: Kirigami.Units.smallSpacing
+                visible: text.length > 0
+                text: Daemon.daemonBuildMismatch
+                readOnly: true
+                selectByMouse: true
+                wrapMode: TextEdit.Wrap
+                background: null
+                padding: 0
+                font: Kirigami.Theme.smallFont
+                color: Kirigami.Theme.neutralTextColor
+            }
+        }
     }
 
 

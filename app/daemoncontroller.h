@@ -48,6 +48,19 @@ class DaemonController : public QObject
     Q_PROPERTY(bool removeNeedsHelper READ removeNeedsHelper NOTIFY removeChanged)
     /// That refusal was PendingUploads: changes made here would be lost with the account.
     Q_PROPERTY(bool removeWaitsForUploads READ removeWaitsForUploads NOTIFY removeChanged)
+    /// This window's build (CMakeLists.txt, docs/releasing.md): X.Y.Z,
+    /// X.Y.Z-dev.N or X.Y.Z-dev, and the full hash of its commit or "unknown".
+    Q_PROPERTY(QString version READ version CONSTANT)
+    Q_PROPERTY(QString commit READ commit CONSTANT)
+    /// "Version 0.1.1-dev.57 · commit 5254595": the sidebar's line.
+    Q_PROPERTY(QString versionLine READ versionLine CONSTANT)
+    /// The running daemon's Version and Commit; empty before it has said, or
+    /// from a daemon too old to have them.
+    Q_PROPERTY(QString daemonVersion READ daemonVersion NOTIFY changed)
+    Q_PROPERTY(QString daemonCommit READ daemonCommit NOTIFY changed)
+    /// The daemon is on the bus and runs another build than this window's
+    /// (installed, not restarted): what the sidebar says about it, else empty.
+    Q_PROPERTY(QString daemonBuildMismatch READ daemonBuildMismatch NOTIFY daemonBuildChanged)
 
 public:
     static const QString ServiceName;
@@ -73,6 +86,15 @@ public:
     QString removeError() const { return m_removeError; }
     bool removeNeedsHelper() const { return m_removeNeedsHelper; }
     bool removeWaitsForUploads() const { return m_removeWaitsForUploads; }
+    QString version() const { return m_version; }
+    QString commit() const { return m_commit; }
+    QString versionLine() const;
+    QString daemonVersion() const { return m_daemonVersion; }
+    QString daemonCommit() const { return m_daemonCommit; }
+    QString daemonBuildMismatch() const;
+
+    /// A commit as people read it: its first 7 characters.
+    static QString shortCommit(const QString &commit) { return commit.left(7); }
 
     /// Re-reads every Accounts property (GetAll).
     Q_INVOKABLE void retry();
@@ -95,6 +117,7 @@ Q_SIGNALS:
     void changed();
     void actionErrorChanged();
     void removeChanged();
+    void daemonBuildChanged();
 
 private Q_SLOTS:
     void onPropertiesChanged(const QString &interfaceName, const QVariantMap &changed, const QStringList &invalidated);
@@ -122,4 +145,10 @@ private:
     QString m_removeError;
     bool m_removeNeedsHelper = false;
     bool m_removeWaitsForUploads = false;
+    const QString m_version;
+    const QString m_commit;
+    QString m_daemonVersion;
+    QString m_daemonCommit;
+    /// Version and Commit have been read from the running daemon (present or not).
+    bool m_daemonBuildKnown = false;
 };

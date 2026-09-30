@@ -107,6 +107,10 @@ target_include_directories(konedrive_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${C
 target_link_libraries(konedrive_core PUBLIC
     Qt6::Core Qt6::Gui Qt6::DBus Qt6::Widgets
     KF6::I18n KF6::ConfigCore KF6::Notifications KF6::StatusNotifierItem KF6::KIOGui KF6::KIOFileWidgets KF6::WindowSystem KF6::JobWidgets)
+# This build's version and commit: the window's version line (DaemonController)
+# and KAboutData (main.cpp).
+target_compile_definitions(konedrive_core PUBLIC
+    KONEDRIVE_VERSION="${KONEDRIVE_VERSION}" KONEDRIVE_COMMIT="${KONEDRIVE_SHOWN_COMMIT}")
 # What the autostart entry runs: the installed program, as the launcher's entry does.
 target_compile_definitions(konedrive_core PRIVATE KONEDRIVE_INSTALLED_PROGRAM="${KDE_INSTALL_FULL_BINDIR}/konedrive")
 
@@ -142,8 +146,6 @@ qt_add_qml_module(konedrive_window
 target_link_libraries(konedrive_window PRIVATE Qt6::Qml Qt6::Quick)
 
 add_executable(konedrive main.cpp)
-target_compile_definitions(konedrive PRIVATE
-    KONEDRIVE_VERSION="${KONEDRIVE_VERSION}" KONEDRIVE_COMMIT="${KONEDRIVE_SHOWN_COMMIT}")
 target_link_libraries(konedrive PRIVATE
     konedrive_core
     konedrive_windowplugin

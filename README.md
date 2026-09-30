@@ -104,15 +104,14 @@ is missing):
 ```
 sudo dnf install rpm-build
 sudo dnf builddep packaging/rpm/konedrive.spec
-git fetch --tags
 scripts/build-rpm.sh
 ```
 
 `scripts/build-rpm.sh` packages the committed tree (`HEAD`: uncommitted changes are left out),
-with its Rust crates vendored so that the build itself is offline. It versions the build after the
-latest release, below the next one — for example `0.1.2~dev.20260929.fad78d9` after the release
-0.1.1 — so the next release upgrades it (`docs/releasing.md`); that is what `git fetch --tags` is
-for. Everything it makes is under `target/rpm/`, and it lists the RPMs at the end. Then, from the
+with its Rust crates vendored so that the build itself is offline. The version is the next
+release's, from `Cargo.toml`, with the number of commits in `HEAD`'s history — for example
+`0.1.1~dev.57` — so a later build upgrades an earlier one, and the release 0.1.1 upgrades them all
+(`docs/releasing.md`). Everything it makes is under `target/rpm/`, and it lists the RPMs at the end. Then, from the
 repository:
 
 ```
@@ -252,6 +251,9 @@ removes it all again, apart from the helper.
   notifications and download progress name the account. "Start at login" is on by default after
   the first run. Each account's folder also gets an entry named `OneDrive — <name>` in Dolphin's
   Places panel and in file dialogs ("Show in Places" in Settings, on by default).
+  The foot of the sidebar names the build, `Version 0.1.1-dev.57 · commit 5254595` (selectable,
+  for a bug report), and adds a line when the running service is another build — installed but
+  not restarted; `konedrivectl --version` prints the same for itself and the daemon.
 
 - **The helper.** A small privileged service that makes a placeholder download the moment a
   program opens it, instead of that program reading zeros. The `konedrive` package installs and

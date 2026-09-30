@@ -3298,7 +3298,10 @@ The RPM packages, `konedrive` and `konedrive-kde`, from `packaging/rpm/konedrive
   expects is missing; `cargo vendor --locked` stops it if the lock file no longer fits. The
   window's CMake reads the version from `Cargo.toml` with a regular expression, and stops
   configuring if it finds none. (5) The user agent sent to Microsoft Graph carries Cargo's own
-  version (`X.Y.Z` in a plain build, without `-dev`).
+  version (`X.Y.Z` in a plain build, without `-dev`). (6) The window compares the daemon's
+  `Version` and `Commit` with its own exactly, as it reads them each time the daemon appears on the
+  bus (both are constant): two builds from the same commit and version look the same, and a
+  daemon from before the properties counts as another build ("Service: an older version").
 - **R9. A merge into `main` can go without a release of its own.** LIMIT · reasoned · open. The
   release workflow runs one at a time (`concurrency`), and GitHub keeps one waiting run per group:
   a third push while one run builds and one waits cancels the waiting one. Nothing is lost — the
