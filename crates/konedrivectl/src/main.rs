@@ -21,7 +21,8 @@ use zbus::zvariant::OwnedObjectPath;
                   `status` and `sync status` show every account when none is named. The commands that take \
                   a path (`sync hydrate`, `dehydrate`, `state`, `pin`, `unpin`, `free`) act on the account \
                   whose folder holds the path; they, `account list`, `account add`, `account rename`, \
-                  `account remove` and `set-client-id` refuse --account and ignore KONEDRIVE_ACCOUNT."
+                  `account remove`, `set-client-id` and `settings` refuse --account and ignore \
+                  KONEDRIVE_ACCOUNT."
 )]
 struct Cli {
     /// The account to act on: its id, its label or its email, as `account list` shows them
@@ -45,6 +46,12 @@ enum Cmd {
     ///
     /// Refused while any account is signed in or signing in.
     SetClientId { id: String },
+    /// Show or change the settings every account shares: what they do on a metered
+    /// connection and on battery
+    Settings {
+        #[command(subcommand)]
+        command: SettingsCmd,
+    },
     /// Sign the account in with its Microsoft account, in the browser
     ///
     /// With no account at all, first adds one called Personal. The sign-in page's address is
@@ -119,6 +126,22 @@ enum AccountCmd {
         /// are not uploaded
         #[arg(long, requires = "mode")]
         force: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SettingsCmd {
+    /// Show or change what every account does on a metered connection: pause, or sync as
+    /// usual
+    OnMetered {
+        #[arg(value_parser = ["pause", "sync"])]
+        choice: Option<String>,
+    },
+    /// Show or change what every account does on battery: sync as usual, pause in
+    /// power-saver mode, or pause
+    OnBattery {
+        #[arg(value_parser = ["sync", "power-saver", "pause"])]
+        choice: Option<String>,
     },
 }
 
@@ -201,17 +224,6 @@ enum SyncCmd {
     Thumbnails {
         #[arg(value_parser = ["on", "off"])]
         state: Option<String>,
-    },
-    /// Show or change what the account does on a metered connection: pause, or sync as usual
-    OnMetered {
-        #[arg(value_parser = ["pause", "sync"])]
-        choice: Option<String>,
-    },
-    /// Show or change what the account does on battery: sync as usual, pause in power-saver
-    /// mode, or pause
-    OnBattery {
-        #[arg(value_parser = ["sync", "power-saver", "pause"])]
-        choice: Option<String>,
     },
     /// Show or change the names of local files that are never uploaded (shell
     /// globs, matched against a name)
@@ -319,6 +331,7 @@ async fn main() -> ExitCode {
 fn takes_no_account(command: &Cmd) -> Option<&'static str> {
     match command {
         Cmd::SetClientId { .. } => Some("the client ID is one for every account"),
+        Cmd::Settings { .. } => Some("the settings are one for every account"),
         Cmd::Account { command: AccountCmd::List } => Some("`account list` shows every account"),
         Cmd::Account { command: AccountCmd::Add { .. } } => Some("`account add` adds a new account"),
         Cmd::Account { command: AccountCmd::Rename { .. } | AccountCmd::Remove { .. } } => {
@@ -346,6 +359,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     match cli.command {
         Cmd::Account { command } => account(&daemon, option, command).await,
         Cmd::SetClientId { id } => set_client_id(&daemon, &id).await,
+        Cmd::Settings { command } => settings(&daemon, command).await,
         Cmd::Login => login(&daemon, option).await,
         Cmd::Logout => {
             let chosen = daemon.chosen(option).await?.account;
@@ -675,6 +689,25 @@ async fn set_client_id(daemon: &Daemon, id: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `settings`: the manager's `PauseOnMetered` and `OnBattery`, one pair for every account.
+async fn settings(daemon: &Daemon, command: SettingsCmd) -> anyhow::Result<()> {
+    let manager = &daemon.manager;
+    match command {
+        SettingsCmd::OnMetered { choice: None } => println!("{}", konedrivectl::on_metered_text(manager.pause_on_metered().await?)),
+        SettingsCmd::OnMetered { choice: Some(choice) } => {
+            let pause = choice == "pause";
+            manager.set_pause_on_metered(pause).await.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::Settings, &e)))?;
+            println!("{}", konedrivectl::on_metered_text(pause));
+        }
+        SettingsCmd::OnBattery { choice: None } => println!("{}", konedrivectl::on_battery_text(&manager.on_battery().await?)),
+        SettingsCmd::OnBattery { choice: Some(choice) } => {
+            manager.set_on_battery(&choice).await.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::Settings, &e)))?;
+            println!("{}", konedrivectl::on_battery_text(&choice));
+        }
+    }
+    Ok(())
+}
+
 async fn status(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()> {
     let client_id = daemon.manager.client_id().await?;
     let trouble = daemon.manager.last_error().await?;
@@ -975,21 +1008,6 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<
                 let on = state == "on";
                 explained(daemon, chosen, proxy, SyncAction::Settings, proxy.folder.set_thumbnails(on).await).await?;
                 println!("{tag}{}", konedrivectl::thumbnails_text(on));
-            }
-        },
-        SyncCmd::OnMetered { choice } => match choice.as_deref() {
-            None => println!("{tag}{}", konedrivectl::on_metered_text(proxy.folder.pause_on_metered().await?)),
-            Some(choice) => {
-                let pause = choice == "pause";
-                explained(daemon, chosen, proxy, SyncAction::Settings, proxy.folder.set_pause_on_metered(pause).await).await?;
-                println!("{tag}{}", konedrivectl::on_metered_text(pause));
-            }
-        },
-        SyncCmd::OnBattery { choice } => match choice.as_deref() {
-            None => println!("{tag}{}", konedrivectl::on_battery_text(&proxy.folder.on_battery().await?)),
-            Some(choice) => {
-                explained(daemon, chosen, proxy, SyncAction::Settings, proxy.folder.set_on_battery(choice).await).await?;
-                println!("{tag}{}", konedrivectl::on_battery_text(choice));
             }
         },
         SyncCmd::Ignore { action } => {

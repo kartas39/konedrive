@@ -2438,17 +2438,19 @@ application must never read zeros where real content should be.
   (`sync/conditions.rs`; issue #57) — the automatic hold reads NetworkManager's `Metered`, UPower's
   `OnBattery` and the power profile's `ActiveProfile` on the system bus. A source that is missing
   or cannot be read counts as "no reason to hold back" (not metered, on mains, another profile),
-  logged once at `info`: on a machine without NetworkManager an account never holds back on a
-  metered connection, and without UPower never for the battery. A source that starts after the
-  daemon is not read until its first `PropertiesChanged`; the daemon's next start reads it. The
-  older `net.hadess.PowerProfiles` name is chosen only when it is present at the daemon's start
-  and the newer one is not. FRAGILE · measured with fakes on a private bus
+  logged once at `info`: on a machine without NetworkManager no account holds back on a metered
+  connection, and without UPower none for the battery, whatever the app's `pause_on_metered` and
+  `on_battery` say (issue #95: one pair for the whole app, no longer per account). A source that
+  starts after the daemon is not read until its first `PropertiesChanged`; the daemon's next start
+  reads it. The older `net.hadess.PowerProfiles` name is chosen only when it is present at the
+  daemon's start and the newer one is not. FRAGILE · measured with fakes on a private bus
   (`sync::conditions::tests::*`) · open.
 - **F176. NetworkManager's guess of a metered connection is trusted as it is**
   (`sync/conditions.rs`; issue #57) — `Metered` = 3 ("guessed yes", as NetworkManager guesses
-  for a phone's hotspot it recognises) holds the account back like 1 ("yes"), and 4 ("guessed
-  no") does not: a capped connection NetworkManager does not recognise is not metered for
-  konedrive until the user marks it so in the connection's settings. Reasoned · open.
+  for a phone's hotspot it recognises) holds every account back like 1 ("yes") while the app's
+  `pause_on_metered` is on, and 4 ("guessed no") does not: a capped connection NetworkManager does
+  not recognise is not metered for konedrive until the user marks it so in the connection's
+  settings. Reasoned · open.
 - **F177. A stop waits 10 s at most for the requests in flight** (`stop.rs`, `main.rs`,
   `sync/upload` `OutboxWorker::close`; write design §6.1; issue #84) — on SIGTERM or SIGINT the
   outbox workers take nothing more and the daemon waits for the rows in flight, then exits with
@@ -2465,6 +2467,20 @@ application must never read zeros where real content should be.
   systemd charges to the daemon. The call is advisory — the kernel may keep pages, and pages another
   process holds stay — and an upload stopped part way leaves what it read. Downloads are left
   alone. Not measured on the user's machine. Open.
+- **F179. The move of the hold settings to the whole app takes the strictest value**
+  (`migrate.rs` `move_hold_settings`, called from `accounts::start_on`; write design §11; issue
+  #95) — issue #57 kept `pause_on_metered` and `on_battery` per account; they are now one pair for
+  the whole app, and the first start that finds either key in an account's section moves it to the
+  top level once and writes `config.toml` back without the per-account keys. Where accounts
+  disagreed, the strictest wins (`pause` over `power-saver` over `sync`; metered stays on unless
+  every account had it off and none lacked the key): an account that synced on battery while
+  another paused now pauses too, until the user changes the one setting (Settings page,
+  `konedrivectl settings`). An account's `on_battery` the daemon does not know is moved as
+  `power-saver`, its default. The move is logged at `info` with the result. When its write fails,
+  the keys stay in the accounts, and the next `SetPauseOnMetered` or `SetOnBattery` moves them in
+  its own write, so a later start cannot undo the user's choice. SHORTCUT · measured by unit tests
+  (`migrate::tests::the_accounts_hold_settings_move_to_the_global_keys_once`,
+  `migrate::tests::a_global_set_takes_the_keys_left_in_the_accounts`) · open.
 ---
 
 ## 5. Provisional numbers

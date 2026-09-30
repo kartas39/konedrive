@@ -79,11 +79,8 @@ class SyncController : public QObject
     /// Why the account holds back by itself (HeldBack): "metered", "on-battery",
     /// "power-saver", or empty. Never the user's pause, which `paused` shows.
     Q_PROPERTY(QString heldBack READ heldBack NOTIFY syncChanged)
-    /// The account's sync settings (Thumbnails, PauseOnMetered, OnBattery: "sync",
-    /// "power-saver" or "pause").
+    /// The account's own sync setting (Thumbnails).
     Q_PROPERTY(bool thumbnails READ thumbnails NOTIFY syncChanged)
-    Q_PROPERTY(bool pauseOnMetered READ pauseOnMetered NOTIFY syncChanged)
-    Q_PROPERTY(QString onBattery READ onBattery NOTIFY syncChanged)
     /// What a copy of a file changed on both sides is named after: "Report-<machine>.docx".
     Q_PROPERTY(QString machineName READ machineName NOTIFY syncChanged)
     /// Uploads under way (Transfers.Uploads).
@@ -197,8 +194,6 @@ public:
     QStringList ignorePatterns() const { return m_ignorePatterns; }
     QString heldBack() const { return m_heldBack; }
     bool thumbnails() const { return m_thumbnails; }
-    bool pauseOnMetered() const { return m_pauseOnMetered; }
-    QString onBattery() const { return m_onBattery; }
     QString machineName() const { return m_machineName; }
     TransferModel *uploads() const { return m_uploads; }
     qulonglong downloadSpeed() const { return m_downloadSpeed; }
@@ -272,10 +267,8 @@ public:
     Q_INVOKABLE void resume();
     /// SyncAnyway: the automatic hold is lifted until a source or its setting changes.
     Q_INVOKABLE void syncAnyway();
-    /// SetThumbnails, SetPauseOnMetered, SetOnBattery; a refusal lands in actionError.
+    /// SetThumbnails; a refusal lands in actionError.
     Q_INVOKABLE void setThumbnails(bool on);
-    Q_INVOKABLE void setPauseOnMetered(bool on);
-    Q_INVOKABLE void setOnBattery(const QString &choice);
     /// SetIgnorePatterns; a refusal lands in actionError.
     Q_INVOKABLE void setIgnorePatterns(const QStringList &patterns);
     /// The list with `pattern` (trimmed) added, if it is not there yet.
@@ -377,8 +370,6 @@ private:
     QStringList m_ignorePatterns;
     QString m_heldBack;
     bool m_thumbnails = true;
-    bool m_pauseOnMetered = true;
-    QString m_onBattery = QStringLiteral("power-saver");
     QString m_machineName;
     TransferModel *m_uploads;
     /// Adds one sample to each history (every second).

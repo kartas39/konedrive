@@ -19,13 +19,14 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 use zbus::{fdo, interface, Connection, DBusError};
 
 use crate::account::{AccountService, Siblings};
-use crate::config::{is_valid_client_id, AccountConfig, AccountPaths, ConfigError, ConfigStore, Paths};
+use crate::config::{is_valid_client_id, AccountConfig, AccountPaths, ConfigError, ConfigStore, OnBattery, Paths};
 use crate::oauth::Endpoints;
 use crate::secret::{AccountSecrets, Slot, Wallet};
 use crate::state::SignInState;
 use crate::sync::baloo::Baloo;
 use crate::sync::dbus::{to_fault, SyncFault};
 use crate::sync::hub::HelperHub;
+use crate::sync::running::HoldSettings;
 use crate::sync::{Persist, SyncError, SyncPaths, SyncService};
 
 /// How long the migration waits for the wallet to say whether version 1's refresh token is
@@ -95,12 +96,15 @@ pub struct AccountManager {
     hub: Arc<HelperHub>,
     siblings: Arc<Siblings>,
     accounts: Mutex<Vec<Arc<Account>>>,
-    /// `Add`, `Remove` and `SetClientId`, one at a time.
+    /// `Add`, `Remove`, `SetClientId`, `SetPauseOnMetered` and `SetOnBattery`, one at a
+    /// time.
     changing: tokio::sync::Mutex<()>,
 }
 
 impl AccountManager {
+    /// The hub takes the hold's settings from `config` now, before any account joins it.
     pub fn new(config: Arc<ConfigStore>, paths: Paths, options: Options, hub: Arc<HelperHub>) -> Arc<Self> {
+        hub.set_hold_settings(HoldSettings::of(&config.snapshot()));
         Arc::new(Self {
             config,
             paths,
@@ -325,6 +329,41 @@ impl AccountManager {
         Ok(())
     }
 
+    /// The hold's settings every account runs on (`Accounts.PauseOnMetered`, `OnBattery`).
+    pub fn hold_settings(&self) -> HoldSettings {
+        self.hub.hold_settings()
+    }
+
+    /// `Accounts.SetPauseOnMetered`: written to `config.toml`, then taken by every account
+    /// at once (issue #95).
+    pub async fn set_pause_on_metered(&self, on: bool) -> Result<(), ManagerError> {
+        self.change_hold_settings(|config| config.set_pause_on_metered(on)).await
+    }
+
+    /// `Accounts.SetOnBattery`: `sync`, `power-saver` or `pause`, refused `InvalidArgs`
+    /// otherwise; written to `config.toml`, then taken by every account at once.
+    pub async fn set_on_battery(&self, choice: &str) -> Result<(), ManagerError> {
+        let Some(choice) = OnBattery::parse(choice) else {
+            return Err(ManagerError::InvalidArgs(format!("{choice:?}: not sync, power-saver or pause")));
+        };
+        self.change_hold_settings(|config| config.set_on_battery(choice)).await
+    }
+
+    /// One change of the hold's settings: one at a time, so that the file and what every
+    /// account runs on end up the same.
+    async fn change_hold_settings(&self, write: impl FnOnce(&ConfigStore) -> Result<(), ConfigError>) -> Result<(), ManagerError> {
+        let _changing = self.changing.lock().await;
+        write(&self.config)?;
+        let hold = HoldSettings::of(&self.config.snapshot());
+        tracing::info!(
+            "every account now {} on a metered connection, and on battery: {}",
+            if hold.pause_on_metered { "pauses" } else { "syncs" },
+            hold.on_battery.as_str()
+        );
+        self.hub.set_hold_settings(hold);
+        Ok(())
+    }
+
     /// The account whose folder holds `path` (design §2.5), for `Files`: the one whose
     /// folder is a component prefix of it, taken as given, or else with its directory part
     /// resolved — a folder reached through a link (`/home` → `/var/home`). The file itself
@@ -491,6 +530,21 @@ impl Accounts {
         Ok(())
     }
 
+    /// Whether every account holds back on a metered connection; written to `config.toml`.
+    async fn set_pause_on_metered(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), ManagerFault> {
+        self.manager.set_pause_on_metered(on).await?;
+        self.pause_on_metered_changed(&emitter).await?;
+        Ok(())
+    }
+
+    /// What every account does on battery: `sync`, `power-saver` or `pause`; refused
+    /// `InvalidArgs` otherwise. Written to `config.toml`.
+    async fn set_on_battery(&self, choice: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<(), ManagerFault> {
+        self.manager.set_on_battery(choice).await?;
+        self.on_battery_changed(&emitter).await?;
+        Ok(())
+    }
+
     #[zbus(property)]
     async fn list(&self) -> Vec<OwnedObjectPath> {
         self.manager.paths()
@@ -499,6 +553,16 @@ impl Accounts {
     #[zbus(property)]
     async fn client_id(&self) -> String {
         self.manager.config.client_id()
+    }
+
+    #[zbus(property)]
+    async fn pause_on_metered(&self) -> bool {
+        self.manager.hold_settings().pause_on_metered
+    }
+
+    #[zbus(property)]
+    async fn on_battery(&self) -> String {
+        self.manager.hold_settings().on_battery.as_str().to_owned()
     }
 
     #[zbus(property)]
@@ -652,6 +716,7 @@ pub async fn start_on(
     };
     let config = Arc::new(ConfigStore::open(&paths, legacy_token).await);
     crate::migrate::finish_file_moves(&config, &paths);
+    crate::migrate::move_hold_settings(&config);
     let manager = AccountManager::new(config, paths, options, hub);
     manager.load().await;
     serve(&connection, &manager).await?;

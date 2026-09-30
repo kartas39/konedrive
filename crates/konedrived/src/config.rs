@@ -110,6 +110,16 @@ pub struct Config {
     /// release removes the gate in a commit of its own (limitations log F60).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub write_test_drive_ids: Vec<String>,
+    /// Whether every account holds its background work back on a metered connection
+    /// (issues #57, #95, `docs/design/writes.md` §11); `None` for yes. One setting for the
+    /// machine, not per account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pause_on_metered: Option<bool>,
+    /// What every account does on battery (issues #57, #95): `sync`, `power-saver` or
+    /// `pause`; `None` for `power-saver`. Kept as written, so that a value this version does
+    /// not know cannot make the whole file unreadable ([`Config::on_battery`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_battery: Option<String>,
     /// Every account, in the order it was added.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub accounts: Vec<AccountConfig>,
@@ -166,12 +176,27 @@ impl Config {
     }
 }
 
+impl Config {
+    /// `pause_on_metered`, absent meaning on.
+    pub fn pauses_on_metered(&self) -> bool {
+        self.pause_on_metered.unwrap_or(true)
+    }
+
+    /// `on_battery`, absent meaning `power-saver`; any other value is `power-saver` too,
+    /// with a warning in the log.
+    pub fn on_battery(&self) -> OnBattery {
+        OnBattery::read(self.on_battery.as_deref())
+    }
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             config_version: CONFIG_VERSION,
             client_id: String::new(),
             write_test_drive_ids: Vec::new(),
+            pause_on_metered: None,
+            on_battery: None,
             accounts: Vec::new(),
             transfers: None,
         }
@@ -222,15 +247,15 @@ pub struct AccountConfig {
     /// (issue #80); `None` for yes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnails: Option<bool>,
-    /// Whether the account holds its background work back on a metered connection
-    /// (issue #57, `docs/design/writes.md` §11); `None` for yes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pause_on_metered: Option<bool>,
-    /// What the account does on battery (issue #57): `sync`, `power-saver` or `pause`;
-    /// `None` for `power-saver`. Kept as written, so that a value this version does not know
-    /// cannot make the whole file unreadable ([`AccountConfig::on_battery`]).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub on_battery: Option<String>,
+    /// `pause_on_metered` as an account had it before it became one setting for the whole
+    /// app (issue #95): read only to be moved to [`Config::pause_on_metered`]
+    /// ([`crate::migrate::move_hold_settings`]), and gone from the file once moved.
+    #[serde(default, rename = "pause_on_metered", skip_serializing_if = "Option::is_none")]
+    pub old_pause_on_metered: Option<bool>,
+    /// `on_battery` as an account had it before issue #95; see
+    /// [`old_pause_on_metered`](Self::old_pause_on_metered).
+    #[serde(default, rename = "on_battery", skip_serializing_if = "Option::is_none")]
+    pub old_on_battery: Option<String>,
 }
 
 impl AccountConfig {
@@ -239,25 +264,9 @@ impl AccountConfig {
         self.thumbnails.unwrap_or(true)
     }
 
-    /// `pause_on_metered`, absent meaning on.
-    pub fn pauses_on_metered(&self) -> bool {
-        self.pause_on_metered.unwrap_or(true)
-    }
-
-    /// `on_battery`, absent meaning `power-saver`; any other value is `power-saver` too,
-    /// with a warning in the log.
-    pub fn on_battery(&self) -> OnBattery {
-        match self.on_battery.as_deref() {
-            None => OnBattery::default(),
-            Some(text) => OnBattery::parse(text).unwrap_or_else(|| {
-                tracing::warn!("on_battery = {text:?} in config.toml is not sync, power-saver or pause; using power-saver");
-                OnBattery::default()
-            }),
-        }
-    }
 }
 
-/// What an account does on battery (issue #57, `docs/design/writes.md` §11).
+/// What every account does on battery (issues #57, #95, `docs/design/writes.md` §11).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum OnBattery {
     /// The battery changes nothing.
@@ -276,6 +285,27 @@ impl OnBattery {
             "power-saver" => Some(Self::PowerSaver),
             "pause" => Some(Self::Pause),
             _ => None,
+        }
+    }
+
+    /// `on_battery` as `config.toml` has it: absent is `power-saver`, and so is any value
+    /// this version does not know, with a warning in the log.
+    pub fn read(text: Option<&str>) -> Self {
+        match text {
+            None => Self::default(),
+            Some(text) => Self::parse(text).unwrap_or_else(|| {
+                tracing::warn!("on_battery = {text:?} in config.toml is not sync, power-saver or pause; using power-saver");
+                Self::default()
+            }),
+        }
+    }
+
+    /// How strict the choice is: `pause` over `power-saver` over `sync`.
+    pub fn strictness(self) -> u8 {
+        match self {
+            Self::Sync => 0,
+            Self::PowerSaver => 1,
+            Self::Pause => 2,
         }
     }
 
@@ -437,6 +467,35 @@ pub fn check_label(label: &str, config: &Config, except: Option<&str>) -> Result
 }
 
 impl Config {
+    /// Issue #95: the accounts' `pause_on_metered` and `on_battery` of before, folded into
+    /// the global keys and taken out of the accounts. The strictest value wins, over every
+    /// account and a global key already there — an account without the key counting as its
+    /// default: `on_battery` takes `pause` over `power-saver` over `sync` (a value it does not
+    /// know reads `power-saver`); `pause_on_metered` is off only when every account says off.
+    /// `None`, changing nothing, when no account has either key.
+    pub fn take_old_hold_settings(&mut self) -> Option<(bool, OnBattery)> {
+        if !self.accounts.iter().any(|a| a.old_pause_on_metered.is_some() || a.old_on_battery.is_some()) {
+            return None;
+        }
+        let pause_on_metered =
+            self.accounts.iter().map(|a| a.old_pause_on_metered.unwrap_or(true)).chain(self.pause_on_metered).any(|on| on);
+        let on_battery = self
+            .accounts
+            .iter()
+            .map(|a| a.old_on_battery.as_deref())
+            .chain(self.on_battery.as_deref().map(Some))
+            .map(OnBattery::read)
+            .max_by_key(|choice| choice.strictness())
+            .unwrap_or_default();
+        for account in &mut self.accounts {
+            account.old_pause_on_metered = None;
+            account.old_on_battery = None;
+        }
+        self.pause_on_metered = Some(pause_on_metered);
+        self.on_battery = Some(on_battery.as_str().to_owned());
+        Some((pause_on_metered, on_battery))
+    }
+
     pub fn account(&self, id: &str) -> Option<&AccountConfig> {
         self.accounts.iter().find(|a| a.id == id)
     }
@@ -722,6 +781,26 @@ impl ConfigStore {
         })
     }
 
+    /// `Accounts.SetPauseOnMetered`'s write: one setting for every account.
+    /// Keys of an account still left (a move whose write failed) are moved first, in the
+    /// same write, so that a later start's move cannot undo the user's choice.
+    pub fn set_pause_on_metered(&self, on: bool) -> Result<(), ConfigError> {
+        self.update(|config| {
+            config.take_old_hold_settings();
+            config.pause_on_metered = Some(on);
+            Ok(())
+        })
+    }
+
+    /// `Accounts.SetOnBattery`'s write: one setting for every account.
+    pub fn set_on_battery(&self, choice: OnBattery) -> Result<(), ConfigError> {
+        self.update(|config| {
+            config.take_old_hold_settings();
+            config.on_battery = Some(choice.as_str().to_owned());
+            Ok(())
+        })
+    }
+
     /// `Accounts.Add`: a read-only account with no folder and no drive yet, after every
     /// other, under a fresh id.
     pub fn add_account(&self, label: &str) -> Result<AccountConfig, ConfigError> {
@@ -740,8 +819,8 @@ impl ConfigStore {
                 ignore: None,
                 machine_name: String::new(),
                 thumbnails: None,
-                pause_on_metered: None,
-                on_battery: None,
+                old_pause_on_metered: None,
+                old_on_battery: None,
             };
             config.accounts.push(account.clone());
             Ok(account)
@@ -909,8 +988,8 @@ mod tests {
             ignore: None,
             machine_name: String::new(),
             thumbnails: None,
-            pause_on_metered: None,
-            on_battery: None,
+            old_pause_on_metered: None,
+            old_on_battery: None,
         }
     }
 
@@ -998,6 +1077,33 @@ mod tests {
         assert_eq!(read("[transfers]\nlarge = 0"), 1);
         assert_eq!(read("[transfers]\nmax = 8\nlarge = 20"), 8);
         assert_eq!(read("[transfers]\nmax = 2"), 2, "the default never above the ceiling");
+    }
+
+    /// Issue #95: the hold's two settings are global keys, absent until set and read as
+    /// their defaults then (an unknown `on_battery` as `power-saver`); each setter writes its
+    /// own key at the top of the file and leaves the accounts alone.
+    #[tokio::test]
+    async fn the_hold_settings_are_global_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dir(dir.path());
+        let store = open(&paths).await;
+        let id = store.add_account("Personal").unwrap().id;
+        let config = store.snapshot();
+        assert_eq!((config.pause_on_metered.clone(), config.on_battery.clone()), (None, None));
+        assert_eq!((config.pauses_on_metered(), config.on_battery()), (true, OnBattery::PowerSaver));
+
+        store.set_pause_on_metered(false).unwrap();
+        store.set_on_battery(OnBattery::Pause).unwrap();
+        let text = std::fs::read_to_string(&paths.config_file).unwrap();
+        let top = text.split("[[accounts]]").next().unwrap();
+        assert!(top.contains("pause_on_metered = false") && top.contains("on_battery = \"pause\""), "{text}");
+        let on_disk: Config = toml::from_str(&text).unwrap();
+        assert_eq!((on_disk.pauses_on_metered(), on_disk.on_battery()), (false, OnBattery::Pause));
+        let account = on_disk.account(&id).unwrap();
+        assert_eq!((account.old_pause_on_metered, account.old_on_battery.clone()), (None, None));
+
+        std::fs::write(&paths.config_file, text.replace("\"pause\"", "\"whenever\"")).unwrap();
+        assert_eq!(store.current().unwrap().on_battery(), OnBattery::PowerSaver, "an unknown value falls back");
     }
 
     /// A label may contain "@": an account is commonly named by its email.

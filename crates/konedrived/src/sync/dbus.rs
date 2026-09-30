@@ -169,20 +169,7 @@ impl Folder {
         self.thumbnails_changed(&emitter).await.map_err(SyncFault::ZBus)
     }
 
-    /// Whether the account holds back on a metered connection; written to `config.toml`.
-    async fn set_pause_on_metered(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
-        self.service.change_run_settings(move |s| s.pause_on_metered = on).await.map_err(to_fault)?;
-        self.pause_on_metered_changed(&emitter).await.map_err(SyncFault::ZBus)
-    }
-
-    /// `sync`, `power-saver` or `pause`; refused `InvalidArgs` otherwise. Written to
-    /// `config.toml`.
-    async fn set_on_battery(&self, choice: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
-        self.service.set_on_battery(choice).await.map_err(to_fault)?;
-        self.on_battery_changed(&emitter).await.map_err(SyncFault::ZBus)
-    }
-
-    /// Lifts the automatic hold now, until a source or the account's `PauseOnMetered` /
+    /// Lifts the automatic hold now, until a source or the global `Accounts.PauseOnMetered` /
     /// `OnBattery` changes.
     async fn sync_anyway(&self) -> Result<()> {
         self.service.sync_anyway().map_err(to_fault)
@@ -198,16 +185,6 @@ impl Folder {
     #[zbus(property)]
     async fn thumbnails(&self) -> bool {
         self.service.run_settings().thumbnails
-    }
-
-    #[zbus(property)]
-    async fn pause_on_metered(&self) -> bool {
-        self.service.run_settings().pause_on_metered
-    }
-
-    #[zbus(property)]
-    async fn on_battery(&self) -> String {
-        self.service.run_settings().on_battery.as_str().to_owned()
     }
 
     #[zbus(property)]

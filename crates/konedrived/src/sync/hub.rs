@@ -72,6 +72,9 @@ pub struct HelperHub {
     /// What the machine's sources say (`sync::conditions`): every account is told, and one
     /// that joins later is told what they say then.
     conditions: Mutex<super::running::Conditions>,
+    /// The hold's settings, one pair for every account (issue #95): every account is told,
+    /// and one that joins later is told what they are then.
+    hold: Mutex<super::running::HoldSettings>,
 }
 
 impl HelperHub {
@@ -94,6 +97,7 @@ impl HelperHub {
             registering: tokio::sync::Mutex::new(()),
             moved_out: Mutex::new(Vec::new()),
             conditions: Mutex::new(super::running::Conditions::default()),
+            hold: Mutex::new(super::running::HoldSettings::default()),
         })
     }
 
@@ -241,7 +245,32 @@ impl HelperHub {
         accounts.push(Arc::downgrade(&account));
         // Under the accounts' lock, as `set_conditions` tells them: none is missed.
         account.set_conditions(*self.conditions.lock().unwrap());
+        account.set_hold_settings(*self.hold.lock().unwrap());
         account
+    }
+
+    /// The hold's settings every account runs on now.
+    pub fn hold_settings(&self) -> super::running::HoldSettings {
+        *self.hold.lock().unwrap()
+    }
+
+    /// The hold's settings, one pair for every account (`Accounts.SetPauseOnMetered`,
+    /// `SetOnBattery`): every account works its hold out again, and a change ends its
+    /// `SyncAnyway`.
+    pub fn set_hold_settings(&self, hold: super::running::HoldSettings) {
+        let accounts = {
+            let _accounts = self.accounts.lock().unwrap();
+            let mut kept = self.hold.lock().unwrap();
+            if *kept == hold {
+                return;
+            }
+            *kept = hold;
+            drop(kept);
+            _accounts.iter().filter_map(Weak::upgrade).collect::<Vec<_>>()
+        };
+        for account in accounts {
+            account.set_hold_settings(hold);
+        }
     }
 
     /// What the machine's sources say now: every account works its hold out again.

@@ -255,6 +255,62 @@ async fn accounts_are_added_listed_announced_and_removed() {
     assert_eq!(signature_lines(&live, FILES_INTERFACE_NAME), signature_lines(FILES_XML, FILES_INTERFACE_NAME));
 }
 
+/// Issue #95: `PauseOnMetered` and `OnBattery` are the manager's, one pair for every
+/// account. A start moves an account's keys of before to them (the strictest value); each
+/// setter writes `config.toml`, announces the change, and every account runs on it at once;
+/// `SetOnBattery` refuses what is not a choice, changing nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_hold_settings_are_one_pair_for_every_account() {
+    use konedrived::config::OnBattery;
+    let config = tempfile::tempdir().unwrap();
+    std::fs::write(
+        config.path().join("config.toml"),
+        "config_version = 2\n\
+         [[accounts]]\nid = \"3f9a1c0e5b7d\"\nlabel = \"Personal\"\norigin = \"added\"\non_battery = \"sync\"\npause_on_metered = false\n\
+         [[accounts]]\nid = \"8c21d07a44e1\"\nlabel = \"Family\"\norigin = \"added\"\non_battery = \"pause\"\npause_on_metered = false\n",
+    )
+    .unwrap();
+    let d = Daemon::start_in(config, tempfile::tempdir().unwrap()).await;
+    let file = d.config.path().join("config.toml");
+    let accounts = d.manager.list().await.unwrap();
+    assert_eq!(accounts.len(), 2);
+    assert!(!d.manager.pause_on_metered().await.unwrap(), "moved: every account said off");
+    assert_eq!(d.manager.on_battery().await.unwrap(), "pause", "moved: the strictest");
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(!text.split("[[accounts]]").skip(1).any(|a| a.contains("on_battery") || a.contains("pause_on_metered")), "{text}");
+    let hold = |path: &OwnedObjectPath| d.account(path).sync.hold_settings();
+    assert!(accounts.iter().all(|a| hold(a).on_battery == OnBattery::Pause && !hold(a).pause_on_metered));
+
+    let properties = zbus::fdo::PropertiesProxy::builder(&d.client)
+        .destination(konedrive_dbus::SERVICE_NAME)
+        .unwrap()
+        .path(ACCOUNTS_PATH)
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let mut changed = properties.receive_properties_changed().await.unwrap();
+    async fn announced(changed: &mut zbus::fdo::PropertiesChangedStream) -> Vec<String> {
+        let signal = tokio::time::timeout(Duration::from_secs(5), changed.next()).await.unwrap().unwrap();
+        signal.args().unwrap().changed_properties.keys().map(|k| k.to_string()).collect()
+    }
+
+    d.manager.set_pause_on_metered(true).await.unwrap();
+    assert_eq!(announced(&mut changed).await, ["PauseOnMetered"]);
+    assert!(d.manager.pause_on_metered().await.unwrap());
+    d.manager.set_on_battery("sync").await.unwrap();
+    assert_eq!(announced(&mut changed).await, ["OnBattery"]);
+    assert_eq!(d.manager.on_battery().await.unwrap(), "sync");
+    assert!(accounts.iter().all(|a| hold(a).on_battery == OnBattery::Sync && hold(a).pause_on_metered), "every account at once");
+    let text = std::fs::read_to_string(&file).unwrap();
+    let top = text.split("[[accounts]]").next().unwrap();
+    assert!(top.contains("pause_on_metered = true") && top.contains("on_battery = \"sync\""), "{text}");
+
+    assert_eq!(refusal(d.manager.set_on_battery("whenever").await), "org.freedesktop.DBus.Error.InvalidArgs");
+    assert_eq!(d.manager.on_battery().await.unwrap(), "sync", "a refusal changes nothing");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
+}
+
 /// Design §8.3 (test 7): a folder that is, is inside, or contains another account's folder
 /// is refused `Overlaps`, naming that account — both ways.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

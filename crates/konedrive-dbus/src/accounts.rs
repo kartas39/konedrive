@@ -45,12 +45,23 @@ pub trait Accounts {
     fn remove(&self, account: &ObjectPath<'_>) -> zbus::Result<()>;
     /// The Entra application every account signs in with.
     fn set_client_id(&self, id: &str) -> zbus::Result<()>;
+    /// Whether every account holds back on a metered connection; written to `config.toml`.
+    fn set_pause_on_metered(&self, on: bool) -> zbus::Result<()>;
+    /// What every account does on battery: `sync`, `power-saver` or `pause`; refused
+    /// `org.freedesktop.DBus.Error.InvalidArgs` otherwise.
+    fn set_on_battery(&self, choice: &str) -> zbus::Result<()>;
 
     /// Every account's object path, in the order the accounts were added.
     #[zbus(property)]
     fn list(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
     #[zbus(property)]
     fn client_id(&self) -> zbus::Result<String>;
+    /// Whether every account holds back on a metered connection.
+    #[zbus(property)]
+    fn pause_on_metered(&self) -> zbus::Result<bool>;
+    /// What every account does on battery: `sync`, `power-saver` or `pause`.
+    #[zbus(property)]
+    fn on_battery(&self) -> zbus::Result<String>;
     /// The privileged helper as the daemon sees it: `connected`,
     /// `not-installed`, `stopped`, `failed` or `unknown`
     /// ([`helper_advice`](crate::helper_advice)).
@@ -162,11 +173,8 @@ pub trait Folder {
     fn set_ignore_patterns(&self, patterns: &[&str]) -> zbus::Result<()>;
     /// Written to `config.toml`; refused `Unsupported` for a folder not connected to OneDrive.
     fn set_thumbnails(&self, on: bool) -> zbus::Result<()>;
-    fn set_pause_on_metered(&self, on: bool) -> zbus::Result<()>;
-    /// `sync`, `power-saver` or `pause`; refused `org.freedesktop.DBus.Error.InvalidArgs`
-    /// otherwise.
-    fn set_on_battery(&self, choice: &str) -> zbus::Result<()>;
-    /// Lifts the automatic hold until a source or the hold's settings change.
+    /// Lifts this account's automatic hold until a source or the hold's settings
+    /// ([`AccountsProxy::pause_on_metered`], [`AccountsProxy::on_battery`]) change.
     fn sync_anyway(&self) -> zbus::Result<()>;
 
     #[zbus(property)]
@@ -204,12 +212,6 @@ pub trait Folder {
     /// Whether Graph's thumbnails of images and videos are fetched.
     #[zbus(property)]
     fn thumbnails(&self) -> zbus::Result<bool>;
-    /// Whether the account holds back on a metered connection.
-    #[zbus(property)]
-    fn pause_on_metered(&self) -> zbus::Result<bool>;
-    /// `sync`, `power-saver` or `pause`.
-    #[zbus(property)]
-    fn on_battery(&self) -> zbus::Result<String>;
     /// Why the account holds back by itself: `metered`, `on-battery`, `power-saver`, or empty.
     #[zbus(property)]
     fn held_back(&self) -> zbus::Result<String>;

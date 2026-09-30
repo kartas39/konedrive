@@ -212,10 +212,6 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         if (const auto it = p.constFind(QLatin1String("Thumbnails")); it != p.constEnd()) {
             m_thumbnails = it->toBool();
         }
-        if (const auto it = p.constFind(QLatin1String("PauseOnMetered")); it != p.constEnd()) {
-            m_pauseOnMetered = it->toBool();
-        }
-        text("OnBattery", m_onBattery);
     } else if (interfaceName == TransfersInterface) {
         // A structured value inside a{sv} arrives as a QDBusArgument.
         const auto transfers = [](const QVariant &value) {
@@ -594,16 +590,6 @@ void SyncController::syncAnyway()
 void SyncController::setThumbnails(bool on)
 {
     call(m_folder->SetThumbnails(on));
-}
-
-void SyncController::setPauseOnMetered(bool on)
-{
-    call(m_folder->SetPauseOnMetered(on));
-}
-
-void SyncController::setOnBattery(const QString &choice)
-{
-    call(m_folder->SetOnBattery(choice));
 }
 
 void SyncController::setIgnorePatterns(const QStringList &patterns)
