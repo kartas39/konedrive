@@ -199,6 +199,9 @@ removes it all again, apart from the helper.
 
   `konedrivectl logout` signs the account out again and deletes its stored token.
 
+  For a sign-in over SSH or without a desktop, run `KONEDRIVE_NO_BROWSER=1 konedrivectl login`:
+  no browser is opened, and the address is printed to open elsewhere.
+
   konedrive signs in with its own application registration, so this needs no setup. Anyone who
   wants to sign in with their own Microsoft Entra registration instead can set its client ID with
   `konedrivectl set-client-id <id>`.

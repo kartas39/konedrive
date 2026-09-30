@@ -18,6 +18,18 @@ pub const FIRST_LABEL: &str = "Personal";
 /// The environment variable that chooses the account when `--account` is not given.
 pub const ACCOUNT_VARIABLE: &str = "KONEDRIVE_ACCOUNT";
 
+/// The environment variable that, set to anything but empty, keeps the sign-in page from
+/// being opened in a browser (issue #21): a sign-in over SSH, with no desktop, or in tests.
+pub const NO_BROWSER_VARIABLE: &str = "KONEDRIVE_NO_BROWSER";
+
+/// Whether a command opens the sign-in page in the browser: only when
+/// [`NO_BROWSER_VARIABLE`] is unset or empty (`no_browser`, its value) and stdout is a
+/// terminal, so that nobody's desktop gets a browser tab nobody looks at. The address is
+/// printed either way.
+pub fn opens_browser(no_browser: Option<&std::ffi::OsStr>, terminal: bool) -> bool {
+    no_browser.is_none_or(|v| v.is_empty()) && terminal
+}
+
 /// One account, as a command chooses it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccountInfo {
@@ -619,6 +631,10 @@ pub fn upload_reason_text(reason: &str) -> String {
         "other-device" => "on another filesystem mounted inside the folder: never uploaded".to_owned(),
         "hard-link" => "a file with other hard links: not uploaded".to_owned(),
         "locked" => "locked in OneDrive (open for co-authoring): tried again later".to_owned(),
+        "network" => "OneDrive could not be reached: tried again later".to_owned(),
+        "local-error" => "the local file could not be read: tried again later".to_owned(),
+        "index-error" => "konedrive's local index failed: tried again later".to_owned(),
+        "upload-error" => "the upload failed: tried again later".to_owned(),
         "refused" => "refused by OneDrive".to_owned(),
         "too-big" => "too big for the space left in OneDrive: free up space there, then `sync refresh`".to_owned(),
         other => match (other.strip_prefix("refused: "), too_big(other)) {
@@ -1871,6 +1887,17 @@ pub async fn wait_for_sign_in(proxy: &AccountProxy<'_>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Issue #21: the browser opens only on a terminal, and never with the variable set.
+    #[test]
+    fn the_browser_opens_only_on_a_terminal_without_the_variable() {
+        use std::ffi::OsStr;
+        assert!(super::opens_browser(None, true));
+        assert!(super::opens_browser(Some(OsStr::new("")), true));
+        assert!(!super::opens_browser(None, false));
+        assert!(!super::opens_browser(Some(OsStr::new("1")), true));
+        assert!(!super::opens_browser(Some(OsStr::new("1")), false));
+    }
+
     use super::{
         account_refusal_text, choose, command_prefix, dev_refusal_text, human_bytes, not_uploaded_text, outbox_text, parse_duration, quota_text,
         space_waiting_text,
@@ -2324,6 +2351,10 @@ mod tests {
         assert_eq!(upload_reason_text("too-big:3221225472:1073741824"), "too big: needs 3.0 GiB, 1.0 GiB free");
         assert_eq!(upload_reason_text("waiting-for-space"), "waiting for space: OneDrive is full");
         assert!(upload_reason_text("too-big").starts_with("too big for the space left"));
+        assert_eq!(upload_reason_text("network"), "OneDrive could not be reached: tried again later");
+        assert_eq!(upload_reason_text("local-error"), "the local file could not be read: tried again later");
+        assert_eq!(upload_reason_text("index-error"), "konedrive's local index failed: tried again later");
+        assert_eq!(upload_reason_text("upload-error"), "the upload failed: tried again later");
         assert_eq!(quota_text("nearing", 5 << 30, false), "OneDrive: 5.0 GiB free (quota nearing).\n");
         assert_eq!(quota_text("", 0, false), "");
     }

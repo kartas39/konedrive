@@ -1389,3 +1389,49 @@ mod removed;
 
 #[path = "sessions_tests.rs"]
 mod sessions;
+
+/// Issue #87: a failure no step settles gives its row a stable key, never
+/// the error's own text.
+#[test]
+fn a_failure_is_one_of_four_keys() {
+    use super::engine::{outcome_of, Fail, Outcome};
+    use crate::drive::write::WriteError;
+    let key = |fail: Fail| match outcome_of(fail) {
+        Outcome::Again { reason, backoff: true, detail: Some(_), .. } => reason.unwrap(),
+        other => panic!("not a backoff with a detail: {other:?}"),
+    };
+    assert_eq!(key(Fail::Write(WriteError::Transient("cannot reach Microsoft Graph: error sending request".into()))), reason::NETWORK);
+    assert_eq!(key(Fail::Io(std::io::Error::other("disk"))), reason::LOCAL_IO);
+    assert_eq!(key(Fail::Store(crate::tree::TreeError::Schema(None))), reason::STORE);
+    for e in [WriteError::Failed("odd".into()), WriteError::Changed, WriteError::NameExists, WriteError::NotFound, WriteError::SessionGone] {
+        assert_eq!(key(Fail::Write(e)), reason::FAILED);
+    }
+}
+
+/// The journal line of a failure carries no address.
+#[test]
+fn the_journal_gets_no_url() {
+    use super::engine::without_urls;
+    assert_eq!(
+        without_urls("error sending request for url (https://graph.microsoft.com/v1.0/me/drive?x=1) and http://a.b/c done"),
+        "error sending request for url (<url> and <url> done"
+    );
+    assert_eq!(without_urls("no address here"), "no address here");
+}
+
+/// Issue #87: an upload whose step meets a network failure waits with
+/// `network`, and goes up once OneDrive answers again.
+#[test]
+fn a_network_failure_waits_as_network() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"a");
+    w.examine(&[("", "a.txt")]);
+    w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(502), 1));
+    let engine = w.h.engine();
+    w.h.drain(&engine);
+    assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Retry)]);
+    assert_eq!(reason_of(&w, "a.txt").as_deref(), Some(reason::NETWORK));
+    w.h.block_on(engine.retry_now()).unwrap();
+    w.h.drain(&engine);
+    assert_committed(&w, "a.txt", "a.txt");
+}

@@ -205,8 +205,10 @@ async fn path_commands_go_by_the_path_and_status_shows_every_account() {
 }
 
 /// `login` with no account at all adds `Personal` and signs it in; with no client ID it
-/// says so first and adds nothing. The browser is a stand-in `xdg-open` that records the
-/// address it is given, and the sign-in is cancelled from the bus, as another client would.
+/// says so first and adds nothing. A stand-in `xdg-open` that records the address it is
+/// given is in `PATH`, and `KONEDRIVE_NO_BROWSER` is not set: the piped stdout alone keeps
+/// it from being called (issue #21), and the address is printed. The sign-in is cancelled
+/// from the bus, as another client would.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn login_with_no_account_adds_personal() {
     let bus = TestBus::start();
@@ -234,6 +236,7 @@ async fn login_with_no_account_adds_personal() {
         .env("DBUS_SESSION_BUS_ADDRESS", bus.address())
         .env("PATH", browser.path())
         .env_remove(konedrivectl::ACCOUNT_VARIABLE)
+        .env_remove(konedrivectl::NO_BROWSER_VARIABLE)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
@@ -258,15 +261,16 @@ async fn login_with_no_account_adds_personal() {
     }
     let account = account.expect("login never started signing in");
     assert_eq!(account.label().await.unwrap(), "Personal");
-    wait_for("the browser", || opened.exists()).await;
     account.cancel_sign_in().await.unwrap();
 
     let out = login.wait_with_output().unwrap();
     assert!(!out.status.success(), "a cancelled sign-in fails: {out:?}");
     let said = out_text(&out);
     assert!(said.starts_with("Added an account called Personal"), "{said}");
-    let url = std::fs::read_to_string(&opened).unwrap();
-    assert!(said.contains(&url) && url.contains(CLIENT_ID), "the address is printed and opened: {said}");
+    assert!(!opened.exists(), "no browser is opened when stdout is not a terminal");
+    assert!(said.contains("Open this address in a browser:"), "{said}");
+    let url = said.split_whitespace().find(|w| w.starts_with("http")).unwrap_or_default();
+    assert!(url.contains(CLIENT_ID), "the address is printed: {said}");
     assert!(err_text(&out).contains("cancelled"), "{}", err_text(&out));
     assert_eq!(manager.list().await.unwrap().len(), 1);
 }

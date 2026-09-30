@@ -71,7 +71,8 @@ fn known_group(key: &str) -> Option<Group> {
         // `reserved-name` is a `.konedrive-` name, which the daemon keeps for itself.
         "symlink" | "fifo" | "socket" | "device" | OTHER_DEVICE | "reserved-name" | "hard-link" | "ignored" => Group::Never,
         OPEN_FOR_WRITING | LOCKED | NOT_FOUND | NOT_LOCAL | CHANGED | PARENT | HASH | MOVE_OUT | NO_HELPER | UNREACHABLE
-        | BACK_INSIDE | PLACE_UNKNOWN | DOWNLOAD | GONE_ONCE | STALE_HANDLE | GONE_UNPROVED | NO_LEASE => Group::Waiting,
+        | BACK_INSIDE | PLACE_UNKNOWN | DOWNLOAD | GONE_ONCE | STALE_HANDLE | GONE_UNPROVED | NO_LEASE | NETWORK | LOCAL_IO | STORE
+        | FAILED => Group::Waiting,
         _ => return None,
     })
 }
@@ -246,5 +247,13 @@ mod tests {
         let (items, _) = files(&store, root, false, "refused", 20).unwrap();
         assert_eq!(items, vec![("/nowhere/OneDrive/odd.txt".to_owned(), "refused: The name is not allowed".to_owned())]);
         assert_eq!(files(&store, root, false, "no-such", 20).unwrap(), (vec![], 0));
+    }
+
+    /// Issue #87: the four keys a failure is stored under all wait.
+    #[test]
+    fn failure_keys_wait() {
+        for key in [reason::NETWORK, reason::LOCAL_IO, reason::STORE, reason::FAILED] {
+            assert_eq!(known_group(key), Some(Group::Waiting), "{key}");
+        }
     }
 }

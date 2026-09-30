@@ -47,8 +47,9 @@ enum Cmd {
     SetClientId { id: String },
     /// Sign the account in with its Microsoft account, in the browser
     ///
-    /// With no account at all, first adds one called Personal. The browser is opened with
-    /// xdg-open; the sign-in page's address is printed too.
+    /// With no account at all, first adds one called Personal. The sign-in page's address is
+    /// printed; it is also opened in the browser with xdg-open, but only when stdout is a
+    /// terminal and KONEDRIVE_NO_BROWSER is not set (set it for a sign-in over SSH).
     Login,
     /// Sign the account out and delete its stored token
     Logout,
@@ -613,11 +614,18 @@ async fn account_mode(daemon: &Daemon, option: Option<&str>, mode: Option<&str>,
         println!("{tag}Already read-write.");
         return Ok(());
     }
-    println!(
-        "Opening the Microsoft sign-in page in your browser, to allow konedrive to change the files \
-         of {label} in OneDrive. If it does not open, visit:\n\n  {url}\n"
-    );
-    let _ = Command::new("xdg-open").arg(&url).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    if open_browser() {
+        println!(
+            "Opening the Microsoft sign-in page in your browser, to allow konedrive to change the files \
+             of {label} in OneDrive. If it does not open, visit:\n\n  {url}\n"
+        );
+        spawn_browser(&url);
+    } else {
+        println!(
+            "To allow konedrive to change the files of {label} in OneDrive, sign in on the Microsoft \
+             sign-in page. Open this address in a browser:\n\n  {url}\n"
+        );
+    }
     // Uncached, as `login`'s: the wait polls `Mode` directly.
     let wait_proxy = AccountProxy::builder(&daemon.connection)
         .path(chosen.account.path.clone())?
@@ -635,6 +643,17 @@ async fn account_mode(daemon: &Daemon, option: Option<&str>, mode: Option<&str>,
     }
     println!("{tag}Read-write: the folder's files can be changed.");
     Ok(())
+}
+
+/// Whether the sign-in page is opened in the browser here ([`konedrivectl::opens_browser`]).
+fn open_browser() -> bool {
+    use std::io::IsTerminal;
+    konedrivectl::opens_browser(std::env::var_os(konedrivectl::NO_BROWSER_VARIABLE).as_deref(), std::io::stdout().is_terminal())
+}
+
+/// Opens `url` with xdg-open, without waiting for it.
+fn spawn_browser(url: &str) {
+    let _ = Command::new("xdg-open").arg(url).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
 }
 
 async fn set_client_id(daemon: &Daemon, id: &str) -> anyhow::Result<()> {
@@ -1286,15 +1305,15 @@ async fn login(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()> {
     let proxy = daemon.account(&chosen.path).await?;
     let result = proxy.begin_sign_in().await;
     let url = result.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::SignIn(&chosen.label), &e)))?;
-    println!(
-        "Opening the Microsoft sign-in page for {} in your browser. If it does not open, visit:\n\n  {url}\n",
-        chosen.label
-    );
-    let _ = Command::new("xdg-open")
-        .arg(&url)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn();
+    if open_browser() {
+        println!(
+            "Opening the Microsoft sign-in page for {} in your browser. If it does not open, visit:\n\n  {url}\n",
+            chosen.label
+        );
+        spawn_browser(&url);
+    } else {
+        println!("Sign {} in on the Microsoft sign-in page. Open this address in a browser:\n\n  {url}\n", chosen.label);
+    }
 
     // An uncached proxy: the wait loop polls `State` directly rather than watching
     // `StateChanged`, so it never misses a transition the signal stream coalesced away.

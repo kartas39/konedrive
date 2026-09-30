@@ -157,6 +157,20 @@ pub mod reason {
     /// one abandoned (issue #89). Never copied around, never deleted; tried
     /// again later, until the name is free or the holder has content.
     pub const NAME_HELD: &str = "name-held-by-an-upload";
+    /// OneDrive could not be reached: a network error, a `5xx`, an answer
+    /// that could not be read (issue #87). In backoff; the error's own text
+    /// is in the journal only.
+    pub const NETWORK: &str = "network";
+    /// The local file could not be read or written (an I/O error). In
+    /// backoff; the error's text is in the journal only.
+    pub const LOCAL_IO: &str = "local-error";
+    /// The daemon's own index (the store) failed. In backoff; the error's
+    /// text is in the journal only.
+    pub const STORE: &str = "index-error";
+    /// Any other failure of a step: an error OneDrive gave that no step
+    /// settled, or a step that stopped by itself. In backoff; the error's
+    /// text is in the journal only.
+    pub const FAILED: &str = "upload-error";
 }
 
 /// The activity kinds the worker writes (§9; the outbox on the bus adds them to the D-Bus
