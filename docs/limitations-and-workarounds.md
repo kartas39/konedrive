@@ -2504,7 +2504,10 @@ application must never read zeros where real content should be.
   skipped (logged at `debug`); a close, a refused namespace, an unreadable frame, a binary frame or
   no ping for `pingInterval + pingTimeout` ends the connection. Tested only against a local server
   playing the protocol (`drive::socket::tests`); the test account's harness check is what shows the
-  service behaves so. Reasoned · open.
+  service behaves so. A pong is sent inside `notification()` / `heard()`: when the caller drops that
+  future (a `select!` branch that wins) while the pong is being written, the pong may be lost, and
+  the server then ends the connection by its `pingTimeout`; the live task reconnects on its backoff.
+  Reasoned · open.
 - **F183. While the notification socket is up the poll runs every 5 minutes** (`listing.rs`
   `Schedule::live_interval`; `docs/design/sync.md` §4.2; issue #54) — a change OneDrive sends no
   event for is seen up to 5 minutes later instead of 60 s. The poll is kept only as the safety net;
@@ -2528,8 +2531,14 @@ application must never read zeros where real content should be.
 - **F186. The live task's waits are chosen, not measured** (`sync/live.rs` `Timing`; issue #54) —
   2 s of debounce, retries after 1, 2, 4 … 60 s, an endpoint kept at least 60 s whatever its
   expiry says (one that expires within 2 minutes would otherwise be renewed in a loop), and a
-  stopped account looked at again every 60 s besides the nudges that wake it. GUESS · reasoned ·
-  open.
+  stopped account looked at again every 60 s besides the nudges that wake it. A connection counts
+  as up only after the server's first ping or 30 s of life, whichever comes first: one the service
+  ends sooner (a refused namespace, a close right after the open packet) is a failure, so the
+  backoff keeps growing and no cycle is asked for (no reconnect storm). The renewal deadline is
+  also kept as wall-clock time, so a machine that slept past it renews at its first wake-up (a
+  ping, an event, a nudge) instead of after the monotonic clock's remaining wait; a renewal asks
+  for one cycle, since the old socket was not read while the new one opened. Every close of a
+  socket is bounded by 5 s. GUESS · reasoned · open.
 ---
 
 ## 5. Provisional numbers
@@ -2599,7 +2608,7 @@ application must never read zeros where real content should be.
 | Jobs a tree store's channel holds before a sender waits (`tree::QUEUE`) | 1 024 | **guess** (F162) |
 | The notification endpoint's lifetime without `expirationDateTime` (`socket::DEFAULT_LIFETIME`) / replaced before its expiry by (`RENEW_EARLY`) / opening the socket, bound (`CONNECT_TIMEOUT`) / largest message taken (`MAX_MESSAGE`) | 1 h / 2 min / 30 s / 1 MiB | **guess** (issue #54, F180) |
 | The poll while the notification socket is up (`Schedule::live_interval`) | 5 min | the user's choice; how often the service drops an event is not known (F183) |
-| The live task's debounce / retries / shortest endpoint life / look at a stopped account (`live::Timing`) | 2 s / 1, 2, 4 … 60 s / 60 s / 60 s | **guess** (F186) |
+| The live task's debounce / retries / shortest endpoint life / look at a stopped account / time before a connection counts as up (`live::Timing`) | 2 s / 1, 2, 4 … 60 s / 60 s / 60 s / first ping or 30 s | **guess** (F186) |
 
 ---
 

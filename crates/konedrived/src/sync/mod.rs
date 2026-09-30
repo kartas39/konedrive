@@ -9642,7 +9642,7 @@ mod tests {
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({"notificationUrl": endpoint.notification_url.as_str()})))
                 .mount(&w.server).await;
             let service = connected(&w, true).await;
-            let live = Timing { debounce: Duration::from_millis(300), ..Timing::default() };
+            let live = Timing { debounce: Duration::from_millis(300), settle: Duration::from_millis(100), ..Timing::default() };
             service.set_schedule(Schedule { live: Some(live), ..Schedule::polled(Duration::from_secs(3600), vec![Duration::from_millis(50)]) });
             service.register_root(w.folder.path()).await.unwrap();
             listed(&service).await;

@@ -247,8 +247,21 @@ impl NotificationSocket {
     /// drop the socket after it.
     ///
     /// Safe to cancel between events (in a `select!`): no event is lost that has not been
-    /// read, and a pong cut short goes out with the next write.
+    /// read. A pong is not safe: when this future is dropped while a pong is being sent,
+    /// that pong may be lost, and the server then ends the connection when its
+    /// `pingTimeout` runs out (limitations log F182).
     pub async fn notification(&mut self) -> Result<(), SocketEnd> {
+        loop {
+            if let Heard::Notification = self.heard().await? {
+                return Ok(());
+            }
+        }
+    }
+
+    /// As [`notification`](Self::notification), but also returns after each server ping
+    /// (answered already): the caller learns the connection is alive. The same caveat on a
+    /// pong cut short applies.
+    pub async fn heard(&mut self) -> Result<Heard, SocketEnd> {
         loop {
             let quiet = self.ping_interval + self.ping_timeout;
             let message = match tokio::time::timeout_at(self.last_ping + quiet, self.ws.next()).await {
@@ -265,8 +278,8 @@ impl NotificationSocket {
                 other => return Err(SocketEnd::Malformed(format!("an unexpected {} frame", kind(&other)))),
             };
             match self.engine_packet(text.as_str()).await? {
-                Packet::Notification => return Ok(()),
-                Packet::Handled => {}
+                Packet::Notification => return Ok(Heard::Notification),
+                Packet::Ping => return Ok(Heard::Ping),
                 Packet::Ignored(what) => {
                     tracing::debug!(host = %self.host, packet = %shown(text.as_str()), "{what} on the notification socket, ignored")
                 }
@@ -286,11 +299,14 @@ impl NotificationSocket {
             Some('0') => Ok(Packet::Ignored("an open packet")),
             Some('1') => Err(SocketEnd::Closed("the server closed the Engine.IO session".into())),
             Some('2') => {
-                // The server pings, the client answers with the same payload.
+                // The server pings, the client answers with the same payload. When the
+                // caller drops `heard()` / `notification()` while this send is under way,
+                // the pong may be lost; the server then ends the connection by its
+                // `pingTimeout` (limitations log F182).
                 self.last_ping = Instant::now();
                 let pong = format!("3{}", chars.as_str());
                 self.ws.send(Message::text(pong)).await.map_err(|e| SocketEnd::Transport(redacted(&e)))?;
-                Ok(Packet::Handled)
+                Ok(Packet::Ping)
             }
             Some('3') => Ok(Packet::Ignored("a pong")),
             Some('4') => self.socket_packet(chars.as_str()),
@@ -335,8 +351,17 @@ impl NotificationSocket {
 
 enum Packet {
     Notification,
-    Handled,
+    Ping,
     Ignored(&'static str),
+}
+
+/// What [`NotificationSocket::heard`] heard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Heard {
+    /// A `notification` event: something in the drive changed.
+    Notification,
+    /// A server ping, answered: the connection is alive.
+    Ping,
 }
 
 /// A websocket error without anything that could carry the URL: tungstenite's own

@@ -108,9 +108,15 @@ public HTTPS address.
   again (the same nudge wakes the poller and the task). Changes in OneDrive are not heard of
   meanwhile (limitations log F184).
 - The endpoint is fetched again 2 minutes before its `expirationDateTime` (an hour when Graph
-  leaves it out, F180), and the new connection is opened before the old one is closed.
+  leaves it out, F180), and the new connection is opened before the old one is closed; the
+  renewal then asks for one cycle, since the old socket was not read while the new one opened.
+  The deadline is also kept as wall-clock time: after a suspend, the first wake-up past it (a
+  ping, an event, a nudge) renews at once.
+- A connection counts as up — `connected`, the poller told, the backoff reset — only after the
+  server's first ping or 30 s of life, whichever comes first. One that ends sooner is a failure
+  like one that cannot open: no reconnect storm when the service accepts and drops at once.
 - A connection that ends or cannot open is tried again after 1, 2, 4 … 60 s. The first
-  connection after a drop asks for one cycle: events during the gap are lost. The first failure
+  connection up after a drop asks for one cycle: events during the gap are lost. The first failure
   in a row is logged at `warn`, the rest at `debug`. The socket goes directly to Microsoft's
   notification host, never through a proxy (F181): without a direct route the poll carries on
   alone, every 60 s.

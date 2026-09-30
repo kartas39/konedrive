@@ -39,8 +39,8 @@ impl Run {
         };
         let mut socket = step!(format!("opening the socket at {}", endpoint.host()), NotificationSocket::connect(&endpoint.notification_url).await);
         let timings = format!("pingInterval {:?}, pingTimeout {:?}", socket.ping_interval(), socket.ping_timeout());
-        let written = Instant::now();
         step!("writing notification.txt", self.put("notification.txt", b"notification".to_vec(), T0).await);
+        let written = Instant::now();
         let outcome = match tokio::time::timeout(WAIT, socket.notification()).await {
             Ok(Ok(())) => Pass(format!(
                 "a notification {:.1} s after the write finished; {timings}; {expiry}; host {}",

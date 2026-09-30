@@ -802,9 +802,23 @@ pub struct FakeSockets {
     drops: tokio::sync::watch::Sender<u64>,
     /// While set, a connection is closed as soon as it is accepted.
     refuse: std::sync::atomic::AtomicBool,
+    /// What a connection gets right after the open packet ([`Early`] as a number).
+    early: std::sync::atomic::AtomicU8,
     /// Connections accepted (refused ones too), and open now.
     accepted: std::sync::atomic::AtomicUsize,
     open: std::sync::atomic::AtomicUsize,
+}
+
+/// What the fake's socket does right after the open packet, to play a service that
+/// accepts a connection and drops it at once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Early {
+    /// Nothing: the connection goes on as usual.
+    Nothing = 0,
+    /// Refuses the namespace (`44/notifications,{…}`).
+    Refuse = 1,
+    /// Closes the websocket.
+    Close = 2,
 }
 
 /// The fake's Engine.IO ping interval; its `pingTimeout` is the same.
@@ -816,6 +830,7 @@ impl FakeSockets {
             changes: tokio::sync::watch::channel(0).0,
             drops: tokio::sync::watch::channel(0).0,
             refuse: false.into(),
+            early: 0.into(),
             accepted: 0.into(),
             open: 0.into(),
         }
@@ -834,6 +849,11 @@ impl FakeSockets {
     /// answers.
     pub fn refuse(&self, refuse: bool) {
         self.refuse.store(refuse, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// From now on, what a connection gets right after the open packet.
+    pub fn early(&self, early: Early) {
+        self.early.store(early as u8, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Connections accepted so far.
@@ -869,6 +889,19 @@ impl FakeSockets {
         let open = format!(r#"0{{"sid":"fake","upgrades":[],"pingInterval":{ms},"pingTimeout":{ms},"maxPayload":1000000}}"#);
         if ws.send(Message::text(open)).await.is_err() {
             return;
+        }
+        match self.early.load(SeqCst) {
+            1 => {
+                // The client leaves: read until it has.
+                let _ = ws.send(Message::text(r#"44/notifications,{"message":"not now"}"#)).await;
+                while let Some(Ok(_)) = ws.next().await {}
+                return;
+            }
+            2 => {
+                let _ = ws.close(None).await;
+                return;
+            }
+            _ => {}
         }
         self.open.fetch_add(1, SeqCst);
         let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_INTERVAL, PING_INTERVAL);

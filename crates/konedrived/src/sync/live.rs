@@ -10,10 +10,15 @@
 //!   own.
 //! - Events within [`Timing::debounce`] of the first give one cycle.
 //! - The endpoint is fetched again, and a new connection opened before the old one is
-//!   closed, [`RENEW_EARLY`](crate::drive::socket::RENEW_EARLY) before it expires.
+//!   closed, [`RENEW_EARLY`](crate::drive::socket::RENEW_EARLY) before it expires; the
+//!   renewal asks for one cycle, since the old socket was not read while the new one opened.
+//!   The deadline is also kept as wall-clock time, so a machine that slept past it renews at
+//!   its first wake-up.
+//! - A connection counts as up only after the server's first ping or [`Timing::settle`];
+//!   one that ends sooner is a failure like one that never opened (no reconnect storm).
 //! - A connection that ends is tried again after 1, 2, 4 … 60 s (`Timing`), and the poller is
-//!   told at once that the socket is down; the first connection after such a drop asks for
-//!   one cycle, since events during the gap are lost.
+//!   told at once that the socket is down; the first connection up after such a drop asks
+//!   for one cycle, since events during the gap are lost.
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -24,7 +29,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::running::Running;
 use super::SyncStateHandle;
-use crate::drive::socket::{NotificationSocket, SocketEndpoint};
+use crate::drive::socket::{Heard, NotificationSocket, SocketEndpoint};
 use crate::drive::DriveClient;
 use crate::tree::Store;
 
@@ -64,6 +69,11 @@ pub struct Timing {
     pub renew_floor: Duration,
     /// While the account is stopped, how often it is looked at again besides the wake-ups.
     pub stopped_look: Duration,
+    /// A connection counts as up after the server's first ping, or after this much life
+    /// without one; one that ends sooner counts as a failure.
+    pub settle: Duration,
+    /// The wall clock, for the renewal deadline (the tests move it).
+    pub clock: fn() -> SystemTime,
 }
 
 impl Default for Timing {
@@ -74,6 +84,8 @@ impl Default for Timing {
             backoff_max: Duration::from_secs(60),
             renew_floor: Duration::from_secs(60),
             stopped_look: Duration::from_secs(60),
+            settle: Duration::from_secs(30),
+            clock: SystemTime::now,
         }
     }
 }
@@ -130,6 +142,9 @@ impl Live {
     }
 }
 
+/// The bound on closing a socket politely.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// How a connection ended.
 enum End {
     Cancelled,
@@ -170,30 +185,62 @@ async fn run(ctx: LiveContext, timing: Timing, wake: Arc<Notify>, cancel: Cancel
             }
         };
         if ctx.stopped() {
-            socket.close().await;
+            close(socket).await;
             continue;
         }
-        failures = 0;
-        tracing::info!(host = %endpoint.host(), "changes from OneDrive arrive as they happen");
-        ctx.set_up(true);
-        ctx.show(LiveChanges::Connected);
-        if std::mem::take(&mut dropped) {
-            ctx.refresh.notify_one();
-        }
-        let end = serve(&ctx, &timing, endpoint, socket, &wake, &cancel).await;
+        let mut link = Link { ctx: &ctx, failures: &mut failures, dropped: &mut dropped, up: false };
+        let end = serve(&mut link, &timing, endpoint, socket, &wake, &cancel).await;
+        let was_up = link.up;
         ctx.set_up(false);
         match end {
             End::Cancelled => return,
             End::Stopped => tracing::info!("the notification socket is closed while the account's sync stops"),
             End::Lost(why) => {
-                tracing::warn!("{why}; the poll carries on meanwhile");
-                dropped = true;
+                if was_up {
+                    tracing::warn!("{why}; the poll carries on meanwhile");
+                    dropped = true;
+                } else {
+                    // Ended before it was up: a failure in a row, the backoff keeps growing.
+                    said(failures, &format!("{why} (before the connection was up)"));
+                }
                 ctx.show(LiveChanges::Connecting);
                 if !back_off(&timing, &mut failures, &wake, &cancel).await {
                     return;
                 }
             }
         }
+    }
+}
+
+/// One connection's standing in the task: whether it is up yet, and the task's counters it
+/// resets once it is.
+struct Link<'a> {
+    ctx: &'a LiveContext,
+    failures: &'a mut u32,
+    dropped: &'a mut bool,
+    up: bool,
+}
+
+impl Link<'_> {
+    /// The connection proved alive (a ping, or `settle` of life): it counts as up.
+    fn go_up(&mut self, endpoint: &SocketEndpoint) {
+        if std::mem::replace(&mut self.up, true) {
+            return;
+        }
+        *self.failures = 0;
+        tracing::info!(host = %endpoint.host(), "changes from OneDrive arrive as they happen");
+        self.ctx.set_up(true);
+        self.ctx.show(LiveChanges::Connected);
+        if std::mem::take(self.dropped) {
+            self.ctx.refresh.notify_one();
+        }
+    }
+}
+
+/// Closes a socket politely, but never waits more than [`CLOSE_TIMEOUT`] for it.
+async fn close(socket: NotificationSocket) {
+    if tokio::time::timeout(CLOSE_TIMEOUT, socket.close()).await.is_err() {
+        tracing::debug!("the notification socket did not close within {CLOSE_TIMEOUT:?}; dropped");
     }
 }
 
@@ -226,28 +273,41 @@ async fn back_off(timing: &Timing, failures: &mut u32, wake: &Notify, cancel: &C
     }
 }
 
-/// Keeps one connection: events become cycles, the endpoint is renewed before it expires, and
-/// a stop closes it.
+/// Keeps one connection: it counts as up at its first ping (or after `settle`), events
+/// become cycles, the endpoint is renewed before it expires, and a stop closes it.
 async fn serve(
-    ctx: &LiveContext,
+    link: &mut Link<'_>,
     timing: &Timing,
-    endpoint: SocketEndpoint,
+    mut endpoint: SocketEndpoint,
     mut socket: NotificationSocket,
     wake: &Notify,
     cancel: &CancellationToken,
 ) -> End {
-    let renew_at = |endpoint: &SocketEndpoint| Instant::now() + endpoint.renew_after(SystemTime::now()).max(timing.renew_floor);
-    let mut renew = renew_at(&endpoint);
+    let ctx = link.ctx;
+    let clock = timing.clock;
+    // The renewal deadline on both clocks: the monotonic one does not count a suspend.
+    let deadlines = |endpoint: &SocketEndpoint| {
+        let wait = endpoint.renew_after(clock()).max(timing.renew_floor);
+        (Instant::now() + wait, clock() + wait)
+    };
+    let (mut renew, mut renew_wall) = deadlines(&endpoint);
+    let settled = Instant::now() + timing.settle;
     // When the cycle asked for by the first event of a burst is due.
     let mut due: Option<Instant> = None;
     let end = loop {
+        // Any wake-up (a ping, an event, a nudge) after a suspend past the deadline renews.
+        if clock() >= renew_wall {
+            renew = Instant::now();
+        }
         tokio::select! {
-            got = socket.notification() => match got {
-                Ok(()) => {
+            got = socket.heard() => match got {
+                Ok(Heard::Notification) => {
                     due.get_or_insert_with(|| Instant::now() + timing.debounce);
                 }
+                Ok(Heard::Ping) => link.go_up(&endpoint),
                 Err(why) => break End::Lost(why.to_string()),
             },
+            () = tokio::time::sleep_until(settled), if !link.up => link.go_up(&endpoint),
             () = sleep_until(due), if due.is_some() => {
                 due = None;
                 ctx.refresh.notify_one();
@@ -258,11 +318,14 @@ async fn serve(
                     () = cancel.cancelled() => break End::Cancelled,
                 };
                 match opened {
-                    // The new one first, then the old one goes: nothing is missed between them.
-                    Ok((endpoint, fresh)) => {
-                        std::mem::replace(&mut socket, fresh).close().await;
-                        renew = renew_at(&endpoint);
+                    // The new one first, then the old one goes. The old one was not read
+                    // while the new one opened, so an event may have been missed: one cycle.
+                    Ok((fresh_endpoint, fresh)) => {
+                        close(std::mem::replace(&mut socket, fresh)).await;
+                        endpoint = fresh_endpoint;
+                        (renew, renew_wall) = deadlines(&endpoint);
                         tracing::debug!(host = %endpoint.host(), "the notification endpoint was renewed");
+                        ctx.refresh.notify_one();
                     }
                     Err(why) => break End::Lost(format!("the notification endpoint could not be renewed: {why}")),
                 }
@@ -280,7 +343,7 @@ async fn serve(
         ctx.refresh.notify_one();
     }
     if !matches!(end, End::Lost(_)) {
-        socket.close().await;
+        close(socket).await;
     }
     end
 }
@@ -294,11 +357,11 @@ async fn sleep_until(at: Option<Instant>) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     use super::*;
     use crate::sync::running::Conditions;
-    use crate::sync::upload::fake::{FakeGraph, ROOT};
+    use crate::sync::upload::fake::{Early, FakeGraph, ROOT};
     use crate::sync::SyncSnapshot;
     use crate::tree::TreeStore;
 
@@ -322,6 +385,10 @@ mod tests {
     }
 
     async fn world_with(setup: impl FnOnce(&mut crate::sync::upload::fake::Cloud)) -> World {
+        world_timed(setup, |_| {}).await
+    }
+
+    async fn world_timed(setup: impl FnOnce(&mut crate::sync::upload::fake::Cloud), adjust: impl FnOnce(&mut Timing)) -> World {
         let graph = FakeGraph::start().await;
         graph.with(setup);
         let store = Store::new(TreeStore::in_memory().unwrap());
@@ -348,13 +415,17 @@ mod tests {
             refresh,
             up: Arc::clone(&up),
         };
-        let timing = Timing {
+        let mut timing = Timing {
             debounce: DEBOUNCE,
             backoff: Duration::from_millis(50),
             backoff_max: Duration::from_millis(200),
             renew_floor: Duration::from_millis(200),
             stopped_look: Duration::from_secs(3600),
+            // The fake pings every 25 s: up after this instead.
+            settle: Duration::from_millis(100),
+            clock: SystemTime::now,
         };
+        adjust(&mut timing);
         let live = Some(Live::start(ctx, timing, cancel.clone()));
         World { graph, store, running, state, up, cycles, cancel, live, files: 0 }
     }
@@ -445,15 +516,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_endpoint_is_renewed_before_it_expires_without_a_gap() {
+    async fn the_endpoint_is_renewed_before_it_expires_and_each_renewal_asks_for_a_cycle() {
         // Expires 121 s after it is handed out: renewed after about a second (`RENEW_EARLY`).
         let w = world_with(|c| c.socket_lifetime = Some(121)).await;
         w.connected().await;
         w.wait("renewed twice", |w| w.endpoints() >= 3 && w.graph.sockets.accepted() >= 3).await;
         w.wait("the old connections closed", |w| w.graph.sockets.open() == 1).await;
         assert_eq!(w.live(), LiveChanges::Connected, "connected all along");
-        assert_eq!(w.cycles(), 0, "a renewal loses nothing, so it asks for no cycle");
+        w.wait("a cycle per renewal: the old socket was not read meanwhile", |w| w.cycles() >= 2).await;
         w.stop().await;
+    }
+
+    /// How far the moved wall clock is ahead of the real one, in seconds.
+    static AHEAD: AtomicU64 = AtomicU64::new(0);
+
+    fn moved_clock() -> SystemTime {
+        SystemTime::now() + Duration::from_secs(AHEAD.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    async fn a_wake_up_past_the_wall_clock_deadline_renews_as_after_a_suspend() {
+        // Renewed in about 58 min by the monotonic clock, which does not count a suspend.
+        let w = world_timed(|c| c.socket_lifetime = Some(3600), |t| t.clock = moved_clock).await;
+        w.connected().await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(w.endpoints(), 1, "not renewed yet");
+
+        // The machine slept for an hour: the wall clock is past the deadline.
+        AHEAD.store(3600, Ordering::SeqCst);
+        w.wake();
+        w.wait("renewed at the wake-up", |w| w.endpoints() >= 2 && w.graph.sockets.accepted() >= 2).await;
+        w.wait("a cycle for the renewal", |w| w.cycles() >= 1).await;
+        assert_eq!(w.live(), LiveChanges::Connected);
+        w.stop().await;
+    }
+
+    #[tokio::test]
+    async fn connections_dropped_before_they_are_up_back_off_further_and_ask_for_no_cycle() {
+        for early in [Early::Refuse, Early::Close] {
+            // Up only after 5 s: every connection here ends long before.
+            let w = world_timed(|_| {}, |t| {
+                t.backoff_max = Duration::from_secs(10);
+                t.settle = Duration::from_secs(5);
+            })
+            .await;
+            w.graph.sockets.early(early);
+            // Waits of 50, 100, 200, 400, 800 ms: about six tries in 1.6 s, not thirty.
+            tokio::time::sleep(Duration::from_millis(1600)).await;
+            let tried = w.graph.sockets.accepted();
+            assert!((3..=7).contains(&tried), "{early:?}: a growing backoff, {tried} connections");
+            assert_eq!(w.cycles(), 0, "{early:?}: no cycle for a connection that was never up");
+            assert_eq!(w.live(), LiveChanges::Connecting, "{early:?}");
+            assert!(!*w.up.borrow(), "{early:?}: the poller never told it is up");
+            w.stop().await;
+        }
     }
 
     #[tokio::test]
