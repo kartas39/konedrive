@@ -182,6 +182,14 @@ impl Folder {
         self.service.state().get().held_back
     }
 
+    /// How changes made in OneDrive reach this computer: `connected` (at once, through the
+    /// notification socket), `connecting` (trying; the poll runs meanwhile), or `off`
+    /// (stopped, or not a OneDrive folder).
+    #[zbus(property)]
+    async fn live_changes(&self) -> String {
+        self.service.state().get().live_changes.as_str().to_owned()
+    }
+
     #[zbus(property)]
     async fn thumbnails(&self) -> bool {
         self.service.run_settings().thumbnails
@@ -950,6 +958,9 @@ async fn emit_changes(
     }
     if old.held_back != new.held_back {
         folder.held_back_changed(emitter).await?;
+    }
+    if old.live_changes != new.live_changes {
+        folder.live_changes_changed(emitter).await?;
     }
     // Not coalesced either: the tray says once that OneDrive is full.
     if old.quota_full != new.quota_full {

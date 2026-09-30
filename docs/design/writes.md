@@ -841,7 +841,9 @@ Per account: on `org.konedrive.UploadQueue`, `Changes`, `ConfirmDeletes`/`Restor
 `PendingBytes`, `BlockedCount`, `HeldCount`, `QuotaFull`, `QuotaWaitingCount`, `QuotaWaitingBytes`,
 `TooBigCount` (§6.4); on `org.konedrive.Folder`, `Pause`/`Resume`,
 `SetIgnorePatterns`, `Paused`, `PausedUntil` and `IgnorePatterns`, the thumbnail setting
-`SetThumbnails` and `Thumbnails`, and the automatic hold's `HeldBack` and `SyncAnyway`;
+`SetThumbnails` and `Thumbnails`, the automatic hold's `HeldBack` and `SyncAnyway`, and
+`LiveChanges` (whether changes from OneDrive arrive through the notification socket,
+[sync.md](sync.md) §4.2);
 `Transfers.Uploads`;
 `Conflicts.MachineName`; and the Full local scan's `org.konedrive.LocalScan` — `State`, `Reason`,
 `Started`, `Directories`, `Files`, `Expected`, `Finished`, `Took` (§4.6);
@@ -869,8 +871,9 @@ never the async runtime or the bus.
 
 **What runs is decided in one place** per account (`sync/running.rs`), from the user's pause, the
 automatic hold (below) and the thumbnail setting (desktop.md §8). The transfer pool, the outbox
-worker (before each row and between fragments), the poll and the replacements it runs, and the
-thumbnail filler all ask it, never the tree store; `Paused`, `PausedUntil`, `HeldBack`, the rows of
+worker (before each row and between fragments), the poll and the replacements it runs, the
+notification socket ([sync.md](sync.md) §4.2) and the thumbnail filler all ask it, never the tree
+store; `Paused`, `PausedUntil`, `HeldBack`, the rows of
 `Changes()` and the queue totals' "no time left" follow what it publishes. A pause and a hold stop
 the same work (the table below); thumbnails off stop only the thumbnail requests.
 
@@ -912,10 +915,14 @@ the window's **Sync anyway**) lifts it now, until a source changes (the network'
 then worked out again. It is not kept across a restart, and a folder not connected to OneDrive
 refuses it `Unsupported`. It stays per account (`Folder.SyncAnyway`): it is an action on the
 account in front of the user — "sync this one now" — not a setting, and lifting every account's
-hold at once from one account's Status page would sync accounts the user did not look at.
+hold at once from one account's Status page would sync accounts the user did not look at. The
+whole app's action is `konedrivectl sync anyway --all`: it calls `SyncAnyway` on every account
+that holds back by itself and is not paused by the user, and on no other.
 
-**Pause** stops the account's outbox, its poll (so no cycle and no replacement), its pinned
-downloads (the pool gives no slot but for opens) and its thumbnails;
+**Pause** stops the account's outbox, its poll (so no cycle and no replacement), its notification
+socket (closed at once, opened again when the pause ends: meanwhile nothing is heard of changes
+in OneDrive, limitations log F184), its pinned downloads (the pool gives no slot but for opens)
+and its thumbnails;
 fills on open, `Hydrate` and the watcher go on, so rows keep collecting. It is kept in the tree
 store, so it outlasts a restart, and a timed pause ends by itself. The tray's "Pause Syncing" pauses
 every account. What it does to work already under way:
@@ -1011,6 +1018,17 @@ account that holds more than 1 GiB:
 konedrivectl --account Test dev export-access-token --read-write --out /tmp/kd-rw.token
 cargo run -p konedrive-write-test -- --graph-test-drive <id> --graph-token /tmp/kd-rw.token \
     --daemon-config ~/.config/konedrive/config.toml --large-test-drive --only placeholders
+rm /tmp/kd-rw.token
+```
+
+Only the check that a write sends a notification on the drive's Socket.IO endpoint (issue #54:
+it reports the delay, `pingInterval` / `pingTimeout`, and whether `expirationDateTime` came —
+limitations log F180, F182), which needs no read-only token either:
+
+```
+konedrivectl --account Test dev export-access-token --read-write --out /tmp/kd-rw.token
+cargo run -p konedrive-write-test -- --graph-test-drive <id> --graph-token /tmp/kd-rw.token \
+    --daemon-config ~/.config/konedrive/config.toml --only notifications
 rm /tmp/kd-rw.token
 ```
 

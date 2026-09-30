@@ -147,6 +147,7 @@ impl Run {
         check!("a delete goes to the recycle bin", self.recycle_bin());
         check!("the token exported after the switch back to read-only cannot write", self.read_only_token());
         check!("delta returns the run's own changes with the eTags they were given", self.delta_echo());
+        check!(notifications::NOTIFICATION, self.notification_of_a_write());
         done
     }
 
@@ -509,4 +510,5 @@ fn message(answer: &Value) -> String {
 }
 
 // After `step!`, which it uses.
+mod notifications;
 mod placeholders;

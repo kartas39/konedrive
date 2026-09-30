@@ -147,6 +147,12 @@
          stops, but is not the user's pause: Paused stays false, and it is
          worked out again from the machine's state after a restart. -->
     <property name="HeldBack" type="s" access="read"/>
+    <!-- How changes made in OneDrive reach this computer: "connected" (at
+         once, through Graph's notification socket; the poll runs every 5
+         minutes as a safety net), "connecting" (trying, or waiting before the
+         next try; the poll runs every minute), or "off" (paused, held back,
+         or not a OneDrive folder: nothing is asked of OneDrive). -->
+    <property name="LiveChanges" type="s" access="read"/>
     <!-- See SetThumbnails; true until it is called. -->
     <property name="Thumbnails" type="b" access="read"/>
   </interface>

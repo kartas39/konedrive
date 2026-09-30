@@ -28,7 +28,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use tokio::sync::{Notify, OwnedMutexGuard};
+use tokio::sync::{watch, Notify, OwnedMutexGuard};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
@@ -1252,33 +1252,80 @@ pub struct Schedule {
     /// The waits after the first, second, … failure in a row; after the last,
     /// the ordinary interval.
     pub retry: Vec<Duration>,
+    /// The interval while the notification socket is up (`live`): the poll is only the safety
+    /// net for an event OneDrive never sent.
+    pub live_interval: Duration,
+    /// The live task's waits; `None` runs none, and the poll alone brings changes (the tests
+    /// that do not ask for it).
+    pub live: Option<super::live::Timing>,
 }
 
 impl Default for Schedule {
     fn default() -> Self {
-        Self { interval: Duration::from_secs(60), retry: vec![Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(30)] }
+        Self {
+            interval: Duration::from_secs(60),
+            retry: vec![Duration::from_secs(5), Duration::from_secs(15), Duration::from_secs(30)],
+            live_interval: Duration::from_secs(300),
+            live: Some(super::live::Timing::default()),
+        }
     }
 }
 
-/// Runs a cycle at once, then every `interval`, at once on `refresh()`, and on
-/// the retry schedule after a failure (Poller).
+impl Schedule {
+    /// The poll alone, every `interval`, with these retries: no live task.
+    pub fn polled(interval: Duration, retry: Vec<Duration>) -> Self {
+        Self { interval, retry, live: None, ..Self::default() }
+    }
+}
+
+/// Runs a cycle at once, then every `interval` (`live_interval` while the notification
+/// socket is up), at once on `refresh()`, and on the retry schedule after a failure
+/// (Poller). The live task (`live`), when the schedule has one, runs alongside and stops
+/// with it.
 pub struct Poller {
     refresh: Arc<Notify>,
     cancel: CancellationToken,
     task: tokio::task::JoinHandle<()>,
     listing: Arc<Listing>,
+    /// Whether the notification socket is up: the live task says, the poller reads.
+    up: Arc<watch::Sender<bool>>,
+    live: Option<super::live::Live>,
 }
 
 impl Poller {
     pub fn start(listing: Arc<Listing>, schedule: Schedule) -> Self {
         let refresh = Arc::new(Notify::new());
         let cancel = CancellationToken::new();
-        let task = tokio::spawn(run(Arc::clone(&listing), schedule, Arc::clone(&refresh), cancel.clone()));
-        Self { refresh, cancel, task, listing }
+        let up = Arc::new(watch::channel(false).0);
+        let live = schedule.live.clone().map(|timing| {
+            let ctx = super::live::LiveContext {
+                drive: listing.ctx.drive.clone(),
+                store: listing.ctx.store.clone(),
+                running: Arc::clone(&listing.ctx.running),
+                state: listing.ctx.state.clone(),
+                refresh: Arc::clone(&refresh),
+                up: Arc::clone(&up),
+            };
+            super::live::Live::start(ctx, timing, cancel.clone())
+        });
+        let task = tokio::spawn(run(Arc::clone(&listing), schedule, Arc::clone(&refresh), cancel.clone(), up.subscribe()));
+        Self { refresh, cancel, task, listing, up, live }
     }
 
     pub fn refresh(&self) {
         self.refresh.notify_one();
+    }
+
+    /// The pause, the hold or the network may have changed: the live task looks again.
+    pub fn wake_live(&self) {
+        if let Some(live) = &self.live {
+            live.wake();
+        }
+    }
+
+    /// Whether the notification socket is up, as the poller reads it.
+    pub fn live_up(&self) -> Arc<watch::Sender<bool>> {
+        Arc::clone(&self.up)
     }
 
     /// A cycle now whose reconcile is Full: it places again what is missing
@@ -1289,11 +1336,15 @@ impl Poller {
         self.refresh.notify_one();
     }
 
-    /// Stops the poller and every replacement under way, and waits for them.
+    /// Stops the poller, the live task and every replacement under way, and waits for them.
     pub async fn stop(self) {
         self.cancel.cancel();
         self.listing.cancel_replacements.cancel();
         let _ = self.task.await;
+        if let Some(live) = self.live {
+            live.join().await;
+        }
+        self.listing.ctx.state.set_live_changes(super::live::LiveChanges::Off);
         self.listing.join_replacements().await;
     }
 }
@@ -1322,8 +1373,16 @@ async fn held_back(listing: &Listing) -> bool {
     waiting != Some(0)
 }
 
-async fn run(listing: Arc<Listing>, schedule: Schedule, refresh: Arc<Notify>, cancel: CancellationToken) {
+async fn run(
+    listing: Arc<Listing>,
+    schedule: Schedule,
+    refresh: Arc<Notify>,
+    cancel: CancellationToken,
+    mut up: watch::Receiver<bool>,
+) {
     let mut failures = 0usize;
+    // False once the sender is gone: `changed` would then answer at once, for good.
+    let mut up_open = true;
     loop {
         // Paused (`docs/design/writes.md` §11): OneDrive is not asked, so nothing is
         // replaced either, until the pause ends or `Resume()` nudges.
@@ -1359,20 +1418,27 @@ async fn run(listing: Arc<Listing>, schedule: Schedule, refresh: Arc<Notify>, ca
         let wait = match &result {
             Ok(_) => {
                 failures = 0;
-                schedule.interval
+                None
             }
             Err(CycleError::Cancelled) => return,
             Err(e) => {
                 tracing::warn!("the sync with OneDrive failed: {e}");
                 let wait = schedule.retry.get(failures).copied().unwrap_or(schedule.interval);
                 failures += 1;
-                wait
+                Some(wait)
             }
         };
-        tokio::select! {
-            () = tokio::time::sleep(wait) => {}
-            () = refresh.notified() => {}
-            () = cancel.cancelled() => return,
+        // Counted from the end of the cycle: a socket that goes down makes the next cycle
+        // due at most `interval` after it, and one that comes up puts it off.
+        let since = tokio::time::Instant::now();
+        loop {
+            let wait = wait.unwrap_or(if *up.borrow_and_update() { schedule.live_interval } else { schedule.interval });
+            tokio::select! {
+                () = tokio::time::sleep_until(since + wait) => break,
+                () = refresh.notified() => break,
+                () = cancel.cancelled() => return,
+                changed = up.changed(), if up_open => up_open = changed.is_ok(),
+            }
         }
     }
 }
@@ -2007,12 +2073,35 @@ mod tests {
         Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "L1"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [], "@odata.deltaLink": s.link("L1")})))
             .mount(&s.server).await;
-        let poller = Poller::start(s.listing(), Schedule { interval: Duration::from_secs(3600), retry: vec![] });
+        let poller = Poller::start(s.listing(), Schedule::polled(Duration::from_secs(3600), vec![]));
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(delta_requests(&s.server).await, 1, "the first cycle runs at once");
         poller.refresh();
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(delta_requests(&s.server).await, 2, "Refresh() runs another now, not in an hour");
+        tokio::time::timeout(Duration::from_secs(5), poller.stop()).await.expect("stop returns");
+    }
+
+    /// Issue #54: while the notification socket is up the poll waits `live_interval`; once it
+    /// goes down, the next cycle is due `interval` after the last one.
+    #[tokio::test]
+    async fn the_poll_waits_longer_while_the_socket_is_up_and_not_once_it_drops() {
+        let s = setup().await;
+        s.feed(None, json!([root_item()]), "L1").await;
+        Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "L1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [], "@odata.deltaLink": s.link("L1")})))
+            .mount(&s.server).await;
+        let schedule = Schedule { live_interval: Duration::from_secs(3600), ..Schedule::polled(Duration::from_millis(400), vec![]) };
+        let poller = Poller::start(s.listing(), schedule);
+        let up = poller.live_up();
+        up.send_replace(true);
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        assert_eq!(delta_requests(&s.server).await, 1, "the first cycle, then the live interval");
+        up.send_replace(false);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert_eq!(delta_requests(&s.server).await, 2, "overdue by the normal interval: a cycle at once");
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(delta_requests(&s.server).await, 3, "and every normal interval after");
         tokio::time::timeout(Duration::from_secs(5), poller.stop()).await.expect("stop returns");
     }
 
@@ -2024,7 +2113,7 @@ mod tests {
             .up_to_n_times(2).with_priority(1)
             .mount(&s.server).await;
         s.feed(None, json!([root_item(), folder("D", "R", "docs")]), "L1").await;
-        let poller = Poller::start(s.listing(), Schedule { interval: Duration::from_secs(3600), retry: vec![Duration::from_millis(100)] });
+        let poller = Poller::start(s.listing(), Schedule::polled(Duration::from_secs(3600), vec![Duration::from_millis(100)]));
         tokio::time::sleep(Duration::from_millis(1500)).await;
         assert!(s.root.path.join("docs").is_dir(), "retried after 100 ms rather than an hour");
         assert_eq!(s.state.get().sync_trouble, None, "the trouble clears once a cycle succeeds");
@@ -2041,7 +2130,7 @@ mod tests {
         let lifecycle = Arc::new(tokio::sync::RwLock::new(()));
         let held = Arc::clone(&lifecycle).write_owned().await;
         let listing = Listing::new(ListingContext { lifecycle: Arc::clone(&lifecycle), ..s.context() });
-        let poller = Poller::start(listing, Schedule { interval: Duration::from_secs(3600), retry: vec![] });
+        let poller = Poller::start(listing, Schedule::polled(Duration::from_secs(3600), vec![]));
         let docs = s.root.path.join("docs");
         let mut staged = false;
         for _ in 0..100 {
@@ -2091,7 +2180,7 @@ mod tests {
     async fn stopping_does_not_wait_for_a_slow_answer_from_graph() {
         let s = setup().await;
         s.feed_after(None, json!([root_item()]), "L1", Duration::from_secs(30)).await;
-        let poller = Poller::start(s.listing(), Schedule { interval: Duration::from_secs(3600), retry: vec![] });
+        let poller = Poller::start(s.listing(), Schedule::polled(Duration::from_secs(3600), vec![]));
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert_eq!(delta_requests(&s.server).await, 1, "the listing has asked");
         assert!(s.state.get().listing);
@@ -2491,7 +2580,7 @@ mod tests {
         let new = b"new content".to_vec();
         s.serve_new_version(&new, s.new_version(&new).set_delay(Duration::from_secs(30))).await;
         s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-        let poller = Poller::start(Arc::clone(&listing), Schedule { interval: Duration::from_secs(3600), retry: vec![] });
+        let poller = Poller::start(Arc::clone(&listing), Schedule::polled(Duration::from_secs(3600), vec![]));
         let mut asked = false;
         for _ in 0..100 {
             asked = s.server.received_requests().await.unwrap().iter().any(|r| r.url.path() == "/me/drive/items/F");

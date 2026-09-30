@@ -217,7 +217,12 @@ enum SyncCmd {
     Resume,
     /// Sync now though the account paused by itself (a metered connection, the battery),
     /// until the connection, the battery or the power profile changes
-    Anyway,
+    Anyway {
+        /// Every account that paused by itself and is not paused by you, as the tray's
+        /// Sync Anyway does
+        #[arg(long)]
+        all: bool,
+    },
     /// Show or change whether OneDrive's thumbnails of images and videos are downloaded.
     /// Off, Dolphin downloads a cloud-only file in full to show its preview while its
     /// previews are on
@@ -346,6 +351,7 @@ fn takes_no_account(command: &Cmd) -> Option<&'static str> {
                 | SyncCmd::Unpin { .. }
                 | SyncCmd::Free { .. },
         } => Some("the path decides the account"),
+        Cmd::Sync { command: SyncCmd::Anyway { all: true } } => Some("`sync anyway --all` acts on every account"),
         _ => None,
     }
 }
@@ -767,6 +773,43 @@ async fn sync_status(daemon: &Daemon, option: Option<&str>) -> anyhow::Result<()
     Ok(())
 }
 
+/// `sync anyway --all`: the hold of every account that holds back by itself and is not paused
+/// by the user is lifted — the tray's Sync Anyway (`docs/design/writes.md` §11).
+async fn sync_anyway_all(daemon: &Daemon) -> anyhow::Result<()> {
+    let accounts = daemon.accounts().await?;
+    let several = accounts.len() > 1;
+    let mut lifted = 0;
+    for account in &accounts {
+        let lift = async {
+            let proxy = daemon.sync(&account.path).await?;
+            let held = proxy.folder.held_back().await?;
+            if held.is_empty() || proxy.folder.paused().await? {
+                return zbus::Result::Ok(None);
+            }
+            proxy.folder.sync_anyway().await?;
+            Ok(Some(held))
+        };
+        match lift.await {
+            Ok(Some(held)) => {
+                let tag = if several { format!("{}: ", account.label) } else { String::new() };
+                println!(
+                    "{tag}Syncing anyway ({}) until the connection, the battery or the power profile changes.",
+                    konedrivectl::held_text(&held)
+                );
+                lifted += 1;
+            }
+            Ok(None) => {}
+            // Removed while this ran.
+            Err(e) if konedrivectl::is_gone(&e) => {}
+            Err(e) => return Err(anyhow!("{}: {e}", account.label)),
+        }
+    }
+    if lifted == 0 {
+        println!("No account is paused by itself: nothing to lift.");
+    }
+    Ok(())
+}
+
 /// `dev`: only in a development build, as the daemon's `TokenExport` is (limitations log W11).
 #[cfg(feature = "dev-tools")]
 async fn dev(daemon: &Daemon, option: Option<&str>, command: DevCmd) -> anyhow::Result<()> {
@@ -799,6 +842,7 @@ async fn dev(daemon: &Daemon, option: Option<&str>, command: DevCmd) -> anyhow::
 async fn sync(daemon: &Daemon, option: Option<&str>, command: SyncCmd) -> anyhow::Result<()> {
     match command {
         SyncCmd::Status => return sync_status(daemon, option).await,
+        SyncCmd::Anyway { all: true } => return sync_anyway_all(daemon).await,
         SyncCmd::Hydrate { path } => {
             let absolute = absolute_str(&path)?;
             let files = FilesProxy::new(&daemon.connection).await?;
@@ -991,7 +1035,7 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<
             explained(daemon, chosen, proxy, SyncAction::Resume, proxy.folder.resume().await).await?;
             println!("{tag}Resumed.");
         }
-        SyncCmd::Anyway => {
+        SyncCmd::Anyway { .. } => {
             let held = proxy.folder.held_back().await?;
             explained(daemon, chosen, proxy, SyncAction::Anyway, proxy.folder.sync_anyway().await).await?;
             match held.as_str() {

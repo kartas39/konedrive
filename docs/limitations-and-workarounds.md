@@ -2492,7 +2492,9 @@ application must never read zeros where real content should be.
 - **F181. The notification socket ignores proxies** (`drive/socket.rs`; issue #54) — `reqwest`
   follows `HTTPS_PROXY`, so the endpoint's `GET` goes through a proxy, but `tokio-tungstenite`
   opens a direct TCP connection. Without a direct route the socket fails to connect and changes
-  arrive by the poll only, every 60 s, as before issue #54. LIMIT · reasoned · open.
+  arrive by the poll only, every 60 s, as before issue #54. The endpoint is still asked for before
+  every try, so such a machine sends Graph one more `GET` a minute at most (the live task's backoff
+  ends at 60 s). LIMIT · reasoned · open.
 - **F182. The Socket.IO client is written from the protocol and one other client, not observed
   against the service** (`drive/socket.rs`; issue #54) — Engine.IO v4 over the websocket only (no
   long polling, which Microsoft does not offer), the notification URL's path taken as the
@@ -2503,6 +2505,31 @@ application must never read zeros where real content should be.
   no ping for `pingInterval + pingTimeout` ends the connection. Tested only against a local server
   playing the protocol (`drive::socket::tests`); the test account's harness check is what shows the
   service behaves so. Reasoned · open.
+- **F183. While the notification socket is up the poll runs every 5 minutes** (`listing.rs`
+  `Schedule::live_interval`; `docs/design/sync.md` §4.2; issue #54) — a change OneDrive sends no
+  event for is seen up to 5 minutes later instead of 60 s. The poll is kept only as the safety net;
+  how often the service drops an event is not known. When the socket goes down the next cycle is
+  due at most 60 s after the last one. GUESS · measured by
+  `sync::listing::tests::the_poll_waits_longer_while_the_socket_is_up_and_not_once_it_drops` ·
+  open.
+- **F184. While the account is paused or holds back, changes made in OneDrive are not seen**
+  (`sync/live.rs`, `listing.rs`; write design §11; issue #54) — the socket is closed and no cycle
+  runs, as a pause always stopped the poll. A file downloaded earlier stays at its old version
+  here, and one edited here meanwhile meets the newer version in OneDrive when the account runs
+  again: a conflict copy (write design §7). Accepted with the user: a hold on a metered connection
+  or on battery is meant to stop the traffic, and opening a file still downloads it (the pool's
+  reserve for opens). DESIGN · measured by
+  `sync::live::tests::a_pause_and_a_hold_close_the_socket_and_keep_it_closed_until_they_end` · open.
+- **F185. Every change in the drive asks for a cycle, the account's own uploads too**
+  (`sync/live.rs`; issue #54) — an event carries nothing that tells whose change it was, so each
+  upload, move or delete the outbox sends is followed by a delta cycle about 2 s later (events
+  within 2 s give one). The cycle finds the echo and changes nothing (write design §9); it costs
+  one `GET` of the delta, as a poll does. SHORTCUT · reasoned · open.
+- **F186. The live task's waits are chosen, not measured** (`sync/live.rs` `Timing`; issue #54) —
+  2 s of debounce, retries after 1, 2, 4 … 60 s, an endpoint kept at least 60 s whatever its
+  expiry says (one that expires within 2 minutes would otherwise be renewed in a loop), and a
+  stopped account looked at again every 60 s besides the nudges that wake it. GUESS · reasoned ·
+  open.
 ---
 
 ## 5. Provisional numbers
@@ -2571,6 +2598,8 @@ application must never read zeros where real content should be.
 | The outbox's budgets at scale (`bench.rs`) | see F158 | **guess** |
 | Jobs a tree store's channel holds before a sender waits (`tree::QUEUE`) | 1 024 | **guess** (F162) |
 | The notification endpoint's lifetime without `expirationDateTime` (`socket::DEFAULT_LIFETIME`) / replaced before its expiry by (`RENEW_EARLY`) / opening the socket, bound (`CONNECT_TIMEOUT`) / largest message taken (`MAX_MESSAGE`) | 1 h / 2 min / 30 s / 1 MiB | **guess** (issue #54, F180) |
+| The poll while the notification socket is up (`Schedule::live_interval`) | 5 min | the user's choice; how often the service drops an event is not known (F183) |
+| The live task's debounce / retries / shortest endpoint life / look at a stopped account (`live::Timing`) | 2 s / 1, 2, 4 … 60 s / 60 s / 60 s | **guess** (F186) |
 
 ---
 
@@ -2618,6 +2647,8 @@ application must never read zeros where real content should be.
   failed once in a full `cargo test --workspace` while other builds loaded the machine (load 6), and
   passes alone: it waits at most 2.5 s for `Folder.State` to read `listing`, behind a delta answer held
   for 2 s, so a slow bring-up misses the window. A read-only folder's path; seen once; not chased.
+  Seen again in a full `cargo test -p konedrivectl` of issue #54 (its default schedule now also
+  runs the live task, whose endpoint this test's wiremock answers `404`); passes alone.
 - **D17.** `konedrived` `sync::tests::onedrive::refresh_starts_a_sync_that_could_not_start_or_says_why`
   failed once in a full `cargo test --workspace` while other worktrees' builds loaded the machine,
   and passes alone and in the whole `konedrived` run. Seen once (issue #3's run); not chased.
