@@ -77,8 +77,8 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `FreeUpSpace() → (u files, t bytes, u busy)` | frees up every downloaded file that is not in use; files open somewhere or busy with a download are skipped and counted, never waited for; a file whose change waits to be uploaded is left, and counted as busy |
 | `Pause(u seconds)`, `Resume()` | pause the account — no upload, no poll, no thumbnails; fills on open, `Hydrate` and detection go on — for `seconds`, or until `Resume` when 0; the pause outlasts a daemon restart |
 | `SetIgnorePatterns(as)` | the names of the user's own files that are never uploaded (shell globs on a name); written to `config.toml`, then the whole folder is scanned again; `InvalidArgs` for an empty pattern or one holding "/" |
-| `SyncAnyway()` | lifts the automatic hold ([writes.md](writes.md) §11) now, until a source or the account's `pause_on_metered` / `on_battery` changes; not kept across a restart; `Unsupported` for a folder not connected to OneDrive |
-| `SetThumbnails(b)`, `SetPauseOnMetered(b)`, `SetOnBattery(s)` | the account's sync settings (§8, [writes.md](writes.md) §11): whether Graph's thumbnails are fetched; whether the account holds back on a metered connection; what it does on battery — `sync`, `power-saver` or `pause` (`InvalidArgs` for anything else). Each is written to the account's section of `config.toml` (`thumbnails`, `pause_on_metered`, `on_battery`) and taken at once; `Unsupported` for a folder not connected to OneDrive |
+| `SyncAnyway()` | lifts the automatic hold ([writes.md](writes.md) §11) of this account now, until a source or the app's `pause_on_metered` / `on_battery` (`Accounts.SetPauseOnMetered`, `SetOnBattery`, §2.8) changes; not kept across a restart; `Unsupported` for a folder not connected to OneDrive |
+| `SetThumbnails(b)` | the account's own sync setting (§8): whether Graph's thumbnails are fetched. Written to the account's section of `config.toml` (`thumbnails`) and taken at once; `Unsupported` for a folder not connected to OneDrive. When the account holds back by itself is the whole app's setting, on `Accounts` (§2.8) |
 
 `UploadQueue`:
 
@@ -120,7 +120,7 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `IgnorePatterns` (`as`) | the ignore list; read-only |
 | `Paused` (`b`), `PausedUntil` (`x`) | whether the account is paused, and when the pause ends by itself (0: until `Resume`) |
 | `HeldBack` (`s`) | why the account holds its background work back by itself: `metered`, `on-battery`, `power-saver`, or empty ([writes.md](writes.md) §11); never the user's pause, which `Paused` shows |
-| `Thumbnails` (`b`), `PauseOnMetered` (`b`), `OnBattery` (`s`) | the account's sync settings; absent from `config.toml`, `true`, `true` and `power-saver` (an `on_battery` the daemon does not know reads `power-saver`, with a warning in the log) |
+| `Thumbnails` (`b`) | the account's own sync setting; `true` when absent from `config.toml` |
 
 `Transfers`:
 
@@ -236,6 +236,8 @@ through, `ModeNotGranted` for one that is not read-write.
 | `Add(s label) → o` | adds a signed-out, read-only account with no folder and returns its object ([accounts.md](accounts.md) §7.2); `InvalidArgs` for a label the rules refuse |
 | `Remove(o account)` | forgets the account's folder as `Folder.Unregister` does, signs it out, deletes its refresh token, cached name and quota and tree store, and takes its object off the bus; the folder's files and the rescued files stay ([accounts.md](accounts.md) §7.3) |
 | `SetClientId(s)` | overrides the built-in client id with one of the caller's own (a custom Entra registration); validates and stores it, `InvalidArgs` for a malformed one, and refused while any account is signing in or signed in |
+| `PauseOnMetered` (`b`), `OnBattery` (`s`) | when every account holds back by itself ([writes.md](writes.md) §11): on a metered connection or not; on battery `sync`, `power-saver` or `pause`. The top-level `pause_on_metered` and `on_battery` of `config.toml`; absent, `true` and `power-saver` (an `on_battery` the daemon does not know reads `power-saver`, with a warning in the log). Both announced with `PropertiesChanged` |
+| `SetPauseOnMetered(b)`, `SetOnBattery(s)` | change them for every account at once: written to `config.toml` under its lock, taken by every account's hold, and every account's `SyncAnyway` ends; `InvalidArgs` for an `on_battery` choice other than the three |
 
 The same object is an `org.freedesktop.DBus.ObjectManager`: `InterfacesAdded` when an account's
 object is on the bus, `InterfacesRemoved` when it goes, and `GetManagedObjects` for tools. The
@@ -284,6 +286,7 @@ F51).
 | `account remove <account>` | the argument | `Accounts.Remove`, without asking; then says what was deleted and what was kept |
 | `account mode [read-only\|read-write] [--force]` | chosen | shows the mode (and `LastError`), or switches it with `Account.SetMode`: read-write opens the browser like `login` and waits until `Mode` is `read-write` or `LastError` says why not; read-only is refused while changes wait to be uploaded, unless `--force` |
 | `set-client-id <id>` | — | `Accounts.SetClientId`, overriding the built-in client id for every account with the caller's own; a refusal names the accounts still signed in |
+| `settings on-metered [pause\|sync]`, `settings on-battery [sync\|power-saver\|pause]` | — | the whole app's hold settings: shows the choice, or changes it for every account (`Accounts.SetPauseOnMetered` — `pause` is on — and `SetOnBattery`) |
 | `login` | chosen | `BeginSignIn`, opens the browser and waits. With no account at all and none named, it first adds one called `Personal` |
 | `logout` | chosen | signs the account out and deletes its token |
 | `status` | chosen, or all | the account's sign-in state and mode; with several accounts and none named, every account under its label, the `Client ID:` line once above them |
@@ -303,7 +306,7 @@ F51).
 | `sync pause [--for <duration>]`, `sync resume` | chosen | `Pause` for `30m`, `2h`, `1d`, `1h30m`…, or until `sync resume`; `Resume` |
 | `sync anyway` | chosen | `SyncAnyway`: syncs now though the account holds back by itself, until the connection, the battery or the power profile changes |
 | `sync ignore [list\|add <pattern>\|remove <pattern>]` | chosen | shows the ignore list (`IgnorePatterns`), or changes it with `SetIgnorePatterns` |
-| `sync thumbnails [on\|off]`, `sync on-metered [pause\|sync]`, `sync on-battery [sync\|power-saver\|pause]` | chosen | shows the sync setting, or changes it (`SetThumbnails`, `SetPauseOnMetered` — `pause` is on — and `SetOnBattery`) |
+| `sync thumbnails [on\|off]` | chosen | shows the account's thumbnail setting, or changes it (`SetThumbnails`) |
 | `sync not-uploaded [--all]` | chosen | `NotUploadedSummary`: each group and its reasons with their counts and sizes, then (`NotUploadedFiles`) the files of the per-file reasons, the first 20 of each; `--all` lists every file of every reason |
 | `sync deletes confirm\|restore` | chosen | `ConfirmDeletes` or `RestoreDeletes`: the mass-delete guard's two answers |
 | `dev export-access-token --out <file> [--read-write]` | chosen | a development build's only (`dev-tools`); writes an access token of the account to a `0600` file, atomically, never through a symlink: a read-only one, or with `--read-write` one that can change files, which only a test account the write gate lets through gets |
@@ -336,8 +339,8 @@ rows in sight, so thousands of entries cost a handful of delegates; both keep a 
 a page waiting in the window's hidden holder would otherwise take the whole list's height and build
 every row (issue #39, limitations log F168, F170).
 | **Not Uploaded** | what stays on this computer and why (`NotUploadedSummary()`), in four groups: "Needs You" (a reason one action fixes: its count, size and button — "Refresh" for a full OneDrive, "Sign In Again" for a sign-in that does not allow writes), "Needs You for Each File" (each reason with its count; opened, its files — `NotUploadedFiles(reason, 20)`, asked only then — each with its reason, OneDrive's own words for a refused one; clicking one shows it in Dolphin; past 20, "and N more" names `konedrivectl sync not-uploaded --all`), "Never Uploaded" (a line per reason with its count) and "Waiting" (one line, "N changes wait and will go up by themselves", its reasons when opened). Read when shown and when a count moves while it is, at most once a second. A count badge while changes are blocked |
-| **Account** | the account's name with "Rename…"; the switch "Upload changes made on this computer" (below); for a OneDrive folder, "Sync Settings" below it: the switch "Download thumbnails" (`SetThumbnails`, §8; while off, a line says that Dolphin, with its previews on, downloads a cloud-only file in full to make its preview), the switch "Pause on metered connections" (`SetPauseOnMetered`) and the combo box "On battery" — "Sync as usual", "Pause in power-saver mode", "Pause" (`SetOnBattery`) — each showing what the daemon says; sign in or out, the Microsoft account's name, email and quota; the folder, with "Choose Folder…" and "Forget Folder"; for a OneDrive folder, "Uploading": this computer's name for copies (`MachineName`, read-only: `machine_name` in `config.toml`) and the ignore list, with "Add" and a remove button per pattern (`SetIgnorePatterns`); and "Remove Account…" |
-| **Settings** | "Start at login", "Show download and upload progress", "Show in Places", "Quit KOneDrive" |
+| **Account** | the account's name with "Rename…"; the switch "Upload changes made on this computer" (below); for a OneDrive folder, "Thumbnails" below it: the switch "Download thumbnails" (`SetThumbnails`, §8; while off, a line says that Dolphin, with its previews on, downloads a cloud-only file in full to make its preview), showing what the daemon says; sign in or out, the Microsoft account's name, email and quota; the folder, with "Choose Folder…" and "Forget Folder"; for a OneDrive folder, "Uploading": this computer's name for copies (`MachineName`, read-only: `machine_name` in `config.toml`) and the ignore list, with "Add" and a remove button per pattern (`SetIgnorePatterns`); and "Remove Account…" |
+| **Settings** | "App": "Start at login", "Show download and upload progress", "Show in Places"; "Sync", for every account: the switch "Pause on metered connections" (`Accounts.SetPauseOnMetered`) and the combo box "On battery" — "Sync as usual", "Pause in power-saver mode", "Pause" (`Accounts.SetOnBattery`) — each showing what the daemon says and disabled while it is not running; "Quit KOneDrive" |
 
 **The switcher** shows the chosen account's initials, label and email, and opens a menu of every
 account, each with its state's icon (the tray's four, §5), then "Sign in…". It is there with a

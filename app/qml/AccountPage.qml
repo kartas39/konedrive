@@ -200,14 +200,15 @@ FormCard.FormCardPage {
         }
     }
 
-    // The account's sync settings (issues #57, #80): each is the daemon's, written to
-    // config.toml; the controls show what it says, and a change goes through it.
+    // The account's own sync setting (issue #80): the daemon's, written to config.toml;
+    // the switch shows what it says, and a change goes through it. Pausing on metered
+    // connections and on battery is the whole app's, on the Settings page (issue #95).
     FormCard.FormHeader {
         visible: page.oneDrive
-        title: i18nc("@title:group", "Sync Settings")
+        title: i18nc("@title:group", "Thumbnails")
     }
     FormCard.FormCard {
-        objectName: "syncSettings"
+        objectName: "thumbnailSettings"
         visible: page.oneDrive
 
         FormCard.FormSwitchDelegate {
@@ -236,40 +237,6 @@ FormCard.FormCardPage {
                 source: "dialog-warning"
                 implicitWidth: Kirigami.Units.iconSizes.small
                 implicitHeight: Kirigami.Units.iconSizes.small
-            }
-        }
-        FormCard.FormDelegateSeparator {}
-        FormCard.FormSwitchDelegate {
-            id: meteredSwitch
-            objectName: "meteredSwitch"
-
-            readonly property bool on: page.sync !== null && page.sync.pauseOnMetered
-
-            text: i18n("Pause on metered connections")
-            description: i18n("On a connection marked as metered, such as a phone's hotspot, nothing is uploaded or downloaded in the background. Opening a file still downloads it.")
-            checked: on
-            onOnChanged: checked = on
-            onToggled: {
-                const wanted = checked;
-                checked = on;
-                page.sync.setPauseOnMetered(wanted);
-            }
-        }
-        FormCard.FormDelegateSeparator {}
-        FormCard.FormComboBoxDelegate {
-            id: batteryCombo
-            objectName: "batteryCombo"
-
-            readonly property string choice: page.sync ? page.sync.onBattery : "power-saver"
-            readonly property var choices: ["sync", "power-saver", "pause"]
-
-            text: i18n("On battery")
-            model: [i18nc("@item:inlistbox on battery", "Sync as usual"), i18nc("@item:inlistbox on battery", "Pause in power-saver mode"), i18nc("@item:inlistbox on battery", "Pause")]
-            currentIndex: Math.max(0, choices.indexOf(choice))
-            onChoiceChanged: currentIndex = Math.max(0, choices.indexOf(choice))
-            onActivated: index => {
-                currentIndex = Math.max(0, choices.indexOf(choice));
-                page.sync.setOnBattery(choices[index]);
             }
         }
     }

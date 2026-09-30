@@ -31,9 +31,13 @@ class DaemonController : public QObject
     Q_PROPERTY(bool helperTrouble READ helperTrouble NOTIFY changed)
     /// What to do about helperState, in one line; empty when there is nothing to add.
     Q_PROPERTY(QString helperInstruction READ helperInstruction NOTIFY changed)
+    /// The hold settings of the whole app (PauseOnMetered, OnBattery: "sync",
+    /// "power-saver" or "pause"): the same for every account.
+    Q_PROPERTY(bool pauseOnMetered READ pauseOnMetered NOTIFY changed)
+    Q_PROPERTY(QString onBattery READ onBattery NOTIFY changed)
     /// Trouble that belongs to no account (config.toml unreadable, a failed migration).
     Q_PROPERTY(QString lastError READ lastError NOTIFY changed)
-    /// Why the last SetClientId asked from this window failed.
+    /// Why the last SetClientId, SetPauseOnMetered or SetOnBattery asked from this window failed.
     Q_PROPERTY(QString actionError READ actionError NOTIFY actionErrorChanged)
     /// The account a Remove is under way for; empty when none is.
     Q_PROPERTY(QString removing READ removing NOTIFY removeChanged)
@@ -60,6 +64,8 @@ public:
     QString helperState() const { return m_helperState; }
     bool helperTrouble() const;
     QString helperInstruction() const;
+    bool pauseOnMetered() const { return m_pauseOnMetered; }
+    QString onBattery() const { return m_onBattery; }
     QString lastError() const { return m_lastError; }
     QString actionError() const { return m_actionError; }
     QString removing() const { return m_removing; }
@@ -71,6 +77,9 @@ public:
     /// Re-reads every Accounts property (GetAll).
     Q_INVOKABLE void retry();
     Q_INVOKABLE void setClientId(const QString &id);
+    /// SetPauseOnMetered, SetOnBattery; a refusal lands in actionError.
+    Q_INVOKABLE void setPauseOnMetered(bool on);
+    Q_INVOKABLE void setOnBattery(const QString &choice);
     /// SetClientId, then `done`; or `failed` with the daemon's reason. Leaves actionError alone.
     void setClientId(const QString &id, std::function<void()> done, std::function<void(const QString &)> failed);
     /// Add(label): `done` gets the new account's object path, `failed` the daemon's reason.
@@ -104,6 +113,8 @@ private:
     QStringList m_accounts;
     QString m_clientId;
     QString m_helperState;
+    bool m_pauseOnMetered = true;
+    QString m_onBattery = QStringLiteral("power-saver");
     QString m_lastError;
     QString m_actionError;
     QString m_removing;

@@ -840,9 +840,8 @@ Per account: on `org.konedrive.UploadQueue`, `Changes`, `ConfirmDeletes`/`Restor
 `NotUploaded`, `NotUploadedSummary`, `NotUploadedFiles` and the properties `PendingCount`,
 `PendingBytes`, `BlockedCount`, `HeldCount`, `QuotaFull`, `QuotaWaitingCount`, `QuotaWaitingBytes`,
 `TooBigCount` (§6.4); on `org.konedrive.Folder`, `Pause`/`Resume`,
-`SetIgnorePatterns`, `Paused`, `PausedUntil` and `IgnorePatterns`, and the sync settings
-`SetThumbnails`, `SetPauseOnMetered`, `SetOnBattery`, `Thumbnails`, `PauseOnMetered`, `OnBattery`,
-and the automatic hold's `HeldBack` and `SyncAnyway`;
+`SetIgnorePatterns`, `Paused`, `PausedUntil` and `IgnorePatterns`, the thumbnail setting
+`SetThumbnails` and `Thumbnails`, and the automatic hold's `HeldBack` and `SyncAnyway`;
 `Transfers.Uploads`;
 `Conflicts.MachineName`; and the Full local scan's `org.konedrive.LocalScan` — `State`, `Reason`,
 `Started`, `Directories`, `Files`, `Expected`, `Finished`, `Took` (§4.6);
@@ -850,8 +849,10 @@ the activity kinds `uploaded`, `cloud-moved`, `cloud-deleted`, `upload-failed`, 
 `not-uploaded`; the
 error `NotUploaded`, which "Free up space" gets for a file with changes not uploaded yet. On
 `Account`: `SetMode`, `Mode`, and the quota (`QuotaUsed`, `QuotaTotal`, `QuotaRemaining`,
-`QuotaState`, §6.4). [desktop.md](desktop.md) has each member, the commands and the
-window's pages.
+`QuotaState`, §6.4). For the whole app, on `org.konedrive.Accounts`: the automatic hold's
+settings `SetPauseOnMetered`, `SetOnBattery`, `PauseOnMetered` and `OnBattery` (below;
+`konedrivectl settings on-metered|on-battery`, the Settings page's "Sync" group).
+[desktop.md](desktop.md) has each member, the commands and the window's pages.
 
 **Answers from memory.** The counts (`PendingCount`, `PendingBytes`, `BlockedCount`, `HeldCount`,
 the space counts of §6.4, the queue totals) and the Not Uploaded summary are kept in memory by the
@@ -876,10 +877,9 @@ the same work (the table below); thumbnails off stop only the thumbnail requests
 **The automatic hold** (issue #57) holds an account back by itself:
 
 - on a **metered connection** — NetworkManager's `Metered` on `/org/freedesktop/NetworkManager`
-  is `1` (yes) or `3` (guessed yes; limitations log F176) — while the account's `pause_on_metered`
-  is on (the default);
-- **on battery** — UPower's `OnBattery` on `/org/freedesktop/UPower` — as the account's
-  `on_battery` says: `sync`, the battery changes nothing; `power-saver` (the default), while the
+  is `1` (yes) or `3` (guessed yes; limitations log F176) — while `pause_on_metered` is on (the
+  default);
+- **on battery** — UPower's `OnBattery` on `/org/freedesktop/UPower` — as `on_battery` says: `sync`, the battery changes nothing; `power-saver` (the default), while the
   power profile (`ActiveProfile` of `org.freedesktop.UPower.PowerProfiles`, or of the older
   `net.hadess.PowerProfiles` when that is the name present) is `power-saver`; `pause`, always. On
   mains power the battery never holds an account back, whatever the profile.
@@ -887,7 +887,18 @@ the same work (the table below); thumbnails off stop only the thumbnail requests
 One watcher for the daemon (`sync/conditions.rs`, as `sync/network.rs` is) reads the three
 sources at the start and follows each one's `PropertiesChanged`, and the hub tells every account,
 and any that joins later, what they say. A source that is missing or cannot be read is no reason
-to hold back, logged once at `info` (limitations log F175). `HeldBack` says why an account holds
+to hold back, logged once at `info` (limitations log F175).
+
+**The two settings are the whole app's** (issue #95): a metered hotspot or the battery is the
+machine's, the same for every account. They are top-level keys of `config.toml`, next to
+`client_id`; every account's hold reads the same pair, and a change (`Accounts.SetPauseOnMetered`,
+`SetOnBattery`) is written under the file's lock, reaches every account at once and ends every
+account's `SyncAnyway`. Issue #57 had made them keys of each account; a start that still finds
+either key in an account's section moves it to the top level once, removes it from every account
+and writes the file back, logging what it moved at `info`. The strictest value wins: for
+`on_battery`, `pause` over `power-saver` over `sync`; `pause_on_metered` stays off only if every
+account said off (an account without the key counts as on, its default), and a top-level key
+already there takes part too (limitations log F179). `HeldBack` says why an account holds
 back now — `metered`, `on-battery`, `power-saver`, or empty; with a network and a battery reason
 at once, `metered`.
 
@@ -897,9 +908,11 @@ A pause and a hold can both be on, and the account runs only when neither is: `R
 not start an account while it holds back, nor does the hold's end alone while it is paused. When
 the hold ends, what it held back goes at once, as after `Resume`. `SyncAnyway()` (`sync anyway`,
 the window's **Sync anyway**) lifts it now, until a source changes (the network's `Metered`,
-`OnBattery` or the profile) or the account's `pause_on_metered` / `on_battery` does; the hold is
+`OnBattery` or the profile) or the app's `pause_on_metered` / `on_battery` does; the hold is
 then worked out again. It is not kept across a restart, and a folder not connected to OneDrive
-refuses it `Unsupported`, as it does the settings.
+refuses it `Unsupported`. It stays per account (`Folder.SyncAnyway`): it is an action on the
+account in front of the user — "sync this one now" — not a setting, and lifting every account's
+hold at once from one account's Status page would sync accounts the user did not look at.
 
 **Pause** stops the account's outbox, its poll (so no cycle and no replacement), its pinned
 downloads (the pool gives no slot but for opens) and its thumbnails;

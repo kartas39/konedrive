@@ -6,8 +6,9 @@ import org.kde.kirigamiaddons.formcard as FormCard
 import org.konedrive.app
 
 /// The whole app's settings: start at login, download progress, Places,
-/// and Quit. Each account's own
-/// things (its folder, its sign-in) are on its Account page.
+/// when every account pauses by itself (metered connections, battery), and
+/// Quit. Each account's own things (its folder, its sign-in, its thumbnails)
+/// are on its Account page.
 FormCard.FormCardPage {
     id: page
 
@@ -67,6 +68,52 @@ FormCard.FormCardPage {
             description: i18n("Each account's OneDrive folder gets an entry named after the account in Dolphin's Places panel and in file dialogs.")
             checked: Places.enabled
             onToggled: Places.enabled = checked
+        }
+    }
+
+    // When every account holds back by itself (issue #95): the daemon's settings, written
+    // to config.toml; the controls show what it says, and a change goes through it.
+    FormCard.FormHeader {
+        title: i18nc("@title:group", "Sync")
+    }
+    FormCard.FormCard {
+        objectName: "holdSettings"
+
+        FormCard.FormSwitchDelegate {
+            id: meteredSwitch
+            objectName: "meteredSwitch"
+
+            readonly property bool on: Daemon.pauseOnMetered
+
+            text: i18n("Pause on metered connections")
+            description: i18n("On a connection marked as metered, such as a phone's hotspot, nothing is uploaded or downloaded in the background. Opening a file still downloads it.")
+            enabled: page.available
+            checked: on
+            // The inner switch writes `checked` back, ending the binding: kept in step here.
+            onOnChanged: checked = on
+            onToggled: {
+                const wanted = checked;
+                checked = on;
+                Daemon.setPauseOnMetered(wanted);
+            }
+        }
+        FormCard.FormDelegateSeparator {}
+        FormCard.FormComboBoxDelegate {
+            id: batteryCombo
+            objectName: "batteryCombo"
+
+            readonly property string choice: Daemon.onBattery
+            readonly property var choices: ["sync", "power-saver", "pause"]
+
+            text: i18n("On battery")
+            model: [i18nc("@item:inlistbox on battery", "Sync as usual"), i18nc("@item:inlistbox on battery", "Pause in power-saver mode"), i18nc("@item:inlistbox on battery", "Pause")]
+            enabled: page.available
+            currentIndex: Math.max(0, choices.indexOf(choice))
+            onChoiceChanged: currentIndex = Math.max(0, choices.indexOf(choice))
+            onActivated: index => {
+                currentIndex = Math.max(0, choices.indexOf(choice));
+                Daemon.setOnBattery(choices[index]);
+            }
         }
     }
 

@@ -230,8 +230,6 @@ class FakeFolder : public FakeFolderInterface
     Q_PROPERTY(qlonglong PausedUntil READ pausedUntil)
     Q_PROPERTY(QString HeldBack READ heldBack)
     Q_PROPERTY(bool Thumbnails READ thumbnails)
-    Q_PROPERTY(bool PauseOnMetered READ pauseOnMetered)
-    Q_PROPERTY(QString OnBattery READ onBattery)
 
 public:
     FakeFolder(QObject *parent, FakeSync *sync)
@@ -254,8 +252,6 @@ public:
                                   {QStringLiteral("PausedUntil"), QVariant::fromValue<qlonglong>(0)},
                                   {QStringLiteral("HeldBack"), QString()},
                                   {QStringLiteral("Thumbnails"), true},
-                                  {QStringLiteral("PauseOnMetered"), true},
-                                  {QStringLiteral("OnBattery"), QStringLiteral("power-saver")},
                               })
     {
     }
@@ -275,8 +271,6 @@ public:
     qlonglong pausedUntil() const { return value("PausedUntil").toLongLong(); }
     QString heldBack() const { return value("HeldBack").toString(); }
     bool thumbnails() const { return value("Thumbnails").toBool(); }
-    bool pauseOnMetered() const { return value("PauseOnMetered").toBool(); }
-    QString onBattery() const { return value("OnBattery").toString(); }
 
 public Q_SLOTS:
     void Register(const QString &path, const QDBusMessage &message);
@@ -291,9 +285,6 @@ public Q_SLOTS:
     void SetIgnorePatterns(const QStringList &patterns, const QDBusMessage &message);
     void SyncAnyway();
     void SetThumbnails(bool on);
-    void SetPauseOnMetered(bool on);
-    /// Refused InvalidArgs for anything but sync, power-saver or pause, as the daemon does.
-    void SetOnBattery(const QString &choice, const QDBusMessage &message);
 };
 
 class FakeTransfers : public FakeFolderInterface
@@ -725,23 +716,6 @@ inline void FakeFolder::SetThumbnails(bool on)
     set({{QStringLiteral("Thumbnails"), on}});
 }
 
-inline void FakeFolder::SetPauseOnMetered(bool on)
-{
-    m_sync->calls << QStringLiteral("SetPauseOnMetered:") + (on ? QStringLiteral("on") : QStringLiteral("off"));
-    set({{QStringLiteral("PauseOnMetered"), on}});
-}
-
-inline void FakeFolder::SetOnBattery(const QString &choice, const QDBusMessage &message)
-{
-    m_sync->calls << QStringLiteral("SetOnBattery:") + choice;
-    if (choice != QLatin1String("sync") && choice != QLatin1String("power-saver") && choice != QLatin1String("pause")) {
-        message.setDelayedReply(true);
-        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("not a choice: ") + choice));
-        return;
-    }
-    set({{QStringLiteral("OnBattery"), choice}});
-}
-
 inline KonedriveOutboxList FakeUploadQueue::Changes(uint limit)
 {
     m_sync->calls << QStringLiteral("Changes");
@@ -857,6 +831,8 @@ class FakeAccounts : public QDBusAbstractAdaptor
     Q_PROPERTY(QString ClientId READ clientId)
     Q_PROPERTY(QString HelperState READ helperState)
     Q_PROPERTY(QString LastError READ lastError)
+    Q_PROPERTY(bool PauseOnMetered READ pauseOnMetered)
+    Q_PROPERTY(QString OnBattery READ onBattery)
 
 public:
     explicit FakeAccounts(FakeDaemon *daemon);
@@ -865,6 +841,8 @@ public:
     QString clientId() const { return m_properties.value(QStringLiteral("ClientId")).toString(); }
     QString helperState() const { return m_properties.value(QStringLiteral("HelperState")).toString(); }
     QString lastError() const { return m_properties.value(QStringLiteral("LastError")).toString(); }
+    bool pauseOnMetered() const { return m_properties.value(QStringLiteral("PauseOnMetered")).toBool(); }
+    QString onBattery() const { return m_properties.value(QStringLiteral("OnBattery")).toString(); }
 
     void set(const QVariantMap &changes)
     {
@@ -891,6 +869,22 @@ public Q_SLOTS:
         }
         set({{QStringLiteral("ClientId"), id}});
     }
+    void SetPauseOnMetered(bool on)
+    {
+        calls << QStringLiteral("SetPauseOnMetered:") + (on ? QStringLiteral("on") : QStringLiteral("off"));
+        set({{QStringLiteral("PauseOnMetered"), on}});
+    }
+    /// Refused InvalidArgs for anything but sync, power-saver or pause, as the daemon does.
+    void SetOnBattery(const QString &choice, const QDBusMessage &message)
+    {
+        calls << QStringLiteral("SetOnBattery:") + choice;
+        if (choice != QLatin1String("sync") && choice != QLatin1String("power-saver") && choice != QLatin1String("pause")) {
+            message.setDelayedReply(true);
+            fake::bus().send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("not a choice: ") + choice));
+            return;
+        }
+        set({{QStringLiteral("OnBattery"), choice}});
+    }
 
 private:
     FakeDaemon *m_daemon;
@@ -898,6 +892,8 @@ private:
         {QStringLiteral("ClientId"), QString()},
         {QStringLiteral("HelperState"), QStringLiteral("connected")},
         {QStringLiteral("LastError"), QString()},
+        {QStringLiteral("PauseOnMetered"), true},
+        {QStringLiteral("OnBattery"), QStringLiteral("power-saver")},
     };
 };
 

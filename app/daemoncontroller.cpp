@@ -104,6 +104,10 @@ void DaemonController::applyProperties(const QVariantMap &p)
     text("ClientId", m_clientId);
     text("HelperState", m_helperState);
     text("LastError", m_lastError);
+    text("OnBattery", m_onBattery);
+    if (const auto it = p.constFind(QLatin1String("PauseOnMetered")); it != p.constEnd()) {
+        m_pauseOnMetered = it->toBool();
+    }
     Q_EMIT changed();
     if (const auto it = p.constFind(QLatin1String("List")); it != p.constEnd()) {
         const QStringList accounts = objectPaths(*it);
@@ -158,6 +162,22 @@ void DaemonController::setClientId(const QString &id)
 void DaemonController::setClientId(const QString &id, std::function<void()> done, std::function<void(const QString &)> failed)
 {
     watch(m_iface->SetClientId(id.trimmed()), std::move(done), std::move(failed));
+}
+
+void DaemonController::setPauseOnMetered(bool on)
+{
+    setActionError(QString());
+    watch(m_iface->SetPauseOnMetered(on), {}, [this](const QString &error) {
+        setActionError(error);
+    });
+}
+
+void DaemonController::setOnBattery(const QString &choice)
+{
+    setActionError(QString());
+    watch(m_iface->SetOnBattery(choice), {}, [this](const QString &error) {
+        setActionError(error);
+    });
 }
 
 void DaemonController::add(const QString &label, std::function<void(const QString &)> done, std::function<void(const QString &)> failed)

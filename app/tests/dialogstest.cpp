@@ -224,9 +224,9 @@ private Q_SLOTS:
         fake.stop();
     }
 
-    /// Issues #57, #80: the account page's sync settings show what the daemon says and set
-    /// it; the thumbnails line shows while they are off.
-    void theSyncSettings()
+    /// Issue #80: the account page's thumbnails switch shows what the daemon says and sets
+    /// it; the line about Dolphin's previews shows while it is off.
+    void theThumbnailsSetting()
     {
         FakeDaemon fake;
         fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
@@ -255,14 +255,10 @@ private Q_SLOTS:
         QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("account")));
         auto *thumbnails = window->findChild<QQuickItem *>(QStringLiteral("thumbnailsSwitch"));
         auto *offLine = window->findChild<QQuickItem *>(QStringLiteral("thumbnailsOffLine"));
-        auto *metered = window->findChild<QQuickItem *>(QStringLiteral("meteredSwitch"));
-        auto *battery = window->findChild<QQuickItem *>(QStringLiteral("batteryCombo"));
-        QVERIFY(thumbnails && offLine && metered && battery);
+        QVERIFY(thumbnails && offLine);
         QTRY_VERIFY(thumbnails->isVisible());
         QVERIFY(thumbnails->property("checked").toBool());
         QVERIFY(!offLine->isVisible());
-        QVERIFY(metered->property("checked").toBool());
-        QCOMPARE(battery->property("currentIndex").toInt(), 1);
 
         // A switch turned by the user asks the daemon; the daemon's answer is what shows.
         thumbnails->setProperty("checked", false);
@@ -270,20 +266,65 @@ private Q_SLOTS:
         QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SetThumbnails:off")));
         QTRY_VERIFY(!thumbnails->property("checked").toBool());
         QTRY_VERIFY(offLine->isVisible());
-        metered->setProperty("checked", false);
-        QMetaObject::invokeMethod(metered, "toggled");
-        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SetPauseOnMetered:off")));
-        QTRY_VERIFY(!metered->property("checked").toBool());
-        QMetaObject::invokeMethod(battery, "activated", Q_ARG(int, 2));
-        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("SetOnBattery:pause")));
-        QTRY_COMPARE(battery->property("currentIndex").toInt(), 2);
 
         // Changed elsewhere (konedrivectl), the page follows.
-        fake.sync->folder->set({{QStringLiteral("Thumbnails"), true}, {QStringLiteral("OnBattery"), QStringLiteral("sync")}});
+        fake.sync->folder->set({{QStringLiteral("Thumbnails"), true}});
         QTRY_VERIFY(thumbnails->property("checked").toBool());
         QTRY_VERIFY(!offLine->isVisible());
-        QTRY_COMPARE(battery->property("currentIndex").toInt(), 0);
         fake.stop();
+    }
+
+    /// Issue #95: pausing on metered connections and on battery is the whole app's, on the
+    /// Settings page; the controls show what the manager says and set it there.
+    void theHoldSettings()
+    {
+        FakeDaemon fake;
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_VERIFY(daemon.serviceAvailable());
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("settings")));
+        QQuickItem *metered = nullptr;
+        QQuickItem *battery = nullptr;
+        QTRY_VERIFY((metered = window->findChild<QQuickItem *>(QStringLiteral("meteredSwitch"))));
+        QTRY_VERIFY((battery = window->findChild<QQuickItem *>(QStringLiteral("batteryCombo"))));
+        QTRY_VERIFY(metered->isVisible() && metered->isEnabled());
+        QVERIFY(metered->property("checked").toBool());
+        QCOMPARE(battery->property("currentIndex").toInt(), 1);
+
+        // Turned by the user, the manager is asked; its answer is what shows.
+        metered->setProperty("checked", false);
+        QMetaObject::invokeMethod(metered, "toggled");
+        QTRY_VERIFY(fake.manager->calls.contains(QStringLiteral("SetPauseOnMetered:off")));
+        QTRY_VERIFY(!metered->property("checked").toBool());
+        QMetaObject::invokeMethod(battery, "activated", Q_ARG(int, 2));
+        QTRY_VERIFY(fake.manager->calls.contains(QStringLiteral("SetOnBattery:pause")));
+        QTRY_COMPARE(battery->property("currentIndex").toInt(), 2);
+
+        // Changed elsewhere (konedrivectl settings), the page follows.
+        fake.manager->set({{QStringLiteral("PauseOnMetered"), true}, {QStringLiteral("OnBattery"), QStringLiteral("sync")}});
+        QTRY_VERIFY(metered->property("checked").toBool());
+        QTRY_COMPARE(battery->property("currentIndex").toInt(), 0);
+
+        // With the daemon gone, the controls cannot be used.
+        fake.stop();
+        QTRY_VERIFY(!daemon.serviceAvailable());
+        QTRY_VERIFY(!metered->isEnabled());
+        QVERIFY(!battery->isEnabled());
     }
 
     /// Issue #57: while the account holds back by itself, the Status page says why, beside
