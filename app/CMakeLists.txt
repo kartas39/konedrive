@@ -37,11 +37,13 @@ else()
             RESULT_VARIABLE KONEDRIVE_GIT_RESULT ERROR_QUIET)
         if(KONEDRIVE_GIT_RESULT EQUAL 0 AND KONEDRIVE_GIT_HEAD MATCHES "^[0-9a-f]+$")
             set(KONEDRIVE_SHOWN_COMMIT ${KONEDRIVE_GIT_HEAD})
-            # A new commit configures again: HEAD, and the branch it names.
+            # A new commit configures again: HEAD, the worktree's reflog (logs/HEAD, which every
+            # commit, checkout and reset updates, even once the branch's ref is packed), and the
+            # branch HEAD names.
             execute_process(COMMAND ${GIT_EXECUTABLE} symbolic-ref -q HEAD
                 WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                 OUTPUT_VARIABLE branch OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
-            foreach(ref HEAD ${branch})
+            foreach(ref HEAD logs/HEAD ${branch})
                 execute_process(COMMAND ${GIT_EXECUTABLE} rev-parse --path-format=absolute --git-path ${ref}
                     WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                     OUTPUT_VARIABLE path OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)

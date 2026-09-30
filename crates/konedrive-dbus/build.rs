@@ -36,9 +36,11 @@ fn main() {
             return "unknown".to_owned();
         };
         // A new commit builds again: HEAD moves, or the branch it names does (a loose ref, or
-        // packed-refs once git packs it).
+        // packed-refs once git packs it). The worktree's reflog, `logs/HEAD`, catches every
+        // commit, checkout and reset even when the branch's ref is packed and packed-refs is not
+        // rewritten.
         let branch = git(&["symbolic-ref", "-q", "HEAD"]);
-        for reference in ["HEAD", "packed-refs"].into_iter().chain(branch.as_deref()) {
+        for reference in ["HEAD", "logs/HEAD", "packed-refs"].into_iter().chain(branch.as_deref()) {
             if let Some(path) = git(&["rev-parse", "--path-format=absolute", "--git-path", reference]) {
                 if PathBuf::from(&path).exists() {
                     println!("cargo:rerun-if-changed={path}");
