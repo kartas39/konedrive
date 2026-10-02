@@ -105,6 +105,52 @@ pub enum SyncFault {
 
 type Result<T> = std::result::Result<T, SyncFault>;
 
+/// How `SetSelection` refuses: under the folder's named errors, and under the bus's own
+/// `InvalidArgs` for an id that cannot be chosen. ([`SyncFault::ZBus`] cannot carry that
+/// name: an error it wraps arrives as `org.freedesktop.zbus.Error`.)
+#[derive(Debug)]
+pub enum SelectionFault {
+    Named(SyncFault),
+    Fdo(zbus::fdo::Error),
+}
+
+impl DBusError for SelectionFault {
+    fn create_reply(&self, call: &zbus::message::Header<'_>) -> zbus::Result<zbus::message::Message> {
+        match self {
+            Self::Named(fault) => fault.create_reply(call),
+            Self::Fdo(error) => error.create_reply(call),
+        }
+    }
+
+    fn name(&self) -> zbus::names::ErrorName<'_> {
+        match self {
+            Self::Named(fault) => fault.name(),
+            Self::Fdo(error) => error.name(),
+        }
+    }
+
+    fn description(&self) -> Option<&str> {
+        match self {
+            Self::Named(fault) => fault.description(),
+            Self::Fdo(error) => error.description(),
+        }
+    }
+}
+
+impl std::fmt::Display for SelectionFault {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.name(), self.description().unwrap_or(""))
+    }
+}
+
+impl std::error::Error for SelectionFault {}
+
+impl From<zbus::Error> for SelectionFault {
+    fn from(error: zbus::Error) -> Self {
+        Self::Named(SyncFault::ZBus(error))
+    }
+}
+
 #[interface(name = "org.konedrive.Folder")]
 impl Folder {
     async fn register(&self, path: &str) -> Result<()> {
@@ -173,6 +219,27 @@ impl Folder {
         self.thumbnails_changed(&emitter).await.map_err(SyncFault::ZBus)
     }
 
+    /// Only these folders of OneDrive, by item id, are on this computer from now on, with the
+    /// root's own files if `root_files` (issue #58). The properties follow by themselves.
+    async fn set_selection(&self, ids: Vec<String>, root_files: bool) -> std::result::Result<(), SelectionFault> {
+        self.service.set_selection(ids, root_files).await.map_err(|error| match error {
+            SyncError::InvalidArgs(why) => SelectionFault::Fdo(zbus::fdo::Error::InvalidArgs(why)),
+            other => SelectionFault::Named(to_fault(other)),
+        })
+    }
+
+    /// No selection: every folder of OneDrive is on this computer again.
+    async fn sync_everything(&self) -> Result<()> {
+        self.service.sync_everything().await.map_err(to_fault)
+    }
+
+    /// The sub-folders of a folder of OneDrive (`""`: the root), by name: (id, name, state,
+    /// whether it has sub-folders). The state is `chosen`, `inside`, `partial` or `none`.
+    async fn folder_children(&self, id: &str) -> Result<Vec<(String, String, String, bool)>> {
+        let children = self.service.folder_children(id).await.map_err(to_fault)?;
+        Ok(children.into_iter().map(|c| (c.id, c.name, c.state.to_owned(), c.has_subfolders)).collect())
+    }
+
     /// Lifts the automatic hold now, until a source or the global `Accounts.PauseOnMetered` /
     /// `OnBattery` changes.
     async fn sync_anyway(&self) -> Result<()> {
@@ -197,6 +264,25 @@ impl Folder {
     #[zbus(property)]
     async fn thumbnails(&self) -> bool {
         self.service.run_settings().thumbnails
+    }
+
+    /// True while there is no selection: every folder of OneDrive is on this computer.
+    #[zbus(property)]
+    async fn syncs_everything(&self) -> bool {
+        self.service.selection().is_none()
+    }
+
+    /// The chosen folders: (item id, path in OneDrive relative to the root — empty for an id
+    /// the store does not know). Empty while there is no selection.
+    #[zbus(property)]
+    async fn selected_folders(&self) -> Vec<(String, String)> {
+        chosen_folders(&self.service).await
+    }
+
+    /// Whether the root's own files are synced; true while there is no selection.
+    #[zbus(property)]
+    async fn root_files(&self) -> bool {
+        self.service.selection().is_none_or(|s| s.root_files)
     }
 
     #[zbus(property)]
@@ -522,7 +608,7 @@ impl LocalScan {
     }
 
     /// Why the running (or the last) scan runs: start, read-write, helper-back, overflow,
-    /// ignore-list, periodic.
+    /// ignore-list, selection, periodic.
     #[zbus(property)]
     async fn reason(&self) -> String {
         self.service.state().get().scan.reason
@@ -577,6 +663,49 @@ impl ActivityLog {
     /// One per event, as it is recorded; the same fields as `Recent`.
     #[zbus(signal)]
     async fn added(emitter: &SignalEmitter<'_>, time: i64, kind: &str, path: &str, detail: &str) -> zbus::Result<()>;
+}
+
+/// `SelectedFolders` now. When the store cannot be read, the ids are still the selection's:
+/// they are given with no path, as ids the store does not know are.
+async fn chosen_folders(service: &SyncService) -> Vec<(String, String)> {
+    match service.selected_folders().await {
+        Ok(folders) => folders,
+        Err(e) => {
+            tracing::warn!("cannot read the chosen folders' paths: {e}");
+            let ids = service.selection().map(|s| s.folders).unwrap_or_default();
+            ids.into_iter().map(|id| (id, String::new())).collect()
+        }
+    }
+}
+
+/// Sends `SelectedFolders`' `PropertiesChanged`. The list changes with the selection, and
+/// — with no change of the selection — when a chosen folder is renamed or moved in OneDrive,
+/// or is listed for the first time: so it is read again after every change of the selection,
+/// of the folder, and after every check with OneDrive while a selection is set, and sent when
+/// it differs from what was sent last. A task of its own: reading it may wait for a
+/// registration under way, which must not hold up `State` and `Path`.
+async fn announce_chosen_folders(service: Arc<SyncService>, folder: InterfaceRef<Folder>, mut changes: watch::Receiver<SyncSnapshot>) {
+    let mut previous = changes.borrow_and_update().clone();
+    let mut shown = chosen_folders(&service).await;
+    while changes.changed().await.is_ok() {
+        let current = changes.borrow_and_update().clone();
+        let asked = current.selection != previous.selection
+            || (current.selection.is_some()
+                && (current.last_checked != previous.last_checked
+                    || current.root_path != previous.root_path
+                    || published_state(&current) != published_state(&previous)));
+        previous = current;
+        if !asked {
+            continue;
+        }
+        let now = chosen_folders(&service).await;
+        if now != shown {
+            shown = now;
+            if let Err(e) = folder.get().await.selected_folders_changed(folder.signal_emitter()).await {
+                tracing::warn!("cannot emit PropertiesChanged for the chosen folders: {e}");
+            }
+        }
+    }
 }
 
 /// Every refusal keeps its own name; only the ones with nothing a caller
@@ -679,6 +808,7 @@ async fn start_signals(
     let activity_emitter = folder.signal_emitter().to_owned();
     // The queue totals, counted from the rest into the state (issue #16).
     let totals = tokio::spawn(super::totals::run(service.state().clone(), service.report().transfers.clone()));
+    let chosen = tokio::spawn(announce_chosen_folders(Arc::clone(&service), folder.clone(), service.state().subscribe()));
     let states = tokio::spawn(async move {
         while changes.changed().await.is_ok() {
             let current = changes.borrow_and_update().clone();
@@ -712,7 +842,7 @@ async fn start_signals(
             }
         }
     });
-    Ok(vec![states, coalesced, activity, totals])
+    Ok(vec![states, coalesced, activity, totals, chosen])
 }
 
 /// What travels in the coalesced `PropertiesChanged`: the counters (spec
@@ -967,6 +1097,14 @@ async fn emit_changes(
     if old.live_changes != new.live_changes {
         folder.live_changes_changed(emitter).await?;
     }
+    // The selection (issue #58); `SelectedFolders` is `announce_chosen_folders`'s.
+    if old.selection.is_none() != new.selection.is_none() {
+        folder.syncs_everything_changed(emitter).await?;
+    }
+    let root_files = |s: &SyncSnapshot| s.selection.as_ref().is_none_or(|s| s.root_files);
+    if root_files(old) != root_files(new) {
+        folder.root_files_changed(emitter).await?;
+    }
     // Not coalesced either: the tray says once that OneDrive is full.
     if old.quota_full != new.quota_full {
         queue.get().await.quota_full_changed(queue.signal_emitter()).await?;
@@ -1010,6 +1148,15 @@ mod tests {
     use super::*;
     use crate::sync::activity::Transfers as Downloads;
     use crate::sync::SyncStateHandle;
+
+    /// A refused change of the chosen folders has its own name, and keeps its paths.
+    #[test]
+    fn a_refused_selection_is_named_local_changes() {
+        use zbus::DBusError as _;
+        let fault = to_fault(SyncError::LocalChanges("1 file(s)\ndocs/a.txt: why".into()));
+        assert_eq!(fault.name().as_str(), "org.konedrive.Error.LocalChanges");
+        assert!(fault.description().is_some_and(|d| d.contains("docs/a.txt: why")), "{fault:?}");
+    }
 
     /// A download moves its `Downloads` entry on with every
     /// read, and a listing the counters with every page, but what goes on

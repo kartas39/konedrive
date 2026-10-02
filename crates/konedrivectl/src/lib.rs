@@ -340,6 +340,11 @@ pub async fn sync_status_text(proxy: &FolderProxies<'_>, helper: Option<&str>, p
     if !last_error.is_empty() {
         out.push_str(&format!("{:<W$}{last_error}\n", "Last error:"));
     }
+    // Only while a list of chosen folders is set (issue #58); an older daemon has none.
+    if !proxy.folder.syncs_everything().await.unwrap_or(true) {
+        let chosen = proxy.folder.selected_folders().await?.len();
+        out.push_str(&format!("{:<W$}{}\n", "Synced:", selection_status_text(chosen, proxy.folder.root_files().await?)));
+    }
     if proxy.folder.source().await? == "onedrive" {
         let (listed, placed, skipped) =
             (proxy.folder.items_listed().await?, proxy.folder.items_placed().await?, proxy.folder.skipped_count().await?);
@@ -435,6 +440,92 @@ pub fn mode_text(mode: &str) -> String {
         "read-only" => "read-only: nothing made or changed here is uploaded".to_owned(),
         other => other.to_owned(),
     }
+}
+
+/// `sync status`'s `Synced:` line while a list of chosen folders is set: `3 chosen folders,
+/// files in the root: off`.
+pub fn selection_status_text(chosen: usize, root_files: bool) -> String {
+    let folders = if chosen == 1 { "1 chosen folder".to_owned() } else { format!("{chosen} chosen folders") };
+    format!("{folders}, files in the root: {}", if root_files { "on" } else { "off" })
+}
+
+/// `sync select`: "everything", or the chosen folders — (item id, path in OneDrive; empty
+/// for a folder the daemon has not listed yet, which is shown by its id) — and the switch of
+/// the root's files.
+pub fn selection_text(everything: bool, folders: &[(String, String)], root_files: bool) -> String {
+    if everything {
+        return "Synced: everything in OneDrive.\n".to_owned();
+    }
+    let mut out = match folders.len() {
+        0 => "Synced: no folder of OneDrive.\n".to_owned(),
+        _ => "Synced: only these folders of OneDrive, with everything in them:\n".to_owned(),
+    };
+    for (id, path) in folders {
+        match path.as_str() {
+            "" => out.push_str(&format!("  (not listed yet; its id is {id})\n")),
+            path => out.push_str(&format!("  {path}\n")),
+        }
+    }
+    out.push_str(&format!("Files in the root: {}.\n", if root_files { "on" } else { "off" }));
+    out
+}
+
+/// What every change of the chosen folders ends with.
+pub const SELECTION_NOTE: &str = "Folders outside the chosen ones are removed from this computer; they stay in OneDrive.";
+
+/// A folder's state in `sync select browse`, from `FolderChildren`'s word.
+pub fn folder_state_text(state: &str) -> &str {
+    match state {
+        "chosen" => "chosen",
+        "inside" => "synced",
+        "partial" => "partly",
+        "none" => "not synced",
+        other => other,
+    }
+}
+
+/// `sync select browse`: the sub-folders of `shown` (a path in OneDrive; empty for the
+/// root), as `FolderChildren` lists them: (id, name, state, whether it has sub-folders).
+/// `listing` says that the first listing of OneDrive still runs.
+pub fn browse_text(shown: &str, children: &[(String, String, String, bool)], listing: bool) -> String {
+    let place = if shown.is_empty() { "the root of OneDrive".to_owned() } else { shown.to_owned() };
+    let mut out = String::new();
+    if listing {
+        out.push_str("OneDrive is still being listed; this list may be incomplete.\n");
+    }
+    if children.is_empty() {
+        out.push_str(&format!("No folders in {place}.\n"));
+        return out;
+    }
+    out.push_str(&format!("Folders in {place}:\n"));
+    for (_, name, state, has_subfolders) in children {
+        let more = if *has_subfolders { "/…" } else { "/" };
+        out.push_str(&format!("  {:<12}{name}{more}\n", folder_state_text(state)));
+    }
+    out
+}
+
+/// The names of the folders on the way to the folder `given` names for `sync select`: a
+/// path in OneDrive relative to its root, or an absolute local path inside the account's
+/// folder `root` (which may be empty: none). Empty for the root itself. The error says why
+/// `given` names no folder.
+pub fn selection_path(given: &str, root: &str) -> Result<Vec<String>, String> {
+    let relative = if given.starts_with('/') {
+        if root.is_empty() {
+            return Err(format!("{given} is a local path, and this account has no folder yet: name the folder by its path in OneDrive"));
+        }
+        match std::path::Path::new(given).strip_prefix(root) {
+            Ok(rest) => rest.to_str().unwrap_or_default().to_owned(),
+            Err(_) => return Err(format!("{given} is not inside this account's folder ({root}): name a folder inside it, or a path in OneDrive")),
+        }
+    } else {
+        given.to_owned()
+    };
+    let names: Vec<String> = relative.split('/').filter(|name| !name.is_empty()).map(str::to_owned).collect();
+    if names.iter().any(|name| name == "." || name == "..") {
+        return Err(format!("{given}: write the path without `.` and `..`"));
+    }
+    Ok(names)
 }
 
 /// The Full local scan as `LocalScan`'s properties say it (issue #8).
@@ -849,6 +940,8 @@ pub enum SyncAction<'a> {
     Anyway,
     NotUploaded,
     Deletes,
+    /// `sync select`, and `sync register --choose-folders`: the chosen folders.
+    Select,
 }
 
 impl SyncAction<'_> {
@@ -882,6 +975,7 @@ impl SyncAction<'_> {
             Self::Anyway => "syncing anyway".to_owned(),
             Self::NotUploaded => "listing what is not uploaded".to_owned(),
             Self::Deletes => "deciding on the large delete".to_owned(),
+            Self::Select => "choosing the folders".to_owned(),
         }
     }
 
@@ -910,7 +1004,8 @@ impl SyncAction<'_> {
             | Self::Settings
             | Self::Anyway
             | Self::NotUploaded
-            | Self::Deletes => "",
+            | Self::Deletes
+            | Self::Select => "",
         }
     }
 }
@@ -1077,6 +1172,17 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
     let path = action.path();
     let folder = if root.is_empty() { String::new() } else { format!(" ({root})") };
     match (refusal, action) {
+        // The daemon's message is the list: a first line, then a path and why on each.
+        (Some("LocalChanges"), _) => format!(
+            "{detail}\nOnce these are uploaded (`{prefix} sync outbox`), or moved out of the folders that \
+             would leave or deleted (`{prefix} sync not-uploaded`), choose again"
+        ),
+        (Some("Unsupported"), Select) => {
+            "this folder is not connected to OneDrive, so there are no folders of OneDrive to choose".to_owned()
+        }
+        (None, Select) if name == Some("org.freedesktop.DBus.Error.InvalidArgs") => {
+            format!("the chosen folders were not changed: {detail}")
+        }
         (Some("NotSignedIn"), _) => format!(
             "the account is not signed in, and `{prefix} sync register` binds the folder to the \
              account's OneDrive. Sign in first with `{prefix} login` — or, in the developer's mode \
@@ -1975,6 +2081,7 @@ mod tests {
         write_secret_atomically, AccountAction, AccountInfo,
         Context, NoChoice, Source, SyncAction,
     };
+    use super::{browse_text, selection_path, selection_status_text, selection_text};
 
     /// `account remove` and `sync forget` refused while changes wait say how
     /// to see them and how to drop them.
@@ -2359,6 +2466,46 @@ mod tests {
             "/home/u/OneDrive",
         );
         assert!(text.contains("To use /home/u/Other instead"), "{text}");
+    }
+
+    /// Issue #58: what `sync select` prints, and how it reads a folder's name.
+    #[test]
+    fn the_chosen_folders_are_shown_and_named() {
+        assert_eq!(selection_text(true, &[], true), "Synced: everything in OneDrive.\n");
+        let folders = [("A".to_owned(), "docs/work".to_owned()), ("B".to_owned(), String::new())];
+        assert_eq!(
+            selection_text(false, &folders, false),
+            "Synced: only these folders of OneDrive, with everything in them:\n  docs/work\n  (not listed yet; its id is B)\nFiles in the root: off.\n"
+        );
+        assert_eq!(selection_text(false, &[], true), "Synced: no folder of OneDrive.\nFiles in the root: on.\n");
+        assert_eq!(selection_status_text(3, false), "3 chosen folders, files in the root: off");
+        assert_eq!(selection_status_text(1, true), "1 chosen folder, files in the root: on");
+
+        let children = [("A".to_owned(), "docs".to_owned(), "partial".to_owned(), true), ("B".to_owned(), "music".to_owned(), "none".to_owned(), false)];
+        assert_eq!(
+            browse_text("", &children, true),
+            "OneDrive is still being listed; this list may be incomplete.\nFolders in the root of OneDrive:\n  partly      docs/…\n  not synced  music/\n"
+        );
+        assert_eq!(browse_text("docs/work", &[], false), "No folders in docs/work.\n");
+
+        let names = |given: &str| selection_path(given, "/home/u/OneDrive");
+        assert_eq!(names("docs/work/"), Ok(vec!["docs".to_owned(), "work".to_owned()]));
+        assert_eq!(names("/home/u/OneDrive/docs"), Ok(vec!["docs".to_owned()]));
+        assert_eq!(names("/home/u/OneDrive"), Ok(Vec::new()), "the root itself");
+        assert!(names("/home/u/Other/docs").is_err_and(|why| why.contains("not inside this account's folder")));
+        assert!(names("docs/../x").is_err());
+        assert!(selection_path("/home/u/OneDrive/docs", "").is_err_and(|why| why.contains("no folder yet")));
+    }
+
+    /// A change of the chosen folders refused `LocalChanges` keeps the daemon's list of paths.
+    #[test]
+    fn a_refused_selection_lists_the_paths_and_why() {
+        let detail = "1 file(s) or folder(s) that would be removed from this computer exist only here; nothing was changed:\ndocs/link: it is never uploaded (symlink)";
+        let text = refusal_text(SyncAction::Select, Some("org.konedrive.Error.LocalChanges"), detail, "/r");
+        assert!(text.starts_with(detail), "{text}");
+        assert!(text.contains("`konedrivectl sync not-uploaded`"), "{text}");
+        let text = refusal_text(SyncAction::Select, Some("org.freedesktop.DBus.Error.InvalidArgs"), "X is not a folder", "/r");
+        assert_eq!(text, "the chosen folders were not changed: X is not a folder");
     }
 
     #[test]

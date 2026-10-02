@@ -182,6 +182,18 @@ pub trait Folder {
     /// Lifts this account's automatic hold until a source or the hold's settings
     /// ([`AccountsProxy::pause_on_metered`], [`AccountsProxy::on_battery`]) change.
     fn sync_anyway(&self) -> zbus::Result<()>;
+    /// Only these folders of OneDrive, by item id, are on this computer from now on, with
+    /// the root's own files if `root_files`. Refused
+    /// `org.freedesktop.DBus.Error.InvalidArgs` for an id that cannot be chosen, and
+    /// `LocalChanges`, with nothing changed, while what would leave this computer exists
+    /// only here: the message lists the paths, one per line after the first, each with why.
+    fn set_selection(&self, ids: &[&str], root_files: bool) -> zbus::Result<()>;
+    /// Removes the selection: everything in OneDrive is on this computer again.
+    fn sync_everything(&self) -> zbus::Result<()>;
+    /// The sub-folders of a folder of OneDrive (`""`: the root), by name: (item id, name,
+    /// state, whether it has sub-folders). The state is `chosen`, `inside`, `partial` or
+    /// `none`.
+    fn folder_children(&self, id: &str) -> zbus::Result<Vec<(String, String, String, bool)>>;
 
     #[zbus(property)]
     fn path(&self) -> zbus::Result<String>;
@@ -224,6 +236,16 @@ pub trait Folder {
     /// How changes made in OneDrive arrive: `connected`, `connecting` or `off`.
     #[zbus(property)]
     fn live_changes(&self) -> zbus::Result<String>;
+    /// True while there is no selection.
+    #[zbus(property)]
+    fn syncs_everything(&self) -> zbus::Result<bool>;
+    /// The chosen folders: (item id, path in OneDrive relative to the root — empty for an
+    /// id the daemon does not know yet). Empty while there is no selection.
+    #[zbus(property)]
+    fn selected_folders(&self) -> zbus::Result<Vec<(String, String)>>;
+    /// Whether the files directly in the root are synced; true while there is no selection.
+    #[zbus(property)]
+    fn root_files(&self) -> zbus::Result<bool>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: what that account's folder moves now.
@@ -368,7 +390,7 @@ pub trait LocalScan {
     /// `running`, `idle`, or `none` for a read-only folder.
     #[zbus(property)]
     fn state(&self) -> zbus::Result<String>;
-    /// Why it runs: start, read-write, helper-back, overflow, ignore-list, periodic.
+    /// Why it runs: start, read-write, helper-back, overflow, ignore-list, selection, periodic.
     #[zbus(property)]
     fn reason(&self) -> zbus::Result<String>;
     /// Unix seconds when it started.

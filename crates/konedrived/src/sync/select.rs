@@ -213,6 +213,11 @@ impl SyncService {
     /// `SelectedFolders`: the chosen folders, each with its path in OneDrive
     /// relative to the root — empty for an id the store does not know.
     pub async fn selected_folders(&self) -> Result<Vec<(String, String)>, SyncError> {
+        // Asked first, with no lock: with no selection there is nothing to
+        // read, and a property read must not wait for a registration.
+        if self.selection().is_none() {
+            return Ok(Vec::new());
+        }
         let lifecycle = Arc::clone(&self.lifecycle).read_owned().await;
         let Some(selection) = self.selection() else { return Ok(Vec::new()) };
         if !matches!(self.selectable(), Ok(true)) {

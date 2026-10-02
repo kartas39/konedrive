@@ -1721,3 +1721,285 @@ async fn binary_outbox_of_a_local_folder_says_nothing_is_uploaded_from_it() {
     assert!(!out.status.success(), "{out:?}");
     assert!(err_text(&out).contains("not connected to OneDrive, so nothing is uploaded from it"), "{}", err_text(&out));
 }
+
+// --- Selective sync (issue #58): `sync select`, `sync register --choose-folders` -----
+
+/// As [`harness_onedrive`], with a wider drive: `docs` (holding `f.txt` and the folders
+/// `work`, with `w.txt`, and `home`), `photos` (with `p.jpg`), `top.txt` in the root, and the
+/// Personal Vault, which is skipped. Nine items in all.
+async fn harness_with_folders() -> (Harness, wiremock::MockServer) {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let graph = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "D1"})))
+        .mount(&graph)
+        .await;
+    let file = |id: &str, name: &str, parent: &str| serde_json::json!({"id": id, "name": name, "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": parent}});
+    let folder = |id: &str, name: &str, parent: &str| serde_json::json!({"id": id, "name": name, "folder": {}, "parentReference": {"id": parent}});
+    Mock::given(method("GET"))
+        .and(path("/me/drive/root/delta"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "value": [
+                {"id": "R", "root": {}, "folder": {}},
+                folder("D", "docs", "R"),
+                file("F", "f.txt", "D"),
+                folder("W", "work", "D"),
+                file("WF", "w.txt", "W"),
+                folder("H", "home", "D"),
+                folder("P", "photos", "R"),
+                file("PF", "p.jpg", "P"),
+                file("T", "top.txt", "R"),
+                {"id": "V", "name": "Personal Vault", "folder": {}, "specialFolder": {"name": "vault"}, "parentReference": {"id": "R"}}
+            ],
+            "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", graph.uri())
+        })))
+        .mount(&graph)
+        .await;
+    let f = build_harness(true, true, false).await;
+    let drive = konedrived::drive::DriveClient::new(
+        url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
+        std::sync::Arc::new(konedrived::token::StaticToken::new("T")),
+    )
+    .unwrap();
+    f.service.set_drive(drive);
+    f.service.set_sync_paths(konedrived::sync::SyncPaths {
+        tree_db: f.dir.path().join("tree.sqlite"),
+        rescue_dir: f.dir.path().join("rescued"),
+        thumbnails: Some(f.dir.path().join("thumbnails")),
+    });
+    (f, graph)
+}
+
+/// The chosen folders as the daemon holds them, sorted; `None` while everything is synced.
+fn chosen(f: &Harness) -> Option<(Vec<String>, bool)> {
+    f.service.selection().map(|s| {
+        let mut folders = s.folders;
+        folders.sort();
+        (folders, s.root_files)
+    })
+}
+
+fn ids(folders: &[&str], root_files: bool) -> Option<(Vec<String>, bool)> {
+    Some((folders.iter().map(|id| (*id).to_owned()).collect(), root_files))
+}
+
+/// Every `sync select` command, end to end through the binary: the list is shown, browsed,
+/// started with `only`, changed with `add`, `remove` and `root-files`, and removed with
+/// `everything`, and the folder follows. With no list, `add`, `remove` and `root-files` are
+/// usage errors that point to `only`. `sync status` says what is synced while a list is set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_select_shows_browses_and_changes_the_chosen_folders() {
+    let (f, _graph) = harness_with_folders().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/work/w.txt").is_file() && root.join("photos/p.jpg").is_file() && root.join("top.txt").is_file()).await;
+    let addr = f._bus.address();
+    let ok = |args: &[&str]| {
+        let out = run(addr, args);
+        assert!(out.status.success(), "{args:?}: {out:?}");
+        out_text(&out)
+    };
+
+    assert_eq!(ok(&["sync", "select"]), "Synced: everything in OneDrive.\n");
+    let browsed = ok(&["sync", "select", "browse"]);
+    assert_eq!(browsed, "Folders in the root of OneDrive:\n  synced      docs/…\n  synced      photos/\n", "the vault is left out");
+    assert!(!out_text(&run(addr, &["sync", "status"])).lines().any(|l| l.starts_with("Synced:")), "no line while everything is synced");
+
+    // With no list, nothing changes one; and `only` wants to be told what.
+    for args in [&["add", "photos"][..], &["remove", "photos"], &["root-files", "on"]] {
+        let out = run(addr, &[&["sync", "select"], args].concat());
+        assert_eq!(out.status.code(), Some(2), "{out:?}");
+        assert!(err_text(&out).contains("sync select only <folder>"), "{}", err_text(&out));
+    }
+    assert_eq!(run(addr, &["sync", "select", "only"]).status.code(), Some(2));
+    let out = run(addr, &["sync", "select", "only", "nope"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    assert!(err_text(&out).contains("there is no folder `nope` in the root of OneDrive"), "{}", err_text(&out));
+    assert_eq!(run(addr, &["sync", "select", "only", "/"]).status.code(), Some(2), "a local path outside the folder");
+    assert_eq!(chosen(&f), None, "nothing was changed");
+
+    let said = ok(&["sync", "select", "only", "photos"]);
+    assert_eq!(
+        said,
+        format!("Synced: only these folders of OneDrive, with everything in them:\n  photos\nFiles in the root: off.\n{}\n", konedrivectl::SELECTION_NOTE)
+    );
+    assert_eq!(chosen(&f), ids(&["P"], false));
+    wait_for(|| !root.join("docs").exists() && !root.join("top.txt").exists()).await;
+    assert!(root.join("photos/p.jpg").is_file());
+    let status = out_text(&run(addr, &["sync", "status"]));
+    assert!(status.lines().any(|l| l == "Synced:                 1 chosen folder, files in the root: off"), "{status}");
+
+    ok(&["sync", "select", "add", "docs/work"]);
+    assert_eq!(chosen(&f), ids(&["P", "W"], false));
+    wait_for(|| root.join("docs/work/w.txt").is_file()).await;
+    assert!(!root.join("docs/f.txt").exists(), "files directly in a partial folder are not synced");
+    assert_eq!(ok(&["sync", "select", "browse"]), "Folders in the root of OneDrive:\n  partly      docs/…\n  chosen      photos/\n");
+    assert_eq!(ok(&["sync", "select", "browse", "docs"]), "Folders in docs:\n  not synced  home/\n  chosen      work/\n");
+    assert_eq!(
+        ok(&["sync", "select"]),
+        "Synced: only these folders of OneDrive, with everything in them:\n  photos\n  docs/work\nFiles in the root: off.\n"
+    );
+
+    ok(&["sync", "select", "root-files", "on"]);
+    assert_eq!(chosen(&f), ids(&["P", "W"], true));
+    wait_for(|| root.join("top.txt").is_file()).await;
+
+    // `docs` takes `docs/work` in: the daemon keeps the list normal.
+    ok(&["sync", "select", "add", "docs"]);
+    assert_eq!(chosen(&f), ids(&["D", "P"], true));
+    wait_for(|| root.join("docs/f.txt").is_file() && root.join("docs/home").is_dir()).await;
+
+    // A folder inside a chosen one: the chosen folder is replaced by its other sub-folders.
+    let said = ok(&["sync", "select", "remove", "docs/home"]);
+    assert!(said.contains("the files directly in it are removed from this computer too"), "{said}");
+    assert_eq!(chosen(&f), ids(&["P", "W"], true));
+    wait_for(|| !root.join("docs/f.txt").exists() && !root.join("docs/home").exists()).await;
+
+    // By its local path; then a folder above the last chosen one, which leaves an empty list.
+    ok(&["sync", "select", "remove", root.join("photos").to_str().unwrap()]);
+    assert_eq!(chosen(&f), ids(&["W"], true));
+    let said = ok(&["sync", "select", "remove", "docs"]);
+    assert!(said.starts_with("Synced: no folder of OneDrive.\nFiles in the root: on.\n"), "{said}");
+    assert_eq!(chosen(&f), ids(&[], true), "an empty list, not everything");
+    let out = run(addr, &["sync", "select", "remove", "docs"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(err_text(&out).contains("docs is not chosen"), "{}", err_text(&out));
+    wait_for(|| !root.join("docs").exists() && !root.join("photos").exists()).await;
+
+    let said = ok(&["sync", "select", "everything"]);
+    assert!(said.starts_with("Synced: everything in OneDrive.\n"), "{said}");
+    assert_eq!(chosen(&f), None);
+    wait_for(|| root.join("docs/f.txt").is_file() && root.join("photos/p.jpg").is_file()).await;
+}
+
+/// `sync register <folder> --choose-folders` binds the folder with an empty list: OneDrive
+/// is listed and nothing is placed, and its output says how to go on. A folder bound again
+/// keeps the list, and `--choose-folders` is then a usage error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_register_choose_folders_places_nothing_until_folders_are_chosen() {
+    let (f, _graph) = harness_with_folders().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    let addr = f._bus.address();
+
+    let out = run(addr, &["sync", "register", root.to_str().unwrap(), "--choose-folders"]);
+    assert!(out.status.success(), "{out:?}");
+    let said = out_text(&out);
+    assert!(said.starts_with(&format!("Folder registered: {}\nNothing is placed in it yet.", root.display())), "{said}");
+    assert!(said.contains("`konedrivectl sync select browse`") && said.contains("`konedrivectl sync select only <folder>…`"), "{said}");
+    wait_for(|| f.service.items().0 == 9 && f.service.root_state() == "ready").await;
+    assert_eq!(chosen(&f), ids(&[], false));
+    assert_eq!(std::fs::read_dir(&root).unwrap().count(), 0, "nothing is placed");
+    let browsed = out_text(&run(addr, &["sync", "select", "browse"]));
+    assert_eq!(browsed, "Folders in the root of OneDrive:\n  not synced  docs/…\n  not synced  photos/\n");
+
+    assert!(run(addr, &["sync", "select", "only", "docs/work"]).status.success());
+    wait_for(|| root.join("docs/work/w.txt").is_file()).await;
+    assert!(!root.join("photos").exists() && !root.join("top.txt").exists());
+
+    // Forgetting the folder keeps the list.
+    assert!(run(addr, &["sync", "forget"]).status.success());
+    let again = f.dir.path().join("Again");
+    std::fs::create_dir(&again).unwrap();
+    let out = run(addr, &["sync", "register", again.to_str().unwrap(), "--choose-folders"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(err_text(&out).contains("already has chosen folders"), "{}", err_text(&out));
+    assert_eq!(f.service.root_state(), "none", "nothing was bound");
+    assert!(run(addr, &["sync", "register", again.to_str().unwrap()]).status.success());
+    wait_for(|| again.join("docs/work/w.txt").is_file()).await;
+    assert_eq!(chosen(&f), ids(&["W"], false));
+    assert!(!again.join("photos").exists());
+}
+
+/// A `--choose-folders` registration that is refused leaves no empty list behind: the
+/// account syncs everything, as before.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_register_choose_folders_refused_removes_the_list_it_set() {
+    let f = harness().await;
+    let root = f.dir.path().join("NotEmpty");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(root.join("stray.txt"), b"x").unwrap();
+
+    let out = run(f._bus.address(), &["sync", "register", root.to_str().unwrap(), "--choose-folders"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(err_text(&out).contains("is not empty"), "{}", err_text(&out));
+    assert!(!out_text(&out).contains("Folder registered"), "{}", out_text(&out));
+    assert_eq!(chosen(&f), None);
+    let config = std::fs::read_to_string(f._config_dir.path().join("config.toml")).unwrap();
+    assert!(!config.contains("sync_only"), "{config}");
+}
+
+/// A change of the chosen folders that would take off this computer something that exists
+/// only here is refused under its own name, `LocalChanges`: the binary prints the paths and
+/// why, and nothing changes. Here a symbolic link, which is never uploaded, in a folder that
+/// would leave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_select_refused_for_local_changes_prints_the_paths_and_why() {
+    use std::os::unix::fs::PermissionsExt;
+    use konedrived::config::Mode;
+    let (f, _graph) = harness_with_folders().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    wait_for(|| root.join("docs/work/w.txt").is_file() && root.join("photos/p.jpg").is_file()).await;
+    // A read-write folder's local scan finds the link and keeps it back.
+    std::fs::set_permissions(root.join("docs"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("f.txt", root.join("docs/link")).unwrap();
+    f.account.state().update(|s| s.mode = Mode::ReadWrite);
+    let link = root.join("docs/link").display().to_string();
+    let mut kept_back = false;
+    for _ in 0..250 {
+        kept_back = f.proxy.queue.not_uploaded().await.is_ok_and(|rows| rows.iter().any(|(path, _)| *path == link));
+        if kept_back {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(kept_back, "the link is kept back");
+
+    let out = run(f._bus.address(), &["sync", "select", "only", "photos"]);
+    assert_eq!(out.status.code(), Some(1), "{out:?}");
+    let said = err_text(&out);
+    assert!(said.contains("nothing was changed"), "{said}");
+    assert!(said.lines().any(|l| l.starts_with("docs/link: ") && l.contains("symlink")), "{said}");
+    assert!(said.contains("`konedrivectl sync not-uploaded`"), "{said}");
+    assert_eq!(chosen(&f), None);
+    assert!(root.join("docs/f.txt").is_file());
+
+    // In a folder that stays, it blocks nothing.
+    assert!(run(f._bus.address(), &["sync", "select", "only", "docs"]).status.success());
+    assert_eq!(chosen(&f), ids(&["D"], false));
+}
+
+/// A local folder has no folders of OneDrive to choose.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_select_of_a_local_folder_says_it_is_not_connected_to_onedrive() {
+    let f = harness().await;
+    let root = f.dir.path().join("local");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    let out = run(f._bus.address(), &["sync", "select", "browse"]);
+    assert!(!out.status.success(), "{out:?}");
+    assert!(err_text(&out).contains("not connected to OneDrive, so there are no folders of OneDrive to choose"), "{}", err_text(&out));
+}
+
+/// The kept-back reason `not-selected` and the `selection` scan have their texts, and the
+/// window says the same of both.
+#[test]
+fn the_not_selected_reason_and_the_selection_scan_have_their_texts() {
+    let reason = konedrivectl::upload_reason_text("not-selected");
+    assert_eq!(
+        reason,
+        "files directly in this folder are not synced: move it into a chosen folder, choose this folder, or, in the root, turn on the root's files"
+    );
+    assert!(app_source("uploadreasons.cpp").contains(
+        "\"Files directly in this folder are not synced. Move it into a chosen folder, choose this folder, or, in the root, turn on the root's files.\""
+    ));
+    assert_eq!(konedrivectl::scan_reason_text("selection"), "after the chosen folders changed");
+    assert!(app_source("accountstatus.cpp").contains("\"after the chosen folders changed\""));
+    let running = konedrivectl::LocalScan { state: "running".into(), reason: "selection".into(), started: 100, directories: 2, files: 3, ..Default::default() };
+    assert_eq!(konedrivectl::local_scan_text(&running, 110), "running — 2 folders and 3 files (10 s, after the chosen folders changed)");
+}

@@ -37,7 +37,9 @@
          symlink, fifo, socket, device, other-device (on another
          filesystem mounted inside the folder, or a nested Btrfs subvolume),
          reserved-name, not-downloaded (a
-         file from elsewhere that is not downloaded), hard-link; and every
+         file from elsewhere that is not downloaded), hard-link, not-selected
+         (a file made directly in a folder whose files are not synced: see
+         Folder.SetSelection); and every
          blocked change with its reason: name-characters, name-spaces,
          name-reserved, name-not-utf8, too-large, forbidden,
          "refused: <OneDrive's message>". -->
@@ -51,7 +53,7 @@
          the mass-delete guard are not. Groups, in this order:
          one-action (one action fixes every file: quota-exceeded, forbidden),
          per-file (each file needs the user: name-characters, name-spaces,
-         name-reserved, name-not-utf8, too-large, refused — every
+         name-reserved, name-not-utf8, too-large, not-selected, refused — every
          "refused: <message>" is summed as refused), never (never uploaded:
          symlink, fifo, socket, device, other-device, reserved-name,
          hard-link), waiting (goes up by itself; also every reason the

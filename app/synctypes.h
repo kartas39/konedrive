@@ -154,6 +154,33 @@ inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveK
     return argument;
 }
 
+/// One entry of FolderChildren(): (item id, name, state, whether it has sub-folders). The
+/// state is "chosen", "inside", "partial" or "none".
+struct KonedriveFolderChild {
+    QString id;
+    QString name;
+    QString state;
+    bool hasSubfolders = false;
+};
+using KonedriveFolderChildList = QList<KonedriveFolderChild>;
+Q_DECLARE_METATYPE(KonedriveFolderChild)
+
+inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveFolderChild &child)
+{
+    argument.beginStructure();
+    argument << child.id << child.name << child.state << child.hasSubfolders;
+    argument.endStructure();
+    return argument;
+}
+
+inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveFolderChild &child)
+{
+    argument.beginStructure();
+    argument >> child.id >> child.name >> child.state >> child.hasSubfolders;
+    argument.endStructure();
+    return argument;
+}
+
 /// Registers every one of these types with QtDBus; safe to call more than once.
 inline void registerKonedriveSyncTypes()
 {
@@ -169,4 +196,6 @@ inline void registerKonedriveSyncTypes()
     qDBusRegisterMetaType<KonedriveOutboxList>();
     qDBusRegisterMetaType<KonedriveKeptBack>();
     qDBusRegisterMetaType<KonedriveKeptBackList>();
+    qDBusRegisterMetaType<KonedriveFolderChild>();
+    qDBusRegisterMetaType<KonedriveFolderChildList>();
 }

@@ -817,6 +817,152 @@ async fn the_local_scan_is_on_the_bus() {
     );
 }
 
+/// Gives the account of `f` a drive on a mocked Graph: `docs` (holding `f.txt` and the folder
+/// `work`), `photos`, a file in the root, and the Personal Vault, which is skipped.
+async fn with_a_drive(f: &Setup) -> wiremock::MockServer {
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    let graph = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "D1"})))
+        .mount(&graph)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive/root/delta"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "value": [
+                {"id": "R", "root": {}, "folder": {}},
+                {"id": "D", "name": "docs", "folder": {}, "parentReference": {"id": "R"}},
+                {"id": "F", "name": "f.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "D"}},
+                {"id": "W", "name": "work", "folder": {}, "parentReference": {"id": "D"}},
+                {"id": "P", "name": "photos", "folder": {}, "parentReference": {"id": "R"}},
+                {"id": "T", "name": "top.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "R"}},
+                {"id": "V", "name": "Personal Vault", "folder": {}, "specialFolder": {"name": "vault"}, "parentReference": {"id": "R"}}
+            ],
+            "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", graph.uri())
+        })))
+        .mount(&graph)
+        .await;
+    let drive = konedrived::drive::DriveClient::new(
+        url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
+        Arc::new(konedrived::token::StaticToken::new("T")),
+    )
+    .unwrap();
+    f.sync.set_drive(drive);
+    f.sync.set_sync_paths(konedrived::sync::SyncPaths {
+        tree_db: f.dir.path().join("tree.sqlite"),
+        rescue_dir: f.dir.path().join("rescued"),
+        thumbnails: None,
+    });
+    graph
+}
+
+/// Polls `pred` every 20 ms for up to 5 s.
+async fn wait_for(what: &str, mut pred: impl FnMut() -> bool) {
+    for _ in 0..250 {
+        if pred() {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("not within 5 s: {what}");
+}
+
+/// Selective sync on the bus (issue #58): the three properties, each announced when it
+/// changes; `FolderChildren`, read from the daemon's list of OneDrive; and the refusal of an
+/// id that cannot be chosen, by its name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_selection_is_set_read_and_announced_on_the_bus() {
+    let f = setup().await;
+    let _graph = with_a_drive(&f).await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.folder.register(root.to_str().unwrap()).await.unwrap();
+    wait_for("the drive is in the folder", || root.join("docs/f.txt").is_file() && root.join("top.txt").is_file()).await;
+
+    let selection = || async {
+        (f.folder.syncs_everything().await.unwrap(), f.folder.selected_folders().await.unwrap(), f.folder.root_files().await.unwrap())
+    };
+    assert_eq!(selection().await, (true, Vec::new(), true), "no selection: everything is synced");
+    let folder = &f.folder;
+    let children = |id: &'static str| async move {
+        let children = folder.folder_children(id).await.unwrap();
+        children.into_iter().map(|(_, name, state, has)| (name, state, has)).collect::<Vec<_>>()
+    };
+    let child = |name: &str, state: &str, has: bool| (name.to_owned(), state.to_owned(), has);
+    assert_eq!(children("").await, [child("docs", "inside", true), child("photos", "inside", false)], "the vault is left out");
+
+    let properties = zbus::fdo::PropertiesProxy::builder(&f.client)
+        .destination(SERVICE_NAME)
+        .unwrap()
+        .path(f.path.clone())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    let mut changes = properties.receive_properties_changed().await.unwrap();
+    let ours = |names: Vec<String>| -> Vec<String> {
+        names.into_iter().filter(|n| ["SyncsEverything", "SelectedFolders", "RootFiles"].contains(&n.as_str())).collect()
+    };
+
+    for (ids, why) in [(vec!["nope"], "an id the store does not know"), (vec!["F"], "a file"), (vec!["V"], "a skipped folder"), (vec!["R"], "the root")] {
+        assert_eq!(refusal(f.folder.set_selection(&ids, false).await), "org.freedesktop.DBus.Error.InvalidArgs", "{why}");
+    }
+    assert_eq!(selection().await, (true, Vec::new(), true), "a refused change changes nothing");
+
+    // `work` lies inside `docs`: the list is made normal.
+    f.folder.set_selection(&["W", "D", "D"], false).await.unwrap();
+    assert_eq!(
+        ours(changed_within(&mut changes, Duration::from_millis(600)).await),
+        ["RootFiles", "SelectedFolders", "SyncsEverything"]
+    );
+    assert_eq!(selection().await, (false, vec![("D".to_owned(), "docs".to_owned())], false));
+    assert_eq!(children("").await, [child("docs", "chosen", true), child("photos", "none", false)]);
+    assert_eq!(children("D").await, [child("work", "inside", false)]);
+    wait_for("what is not chosen leaves the folder", || !root.join("photos").exists() && !root.join("top.txt").exists()).await;
+    assert!(root.join("docs/f.txt").is_file());
+
+    f.folder.set_selection(&["W"], true).await.unwrap();
+    assert_eq!(ours(changed_within(&mut changes, Duration::from_millis(600)).await), ["RootFiles", "SelectedFolders"]);
+    assert_eq!(selection().await, (false, vec![("W".to_owned(), "docs/work".to_owned())], true));
+    assert_eq!(children("").await, [child("docs", "partial", true), child("photos", "none", false)]);
+
+    f.folder.sync_everything().await.unwrap();
+    assert_eq!(ours(changed_within(&mut changes, Duration::from_millis(600)).await), ["SelectedFolders", "SyncsEverything"]);
+    assert_eq!(selection().await, (true, Vec::new(), true));
+    wait_for("everything comes back", || root.join("photos").is_dir() && root.join("docs/f.txt").is_file()).await;
+}
+
+/// Before a folder is bound, `SetSelection` takes only an empty list, so that a folder can
+/// be bound with nothing placed, and `SyncEverything` removes it again. A folder that is not
+/// connected to OneDrive refuses all three calls `Unsupported`, as it refuses `SetThumbnails`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_selection_before_a_folder_is_bound_is_an_empty_list_and_a_local_folder_has_none() {
+    let f = setup().await;
+    assert_eq!(refusal(f.folder.set_selection(&["D"], false).await), "org.freedesktop.DBus.Error.InvalidArgs");
+    assert!(f.folder.syncs_everything().await.unwrap());
+
+    f.folder.set_selection(&[], false).await.unwrap();
+    assert_eq!(
+        (f.folder.syncs_everything().await.unwrap(), f.folder.selected_folders().await.unwrap(), f.folder.root_files().await.unwrap()),
+        (false, Vec::new(), false)
+    );
+    assert!(f.folder.folder_children("").await.unwrap().is_empty(), "nothing is listed before a folder is bound");
+    f.folder.sync_everything().await.unwrap();
+    assert!(f.folder.syncs_everything().await.unwrap());
+
+    // This daemon's folders are local: not connected to OneDrive.
+    let root = f.dir.path().join("local");
+    std::fs::create_dir(&root).unwrap();
+    f.folder.register(root.to_str().unwrap()).await.unwrap();
+    assert_eq!(f.folder.source().await.unwrap(), "local");
+    assert_eq!(refusal(f.folder.set_selection(&[], false).await), "org.konedrive.Error.Unsupported");
+    assert_eq!(refusal(f.folder.sync_everything().await), "org.konedrive.Error.Unsupported");
+    assert_eq!(refusal(f.folder.folder_children("").await), "org.konedrive.Error.Unsupported");
+    assert!(f.folder.syncs_everything().await.unwrap());
+}
+
 /// The names of the `Folder` properties that reported a change within
 /// `window`, sorted and de-duplicated. One `PropertiesChanged` arrives per
 /// property, so a window is what a caller has to work with.

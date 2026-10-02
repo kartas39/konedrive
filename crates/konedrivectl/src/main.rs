@@ -6,7 +6,7 @@ use anyhow::{anyhow, bail, Context};
 use clap::{Parser, Subcommand};
 #[cfg(feature = "dev-tools")]
 use konedrive_dbus::accounts::TokenExportProxy;
-use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, FilesProxy, FolderProxies};
+use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, FilesProxy, FolderProxies, FolderProxy};
 use konedrivectl::{AccountAction, AccountInfo, AccountRow, Source, SyncAction, ACCOUNT_VARIABLE, FIRST_LABEL};
 use zbus::zvariant::OwnedObjectPath;
 
@@ -168,7 +168,17 @@ enum DevCmd {
 #[derive(Subcommand)]
 enum SyncCmd {
     /// Bind an empty folder to the account
-    Register { path: String },
+    ///
+    /// Everything in OneDrive is placed in it, unless the account has chosen folders
+    /// (`sync select`), which a folder bound again keeps.
+    Register {
+        path: String,
+        /// Place nothing yet: OneDrive is listed, and `sync select browse` and `sync select
+        /// only` then choose what comes to this computer. Refused for an account that
+        /// already has chosen folders
+        #[arg(long)]
+        choose_folders: bool,
+    },
     /// The developer's mode: bind a local folder with NOTHING intercepting opens inside it
     ///
     /// The folder is filled from a directory with `populate-from`. Without
@@ -241,6 +251,18 @@ enum SyncCmd {
         #[command(subcommand)]
         action: Option<IgnoreCmd>,
     },
+    /// Show or change which folders of OneDrive are on this computer; without a command,
+    /// show them
+    ///
+    /// A chosen folder is on this computer with everything in it. A folder above a chosen
+    /// one holds only its chosen sub-folders: files directly in it are not synced. Folders
+    /// that are not chosen are removed from this computer and stay in OneDrive. A folder is
+    /// named by its path in OneDrive (`Documents/Work`) or by its local path inside the
+    /// account's folder.
+    Select {
+        #[command(subcommand)]
+        action: Option<SelectCmd>,
+    },
     /// List what stays on this computer, and why: every reason with its
     /// count, then the files of the reasons that need something done to each
     NotUploaded {
@@ -284,6 +306,39 @@ enum SyncCmd {
         #[arg(required = true)]
         paths: Vec<String>,
     },
+}
+
+#[derive(Subcommand)]
+enum SelectCmd {
+    /// List the sub-folders of a folder of OneDrive (the root without one), each with
+    /// whether it is synced
+    Browse { folder: Option<String> },
+    /// Sync exactly these folders: everything else is removed from this computer and stays
+    /// in OneDrive
+    Only {
+        folders: Vec<String>,
+        /// Also sync the files directly in the root
+        #[arg(long)]
+        root_files: bool,
+    },
+    /// Add folders to the chosen ones
+    Add {
+        #[arg(required = true)]
+        folders: Vec<String>,
+    },
+    /// Stop syncing folders: they are removed from this computer and stay in OneDrive. For
+    /// a folder inside a chosen one, the chosen folder is replaced by its other sub-folders
+    Remove {
+        #[arg(required = true)]
+        folders: Vec<String>,
+    },
+    /// Sync the files directly in the root, or not
+    RootFiles {
+        #[arg(value_parser = ["on", "off"])]
+        state: String,
+    },
+    /// Sync everything in OneDrive again
+    Everything,
 }
 
 #[derive(Subcommand)]
@@ -964,11 +1019,38 @@ async fn sync(daemon: &Daemon, option: Option<&str>, command: SyncCmd) -> anyhow
 async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<'_>, command: SyncCmd) -> anyhow::Result<()> {
     let tag = chosen.tag();
     match command {
-        SyncCmd::Register { path } => {
+        SyncCmd::Register { path, choose_folders } => {
             let absolute = absolute_str(&path)?;
             let action = SyncAction::Register(&absolute);
-            explained(daemon, chosen, proxy, action, proxy.folder.register(&absolute).await).await?;
+            if choose_folders {
+                // An empty list first, so that the listing places nothing.
+                if !proxy.folder.syncs_everything().await? {
+                    let prefix = chosen.prefix();
+                    return Err(Usage(format!(
+                        "this account already has chosen folders (`{prefix} sync select` shows them), and a \
+                         folder bound to it keeps them: leave out --choose-folders"
+                    ))
+                    .into());
+                }
+                explained(daemon, chosen, proxy, SyncAction::Select, proxy.folder.set_selection(&[], false).await).await?;
+            }
+            let result = proxy.folder.register(&absolute).await;
+            if choose_folders && result.is_err() {
+                // The folder was not bound: the account is as it was.
+                if let Err(error) = proxy.folder.sync_everything().await {
+                    eprintln!("warning: the empty list of chosen folders could not be removed again: {error}");
+                }
+            }
+            explained(daemon, chosen, proxy, action, result).await?;
             match root_trouble(proxy).await? {
+                None if choose_folders => {
+                    let prefix = chosen.prefix();
+                    println!("{tag}Folder registered: {absolute}");
+                    println!(
+                        "Nothing is placed in it yet. `{prefix} sync select browse` lists the folders of \
+                         OneDrive, and `{prefix} sync select only <folder>…` chooses the ones to sync."
+                    );
+                }
                 None => println!("{tag}Folder registered: {absolute}"),
                 // `SyncService::register_root`'s own doc comment says the
                 // call still returns `Ok(())` here (the root itself is
@@ -1134,6 +1216,7 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<
                 println!("{said}");
             }
         }
+        SyncCmd::Select { action } => select(daemon, chosen, proxy, action).await?,
         SyncCmd::NotUploaded { all } => {
             let summary = explained(daemon, chosen, proxy, SyncAction::NotUploaded, proxy.queue.not_uploaded_summary().await).await?;
             let limit = if all { 0 } else { konedrivectl::PER_FILE_SHOWN };
@@ -1192,6 +1275,205 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<
         | SyncCmd::Pin { .. }
         | SyncCmd::Unpin { .. }
         | SyncCmd::Free { .. } => unreachable!("handled by `sync`"),
+    }
+    Ok(())
+}
+
+/// A folder of OneDrive as `sync select` found it.
+struct Found {
+    /// Its path in OneDrive, relative to the root.
+    path: String,
+    /// The ids of the folders on the way to it, from the root's sub-folder down to itself,
+    /// each with its path.
+    chain: Vec<(String, String)>,
+}
+
+impl Found {
+    fn id(&self) -> &str {
+        &self.chain.last().expect("a found folder is not the root").0
+    }
+}
+
+/// What `sync select` works through: the chosen account, its folder's proxies, and a proxy
+/// that reads every property from the daemon each time — a change is printed right after
+/// it is made, before its `PropertiesChanged` arrives.
+struct Selecting<'a> {
+    daemon: &'a Daemon,
+    chosen: &'a Chosen,
+    proxy: &'a FolderProxies<'a>,
+    live: FolderProxy<'static>,
+}
+
+impl Selecting<'_> {
+    async fn children(&self, id: &str) -> anyhow::Result<Vec<(String, String, String, bool)>> {
+        explained(self.daemon, self.chosen, self.proxy, SyncAction::Select, self.live.folder_children(id).await).await
+    }
+
+    /// The folder `given` names ([`konedrivectl::selection_path`]), found level by level
+    /// in the daemon's list of OneDrive; `None` for the root itself.
+    async fn find(&self, given: &str) -> anyhow::Result<Option<Found>> {
+        let root = self.live.path().await?;
+        let names = konedrivectl::selection_path(given, &root).map_err(Usage)?;
+        let (mut parent, mut path, mut chain) = (String::new(), String::new(), Vec::new());
+        for name in names {
+            let children = self.children(&parent).await?;
+            let same_case = children.iter().find(|(_, n, _, _)| *n == name);
+            // OneDrive's names differ in more than case, so one that fits in any case is it.
+            let any_case = || {
+                let mut fits = children.iter().filter(|(_, n, _, _)| n.to_lowercase() == name.to_lowercase());
+                fits.next().filter(|_| fits.next().is_none())
+            };
+            let Some((id, name, _, _)) = same_case.or_else(any_case) else {
+                let place = if path.is_empty() { "the root of OneDrive".to_owned() } else { path.clone() };
+                let listing = if self.live.state().await? == "listing" { " OneDrive is still being listed: try again in a moment." } else { "" };
+                bail!(
+                    "there is no folder `{name}` in {place} that can be synced (`{} sync select browse{}` lists them).{listing}",
+                    self.chosen.prefix(),
+                    if path.is_empty() { String::new() } else { format!(" {}", konedrivectl::shell_word(&path)) }
+                );
+            };
+            path = if path.is_empty() { name.clone() } else { format!("{path}/{name}") };
+            parent = id.clone();
+            chain.push((id.clone(), path.clone()));
+        }
+        Ok((!chain.is_empty()).then_some(Found { path, chain }))
+    }
+
+    /// [`find`](Self::find) for a folder to choose or to stop choosing: never the root.
+    async fn find_folder(&self, given: &str) -> anyhow::Result<Found> {
+        let prefix = self.chosen.prefix();
+        self.find(given).await?.ok_or_else(|| {
+            Usage(format!(
+                "{given} is the root of OneDrive, which is not a folder to choose: `{prefix} sync select root-files on|off` \
+                 is for its files, `{prefix} sync select everything` for all of OneDrive"
+            ))
+            .into()
+        })
+    }
+
+    /// The list `add`, `remove` and `root-files` change: refused while everything is synced,
+    /// because starting a list removes everything else from this computer.
+    async fn list(&self, command: &str) -> anyhow::Result<(Vec<(String, String)>, bool)> {
+        if self.live.syncs_everything().await? {
+            let prefix = self.chosen.prefix();
+            return Err(Usage(format!(
+                "everything in OneDrive is synced, so there is no list of chosen folders for `{command}` to change. \
+                 `{prefix} sync select only <folder>…` starts one: every other folder is then removed from this \
+                 computer (it stays in OneDrive)"
+            ))
+            .into());
+        }
+        Ok((self.live.selected_folders().await?, self.live.root_files().await?))
+    }
+
+    /// Sets the selection, and prints what it is now.
+    async fn set(&self, ids: &[String], root_files: bool) -> anyhow::Result<()> {
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        explained(self.daemon, self.chosen, self.proxy, SyncAction::Select, self.live.set_selection(&refs, root_files).await).await?;
+        self.show().await?;
+        println!("{}", konedrivectl::SELECTION_NOTE);
+        Ok(())
+    }
+
+    async fn show(&self) -> anyhow::Result<()> {
+        let everything = self.live.syncs_everything().await?;
+        let (folders, root_files) = (self.live.selected_folders().await?, self.live.root_files().await?);
+        print!("{}{}", self.chosen.tag(), konedrivectl::selection_text(everything, &folders, root_files));
+        Ok(())
+    }
+}
+
+/// `sync select` (issue #58): which folders of OneDrive are on this computer.
+async fn select(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<'_>, action: Option<SelectCmd>) -> anyhow::Result<()> {
+    let live = FolderProxy::builder(&daemon.connection)
+        .path(chosen.account.path.clone())?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await?;
+    let s = Selecting { daemon, chosen, proxy, live };
+    match action {
+        None => s.show().await?,
+        Some(SelectCmd::Browse { folder }) => {
+            if s.live.path().await?.is_empty() {
+                println!("No folder is registered.");
+                return Ok(());
+            }
+            // Read first: a listing that ends meanwhile only makes the list more complete.
+            let listing = s.live.state().await? == "listing";
+            let found = match folder {
+                Some(given) => s.find(&given).await?,
+                None => None,
+            };
+            let (id, path) = found.as_ref().map(|f| (f.id(), f.path.as_str())).unwrap_or_default();
+            print!("{}", konedrivectl::browse_text(path, &s.children(id).await?, listing));
+        }
+        Some(SelectCmd::Only { folders, root_files }) => {
+            if folders.is_empty() && !root_files {
+                return Err(Usage(format!(
+                    "name the folders to sync. (`{} sync select only --root-files` alone syncs only the files in the root.)",
+                    chosen.prefix()
+                ))
+                .into());
+            }
+            let mut ids = Vec::new();
+            for given in &folders {
+                ids.push(s.find_folder(given).await?.id().to_owned());
+            }
+            s.set(&ids, root_files).await?;
+        }
+        Some(SelectCmd::Add { folders }) => {
+            let (list, root_files) = s.list("add").await?;
+            let mut ids: Vec<String> = list.into_iter().map(|(id, _)| id).collect();
+            for given in &folders {
+                ids.push(s.find_folder(given).await?.id().to_owned());
+            }
+            s.set(&ids, root_files).await?;
+        }
+        Some(SelectCmd::Remove { folders }) => {
+            let (mut list, root_files) = s.list("remove").await?;
+            // The folders that become partial: the files directly in them leave too.
+            let mut opened: Vec<String> = Vec::new();
+            for given in &folders {
+                let found = s.find_folder(given).await?;
+                let below = format!("{}/", found.path);
+                if let Some(at) = list.iter().position(|(id, _)| id == found.id()) {
+                    list.remove(at);
+                } else if let Some(above) = found.chain.iter().position(|(id, _)| list.iter().any(|(chosen, _)| chosen == id)) {
+                    // Inside a chosen folder: that folder is replaced by its other
+                    // sub-folders, level by level down to this one.
+                    list.retain(|(id, _)| *id != found.chain[above].0);
+                    for level in above..found.chain.len() - 1 {
+                        let (id, path) = &found.chain[level];
+                        for (child, name, _, _) in s.children(id).await? {
+                            if child != found.chain[level + 1].0 {
+                                list.push((child, format!("{path}/{name}")));
+                            }
+                        }
+                        opened.push(path.clone());
+                    }
+                } else if list.iter().any(|(_, path)| path.starts_with(&below)) {
+                    // Above chosen folders: they all go.
+                    list.retain(|(_, path)| !path.starts_with(&below));
+                } else {
+                    return Err(Usage(format!("{} is not chosen (`{} sync select` shows the chosen folders)", found.path, chosen.prefix())).into());
+                }
+            }
+            let ids: Vec<String> = list.into_iter().map(|(id, _)| id).collect();
+            s.set(&ids, root_files).await?;
+            for path in opened {
+                println!("Only the chosen sub-folders of {path} are synced now: the files directly in it are removed from this computer too.");
+            }
+        }
+        Some(SelectCmd::RootFiles { state }) => {
+            let (list, _) = s.list("root-files").await?;
+            let ids: Vec<String> = list.into_iter().map(|(id, _)| id).collect();
+            s.set(&ids, state == "on").await?;
+        }
+        Some(SelectCmd::Everything) => {
+            explained(daemon, chosen, proxy, SyncAction::Select, s.live.sync_everything().await).await?;
+            s.show().await?;
+            println!("Every folder of OneDrive comes back to this computer.");
+        }
     }
     Ok(())
 }

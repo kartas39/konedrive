@@ -106,6 +106,46 @@
          lifted. Not kept across a restart. Refused Unsupported for a folder
          not connected to OneDrive. -->
     <method name="SyncAnyway"/>
+    <!-- Selective sync (issue #58): only these folders of OneDrive, by item
+         id, are on this computer from now on, each with everything in it,
+         and the root's own files if root_files. A folder above a chosen one
+         is on disk as a plain directory holding only its chosen sub-folders;
+         files directly in it are not synced. The daemon keeps the list
+         normal: no id twice, and no folder inside another chosen one. What
+         is no longer chosen is removed from this computer and stays in
+         OneDrive. Written to config.toml; kept when the folder is forgotten.
+         Refused org.freedesktop.DBus.Error.InvalidArgs for an id that is not
+         in the list already and is not a folder the store knows, is the
+         root, or is, or lies inside, a folder skipped for another reason
+         (Skipped()). Refused LocalChanges, with nothing changed, while what
+         would leave this computer holds a change waiting to be uploaded or
+         something that is never uploaded: the message has a first line, then
+         up to ten lines "path: why" (the path relative to the folder), then
+         "and N more". Refused Unsupported for a folder not connected to
+         OneDrive. Before a folder is bound, only an empty list is taken:
+         the folder bound next lists OneDrive and places nothing. -->
+    <method name="SetSelection">
+      <arg name="ids" type="as" direction="in"/>
+      <arg name="root_files" type="b" direction="in"/>
+    </method>
+    <!-- Removes the selection: everything in OneDrive is on this computer
+         again. Also before a folder is bound. Refused Unsupported for a
+         folder not connected to OneDrive. -->
+    <method name="SyncEverything"/>
+    <!-- The sub-folders of a folder of OneDrive ("" is the root), ordered by
+         name: (item id, name, state, whether it has sub-folders). The state
+         is "chosen", "inside" (in a chosen folder; every folder while there
+         is no selection), "partial" (a chosen folder lies below it) or
+         "none". Folders skipped for another reason are left out. Read from
+         the daemon's list of OneDrive, so it also lists folders that are not
+         on this computer; while State is "listing" it may be incomplete.
+         Empty before a folder is bound; refused Unsupported for a folder not
+         connected to OneDrive. -->
+    <method name="FolderChildren">
+      <arg name="id" type="s" direction="in"/>
+      <arg name="children" type="a(sssb)" direction="out"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveFolderChildList"/>
+    </method>
     <property name="Path" type="s" access="read"/>
     <!-- none | listing | ready | no-interception | error -->
     <property name="State" type="s" access="read"/>
@@ -155,5 +195,16 @@
     <property name="LiveChanges" type="s" access="read"/>
     <!-- See SetThumbnails; true until it is called. -->
     <property name="Thumbnails" type="b" access="read"/>
+    <!-- True while there is no selection (SetSelection, SyncEverything). -->
+    <property name="SyncsEverything" type="b" access="read"/>
+    <!-- The chosen folders: (item id, path in OneDrive relative to the root;
+         empty for an id the daemon's list of OneDrive does not hold yet).
+         Empty while there is no selection. -->
+    <property name="SelectedFolders" type="a(ss)" access="read">
+      <annotation name="org.qtproject.QtDBus.QtTypeName" value="KonedriveSkippedList"/>
+    </property>
+    <!-- Whether the files directly in the root are synced; true while there
+         is no selection. -->
+    <property name="RootFiles" type="b" access="read"/>
   </interface>
 </node>

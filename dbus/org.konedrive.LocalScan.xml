@@ -12,7 +12,7 @@
   <interface name="org.konedrive.LocalScan">
     <!-- running, idle, or none (a read-only folder has no local scan). -->
     <property name="State" type="s" access="read"/>
-    <!-- start, read-write, helper-back, overflow, ignore-list, periodic. -->
+    <!-- start, read-write, helper-back, overflow, ignore-list, selection, periodic. -->
     <property name="Reason" type="s" access="read"/>
     <!-- Unix seconds. -->
     <property name="Started" type="x" access="read"/>
