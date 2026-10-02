@@ -136,6 +136,7 @@ impl TreeStore {
         let committed = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next().ok_or_else(|| gone(seq))?;
         let local_seq = next_local_seq(&tx)?;
         upsert(&tx, Table::Items, &Row { placement: Placement::Placed, ..answer.clone() })?;
+        crate::tree::select::after_write(&tx, &self.select, answer)?;
         tx.execute(
             "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
             params![answer.id, handle.map(FileHandle::encode), local_seq],
@@ -354,6 +355,7 @@ impl TreeStore {
         let tx = self.conn.transaction()?;
         if let Some(row) = base {
             upsert(&tx, Table::Items, row)?;
+            crate::tree::select::after_write(&tx, &self.select, row)?;
         }
         if let Some(id) = forget {
             forget_local(&tx, id)?;

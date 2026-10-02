@@ -247,6 +247,11 @@ pub struct AccountConfig {
     /// (issue #80); `None` for yes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thumbnails: Option<bool>,
+    /// The folders chosen for this computer (selective sync, issue #58): `None`, the
+    /// default, syncs everything. The folders are kept by item id; the list may be empty.
+    /// Kept when the folder is forgotten.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_only: Option<crate::tree::Selection>,
     /// `pause_on_metered` as an account had it before it became one setting for the whole
     /// app (issue #95): read only to be moved to [`Config::pause_on_metered`]
     /// ([`crate::migrate::move_hold_settings`]), and gone from the file once moved.
@@ -819,6 +824,7 @@ impl ConfigStore {
                 ignore: None,
                 machine_name: String::new(),
                 thumbnails: None,
+                sync_only: None,
                 old_pause_on_metered: None,
                 old_on_battery: None,
             };
@@ -988,6 +994,7 @@ mod tests {
             ignore: None,
             machine_name: String::new(),
             thumbnails: None,
+            sync_only: None,
             old_pause_on_metered: None,
             old_on_battery: None,
         }
@@ -1208,6 +1215,43 @@ id = "R7"
         assert!(text.contains("mode = \"read-only\"") && text.contains("origin = \"migrated\""), "{text}");
         assert!(text.contains("mode = \"read-write\""), "{text}");
         assert_eq!(Mode::parse("rw"), None);
+    }
+
+    /// `[accounts.sync_only]` (issue #58): absent is everything; present, it is read with its
+    /// list — which may be empty — and its switch, written back as it is, beside the root's
+    /// table, and gone from the file once taken off.
+    #[tokio::test]
+    async fn the_selection_is_read_and_written_and_absent_by_default() {
+        use crate::tree::Selection;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::in_dir(dir.path());
+        std::fs::write(
+            &paths.config_file,
+            "config_version = 2\n\
+             [[accounts]]\nid = \"3f9a1c0e5b7d\"\nlabel = \"Personal\"\n\
+             [[accounts]]\nid = \"8c21d07a44e1\"\nlabel = \"Work\"\n\
+             [accounts.sync_only]\nfolders = [\"A1\", \"B2\"]\nroot_files = true\n\
+             [[accounts]]\nid = \"0a0b0c0d0e0f\"\nlabel = \"Empty\"\n\
+             [accounts.sync_only]\nfolders = []\n",
+        )
+        .unwrap();
+        let store = open(&paths).await;
+        assert_eq!(store.account("3f9a1c0e5b7d").unwrap().sync_only, None, "absent: everything");
+        assert_eq!(store.account("8c21d07a44e1").unwrap().sync_only, Some(Selection { folders: vec!["A1".into(), "B2".into()], root_files: true }));
+        assert_eq!(store.account("0a0b0c0d0e0f").unwrap().sync_only, Some(Selection::default()), "an empty list is a selection");
+
+        let root = RootConfig { path: "/home/ann/OneDrive".into(), id: "R1".into(), intercepted: true, source: "onedrive".into(), baloo_excluded: false, upgrade_when_helper: None };
+        store.set_root("3f9a1c0e5b7d", Some(root.clone())).unwrap();
+        let chosen = Selection { folders: vec!["C3".into()], root_files: false };
+        let kept = chosen.clone();
+        store.update_account("3f9a1c0e5b7d", |a| { a.sync_only = Some(kept); Ok::<_, ConfigError>(()) }).unwrap();
+        store.update_account("8c21d07a44e1", |a| { a.sync_only = None; Ok::<_, ConfigError>(()) }).unwrap();
+        let text = std::fs::read_to_string(&paths.config_file).unwrap();
+        let on_disk: Config = toml::from_str(&text).unwrap();
+        assert_eq!(on_disk.account("3f9a1c0e5b7d").map(|a| (a.sync_only.clone(), a.root.clone())), Some((Some(chosen), Some(root))), "{text}");
+        assert_eq!(on_disk.account("8c21d07a44e1").unwrap().sync_only, None);
+        assert_eq!(on_disk.account("0a0b0c0d0e0f").unwrap().sync_only, Some(Selection::default()), "the empty list stays a list: {text}");
+        assert_eq!(text.matches("sync_only").count(), 2, "{text}");
     }
 
     /// The write design's development gate (§7) refuses every drive by default — the list is

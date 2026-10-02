@@ -74,7 +74,11 @@ fn deferred_change(r: &rusqlite::Row<'_>) -> rusqlite::Result<(Change, i64)> {
         ctag: r.get(9)?,
         quickxor: r.get(10)?,
         mime: r.get(11)?,
-        placement: Placement::decode(&placement),
+        // What the selection left out is worked out again once it is staged.
+        placement: match Placement::decode(&placement) {
+            Placement::Skipped(super::SkipReason::NotSelected) => Placement::Placed,
+            other => other,
+        },
     };
     // The drive's root never waits here: it is the folder itself.
     Ok((Change::Upsert(row), seq))
@@ -128,9 +132,11 @@ impl TreeStore {
         let changes = self.live_deferred()?;
         let tx = self.conn.transaction()?;
         apply(&tx, Source::Items, &changes)?;
+        super::select::pass(&tx, Source::Items, &self.select, None)?;
         tx.execute("DELETE FROM deferred", [])?;
         tx.execute("DELETE FROM outbox_gone", [])?;
         tx.commit()?;
+        self.settle_selection()?;
         Ok(changes.len())
     }
 
@@ -332,6 +338,8 @@ impl TreeStore {
         self.begin_staging(true)?;
         self.stage(&deferred)?;
         self.stage(changes)?;
+        // Before the new tree is compared with `items`: the selection.
+        self.select_staged()?;
         let mut ids: std::collections::BTreeSet<String> = self.changed_ids()?.into_iter().collect();
         ids.extend(revisit);
         ids.extend(self.unplaced(Table::Staging)?);
@@ -345,6 +353,7 @@ impl TreeStore {
         let tx = self.conn.transaction()?;
         apply(&tx, source, changes)?;
         tx.commit()?;
+        self.select_staged()?;
         Ok(())
     }
 }

@@ -463,7 +463,10 @@ impl Listing {
                 if count > 0 || full_requested {
                     self.on_store(turn, move |s| {
                         s.begin_staging(true)?;
-                        s.stage(&changes)
+                        s.stage(&changes)?;
+                        // The selection, before the new tree is compared
+                        // with `items` (issue #58).
+                        s.select_staged().map(|_| ())
                     })
                     .await?;
                 }
@@ -621,7 +624,11 @@ impl Listing {
             self.ctx.state.update(|s| s.items_listed = listed);
             match page.next {
                 DeltaNext::Page(next) => from = DeltaFrom::Link(next),
-                DeltaNext::Done(link) => return Ok(Fetched::Listed { link, upload_differences: false }),
+                DeltaNext::Done(link) => {
+                    // The listing is whole: the selection is applied to it.
+                    self.on_store(turn, |s| s.select_staged().map(|_| ())).await?;
+                    return Ok(Fetched::Listed { link, upload_differences: false });
+                }
             }
         }
     }
@@ -746,8 +753,16 @@ impl Listing {
                 }
                 None => None,
             };
-            self.on_store(turn, move |s| s.stage(&staged)).await?;
-            let scope = if full { Scope::Full } else { Scope::Changed(changes.iter().map(|c| c.id().to_owned()).collect()) };
+            // The selection (issue #58): a chosen folder that comes on this
+            // page brings the folders above it into view, which the page
+            // itself does not name.
+            let selected = self
+                .on_store(turn, move |s| {
+                    s.stage(&staged)?;
+                    s.select_staged()
+                })
+                .await?;
+            let scope = if full { Scope::Full } else { Scope::Changed(changes.iter().map(|c| c.id().to_owned()).chain(selected).collect()) };
             let (commit, next) = match page.next {
                 DeltaNext::Page(next) => (Commit::Page { changes, next: next.clone() }, Some(next)),
                 DeltaNext::Done(link) => (Commit::Swap { link, listing: true }, None),

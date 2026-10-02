@@ -164,6 +164,7 @@ async fn to_v2(v1: V1Config, paths: &Paths, legacy_token: impl Future<Output = b
             ignore: None,
             machine_name: String::new(),
             thumbnails: None,
+            sync_only: None,
             old_pause_on_metered: None,
             old_on_battery: None,
         }]
@@ -494,6 +495,7 @@ mod tests {
                 ignore: None,
                 machine_name: String::new(),
                 thumbnails: None,
+                sync_only: None,
                 old_pause_on_metered: None,
                 old_on_battery: None,
             }

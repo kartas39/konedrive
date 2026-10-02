@@ -1288,6 +1288,7 @@ impl TreeStore {
         match committed {
             Committed::Item { row, handle } => {
                 upsert(&tx, Table::Items, row)?;
+                super::select::after_write(&tx, &self.select, row)?;
                 tx.execute(
                     "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
                     params![row.id, handle.map(FileHandle::encode), local_seq],
@@ -1328,6 +1329,8 @@ impl TreeStore {
             )?;
         }
         tx.commit()?;
+        // A chosen folder deleted here and in OneDrive leaves the list.
+        self.settle_selection()?;
         Ok(local_seq)
     }
 

@@ -31,6 +31,9 @@ use crate::drive::item::{DriveItem, NAME_MAX, RESERVED_PREFIX};
 
 pub mod outbox;
 pub mod reconcile;
+pub mod select;
+
+pub use select::{FolderChild, Selection, SelectionSink};
 
 /// Version 2 added `activity` and `conflicts`; version 3 the write phase's
 /// `outbox`, `local_skipped`, `items.local_handle`, `items.local_seq` and
@@ -224,6 +227,10 @@ pub enum SkipReason {
     OneNote,
     ReservedName,
     Unsupported,
+    /// Not among the folders chosen for this computer (selective sync,
+    /// issue #58): applied by [`TreeStore::select_staged`] and its like,
+    /// never by [`classify`], and left out of `Skipped()`.
+    NotSelected,
 }
 
 impl SkipReason {
@@ -235,11 +242,12 @@ impl SkipReason {
             SkipReason::OneNote => "onenote",
             SkipReason::ReservedName => "reserved-name",
             SkipReason::Unsupported => "unsupported",
+            SkipReason::NotSelected => "not-selected",
         }
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        [Self::NameTooLong, Self::PersonalVault, Self::Shared, Self::OneNote, Self::ReservedName, Self::Unsupported]
+        [Self::NameTooLong, Self::PersonalVault, Self::Shared, Self::OneNote, Self::ReservedName, Self::Unsupported, Self::NotSelected]
             .into_iter()
             .find(|reason| reason.as_str() == value)
     }
@@ -320,7 +328,8 @@ pub struct Counts {
     pub listed: u64,
     /// Items in the folder: placed, under placed folders.
     pub placed: u64,
-    /// Skipped items whose folder is placed — what `Skipped()` lists.
+    /// Skipped items whose folder is placed — what `Skipped()` lists: not
+    /// those left out by the selection ([`SkipReason::NotSelected`]).
     pub skipped: u64,
 }
 
@@ -463,6 +472,9 @@ pub struct TreeStore {
     whole: bool,
     /// What changed in the outbox since it was last asked (issue #38).
     changes: std::sync::Arc<outbox::OutboxChanges>,
+    /// The folders chosen for this computer, as `config.toml` has them
+    /// ([`select`]).
+    select: select::Selecting,
 }
 
 impl TreeStore {
@@ -519,7 +531,7 @@ impl TreeStore {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.set_prepared_statement_cache_capacity(64);
-        Ok(Self { conn, path: None, whole: false, changes: Default::default() })
+        Ok(Self { conn, path: None, whole: false, changes: Default::default(), select: Default::default() })
     }
 
     /// Creates the schema in a store with no table at all, in one
@@ -584,7 +596,7 @@ impl TreeStore {
         conn.set_prepared_statement_cache_capacity(64);
         let changes = std::sync::Arc::new(outbox::OutboxChanges::default());
         outbox::watch(&conn, &changes)?;
-        Ok(Self { conn, path: None, whole, changes })
+        Ok(Self { conn, path: None, whole, changes, select: Default::default() })
     }
 
     pub fn meta(&self, key: &str) -> Result<Option<String>, TreeError> {
@@ -794,7 +806,7 @@ impl TreeStore {
         tx.execute("DELETE FROM meta WHERE key = ?1", [LISTING_NEXT])?;
         tx.commit()?;
         self.whole = false;
-        Ok(())
+        self.settle_selection()
     }
 
     /// One page of a first listing, placed: its entries applied to
@@ -808,6 +820,9 @@ impl TreeStore {
     pub fn commit_page(&mut self, changes: &[Change], next: &str) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         apply(&tx, Source::Items, changes)?;
+        // A page's rows come as `classify` made them: the selection is
+        // applied to `items` again.
+        select::pass(&tx, Source::Items, &self.select, None)?;
         // The handles the placement recorded in `staging` for items that
         // were not in `items` yet.
         tx.execute(
@@ -824,7 +839,7 @@ impl TreeStore {
             params![LISTING_NEXT, next],
         )?;
         tx.commit()?;
-        Ok(())
+        self.settle_selection()
     }
 
     /// Ids that differ between `items` and the new tree — added, removed or
@@ -873,7 +888,9 @@ impl TreeStore {
                      SELECT c.id, p.depth + 1 FROM items c JOIN placed p ON c.parent_id = p.id
                       WHERE c.placement = 'placed' AND p.depth < {MAX_CHAIN})
                  SELECT (SELECT count(*) - 1 FROM placed),
-                        (SELECT count(*) FROM items s JOIN placed p ON s.parent_id = p.id WHERE s.placement != 'placed')"
+                        (SELECT count(*) FROM items s JOIN placed p ON s.parent_id = p.id
+                          WHERE s.placement != 'placed' AND s.placement != '{}')",
+                select::NOT_SELECTED
             ),
             [&root],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -883,15 +900,15 @@ impl TreeStore {
 
     /// The skipped items `Skipped()` lists: those whose own folder is in the
     /// folder. What is inside a skipped folder is covered by that folder's
-    /// line. One query, from the index of skipped items up to the root
-    /// (issue #39).
+    /// line. What the selection leaves out is not listed. One query, from the
+    /// index of skipped items up to the root (issue #39).
     pub fn skipped(&self) -> Result<Vec<(PathBuf, SkipReason)>, TreeError> {
         let Some(root) = self.root_item_id()? else {
             return Ok(Vec::new());
         };
         let sql = chains_then(
             Source::Items,
-            "SELECT id, parent_id, name, placement FROM items WHERE placement != 'placed'",
+            &format!("SELECT id, parent_id, name, placement FROM items WHERE placement != 'placed' AND placement != '{}'", select::NOT_SELECTED),
             "SELECT c.path, i.placement FROM chain c JOIN items i ON i.id = c.start WHERE c.parent_id = ?1 AND c.above",
         );
         let mut statement = self.conn.prepare_cached(&sql)?;

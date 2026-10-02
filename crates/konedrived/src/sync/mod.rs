@@ -25,6 +25,7 @@ pub mod outbox_api;
 pub mod pin;
 pub mod root;
 pub mod running;
+pub mod select;
 pub mod source;
 pub mod thumbs;
 pub mod totals;
@@ -632,6 +633,9 @@ pub struct SyncSnapshot {
     /// `LocalScan`'s `State`, `Reason`, `Started`, `Directories`, `Files`,
     /// `Expected`, `Finished`, `Took`: the Full local scan (issue #8).
     pub scan: local_scan::LocalScan,
+    /// The folders chosen for this computer (selective sync, issue #58), as
+    /// `config.toml` has them; `None` while everything is synced.
+    pub selection: Option<crate::tree::Selection>,
 }
 
 impl SyncSnapshot {
@@ -651,6 +655,7 @@ impl Default for SyncSnapshot {
             items_listed: 0,
             items_placed: 0,
             skipped_count: 0,
+            selection: None,
             sync_trouble: None,
             replacement_note: String::new(),
             last_checked: 0,
@@ -1075,6 +1080,9 @@ pub struct SyncService {
     /// What background work runs now (`running`): the one place every reader of the pause
     /// asks, with the account's settings from `config.toml`.
     running: Arc<running::Running>,
+    /// Held while the selection is written to `config.toml` and to the
+    /// published state, so that the two never differ (`select`).
+    selecting: Arc<Mutex<()>>,
 }
 
 /// A OneDrive folder's sync while it runs.
@@ -1208,7 +1216,8 @@ impl SyncService {
     /// hub has already.
     pub fn on_hub(hub: &Arc<hub::HelperHub>, account: Option<StateHandle>, persist: Option<Persist>) -> Arc<Self> {
         hub.join(|helper_state| {
-            let state = SyncStateHandle::new(SyncSnapshot { helper_state, ..SyncSnapshot::default() });
+            let selection = persist.as_ref().and_then(|p| p.store.account(&p.account)).and_then(|a| a.sync_only);
+            let state = SyncStateHandle::new(SyncSnapshot { helper_state, selection, ..SyncSnapshot::default() });
             let pool = crate::pool::TransferPool::new(crate::pool::DEFAULT_CEILING);
             let shown = state.clone();
             pool.set_observer(Arc::new(move |throughput| shown.set_throughput(throughput)));
@@ -1253,6 +1262,7 @@ impl SyncService {
                 me: me.clone(),
                 tree_lock: Arc::new(tokio::sync::Mutex::new(())),
                 drive_seen: Mutex::new(None),
+                selecting: Arc::new(Mutex::new(())),
             })
         })
     }
@@ -2283,6 +2293,13 @@ impl SyncService {
                 Ok(n) => tracing::info!("{n} change(s) from OneDrive that waited for local changes are applied now"),
                 Err(e) => tracing::warn!("cannot apply the changes from OneDrive that waited: {e}"),
             }
+        }
+        // The folders chosen for this computer, as `config.toml` has them (issue #58): the
+        // store applies them to what it holds — a store rebuilt, or a list edited by hand —
+        // and to everything a cycle stages from now on.
+        let (selection, sink) = (self.selection(), self.selection_sink());
+        if let Err(e) = store.call(move |s| s.set_selection(selection, Some(sink))).await {
+            return self.cannot_start(&reg.root, format!("the chosen folders cannot be applied to the tree store: {e}")).await;
         }
         // The activity log and the conflicts are kept in this
         // store from now on, and `LastChecked` is where the last run left it.
@@ -8336,6 +8353,178 @@ mod tests {
             assert_eq!(baloo_calls(&w), format!("config add excludeFolders {}\n", folder.display()));
             assert!(config_of(&w).sync_root_baloo_excluded);
             service.stop_sync().await;
+        }
+
+        /// Selective sync (issue #58), at the service's level.
+        mod selective {
+            use super::*;
+            use crate::tree::Selection;
+
+            /// A drive holding `docs/f.txt`, `pics/p.jpg` and `top.txt`, with no
+            /// changes since from its delta link `M1`.
+            async fn wider(w: &World) {
+                let link = |token: &str| format!("{}/me/drive/root/delta?token={token}", w.server.uri());
+                Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "M1"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [], "@odata.deltaLink": link("M1")})))
+                    .with_priority(3)
+                    .mount(&w.server).await;
+                Mock::given(method("GET")).and(path("/me/drive/root/delta"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                        "value": [
+                            {"id": "R", "root": {}, "folder": {}},
+                            {"id": "D", "name": "docs", "folder": {}, "parentReference": {"id": "R"}},
+                            {"id": "F", "name": "f.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "D"}},
+                            {"id": "P", "name": "pics", "folder": {}, "parentReference": {"id": "R"}},
+                            {"id": "Q", "name": "p.jpg", "size": 3, "cTag": "c2", "file": {}, "parentReference": {"id": "P"}},
+                            {"id": "T", "name": "top.txt", "size": 3, "cTag": "c3", "file": {}, "parentReference": {"id": "R"}}
+                        ],
+                        "@odata.deltaLink": link("M1")
+                    })))
+                    .with_priority(4)
+                    .mount(&w.server).await;
+            }
+
+            /// From `M1` on, OneDrive says `docs` was deleted.
+            async fn delete_docs(w: &World) {
+                let link = format!("{}/me/drive/root/delta?token=M2", w.server.uri());
+                Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "M1"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [{"id": "D", "deleted": {}}], "@odata.deltaLink": link})))
+                    .with_priority(2)
+                    .mount(&w.server).await;
+                Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "M2"))
+                    .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [], "@odata.deltaLink": link})))
+                    .with_priority(2)
+                    .mount(&w.server).await;
+            }
+
+            fn only(folders: &[&str], root_files: bool) -> Option<Selection> {
+                Some(Selection { folders: folders.iter().map(|f| (*f).to_owned()).collect(), root_files })
+            }
+
+            /// What `config.toml` says, read from the file.
+            fn in_config(w: &World) -> Option<Selection> {
+                let text = std::fs::read_to_string(w.config.path().join("config.toml")).unwrap();
+                let config: crate::config::Config = toml::from_str(&text).unwrap();
+                config.accounts[0].sync_only.clone()
+            }
+
+            /// Writes the selection into `config.toml`, as an earlier run left it.
+            fn configured(service: &SyncService, selection: Option<Selection>) {
+                let persist = service.persist.as_ref().unwrap();
+                persist.store.update_account(&persist.account, |a| { a.sync_only = selection; Ok::<_, crate::config::ConfigError>(()) }).unwrap();
+            }
+
+            /// The names in the folder, sorted.
+            fn on_disk(w: &World) -> Vec<String> {
+                let mut names: Vec<String> = walk(w.folder.path(), w.folder.path());
+                names.sort();
+                names
+            }
+
+            fn walk(root: &std::path::Path, dir: &std::path::Path) -> Vec<String> {
+                let mut out = Vec::new();
+                for entry in std::fs::read_dir(dir).unwrap() {
+                    let path = entry.unwrap().path();
+                    out.push(path.strip_prefix(root).unwrap().display().to_string());
+                    if path.is_dir() {
+                        out.extend(walk(root, &path));
+                    }
+                }
+                out
+            }
+
+            /// A selection is set: `config.toml` and the published state take
+            /// it, and the folder follows — what is not chosen leaves this
+            /// computer. Cleared, everything comes back.
+            #[tokio::test]
+            async fn a_selection_is_set_and_cleared_and_the_folder_follows() {
+                let w = world().await;
+                wider(&w).await;
+                let service = connected(&w, true).await;
+                service.register_root(w.folder.path()).await.unwrap();
+                wait_until("the drive is listed into the folder", || service.items() == (5, 5, 0)).await;
+                assert_eq!(service.selection(), None);
+                let states = |children: Vec<crate::tree::FolderChild>| children.into_iter().map(|c| (c.name, c.state)).collect::<Vec<_>>();
+                assert_eq!(states(service.folder_children("").await.unwrap()), [("docs".to_owned(), "inside"), ("pics".to_owned(), "inside")]);
+
+                assert!(matches!(service.set_selection(vec!["F".into()], false).await, Err(SyncError::InvalidArgs(_))), "a file");
+                assert!(matches!(service.set_selection(vec!["nope".into()], false).await, Err(SyncError::InvalidArgs(_))));
+                assert_eq!((service.selection(), in_config(&w)), (None, None), "a refused change changes nothing");
+
+                service.set_selection(vec!["D".into(), "D".into()], false).await.unwrap();
+                assert_eq!(service.selection(), only(&["D"], false));
+                assert_eq!(in_config(&w), only(&["D"], false));
+                wait_until("what is not chosen leaves the folder", || on_disk(&w) == ["docs", "docs/f.txt"]).await;
+                wait_until("the counts follow", || service.items() == (5, 2, 0)).await;
+                assert_eq!(service.selected_folders().await.unwrap(), [("D".to_owned(), "docs".to_owned())]);
+                assert_eq!(states(service.folder_children("").await.unwrap()), [("docs".to_owned(), "chosen"), ("pics".to_owned(), "none")]);
+                assert!(service.skipped().await.unwrap().is_empty(), "what is not chosen is not listed as skipped");
+
+                service.sync_everything().await.unwrap();
+                assert_eq!((service.selection(), in_config(&w)), (None, None));
+                wait_until("everything is back", || on_disk(&w) == ["docs", "docs/f.txt", "pics", "pics/p.jpg", "top.txt"]).await;
+                service.stop_sync().await;
+            }
+
+            /// A selection `config.toml` has when the folder's sync starts is
+            /// applied to its first listing. An id the store does not know
+            /// stays in the list. A chosen folder deleted in OneDrive leaves
+            /// it, and the last one leaves an empty list — never everything.
+            #[tokio::test]
+            async fn a_chosen_folder_deleted_in_onedrive_leaves_the_list() {
+                let w = world().await;
+                wider(&w).await;
+                let service = connected(&w, true).await;
+                configured(&service, only(&["D", "ghost"], true));
+                drop(service);
+                let service = connected(&w, true).await;
+                assert_eq!(service.selection(), only(&["D", "ghost"], true), "read from config.toml");
+                service.register_root(w.folder.path()).await.unwrap();
+                wait_until("the chosen folder and the root's files are placed", || service.items() == (5, 3, 0)).await;
+                assert_eq!(on_disk(&w), ["docs", "docs/f.txt", "top.txt"]);
+                assert_eq!(in_config(&w), only(&["D", "ghost"], true), "an id the store does not know is kept");
+
+                service.set_selection(vec!["D".into()], false).await.unwrap();
+                wait_until("the root's file leaves", || on_disk(&w) == ["docs", "docs/f.txt"]).await;
+                delete_docs(&w).await;
+                service.refresh().await.unwrap();
+                wait_until("the deleted folder leaves the list", || service.selection() == only(&[], false)).await;
+                assert_eq!(in_config(&w), only(&[], false), "an empty list, not everything");
+                wait_until("the folder is empty", || on_disk(&w).is_empty()).await;
+                service.stop_sync().await;
+            }
+
+            /// Before a folder is bound only an empty list is taken; the folder
+            /// bound next lists the drive and places nothing. Forgetting the
+            /// folder keeps the selection: bound again, it gets the same choice.
+            #[tokio::test]
+            async fn a_folder_is_bound_with_a_selection_and_forgetting_it_keeps_the_selection() {
+                let w = world().await;
+                wider(&w).await;
+                let service = connected(&w, true).await;
+                assert!(matches!(service.set_selection(vec!["D".into()], false).await, Err(SyncError::InvalidArgs(_))));
+                assert!(service.folder_children("").await.unwrap().is_empty());
+                service.set_selection(Vec::new(), false).await.unwrap();
+                assert_eq!(in_config(&w), only(&[], false));
+
+                service.register_root(w.folder.path()).await.unwrap();
+                wait_until("the drive is listed, and nothing placed", || service.items() == (5, 0, 0)).await;
+                assert!(on_disk(&w).is_empty());
+
+                service.set_selection(vec!["P".into()], false).await.unwrap();
+                wait_until("the chosen folder comes", || on_disk(&w) == ["pics", "pics/p.jpg"]).await;
+
+                service.unregister_root().await.unwrap();
+                assert_eq!((service.selection(), in_config(&w)), (only(&["P"], false), only(&["P"], false)), "kept across a Forget");
+                // What the first folder held stays where it is; the same choice goes into a new one.
+                let again = tempfile::tempdir().unwrap();
+                service.register_root(again.path()).await.unwrap();
+                wait_until("the same choice is placed again", || again.path().join("pics/p.jpg").exists()).await;
+                wait_until("the listing is done", || service.items() == (5, 2, 0)).await;
+                assert!(!again.path().join("docs").exists() && !again.path().join("top.txt").exists());
+                service.stop_sync().await;
+                let _ = std::process::Command::new("chmod").args(["-R", "u+w"]).arg(again.path()).status();
+            }
         }
 
         /// A fresh OneDrive folder that is not already excluded

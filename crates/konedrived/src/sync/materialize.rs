@@ -1938,6 +1938,92 @@ mod tests {
         assert!(names.iter().all(|n| !n.to_string_lossy().starts_with("user.konedrive.")), "{names:?}");
     }
 
+    /// Selective sync (issue #58): the selection set as the service sets it —
+    /// on the store, then a Full reconcile of what is staged with it.
+    fn choose(f: &Fixture, folders: &[&str], root_files: bool) -> Applied {
+        let selection = crate::tree::Selection { folders: folders.iter().map(|id| (*id).to_owned()).collect(), root_files };
+        f.store
+            .call_blocking(move |s| {
+                s.set_selection(Some(selection), None)?;
+                s.begin_staging(true)?;
+                s.stage(&[])?;
+                s.select_staged().map(|_| ())
+            })
+            .unwrap();
+        let applied = f.materializer(true, None).apply(Scope::Full).unwrap();
+        f.store.call_blocking(move |s| s.commit_staging("link-2")).unwrap();
+        applied
+    }
+
+    fn two_folders() -> Vec<Change> {
+        let mut changes = tree();
+        changes.extend([folder("O", "R", "other"), file("P", "O", "o.txt")]);
+        changes
+    }
+
+    /// A folder that stops being chosen leaves this computer whole — its
+    /// placeholders and its clean downloads — but for a file modified here,
+    /// which is rescued; chosen again, it comes back as placeholders.
+    #[test]
+    fn a_folder_that_is_not_chosen_leaves_and_comes_back() {
+        let f = fixture();
+        f.listed(&two_folders(), true);
+        hydrate_by_hand(&f.path("docs/f.txt"), b"clean", "c-F");
+        {
+            let path = f.path("docs/deep/g.txt");
+            hydrate_by_hand(&path, b"downloaded", "c-G");
+            let file = konedrive_fs::placeholder::reopen_writable(&File::open(&path).unwrap()).unwrap();
+            file.write_all_at(b"local work", 10).unwrap();
+        }
+        let applied = choose(&f, &["O"], false);
+        assert!(!f.path("docs").exists(), "the folder is gone, its clean download with it");
+        assert!(!f.path("top.bin").exists(), "the root's files are off");
+        assert!(f.path("other/o.txt").exists());
+        assert_eq!(applied.rescued, vec![Rescued { original: "docs/deep/g.txt".into(), rescued: f.rescue.path().join("now/docs/deep/g.txt") }]);
+        assert!(std::fs::read(&applied.rescued[0].rescued).unwrap().ends_with(b"local work"));
+        assert!(!f.path(HOLDING).exists());
+
+        let applied = choose(&f, &["O", "D"], false);
+        assert_eq!(applied.created, 4, "docs, f.txt, deep and g.txt");
+        assert_eq!(id_at(&f.path("docs/f.txt")).as_deref(), Some("F"));
+        assert_eq!(std::fs::metadata(f.path("docs/deep/g.txt")).unwrap().blocks(), 0, "a placeholder again");
+        assert!(!f.path("top.bin").exists());
+    }
+
+    /// A folder that becomes partial — a folder inside it is chosen, it is
+    /// not — keeps its directory and loses the files directly in it.
+    #[test]
+    fn the_files_of_a_folder_that_becomes_partial_leave() {
+        let f = fixture();
+        f.listed(&two_folders(), true);
+        let docs = ino(&f.path("docs"));
+        choose(&f, &["E"], false);
+        assert_eq!(ino(&f.path("docs")), docs, "the partial folder is the same directory");
+        assert!(!f.path("docs/f.txt").exists());
+        assert!(f.path("docs/deep/g.txt").exists());
+        assert!(!f.path("other").exists());
+        // Chosen itself again, its files come back.
+        choose(&f, &["D"], false);
+        assert_eq!(id_at(&f.path("docs/f.txt")).as_deref(), Some("F"));
+        assert!(f.path("docs/deep/g.txt").exists());
+    }
+
+    /// The files directly in the root follow their own switch.
+    #[test]
+    fn the_roots_files_follow_their_switch() {
+        let f = fixture();
+        f.listed(&two_folders(), true);
+        choose(&f, &["D"], true);
+        assert!(f.path("top.bin").exists() && f.path("docs/f.txt").exists() && !f.path("other").exists());
+        choose(&f, &["D"], false);
+        assert!(!f.path("top.bin").exists() && f.path("docs/f.txt").exists());
+        choose(&f, &["D"], true);
+        assert_eq!(id_at(&f.path("top.bin")).as_deref(), Some("T"));
+        // An empty list with the switch off: nothing at all is on disk.
+        choose(&f, &[], false);
+        assert!(std::fs::read_dir(&f.root.path).unwrap().next().is_none());
+    }
+
     #[test]
     fn a_name_too_long_is_not_created_and_a_folder_renamed_to_one_leaves() {
         let f = fixture();
