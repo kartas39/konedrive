@@ -477,6 +477,7 @@ pub fn scan_reason_text(reason: &str) -> String {
         "helper-back" => "after the helper came back".to_owned(),
         "overflow" => "after too many changes at once for the notifications".to_owned(),
         "ignore-list" => "after the ignore list changed".to_owned(),
+        "selection" => "after the chosen folders changed".to_owned(),
         "periodic" => "the regular scan while part of the folder cannot be watched".to_owned(),
         other => other.to_owned(),
     }
@@ -643,6 +644,8 @@ pub fn upload_reason_text(reason: &str) -> String {
         "not-downloaded" => "a file from another OneDrive folder that is not downloaded here".to_owned(),
         "other-device" => "on another filesystem mounted inside the folder: never uploaded".to_owned(),
         "hard-link" => "a file with other hard links: not uploaded".to_owned(),
+        "not-selected" => "files directly in this folder are not synced: move it into a chosen folder, choose this folder, or, in the root, turn on the root's files"
+            .to_owned(),
         "locked" => "locked in OneDrive (open for co-authoring): tried again later".to_owned(),
         "network" => "OneDrive could not be reached: tried again later".to_owned(),
         "local-error" => "the local file could not be read: tried again later".to_owned(),

@@ -131,8 +131,23 @@ impl TreeStore {
     pub fn apply_deferred(&mut self) -> Result<usize, TreeError> {
         let changes = self.live_deferred()?;
         let tx = self.conn.transaction()?;
+        // What these changes bring back into the folder from where the
+        // selection left it out has no local object on record any more.
+        let mut out: Vec<&str> = Vec::new();
+        for change in &changes {
+            if let Change::Upsert(row) = change {
+                if !super::select::in_view(&tx, &row.id)? {
+                    out.push(&row.id);
+                }
+            }
+        }
         apply(&tx, Source::Items, &changes)?;
-        super::select::pass(&tx, Source::Items, &self.select, None)?;
+        super::select::pass(&tx, Source::Items, &self.select, None, true)?;
+        for id in out {
+            if super::select::in_view(&tx, id)? {
+                super::select::forget_local(&tx, id)?;
+            }
+        }
         tx.execute("DELETE FROM deferred", [])?;
         tx.execute("DELETE FROM outbox_gone", [])?;
         tx.commit()?;
@@ -167,7 +182,24 @@ impl TreeStore {
     /// Read from those with no local object alone (an index of `items`, and
     /// what a delta staged), each placed or not by one query for the lot
     /// (issue #39): no walk of the whole tree.
+    ///
+    /// While a selection is set (issue #58), the items with no local object
+    /// include everything listed inside folders that are not chosen and
+    /// never came to this computer. Past [`UNPLACED_FROM_BELOW`] of them the
+    /// walk goes the other way, down from the root through the placed
+    /// folders alone ([`Self::unplaced_from_the_root`]): its cost is bounded
+    /// by what is on this computer, not by what is left out.
     pub fn unplaced(&self, table: Table) -> Result<Vec<String>, TreeError> {
+        if self.selection().is_some() {
+            let many: i64 = self.conn.query_row(
+                "SELECT count(*) FROM (SELECT 1 FROM items WHERE local_handle IS NULL AND placement = 'placed' LIMIT ?1)",
+                [UNPLACED_FROM_BELOW + 1],
+                |r| r.get(0),
+            )?;
+            if many > UNPLACED_FROM_BELOW {
+                return self.unplaced_from_the_root(table);
+            }
+        }
         let start = match self.source(table) {
             Source::Items => "SELECT id, parent_id, name, placement FROM items WHERE local_handle IS NULL AND placement = 'placed'".to_owned(),
             Source::Whole => "SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND placement = 'placed'".to_owned(),
@@ -180,6 +212,32 @@ impl TreeStore {
             ),
         };
         Ok(self.chains(table, &start, &[])?.into_iter().filter(|c| c.above && c.own).map(|c| c.id).collect())
+    }
+
+    /// [`Self::unplaced`], found from the root down: every placed child of
+    /// the root and of each placed folder is read, and those with no local
+    /// object are the answer. Nothing inside a folder that is not placed is
+    /// read.
+    pub(super) fn unplaced_from_the_root(&self, table: Table) -> Result<Vec<String>, TreeError> {
+        let Some(root) = self.root_item_id()? else { return Ok(Vec::new()) };
+        let source = self.source(table);
+        let sql = format!(
+            "WITH RECURSIVE seen(id, folder, missing, depth) AS (
+                 SELECT id, kind = 'folder', local_handle IS NULL, 1 FROM {rows} WHERE parent_id = ?1 AND placement = 'placed'
+                 UNION ALL
+                 {step})
+             SELECT id FROM seen WHERE missing",
+            rows = source.rows(),
+            step = source.step(
+                "p.id, p.kind = 'folder', p.local_handle IS NULL, c.depth + 1",
+                "seen",
+                "p.parent_id = c.id",
+                &format!("c.folder AND p.placement = 'placed' AND c.depth < {}", super::MAX_CHAIN)
+            )
+        );
+        let mut statement = self.conn.prepare_cached(&sql)?;
+        let ids = statement.query_map([&root], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(ids)
     }
 
     /// Items the outbox wrote after commit count `seq` (`local_seq`): a read-write
@@ -357,6 +415,10 @@ impl TreeStore {
         Ok(())
     }
 }
+
+/// How many items with no local object [`TreeStore::unplaced`] still places
+/// one by one, from the item up, while a selection is set.
+const UNPLACED_FROM_BELOW: i64 = 2_000;
 
 #[cfg(test)]
 mod tests {

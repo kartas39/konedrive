@@ -62,12 +62,14 @@ pub fn reason_key(reason: &str) -> &str {
 /// The group of a reason key ([`reason_key`]); `None` for one no code of
 /// the daemon writes, which the caller shows as [`Group::Waiting`].
 fn known_group(key: &str) -> Option<Group> {
-    use super::local::examine::{OPEN_FOR_WRITING, OTHER_DEVICE};
+    use super::local::examine::{NOT_SELECTED, OPEN_FOR_WRITING, OTHER_DEVICE};
     use reason::*;
     Some(match key {
         // `quota-exceeded` only until a start converts it to `waiting-for-space` (#2).
         QUOTA | space::WAITING | space::TOO_BIG_KEY | FORBIDDEN => Group::OneAction,
-        "name-characters" | "name-spaces" | "name-reserved" | "name-not-utf8" | "too-large" | REFUSED => Group::PerFile,
+        // `not-selected`: a file where the selection syncs no files (issue #58) goes up once
+        // it is moved into a chosen folder, or its folder is chosen.
+        "name-characters" | "name-spaces" | "name-reserved" | "name-not-utf8" | "too-large" | REFUSED | NOT_SELECTED => Group::PerFile,
         // `reserved-name` is a `.konedrive-` name, which the daemon keeps for itself.
         "symlink" | "fifo" | "socket" | "device" | OTHER_DEVICE | "reserved-name" | "hard-link" | "ignored" => Group::Never,
         OPEN_FOR_WRITING | LOCKED | NOT_FOUND | NOT_LOCAL | CHANGED | PARENT | HASH | MOVE_OUT | NO_HELPER | UNREACHABLE

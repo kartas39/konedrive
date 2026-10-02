@@ -232,8 +232,11 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
     }
     let known_here = !own_item
         && (rows.iter().any(|r| r.item_id.as_deref() == Some(holder.id.as_str())) || {
+            // Placed here: one the selection leaves out is not on this
+            // computer, whatever object the base still records for it — its
+            // folder kept here with local work adopts it (issue #58).
             let held_by = holder.id.clone();
-            e.store().call(move |s| s.local_handle(&held_by)).await?.is_some()
+            e.store().call(move |s| Ok(s.local_handle(&held_by)?.is_some() && !s.left_out(Table::Items, &held_by)?)).await?
         });
     if is_ours && !known_here {
         return Ok(Taken::Adopt(Box::new(holder)));

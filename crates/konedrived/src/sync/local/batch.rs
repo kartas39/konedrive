@@ -41,6 +41,8 @@ pub enum ScanReason {
     Overflow,
     /// The ignore list changed.
     IgnoreList,
+    /// The folders chosen for this computer changed (issue #58).
+    Selection,
     /// Part of the folder cannot be watched: it is scanned every few minutes instead.
     Periodic,
 }
@@ -54,6 +56,7 @@ impl ScanReason {
             Self::HelperBack => "helper-back",
             Self::Overflow => "overflow",
             Self::IgnoreList => "ignore-list",
+            Self::Selection => "selection",
             Self::Periodic => "periodic",
         }
     }

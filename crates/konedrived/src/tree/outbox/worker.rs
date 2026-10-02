@@ -7,7 +7,7 @@ use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{insert, rewrite, rows_for, rows_where, Base, OutboxKind, OutboxRow, OutboxState, OUTBOX_SEQ, SWAP_PREFIX};
-use crate::tree::{apply, upsert, ActivityRow, Change, Placement, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
+use crate::tree::{apply, upsert, ActivityRow, Change, Placement, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT};
 
 fn gone(seq: i64) -> TreeError {
     TreeError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("outbox row {seq} is gone")))
@@ -41,19 +41,7 @@ fn add_activity(tx: &rusqlite::Transaction<'_>, event: Option<&ActivityRow>) -> 
 fn forget_local(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<(), TreeError> {
     // In both tables, so that a cycle between staging and swap cannot give
     // them back (the outbox on the bus).
-    for table in ["items", "staging"] {
-        tx.execute(
-            &format!(
-                "WITH RECURSIVE below(id, depth) AS (
-                     SELECT ?1, 0
-                     UNION ALL
-                     SELECT c.id, b.depth + 1 FROM items c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
-                 UPDATE {table} SET local_handle = NULL WHERE id IN (SELECT id FROM below)"
-            ),
-            [id],
-        )?;
-    }
-    Ok(())
+    crate::tree::select::forget_local(tx, id)
 }
 
 fn amend_in(conn: &Connection, seq: i64, amend: impl FnOnce(&mut OutboxRow)) -> Result<bool, TreeError> {
@@ -135,8 +123,8 @@ impl TreeStore {
         let tx = self.conn.transaction()?;
         let committed = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next().ok_or_else(|| gone(seq))?;
         let local_seq = next_local_seq(&tx)?;
-        upsert(&tx, Table::Items, &Row { placement: Placement::Placed, ..answer.clone() })?;
-        crate::tree::select::after_write(&tx, &self.select, answer)?;
+        let placed = Row { placement: Placement::Placed, ..answer.clone() };
+        crate::tree::select::commit_written(&tx, &mut self.select, &placed)?;
         tx.execute(
             "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
             params![answer.id, handle.map(FileHandle::encode), local_seq],

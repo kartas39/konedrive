@@ -108,15 +108,21 @@ impl Fx {
     /// and committed as a read-write cycle commits: what the disk does not
     /// show keeps its base, and its change waits.
     fn cycle(&self, changes: &[Change], full: bool) -> Result<Applied, ApplyError> {
+        self.cycle_as(changes, full, false)
+    }
+
+    /// [`cycle`](Self::cycle), with `resyncChangesUploadDifferences` as given.
+    fn cycle_as(&self, changes: &[Change], full: bool, upload_differences: bool) -> Result<Applied, ApplyError> {
         let staged = changes.to_vec();
         let (ids, plan) = self
             .store
             .call_blocking(move |s| {
                 s.begin_staging(true)?;
                 s.stage(&staged)?;
+                s.select_staged()?;
                 let mut ids = s.changed_ids()?;
                 ids.extend(s.unplaced(Table::Staging)?);
-                Ok((ids, Rw::read(s, "fedora".into(), false, IgnoreList::default())?))
+                Ok((ids, Rw::read(s, "fedora".into(), upload_differences, IgnoreList::default())?))
             })
             .unwrap();
         let scope = if full { Scope::Full } else { Scope::Changed(ids) };
@@ -138,6 +144,14 @@ impl Fx {
 
     fn path(&self, rel: &str) -> PathBuf {
         self.root.path.join(rel)
+    }
+
+    /// Selective sync (issue #58): only `folders` are on this computer from
+    /// now on, as the service sets it — the base's placements at once, the
+    /// folder at the next Full reconcile.
+    fn select(&self, folders: &[&str], root_files: bool) {
+        let selection = crate::tree::Selection { folders: folders.iter().map(|id| (*id).to_owned()).collect(), root_files };
+        self.store.call_blocking(move |s| s.set_selection(Some(selection), None)).unwrap();
     }
 
     /// A live outbox row of `kind` for `id` (None: something new) at `rel`.
@@ -423,4 +437,84 @@ fn a_new_folder_a_stop_left_under_its_temporary_name_is_finished_when_onedrive_r
         assert_eq!(fx.path("docs/mine.txt").exists(), with_a_file, "what was in it is put back where it stood");
         assert!(applied.examine.iter().all(|(rel, _)| rel == Path::new("docs/mine.txt")), "{:?}", applied.examine);
     }
+}
+
+/// Issue #58: what the selection leaves out goes from this computer and is
+/// not read as removed from OneDrive — nothing is uploaded again, no folder
+/// is made again there, and a clean download goes whatever
+/// `upload_differences` says. The base keeps the items.
+#[test]
+fn what_the_selection_leaves_out_goes_and_is_not_removed_from_onedrive() {
+    for upload_differences in [false, true] {
+        let fx = Fx::new();
+        hydrate(&fx.path("docs/f.txt"), b"one", "c1");
+        fx.select(&[], true);
+        let applied = fx.cycle_as(&[], true, upload_differences).unwrap();
+        assert!(!fx.path("docs").exists(), "upload_differences={upload_differences}: the folder went, its clean download too");
+        assert!(fx.path("top.txt").exists(), "the root's files are on");
+        assert!(applied.recreated.is_empty() && applied.examine.is_empty(), "{:?} {:?}", applied.recreated, applied.examine);
+        assert!(applied.unsettled.is_empty(), "{:?}", applied.unsettled);
+        assert_eq!(fx.base("D").unwrap().placement, Placement::Skipped(crate::tree::SkipReason::NotSelected));
+        assert!(fx.base("F").is_some() && fx.base("G").is_some(), "still in OneDrive, and in the base");
+    }
+}
+
+/// Issue #58: the files directly in a folder that becomes partial go, and
+/// the folder stays with its chosen sub-folder. A chosen folder moved in
+/// OneDrive then takes its old folders off this computer by a delta alone
+/// (the Changed scope), again without anything made again in OneDrive.
+#[test]
+fn a_partial_folder_keeps_only_its_chosen_folders_and_follows_a_move_in_onedrive() {
+    let fx = Fx::new();
+    hydrate(&fx.path("docs/f.txt"), b"one", "c1");
+    fx.select(&["E"], false);
+    let applied = fx.cycle_as(&[], true, true).unwrap();
+    assert!(!fx.path("docs/f.txt").exists() && !fx.path("top.txt").exists(), "no files in a partial folder, nor in the root");
+    assert_eq!(id_at(&fx.path("docs")).as_deref(), Some("D"));
+    assert_eq!(id_at(&fx.path("docs/deep/g.txt")).as_deref(), Some("G"));
+    assert!(applied.recreated.is_empty() && applied.examine.is_empty());
+
+    let applied = fx.cycle(&[folder("E", "R", "deep")], false).unwrap();
+    assert_eq!(id_at(&fx.path("deep/g.txt")).as_deref(), Some("G"), "the chosen folder is where OneDrive has it");
+    assert!(!fx.path("docs").exists(), "and the folder it left is not partial any more");
+    assert!(applied.recreated.is_empty() && applied.examine.is_empty(), "{:?} {:?}", applied.recreated, applied.examine);
+    assert_eq!(fx.base("D").unwrap().placement, Placement::Skipped(crate::tree::SkipReason::NotSelected));
+}
+
+/// Issue #58, design §3: local work in what the selection leaves out that the
+/// check could not see — a download changed since, a file made since — stays
+/// on this computer and is handled as when its item is removed in OneDrive:
+/// the file loses konedrive's attributes and goes up again, and the folders
+/// around it lose theirs, to meet their items at their `mkdir`. No folder is
+/// made again in OneDrive, where they all still are; what held nothing goes.
+#[test]
+fn local_work_in_what_the_selection_leaves_out_is_kept() {
+    let fx = Fx::new();
+    hydrate(&fx.path("docs/f.txt"), b"one", "c1");
+    edit(&fx.path("docs/f.txt"), b" and mine");
+    std::fs::write(fx.path("docs/deep/mine.txt"), b"new here").unwrap();
+    fx.select(&[], false);
+    let applied = fx.cycle(&[], true).unwrap();
+    assert_eq!(std::fs::read(fx.path("docs/f.txt")).unwrap(), b"one and mine");
+    assert_eq!(id_at(&fx.path("docs/f.txt")), None, "uploaded again as new");
+    assert_eq!(std::fs::read(fx.path("docs/deep/mine.txt")).unwrap(), b"new here");
+    assert!(!fx.path("docs/deep/g.txt").exists() && !fx.path("top.txt").exists(), "what held nothing went");
+    assert_eq!((id_at(&fx.path("docs")), id_at(&fx.path("docs/deep"))), (None, None), "the folders meet their items at their mkdir");
+    assert!(applied.recreated.is_empty(), "nothing is made again in OneDrive: {:?}", applied.recreated);
+    assert!(applied.examine.contains(&(PathBuf::from("docs"), true)) && applied.examine.contains(&(PathBuf::from("docs/f.txt"), false)), "{:?}", applied.examine);
+    assert!(fx.base("D").is_some() && fx.base("F").is_some() && fx.base("E").is_some(), "the base keeps what OneDrive has");
+}
+
+/// Issue #58: an item with a live outbox row in what the selection leaves
+/// out is left as it is, row and attributes, and so is its folder.
+#[test]
+fn a_row_keeps_what_the_selection_leaves_out() {
+    let fx = Fx::new();
+    hydrate(&fx.path("docs/f.txt"), b"one", "c1");
+    fx.select(&[], true);
+    fx.row(OutboxKind::Update, Some("F"), "docs/f.txt");
+    let applied = fx.cycle(&[], true).unwrap();
+    assert_eq!(id_at(&fx.path("docs/f.txt")).as_deref(), Some("F"), "its update goes up as it is");
+    assert!(fx.path("docs").is_dir() && !fx.path("docs/deep").exists());
+    assert!(applied.recreated.is_empty());
 }

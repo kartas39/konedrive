@@ -64,6 +64,11 @@ pub const MASS_DELETE: &str = "mass-delete";
 /// `local_skipped`'s reason for what is on another device than the folder
 /// (a nested Btrfs subvolume, a mount): never uploaded (F72).
 pub const OTHER_DEVICE: &str = "other-device";
+/// `local_skipped`'s reason for a file made, or moved, where the selection
+/// syncs no files (issue #58): directly in a partial folder, or in the root
+/// while its files are off. Not uploaded until its folder is chosen. Another
+/// thing than the store's `SkipReason::NotSelected`, which no list shows.
+pub const NOT_SELECTED: &str = "not-selected";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExamineError {
@@ -170,7 +175,8 @@ impl Examiner<'_> {
             _ => (batch, false),
         };
         let handles_current = super::liveness::handles_current(self.store, &root);
-        let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
+        let (rows, no_files) = self.store.call_blocking(move |s| Ok((s.outbox_rows()?, s.folders_without_files()?)))?;
+        let rows = Rows::new(rows);
         if let Some(progress) = progress {
             progress.started();
         }
@@ -183,6 +189,7 @@ impl Examiner<'_> {
             root_path,
             handles_current,
             rows,
+            no_files,
             entries: Vec::new(),
             at: HashMap::new(),
             whole: BTreeSet::new(),
@@ -276,6 +283,9 @@ struct Run<'e, 'a> {
     handles_current: bool,
     /// The live rows before this examination, and what they are looked up by.
     rows: Rows,
+    /// The folders whose own files the selection does not sync, by item id
+    /// (issue #58); `None` while everything is synced.
+    no_files: Option<HashSet<String>>,
     entries: Vec<Entry>,
     at: HashMap<PathBuf, usize>,
     whole: BTreeSet<PathBuf>,
@@ -843,6 +853,16 @@ impl Run<'_, '_> {
         }
     }
 
+    /// Whether a file directly in the folder `dir` (an item id; `None`: a
+    /// directory new to OneDrive) is left out by the selection: the folder
+    /// is partial, or the root with its files off (design §4).
+    fn files_left_out(&self, dir: Option<&str>) -> bool {
+        match (&self.no_files, dir) {
+            (Some(folders), Some(dir)) => folders.contains(dir),
+            _ => false,
+        }
+    }
+
     fn skip(&mut self, rel: &Path, reason: &str) {
         self.skipped.insert(rel.to_path_buf(), reason.to_owned());
     }
@@ -1227,6 +1247,12 @@ impl Run<'_, '_> {
         let at_base = d.target_parent.as_deref() == base.parent_id.as_deref() && d.target_name.as_deref() == Some(base.name.as_str());
         // In place, unchanged or unknown, with no row: nothing to record.
         if d.kind == OutboxKind::Move && at_base && self.rows.of_item(id).next().is_none() {
+            return Ok(());
+        }
+        // A file moved to where the selection syncs no files: not moved in
+        // OneDrive, and listed as kept back (issue #58).
+        if e.ty == Type::File && !at_base && self.files_left_out(d.target_parent.as_deref()) {
+            self.skip(&e.rel, NOT_SELECTED);
             return Ok(());
         }
         self.detections.push(d);
@@ -1749,6 +1775,16 @@ impl Run<'_, '_> {
                     return self.save_by_rename(&id, &base, i);
                 }
             }
+        }
+        // A new file where the selection syncs no files: not uploaded, and
+        // listed as kept back; a create it had goes (issue #58). One the
+        // worker is sending right now is an item already.
+        if !is_dir && self.files_left_out(target_parent.as_deref()) && !self.being_created(&e) {
+            if let Some(row) = pending.as_ref().filter(|r| r.kind == OutboxKind::Create) {
+                self.ops.push(OutboxOp::Remove(row.seq));
+            }
+            self.skip(&e.rel, NOT_SELECTED);
+            return Ok(());
         }
         let mut d = Detection {
             kind: if is_dir { OutboxKind::Mkdir } else { OutboxKind::Create },

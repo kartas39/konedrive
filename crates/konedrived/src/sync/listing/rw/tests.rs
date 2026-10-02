@@ -948,3 +948,108 @@ async fn a_delta_that_brings_an_upload_before_its_commit_changes_nothing() {
     assert!(w.store.call(move |s| s.deferred_ids()).await.unwrap().is_empty());
     assert_eq!(w.graph.with(|c| c.paths()).len(), 4, "no copy in OneDrive: {:?}", w.graph.with(|c| c.paths()));
 }
+
+/// Selective sync (issue #58): the selection the store applies from now on —
+/// the base's placements at once, as the service sets it — and a Full
+/// reconcile, which makes the folder follow.
+async fn select(w: &World, listing: &Arc<Listing>, folders: &[&str], root_files: bool) {
+    let selection = crate::tree::Selection { folders: folders.iter().map(|id| (*id).to_owned()).collect(), root_files };
+    w.store.call(move |s| s.set_selection(Some(selection), None)).await.unwrap();
+    listing.needs_full.store(true, Ordering::SeqCst);
+    w.cycle(listing).await;
+}
+
+async fn chosen(w: &World) -> Vec<String> {
+    w.store.call(|s| Ok(s.selection().map(|s| s.folders.clone()).unwrap_or_default())).await.unwrap()
+}
+
+fn cloud_folder(w: &World, id: &str, parent: &str, name: &str) {
+    w.graph.with(|c| {
+        c.add(FakeItem {
+            id: id.into(),
+            parent: Some(parent.into()),
+            name: name.into(),
+            folder: true,
+            content: Vec::new(),
+            hash: None,
+            size: 0,
+            etag: format!("e-{id}"),
+            ctag: format!("c-{id}"),
+            mtime: 0,
+        })
+    });
+}
+
+/// Issue #58, design §4 and §3: a new file directly in a partial folder is
+/// kept back and not uploaded; once its folder is chosen, the Full local
+/// scan that follows the change sends it. A new directory made in a partial
+/// folder is uploaded, and is among the chosen folders once its row is
+/// committed — so the next reconcile leaves it here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_kept_back_goes_up_once_its_folder_is_chosen_and_a_new_folder_becomes_chosen() {
+    let w = world().await;
+    cloud_folder(&w, "S", "D", "sub");
+    let listing = w.listed().await;
+    select(&w, &listing, &["S"], false).await;
+    assert!(w.path("docs/sub").is_dir() && !w.path("docs/f.txt").exists() && !w.path("top.txt").exists(), "docs is partial");
+
+    std::fs::write(w.path("docs/mine.txt"), b"mine").unwrap();
+    std::fs::create_dir(w.path("docs/made")).unwrap();
+    std::fs::write(w.path("docs/made/in.txt"), b"in").unwrap();
+    w.examine(Batch::full()).await;
+    w.upload().await;
+    assert!(w.graph.with(|c| c.at("docs/mine.txt").is_none()), "kept back: {:?}", w.graph.with(|c| c.paths()));
+    let kept: Vec<String> = w.store.call(|s| s.local_skipped()).await.unwrap().into_iter().map(|k| format!("{}: {}", k.rel.display(), k.reason)).collect();
+    assert_eq!(kept, ["docs/mine.txt: not-selected"]);
+    assert!(w.graph.with(|c| c.at("docs/made/in.txt").is_some_and(|f| f.content == b"in")), "{:?}", w.graph.with(|c| c.paths()));
+    let made = id_at(&w.path("docs/made")).expect("the new folder is an item");
+    assert_eq!(chosen(&w).await, vec!["S".to_owned(), made.clone()], "chosen by itself, as its row was committed");
+
+    // The next Full reconcile leaves it, and the file kept back, where they are.
+    listing.needs_full.store(true, Ordering::SeqCst);
+    w.cycle(&listing).await;
+    assert_eq!(id_at(&w.path("docs/made")), Some(made));
+    assert!(w.path("docs/made/in.txt").exists() && w.path("docs/mine.txt").exists());
+
+    // The folder is chosen: the scan that follows sends the file.
+    select(&w, &listing, &["D"], false).await;
+    w.examine(Batch::full()).await;
+    w.upload().await;
+    assert!(w.graph.with(|c| c.at("docs/mine.txt").is_some_and(|f| f.content == b"mine")), "{:?}", w.graph.with(|c| c.paths()));
+    assert!(w.store.call(|s| s.local_skipped()).await.unwrap().is_empty());
+    assert!(id_at(&w.path("docs/f.txt")).is_some(), "and what OneDrive has in it is here again");
+}
+
+/// Issue #58, design §3 and §4: a folder that stops being chosen while it
+/// holds local work nobody saw in time stays; its directory, its attributes
+/// off, meets the folder in OneDrive at its `mkdir` (the `409`), adopts it
+/// and becomes chosen; the new file goes up into it; nothing is made twice in
+/// OneDrive, and what the folder held there is placed again, not deleted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_left_out_with_local_work_adopts_its_folder_in_onedrive_and_becomes_chosen() {
+    let w = world().await;
+    let listing = w.listed().await;
+    std::fs::write(w.path("docs/mine.txt"), b"mine").unwrap();
+    select(&w, &listing, &[], true).await;
+    assert_eq!(id_at(&w.path("docs")), None, "kept, and no longer the item's");
+    assert!(w.path("docs/mine.txt").exists() && !w.path("docs/f.txt").exists());
+    assert!(w.base("D").is_some(), "still in OneDrive");
+
+    for batch in std::mem::take(&mut *w.examined.lock().unwrap()) {
+        w.examine(batch).await;
+    }
+    w.upload().await;
+    assert_eq!(id_at(&w.path("docs")).as_deref(), Some("D"), "adopted: {:?}", w.graph.with(|c| c.paths()));
+    assert_eq!(chosen(&w).await, vec!["D".to_owned()]);
+    assert!(w.graph.with(|c| c.at("docs/mine.txt").is_some_and(|f| f.content == b"mine")));
+    assert!(w.graph.with(|c| c.at("docs/f.txt").is_some()), "nothing was deleted in OneDrive");
+    assert_eq!(w.graph.with(|c| c.paths().iter().filter(|p| p.starts_with("docs")).count()), 3, "one docs, with its two files: {:?}", w.graph.with(|c| c.paths()));
+
+    // What OneDrive has in the folder is placed again; the examination that
+    // looks at the folder before that takes nothing for deleted.
+    w.examine(Batch::full()).await;
+    assert!(w.store.call(|s| s.outbox_rows()).await.unwrap().is_empty());
+    w.cycle(&listing).await;
+    assert_eq!(id_at(&w.path("docs/f.txt")).as_deref(), Some("F"));
+    assert!(w.graph.with(|c| c.at("docs/f.txt").is_some()));
+}

@@ -883,6 +883,12 @@ pub enum SyncError {
     /// the tree store holding them would go. The message says how many, and what to do.
     #[error("{0}")]
     PendingUploads(String),
+    /// A change of the chosen folders (issue #58) that would take off this
+    /// computer something that exists only here — a change waiting to be
+    /// uploaded, or an object that is never uploaded. Nothing was changed.
+    /// The message lists up to ten of the paths, one per line, each with why.
+    #[error("{0}")]
+    LocalChanges(String),
     #[error("{0}")]
     Io(String),
 }
@@ -8524,6 +8530,65 @@ mod tests {
                 assert!(!again.path().join("docs").exists() && !again.path().join("top.txt").exists());
                 service.stop_sync().await;
                 let _ = std::process::Command::new("chmod").args(["-R", "u+w"]).arg(again.path()).status();
+            }
+
+            /// Design §3: a change that would take off this computer what
+            /// exists only here — a change waiting to be uploaded, an object
+            /// that is never uploaded — is refused `LocalChanges`, with the
+            /// paths and why, and changes nothing: not `config.toml`, not
+            /// the store, not the folder. Once nothing is in the way, the
+            /// same change goes through.
+            #[tokio::test]
+            async fn a_change_that_would_lose_local_changes_is_refused_and_changes_nothing() {
+                use crate::tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState};
+                let w = world().await;
+                wider(&w).await;
+                let service = connected(&w, true).await;
+                service.register_root(w.folder.path()).await.unwrap();
+                wait_until("the drive is listed into the folder", || service.items() == (5, 5, 0)).await;
+                let store = service.store.lock().unwrap().clone().unwrap();
+                let everything = on_disk(&w);
+
+                // A change of `pics/p.jpg` waits to be uploaded, and `docs`
+                // holds a symbolic link, which is never uploaded.
+                let waiting = Detection {
+                    kind: OutboxKind::Update,
+                    item_id: Some("Q".into()),
+                    inode: None,
+                    rel: "pics/p.jpg".into(),
+                    base: Some(Base { etag: None, ctag: Some("c2".into()), parent: Some("P".into()), name: Some("p.jpg".into()) }),
+                    target_parent: Some("P".into()),
+                    target_name: Some("p.jpg".into()),
+                    same_content: false,
+                    state: OutboxState::Ready,
+                    reason: None,
+                    next_try: None,
+                    size: None,
+                };
+                let seq = store
+                    .call(move |s| {
+                        s.outbox_apply(&[OutboxOp::Record(waiting), OutboxOp::Skip { rel: "docs/link".into(), reason: "symlink".into(), size: 0 }], 5)?;
+                        Ok(s.outbox_rows()?[0].seq)
+                    })
+                    .await
+                    .unwrap();
+
+                for (folders, path, why) in [(vec!["D".to_owned()], "pics/p.jpg", "waiting to be uploaded"), (vec!["P".to_owned()], "docs/link", "symlink")] {
+                    let refused = service.set_selection(folders, true).await;
+                    let Err(SyncError::LocalChanges(message)) = &refused else { panic!("{refused:?}") };
+                    assert!(message.lines().any(|line| line.starts_with(&format!("{path}: ")) && line.contains(why)), "{message}");
+                    assert_eq!((service.selection(), in_config(&w)), (None, None), "nothing in config.toml");
+                    let placements = store.call(|s| Ok((s.selection().cloned(), s.counts()?.placed))).await.unwrap();
+                    assert_eq!(placements, (None, 5), "nothing in the store");
+                    assert_eq!(on_disk(&w), everything, "nothing in the folder");
+                }
+
+                // Nothing waits any more, and the link is in the folder that stays.
+                store.call(move |s| s.outbox_apply(&[OutboxOp::Remove(seq)], 6).map(|_| ())).await.unwrap();
+                service.set_selection(vec!["D".into()], false).await.unwrap();
+                assert_eq!(in_config(&w), only(&["D"], false));
+                wait_until("what is not chosen leaves the folder", || on_disk(&w) == ["docs", "docs/f.txt"]).await;
+                service.stop_sync().await;
             }
         }
 

@@ -31,7 +31,7 @@ use konedrive_fs::handle::FileHandle;
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{apply, upsert, ActivityRow, Change, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN, ROW_COLUMNS};
+use super::{apply, ActivityRow, Change, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN, ROW_COLUMNS};
 #[cfg(test)]
 use super::Kind;
 
@@ -1287,8 +1287,9 @@ impl TreeStore {
         };
         match committed {
             Committed::Item { row, handle } => {
-                upsert(&tx, Table::Items, row)?;
-                super::select::after_write(&tx, &self.select, row)?;
+                // A folder made here where it would be left out becomes
+                // chosen first, in `config.toml` (issue #58).
+                super::select::commit_written(&tx, &mut self.select, row)?;
                 tx.execute(
                     "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
                     params![row.id, handle.map(FileHandle::encode), local_seq],

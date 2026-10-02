@@ -168,6 +168,19 @@ impl Fx {
     fn rename(&self, from: &str, to: &str) {
         std::fs::rename(self.path(from), self.path(to)).unwrap();
     }
+
+    /// Selective sync (issue #58): only `folders` (item ids) are on this
+    /// computer from now on, or everything (`None`): the base's placements
+    /// change at once, as the service changes them.
+    fn select(&self, folders: Option<&[&str]>, root_files: bool) {
+        let selection = folders.map(|f| crate::tree::Selection { folders: f.iter().map(|id| (*id).to_owned()).collect(), root_files });
+        self.store.call_blocking(move |s| s.set_selection(selection, None)).unwrap();
+    }
+
+    /// What is kept back, with why.
+    fn kept_back(&self) -> Vec<(String, String)> {
+        self.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason)).collect()
+    }
 }
 
 /// A batch naming these (directory, name) pairs.
@@ -1327,4 +1340,84 @@ fn w5_fixture_folder_replaced_offline_keeping_one_file() {
         assert_eq!(std::fs::read(fx.path(&new_rel)).unwrap(), b"new");
         assert!(h.graph.with(|c| c.log.iter().all(|(m, p)| !(m == "DELETE" && p.ends_with("items/K")))));
     }
+}
+
+/// Issue #58, design §4: while a selection is set, a new file made where
+/// files are not synced — directly in a partial folder, or in the root with
+/// its files off — gets no row and is listed as kept back, `not-selected`;
+/// so does a file moved there. A new directory there gets its `mkdir`, with
+/// what is in it, and a new file inside a chosen folder its `create`, as
+/// ever. Once the folder is chosen, the Full local scan sends what was kept
+/// back.
+#[test]
+fn a_new_file_where_files_are_not_synced_is_kept_back_and_a_new_directory_is_made() {
+    let fx = Fx::new(&[
+        folder("D", "R", "docs"),
+        folder("C", "D", "chosen"),
+        file("B", "C", "b.txt", b"b"),
+        file("M", "C", "m.txt", b"m"),
+        file("A", "D", "a.txt", b"a"),
+    ]);
+    fx.select(Some(&["C"]), false);
+    fx.write("docs/new.txt", b"new");
+    fx.write("root.txt", b"root");
+    fx.write("docs/chosen/ok.txt", b"ok");
+    std::fs::create_dir(fx.path("docs/made")).unwrap();
+    fx.write("docs/made/in.txt", b"in");
+    fx.rename("docs/chosen/m.txt", "docs/m.txt");
+    let out = fx.examine(&Batch::full());
+    assert_eq!(
+        fx.summary(),
+        vec![(Mkdir, "docs/made".into(), None), (Create, "docs/chosen/ok.txt".into(), None), (Create, "docs/made/in.txt".into(), None)],
+        "nothing for what is kept back, nor for a.txt, which the reconcile has still to take away"
+    );
+    let not_selected = |rel: &str| (rel.to_owned(), examine::NOT_SELECTED.to_owned());
+    assert_eq!(fx.kept_back(), vec![not_selected("docs/m.txt"), not_selected("docs/new.txt"), not_selected("root.txt")]);
+    assert_eq!(out.held, 0);
+
+    // A create recorded before the folder became partial goes too.
+    fx.select(Some(&["D"]), false);
+    fx.examine(&Batch::full());
+    assert!(fx.summary().contains(&(Create, "docs/new.txt".into(), None)));
+    fx.select(Some(&["C"]), false);
+    fx.examine(&Batch::full());
+    assert!(!fx.summary().iter().any(|(_, rel, _)| rel == "docs/new.txt"), "{:?}", fx.summary());
+    assert!(fx.kept_back().contains(&not_selected("docs/new.txt")));
+
+    // The folder is chosen, and the root's files are on: everything goes up.
+    fx.select(Some(&["D"]), true);
+    fx.examine(&Batch::full());
+    assert!(fx.kept_back().is_empty(), "{:?}", fx.kept_back());
+    let rows = fx.summary();
+    for expected in [(Create, "docs/new.txt".to_owned(), None), (Create, "root.txt".to_owned(), None), (Move, "docs/m.txt".to_owned(), Some("M".to_owned()))] {
+        assert!(rows.contains(&expected), "{expected:?} in {rows:?}");
+    }
+}
+
+/// Issue #58, design §3: what left this computer by the selection is never
+/// read as a delete by the user — no row, nothing for the mass-delete guard
+/// to count, though a whole big folder went. And when it is chosen again,
+/// before the reconcile has placed it, it is not there and still no delete:
+/// its local objects were forgotten as it came back.
+#[test]
+fn what_left_by_the_selection_is_no_delete_and_does_not_trip_the_guard() {
+    let mut changes = vec![folder("K", "R", "keep"), file("k", "K", "k.txt", b"k"), folder("G", "R", "big"), file("T", "R", "top.txt", b"t")];
+    for n in 0..60 {
+        changes.push(file(&format!("g{n}"), "G", &format!("g{n}.txt"), b"g"));
+    }
+    let fx = Fx::new(&changes);
+    fx.select(Some(&["K"]), false);
+    // As the reconcile takes them away.
+    std::fs::remove_dir_all(fx.path("big")).unwrap();
+    std::fs::remove_file(fx.path("top.txt")).unwrap();
+    let out = fx.examine(&Batch::full());
+    assert!(fx.rows().is_empty(), "{:?}", fx.summary());
+    assert_eq!(out.held, 0);
+    assert!(out.unproven.is_empty() && out.undecided.is_empty(), "{:?} {:?}", out.unproven, out.undecided);
+
+    fx.select(None, true);
+    let out = fx.examine(&Batch::full());
+    assert!(fx.rows().is_empty(), "chosen again and not placed yet: {:?}", fx.summary());
+    assert_eq!(out.held, 0);
+    assert!(out.unproven.contains(&"G".to_owned()) && out.unproven.contains(&"T".to_owned()), "the reconcile places them again: {:?}", out.unproven);
 }

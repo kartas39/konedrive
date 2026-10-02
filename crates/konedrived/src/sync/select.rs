@@ -42,6 +42,26 @@ impl Keeper {
     }
 }
 
+/// How many paths a `LocalChanges` refusal lists.
+const REFUSAL_PATHS: usize = 10;
+
+/// The message of a `LocalChanges` refusal: a first line that says what
+/// happened, then up to [`REFUSAL_PATHS`] lines `<path>: <why>`, the paths
+/// relative to the folder, and a last line counting the rest, if any.
+fn refusal(lost: &[(std::path::PathBuf, String)]) -> String {
+    let mut text = format!(
+        "{} file(s) or folder(s) that would be removed from this computer exist only here; nothing was changed:",
+        lost.len()
+    );
+    for (rel, why) in lost.iter().take(REFUSAL_PATHS) {
+        text.push_str(&format!("\n{}: {why}", rel.display()));
+    }
+    if lost.len() > REFUSAL_PATHS {
+        text.push_str(&format!("\nand {} more", lost.len() - REFUSAL_PATHS));
+    }
+    text
+}
+
 impl SyncService {
     fn keeper(&self) -> Keeper {
         Keeper { lock: Arc::clone(&self.selecting), persist: self.persist.clone(), state: self.state.clone() }
@@ -58,9 +78,10 @@ impl SyncService {
     pub(super) fn selection_sink(&self) -> SelectionSink {
         let keeper = self.keeper();
         Arc::new(move |selection| {
-            if let Err(e) = keeper.write(Some(selection.clone())) {
+            keeper.write(Some(selection.clone())).map_err(|e| {
                 tracing::error!("the chosen folders changed, and {e}");
-            }
+                e.to_string()
+            })
         })
     }
 
@@ -110,7 +131,10 @@ impl SyncService {
     ///
     /// `InvalidArgs` for an id that is not in the list already and is not in
     /// the store, is not a folder, or is, or lies inside, a folder skipped
-    /// for another reason. Before a folder is bound only an empty list is
+    /// for another reason. `LocalChanges`, with nothing changed, while what
+    /// would leave this computer holds a change waiting to be uploaded or
+    /// an object that is never uploaded
+    /// ([`TreeStore::selection_would_lose`]). Before a folder is bound only an empty list is
     /// taken, and only `config.toml` is written: the folder bound next lists
     /// the drive and places nothing.
     pub async fn set_selection(&self, ids: Vec<String>, root_files: bool) -> Result<(), SyncError> {
@@ -131,6 +155,13 @@ impl SyncService {
                 Err(why) => return Ok(Err(SyncError::InvalidArgs(why))),
             };
             let selection = Selection { folders, root_files };
+            // Nothing that exists only on this computer leaves it: a change
+            // waiting to be uploaded, or an object that is never uploaded,
+            // refuses the whole change, before anything is written.
+            let lost = s.selection_would_lose(&selection)?;
+            if !lost.is_empty() {
+                return Ok(Err(SyncError::LocalChanges(refusal(&lost))));
+            }
             // `config.toml` first: what the store then holds is never more
             // than the file says.
             if let Err(e) = keeper.write(Some(selection.clone())) {
@@ -140,7 +171,7 @@ impl SyncService {
             Ok(Ok(()))
         })
         .await??;
-        self.nudge_full();
+        self.follow_selection();
         Ok(())
     }
 
@@ -163,8 +194,20 @@ impl SyncService {
             Ok(Ok(()))
         })
         .await??;
-        self.nudge_full();
+        self.follow_selection();
         Ok(())
+    }
+
+    /// The folder follows a change of the selection: a Full reconcile takes
+    /// off this computer what left and places what came, and — on a
+    /// read-write folder — a Full local scan sends what was kept back as
+    /// `not-selected` and is not any more. With no sync running, both happen
+    /// when one starts.
+    fn follow_selection(&self) {
+        self.nudge_full();
+        if let Some(watcher) = self.syncing.lock().unwrap().as_ref().and_then(|s| s.watcher.as_ref()) {
+            watcher.selection_scan();
+        }
     }
 
     /// `SelectedFolders`: the chosen folders, each with its path in OneDrive

@@ -95,6 +95,10 @@ pub enum SyncFault {
     /// `Unregister`, or `Accounts.Remove`, while changes wait to be uploaded: the folder's
     /// record holding them would go. The message says how many.
     PendingUploads(String),
+    /// A change of the chosen folders that would take off this computer something that
+    /// exists only here; nothing was changed. The message lists up to ten of the paths,
+    /// one per line, each with why.
+    LocalChanges(String),
     /// Everything with no name of its own: an I/O failure, mostly.
     Failed(String),
 }
@@ -598,6 +602,7 @@ pub(crate) fn to_fault(error: SyncError) -> SyncFault {
         SyncError::NotAllowed(_) => SyncFault::NotAllowed(message),
         SyncError::NotUploaded(_) => SyncFault::NotUploaded(message),
         SyncError::PendingUploads(_) => SyncFault::PendingUploads(message),
+        SyncError::LocalChanges(_) => SyncFault::LocalChanges(message),
         SyncError::InvalidArgs(_) => SyncFault::ZBus(zbus::Error::FDO(Box::new(zbus::fdo::Error::InvalidArgs(message)))),
         SyncError::Io(_) => SyncFault::Failed(message),
     }

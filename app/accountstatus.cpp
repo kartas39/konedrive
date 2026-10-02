@@ -97,6 +97,9 @@ QString scanReasonText(const QString &reason)
     if (reason == QLatin1String("ignore-list")) {
         return i18nc("@info why the local files are checked", "after the ignore list changed");
     }
+    if (reason == QLatin1String("selection")) {
+        return i18nc("@info why the local files are checked", "after the chosen folders changed");
+    }
     if (reason == QLatin1String("periodic")) {
         return i18nc("@info why the local files are checked", "as part of the folder cannot be watched");
     }

@@ -822,7 +822,7 @@ impl TreeStore {
         apply(&tx, Source::Items, changes)?;
         // A page's rows come as `classify` made them: the selection is
         // applied to `items` again.
-        select::pass(&tx, Source::Items, &self.select, None)?;
+        select::pass(&tx, Source::Items, &self.select, None, false)?;
         // The handles the placement recorded in `staging` for items that
         // were not in `items` yet.
         tx.execute(

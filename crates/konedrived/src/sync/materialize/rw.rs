@@ -29,6 +29,13 @@
 //!   again; a folder that holds local work stays, and is made again in
 //!   OneDrive (F82 (4)); one that holds only what is in use (or ignored)
 //!   waits, keeping its id; a downloaded file goes only under a write lease;
+//! - **takes off this computer what the selection leaves out, without
+//!   reading that as a removal in OneDrive** (issue #58): the item is still
+//!   there, so a clean download goes whatever `upload_differences` says, and
+//!   a folder is never made again in OneDrive. Local work nobody saw in time
+//!   stays, as above: a changed file is uploaded again, and its folder, its
+//!   attributes off, meets the one in OneDrive at its `mkdir` and becomes
+//!   chosen;
 //! - **never moves anything out of the folder**: what it moved to the holding
 //!   directory — this run, or one a stop cut short — is placed from there or
 //!   put back where it was, never rescued outside, where it would be taken
@@ -51,7 +58,7 @@ use crate::sync::disk::{Probe, Scanned, HOLDING, NEW_PREFIX};
 use crate::sync::local::{names, IgnoreList};
 use crate::sync::upload::copy_name;
 use crate::tree::outbox::{OutboxOp, SWAP_PREFIX};
-use crate::tree::{Kind, Placement, Table, TreeError, TreeStore};
+use crate::tree::{Kind, Placement, SkipReason, Table, TreeError, TreeStore};
 
 /// What a read-write folder's reconcile needs to know besides the tree.
 #[derive(Debug, Default, Clone)]
@@ -376,7 +383,9 @@ impl Materializer {
             let placed = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed);
             return Ok(if staged.is_some() && placed { Was::Moved } else { Was::Stranger });
         };
-        let at_base = base.placement == Placement::Placed
+        // Left out by the selection, the base has it where it was: a change
+        // of the selection writes the base before the folder follows.
+        let at_base = matches!(base.placement, Placement::Placed | Placement::Skipped(SkipReason::NotSelected))
             && base.parent_id == entry.parent_id
             && entry.rel.file_name() == Some(OsStr::new(&base.name))
             && (base.kind == Kind::Folder) == entry.is_dir;
@@ -587,9 +596,11 @@ impl Materializer {
                     run.out.unsettled.insert(id);
                     return Ok(Removal::Busy);
                 }
+                // Not removed from OneDrive: the selection leaves it out.
+                let left_out = self.store.call_blocking({ let id = id.to_owned(); move |s| s.left_out(Table::Staging, &id) })?;
                 if !is_dir {
                     let file = self.disk.open_file(&dir, name)?;
-                    return self.remove_file_in_place(rw, &dir, name, &rel, &id, file, run);
+                    return self.remove_file_in_place(rw, &dir, name, &rel, &id, file, left_out, run);
                 }
                 let sub = self.disk.open_subdir(&dir, name)?;
                 let mut outcome = Removal::Gone;
@@ -604,8 +615,20 @@ impl Materializer {
                         run.note(EventKind::Removed, &rel, None);
                     }
                     Removal::Busy => {
-                        tracing::info!("{} was removed from OneDrive; it goes once nothing in it is in use", rel.display());
+                        if left_out {
+                            tracing::info!("{} is not among the folders chosen for this computer; it goes once nothing in it is in use", rel.display());
+                        } else {
+                            tracing::info!("{} was removed from OneDrive; it goes once nothing in it is in use", rel.display());
+                        }
                         run.out.unsettled.insert(id);
+                    }
+                    Removal::Kept if left_out => {
+                        // The folder is still in OneDrive: nothing is made
+                        // again there. Its `mkdir` finds it, adopts it, and
+                        // the folder becomes chosen (design §4).
+                        placeholder::strip_konedrive_xattrs(&sub)?;
+                        tracing::info!("{} is not among the folders chosen for this computer but holds local work: it stays, and becomes chosen", rel.display());
+                        run.out.examine.push((rel, true));
                     }
                     Removal::Kept => {
                         placeholder::strip_konedrive_xattrs(&sub)?;
@@ -620,10 +643,14 @@ impl Materializer {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn remove_file_in_place(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, id: &str, file: File, run: &mut Run) -> Result<Removal, ApplyError> {
+    fn remove_file_in_place(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, id: &str, file: File, left_out: bool, run: &mut Run) -> Result<Removal, ApplyError> {
         let keep = |run: &mut Run| -> Result<Removal, ApplyError> {
             placeholder::strip_konedrive_xattrs(&file)?;
-            tracing::info!("{} was removed from OneDrive but holds local work: it stays, and is uploaded again", rel.display());
+            if left_out {
+                tracing::info!("{} is not among the folders chosen for this computer but holds local work: it stays, and is uploaded again", rel.display());
+            } else {
+                tracing::info!("{} was removed from OneDrive but holds local work: it stays, and is uploaded again", rel.display());
+            }
             run.out.examine.push((rel.to_path_buf(), false));
             Ok(Removal::Kept)
         };
@@ -641,7 +668,9 @@ impl Materializer {
                     run.out.unsettled.insert(id.to_owned());
                     return Ok(Removal::Busy);
                 };
-                if self.local_work(&file) || rw.upload_differences {
+                // A clean download the selection leaves out is still in
+                // OneDrive: it goes, whatever `upload_differences` says.
+                if self.local_work(&file) || (rw.upload_differences && !left_out) {
                     return keep(run);
                 }
                 self.disk.remove(dir, name, false)?;
@@ -651,7 +680,7 @@ impl Materializer {
             }
             _ if self.local_work(&file) => keep(run),
             _ => {
-                if rw.upload_differences {
+                if rw.upload_differences && !left_out {
                     tracing::info!("{} is not in OneDrive's new listing and held nothing here: removed", rel.display());
                 }
                 self.disk.remove(dir, name, false)?;

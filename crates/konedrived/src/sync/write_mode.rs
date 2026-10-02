@@ -490,6 +490,12 @@ impl Watcher {
     pub(super) fn full_scan(&self) {
         self.inner.full_scan(super::local::ScanReason::IgnoreList);
     }
+
+    /// A Full local scan now: the folders chosen for this computer changed (issue #58), so a
+    /// file kept back as `not-selected` may go up now.
+    pub(super) fn selection_scan(&self) {
+        self.inner.full_scan(super::local::ScanReason::Selection);
+    }
 }
 
 #[cfg(test)]

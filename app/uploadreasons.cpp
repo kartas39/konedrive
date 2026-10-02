@@ -53,6 +53,9 @@ QString uploadReasonText(const QString &reason)
     if (reason == QLatin1String("hard-link")) {
         return i18n("A file with other hard links: not uploaded.");
     }
+    if (reason == QLatin1String("not-selected")) {
+        return i18n("Files directly in this folder are not synced. Move it into a chosen folder, choose this folder, or, in the root, turn on the root's files.");
+    }
     if (reason == QLatin1String("locked")) {
         return i18n("Locked in OneDrive (open for co-authoring): tried again later.");
     }
