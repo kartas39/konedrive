@@ -458,6 +458,12 @@ void SyncController::chooseFolder(const QUrl &folder)
 void SyncController::chooseFolderAndFolders(const QUrl &folder)
 {
     const QString path = folder.toLocalFile();
+    // Only for an account with no folder: on a bound one the empty list would
+    // start taking everything off it, and the refused bind bring it all back.
+    if (!m_rootPath.isEmpty()) {
+        setActionError(i18n("This account already syncs %1. Choose its folders with \"Choose Folders…\" instead.", m_rootPath));
+        return;
+    }
     // Nothing is placed until folders are chosen: the listing runs, and the
     // picker opens when it has finished.
     call(m_folder->SetSelection(QStringList(), false), [this, path](const QDBusPendingCall &) {

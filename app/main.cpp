@@ -130,8 +130,8 @@ int main(int argc, char *argv[])
     QObject::connect(&accounts, &AccountsModel::chooseFoldersRequested, &app, [](const QString &account) {
         qCDebug(KONEDRIVE_APP) << "choosing folders for" << account;
     });
-    QObject::connect(&accounts, &AccountsModel::chooseFoldersFailed, &app, [](const QString &folder) {
-        qCDebug(KONEDRIVE_APP) << "no account has the folder" << folder;
+    QObject::connect(&accounts, &AccountsModel::chooseFoldersFailed, &app, [](const QString &folder, bool noAnswer) {
+        qCDebug(KONEDRIVE_APP) << (noAnswer ? "no answer about the folder" : "no account has the folder") << folder;
     });
 
     QObject::connect(&service, &KDBusService::activateRequested, &tray, [&tray, &accounts, window](const QStringList &arguments, const QString &workingDirectory) {

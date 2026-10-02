@@ -302,7 +302,7 @@ public Q_SLOTS:
     /// already), and LocalChanges with `refuseSelection` while that is set.
     void SetSelection(const QStringList &ids, bool root_files, const QDBusMessage &message);
     void SyncEverything();
-    KonedriveFolderChildList FolderChildren(const QString &id);
+    KonedriveFolderChildList FolderChildren(const QString &id, const QDBusMessage &message);
 };
 
 class FakeTransfers : public FakeFolderInterface
@@ -641,6 +641,8 @@ public:
     bool rootFiles = true;
     /// SetSelection refuses LocalChanges with this message while it is set.
     QString refuseSelection;
+    /// FolderChildren fails while it is set.
+    bool refuseChildren = false;
     /// Hold these calls unanswered (until releaseActivity/finishFreeUp; Refresh for ever).
     bool holdActivity = false;
     bool holdFreeUp = false;
@@ -697,7 +699,9 @@ inline void FakeFolder::Register(const QString &path, const QDBusMessage &messag
         m_sync->bus.send(message.createErrorReply(m_sync->refuseRegister, QStringLiteral("the folder was not added")));
         return;
     }
-    set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("listing")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+    // As the real daemon answers: bound, and `ready` — the listing starts
+    // later, in the folder's own task, and says `listing` only then.
+    set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("ready")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
 }
 
 inline void FakeFolder::RegisterWithoutInterception(const QString &path)
@@ -836,9 +840,14 @@ inline void FakeFolder::SyncEverything()
     announceSelection();
 }
 
-inline KonedriveFolderChildList FakeFolder::FolderChildren(const QString &id)
+inline KonedriveFolderChildList FakeFolder::FolderChildren(const QString &id, const QDBusMessage &message)
 {
     m_sync->calls << QStringLiteral("FolderChildren:") + id;
+    if (m_sync->refuseChildren) {
+        message.setDelayedReply(true);
+        m_sync->bus.send(message.createErrorReply(QStringLiteral("org.freedesktop.DBus.Error.Failed"), QStringLiteral("the store task failed")));
+        return {};
+    }
     const auto parentOf = [this](const QString &of) {
         for (const FakeSync::DriveFolder &folder : std::as_const(m_sync->drive)) {
             if (folder.id == of) {

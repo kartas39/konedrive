@@ -829,9 +829,13 @@ private Q_SLOTS:
         QTest::qWait(100);
         QVERIFY(!shown(picker));
         QVERIFY(!fake.sync->calls.contains(QStringLiteral("FolderChildren:")));
+        // Review fix 9: the listing starts after the bind's answer, as the daemon's does.
+        fake.sync->folder->set({{QStringLiteral("State"), QStringLiteral("listing")}});
+        QTest::qWait(100);
+        QVERIFY(!shown(picker));
 
-        // Listed: the picker opens, once.
-        fake.sync->folder->set({{QStringLiteral("State"), QStringLiteral("ready")}});
+        // Listed, the first check done: the picker opens, once.
+        fake.sync->folder->set({{QStringLiteral("State"), QStringLiteral("ready")}, {QStringLiteral("LastChecked"), QVariant::fromValue<qlonglong>(1700000000)}});
         QTRY_VERIFY(shown(picker));
         QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("FolderChildren:")));
         QCOMPARE(line->property("text").toString(), QStringLiteral("No folder of OneDrive"));

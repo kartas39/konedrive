@@ -118,8 +118,10 @@ Kirigami.ApplicationWindow {
             root.showPage("account");
             accountPage.openSelectionPicker();
         }
-        function onChooseFoldersFailed(folder) {
-            root.chooseFoldersProblem = i18n("“%1” is not the OneDrive folder of an account here, so there are no folders to choose for it.", folder);
+        function onChooseFoldersFailed(folder, noAnswer) {
+            root.chooseFoldersProblem = noAnswer
+                ? i18n("KOneDrive did not answer, so the folders of “%1” cannot be chosen now. Try again once it runs.", folder)
+                : i18n("“%1” is not the OneDrive folder of an account here, so there are no folders to choose for it.", folder);
             root.showPassiveNotification(root.chooseFoldersProblem, "long");
         }
     }

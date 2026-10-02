@@ -192,6 +192,10 @@ QString FolderPicker::summary() const
     if (m_initial.rootFiles && !rootFiles()) {
         lines << i18n("The files directly in the root of OneDrive are removed from this computer; they stay in OneDrive.");
     }
+    // Said in words whatever else is said: no folder at all from now on.
+    if (!m_now.everything && m_now.chosen.isEmpty() && (m_initial.everything || !m_initial.chosen.isEmpty())) {
+        lines.prepend(i18n("No folder is chosen: every folder of OneDrive is removed from this computer; they stay in OneDrive."));
+    }
     return lines.join(QLatin1Char('\n'));
 }
 
@@ -211,7 +215,7 @@ void FolderPicker::fail(const QString &message)
 
 void FolderPicker::setEverything(bool on)
 {
-    if (m_loading || m_applying || on == m_now.everything || !m_nodes.contains(QString())) {
+    if (!ready() || m_applying || on == m_now.everything) {
         return;
     }
     if (on) {
@@ -238,7 +242,7 @@ void FolderPicker::setEverything(bool on)
 
 void FolderPicker::setRootFiles(bool on)
 {
-    if (m_loading || m_applying || m_now.everything || on == m_now.rootFiles) {
+    if (!ready() || m_applying || m_now.everything || on == m_now.rootFiles) {
         return;
     }
     m_now.rootFiles = on;
@@ -412,7 +416,7 @@ void FolderPicker::removeBelow(const QString &path)
 
 void FolderPicker::setChecked(int row, bool checked)
 {
-    if (row < 0 || row >= m_rows.size() || m_now.everything || m_loading || m_applying) {
+    if (row < 0 || row >= m_rows.size() || m_now.everything || !ready() || m_applying) {
         return;
     }
     const Node node = m_nodes.value(m_rows.at(row));
@@ -471,9 +475,19 @@ void FolderPicker::setChecked(int row, bool checked)
     touched();
 }
 
+void FolderPicker::click(int row)
+{
+    if (row < 0 || row >= m_rows.size()) {
+        return;
+    }
+    setChecked(row, stateOf(m_nodes.value(m_rows.at(row)), m_now) == Qt::Unchecked);
+}
+
 void FolderPicker::apply()
 {
-    if (m_loading || m_applying) {
+    // Nothing read, nothing sent: an empty list made from a failed read would
+    // take every folder off this computer.
+    if (!ready() || m_applying) {
         return;
     }
     if (!modified()) {

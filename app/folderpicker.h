@@ -28,6 +28,9 @@ class FolderPicker : public QAbstractListModel
     Q_PROPERTY(bool rootFiles READ rootFiles WRITE setRootFiles NOTIFY changed)
     /// The selection and the root's folders are being read.
     Q_PROPERTY(bool loading READ loading NOTIFY changed)
+    /// The selection and the root's folders were read: only then can anything
+    /// be changed or applied. A failed read leaves it off, with `problem` saying why.
+    Q_PROPERTY(bool ready READ ready NOTIFY changed)
     /// apply() waits for the daemon's answer.
     Q_PROPERTY(bool applying READ applying NOTIFY changed)
     /// The first listing of OneDrive still runs: folders may be missing.
@@ -66,6 +69,7 @@ public:
     bool rootFiles() const { return m_now.everything || m_now.rootFiles; }
     void setRootFiles(bool on);
     bool loading() const { return m_loading; }
+    bool ready() const { return !m_loading && m_nodes.value(QString()).loaded; }
     bool applying() const { return m_applying; }
     bool incomplete() const { return m_incomplete; }
     bool modified() const;
@@ -86,6 +90,10 @@ public:
     /// folder inside a chosen one makes that one give way to its other
     /// sub-folders; a partly checked folder loses the chosen folders below it.
     Q_INVOKABLE void setChecked(int row, bool checked);
+    /// A click on the folder at `row`: an unchecked folder is checked; a checked or
+    /// partly checked one is unchecked (a partly checked one loses every chosen
+    /// folder below it, as `konedrivectl sync select remove` does).
+    Q_INVOKABLE void click(int row);
     /// SyncEverything, or SetSelection with the chosen folders. applied() on
     /// success; a refusal lands in `problem` and changes nothing.
     Q_INVOKABLE void apply();

@@ -373,6 +373,31 @@ private Q_SLOTS:
         QCOMPARE(current.path(), fake::FirstAccount);
         QTRY_VERIFY(model.at(1)->sync()->serviceAvailable());
     }
+
+    /// Review fix 10: `--choose-folders` with no daemon answering within the wait is
+    /// said as that, not as a folder that is no account's; a folder that really is no
+    /// account's is said so.
+    void chooseFoldersWithNoAnswerOrNoAccount()
+    {
+        {
+            DaemonController daemon;
+            AccountsModel model(&daemon);
+            model.setChooseFoldersWait(200);
+            QSignalSpy failed(&model, &AccountsModel::chooseFoldersFailed);
+            model.requestChooseFolders(QStringLiteral("/home/u/OneDrive"));
+            QTRY_COMPARE(failed.size(), 1);
+            QCOMPARE(failed.at(0).at(0).toString(), QStringLiteral("/home/u/OneDrive"));
+            QVERIFY2(failed.at(0).at(1).toBool(), "no daemon answered");
+        }
+        start({QStringLiteral("Personal")});
+        DaemonController daemon;
+        AccountsModel model(&daemon);
+        QTRY_COMPARE(model.rowCount(), 1);
+        QSignalSpy failed(&model, &AccountsModel::chooseFoldersFailed);
+        model.requestChooseFolders(QStringLiteral("/home/u/Elsewhere"));
+        QTRY_COMPARE(failed.size(), 1);
+        QVERIFY2(!failed.at(0).at(1).toBool(), "the daemon answered: no account has it");
+    }
 };
 
 QTEST_GUILESS_MAIN(AccountsModelTest)

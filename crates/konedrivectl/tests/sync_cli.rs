@@ -1970,6 +1970,28 @@ async fn binary_register_choose_folders_places_nothing_until_folders_are_chosen(
     assert!(!again.join("photos").exists());
 }
 
+/// Review fix 7: `--choose-folders` on an account whose folder is already bound is a usage
+/// error before any call — no empty list is set on the bound folder, so nothing leaves it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_register_choose_folders_on_a_bound_folder_is_refused_before_anything_changes() {
+    let (f, _graph) = harness_with_folders().await;
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    let addr = f._bus.address();
+    assert!(run(addr, &["sync", "register", root.to_str().unwrap()]).status.success());
+    wait_for(|| root.join("photos/p.jpg").is_file() && root.join("top.txt").is_file()).await;
+
+    let other = f.dir.path().join("Other");
+    std::fs::create_dir(&other).unwrap();
+    let out = run(addr, &["sync", "register", other.to_str().unwrap(), "--choose-folders"]);
+    assert_eq!(out.status.code(), Some(2), "{out:?}");
+    assert!(err_text(&out).contains("is already") && err_text(&out).contains("sync select"), "{}", err_text(&out));
+    assert_eq!(chosen(&f), None, "no list was set");
+    let config = std::fs::read_to_string(f._config_dir.path().join("config.toml")).unwrap();
+    assert!(!config.contains("sync_only"), "{config}");
+    assert!(root.join("photos/p.jpg").is_file() && root.join("top.txt").is_file(), "nothing left the folder");
+}
+
 /// A `--choose-folders` registration that is refused leaves no empty list behind: the
 /// account syncs everything, as before.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

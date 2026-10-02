@@ -266,7 +266,8 @@ public:
     /// Binds with nothing placed, for the folders to be chosen afterwards: an empty
     /// selection (SetSelection([], false)), then Register. A refused Register takes the
     /// empty selection back (SyncEverything); NoHelper is kept as `pendingFolder`, as in
-    /// chooseFolder. Bound, `choosePending` turns on.
+    /// chooseFolder. Bound, `choosePending` turns on. Refused, in `actionError`, with
+    /// nothing called, while the account has a folder bound.
     Q_INVOKABLE void chooseFolderAndFolders(const QUrl &folder);
     Q_INVOKABLE void clearChoosePending();
     /// "Try Again" on the NoHelper prompt: retries Register(pendingFolder), the way it

@@ -33,7 +33,7 @@ Kirigami.Dialog {
             objectName: "applySelection"
             text: i18nc("@action:button", "Apply")
             icon.name: "dialog-ok-apply"
-            enabled: dialog.picker !== null && dialog.picker.modified && !dialog.picker.loading && !dialog.picker.applying
+            enabled: dialog.picker !== null && dialog.picker.ready && dialog.picker.modified && !dialog.picker.applying
             onTriggered: dialog.picker.apply()
         },
         Kirigami.Action {
@@ -63,7 +63,7 @@ Kirigami.Dialog {
         id: tree
         objectName: "folderTree"
 
-        readonly property bool editable: dialog.picker !== null && !dialog.picker.everything && !dialog.picker.loading && !dialog.picker.applying
+        readonly property bool editable: dialog.picker !== null && dialog.picker.ready && !dialog.picker.everything && !dialog.picker.applying
 
         implicitHeight: Kirigami.Units.gridUnit * 24
         clip: true
@@ -83,7 +83,7 @@ Kirigami.Dialog {
 
                 Layout.fillWidth: true
                 text: i18n("Sync everything")
-                enabled: dialog.picker !== null && !dialog.picker.loading && !dialog.picker.applying
+                enabled: dialog.picker !== null && dialog.picker.ready && !dialog.picker.applying
                 checked: on
                 // A click writes `checked`, ending the binding: kept in step here.
                 onOnChanged: checked = on
@@ -167,17 +167,17 @@ Kirigami.Dialog {
                 text: row.name
                 tristate: true
                 checkState: row.check
-                // A click on a checked folder unchecks it; on any other, checks it whole.
+                // A click on an unchecked folder checks it; on a checked or partly
+                // checked one, unchecks it (FolderPicker::click).
                 nextCheckState: function () {
-                    return row.check === Qt.Checked ? Qt.Unchecked : Qt.Checked;
+                    return row.check === Qt.Unchecked ? Qt.Checked : Qt.Unchecked;
                 }
                 onClicked: {
-                    const wanted = row.check !== Qt.Checked;
                     // The model's answer is what shows.
                     box.checkState = Qt.binding(function () {
                         return row.check;
                     });
-                    dialog.picker.setChecked(row.index, wanted);
+                    dialog.picker.click(row.index);
                 }
             }
         }

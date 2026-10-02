@@ -65,10 +65,13 @@ FormCard.FormCardPage {
         }
     }
 
-    /// The folder was bound with "Choose Folders…" and its first listing is still running.
-    readonly property bool readingFolders: oneDrive && sync.choosePending && sync.rootState === "listing"
+    /// The folder was bound with "Choose Folders…" and its first listing has not finished:
+    /// nothing was checked with OneDrive yet. The daemon answers the bind before the
+    /// listing even starts, so `State` says nothing here; `LastChecked` stays 0 until
+    /// the first cycle, the whole listing, succeeds (a new folder starts at 0).
+    readonly property bool readingFolders: oneDrive && sync.choosePending && sync.lastChecked === 0
     /// …and has finished: the picker opens, once.
-    readonly property bool pickerDue: oneDrive && sync.choosePending && sync.rootState !== "listing"
+    readonly property bool pickerDue: oneDrive && sync.choosePending && sync.lastChecked !== 0
     onPickerDueChanged: {
         if (pickerDue) {
             // Not from inside the binding that just changed.

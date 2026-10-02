@@ -182,6 +182,11 @@ void AccountsModel::follow(const QStringList &paths)
     resolveChooseFolders();
 }
 
+void AccountsModel::setChooseFoldersWait(int ms)
+{
+    m_chooseWait->setInterval(ms);
+}
+
 void AccountsModel::requestChooseFolders(const QString &folder)
 {
     if (folder.isEmpty()) {
@@ -221,7 +226,8 @@ void AccountsModel::resolveChooseFolders(bool giveUp)
     m_chooseFolder.clear();
     m_chooseWait->stop();
     if (found.isEmpty()) {
-        Q_EMIT chooseFoldersFailed(folder);
+        // Given up before every account was known: the daemon did not answer.
+        Q_EMIT chooseFoldersFailed(folder, !allKnown);
     } else {
         Q_EMIT chooseFoldersRequested(found);
     }

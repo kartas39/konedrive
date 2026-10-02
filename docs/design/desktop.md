@@ -301,7 +301,7 @@ F51).
 | `login` | chosen | `BeginSignIn`, opens the browser and waits. With no account at all and none named, it first adds one called `Personal` |
 | `logout` | chosen | signs the account out and deletes its token |
 | `status` | chosen, or all | the account's sign-in state and mode; with several accounts and none named, every account under its label, the `Client ID:` line once above them |
-| `sync register <path> [--choose-folders]` | chosen | registers a OneDrive folder (needs the helper). With `--choose-folders`, an empty selection is set first (`SetSelection([], false)`), so the listing runs and nothing is placed; the output says to go on with `sync select browse` and `sync select only`. A refused bind takes the empty selection back (`SyncEverything`); on an account that has a selection already, `--choose-folders` is refused, and a plain `register` keeps that selection |
+| `sync register <path> [--choose-folders]` | chosen | registers a OneDrive folder (needs the helper). With `--choose-folders`, an empty selection is set first (`SetSelection([], false)`), so the listing runs and nothing is placed; the output says to go on with `sync select browse` and `sync select only`. A refused bind takes the empty selection back (`SyncEverything`); on an account that has a selection already, or a folder bound already, `--choose-folders` is refused before any call, and a plain `register` keeps that selection |
 | `sync select` | chosen | the selection ([sync.md](sync.md) §3.1): "everything", or the chosen folders and the root files' switch; a chosen folder the store does not know is shown by its id, as not listed yet. `sync status` adds "Synced: 3 chosen folders, files in the root: off" while a list is set |
 | `sync select browse [<folder>]` | chosen | the sub-folders of a folder of OneDrive (`FolderChildren`) with their state; while the first listing runs, it says the list may be incomplete |
 | `sync select only <folder>… [--root-files]`, `add <folder>…`, `remove <folder>…`, `root-files on\|off`, `everything` | chosen | `SetSelection` or `SyncEverything`: exactly these folders (the root's files off unless `--root-files`); add to or take from a list; `remove` of a folder inside a chosen one makes that one give way to its other sub-folders, and of a partial folder removes every chosen folder below it; the last one removed leaves an empty list. With no list, `add`, `remove` and `root-files` are refused and point to `only`. A folder is named by its path in OneDrive or by an absolute local path in the account's folder. Each change prints the new selection and says that folders outside it leave this computer and stay in OneDrive; a `LocalChanges` refusal prints the paths and why |
@@ -412,18 +412,22 @@ listed yet") and whether the root's files are synced, and **Choose Folders…**,
 picker. The picker is a dialog with a tree of the drive's folders, read level by level as branches
 open (`FolderChildren`), each with a check box: checked — chosen, or inside a chosen folder; partly
 checked — partial. Checking a folder chooses it whole; unchecking a folder inside a chosen one
-replaces the chosen one by its other sub-folders, which makes it partial. Above the tree, "Sync
+replaces the chosen one by its other sub-folders, which makes it partial; a click on a partly
+checked folder unchecks it, with every chosen folder below it. Nothing can be changed or applied
+until the selection and the root's folders are read; a failed read stays shown. Above the tree, "Sync
 everything" disables it; switched off, the tree starts with every folder of the root chosen and the
 root's files on, so nothing leaves until something is unchecked. "Files in the root" heads the
 tree. Before **Apply**, a line names the folders that leave this computer and stay in OneDrive,
-and, for a folder that becomes partial, that the files directly in it leave too; Apply calls
+and, for a folder that becomes partial, that the files directly in it leave too, and says in
+words when no folder is left chosen at all; Apply calls
 `SetSelection` or `SyncEverything`. A `LocalChanges` refusal is shown in the dialog with its paths
 and why, and the dialog stays open (limitations log A27, A28).
 
 **Binding a folder.** After the folder dialog, an account with no selection is asked: "Sync
 Everything" (the default) or "Choose Folders…". The second does what `sync register
---choose-folders` does, a refused bind included; the card then says that the list of folders is
-being read, and the picker opens once the first listing has finished (A30).
+--choose-folders` does, a refused bind included, and is refused, with nothing called, on an
+account whose folder is already bound; the card then says that the list of folders is being read,
+and the picker opens once the first listing has finished — once `LastChecked` is no longer 0 (A30).
 
 **Held removals.** The mass-delete guard holds a large delete until the user decides. The window
 follows `HeldCount` for the Status page, the tray and the `massDelete` notification, and reads

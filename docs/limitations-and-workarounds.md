@@ -2557,14 +2557,31 @@ application must never read zeros where real content should be.
   the pass costs two indexed queries per staged cycle and per outbox commit of a folder, and every
   local examination of a read-write folder computes the partial folders (a few queries per chosen
   folder). `thumbnail_candidates` and `TreeStore::unplaced` still look at rows inside folders that
-  are not chosen; `unplaced` is bounded: past 2000 items left out and never placed, every read-write
-  cycle reads all placed items from the root down instead. SHORTCUT · reasoned · open.
+  are not chosen; `unplaced` is bounded: past 2000 items left out and never placed, a read-write
+  cycle that stages something, or a Full one, reads all placed items from the root down instead.
+  An idle cycle then does not look for placed items with no local object at all (issue #39's rule:
+  it reads nothing whole), so such an item — one the outbox forgot, say — is placed again only at
+  the next cycle that stages something or is Full. During a first listing each page runs the
+  pass's queries over `staging`, which has no index on `placement`. A list the store changes by
+  itself (a chosen folder deleted, or moved into another) is applied to `items` at once, one more
+  pass over the whole of `items`. SHORTCUT · measured
+  (`tree::select::tests::an_idle_cycle_does_not_walk_from_the_root`) · open.
 - **F189. When a change of the selection takes effect** (issue #58) — a change made while a cycle
   runs takes effect at the next cycle, which the change asks for as Full; paused, signed out or
   without the helper, it waits for the next cycle. A list edited by hand in `config.toml` is read
   only when the daemon starts. A chosen id the store never knew (the file edited by hand, a store
   being rebuilt) stays in the list for good: nothing drops it by itself (`sync select remove` or the
-  picker does). DESIGN · reasoned · open.
+  picker does). A list the store changes by itself changes the base's placements at once, and the
+  folder follows at the next cycle, which is then Full; nothing asks for that cycle. When
+  `config.toml` cannot be written then, the store keeps the old list and placements and tries again
+  at its next change. A change of the selection waits for the folder's tree lock (in read-only mode
+  too, where nothing holds it long), so it waits for a read-write cycle under way to swap; one the
+  store cannot write puts the old selection back in `config.toml` and answers the error. An account
+  with a selection that binds a developer local-mode folder cannot remove the selection
+  (`Unsupported`) until it forgets that folder. DESIGN · measured
+  (`tree::select::tests::a_list_that_changes_by_itself_is_applied_at_once_and_only_once_written`,
+  `sync::tests::onedrive::selective::a_change_of_the_selection_waits_for_the_tree_and_one_the_store_refuses_changes_nothing`)
+  · open.
 - **F190. Read-write: local work the selection's check could not see goes up again** (issue #58;
   write design §9) — the check before a change reads the store only. Work it could not see (a
   change not examined yet, or made after the check) in a folder that leaves is kept as for an item
@@ -2573,9 +2590,14 @@ application must never read zeros where real content should be.
   id moved into a partial folder stays where it was in OneDrive and is listed `not-selected`. After a
   folder comes back, a file deleted here before the reconcile placed it again comes back too (its
   delete cannot be proved; the stale local object is forgotten so that it is not read as a delete
-  in OneDrive). Something in use (open, being filled) in a leaving folder stays until the next Full
-  reconcile, and nothing asks for one. DESIGN · measured
-  (`sync::materialize::rw::tests`, `sync::local::tests`) · open.
+  in OneDrive). Something in use (open, being filled), an ignored name or a symbolic link in a
+  leaving folder stays, with that folder, until the next Full reconcile, and nothing asks for one.
+  Meanwhile the base already has the folder left out (a selection flip never waits for the disk),
+  and whatever the reconcile took off the disk around it has no local object on record, so no
+  examination can take it for deleted here. DESIGN · measured
+  (`sync::materialize::rw::tests`, `sync::local::tests`,
+  `sync::listing::rw::tests::a_folder_the_selection_took_off_the_disk_beside_something_busy_is_never_deleted_in_onedrive`)
+  · open.
 - **F191. Read-write: what blocks a change of the selection** (issue #58) — a kept-back object (a
   symbolic link, an ignored name, a `not-selected` file) in a folder that would leave refuses the
   change (`LocalChanges`) until the user moves or deletes it; so does an outbox row on anything
@@ -2614,8 +2636,11 @@ application must never read zeros where real content should be.
   read, so a change made elsewhere in between (the window, another `konedrivectl`) is overwritten.
   `sync register --choose-folders`, and "Choose Folders…" at the window's bind, are two calls
   (`SetSelection([], false)`, then `Register`): one killed between them leaves an empty list on an
-  account with no folder, which `sync select everything` removes. A folder whose name starts with
-  `/` cannot be named by its OneDrive path. SHORTCUT · reasoned · open.
+  account with no folder, which `sync select everything` removes; both refuse an account whose
+  folder is already bound, before any call. A list read by the picker or by `sync select remove`
+  just before a folder made here is committed (and so becomes chosen) can drop that new folder from
+  the list: it leaves the disk and stays in OneDrive. A folder whose name starts with `/` cannot be
+  named by its OneDrive path. SHORTCUT · reasoned · open.
 ---
 
 ## 5. Provisional numbers
@@ -3358,18 +3383,25 @@ window's status, activity and conflicts, all read from the folder's interfaces (
   and Apply sends the whole list (F197). A chosen folder in a branch never opened is placed by its
   path in `SelectedFolders`, which after a rename in OneDrive is the old one until the next check
   (F196): its parents' partial marks may be wrong until then. A click on a partly checked folder
-  checks it whole; removing what is chosen below it takes a second click. Open.
+  unchecks it, every chosen folder below it going, as `sync select remove` does; the next click
+  checks it whole. Until the selection and the root's folders are read, nothing can be changed or
+  applied, and a failed read stays shown; a list left with no folder is said in words before
+  Apply. Apply has no timeout: a daemon that stalls leaves the dialog "applying" until it is
+  cancelled. Open.
 - **A29. `--choose-folders` waits for the daemon, then gives up quietly.** SHORTCUT · measured
   (`dialogstest::chooseFoldersFromOutside`, `singleinstancetest::aSecondLaunchChoosesFolders`;
   issue #58). At the window's start the accounts are not known until the daemon has answered, so the
   request waits for every account to be read, at most 10 s; a folder that is no account's then shows
-  the window and a passive message, which disappears by itself. A relative folder is taken from the
+  the window and a passive message, which disappears by itself, and a daemon that did not answer
+  within those 10 s shows its own message ("KOneDrive did not answer"). A relative folder is taken from the
   launch's working directory. `dialogstest::chooseFoldersFromOutside` failed once (the account was
   not chosen within 5 s) and passed in every later run: recorded, not chased. Open.
 - **A30. The picker after "Choose Folders…" at the bind belongs to the window.** SHORTCUT · measured
   (`dialogstest::theBindQuestion`, `folderpickertest::bindingWithChooseFolders`; issue #58). That the
-  picker is to open once the first listing has finished is kept by the window, not the daemon: it
-  opens when the account's page is shown with the listing done (another account shown meanwhile
+  picker is to open once the first listing has finished is kept by the window, not the daemon. The
+  listing is done when `LastChecked` is no longer 0 — a new folder starts at 0, and the first
+  successful cycle is the whole listing; `State` cannot tell, since the daemon answers the bind
+  before it says `listing`. The picker opens when the account's page is shown with the listing done (another account shown meanwhile
   puts it off until that one is shown again), and a window restarted meanwhile does not open it —
   the card then shows "No folder of OneDrive" with **Choose Folders…**. Open.
 

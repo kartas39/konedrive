@@ -209,7 +209,7 @@ private Q_SLOTS:
         m_fake->helperMissing = false;
         controller.retryRegistration();
         QTRY_COMPARE(controller.pendingFolder(), QString());
-        QCOMPARE(controller.rootState(), QStringLiteral("listing"));
+        QCOMPARE(controller.rootState(), QStringLiteral("ready"));
         QCOMPARE(m_fake->calls.count(QStringLiteral("Register:/home/u/OneDrive")), 3);
         QVERIFY(!m_fake->calls.contains(QStringLiteral("RegisterWithoutInterception:/home/u/OneDrive")));
     }

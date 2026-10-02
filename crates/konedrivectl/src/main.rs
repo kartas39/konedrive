@@ -1044,6 +1044,18 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<
             let absolute = absolute_str(&path)?;
             let action = SyncAction::Register(&absolute);
             if choose_folders {
+                // Only for an account's first folder: on a bound folder the
+                // empty list would start taking everything off it, and the
+                // refused bind would then bring it all back.
+                let bound = proxy.folder.path().await?;
+                if !bound.is_empty() {
+                    let prefix = chosen.prefix();
+                    return Err(Usage(format!(
+                        "this account's folder is already {bound}: --choose-folders is only for binding a \
+                         folder to an account with none; `{prefix} sync select` chooses its folders"
+                    ))
+                    .into());
+                }
                 // An empty list first, so that the listing places nothing.
                 if !proxy.folder.syncs_everything().await? {
                     let prefix = chosen.prefix();

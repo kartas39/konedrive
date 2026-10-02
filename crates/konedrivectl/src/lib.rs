@@ -509,12 +509,27 @@ pub fn browse_text(shown: &str, children: &[(String, String, String, bool)], lis
 /// path in OneDrive relative to its root, or an absolute local path inside the account's
 /// folder `root` (which may be empty: none). Empty for the root itself. The error says why
 /// `given` names no folder.
+/// `path` with its symbolic links resolved as far as it exists — a folder that is not
+/// synced is not on disk — and the rest as given.
+fn canonical(path: &std::path::Path) -> std::path::PathBuf {
+    if let Ok(real) = path.canonicalize() {
+        return real;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) if !parent.as_os_str().is_empty() => canonical(parent).join(name),
+        _ => path.to_path_buf(),
+    }
+}
+
 pub fn selection_path(given: &str, root: &str) -> Result<Vec<String>, String> {
     let relative = if given.starts_with('/') {
         if root.is_empty() {
             return Err(format!("{given} is a local path, and this account has no folder yet: name the folder by its path in OneDrive"));
         }
-        match std::path::Path::new(given).strip_prefix(root) {
+        // Both canonical, as the window compares them: a path through a
+        // symbolic link, or the folder's own path through one, names the
+        // same folder.
+        match canonical(std::path::Path::new(given)).strip_prefix(canonical(std::path::Path::new(root))) {
             Ok(rest) => rest.to_str().unwrap_or_default().to_owned(),
             Err(_) => return Err(format!("{given} is not inside this account's folder ({root}): name a folder inside it, or a path in OneDrive")),
         }
@@ -2531,6 +2546,17 @@ mod tests {
         assert!(names("/home/u/Other/docs").is_err_and(|why| why.contains("not inside this account's folder")));
         assert!(names("docs/../x").is_err());
         assert!(selection_path("/home/u/OneDrive/docs", "").is_err_and(|why| why.contains("no folder yet")));
+
+        // Review fix 12: through a symbolic link, to the folder or from it, as the window
+        // compares paths — also for a folder that is not on disk.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("OneDrive");
+        std::fs::create_dir_all(real.join("docs")).unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let (real, link) = (real.to_str().unwrap(), link.to_str().unwrap());
+        assert_eq!(selection_path(&format!("{link}/docs/away"), real), Ok(vec!["docs".to_owned(), "away".to_owned()]));
+        assert_eq!(selection_path(&format!("{real}/docs"), link), Ok(vec!["docs".to_owned()]));
     }
 
     /// A change of the chosen folders refused `LocalChanges` keeps the daemon's list of paths.

@@ -813,7 +813,11 @@ whose item id the base does not know is never removed: it may be another account
 **What the selection leaves out** ([sync.md](sync.md) §3.1) is not "removed from OneDrive": a
 placeholder and a clean downloaded file go whatever `upload_differences` says, nothing goes up and
 nothing is made again, and its disappearance is never read as a delete by the user — no outbox row,
-and the mass-delete guard does not count it. Before a change of the selection, the daemon looks in
+and the mass-delete guard does not count it. What the reconcile takes off the disk this way has its
+local object forgotten at once, and a change that only leaves an item out is never deferred, even
+while its folder stays on disk holding something that cannot go (in use, ignored, a symlink): an
+examination meanwhile can prove nothing gone, so nothing of it is deleted in OneDrive. A change of
+the selection takes the tree lock first, as the outbox worker does. Before a change of the selection, the daemon looks in
 the store for an outbox row on anything that would leave, a new file waiting in a folder whose files
 would stop being synced, and a kept-back object (a symlink, an ignored name, a `not-selected` file)
 in a directory that would leave; any of them refuses the whole change with `LocalChanges`, whose

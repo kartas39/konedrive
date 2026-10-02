@@ -202,7 +202,9 @@ private Q_SLOTS:
         QCOMPARE(check(picker, QStringLiteral("Photos")), int(Qt::Checked));
         picker.setChecked(rowOf(picker, QStringLiteral("Photos")), false);
         QCOMPARE(picker.chosenIds(), QStringList());
-        QCOMPARE(picker.summary(), QStringLiteral("Removed from this computer (it stays in OneDrive): Photos/2019"));
+        QCOMPARE(picker.summary(),
+                 QStringLiteral("No folder is chosen: every folder of OneDrive is removed from this computer; they stay in OneDrive.\n"
+                                "Removed from this computer (it stays in OneDrive): Photos/2019"));
     }
 
     /// LocalChanges: the daemon's paths and why are shown, nothing changed, and
@@ -224,6 +226,74 @@ private Q_SLOTS:
         QVERIFY(!picker.applying());
         QVERIFY(picker.modified());
         QCOMPARE(m_fake->chosen, (QStringList{QStringLiteral("d"), QStringLiteral("m")}));
+    }
+
+    /// Review fix 8: a picker whose first read failed — the selection, or the root's
+    /// folders — cannot be changed or applied, and keeps saying why: an empty list
+    /// made from nothing read would take every folder off this computer.
+    void aFailedReadSendsNothing()
+    {
+        startFake();
+        m_fake->refuseChildren = true;
+        FolderPicker picker(QDBusConnection::sessionBus(), fake::FirstAccount);
+        picker.open();
+        QTRY_VERIFY(!picker.loading());
+        QVERIFY(!picker.problem().isEmpty());
+        QVERIFY(!picker.ready());
+        picker.setEverything(false);
+        QVERIFY(picker.everything());
+        picker.setRootFiles(false);
+        picker.apply();
+        QTest::qWait(100);
+        QVERIFY(!picker.problem().isEmpty());
+        QVERIFY(m_fake->calls.filter(QStringLiteral("SetSelection")).isEmpty());
+        QVERIFY(!m_fake->calls.contains(QStringLiteral("SyncEverything")));
+
+        // Read again, it works.
+        m_fake->refuseChildren = false;
+        openPicker(picker);
+        QVERIFY(picker.ready());
+    }
+
+    /// Review fix 8: a list left with no folder is said in words before Apply, from
+    /// everything and from a list of folders alike.
+    void anEmptyListIsSaidInWords()
+    {
+        startFake();
+        choose({QStringLiteral("m")}, true);
+        FolderPicker picker(QDBusConnection::sessionBus(), fake::FirstAccount);
+        openPicker(picker);
+        picker.click(rowOf(picker, QStringLiteral("Music")));
+        QVERIFY(picker.chosenIds().isEmpty());
+        QVERIFY2(picker.summary().startsWith(QStringLiteral("No folder is chosen: every folder of OneDrive is removed from this computer")), qPrintable(picker.summary()));
+
+        // From everything: the root's folders, all unchecked one by one.
+        m_fake->everything = true;
+        openPicker(picker);
+        picker.setEverything(false);
+        for (const QString &name : {QStringLiteral("Documents"), QStringLiteral("Music"), QStringLiteral("Photos")}) {
+            picker.click(rowOf(picker, name));
+        }
+        QVERIFY2(picker.summary().startsWith(QStringLiteral("No folder is chosen")), qPrintable(picker.summary()));
+    }
+
+    /// Review fix 11: a click on a partly checked folder unchecks it — every chosen
+    /// folder below it goes — and the next click checks it whole.
+    void aClickOnAPartlyCheckedFolderUnchecksIt()
+    {
+        startFake();
+        choose({QStringLiteral("p19"), QStringLiteral("m")}, true);
+        FolderPicker picker(QDBusConnection::sessionBus(), fake::FirstAccount);
+        openPicker(picker);
+        QCOMPARE(check(picker, QStringLiteral("Photos")), int(Qt::PartiallyChecked));
+        picker.click(rowOf(picker, QStringLiteral("Photos")));
+        QCOMPARE(check(picker, QStringLiteral("Photos")), int(Qt::Unchecked));
+        QCOMPARE(picker.chosenIds(), QStringList{QStringLiteral("m")});
+        picker.click(rowOf(picker, QStringLiteral("Photos")));
+        QCOMPARE(check(picker, QStringLiteral("Photos")), int(Qt::Checked));
+        QCOMPARE(picker.chosenIds(), (QStringList{QStringLiteral("m"), QStringLiteral("p")}));
+        picker.click(rowOf(picker, QStringLiteral("Photos")));
+        QCOMPARE(check(picker, QStringLiteral("Photos")), int(Qt::Unchecked));
     }
 
     /// The window follows the selection's properties.
@@ -281,6 +351,17 @@ private Q_SLOTS:
         QVERIFY(controller.pendingFolder().isEmpty());
         QVERIFY(!m_fake->everything);
         QVERIFY(m_fake->chosen.isEmpty());
+
+        // Review fix 7: with a folder bound, nothing is called — an empty list
+        // would start taking everything off that folder.
+        QTRY_COMPARE(controller.rootPath(), QStringLiteral("/home/u/OneDrive"));
+        m_fake->calls.clear();
+        m_fake->everything = true;
+        controller.chooseFolderAndFolders(QUrl::fromLocalFile(QStringLiteral("/home/u/Other")));
+        QTRY_VERIFY(controller.actionError().contains(QStringLiteral("/home/u/OneDrive")));
+        QTest::qWait(100);
+        QVERIFY(bindCalls().isEmpty());
+        QVERIFY(m_fake->everything);
 
         // Forgotten, nothing is due any more.
         controller.forget();
