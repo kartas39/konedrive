@@ -7,6 +7,7 @@
 #include <QDBusConnection>
 #include <QDBusContext>
 #include <QDBusMessage>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -62,6 +63,12 @@ inline bool setState(const QString &path, const QByteArray &state)
 inline bool setUploadState(const QString &path, const QByteArray &value)
 {
     return setAttribute(path, "user.konedrive.sync", value);
+}
+
+/// `user.konedrive.item-id`, as the daemon writes it on what OneDrive has.
+inline bool setItemId(const QString &path, const QByteArray &id = QByteArrayLiteral("ITEM1"))
+{
+    return setAttribute(path, "user.konedrive.item-id", id);
 }
 
 inline bool markRoot(const QString &dir)
@@ -174,6 +181,8 @@ public:
     QStringList calls;
     /// Delayed answers sent so far.
     int delayedAnswersSent = 0;
+    /// WebUrl's `url`, when `defaultAnswer` is not a refusal.
+    QString webUrl = QStringLiteral("https://onedrive.example/item");
 
     ~FakeSync() override
     {
@@ -223,6 +232,11 @@ public Q_SLOTS:
                 QVariant::fromValue(defaultAnswer.skippedPinned)});
     }
 
+    void WebUrl(const QString &path, const QDBusMessage &message)
+    {
+        answer(QStringLiteral("WebUrl"), {path}, message, {QVariant::fromValue(webUrl)});
+    }
+
 private:
     void answer(const QString &method, const QStringList &paths, const QDBusMessage &message, const QVariantList &results)
     {
@@ -246,6 +260,35 @@ private:
     }
 
     bool m_stopped = false;
+};
+
+/// Takes the `https` scheme for as long as it lives: an address the plugin
+/// opens lands in `opened`, and no browser is started. Made before anything
+/// that could open an address.
+class UrlCatcher : public QObject
+{
+    Q_OBJECT
+
+public:
+    QList<QUrl> opened;
+
+    UrlCatcher()
+    {
+        QDesktopServices::setUrlHandler(QStringLiteral("https"), this, "open");
+        QDesktopServices::setUrlHandler(QStringLiteral("http"), this, "open");
+    }
+
+    ~UrlCatcher() override
+    {
+        QDesktopServices::unsetUrlHandler(QStringLiteral("https"));
+        QDesktopServices::unsetUrlHandler(QStringLiteral("http"));
+    }
+
+public Q_SLOTS:
+    void open(const QUrl &url)
+    {
+        opened.append(url);
+    }
 };
 
 /// Every open(2) and read(2) of anything directly inside the watched

@@ -84,6 +84,12 @@ bool hasPinMark(const QString &path)
     return ::lgetxattr(native.constData(), PinAttribute, nullptr, 0) >= 0;
 }
 
+bool hasItemId(const QString &path)
+{
+    const QByteArray native = QFile::encodeName(path);
+    return ::lgetxattr(native.constData(), ItemIdAttribute, nullptr, 0) > 0;
+}
+
 std::optional<QString> findRoot(const QString &dir, const RootMarkReader &hasMark)
 {
     for (QString current = dir; !current.isEmpty(); current = parentDirectory(current)) {
@@ -387,6 +393,25 @@ MenuState menuState(const QStringList &paths, const RootMarkReader &hasRoot, con
         }
         if (hydrated || explicitPin) {
             anyHydratedOrExplicit = true;
+        }
+    }
+
+    // "Open in OneDrive": one path only, an item in a root or an account's
+    // folder itself -- whose parent is in no root, so it is not in `inRoot`.
+    if (paths.size() == 1) {
+        const QString &only = paths.first();
+        if (result.inRoot.size() == 1) {
+            result.showOpenOnline = true;
+            result.openOnlineEnabled = hasItemId(only);
+            result.openOnlinePath = only;
+        } else if (isDirectory(only) && hasRoot(only)) {
+            const QString dir = parentDirectory(only);
+            if (!dir.isEmpty() && !rootOf(dir, hasRoot).has_value()) {
+                result.accountFolder = only;
+                result.showOpenOnline = true;
+                result.openOnlineEnabled = true;
+                result.openOnlinePath = only;
+            }
         }
     }
 

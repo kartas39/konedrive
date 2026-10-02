@@ -833,6 +833,8 @@ pub enum SyncAction<'a> {
     Unpin(&'a str),
     /// The path refused ([`refused_path`]), or the paths given, joined with ", ".
     Free(&'a str),
+    /// `sync open`: `Files.WebUrl`, with the path.
+    Open(&'a str),
     /// `account remove`, with the account's label: `Accounts.Remove` forgets the
     /// folder as `Forget` does, and is refused under the same names.
     Remove(&'a str),
@@ -870,6 +872,7 @@ impl SyncAction<'_> {
             Self::Pin(paths) => format!("keeping {paths} on this device"),
             Self::Unpin(paths) => format!("no longer keeping {paths} on this device"),
             Self::Free(paths) => format!("freeing up {paths}"),
+            Self::Open(path) => format!("opening {path} in OneDrive"),
             Self::Remove(label) => format!("removing the account {label}"),
             Self::Outbox => "listing the changes waiting to upload".to_owned(),
             Self::Pause => "pausing the sync".to_owned(),
@@ -892,7 +895,8 @@ impl SyncAction<'_> {
             | Self::Dismiss(path)
             | Self::Pin(path)
             | Self::Unpin(path)
-            | Self::Free(path) => path,
+            | Self::Free(path)
+            | Self::Open(path) => path,
             Self::Forget
             | Self::Refresh
             | Self::Skipped
@@ -985,7 +989,7 @@ pub fn refusal_text_in(action: SyncAction<'_>, name: Option<&str>, detail: &str,
     let refusal = name.and_then(|name| name.strip_prefix(ERROR_PREFIX)).and_then(|rest| rest.strip_prefix('.'));
     let path = action.path();
     let prefix = context.prefix();
-    let path_command = matches!(action, Hydrate(_) | Dehydrate(_) | Pin(_) | Unpin(_) | Free(_));
+    let path_command = matches!(action, Hydrate(_) | Dehydrate(_) | Pin(_) | Unpin(_) | Free(_) | Open(_));
     // An account removed while this command ran: its object is gone.
     if name.is_some_and(is_gone_name) && !path_command {
         let text = refusal_text_as(action, Some(&format!("{ERROR_PREFIX}.NoAccount")), detail, context.root, prefix);
@@ -997,6 +1001,15 @@ pub fn refusal_text_in(action: SyncAction<'_>, name: Option<&str>, detail: &str,
         (Some("OutsideRoot"), _) if path_command && context.root.is_empty() => {
             return match context.folders {
                 [] => refusal_text_as(action, Some(&format!("{ERROR_PREFIX}.NoRoot")), detail, "", prefix),
+                [one] if matches!(action, Open(_)) => format!(
+                    "{path} is not inside the sync folder ({one}). Only what is inside it, and the folder \
+                     itself, has a page in OneDrive"
+                ),
+                several if matches!(action, Open(_)) => format!(
+                    "{path} is not inside any account's sync folder ({}). Only what is inside one, and the \
+                     folder itself, has a page in OneDrive",
+                    several.join(", ")
+                ),
                 [one] => format!(
                     "{path} is not inside the sync folder ({one}). Only what is inside it can be downloaded, \
                      freed up or kept on this device"
@@ -1074,6 +1087,29 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
     let path = action.path();
     let folder = if root.is_empty() { String::new() } else { format!(" ({root})") };
     match (refusal, action) {
+        // `sync open` (issue #53): OneDrive is asked for the address each time.
+        // The daemon's message is the cause (no network, a locked secret
+        // storage, an answer that cannot be read), shown when there is one.
+        (Some("Unreachable"), _) if detail.is_empty() || detail.starts_with(ERROR_PREFIX) => {
+            "OneDrive could not be reached".to_owned()
+        }
+        (Some("Unreachable"), _) => format!("OneDrive could not be reached: {detail}"),
+        (Some("NotSignedIn"), Open(_)) => format!(
+            "the account is not signed in, so OneDrive cannot be asked for the page of {path}. Sign in \
+             with `{prefix} login` and try again"
+        ),
+        (Some("NotUploaded"), Open(_)) => format!(
+            "{path} is not uploaded yet, so it has no page in OneDrive. It can be opened there once it \
+             is uploaded (`{prefix} sync outbox`)"
+        ),
+        (Some("NotManaged"), Open(_)) => format!(
+            "{path} is not a OneDrive file: it is a file of your own in the sync folder, so it has no \
+             page in OneDrive"
+        ),
+        (Some("OutsideRoot"), Open(_)) => format!(
+            "{path}: only files and folders inside the sync folder{folder}, and the folder itself, have \
+             a page in OneDrive — not symbolic links, or anything outside it"
+        ),
         (Some("NotSignedIn"), _) => format!(
             "the account is not signed in, and `{prefix} sync register` binds the folder to the \
              account's OneDrive. Sign in first with `{prefix} login` — or, in the developer's mode \
@@ -2368,6 +2404,17 @@ mod tests {
         for bad in ["", "0", "soon", "2x", "h", "30m5", "999999999999"] {
             assert_eq!(parse_duration(bad), None, "{bad:?}");
         }
+    }
+
+    /// `sync open` refused `Unreachable`: the sentence, then the daemon's own
+    /// message when there is one — the cause is not always the network.
+    #[test]
+    fn unreachable_is_followed_by_the_daemons_cause() {
+        let name = format!("{}.Unreachable", konedrive_dbus::ERROR_PREFIX);
+        let told = |detail: &str| refusal_text(SyncAction::Open("/f/a.txt"), Some(&name), detail, "/f");
+        assert_eq!(told("the secret storage is locked"), "OneDrive could not be reached: the secret storage is locked");
+        assert_eq!(told(""), "OneDrive could not be reached");
+        assert_eq!(told(&name), "OneDrive could not be reached", "an error with no message");
     }
 
     #[test]

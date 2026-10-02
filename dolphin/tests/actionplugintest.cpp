@@ -32,6 +32,9 @@ namespace
 {
 const QString AlwaysKeep = QStringLiteral("konedrive_always_keep");
 const QString FreeUp = QStringLiteral("konedrive_free_up_space");
+const QString Section = QStringLiteral("konedrive_section");
+const QString OpenOnline = QStringLiteral("konedrive_open_online");
+const QString SectionEnd = QStringLiteral("konedrive_section_end");
 const QString DaemonService = QStringLiteral("org.konedrive.Daemon");
 } // namespace
 
@@ -40,6 +43,8 @@ class ActionPluginTest : public QObject
     Q_OBJECT
 
     std::unique_ptr<FakeSync> m_fake;
+    /// Takes every address the plugin opens: no test starts a browser.
+    std::unique_ptr<UrlCatcher> m_urls;
 
     bool startFake()
     {
@@ -86,12 +91,19 @@ private Q_SLOTS:
     void initTestCase()
     {
         QStandardPaths::setTestModeEnabled(true);
+        m_urls = std::make_unique<UrlCatcher>();
         QVERIFY(createPlugin());
+    }
+
+    void cleanupTestCase()
+    {
+        m_urls.reset();
     }
 
     void cleanup()
     {
         m_fake.reset();
+        m_urls->opened.clear();
     }
 
     /// Single-item selections: what each of the four pin states offers.
@@ -331,15 +343,16 @@ private Q_SLOTS:
     {
         QTest::addColumn<QStringList>("entries"); // name:mimetype:state, or name/ for a folder
         QTest::addColumn<QStringList>("expected");
-        QTest::newRow("one online-only file") << QStringList{QStringLiteral("notes.txt:text/plain:online-only")} << QStringList{AlwaysKeep};
+        QTest::newRow("one online-only file") << QStringList{QStringLiteral("notes.txt:text/plain:online-only")} << QStringList{Section, AlwaysKeep, OpenOnline, SectionEnd};
         QTest::newRow("files of different types")
             << QStringList{QStringLiteral("notes.txt:text/plain:online-only"),
                            QStringLiteral("photo.jpg:image/jpeg:online-only"),
                            QStringLiteral("report.pdf:application/pdf:hydrated")}
-            << QStringList{AlwaysKeep, FreeUp};
-        QTest::newRow("a file and a folder") << QStringList{QStringLiteral("notes.txt:text/plain:online-only"), QStringLiteral("sub/")} << QStringList{AlwaysKeep, FreeUp};
-        QTest::newRow("a folder alone") << QStringList{QStringLiteral("sub/")} << QStringList{AlwaysKeep, FreeUp};
-        QTest::newRow("two folders") << QStringList{QStringLiteral("sub1/"), QStringLiteral("sub2/")} << QStringList{AlwaysKeep, FreeUp};
+            << QStringList{Section, AlwaysKeep, FreeUp, SectionEnd};
+        QTest::newRow("a file and a folder") << QStringList{QStringLiteral("notes.txt:text/plain:online-only"), QStringLiteral("sub/")}
+                                             << QStringList{Section, AlwaysKeep, FreeUp, SectionEnd};
+        QTest::newRow("a folder alone") << QStringList{QStringLiteral("sub/")} << QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd};
+        QTest::newRow("two folders") << QStringList{QStringLiteral("sub1/"), QStringLiteral("sub2/")} << QStringList{Section, AlwaysKeep, FreeUp, SectionEnd};
     }
 
     void inTheContextMenuKioBuilds()
@@ -371,14 +384,187 @@ private Q_SLOTS:
         fileItemActions.setItemListProperties(KFileItemListProperties(items));
         QMenu menu;
         fileItemActions.addActionsTo(&menu, KFileItemActions::MenuActionSource::Plugins);
+        // In the order the menu shows them: the heading first, the closing
+        // separator last, the entries between them.
         QStringList shown;
-        const QList<QAction *> actions = menu.findChildren<QAction *>() + menu.actions();
+        const QList<QAction *> actions = menu.actions();
         for (const QAction *action : actions) {
-            if (action->objectName().startsWith(QLatin1String("konedrive_")) && !shown.contains(action->objectName())) {
+            if (action->objectName().startsWith(QLatin1String("konedrive_"))) {
                 shown.append(action->objectName());
             }
         }
         QCOMPARE(shown, expected);
+        QAction *heading = menu.findChild<QAction *>(Section);
+        if (!heading) {
+            heading = find(actions, Section);
+        }
+        QVERIFY(heading);
+        QVERIFY(heading->isSeparator());
+        QCOMPARE(heading->text(), QStringLiteral("OneDrive"));
+        QVERIFY(find(actions, SectionEnd)->isSeparator());
+    }
+
+    /// "Open in OneDrive" is offered for one item in a root -- enabled when
+    /// OneDrive has it (it carries an item id), disabled with the reason
+    /// when it does not -- never for two, and not outside a root.
+    void openInOneDriveIsForOneItemOneDriveHas()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/there.bin"), "online-only"));
+        QVERIFY(setItemId(tree.path(QStringLiteral("OneDrive/there.bin"))));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/new.bin"), "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("Elsewhere/f.bin"), "hydrated"));
+        QVERIFY(setItemId(tree.path(QStringLiteral("Elsewhere/f.bin"))));
+        const QString there = tree.path(QStringLiteral("OneDrive/there.bin"));
+        const QString fresh = tree.path(QStringLiteral("OneDrive/new.bin"));
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        QList<QAction *> actions = plugin->actions(selection({there}), nullptr);
+        QCOMPARE(names(actions), (QStringList{Section, AlwaysKeep, OpenOnline, SectionEnd}));
+        QVERIFY(find(actions, OpenOnline)->isEnabled());
+        QCOMPARE(find(actions, OpenOnline)->text(), QStringLiteral("Open in OneDrive"));
+
+        actions = plugin->actions(selection({fresh}), nullptr);
+        QCOMPARE(names(actions), (QStringList{Section, AlwaysKeep, FreeUp, OpenOnline, SectionEnd}));
+        QVERIFY(!find(actions, OpenOnline)->isEnabled());
+        QCOMPARE(find(actions, OpenOnline)->toolTip(), QStringLiteral("Not in OneDrive yet."));
+
+        QCOMPARE(names(plugin->actions(selection({there, fresh}), nullptr)), (QStringList{Section, AlwaysKeep, FreeUp, SectionEnd}));
+        QCOMPARE(names(plugin->actions(selection({tree.path(QStringLiteral("Elsewhere/f.bin"))}), nullptr)), QStringList());
+    }
+
+    /// The account's folder itself: the heading, "Open in OneDrive" --
+    /// enabled, with or without an item id -- and the closing separator,
+    /// nothing else. A click asks for the folder's own path.
+    void theAccountsFolderItselfOpensInOneDrive()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        const QString root = tree.path(QStringLiteral("OneDrive"));
+        const KFileItem folder(url(root), QStringLiteral("inode/directory"), S_IFDIR);
+        QVERIFY(startFake());
+        m_fake->webUrl = QStringLiteral("https://onedrive.example/root");
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        const QList<QAction *> actions = plugin->actions(KFileItemListProperties({folder}), nullptr);
+        QCOMPARE(names(actions), (QStringList{Section, OpenOnline, SectionEnd}));
+        QVERIFY(find(actions, OpenOnline)->isEnabled());
+        find(actions, OpenOnline)->trigger();
+        QTRY_COMPARE(m_urls->opened, QList<QUrl>{QUrl(QStringLiteral("https://onedrive.example/root"))});
+        QCOMPARE(m_fake->calls, QStringList{QStringLiteral("WebUrl ") + root});
+
+        // With another item beside it, it is one of several: nothing for it.
+        QVERIFY(tree.file(QStringLiteral("other.txt")));
+        QCOMPARE(names(plugin->actions(selection({root, tree.path(QStringLiteral("other.txt"))}), nullptr)), QStringList());
+    }
+
+    /// A click makes one WebUrl call with the path, and the address that
+    /// comes back is opened -- here, handed to the test's own handler.
+    void openInOneDriveOpensTheAddressTheDaemonAnswers()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "online-only"));
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        QVERIFY(setItemId(doc));
+        QVERIFY(startFake());
+        m_fake->webUrl = QStringLiteral("https://onedrive.example/doc?id=1");
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
+        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        QTRY_COMPARE(m_urls->opened, QList<QUrl>{QUrl(QStringLiteral("https://onedrive.example/doc?id=1"))});
+        QCOMPARE(m_fake->calls, QStringList{QStringLiteral("WebUrl ") + doc});
+        QTest::qWait(konedrive::SyncClient::ReportDelayMs + 200);
+        QCOMPARE(errors.count(), 0);
+
+        // An answer that is not an address of the web is opened by nothing.
+        m_fake->webUrl = QStringLiteral("file:///etc/passwd");
+        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        QTRY_COMPARE(errors.count(), 1);
+        QVERIFY2(errors.at(0).at(0).toString().contains(QStringLiteral("The page of “doc.bin” in OneDrive could not be opened")), qPrintable(errors.at(0).at(0).toString()));
+        QCOMPARE(m_urls->opened.size(), 1);
+    }
+
+    void openInOneDriveRefusalIsExplained_data()
+    {
+        QTest::addColumn<QString>("errorName");
+        QTest::addColumn<QString>("message");
+        QTest::addColumn<QString>("expected");
+        const QString decoy = QStringLiteral("DAEMON-OWN-WORDS");
+        const auto named = [](const char *name) {
+            return QStringLiteral("org.konedrive.Error.") + QLatin1String(name);
+        };
+        QTest::newRow("NotUploaded") << named("NotUploaded") << decoy << QStringLiteral("“doc.bin” is not uploaded yet, so it has no page in OneDrive.");
+        QTest::newRow("Unreachable, with the cause") << named("Unreachable") << QStringLiteral("the secret storage is locked")
+                                                     << QStringLiteral("OneDrive could not be reached: the secret storage is locked");
+        QTest::newRow("Unreachable, no message") << named("Unreachable") << QString() << QStringLiteral("OneDrive could not be reached.");
+        QTest::newRow("NotSignedIn") << named("NotSignedIn") << decoy
+                                     << QStringLiteral("The account is not signed in, so OneDrive cannot be asked for the page of “doc.bin”. Sign in and try again.");
+        QTest::newRow("OutsideRoot") << named("OutsideRoot") << decoy << QStringLiteral("“doc.bin” is not inside any of KOneDrive's folders, so it has no page in OneDrive.");
+        QTest::newRow("NotManaged") << named("NotManaged") << decoy
+                                    << QStringLiteral("“doc.bin” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive.");
+        QTest::newRow("NoRoot") << named("NoRoot") << decoy << QStringLiteral("The folder holding “doc.bin” is no longer registered with KOneDrive, so nothing was done with it.");
+        QTest::newRow("Failed") << named("Failed") << QStringLiteral("doc.bin is not in OneDrive any more")
+                                << QStringLiteral("Opening “doc.bin” in OneDrive failed: doc.bin is not in OneDrive any more");
+    }
+
+    /// Each refusal of WebUrl is explained by its name, and nothing is opened.
+    void openInOneDriveRefusalIsExplained()
+    {
+        QFETCH(QString, errorName);
+        QFETCH(QString, message);
+        QFETCH(QString, expected);
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "hydrated"));
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        QVERIFY(setItemId(doc));
+        QVERIFY(startFake());
+        m_fake->defaultAnswer = {errorName, message, 0, 0, 0, 0, 0, 0};
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
+        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        QTRY_COMPARE(errors.count(), 1);
+        QCOMPARE(errors.at(0).at(0).toString(), expected);
+        QVERIFY(m_urls->opened.isEmpty());
+    }
+
+    /// With no daemon, and with one that stops before answering, "Open in
+    /// OneDrive" says so as the other entries do; a path still waiting is
+    /// not asked again.
+    void openInOneDriveFollowsTheRulesOfTheOtherCalls()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "hydrated"));
+        const QString doc = tree.path(QStringLiteral("OneDrive/doc.bin"));
+        QVERIFY(setItemId(doc));
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
+        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        QTRY_COMPARE(errors.count(), 1);
+        QVERIFY2(errors.at(0).at(0).toString().startsWith(QStringLiteral("KOneDrive is not running, so “doc.bin” was not opened in OneDrive.")),
+                 qPrintable(errors.at(0).at(0).toString()));
+
+        QVERIFY(startFake());
+        m_fake->defaultAnswer.delayMs = -1;
+        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        QTRY_COMPARE(m_fake->calls.size(), 1);
+        find(plugin->actions(selection({doc}), nullptr), OpenOnline)->trigger();
+        QTRY_COMPARE(errors.count(), 2);
+        QVERIFY2(errors.at(1).at(0).toString().startsWith(QStringLiteral("KOneDrive has not yet answered an earlier request for “doc.bin”")),
+                 qPrintable(errors.at(1).at(0).toString()));
+        QCOMPARE(m_fake->calls.size(), 1);
+
+        m_fake->stop();
+        QTRY_COMPARE(errors.count(), 3);
+        QVERIFY2(errors.at(2).at(0).toString().startsWith(QStringLiteral("KOneDrive stopped before it found the page of “doc.bin” in OneDrive.")),
+                 qPrintable(errors.at(2).at(0).toString()));
+        QVERIFY(m_urls->opened.isEmpty());
     }
 
     /// Triggering an action calls Pin or FreeUp with every selected path

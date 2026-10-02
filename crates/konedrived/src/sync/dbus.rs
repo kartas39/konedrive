@@ -91,10 +91,14 @@ pub enum SyncFault {
     NoAccount(String),
     /// A free-up of a file whose change waits to be uploaded (write design
     /// §3.8): freeing it up would lose that change. The message names it.
+    /// Also `Files.WebUrl` of an item OneDrive does not have yet.
     NotUploaded(String),
     /// `Unregister`, or `Accounts.Remove`, while changes wait to be uploaded: the folder's
     /// record holding them would go. The message says how many.
     PendingUploads(String),
+    /// OneDrive did not answer a question that needs it now (`Files.WebUrl`):
+    /// no network, or Graph kept refusing. The message says which.
+    Unreachable(String),
     /// Everything with no name of its own: an I/O failure, mostly.
     Failed(String),
 }
@@ -596,7 +600,8 @@ pub(crate) fn to_fault(error: SyncError) -> SyncFault {
         SyncError::NoSource => SyncFault::NoSource(message),
         SyncError::NoConflict(_) => SyncFault::NoConflict(message),
         SyncError::NotAllowed(_) => SyncFault::NotAllowed(message),
-        SyncError::NotUploaded(_) => SyncFault::NotUploaded(message),
+        SyncError::NotUploaded(_) | SyncError::NotInOneDrive(_) => SyncFault::NotUploaded(message),
+        SyncError::Unreachable(_) => SyncFault::Unreachable(message),
         SyncError::PendingUploads(_) => SyncFault::PendingUploads(message),
         SyncError::InvalidArgs(_) => SyncFault::ZBus(zbus::Error::FDO(Box::new(zbus::fdo::Error::InvalidArgs(message)))),
         SyncError::Io(_) => SyncFault::Failed(message),
