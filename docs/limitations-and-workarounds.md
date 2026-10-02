@@ -3364,7 +3364,8 @@ window's status, activity and conflicts, all read from the folder's interfaces (
   issue #58). At the window's start the accounts are not known until the daemon has answered, so the
   request waits for every account to be read, at most 10 s; a folder that is no account's then shows
   the window and a passive message, which disappears by itself. A relative folder is taken from the
-  launch's working directory. Open.
+  launch's working directory. `dialogstest::chooseFoldersFromOutside` failed once (the account was
+  not chosen within 5 s) and passed in every later run: recorded, not chased. Open.
 - **A30. The picker after "Choose Folders…" at the bind belongs to the window.** SHORTCUT · measured
   (`dialogstest::theBindQuestion`, `folderpickertest::bindingWithChooseFolders`; issue #58). That the
   picker is to open once the first listing has finished is kept by the window, not the daemon: it
