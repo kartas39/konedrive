@@ -28,6 +28,10 @@ inline constexpr char PinAttribute[] = "user.konedrive.pin";
 /// removed once the upload is committed.
 inline constexpr char SyncAttribute[] = "user.konedrive.sync";
 
+/// The item's id in OneDrive, written by the daemon on every file and folder
+/// OneDrive has; one made here and not uploaded yet has none.
+inline constexpr char ItemIdAttribute[] = "user.konedrive.item-id";
+
 enum class FileState {
     /// A regular file with no `user.konedrive.state`: not a OneDrive file.
     Unmanaged,
@@ -104,6 +108,10 @@ bool hasPinMark(const QString &path);
 
 using PinMarkReader = std::function<bool(const QString &path)>;
 
+/// Whether `path` itself -- never following a symbolic link -- carries
+/// `user.konedrive.item-id`, by lgetxattr(2) alone: OneDrive has it.
+bool hasItemId(const QString &path);
+
 /// The nearest ancestor of `path`, up to and including `root`, that carries
 /// the pin -- physical ancestors (physicalDirectory, the same resolution
 /// `root` itself was found with), never `path` itself. `std::nullopt` if
@@ -148,6 +156,7 @@ QStringList overlayNames(Emblem emblem);
 /// icon it always had.
 inline constexpr char AlwaysKeepIcon[] = "window-pin";
 inline constexpr char FreeUpSpaceIcon[] = "cloudstatus";
+inline constexpr char OpenOnlineIcon[] = "internet-services";
 
 /// `/a/b` for `/a/b/c`, `/` for `/a`, empty for `/` or a relative name.
 QString parentDirectory(const QString &path);
@@ -193,6 +202,21 @@ struct MenuState {
     /// pinned by an ancestor -- named in "Always keep"'s tooltip when it is
     /// disabled, and in "Free up space"'s when it is.
     QString blockingFolder;
+    /// The one selected path when it is an account's folder itself: a
+    /// directory that carries `user.konedrive.root` and lies in no other
+    /// account's folder. Empty otherwise. Such a path is never in `inRoot`,
+    /// and is offered "Open in OneDrive" alone.
+    QString accountFolder;
+    /// "Open in OneDrive": offered for exactly one selected path that is the
+    /// one item of `inRoot` or is `accountFolder`. Never for several.
+    bool showOpenOnline = false;
+    /// For an item of `inRoot`: whether it carries `user.konedrive.item-id`
+    /// (one not uploaded yet has no page in OneDrive). Always for
+    /// `accountFolder`, which opens the drive's root.
+    bool openOnlineEnabled = false;
+    /// What "Open in OneDrive" asks about: `accountFolder`, or the one item
+    /// of `inRoot`. Empty when it is not shown.
+    QString openOnlinePath;
 };
 
 /// Classifies `paths` for the context menu. Reads each item's attributes by

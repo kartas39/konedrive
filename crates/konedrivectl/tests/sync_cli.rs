@@ -1232,6 +1232,62 @@ async fn binary_pin_keeps_a_folder_here_and_free_lets_it_go() {
     assert!(status.lines().any(|l| l == "Always on this device:  0"), "{status}");
 }
 
+/// `sync open` (issue #53) prints the address of the item's page — of a file, and of the
+/// account's folder itself, which is the drive's root — and starts no opener: a stand-in
+/// `xdg-open` that records what it is given is alone in `PATH`, `KONEDRIVE_NO_BROWSER` is
+/// empty, and the piped stdout alone, or `--print`, keeps it from being called. A file that
+/// is not uploaded yet is explained.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_open_prints_the_address_and_starts_no_opener() {
+    use std::os::unix::fs::PermissionsExt;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, ResponseTemplate};
+    let (f, graph) = harness_onedrive().await;
+    let addr = f._bus.address();
+    let root = f.dir.path().join("OneDrive");
+    std::fs::create_dir(&root).unwrap();
+    f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
+    let file = root.join("docs/f.txt");
+    wait_for(|| file.is_file()).await;
+    for (route, url) in [("/me/drive/items/F", "https://onedrive.example/f"), ("/me/drive/root", "https://onedrive.example/root")] {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"id": "X", "webUrl": url})))
+            .mount(&graph)
+            .await;
+    }
+
+    let opener = tempfile::tempdir().unwrap();
+    let opened = opener.path().join("opened");
+    let script = opener.path().join("xdg-open");
+    std::fs::write(&script, format!("#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n", opened.display())).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let env = [("PATH", opener.path().to_str().unwrap()), (konedrivectl::NO_BROWSER_VARIABLE, "")];
+
+    let out = common::run_env(addr, &["sync", "open", file.to_str().unwrap()], &env);
+    assert!(out.status.success(), "{out:?}");
+    assert_eq!(out_text(&out), "https://onedrive.example/f\n");
+    let out = common::run_env(addr, &["sync", "open", "--print", file.to_str().unwrap()], &env);
+    assert_eq!(out_text(&out), "https://onedrive.example/f\n", "{out:?}");
+    let out = common::run_env(addr, &["sync", "open", root.to_str().unwrap()], &env);
+    assert_eq!(out_text(&out), "https://onedrive.example/root\n", "{out:?}");
+    // Long enough for an opener, had one been started, to have written its line.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(!opened.exists(), "an opener was started: {:?}", std::fs::read_to_string(&opened));
+
+    std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let new = root.join("new.txt");
+    std::fs::write(&new, b"new").unwrap();
+    write_state(&std::fs::File::open(&new).unwrap(), State::Hydrated).unwrap();
+    let told = refused(addr, &["sync", "open", new.to_str().unwrap()]);
+    assert!(told.contains(&format!("{} is not uploaded yet, so it has no page in OneDrive", new.display())), "{told}");
+
+    let outside = f.dir.path().join("elsewhere.txt");
+    std::fs::write(&outside, b"x").unwrap();
+    let told = refused(addr, &["sync", "open", outside.to_str().unwrap()]);
+    assert!(told.contains("is not inside the sync folder") && told.contains("has a page in OneDrive"), "{told}");
+}
+
 /// `sync unpin` takes a folder's pin off and leaves its files downloaded.
 /// Asked of files the folder keeps, it is refused, naming the first such
 /// file alone and the folder.

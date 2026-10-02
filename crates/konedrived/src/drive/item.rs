@@ -49,6 +49,10 @@ pub struct DriveItem {
     pub created_date_time: Option<String>,
     #[serde(default, rename = "@microsoft.graph.downloadUrl")]
     pub download_url: Option<String>,
+    /// The address of the item's page in OneDrive's web interface. Asked for
+    /// when the page is opened (`Files.WebUrl`), and kept nowhere.
+    #[serde(default)]
+    pub web_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]

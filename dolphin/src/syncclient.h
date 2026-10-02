@@ -22,6 +22,10 @@
 // again, and no more than MaxCallsInFlight paths wait at once; the paths left
 // out are named in the message. Paths not already waiting and under the cap
 // are still sent together, in the one call this operation makes.
+//
+// "Open in OneDrive" is the same kind of call, WebUrl(s) -> s for one path:
+// the daemon asks OneDrive for the address, which takes as long as the
+// network does, and this class only hands the address on. It opens nothing.
 
 #pragma once
 
@@ -57,7 +61,9 @@ public:
 
     /// One Pin(paths) or FreeUp(paths) call for every path not already
     /// waiting and not past the cap; those are reported along with whatever
-    /// refusal the call itself comes back with.
+    /// refusal the call itself comes back with. Operation::OpenOnline is
+    /// WebUrl(path), for the first path alone, under the same rules; its
+    /// answer is announced with webUrlReady().
     void start(Operation operation, const QStringList &paths);
 
 Q_SIGNALS:
@@ -69,6 +75,9 @@ Q_SIGNALS:
     /// FreeUp's own `busy` count, which folds in both. Not emitted when it
     /// is 0.
     void freeUpKeptBusy(uint busy);
+    /// WebUrl(path) answered: `url` is the address of `path`'s page in
+    /// OneDrive, for whoever asked to open it.
+    void webUrlReady(const QString &path, const QString &url);
 
 private:
     QDBusConnection m_bus;

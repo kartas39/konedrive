@@ -384,6 +384,28 @@ impl AccountManager {
         }
     }
 
+    /// The account whose folder `path` itself is, for `Files.WebUrl`: the parent resolved
+    /// and the name kept, as [`route`](Self::route) and `SyncRoot::open_item` take a path.
+    /// `route` never answers for such a path: its parent is in no account's folder.
+    async fn folder_itself(&self, path: &Path) -> Option<Arc<Account>> {
+        let accounts = self.accounts();
+        let given = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let resolved = resolve_parent(&given)?;
+            accounts
+                .iter()
+                .find(|a| {
+                    a.sync.root().is_some_and(|root| {
+                        resolved == root.path || std::fs::canonicalize(&root.path).is_ok_and(|real| real == resolved)
+                    })
+                })
+                .cloned()
+        })
+        .await
+        .ok()
+        .flatten()
+    }
+
     /// Every path routed to its account, grouped by account in the order the accounts are
     /// first named; `OutsideRoot` for the first path in no account's folder, before
     /// anything is done.
@@ -662,6 +684,18 @@ impl Files {
             total.3 += freed.pinned;
         }
         Ok(total)
+    }
+
+    /// The address of the page OneDrive's web interface has for the file or folder at
+    /// `path`; of the drive's root for an account's folder itself. Asks OneDrive, and
+    /// changes nothing.
+    #[zbus(out_args("url"))]
+    async fn web_url(&self, path: &str) -> Result<String, SyncFault> {
+        if let Some(account) = self.manager.folder_itself(Path::new(path)).await {
+            return account.sync.root_web_url().await.map_err(to_fault);
+        }
+        let account = self.manager.route(Path::new(path)).await.ok_or_else(|| outside(path))?;
+        account.sync.web_url(Path::new(path)).await.map_err(to_fault)
     }
 }
 

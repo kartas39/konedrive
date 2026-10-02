@@ -245,6 +245,11 @@ impl DriveClient {
         self.get_json(self.item_url(id, None)?).await
     }
 
+    /// The drive's root folder: what the account's folder itself shows.
+    pub async fn root_item(&self) -> Result<DriveItem, DriveError> {
+        self.get_json(self.route("me/drive/root")?).await
+    }
+
     /// The item called `name` in the folder `parent_id`: what a create that
     /// found the name taken looks at.
     pub async fn child(&self, parent_id: &str, name: &str) -> Result<DriveItem, DriveError> {

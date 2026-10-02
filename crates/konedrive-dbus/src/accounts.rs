@@ -103,6 +103,12 @@ pub trait Files {
     /// here, downloaded files kept by a pin below). Refused `NotAllowed` for
     /// a path a folder above it pins.
     fn free_up(&self, paths: &[&str]) -> zbus::Result<(u32, u64, u32, u32)>;
+    /// The address of the page OneDrive's web interface has for the file or
+    /// folder at `path`, or for the drive's root when `path` is an account's
+    /// folder itself. Asks OneDrive each time and changes nothing. Refused
+    /// `NotUploaded` for an item OneDrive does not have yet, `NotSignedIn`,
+    /// and `Unreachable` when OneDrive does not answer.
+    fn web_url(&self, path: &str) -> zbus::Result<String>;
 }
 
 /// `/org/konedrive/Accounts/<id>`: one Microsoft account.

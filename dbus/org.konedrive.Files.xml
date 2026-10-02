@@ -71,5 +71,22 @@
       <arg name="busy" type="u" direction="out"/>
       <arg name="skipped_pinned" type="u" direction="out"/>
     </method>
+    <!-- "Open in OneDrive": the address of the page OneDrive's web interface
+         has for the file or folder at the path. The path is opened as Pin
+         opens it (nothing is downloaded) for its item id, and OneDrive is
+         asked for that item: one GET, with the client's usual retries, so
+         the answer can take as long as they do. Nothing is changed, on disk
+         or in OneDrive, and no browser is started: the caller opens the
+         address. Unlike every other call here, the path of an account's
+         folder itself is answered too, with the address of the drive's root.
+         Refused NotManaged for a file of the user's own or a reserved name,
+         NotUploaded for an item with no id (OneDrive does not have it yet),
+         NotSignedIn for an account that is signed out, Unreachable when
+         OneDrive does not answer (the message is the cause), and Failed otherwise (the item is gone
+         from OneDrive, or the answer carries no address). -->
+    <method name="WebUrl">
+      <arg name="path" type="s" direction="in"/>
+      <arg name="url" type="s" direction="out"/>
+    </method>
   </interface>
 </node>

@@ -9,6 +9,17 @@ set(KONEDRIVE_TEST_SERVICE_DIR ${CMAKE_CURRENT_BINARY_DIR}/activation)
 configure_file(failing-daemon.service.in ${KONEDRIVE_TEST_SERVICE_DIR}/org.konedrive.Daemon.service @ONLY)
 configure_file(activating-bus.conf.in ${CMAKE_CURRENT_BINARY_DIR}/activating-bus.conf @ONLY)
 
+# "Open in OneDrive" opens an address, and no test may start a browser: each
+# test takes the https scheme itself (QDesktopServices::setUrlHandler), and
+# should anything get past that, every program the desktop could start for an
+# address is, first in PATH, a stand-in that only logs what it was given.
+set(test_openers ${CMAKE_CURRENT_BINARY_DIR}/openers)
+set(test_openers_log ${CMAKE_CURRENT_BINARY_DIR}/openers.log)
+foreach(opener xdg-open kde-open kde-open5 kioclient kioclient5 firefox gio drkonqi)
+    file(WRITE ${test_openers}/${opener} "#!/bin/sh\necho \"${opener} $*\" >> '${test_openers_log}'\n")
+    file(CHMOD ${test_openers}/${opener} PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+endforeach()
+
 set(test_home ${CMAKE_CURRENT_BINARY_DIR}/home)
 # The last two make glibc fill every freed block with a pattern and skip its
 # per-thread cache, so a read of freed memory crashes instead of seeing the
@@ -16,6 +27,8 @@ set(test_home ${CMAKE_CURRENT_BINARY_DIR}/home)
 # passed under glibc's defaults).
 set(test_environment
     QT_QPA_PLATFORM=offscreen
+    BROWSER=true
+    PATH=${test_openers}:$ENV{PATH}
     QT_PLUGIN_PATH=${CMAKE_BINARY_DIR}/bin
     LANGUAGE=en_US
     LC_ALL=C.UTF-8
