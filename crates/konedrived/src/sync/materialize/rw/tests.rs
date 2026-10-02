@@ -518,3 +518,42 @@ fn a_row_keeps_what_the_selection_leaves_out() {
     assert!(fx.path("docs").is_dir() && !fx.path("docs/deep").exists());
     assert!(applied.recreated.is_empty());
 }
+
+/// Review fix 1 (issue #58): the selection is `{docs/deep/x}` and `docs`
+/// holds a symlink, which cannot go. `x` is deleted in OneDrive, so `docs`
+/// is left out: `deep` goes from the disk at once, and nothing of it stays
+/// on record as a local object — an examination before the swap can prove
+/// nothing gone. `docs` stays, busy, and the base takes it as left out all
+/// the same: a selection flip never waits for the disk.
+#[test]
+fn what_the_selection_takes_off_the_disk_beside_something_busy_is_forgotten_and_its_folder_not_deferred() {
+    let fx = Fx::new();
+    fx.cycle(&[folder("X", "E", "x")], false).unwrap();
+    fx.select(&["X"], false);
+    fx.cycle(&[], true).unwrap();
+    assert!(fx.path("docs/deep/x").is_dir() && !fx.path("docs/f.txt").exists());
+    let handle = |id: &str| { let id = id.to_owned(); fx.store.call_blocking(move |s| s.local_handle(&id)).unwrap() };
+    assert!(handle("E").is_some() && handle("D").is_some(), "placed, with their objects on record");
+    std::os::unix::fs::symlink("/nowhere", fx.path("docs/link")).unwrap();
+
+    let (ids, plan) = fx
+        .store
+        .call_blocking(move |s| {
+            s.begin_staging(true)?;
+            s.stage(&[Change::Delete("X".into())])?;
+            s.select_staged()?;
+            let mut ids = s.changed_ids()?;
+            ids.extend(s.unplaced(Table::Staging)?);
+            Ok((ids, Rw::read(s, "fedora".into(), false, IgnoreList::default())?))
+        })
+        .unwrap();
+    let applied = fx.materializer(Some(plan)).apply(Scope::Changed(ids)).unwrap();
+    assert!(!fx.path("docs/deep").exists() && fx.path("docs/link").symlink_metadata().is_ok());
+    assert!(applied.unsettled.contains("D"), "docs is busy: {:?}", applied.unsettled);
+    assert_eq!(handle("E"), None, "what went has no object on record, before the swap too");
+
+    let unsettled: Vec<String> = applied.unsettled.iter().cloned().collect();
+    fx.store.call_blocking(move |s| s.commit_staging_deferring("link-3", &[], &unsettled, &[], 0)).unwrap();
+    assert_eq!(fx.base("D").unwrap().placement, Placement::Skipped(crate::tree::SkipReason::NotSelected), "the base takes the flip");
+    assert!(fx.deferred("D").is_none(), "nothing waits for the disk");
+}

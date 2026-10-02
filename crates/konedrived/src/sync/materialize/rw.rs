@@ -613,6 +613,9 @@ impl Materializer {
                         self.disk.remove(&dir, name, true)?;
                         run.out.deleted += 1;
                         run.note(EventKind::Removed, &rel, None);
+                        if left_out {
+                            self.forget_left_out(&id)?;
+                        }
                     }
                     Removal::Busy => {
                         if left_out {
@@ -676,6 +679,9 @@ impl Materializer {
                 self.disk.remove(dir, name, false)?;
                 run.out.deleted += 1;
                 run.note(EventKind::Removed, rel, None);
+                if left_out {
+                    self.forget_left_out(id)?;
+                }
                 Ok(Removal::Gone)
             }
             _ if self.local_work(&file) => keep(run),
@@ -686,9 +692,23 @@ impl Materializer {
                 self.disk.remove(dir, name, false)?;
                 run.out.deleted += 1;
                 run.note(EventKind::Removed, rel, None);
+                if left_out {
+                    self.forget_left_out(id)?;
+                }
                 Ok(Removal::Gone)
             }
         }
+    }
+
+    /// What the selection took off this computer — `id`, and everything
+    /// below it — has no local object on record from now on, in the base and
+    /// in the new tree: its folder may stay (busy) and keep its base, and an
+    /// examination that found a recorded object gone would delete the item
+    /// in OneDrive. With nothing on record it can prove nothing gone.
+    fn forget_left_out(&self, id: &str) -> Result<(), ApplyError> {
+        let id = id.to_owned();
+        self.store.call_blocking(move |s| s.forget_local(&id))?;
+        Ok(())
     }
 
     /// Keeps both (§6): the object at `dir/name` (at `rel`) is renamed in its

@@ -84,6 +84,20 @@ fn deferred_change(r: &rusqlite::Row<'_>) -> rusqlite::Result<(Change, i64)> {
     Ok((Change::Upsert(row), seq))
 }
 
+/// Whether the staged `row` differs from what `items` has only by the
+/// selection leaving it out: the same parent, name and content, staged
+/// [`SkipReason::NotSelected`](super::SkipReason::NotSelected), placed in
+/// `items`.
+fn only_left_out(conn: &rusqlite::Connection, row: &Row) -> bool {
+    if row.placement != Placement::Skipped(super::SkipReason::NotSelected) {
+        return false;
+    }
+    match get_row(conn, Source::Items, &row.id) {
+        Ok(Some(base)) => base.placement == Placement::Placed && Row { placement: Placement::Placed, ..row.clone() } == base,
+        _ => false,
+    }
+}
+
 impl TreeStore {
     /// What the outbox committed after commit count `seq`: items whose
     /// `local_seq` is newer, and tombstones.
@@ -190,15 +204,8 @@ impl TreeStore {
     /// folders alone ([`Self::unplaced_from_the_root`]): its cost is bounded
     /// by what is on this computer, not by what is left out.
     pub fn unplaced(&self, table: Table) -> Result<Vec<String>, TreeError> {
-        if self.selection().is_some() {
-            let many: i64 = self.conn.query_row(
-                "SELECT count(*) FROM (SELECT 1 FROM items WHERE local_handle IS NULL AND placement = 'placed' LIMIT ?1)",
-                [UNPLACED_FROM_BELOW + 1],
-                |r| r.get(0),
-            )?;
-            if many > UNPLACED_FROM_BELOW {
-                return self.unplaced_from_the_root(table);
-            }
+        if self.unplaced_from_above()? {
+            return self.unplaced_from_the_root(table);
         }
         let start = match self.source(table) {
             Source::Items => "SELECT id, parent_id, name, placement FROM items WHERE local_handle IS NULL AND placement = 'placed'".to_owned(),
@@ -212,6 +219,21 @@ impl TreeStore {
             ),
         };
         Ok(self.chains(table, &start, &[])?.into_iter().filter(|c| c.above && c.own).map(|c| c.id).collect())
+    }
+
+    /// Whether [`Self::unplaced`] walks from the root down: a selection is
+    /// set, and more than [`UNPLACED_FROM_BELOW`] items with no local object
+    /// are listed. One indexed count, of that many rows at most.
+    fn unplaced_from_above(&self) -> Result<bool, TreeError> {
+        if self.selection().is_none() {
+            return Ok(false);
+        }
+        let many: i64 = self.conn.query_row(
+            "SELECT count(*) FROM (SELECT 1 FROM items WHERE local_handle IS NULL AND placement = 'placed' LIMIT ?1)",
+            [UNPLACED_FROM_BELOW + 1],
+            |r| r.get(0),
+        )?;
+        Ok(many > UNPLACED_FROM_BELOW)
     }
 
     /// [`Self::unplaced`], found from the root down: every placed child of
@@ -278,6 +300,14 @@ impl TreeStore {
                 )?;
                 let seq = seq.max(committed);
                 let staged = get_row(&tx, source, id)?;
+                // Only the selection leaves it out now (issue #58): nothing
+                // waits for the disk there. The base takes it at once, even
+                // while its folder stays on disk, busy — a base that still
+                // placed it would have an examination take what left for
+                // deleted here.
+                if whole && staged.as_ref().is_some_and(|row| only_left_out(&tx, row)) {
+                    continue;
+                }
                 match staged {
                     Some(row) => tx.execute(
                         "INSERT OR REPLACE INTO deferred (id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement)
@@ -339,6 +369,9 @@ impl TreeStore {
             Some((Change::Upsert(row), _)) if row.ctag.is_some() && row.ctag.as_deref() == ctag => {
                 upsert(&tx, Table::Items, &row)?;
                 tx.execute("DELETE FROM deferred WHERE id = ?1", [id])?;
+                // A deferred row comes back placed (`deferred_change`): the
+                // selection decides again, as at any write into `items`.
+                super::select::after_write(&tx, &self.select, &row)?;
                 true
             }
             _ => false,
@@ -388,9 +421,15 @@ impl TreeStore {
             waiting
         };
         let revisit = self.committed_items_since(since)?;
-        let unplaced = self.unplaced(Table::Items)?;
-        if !full && changes.is_empty() && waiting && revisit.is_empty() && unplaced.is_empty() {
-            return Ok(None);
+        if !full && changes.is_empty() && waiting && revisit.is_empty() {
+            // Idle so far. What has no local object is looked for through
+            // its index — but not by a walk from the root (many items left
+            // out by the selection): an idle cycle reads nothing whole
+            // (issue #39). A cycle that stages something, or a Full one,
+            // looks for it.
+            if self.unplaced_from_above()? || self.unplaced(Table::Items)?.is_empty() {
+                return Ok(None);
+            }
         }
         let consumed: Vec<String> = deferred.iter().map(|c| c.id().to_owned()).collect();
         self.begin_staging(true)?;
@@ -483,6 +522,29 @@ mod tests {
         assert!(s.land_deferred("X", Some("c2"), None).unwrap());
         assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c2"));
         assert!(s.deferred_ids().unwrap().is_empty());
+    }
+
+    /// Review fix 1 (issue #58): a replacement that lands takes its deferred
+    /// version into the base with the selection applied — a deferred row
+    /// comes back placed, and must not stay so where the selection leaves
+    /// it out.
+    #[test]
+    fn a_landed_replacement_keeps_what_the_selection_leaves_out() {
+        let mut s = TreeStore::in_memory().unwrap();
+        s.begin_staging(false).unwrap();
+        s.stage(&[Change::Root(root()), Change::Upsert(file("X", "R", "x", "c1"))]).unwrap();
+        s.commit_staging("L1").unwrap();
+        s.begin_staging(true).unwrap();
+        s.stage(&[Change::Upsert(file("X", "R", "x", "c2"))]).unwrap();
+        s.commit_staging_deferring("L2", &[], &["X".to_owned()], &[], 1).unwrap();
+        // The root's files are off from now on.
+        s.set_selection(Some(crate::tree::Selection { folders: Vec::new(), root_files: false }), None).unwrap();
+        let left_out = Placement::Skipped(crate::tree::SkipReason::NotSelected);
+        assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().placement, left_out);
+
+        assert!(s.land_deferred("X", Some("c2"), None).unwrap());
+        let base = s.get(Table::Items, "X").unwrap().unwrap();
+        assert_eq!((base.ctag.as_deref(), base.placement), (Some("c2"), left_out));
     }
 
     /// Tombstones say what the outbox deleted after a commit count, and go

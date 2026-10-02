@@ -82,6 +82,9 @@ pub(super) struct Selecting {
     /// never knew stays.
     known: HashSet<String>,
     sink: Option<SelectionSink>,
+    /// The store changed the list by itself, and placements in `items`
+    /// with it: the folder follows at the next cycle, a Full one.
+    settled: bool,
 }
 
 /// What the selection makes of a tree.
@@ -311,8 +314,21 @@ impl TreeStore {
     /// The selection from now on, applied to the whole of `items` in one
     /// transaction: how many placements changed. `sink` hears of every
     /// change the store makes to the list by itself.
+    /// On an error nothing changed: the store keeps the selection it had.
     pub fn set_selection(&mut self, selection: Option<Selection>, sink: Option<SelectionSink>) -> Result<usize, TreeError> {
-        self.select = Selecting { selection, known: HashSet::new(), sink };
+        let before = std::mem::replace(&mut self.select, Selecting { selection, known: HashSet::new(), sink, settled: false });
+        match self.apply_selection() {
+            Ok(changed) => Ok(changed),
+            Err(e) => {
+                self.select = before;
+                Err(e)
+            }
+        }
+    }
+
+    /// [`Self::set_selection`]'s transaction: the selection the store holds
+    /// now, applied to the whole of `items`.
+    fn apply_selection(&mut self) -> Result<usize, TreeError> {
         let tx = self.conn.transaction()?;
         let changed = match &self.select.selection {
             // Through the index of skipped items. What comes back has no
@@ -385,6 +401,16 @@ impl TreeStore {
                 forget.execute([id])?;
             }
         }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Forgets the local object of `id` and of everything `items` has below
+    /// it, in `items` and `staging` ([`forget_local`]): what the selection
+    /// just took off this computer.
+    pub fn forget_local(&mut self, id: &str) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        forget_local(&tx, id)?;
         tx.commit()?;
         Ok(())
     }
@@ -499,7 +525,7 @@ impl TreeStore {
             found.iter().map(|(_, _, id, new_file)| Ok(in_view(conn, id)? && !(*new_file && partial.contains(id)))).collect()
         };
         let before = stands(&self.conn, &self.select)?;
-        let wanted = Selecting { selection: Some(selection.clone()), known: HashSet::new(), sink: None };
+        let wanted = Selecting { selection: Some(selection.clone()), ..Selecting::default() };
         let tx = self.conn.unchecked_transaction()?;
         pass(&tx, Source::Items, &wanted, None, false)?;
         let after = stands(&tx, &wanted)?;
@@ -516,34 +542,64 @@ impl TreeStore {
     /// deleted leaves it, and so does a folder that now lies inside another
     /// chosen one. A list that loses its last id stays an empty list. An id
     /// `items` never had stays.
+    ///
+    /// The new list goes to `config.toml` first (the sink); then the store
+    /// takes it and applies it to `items` at once, as a change of the
+    /// selection does, so that no placement waits for the next cycle. When
+    /// `config.toml` cannot be written, the store keeps the list it had —
+    /// never more than the file says — and the next settle tries again.
     pub(super) fn settle_selection(&mut self) -> Result<(), TreeError> {
         let Some(selection) = self.select.selection.clone() else { return Ok(()) };
         let listed: HashSet<&str> = selection.folders.iter().map(String::as_str).collect();
+        let mut known = self.select.known.clone();
         let mut kept: Vec<String> = Vec::new();
         for id in &selection.folders {
             if kept.contains(id) {
                 continue;
             }
             match brief(&self.conn, Source::Items, id)? {
-                None if self.select.known.remove(id) => {}
+                None if known.remove(id) => {}
                 None => kept.push(id.clone()),
                 Some(_) => {
-                    self.select.known.insert(id.clone());
+                    known.insert(id.clone());
                     if !ancestors(&self.conn, Source::Items, id)?.iter().any(|a| listed.contains(a.as_str())) {
                         kept.push(id.clone());
                     }
                 }
             }
         }
-        if kept != selection.folders {
-            let settled = Selection { folders: kept, root_files: selection.root_files };
-            self.select.selection = Some(settled.clone());
-            if let Some(sink) = &self.select.sink {
-                // Said by the sink already; the store's copy is the one applied.
-                let _ = sink(&settled);
+        if kept == selection.folders {
+            self.select.known = known;
+            return Ok(());
+        }
+        let settled = Selection { folders: kept, root_files: selection.root_files };
+        if let Some(sink) = &self.select.sink {
+            if let Err(why) = sink(&settled) {
+                tracing::error!("the chosen folders could not lose what left OneDrive, and stay as they were: {why}");
+                return Ok(());
             }
         }
+        self.select.known = known;
+        self.select.selection = Some(settled);
+        let tx = self.conn.transaction()?;
+        let flipped = pass(&tx, Source::Items, &self.select, None, true)?;
+        tx.commit()?;
+        self.select.settled |= !flipped.is_empty();
         Ok(())
+    }
+
+    /// Makes every write to the store fail (`on`), or work again: for tests
+    /// of what a failed write leaves.
+    #[cfg(test)]
+    pub(crate) fn refuse_writes(&self, on: bool) {
+        self.conn.execute_batch(if on { "PRAGMA query_only = ON" } else { "PRAGMA query_only = OFF" }).unwrap();
+    }
+
+    /// Whether the store changed the list by itself, and placements in
+    /// `items` with it, since this was last asked: the cycle that asks
+    /// makes the folder follow with a Full reconcile.
+    pub fn take_selection_settled(&mut self) -> bool {
+        std::mem::take(&mut self.select.settled)
     }
 
     /// `ids` as a list to set: no id twice, and no folder inside another of
@@ -1038,6 +1094,71 @@ mod tests {
         assert_eq!(placement(&s, Table::Items, "D"), Placement::Placed);
         assert_eq!(s.local_handle("D").unwrap(), Some(handle(2)), "the directory that adopted it");
         assert_eq!(s.local_handle("d").unwrap(), None, "what was in it is placed again, not deleted");
+    }
+
+    /// Review fixes 3 and 5 (issue #58): a chosen folder deleted here and
+    /// committed by the outbox leaves the list, and the placements follow at
+    /// once — `B`, partial only for `X`, is left out now — and the next cycle
+    /// is told to make the folder follow. When `config.toml` cannot be
+    /// written, the store keeps its list and placements, and settles them
+    /// once it can.
+    #[test]
+    fn a_list_that_changes_by_itself_is_applied_at_once_and_only_once_written() {
+        let mut s = drive();
+        let refuse: Arc<Mutex<bool>> = Arc::new(Mutex::new(true));
+        let sink: SelectionSink = {
+            let refuse = Arc::clone(&refuse);
+            Arc::new(move |_| if *refuse.lock().unwrap() { Err("the disk is full".into()) } else { Ok(()) })
+        };
+        s.set_selection(only(&["X", "C"], false), Some(sink)).unwrap();
+        assert_eq!(placement(&s, Table::Items, "B"), Placement::Placed, "partial");
+        let seq = waiting(&mut s, OutboxKind::Delete, Some("X"), "A/B/X", Some("B"));
+        s.outbox_commit(seq, Committed::Gone { item_id: "X" }, None).unwrap();
+        assert_eq!(s.selection(), only(&["X", "C"], false).as_ref(), "config.toml could not be written: the list stays");
+        assert_eq!(placement(&s, Table::Items, "B"), Placement::Placed);
+        assert!(!s.take_selection_settled());
+
+        *refuse.lock().unwrap() = false;
+        s.settle_selection().unwrap();
+        assert_eq!(s.selection(), only(&["C"], false).as_ref());
+        assert_eq!(placement(&s, Table::Items, "B"), Placement::Skipped(SkipReason::NotSelected), "applied at once");
+        assert!(s.take_selection_settled(), "the next cycle makes the folder follow");
+        assert!(!s.take_selection_settled());
+    }
+
+    /// Review fix 4 (issue #58): a selection the store cannot write leaves
+    /// the store as it was — the selection it held included.
+    #[test]
+    fn a_selection_the_store_cannot_write_changes_nothing() {
+        let mut s = drive();
+        s.set_selection(only(&["X"], false), None).unwrap();
+        s.refuse_writes(true);
+        assert!(s.set_selection(only(&["D"], true), None).is_err());
+        assert!(s.set_selection(None, None).is_err());
+        s.refuse_writes(false);
+        assert_eq!(s.selection(), only(&["X"], false).as_ref());
+        assert_eq!(left_out(&s), ["C", "D", "a", "b", "r"]);
+    }
+
+    /// Review fix 6 (issue #58): with many items left out, an idle cycle —
+    /// nothing staged, not Full — does not walk the tree from the root for
+    /// what has no local object; a cycle that stages something does.
+    #[test]
+    fn an_idle_cycle_does_not_walk_from_the_root() {
+        let mut s = drive();
+        let many: Vec<Change> = (0..2_100).map(|n| file(&format!("m{n}"), "D", &format!("m{n}.txt"))).collect();
+        s.begin_staging(true).unwrap();
+        s.stage(&many).unwrap();
+        s.commit_staging("L2").unwrap();
+        s.set_selection(only(&["X"], true), None).unwrap();
+        // Everything placed has its object on record, but `r.txt`.
+        for id in ["A", "B", "X", "x"] {
+            s.set_local_handle(id, Some(&handle(1))).unwrap();
+        }
+        assert_eq!(s.unplaced(Table::Items).unwrap(), ["r"]);
+        assert!(s.stage_rw(&[], 0, false).unwrap().is_none(), "idle: nothing read whole");
+        let (ids, _) = s.stage_rw(&[], 0, true).unwrap().expect("a Full cycle");
+        assert!(ids.contains(&"r".to_owned()), "a Full cycle looks for it: {ids:?}");
     }
 
     /// With many items left out, what has no local object is found from the

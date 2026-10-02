@@ -1053,3 +1053,38 @@ async fn a_folder_left_out_with_local_work_adopts_its_folder_in_onedrive_and_bec
     assert_eq!(id_at(&w.path("docs/f.txt")).as_deref(), Some("F"));
     assert!(w.graph.with(|c| c.at("docs/f.txt").is_some()));
 }
+
+/// Review fix 1 (issue #58): the selection is `{A/B/X}` and `A` holds
+/// something that cannot go — a symlink, kept back. `X` is deleted in
+/// OneDrive, so `A` is left out: `B`, which never held anything here, goes
+/// from the disk, while `A` stays, busy. What went must never be taken for
+/// a delete made here: the Full local scan after the cycle finds `B` gone,
+/// and nothing of it reaches OneDrive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_the_selection_took_off_the_disk_beside_something_busy_is_never_deleted_in_onedrive() {
+    let w = world().await;
+    cloud_folder(&w, "A", ROOT, "A");
+    cloud_folder(&w, "B", "A", "B");
+    cloud_folder(&w, "X", "B", "X");
+    w.graph.with(|c| c.add_file("BF", "B", "b.txt", b"b"));
+    w.graph.with(|c| c.add_file("XF", "X", "x.txt", b"x"));
+    let listing = w.listed().await;
+    select(&w, &listing, &["X"], false).await;
+    assert!(w.path("A/B/X/x.txt").exists() && !w.path("A/B/b.txt").exists());
+    std::os::unix::fs::symlink("/nowhere", w.path("A/link")).unwrap();
+    w.examine(Batch::full()).await;
+    let kept: Vec<String> = w.store.call(|s| s.local_skipped()).await.unwrap().into_iter().map(|k| k.rel.display().to_string()).collect();
+    assert_eq!(kept, ["A/link"]);
+
+    w.graph.with(|c| c.trash("X"));
+    w.cycle(&listing).await;
+    assert!(!w.path("A/B").exists(), "B left the disk");
+    assert!(w.path("A").is_dir(), "A stays while it holds the link");
+    assert!(chosen(&w).await.is_empty(), "the list lost X");
+
+    let examined = w.scan_and_upload().await;
+    let rows = w.store.call(move |s| s.outbox_rows()).await.unwrap();
+    assert!(!rows.iter().any(|r| r.kind.removes()), "{rows:?}: {:?}", examined.applied);
+    assert_eq!(w.deletes(), 0, "nothing deleted in OneDrive");
+    assert!(w.graph.with(|c| c.item("B").is_some() && c.item("BF").is_some() && c.bin.keys().all(|k| k == "X" || k == "XF")));
+}

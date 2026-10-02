@@ -62,6 +62,18 @@ fn refusal(lost: &[(std::path::PathBuf, String)]) -> String {
     text
 }
 
+/// The store takes `selection`, which `config.toml` and the published state
+/// already have. When it cannot, both get `before` back — the selection the
+/// store keeps — and the error is the answer: nothing changed.
+fn applied(s: &mut TreeStore, keeper: &Keeper, before: Option<Selection>, selection: Option<Selection>, sink: SelectionSink) -> Result<(), SyncError> {
+    let Err(e) = s.set_selection(selection, Some(sink)) else { return Ok(()) };
+    tracing::error!("the store could not take the chosen folders; they stay as they were: {e}");
+    if let Err(back) = keeper.write(before) {
+        tracing::error!("and config.toml could not be put back: {back}");
+    }
+    Err(SyncError::Io(e.to_string()))
+}
+
 impl SyncService {
     fn keeper(&self) -> Keeper {
         Keeper { lock: Arc::clone(&self.selecting), persist: self.persist.clone(), state: self.state.clone() }
@@ -104,10 +116,22 @@ impl SyncService {
         lifecycle: tokio::sync::OwnedRwLockReadGuard<()>,
         job: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
     ) -> Result<T, SyncError> {
+        self.on_tree_holding(None, lifecycle, job).await
+    }
+
+    /// [`Self::on_tree`], with the tree lock `tree` held too until the job
+    /// is done.
+    async fn on_tree_holding<T: Send + 'static>(
+        &self,
+        tree: Option<tokio::sync::OwnedMutexGuard<()>>,
+        lifecycle: tokio::sync::OwnedRwLockReadGuard<()>,
+        job: impl FnOnce(&mut TreeStore) -> Result<T, TreeError> + Send + 'static,
+    ) -> Result<T, SyncError> {
         let open = self.store.lock().unwrap().clone();
         let file = self.sync_paths.lock().unwrap().as_ref().map(|p| p.tree_db.clone());
         let selection = self.selection();
         tokio::task::spawn_blocking(move || {
+            let _tree = tree;
             let _lifecycle = lifecycle;
             match (open, file) {
                 (Some(store), _) => store.call_blocking(job),
@@ -138,6 +162,7 @@ impl SyncService {
     /// taken, and only `config.toml` is written: the folder bound next lists
     /// the drive and places nothing.
     pub async fn set_selection(&self, ids: Vec<String>, root_files: bool) -> Result<(), SyncError> {
+        let tree = self.change_lock().await;
         let lifecycle = Arc::clone(&self.lifecycle).read_owned().await;
         let keeper = self.keeper();
         if !self.selectable()? {
@@ -149,7 +174,8 @@ impl SyncService {
                 .map_err(|e| SyncError::Io(format!("the settings task failed: {e}")))?;
         }
         let sink = self.selection_sink();
-        self.on_tree(lifecycle, move |s| {
+        let before = self.selection();
+        self.on_tree_holding(Some(tree), lifecycle, move |s| {
             let folders = match s.check_selection(&ids)? {
                 Ok(folders) => folders,
                 Err(why) => return Ok(Err(SyncError::InvalidArgs(why))),
@@ -167,8 +193,7 @@ impl SyncService {
             if let Err(e) = keeper.write(Some(selection.clone())) {
                 return Ok(Err(e));
             }
-            s.set_selection(Some(selection), Some(sink))?;
-            Ok(Ok(()))
+            Ok(applied(s, &keeper, before, Some(selection), sink))
         })
         .await??;
         self.follow_selection();
@@ -178,6 +203,7 @@ impl SyncService {
     /// `SyncEverything()`: no selection; every folder is on this computer
     /// again. Also on an account with no folder bound yet.
     pub async fn sync_everything(&self) -> Result<(), SyncError> {
+        let tree = self.change_lock().await;
         let lifecycle = Arc::clone(&self.lifecycle).read_owned().await;
         let keeper = self.keeper();
         if !self.selectable()? {
@@ -186,16 +212,25 @@ impl SyncService {
                 .map_err(|e| SyncError::Io(format!("the settings task failed: {e}")))?;
         }
         let sink = self.selection_sink();
-        self.on_tree(lifecycle, move |s| {
+        let before = self.selection();
+        self.on_tree_holding(Some(tree), lifecycle, move |s| {
             if let Err(e) = keeper.write(None) {
                 return Ok(Err(e));
             }
-            s.set_selection(None, Some(sink))?;
-            Ok(Ok(()))
+            Ok(applied(s, &keeper, before, None, sink))
         })
         .await??;
         self.follow_selection();
         Ok(())
+    }
+
+    /// The tree lock, taken before a change of the selection, in the order
+    /// the outbox worker and a read-write cycle take it (the tree lock, then
+    /// the store): a cycle between its staging and its swap would otherwise
+    /// write the placements from before the change back into `items`.
+    /// Taken in read-only mode too, where nothing else holds it for long.
+    async fn change_lock(&self) -> tokio::sync::OwnedMutexGuard<()> {
+        Arc::clone(&self.tree_lock).lock_owned().await
     }
 
     /// The folder follows a change of the selection: a Full reconcile takes

@@ -404,7 +404,13 @@ impl Listing {
         let turn: Turn = Arc::new(cancellable(cancel, Arc::clone(&self.turns).lock_owned()).await?);
         // Taken, not read: a replacement that ends while this cycle runs asks
         // for a Full reconcile, and that request must outlive this cycle.
-        let full_requested = self.needs_full.swap(false, Ordering::SeqCst);
+        let mut full_requested = self.needs_full.swap(false, Ordering::SeqCst);
+        // The store changed the chosen folders by itself (issue #58), and the
+        // base's placements with them: the folder follows them.
+        match self.ctx.store.call(|s| Ok(s.take_selection_settled())).await {
+            Ok(settled) => full_requested |= settled,
+            Err(e) => tracing::warn!("cannot ask the store whether the chosen folders changed: {e}"),
+        }
         // Unless this cycle succeeds, the next one is Full — also
         // when its future is dropped part-way.
         let mut unless_done = OnDrop(Some(|| self.needs_full.store(true, Ordering::SeqCst)));

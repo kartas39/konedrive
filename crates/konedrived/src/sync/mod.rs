@@ -8613,6 +8613,40 @@ mod tests {
                 service.stop_sync().await;
             }
 
+            /// Review fixes 2 and 4: a change of the selection waits for the
+            /// tree lock — a read-write cycle between its staging and its swap
+            /// would write the old placements back — and one the store cannot
+            /// write changes nothing: `config.toml`, the published state and
+            /// the store keep the selection they had.
+            #[tokio::test]
+            async fn a_change_of_the_selection_waits_for_the_tree_and_one_the_store_refuses_changes_nothing() {
+                let w = world().await;
+                wider(&w).await;
+                let service = connected(&w, true).await;
+                service.register_root(w.folder.path()).await.unwrap();
+                wait_until("the drive is listed into the folder", || service.items() == (5, 5, 0)).await;
+                let store = service.store.lock().unwrap().clone().unwrap();
+
+                let held = Arc::clone(&service.tree_lock).lock_owned().await;
+                let change = {
+                    let service = Arc::clone(&service);
+                    tokio::spawn(async move { service.set_selection(vec!["D".into()], false).await })
+                };
+                tokio::time::sleep(Duration::from_millis(300)).await;
+                assert!(!change.is_finished(), "the change waits for the tree lock");
+                assert_eq!(store.call(|s| Ok(s.selection().cloned())).await.unwrap(), None);
+                drop(held);
+                change.await.unwrap().unwrap();
+                assert_eq!(store.call(|s| Ok(s.selection().cloned())).await.unwrap(), only(&["D"], false));
+
+                store.call(|s| { s.refuse_writes(true); Ok(()) }).await.unwrap();
+                assert!(service.set_selection(vec!["P".into()], true).await.is_err());
+                assert!(service.sync_everything().await.is_err());
+                store.call(|s| { s.refuse_writes(false); Ok(()) }).await.unwrap();
+                assert_eq!((service.selection(), in_config(&w), store.call(|s| Ok(s.selection().cloned())).await.unwrap()), (only(&["D"], false), only(&["D"], false), only(&["D"], false)));
+                service.stop_sync().await;
+            }
+
             /// A selection `config.toml` has when the folder's sync starts is
             /// applied to its first listing. An id the store does not know
             /// stays in the list. A chosen folder deleted in OneDrive leaves
