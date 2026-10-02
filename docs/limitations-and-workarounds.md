@@ -223,6 +223,9 @@ application must never read zeros where real content should be.
   directory is walked and marked at registration and at every helper start.
 - **Cost:** measured 1.03 s on a cold cache for 10 000 directories and 100 000 files; the
   file-level part exists only to clear ignore marks (W4).
+- **Selection (issue #58):** only what is on disk is walked and marked. With a list of chosen
+  folders ([sync.md](design/sync.md) §3.1), folders that are not chosen are not on disk, so the
+  walk and the marks follow the chosen folders.
 - **Way out:** one fanotify group per user. Unregistering becomes closing the group, the
   file-level walk disappears, and one user's leased file stops stalling others. A large
   change to the helper; natural to do with the watcher.
@@ -233,6 +236,8 @@ application must never read zeros where real content should be.
   on a 10 000-directory tree, against an earlier isolated measurement of 1148 B. The gap is
   unexplained because the measurement records totals only.
 - **Cost:** ~16.6 MB for 10 000 folders. Marking files instead would cost ~330 MB for 200 000.
+  The cost follows the directories on disk: a selection (issue #58) keeps the folders that are not
+  chosen off the disk, and their marks and memory with them.
 
 ### P5. Only a fixed set of errnos can reach an application
 - **Kind** LIMIT · **Evidence** measured · **Status** open
@@ -272,6 +277,10 @@ application must never read zeros where real content should be.
 
   All six are skipped, never silently dropped, and listed by `Skipped()` /
   `konedrivectl sync skipped` with why.
+- **A seventh kind, chosen by the user:** what the selection leaves out (`not-selected`, issue #58;
+  [sync.md](design/sync.md) §3.1) is stored with that reason, but `Skipped()`, `SkippedCount` and the
+  "Not in the Folder" page leave it out: they list what konedrive cannot place, and the selection
+  has its own views (`konedrivectl sync select`, the Account page's "Folders on This Computer").
 - **Personal Vault detection, verified:** a real-account run (G1) asserted that no folder literally
   named "Personal Vault" was ever placed as an ordinary folder — confirming `specialFolder.name ==
   "vault"` is what actually distinguishes it, not the name, which a user could give to any folder.
@@ -2539,6 +2548,74 @@ application must never read zeros where real content should be.
   ping, an event, a nudge) instead of after the monotonic clock's remaining wait; a renewal asks
   for one cycle, since the old socket was not read while the new one opened. Every close of a
   socket is bounded by 5 s. GUESS · reasoned · open.
+- **F187. The whole drive is still listed and stored with a selection** (issue #58) — Graph lists
+  from the root, so a list of chosen folders shrinks neither the listing time nor the store: every
+  item of the drive has its row, those left out marked `skipped:not-selected` (W15 for the same
+  cost in a real-account run). Only the disk, the marks and the downloads follow the selection.
+  LIMIT · reasoned · open.
+- **F188. What the selection costs the store** (issue #58; `tree/select.rs`) — while a list is set,
+  the pass costs two indexed queries per staged cycle and per outbox commit of a folder, and every
+  local examination of a read-write folder computes the partial folders (a few queries per chosen
+  folder). `thumbnail_candidates` and `TreeStore::unplaced` still look at rows inside folders that
+  are not chosen; `unplaced` is bounded: past 2000 items left out and never placed, every read-write
+  cycle reads all placed items from the root down instead. SHORTCUT · reasoned · open.
+- **F189. When a change of the selection takes effect** (issue #58) — a change made while a cycle
+  runs takes effect at the next cycle, which the change asks for as Full; paused, signed out or
+  without the helper, it waits for the next cycle. A list edited by hand in `config.toml` is read
+  only when the daemon starts. A chosen id the store never knew (the file edited by hand, a store
+  being rebuilt) stays in the list for good: nothing drops it by itself (`sync select remove` or the
+  picker does). DESIGN · reasoned · open.
+- **F190. Read-write: local work the selection's check could not see goes up again** (issue #58;
+  write design §9) — the check before a change reads the store only. Work it could not see (a
+  change not examined yet, or made after the check) in a folder that leaves is kept as for an item
+  removed in OneDrive: a file is stripped and uploaded again, possibly as a copy beside the cloud's
+  version; a folder is stripped, adopted on the `409`, and becomes chosen again. A file with an item
+  id moved into a partial folder stays where it was in OneDrive and is listed `not-selected`. After a
+  folder comes back, a file deleted here before the reconcile placed it again comes back too (its
+  delete cannot be proved; the stale local object is forgotten so that it is not read as a delete
+  in OneDrive). Something in use (open, being filled) in a leaving folder stays until the next Full
+  reconcile, and nothing asks for one. DESIGN · measured
+  (`sync::materialize::rw::tests`, `sync::local::tests`) · open.
+- **F191. Read-write: what blocks a change of the selection** (issue #58) — a kept-back object (a
+  symbolic link, an ignored name, a `not-selected` file) in a folder that would leave refuses the
+  change (`LocalChanges`) until the user moves or deletes it; so does an outbox row on anything
+  that would leave, and a new file waiting in a folder whose files would stop being synced (it
+  would otherwise become kept back without a word). A new directory there blocks nothing. The check
+  finds a new object's folder by its path's names, so a directory renamed here and not uploaded yet
+  is looked up by its new name. The refusal lists 10 paths and counts the rest. DESIGN · measured
+  (`sync_cli::binary_select_refused_for_local_changes_prints_the_paths_and_why`) · open.
+- **F192. A read-only folder rescues the modified files of a folder that leaves** (issue #58) — a
+  file changed here past the read-only lock, in a folder that stops being chosen, is rescued as for
+  an item removed in OneDrive (sync design §10): it is listed under Conflicts, not kept in place.
+  Nothing is lost. DESIGN · measured (`sync::materialize::tests`) · open.
+- **F193. Unchecking one sub-folder of a chosen folder also removes the files directly in that
+  folder** (issue #58) — the chosen folder gives way to its other sub-folders and becomes partial,
+  and a partial folder holds no files of its own. The picker says so before Apply; `sync select
+  remove` prints it. DESIGN · reasoned · open.
+- **F194. Downloads queued for a pinned folder that leaves** (issue #58) — they go the way of an item
+  removed in OneDrive (`fill_pinned`): dropped or failing quietly, with no conflict and no error in
+  the activity, by reading. Not tested. reasoned · open.
+- **F195. An older daemon reading a newer store shows `not-selected` as `unsupported`** (issue #58) —
+  the placement is a string in the store; a daemon from before issue #58 knows no such reason, and
+  its `Skipped()` lists every left-out folder as unsupported until the selection is removed or the
+  store rebuilt. LIMIT · reasoned · open.
+- **F196. Open and untested about the selection** (issue #58) — the mark of a folder kept because of
+  local work the check could not see was not tested in the VM: by reading, the materializer never
+  sends `UnmarkDir`, so the folder keeps its mark, which is still right, since a read-write
+  folder's watcher marks every directory. `SelectedFolders` after a rename in OneDrive, or after the
+  first listing, is announced only after the next successful check with OneDrive, and that
+  announcement has no test; its read waits for a registration under way while a selection is set.
+  The stale-object delete that issue #58 fixed for a folder coming back into the selection exists on
+  its own for an item that leaves and comes back for another skip reason with no selection set: not
+  touched. reasoned · open.
+- **F197. `konedrivectl sync select` and the picker read, then write** (issue #58) — `sync select`
+  finds a folder with one `FolderChildren` call per level of its path; `remove` of a folder inside a
+  chosen one, `add`, `root-files` and the window's Apply send a whole new list built from what was
+  read, so a change made elsewhere in between (the window, another `konedrivectl`) is overwritten.
+  `sync register --choose-folders`, and "Choose Folders…" at the window's bind, are two calls
+  (`SetSelection([], false)`, then `Register`): one killed between them leaves an empty list on an
+  account with no folder, which `sync select everything` removes. A folder whose name starts with
+  `/` cannot be named by its OneDrive path. SHORTCUT · reasoned · open.
 ---
 
 ## 5. Provisional numbers
@@ -2609,6 +2686,8 @@ application must never read zeros where real content should be.
 | The notification endpoint's lifetime without `expirationDateTime` (`socket::DEFAULT_LIFETIME`) / replaced before its expiry by (`RENEW_EARLY`) / opening the socket, bound (`CONNECT_TIMEOUT`) / largest message taken (`MAX_MESSAGE`) | 1 h / 2 min / 30 s / 1 MiB | **guess** (issue #54, F180) |
 | The poll while the notification socket is up (`Schedule::live_interval`) | 5 min | the user's choice; how often the service drops an event is not known (F183) |
 | The live task's debounce / retries / shortest endpoint life / look at a stopped account / time before a connection counts as up (`live::Timing`) | 2 s / 1, 2, 4 … 60 s / 60 s / 60 s / first ping or 30 s | **guess** (F186) |
+| Paths a `LocalChanges` refusal lists (`sync/select.rs` `REFUSAL_PATHS`) / items left out and never placed before `unplaced` walks from the root (issue #58) | 10 / 2000 | **guess** (F188, F191) |
+| How long the window waits for the daemon to name `--choose-folders`' account (`AccountsModel::ChooseFoldersWaitMs`) | 10 s | **guess** (A29) |
 
 ---
 
@@ -2686,6 +2765,10 @@ application must never read zeros where real content should be.
   `account mode read-write` open the sign-in page only when stdout is a terminal and
   `KONEDRIVE_NO_BROWSER` is unset or empty, so tests never open one; `konedrivectl login | tee log`
   opens none either. The address is printed every time, to be opened by hand.
+- **D22. `SetIgnorePatterns` promises `InvalidArgs` and sends another name.** Its refusal travels as
+  `SyncFault::ZBus(fdo InvalidArgs)`, which arrives as `org.freedesktop.zbus.Error`, while
+  `dbus/org.konedrive.Folder.xml` promises the bus's `InvalidArgs`. `SetSelection` has its own fault
+  type (`SelectionFault`) for that reason (issue #58); `SetIgnorePatterns` was left as it was.
 
 ---
 
@@ -2901,6 +2984,14 @@ attributes and never open it.
   is an `https` address, so that an answer of any other kind (a local file, another scheme) is
   never opened. The plugin then says the page could not be opened; `konedrivectl` still prints
   what it got. `actionplugintest::openInOneDriveOpensTheAddressTheDaemonAnswers`. open.
+- **K32. "Choose Folders…" needs the window's program in `PATH`, and is offered on the account's
+  folder only.** LIMIT · measured (`actionplugintest::chooseFoldersIsOnTheAccountsFolderOnly`;
+  issue #58). The entry starts `konedrive --choose-folders <folder>` detached, found through `PATH`,
+  and makes no D-Bus call: a `konedrive` that is not in `PATH` (a developer build run from its build
+  directory) gives "KOneDrive's window could not be started" through the plugin's `error`. It is
+  offered only when the one selected path is an account's folder itself, not on a folder inside
+  it: the picker chooses for the whole drive, and choosing from a sub-folder's menu is not built.
+  open.
 
 ---
 
@@ -3257,6 +3348,29 @@ window's status, activity and conflicts, all read from the folder's interfaces (
   they happen, so the poll's time says little. `LastChecked` is still on the bus and in
   `konedrivectl sync status`. A socket that looks connected while the service sends nothing (F182,
   F183) shows "live" all the same, until the connection is found dead. Open.
+- **A27. The picker of the chosen folders shows no folder sizes** (issue #58). LIMIT · reasoned.
+  `FolderChildren` answers names and states only; how much a folder would bring or free is not
+  shown, in the window or by `konedrivectl sync select browse`. Open.
+- **A28. The picker works on what it read when it opened.** SHORTCUT · measured
+  (`folderpickertest`, `dialogstest::theSelectionCardAndPicker`; issue #58). It reads the
+  selection (`SelectedFolders`, `RootFiles`, `SyncsEverything`) and the root's folders when it opens,
+  and each branch the first time it opens; a change made elsewhere while it is open is not shown,
+  and Apply sends the whole list (F197). A chosen folder in a branch never opened is placed by its
+  path in `SelectedFolders`, which after a rename in OneDrive is the old one until the next check
+  (F196): its parents' partial marks may be wrong until then. A click on a partly checked folder
+  checks it whole; removing what is chosen below it takes a second click. Open.
+- **A29. `--choose-folders` waits for the daemon, then gives up quietly.** SHORTCUT · measured
+  (`dialogstest::chooseFoldersFromOutside`, `singleinstancetest::aSecondLaunchChoosesFolders`;
+  issue #58). At the window's start the accounts are not known until the daemon has answered, so the
+  request waits for every account to be read, at most 10 s; a folder that is no account's then shows
+  the window and a passive message, which disappears by itself. A relative folder is taken from the
+  launch's working directory. Open.
+- **A30. The picker after "Choose Folders…" at the bind belongs to the window.** SHORTCUT · measured
+  (`dialogstest::theBindQuestion`, `folderpickertest::bindingWithChooseFolders`; issue #58). That the
+  picker is to open once the first listing has finished is kept by the window, not the daemon: it
+  opens when the account's page is shown with the listing done (another account shown meanwhile
+  puts it off until that one is shown again), and a window restarted meanwhile does not open it —
+  the card then shows "No folder of OneDrive" with **Choose Folders…**. Open.
 
 ---
 

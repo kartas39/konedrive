@@ -238,7 +238,8 @@ removes it all again, apart from the helper.
   now, and the most recent of what the daemon keeps), **Conflicts** (local edits rescued out of
   the way, with a count badge), **Not in the Folder** (what OneDrive has that was skipped, and
   why) and **Account** (the account's name with **Rename…**; sign in or out, and the quota; the
-  folder, with **Choose Folder…** and **Forget Folder**; and **Remove Account…**). **Settings**
+  folder, with **Choose Folder…** and **Forget Folder**; which folders of OneDrive are on this
+  computer, with **Choose Folders…**; and **Remove Account…**). **Settings**
   is the whole app's: "Start at login", "Show download progress" (a download that takes more
   than 2 s shows in Plasma's notifications), and "Show in Places". While the helper is not
   connected, a card on the Status page says so, with the same instruction as the `Helper:` line
@@ -275,6 +276,32 @@ removes it all again, apart from the helper.
   must be empty, and must not be inside another account's folder or contain one. Right after the
   helper is installed or started, the daemon takes up to half a minute to connect to it, and
   `register` is refused (`NoHelper`) until then: wait for `Helper: connected`.
+
+- **Only some folders on this computer.** By default all of your OneDrive is in the folder. To
+  keep only part of it here, choose the folders: **Choose Folders…** on the **Account** page (or
+  in Dolphin's context menu of the account's folder) opens a tree of your OneDrive's folders with a
+  check box each, and **Sync everything** above it. A chosen folder is here with everything in it,
+  including what appears in it later; a folder above a chosen one holds only its chosen
+  sub-folders, not its own files; "Files in the root" decides about the files directly in the
+  root. Folders you uncheck are removed from this computer and stay in OneDrive; the picker says
+  which before you apply. A new folder that appears in OneDrive outside the chosen ones does not
+  come here. When you bind a folder, you are asked whether to sync everything or to choose the
+  folders first, before anything is placed. With uploading on, a folder you make here next to the
+  chosen ones is uploaded and becomes chosen, while a file you put directly in a folder whose files
+  are not synced stays here (listed under **Not Uploaded**). A change that would remove something
+  that exists only on this computer (a change not uploaded yet, a symbolic link) is refused, with
+  the paths and why. From a terminal:
+
+  ```
+  konedrivectl sync select                              # everything, or the chosen folders
+  konedrivectl sync select browse Documents             # the sub-folders of a OneDrive folder
+  konedrivectl sync select only Documents Photos/2024   # sync only these (--root-files: the root's files too)
+  konedrivectl sync select add Music
+  konedrivectl sync select remove Photos/2024
+  konedrivectl sync select root-files on
+  konedrivectl sync select everything                   # all of OneDrive again
+  konedrivectl sync register ~/OneDrive --choose-folders  # bind with nothing placed, then choose
+  ```
 
 - **From the command line** — each of these acts on the chosen account, except `sync status` with
   none chosen, which shows every account's folder, and `sync hydrate`, whose path decides:
@@ -469,7 +496,9 @@ mark when downloaded, a filled check when kept on this device — and their cont
 menu offers, under the heading **OneDrive**, **Always keep on this device** and
 **Free up space**, for files and folders, and **Open in OneDrive** for one file
 or folder — or the account's folder itself — which opens its page in OneDrive's
-web interface in the browser. Emblems come from each file's
+web interface in the browser. On the account's folder itself, **Choose Folders…**
+opens KOneDrive's window with the picker of the folders that are on this
+computer (it starts `konedrive --choose-folders <folder>`, found through `PATH`). Emblems come from each file's
 `user.konedrive.state` and work with the daemon stopped; the menu actions ask
 the daemon, and say plainly when it is not running. Neither plugin ever
 opens a file in the sync folder. Dolphin itself still opens some, and that
@@ -520,7 +549,7 @@ cmake --build build/dolphin-system && sudo cmake --install build/dolphin-system
 This installs into `/usr/lib64/qt6/plugins/kf6/overlayicon/` and
 `.../kf6/kfileitemaction/`; `sudo xargs rm < build/dolphin-system/install_manifest.txt`
 removes it. The menu actions can be switched off in Dolphin under Configure
-Dolphin → Context Menu ("KOneDrive: Always Keep on This Device, Free Up Space and Open in OneDrive").
+Dolphin → Context Menu ("KOneDrive: Always Keep on This Device, Free Up Space, Open in OneDrive and Choose Folders").
 
 ## For developers
 

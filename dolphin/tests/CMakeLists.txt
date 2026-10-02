@@ -20,6 +20,13 @@ foreach(opener xdg-open kde-open kde-open5 kioclient kioclient5 firefox gio drko
     file(CHMOD ${test_openers}/${opener} PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
 endforeach()
 
+# "Choose Folders…" starts the window's program, `konedrive`, found through
+# PATH: in the tests, a stand-in that only logs its arguments, apart from the
+# openers' log.
+set(test_konedrive_log ${CMAKE_CURRENT_BINARY_DIR}/konedrive.log)
+file(WRITE ${test_openers}/konedrive "#!/bin/sh\necho \"$*\" >> '${test_konedrive_log}'\n")
+file(CHMOD ${test_openers}/konedrive PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+
 set(test_home ${CMAKE_CURRENT_BINARY_DIR}/home)
 # The last two make glibc fill every freed block with a pattern and skip its
 # per-thread cache, so a read of freed memory crashes instead of seeing the
@@ -45,7 +52,8 @@ function(konedrive_dolphin_test name)
     target_compile_definitions(${name} PRIVATE
         KONEDRIVE_OVERLAY_PLUGIN="$<TARGET_FILE:konedriveoverlay>"
         KONEDRIVE_ACTIONS_PLUGIN="$<TARGET_FILE:konedriveactions>"
-        KONEDRIVE_PLUGIN_DIR="${CMAKE_BINARY_DIR}/bin")
+        KONEDRIVE_PLUGIN_DIR="${CMAKE_BINARY_DIR}/bin"
+        KONEDRIVE_STAND_IN_LOG="${test_konedrive_log}")
     add_dependencies(${name} konedriveoverlay konedriveactions)
     add_test(NAME ${name} COMMAND dbus-run-session --config-file=${CMAKE_CURRENT_BINARY_DIR}/session-bus.conf -- $<TARGET_FILE:${name}>)
     set_tests_properties(${name} PROPERTIES ENVIRONMENT "${test_environment}" TIMEOUT 120)

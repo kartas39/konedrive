@@ -22,6 +22,7 @@
 #include <QStringList>
 #include <QVariantMap>
 
+#include <algorithm>
 #include <memory>
 
 namespace fake
@@ -231,6 +232,9 @@ class FakeFolder : public FakeFolderInterface
     Q_PROPERTY(QString HeldBack READ heldBack)
     Q_PROPERTY(QString LiveChanges READ liveChanges)
     Q_PROPERTY(bool Thumbnails READ thumbnails)
+    Q_PROPERTY(bool SyncsEverything READ syncsEverything)
+    Q_PROPERTY(KonedriveSkippedList SelectedFolders READ selectedFolders)
+    Q_PROPERTY(bool RootFiles READ rootFiles)
 
 public:
     FakeFolder(QObject *parent, FakeSync *sync)
@@ -274,6 +278,12 @@ public:
     QString heldBack() const { return value("HeldBack").toString(); }
     QString liveChanges() const { return value("LiveChanges").toString(); }
     bool thumbnails() const { return value("Thumbnails").toBool(); }
+    /// The selection is FakeSync's (`everything`, `chosen`, `rootFiles`).
+    bool syncsEverything() const;
+    KonedriveSkippedList selectedFolders() const;
+    bool rootFiles() const;
+    /// PropertiesChanged for the three, as the daemon announces a changed selection.
+    void announceSelection();
 
 public Q_SLOTS:
     void Register(const QString &path, const QDBusMessage &message);
@@ -288,6 +298,11 @@ public Q_SLOTS:
     void SetIgnorePatterns(const QStringList &patterns, const QDBusMessage &message);
     void SyncAnyway();
     void SetThumbnails(bool on);
+    /// Refused InvalidArgs for an id `drive` does not hold (and that is not chosen
+    /// already), and LocalChanges with `refuseSelection` while that is set.
+    void SetSelection(const QStringList &ids, bool root_files, const QDBusMessage &message);
+    void SyncEverything();
+    KonedriveFolderChildList FolderChildren(const QString &id);
 };
 
 class FakeTransfers : public FakeFolderInterface
@@ -590,8 +605,42 @@ public:
     FakeLocalScan *scan;
     FakeActivityLog *activityLog;
 
+    /// One folder of the fake OneDrive: its item id, name and parent's id ("" is the root).
+    struct DriveFolder {
+        QString id;
+        QString name;
+        QString parent;
+    };
+
+    /// The folder's path in OneDrive, relative to the root; empty for an id `drive` lacks.
+    QString drivePath(const QString &id) const
+    {
+        QStringList names;
+        for (QString at = id; !at.isEmpty();) {
+            const auto folder = std::find_if(drive.cbegin(), drive.cend(), [&at](const DriveFolder &f) {
+                return f.id == at;
+            });
+            if (folder == drive.cend()) {
+                return {};
+            }
+            names.prepend(folder->name);
+            at = folder->parent;
+        }
+        return names.join(QLatin1Char('/'));
+    }
+
     QStringList calls;
     bool helperMissing = false;
+    /// Register refuses under this error name (with any message) while it is set.
+    QString refuseRegister;
+    /// FolderChildren(): OneDrive's folders.
+    QList<DriveFolder> drive;
+    /// The selection: none while `everything`; else `chosen` (item ids) and `rootFiles`.
+    bool everything = true;
+    QStringList chosen;
+    bool rootFiles = true;
+    /// SetSelection refuses LocalChanges with this message while it is set.
+    QString refuseSelection;
     /// Hold these calls unanswered (until releaseActivity/finishFreeUp; Refresh for ever).
     bool holdActivity = false;
     bool holdFreeUp = false;
@@ -641,6 +690,11 @@ inline void FakeFolder::Register(const QString &path, const QDBusMessage &messag
     if (m_sync->helperMissing) {
         message.setDelayedReply(true);
         m_sync->bus.send(message.createErrorReply(QStringLiteral("org.konedrive.Error.NoHelper"), QStringLiteral("the konedrive helper is not connected")));
+        return;
+    }
+    if (!m_sync->refuseRegister.isEmpty()) {
+        message.setDelayedReply(true);
+        m_sync->bus.send(message.createErrorReply(m_sync->refuseRegister, QStringLiteral("the folder was not added")));
         return;
     }
     set({{QStringLiteral("Path"), path}, {QStringLiteral("State"), QStringLiteral("listing")}, {QStringLiteral("Source"), QStringLiteral("onedrive")}});
@@ -717,6 +771,122 @@ inline void FakeFolder::SetThumbnails(bool on)
 {
     m_sync->calls << QStringLiteral("SetThumbnails:") + (on ? QStringLiteral("on") : QStringLiteral("off"));
     set({{QStringLiteral("Thumbnails"), on}});
+}
+
+inline bool FakeFolder::syncsEverything() const
+{
+    return m_sync->everything;
+}
+
+inline bool FakeFolder::rootFiles() const
+{
+    return m_sync->everything || m_sync->rootFiles;
+}
+
+inline KonedriveSkippedList FakeFolder::selectedFolders() const
+{
+    KonedriveSkippedList folders;
+    if (!m_sync->everything) {
+        for (const QString &id : std::as_const(m_sync->chosen)) {
+            folders << KonedriveSkippedItem{id, m_sync->drivePath(id)};
+        }
+    }
+    return folders;
+}
+
+inline void FakeFolder::announceSelection()
+{
+    fake::propertiesChanged(m_sync->bus,
+                            m_sync->path,
+                            m_interface,
+                            {{QStringLiteral("SyncsEverything"), syncsEverything()},
+                             {QStringLiteral("SelectedFolders"), QVariant::fromValue(selectedFolders())},
+                             {QStringLiteral("RootFiles"), rootFiles()}});
+}
+
+inline void FakeFolder::SetSelection(const QStringList &ids, bool root_files, const QDBusMessage &message)
+{
+    m_sync->calls << QStringLiteral("SetSelection:%1:%2").arg(ids.join(QLatin1Char(',')), root_files ? QStringLiteral("root-files") : QStringLiteral("no-root-files"));
+    const auto refuse = [&](const QString &name, const QString &why) {
+        message.setDelayedReply(true);
+        m_sync->bus.send(message.createErrorReply(name, why));
+    };
+    for (const QString &id : ids) {
+        if (m_sync->drivePath(id).isEmpty() && (m_sync->everything || !m_sync->chosen.contains(id))) {
+            refuse(QStringLiteral("org.freedesktop.DBus.Error.InvalidArgs"), QStringLiteral("no folder of OneDrive has the id ") + id);
+            return;
+        }
+    }
+    if (!m_sync->refuseSelection.isEmpty()) {
+        refuse(QStringLiteral("org.konedrive.Error.LocalChanges"), m_sync->refuseSelection);
+        return;
+    }
+    m_sync->everything = false;
+    m_sync->chosen = ids;
+    m_sync->rootFiles = root_files;
+    announceSelection();
+}
+
+inline void FakeFolder::SyncEverything()
+{
+    m_sync->calls << QStringLiteral("SyncEverything");
+    m_sync->everything = true;
+    m_sync->chosen.clear();
+    m_sync->rootFiles = true;
+    announceSelection();
+}
+
+inline KonedriveFolderChildList FakeFolder::FolderChildren(const QString &id)
+{
+    m_sync->calls << QStringLiteral("FolderChildren:") + id;
+    const auto parentOf = [this](const QString &of) {
+        for (const FakeSync::DriveFolder &folder : std::as_const(m_sync->drive)) {
+            if (folder.id == of) {
+                return folder.parent;
+            }
+        }
+        return QString();
+    };
+    /// `of` is `above`, or lies below it.
+    const auto within = [&parentOf](QString of, const QString &above) {
+        for (; !of.isEmpty(); of = parentOf(of)) {
+            if (of == above) {
+                return true;
+            }
+        }
+        return false;
+    };
+    const auto covered = [&](const QString &of) {
+        return m_sync->everything || std::any_of(m_sync->chosen.cbegin(), m_sync->chosen.cend(), [&](const QString &chosen) {
+            return within(of, chosen);
+        });
+    };
+    KonedriveFolderChildList children;
+    for (const FakeSync::DriveFolder &folder : std::as_const(m_sync->drive)) {
+        if (folder.parent != id) {
+            continue;
+        }
+        QString state = QStringLiteral("none");
+        if (!id.isEmpty() && covered(id)) {
+            state = QStringLiteral("inside");
+        } else if (m_sync->everything) {
+            state = QStringLiteral("inside");
+        } else if (m_sync->chosen.contains(folder.id)) {
+            state = QStringLiteral("chosen");
+        } else if (std::any_of(m_sync->chosen.cbegin(), m_sync->chosen.cend(), [&](const QString &chosen) {
+                       return within(chosen, folder.id);
+                   })) {
+            state = QStringLiteral("partial");
+        }
+        const bool hasSubfolders = std::any_of(m_sync->drive.cbegin(), m_sync->drive.cend(), [&folder](const FakeSync::DriveFolder &other) {
+            return other.parent == folder.id;
+        });
+        children << KonedriveFolderChild{folder.id, folder.name, state, hasSubfolders};
+    }
+    std::sort(children.begin(), children.end(), [](const KonedriveFolderChild &a, const KonedriveFolderChild &b) {
+        return a.name < b.name;
+    });
+    return children;
 }
 
 inline KonedriveOutboxList FakeUploadQueue::Changes(uint limit)

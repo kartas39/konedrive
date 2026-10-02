@@ -16,6 +16,7 @@
 #include <QDBusConnection>
 #include <QDBusConnectionInterface>
 #include <QElapsedTimer>
+#include <QFile>
 #include <QMenu>
 #include <QScopeGuard>
 #include <QSignalSpy>
@@ -35,6 +36,7 @@ const QString FreeUp = QStringLiteral("konedrive_free_up_space");
 const QString Section = QStringLiteral("konedrive_section");
 const QString OpenOnline = QStringLiteral("konedrive_open_online");
 const QString SectionEnd = QStringLiteral("konedrive_section_end");
+const QString ChooseFolders = QStringLiteral("konedrive_choose_folders");
 const QString DaemonService = QStringLiteral("org.konedrive.Daemon");
 } // namespace
 
@@ -435,8 +437,8 @@ private Q_SLOTS:
     }
 
     /// The account's folder itself: the heading, "Open in OneDrive" --
-    /// enabled, with or without an item id -- and the closing separator,
-    /// nothing else. A click asks for the folder's own path.
+    /// enabled, with or without an item id -- "Choose Folders…" and the
+    /// closing separator, nothing else. A click asks for the folder's own path.
     void theAccountsFolderItselfOpensInOneDrive()
     {
         Tree tree;
@@ -448,7 +450,7 @@ private Q_SLOTS:
 
         KAbstractFileItemActionPlugin *plugin = createPlugin();
         const QList<QAction *> actions = plugin->actions(KFileItemListProperties({folder}), nullptr);
-        QCOMPARE(names(actions), (QStringList{Section, OpenOnline, SectionEnd}));
+        QCOMPARE(names(actions), (QStringList{Section, OpenOnline, ChooseFolders, SectionEnd}));
         QVERIFY(find(actions, OpenOnline)->isEnabled());
         find(actions, OpenOnline)->trigger();
         QTRY_COMPARE(m_urls->opened, QList<QUrl>{QUrl(QStringLiteral("https://onedrive.example/root"))});
@@ -457,6 +459,55 @@ private Q_SLOTS:
         // With another item beside it, it is one of several: nothing for it.
         QVERIFY(tree.file(QStringLiteral("other.txt")));
         QCOMPARE(names(plugin->actions(selection({root, tree.path(QStringLiteral("other.txt"))}), nullptr)), QStringList());
+    }
+
+    /// "Choose Folders…" is on the account's folder itself and nowhere else: not
+    /// on a folder or a file in it, not beside another item, not outside a root.
+    /// A click starts the window's program, `konedrive` (here the tests' stand-in,
+    /// first in PATH), with the option and the folder, and makes no call on the bus.
+    void chooseFoldersIsOnTheAccountsFolderOnly()
+    {
+        Tree tree;
+        QVERIFY(tree.root(QStringLiteral("OneDrive")));
+        QVERIFY(tree.dir(QStringLiteral("OneDrive/Documents")));
+        QVERIFY(tree.file(QStringLiteral("OneDrive/doc.bin"), "hydrated"));
+        QVERIFY(tree.file(QStringLiteral("Elsewhere/f.bin"), "hydrated"));
+        const QString root = tree.path(QStringLiteral("OneDrive"));
+        const auto folder = [](const QString &path) {
+            return KFileItemListProperties({KFileItem(url(path), QStringLiteral("inode/directory"), S_IFDIR)});
+        };
+        QVERIFY(startFake());
+        QFile::remove(QStringLiteral(KONEDRIVE_STAND_IN_LOG));
+
+        KAbstractFileItemActionPlugin *plugin = createPlugin();
+        QVERIFY(!find(plugin->actions(folder(tree.path(QStringLiteral("OneDrive/Documents"))), nullptr), ChooseFolders));
+        QVERIFY(!find(plugin->actions(selection({tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr), ChooseFolders));
+        QVERIFY(!find(plugin->actions(selection({root, tree.path(QStringLiteral("OneDrive/doc.bin"))}), nullptr), ChooseFolders));
+        QVERIFY(!find(plugin->actions(folder(tree.path(QStringLiteral("Elsewhere"))), nullptr), ChooseFolders));
+
+        const QList<QAction *> actions = plugin->actions(folder(root), nullptr);
+        QAction *choose = find(actions, ChooseFolders);
+        QVERIFY(choose);
+        QVERIFY(choose->isEnabled());
+        QCOMPARE(choose->text(), QStringLiteral("Choose Folders…"));
+        QSignalSpy errors(plugin, &KAbstractFileItemActionPlugin::error);
+        choose->trigger();
+        QFile log(QStringLiteral(KONEDRIVE_STAND_IN_LOG));
+        QTRY_VERIFY(log.exists() && log.size() > 0);
+        QVERIFY(log.open(QIODevice::ReadOnly));
+        QCOMPARE(QString::fromUtf8(log.readAll()), QStringLiteral("--choose-folders ") + root + QLatin1Char('\n'));
+        QVERIFY(errors.isEmpty());
+        QVERIFY(m_fake->calls.isEmpty());
+
+        // No `konedrive` to start: said through `error`.
+        const QByteArray path = qgetenv("PATH");
+        const auto restore = qScopeGuard([&path] {
+            qputenv("PATH", path);
+        });
+        qputenv("PATH", QFile::encodeName(tree.path(QStringLiteral("Elsewhere"))));
+        choose->trigger();
+        QCOMPARE(errors.size(), 1);
+        QVERIFY(errors.first().first().toString().contains(QStringLiteral("could not be started")));
     }
 
     /// A click makes one WebUrl call with the path, and the address that

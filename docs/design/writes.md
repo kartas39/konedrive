@@ -218,8 +218,14 @@ Each dirty directory is listed, and each entry read by name (`lstat`, `lgetxattr
    `*.crdownload`, `*.tmp` and `.goutputstream-*` by default. A directory whose name is ignored
    keeps everything under it local. A shorter list runs a Full local scan, so what is no longer
    ignored goes up.
-4. A directory without an item id: a `mkdir` row, and its contents are examined.
-5. A file without an item id: a `create` row.
+4. A directory without an item id: a `mkdir` row, and its contents are examined. In a partial
+   folder of the selection ([sync.md](sync.md) §3.1), the root included, it becomes chosen when its
+   item id is known: the id goes into `config.toml` first, then the row is committed, so a crash
+   between the two never leaves a folder the next pass would remove.
+5. A file without an item id: a `create` row. Where files are not synced — directly in a partial
+   folder, or in the root with `root_files` off — no row: it is listed (`not-selected`, a per-file
+   reason), and goes up once its folder is chosen or the root's switch goes on (the `selection`
+   scan, §4.6). The same for a file moved there.
 6. An entry with an item id: where the base has it, the content check (§4.3); elsewhere in the
    folder, a `move` row and the content check. An id the base does not know (a file from another
    account's folder, or one deleted since) is stripped of konedrive's attributes and created if it
@@ -289,7 +295,8 @@ without a recorded handle cannot be proved gone, and is placed again from OneDri
 **How it goes is published** (issue #8). A Full local scan carries its reason from where it was
 asked for: the watcher's bring-up (`start` — the folder's read-write sync started — or
 `read-write`, when that start follows a switch to read-write), an overflow (`overflow`), the helper
-back (`helper-back`), `SetIgnorePatterns` (`ignore-list`), or the scan every 10 minutes while part of
+back (`helper-back`), `SetIgnorePatterns` (`ignore-list`), a change of the chosen folders
+(`selection`, [sync.md](sync.md) §3.1), or the scan every 10 minutes while part of
 the folder cannot be watched (`periodic`); merged with another batch, the first reason stays. The
 examination tells the watcher's sink once it has started (the base and the root are there) and
 after every directory it lists whole, with the directories and the other entries seen so far; the
@@ -556,7 +563,7 @@ limitations log F172).
 |---|---|
 | `200`, `201` | the commit (§5.4) |
 | `202` | a fragment accepted: `session_next` persisted, the next one sent |
-| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours (it is this content already), a folder adopts a folder and the two merge, a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3). What would be a copy but is an empty file neither the items table (the delta feed's mirror) nor a listing being staged knows is, as far as anything here can tell, an upload session's placeholder (never in the feed): never a copy, never deleted — the row waits (`name-held-by-an-upload`, the usual backoff) until the name is free, or the holder has content or the feed lists it, and then decides again (issue #89). This holds for every `409`: a create, a move or rename, a folder's `mkdir`. An empty file the feed listed is a real file. Anything else makes the file here a copy (§7) |
+| `409` | a name a listed session of ours holds: its placeholder (§6.1). Otherwise the item at that name is read. A create adopts it when its hash is ours (it is this content already), a folder adopts a folder and the two merge (a cloud folder the selection leaves out becomes chosen, §9), a move adopts its own item (it landed); a name a live row is freeing goes through a temporary name (§5.3). What would be a copy but is an empty file neither the items table (the delta feed's mirror) nor a listing being staged knows is, as far as anything here can tell, an upload session's placeholder (never in the feed): never a copy, never deleted — the row waits (`name-held-by-an-upload`, the usual backoff) until the name is free, or the holder has content or the feed lists it, and then decides again (issue #89). This holds for every `409`: a create, a move or rename, a folder's `mkdir`. An empty file the feed listed is a real file. Anything else makes the file here a copy (§7) |
 | `412` | the item is read again: the same hash as ours means done already; the base's cTag means only its metadata changed, and the request goes again with the fresh eTag; otherwise §7 |
 | `404` | gone in OneDrive: §7 |
 | `404` from an upload URL | the session ended: the item is read and adopted if its hash is ours, else a new session from zero |
@@ -789,7 +796,9 @@ never leaves the folder, where it would be taken for a move out (F117).
 is renamed to a conflict copy in place (§7) and handed to the examination, which uploads it: the
 daemon's own renames raise no event the watcher keeps, so after its swap the cycle hands the
 watcher whatever it kept, copied or stripped. A folder of the user's at the name of a folder
-OneDrive brings merges with it rather than being copied. An unmanaged file at the name of an item
+OneDrive brings merges with it rather than being copied. A local directory that adopts on the `409`
+(§6.2) a cloud folder the selection leaves out makes it chosen, as a new folder in a partial folder
+does (§4.2). An unmanaged file at the name of an item
 OneDrive did not change (a save by rename not examined yet) is left alone. A missing item is placed
 again only with something to place: new in OneDrive, a file whose content changed there, or an item
 with no local object on record (and the folders above such an item); otherwise its absence is a
@@ -800,6 +809,19 @@ goes; a downloaded file only under a write lease; a changed file stays, stripped
 again; a folder that holds local work stays, and is made again in OneDrive as a new item, while one
 that keeps only what is not local work (a file in use, an ignored name) waits (F116). An object
 whose item id the base does not know is never removed: it may be another account's.
+
+**What the selection leaves out** ([sync.md](sync.md) §3.1) is not "removed from OneDrive": a
+placeholder and a clean downloaded file go whatever `upload_differences` says, nothing goes up and
+nothing is made again, and its disappearance is never read as a delete by the user — no outbox row,
+and the mass-delete guard does not count it. Before a change of the selection, the daemon looks in
+the store for an outbox row on anything that would leave, a new file waiting in a folder whose files
+would stop being synced, and a kept-back object (a symlink, an ignored name, a `not-selected` file)
+in a directory that would leave; any of them refuses the whole change with `LocalChanges`, whose
+message lists up to 10 of the paths, each with why. A kept-back object in a directory that stays (a
+folder that becomes partial) blocks nothing. Local work the check could not see (not examined yet,
+or made after it) is kept as today: a file is stripped and goes up again, a folder is stripped,
+adopted on the `409`, and chosen again (limitations log F190, F191). A kept folder keeps its mark,
+which is still right: a read-write folder's watcher marks every directory (F196).
 
 **Replacements** of a downloaded file run under a write lease on the old file, taken before the
 file is checked and granted only while nobody has it open: a writer is not left writing into an
@@ -853,7 +875,11 @@ error `NotUploaded`, which "Free up space" gets for a file with changes not uplo
 `Account`: `SetMode`, `Mode`, and the quota (`QuotaUsed`, `QuotaTotal`, `QuotaRemaining`,
 `QuotaState`, §6.4). For the whole app, on `org.konedrive.Accounts`: the automatic hold's
 settings `SetPauseOnMetered`, `SetOnBattery`, `PauseOnMetered` and `OnBattery` (below;
-`konedrivectl settings on-metered|on-battery`, the Settings page's "Sync" group).
+`konedrivectl settings on-metered|on-battery`, the Settings page's "Sync" group). The selection's
+refusal `LocalChanges` (§9), the kept-back reason `not-selected` (§4.2, group `per-file`, with its
+text in `konedrivectl` and the window: "Files directly in this folder are not synced. Move it into a
+chosen folder, choose this folder, or, in the root, turn on the root's files.") and the scan reason
+`selection` (§4.6) are this document's part of the selection ([sync.md](sync.md) §3.1).
 [desktop.md](desktop.md) has each member, the commands and the window's pages.
 
 **Answers from memory.** The counts (`PendingCount`, `PendingBytes`, `BlockedCount`, `HeldCount`,
@@ -1082,4 +1108,6 @@ Recorded in [`../limitations-and-workarounds.md`](../limitations-and-workarounds
 - the outbox on the bus (F100–F102);
 - the reconcile in read-write mode (F110–F117);
 - the test-account harness, and what stays assumed until it runs (F130, F131);
-- an object removed before its upload finished (F149).
+- an object removed before its upload finished (F149);
+- the selection in a read-write folder: local work the check could not see, a kept-back object
+  that blocks a folder's removal, and the check's shortcuts (F190, F191).

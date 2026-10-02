@@ -9,7 +9,10 @@
 #include <QDBusMessage>
 #include <QDBusPendingCallWatcher>
 #include <QDBusPendingReply>
+#include <QDir>
+#include <QFileInfo>
 #include <QRegularExpression>
+#include <QTimer>
 
 const QString AccountsModel::DraftLabel = QStringLiteral("Signing in…");
 
@@ -31,7 +34,17 @@ AccountsModel::AccountsModel(DaemonController *daemon, AccountStatus::Clock cloc
     : QAbstractListModel(parent)
     , m_daemon(daemon)
     , m_clock(std::move(clock))
+    , m_chooseWait(new QTimer(this))
 {
+    m_chooseWait->setSingleShot(true);
+    m_chooseWait->setInterval(ChooseFoldersWaitMs);
+    connect(m_chooseWait, &QTimer::timeout, this, [this] {
+        resolveChooseFolders(true);
+    });
+    // The list of accounts is applied before the daemon is said to be there.
+    connect(m_daemon, &DaemonController::serviceAvailableChanged, this, [this] {
+        resolveChooseFolders();
+    });
     connect(m_daemon, &DaemonController::accountsChanged, this, [this] {
         follow(m_daemon->accounts());
     });
@@ -166,6 +179,52 @@ void AccountsModel::follow(const QStringList &paths)
         m_items.move(row, i);
         endMoveRows();
     }
+    resolveChooseFolders();
+}
+
+void AccountsModel::requestChooseFolders(const QString &folder)
+{
+    if (folder.isEmpty()) {
+        return;
+    }
+    m_chooseFolder = folder;
+    m_chooseWait->start();
+    resolveChooseFolders();
+}
+
+void AccountsModel::resolveChooseFolders(bool giveUp)
+{
+    if (m_chooseFolder.isEmpty()) {
+        return;
+    }
+    // The same directory, however it is written: cleaned, and through links.
+    const auto same = [](const QString &a, const QString &b) {
+        if (QDir::cleanPath(a) == QDir::cleanPath(b)) {
+            return true;
+        }
+        const QString canonical = QFileInfo(a).canonicalFilePath();
+        return !canonical.isEmpty() && canonical == QFileInfo(b).canonicalFilePath();
+    };
+    bool allKnown = m_daemon->serviceAvailable() && m_probing.isEmpty();
+    QString found;
+    for (const AccountItem *item : std::as_const(m_items)) {
+        allKnown = allKnown && item->sync()->serviceAvailable();
+        const QString root = item->sync()->rootPath();
+        if (found.isEmpty() && !root.isEmpty() && same(root, m_chooseFolder)) {
+            found = item->path();
+        }
+    }
+    if (found.isEmpty() && !allKnown && !giveUp) {
+        return;
+    }
+    const QString folder = m_chooseFolder;
+    m_chooseFolder.clear();
+    m_chooseWait->stop();
+    if (found.isEmpty()) {
+        Q_EMIT chooseFoldersFailed(folder);
+    } else {
+        Q_EMIT chooseFoldersRequested(found);
+    }
 }
 
 void AccountsModel::probe(const QString &path)
@@ -244,6 +303,7 @@ void AccountsModel::rowChanged(AccountItem *item)
     }
     Q_EMIT dataChanged(index(row), index(row));
     Q_EMIT summaryChanged();
+    resolveChooseFolders();
 }
 
 QString AccountsModel::labelProblem(const QString &label, const QString &exceptPath) const

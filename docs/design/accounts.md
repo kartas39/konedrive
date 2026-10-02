@@ -191,6 +191,10 @@ intercepted = true
 source = "onedrive"
 baloo_excluded = true
 
+[accounts.sync_only]         # absent: every folder of OneDrive is synced (issue #58)
+folders = ["01BYE5RZ6QN3ZWBTUFOFD3GSPGOHDJD36K"]   # the chosen folders' item ids
+root_files = false           # whether the files directly in the root are synced
+
 [[accounts]]
 id = "8c21d07a44e1"
 label = "Family"
@@ -202,6 +206,12 @@ drive_id = "E5F6A7B8"
 The fields of `[accounts.root]` are the single-account file's `sync_root_*` fields, with the same
 defaults: a missing `intercepted` reads as `true`, a missing `source` as `local`, and
 `upgrade_when_helper` is written only when it was decided ([hydration.md](hydration.md) §14.4).
+
+`[accounts.sync_only]` is the selection ([sync.md](sync.md) §3.1): present, only the chosen folders
+are synced, and an empty `folders` with `root_files` off puts nothing on disk; a missing
+`root_files` reads as `false`. It stays when the folder is forgotten, so a folder bound again gets
+the same choice. The daemon writes it through `ConfigStore::update` like everything else; a list
+edited by hand is read only when the daemon starts (limitations log F189).
 
 **One owner.** Every change — the client id, a label, a drive, the migration's flags, a folder
 registered or forgotten — goes through `ConfigStore::update`, which re-reads the file, applies the

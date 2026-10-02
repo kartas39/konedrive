@@ -10,6 +10,7 @@
 #include "downloadjobtracker.h"
 #include "downloadprogresscontroller.h"
 #include "downloadprogresssettings.h"
+#include "launchoptions.h"
 #include "notifier.h"
 #include "placescontroller.h"
 #include "placessettings.h"
@@ -26,6 +27,7 @@
 
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QDir>
 #include <QIcon>
 #include <QQmlApplicationEngine>
 #include <QQuickStyle>
@@ -54,8 +56,12 @@ int main(int argc, char *argv[])
     QApplication::setWindowIcon(QIcon::fromTheme(QStringLiteral("folder-cloud")));
 
     const QCommandLineOption background(QStringLiteral("background"), i18n("Start in the system tray without showing the window."));
+    const QCommandLineOption chooseFolders(ChooseFoldersOption,
+                                           i18n("Show the window and choose which folders of OneDrive are in this account's folder."),
+                                           i18n("folder"));
     QCommandLineParser parser;
     parser.addOption(background);
+    parser.addOption(chooseFolders);
     about.setupCommandLine(&parser);
     parser.process(app);
     about.processCommandLine(&parser);
@@ -119,21 +125,34 @@ int main(int argc, char *argv[])
         uploads->setAccountName(name);
     });
 
-    QObject::connect(&service, &KDBusService::activateRequested, &tray, [&tray, window](const QStringList &arguments, const QString &) {
+    // `--choose-folders <folder>`: the window, on that folder's account, with the
+    // picker of its chosen folders open (Main.qml follows the model's signals).
+    QObject::connect(&accounts, &AccountsModel::chooseFoldersRequested, &app, [](const QString &account) {
+        qCDebug(KONEDRIVE_APP) << "choosing folders for" << account;
+    });
+    QObject::connect(&accounts, &AccountsModel::chooseFoldersFailed, &app, [](const QString &folder) {
+        qCDebug(KONEDRIVE_APP) << "no account has the folder" << folder;
+    });
+
+    QObject::connect(&service, &KDBusService::activateRequested, &tray, [&tray, &accounts, window](const QStringList &arguments, const QString &workingDirectory) {
         // arguments[0] is the program; an autostart while running changes nothing.
         const bool inBackground = arguments.contains(QStringLiteral("--background"));
+        const QString folder = chooseFoldersArgument(arguments, workingDirectory);
         qCDebug(KONEDRIVE_APP) << "second launch, background:" << inBackground;
-        if (inBackground) {
+        if (inBackground && folder.isEmpty()) {
             return;
         }
         // The launch's activation token, which KDBusService has just put in place.
         KWindowSystem::updateStartupId(window);
         tray.showWindow();
+        accounts.requestChooseFolders(folder);
     });
 
-    if (!parser.isSet(background)) {
+    const QString folder = chooseFoldersArgument(QCoreApplication::arguments(), QDir::currentPath());
+    if (!parser.isSet(background) || !folder.isEmpty()) {
         tray.showWindow();
     }
+    accounts.requestChooseFolders(folder);
     qCDebug(KONEDRIVE_APP) << "ready, window" << (window && window->isVisible() ? "shown" : "hidden");
     return app.exec();
 }

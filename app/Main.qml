@@ -78,6 +78,9 @@ Kirigami.ApplicationWindow {
         }
     }
 
+    /// Why the last `--choose-folders <folder>` opened no picker; empty when it did.
+    property string chooseFoldersProblem: ""
+
     function signIn() {
         if (Accounts.adding) {
             return;
@@ -106,6 +109,18 @@ Kirigami.ApplicationWindow {
             root.folderPickerFor = path;
             Current.select(path);
             root.openFolderPickerWhenShown();
+        }
+        // `konedrive --choose-folders <folder>` (Dolphin's "Choose Folders…"): that
+        // account's page, with the picker of its chosen folders open.
+        function onChooseFoldersRequested(path) {
+            root.chooseFoldersProblem = "";
+            Current.select(path);
+            root.showPage("account");
+            accountPage.openSelectionPicker();
+        }
+        function onChooseFoldersFailed(folder) {
+            root.chooseFoldersProblem = i18n("“%1” is not the OneDrive folder of an account here, so there are no folders to choose for it.", folder);
+            root.showPassiveNotification(root.chooseFoldersProblem, "long");
         }
     }
     Connections {

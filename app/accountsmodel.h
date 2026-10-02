@@ -15,6 +15,7 @@
 #include <vector>
 
 class DaemonController;
+class QTimer;
 
 /// One account: its object path and the controllers that present it.
 /// AccountsModel owns it; what else hangs on an account (its notifier, its
@@ -121,6 +122,13 @@ public:
     Q_INVOKABLE void removeAccount(const QString &path);
     /// "Try Again" when the service was not running: every controller re-reads.
     Q_INVOKABLE void retry();
+    /// The window's `--choose-folders <folder>` (Dolphin's "Choose Folders…"):
+    /// chooseFoldersRequested(account) once the account whose folder it is
+    /// is known, which at the window's start takes until the daemon has
+    /// answered; chooseFoldersFailed(folder) when no account has that
+    /// folder, or none is known within ChooseFoldersWaitMs.
+    Q_INVOKABLE void requestChooseFolders(const QString &folder);
+    static constexpr int ChooseFoldersWaitMs = 10000;
 
 Q_SIGNALS:
     void countChanged();
@@ -133,6 +141,10 @@ Q_SIGNALS:
     void accountRemoved(AccountItem *item);
     /// Some account's sign-in has its URL; the window opens it in the browser.
     void openUrlRequested(const QString &url);
+    /// The picker of the chosen folders is to open for this account.
+    void chooseFoldersRequested(const QString &path);
+    /// `folder` is no account's folder: there is nothing to choose for it.
+    void chooseFoldersFailed(const QString &folder);
 
 private:
     void follow(const QStringList &paths);
@@ -145,6 +157,8 @@ private:
     void removeAt(int row);
     void rowChanged(AccountItem *item);
     void finishAdding(const QString &error);
+    /// Answers the request under way, if it can be: `giveUp` when waiting is over.
+    void resolveChooseFolders(bool giveUp = false);
 
     /// The label a signing-in account holds until Sign In renames it to its
     /// email: never a real email (no "@"), so it can never collide with one.
@@ -171,4 +185,7 @@ private:
     QSet<QString> m_probing;
     /// Paths a probe found are not a draft: shown without probing again.
     QSet<QString> m_cleared;
+    /// The folder requestChooseFolders() still looks for; empty when none.
+    QString m_chooseFolder;
+    QTimer *m_chooseWait;
 };

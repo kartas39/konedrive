@@ -1,6 +1,6 @@
-// "Always keep on this device", "Free up space" and "Open in OneDrive" in
-// Dolphin's context menu, as a section of their own under the heading
-// "OneDrive".
+// "Always keep on this device", "Free up space", "Open in OneDrive" and, on
+// an account's folder itself, "Choose Folders…" in Dolphin's context menu,
+// as a section of their own under the heading "OneDrive".
 //
 // KFileItemActions creates this once per Dolphin window and calls actions()
 // each time a context menu is built (kio src/widgets/kfileitemactions.cpp);
@@ -19,6 +19,8 @@
 #include <QDesktopServices>
 #include <QIcon>
 #include <QPointer>
+#include <QProcess>
+#include <QStandardPaths>
 #include <QUrl>
 #include <QWidget>
 
@@ -109,6 +111,21 @@ public:
             const QString path = state.openOnlinePath;
             connect(action, &QAction::triggered, this, [this, path]() {
                 m_client->start(konedrive::Operation::OpenOnline, {path});
+            });
+            entries.append(action);
+        }
+        if (!state.accountFolder.isEmpty()) {
+            // The window's picker of the folders of OneDrive that are on this
+            // computer (issue #58). No call on the bus: the window, single-
+            // instance, opens it in the one already running.
+            auto *action = new QAction(QIcon::fromTheme(QStringLiteral("folder-sync")), i18nc("@action:inmenu", "Choose Folders…"), parentWidget);
+            action->setObjectName(QStringLiteral("konedrive_choose_folders"));
+            const QString path = state.accountFolder;
+            connect(action, &QAction::triggered, this, [this, path]() {
+                const QString program = QStandardPaths::findExecutable(QStringLiteral("konedrive"));
+                if (program.isEmpty() || !QProcess::startDetached(program, {QStringLiteral("--choose-folders"), path})) {
+                    Q_EMIT error(i18nc("@info", "KOneDrive's window could not be started to choose the folders of “%1”.", konedrive::fileName(path)));
+                }
             });
             entries.append(action);
         }

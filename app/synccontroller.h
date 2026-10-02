@@ -2,6 +2,7 @@
 
 #include "activitymodel.h"
 #include "conflictmodel.h"
+#include "folderpicker.h"
 #include "synctypes.h"
 #include "transfermodel.h"
 #include "uploadreasons.h"
@@ -148,6 +149,18 @@ class SyncController : public QObject
     Q_PROPERTY(QVariantMap notUploadedFiles READ notUploadedFiles NOTIFY notUploadedFilesChanged)
     /// How many files of one reason the window lists (issue #20; a guess).
     Q_PROPERTY(int perFileCap READ perFileCap CONSTANT)
+    /// The selection (issue #58): true while every folder of OneDrive is synced
+    /// (SyncsEverything); else the chosen folders, each {id, path} with the path in
+    /// OneDrive, empty for a folder the daemon has not listed yet (SelectedFolders), and
+    /// whether the files directly in the root are synced (RootFiles).
+    Q_PROPERTY(bool syncsEverything READ syncsEverything NOTIFY syncChanged)
+    Q_PROPERTY(QVariantList selectedFolders READ selectedFolders NOTIFY syncChanged)
+    Q_PROPERTY(bool rootFiles READ rootFiles NOTIFY syncChanged)
+    /// The picker of the chosen folders; open() reads it anew.
+    Q_PROPERTY(FolderPicker *picker READ picker CONSTANT)
+    /// The folder was bound with "Choose Folders…": the picker is to open once the first
+    /// listing has finished (clearChoosePending() when it does).
+    Q_PROPERTY(bool choosePending READ choosePending NOTIFY choosePendingChanged)
 
 public:
     static constexpr int PerFileCap = 20;
@@ -239,13 +252,25 @@ public:
     qulonglong blockedBytes() const { return m_blockedBytes; }
     QVariantMap notUploadedFiles() const { return m_notUploadedFiles; }
     int perFileCap() const { return PerFileCap; }
+    bool syncsEverything() const { return m_syncsEverything; }
+    QVariantList selectedFolders() const { return m_selectedFolders; }
+    bool rootFiles() const { return m_rootFiles; }
+    FolderPicker *picker() const { return m_picker; }
+    bool choosePending() const { return m_choosePending; }
 
     /// Folder.Register; a NoHelper refusal is kept as `pendingFolder` for the
     /// window to prompt about — never registered without interception, since
     /// an unhydrated file then reads as zeros for good (no-interception stays
     /// a daemon/CLI-only mode; docs/design/decisions.md).
     Q_INVOKABLE void chooseFolder(const QUrl &folder);
-    /// "Try Again" on the NoHelper prompt: retries Register(pendingFolder).
+    /// Binds with nothing placed, for the folders to be chosen afterwards: an empty
+    /// selection (SetSelection([], false)), then Register. A refused Register takes the
+    /// empty selection back (SyncEverything); NoHelper is kept as `pendingFolder`, as in
+    /// chooseFolder. Bound, `choosePending` turns on.
+    Q_INVOKABLE void chooseFolderAndFolders(const QUrl &folder);
+    Q_INVOKABLE void clearChoosePending();
+    /// "Try Again" on the NoHelper prompt: retries Register(pendingFolder), the way it
+    /// was asked for.
     Q_INVOKABLE void retryRegistration();
     Q_INVOKABLE void cancelPending();
     Q_INVOKABLE void forget();
@@ -304,6 +329,7 @@ Q_SIGNALS:
     void skippedChanged();
     void actionErrorChanged();
     void pendingFolderChanged();
+    void choosePendingChanged();
     void freeUpResultChanged();
     void notUploadedChanged();
     void historyChanged();
@@ -322,6 +348,8 @@ private:
     void setServiceAvailable(bool available);
     void setActionError(const QString &message);
     void setPendingFolder(const QString &folder);
+    void setChoosePending(bool pending);
+    void registerFolder(const QString &path, bool choosing);
     /// `resetError` false (loadSkipped, an incidental background reload) means
     /// this call never clears an actionError already showing (M7): only a
     /// user-started action gets to wipe out the previous one.
@@ -414,6 +442,13 @@ private:
     bool m_notUploadedKnown = false;
     qulonglong m_blockedBytes = 0;
     QVariantMap m_notUploadedFiles;
+    bool m_syncsEverything = true;
+    QVariantList m_selectedFolders;
+    bool m_rootFiles = true;
+    FolderPicker *m_picker;
+    bool m_choosePending = false;
+    /// The folder waiting in `pendingFolder` was asked for with "Choose Folders…".
+    bool m_pendingChooses = false;
     QSet<QString> m_filesShown;
     /// loadNotUploaded() put off to the end of the second since the last one.
     QTimer *m_notUploadedSoon;

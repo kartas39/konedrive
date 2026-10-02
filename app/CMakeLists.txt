@@ -87,6 +87,7 @@ add_library(konedrive_core STATIC
     daemoncontroller.cpp
     accountcontroller.cpp
     synccontroller.cpp
+    folderpicker.cpp
     accountsmodel.cpp
     currentaccount.cpp
     transfermodel.cpp
@@ -138,6 +139,7 @@ set(KONEDRIVE_QML
     qml/SkippedPage.qml
     qml/NotUploadedPage.qml
     qml/AccountPage.qml
+    qml/FolderPickerDialog.qml
     qml/SettingsPage.qml
     qml/AccountSwitcher.qml)
 qt_add_qml_module(konedrive_window
@@ -185,6 +187,7 @@ if(BUILD_TESTING)
     konedrive_test(accountcontrollertest)
     konedrive_test(accountsmodeltest)
     konedrive_test(synccontrollertest)
+    konedrive_test(folderpickertest)
     konedrive_test(modelstest)
     konedrive_test(appstatustest)
     konedrive_test(notifiertest)

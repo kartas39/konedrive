@@ -73,6 +73,7 @@ SyncController::SyncController(const QDBusConnection &bus, const QString &path, 
     , m_activity(new ActivityModel(this))
     , m_conflicts(new ConflictModel(this))
     , m_uploads(new TransferModel(this))
+    , m_picker(new FolderPicker(bus, path, this))
     , m_sampler(new QTimer(this))
     , m_notUploadedSoon(new QTimer(this))
 {
@@ -213,6 +214,21 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
         if (const auto it = p.constFind(QLatin1String("Thumbnails")); it != p.constEnd()) {
             m_thumbnails = it->toBool();
         }
+        if (const auto it = p.constFind(QLatin1String("SyncsEverything")); it != p.constEnd()) {
+            m_syncsEverything = it->toBool();
+        }
+        if (const auto it = p.constFind(QLatin1String("RootFiles")); it != p.constEnd()) {
+            m_rootFiles = it->toBool();
+        }
+        if (const auto it = p.constFind(QLatin1String("SelectedFolders")); it != p.constEnd()) {
+            // (item id, path in OneDrive): the type's first field is the id.
+            const KonedriveSkippedList folders =
+                it->canConvert<QDBusArgument>() ? qdbus_cast<KonedriveSkippedList>(it->value<QDBusArgument>()) : it->value<KonedriveSkippedList>();
+            m_selectedFolders.clear();
+            for (const KonedriveSkippedItem &folder : folders) {
+                m_selectedFolders << QVariantMap{{QStringLiteral("id"), folder.path}, {QStringLiteral("path"), folder.reason}};
+            }
+        }
     } else if (interfaceName == TransfersInterface) {
         // A structured value inside a{sv} arrives as a QDBusArgument.
         const auto transfers = [](const QVariant &value) {
@@ -272,6 +288,9 @@ void SyncController::applyProperties(const QString &interfaceName, const QVarian
     // GetAll's own answer loads the lists (fetchAll); a change on the way loads them again.
     if (!m_serviceAvailable) {
         return;
+    }
+    if (m_rootPath.isEmpty()) {
+        setChoosePending(false);
     }
     if (m_rootPath != previousRoot) {
         // Registered or forgotten: the daemon's lists start over.
@@ -385,9 +404,22 @@ void SyncController::quietly(const QDBusPendingCall &pending, std::function<void
     });
 }
 
-void SyncController::chooseFolder(const QUrl &folder)
+void SyncController::setChoosePending(bool pending)
 {
-    const QString path = folder.toLocalFile();
+    if (m_choosePending == pending) {
+        return;
+    }
+    m_choosePending = pending;
+    Q_EMIT choosePendingChanged();
+}
+
+void SyncController::clearChoosePending()
+{
+    setChoosePending(false);
+}
+
+void SyncController::registerFolder(const QString &path, bool choosing)
+{
     // M6: no timeout, as FreeUpSpace has — Register can take a while
     // (the initial listing starts under it), so it bypasses the generated
     // proxy (whose timeout is shared with every other call on m_folder).
@@ -395,18 +427,42 @@ void SyncController::chooseFolder(const QUrl &folder)
     message << path;
     call(
         m_bus.asyncCall(message, std::numeric_limits<int>::max()),
-        [this](const QDBusPendingCall &) {
+        [this, choosing](const QDBusPendingCall &) {
             // A no-op the first time (pendingFolder is already empty); on a
             // retry that now succeeds, this is what closes the prompt.
             setPendingFolder(QString());
+            m_pendingChooses = false;
+            setChoosePending(choosing);
         },
-        [this, path](const QDBusError &error) {
+        [this, path, choosing](const QDBusError &error) {
+            if (choosing) {
+                // The empty selection was set for this bind only.
+                quietly(m_folder->SyncEverything(), [](const QDBusPendingCall &) { });
+            }
             if (error.name() == QLatin1String("org.konedrive.Error.NoHelper")) {
+                m_pendingChooses = choosing;
                 setPendingFolder(path);
                 return true;
             }
             return false;
-        });
+        },
+        // After SetSelection, its call already cleared the error.
+        !choosing);
+}
+
+void SyncController::chooseFolder(const QUrl &folder)
+{
+    registerFolder(folder.toLocalFile(), false);
+}
+
+void SyncController::chooseFolderAndFolders(const QUrl &folder)
+{
+    const QString path = folder.toLocalFile();
+    // Nothing is placed until folders are chosen: the listing runs, and the
+    // picker opens when it has finished.
+    call(m_folder->SetSelection(QStringList(), false), [this, path](const QDBusPendingCall &) {
+        registerFolder(path, true);
+    });
 }
 
 void SyncController::retryRegistration()
@@ -417,11 +473,17 @@ void SyncController::retryRegistration()
     // Retries Register(path); on the same NoHelper refusal, pendingFolder
     // simply stays as it was (I3: the window never falls back to
     // RegisterWithoutInterception on its own).
-    chooseFolder(QUrl::fromLocalFile(m_pendingFolder));
+    const QUrl folder = QUrl::fromLocalFile(m_pendingFolder);
+    if (m_pendingChooses) {
+        chooseFolderAndFolders(folder);
+    } else {
+        chooseFolder(folder);
+    }
 }
 
 void SyncController::cancelPending()
 {
+    m_pendingChooses = false;
     setPendingFolder(QString());
 }
 

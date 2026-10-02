@@ -47,6 +47,41 @@ FormCard.FormCardPage {
         }
     }
 
+    /// The picker of the chosen folders, for the account shown.
+    function openSelectionPicker() {
+        if (Current.item) {
+            folderPickerDialog.openFor(Current.item);
+        }
+    }
+
+    /// A folder was picked for `account` (an AccountItem). With no selection yet it is
+    /// asked whether everything is synced or folders are chosen first; an account that
+    /// has a selection keeps it.
+    function folderChosen(account, folder) {
+        if (account.sync.syncsEverything) {
+            bindDialog.ask(account, folder);
+        } else {
+            account.sync.chooseFolder(folder);
+        }
+    }
+
+    /// The folder was bound with "Choose Folders…" and its first listing is still running.
+    readonly property bool readingFolders: oneDrive && sync.choosePending && sync.rootState === "listing"
+    /// …and has finished: the picker opens, once.
+    readonly property bool pickerDue: oneDrive && sync.choosePending && sync.rootState !== "listing"
+    onPickerDueChanged: {
+        if (pickerDue) {
+            // Not from inside the binding that just changed.
+            Qt.callLater(page.openDuePicker);
+        }
+    }
+    function openDuePicker() {
+        if (pickerDue) {
+            sync.clearChoosePending();
+            openSelectionPicker();
+        }
+    }
+
     objectName: "accountPage"
     title: window ? window.accountTitle(i18nc("@title", "Account")) : i18nc("@title", "Account")
 
@@ -353,7 +388,7 @@ FormCard.FormCardPage {
         title: i18nc("@title:window", "Choose an Empty Folder for OneDrive")
         onAccepted: {
             if (item) {
-                item.sync.chooseFolder(selectedFolder);
+                page.folderChosen(item, selectedFolder);
             }
             item = null;
         }
@@ -436,6 +471,125 @@ FormCard.FormCardPage {
             description: i18n("The files stay where they are; KOneDrive stops keeping them in step.")
             icon.name: "edit-delete-remove"
             onClicked: page.sync.forget()
+        }
+    }
+
+    // Which folders of OneDrive are in the folder (issue #58): everything, or the chosen ones.
+    FormCard.FormHeader {
+        visible: page.oneDrive
+        title: i18nc("@title:group", "Folders on This Computer")
+    }
+    FormCard.FormCard {
+        objectName: "selectionCard"
+        visible: page.oneDrive
+
+        FormCard.FormTextDelegate {
+            objectName: "selectionLine"
+            text: {
+                if (!page.sync) {
+                    return "";
+                }
+                if (page.readingFolders) {
+                    return i18n("The list of folders in OneDrive is being read…");
+                }
+                if (page.sync.syncsEverything) {
+                    return i18n("Everything in OneDrive");
+                }
+                if (page.sync.selectedFolders.length === 0) {
+                    return i18n("No folder of OneDrive");
+                }
+                return i18np("1 chosen folder", "%1 chosen folders", page.sync.selectedFolders.length);
+            }
+            description: {
+                if (!page.sync) {
+                    return "";
+                }
+                if (page.readingFolders) {
+                    return i18n("Nothing is placed in the folder yet. You choose the folders when the list is complete.");
+                }
+                if (page.sync.syncsEverything) {
+                    return i18n("Every folder of OneDrive is in the folder on this computer.");
+                }
+                const lines = [];
+                for (const folder of page.sync.selectedFolders) {
+                    lines.push(folder.path.length > 0 ? folder.path : i18n("(not listed yet; its id is %1)", folder.id));
+                }
+                lines.push(page.sync.rootFiles ? i18n("Files in the root: synced") : i18n("Files in the root: not synced"));
+                return lines.join("\n");
+            }
+            textItem.wrapMode: Text.Wrap
+            descriptionItem.textFormat: Text.PlainText
+        }
+        FormCard.FormDelegateSeparator {}
+        FormCard.FormButtonDelegate {
+            objectName: "chooseFoldersButton"
+            text: i18nc("@action:button", "Choose Folders…")
+            description: i18n("Folders that are not chosen are removed from this computer; they stay in OneDrive.")
+            icon.name: "folder-sync"
+            enabled: !page.readingFolders
+            onClicked: page.openSelectionPicker()
+        }
+    }
+
+    FolderPickerDialog {
+        id: folderPickerDialog
+    }
+
+    // After the folder dialog, for an account with no selection: everything, or choose first.
+    Kirigami.PromptDialog {
+        id: bindDialog
+        objectName: "bindDialog"
+
+        /// The account it was opened for (an AccountItem); null once that account is gone.
+        property QtObject item: null
+        property url folder
+
+        function ask(account, chosen) {
+            item = account;
+            folder = chosen;
+            open();
+        }
+        function syncEverything() {
+            if (item) {
+                item.sync.chooseFolder(folder);
+            }
+            close();
+        }
+        /// As `konedrivectl sync register --choose-folders`: bound with nothing placed;
+        /// the picker opens once OneDrive is listed.
+        function chooseFolders() {
+            if (item) {
+                item.sync.chooseFolderAndFolders(folder);
+            }
+            close();
+        }
+
+        title: i18nc("@title:window", "Which Folders of OneDrive?")
+        subtitle: i18n("Everything in your OneDrive can appear in the folder, or only the folders you choose. If you choose, nothing is placed until OneDrive is listed and you have chosen.")
+        maximumWidth: Math.min(absoluteMaximumWidth, Kirigami.Units.gridUnit * 30)
+        standardButtons: Kirigami.Dialog.NoButton
+        onClosed: item = null
+        customFooterActions: [
+            Kirigami.Action {
+                text: i18nc("@action:button", "Sync Everything")
+                icon.name: "folder-cloud"
+                enabled: bindDialog.item !== null
+                onTriggered: bindDialog.syncEverything()
+            },
+            Kirigami.Action {
+                text: i18nc("@action:button", "Choose Folders…")
+                icon.name: "folder-sync"
+                enabled: bindDialog.item !== null
+                onTriggered: bindDialog.chooseFolders()
+            }
+        ]
+
+        // Another account shown, or this one gone: not the question asked.
+        Connections {
+            target: Current
+            function onChanged() {
+                bindDialog.close();
+            }
         }
     }
 

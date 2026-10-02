@@ -68,6 +68,35 @@ zeros to whatever opens them. While a folder waits for the helper, `Folder.State
 `LastError` begins with what to do: install the helper, start it, or look at why it failed
 ([desktop.md](desktop.md) §2.5).
 
+### 3.1 The chosen folders
+
+By default every folder of the drive is in the folder. A **selection** (issue #58) narrows that to
+a list of chosen folders: `[accounts.sync_only]` in `config.toml` ([accounts.md](accounts.md) §4.1),
+with the chosen folders' item ids (`folders`) and a switch for the files directly in the root
+(`root_files`). Absent, everything is synced; present, only what it says — an empty list with the
+root's files off puts nothing at all on disk.
+
+- A chosen folder is on disk with everything in it, including what appears in it later.
+- A folder above a chosen one is **partial**: a plain directory that holds only its chosen
+  sub-folders, and none of its own files. The root is always partial while a list is set, and its
+  own files follow `root_files`.
+- A folder that appears in OneDrive outside the chosen ones does not come.
+- Folders are kept by item id, so a rename or a move in OneDrive keeps the choice. The daemon keeps
+  the list normal: no id twice, none inside another chosen folder. An id leaves the list when its
+  item is deleted (in OneDrive, or here and uploaded); the last one leaves an empty list, never
+  "everything". An id the store does not know yet stays, and counts once its item is listed.
+  Forgetting the folder keeps the selection, so a folder bound again gets the same choice.
+
+The selection is set with `Folder.SetSelection` and removed with `SyncEverything`
+([desktop.md](desktop.md) §2.3), from `konedrivectl sync select` or the window's picker. A change
+writes the config and the store's placements together, then asks for a Full reconcile (§6.2):
+folders that stop being chosen leave the disk (their placeholders and clean downloads; a modified
+file is rescued on a read-only folder, §10, and a read-write folder refuses the change while
+anything that would leave exists only here, [writes.md](writes.md) §11), and folders that become
+chosen come with what is in them. Paused, signed out or without the helper, the change is stored and
+the disk follows at the next cycle. The whole drive is still listed and stored (limitations log
+F187).
+
 ## 4. Listing and changes
 
 ### 4.1 The delta feed
@@ -172,6 +201,17 @@ CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original 
 -- and the outbox's tables, used by a read-write folder: writes.md §5.1
 ```
 
+`placement` is the item's **own** placement: a row inside a skipped folder keeps `placed`, and
+"inside a skipped folder" is found by walking the chain. A folder or a file the selection (§3.1)
+leaves out is `skipped:not-selected`; one function of the store applies it — never `classify`,
+which judges an item alone — to a row that would otherwise be placed, whose parent is partial, and
+which is a folder that is not chosen and has no chosen folder below it, or a file (unless the parent
+is the root and `root_files` is on). Every other reason wins over it. The function runs on what a
+cycle staged before the reconcile compares it with `items` (a chosen folder moved in OneDrive changes
+which folders are partial without their rows arriving), on the rows an upload commits, and on the
+whole store when the selection changes; with no selection it does nothing. An older daemon reading
+such a store shows the reason as `unsupported` (limitations log F195).
+
 A local path is the chain of names from the root; it is computed, never stored, so renaming a
 folder changes one row. The schema is created in one transaction. The file handle is recorded for
 what the daemon places, so that a read-write folder can tell an item's own inode from a copy of it
@@ -239,6 +279,8 @@ has more than **5000** changes (above that one scan is assumed cheaper than item
 a cycle that left files for later (`deferred`: files being filled or freed up at that moment, which a
 Changed scope would never revisit). A cycle with no changes stores the new link and reconciles
 nothing. A *failed replacement* does not force Full; it is retried on its own after every cycle (§9).
+A change of the selection (§3.1) asks for a Full cycle too; one made while a cycle runs takes effect
+at the next (limitations log F189).
 
 ### 6.3 Locking and stopping
 
@@ -269,6 +311,8 @@ reconcile leaves alone whatever has one waiting to upload ([writes.md](writes.md
 | New content, file `online-only` | the placeholder takes the new size, time and cTag, in place (a stale checkpoint goes with it) |
 | New content, file downloaded | the new version is downloaded in the background and swapped in atomically (§9) |
 | New content, file changed locally | the local file is rescued and a placeholder of the new version takes its place (§10) |
+| Left out by the selection (§3.1) | as a delete: the folder or file leaves the disk, a modified file is rescued (§10); it stays in OneDrive |
+| Back in the selection | as new: the folder comes with everything in it that is placed |
 
 Every change goes through a directory descriptor opened beneath the root (`openat2` with
 `RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS`), never through a path string a rename could redirect. A
@@ -327,6 +371,11 @@ listed by `Skipped()`, `konedrivectl sync skipped` and the window's "Not in the 
   own working names (the holding directory, new folders, rescues).
 - **Unsupported**: an item that is neither a file nor a folder, or whose id or name cannot be a
   name in a directory (empty, `.`, `..`, containing `/` or NUL).
+
+What the user's own selection leaves out (`not-selected`, §3.1) is **not** listed: `Skipped()`,
+`SkippedCount` and the page stay the list of what OneDrive has and konedrive cannot place, and the
+selection has its own views (`konedrivectl sync select`, the Account page's "Folders on This
+Computer"). `ItemsPlaced` counts only what is placed.
 
 Only the top of a skipped subtree is listed. `ItemsListed` counts every item in the drive, while
 `ItemsPlaced` and `SkippedCount` count only what the tree reaches from the root through placed
@@ -579,7 +628,10 @@ Signing in again nudges a cycle at once, which brings the folder up to date.
 
 The limitations log has the full list. The ones specific to this document: the whole drive is
 listed even when only part of it matters, since Graph lists from the root (limitations log W15);
-the activity log keeps 200 events and summarises large changes (F24, F25); a delta is held in memory
+the activity log keeps 200 events and summarises large changes (F24, F25); with a selection, the
+whole drive is still listed and stored, and the store's pass and walks still see the folders that
+are not chosen (F187, F188), a change of it takes effect at the next Full cycle (F189), and a
+read-only folder rescues the modified files of a folder that leaves, as conflicts (F192); a delta is held in memory
 whole before it is staged (D11); and the numbers here — 60 s, 5 minutes while the socket is up, the socket's 2 s debounce and its
 backoff, the retry steps, 5000 changes,
 16 MiB checkpoints, 8 replacement workers — are chosen, not measured (limitations log §5).

@@ -4,6 +4,7 @@
 #include <QDBusMessage>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QScopeGuard>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -169,6 +170,35 @@ private Q_SLOTS:
         const auto shownBefore = m_firstOutput.count(Shown);
         runSecond({});
         QVERIFY2(waitForFirst(Shown, shownBefore + 1, ExitMs), m_firstOutput.constData());
+    }
+
+    /// Issue #58: `konedrive --choose-folders <folder>` (Dolphin's "Choose Folders…")
+    /// while the app runs hands the folder over: the running window shows, and opens
+    /// the picker of that folder's account, which reads its folders from the daemon (a
+    /// stand-in here, in this process). A folder that is no account's opens none.
+    void aSecondLaunchChoosesFolders()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        fake.sync->drive = {{QStringLiteral("d"), QStringLiteral("Documents"), QString()}};
+        QVERIFY(fake.start());
+        const auto stop = qScopeGuard([&fake] {
+            fake.stop();
+        });
+
+        const auto shownBefore = m_firstOutput.count(Shown);
+        runSecond({QStringLiteral("--choose-folders"), QStringLiteral("/home/u/OneDrive")});
+        const QByteArray chosen = "konedrive.app: choosing folders for \"" + fake::FirstAccount.toUtf8() + "\"";
+        QVERIFY2(waitForFirst(chosen, 1, StartMs), m_firstOutput.constData());
+        QVERIFY2(waitForFirst(Shown, shownBefore + 1, ExitMs), m_firstOutput.constData());
+        QTRY_VERIFY_WITH_TIMEOUT(fake.sync->calls.contains(QStringLiteral("FolderChildren:")), ExitMs);
+
+        runSecond({QStringLiteral("--choose-folders"), QStringLiteral("/home/u/Elsewhere")});
+        QVERIFY2(waitForFirst("konedrive.app: no account has the folder \"/home/u/Elsewhere\"", 1, StartMs), m_firstOutput.constData());
+        QCOMPARE(fake.sync->calls.count(QStringLiteral("FolderChildren:")), 1);
     }
 };
 

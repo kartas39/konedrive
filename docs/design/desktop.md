@@ -78,6 +78,9 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `Pause(u seconds)`, `Resume()` | pause the account — no upload, no poll, no thumbnails; fills on open, `Hydrate` and detection go on — for `seconds`, or until `Resume` when 0; the pause outlasts a daemon restart |
 | `SetIgnorePatterns(as)` | the names of the user's own files that are never uploaded (shell globs on a name); written to `config.toml`, then the whole folder is scanned again; `InvalidArgs` for an empty pattern or one holding "/" |
 | `SyncAnyway()` | lifts the automatic hold ([writes.md](writes.md) §11) of this account now, until a source or the app's `pause_on_metered` / `on_battery` (`Accounts.SetPauseOnMetered`, `SetOnBattery`, §2.8) changes; not kept across a restart; `Unsupported` for a folder not connected to OneDrive |
+| `SetSelection(as ids, b root_files)` | the selection ([sync.md](sync.md) §3.1): only these folders (item ids) are synced, and the files directly in the root when `root_files`; the list is made normal (no id twice, none inside another). Written to `config.toml` (`[accounts.sync_only]`) with the store's placements, then a Full cycle and, read-write, a Full local scan (`selection`). `InvalidArgs` for an id that is not chosen already and is not a folder in the store, or is or lies inside a folder skipped for another reason, or is the root; `LocalChanges` while something that would leave exists only here ([writes.md](writes.md) §9); `Unsupported` for a folder not connected to OneDrive. With no folder bound yet it takes only an empty list, so a folder can be bound with nothing placed |
+| `SyncEverything()` | removes the selection: everything is synced again; also with no folder bound yet |
+| `FolderChildren(s id) → a(sssb)` | the sub-folders of a folder of OneDrive (`""`: the root), by name: (id, name, state, whether it has sub-folders); the state is `chosen`, `inside` (in a chosen folder; every folder while there is no selection), `partial` or `none`. Folders skipped for another reason are left out. Read from the store, so it lists folders that are not on disk; while `State` is `listing` it may be incomplete |
 | `SetThumbnails(b)` | the account's own sync setting (§8): whether Graph's thumbnails are fetched. Written to the account's section of `config.toml` (`thumbnails`) and taken at once; `Unsupported` for a folder not connected to OneDrive. When the account holds back by itself is the whole app's setting, on `Accounts` (§2.8) |
 
 `UploadQueue`:
@@ -122,6 +125,7 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `HeldBack` (`s`) | why the account holds its background work back by itself: `metered`, `on-battery`, `power-saver`, or empty ([writes.md](writes.md) §11); never the user's pause, which `Paused` shows |
 | `LiveChanges` (`s`) | how changes made in OneDrive reach this computer ([sync.md](sync.md) §4.2): `connected` (at once, through Graph's notification socket; the poll runs every 5 minutes), `connecting` (trying, or waiting before the next try; the poll runs every minute), `off` (paused, held back, or not a OneDrive folder) |
 | `Thumbnails` (`b`) | the account's own sync setting; `true` when absent from `config.toml` |
+| `SyncsEverything` (`b`), `SelectedFolders` (`a(ss)`), `RootFiles` (`b`) | the selection ([sync.md](sync.md) §3.1): true while there is none; the chosen folders as (item id, path in OneDrive relative to the root — empty for an id the store does not know yet), empty while there is none; whether the root's files are synced, true while there is none. A rename in OneDrive changes `SelectedFolders` after the next successful check (limitations log F196) |
 
 `Transfers`:
 
@@ -161,7 +165,7 @@ The speeds, the pool and `RetryAfter` are updated once a second while anything m
 
 | Property | Meaning |
 |---|---|
-| `State` (`s`), `Reason` (`s`), `Started` (`x`), `Directories` (`t`), `Files` (`t`), `Expected` (`t`), `Finished` (`x`), `Took` (`u`) | the Full local scan of a read-write folder ([writes.md](writes.md) §3.1): `running`, `idle`, or `none` for a read-only folder; why it runs (`start`, `read-write`, `helper-back`, `overflow`, `ignore-list`, `periodic`); when it started; the directories and the files (every entry that is not a directory) it has seen so far; about how many items it will see — the items the base had placed when it started, not the disk's count, so never a percentage; when the last one finished (0: none since the daemon started) and how long it took, in seconds. While idle, the reason, start and counts are the last scan's. The small examinations after each change are not reported. Updated at most once a second while a scan runs, and once when it ends |
+| `State` (`s`), `Reason` (`s`), `Started` (`x`), `Directories` (`t`), `Files` (`t`), `Expected` (`t`), `Finished` (`x`), `Took` (`u`) | the Full local scan of a read-write folder ([writes.md](writes.md) §3.1): `running`, `idle`, or `none` for a read-only folder; why it runs (`start`, `read-write`, `helper-back`, `overflow`, `ignore-list`, `selection`, `periodic`); when it started; the directories and the files (every entry that is not a directory) it has seen so far; about how many items it will see — the items the base had placed when it started, not the disk's count, so never a percentage; when the last one finished (0: none since the daemon started) and how long it took, in seconds. While idle, the reason, start and counts are the last scan's. The small examinations after each change are not reported. Updated at most once a second while a scan runs, and once when it ends |
 
 The signal `ActivityLog.Added(x time, s kind, s path, s detail)` announces each event as it is
 recorded.
@@ -210,7 +214,9 @@ keeps, [pinning.md](pinning.md) §5), `Overlaps` (a folder that is, is inside, o
 account's; the message names that account), `NoAccount` (`Remove` of a path that names no account),
 `WritesNotAllowed` (the write gate refuses read-write for this account), `ModeNotGranted` (the
 account's token does not carry `Files.ReadWrite`), `PendingUploads` (a switch to read-only while
-changes wait to be uploaded), and `Failed` for everything without a name of its own (an I/O failure). Registration refusals come
+changes wait to be uploaded), `LocalChanges` (a change of the chosen folders that would take off this
+computer something that exists only here; the message is a first line, then up to 10 lines
+`<path>: <why>`, then `and N more`), and `Failed` for everything without a name of its own (an I/O failure). Registration refusals come
 in the order `NotSignedIn`, `AlreadyRegistered`, `NoHelper`, `Overlaps`, then the folder checks.
 `Add`, `SetLabel` and `SetClientId` refuse a label or an id with the bus's own `InvalidArgs`, and
 `Accounts` refuses with the bus's `Failed` a call that is not possible now — a client id changed
@@ -295,7 +301,10 @@ F51).
 | `login` | chosen | `BeginSignIn`, opens the browser and waits. With no account at all and none named, it first adds one called `Personal` |
 | `logout` | chosen | signs the account out and deletes its token |
 | `status` | chosen, or all | the account's sign-in state and mode; with several accounts and none named, every account under its label, the `Client ID:` line once above them |
-| `sync register <path>` | chosen | registers a OneDrive folder (needs the helper) |
+| `sync register <path> [--choose-folders]` | chosen | registers a OneDrive folder (needs the helper). With `--choose-folders`, an empty selection is set first (`SetSelection([], false)`), so the listing runs and nothing is placed; the output says to go on with `sync select browse` and `sync select only`. A refused bind takes the empty selection back (`SyncEverything`); on an account that has a selection already, `--choose-folders` is refused, and a plain `register` keeps that selection |
+| `sync select` | chosen | the selection ([sync.md](sync.md) §3.1): "everything", or the chosen folders and the root files' switch; a chosen folder the store does not know is shown by its id, as not listed yet. `sync status` adds "Synced: 3 chosen folders, files in the root: off" while a list is set |
+| `sync select browse [<folder>]` | chosen | the sub-folders of a folder of OneDrive (`FolderChildren`) with their state; while the first listing runs, it says the list may be incomplete |
+| `sync select only <folder>… [--root-files]`, `add <folder>…`, `remove <folder>…`, `root-files on\|off`, `everything` | chosen | `SetSelection` or `SyncEverything`: exactly these folders (the root's files off unless `--root-files`); add to or take from a list; `remove` of a folder inside a chosen one makes that one give way to its other sub-folders, and of a partial folder removes every chosen folder below it; the last one removed leaves an empty list. With no list, `add`, `remove` and `root-files` are refused and point to `only`. A folder is named by its path in OneDrive or by an absolute local path in the account's folder. Each change prints the new selection and says that folders outside it leave this computer and stay in OneDrive; a `LocalChanges` refusal prints the paths and why |
 | `sync register-without-interception <path>` | chosen | the developer's local folder, named after its cost on purpose |
 | `sync forget` | chosen | Forget |
 | `sync populate-from <dir>` | chosen | fills a local folder from a directory |
@@ -344,7 +353,7 @@ rows in sight, so thousands of entries cost a handful of delegates; both keep a 
 a page waiting in the window's hidden holder would otherwise take the whole list's height and build
 every row (issue #39, limitations log F168, F170).
 | **Not Uploaded** | what stays on this computer and why (`NotUploadedSummary()`), in four groups: "Needs You" (a reason one action fixes: its count, size and button — "Refresh" for a full OneDrive, "Sign In Again" for a sign-in that does not allow writes), "Needs You for Each File" (each reason with its count; opened, its files — `NotUploadedFiles(reason, 20)`, asked only then — each with its reason, OneDrive's own words for a refused one; clicking one shows it in Dolphin; past 20, "and N more" names `konedrivectl sync not-uploaded --all`), "Never Uploaded" (a line per reason with its count) and "Waiting" (one line, "N changes wait and will go up by themselves", its reasons when opened). Read when shown and when a count moves while it is, at most once a second. A count badge while changes are blocked |
-| **Account** | the account's name with "Rename…"; the switch "Upload changes made on this computer" (below); for a OneDrive folder, "Thumbnails" below it: the switch "Download thumbnails" (`SetThumbnails`, §8; while off, a line says that Dolphin, with its previews on, downloads a cloud-only file in full to make its preview), showing what the daemon says; sign in or out, the Microsoft account's name, email and quota; the folder, with "Choose Folder…" and "Forget Folder"; for a OneDrive folder, "Uploading": this computer's name for copies (`MachineName`, read-only: `machine_name` in `config.toml`) and the ignore list, with "Add" and a remove button per pattern (`SetIgnorePatterns`); and "Remove Account…" |
+| **Account** | the account's name with "Rename…"; the switch "Upload changes made on this computer" (below); for a OneDrive folder, "Thumbnails" below it: the switch "Download thumbnails" (`SetThumbnails`, §8; while off, a line says that Dolphin, with its previews on, downloads a cloud-only file in full to make its preview), showing what the daemon says; sign in or out, the Microsoft account's name, email and quota; the folder, with "Choose Folder…" and "Forget Folder"; for a OneDrive folder, "Folders on This Computer" (below); for a OneDrive folder, "Uploading": this computer's name for copies (`MachineName`, read-only: `machine_name` in `config.toml`) and the ignore list, with "Add" and a remove button per pattern (`SetIgnorePatterns`); and "Remove Account…" |
 | **Settings** | "App": "Start at login", "Show download and upload progress", "Show in Places"; "Sync", for every account: the switch "Pause on metered connections" (`Accounts.SetPauseOnMetered`) and the combo box "On battery" — "Sync as usual", "Pause in power-saver mode", "Pause" (`Accounts.SetOnBattery`) — each showing what the daemon says and disabled while it is not running; "Quit KOneDrive" |
 
 **The switcher** shows the chosen account's initials, label and email, and opens a menu of every
@@ -397,6 +406,25 @@ if changes still wait to be uploaded, a dialog asks whether to turn off without 
 files stay), and then forces it. Refusals are told by name: uploading is not available for this
 account in this version (the write gate), sign in first, sign in again (limitations log A16).
 
+**Folders on This Computer** (issue #58) is a card of the Account page for a OneDrive folder: "Everything
+in OneDrive", or "N chosen folders" with their paths (an id the store does not know yet: "not
+listed yet") and whether the root's files are synced, and **Choose Folders…**, which opens the
+picker. The picker is a dialog with a tree of the drive's folders, read level by level as branches
+open (`FolderChildren`), each with a check box: checked — chosen, or inside a chosen folder; partly
+checked — partial. Checking a folder chooses it whole; unchecking a folder inside a chosen one
+replaces the chosen one by its other sub-folders, which makes it partial. Above the tree, "Sync
+everything" disables it; switched off, the tree starts with every folder of the root chosen and the
+root's files on, so nothing leaves until something is unchecked. "Files in the root" heads the
+tree. Before **Apply**, a line names the folders that leave this computer and stay in OneDrive,
+and, for a folder that becomes partial, that the files directly in it leave too; Apply calls
+`SetSelection` or `SyncEverything`. A `LocalChanges` refusal is shown in the dialog with its paths
+and why, and the dialog stays open (limitations log A27, A28).
+
+**Binding a folder.** After the folder dialog, an account with no selection is asked: "Sync
+Everything" (the default) or "Choose Folders…". The second does what `sync register
+--choose-folders` does, a refused bind included; the card then says that the list of folders is
+being read, and the picker opens once the first listing has finished (A30).
+
 **Held removals.** The mass-delete guard holds a large delete until the user decides. The window
 follows `HeldCount` for the Status page, the tray and the `massDelete` notification, and reads
 `Changes()` for the list when a count changes, when `Paused` changes, or when the Activity page is
@@ -424,7 +452,11 @@ skipped as busy. It has no D-Bus timeout: freeing up a large folder can take lon
 default 25 s, and the window shows "Freeing up space…" until the answer.
 
 **One instance.** The app is single-instance through `KDBusService(Unique)`; a second launch shows
-the running window. It starts at login, hidden in the tray, through an XDG autostart entry that the
+the running window. **`konedrive --choose-folders <folder>`**, where the folder is an account's,
+shows the window on that account's page with the picker open — Dolphin's "Choose Folders…" runs it
+(§10.2). With a window already running, the option arrives through `activateRequested` and does
+the same there. At the window's start it waits for the daemon to answer, up to 10 s; a folder that
+is no account's shows the window and a message, and opens no picker (A29). It starts at login, hidden in the tray, through an XDG autostart entry that the
 "Start at login" switch writes or removes; the switch is on by default after the first run, and the
 entry itself is the truth, so removing it in System Settings turns the switch off. With a system
 tray, closing the window hides it; without one, closing quits, so no process lingers unseen.
@@ -657,15 +689,15 @@ separator whose text is "OneDrive" (`konedrive_section`), the entries, and a clo
 (`konedrive_section_end`). With nothing to offer it adds nothing. Whether the heading is drawn is
 the widget style's choice (limitations log K30).
 
-**Open in OneDrive** (`konedrive_open_online`, issue #53) is the section's last entry. It is
+**Open in OneDrive** (`konedrive_open_online`, issue #53) comes after the other two. It is
 offered for exactly one selected path, never for several:
 
 - an item the other two entries are offered for: enabled when it carries
   `user.konedrive.item-id` (read with `lgetxattr`; the plugin still opens nothing), otherwise
   disabled with the tooltip "Not in OneDrive yet.";
 - an account's folder itself — a directory that carries `user.konedrive.root` and lies in no
-  other account's folder: always enabled, and the section's only entry, since the other two are
-  not offered there. It opens the root of the drive.
+  other account's folder: always enabled, and the only one of the three offered there. It opens
+  the root of the drive.
 
 A click is one asynchronous `WebUrl(path)` call on `Files`, under the same rules as the other
 calls: no reply timeout, a stopped daemon is started, a path already waiting is not asked again.
@@ -682,12 +714,21 @@ daemon's words (the item is gone from OneDrive, or the answer has no address).
 `--print` it also opens it, under the guard the sign-in page has (`KONEDRIVE_NO_BROWSER` unset and
 stdout a terminal).
 
+**Choose Folders…** (`konedrive_choose_folders`, icon `folder-sync`, issue #58) follows "Open in
+OneDrive", only when the one selected path is an account's folder itself (`MenuState`'s
+`accountFolder`). A click starts `konedrive --choose-folders <path>` detached, found through
+`PATH`: the window opens its picker of the folders of OneDrive that are on this computer (§4). The
+plugin makes no D-Bus call for it; if the program cannot be started, it says so through `error`
+(limitations log K32).
+
 ## 11. Known limits
 
 The limitations log's sections 7 and 8 list them. The main ones: Dolphin still opens some files
 itself (K1); notifications need the app running (A1); no emblems in search results or Recent Files,
 which do not use `file://` URLs (K2); and the Plasma side — how the tray, the popups and the job
 tracker actually render — is not covered by the tests, which run offscreen on private buses (A7).
+The picker of the chosen folders shows no folder sizes and does not follow a change made elsewhere
+while it is open (A27, A28), and Dolphin's "Choose Folders…" needs `konedrive` in `PATH` (K32).
 With several accounts: the window shows one at a time (A13), Sign In is several calls rather than
 one transaction (A15), and a window or a Dolphin running across the upgrade to multiple accounts
 needs a restart (F46).

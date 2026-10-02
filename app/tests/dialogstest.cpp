@@ -1,4 +1,5 @@
 #include "fakedaemon.h"
+#include "launchoptions.h"
 #include "qmlregistration.h"
 
 #include <KLocalizedQmlContext>
@@ -688,6 +689,224 @@ private Q_SLOTS:
         QCOMPARE(digits(conflictsMore->property("text").toString()), QStringLiteral("4800"));
         QVERIFY(conflictsMore->property("description").toString().contains(QStringLiteral("konedrivectl sync conflicts")));
 
+        fake.stop();
+    }
+    /// Issue #58: the account page's card "Folders on This Computer" follows the
+    /// selection; "Choose Folders…" opens the picker, which reads the drive's
+    /// folders. Applied, it sends the selection and closes; refused, it shows the
+    /// daemon's paths and why and stays open.
+    void theSelectionCardAndPicker()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}, {QStringLiteral("Mode"), QStringLiteral("read-write")}});
+        fake.sync->folder->set({{QStringLiteral("Path"), QStringLiteral("/home/u/OneDrive")},
+                                {QStringLiteral("State"), QStringLiteral("ready")},
+                                {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+        fake.sync->drive = {{QStringLiteral("d"), QStringLiteral("Documents"), QString()},
+                            {QStringLiteral("m"), QStringLiteral("Music"), QString()},
+                            {QStringLiteral("p"), QStringLiteral("Photos"), QString()}};
+        fake.sync->everything = false;
+        fake.sync->chosen = {QStringLiteral("d"), QStringLiteral("x")};
+        fake.sync->rootFiles = false;
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        SyncController *sync = accounts.at(0)->sync();
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("account")));
+        auto *line = window->findChild<QQuickItem *>(QStringLiteral("selectionLine"));
+        auto *button = window->findChild<QQuickItem *>(QStringLiteral("chooseFoldersButton"));
+        QObject *dialog = window->findChild<QObject *>(QStringLiteral("folderPickerDialog"));
+        QVERIFY(line && button && dialog);
+        QTRY_VERIFY(line->isVisible());
+        QTRY_COMPARE(line->property("text").toString(), QStringLiteral("2 chosen folders"));
+        QCOMPARE(line->property("description").toString(),
+                 QStringLiteral("Documents\n(not listed yet; its id is x)\nFiles in the root: not synced"));
+
+        // Changed elsewhere (konedrivectl), the card follows.
+        fake.sync->everything = true;
+        fake.sync->folder->announceSelection();
+        QTRY_COMPARE(line->property("text").toString(), QStringLiteral("Everything in OneDrive"));
+
+        // The picker: opened from the card, it reads the root's folders.
+        QMetaObject::invokeMethod(button, "clicked");
+        QTRY_VERIFY(shown(dialog));
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("FolderChildren:")));
+        auto *tree = window->findChild<QQuickItem *>(QStringLiteral("folderTree"));
+        auto *summary = window->findChild<QQuickItem *>(QStringLiteral("pickerSummary"));
+        auto *problem = window->findChild<QQuickItem *>(QStringLiteral("pickerProblem"));
+        QVERIFY(tree && summary && problem);
+        QTRY_COMPARE(tree->property("count").toInt(), 3);
+        QVERIFY(!tree->property("editable").toBool());
+
+        // Sync everything off: every folder of the root, checked; one unchecked is named.
+        FolderPicker *picker = sync->picker();
+        picker->setEverything(false);
+        QTRY_VERIFY(tree->property("editable").toBool());
+        picker->setChecked(1, false);
+        QTRY_VERIFY(summary->isVisible());
+        QCOMPARE(summary->property("text").toString(), QStringLiteral("Removed from this computer (it stays in OneDrive): Music"));
+        picker->apply();
+        QTRY_VERIFY(!shown(dialog));
+        QVERIFY(fake.sync->calls.contains(QStringLiteral("SetSelection:d,p:root-files")));
+        QTRY_COMPARE(line->property("text").toString(), QStringLiteral("2 chosen folders"));
+
+        // Refused: the paths and why, and the dialog stays.
+        fake.sync->refuseSelection = QStringLiteral("1 file(s) or folder(s) that would be removed from this computer exist only here; nothing was changed:\nPhotos/link: a symbolic link");
+        QMetaObject::invokeMethod(button, "clicked");
+        QTRY_VERIFY(shown(dialog));
+        QTRY_COMPARE(tree->property("count").toInt(), 3);
+        QTRY_VERIFY(!picker->loading());
+        picker->setChecked(2, false);
+        picker->apply();
+        QTRY_VERIFY(problem->isVisible());
+        QVERIFY(problem->property("text").toString().contains(QStringLiteral("Photos/link: a symbolic link")));
+        QTest::qWait(100);
+        QVERIFY(shown(dialog));
+        fake.stop();
+    }
+
+    /// Binding a folder to an account with no selection asks first: "Sync Everything",
+    /// or "Choose Folders…", which binds with nothing placed (SetSelection([], false),
+    /// then Register), says the list is being read, and opens the picker once the
+    /// listing has finished. An account that has a selection keeps it, unasked.
+    void theBindQuestion()
+    {
+        FakeDaemon fake;
+        fake.account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+        fake.sync->drive = {{QStringLiteral("d"), QStringLiteral("Documents"), QString()}};
+        QVERIFY(fake.start());
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QTRY_COMPARE(accounts.count(), 1);
+        QTRY_VERIFY(accounts.at(0)->sync()->serviceAvailable() && accounts.at(0)->account()->state() == QLatin1String("signed-in"));
+        QMetaObject::invokeMethod(window, "showPage", Q_ARG(QVariant, QStringLiteral("account")));
+        QObject *page = window->findChild<QObject *>(QStringLiteral("accountPage"));
+        QObject *question = window->findChild<QObject *>(QStringLiteral("bindDialog"));
+        QObject *picker = window->findChild<QObject *>(QStringLiteral("folderPickerDialog"));
+        auto *line = window->findChild<QQuickItem *>(QStringLiteral("selectionLine"));
+        QVERIFY(page && question && picker && line);
+        const QVariant item = QVariant::fromValue<QObject *>(accounts.at(0));
+        const QVariant folder = QUrl::fromLocalFile(QStringLiteral("/home/u/OneDrive"));
+
+        QMetaObject::invokeMethod(page, "folderChosen", Q_ARG(QVariant, item), Q_ARG(QVariant, folder));
+        QTRY_VERIFY(shown(question));
+        QVERIFY(!fake.sync->calls.join(QLatin1Char(' ')).contains(QStringLiteral("Register")));
+        QMetaObject::invokeMethod(question, "chooseFolders");
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("Register:/home/u/OneDrive")));
+        QCOMPARE(fake.sync->calls.filter(QStringLiteral("SetSelection")), QStringList{QStringLiteral("SetSelection::no-root-files")});
+        QTRY_VERIFY(!shown(question));
+        QTRY_COMPARE(line->property("text").toString(), QStringLiteral("The list of folders in OneDrive is being read…"));
+        QTest::qWait(100);
+        QVERIFY(!shown(picker));
+        QVERIFY(!fake.sync->calls.contains(QStringLiteral("FolderChildren:")));
+
+        // Listed: the picker opens, once.
+        fake.sync->folder->set({{QStringLiteral("State"), QStringLiteral("ready")}});
+        QTRY_VERIFY(shown(picker));
+        QTRY_VERIFY(fake.sync->calls.contains(QStringLiteral("FolderChildren:")));
+        QCOMPARE(line->property("text").toString(), QStringLiteral("No folder of OneDrive"));
+        QMetaObject::invokeMethod(picker, "close");
+        QTRY_VERIFY(!shown(picker));
+
+        // With a selection, a folder picked again is bound at once and keeps it.
+        const auto registered = fake.sync->calls.count(QStringLiteral("Register:/home/u/Other"));
+        QMetaObject::invokeMethod(page, "folderChosen", Q_ARG(QVariant, item), Q_ARG(QVariant, QVariant(QUrl::fromLocalFile(QStringLiteral("/home/u/Other")))));
+        QTRY_COMPARE(fake.sync->calls.count(QStringLiteral("Register:/home/u/Other")), registered + 1);
+        QVERIFY(!shown(question));
+        QCOMPARE(fake.sync->calls.filter(QStringLiteral("SetSelection")).size(), 1);
+        fake.stop();
+    }
+
+    /// Dolphin's "Choose Folders…" runs `konedrive --choose-folders <folder>`: as
+    /// main() reads it on the first launch, and as a second launch hands it over
+    /// (activateRequested), the window shows that folder's account with the picker
+    /// open. A folder that is no account's opens nothing and says so.
+    void chooseFoldersFromOutside()
+    {
+        QCOMPARE(chooseFoldersArgument({QStringLiteral("konedrive"), QStringLiteral("--choose-folders=/home/u/x/../Family")}, QString()),
+                 QStringLiteral("/home/u/Family"));
+        QCOMPARE(chooseFoldersArgument({QStringLiteral("konedrive"), QStringLiteral("--background")}, QStringLiteral("/home/u")), QString());
+
+        FakeDaemon fake({QStringLiteral("Personal"), QStringLiteral("Family")});
+        for (FakeAccountObject *object : std::as_const(fake.objects)) {
+            object->account->set({{QStringLiteral("State"), QStringLiteral("signed-in")}});
+            object->sync->folder->set({{QStringLiteral("Path"), QString(QStringLiteral("/home/u/") + object->account->label())},
+                                       {QStringLiteral("State"), QStringLiteral("ready")},
+                                       {QStringLiteral("Source"), QStringLiteral("onedrive")}});
+            object->sync->drive = {{QStringLiteral("d"), QStringLiteral("Documents"), QString()}};
+        }
+        FakeSync *personal = fake.object(0)->sync;
+        FakeSync *family = fake.object(1)->sync;
+        const QString familyPath = fake.object(1)->path;
+
+        Autostart autostart;
+        DownloadProgressSettings progress;
+        PlacesSettings places;
+        DaemonController daemon;
+        AccountsModel accounts(&daemon);
+        CurrentAccount current(&accounts);
+        registerKonedriveQml(&daemon, &accounts, &current, &autostart, &progress, &places);
+
+        QQmlApplicationEngine engine;
+        KLocalization::setupLocalizedContext(&engine);
+        engine.loadFromModule("org.konedrive.app.window", "Main");
+        QVERIFY(!engine.rootObjects().isEmpty());
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst());
+        QVERIFY(window);
+        window->show();
+        QObject *picker = window->findChild<QObject *>(QStringLiteral("folderPickerDialog"));
+        QVERIFY(picker);
+
+        // Asked before the daemon is there, as at the window's start: answered once it is.
+        accounts.requestChooseFolders(chooseFoldersArgument({QStringLiteral("konedrive"), QStringLiteral("--choose-folders"), QStringLiteral("Family")},
+                                                            QStringLiteral("/home/u")));
+        QVERIFY(fake.start());
+        QTRY_COMPARE(current.path(), familyPath);
+        QTRY_VERIFY(shown(picker));
+        QCOMPARE(window->property("currentPage").toString(), QStringLiteral("account"));
+        QTRY_VERIFY(family->calls.contains(QStringLiteral("FolderChildren:")));
+        QVERIFY(!personal->calls.contains(QStringLiteral("FolderChildren:")));
+        QCOMPARE(window->property("chooseFoldersProblem").toString(), QString());
+
+        // No account's folder: a message, and no picker.
+        QMetaObject::invokeMethod(picker, "close");
+        QTRY_VERIFY(!shown(picker));
+        accounts.requestChooseFolders(chooseFoldersArgument({QStringLiteral("konedrive"), QStringLiteral("--choose-folders"), QStringLiteral("/home/u/Elsewhere")},
+                                                            QString()));
+        QTRY_VERIFY(!window->property("chooseFoldersProblem").toString().isEmpty());
+        QVERIFY(window->property("chooseFoldersProblem").toString().contains(QStringLiteral("/home/u/Elsewhere")));
+        QTest::qWait(100);
+        QVERIFY(!shown(picker));
         fake.stop();
     }
 };
