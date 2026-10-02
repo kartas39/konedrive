@@ -44,6 +44,8 @@ QString wasNot(Operation operation)
         return i18nc("@info how a file was not changed", "unpinned");
     case Operation::FreeUpSpace:
         return i18nc("@info how a file was not changed", "freed up");
+    case Operation::OpenOnline:
+        return i18nc("@info how a file was not changed", "opened in OneDrive");
     }
     return {};
 }
@@ -113,6 +115,11 @@ QString refusalText(Operation operation, const Failure &failure)
                           "Its emblem shows whether it still takes space; if it does, start KOneDrive again "
                           "(“systemctl --user start konedrived”) and try again.",
                           file);
+        case Operation::OpenOnline:
+            return i18nc("@info",
+                          "KOneDrive stopped before it found the page of “%1” in OneDrive. Start KOneDrive again "
+                          "(“systemctl --user start konedrived”) and try again.",
+                          file);
         }
     }
 
@@ -140,6 +147,27 @@ QString refusalText(Operation operation, const Failure &failure)
                           "opens through unchecked, or the emptied file could read as zeros from then on. Try again once "
                           "KOneDrive is connected to the helper again — it reconnects on its own.",
                           file);
+        case Operation::OpenOnline:
+            // WebUrl needs no helper; named anyway, it is told as any other failure.
+            break;
+        }
+    }
+    // "Open in OneDrive" (WebUrl): OneDrive is asked each time.
+    if (refusal == QLatin1String("Unreachable")) {
+        return i18nc("@info", "OneDrive could not be reached.");
+    }
+    if (operation == Operation::OpenOnline) {
+        if (refusal == QLatin1String("NotUploaded")) {
+            return i18nc("@info", "“%1” is not uploaded yet, so it has no page in OneDrive.", file);
+        }
+        if (refusal == QLatin1String("NotSignedIn")) {
+            return i18nc("@info", "The account is not signed in, so OneDrive cannot be asked for the page of “%1”. Sign in and try again.", file);
+        }
+        if (refusal == QLatin1String("OutsideRoot")) {
+            return i18nc("@info", "“%1” is not inside any of KOneDrive's folders, so it has no page in OneDrive.", file);
+        }
+        if (refusal == QLatin1String("NotManaged")) {
+            return i18nc("@info", "“%1” is not a OneDrive file: it is a file of your own in the sync folder, so it has no page in OneDrive.", file);
         }
     }
     if (refusal == QLatin1String("NoRoot")) {
@@ -178,6 +206,8 @@ QString refusalText(Operation operation, const Failure &failure)
                           "“%1” is not a OneDrive file: it is a file of your own in the sync folder, "
                           "and KOneDrive never frees the space of a file it could not download again.",
                           file);
+        case Operation::OpenOnline:
+            break; // answered above
         }
     }
     if (refusal == QLatin1String("NotHydrated")) {
@@ -197,6 +227,8 @@ QString refusalText(Operation operation, const Failure &failure)
                           "“%1” was changed here and has not been uploaded, so freeing its space would "
                           "lose your edits. It was left exactly as it is.",
                           file);
+        case Operation::OpenOnline:
+            break;
         }
     }
     // Free up refused for a file with changes waiting to be uploaded (write
@@ -236,6 +268,8 @@ QString refusalText(Operation operation, const Failure &failure)
         return i18nc("@info", "Unpinning “%1” failed: %2", file, detail);
     case Operation::FreeUpSpace:
         return i18nc("@info", "Freeing up “%1” failed: %2", file, detail);
+    case Operation::OpenOnline:
+        return i18nc("@info", "Opening “%1” in OneDrive failed: %2", file, detail);
     }
     return detail;
 }

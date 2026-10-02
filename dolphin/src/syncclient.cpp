@@ -36,10 +36,12 @@ void SyncClient::start(Operation operation, const QStringList &paths)
         return;
     }
 
+    // WebUrl takes one path; "Open in OneDrive" is never offered for more.
+    const QStringList asked = operation == Operation::OpenOnline ? paths.mid(0, 1) : paths;
     QStringList toSend;
     QSet<QString> sending;
     QList<Failure> notSent;
-    for (const QString &path : paths) {
+    for (const QString &path : asked) {
         if (m_waiting.contains(path) || sending.contains(path)) {
             notSent.append({path, QString::fromLatin1(AlreadyWaitingError), QString()});
         } else if (m_waiting.size() + toSend.size() >= MaxCallsInFlight) {
@@ -91,9 +93,16 @@ void SyncClient::start(Operation operation, const QStringList &paths)
     case Operation::FreeUpSpace:
         method = QStringLiteral("FreeUp");
         break;
+    case Operation::OpenOnline:
+        method = QStringLiteral("WebUrl");
+        break;
     }
     QDBusMessage call = QDBusMessage::createMethodCall(ServiceName, ObjectPath, InterfaceName, method);
-    call << toSend;
+    if (operation == Operation::OpenOnline) {
+        call << toSend.first();
+    } else {
+        call << toSend;
+    }
     for (const QString &path : std::as_const(toSend)) {
         m_waiting.insert(path);
     }
@@ -122,6 +131,9 @@ void SyncClient::start(Operation operation, const QStringList &paths)
             if (busy > 0) {
                 Q_EMIT freeUpKeptBusy(busy);
             }
+        } else if (operation == Operation::OpenOnline) {
+            const QDBusPendingReply<QString> urlReply = *finished;
+            Q_EMIT webUrlReady(toSend.first(), urlReply.argumentAt<0>());
         }
         if (request->unanswered == 0) {
             report();

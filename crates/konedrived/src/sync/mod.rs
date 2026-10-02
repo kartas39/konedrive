@@ -871,6 +871,13 @@ pub enum SyncError {
     /// §3.8): the message names it.
     #[error("{0} is not uploaded yet, so freeing it up would lose the changes made here")]
     NotUploaded(String),
+    /// `WebUrl` of a file or folder that carries no item id: OneDrive does not
+    /// have it yet, so it has no page there. `Files` answers it `NotUploaded`.
+    #[error("{0} is not uploaded yet, so it has no page in OneDrive")]
+    NotInOneDrive(String),
+    /// OneDrive did not answer (`WebUrl`): no network, or Graph kept refusing.
+    #[error("OneDrive could not be reached: {0}")]
+    Unreachable(String),
     /// An argument no value of which makes sense (`SetIgnorePatterns`).
     #[error("{0}")]
     InvalidArgs(String),
@@ -3656,6 +3663,40 @@ impl SyncService {
         activity::large_files(&downloads, &self.state.get().uploads)
     }
 
+    /// `Files.WebUrl`: the address of the page OneDrive's web interface has for
+    /// the file or folder at `path`. The path is opened as a pin's is
+    /// (`SyncRoot::open_item`: beneath the root, no link followed, nothing
+    /// downloaded) for its item id, and OneDrive is asked for that item — one
+    /// GET, with the drive client's own retries. Nothing is changed, here or
+    /// in OneDrive, and nothing is remembered.
+    ///
+    /// Refused `NotInOneDrive` for an item with no id (not uploaded yet),
+    /// `NotSignedIn` with no drive or no token, `Unreachable` when OneDrive
+    /// does not answer.
+    pub async fn web_url(&self, path: &Path) -> Result<String, SyncError> {
+        let reg = self.require_registration()?;
+        let (root, target) = (reg.root.clone(), path.to_path_buf());
+        let (id, shown) = tokio::task::spawn_blocking(move || -> Result<_, SyncError> {
+            let (item, shown) = root.open_item(&target)?;
+            let id = konedrive_fs::placeholder::read_item_id(&item)
+                .map_err(|e| SyncError::Io(format!("{}: {e}", shown.display())))?;
+            Ok((id, shown.display().to_string()))
+        })
+        .await
+        .map_err(|e| SyncError::Io(format!("reading the item failed: {e}")))??;
+        let Some(id) = id else { return Err(SyncError::NotInOneDrive(shown)) };
+        let drive = self.drive.lock().unwrap().clone().ok_or(SyncError::NotSignedIn)?;
+        page_of(drive.item(&id).await, &shown)
+    }
+
+    /// `Files.WebUrl` of the account's folder itself: the address of the page
+    /// of the drive's root. One GET, as [`web_url`](Self::web_url).
+    pub async fn root_web_url(&self) -> Result<String, SyncError> {
+        let reg = self.require_registration()?;
+        let drive = self.drive.lock().unwrap().clone().ok_or(SyncError::NotSignedIn)?;
+        page_of(drive.root_item().await, &reg.root.path.display().to_string())
+    }
+
     /// The file's own state, or `not-managed` for anything that is not a
     /// plain file this daemon actually manages inside the current root —
     /// including a file outside the root altogether, per.
@@ -3692,6 +3733,21 @@ impl SyncService {
         })
         .await
         .unwrap_or_else(|_| NOT_MANAGED.to_owned())
+    }
+}
+
+/// The page's address out of OneDrive's answer about the item shown as `shown`.
+fn page_of(answer: Result<crate::drive::DriveItem, crate::drive::DriveError>, shown: &str) -> Result<String, SyncError> {
+    use crate::drive::DriveError;
+    match answer {
+        Ok(item) => item
+            .web_url
+            .filter(|url| !url.is_empty())
+            .ok_or_else(|| SyncError::Io(format!("OneDrive gave no address for the page of {shown}"))),
+        Err(DriveError::SignedOut) => Err(SyncError::NotSignedIn),
+        Err(DriveError::Transient(why)) => Err(SyncError::Unreachable(why)),
+        Err(DriveError::NotFound) => Err(SyncError::Io(format!("{shown} is not in OneDrive any more"))),
+        Err(other) => Err(SyncError::Io(format!("asking OneDrive for the page of {shown}: {other}"))),
     }
 }
 
@@ -8316,6 +8372,89 @@ mod tests {
         /// folder has been made to match the tree.
         async fn listed(service: &SyncService) {
             wait_until("the drive is listed into the folder", || service.items() == (2, 2, 0)).await;
+        }
+
+        /// OneDrive's answer about one item (or `root`), with the address of its page.
+        async fn mount_page(w: &World, route: &str, id: &str, url: &str) {
+            Mock::given(method("GET")).and(path(route))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": id, "webUrl": url})))
+                .mount(&w.server).await;
+        }
+
+        /// `WebUrl` (issue #53): the address of the page of a file, of a folder and of
+        /// the account's folder itself, each from one GET and nothing else.
+        #[tokio::test]
+        async fn web_url_asks_onedrive_for_the_items_page_with_one_get() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            mount_page(&w, "/me/drive/items/F", "F", "https://onedrive.example/f").await;
+            mount_page(&w, "/me/drive/items/D", "D", "https://onedrive.example/docs").await;
+            mount_page(&w, "/me/drive/root", "R", "https://onedrive.example/root").await;
+            let before = requests(&w).await;
+
+            let file = w.folder.path().join("docs/f.txt");
+            assert_eq!(service.web_url(&file).await.unwrap(), "https://onedrive.example/f");
+            assert_eq!(service.web_url(&w.folder.path().join("docs")).await.unwrap(), "https://onedrive.example/docs");
+            assert_eq!(service.root_web_url().await.unwrap(), "https://onedrive.example/root");
+
+            let asked: Vec<(String, String)> = w.server.received_requests().await.unwrap()[before..]
+                .iter()
+                .map(|r| (r.method.to_string(), r.url.path().to_owned()))
+                .collect();
+            let get = |route: &str| ("GET".to_owned(), route.to_owned());
+            assert_eq!(asked, [get("/me/drive/items/F"), get("/me/drive/items/D"), get("/me/drive/root")]);
+            assert_eq!(
+                konedrive_fs::placeholder::read_state(&std::fs::File::open(&file).unwrap()).unwrap(),
+                Some(konedrive_fs::placeholder::State::OnlineOnly),
+                "asking for the page downloads nothing"
+            );
+            service.stop_sync().await;
+        }
+
+        /// A file with no item id is not in OneDrive yet: refused by that name, and
+        /// OneDrive is not asked.
+        #[tokio::test]
+        async fn web_url_of_a_file_not_uploaded_yet_is_refused_without_asking() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            std::fs::set_permissions(w.folder.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+            let new = w.folder.path().join("new.txt");
+            std::fs::write(&new, b"new").unwrap();
+            konedrive_fs::placeholder::write_state(&std::fs::File::open(&new).unwrap(), konedrive_fs::placeholder::State::Hydrated).unwrap();
+            let before = requests(&w).await;
+
+            let refused = service.web_url(&new).await.unwrap_err();
+            assert!(matches!(refused, SyncError::NotInOneDrive(_)), "{refused:?}");
+            assert!(matches!(dbus::to_fault(refused), dbus::SyncFault::NotUploaded(_)));
+            assert_eq!(requests(&w).await, before);
+            service.stop_sync().await;
+        }
+
+        /// OneDrive answering 503 until the retries run out is `Unreachable`, not a
+        /// plain failure; an answer without an address, and an item gone, are failures.
+        #[tokio::test]
+        async fn web_url_says_when_onedrive_could_not_be_reached() {
+            let w = world().await;
+            let service = connected(&w, true).await;
+            service.register_root(w.folder.path()).await.unwrap();
+            listed(&service).await;
+            Mock::given(method("GET")).and(path("/me/drive/items/F"))
+                .respond_with(ResponseTemplate::new(503))
+                .mount(&w.server).await;
+            Mock::given(method("GET")).and(path("/me/drive/items/D"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "D"})))
+                .mount(&w.server).await;
+
+            let refused = service.web_url(&w.folder.path().join("docs/f.txt")).await.unwrap_err();
+            assert!(matches!(refused, SyncError::Unreachable(_)), "{refused:?}");
+            assert!(matches!(dbus::to_fault(refused), dbus::SyncFault::Unreachable(_)));
+            let refused = service.web_url(&w.folder.path().join("docs")).await.unwrap_err();
+            assert!(matches!(&refused, SyncError::Io(why) if why.contains("no address")), "{refused:?}");
+            service.stop_sync().await;
         }
 
         #[tokio::test]

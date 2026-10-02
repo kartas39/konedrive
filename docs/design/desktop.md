@@ -648,6 +648,35 @@ Refusals are explained by their error name; a batch refused because one path is 
 ancestor is explained with the daemon's own words, which name that path and folder, not the first
 path of the selection. The actions can be switched off in Dolphin's context-menu settings.
 
+**The section.** Whatever the plugin offers is one section of the menu itself, not a submenu: a
+separator whose text is "OneDrive" (`konedrive_section`), the entries, and a closing separator
+(`konedrive_section_end`). With nothing to offer it adds nothing. Whether the heading is drawn is
+the widget style's choice (limitations log K30).
+
+**Open in OneDrive** (`konedrive_open_online`, issue #53) is the section's last entry. It is
+offered for exactly one selected path, never for several:
+
+- an item the other two entries are offered for: enabled when it carries
+  `user.konedrive.item-id` (read with `lgetxattr`; the plugin still opens nothing), otherwise
+  disabled with the tooltip "Not in OneDrive yet.";
+- an account's folder itself — a directory that carries `user.konedrive.root` and lies in no
+  other account's folder: always enabled, and the section's only entry, since the other two are
+  not offered there. It opens the root of the drive.
+
+A click is one asynchronous `WebUrl(path)` call on `Files`, under the same rules as the other
+calls: no reply timeout, a stopped daemon is started, a path already waiting is not asked again.
+The daemon finds the account, reads the item's id from the path (opened as `Pin` opens it, so
+nothing is downloaded) and asks Graph for the item — `GET me/drive/items/{id}`, or
+`GET me/drive/root` for an account's folder itself — and answers its `webUrl`. The address is
+stored nowhere and asked for on every click (K28). The daemon opens no browser and changes
+nothing; the plugin opens the address with `QDesktopServices::openUrl`, and only an `https`
+address. Refusals are explained by name: `NotUploaded` (no item id), `NotSignedIn`,
+`Unreachable` (OneDrive did not answer), `OutsideRoot`, `NotManaged`, and `Failed` with the
+daemon's words (the item is gone from OneDrive, or the answer has no address).
+`konedrivectl sync open <path> [--print]` makes the same call and prints the address; without
+`--print` it also opens it, under the guard the sign-in page has (`KONEDRIVE_NO_BROWSER` unset and
+stdout a terminal).
+
 ## 11. Known limits
 
 The limitations log's sections 7 and 8 list them. The main ones: Dolphin still opens some files

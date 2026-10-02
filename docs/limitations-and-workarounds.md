@@ -2868,6 +2868,35 @@ attributes and never open it.
   downloads it (K1). Turning previews off for the folder avoids it. Before issue #80 such an item
   was asked for again after every sync cycle, thousands of times a day, each time in a transfer
   slot. `sync::thumbs::tests::a_406_refused_at_both_sizes_is_recorded`. open.
+- **K28. "Open in OneDrive" asks OneDrive for the address on every click.** LIMIT · by design
+  (issue #53). The address of an item's page (`webUrl`) is kept nowhere — not in the store, not on
+  the file — so `Files.WebUrl` makes one Graph request each time: the entry needs the network, and
+  the browser opens only when the answer is back, not at once. While OneDrive throttles (`429`,
+  `503`), the answer waits as long as the drive client's retries do (up to five attempts, each
+  waiting what OneDrive says, at most five minutes), and nothing in Dolphin shows that a request is
+  under way; then it is refused `Unreachable`. The same holds for `konedrivectl sync open`.
+  `sync::tests::onedrive::web_url_*`. open.
+- **K29. An item that is in OneDrive but not in the folder cannot be opened in OneDrive from
+  here.** LIMIT · reasoned. "Open in OneDrive" and `konedrivectl sync open` start from a path in
+  the local folder and its `user.konedrive.item-id`. A skipped item (`konedrivectl sync skipped`:
+  the Personal Vault, a shared folder, a OneNote notebook, a name too long for Linux) has no path
+  here, so there is nothing to click and nothing to name; it is reached from the page of the folder
+  that holds it. A file made here and not uploaded yet has no page either: the entry is disabled
+  ("Not in OneDrive yet."), or absent while the file has no state at all (K26), and the daemon
+  refuses `NotUploaded`. open.
+- **K30. Whether the menu section's heading "OneDrive" is drawn depends on the widget style.**
+  FRAGILE · reasoned, not checked by eye. The section is a separator action that carries the text
+  "OneDrive", the entries, and a closing separator. Qt leaves drawing a separator's text to the
+  style: Breeze draws it as a section title, and a style that does not draws a plain line, so the
+  section is then two plain separators around the entries with no heading. Where another plugin's
+  or Dolphin's own separator sits next to it, two lines may show side by side.
+  `actionplugintest::inTheContextMenuKioBuilds` checks the order and the text, not the drawing.
+  open.
+- **K31. "Open in OneDrive" opens only an `https` address.** Reasoned. The daemon's answer is
+  Graph's `webUrl` as it came; the plugin and `konedrivectl` hand it to the desktop only when it
+  is an `https` address, so that an answer of any other kind (a local file, another scheme) is
+  never opened. The plugin then says the page could not be opened; `konedrivectl` still prints
+  what it got. `actionplugintest::openInOneDriveOpensTheAddressTheDaemonAnswers`. open.
 
 ---
 

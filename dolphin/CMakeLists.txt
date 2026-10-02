@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.24)
 project(konedrive-dolphin VERSION 0.1.0 LANGUAGES CXX)
 
 # Dolphin integration: an overlay emblem for each file's state and pin, and
-# "Always keep on this device" / "Free up space" in the context menu. Neither
+# "Always keep on this device" / "Free up space" / "Open in OneDrive" in the context menu. Neither
 # plugin ever opens a file in the sync folder -- opening a placeholder
 # downloads it.
 

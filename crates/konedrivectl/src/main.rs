@@ -284,6 +284,15 @@ enum SyncCmd {
         #[arg(required = true)]
         paths: Vec<String>,
     },
+    /// Open the page of a file or folder in OneDrive's web interface, where it can be
+    /// shared and its versions seen; the account's folder itself opens the drive. The
+    /// address is printed either way. The path decides the account
+    Open {
+        path: String,
+        /// Only print the address; open nothing
+        #[arg(long)]
+        print: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -354,7 +363,8 @@ fn takes_no_account(command: &Cmd) -> Option<&'static str> {
                 | SyncCmd::State { .. }
                 | SyncCmd::Pin { .. }
                 | SyncCmd::Unpin { .. }
-                | SyncCmd::Free { .. },
+                | SyncCmd::Free { .. }
+                | SyncCmd::Open { .. },
         } => Some("the path decides the account"),
         Cmd::Sync { command: SyncCmd::Anyway { all: true } } => Some("`sync anyway --all` acts on every account"),
         _ => None,
@@ -950,6 +960,17 @@ async fn sync(daemon: &Daemon, option: Option<&str>, command: SyncCmd) -> anyhow
             println!("{}", konedrivectl::free_text(freed, bytes, busy, pinned));
             fail_if_holders_unhealthy(daemon, &absolute).await?;
         }
+        SyncCmd::Open { path, print } => {
+            let absolute = absolute_str(&path)?;
+            let files = FilesProxy::new(&daemon.connection).await?;
+            let result = files.web_url(&absolute).await;
+            let url = explained_paths(daemon, PathAction::Open, std::slice::from_ref(&absolute), result).await?;
+            println!("{url}");
+            // Only an address of the web is handed to the opener, whatever answered.
+            if !print && open_browser() && url.starts_with("https://") {
+                spawn_browser(&url);
+            }
+        }
         command => {
             let chosen = daemon.chosen(option).await?;
             let proxy = daemon.sync(&chosen.account.path).await?;
@@ -1191,7 +1212,8 @@ async fn folder_command(daemon: &Daemon, chosen: &Chosen, proxy: &FolderProxies<
         | SyncCmd::State { .. }
         | SyncCmd::Pin { .. }
         | SyncCmd::Unpin { .. }
-        | SyncCmd::Free { .. } => unreachable!("handled by `sync`"),
+        | SyncCmd::Free { .. }
+        | SyncCmd::Open { .. } => unreachable!("handled by `sync`"),
     }
     Ok(())
 }
@@ -1290,6 +1312,7 @@ enum PathAction {
     Pin,
     Unpin,
     Free,
+    Open,
 }
 
 impl PathAction {
@@ -1301,6 +1324,7 @@ impl PathAction {
             PathAction::Pin => SyncAction::Pin(named),
             PathAction::Unpin => SyncAction::Unpin(named),
             PathAction::Free => SyncAction::Free(named),
+            PathAction::Open => SyncAction::Open(named),
         }
     }
 }

@@ -20,6 +20,9 @@ enum class Operation {
     Unpin,
     /// "Free up space": calls FreeUp(paths).
     FreeUpSpace,
+    /// "Open in OneDrive": calls WebUrl(path) for the one path, and the
+    /// answer is the address to open.
+    OpenOnline,
 };
 
 /// Not D-Bus errors: the names under which a file that was not sent at all

@@ -289,6 +289,10 @@ removes it all again, apart from the helper.
     dismiss <path>` takes one off the list (the file itself stays where it was moved to).
   - `konedrivectl sync free-up-space` — send every downloaded file that is not in use back to
     online-only.
+  - `konedrivectl sync open <path> [--print]` — open the page of a file or folder in OneDrive's
+    web interface, where it can be shared and its versions seen; the account's folder itself
+    opens the drive. The address is always printed; `--print` only prints it. The path decides
+    the account.
   - `konedrivectl sync skipped` — what OneDrive has that did not make it into the folder, and
     why (the Personal Vault, a shared folder, a OneNote notebook, a name too long for Linux).
   - `konedrivectl sync refresh` — ask OneDrive for changes now. Changes made in OneDrive usually
@@ -462,8 +466,10 @@ systemd unit narrows that down.
 `dolphin/` holds two Dolphin plugins. Files in the sync folder get an emblem — a
 cloud when online-only, sync arrows while downloading or freeing up, a check
 mark when downloaded, a filled check when kept on this device — and their context
-menu offers **Always keep on this device** and **Free up space**, for files and
-folders. Emblems come from each file's
+menu offers, under the heading **OneDrive**, **Always keep on this device** and
+**Free up space**, for files and folders, and **Open in OneDrive** for one file
+or folder — or the account's folder itself — which opens its page in OneDrive's
+web interface in the browser. Emblems come from each file's
 `user.konedrive.state` and work with the daemon stopped; the menu actions ask
 the daemon, and say plainly when it is not running. Neither plugin ever
 opens a file in the sync folder. Dolphin itself still opens some, and that
@@ -514,7 +520,7 @@ cmake --build build/dolphin-system && sudo cmake --install build/dolphin-system
 This installs into `/usr/lib64/qt6/plugins/kf6/overlayicon/` and
 `.../kf6/kfileitemaction/`; `sudo xargs rm < build/dolphin-system/install_manifest.txt`
 removes it. The menu actions can be switched off in Dolphin under Configure
-Dolphin → Context Menu ("KOneDrive: Always Keep on This Device and Free up space").
+Dolphin → Context Menu ("KOneDrive: Always Keep on This Device, Free Up Space and Open in OneDrive").
 
 ## For developers
 
