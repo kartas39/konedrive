@@ -875,8 +875,10 @@ pub enum SyncError {
     /// have it yet, so it has no page there. `Files` answers it `NotUploaded`.
     #[error("{0} is not uploaded yet, so it has no page in OneDrive")]
     NotInOneDrive(String),
-    /// OneDrive did not answer (`WebUrl`): no network, or Graph kept refusing.
-    #[error("OneDrive could not be reached: {0}")]
+    /// OneDrive did not answer (`WebUrl`): no network, Graph kept refusing, the
+    /// secret storage is locked, or the answer could not be read. The message
+    /// is that cause alone; the clients put their own sentence in front of it.
+    #[error("{0}")]
     Unreachable(String),
     /// An argument no value of which makes sense (`SetIgnorePatterns`).
     #[error("{0}")]

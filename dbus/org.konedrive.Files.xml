@@ -82,7 +82,7 @@
          Refused NotManaged for a file of the user's own or a reserved name,
          NotUploaded for an item with no id (OneDrive does not have it yet),
          NotSignedIn for an account that is signed out, Unreachable when
-         OneDrive does not answer, and Failed otherwise (the item is gone
+         OneDrive does not answer (the message is the cause), and Failed otherwise (the item is gone
          from OneDrive, or the answer carries no address). -->
     <method name="WebUrl">
       <arg name="path" type="s" direction="in"/>

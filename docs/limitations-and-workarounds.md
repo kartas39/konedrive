@@ -2874,7 +2874,11 @@ attributes and never open it.
   the browser opens only when the answer is back, not at once. While OneDrive throttles (`429`,
   `503`), the answer waits as long as the drive client's retries do (up to five attempts, each
   waiting what OneDrive says, at most five minutes), and nothing in Dolphin shows that a request is
-  under way; then it is refused `Unreachable`. The same holds for `konedrivectl sync open`.
+  under way; then it is refused `Unreachable`, with the cause after the sentence. The same holds
+  for `konedrivectl sync open`. While an "Open in OneDrive" request for a path waits, "Always Keep
+  on This Device" and "Free Up Space" for that path are refused as already waiting ("has not yet
+  answered an earlier request"), and the other way round: the plugin keeps one set of waiting
+  paths for all three (K6).
   `sync::tests::onedrive::web_url_*`. open.
 - **K29. An item that is in OneDrive but not in the folder cannot be opened in OneDrive from
   here.** LIMIT · reasoned. "Open in OneDrive" and `konedrivectl sync open` start from a path in
@@ -2892,7 +2896,7 @@ attributes and never open it.
   or Dolphin's own separator sits next to it, two lines may show side by side.
   `actionplugintest::inTheContextMenuKioBuilds` checks the order and the text, not the drawing.
   open.
-- **K31. "Open in OneDrive" opens only an `https` address.** Reasoned. The daemon's answer is
+- **K31. "Open in OneDrive" opens only an `https` address.** LIMIT · reasoned. The daemon's answer is
   Graph's `webUrl` as it came; the plugin and `konedrivectl` hand it to the desktop only when it
   is an `https` address, so that an answer of any other kind (a local file, another scheme) is
   never opened. The plugin then says the page could not be opened; `konedrivectl` still prints

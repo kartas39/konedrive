@@ -257,6 +257,10 @@ The calls on one file or on chosen paths, each routed by path to the account who
 | `Pin(as paths) → u queued` | "Always keep on this device" ([pinning.md](pinning.md) §3) |
 | `Unpin(as paths) → u unpinned` | takes each path's own pin off ([pinning.md](pinning.md) §5) |
 | `FreeUp(as paths) → (u files, t bytes, u busy, u skipped_pinned)` | "Free up space" ([pinning.md](pinning.md) §5) |
+| `WebUrl(s path) → s url` | "Open in OneDrive": the address of the item's page in OneDrive's web interface, asked from Graph each time (§10.2) |
+
+`WebUrl` alone also answers for an account's folder itself, with the address of the drive's root;
+every other method treats that path as in no account's folder.
 
 `Pin`, `Unpin` and `FreeUp` route every path before anything changes, and their counts are summed
 over the accounts.
@@ -671,7 +675,8 @@ nothing is downloaded) and asks Graph for the item — `GET me/drive/items/{id}`
 stored nowhere and asked for on every click (K28). The daemon opens no browser and changes
 nothing; the plugin opens the address with `QDesktopServices::openUrl`, and only an `https`
 address. Refusals are explained by name: `NotUploaded` (no item id), `NotSignedIn`,
-`Unreachable` (OneDrive did not answer), `OutsideRoot`, `NotManaged`, and `Failed` with the
+`Unreachable` (OneDrive did not answer; the sentence is followed by the daemon's message, the
+cause), `OutsideRoot`, `NotManaged`, and `Failed` with the
 daemon's words (the item is gone from OneDrive, or the answer has no address).
 `konedrivectl sync open <path> [--print]` makes the same call and prints the address; without
 `--print` it also opens it, under the guard the sign-in page has (`KONEDRIVE_NO_BROWSER` unset and

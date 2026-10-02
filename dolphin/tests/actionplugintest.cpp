@@ -497,7 +497,9 @@ private Q_SLOTS:
             return QStringLiteral("org.konedrive.Error.") + QLatin1String(name);
         };
         QTest::newRow("NotUploaded") << named("NotUploaded") << decoy << QStringLiteral("“doc.bin” is not uploaded yet, so it has no page in OneDrive.");
-        QTest::newRow("Unreachable") << named("Unreachable") << decoy << QStringLiteral("OneDrive could not be reached.");
+        QTest::newRow("Unreachable, with the cause") << named("Unreachable") << QStringLiteral("the secret storage is locked")
+                                                     << QStringLiteral("OneDrive could not be reached: the secret storage is locked");
+        QTest::newRow("Unreachable, no message") << named("Unreachable") << QString() << QStringLiteral("OneDrive could not be reached.");
         QTest::newRow("NotSignedIn") << named("NotSignedIn") << decoy
                                      << QStringLiteral("The account is not signed in, so OneDrive cannot be asked for the page of “doc.bin”. Sign in and try again.");
         QTest::newRow("OutsideRoot") << named("OutsideRoot") << decoy << QStringLiteral("“doc.bin” is not inside any of KOneDrive's folders, so it has no page in OneDrive.");

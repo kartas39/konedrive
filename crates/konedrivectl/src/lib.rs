@@ -1088,7 +1088,12 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
     let folder = if root.is_empty() { String::new() } else { format!(" ({root})") };
     match (refusal, action) {
         // `sync open` (issue #53): OneDrive is asked for the address each time.
-        (Some("Unreachable"), _) => "OneDrive could not be reached".to_owned(),
+        // The daemon's message is the cause (no network, a locked secret
+        // storage, an answer that cannot be read), shown when there is one.
+        (Some("Unreachable"), _) if detail.is_empty() || detail.starts_with(ERROR_PREFIX) => {
+            "OneDrive could not be reached".to_owned()
+        }
+        (Some("Unreachable"), _) => format!("OneDrive could not be reached: {detail}"),
         (Some("NotSignedIn"), Open(_)) => format!(
             "the account is not signed in, so OneDrive cannot be asked for the page of {path}. Sign in \
              with `{prefix} login` and try again"
@@ -2399,6 +2404,17 @@ mod tests {
         for bad in ["", "0", "soon", "2x", "h", "30m5", "999999999999"] {
             assert_eq!(parse_duration(bad), None, "{bad:?}");
         }
+    }
+
+    /// `sync open` refused `Unreachable`: the sentence, then the daemon's own
+    /// message when there is one — the cause is not always the network.
+    #[test]
+    fn unreachable_is_followed_by_the_daemons_cause() {
+        let name = format!("{}.Unreachable", konedrive_dbus::ERROR_PREFIX);
+        let told = |detail: &str| refusal_text(SyncAction::Open("/f/a.txt"), Some(&name), detail, "/f");
+        assert_eq!(told("the secret storage is locked"), "OneDrive could not be reached: the secret storage is locked");
+        assert_eq!(told(""), "OneDrive could not be reached");
+        assert_eq!(told(&name), "OneDrive could not be reached", "an error with no message");
     }
 
     #[test]

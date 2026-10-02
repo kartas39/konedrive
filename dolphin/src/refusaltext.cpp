@@ -153,8 +153,11 @@ QString refusalText(Operation operation, const Failure &failure)
         }
     }
     // "Open in OneDrive" (WebUrl): OneDrive is asked each time.
+    // The daemon's message is the cause -- no network, a locked secret
+    // storage, an answer that cannot be read -- shown when there is one.
     if (refusal == QLatin1String("Unreachable")) {
-        return i18nc("@info", "OneDrive could not be reached.");
+        return failure.message.isEmpty() ? i18nc("@info", "OneDrive could not be reached.")
+                                         : i18nc("@info", "OneDrive could not be reached: %1", failure.message);
     }
     if (operation == Operation::OpenOnline) {
         if (refusal == QLatin1String("NotUploaded")) {
