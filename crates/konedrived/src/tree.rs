@@ -38,7 +38,10 @@ pub mod reconcile;
 /// other version is rebuilt from a full listing, so a
 /// version 1 or 2 store is rebuilt once, and loses nothing but a listing: a
 /// version 2 folder was read-only and has nothing waiting to upload.
-pub const SCHEMA_VERSION: &str = "3";
+/// Version 4 is version 3 once the local objects of every row below a row
+/// that is not placed are forgotten (issue #104): a version 3 store is
+/// brought to it in place, never rebuilt ([`migrate_3_to_4`]).
+pub const SCHEMA_VERSION: &str = "4";
 
 /// How many activity events the store keeps: the oldest go.
 pub const ACTIVITY_KEPT: usize = 200;
@@ -441,6 +444,31 @@ fn skip_reason(item: &DriveItem, name: &str) -> Option<SkipReason> {
     None
 }
 
+/// Version 3 to 4 (issue #104), in one transaction: every row below a row
+/// that is not placed forgets its local object, in `items` and `staging`,
+/// each by its own tree. A build before #104 kept them when a folder
+/// stopped being placed, and once the folder was placed again they read as
+/// objects gone — deletes in OneDrive.
+fn migrate_3_to_4(conn: &Connection) -> Result<(), TreeError> {
+    let mut batch = String::from("BEGIN IMMEDIATE;");
+    for table in ["items", "staging"] {
+        batch.push_str(&format!(
+            "WITH RECURSIVE below(id, depth) AS (
+                 SELECT c.id, 1 FROM {table} c JOIN {table} p ON c.parent_id = p.id WHERE p.placement != 'placed'
+                 UNION
+                 SELECT c.id, b.depth + 1 FROM {table} c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
+             UPDATE {table} SET local_handle = NULL WHERE local_handle IS NOT NULL AND id IN (SELECT id FROM below);"
+        ));
+    }
+    batch.push_str(&format!("UPDATE meta SET value = '{SCHEMA_VERSION}' WHERE key = 'schema_version'; COMMIT;"));
+    if let Err(e) = conn.execute_batch(&batch) {
+        let _ = conn.execute_batch("ROLLBACK");
+        return Err(e.into());
+    }
+    tracing::info!("the tree store is at version {SCHEMA_VERSION}: what was below a folder not placed forgot its local objects");
+    Ok(())
+}
+
 /// Whether `TreeStore::open` should discard what is on disk and rebuild empty:
 /// only for an unknown schema version, or a file SQLite itself reports as not
 /// a database or corrupt. Permission errors, other I/O failures,
@@ -568,9 +596,13 @@ impl TreeStore {
         if has_meta == 0 {
             return Err(TreeError::Schema(None));
         }
-        let version: Option<String> = conn
+        let mut version: Option<String> = conn
             .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| row.get(0))
             .optional()?;
+        if version.as_deref() == Some("3") {
+            migrate_3_to_4(&conn)?;
+            version = Some(SCHEMA_VERSION.to_owned());
+        }
         if version.as_deref() != Some(SCHEMA_VERSION) {
             return Err(TreeError::Schema(version));
         }
@@ -1171,11 +1203,15 @@ fn write(tx: &rusqlite::Transaction<'_>, source: Source, row: &Row) -> Result<()
             let was = placement_in_items(tx, &row.id)?;
             upsert(tx, Table::Items, row)?;
             if turns_placed(was, row) {
-                tx.prepare_cached("UPDATE items SET local_handle = NULL WHERE id = ?1")?.execute([&row.id])?;
+                forget_subtrees(tx, std::slice::from_ref(&row.id), true, &[])?;
             }
         }
         Source::Whole => {
             upsert(tx, Table::Staging, row)?;
+            // What is below it, by `items`: the swap would give it back.
+            if turns_placed(placement_in_items(tx, &row.id)?, row) {
+                forget_subtrees(tx, std::slice::from_ref(&row.id), false, &[])?;
+            }
         }
         Source::Overlay => {
             tx.prepare_cached(&format!("INSERT OR IGNORE INTO staging ({COLUMNS}) SELECT {COLUMNS} FROM items WHERE id = ?1"))?
@@ -1183,10 +1219,57 @@ fn write(tx: &rusqlite::Transaction<'_>, source: Source, row: &Row) -> Result<()
             tx.prepare_cached("DELETE FROM staging_gone WHERE id = ?1")?.execute([&row.id])?;
             upsert(tx, Table::Staging, row)?;
             if turns_placed(placement_in_items(tx, &row.id)?, row) {
-                tx.prepare_cached("UPDATE staging SET local_handle = NULL WHERE id = ?1")?.execute([&row.id])?;
+                // The row itself, and everything below it in both tables:
+                // the rows below that the delta does not stage show through
+                // from `items` at the swap.
+                forget_subtrees(tx, std::slice::from_ref(&row.id), true, &[])?;
             }
         }
     }
+    Ok(())
+}
+
+/// The subtrees at `roots` — `roots` themselves when `with_roots`, and
+/// everything `items` or `staging` has below them — forget their local
+/// objects in both tables, and so does every row recording one of
+/// `handles` (issue #104): seeded from a temporary table, one statement per
+/// table, whatever the number of roots.
+pub(crate) fn forget_subtrees(tx: &rusqlite::Transaction<'_>, roots: &[String], with_roots: bool, handles: &[konedrive_fs::handle::FileHandle]) -> Result<(), TreeError> {
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS forget_roots (id TEXT PRIMARY KEY);
+         CREATE TEMP TABLE IF NOT EXISTS forget_handles (handle BLOB PRIMARY KEY);
+         DELETE FROM forget_roots; DELETE FROM forget_handles;",
+    )?;
+    {
+        let mut root = tx.prepare_cached("INSERT OR IGNORE INTO forget_roots (id) VALUES (?1)")?;
+        for id in roots {
+            root.execute([id])?;
+        }
+        let mut handle = tx.prepare_cached("INSERT OR IGNORE INTO forget_handles (handle) VALUES (?1)")?;
+        for h in handles {
+            handle.execute([h.encode()])?;
+        }
+    }
+    let first = if with_roots { "SELECT id, 0 FROM forget_roots" } else { "SELECT c.id, 1 FROM tree c JOIN forget_roots r ON c.parent_id = r.id" };
+    for table in ["items", "staging"] {
+        if !roots.is_empty() {
+            tx.execute(
+                &format!(
+                    "WITH RECURSIVE tree(id, parent_id) AS (SELECT id, parent_id FROM items UNION SELECT id, parent_id FROM staging),
+                     below(id, depth) AS (
+                         {first}
+                         UNION
+                         SELECT c.id, b.depth + 1 FROM tree c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
+                     UPDATE {table} SET local_handle = NULL WHERE local_handle IS NOT NULL AND id IN (SELECT id FROM below)"
+                ),
+                [],
+            )?;
+        }
+        if !handles.is_empty() {
+            tx.execute(&format!("UPDATE {table} SET local_handle = NULL WHERE local_handle IN (SELECT handle FROM forget_handles)"), [])?;
+        }
+    }
+    tx.execute_batch("DELETE FROM forget_roots; DELETE FROM forget_handles;")?;
     Ok(())
 }
 
@@ -1200,9 +1283,10 @@ fn placement_in_items(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<Option
 }
 
 /// Whether `row` turns placed again over a row of `items` that was not
-/// (`was`). Such a row carries no local object (issue #104): what was on
-/// disk when it stopped being placed was taken off, and its placement
-/// records the object it is placed as.
+/// (`was`). Such a row, and every row below it, carries no local object
+/// (issue #104): what was on disk when it stopped being placed was taken
+/// off, and its placement records the objects it is placed as. Forgotten
+/// as it is staged, so that the placement that follows records them anew.
 fn turns_placed(was: Option<Placement>, row: &Row) -> bool {
     row.placement == Placement::Placed && was.is_some_and(|was| was != Placement::Placed)
 }
@@ -2017,7 +2101,7 @@ mod tests {
         assert_eq!(store.delta_link().unwrap(), None, "rebuilt: the next cycle lists in full");
         assert!(store.get(Table::Items, "A").unwrap().is_none());
         assert!(store.outbox_rows().unwrap().is_empty(), "the outbox is there, empty");
-        assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some("3"));
+        assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
     }
 
     /// The inode an item was placed as survives the swap that ends a cycle,
@@ -2046,6 +2130,35 @@ mod tests {
         store.set_local_handle("B", Some(&handle)).unwrap();
         store.commit_page(&[root(), file("B", "R", "b")], "next-2").unwrap();
         assert_eq!(store.local_handle("B").unwrap(), Some(handle));
+    }
+
+    /// Review fix 2 of issue #104: a version 3 store, as a build before
+    /// #104 left it — a folder not placed whose children keep their local
+    /// objects — is brought to version 4 in place on open: the children
+    /// forget them, the rest of the store stays.
+    #[test]
+    fn a_version_3_store_forgets_the_objects_below_a_folder_not_placed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tree.sqlite");
+        let handle = |n: u8| konedrive_fs::handle::FileHandle { kind: 1, bytes: vec![n; 4] };
+        {
+            let mut store = TreeStore::open(&path).unwrap();
+            let Change::Upsert(placed) = folder("D", "R", "long") else { unreachable!() };
+            let skipped = Row { placement: Placement::Skipped(SkipReason::NameTooLong), ..placed };
+            store.begin_staging(false).unwrap();
+            store.stage(&[root(), Change::Upsert(skipped), folder("F", "D", "f"), file("G", "F", "g"), file("T", "R", "t")]).unwrap();
+            store.commit_staging("link-1").unwrap();
+            for (id, n) in [("D", 1), ("F", 2), ("G", 3), ("T", 4)] {
+                store.set_local_handle(id, Some(&handle(n))).unwrap();
+            }
+            store.set_meta("schema_version", Some("3")).unwrap();
+        }
+        let store = TreeStore::open(&path).unwrap();
+        assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
+        assert_eq!(store.local_handle("F").unwrap(), None);
+        assert_eq!(store.local_handle("G").unwrap(), None, "every level below");
+        assert_eq!(store.local_handle("T").unwrap(), Some(handle(4)), "a placed item keeps its object");
+        assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"), "not rebuilt");
     }
 
     /// The last 200 events are kept; the oldest go.

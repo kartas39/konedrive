@@ -201,9 +201,15 @@ struct Run {
     /// The inodes items were placed as, not recorded yet: written
     /// [`PLACED_BATCH`] at a time, and at the end of the run (issue #39).
     placed: Vec<(String, konedrive_fs::handle::FileHandle)>,
+    /// Files whose download the drain stopped (issue #104).
+    stopped: Vec<super::InodeKey>,
     /// Read-write mode: items this run found no longer placed (issue #104):
     /// examined first, and removed by a later cycle at the earliest.
     unplaced: HashSet<String>,
+}
+
+fn survey_stopped(survey: &rw::Survey) -> Vec<super::InodeKey> {
+    survey.stopped_keys().to_vec()
 }
 
 /// Placed items recorded in one transaction (issue #39; a guess).
@@ -714,9 +720,14 @@ impl Materializer {
                 .unwrap_or_else(|| PathBuf::from(HOLDING).join(&name));
             // What goes is forgotten first, and its downloads stop (issue
             // #104); what is rescued keeps its content, out of the folder.
-            self.forget_before_removing(&holding, &name, true)?;
+            let survey = self.forget_before_removing(&holding, &name, true)?;
             let deleted = run.out.deleted;
-            self.delete_tree(&holding, &name, &shown, run)?;
+            run.stopped = survey_stopped(&survey);
+            let result = self.delete_tree(&holding, &name, &shown, run);
+            if result.is_err() {
+                self.settle_stopped(&holding, &name, &survey);
+            }
+            result?;
             // One event for what went, however much was inside it; what was
             // rescued instead is a conflict, not a removal.
             if run.out.deleted > deleted {
@@ -734,7 +745,15 @@ impl Materializer {
         match self.disk.probe(dir, name)? {
             Probe::Absent => Ok(()),
             Probe::Unmanaged { .. } => self.rescue(dir, name, shown, run),
-            Probe::Managed { id, .. } if self.claimed_elsewhere(&id)? => self.set_aside(dir, name, shown, run),
+            Probe::Managed { id, .. } if self.claimed_elsewhere(&id)? => {
+                // It survives, out of the folder: a download stopped in it is
+                // a placeholder again first (issue #104).
+                if !run.stopped.is_empty() {
+                    let survey = rw::Survey::stopped_only(run.stopped.clone());
+                    self.settle_stopped(dir, name, &survey);
+                }
+                self.set_aside(dir, name, shown, run)
+            }
             Probe::Managed { is_dir: true, .. } => {
                 let sub = self.disk.open_subdir(dir, name)?;
                 for child in self.disk.list(&sub)? {
@@ -1470,6 +1489,44 @@ mod tests {
         fx.store.call_blocking(move |s| s.commit_staging("link-3")).unwrap();
         let placed = konedrive_fs::handle::FileHandle::of(&File::open(fx.path("docs/deep/g.txt")).unwrap()).unwrap();
         assert_eq!(handle("G"), Some(placed), "placed again, with its new object");
+    }
+
+    /// Review fix 6 of issue #104, read-only: a file of another account being
+    /// downloaded inside a folder removed in OneDrive is set aside alive, as
+    /// always — but its download is stopped first and it is a placeholder
+    /// again, not partly filled.
+    #[test]
+    fn a_stopped_download_set_aside_for_another_account_is_a_placeholder_again() {
+        let fx = fixture();
+        fx.listed(&tree(), false);
+        let at = fx.path("docs/theirs.bin");
+        std::fs::write(&at, vec![7u8; 8192]).unwrap();
+        let file = File::open(&at).unwrap();
+        placeholder::write_item_id(&file, "Y").unwrap();
+        placeholder::write_state(&file, State::Hydrating).unwrap();
+        let key = crate::sync::InodeKey::of(&file).unwrap();
+        drop(file);
+        let locks = InodeLocks::new();
+        let rt = fx.runtime.as_ref().unwrap();
+        let (held, holding) = std::sync::mpsc::channel();
+        let fill = rt.spawn({
+            let locks = locks.clone();
+            async move {
+                let guard = locks.lock(key).await;
+                held.send(()).unwrap();
+                guard.cancelled().await;
+            }
+        });
+        holding.recv().unwrap();
+        let claimed: Claimed = std::sync::Arc::new(|id: &str| id == "Y");
+        { fx.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[Change::Delete("D".into())]) }).unwrap(); }
+        let applied = Materializer { locks: locks.clone(), claimed: Some(claimed), ..fx.materializer(false, None) }.apply(Scope::Changed(vec!["D".into()])).unwrap();
+        rt.block_on(fill).unwrap();
+        let aside = applied.rescued.iter().find(|r| r.original.ends_with("theirs.bin")).expect("set aside").rescued.clone();
+        let file = File::open(&aside).unwrap();
+        assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly), "a placeholder again");
+        assert_eq!(file.metadata().unwrap().blocks(), 0, "with nothing of the stopped download in it");
+        assert_eq!(placeholder::read_item_id(&file).unwrap().as_deref(), Some("Y"), "still the other account's");
     }
 
     use std::os::unix::fs::FileExt as _;

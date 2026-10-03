@@ -73,9 +73,28 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
         cancel_session(e, &stale).await?;
     }
     e.upload_progress(row.seq, 0, snap.size);
-    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
-    let name = wanted_name(&row, &local);
-    let job = Job { e, disk, row: &row, found: &found, file: &file, snap, parent: &parent, name: &name, session };
+    // An item this folder does not place (issue #104, decision 1): its
+    // content goes up into the item where OneDrive has it, whatever the
+    // local path says — never a rename or a move.
+    // So too an object of an item that is leaving, placed again elsewhere
+    // meanwhile: its content goes up into the item, wherever that is now.
+    let held_out = match (&row.item_id, row.kind) {
+        (Some(id), OutboxKind::Update) => {
+            let (id, rel) = (id.clone(), row.rel.clone());
+            e.store().call(move |s| Ok(s.held_out(&id)? || s.leaving()?.iter().any(|(_, at)| rel.starts_with(at)))).await?
+        }
+        _ => false,
+    };
+    let at_base = row.base.as_ref().and_then(|b| Some((b.parent.clone()?, b.name.clone()?))).filter(|_| held_out);
+    let (parent, name) = match at_base {
+        Some(at) => at,
+        None => {
+            let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
+            (parent, wanted_name(&row, &local))
+        }
+    };
+    let content_only = held_out && row.base.as_ref().is_some_and(|b| b.parent.as_deref() == Some(parent.as_str()) && b.name.as_deref() == Some(name.as_str()));
+    let job = Job { e, disk, row: &row, found: &found, file: &file, snap, parent: &parent, name: &name, session, content_only };
     match row.kind {
         OutboxKind::Create => job.create().await,
         _ => job.update().await,
@@ -170,6 +189,10 @@ struct Job<'a> {
     /// A session opened for exactly this content (the same snapshot), to
     /// resume.
     session: Option<String>,
+    /// The item is not placed here (`TreeStore::held_out`): its content
+    /// only, into the item where OneDrive has it — no rename, no move, no
+    /// local object recorded (issue #104).
+    content_only: bool,
 }
 
 impl Job<'_> {
@@ -395,11 +418,13 @@ impl Job<'_> {
         let remote_parent = remote.parent_reference.as_ref().and_then(|p| p.id.clone());
         let remote_name = remote.name.clone().unwrap_or_default();
         let same_content = remote.quick_xor_hash() == Some(hash.as_str());
-        if same_content && remote_parent.as_deref() == Some(self.parent) && remote_name == self.name {
+        if same_content && (self.content_only || (remote_parent.as_deref() == Some(self.parent) && remote_name == self.name)) {
             return self.commit(remote).await;
         }
         if same_content || (remote.c_tag.is_some() && remote.c_tag == base.ctag) {
-            let moved_there = remote_parent != base.parent || Some(remote_name.as_str()) != base.name.as_deref();
+            // Not placed here: OneDrive's place is the row's, and nothing on
+            // disk follows it (issue #104).
+            let moved_there = !self.content_only && (remote_parent != base.parent || Some(remote_name.as_str()) != base.name.as_deref());
             let _tree = self.e.cfg.tree_lock.lock().await;
             let followed = if moved_there { follow_cloud(self.e, self.disk, self.found, &remote).await? } else { None };
             let fresh = Base { etag: remote.e_tag.clone(), ctag: base.ctag.clone(), parent: remote_parent.clone(), name: Some(remote_name.clone()) };
@@ -843,7 +868,9 @@ impl Job<'_> {
         self.e.fault(Fault::AfterCommitStep1)?;
         self.e.space_used(self.snap.size);
         let event = self.e.event(kind::UPLOADED, &self.found.rel, crate::sync::activity::human_size(self.snap.size));
-        commit_row(self.e, self.row, &answer, self.found.inode.handle.as_ref(), self.parent, event).await?;
+        // An item not placed here records no local object (issue #104).
+        let handle = self.found.inode.handle.as_ref().filter(|_| !self.content_only);
+        commit_row(self.e, self.row, &answer, handle, self.parent, event).await?;
         Ok(Outcome::Done)
     }
 }

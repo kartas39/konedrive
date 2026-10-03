@@ -64,6 +64,14 @@ pub const MASS_DELETE: &str = "mass-delete";
 /// `local_skipped`'s reason for what is on another device than the folder
 /// (a nested Btrfs subvolume, a mount): never uploaded (F72).
 pub const OTHER_DEVICE: &str = "other-device";
+/// `local_skipped`'s reason for a file of ours whose konedrive state cannot
+/// be read, inside a folder that is no longer placed (issue #104): the
+/// folder stays on disk until it can be read.
+pub const UNKNOWN_STATE: &str = "unknown-state";
+/// `local_skipped`'s reason for another filesystem mounted inside a folder
+/// that is no longer placed (issue #104): the folder stays on disk until it
+/// is unmounted.
+pub const MOUNTED_INSIDE: &str = "mounted-inside";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ExamineError {
@@ -171,6 +179,7 @@ impl Examiner<'_> {
         };
         let handles_current = super::liveness::handles_current(self.store, &root);
         let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
+        let leaving = self.store.call_blocking(|s| s.leaving())?.into_iter().map(|(_, rel)| rel).collect();
         if let Some(progress) = progress {
             progress.started();
         }
@@ -183,6 +192,7 @@ impl Examiner<'_> {
             root_path,
             handles_current,
             rows,
+            leaving,
             entries: Vec::new(),
             at: HashMap::new(),
             whole: BTreeSet::new(),
@@ -276,6 +286,10 @@ struct Run<'e, 'a> {
     handles_current: bool,
     /// The live rows before this examination, and what they are looked up by.
     rows: Rows,
+    /// Where objects of items no longer placed stay until they are removed
+    /// (issue #104): what is at or below them is never uploaded as new,
+    /// never stripped, never moved in OneDrive.
+    leaving: Vec<PathBuf>,
     entries: Vec<Entry>,
     at: HashMap<PathBuf, usize>,
     whole: BTreeSet<PathBuf>,
@@ -551,6 +565,11 @@ impl Run<'_, '_> {
         };
         self.expected.insert(id.to_owned(), expect.clone());
         Ok(expect)
+    }
+
+    /// Whether `rel` is at or below an object that is leaving (issue #104).
+    fn under_leaving(&self, rel: &Path) -> bool {
+        self.leaving.iter().any(|at| rel.starts_with(at))
     }
 
     fn push(&mut self, e: Entry) -> usize {
@@ -872,6 +891,7 @@ impl Run<'_, '_> {
     fn classify(&mut self, batch: &Batch) -> Result<(), ExamineError> {
         let mut by_id: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         let mut unnamed: Vec<usize> = Vec::new();
+        let mut leaving: Vec<usize> = Vec::new();
         for i in 0..self.entries.len() {
             let e = &self.entries[i];
             // 1. The daemon's own names; a user's `.konedrive-*` is listed.
@@ -897,14 +917,32 @@ impl Run<'_, '_> {
             // the helper cannot protect what is placed there (F72).
             if e.dev != self.root_dev {
                 let rel = e.rel.clone();
-                self.skip(&rel, OTHER_DEVICE);
+                // Inside a folder that is leaving, it keeps the folder on
+                // disk, and says so (issue #104).
+                let reason = if self.under_leaving(&rel) { MOUNTED_INSIDE } else { OTHER_DEVICE };
+                self.skip(&rel, reason);
                 continue;
             }
             match &e.id {
+                // An object that is leaving, or inside one: never the item
+                // where it is placed now, never a stranger (issue #104).
+                Some(_) if self.under_leaving(&e.rel) => leaving.push(i),
                 Some(id) => by_id.entry(id.clone()).or_default().push(i),
                 None => unnamed.push(i),
             }
         }
+        // An object inside a leaving folder whose id the base does not know
+        // is a stranger there as anywhere: its content goes up as new.
+        let mut ours = Vec::new();
+        for i in leaving {
+            let id = self.entries[i].id.clone().expect("only entries with an id");
+            if self.base_row(&id)?.is_some() {
+                ours.push(i);
+            } else {
+                by_id.entry(id).or_default().push(i);
+            }
+        }
+        let leaving = ours;
         // 6. Who is who, before anything is decided by place: a directory's
         // id says what its entries' parent is.
         let mut found: Vec<(String, usize)> = Vec::new();
@@ -916,6 +954,15 @@ impl Run<'_, '_> {
         found.sort_by_key(|(_, i)| depth(&self.entries[*i].rel));
         for (id, i) in found {
             self.found(&id, i, batch)?;
+        }
+        // What is leaving uploads its content into its item, nothing more.
+        for i in leaving {
+            self.consumed.insert(i);
+            let e = self.entries[i].clone();
+            let Some(id) = e.id.clone() else { continue };
+            if let Some(base) = self.base_row(&id)? {
+                self.found_leaving(&id, &base, &e, batch)?;
+            }
         }
         // 7. What is missing from where it was.
         self.missing()?;
@@ -1228,8 +1275,9 @@ impl Run<'_, '_> {
             }
         }
         let at_base = d.target_parent.as_deref() == base.parent_id.as_deref() && d.target_name.as_deref() == Some(base.name.as_str());
-        // In place, unchanged or unknown, with no row: nothing to record.
-        if d.kind == OutboxKind::Move && at_base && self.rows.of_item(id).next().is_none() {
+        // In place, unchanged or unknown, with no row — or only rows of an
+        // object of it that is leaving (issue #104): nothing to record.
+        if d.kind == OutboxKind::Move && at_base && self.rows.of_item(id).all(|r| self.under_leaving(&r.rel)) {
             return Ok(());
         }
         self.detections.push(d);
@@ -1244,6 +1292,12 @@ impl Run<'_, '_> {
     /// where OneDrive has it.
     fn found_leaving(&mut self, id: &str, base: &Row, e: &Entry, batch: &Batch) -> Result<(), ExamineError> {
         if e.ty != Type::File {
+            return Ok(());
+        }
+        if matches!(e.state, StateAttr::Absent | StateAttr::Corrupt) {
+            // Whether it holds anything cannot be told: listed, and its
+            // folder stays (issue #104).
+            self.skip(&e.rel, UNKNOWN_STATE);
             return Ok(());
         }
         let mut d = self.detection(OutboxKind::Update, id, base, e, e.ctag.as_deref());

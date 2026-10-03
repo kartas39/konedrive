@@ -395,6 +395,8 @@ fn what_is_removed_is_forgotten_before_it_goes() {
     assert_eq!(handle("T"), None, "the object moved in was taken off too: forgotten");
     let staged = fx.store.call_blocking(move |s| s.get(Table::Staging, "T")).unwrap();
     assert!(staged.is_some(), "still in OneDrive");
+    fx.cycle(&[], false).unwrap();
+    assert_eq!(id_at(&fx.path("top.txt")).as_deref(), Some("T"), "placed again where OneDrive has it");
 }
 
 /// Issue #104, point 3: an object that will not go fails the cycle, as any

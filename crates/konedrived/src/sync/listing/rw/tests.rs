@@ -84,6 +84,11 @@ fn helper(socket_path: &Path) {
 
 /// OneDrive holds `docs/f.txt` ("one") and `top.txt` ("top").
 pub(super) async fn world() -> World {
+    world_in(None).await
+}
+
+/// [`world`], with its folder in a temporary directory under `base`.
+pub(super) async fn world_in(base: Option<&Path>) -> World {
     let graph = FakeGraph::start().await;
     graph.with(|c| {
         c.add(FakeItem {
@@ -101,7 +106,10 @@ pub(super) async fn world() -> World {
         c.add_file("F", "D", "f.txt", b"one");
         c.add_file("T", ROOT, "top.txt", b"top");
     });
-    let dir = tempfile::tempdir().unwrap();
+    let dir = match base {
+        Some(base) => tempfile::tempdir_in(base).unwrap(),
+        None => tempfile::tempdir().unwrap(),
+    };
     let folder = dir.path().canonicalize().unwrap().join("OneDrive");
     std::fs::create_dir(&folder).unwrap();
     let root_id = "7e3a9c1d-2b4f-4a6e-8d0c-1f2e3d4c5b6a".to_owned();

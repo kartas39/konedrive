@@ -507,6 +507,33 @@ mod tests {
         assert_eq!(s.local_handle("T").unwrap(), None, "the swap gives none back");
     }
 
+    /// Review fix 7 of issue #104: many subtree roots and handles at once —
+    /// thousands, some unknown — are forgotten together, each subtree whole.
+    #[test]
+    fn forgetting_takes_many_roots_and_handles_at_once() {
+        let mut s = TreeStore::in_memory().unwrap();
+        let mut changes = vec![Change::Root(root())];
+        for n in 0..300 {
+            changes.push(Change::Upsert(folder(&format!("D{n}"), "R", &format!("d{n}"))));
+            changes.push(Change::Upsert(file(&format!("F{n}"), &format!("D{n}"), "f", "c1")));
+        }
+        changes.push(Change::Upsert(file("K", "R", "k", "c1")));
+        s.begin_staging(false).unwrap();
+        s.stage(&changes).unwrap();
+        s.commit_staging("L1").unwrap();
+        for n in 0..300u16 {
+            s.set_local_handle(&format!("F{n}"), Some(&FileHandle { kind: 1, bytes: n.to_be_bytes().to_vec() })).unwrap();
+        }
+        s.set_local_handle("K", Some(&handle(200))).unwrap();
+        let mut roots: Vec<String> = (0..300).map(|n| format!("D{n}")).collect();
+        roots.extend((0..2000).map(|n| format!("unknown-{n}")));
+        s.forget_local_objects(&roots, &[handle(200), handle(201)]).unwrap();
+        for n in [0, 150, 299] {
+            assert_eq!(s.local_handle(&format!("F{n}")).unwrap(), None);
+        }
+        assert_eq!(s.local_handle("K").unwrap(), None, "by its handle");
+    }
+
     /// Issue #104, decision 5: a row that turns placed again over an `items`
     /// row that is not placed carries no local object — staged by a delta,
     /// swapped in whole, landed from what waited, or applied by a folder

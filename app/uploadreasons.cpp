@@ -50,6 +50,12 @@ QString uploadReasonText(const QString &reason)
     if (reason == QLatin1String("other-device")) {
         return i18n("On another filesystem mounted inside the folder: never uploaded.");
     }
+    if (reason == QLatin1String("mounted-inside")) {
+        return i18n("Another filesystem is mounted inside a folder no longer synced here: the folder stays until it is unmounted.");
+    }
+    if (reason == QLatin1String("unknown-state")) {
+        return i18n("A file whose KOneDrive state cannot be read, in a folder no longer synced here: the folder stays until it is fixed or removed.");
+    }
     if (reason == QLatin1String("hard-link")) {
         return i18n("A file with other hard links: not uploaded.");
     }

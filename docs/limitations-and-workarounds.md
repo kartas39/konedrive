@@ -1672,7 +1672,12 @@ application must never read zeros where real content should be.
   the store forgets the local object of everything removed (the item, what the tree has below it, and
   every object found there, by its own id and handle), so no examination can prove one of them gone.
   An object that will not go (an I/O error, a directory the daemon may not write) fails the cycle, and
-  nothing of it is committed; a filesystem mounted inside the removed folder is not entered, so its
+  the cycle's tree rows are not committed: `items` keeps the item, and the next cycle tries again. What
+  was done before the removal is committed already and stays — the objects forgotten, the outbox rows
+  dropped, the `leaving` rows — and that is safe: a forgotten object makes the item unproven, never
+  deleted, and is recorded again when it is found in place; a dropped row would only have uploaded or
+  moved something into what OneDrive removed; a download stopped in a file that stays is a
+  placeholder again (F191). A filesystem mounted inside the removed folder is not entered, so its
   mount point fails the cycle until it is unmounted. `resyncChangesUploadDifferences` (§3.7) alone
   still keeps downloads and local work the new listing left out, uploads them again as new and makes
   their folder again in OneDrive: that listing does not say the items were removed. What is lost is
@@ -2549,27 +2554,42 @@ application must never read zeros where real content should be.
   gone). A download in progress inside it is stopped, and its opener gets `ENOENT`. Accepted with the
   user. DESIGN · measured (`sync::listing::rw::stale_tests::d_…`, `…e_…`) · open.
 - **F188. A folder that stopped being placed stays on disk while its uploads run**
-  (`konedrived/src/sync/materialize/rw.rs` `unplace`, `leaving_rw`; `tree/reconcile.rs` table
-  `leaving`; issue #104) — an item that OneDrive still has but this folder no longer places (a name
-  too long, a reserved name, the Personal Vault, shared, OneNote, unsupported) has its placement
-  committed and its local objects forgotten at once, and is listed in `Skipped()`; its object stays
-  where it was, is handed to the examination, and goes whole at a later cycle once no outbox row has a
-  place at or below it and nothing in it would be uploaded (a new file, a changed download). Until then
-  every poll runs a cycle for it. A row the outbox cannot finish (blocked, kept back) keeps it on disk
-  for as long as the row stays. While it waits, the examination never moves the item in OneDrive to
-  where it is here, nor records its object again: only content changed here goes up, into the item where
-  OneDrive has it; something moved out of it here is not moved in OneDrive either, and is removed here
-  later (its changes uploaded first). Placed again where it is, it is the item's again; placed again
-  elsewhere, it gets a new placeholder there and the old object goes once its uploads are done.
-  DESIGN · measured (`sync::listing::rw::stale_tests::a_new_file_in_a_folder_that_stops_being_placed_…`,
-  `…a_blocked_row_keeps_…`, `…a_…`, `…b_…`, `…c_…`) · open.
+  (`konedrived/src/sync/materialize/rw.rs` `unplace`, `leaving_rw`, `keeps_leaving`;
+  `tree/reconcile.rs` table `leaving`; `sync/local/examine.rs` `found_leaving`; issue #104) — an item
+  OneDrive still has but this folder no longer places (a name too long, a reserved name, the Personal
+  Vault, shared, OneNote, unsupported) has its placement committed and its local objects forgotten at
+  once, is listed in `Skipped()`, and its object is recorded in `leaving` where it stays. From a later
+  cycle on, each cycle examines it itself, after its reconcile: the object goes whole only when that
+  examination records and holds back nothing and no outbox row has a place at or below it — so a file
+  moved in within the watcher's quiet spell, another account's included, goes up before the folder
+  goes. Until then every poll runs a cycle for it, and an examination of the folder. What keeps it is
+  shown: a content row (a blocked or kept-back one keeps it as long as it stays, listed where blocked
+  rows are), a file whose state cannot be read (`unknown-state`), another filesystem mounted inside
+  (`mounted-inside`), both in `NotUploaded()`. `move` and `delete` rows from before for items in it are
+  dropped: the daemon never moves or deletes for what is leaving. An object recorded in `leaving`, and
+  everything of ours in it, is never uploaded as new nor stripped, even once its item is placed again
+  elsewhere: its changed content goes up into the item, wherever OneDrive has it, without a rename or
+  a move and without recording its object (an object whose id the base does not know is a stranger
+  there as anywhere, and goes up as new). Its `leaving` row goes only when it is removed, or placed
+  again where it is. Something moved out of a leaving folder here is not followed: only a Full scan
+  finds it, and the Full reconcile then records it as leaving where it is. DESIGN · measured
+  (`sync::listing::rw::stale_tests::a_new_file_in_a_folder_that_stops_being_placed_…`,
+  `…a_blocked_row_keeps_…`, `…a_leaving_folder_placed_again_elsewhere_…`,
+  `…a_file_moved_in_from_another_account_…`, `…what_keeps_a_leaving_folder_is_shown_…`,
+  `…a_filesystem_mounted_inside_keeps_…`, `…a_change_to_an_item_no_longer_placed_never_renames_it_…`) ·
+  open.
 - **F189. A row placed again carries no local object** (`konedrived/src/tree.rs` `write`,
   `commit_staging`; `tree/reconcile.rs` `land_deferred`; issue #104) — a row that turns placed over an
   `items` row that is not placed drops whatever object `items` recorded, in a delta's overlay, a full
   listing's swap, a landed deferred change and the deferred changes a folder turned read-only takes.
-  The placement records the object it is placed as; one found already in place is recorded then. A
+  Every row below it, by either tree, forgets its object too, as it is staged, so the placement that
+  follows records the objects it places or finds. A store a build before #104 left (version 3) is
+  brought to version 4 on open: every row below a row that is not placed forgets its object, once; a
+  build before #104 that opens a version 4 store rebuilds it from a full listing. A
   skipped item whose object is really on disk (the outbox's temporary name, F82 (5)) is unproven
-  meanwhile, never deleted. DESIGN · measured (`tree::reconcile::tests::a_row_placed_again_…`) · open.
+  meanwhile, never deleted. DESIGN · measured (`tree::reconcile::tests::a_row_placed_again_…`,
+  `tree::tests::a_version_3_store_forgets_…`,
+  `sync::listing::rw::stale_tests::a_store_left_with_stale_objects_below_…`) · open.
 - **F190. The window between a cycle's reconcile and its swap is tested through a hook**
   (`konedrived/src/sync/listing/rw.rs` `Writes::before_swap`, tests only; issue #104) — a Full local
   scan run after the reconcile took something off the disk and before `staging` is swapped in is how
@@ -2584,8 +2604,20 @@ application must never read zeros where real content should be.
   without being stopped (an inode the table does not know) writes into the unlinked inode until it
   ends. The stop is told through the inode's lock slot: a fill waiting for the same inode is stopped
   too, and so would be one of an unrelated file that reuses the inode number while the slot still has
-  a user. SHORTCUT · measured (`sync::listing::rw::stale_tests::e_…`,
-  `sync::materialize::tests::a_read_only_removal_forgets_first_and_stops_a_download`) · open.
+  a user. Where the file survives — set aside for another account in a read-only folder, or left by a
+  removal that failed — the reconcile waits (up to 10 s) for the fill to let go of the inode and turns
+  the file back into a placeholder, its partial content and checkpoint gone; one whose fill does not
+  let go in time is left as it is, logged. A hardlink outside the folder is out of reach as before
+  (Z3). SHORTCUT · measured (`sync::listing::rw::stale_tests::e_…`,
+  `sync::materialize::tests::a_read_only_removal_forgets_first_and_stops_a_download`,
+  `…a_stopped_download_set_aside_for_another_account_is_a_placeholder_again`) · open.
+- **F192. An item moved here into a folder that OneDrive then removes is removed here, and stays in
+  OneDrive where it was** (`konedrived/src/sync/materialize/rw.rs` `remove_in_place`; issue #104,
+  decision 2) — a file or folder the user moved into a folder before the examination recorded the
+  move, when OneDrive removes that folder, goes from the disk with it; its move is never sent (the row,
+  if any, is dropped with the folder's), so OneDrive keeps the item where it was, and the next cycle
+  places it there again. What was only here (changes not uploaded) is lost with the folder (F187).
+  DESIGN · measured (`sync::materialize::rw::tests::what_is_removed_is_forgotten_before_it_goes`) · open.
 ---
 
 ## 5. Provisional numbers

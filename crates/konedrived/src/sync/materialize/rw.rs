@@ -225,6 +225,19 @@ pub(super) struct Survey {
     handles: Vec<konedrive_fs::handle::FileHandle>,
     /// The files, for their fills.
     files: Vec<crate::sync::InodeKey>,
+    /// The files whose fill was told to stop.
+    stopped: Vec<crate::sync::InodeKey>,
+}
+
+impl Survey {
+    /// A survey that knows only which fills were stopped.
+    pub(super) fn stopped_only(stopped: Vec<crate::sync::InodeKey>) -> Self {
+        Survey { stopped, ..Survey::default() }
+    }
+
+    pub(super) fn stopped_keys(&self) -> &[crate::sync::InodeKey] {
+        &self.stopped
+    }
 }
 
 /// Whether an object the examination meets without an item id would be
@@ -427,13 +440,17 @@ impl Materializer {
         };
         let placed = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed);
         let base_placed = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Items, &id) })?.is_some_and(|l| l.placed);
+        // An object that stays while it leaves (issue #104), whether or not
+        // its item is placed again elsewhere since.
+        let leaving = self.store.call_blocking(|s| s.leaving())?.into_iter().any(|(left, at)| left == id && at == entry.rel);
+        if leaving && staged.is_some() {
+            return Ok(Was::Leaving);
+        }
         if !base_placed {
-            // Not placed by the base: an object that stays while it leaves
-            // (issue #104) — or one a stop left before it was recorded so.
-            let leaving = self.store.call_blocking(|s| s.leaving())?.into_iter().any(|(left, at)| left == id && at == entry.rel);
+            // Not placed by the base — or one a stop left before it was
+            // recorded as leaving.
             return Ok(match (staged.is_some(), placed) {
                 (false, _) => Was::Removed,
-                _ if leaving => Was::Leaving,
                 (true, false) => Was::Unplaced,
                 // Placed by the tree, and not by the base: as for anything
                 // away from its base place, the examination decides first.
@@ -638,8 +655,12 @@ impl Materializer {
             return Ok(Removal::Gone);
         }
         let survey = self.forget_before_removing(&dir, name, true)?;
-        run.out.taken.extend(survey.ids);
-        let outcome = self.remove_whole(rw.upload_differences.then_some(rw), &dir, name, &rel, run)?;
+        run.out.taken.extend(survey.ids.iter().cloned());
+        let outcome = self.remove_whole(rw.upload_differences.then_some(rw), &dir, name, &rel, run);
+        if outcome.is_err() {
+            self.settle_stopped(&dir, name, &survey);
+        }
+        let outcome = outcome?;
         let dropped = self.store.call_blocking({ let rel = rel.clone(); move |s| s.outbox_drop_under(&rel) })?;
         if !dropped.is_empty() {
             tracing::info!("{} was removed from OneDrive: {} change(s) waiting there are dropped", rel.display(), dropped.len());
@@ -659,9 +680,10 @@ impl Materializer {
         let ids = if by_id { survey.ids.clone() } else { Vec::new() };
         let handles = survey.handles.clone();
         self.store.call_blocking(move |s| s.forget_local_objects(&ids, &handles))?;
-        for key in &survey.files {
-            if self.locks.cancel(*key) {
+        for key in survey.files.clone() {
+            if self.locks.cancel(key) {
                 tracing::info!("a download into a file being removed is stopped");
+                survey.stopped.push(key);
             }
         }
         Ok(survey)
@@ -821,46 +843,119 @@ impl Materializer {
                 self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
                 continue;
             }
-            let rows = self.store.call_blocking({ let rel = rel.clone(); move |s| s.outbox_at_or_under(&rel) })?;
-            if !rows.is_empty() {
-                tracing::debug!("{} waits for {} upload(s) before it goes", rel.display(), rows.len());
-                continue;
+            // The daemon never moves or deletes in OneDrive for what is
+            // leaving: such rows from before go; only content keeps it.
+            let mut ids = self.store.call_blocking({ let id = id.clone(); move |s| s.descendants(Table::Items, &id) })?;
+            ids.push(id.clone());
+            let dropped = self.store.call_blocking({ let rel = rel.clone(); move |s| s.outbox_drop_moves(&ids, &rel) })?;
+            if !dropped.is_empty() {
+                tracing::info!("{} is no longer placed here: {} move(s) or delete(s) waiting for it are dropped", rel.display(), dropped.len());
             }
-            let dev = nix::sys::stat::fstat(dir.as_fd()).map_err(std::io::Error::from)?.st_dev;
-            if self.waits_to_upload(rw, &dir, &name, dev)? {
-                run.out.examine.push((rel.clone(), is_dir));
+            if self.keeps_leaving(rw, &rel, is_dir)? {
                 continue;
             }
             // Placed elsewhere now, the item's own object is the new one: only
             // what is here is forgotten.
             let placed_elsewhere = located.is_some_and(|l| l.placed);
-            self.forget_before_removing(&dir, &name, !placed_elsewhere)?;
-            self.remove_whole(None, &dir, &name, &rel, run)?;
+            let survey = self.forget_before_removing(&dir, &name, !placed_elsewhere)?;
+            let removed = self.remove_whole(None, &dir, &name, &rel, run);
+            if removed.is_err() {
+                self.settle_stopped(&dir, &name, &survey);
+            }
+            removed?;
             tracing::info!("{} is no longer placed here, and nothing in it waits to be uploaded: removed", rel.display());
             self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
         }
         Ok(())
     }
 
-    /// Whether something at or below `dir/name` would be uploaded by an
-    /// examination: a new file or folder, or a download changed here.
-    fn waits_to_upload(&self, rw: &Rw, dir: &File, name: &OsStr, dev: libc::dev_t) -> Result<bool, ApplyError> {
-        match self.disk.probe(dir, name)? {
-            Probe::Absent => Ok(false),
-            Probe::Unmanaged { .. } => Ok(uploadable(rw, dir, name)?),
-            Probe::Managed { is_dir: false, .. } => Ok(self.local_work(&self.disk.open_file(dir, name)?)),
-            Probe::Managed { is_dir: true, .. } => {
-                let sub = self.disk.open_subdir(dir, name)?;
-                if nix::sys::stat::fstat(sub.as_fd()).map_err(std::io::Error::from)?.st_dev != dev {
-                    return Ok(false);
-                }
-                for child in self.disk.list(&sub)? {
-                    if self.waits_to_upload(rw, &sub, &child, dev)? {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+    /// Whether what is leaving at `rel` stays on disk for now (review fixes
+    /// 4 and 5 of issue #104): an examination of it, run here in this cycle,
+    /// records or holds back something; an outbox row has a place at or
+    /// below it; or it holds what cannot be told or removed — a file whose
+    /// state cannot be read, another filesystem mounted inside — which the
+    /// examination lists as not uploaded, with its reason.
+    fn keeps_leaving(&self, rw: &Rw, rel: &Path, is_dir: bool) -> Result<bool, ApplyError> {
+        let mut batch = crate::sync::local::Batch::new();
+        if let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) {
+            batch.name(parent, name);
+        }
+        if is_dir {
+            batch.tree(rel);
+        }
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        let examined = crate::sync::local::Examiner {
+            disk: &self.disk,
+            store: &self.store,
+            liveness: &crate::sync::local::NoLiveness,
+            ignore: &rw.ignore,
+            locks: &self.locks,
+            now,
+        }
+        .examine(&batch)
+        .map_err(|e| ApplyError::Io(format!("{} could not be examined before it goes: {e}", rel.display())))?;
+        if !examined.applied.queued.is_empty() || !examined.recheck.is_empty() || !examined.undecided.is_empty() {
+            tracing::debug!("{} waits: its examination recorded or held back something", rel.display());
+            return Ok(true);
+        }
+        let (rows, skipped) = self.store.call_blocking({ let rel = rel.to_path_buf(); move |s| Ok((s.outbox_at_or_under(&rel)?, s.local_skipped()?)) })?;
+        if !rows.is_empty() {
+            tracing::debug!("{} waits for {} upload(s) before it goes", rel.display(), rows.len());
+            return Ok(true);
+        }
+        use crate::sync::local::examine::{MOUNTED_INSIDE, UNKNOWN_STATE};
+        if let Some(held) = skipped.iter().find(|k| k.rel.starts_with(rel) && (k.reason == MOUNTED_INSIDE || k.reason == UNKNOWN_STATE)) {
+            tracing::info!("{} stays on disk: {} ({})", rel.display(), held.rel.display(), held.reason);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    /// After a removal that failed: a file whose download was stopped for it
+    /// and is still here is a placeholder again, never partly filled
+    /// (review fix 6 of issue #104).
+    pub(super) fn settle_stopped(&self, dir: &File, name: &OsStr, survey: &Survey) {
+        if survey.stopped.is_empty() {
+            return;
+        }
+        let mut files = Vec::new();
+        let dev = match nix::sys::stat::fstat(dir.as_fd()) {
+            Ok(stat) => stat.st_dev,
+            Err(_) => return,
+        };
+        self.files_below(dir, name, dev, &mut files);
+        for file in files {
+            let Ok(key) = crate::sync::InodeKey::of(&file) else { continue };
+            if !survey.stopped.contains(&key) {
+                continue;
             }
+            // The fill lets go of the lock once it has stopped.
+            let guard = self.runtime.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(10), self.locks.lock(key)).await });
+            match guard {
+                Ok(_guard) => crate::sync::source::back_to_placeholder(&file),
+                Err(_) => tracing::warn!("a stopped download did not let go of its file in time; it is left as it is"),
+            }
+        }
+    }
+
+    /// The files at or below `dir/name`, opened, not into another filesystem.
+    fn files_below(&self, dir: &File, name: &OsStr, dev: libc::dev_t, out: &mut Vec<File>) {
+        match self.disk.probe(dir, name) {
+            Ok(Probe::Managed { is_dir: false, .. } | Probe::Unmanaged { is_dir: false }) => {
+                if let Ok(file) = self.disk.open_file(dir, name) {
+                    out.push(file);
+                }
+            }
+            Ok(Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true }) => {
+                let Ok(sub) = self.disk.open_subdir(dir, name) else { return };
+                if nix::sys::stat::fstat(sub.as_fd()).map(|s| s.st_dev) != Ok(dev) {
+                    return;
+                }
+                for child in self.disk.list(&sub).unwrap_or_default() {
+                    self.files_below(&sub, &child, dev, out);
+                }
+            }
+            _ => {}
         }
     }
 
