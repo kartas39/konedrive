@@ -760,6 +760,24 @@ examination holds, so none of them sees another's changes half made. The outbox,
 for a cycle at its start and whenever the network comes back, so the base catches up with OneDrive
 before any guard is sent (limitations log F117).
 
+**The order of the locks.** A folder's tree lock is taken before its lifecycle lock (the lock that
+guards the registration, [sync.md](sync.md) §6.3), never while holding it: a cycle takes the tree
+lock at staging and the lifecycle lock, as a reader, at the reconcile; a forced switch to
+read-only drops the rows of a running read-write folder under the tree lock first, then the
+lifecycle lock as a reader. The lifecycle lock is fair, so a writer waiting for it keeps new
+readers out: with the two orders mixed, a cycle holding the tree lock, a reader holding the
+lifecycle lock and a writer between them would wait for each other for good. A file's inode lock
+comes after the tree lock (an outbox commit, a replacement). Whoever holds the lifecycle lock only
+tries a file's lock, or waits for it for a bounded time (a removal's stopped downloads); Free up
+space takes the file's lock, then the lifecycle lock as a reader. What holds the tree lock alone
+(an outbox commit, an examination, a replacement, `RestoreDeletes`) never waits for the lifecycle
+lock.
+
+One caller takes the tree lock while it holds the lifecycle lock: the change of the mode, and the
+forced drop on a folder that is read-only already, which hold it as a writer with the folder's
+sync stopped. No cycle runs then, and the forced drop on a running folder — the only other caller
+of both locks — is kept out by a lock of the switch's own, taken before either.
+
 **An idle cycle.** A cycle whose delta is empty, with no deferred change that can go (each still
 has an outbox row), no outbox commit since the last cycle and nothing placed without a local object
 on record, stages nothing and only stores the new link. Asking that reads the deferred changes, the

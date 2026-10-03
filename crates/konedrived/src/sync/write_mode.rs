@@ -76,6 +76,9 @@ impl SyncService {
             return;
         }
         let was_syncing = self.stop_tasks().await;
+        // Before `lifecycle`: no drop of the outbox holds the tree lock while this switch,
+        // which takes it below with `lifecycle` held, is under way (`switching`).
+        let _switching = self.switching.lock().await;
         let _lifecycle = self.lifecycle.write().await;
         let was_syncing = self.stop_tasks().await || was_syncing;
         if was_syncing {
@@ -416,14 +419,24 @@ impl SyncService {
     /// mark (`user.konedrive.sync`). A rename half-done in OneDrive under a temporary name stays:
     /// dropped, the item would stay under that name, and its local object
     /// would go.
+    ///
+    /// Takes the tree lock, so the caller holds `lifecycle` for writing with the folder's
+    /// tasks stopped, and `switching`: nothing that holds the tree lock then waits for
+    /// `lifecycle` (`docs/design/writes.md` §9). A caller whose sync runs takes the tree lock
+    /// first, and calls [`drop_outbox_under`](Self::drop_outbox_under).
     async fn drop_outbox(&self) {
+        let tree = self.tree_lock.lock().await;
+        self.drop_outbox_under(tree).await;
+    }
+
+    /// [`drop_outbox`](Self::drop_outbox) with the tree lock taken by the caller, before
+    /// `lifecycle`. Under the tree lock: a cycle's swap must not give a moved-out item back
+    /// the object it forgets here.
+    async fn drop_outbox_under(&self, tree: tokio::sync::MutexGuard<'_, ()>) {
         let store = self.store.lock().unwrap().clone();
         let root = self.registration().map(|reg| reg.root);
         let (Some(store), Some(root)) = (store, root) else { return };
         let (dropping, marked) = (store.clone(), root.clone());
-        // Under the tree lock: a cycle's swap must not give a moved-out item back the object
-        // it forgets here.
-        let tree = self.tree_lock.lock().await;
         let dropped = tokio::task::spawn_blocking(move || {
             let rows = dropping.call_blocking(move |s| {
                 let mut rows = upload::move_out::drop_rows(s)?;
@@ -589,9 +602,15 @@ impl PendingUploads for SyncService {
     /// deferred is the base's, and the first cycle is a Full reconcile.
     async fn drop_pending_uploads(&self) {
         self.stop_outbox().await;
+        // The mode stays as it is read here until this is done.
+        let _switching = self.switching.lock().await;
         if self.mode() == Mode::ReadWrite {
+            // The sync runs on: the tree lock first, then `lifecycle`, as its cycles take
+            // them (`docs/design/writes.md` §9). The other way round, a cycle holding the
+            // tree lock and a writer waiting for `lifecycle` between the two never end.
+            let tree = self.tree_lock.lock().await;
             let _lifecycle = self.lifecycle.read().await;
-            self.drop_outbox().await;
+            self.drop_outbox_under(tree).await;
             self.drop_at_read_only.store(true, Ordering::SeqCst);
             return;
         }
