@@ -1036,6 +1036,66 @@ impl TreeStore {
         rows_under(&self.conn, rel)
     }
 
+    /// What is leaving at `rel` is never moved or deleted in OneDrive by the
+    /// daemon (issue #104): the `move` and `delete` rows whose local path is
+    /// `rel` or below it go, but for one the worker is running. A row the
+    /// user's own move out of it made — its path elsewhere — stays, and is
+    /// carried out. What went.
+    pub fn outbox_drop_moves(&mut self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
+        let rows: Vec<OutboxRow> = self
+            .outbox_at_or_under(rel)?
+            .into_iter()
+            .filter(|row| row.state != OutboxState::Running && matches!(row.kind, OutboxKind::Move | OutboxKind::Delete))
+            .collect();
+        let tx = self.conn.transaction()?;
+        for row in &rows {
+            tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+        }
+        tx.commit()?;
+        Ok(rows)
+    }
+
+    /// Items `ids` were removed in OneDrive while their objects waited inside
+    /// something leaving (issue #104, decision 2): their rows go, but for
+    /// one the worker is running. What went.
+    pub fn outbox_drop_items(&mut self, ids: &[String]) -> Result<Vec<OutboxRow>, TreeError> {
+        let ids: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let rows: Vec<OutboxRow> = all_rows(&self.conn)?
+            .into_iter()
+            .filter(|row| row.state != OutboxState::Running && row.item_id.as_deref().is_some_and(|id| ids.contains(id)))
+            .collect();
+        let tx = self.conn.transaction()?;
+        for row in &rows {
+            tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+        }
+        tx.commit()?;
+        Ok(rows)
+    }
+
+    /// Rows at `rel` or below it.
+    pub fn outbox_at_or_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
+        let mut rows = rows_under(&self.conn, rel)?;
+        rows.extend(all_rows(&self.conn)?.into_iter().filter(|row| row.rel == rel));
+        rows.sort_by_key(|row| row.seq);
+        Ok(rows)
+    }
+
+    /// What OneDrive removed at `rel` was taken off the disk (issue #104):
+    /// the rows that would upload, create or move something there or below
+    /// it have nothing left to send, and go — not one the worker is running,
+    /// whose commit meets OneDrive's answer, nor a removal, which the cycle's
+    /// [`outbox_drop_removed`](Self::outbox_drop_removed) settles. What went.
+    pub fn outbox_drop_under(&mut self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
+        let rows: Vec<OutboxRow> =
+            self.outbox_at_or_under(rel)?.into_iter().filter(|row| row.state != OutboxState::Running && !row.kind.removes()).collect();
+        let tx = self.conn.transaction()?;
+        for row in &rows {
+            tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+        }
+        tx.commit()?;
+        Ok(rows)
+    }
+
     /// Every row's blockers: the live rows it waits for (the module's four
     /// rules), computed for all rows at once, as the worker did before issue
     /// #38: what the tests hold the point queries of [`pick`] to.
@@ -1370,6 +1430,21 @@ impl TreeStore {
         for table in [Table::Items, Table::Staging] {
             self.conn.execute(&format!("UPDATE {} SET local_handle = NULL", table.name()), [])?;
         }
+        Ok(())
+    }
+
+    /// What the daemon is about to take off the disk itself (issue #104):
+    /// the subtrees at `roots` — by `items` and by the new tree in `staging`
+    /// — forget their local objects, in both tables, and so does every row
+    /// that records one of `handles`, the objects themselves: one statement
+    /// per table for the lot. Done before anything is removed, in one
+    /// transaction: an examination
+    /// that then misses one of them finds it unproven, never gone, and a row
+    /// placed again later carries no object that is not there.
+    pub fn forget_local_objects(&mut self, roots: &[String], handles: &[FileHandle]) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        super::forget_subtrees(&tx, roots, true, handles)?;
+        tx.commit()?;
         Ok(())
     }
 

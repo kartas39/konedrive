@@ -48,8 +48,8 @@ pub struct Writes {
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
     /// For conflict copies (§6): `name-<machine>.ext`.
     pub machine_name: String,
-    /// The account's ignore list: an ignored name is no local work that
-    /// makes a folder removed in OneDrive come back.
+    /// The account's ignore list: an ignored name is no upload a folder that
+    /// stopped being placed waits for.
     pub ignore: crate::sync::local::ignore::SharedIgnore,
     /// Says when the watcher has examined the folder once (its Full local
     /// scan): the folder's first cycle waits for it (§3.3). `None`, or a
@@ -70,6 +70,11 @@ pub struct Writes {
     ///
     /// [`TreeStore::outbox_drop_removed`]: crate::tree::TreeStore::outbox_drop_removed
     pub dropped_removed: Arc<dyn Fn(Vec<OutboxRow>) + Send + Sync>,
+    /// Tests only: run on the reconcile's thread after the folder was
+    /// reconciled and before `staging` is swapped in — what an examination
+    /// running at that moment sees.
+    #[cfg(test)]
+    pub before_swap: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Writes {
@@ -207,6 +212,8 @@ impl Listing {
         let (machine, examine) = (writes.machine_name.clone(), Arc::clone(&writes.examine));
         let dropped_removed = Arc::clone(&writes.dropped_removed);
         let ignore = writes.ignore.read().unwrap_or_else(|p| p.into_inner()).clone();
+        #[cfg(test)]
+        let before_swap = writes.before_swap.clone();
         tokio::task::spawn_blocking(move || {
             let _held = held;
             if let Some((record, id)) = drive {
@@ -235,7 +242,8 @@ impl Listing {
                 rescue_into: rescue_base(&root.path, &preferred).join(rescue_stamp(SystemTime::now())),
                 cancel,
                 rw: Some(plan.clone()),
-                // Read-write mode removes no object whose id the base does not know (F115).
+                // Read-write mode sets nothing aside: an object whose id the base does not
+                // know is left alone (F115), or goes with what OneDrive removed (F116).
                 claimed: None,
             };
             let changed = matches!(scope, Scope::Changed(_));
@@ -259,6 +267,7 @@ impl Listing {
             applied.examine = first.examine;
             first.recreated.append(&mut applied.recreated);
             applied.recreated = first.recreated;
+            applied.taken.extend(first.taken);
             let said = match commit {
                 Commit::Swap { link, listing } => {
                     // What the disk does not show yet keeps its base; its
@@ -266,17 +275,21 @@ impl Listing {
                     let changed = store.call_blocking(move |s| s.changed_ids())?;
                     let defer: Vec<String> = changed
                         .iter()
-                        .filter(|id| !plan.removing.contains(*id) && (plan.held.contains(*id) || applied.unsettled.contains(*id)))
+                        .filter(|id| !plan.removing.contains(*id) && !applied.taken.contains(*id) && (plan.held.contains(*id) || applied.unsettled.contains(*id)))
                         .cloned()
                         .collect();
                     let deferred: std::collections::HashSet<&String> = defer.iter().collect();
                     // Only the content waits where the disk took the rest.
                     let content: Vec<String> = changed
                         .iter()
-                        .filter(|id| !plan.removing.contains(*id) && !deferred.contains(id) && applied.content_waits.contains(*id))
+                        .filter(|id| !plan.removing.contains(*id) && !applied.taken.contains(*id) && !deferred.contains(id) && applied.content_waits.contains(*id))
                         .cloned()
                         .collect();
                     drop(deferred);
+                    #[cfg(test)]
+                    if let Some(hook) = &before_swap {
+                        hook();
+                    }
                     if !defer.is_empty() || !content.is_empty() {
                         tracing::debug!("{} change(s) wait for the folder to take them", defer.len() + content.len());
                     }
@@ -293,7 +306,8 @@ impl Listing {
                 }
             };
             if !applied.recreated.is_empty() {
-                // Rows into a folder made again wait for its `mkdir` (F82 (4)).
+                // Rows into a folder made again (`resyncChangesUploadDifferences`
+                // only, F116) wait for its `mkdir`.
                 let recreated = applied.recreated.clone();
                 if let Err(e) = store.call_blocking(move |s| s.outbox_detach_parents(&recreated)) {
                     tracing::warn!("cannot let the outbox wait for folders made again: {e}");
@@ -336,3 +350,5 @@ impl Listing {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod stale_tests;

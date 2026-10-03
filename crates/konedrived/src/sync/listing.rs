@@ -293,6 +293,7 @@ impl Reconciled {
             copies,
             examine,
             recreated,
+            taken,
         } = page.applied;
         let all = &mut self.applied;
         all.created += created;
@@ -308,6 +309,7 @@ impl Reconciled {
         all.copies.extend(copies);
         all.examine.extend(examine);
         all.recreated.extend(recreated);
+        all.taken.extend(taken);
         self.full |= page.full;
     }
 }

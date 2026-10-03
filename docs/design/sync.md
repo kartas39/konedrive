@@ -265,7 +265,7 @@ reconcile leaves alone whatever has one waiting to upload ([writes.md](writes.md
 | New folder | a directory with its item id, marked by the helper before anything is placed in it (§7.3) |
 | New file | a placeholder with its true size and time, item id, cTag, `online-only` ([hydration.md](hydration.md) §2.4) |
 | Rename or move, file or folder | one `rename(2)`; attributes travel with the inode, and a folder's contents move with it |
-| Delete | the file or folder is removed; a program holding a file open keeps reading its copy. Anything holding local work is rescued first |
+| Delete | the file or folder is removed; a program holding a file open keeps reading its copy, and a download into it is stopped. In a read-only folder anything holding local work is rescued first; in a read-write folder everything under the item goes, local work included ([writes.md](writes.md) §9) |
 | New content, file `online-only` | the placeholder takes the new size, time and cTag, in place (a stale checkpoint goes with it) |
 | New content, file downloaded | the new version is downloaded in the background and swapped in atomically (§9) |
 | New content, file changed locally | the local file is rescued and a placeholder of the new version takes its place (§10) |
@@ -420,10 +420,12 @@ placeholder, or one mid-fill or mid-free-up, holds nothing only this machine has
 rescued.
 
 A read-write folder moves nothing it could upload out of the folder: where this section moves a
-file out of the folder, the reconcile renames it to a conflict copy beside the original and
-uploads it, and a folder OneDrive removed that holds local work stays where it is
-([writes.md](writes.md) §7, §9). Only konedrive's own temporary names (a leftover
-`.konedrive-new-<id>` that holds local work) are still rescued as §10.2 says.
+file out of the folder for a change, the reconcile renames it to a conflict copy beside the original
+and uploads it ([writes.md](writes.md) §7). For a removal it neither rescues nor keeps: what
+OneDrive removed goes whole, local work included, and what is no longer placed goes once its uploads
+are done ([writes.md](writes.md) §9). Only konedrive's own temporary names (a leftover
+`.konedrive-new-<id>` that holds local work) are still rescued as §10.2 says. A read-only folder
+rescues as this section says.
 
 ### 10.2 How a rescue works
 

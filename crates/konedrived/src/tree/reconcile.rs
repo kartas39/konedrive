@@ -9,6 +9,10 @@
 //!   sends that entry again, so every cycle stages what waits here before its
 //!   own delta, until the disk agrees; an outbox commit made after the fetch
 //!   that brought it supersedes it (Graph's answer to the commit is newer).
+//! - **What is leaving.** An item that stopped being placed while OneDrive
+//!   still has it (a name too long, the Personal Vault...) keeps its object
+//!   on disk while what is inside it waits to be uploaded (issue #104):
+//!   where that object is, by item id, until a cycle removes it.
 //! - **Tombstones.** An item the outbox deleted in OneDrive has no base row
 //!   left to carry its `local_seq`, so the delete's commit count is kept by
 //!   id: a delta fetched before the delete must not bring the item back (the
@@ -19,7 +23,7 @@ use std::collections::HashMap;
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, OptionalExtension};
 
-use super::{apply, get_row, upsert, Change, Kind, Placement, Row, Source, Table, TreeError, TreeStore, COLUMNS};
+use super::{apply, get_row, Change, Kind, Placement, Row, Source, Table, TreeError, TreeStore, COLUMNS};
 
 /// Created on every open (`IF NOT EXISTS`), so a schema-3 store made before
 /// the read-write reconcile gains them without a rebuild.
@@ -28,7 +32,9 @@ pub(super) const TABLES: &str = "
         id TEXT PRIMARY KEY, seq INTEGER NOT NULL, gone INTEGER NOT NULL,
         parent_id TEXT, name TEXT, kind TEXT, size INTEGER, mtime INTEGER, etag TEXT, ctag TEXT,
         quickxor TEXT, mime TEXT, placement TEXT);
-    CREATE TABLE IF NOT EXISTS outbox_gone (id TEXT PRIMARY KEY, local_seq INTEGER NOT NULL);";
+    CREATE TABLE IF NOT EXISTS outbox_gone (id TEXT PRIMARY KEY, local_seq INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS leaving (id TEXT PRIMARY KEY, rel BLOB NOT NULL);
+    CREATE TABLE IF NOT EXISTS leaving_items (id TEXT PRIMARY KEY, leaving TEXT NOT NULL);";
 
 /// A read-write cycle's delta, staged ([`TreeStore::stage_rw`]): the ids
 /// to reconcile, and the deferred changes consumed.
@@ -122,6 +128,7 @@ impl TreeStore {
     /// A folder that is read-only now (a switch back, or a daemon that
     /// starts so): what waits is the base's at once — the read phase's cycle
     /// knows no deferred change, and the delta cursor will not send it again.
+    /// A row placed again by it carries no local object (issue #104).
     /// The first cycle, a Full reconcile, makes the folder match. Nothing to
     /// do, and nothing done, for a folder that never was read-write.
     pub fn apply_deferred(&mut self) -> Result<usize, TreeError> {
@@ -273,7 +280,9 @@ impl TreeStore {
             .optional()?;
         let landed = match waiting {
             Some((Change::Upsert(row), _)) if row.ctag.is_some() && row.ctag.as_deref() == ctag => {
-                upsert(&tx, Table::Items, &row)?;
+                // Through `apply`, so that a row placed again carries no
+                // local object but the one landed here (issue #104).
+                apply(&tx, Source::Items, &[Change::Upsert(row)])?;
                 tx.execute("DELETE FROM deferred WHERE id = ?1", [id])?;
                 true
             }
@@ -290,7 +299,8 @@ impl TreeStore {
     }
 
     /// Rows that were to go into one of `folders` — folders gone from
-    /// OneDrive, whose local directory is made again (F82 (4)) — wait for
+    /// OneDrive, whose local directory is made again (a
+    /// `resyncChangesUploadDifferences` listing only, F116) — wait for
     /// that directory's `mkdir` instead, and find its new id by their place.
     pub fn outbox_detach_parents(&self, folders: &[String]) -> Result<usize, TreeError> {
         let mut n = 0;
@@ -325,7 +335,8 @@ impl TreeStore {
         };
         let revisit = self.committed_items_since(since)?;
         let unplaced = self.unplaced(Table::Items)?;
-        if !full && changes.is_empty() && waiting && revisit.is_empty() && unplaced.is_empty() {
+        let leaving = self.leaving()?;
+        if !full && changes.is_empty() && waiting && revisit.is_empty() && unplaced.is_empty() && leaving.is_empty() {
             return Ok(None);
         }
         let consumed: Vec<String> = deferred.iter().map(|c| c.id().to_owned()).collect();
@@ -336,6 +347,56 @@ impl TreeStore {
         ids.extend(revisit);
         ids.extend(self.unplaced(Table::Staging)?);
         Ok(Some((ids.into_iter().collect(), consumed)))
+    }
+
+    /// Item `id` stopped being placed, and its object stays at `rel` for now
+    /// (issue #104).
+    /// The items the base has at and below it are remembered with it: one of
+    /// them found inside it once the base no longer has it was removed in
+    /// OneDrive, and is never uploaded as new (review fixes, round 2).
+    pub fn leaving_add(&mut self, id: &str, rel: &std::path::Path) -> Result<(), TreeError> {
+        use std::os::unix::ffi::OsStrExt;
+        let mut items = self.descendants(Table::Items, id)?;
+        items.push(id.to_owned());
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO leaving (id, rel) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET rel = excluded.rel",
+            params![id, rel.as_os_str().as_bytes()],
+        )?;
+        {
+            let mut had = tx.prepare_cached("INSERT OR REPLACE INTO leaving_items (id, leaving) VALUES (?1, ?2)")?;
+            for item in &items {
+                had.execute(params![item, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Whether item `id` was at or below something leaving when it began to
+    /// leave.
+    pub fn leaving_had(&self, id: &str) -> Result<bool, TreeError> {
+        Ok(self.conn.query_row("SELECT 1 FROM leaving_items WHERE id = ?1", [id], |_| Ok(())).optional()?.is_some())
+    }
+
+    /// What is leaving: each item id with where its object stays.
+    pub fn leaving(&self) -> Result<Vec<(String, std::path::PathBuf)>, TreeError> {
+        use std::os::unix::ffi::OsStrExt;
+        let mut statement = self.conn.prepare_cached("SELECT id, rel FROM leaving ORDER BY id")?;
+        let rows = statement
+            .query_map([], |r| {
+                let rel: Vec<u8> = r.get(1)?;
+                Ok((r.get::<_, String>(0)?, std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&rel))))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Item `id` left, or is placed again: nothing of it is leaving now.
+    pub fn leaving_drop(&self, id: &str) -> Result<(), TreeError> {
+        self.conn.execute("DELETE FROM leaving WHERE id = ?1", [id])?;
+        self.conn.execute("DELETE FROM leaving_items WHERE leaving = ?1", [id])?;
+        Ok(())
     }
 
     /// Stages `changes` on top of what `staging` holds: the fresh versions a
@@ -433,4 +494,116 @@ mod tests {
         s.commit_staging_deferring("L2", &[], &[], &[], 4).unwrap();
         assert!(s.committed_since(0).unwrap().is_empty(), "pruned");
     }
+
+    fn folder(id: &str, parent: &str, name: &str) -> Row {
+        Row { kind: Kind::Folder, size: 0, ..file(id, parent, name, "c") }
+    }
+
+    fn handle(n: u8) -> FileHandle {
+        FileHandle { kind: 1, bytes: vec![n, n, n] }
+    }
+
+    /// Issue #104, decision 5: one call forgets the local objects of an item
+    /// and of everything below it — by `items` and by the new tree — in both
+    /// tables, and of whatever records one of the objects given.
+    #[test]
+    fn forgetting_an_item_forgets_everything_below_it_in_both_tables() {
+        let mut s = TreeStore::in_memory().unwrap();
+        s.begin_staging(false).unwrap();
+        s.stage(&[Change::Root(root()), Change::Upsert(folder("D", "R", "d")), Change::Upsert(file("F", "D", "f", "c1")), Change::Upsert(file("T", "R", "t", "c1")), Change::Upsert(file("U", "R", "u", "c1"))]).unwrap();
+        s.commit_staging("L1").unwrap();
+        for (id, n) in [("D", 1), ("F", 2), ("T", 3), ("U", 4)] {
+            s.set_local_handle(id, Some(&handle(n))).unwrap();
+        }
+        // A delta staged meanwhile moves `T` into `D`.
+        s.begin_staging(true).unwrap();
+        s.stage(&[Change::Upsert(file("T", "D", "t", "c1"))]).unwrap();
+        s.forget_local_objects(&["D".to_owned()], &[handle(4)]).unwrap();
+        for id in ["D", "F", "T", "U"] {
+            assert_eq!(s.local_handle(id).unwrap(), None, "{id} in items");
+            let staged: Option<Vec<u8>> = s.conn.query_row("SELECT local_handle FROM staging WHERE id = ?1", [id], |r| r.get(0)).optional().unwrap().flatten();
+            assert_eq!(staged, None, "{id} in staging");
+        }
+        s.commit_staging("L2").unwrap();
+        assert_eq!(s.local_handle("T").unwrap(), None, "the swap gives none back");
+    }
+
+    /// Review fix 7 of issue #104: many subtree roots and handles at once —
+    /// thousands, some unknown — are forgotten together, each subtree whole.
+    #[test]
+    fn forgetting_takes_many_roots_and_handles_at_once() {
+        let mut s = TreeStore::in_memory().unwrap();
+        let mut changes = vec![Change::Root(root())];
+        for n in 0..300 {
+            changes.push(Change::Upsert(folder(&format!("D{n}"), "R", &format!("d{n}"))));
+            changes.push(Change::Upsert(file(&format!("F{n}"), &format!("D{n}"), "f", "c1")));
+        }
+        changes.push(Change::Upsert(file("K", "R", "k", "c1")));
+        s.begin_staging(false).unwrap();
+        s.stage(&changes).unwrap();
+        s.commit_staging("L1").unwrap();
+        for n in 0..300u16 {
+            s.set_local_handle(&format!("F{n}"), Some(&FileHandle { kind: 1, bytes: n.to_be_bytes().to_vec() })).unwrap();
+        }
+        s.set_local_handle("K", Some(&handle(200))).unwrap();
+        let mut roots: Vec<String> = (0..300).map(|n| format!("D{n}")).collect();
+        roots.extend((0..2000).map(|n| format!("unknown-{n}")));
+        s.forget_local_objects(&roots, &[handle(200), handle(201)]).unwrap();
+        for n in [0, 150, 299] {
+            assert_eq!(s.local_handle(&format!("F{n}")).unwrap(), None);
+        }
+        assert_eq!(s.local_handle("K").unwrap(), None, "by its handle");
+    }
+
+    /// Issue #104, decision 5: a row that turns placed again over an `items`
+    /// row that is not placed carries no local object — staged by a delta,
+    /// swapped in whole, landed from what waited, or applied by a folder
+    /// turned read-only.
+    #[test]
+    fn a_row_placed_again_carries_no_local_object() {
+        let skipped = || Row { placement: Placement::Skipped(super::super::SkipReason::NameTooLong), ..file("X", "R", "long", "c1") };
+        let base = || {
+            let mut s = TreeStore::in_memory().unwrap();
+            s.begin_staging(false).unwrap();
+            s.stage(&[Change::Root(root()), Change::Upsert(skipped())]).unwrap();
+            s.commit_staging("L1").unwrap();
+            s.set_local_handle("X", Some(&handle(9))).unwrap();
+            s
+        };
+        // A delta.
+        let mut s = base();
+        s.begin_staging(true).unwrap();
+        s.stage(&[Change::Upsert(file("X", "R", "x", "c1"))]).unwrap();
+        assert_eq!(s.unplaced(Table::Staging).unwrap(), vec!["X".to_owned()], "placed again, with no object");
+        s.commit_staging("L2").unwrap();
+        assert_eq!(s.local_handle("X").unwrap(), None);
+        // A full listing.
+        let mut s = base();
+        s.begin_staging(false).unwrap();
+        s.stage(&[Change::Root(root()), Change::Upsert(file("X", "R", "x", "c1"))]).unwrap();
+        s.commit_staging("L2").unwrap();
+        assert_eq!(s.local_handle("X").unwrap(), None);
+        // What waited, applied by a folder turned read-only, or landed.
+        for land in [false, true] {
+            let mut s = base();
+            s.begin_staging(true).unwrap();
+            s.stage(&[Change::Upsert(file("X", "R", "x", "c2"))]).unwrap();
+            s.commit_staging_deferring("L2", &[], &["X".to_owned()], &[], 1).unwrap();
+            s.set_local_handle("X", Some(&handle(9))).unwrap();
+            if land {
+                assert!(s.land_deferred("X", Some("c2"), None).unwrap());
+            } else {
+                s.apply_deferred().unwrap();
+            }
+            assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().placement, Placement::Placed, "land={land}");
+            assert_eq!(s.local_handle("X").unwrap(), None, "land={land}");
+        }
+        // A row that stays placed keeps its object.
+        let mut s = base();
+        s.begin_staging(true).unwrap();
+        s.stage(&[Change::Upsert(Row { name: "longer".into(), ..skipped() })]).unwrap();
+        s.commit_staging("L2").unwrap();
+        assert_eq!(s.local_handle("X").unwrap(), Some(handle(9)), "not placed again: as it was");
+    }
+
 }

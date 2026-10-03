@@ -38,7 +38,10 @@ pub mod reconcile;
 /// other version is rebuilt from a full listing, so a
 /// version 1 or 2 store is rebuilt once, and loses nothing but a listing: a
 /// version 2 folder was read-only and has nothing waiting to upload.
-pub const SCHEMA_VERSION: &str = "3";
+/// Version 4 is version 3 once the local objects of every row below a row
+/// that is not placed are forgotten (issue #104): a version 3 store is
+/// brought to it in place, never rebuilt ([`migrate_3_to_4`]).
+pub const SCHEMA_VERSION: &str = "4";
 
 /// How many activity events the store keeps: the oldest go.
 pub const ACTIVITY_KEPT: usize = 200;
@@ -441,6 +444,31 @@ fn skip_reason(item: &DriveItem, name: &str) -> Option<SkipReason> {
     None
 }
 
+/// Version 3 to 4 (issue #104), in one transaction: every row below a row
+/// that is not placed forgets its local object, in `items` and `staging`,
+/// each by its own tree. A build before #104 kept them when a folder
+/// stopped being placed, and once the folder was placed again they read as
+/// objects gone — deletes in OneDrive.
+fn migrate_3_to_4(conn: &Connection) -> Result<(), TreeError> {
+    let mut batch = String::from("BEGIN IMMEDIATE;");
+    for table in ["items", "staging"] {
+        batch.push_str(&format!(
+            "WITH RECURSIVE below(id, depth) AS (
+                 SELECT c.id, 1 FROM {table} c JOIN {table} p ON c.parent_id = p.id WHERE p.placement != 'placed'
+                 UNION
+                 SELECT c.id, b.depth + 1 FROM {table} c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
+             UPDATE {table} SET local_handle = NULL WHERE local_handle IS NOT NULL AND id IN (SELECT id FROM below);"
+        ));
+    }
+    batch.push_str(&format!("UPDATE meta SET value = '{SCHEMA_VERSION}' WHERE key = 'schema_version'; COMMIT;"));
+    if let Err(e) = conn.execute_batch(&batch) {
+        let _ = conn.execute_batch("ROLLBACK");
+        return Err(e.into());
+    }
+    tracing::info!("the tree store is at version {SCHEMA_VERSION}: what was below a folder not placed forgot its local objects");
+    Ok(())
+}
+
 /// Whether `TreeStore::open` should discard what is on disk and rebuild empty:
 /// only for an unknown schema version, or a file SQLite itself reports as not
 /// a database or corrupt. Permission errors, other I/O failures,
@@ -568,9 +596,13 @@ impl TreeStore {
         if has_meta == 0 {
             return Err(TreeError::Schema(None));
         }
-        let version: Option<String> = conn
+        let mut version: Option<String> = conn
             .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| row.get(0))
             .optional()?;
+        if version.as_deref() == Some("3") {
+            migrate_3_to_4(&conn)?;
+            version = Some(SCHEMA_VERSION.to_owned());
+        }
         if version.as_deref() != Some(SCHEMA_VERSION) {
             return Err(TreeError::Schema(version));
         }
@@ -744,7 +776,8 @@ impl TreeStore {
     /// removes only what it removed (issue #39); a full listing's replaces
     /// every row. The version a cached thumbnail was made for, the local
     /// inode and the last outbox commit travel along: a row staged without
-    /// them keeps what `items` has.
+    /// them keeps what `items` has — but for the inode of a row `items` does
+    /// not place, which is no object of a row placed again (issue #104).
     pub fn commit_staging(&mut self, delta_link: &str) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         if self.whole {
@@ -753,8 +786,11 @@ impl TreeStore {
                   WHERE thumb_key IS NULL",
                 [],
             )?;
+            // A row that turns placed again takes no object from `items`:
+            // whatever was there when it stopped being placed is gone
+            // (issue #104).
             tx.execute(
-                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id)
+                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND (i.placement = 'placed' OR staging.placement != 'placed'))
                   WHERE local_handle IS NULL",
                 [],
             )?;
@@ -769,7 +805,7 @@ impl TreeStore {
                 &format!(
                     "INSERT INTO items ({COLUMNS})
                      SELECT s.id, s.parent_id, s.name, s.kind, s.size, s.mtime, s.etag, s.ctag, s.quickxor, s.mime, s.placement,
-                            COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, i.local_handle),
+                            COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, CASE WHEN i.placement = 'placed' OR s.placement != 'placed' THEN i.local_handle END),
                             MAX(s.local_seq, COALESCE(i.local_seq, 0))
                        FROM staging s LEFT JOIN items i ON i.id = s.id WHERE true
                      ON CONFLICT(id) DO UPDATE SET
@@ -1164,19 +1200,114 @@ fn apply(tx: &rusqlite::Transaction<'_>, source: Source, changes: &[Change]) -> 
 fn write(tx: &rusqlite::Transaction<'_>, source: Source, row: &Row) -> Result<(), TreeError> {
     match source {
         Source::Items => {
+            let was = placement_in_items(tx, &row.id)?;
             upsert(tx, Table::Items, row)?;
+            if turns_placed(was, row) {
+                forget_subtrees(tx, std::slice::from_ref(&row.id), true, &[])?;
+            }
         }
         Source::Whole => {
             upsert(tx, Table::Staging, row)?;
+            // What is below it, by `items`: the swap would give it back.
+            if turns_placed(placement_in_items(tx, &row.id)?, row) {
+                forget_subtrees(tx, std::slice::from_ref(&row.id), false, &[])?;
+            }
         }
         Source::Overlay => {
             tx.prepare_cached(&format!("INSERT OR IGNORE INTO staging ({COLUMNS}) SELECT {COLUMNS} FROM items WHERE id = ?1"))?
                 .execute([&row.id])?;
             tx.prepare_cached("DELETE FROM staging_gone WHERE id = ?1")?.execute([&row.id])?;
             upsert(tx, Table::Staging, row)?;
+            if turns_placed(placement_in_items(tx, &row.id)?, row) {
+                // The row itself, and everything below it in both tables:
+                // the rows below that the delta does not stage show through
+                // from `items` at the swap.
+                forget_subtrees(tx, std::slice::from_ref(&row.id), true, &[])?;
+            }
         }
     }
     Ok(())
+}
+
+/// The subtrees at `roots` — `roots` themselves when `with_roots`, and
+/// everything `items` or `staging` has below them — forget their local
+/// objects in both tables, and so does every row recording one of
+/// `handles` (issue #104): seeded from a temporary table, one statement per
+/// table, whatever the number of roots.
+pub(crate) fn forget_subtrees(tx: &rusqlite::Transaction<'_>, roots: &[String], with_roots: bool, handles: &[konedrive_fs::handle::FileHandle]) -> Result<(), TreeError> {
+    if !handles.is_empty() {
+        tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS forget_handles (handle BLOB PRIMARY KEY); DELETE FROM forget_handles;")?;
+        {
+            let mut handle = tx.prepare_cached("INSERT OR IGNORE INTO forget_handles (handle) VALUES (?1)")?;
+            for h in handles {
+                handle.execute([h.encode()])?;
+            }
+        }
+        for table in ["items", "staging"] {
+            tx.execute(&format!("UPDATE {table} SET local_handle = NULL WHERE local_handle IN (SELECT handle FROM forget_handles)"), [])?;
+        }
+        tx.execute_batch("DELETE FROM forget_handles;")?;
+    }
+    if roots.is_empty() {
+        return Ok(());
+    }
+    // Nothing below a single root (a file) and nothing of its own to forget:
+    // no recursive query at all, through the parent indexes.
+    if !with_roots && roots.len() == 1 {
+        let below: bool = tx
+            .prepare_cached("SELECT EXISTS (SELECT 1 FROM items WHERE parent_id = ?1) OR EXISTS (SELECT 1 FROM staging WHERE parent_id = ?1)")?
+            .query_row([&roots[0]], |r| r.get(0))?;
+        if !below {
+            return Ok(());
+        }
+    }
+    tx.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS forget_roots (id TEXT PRIMARY KEY);
+         CREATE TEMP TABLE IF NOT EXISTS forget_below (id TEXT PRIMARY KEY);
+         DELETE FROM forget_roots; DELETE FROM forget_below;",
+    )?;
+    {
+        let mut root = tx.prepare_cached("INSERT OR IGNORE INTO forget_roots (id) VALUES (?1)")?;
+        for id in roots {
+            root.execute([id])?;
+        }
+    }
+    // The set is built once, each step through a table's parent index, and
+    // then forgotten in both tables by primary key.
+    let from = if with_roots { 0 } else { 1 };
+    tx.execute(
+        &format!(
+            "WITH RECURSIVE below(id, depth) AS (
+                 SELECT id, 0 FROM forget_roots
+                 UNION SELECT c.id, b.depth + 1 FROM below b JOIN items c ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN}
+                 UNION SELECT c.id, b.depth + 1 FROM below b JOIN staging c ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
+             INSERT OR IGNORE INTO forget_below (id) SELECT id FROM below WHERE depth >= {from}"
+        ),
+        [],
+    )?;
+    for table in ["items", "staging"] {
+        tx.execute(&format!("UPDATE {table} SET local_handle = NULL WHERE local_handle IS NOT NULL AND id IN (SELECT id FROM forget_below)"), [])?;
+    }
+    tx.execute_batch("DELETE FROM forget_roots; DELETE FROM forget_below;")?;
+    Ok(())
+}
+
+/// Item `id`'s own placement in `items`, if it has a row there.
+fn placement_in_items(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<Option<Placement>, TreeError> {
+    let placement: Option<String> = tx
+        .prepare_cached("SELECT placement FROM items WHERE id = ?1")?
+        .query_row([id], |r| r.get(0))
+        .optional()?;
+    Ok(placement.as_deref().map(Placement::decode))
+}
+
+/// Whether `row` turns placed again over a row of `items` that was not
+/// (`was`). Such a row, and every row below it, carries no local object
+/// (issue #104): what was on disk when it stopped being placed was taken
+/// off, and its placement records the objects it is placed as. Forgotten
+/// as it is staged, so that the placement that follows records them anew.
+fn turns_placed(was: Option<Placement>, row: &Row) -> bool {
+    row.placement == Placement::Placed && was.is_some_and(|was| was != Placement::Placed)
 }
 
 fn upsert(tx: &rusqlite::Transaction<'_>, table: Table, row: &Row) -> rusqlite::Result<usize> {
@@ -1989,7 +2120,7 @@ mod tests {
         assert_eq!(store.delta_link().unwrap(), None, "rebuilt: the next cycle lists in full");
         assert!(store.get(Table::Items, "A").unwrap().is_none());
         assert!(store.outbox_rows().unwrap().is_empty(), "the outbox is there, empty");
-        assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some("3"));
+        assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
     }
 
     /// The inode an item was placed as survives the swap that ends a cycle,
@@ -2018,6 +2149,63 @@ mod tests {
         store.set_local_handle("B", Some(&handle)).unwrap();
         store.commit_page(&[root(), file("B", "R", "b")], "next-2").unwrap();
         assert_eq!(store.local_handle("B").unwrap(), Some(handle));
+    }
+
+    /// Review fix 2 of issue #104: a version 3 store, as a build before
+    /// #104 left it — a folder not placed whose children keep their local
+    /// objects — is brought to version 4 in place on open: the children
+    /// forget them, the rest of the store stays.
+    #[test]
+    fn a_version_3_store_forgets_the_objects_below_a_folder_not_placed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tree.sqlite");
+        let handle = |n: u8| konedrive_fs::handle::FileHandle { kind: 1, bytes: vec![n; 4] };
+        {
+            let mut store = TreeStore::open(&path).unwrap();
+            let Change::Upsert(placed) = folder("D", "R", "long") else { unreachable!() };
+            let skipped = Row { placement: Placement::Skipped(SkipReason::NameTooLong), ..placed };
+            store.begin_staging(false).unwrap();
+            store.stage(&[root(), Change::Upsert(skipped), folder("F", "D", "f"), file("G", "F", "g"), file("T", "R", "t")]).unwrap();
+            store.commit_staging("link-1").unwrap();
+            for (id, n) in [("D", 1), ("F", 2), ("G", 3), ("T", 4)] {
+                store.set_local_handle(id, Some(&handle(n))).unwrap();
+            }
+            store.set_meta("schema_version", Some("3")).unwrap();
+        }
+        let store = TreeStore::open(&path).unwrap();
+        assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
+        assert_eq!(store.local_handle("F").unwrap(), None);
+        assert_eq!(store.local_handle("G").unwrap(), None, "every level below");
+        assert_eq!(store.local_handle("T").unwrap(), Some(handle(4)), "a placed item keeps its object");
+        assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"), "not rebuilt");
+    }
+
+    /// Review fixes, round 2, of issue #104: forgetting below a row that
+    /// turns placed again stays cheap in a store of 30,000 rows — a file
+    /// (nothing below it) costs no recursive query, a folder one. The times
+    /// are printed (`--nocapture`); the bounds are loose.
+    #[test]
+    fn forgetting_below_a_row_placed_again_is_cheap_at_scale() {
+        let mut changes = vec![root()];
+        for d in 0..100 {
+            changes.push(folder(&format!("D{d}"), "R", &format!("d{d}")));
+            for f in 0..299 {
+                changes.push(file(&format!("F{d}-{f}"), &format!("D{d}"), &format!("f{f}")));
+            }
+        }
+        let mut store = committed(&changes);
+        store.begin_staging(true).unwrap();
+        let tx = store.conn.transaction().unwrap();
+        let time = |root: &str| {
+            let started = std::time::Instant::now();
+            for _ in 0..10 {
+                forget_subtrees(&tx, &[root.to_owned()], false, &[]).unwrap();
+            }
+            started.elapsed() / 10
+        };
+        let (a_file, a_folder) = (time("F50-7"), time("D50"));
+        eprintln!("forget_subtrees on 30,000 rows: below a file {a_file:?}, below a folder of 299 {a_folder:?}");
+        assert!(a_file < std::time::Duration::from_secs(1) && a_folder < std::time::Duration::from_secs(1));
     }
 
     /// The last 200 events are kept; the oldest go.

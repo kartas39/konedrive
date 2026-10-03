@@ -642,6 +642,8 @@ pub fn upload_reason_text(reason: &str) -> String {
         "reserved-name" => "a .konedrive- name, which the daemon keeps for itself: never uploaded".to_owned(),
         "not-downloaded" => "a file from another OneDrive folder that is not downloaded here".to_owned(),
         "other-device" => "on another filesystem mounted inside the folder: never uploaded".to_owned(),
+        "mounted-inside" => "another filesystem is mounted inside a folder no longer synced here: the folder stays until it is unmounted".to_owned(),
+        "unknown-state" => "a file whose konedrive state cannot be read, in a folder no longer synced here: the folder stays until it is fixed or removed".to_owned(),
         "hard-link" => "a file with other hard links: not uploaded".to_owned(),
         "locked" => "locked in OneDrive (open for co-authoring): tried again later".to_owned(),
         "network" => "OneDrive could not be reached: tried again later".to_owned(),

@@ -62,12 +62,15 @@ pub fn reason_key(reason: &str) -> &str {
 /// The group of a reason key ([`reason_key`]); `None` for one no code of
 /// the daemon writes, which the caller shows as [`Group::Waiting`].
 fn known_group(key: &str) -> Option<Group> {
-    use super::local::examine::{OPEN_FOR_WRITING, OTHER_DEVICE};
+    use super::local::examine::{MOUNTED_INSIDE, OPEN_FOR_WRITING, OTHER_DEVICE, UNKNOWN_STATE};
     use reason::*;
     Some(match key {
         // `quota-exceeded` only until a start converts it to `waiting-for-space` (#2).
         QUOTA | space::WAITING | space::TOO_BIG_KEY | FORBIDDEN => Group::OneAction,
         "name-characters" | "name-spaces" | "name-reserved" | "name-not-utf8" | "too-large" | REFUSED => Group::PerFile,
+        // What keeps a folder no longer synced here on disk (issue #104):
+        // the user unmounts, or fixes or removes the file.
+        UNKNOWN_STATE | MOUNTED_INSIDE => Group::PerFile,
         // `reserved-name` is a `.konedrive-` name, which the daemon keeps for itself.
         "symlink" | "fifo" | "socket" | "device" | OTHER_DEVICE | "reserved-name" | "hard-link" | "ignored" => Group::Never,
         OPEN_FOR_WRITING | LOCKED | NOT_FOUND | NOT_LOCAL | CHANGED | PARENT | HASH | MOVE_OUT | NO_HELPER | UNREACHABLE
@@ -247,6 +250,20 @@ mod tests {
         let (items, _) = files(&store, root, false, "refused", 20).unwrap();
         assert_eq!(items, vec![("/nowhere/OneDrive/odd.txt".to_owned(), "refused: The name is not allowed".to_owned())]);
         assert_eq!(files(&store, root, false, "no-such", 20).unwrap(), (vec![], 0));
+    }
+
+    /// Issue #104: what keeps a folder no longer synced here on disk needs
+    /// the user, and is shown where blocked rows are.
+    #[test]
+    fn what_keeps_a_leaving_folder_is_blocked() {
+        use crate::sync::local::examine::{MOUNTED_INSIDE, UNKNOWN_STATE};
+        for key in [UNKNOWN_STATE, MOUNTED_INSIDE] {
+            assert_eq!(group_of(reason_key(key)), Group::PerFile, "{key}");
+        }
+        let mut store = TreeStore::in_memory().unwrap();
+        store.outbox_apply(&[OutboxOp::Skip { rel: PathBuf::from("docs/u.txt"), reason: UNKNOWN_STATE.into(), size: 0 }], 1).unwrap();
+        let got = summary(&store.skipped_groups().unwrap(), &store.outbox_groups().unwrap(), false);
+        assert_eq!(got.iter().map(|(g, r, n, _)| (g.as_str(), r.as_str(), *n)).collect::<Vec<_>>(), vec![("per-file", UNKNOWN_STATE, 1)]);
     }
 
     /// Issue #87: the four keys a failure is stored under all wait.

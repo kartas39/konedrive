@@ -469,6 +469,39 @@ async fn fill_file(
     })
 }
 
+/// A file whose download was stopped part-way because its item was removed
+/// (issue #104), and which survives — set aside for another account, or
+/// left by a removal that failed: a placeholder again, with no content and
+/// no checkpoint, never a partly filled file. Only a file still `hydrating`
+/// is touched; the caller holds its inode lock.
+pub(crate) fn back_to_placeholder(file: &File) {
+    if !matches!(read_state(file), Ok(Some(State::Hydrating))) {
+        return;
+    }
+    // Punching needs a descriptor open for writing.
+    let writable = match konedrive_fs::placeholder::reopen_writable(file) {
+        Ok(writable) => writable,
+        Err(e) => {
+            tracing::error!("cannot reopen a stopped download to turn it back into a placeholder: {e}");
+            return;
+        }
+    };
+    let file = &writable;
+    if let Err(e) = write_state(file, State::OnlineOnly) {
+        tracing::error!("cannot turn a stopped download back into a placeholder: {e}");
+        return;
+    }
+    if let Err(e) = remove_stamp(file) {
+        tracing::error!("cannot remove the stamp of a stopped download: {e}");
+    }
+    if let Err(e) = remove_progress(file) {
+        tracing::error!("cannot remove the checkpoint of a stopped download: {e}");
+    }
+    if let Err(e) = punch_all(file) {
+        tracing::error!("cannot punch away the partial content of a stopped download: {e}");
+    }
+}
+
 /// Undoes the `hydrating` a fill wrote before it had touched anything else.
 fn put_back(file: &File, found: Option<State>) {
     let restored = match found {

@@ -25,6 +25,7 @@ struct Fx {
     store: Store,
     rescue: tempfile::TempDir,
     runtime: tokio::runtime::Runtime,
+    locks: InodeLocks,
 }
 
 fn row(id: &str, parent: &str, name: &str, kind: Kind, ctag: &str) -> Row {
@@ -77,6 +78,7 @@ impl Fx {
             store: Store::new(TreeStore::in_memory().unwrap()),
             rescue: tempfile::tempdir().unwrap(),
             runtime: tokio::runtime::Runtime::new().unwrap(),
+            locks: InodeLocks::new(),
         };
         fx.store.call_blocking(move |s| {
             s.begin_staging(false)?;
@@ -94,7 +96,7 @@ impl Fx {
             store: self.store.clone(),
             link: None,
             runtime: self.runtime.handle().clone(),
-            locks: InodeLocks::new(),
+            locks: self.locks.clone(),
             root_item_id: "R".into(),
             rescue_into: self.rescue.path().join("now"),
             cancel: CancellationToken::new(),
@@ -124,12 +126,12 @@ impl Fx {
         let changed = self.store.call_blocking(move |s| s.changed_ids()).unwrap();
         let defer: Vec<String> = changed
             .iter()
-            .filter(|id| !plan.removing.contains(*id) && (plan.held.contains(*id) || applied.unsettled.contains(*id)))
+            .filter(|id| !plan.removing.contains(*id) && !applied.taken.contains(*id) && (plan.held.contains(*id) || applied.unsettled.contains(*id)))
             .cloned()
             .collect();
         let content: Vec<String> = changed
             .iter()
-            .filter(|id| !plan.removing.contains(*id) && !defer.contains(id) && applied.content_waits.contains(*id))
+            .filter(|id| !plan.removing.contains(*id) && !applied.taken.contains(*id) && !defer.contains(id) && applied.content_waits.contains(*id))
             .cloned()
             .collect();
         self.store.call_blocking(move |s| s.commit_staging_deferring("link-2", &[], &defer, &content, 0)).unwrap();
@@ -325,12 +327,13 @@ fn an_edit_here_and_in_onedrive_keeps_both() {
     assert_eq!(fx.base("F").unwrap().ctag.as_deref(), Some("c2"));
 }
 
-/// §3.7: what OneDrive removed goes only where nothing local is lost — a
-/// changed file stays, stripped, to be uploaded again; a folder that keeps
-/// anything stays, made local, to be made again in OneDrive (F82 (4)); clean
-/// placeholders go.
+/// Issue #104, decision 2: what OneDrive removed goes from the disk whole,
+/// in the cycle — a changed download, a new file, a file from elsewhere
+/// carrying an id the base does not know, an empty folder, placeholders.
+/// Nothing is kept, uploaded again or made again in OneDrive; the base takes
+/// the removal, and forgets the objects first.
 #[test]
-fn what_onedrive_removed_goes_unless_it_holds_local_work() {
+fn what_onedrive_removed_goes_whole() {
     let fx = Fx::new();
     fx.cycle(&[folder("X", "D", "empty")], false).unwrap();
     assert!(fx.path("docs/empty").is_dir());
@@ -341,19 +344,111 @@ fn what_onedrive_removed_goes_unless_it_holds_local_work() {
     std::fs::write(fx.path("docs/stranger.txt"), b"theirs").unwrap();
     xattr::set(fx.path("docs/stranger.txt"), XATTR_ITEM_ID, b"Y").unwrap();
     let applied = fx.cycle(&[Change::Delete("D".into())], false).unwrap();
-    assert_eq!(std::fs::read(fx.path("docs/f.txt")).unwrap(), b"one and mine");
-    assert_eq!(id_at(&fx.path("docs/f.txt")), None, "uploaded again as new");
-    assert!(fx.path("docs/deep/mine.txt").exists());
-    assert!(!fx.path("docs/deep/g.txt").exists(), "a placeholder holds nothing here");
-    assert!(!fx.path("docs/empty").exists(), "an empty folder goes");
-    assert_eq!(id_at(&fx.path("docs/stranger.txt")).as_deref(), Some("Y"), "never ours to remove");
-    assert_eq!(id_at(&fx.path("docs")), None, "the folder stays, as a new one");
-    assert_eq!(id_at(&fx.path("docs/deep")), None);
-    let mut recreated = applied.recreated.clone();
-    recreated.sort();
-    assert_eq!(recreated, vec!["D".to_owned(), "E".to_owned()]);
-    assert!(applied.examine.contains(&(PathBuf::from("docs"), true)));
-    assert!(fx.base("D").is_none() && fx.base("F").is_none(), "gone from the base");
+    assert!(!fx.path("docs").exists(), "removed whole");
+    assert!(fx.path("top.txt").exists());
+    assert!(applied.recreated.is_empty() && applied.examine.is_empty(), "{applied:?}");
+    assert!(applied.unsettled.is_empty(), "nothing waits: {:?}", applied.unsettled);
+    assert!(fx.base("D").is_none() && fx.base("F").is_none() && fx.base("X").is_none(), "gone from the base");
+    assert!(fx.deferred("D").is_none() && fx.deferred("F").is_none());
+}
+
+/// Issue #104, decision 2: a folder removed in OneDrive goes in the cycle
+/// even while a download in it is open — for reading or writing — and with
+/// an ignored lock file beside it; the program keeps what it has open. An
+/// emptied download goes too. Nothing waits, nothing is made again.
+#[test]
+fn a_folder_removed_in_onedrive_goes_whatever_is_open_or_ignored_in_it() {
+    for write in [false, true] {
+        let fx = Fx::new();
+        hydrate(&fx.path("docs/f.txt"), b"one", "c1");
+        std::fs::write(fx.path("docs/.~lock.f.txt#"), b"lock").unwrap();
+        let open = std::fs::OpenOptions::new().read(true).write(write).open(fx.path("docs/f.txt")).unwrap();
+        let applied = fx.cycle(&[Change::Delete("D".into())], false).unwrap();
+        assert!(!fx.path("docs").exists(), "write={write}: removed whole");
+        assert!(applied.recreated.is_empty() && applied.unsettled.is_empty(), "write={write}: {applied:?}");
+        assert!(fx.base("D").is_none() && fx.deferred("D").is_none() && fx.deferred("F").is_none());
+        let mut held = Vec::new();
+        std::io::Read::read_to_end(&mut &open, &mut held).unwrap();
+        assert_eq!(held, b"one", "write={write}: the program keeps what it had open");
+    }
+
+    let fx = Fx::new();
+    hydrate(&fx.path("docs/f.txt"), b"one", "c1");
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    File::options().write(true).truncate(true).open(fx.path("docs/f.txt")).unwrap();
+    let applied = fx.cycle(&[Change::Delete("D".into())], false).unwrap();
+    assert!(applied.recreated.is_empty());
+    assert!(!fx.path("docs").exists(), "an emptied download goes too");
+}
+
+/// Issue #104, decision 5: before the reconcile takes anything off the disk,
+/// the store forgets the local objects of what it removes — the item, what
+/// the base has below it, and an object from elsewhere moved in, by its own
+/// id — so that no examination can prove one of them gone.
+#[test]
+fn what_is_removed_is_forgotten_before_it_goes() {
+    let fx = Fx::new();
+    let handle = |id: &str| { let id = id.to_owned(); fx.store.call_blocking(move |s| s.local_handle(&id)).unwrap() };
+    assert!(handle("F").is_some() && handle("T").is_some());
+    // `top.txt` moved into `docs` here, not examined yet.
+    std::fs::rename(fx.path("top.txt"), fx.path("docs/top.txt")).unwrap();
+    fx.cycle(&[Change::Delete("D".into())], false).unwrap();
+    assert!(!fx.path("docs").exists());
+    assert_eq!(handle("T"), None, "the object moved in was taken off too: forgotten");
+    let staged = fx.store.call_blocking(move |s| s.get(Table::Staging, "T")).unwrap();
+    assert!(staged.is_some(), "still in OneDrive");
+    fx.cycle(&[], false).unwrap();
+    assert_eq!(id_at(&fx.path("top.txt")).as_deref(), Some("T"), "placed again where OneDrive has it");
+}
+
+/// Issue #104, point 3: an object that will not go fails the cycle, as any
+/// cycle that cannot do its work; nothing of it is committed.
+#[test]
+fn a_removal_that_fails_fails_the_cycle_and_commits_nothing() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    std::fs::set_permissions(fx.path("docs/deep"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = fx.cycle(&[Change::Delete("D".into())], false);
+    std::fs::set_permissions(fx.path("docs/deep"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(failed.is_err(), "{failed:?}");
+    assert!(fx.base("D").is_some() && fx.base("G").is_some(), "the base keeps what the disk still has");
+}
+
+/// Review fixes, round 2, point 6: a removal that fails after it stopped a
+/// download leaves the file that survives a placeholder again, not partly
+/// filled.
+#[test]
+fn a_removal_that_fails_after_stopping_a_download_leaves_a_placeholder() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    let at = fx.path("docs/deep/g.txt");
+    {
+        use std::os::unix::fs::FileExt;
+        let file = placeholder::reopen_writable(&File::open(&at).unwrap()).unwrap();
+        file.write_all_at(&[7u8; 3], 0).unwrap();
+        placeholder::write_state(&file, State::Hydrating).unwrap();
+    }
+    let key = crate::sync::InodeKey::of(&File::open(&at).unwrap()).unwrap();
+    let (held, holding) = std::sync::mpsc::channel();
+    let fill = fx.runtime.spawn({
+        let locks = fx.locks.clone();
+        async move {
+            let guard = locks.lock(key).await;
+            held.send(()).unwrap();
+            guard.cancelled().await;
+        }
+    });
+    holding.recv().unwrap();
+    std::fs::set_permissions(fx.path("docs/deep"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = fx.cycle(&[Change::Delete("D".into())], false);
+    std::fs::set_permissions(fx.path("docs/deep"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(failed.is_err());
+    fx.runtime.block_on(fill).unwrap();
+    let file = File::open(&at).unwrap();
+    assert_eq!(placeholder::read_state(&file).unwrap(), Some(State::OnlineOnly), "a placeholder again");
+    let mut left = Vec::new();
+    std::io::Read::read_to_end(&mut &file, &mut left).unwrap();
+    assert!(left.iter().all(|&b| b == 0), "nothing of the stopped download left: {left:?}");
 }
 
 /// F82 (5): an item OneDrive has under the outbox's temporary name (a store
@@ -366,41 +461,6 @@ fn an_item_under_a_temporary_name_in_onedrive_stays_where_it_is_here() {
     fx.cycle(&[swapped], true).unwrap();
     assert_eq!(id_at(&fx.path("docs/f.txt")).as_deref(), Some("F"));
     assert_eq!(fx.base("F").unwrap().name, ".konedrive-swap-F", "the base says where it is in OneDrive");
-}
-
-/// I2: a folder removed in OneDrive that holds nothing to upload — a clean
-/// download merely open, a lock file an ignored name — is not made again in
-/// OneDrive: it keeps its id and its base, and its removal waits until
-/// nothing in it is in use. M7: an emptied download is local work.
-#[test]
-fn a_folder_removed_in_onedrive_waits_for_what_is_in_use_and_comes_back_only_for_local_work() {
-    for write in [false, true] {
-        let fx = Fx::new();
-        hydrate(&fx.path("docs/f.txt"), b"one", "c1");
-        std::fs::write(fx.path("docs/.~lock.f.txt#"), b"lock").unwrap();
-        let open = std::fs::OpenOptions::new().read(true).write(write).open(fx.path("docs/f.txt")).unwrap();
-        let applied = fx.cycle(&[Change::Delete("D".into())], false).unwrap();
-        assert!(applied.recreated.is_empty(), "write={write}: {:?}", applied.recreated);
-        assert_eq!(id_at(&fx.path("docs")).as_deref(), Some("D"), "write={write}: the folder keeps its id");
-        assert_eq!(id_at(&fx.path("docs/f.txt")).as_deref(), Some("F"));
-        assert!(!fx.path("docs/deep").exists(), "what could go went");
-        assert!(fx.base("D").is_some() && fx.base("F").is_some(), "their base stays");
-        assert!(fx.deferred("D").is_some() && fx.deferred("F").is_some(), "their removal waits");
-        drop(open);
-        std::fs::remove_file(fx.path("docs/.~lock.f.txt#")).unwrap();
-        fx.cycle(&[Change::Delete("D".into())], false).unwrap();
-        assert!(!fx.path("docs").exists(), "write={write}: gone once nothing is in use");
-        assert!(fx.base("D").is_none());
-    }
-
-    // M7: an emptied download goes up again as new, with its folder.
-    let fx = Fx::new();
-    hydrate(&fx.path("docs/f.txt"), b"one", "c1");
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    File::options().write(true).truncate(true).open(fx.path("docs/f.txt")).unwrap();
-    let applied = fx.cycle(&[Change::Delete("D".into())], false).unwrap();
-    assert_eq!(applied.recreated, vec!["D".to_owned()]);
-    assert!(fx.path("docs/f.txt").exists() && id_at(&fx.path("docs/f.txt")).is_none());
 }
 
 /// A stop left a new folder under its temporary name, and
