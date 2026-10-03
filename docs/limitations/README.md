@@ -225,6 +225,7 @@ application must never read zeros where real content should be.
 - [F194](F194.md) — Some leaving or removed folders fail every cycle until their cause is gone
 - [F196](F196.md) — What the user does inside a folder that is leaving does not reach OneDrive
 - [F197](F197.md) — A `403` blocks only its row, and the row is tried again whenever a worker begins
+- [F198](F198.md) — The order of the tree lock and the lifecycle lock is kept by hand
 - [F199](F199.md) — A folder without interception has its path, and nothing else, while the daemon starts
 
 ---

@@ -760,6 +760,34 @@ examination holds, so none of them sees another's changes half made. The outbox,
 for a cycle at its start and whenever the network comes back, so the base catches up with OneDrive
 before any guard is sent (limitations log F117).
 
+**The order of the locks.** Two callers take both a folder's tree lock and its lifecycle lock (the
+lock that guards the registration, [sync.md](sync.md) §6.3):
+
+- a cycle takes the tree lock at staging and the lifecycle lock, as a reader, at the reconcile.
+  Both waits end when its poller is stopped;
+- a writer of the lifecycle lock takes the tree lock only once it has stopped the folder's sync.
+  Only a forced drop of the outbox does. The others — a change of the mode, a Forget, a
+  bring-up, the watcher's word that the folder is gone — take no tree lock themselves, but
+  those of them that stop the sync wait for it all the same: stopping the sync waits for the
+  watcher's examination under way, which holds the tree lock. So a stop ends the cycle first,
+  then the outbox worker, then the watcher.
+
+The lifecycle lock is fair: a writer waiting for it keeps new readers out. So nothing but a cycle
+may hold the tree lock while it waits for the lifecycle lock, and nothing may wait for the tree
+lock while it holds the lifecycle lock as a reader: with a cycle on one side, such a caller on the
+other and a writer waiting between them, the three would wait for each other for good, and so would
+a caller that held the tree lock and waited behind a writer that is stopping the watcher. What
+holds the tree lock alone (an outbox commit, an examination, a replacement, `RestoreDeletes`)
+never waits for the lifecycle lock. A forced switch to read-only therefore drops the rows as a
+writer, with the sync stopped, and turns a read-write folder read-only in the same step: no
+watcher runs between the drop and the turn, so nothing dropped is recorded again, and the sync
+that starts again is a read-only one. The folder told to follow its account afterwards finds
+itself turned.
+
+A file's inode lock comes after the tree lock (an outbox commit, a replacement). A cycle, which
+holds the lifecycle lock, only tries a file's lock, or waits for it for a bounded time (a removal's
+stopped downloads); Free up space takes the file's lock, then the lifecycle lock as a reader.
+
 **An idle cycle.** A cycle whose delta is empty, with no deferred change that can go (each still
 has an outbox row), no outbox commit since the last cycle and nothing placed without a local object
 on record, stages nothing and only stores the new link. Asking that reads the deferred changes, the

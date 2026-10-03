@@ -324,10 +324,6 @@ pub struct SyncService {
     /// `NotUploadedSummary()` as the outbox worker last summed it (issue #38):
     /// answered from memory while the worker runs.
     kept_back: Mutex<Option<Vec<kept_back::SummaryRow>>>,
-    /// Set by a forced switch's drop of the outbox (`PendingUploads::drop_pending_uploads`):
-    /// the folder's turn to read-only drops what its watcher recorded since, and only then
-    /// does a turn to read-only drop anything.
-    drop_at_read_only: std::sync::atomic::AtomicBool,
     /// The account was switched to read-write, and the watcher that follows has not started
     /// yet: its Full local scan says so (`LocalScan.Reason`).
     switched_to_read_write: std::sync::atomic::AtomicBool,
@@ -490,7 +486,6 @@ impl SyncService {
                 pause_timer: Mutex::new(None),
                 pause_shown: std::sync::atomic::AtomicU64::new(0),
                 kept_back: Mutex::new(None),
-                drop_at_read_only: std::sync::atomic::AtomicBool::new(false),
                 switched_to_read_write: std::sync::atomic::AtomicBool::new(false),
                 mode_check: Mutex::new(None),
                 persist,
