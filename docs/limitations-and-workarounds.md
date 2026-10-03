@@ -2833,6 +2833,11 @@ application must never read zeros where real content should be.
   `account mode read-write` open the sign-in page only when stdout is a terminal and
   `KONEDRIVE_NO_BROWSER` is unset or empty, so tests never open one; `konedrivectl login | tee log`
   opens none either. The address is printed every time, to be opened by hand.
+- **D22.** `konedrived`'s `sync::watcher::tests::past_the_mark_budget_the_folder_is_scanned_on_a_timer`
+  failed once in a `cargo test --workspace` run (2026-10-03, on the tree `refactor` started from):
+  the first batch after the degraded mode began was not the Full scan the test waits for
+  (`assertion failed: next(&rx).is_full()`). It passed in the next run of the same tests. Not looked
+  into; a timing-sensitive test under a loaded machine is the guess, not a measured cause.
 
 ---
 
