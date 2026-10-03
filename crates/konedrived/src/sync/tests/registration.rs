@@ -596,6 +596,9 @@ async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
     assert!(service.root().is_none(), "not brought up");
     // F211: there is nothing to forget.
     assert!(matches!(service.unregister_root().await, Err(SyncError::NoRoot)));
+    // Tried again at every connect and start, with the file as it is then: still misspelt.
+    service.resume().await;
+    assert!(service.last_error().contains("source = \"one-drive\""), "{}", service.last_error());
 
     // A new registration is taken, and replaces the record; this one fails at the helper,
     // which lets go, and the record is put back.
@@ -607,4 +610,31 @@ async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
     assert!(helper.seen().contains(&Seen::UnregisterRoot), "{:?}", helper.seen());
     let text = std::fs::read_to_string(&config_file).unwrap();
     assert!(text.contains("source = \"one-drive\"") && text.contains("intercepted = false"), "{text}");
+}
+
+/// SY6: a folder that is not held (recorded without interception) is tried again with
+/// `config.toml` as it is on disk, like a held one: a word corrected while the daemon runs
+/// counts at the next connect, with no write of the file in between.
+#[tokio::test]
+async fn a_word_corrected_for_a_folder_without_interception_counts_at_the_next_try() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_file = config_dir.path().join("config.toml");
+    let root_dir = tempfile::tempdir().unwrap();
+    let root_id = "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d";
+    xattr::set(root_dir.path(), "user.konedrive.root", root_id.as_bytes()).unwrap();
+    let recorded = format!(
+        "path = \"{}\"\nid = \"{root_id}\"\nintercepted = false\nsource = \"Local\"\nupgrade_when_helper = false\n",
+        resolved(root_dir.path())
+    );
+    write_config(&config_file, &recorded);
+    let service = SyncService::new(None, None, Some(persist(&config_file)));
+    service.restore().await;
+    service.resume().await;
+    assert_eq!(service.root_state(), "error");
+
+    let text = std::fs::read_to_string(&config_file).unwrap();
+    std::fs::write(&config_file, text.replace("source = \"Local\"", "source = \"local\"")).unwrap();
+    service.resume().await;
+
+    assert_eq!((service.root_state().as_str(), service.root_source().as_str()), ("no-interception", "local"), "{}", service.last_error());
 }

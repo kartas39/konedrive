@@ -396,12 +396,14 @@ impl Listing {
         let result = self.take_turn(cancel).await;
         let was_stopped = self.ctx.state.get().sync_trouble.is_some_and(|t| t.blocking);
         self.publish_outcome(&result);
+        // The trouble that closed the write gate is gone only now, after the cycle's own
+        // word to the outbox (`Writes::cycled`): the worker is told again. Whatever the
+        // cycle came to: one that failed with trouble that is only said opens the gate too.
+        let is_stopped = self.ctx.state.get().sync_trouble.is_some_and(|t| t.blocking);
+        if let Some(writes) = self.ctx.writes.as_ref().filter(|_| was_stopped && !is_stopped) {
+            (writes.reopened)();
+        }
         if result.is_ok() {
-            // The trouble that closed the write gate is gone only now, after the cycle's
-            // own word to the outbox (`Writes::cycled`): the worker is told again.
-            if let Some(writes) = self.ctx.writes.as_ref().filter(|_| was_stopped) {
-                (writes.reopened)();
-            }
             if let Some(kick) = &self.ctx.after_cycle {
                 kick.notify_one();
             }

@@ -329,20 +329,32 @@ impl SyncService {
 
     /// What a folder brought back shows (`SY6`). One that is up, or held with a
     /// `source` that was read, keeps the one it has, whatever `config.toml` says by
-    /// now. Otherwise `config.toml` says, and a word that is neither `"onedrive"` nor
-    /// `"local"` refuses the bring-up: it is not taken for a local folder. A folder
-    /// held with a guess for such a word never comes up on the guess: the file is
-    /// read again, now, so that a word corrected meanwhile counts.
+    /// now. Otherwise `config.toml` says — the file as it is now, read again, so that
+    /// a word corrected while the daemon runs counts — and a word that is neither
+    /// `"onedrive"` nor `"local"` refuses the bring-up: it is not taken for a local
+    /// folder. A folder held with a guess for such a word never comes up on the
+    /// guess: a file that cannot be read now, or no longer records it, refuses too.
+    /// Every refusal is tried again at the helper's next connect and at the next
+    /// start (`resume`).
     fn source_brought_back(&self) -> Result<RootSource, SyncError> {
-        let recorded = match self.registration() {
-            Some(reg) if !reg.source_guessed => return Ok(reg.source),
-            Some(reg) => Some(self.persisted_root_now().ok_or_else(|| {
-                SyncError::Io(format!(
-                    "config.toml cannot be read, or no longer records {}; forget the folder and add it again",
-                    reg.root.path.display()
+        let recorded = match (self.registration(), self.persisted_root_now()) {
+            (Some(reg), _) if !reg.source_guessed => return Ok(reg.source),
+            (Some(_), None) => {
+                return Err(SyncError::Io(
+                    "its source in config.toml was neither \"onedrive\" nor \"local\", and config.toml cannot \
+                     be read now; it is read again when the helper next connects, or konedrive starts"
+                        .into(),
                 ))
-            })?),
-            None => self.persisted_root(),
+            }
+            (Some(reg), Some(None)) => {
+                return Err(SyncError::Io(format!(
+                    "config.toml no longer records {}; forget the folder and add it again",
+                    reg.root.path.display()
+                )))
+            }
+            (Some(_), Some(now)) => now,
+            // Not held: the file as it is now, or else as the daemon last read it.
+            (None, now) => now.flatten().or_else(|| self.persisted_root()),
         };
         match recorded {
             Some(persisted) => match persisted.unread_source() {
@@ -623,9 +635,11 @@ impl SyncService {
     }
 
     /// [`persisted_root`](Self::persisted_root) from `config.toml` as it is now, read
-    /// again: a hand edit made while the daemon runs counts.
-    fn persisted_root_now(&self) -> Option<Persisted> {
+    /// again: a hand edit made while the daemon runs counts. `None` when the file cannot
+    /// be read now (caught half-saved, say); `Some(None)` when it records no folder.
+    fn persisted_root_now(&self) -> Option<Option<Persisted>> {
         let persist = self.persist.as_ref()?;
-        Some(Persisted::read(persist.store.current()?.account(&persist.account)?.root.clone()?))
+        let config = persist.store.current()?;
+        Some(config.account(&persist.account).and_then(|account| account.root.clone()).map(Persisted::read))
     }
 }

@@ -966,6 +966,7 @@ mod stale;
 /// RE6: trouble that stops the folder closes the write gate, and the cycle that clears it
 /// says so to the outbox worker — after the trouble is gone, not only with `cycled`, which
 /// comes while the gate is still closed. A cycle with no such trouble before it says nothing.
+/// A cycle that fails with trouble that is only said clears it too, and says so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
     use crate::status::snapshot::SyncTrouble;
@@ -990,4 +991,12 @@ async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
     w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
     w.cycle(&listing).await;
     assert_eq!(*reopened.lock().unwrap(), vec![None], "woken once, with the trouble already cleared");
+
+    w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    w.graph.with(|c| c.script("GET", "root/delta", ResponseTemplate::new(503), 10));
+    let err = listing.cycle(&CancellationToken::new()).await.unwrap_err();
+    assert!(!err.blocking(), "{err:?}");
+    let woken = reopened.lock().unwrap().clone();
+    assert_eq!(woken.len(), 2, "woken by the cycle that failed, too");
+    assert_eq!(woken[1], Some(SyncTrouble { text: err.to_string(), blocking: false }), "the gate reads open by then");
 }
