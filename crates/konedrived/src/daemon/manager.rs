@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use async_trait::async_trait;
 use konedrive_dbus::account_path;
 use tokio::task::JoinHandle;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
@@ -14,11 +15,9 @@ use crate::config::{is_valid_client_id, AccountConfig, AccountPaths, ConfigError
 use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
 use crate::desktop::baloo::Baloo;
-use crate::dbus::fault::SyncFault;
 use crate::sync::hub::HelperHub;
 use crate::conditions::running::HoldSettings;
 use crate::sync::{Persist, SyncError, SyncPaths, SyncService};
-use crate::dbus::files::outside;
 
 /// What the daemon's accounts are made with. `main` gives Microsoft, the Secret Service, the
 /// real `balooctl6` and the freedesktop thumbnail cache; a test gives wiremock, a
@@ -35,7 +34,42 @@ pub struct Options {
     /// the daemon. A test of local folders turns it off, and every folder is then filled
     /// with `PopulateFromDirectory`, as a service with no drive always was.
     pub onedrive: bool,
+    /// How the objects get on the bus: `dbus::export::OnBus`, which `main` and every test
+    /// give alike.
+    pub bus: Arc<dyn Bus>,
 }
+
+/// The bus, as the daemon uses it: the manager's own objects and each account's are put on
+/// it and taken off it by `dbus/`, whose `dbus::export::OnBus` is the one implementation.
+#[async_trait]
+pub trait Bus: Send + Sync {
+    /// Puts the `ObjectManager`, `org.konedrive.Accounts` and `org.konedrive.Files` at
+    /// `/org/konedrive/Accounts`, over `manager`.
+    async fn serve(&self, connection: &Connection, manager: &Arc<AccountManager>) -> zbus::Result<()>;
+    /// What announces a change of `Accounts.HelperState`: the `Accounts` interface
+    /// [`serve`](Self::serve) put on the bus, looked up once, at startup.
+    async fn helper_state(&self, connection: &Connection) -> zbus::Result<Box<dyn HelperStateSignal>>;
+    /// Puts an account's `Account` at `path`; the task that sends its signals.
+    async fn export_account(&self, connection: &Connection, path: &ObjectPath<'_>, account: Arc<AccountService>) -> zbus::Result<JoinHandle<()>>;
+    /// Puts the interfaces of an account's folder at `path`; the tasks that send their
+    /// signals.
+    async fn export_folder(&self, connection: &Connection, path: &ObjectPath<'_>, sync: Arc<SyncService>) -> zbus::Result<Vec<JoinHandle<()>>>;
+    /// Takes the interfaces of an account's folder off the bus.
+    async fn unexport_folder(&self, connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()>;
+    /// Takes an account's `Account` off the bus.
+    async fn unexport_account(&self, connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()>;
+}
+
+/// Announces changes of `Accounts.HelperState` ([`Bus::helper_state`]).
+#[async_trait]
+pub trait HelperStateSignal: Send + Sync {
+    /// `PropertiesChanged` for `HelperState`.
+    async fn changed(&self) -> zbus::Result<()>;
+}
+
+/// A path that is in no account's folder ([`AccountManager::route_all`]).
+#[derive(Debug)]
+pub struct Outside(pub String);
 
 /// One account: its sign-in, its folder, and the tasks that turn their state into
 /// `PropertiesChanged`.
@@ -105,6 +139,11 @@ impl AccountManager {
 
     pub fn config(&self) -> &Arc<ConfigStore> {
         &self.config
+    }
+
+    /// How the objects get on the bus.
+    pub(crate) fn bus(&self) -> Arc<dyn Bus> {
+        Arc::clone(&self.options.bus)
     }
 
     /// The link to the helper every account shares.
@@ -224,8 +263,8 @@ impl AccountManager {
     /// Puts `account`'s objects on the bus.
     pub(crate) async fn export(&self, connection: &Connection, account: &Account) -> zbus::Result<()> {
         let path = account.path.as_ref();
-        let mut signals = vec![crate::dbus::account::export(connection, &path, Arc::clone(&account.account)).await?];
-        signals.extend(crate::dbus::export::export(connection, &path, Arc::clone(&account.sync)).await?);
+        let mut signals = vec![self.options.bus.export_account(connection, &path, Arc::clone(&account.account)).await?];
+        signals.extend(self.options.bus.export_folder(connection, &path, Arc::clone(&account.sync)).await?);
         account.signals.lock().unwrap().extend(signals);
         Ok(())
     }
@@ -236,10 +275,10 @@ impl AccountManager {
         for signals in account.signals.lock().unwrap().drain(..) {
             signals.abort();
         }
-        if let Err(e) = crate::dbus::export::unexport(connection, &path).await {
+        if let Err(e) = self.options.bus.unexport_folder(connection, &path).await {
             tracing::warn!("cannot take {path} off the bus: {e}");
         }
-        if let Err(e) = crate::dbus::account::unexport(connection, &path).await {
+        if let Err(e) = self.options.bus.unexport_account(connection, &path).await {
             tracing::warn!("cannot take {path} off the bus: {e}");
         }
     }
@@ -394,12 +433,12 @@ impl AccountManager {
     }
 
     /// Every path routed to its account, grouped by account in the order the accounts are
-    /// first named; `OutsideRoot` for the first path in no account's folder, before
+    /// first named; the first path in no account's folder (`OutsideRoot` on the bus), before
     /// anything is done.
-    pub(crate) async fn route_all(&self, paths: &[String]) -> Result<Vec<(Arc<Account>, Vec<PathBuf>)>, SyncFault> {
+    pub(crate) async fn route_all(&self, paths: &[String]) -> Result<Vec<(Arc<Account>, Vec<PathBuf>)>, Outside> {
         let mut groups: Vec<(Arc<Account>, Vec<PathBuf>)> = Vec::new();
         for path in paths {
-            let account = self.route(Path::new(path)).await.ok_or_else(|| outside(path))?;
+            let account = self.route(Path::new(path)).await.ok_or_else(|| Outside(path.clone()))?;
             match groups.iter_mut().find(|(a, _)| Arc::ptr_eq(a, &account)) {
                 Some((_, group)) => group.push(PathBuf::from(path)),
                 None => groups.push((account, vec![PathBuf::from(path)])),

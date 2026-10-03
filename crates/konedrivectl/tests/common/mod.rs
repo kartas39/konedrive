@@ -25,6 +25,7 @@ pub async fn start_daemon(bus: &TestBus, dir: &Path) -> konedrived::daemon::star
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
         onedrive: false,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     let hub = konedrived::sync::hub::HelperHub::new();
     hub.set_socket(dir.join("no-helper.sock"));

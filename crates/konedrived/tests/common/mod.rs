@@ -106,6 +106,7 @@ pub async fn start_daemon(
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
         onedrive: false,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     start_daemon_with(bus, dir, options).await
 }

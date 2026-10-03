@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::Mode;
 use crate::status::snapshot::SyncSnapshot;
 
 fn report(every: Duration) -> ScanReport {

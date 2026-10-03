@@ -62,7 +62,8 @@ use super::engine::{Engine, Fail, Outcome};
 use super::{reason, Fault};
 use crate::folder::disk::Disk;
 use crate::helper::{reopen_for_writing, Clearance, HelperError};
-use crate::helper::LinkCell;
+
+pub use crate::helper::linked::{Helper, Linked};
 use crate::local::liveness::{absent_at, handles_current_async, same_place};
 use crate::local::RECHECK;
 use crate::folder::root::SyncRoot;
@@ -82,51 +83,6 @@ pub const TRASHED: &str = "moved-out:trash";
 
 /// How long a first `ESTALE` for a row's own object waits before a second one is believed.
 const GONE_AGAIN: Duration = Duration::from_secs(5);
-
-/// What a move out asks of the helper (`docs/design/writes.md` §8).
-#[async_trait]
-pub trait Helper: Send + Sync {
-    /// `OpenByHandle` ([`crate::sync::helper::HelperLink::open_by_handle`]).
-    async fn open_by_handle(&self, dir: &File, handle: &FileHandle) -> Result<OwnedFd, HelperError>;
-    async fn mark_file(&self, file: &File) -> Result<(), HelperError>;
-    async fn mark_dir(&self, dir: &File) -> Result<(), HelperError>;
-    async fn unmark_dir(&self, dir: &File) -> Result<(), HelperError>;
-    /// How a file that may carry an ignore mark is cleared before a fill that could fail and
-    /// empty it (`source::hydrate_with`); `None` while there is no link.
-    fn clearance(&self) -> Option<Clearance>;
-}
-
-/// The helper, over the account's link cell: `NotRunning` while there is no link.
-pub struct Linked(pub LinkCell);
-
-impl Linked {
-    fn link(&self) -> Result<crate::helper::HelperLink, HelperError> {
-        self.0.lock().unwrap().clone().ok_or(HelperError::NotRunning)
-    }
-}
-
-#[async_trait]
-impl Helper for Linked {
-    async fn open_by_handle(&self, dir: &File, handle: &FileHandle) -> Result<OwnedFd, HelperError> {
-        self.link()?.open_by_handle(dir, handle).await
-    }
-
-    async fn mark_file(&self, file: &File) -> Result<(), HelperError> {
-        self.link()?.mark_file(file).await
-    }
-
-    async fn mark_dir(&self, dir: &File) -> Result<(), HelperError> {
-        self.link()?.mark_dir(dir).await
-    }
-
-    async fn unmark_dir(&self, dir: &File) -> Result<(), HelperError> {
-        self.link()?.unmark_dir(dir).await
-    }
-
-    fn clearance(&self) -> Option<Clearance> {
-        self.link().ok().map(Clearance::Link)
-    }
-}
 
 /// Downloads a placeholder in place, through a writable descriptor: the ordinary fill.
 #[async_trait]

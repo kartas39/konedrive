@@ -3837,6 +3837,7 @@ fn two_accounts_one_link(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
         baloo: Baloo::disabled,
         thumbnails: None,
         onedrive: false,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     let daemon = runtime
         .block_on(konedrived::daemon::startup::start(bus.builder(), Paths::in_dir(&config_dir), options))

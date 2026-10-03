@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use futures_util::StreamExt;
 
-use crate::sync::hub::HelperHub;
+use crate::conditions::Accounts;
 
 /// `NM_STATE_CONNECTED_GLOBAL`.
 const CONNECTED_GLOBAL: u32 = 70;
@@ -25,12 +25,8 @@ trait NetworkManager {
 /// Asks every account's OneDrive folder for a cycle each time the machine is
 /// online again: one watcher for the daemon, whose hub knows every account.
 /// For the life of the daemon; never in a test (it is the system bus).
-pub async fn watch(hub: Arc<HelperHub>) {
-    let refresh_all = move || {
-        for account in hub.accounts() {
-            account.refresh_now();
-        }
-    };
+pub async fn watch(hub: Arc<impl Accounts>) {
+    let refresh_all = move || hub.refresh_now();
     match zbus::Connection::system().await {
         Ok(connection) => watch_on(&connection, refresh_all).await,
         Err(e) => tracing::info!("no system bus ({e}); a lost network is noticed by retrying"),

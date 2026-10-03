@@ -5,7 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use konedrive_fs::placeholder::{read_stamp, read_state, stamp_matches, State, StateError};
 
-use crate::status::activity::Tracked;
+use crate::hydration::tracked::Tracked;
 use crate::helper::{Clearance, NotCleared};
 use crate::hydration::dehydrate::DehydrateError;
 use crate::folder::root::SyncRoot;

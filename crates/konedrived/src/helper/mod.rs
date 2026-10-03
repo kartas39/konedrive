@@ -85,6 +85,7 @@ use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use nix::sys::socket::{connect, socket, AddressFamily, SockFlag, SockType, UnixAddr};
 use tokio::sync::{mpsc, oneshot, watch};
 
+pub mod linked;
 pub mod status;
 
 #[derive(Debug, thiserror::Error)]

@@ -29,7 +29,7 @@ impl Filler for AccountFill {
         let Some(sync) = self.sync.upgrade() else { return Err(FillError::Errno(libc::EIO)) };
         let Some(source) = sync.source.lock().unwrap().clone() else { return Err(FillError::Errno(libc::EIO)) };
         let shown = shown.display().to_string();
-        let tracked = crate::status::activity::Tracked::new(source, sync.report.transfers.clone(), shown.clone());
+        let tracked = crate::hydration::tracked::Tracked::new(source, sync.report.transfers.clone(), shown.clone());
         let filled = source::hydrate_with(file.into(), &tracked, clearance).await;
         let size = tracked.fetched();
         drop(tracked);

@@ -75,7 +75,7 @@ pub trait ContentSource: Send + Sync {
     /// How far a download in parts has come as a whole: `done` bytes of the
     /// file's `size` are on disk. No one of its streams can tell, so the
     /// download says it here; a source that shows progress
-    /// (`activity::Tracked`) shows this one.
+    /// (`tracked::Tracked`) shows this one.
     fn progress(&self, _done: u64, _size: u64) {}
 }
 

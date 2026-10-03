@@ -11,62 +11,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::local::{ScanProgress, ScanReason};
 use crate::status::snapshot::SyncStateHandle;
-use crate::config::Mode;
+
+pub use crate::status::snapshot::{LocalScan, ScanState};
 
 /// A running scan's counts reach the state at most this often.
 pub const PUBLISH_EVERY: Duration = Duration::from_secs(1);
-
-/// `LocalScan.State`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum ScanState {
-    /// A read-only folder: no watcher, no local scan.
-    #[default]
-    None,
-    Idle,
-    Running,
-}
-
-impl ScanState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Idle => "idle",
-            Self::Running => "running",
-        }
-    }
-}
-
-/// The folder's local scan, as `LocalScan`'s properties publish it. While idle, the
-/// reason, the start and the counts are the last scan's.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct LocalScan {
-    pub state: ScanState,
-    /// Empty before the first scan.
-    pub reason: String,
-    /// Unix seconds; 0 before the first scan.
-    pub started: i64,
-    /// Directories and other entries seen so far, the root not counted.
-    pub directories: u64,
-    pub files: u64,
-    /// Items the base has placed in the folder when the scan started: about how many it
-    /// will see. The disk's own count is not known in advance.
-    pub expected: u64,
-    /// Unix seconds when the last scan finished; 0 for none since the daemon started.
-    pub finished: i64,
-    /// How long the last finished scan took, in seconds.
-    pub took: u32,
-}
-
-impl LocalScan {
-    /// Follows the folder's mode: read-only has no scan; read-write is idle until one runs.
-    pub fn follow(&mut self, mode: Mode) {
-        self.state = match (mode, self.state) {
-            (Mode::ReadOnly, _) => ScanState::None,
-            (Mode::ReadWrite, ScanState::None) => ScanState::Idle,
-            (Mode::ReadWrite, state) => state,
-        };
-    }
-}
 
 fn unix_now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)

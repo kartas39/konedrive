@@ -33,7 +33,8 @@ use tokio::sync::{watch, Notify, OwnedMutexGuard};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::status::activity::{self, Kind, Report, Tracked};
+use crate::status::activity::{self, Kind, Report};
+use crate::hydration::tracked::Tracked;
 use crate::folder::disk::{rescue_base, rescue_stamp, Disk};
 use super::materialize::{replace, replace_leased, Applied, ApplyError, Claimed, Leased, Materializer, ReplaceOutcome, Replacement, Scope};
 use crate::hydration::pin::Pins;

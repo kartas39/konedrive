@@ -68,5 +68,47 @@ pub fn refused(name: &OsStr) -> Option<Refused> {
     None
 }
 
+/// `name` with the machine's name added before its extension (write design
+/// §6): `Report.docx` → `Report-fedora.docx`, `archive.tar.gz` →
+/// `archive.tar-fedora.gz`, `.bashrc` → `.bashrc-fedora`; the `n`th try adds
+/// `-n` (`Report-fedora-2.docx`). The stem is shortened to keep the name
+/// within 255 bytes.
+pub fn copy_name(name: &str, machine: &str, n: u32) -> String {
+    let suffix = if n <= 1 { format!("-{machine}") } else { format!("-{machine}-{n}") };
+    let (stem, ext) = match name.rfind('.') {
+        Some(dot) if dot > 0 => name.split_at(dot),
+        _ => (name, ""),
+    };
+    let room = konedrive_graph::drive::item::NAME_MAX.saturating_sub(suffix.len() + ext.len());
+    let mut cut = stem.len().min(room);
+    while !stem.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    format!("{}{suffix}{ext}", &stem[..cut])
+}
+
+/// The machine's name for conflict copies (`docs/design/writes.md` §7): the host name
+/// up to its first dot, with any character OneDrive refuses replaced by
+/// `-`, at most 32 characters; `linux` when there is none.
+pub fn machine_name(host: &str) -> String {
+    let first = host.trim().split('.').next().unwrap_or_default();
+    let cleaned: String = first
+        .chars()
+        .map(|c| if matches!(c, '"' | '*' | ':' | '<' | '>' | '?' | '/' | '\\' | '|') || c.is_control() { '-' } else { c })
+        .take(32)
+        .collect();
+    let cleaned = cleaned.trim();
+    if cleaned.is_empty() {
+        "linux".into()
+    } else {
+        cleaned.to_owned()
+    }
+}
+
+/// [`machine_name`] of this host.
+pub fn default_machine_name() -> String {
+    machine_name(&std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests;

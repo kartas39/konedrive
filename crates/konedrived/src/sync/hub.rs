@@ -26,7 +26,7 @@ use crate::helper::{Clearance, HelperError, HelperLink, HydrateRequest};
 use crate::helper::status::{HelperState, HelperUnit};
 use crate::helper::LinkCell;
 use crate::hydration::source::ContentSource;
-use crate::hydration::server::{serve, Fillers};
+use crate::hydration::server::{serve, Filler, Fillers, Router};
 use crate::folder::locks::{InodeKey, InodeLocks};
 use super::{SyncService, MAX_HELPER_BACKOFF};
 
@@ -528,10 +528,32 @@ pub(super) fn device_of(path: &Path) -> Option<u64> {
 }
 
 /// A content source is what an account is, to the fill loop.
-pub(crate) fn filler(account: Arc<SyncService>) -> (Arc<dyn ContentSource>, crate::status::activity::Report, Arc<konedrive_graph::pool::TransferPool>) {
+pub(crate) fn filler(account: Arc<SyncService>) -> Filler {
     let report = account.report().clone();
     let pool = Arc::clone(account.pool());
     (account as Arc<dyn ContentSource>, report, pool)
+}
+
+/// The fill loop's routing ([`HelperHub::route`]).
+#[async_trait::async_trait]
+impl Router for HelperHub {
+    async fn route(&self, fd: &OwnedFd) -> Option<Filler> {
+        HelperHub::route(self, fd).await.map(filler)
+    }
+}
+
+/// What the watchers of the network and the power sources tell every account
+/// (`conditions`).
+impl crate::conditions::Accounts for HelperHub {
+    fn set_conditions(&self, conditions: crate::conditions::running::Conditions) {
+        HelperHub::set_conditions(self, conditions);
+    }
+
+    fn refresh_now(&self) {
+        for account in self.accounts() {
+            account.refresh_now();
+        }
+    }
 }
 
 #[cfg(test)]

@@ -2,7 +2,7 @@
 //! connection is metered, whether the machine runs on battery, and whether the power profile
 //! is `power-saver`. One watcher for the daemon, on the system bus, as `sync::network` is:
 //! it follows each source's `PropertiesChanged` and tells every account through the hub
-//! ([`HelperHub::set_conditions`]), each of which decides by the hold's settings, one pair
+//! ([`Accounts::set_conditions`]), each of which decides by the hold's settings, one pair
 //! for every account (`sync::running`).
 //!
 //! - **Metered**: NetworkManager's `Metered` on `/org/freedesktop/NetworkManager` is `1`
@@ -22,8 +22,16 @@ use zbus::fdo::{DBusProxy, PropertiesProxy};
 use zbus::names::{BusName, InterfaceName};
 use zbus::zvariant::OwnedValue;
 
-use crate::sync::hub::HelperHub;
 use crate::conditions::running::Conditions;
+
+/// Every account of the daemon, as this area's watchers tell them: the hub implements it
+/// (`sync::hub::HelperHub`).
+pub trait Accounts: Send + Sync {
+    /// What the hold's sources say now: every account decides by the hold's settings.
+    fn set_conditions(&self, conditions: Conditions);
+    /// The machine is online again: every account's folder is asked for a cycle.
+    fn refresh_now(&self);
+}
 
 /// NetworkManager's `NM_METERED_YES` and `NM_METERED_GUESS_YES`.
 const METERED_YES: u32 = 1;
@@ -75,7 +83,7 @@ const PROFILES_OLD: Source = Source {
 
 /// Tells every account of `hub` what the sources say, now and at each change. For the life
 /// of the daemon; never in a test (it is the system bus).
-pub async fn watch(hub: Arc<HelperHub>) {
+pub async fn watch(hub: Arc<impl Accounts>) {
     match zbus::Connection::system().await {
         Ok(connection) => watch_on(&connection, move |conditions| hub.set_conditions(conditions)).await,
         Err(e) => tracing::info!("no system bus ({e}); no account holds back on a metered connection or on battery"),

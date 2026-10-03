@@ -60,6 +60,7 @@ use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 pub use local::{copy_name, default_machine_name, machine_name};
+pub use crate::conditions::running::{set_paused, set_paused_blocking, user_pause as paused};
 
 /// Takes `user.konedrive.sync` off the files of `rows`, which were dropped
 /// (a switch to read-only). Best effort, by name.
@@ -374,32 +375,6 @@ impl Default for WorkerStatus {
             quota_full: false,
         }
     }
-}
-
-/// The pause of the account whose tree store is `store` (`docs/design/writes.md` §11):
-/// `Some(until)` while paused, unix seconds, 0 meaning until resumed. A
-/// timed pause that has run out is taken off here. Kept in the store's
-/// `meta`, so it survives a restart.
-/// Answered from the store's memory of it ([`Store::pause`]), never by a job:
-/// callable from anywhere.
-pub fn paused(store: &Store) -> Option<i64> {
-    let until = store.pause()?;
-    if until != 0 && until <= engine::now() {
-        store.pause_ended(until);
-        return None;
-    }
-    Some(until)
-}
-
-/// Pauses the account whose tree store is `store` until `until` (unix
-/// seconds, 0 for until resumed), or resumes it (`None`).
-pub async fn set_paused(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
-    store.set_pause(until).await
-}
-
-/// [`set_paused`] for plain threads.
-pub fn set_paused_blocking(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
-    store.set_pause_blocking(until)
 }
 
 /// What the outbox holds, for `PendingCount`, `PendingBytes` and

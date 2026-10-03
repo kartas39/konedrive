@@ -327,6 +327,7 @@ application must never read zeros where real content should be.
 - [D26](D26.md) — The journal lines of the Graph client and the tree store carry the new crates' targets.
 - [D27](D27.md) — The daemon's journal lines carry its new module paths.
 - [D28](D28.md)
+- [D29](D29.md) — Some items moved down a layer have more than one name, and one sits lower than its users need.
 
 ---
 

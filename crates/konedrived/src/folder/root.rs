@@ -11,8 +11,42 @@ use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 use nix::sys::stat::Mode;
 use xattr::FileExt;
 
-use crate::helper::HelperLink;
-use crate::hydration::dehydrate::{DehydrateError, io_error};
+use crate::helper::{HelperLink, NotCleared};
+
+/// Why a file of the folder was not opened, or not freed up (`hydration::dehydrate`).
+#[derive(Debug, thiserror::Error)]
+pub enum DehydrateError {
+    #[error("not a OneDrive file")]
+    NotManaged,
+    #[error("the file is not downloaded")]
+    NotHydrated,
+    #[error("the file was modified locally")]
+    ModifiedLocally,
+    #[error("the file is in use")]
+    InUse,
+    #[error("not a plain file inside this sync root")]
+    OutsideRoot,
+    /// A helper is running and this daemon has no link to it, so a mark its
+    /// group may hold on the file cannot be cleared. Nothing
+    /// was changed; try again once the link is up.
+    #[error("the konedrive helper is running but not connected to this daemon")]
+    HelperNotConnected,
+    #[error("{0}")]
+    Io(String),
+}
+
+pub(crate) fn io_error(e: impl std::fmt::Display) -> DehydrateError {
+    DehydrateError::Io(e.to_string())
+}
+
+impl From<NotCleared> for DehydrateError {
+    fn from(e: NotCleared) -> Self {
+        match e {
+            NotCleared::Unlinked => DehydrateError::HelperNotConnected,
+            other => io_error(other),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SyncRoot {

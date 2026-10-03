@@ -56,7 +56,7 @@ use konedrive_graph::drive::item::RESERVED_PREFIX;
 use crate::status::activity::Kind as EventKind;
 use crate::folder::disk::{Probe, Scanned, HOLDING, NEW_PREFIX};
 use crate::local::{names, IgnoreList};
-use crate::upload::copy_name;
+use crate::local::names::copy_name;
 use konedrive_tree::outbox::{OutboxOp, SWAP_PREFIX};
 use konedrive_tree::{Kind, Placement, Table, TreeError, TreeStore};
 
