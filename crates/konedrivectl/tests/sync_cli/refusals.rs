@@ -294,3 +294,19 @@ async fn binary_an_io_failure_names_the_file_it_was_about() {
     assert!(told.contains(&format!("downloading {} failed", file.display())), "{told}");
     assert!(told.contains("Input/output error"), "the cause stays: {told}");
 }
+
+/// The daemon answers `NoRoot` to `UploadQueue.Changes`, `Folder.Pause`, `Resume` and the
+/// like in two cases: no folder is registered at all, and the folder's sync has not opened
+/// its store yet. Only the second is told to try again in a moment; with no folder, these
+/// commands say what every other one says: no folder is registered, and how to register one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_an_outbox_command_with_no_folder_says_no_folder_is_registered() {
+    let f = harness().await;
+    let addr = f._bus.address();
+
+    for command in ["outbox", "pause"] {
+        let told = refused(addr, &["sync", command]);
+        assert!(told.contains("no sync folder is registered"), "sync {command}: {told}");
+        assert!(told.contains("konedrivectl sync register"), "sync {command}: {told}");
+    }
+}

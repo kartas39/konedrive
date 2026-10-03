@@ -6,7 +6,7 @@ use std::time::Duration;
 use common::*;
 use konedrived::account::{AccountError, AccountService};
 use konedrived::account::cache::AccountInfo;
-use konedrived::config::{ConfigStore, Paths};
+use konedrived::config::{ConfigStore, Paths, DEFAULT_CLIENT_ID};
 use konedrive_graph::oauth::TokenResponse;
 use konedrived::account::secret::{MemoryStore, SecretStore};
 use konedrived::account::state::SignInState;
@@ -42,9 +42,11 @@ async fn set_client_id_never_overwrites_an_unreadable_config() {
 }
 
 #[tokio::test]
-async fn sign_in_requires_a_client_id() {
+async fn sign_in_with_no_client_id_set_uses_the_built_in_one() {
     let f = Fixture::new(Duration::from_secs(5)).await;
-    assert_eq!(f.svc.begin_sign_in().await, Err(AccountError::NoClientId));
+    let url = f.svc.begin_sign_in().await.unwrap();
+    assert!(url.contains(&format!("client_id={DEFAULT_CLIENT_ID}")), "{url}");
+    assert_eq!(f.svc.state().get().state, SignInState::SigningIn);
 }
 
 #[tokio::test]
@@ -245,14 +247,37 @@ async fn graph_401_invalidates_the_cached_token_and_retries_once() {
     assert_eq!(s.last_error, "");
 }
 
-/// `TokenManager::access_token` also returns `SignedOut` when no client ID is configured
-/// (e.g. `config.toml` was lost while a wallet item survives). Unlike the invalid_grant
-/// path, the token manager never touched the state, so `refresh_account_info` must be the
-/// one to bring it back to `signed-out` -- otherwise the daemon is stuck reporting
-/// signed-in with `SetClientId` refused as `Busy`.
+/// With no client ID configured (e.g. `config.toml` was lost while a wallet item survives)
+/// the account stays signed in: its token is refreshed with the built-in client ID.
 #[tokio::test]
-async fn refresh_with_no_client_id_signs_out_and_explains_why() {
+async fn refresh_with_no_client_id_set_uses_the_built_in_one() {
     let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("grant_type=refresh_token"))
+        .and(body_string_contains(format!("client_id={DEFAULT_CLIENT_ID}")))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "token_type": "Bearer", "access_token": "AT1", "expires_in": 3600, "refresh_token": "RT1"
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me"))
+        .and(header("authorization", "Bearer AT1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "displayName": "Test User", "mail": null, "userPrincipalName": "test@outlook.com"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/me/drive"))
+        .and(header("authorization", "Bearer AT1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "quota": {"used": 1u64, "total": 2u64}
+        })))
+        .mount(&server)
+        .await;
     let dir = tempfile::tempdir().unwrap();
     let store = Arc::new(MemoryStore::with_token("RT0"));
     let svc = AccountService::single(dir.path(), endpoints(&server), store.clone(), Duration::from_secs(10)).await
@@ -264,11 +289,9 @@ async fn refresh_with_no_client_id_signs_out_and_explains_why() {
     svc.refresh_account_info().await;
 
     let s = svc.state().get();
-    assert_eq!(s.state, SignInState::SignedOut);
-    assert_eq!(s.last_error, "Set a client ID first, then sign in again.");
-    assert_eq!((s.display_name.as_str(), s.quota_total), ("", 0));
-    // The daemon is usable again: SetClientId is no longer refused as `Busy`.
-    assert!(svc.set_client_id(CLIENT_ID).is_ok());
+    assert_eq!(s.state, SignInState::SignedIn);
+    assert_eq!(s.last_error, "");
+    assert_eq!((s.display_name.as_str(), s.quota_total), ("Test User", 2));
 }
 
 /// The other `SignedOut` case from `access_token`: no refresh token in the wallet at all

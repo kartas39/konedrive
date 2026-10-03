@@ -3,7 +3,8 @@
 //! `KONEDRIVE_ACCOUNT`, and a command that needs one refused with exit status 2 when there are
 //! several and none is chosen; the path commands, routed by `Files` whichever account holds
 //! the path, and refusing `--account`; `status` and `sync status` over every account; and
-//! `login` with no account at all, which adds `Personal`.
+//! `login` with no account at all, which adds `Personal`. No client ID is set: the daemon's
+//! built-in one is what `status` shows and what a sign-in address carries.
 
 mod common;
 
@@ -15,7 +16,7 @@ use common::{err_text, out_text, run_env};
 use konedrive_dbus::accounts::{AccountProxy, AccountsProxy};
 use konedrive_dbus::testing::TestBus;
 
-const CLIENT_ID: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
+use konedrived::config::DEFAULT_CLIENT_ID;
 
 async fn wait_for(what: &str, mut check: impl FnMut() -> bool) {
     for _ in 0..250 {
@@ -91,8 +92,11 @@ async fn accounts_are_added_chosen_renamed_and_removed() {
     assert!(succeeded(&bus, &["--account", "family", "logout"], &[]).contains("Signed out of Family."));
 
     assert_eq!(succeeded(&bus, &["account", "rename", "family", "Home"], &[]).trim(), "Renamed Family to Home.");
-    let (_, told) = failed(&bus, &["account", "rename", "home", "a@b"], &[]);
-    assert!(told.contains("\"a@b\" cannot be an account's label"), "{told}");
+    // A label may be an email; it may not hold a "/".
+    assert_eq!(succeeded(&bus, &["account", "rename", "home", "a@b"], &[]).trim(), "Renamed Home to a@b.");
+    assert_eq!(succeeded(&bus, &["account", "rename", "A@B", "Home"], &[]).trim(), "Renamed a@b to Home.");
+    let (_, told) = failed(&bus, &["account", "rename", "home", "a/b"], &[]);
+    assert!(told.contains("\"a/b\" cannot be an account's label"), "{told}");
     let (status, told) = failed(&bus, &["--account", "home", "account", "remove", "home"], &[]);
     assert_eq!(status, 2, "{told}");
     assert!(told.contains("leave out --account"), "{told}");
@@ -178,7 +182,7 @@ async fn path_commands_go_by_the_path_and_status_shows_every_account() {
 
     // `status` and `sync status` show every account, each under its label.
     let text = succeeded(&bus, &["status"], &[]);
-    assert!(text.starts_with("Client ID:  (not set)\n"), "{text}");
+    assert!(text.starts_with(&format!("Client ID:  {DEFAULT_CLIENT_ID}\n")), "{text}");
     assert!(text.contains("\nPersonal\n  State:      signed-out\n"), "{text}");
     assert!(text.contains("\nFamily\n  State:      signed-out\n"), "{text}");
     let text = succeeded(&bus, &["sync", "status"], &[]);
@@ -204,8 +208,8 @@ async fn path_commands_go_by_the_path_and_status_shows_every_account() {
     assert_eq!(state_of(&bus, &personal.join("a.txt")), "not-managed");
 }
 
-/// `login` with no account at all adds `Personal` and signs it in; with no client ID it
-/// says so first and adds nothing. A stand-in `xdg-open` that records the address it is
+/// `login` with no account at all adds `Personal` and signs it in, with the built-in client
+/// ID when none is set. A stand-in `xdg-open` that records the address it is
 /// given is in `PATH`, and `KONEDRIVE_NO_BROWSER` is not set: the piped stdout alone keeps
 /// it from being called (issue #21), and the address is printed. The sign-in is cancelled
 /// from the bus, as another client would.
@@ -221,10 +225,7 @@ async fn login_with_no_account_adds_personal() {
         .await
         .unwrap();
 
-    let (_, told) = failed(&bus, &["login"], &[]);
-    assert!(told.contains("konedrivectl set-client-id <id>"), "{told}");
-    assert!(manager.list().await.unwrap().is_empty(), "nothing is added without a client ID");
-    manager.set_client_id(CLIENT_ID).await.unwrap();
+    assert!(manager.list().await.unwrap().is_empty());
 
     let browser = tempfile::tempdir().unwrap();
     let opened = browser.path().join("opened");
@@ -270,7 +271,36 @@ async fn login_with_no_account_adds_personal() {
     assert!(!opened.exists(), "no browser is opened when stdout is not a terminal");
     assert!(said.contains("Open this address in a browser:"), "{said}");
     let url = said.split_whitespace().find(|w| w.starts_with("http")).unwrap_or_default();
-    assert!(url.contains(CLIENT_ID), "the address is printed: {said}");
+    assert!(url.contains(DEFAULT_CLIENT_ID), "the address is printed, with the built-in client ID: {said}");
     assert!(err_text(&out).contains("cancelled"), "{}", err_text(&out));
     assert_eq!(manager.list().await.unwrap().len(), 1);
+}
+
+/// The daemon takes a label with an "@" (`config::check_label`: an account is commonly named
+/// by its email), and the CLI says nothing else: not in the help of `account add`, and not
+/// in what it adds to every refused label, whatever it was refused for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn what_the_cli_says_of_a_label_is_what_the_daemon_takes() {
+    let bus = TestBus::start();
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = common::start_daemon(&bus, dir.path()).await;
+
+    // The rule itself: an email is a label.
+    let added = succeeded(&bus, &["account", "add", "ann@outlook.com"], &[]);
+    assert!(added.contains("Added the account ann@outlook.com"), "{added}");
+    assert_eq!(daemon.manager.accounts()[0].account.state().get().label, "ann@outlook.com");
+    assert!(succeeded(&bus, &["account", "rename", "ann@outlook.com", "a@b"], &[]).contains("to a@b"));
+
+    let mut wrong = Vec::new();
+    let help = succeeded(&bus, &["account", "add", "--help"], &[]);
+    if help.contains("no \"@\"") {
+        wrong.push(format!("`account add --help`: {help}"));
+    }
+    // Refused for its length, and told a rule about "@" on the way.
+    let (_, told) = failed(&bus, &["account", "add", &"x".repeat(41)], &[]);
+    assert!(told.contains("at most 40"), "{told}");
+    if told.contains("no \"@\"") {
+        wrong.push(format!("a label refused for its length: {told}"));
+    }
+    assert!(wrong.is_empty(), "the CLI says a label has no \"@\", and the daemon takes one:\n{}", wrong.join("\n"));
 }

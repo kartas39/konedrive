@@ -1,4 +1,4 @@
-use konedrive_dbus::{error_name, ERROR_PREFIX};
+use konedrive_dbus::{error_name, ERROR_PREFIX, LABEL_RULE};
 
 use super::files::pinned_parts;
 use super::formats::{sentence, shell_word};
@@ -147,6 +147,10 @@ pub struct Context<'a> {
     /// (`user.konedrive.drive`, design §8.3), which the daemon refuses under
     /// `NotEmpty` too.
     pub foreign: bool,
+    /// The account has no folder: `Folder.Path` was read, and is empty. Not set when the
+    /// read failed, which says nothing either way. A folder `config.toml` records has its
+    /// path from the daemon's start, before it is brought up.
+    pub no_folder: bool,
     /// How a suggested command names the account ([`command_prefix`]); empty
     /// for plain `konedrivectl`.
     pub prefix: &'a str,
@@ -185,7 +189,7 @@ pub fn refusal_text_in(action: SyncAction<'_>, name: Option<&str>, detail: &str,
     let path_command = matches!(action, Hydrate(_) | Dehydrate(_) | Pin(_) | Unpin(_) | Free(_) | Open(_));
     // An account removed while this command ran: its object is gone.
     if name.is_some_and(is_gone_name) && !path_command {
-        let text = refusal_text_as(action, Some(&format!("{ERROR_PREFIX}.NoAccount")), detail, context.root, prefix);
+        let text = refusal_text_as(action, Some(&format!("{ERROR_PREFIX}.NoAccount")), detail, context.root, context.no_folder, prefix);
         return text;
     }
     match (refusal, action) {
@@ -193,7 +197,7 @@ pub fn refusal_text_in(action: SyncAction<'_>, name: Option<&str>, detail: &str,
         // sees it; with no folder at all, that is `NoRoot`'s situation.
         (Some("OutsideRoot"), _) if path_command && context.root.is_empty() => {
             return match context.folders {
-                [] => refusal_text_as(action, Some(&format!("{ERROR_PREFIX}.NoRoot")), detail, "", prefix),
+                [] => refusal_text_as(action, Some(&format!("{ERROR_PREFIX}.NoRoot")), detail, "", true, prefix),
                 [one] if matches!(action, Open(_)) => format!(
                     "{path} is not inside the sync folder ({one}). Only what is inside it, and the folder \
                      itself, has a page in OneDrive"
@@ -223,7 +227,7 @@ pub fn refusal_text_in(action: SyncAction<'_>, name: Option<&str>, detail: &str,
         }
         _ => {}
     }
-    let text = refusal_text_as(action, name, detail, context.root, prefix);
+    let text = refusal_text_as(action, name, detail, context.root, context.no_folder, prefix);
     match (refusal, konedrive_dbus::helper_advice(context.helper)) {
         // A folder that shows OneDrive downloads from OneDrive; it has no
         // source yet only while it waits to be brought up.
@@ -238,12 +242,19 @@ pub fn refusal_text_in(action: SyncAction<'_>, name: Option<&str>, detail: &str,
 /// [`explain_sync_error`]'s decision, on the name and message alone — so it
 /// can be tested with a name and a message that disagree.
 pub fn refusal_text(action: SyncAction<'_>, name: Option<&str>, detail: &str, root: &str) -> String {
-    refusal_text_as(action, name, detail, root, "konedrivectl")
+    refusal_text_as(action, name, detail, root, false, "konedrivectl")
 }
 
 /// [`refusal_text`], with every command it suggests for this account begun
 /// with `prefix` ([`command_prefix`]).
-fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, root: &str, prefix: &str) -> String {
+fn refusal_text_as(
+    action: SyncAction<'_>,
+    name: Option<&str>,
+    detail: &str,
+    root: &str,
+    no_folder: bool,
+    prefix: &str,
+) -> String {
     use SyncAction::*;
     let refusal = name
         .and_then(|name| name.strip_prefix(ERROR_PREFIX))
@@ -400,7 +411,10 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
         (Some("Unsupported"), Settings | Anyway) => {
             "this folder is not connected to OneDrive, so it has no sync settings".to_owned()
         }
-        (Some("NoRoot"), Outbox | Pause | Resume | Ignore | NotUploaded | Deletes) => {
+        // `NoRoot` is the daemon's answer to these both with no folder registered and before
+        // the folder's sync has opened its store. Only when the account is known to have no
+        // folder ([`Context::no_folder`]) does the arm for every other command say what to do.
+        (Some("NoRoot"), Outbox | Pause | Resume | Ignore | NotUploaded | Deletes) if !no_folder => {
             "the folder's sync has not started yet; try again in a moment".to_owned()
         }
         (Some("Unsupported"), _) => {
@@ -581,10 +595,9 @@ pub fn account_refusal_text(action: AccountAction<'_>, name: Option<&str>, detai
              switches anyway"
         ),
         SetMode(label, mode, _) => format!("{label} was not switched to {mode}: {detail}"),
-        Add(label) | Rename(_, label) if invalid => format!(
-            "{label:?} cannot be an account's label: {detail}. A label has 1 to 40 characters, no \"/\" \
-             and no \"@\", and is not another account's label, whatever the case"
-        ),
+        Add(label) | Rename(_, label) if invalid => {
+            format!("{label:?} cannot be an account's label: {detail}. {LABEL_RULE}")
+        }
         SetClientId(id, _) if invalid => format!(
             "{id:?} is not an Application (client) ID. It is a GUID like \
              00000000-0000-0000-0000-000000000000: copy it from the Overview page of your app \

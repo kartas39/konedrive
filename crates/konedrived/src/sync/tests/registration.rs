@@ -310,6 +310,28 @@ async fn a_folder_registered_without_the_helper_switches_to_interception_when_th
     supervisor.abort();
 }
 
+/// A daemon that has started and not brought its folders up yet (`restore` runs before the
+/// bus name is claimed, `resume` after): a folder registered without interception has no
+/// registration then, and it is published by its path all the same, so that a client can
+/// tell it from an account with no folder. An account with none has no path.
+#[tokio::test]
+async fn a_folder_not_brought_up_yet_is_published_by_its_path() {
+    let (service, _socket_path, config_file, dirs) = registered_before_the_helper().await;
+    let folder = dirs[2].path().display().to_string();
+    drop(service);
+
+    let restarted = SyncService::new(None, None, Some(persist(&config_file)));
+    restarted.restore().await;
+    assert!(restarted.root().is_none(), "not brought up yet");
+    assert_eq!(restarted.root_state(), "none");
+    assert_eq!(restarted.state().get().root_path, folder);
+
+    let other = tempfile::tempdir().unwrap();
+    let empty = SyncService::new(None, None, Some(persist(&other.path().join("config.toml"))));
+    empty.restore().await;
+    assert_eq!(empty.state().get().root_path, "");
+}
+
 /// A folder registered without interception because no helper was
 /// connected is written down as one to switch, so that a restart before
 /// the helper arrives still switches it when the helper does.

@@ -106,6 +106,9 @@
          lifted. Not kept across a restart. Refused Unsupported for a folder
          not connected to OneDrive. -->
     <method name="SyncAnyway"/>
+    <!-- The account's folder; empty when it has none. A folder config.toml
+         records has its path from the daemon's start, while State may still
+         be none: it is not brought up yet. -->
     <property name="Path" type="s" access="read"/>
     <!-- none | listing | ready | no-interception | error -->
     <property name="State" type="s" access="read"/>

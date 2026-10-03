@@ -439,11 +439,12 @@ pub fn new_account_id<'a>(taken: impl IntoIterator<Item = &'a str> + Clone) -> S
     }
 }
 
-/// Checks a label against the rules of `Accounts.Add` and `Account.SetLabel`, and returns
-/// it trimmed: 1–40 characters, no `/`, not 12 hexadecimal digits in any case (so it is
-/// never taken for an id in `--account`), no control characters, and no other account's
-/// label (`except` is the account being renamed), whatever the case. `@` is allowed: an
-/// account's label is commonly its email. `Err` says why, for `InvalidArgs`.
+/// Checks a label against the rules of `Accounts.Add` and `Account.SetLabel`
+/// ([`konedrive_dbus::LABEL_RULE`], the sentence a person is told; whoever changes a rule
+/// here changes it there), and returns it trimmed. 12 hexadecimal digits are refused in any case,
+/// so that a label is never taken for an id in `--account`; `except` is the account being
+/// renamed. `@` is allowed: an account's label is commonly its email. `Err` says why, for
+/// `InvalidArgs`.
 pub fn check_label(label: &str, config: &Config, except: Option<&str>) -> Result<String, String> {
     let label = label.trim();
     let length = label.chars().count();

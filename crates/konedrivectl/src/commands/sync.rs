@@ -416,7 +416,10 @@ async fn explained<T>(
             // it shows, and one ends with how to start the helper. If even
             // reading them fails, they simply do not; the refusal is the
             // thing to report.
-            let root = proxy.folder.path().await.unwrap_or_default();
+            let root = proxy.folder.path().await;
+            // Only a path that was read and is empty says there is no folder.
+            let no_folder = root.as_ref().is_ok_and(|root| root.is_empty());
+            let root = root.unwrap_or_default();
             let source = proxy.folder.source().await.unwrap_or_default();
             let helper = daemon.manager.helper_state().await.unwrap_or_default();
             let foreign = match action {
@@ -430,6 +433,7 @@ async fn explained<T>(
                 helper: &helper,
                 folders: &[],
                 foreign,
+                no_folder,
                 prefix: &prefix,
             };
             Err(anyhow!("{}", konedrivectl::explain_sync_error_in(action, &error, context)))
@@ -475,6 +479,7 @@ async fn explained_paths<T>(
         helper: &helper,
         folders: &roots,
         foreign: false,
+        no_folder: false,
         prefix: &prefix,
     };
     Err(anyhow!("{}", konedrivectl::explain_sync_error_in(action.about(&named), &error, context)))
