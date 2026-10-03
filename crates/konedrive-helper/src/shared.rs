@@ -284,6 +284,13 @@ impl Registry {
 pub(crate) struct Shared {
     pub(crate) marks: marks::Marks,
     pub(crate) roots: Mutex<roots::Roots>,
+    /// Held by a registration or an unregistration from its decision until
+    /// the registrations it decided on are saved and in `roots`, so that the
+    /// save itself — two `fsync`s — runs without `roots`, which every
+    /// connection thread and some workers take. Always taken before `roots`,
+    /// never while holding it, and by nothing else: the one place in the
+    /// helper where a second lock is taken under a first.
+    pub(crate) roots_saving: Mutex<()>,
     pub(crate) jobs: Mutex<jobs::Jobs>,
     /// Every live connection, by uid.
     pub(crate) daemons: Mutex<Registry>,
@@ -536,10 +543,31 @@ pub(crate) enum Refusal {
     /// that is running (`ETXTBSY`), and whatever else `dentry_open` can
     /// refuse `O_RDWR` for.
     EventFdFailed,
+    /// An open for a uid that already has
+    /// [`jobs::MAX_SUSPENDED_OPENS_PER_UID`] waiting for its daemon to
+    /// answer (`EAGAIN`).
+    TooManySuspended,
+    /// A `RegisterRoot` or an `UnregisterRoot` that was refused — which any
+    /// local process can send as fast as it likes.
+    RootRefused,
+    /// A `RegisterRoot` under an id another user holds. Counted apart from
+    /// the other refusals, so that a flood of those does not reduce the one
+    /// line that names somebody reaching for another user's registration
+    /// to a count.
+    RootIdTaken,
+    /// A registration whose feature probe the helper's own sandbox stopped.
+    /// Not a refusal — the registration goes on, on the filesystem type
+    /// check — and under the shipped unit the ordinary case of a first
+    /// registration; kept here for the throttle, since a peer can have the
+    /// line as often as it registers.
+    ProbeSkipped,
+    /// `roots.json` could not be written. The helper's own trouble, but
+    /// while it lasts every registration a peer sends repeats it.
+    RootsNotSaved,
 }
 
 impl Refusal {
-    const ALL: [Refusal; 9] = [
+    const ALL: [Refusal; 14] = [
         Refusal::PoolFull,
         Refusal::NoRoot,
         Refusal::TooManyWaiters,
@@ -549,6 +577,11 @@ impl Refusal {
         Refusal::TooManyConnections,
         Refusal::Unopenable,
         Refusal::EventFdFailed,
+        Refusal::TooManySuspended,
+        Refusal::RootRefused,
+        Refusal::RootIdTaken,
+        Refusal::ProbeSkipped,
+        Refusal::RootsNotSaved,
     ];
 
     /// What a line says when the occurrences it counts are not in front of
@@ -591,6 +624,26 @@ impl Refusal {
             Refusal::EventFdFailed => format!(
                 "{EVENT_FD_FAILED} — an open through a read-only mount, or of an executable that \
                  is running, most likely"
+            ),
+            Refusal::TooManySuspended => format!(
+                "opens for a uid that already has {} opens waiting for its daemon to answer; \
+                 denied EAGAIN",
+                jobs::MAX_SUSPENDED_OPENS_PER_UID
+            ),
+            Refusal::RootRefused => {
+                "requests to register or unregister a root that were refused".into()
+            }
+            Refusal::RootIdTaken => {
+                "requests to register a root id which belongs to another user; refused".into()
+            }
+            Refusal::ProbeSkipped => {
+                "registrations that went on although the helper's own sandbox stopped the \
+                 feature probe, relying on the filesystem type check and the daemon's own probe"
+                    .into()
+            }
+            Refusal::RootsNotSaved => format!(
+                "registrations and unregistrations refused because the helper cannot save \
+                 {ROOTS_FILE}"
             ),
         }
     }

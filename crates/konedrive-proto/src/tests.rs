@@ -192,3 +192,22 @@ fn too_many_descriptors_does_not_leak_fds() {
         "recv must not leave extra descriptors open after rejecting a truncated message"
     );
 }
+
+/// The one form a root id has: what the daemon mints, and all the helper
+/// registers a root under.
+#[test]
+fn a_root_id_is_a_version_4_uuid_in_its_canonical_text() {
+    assert!(is_root_id("1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d"));
+    assert!(is_root_id("1C2E4F5A-0B3C-4D5E-8F60-71829A3B4C5D"));
+    for bad in [
+        "",
+        "some-root",
+        "1c2e4f5a-0b3c-1d5e-8f60-71829a3b4c5d",
+        "1c2e4f5a0b3c4d5e8f6071829a3b4c5d",
+        "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d ",
+        "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5g",
+        "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c\u{e9}",
+    ] {
+        assert!(!is_root_id(bad), "{bad:?}");
+    }
+}

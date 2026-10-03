@@ -6,7 +6,20 @@ use std::io::{self, Write};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
+use konedrive_proto::is_root_id;
 use serde::{Deserialize, Serialize};
+
+/// How many roots one uid may hold.
+///
+/// Every root is an entry in `roots.json`, compared against at each
+/// registration and walked at each start of the helper, before it answers
+/// its first open: without a bound, any local user could register
+/// directories of its own until saving and starting took as long as it
+/// liked. The daemon registers one root for each account whose folder is
+/// intercepted, so this leaves room for many accounts. Beyond it a new root
+/// is refused `EDQUOT`; a root the uid already holds can still be registered
+/// again. Chosen, not measured.
+pub const MAX_ROOTS_PER_UID: usize = 32;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Root {
@@ -21,7 +34,7 @@ pub struct Root {
     pub root_id: String,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Roots {
     by_id: HashMap<String, Root>,
 }
@@ -37,6 +50,73 @@ pub enum Nesting {
     SameDirectory(String),
 }
 
+/// Why a registration is refused.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Refused {
+    /// The id does not have the form of a root id (`EINVAL`).
+    NotAnId,
+    /// The id names another user's root (`EPERM`).
+    AnotherUsers,
+    /// The directory overlaps another root (`EINVAL`).
+    Overlap(Nesting),
+    /// The user already holds [`MAX_ROOTS_PER_UID`] roots (`EDQUOT`).
+    TooMany,
+}
+
+impl Refused {
+    /// The errno the daemon is answered.
+    pub fn errno(&self) -> i32 {
+        match self {
+            Refused::NotAnId | Refused::Overlap(_) => libc::EINVAL,
+            Refused::AnotherUsers => libc::EPERM,
+            Refused::TooMany => libc::EDQUOT,
+        }
+    }
+}
+
+/// The registrations as they are once a root has been accepted.
+#[derive(Debug)]
+pub struct Accepted {
+    /// Every registration, the new one among them. Nothing holds it yet: the
+    /// caller saves it and then puts it in place of the registrations it was
+    /// made from.
+    pub roots: Roots,
+    /// The entry the same user held under the same id, which the new one
+    /// replaces. Its directory is the caller's to unmark when it is another
+    /// directory than the new root's — and the caller's to compare with the
+    /// new one first ([`Root::overlap_with`]): only *other* roots were
+    /// compared here, since a root announcing itself again must not be
+    /// refused for overlapping itself.
+    pub displaced: Option<Root>,
+}
+
+/// What a line of the log says for an id a peer sent: a root id as it is,
+/// anything else cut short and escaped, since it is any bytes the peer liked.
+pub fn shown_id(id: &str) -> String {
+    if is_root_id(id) {
+        return id.to_owned();
+    }
+    shown(id, 40)
+}
+
+/// What a line of the log says for a path: escaped and cut. A directory's
+/// name is its owner's to choose — line breaks and all, up to `PATH_MAX` —
+/// and so is every path the helper prints for a root.
+pub fn shown_path(path: &str) -> String {
+    shown(path, 200)
+}
+
+/// `text` in quotes with everything but plain characters escaped, and only
+/// its first `most` characters when it is longer.
+fn shown(text: &str, most: usize) -> String {
+    let head: String = text.chars().take(most).collect();
+    if head.len() == text.len() {
+        format!("{head:?}")
+    } else {
+        format!("{head:?}… ({} bytes)", text.len())
+    }
+}
+
 /// True when `path` is `within` itself or lies below it. Compared component by
 /// component, so `/home/u/OneDrive2` is not inside `/home/u/OneDrive`.
 fn is_within(path: &str, within: &str) -> bool {
@@ -46,6 +126,31 @@ fn is_within(path: &str, within: &str) -> bool {
         return path.starts_with('/');
     }
     path == within || path.strip_prefix(within).is_some_and(|rest| rest.starts_with('/'))
+}
+
+impl Root {
+    /// Whether `other` is this very registration: the same user's, of the
+    /// same directory, found by the same path.
+    pub fn same_entry(&self, other: &Root) -> bool {
+        (self.uid, self.dev, self.ino) == (other.uid, other.dev, other.ino)
+            && self.path == other.path
+            && self.root_id == other.root_id
+    }
+
+    /// How a directory at `path` would overlap this root's, going by the two
+    /// paths: inside it, containing it, or at the same path. This is the
+    /// question [`Roots::nesting_conflict`] asks of every *other* root; the
+    /// helper asks it of an id's own previous directory before it lets the
+    /// id move there (see `register_root`).
+    pub fn overlap_with(&self, path: &str) -> Option<Nesting> {
+        if is_within(path, &self.path) {
+            return Some(Nesting::Inside(self.root_id.clone()));
+        }
+        if is_within(&self.path, path) {
+            return Some(Nesting::Contains(self.root_id.clone()));
+        }
+        None
+    }
 }
 
 impl Roots {
@@ -68,15 +173,61 @@ impl Roots {
         self.by_id.get(root_id).map(|root| root.uid)
     }
 
-    /// Removes and returns the entry with this id, whoever owns it.
+    /// Decides one registration: whether `root` may be registered, and what
+    /// the registrations are then. `self` is left as it is, so a refusal, or
+    /// a save that fails afterwards, has nothing to put back.
     ///
-    /// Used only by `register_root`, to lift a user's own previous
-    /// registration out of the way before the nesting check runs — a root
-    /// re-announcing itself must not be reported as overlapping itself now
-    /// that `nesting_conflict` no longer skips by id. The caller puts it back
-    /// if the registration does not go through.
-    pub fn take(&mut self, root_id: &str) -> Option<Root> {
-        self.by_id.remove(root_id)
+    /// In this order:
+    /// - the id must have the form of a root id. It is a string the peer
+    ///   picks, stored in `roots.json` and written to the log;
+    /// - the entry it names must be free or the same user's (see
+    ///   [`owner_of`](Self::owner_of));
+    /// - the user's own previous entry under this id is lifted out, so that
+    ///   a root announcing itself again is not compared against itself, and
+    ///   the directory must then overlap no other root
+    ///   ([`nesting_conflict`](Self::nesting_conflict));
+    /// - a root that replaces none of the user's must leave the user within
+    ///   [`MAX_ROOTS_PER_UID`].
+    pub fn with(&self, root: Root) -> Result<Accepted, Refused> {
+        if !is_root_id(&root.root_id) {
+            return Err(Refused::NotAnId);
+        }
+        if self.owner_of(&root.root_id).is_some_and(|other| other != root.uid) {
+            return Err(Refused::AnotherUsers);
+        }
+        let mut roots = self.clone();
+        let displaced = roots.by_id.remove(&root.root_id);
+        if let Some(conflict) = roots.nesting_conflict(&root.path, root.dev, root.ino) {
+            return Err(Refused::Overlap(conflict));
+        }
+        if displaced.is_none() && roots.held_by(root.uid) >= MAX_ROOTS_PER_UID {
+            return Err(Refused::TooMany);
+        }
+        roots.insert(root);
+        Ok(Accepted { roots, displaced })
+    }
+
+    /// The entry registered under this id, whoever holds it.
+    pub fn get(&self, root_id: &str) -> Option<&Root> {
+        self.by_id.get(root_id)
+    }
+
+    /// How many roots this user holds.
+    pub fn held_by(&self, uid: u32) -> usize {
+        self.by_id.values().filter(|root| root.uid == uid).count()
+    }
+
+    /// The registrations without the root `uid` holds under this id, and that
+    /// root; `None` if there is no such root or it is somebody else's. As
+    /// with [`with`](Self::with), `self` is left as it is. The id may have
+    /// any form: a root registered before the form was checked is removed
+    /// like any other.
+    pub fn without(&self, uid: u32, root_id: &str) -> Option<(Roots, Root)> {
+        // Asked before anything is copied: a refusal costs a lookup.
+        self.by_id.get(root_id).filter(|root| root.uid == uid)?;
+        let mut roots = self.clone();
+        let root = roots.remove_owned(uid, root_id)?;
+        Some((roots, root))
     }
 
     /// Removes a root, but only if the asking user is the one who registered
@@ -128,9 +279,9 @@ impl Roots {
     /// carry the same id. Skipping by id was how a second user
     /// reusing somebody's `root_id` slipped past this check entirely: the
     /// victim's root was not even considered as an overlap. A daemon
-    /// re-announcing its own root takes its previous entry out with
-    /// [`take`](Self::take) before asking, so it is still never compared
-    /// against itself.
+    /// re-announcing its own root has its previous entry taken out before
+    /// the question is asked, so it is still never compared
+    /// against itself ([`with`](Self::with) lifts it out).
     pub fn nesting_conflict(&self, path: &str, dev: u64, ino: u64) -> Option<Nesting> {
         self.by_id.values().find_map(|root| {
             if root.dev == dev && root.ino == ino {

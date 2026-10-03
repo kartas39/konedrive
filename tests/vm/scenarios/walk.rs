@@ -229,7 +229,7 @@ pub(crate) fn dt_unknown_walk(ctx: &Ctx, checks: &mut Checks) -> Result<(), Stri
         // empty, and the tree has to be there *before* the walk
         // runs or there is nothing to walk.
         let link = ctx.link()?;
-        let root_id = "dt-unknown-root";
+        let root_id = "0e1d2c3b-4a59-4687-9675-64742d756e6b";
         let handle = File::open(&root).map_err(|e| e.to_string())?;
         ctx.runtime
             .block_on(link.register_root(&handle, root_id))

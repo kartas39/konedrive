@@ -302,12 +302,34 @@ pub struct WalkReport {
     /// How many directories the walk actually changed — marked by
     /// [`walk_and_mark`], unmarked by [`walk_and_unmark`].
     pub marked: usize,
-    pub failures: Vec<String>,
+    pub failures: Vec<WalkFailure>,
+}
+
+/// One thing a walk could not do, in its two parts: whoever writes it down
+/// can cut the path, which is as long as the tree's owner made it, and still
+/// keep the reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WalkFailure {
+    /// The directory or file, as the walk names it: the root's path and the
+    /// names below it.
+    pub path: String,
+    /// What could not be done there, and why.
+    pub what: String,
+}
+
+impl std::fmt::Display for WalkFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.path, self.what)
+    }
 }
 
 impl WalkReport {
     pub fn degraded(&self) -> bool {
         !self.failures.is_empty()
+    }
+
+    fn fail(&mut self, path: &str, what: String) {
+        self.failures.push(WalkFailure { path: path.to_owned(), what });
     }
 }
 
@@ -436,11 +458,11 @@ fn walk_tree(marks: &Marks, root: BorrowedFd<'_>, label: &str, action: Action) -
     let mut report = WalkReport::default();
     match action.apply(marks, root) {
         Ok(()) => report.marked += 1,
-        Err(e) => report.failures.push(format!("{label}: cannot {}: {e}", action.verb())),
+        Err(e) => report.fail(label, format!("cannot {}: {e}", action.verb())),
     }
     match root.try_clone_to_owned() {
         Ok(owned) => walk_below(marks, owned, label, 0, action, &mut report),
-        Err(e) => report.failures.push(format!("{label}: cannot duplicate the root fd: {e}")),
+        Err(e) => report.fail(label, format!("cannot duplicate the root fd: {e}")),
     }
     report
 }
@@ -454,13 +476,13 @@ fn walk_below(
     report: &mut WalkReport,
 ) {
     if depth >= MAX_DEPTH {
-        report.failures.push(format!("{label}: deeper than {MAX_DEPTH} levels, not walked"));
+        report.fail(label, format!("deeper than {MAX_DEPTH} levels, not walked"));
         return;
     }
     let mut handle = match Dir::from_fd(dir) {
         Ok(handle) => handle,
         Err(e) => {
-            report.failures.push(format!("{label}: cannot list: {e}"));
+            report.fail(label, format!("cannot list: {e}"));
             return;
         }
     };
@@ -494,7 +516,7 @@ fn walk_below(
                 names.push_back(name.to_owned());
             }
             Err(e) => {
-                report.failures.push(format!("{label}: cannot read an entry: {e}"));
+                report.fail(label, format!("cannot read an entry: {e}"));
                 break;
             }
         }
@@ -533,7 +555,7 @@ fn walk_below(
             // all ordinary, none a failure.
             Err(Errno::ELOOP) | Err(Errno::EXDEV) | Err(Errno::ENOENT) => continue,
             Err(e) => {
-                report.failures.push(format!("{shown}: cannot open: {e}"));
+                report.fail(&shown, format!("cannot open: {e}"));
                 continue;
             }
         };
@@ -542,7 +564,7 @@ fn walk_below(
         match action.apply(marks, child.as_fd()) {
             Ok(()) => report.marked += 1,
             Err(e) => {
-                report.failures.push(format!("{shown}: cannot {}: {e}", action.verb()));
+                report.fail(&shown, format!("cannot {}: {e}", action.verb()));
                 // A directory we could not mark is one whose children we have
                 // no business marking either — they would be covered by a
                 // parent that is not. Removal is the opposite case: a mark we
@@ -560,10 +582,10 @@ fn walk_below(
 /// (for a registration, H132 for an unregistration).
 fn clear_file(marks: &Marks, dir: BorrowedFd<'_>, name: &CStr, label: &str, report: &mut WalkReport) {
     if let Err(e) = marks.clear_ignore_at(dir, name) {
-        report.failures.push(format!(
-            "{label}/{}: cannot clear the ignore mark: {e}",
-            name.to_string_lossy()
-        ));
+        report.fail(
+            &format!("{label}/{}", name.to_string_lossy()),
+            format!("cannot clear the ignore mark: {e}"),
+        );
     }
 }
 

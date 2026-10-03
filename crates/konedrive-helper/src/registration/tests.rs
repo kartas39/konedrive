@@ -21,3 +21,18 @@ fn a_root_id_held_by_another_user_is_refused() {
         "an unused id is free for anyone"
     );
 }
+
+/// A walk's failure deep in a tree keeps its reason: the path is cut and
+/// escaped, the words after it are not.
+#[test]
+fn a_walk_failure_on_a_long_path_keeps_its_reason() {
+    let failure = marks::WalkFailure {
+        path: format!("/home/u/OneDrive/{}", "a folder with a long name/".repeat(40)),
+        what: "cannot open: Permission denied (os error 13)".into(),
+    };
+    let line = failure_line(&failure);
+    assert!(line.ends_with(": cannot open: Permission denied (os error 13)"), "{line}");
+    assert!(line.len() < 300, "{line}");
+    let odd = marks::WalkFailure { path: "/r/a\nb".into(), what: "cannot list: x".into() };
+    assert_eq!(failure_line(&odd), "\"/r/a\\nb\": cannot list: x");
+}

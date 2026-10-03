@@ -12,7 +12,7 @@ use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
 use nix::sys::fanotify::MaskFlags;
 
-use jobs::{Enrolled, Owner};
+use jobs::{Enrolled, Owner, MAX_SUSPENDED_OPENS_PER_UID};
 use konedrive_helper::outbox::{Outbox, Outgoing};
 
 use crate::pool;
@@ -574,24 +574,40 @@ fn hydrate(
     // `jobs::Dispatch`). A `SCM_RIGHTS` copy of either is the same open file
     // description.
     let enrollment = lock(&shared.jobs).enroll((dev, ino), owner, claim(slot), since);
-    let gone = matches!(enrollment.outcome, Enrolled::ConnectionGone);
     for stranded in enrollment.evicted {
-        if gone {
-            // This connection's cleanup already ran, so nothing
-            // would ever answer a job created on it.
-            tracing::warn!("the daemon connection went away while this open was being handled");
-        } else {
-            tracing::warn!(
-                "a hydration of this file was in hand for another uid, which no longer owns it; \
-                 denying its openers EIO"
-            );
-        }
-        respond_deny(shared, stranded, libc::EIO);
+        let errno = match enrollment.outcome {
+            Enrolled::ConnectionGone => {
+                // This connection's cleanup already ran, so nothing
+                // would ever answer a job created on it.
+                tracing::warn!("the daemon connection went away while this open was being handled");
+                libc::EIO
+            }
+            Enrolled::TooMany => {
+                // Throttled: a daemon that answers nothing turns every open
+                // of its user's placeholders into one of these.
+                shared.refusals.report(Refusal::TooManySuspended, || {
+                    format!(
+                        "uid {} already has {MAX_SUSPENDED_OPENS_PER_UID} opens waiting for its \
+                         daemon to answer; denying this one EAGAIN",
+                        owner.uid
+                    )
+                });
+                libc::EAGAIN
+            }
+            _ => {
+                tracing::warn!(
+                    "a hydration of this file was in hand for another uid, which no longer owns \
+                     it; denying its openers EIO"
+                );
+                libc::EIO
+            }
+        };
+        respond_deny(shared, stranded, errno);
     }
     // `New` comes with its request to send. `Queued` has none yet: the
     // opener is enrolled and stays suspended until a returning credit sends
-    // it. `Existing` asked for nothing, and `ConnectionGone`
-    // was answered above.
+    // it. `Existing` asked for nothing, and `ConnectionGone` and `TooMany`
+    // were answered above.
     dispatch(shared, &daemon.outbox, owner, enrollment.dispatch);
 }
 

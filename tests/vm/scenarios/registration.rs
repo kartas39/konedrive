@@ -9,7 +9,7 @@ use konedrive_fs::placeholder::{
 };
 use konedrive_proto::SOCKET_PATH;
 use konedrived::config::{ConfigStore, Paths};
-use konedrived::helper::HelperLink;
+use konedrived::helper::{HelperError, HelperLink};
 use konedrived::sync::{supervise_helper, Persist, SyncError, SyncService};
 
 use crate::harness::{Checks, Ctx, Reader, count_in_log, dir_mark_present, ignore_mark_present};
@@ -637,6 +637,113 @@ fn upgraded_steps(
     }
     if after.as_deref() != Ok(payload.as_slice()) || state != Some(State::Hydrated) {
         return Err(format!("{}. The reader did not get the file's content", trace.join("; ")));
+    }
+    Ok(())
+}
+
+/// Quality findings `HE2`: the helper registers a root only under a root id,
+/// and an id registered again onto another directory takes the marks off
+/// the directory it had — unless the two overlap, which is refused with
+/// every mark left where it was.
+///
+/// The helper stored whatever string `RegisterRoot` carried, and a
+/// re-registration onto another inode dropped the old entry and walked only
+/// the new directory: the old tree kept every mark with no registration
+/// behind it, so its placeholders were intercepted for a daemon that no
+/// longer knew them (`EIO`) until the helper restarted.
+pub(crate) fn displaced_root_is_unmarked(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
+    let first = scenario_folder(ctx, "displaced-first")?;
+    let second = scenario_folder(ctx, "displaced-second")?;
+    let link = ctx.link()?;
+    let root_id = "0e1d2c3b-4a59-4687-9675-646973706c61";
+    let result = displaced_root_steps(ctx, &link, root_id, &first, &second);
+    let _ = ctx.runtime.block_on(link.unregister_root(root_id));
+    let _ = std::fs::remove_dir_all(&first);
+    let _ = std::fs::remove_dir_all(&second);
+    result
+}
+
+fn displaced_root_steps(
+    ctx: &Ctx,
+    link: &HelperLink,
+    root_id: &str,
+    first: &Path,
+    second: &Path,
+) -> Result<(), String> {
+    // Through the link directly: the trees are there before the walks.
+    std::fs::create_dir_all(first.join("a")).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(second.join("b")).map_err(|e| e.to_string())?;
+    let below_first = ctx.ino_of(&first.join("a"))?;
+    let below_second = ctx.ino_of(&second.join("b"))?;
+    let one = File::open(first).map_err(|e| e.to_string())?;
+    let two = File::open(second).map_err(|e| e.to_string())?;
+
+    match ctx.runtime.block_on(link.register_root(&one, "not-a-root-id")) {
+        Err(HelperError::Refused(errno)) if errno == libc::EINVAL => {}
+        other => return Err(format!("RegisterRoot under \"not-a-root-id\" → {other:?}, not EINVAL")),
+    }
+    if dir_mark_present(ctx.helper_pid(), below_first) {
+        return Err("a registration that was refused marked the tree".into());
+    }
+
+    ctx.runtime
+        .block_on(link.register_root(&one, root_id))
+        .map_err(|e| format!("cannot register the first directory: {e}"))?;
+    if !dir_mark_present(ctx.helper_pid(), below_first) {
+        return Err("the first directory was registered and not marked; nothing is tested".into());
+    }
+    ctx.runtime
+        .block_on(link.register_root(&two, root_id))
+        .map_err(|e| format!("cannot register the second directory under the same id: {e}"))?;
+
+    let stored = std::fs::read_to_string(ROOTS_FILE).unwrap_or_default();
+    let names = |folder: &Path| stored.contains(&format!("\"{}\"", folder.display()));
+    let (old_marked, new_marked) = (
+        dir_mark_present(ctx.helper_pid(), below_first),
+        dir_mark_present(ctx.helper_pid(), below_second),
+    );
+    println!(
+        "    the id registered onto another directory → roots.json names the old: {}, the new: \
+         {}; directory mark on the old tree: {old_marked}, on the new: {new_marked}",
+        names(first),
+        names(second)
+    );
+    if names(first) || !names(second) {
+        return Err("roots.json does not name the new directory alone".into());
+    }
+    if !new_marked {
+        return Err("the directory the id now names was not marked".into());
+    }
+    if old_marked {
+        return Err(
+            "the directory the id named before kept its marks, with no registration behind them"
+                .into(),
+        );
+    }
+
+    // The id onto a directory inside the one it names: unmarking the old
+    // tree would take the marks off the new one until its walk — a window
+    // in which a placeholder there reads zeros. Refused, and nothing moves.
+    let inside = File::open(second.join("b")).map_err(|e| e.to_string())?;
+    match ctx.runtime.block_on(link.register_root(&inside, root_id)) {
+        Err(HelperError::Refused(errno)) if errno == libc::EINVAL => {}
+        other => {
+            return Err(format!(
+                "the id registered onto a directory inside its own → {other:?}, not EINVAL"
+            ))
+        }
+    }
+    let stored = std::fs::read_to_string(ROOTS_FILE).unwrap_or_default();
+    let still_named = stored.contains(&format!("\"{}\"", second.display()));
+    let root_marked = dir_mark_present(ctx.helper_pid(), ctx.ino_of(second)?);
+    let below_marked = dir_mark_present(ctx.helper_pid(), below_second);
+    println!(
+        "    the id registered onto a directory inside its own → EINVAL; roots.json still names \
+         the root: {still_named}; directory mark on the root: {root_marked}, below it: \
+         {below_marked}"
+    );
+    if !still_named || !root_marked || !below_marked {
+        return Err("a refused move of the id changed the registration or dropped a mark".into());
     }
     Ok(())
 }

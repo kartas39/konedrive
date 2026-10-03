@@ -231,6 +231,7 @@ application must never read zeros where real content should be.
 - [F203](F203.md) — A free-up whose blocking task cannot be joined leaves the file `dehydrating`
 - [F204](F204.md) — A sign-in whose account is reported signed out meanwhile ends in silence
 - [F205](F205.md) — A removal that fails half-way leaves the account without its folder, and a failed `Add` can leave its entry
+- [F208](F208.md) — What the helper's bounds per uid on waiting opens and on roots leave open
 - [F210](F210.md) — An entry the examination is refused to open, strip or read is passed over, and the user is not told which
 - [F211](F211.md) — A folder whose `source` in `config.toml` is neither word is held, not repaired
 - [F212](F212.md) — Some failures of the tree store inside a reconcile still do not stop the folder
@@ -248,6 +249,8 @@ application must never read zeros where real content should be.
 | Credit per connection | 64 | equal to the daemon's queue depth; pinned by a test |
 | Waiters per user | 8 | measured binding |
 | Waiters in total | 32 | **guess** — a single-user machine never reaches it |
+| Opens waiting for one uid's daemons to answer (`MAX_SUSPENDED_OPENS_PER_UID`) | 8192 | **guess** — above the 3000-open burst twice over, an eighth of the unit's `LimitNOFILE` (F208) |
+| Roots per uid (`MAX_ROOTS_PER_UID`) | 32 | **guess** — one root per intercepted account (F208) |
 | Liveness window | 60 s | **guess** — nothing in the suite reaches it |
 | Delta size reconciled in full (`FULL_THRESHOLD`) | 5000 changes | **guess** — above it one scan is assumed cheaper than item by item |
 | Sync interval / waits after failures in a row | 60 s / 5, 15, 30 s | 60 s is the design's; the retry steps are a **guess** |

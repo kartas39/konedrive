@@ -32,6 +32,7 @@ fn main() -> anyhow::Result<()> {
     let shared = Arc::new(Shared {
         marks: marks::Marks::new()?,
         roots: Mutex::new(load_roots()),
+        roots_saving: Mutex::new(()),
         jobs: Mutex::new(jobs::Jobs::default()),
         daemons: Mutex::new(Registry::default()),
         daemon_arrived: Condvar::new(),
@@ -73,7 +74,7 @@ fn main() -> anyhow::Result<()> {
     // boot rather than whatever order the map iterated in.
     let mut registered: Vec<roots::Root> = lock(&shared.roots).iter().cloned().collect();
     registered.sort_by(|a, b| a.root_id.cmp(&b.root_id));
-    let mut covered: Vec<roots::Root> = Vec::new();
+    let mut covered = roots::Roots::default();
     for root in &registered {
         if let Some(conflict) = overlap_with(&covered, root) {
             // The checks that ran at registration are re-run
@@ -85,14 +86,15 @@ fn main() -> anyhow::Result<()> {
             tracing::error!(
                 "root {} ({}) now overlaps root {conflict} and will NOT be covered; opens inside \
                  it are not intercepted until it is re-registered",
-                root.root_id,
-                root.path
+                roots::shown_id(&root.root_id),
+                roots::shown_path(&root.path),
+                conflict = roots::shown_id(&conflict)
             );
             lock(&shared.degraded_roots).insert(root.root_id.clone());
             continue;
         }
         if cover_root(&shared, root) {
-            covered.push(root.clone());
+            covered.insert(root.clone());
         }
     }
 
@@ -123,12 +125,8 @@ fn load_roots() -> roots::Roots {
 /// nesting rule (`docs/design/hydration.md` §11) applies at every boot, not
 /// only at registration, because what a stored path leads to can change in
 /// between.
-fn overlap_with(covered: &[roots::Root], root: &roots::Root) -> Option<String> {
-    let mut seen = roots::Roots::default();
-    for other in covered {
-        seen.insert(other.clone());
-    }
-    seen.nesting_conflict(&root.path, root.dev, root.ino).map(|conflict| match conflict {
+fn overlap_with(covered: &roots::Roots, root: &roots::Root) -> Option<String> {
+    covered.nesting_conflict(&root.path, root.dev, root.ino).map(|conflict| match conflict {
         roots::Nesting::Inside(id) | roots::Nesting::Contains(id) | roots::Nesting::SameDirectory(id) => id,
     })
 }
@@ -139,7 +137,7 @@ fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
     let dir = match open_root(root) {
         Ok(dir) => dir,
         Err(e) => {
-            tracing::error!("root {} is not covered: {e}", root.root_id);
+            tracing::error!("root {} is not covered: {e}", roots::shown_id(&root.root_id));
             lock(&shared.degraded_roots).insert(root.root_id.clone());
             return false;
         }
@@ -150,11 +148,12 @@ fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
     // and writing into every user's sync folder on every boot is both
     // unnecessary (it was probed at registration) and, once this root is
     // marked, exactly the self-interception hazard is about.
-    if let Err(errno) = check_filesystem_type(&dir, &root.path) {
+    if let Err(unusable) = check_filesystem_type(&dir, &root.path) {
         tracing::error!(
-            "root {} ({}) is on a filesystem konedrive cannot use (errno {errno}); not covering it",
-            root.root_id,
-            root.path
+            "root {} is on a filesystem konedrive cannot use, and is not covered: {} (errno {})",
+            roots::shown_id(&root.root_id),
+            unusable.why,
+            unusable.errno
         );
         lock(&shared.degraded_roots).insert(root.root_id.clone());
         return false;

@@ -658,9 +658,18 @@ descriptor, not a path.
   (§14.2), and neither inside nor containing another registered root, whatever that root's id. A
   root id that another uid registered is refused `EPERM` (ids are chosen by the client, so without
   this one user could replace another's registration). A path that is not valid UTF-8 is refused.
-  The whole tree is walked and marked, and the ignore mark of every file walked is cleared.
+  The id must have the form the daemon mints (a version 4 UUID in its canonical text), or the
+  request is refused `EINVAL`; a uid that already holds 32 roots is refused another (`EDQUOT`),
+  and can still register one it holds again. The whole tree is walked and marked, and the ignore
+  mark of every file walked is cleared. An id the uid already holds, registered onto another
+  directory, replaces the old entry, and the old directory's tree is unmarked as by
+  `UnregisterRoot` (best effort the same way; limitations log F208). If the old directory is
+  still at its path and the new one lies inside it or contains it, the request is refused
+  `EINVAL` instead, like an overlap with another root: unmarking the old tree would leave the
+  shared part unmarked until the new walk. The old directory is opened before the decision, with
+  no lock held; if the id's entry changed in between, the request is refused `EAGAIN`.
 - **`UnregisterRoot`** — only a root the peer's uid owns, from any of its connections (roots
-  outlive connections). It removes the marks the helper placed on the tree, including files' ignore
+  outlive connections), under whatever id it was registered (the form is not asked here). It removes the marks the helper placed on the tree, including files' ignore
   marks, as well as the entry: removing the entry alone would leave the tree intercepted with no
   daemon to ask, and every placeholder would answer `EIO`. The walk is best effort: what it cannot
   unmark is logged, and the answer is still success (limitations log Z7).
@@ -746,6 +755,9 @@ requirement is that the helper does not exit. What defends it, each item proven 
   kernel; only an error of the group's own descriptor (`EBADF`, `EINVAL`, `EFAULT`) ends the loop;
 - a daemon disconnecting, dying or wedging costs only its own connection, and no uid holds more than
   16 connections;
+- a daemon that takes its requests and answers nothing costs only its own user: at most 8192 opens
+  wait for one uid's daemons at once, over all its connections, and a further open of that uid's
+  files is refused `EAGAIN` (limitations log F208);
 - no lock is held across a blocking call on a socket a peer controls;
 - the fault-injection hooks the suite uses to prove the unwind paths exist only in builds with the
   `fault-injection` cargo feature; the installer refuses a helper that contains them.

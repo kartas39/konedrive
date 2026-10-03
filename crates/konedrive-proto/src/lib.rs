@@ -99,14 +99,41 @@ pub fn clamp_deny_errno(errno: i32) -> i32 {
     }
 }
 
+/// Whether `id` has the form of a root id: what the daemon mints for a folder
+/// and the only form the helper registers a root under — a version 4 UUID in
+/// its canonical text, 36 characters, `8-4-4-4-12`, hex in either case, the
+/// version nibble `4`.
+///
+/// One definition for both sides: the daemon believes no other value it finds
+/// on a folder, and the helper stores and logs no other string a peer sends
+/// with `RegisterRoot`.
+pub fn is_root_id(id: &str) -> bool {
+    if id.len() != 36 {
+        return false;
+    }
+    let fields: Vec<&str> = id.split('-').collect();
+    if fields.iter().map(|f| f.len()).ne([8, 4, 4, 4, 12]) {
+        return false;
+    }
+    if !fields.iter().all(|f| f.chars().all(|c| c.is_ascii_hexdigit())) {
+        return false;
+    }
+    fields[2].starts_with('4')
+}
+
 /// The daemon's half of the conversation. Every variant that needs an object
 /// sends it as an attached descriptor, never as a path: the helper must act on
 /// exactly the object the daemon opened.
 #[derive(Debug, Serialize, Deserialize)]
 pub enum ToHelper {
     Hello { version: u32 },
-    /// The attached fd is the root directory.
+    /// The attached fd is the root directory. `root_id` must be a root id
+    /// ([`is_root_id`]); anything else is refused `EINVAL`. A uid that
+    /// already holds as many roots as the helper allows one is refused
+    /// `EDQUOT`.
     RegisterRoot { root_id: String },
+    /// Any id the helper holds for the peer, whatever its form: a root
+    /// registered before the form was checked can still be removed.
     UnregisterRoot { root_id: String },
     /// The attached fd is a directory inside a registered root.
     MarkDir,

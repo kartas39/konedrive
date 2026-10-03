@@ -91,8 +91,12 @@ handed-over file is in; nothing about accounts crosses the socket.
 
 Per-uid bounds keep one local user from starving another. Each uid may hold at most 16
 connections. At most 8 workers wait for one uid's daemon to connect, and at most 32 across all
-uids. Each connection has at most 64 fills in flight. These numbers were chosen, not all of them
-measured (`docs/limitations/`, "Provisional numbers").
+uids. Each connection has at most 64 fills in flight. At most 8192 opens wait at once for one
+uid's daemons to answer; a further open of that uid's files is refused `EAGAIN`. Each uid may
+hold at most 32 registered folders, and a folder is registered only under an id of the form the
+daemon mints (a version 4 UUID). These numbers were chosen, not all of them measured
+(`docs/limitations/`, "Provisional numbers"); what the bounds leave open is in the limitations
+log, F208.
 
 **The registration's write probe.** The first time a folder is registered, the helper checks that
 its filesystem can hold placeholders: as root, it creates a nameless temporary file (`O_TMPFILE`)

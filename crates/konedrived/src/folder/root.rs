@@ -418,18 +418,10 @@ fn read_root_id(dir: &File) -> Result<Option<String>, RegisterError> {
 
 /// The canonical form of what [`uuid_v4`] mints — 36 characters,
 /// `8-4-4-4-12`, lowercase-or-uppercase hex throughout, version nibble `4`.
+/// The helper registers a root under no other form, so the rule is the
+/// protocol's ([`konedrive_proto::is_root_id`]).
 pub(crate) fn looks_like_a_root_id(id: &str) -> bool {
-    if id.len() != 36 {
-        return false;
-    }
-    let fields: Vec<&str> = id.split('-').collect();
-    if fields.iter().map(|f| f.len()).ne([8, 4, 4, 4, 12]) {
-        return false;
-    }
-    if !fields.iter().all(|f| f.chars().all(|c| c.is_ascii_hexdigit())) {
-        return false;
-    }
-    fields[2].starts_with('4')
+    konedrive_proto::is_root_id(id)
 }
 
 /// 16 random bytes in the canonical form; no dependency for one identifier.

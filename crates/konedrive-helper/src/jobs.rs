@@ -44,6 +44,26 @@ use konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;
 /// set without end.
 const RETIRED_REMEMBERED: usize = 1024;
 
+/// How many suspended opens may wait on one uid's daemons at once, over all
+/// of that uid's connections and jobs.
+///
+/// Each suspended open is an event fd the helper keeps until the daemon
+/// answers, and a daemon is free never to answer: without a bound, one uid
+/// whose program takes the requests and says nothing holds descriptors up to
+/// the helper's `LimitNOFILE` (65 536 in the unit), and from then on every
+/// other user's intercepted open is denied and no daemon can connect. Past
+/// the bound an open is refused `EAGAIN` ([`Enrolled::TooMany`]); only that
+/// uid's are.
+///
+/// An open is charged to the uid whose daemon is asked — the file's owner —
+/// not to whoever opens it: the event carries no uid for the opener, and the
+/// descriptors are held for as long as that daemon stays silent, whoever
+/// opened.
+///
+/// Chosen, not measured: well above the 3 000 concurrent opens the VM suite's
+/// burst holds, and an eighth of the unit's descriptors.
+pub const MAX_SUSPENDED_OPENS_PER_UID: usize = 8192;
+
 /// Who a job belongs to: a uid, and the specific connection from that uid.
 ///
 /// The connection matters as much as the uid. A daemon that reconnects is a
@@ -72,6 +92,11 @@ pub enum Enrolled {
     /// The descriptor comes back in `Enrollment::evicted`; the caller must
     /// answer it.
     ConnectionGone,
+    /// The uid whose daemon would be asked already has
+    /// [`MAX_SUSPENDED_OPENS_PER_UID`] opens suspended. Nothing was enrolled;
+    /// the descriptor comes back in `Enrollment::evicted`, and the caller
+    /// must answer it (`EAGAIN`).
+    TooMany,
 }
 
 /// A hydration whose request must go to its daemon now, because it was just
@@ -96,7 +121,8 @@ pub struct Dispatch {
 ///
 /// `evicted` carries the waiters of a job another uid's daemon was asked for
 /// on the same inode — see `Jobs::enroll` — or, for
-/// [`Enrolled::ConnectionGone`], the opener's own descriptor. The caller must
+/// [`Enrolled::ConnectionGone`] and [`Enrolled::TooMany`], the opener's own
+/// descriptor and nothing else. The caller must
 /// answer them; they are handed back rather than dropped because dropping an
 /// event fd without writing a response leaves its opener blocked until the
 /// helper exits.
@@ -162,6 +188,12 @@ pub struct Jobs {
     /// queue in the same step, so a new hydration never finds a free credit
     /// with older ones still waiting, and arrival order is kept.
     queued: HashMap<u64, VecDeque<u64>>,
+    /// How many opens are suspended for each uid: the waiters of all its
+    /// jobs, on whichever of its connections, the number
+    /// [`MAX_SUSPENDED_OPENS_PER_UID`] bounds. A uid with none holds no
+    /// entry. Kept in step by [`hold`](Self::hold) and
+    /// [`release`](Self::release), wherever a waiter enters or leaves a job.
+    suspended: HashMap<u32, usize>,
 }
 
 impl Jobs {
@@ -185,6 +217,12 @@ impl Jobs {
     /// Nobody is refused for want of credit; joining a job that already
     /// exists, sent or queued, asks the daemon for nothing more.
     ///
+    /// A uid that already has [`MAX_SUSPENDED_OPENS_PER_UID`] opens
+    /// suspended is refused ([`Enrolled::TooMany`]), whether the open would
+    /// start a job or join one: a joined waiter is a descriptor like any
+    /// other. Nothing else changes then — no job is created and nobody is
+    /// evicted.
+    ///
     /// `since` is the helper's count of root unregistrations when this open
     /// was read (see [`Finished::since`]); it is recorded only if the open
     /// creates the job.
@@ -196,6 +234,9 @@ impl Jobs {
                 evicted: vec![fd],
                 dispatch: None,
             };
+        }
+        if self.suspended_for(owner.uid) >= MAX_SUSPENDED_OPENS_PER_UID {
+            return Enrollment { outcome: Enrolled::TooMany, evicted: vec![fd], dispatch: None };
         }
         if let Some(&req_id) = self.by_inode.get(&inode) {
             // Joined whichever of the uid's connections has it in hand, not
@@ -210,6 +251,8 @@ impl Jobs {
             if same_uid {
                 if let Some(job) = self.jobs.get_mut(&req_id) {
                     job.waiters.push(fd);
+                    let uid = job.owner.uid;
+                    self.hold(uid, 1);
                     return Enrollment {
                         outcome: Enrolled::Existing { req_id },
                         evicted,
@@ -250,7 +293,31 @@ impl Jobs {
         self.jobs.values().filter(|job| job.owner.conn == conn && !job.sent).count()
     }
 
+    /// How many opens are suspended for `uid`, over all its connections.
+    pub fn suspended_for(&self, uid: u32) -> usize {
+        self.suspended.get(&uid).copied().unwrap_or(0)
+    }
+
+    /// Counts `waiters` more suspended opens against `uid`.
+    fn hold(&mut self, uid: u32, waiters: usize) {
+        if waiters > 0 {
+            *self.suspended.entry(uid).or_insert(0) += waiters;
+        }
+    }
+
+    /// Takes `waiters` suspended opens off `uid`'s count: they left their
+    /// job, to be answered.
+    fn release(&mut self, uid: u32, waiters: usize) {
+        if let Some(count) = self.suspended.get_mut(&uid) {
+            *count = count.saturating_sub(waiters);
+            if *count == 0 {
+                self.suspended.remove(&uid);
+            }
+        }
+    }
+
     fn insert_job(&mut self, req_id: u64, job: Job) {
+        self.hold(job.owner.uid, job.waiters.len());
         if job.sent {
             *self.outstanding.entry(job.owner.conn).or_insert(0) += 1;
         } else {
@@ -276,6 +343,7 @@ impl Jobs {
                 }
             }
         }
+        self.release(job.owner.uid, job.waiters.len());
         Some(job)
     }
 
@@ -295,10 +363,12 @@ impl Jobs {
         }
         let Some(job) = self.jobs.get_mut(&req_id) else { return Vec::new() };
         let inode = job.inode;
+        let uid = job.owner.uid;
         let waiters = std::mem::take(&mut job.waiters);
         if self.by_inode.get(&inode) == Some(&req_id) {
             self.by_inode.remove(&inode);
         }
+        self.release(uid, waiters.len());
         waiters
     }
 

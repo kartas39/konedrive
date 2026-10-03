@@ -351,8 +351,9 @@ helper — one extra interception, never zeros.
 ### Per-user limits on the helper's socket
 
 **Decision.** The socket is open to every local user, and every request is authorised by the peer's
-uid and the object's owner. Each uid may hold 16 connections; at most 8 workers wait for one user's
-absent daemon and 32 for all; mark requests are limited to objects the user owns on the device of
+uid and the object's owner. Each uid may hold 16 connections, 32 roots, and 8192 opens waiting for
+its daemons to answer; at most 8 workers wait for one user's absent daemon and 32 for all; a root
+is registered only under a root id (a version 4 UUID); mark requests are limited to objects the user owns on the device of
 one of their roots; a root id another user registered is refused.
 
 **Why.** Any local user can connect. Without these, one user could exhaust the helper's descriptors,
