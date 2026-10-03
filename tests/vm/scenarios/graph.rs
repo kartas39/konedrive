@@ -6,7 +6,7 @@
 //!
 //! Safety, all binding:
 //! - only GET requests reach Graph (`DriveClient` never issues anything
-//!   else — see `crates/konedrived/src/drive/mod.rs`);
+//!   else — see `crates/konedrive-graph/src/drive/mod.rs`);
 //! - nothing is written to the cloud;
 //! - the token file is read only inside the guest, never copied, logged or
 //!   printed — [`check_token_permissions`] refuses one that is not mode
@@ -64,7 +64,7 @@ pub(crate) const DEFAULT_MAX_BYTES: u64 = 32 * MIB;
 /// `folder` does **not** narrow the Graph listing itself: `DriveClient` has
 /// no item-scoped delta or children-listing method today (only
 /// `delta(DeltaFrom::Start)`, the whole drive, and `item(id)`, one item by
-/// id — see `crates/konedrived/src/drive/mod.rs`). Adding one is out of
+/// id — see `crates/konedrive-graph/src/drive/mod.rs`). Adding one is out of
 /// scope for this pass, which touches only `tests/vm/` and docs, not
 /// `crates/konedrived` (another agent is editing there). So G1 still lists
 /// and materializes the whole drive; `folder` is enforced at the point

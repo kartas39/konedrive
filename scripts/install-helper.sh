@@ -26,7 +26,7 @@ systemctl=${KONEDRIVE_SYSTEMCTL:-systemctl}
 installed_binary="$root/usr/local/libexec/konedrive-helper"
 installed_unit="$root/etc/systemd/system/konedrive-helper.service"
 # The helper's own list of registered folders (ROOTS_FILE in
-# crates/konedrive-helper/src/main.rs): {"by_id": {"<id>": {..., "path": ...,
+# crates/konedrive-helper/src/shared.rs): {"by_id": {"<id>": {..., "path": ...,
 # "root_id": ...}}}, pretty-printed, one key per line.
 roots_file="$root/var/lib/konedrive/roots.json"
 

@@ -11,7 +11,8 @@ use crate::helper::Clearance;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::{self, Answered, FillError};
 use crate::sync::SyncService;
-use crate::upload::move_out::{Filler, Linked, MoveOuts, Tidy, drop_rows, home_trash};
+use crate::helper::linked::Linked;
+use crate::upload::move_out::{Filler, MoveOuts, Tidy, drop_rows, home_trash};
 
 // ---------------------------------------------------------------------------
 // the account's side

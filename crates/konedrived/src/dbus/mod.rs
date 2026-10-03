@@ -1,7 +1,7 @@
 //! The interfaces of one account's folder — `org.konedrive.Folder`, `Transfers`,
 //! `UploadQueue`, `Conflicts`, `LocalScan` and `ActivityLog` — on the account's object
 //! `/org/konedrive/Accounts/<id>`, beside its `Account` (definitions: `dbus/*.xml`).
-//! The per-file calls are `org.konedrive.Files`'s, routed by path (`crate::accounts`).
+//! The per-file calls are `org.konedrive.Files`'s, routed by path (`crate::daemon::manager`).
 //!
 //! Follows the same split as `crate::dbus`/`crate::account`: this module is
 //! the thin zbus wrapper, and `SyncService` (in `sync/mod.rs`) does the
@@ -10,7 +10,7 @@
 //! `org.konedrive.Account` and `org.konedrive.TokenExport`, one of each per account on the
 //! account's object `/org/konedrive/Accounts/<id>` (definitions: `dbus/*.xml`). The
 //! accounts themselves, and the client id every account signs in with, are
-//! `org.konedrive.Accounts`'s (`crate::accounts`).
+//! `org.konedrive.Accounts`'s (`crate::dbus::accounts`).
 
 pub mod account;
 pub mod accounts;

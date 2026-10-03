@@ -69,7 +69,8 @@ async fn the_hold_settings_reach_every_account_and_end_every_sync_anyway() {
 /// socket (`off`) and Resume opens it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_change_in_onedrive_arrives_through_the_socket_and_a_pause_closes_it() {
-    use crate::remote::live::{LiveChanges, Timing};
+    use crate::remote::live::Timing;
+    use crate::status::snapshot::LiveChanges;
     use crate::upload::fake::{FakeGraph, ROOT};
     let w = world().await;
     // The fake OneDrive for its socket only; the world's own server serves the rest.

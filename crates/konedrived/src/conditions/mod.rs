@@ -1,9 +1,9 @@
 //! The automatic hold's sources (`docs/design/writes.md` §11, issue #57): whether the
 //! connection is metered, whether the machine runs on battery, and whether the power profile
-//! is `power-saver`. One watcher for the daemon, on the system bus, as `sync::network` is:
+//! is `power-saver`. One watcher for the daemon, on the system bus, as `conditions::network` is:
 //! it follows each source's `PropertiesChanged` and tells every account through the hub
 //! ([`Accounts::set_conditions`]), each of which decides by the hold's settings, one pair
-//! for every account (`sync::running`).
+//! for every account (`conditions::running`).
 //!
 //! - **Metered**: NetworkManager's `Metered` on `/org/freedesktop/NetworkManager` is `1`
 //!   (yes) or `3` (guessed yes).

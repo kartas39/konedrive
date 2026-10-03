@@ -162,7 +162,7 @@ pub struct AccountService {
     /// Held across every read-modify-write of `account.json`: a refresh's granted scopes,
     /// `refresh_account_info`'s name and every read of the quota each keep the others'.
     cache_lock: Arc<std::sync::Mutex<()>>,
-    /// The account's one quota (`crate::quota`), in `state`, kept in `account.json` at every
+    /// The account's one quota (`crate::account::quota`), in `state`, kept in `account.json` at every
     /// read, whoever reads it.
     quota: Quota,
     /// The account's folder, as the mode switch asks it about waiting uploads. Empty until

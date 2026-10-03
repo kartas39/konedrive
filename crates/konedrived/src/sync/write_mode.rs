@@ -9,7 +9,7 @@
 //! The write phase's later tasks fill the hooks here, each named for what it does:
 //!
 //! - [`SyncService::start_watcher`] and [`SyncService::stop_watcher`] — the notification
-//!   watcher (`sync::watcher`), started with a read-write folder's sync and kept in it
+//!   watcher (`local::watcher`), started with a read-write folder's sync and kept in it
 //!   ([`Watcher`]), so that it stops exactly when that sync does. Its bring-up walk marks every
 //!   directory and then runs the Full local scan (the examination of `local::Batch::full()`,
 //!   whose rows the outbox worker sends): at bring-up, and right after a switch to read-write, whose lock
@@ -17,7 +17,7 @@
 //! - [`PendingUploads`] — the outbox worker's outbox: how many changes wait, asked before a switch to
 //!   read-only (the watcher hands over what it holds first), and dropping them when that
 //!   switch is forced;
-//! - [`SyncService::start_outbox`] — the outbox worker (`sync::upload`), which sends those
+//! - [`SyncService::start_outbox`] — the outbox worker (`upload`), which sends those
 //!   rows: started beside the watcher, kept in the same sync, stopped with it, and woken by
 //!   the watcher's examination whenever it records rows.
 
@@ -475,7 +475,7 @@ const FLUSH_WITHIN: Duration = Duration::from_secs(30);
 /// How the folder's `LastError` begins while the write gate is closed.
 const GATE_NOTE: &str = "nothing is uploaded: ";
 
-/// A read-write folder's watcher (`sync::watcher`), as its sync keeps it. Made only by
+/// A read-write folder's watcher (`local::watcher`), as its sync keeps it. Made only by
 /// [`SyncService::start_watcher`], and given back to [`SyncService::stop_watcher`] by whoever
 /// stops that sync.
 pub struct Watcher {

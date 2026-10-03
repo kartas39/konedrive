@@ -58,7 +58,7 @@ UI (see `konedrivectl --help`).
   Linux 6.0. Telling a program *why* a download failed (`ENOSPC`, `EIO`, … through `FAN_DENY`
   with an errno) needs Linux 6.14; on older kernels the helper falls back to a plain deny, so the
   program sees `EPERM`. Only 7.2.5 and 7.2.7 (Fedora 44) were measured and exercised; older
-  kernels are untested. See `docs/kernel-behavior-7.2.md` for what was actually tested and on
+  kernels are untested. See `docs/kernel-behavior-7.2/` for what was actually tested and on
   which filesystems (Btrfs, ext4, XFS).
 - **Desktop:** KDE Plasma 6, Qt 6.8+, KDE Frameworks (KF6) 6.8+.
 - **Toolchain:** a stable Rust toolchain (edition 2021), CMake 3.24+ and Extra CMake Modules.

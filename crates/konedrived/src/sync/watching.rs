@@ -32,7 +32,7 @@ impl SyncService {
             ignore: Arc::clone(&self.ignore),
             // The helper's `OpenByHandle`: gone, moved out, or undecided.
             liveness: Box::new(crate::local::HelperLiveness::new(
-                Arc::new(crate::upload::move_out::Linked(Arc::clone(&self.link))),
+                Arc::new(crate::helper::linked::Linked(Arc::clone(&self.link))),
                 root.clone(),
                 runtime.clone(),
             )),

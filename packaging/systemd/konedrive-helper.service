@@ -22,7 +22,7 @@ ProtectSystem=strict
 # mount namespace where the whole filesystem is a read-only bind mount (which
 # is what this line makes of /home), a hydration still wrote through the event
 # fd and the reader got the real content. The helper's own write probe at
-# registration can be refused under this line; check_filesystem in main.rs
+# registration can be refused under this line; check_filesystem in registration.rs
 # treats that as "nothing learned" and relies on fstatfs and the daemon's own
 # probe instead.
 ProtectHome=read-only

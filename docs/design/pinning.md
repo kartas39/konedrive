@@ -61,7 +61,7 @@ sweep (§6) finds every pinned file that is still online-only.
 
 ## 4. The download queue
 
-`sync::pin::Pins` holds the files waiting to be downloaded for a pin. A file is in it once,
+`hydration::pin::Pins` holds the files waiting to be downloaded for a pin. A file is in it once,
 however often a pin, a placement or a sweep asks for it, and leaves it when its download ends.
 
 **Order.** What a pin, a placement or a sweep queues goes folder by folder, alphabetically: a

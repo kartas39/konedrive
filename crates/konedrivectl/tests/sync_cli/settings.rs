@@ -135,7 +135,7 @@ async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it
 /// back by itself, but not the user's pause; with `--account` it is a usage error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_status_says_how_changes_arrive_and_anyway_all_lifts_every_hold() {
-    use konedrived::remote::live::LiveChanges;
+    use konedrived::status::snapshot::LiveChanges;
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();

@@ -1,7 +1,7 @@
 //! The fanotify permission group: marks on directories, ignore marks on files.
 //!
 //! Every fanotify call in this file follows the two rules the proof of
-//! concept in `tests/vm/poc_marks.rs` established (`docs/kernel-behavior-7.2.md`,
+//! concept in `tests/vm/poc_marks.rs` established (`docs/kernel-behavior-7.2/interception.md`,
 //! §7): fanotify does not exempt the process holding the group, so
 //!
 //! 1. files are marked by `(dirfd, name)` or by an fd we did not open
@@ -37,7 +37,7 @@ pub use konedrive_proto::{clamp_deny_errno, ACCEPTED_DENY_ERRNOS};
 /// `FAN_MARK_REMOVE` on an object that carries no mark returns `ENOENT`, and
 /// that is a **normal** outcome here rather than a failure: ignore marks are
 /// added `FAN_MARK_EVICTABLE`, so the kernel is entitled to drop one at any
-/// moment under memory pressure (`docs/kernel-behavior-7.2.md` §2), and the
+/// moment under memory pressure (`docs/kernel-behavior-7.2/interception.md` §2), and the
 /// daemon clears an ignore mark before every dehydration whether or not the
 /// mark survived that long. Reporting it as an error is what made a routine
 /// `ClearIgnore` tear down the daemon connection.
@@ -89,7 +89,7 @@ impl Marks {
             // and the kernel answers it itself: `FAN_DENY`, which the opener
             // sees as `EPERM` — never left suspended, never allowed. Measured
             // in the VM suite (`leased_file_does_not_stall_others`); see
-            // `docs/kernel-behavior-7.2.md` §12.4. The flag changes nothing
+            // `docs/kernel-behavior-7.2/leases.md` §12.4. The flag changes nothing
             // else about a descriptor on a regular file: the daemon's
             // `pwrite`s and `fsync`s through it are unaffected.
             EventFFlags::O_RDWR
@@ -140,7 +140,7 @@ impl Marks {
     /// Stops asking about a file whose content is already there (invariant
     /// M3: only ever called on a file just read `hydrated`, and taken off
     /// again unless it still reads `hydrated` once the mark is in place —
-    /// `main.rs`, `mark_while_hydrated`).
+    /// `events.rs`, `mark_while_hydrated`).
     ///
     /// # `FAN_MARK_IGNORED_SURV_MODIFY` is what makes this work at all
     ///
@@ -159,7 +159,7 @@ impl Marks {
     /// hands out for a permission event is `O_RDWR` (see `Marks::new`), and
     /// the daemon holds an `SCM_RIGHTS` copy of that same open file
     /// description until it has finished filling the file. Measured on Btrfs,
-    /// ext4 and XFS (`docs/kernel-behavior-7.2.md` §2.1): with a writable
+    /// ext4 and XFS (`docs/kernel-behavior-7.2/interception.md` §2.1): with a writable
     /// descriptor open the mark never appears in `/proc/self/fdinfo/<group>`
     /// and the next open still raises an event; with `SURV_MODIFY` it appears
     /// and suppresses, whoever holds the inode open and whether the mark is
@@ -349,7 +349,7 @@ impl WalkReport {
 ///
 /// A mark placed *during* this walk, behind it, is placed by a helper that
 /// has just read the file `hydrated` and read it again after marking
-/// (`main.rs`, `mark_while_hydrated`): it is a correct mark, not a stale
+/// (`events.rs`, `mark_while_hydrated`): it is a correct mark, not a stale
 /// one. The cost is one `fanotify_mark` per file — a lookup of its name —
 /// on top of one per directory; a fresh group, at startup, has nothing to
 /// clear, and every call then simply answers `ENOENT`.
@@ -388,7 +388,7 @@ pub fn walk_and_mark(marks: &Marks, root: BorrowedFd<'_>, label: &str) -> WalkRe
 /// was hydrated while the root was registered carries an ignore mark of its
 /// own, and that mark belongs to this helper's group, not to the
 /// registration: it outlives the unregistration for as long as the inode
-/// stays in cache. Measured (`tests/vm/scenarios.rs`,
+/// stays in cache. Measured (`tests/vm/scenarios/dehydrate.rs`,
 /// `unregistered_ignore_mark`), on Btrfs, ext4 and XFS alike: a folder
 /// unregistered, registered again without interception, a file in it
 /// dehydrated with no helper link — so no `ClearIgnore` was ever sent — and

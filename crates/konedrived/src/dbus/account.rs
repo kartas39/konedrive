@@ -93,7 +93,7 @@ impl Account {
         self.service.state().get().quota_total
     }
 
-    /// Graph's `quota.remaining` as last read, less what went up since (`crate::quota`).
+    /// Graph's `quota.remaining` as last read, less what went up since (`crate::account::quota`).
     #[zbus(property)]
     async fn quota_remaining(&self) -> u64 {
         self.service.state().get().quota_remaining
@@ -116,7 +116,7 @@ fn to_fdo(error: AccountError) -> fdo::Error {
 /// Serves one account's `Account` (and, in a development build, `TokenExport`) at `path`, and turns its state changes into
 /// `PropertiesChanged`; the task that sends them, to stop when the account goes.
 ///
-/// At startup this runs before the bus name is claimed (`crate::accounts::serve`), and
+/// At startup this runs before the bus name is claimed (`crate::daemon::startup::serve`), and
 /// after the session was restored from the wallet: a D-Bus-activated client's first call is
 /// never answered from stale, pre-restore state.
 pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc<AccountService>) -> zbus::Result<JoinHandle<()>> {

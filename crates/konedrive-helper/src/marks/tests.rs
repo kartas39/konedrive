@@ -1,6 +1,6 @@
 use super::*;
 
-/// The self-exemption in main.rs's event loop compares pids (see
+/// The self-exemption in events.rs's event loop compares pids (see
 /// `INIT_FLAGS`).
 #[test]
 fn init_flags_report_pids_not_thread_ids() {

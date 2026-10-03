@@ -23,7 +23,7 @@
 //! Twice measured, the kernel reports success while doing nothing:
 //! `fanotify_mark` with an ignore mask returns 0 and creates no mark when the
 //! inode is open for write without `FAN_MARK_IGNORED_SURV_MODIFY`
-//! (`docs/kernel-behavior-7.2.md` §2.1), and `FAN_DENY` with an errno outside
+//! (`docs/kernel-behavior-7.2/interception.md` §2.1), and `FAN_DENY` with an errno outside
 //! a specific set fails the response `write()` and leaves the opener
 //! suspended forever (§5). So the assertions here are on observable state:
 //! `/proc/<helper>/fdinfo` for whether a mark exists, block counts for

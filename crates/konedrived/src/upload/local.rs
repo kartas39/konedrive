@@ -22,8 +22,8 @@ use nix::sys::stat::Mode;
 use xattr::FileExt as _;
 
 use crate::folder::disk::{open_subdir, Disk};
+use crate::local::names::copy_name;
 
-pub use crate::local::names::{copy_name, default_machine_name, machine_name};
 use konedrive_tree::outbox::Inode;
 
 /// `user.konedrive.sync` values (`docs/design/writes.md` §11).
@@ -46,7 +46,7 @@ impl Snap {
         Ok(Self { size: meta.len(), sec: meta.mtime(), nsec: meta.mtime_nsec() })
     }
 
-    /// As the row keeps it ([`crate::sync::local::snapshot`]).
+    /// As the row keeps it ([`crate::local::snapshot`]).
     pub fn text(self) -> String {
         crate::local::snapshot(self.size, self.sec, self.nsec)
     }

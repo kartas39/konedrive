@@ -1,6 +1,6 @@
 """A pure-Python, stdlib-only port of Microsoft's QuickXorHash, the one content hash Graph
 guarantees for files on personal and business drives alike. This is the same algorithm as
-``crates/konedrived/src/quickxor.rs`` (read that file for the description); this module exists
+``crates/konedrive-graph/src/quickxor.rs`` (read that file for the description); this module exists
 only so ``stress_uploads.py`` can compute the hash of a local file without shelling out to Rust
 or adding a dependency.
 
@@ -12,7 +12,7 @@ slow for the 30-60 MiB files this tool uploads. ``finish`` (called once, on a sh
 array) is cheap enough to stay a plain bit-by-bit loop, matching the Rust source directly.
 
 Self-checked at import time against the three known-answer vectors from
-``crates/konedrived/src/quickxor.rs``'s test suite, plus a differential check of the fast path
+``crates/konedrive-graph/src/quickxor.rs``'s test suite, plus a differential check of the fast path
 above against a bit-by-bit reference, across split points that straddle the 160-byte period. A
 transcription mistake here should fail loudly the first time this module is imported, not
 silently produce hashes that happen to agree with each other and disagree with OneDrive.
@@ -117,7 +117,7 @@ def _noise(length: int, seed: int) -> bytes:
 
 
 def _self_test() -> None:
-    # The three known-answer vectors from crates/konedrived/src/quickxor.rs.
+    # The three known-answer vectors from crates/konedrive-graph/src/quickxor.rs.
     vectors = [
         (b"", "AAAAAAAAAAAAAAAAAAAAAAAAAAA="),
         (bytes([0x4A]), "SgAAAAAAAAAAAAAAAQAAAAAAAAA="),
@@ -128,7 +128,7 @@ def _self_test() -> None:
         if got != expected:
             raise AssertionError(
                 f"quickxor.py self-test failed for {data!r}: got {got}, want {expected} "
-                "(check this port against crates/konedrived/src/quickxor.rs)"
+                "(check this port against crates/konedrive-graph/src/quickxor.rs)"
             )
 
     # Differential check of the fast (block-XOR) update() against the bit-by-bit reference,

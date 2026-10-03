@@ -4,7 +4,7 @@
 //! Requests and acknowledgements are paired by order, not by any request id
 //! carried in the wire messages themselves: the helper answers every
 //! `ToHelper` message with exactly one `ToDaemon::Ack` (see
-//! `konedrive-helper/src/main.rs::serve_one`, which loops `recv` then
+//! `konedrive-helper/src/connection.rs::serve_one`, which loops `recv` then
 //! `apply` then `send(Ack)` with nothing else interleaved on that
 //! connection), so a plain FIFO queue of the callers waiting on a reply is
 //! enough: the writer thread pushes a caller's `oneshot::Sender` onto the
@@ -246,7 +246,7 @@ impl HelperLink {
         // `Ack` queued behind requests it cannot take would never be read,
         // and the fill waiting for that `Ack` would never free its slot. The
         // worst case needs one less — the request loop holds one while it
-        // waits for a fill slot — and `sync::tests::the_reader_reaches_acks_
+        // waits for a fill slot — and `hydration::server::tests::the_reader_reaches_acks_
         // queued_behind_every_request_the_helper_may_send` fails at 62.
         let (requests_tx, requests_rx) =
             mpsc::channel::<HydrateRequest>(konedrive_proto::MAX_OUTSTANDING_HYDRATIONS);
@@ -483,7 +483,7 @@ impl HelperLink {
     ///
     /// - `Ok`: a directory comes back `O_RDONLY | O_DIRECTORY`; a regular
     ///   file `O_RDONLY | O_NONBLOCK`, as the helper cannot open a user's
-    ///   file for writing (`docs/kernel-behavior-7.2.md` §15) —
+    ///   file for writing (`docs/kernel-behavior-7.2/open-by-handle.md` §15) —
     ///   [`reopen_for_writing`] gets a writable one. Where it is now is
     ///   `/proc/self/fd/<fd>`.
     /// - `Refused(ESTALE)`: the object is gone — the handle names nothing,

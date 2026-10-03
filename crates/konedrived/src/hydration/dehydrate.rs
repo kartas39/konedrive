@@ -41,10 +41,7 @@ use konedrive_fs::lease::WriteLease;
 use konedrive_fs::placeholder::{punch_all, read_stamp, read_state, remove_stamp, stamp_matches, write_state, State};
 
 use crate::helper::{Clearance, HelperLink};
-use crate::folder::root::SyncRoot;
-
-pub use crate::folder::root::DehydrateError;
-pub(crate) use crate::folder::root::io_error;
+use crate::folder::root::{io_error, DehydrateError, SyncRoot};
 
 /// The guard: only a clean, fully downloaded file may be emptied
 /// (dehydration's step 1). It runs on the very descriptor the punch will

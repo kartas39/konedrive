@@ -13,7 +13,7 @@ pub mod probe;
 /// make sense at the same depth. The helper's walk (`konedrive-helper`'s
 /// `marks::walk_below`) refuses to mark a directory past it, so nothing
 /// below is ever intercepted; the daemon's startup recovery
-/// (`konedrived`'s `sync::root::recover`) stops at the same level and counts
+/// (`konedrived`'s `hydration::recovery::recover`) stops at the same level and counts
 /// what it left, because recovering files no open of which could ever be
 /// intercepted is incoherent, not merely slow. It lives here, in the crate
 /// both depend on, so that the two cannot drift apart: they used to be two

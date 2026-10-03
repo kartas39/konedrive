@@ -31,7 +31,7 @@ pub struct OpenEvent {
     pub fd: OwnedFd,
     pub pid: i32,
     /// The helper's count of root unregistrations when the event was read
-    /// (`main.rs`, `mark_while_hydrated`).
+    /// (`events.rs`, `mark_while_hydrated`).
     pub since: u64,
 }
 

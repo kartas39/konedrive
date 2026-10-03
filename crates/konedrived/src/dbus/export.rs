@@ -20,7 +20,7 @@ use crate::dbus::signals::start_signals;
 /// that send them, to stop when the account goes.
 ///
 /// At startup this runs before the bus name is claimed
-/// (`crate::accounts::serve`): `main` used to claim the name, then connect
+/// (`crate::daemon::startup::serve`): `main` used to claim the name, then connect
 /// to the helper (up to 30 s), then attach the folder's interface, so a
 /// D-Bus-activated client calling it in that window got
 /// `UnknownInterface` from a daemon that was already on the bus. Nothing

@@ -319,7 +319,7 @@ impl TreeStore {
         Ok(n)
     }
 
-    /// A read-write cycle's delta, staged (`sync::listing::rw`): what waits
+    /// A read-write cycle's delta, staged (`remote::listing::rw`): what waits
     /// is staged again before `changes`. The ids to reconcile — what the new
     /// tree changes, what the outbox committed after commit count `since`,
     /// and what has no local object on record — and the deferred changes

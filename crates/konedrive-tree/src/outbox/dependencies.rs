@@ -137,7 +137,7 @@ impl TreeStore {
         // temporary place to `items` with a live `move` row for the final
         // name in the same step-2 transaction. Rules 2 and 3 stay, so no
         // folder is removed before what left it. The fixture the outbox worker proves this
-        // on is `sync::local::tests::w5_fixture_folder_replaced_offline_keeping_one_file`.
+        // on is `local::tests::w5_fixture_folder_replaced_offline_keeping_one_file`.
         let mut union = deps.clone();
         for &(taker, freer) in &by_name {
             union.get_mut(&taker).expect("every row has an entry").push(freer);

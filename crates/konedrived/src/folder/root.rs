@@ -112,7 +112,7 @@ fn not_a_directory(path: &Path) -> RegisterError {
 /// `ProtectHome=read-only`, so its own write probe can be
 /// refused (`EROFS`/`EACCES`/`EPERM`) against a perfectly good directory in
 /// the user's own home — that is why `check_filesystem` in
-/// `konedrive-helper/src/main.rs` treats a refused write probe as "nothing
+/// `konedrive-helper/src/registration.rs` treats a refused write probe as "nothing
 /// new learned" and falls back to `fstatfs` alone. The daemon runs
 /// unprivileged, in the user's own home, with no such sandbox, so this is
 /// the one place in the system where the write probe's result actually means
@@ -239,7 +239,7 @@ pub async fn register_root(link: &HelperLink, path: &Path) -> Result<SyncRoot, R
 /// the daemon's next start would not know about.
 pub(crate) async fn prepare(path: &Path) -> Result<(File, SyncRoot), RegisterError> {
     // Opening, listing, probing and stamping a directory are
-    // all blocking syscalls, and `sync/helper.rs`'s module doc treats a
+    // all blocking syscalls, and `helper/mod.rs`'s module doc treats a
     // blocking call left on a tokio worker as a first-class defect.
     let requested = path.to_path_buf();
     tokio::task::spawn_blocking(move || prepare_root(&requested))

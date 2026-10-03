@@ -11,7 +11,7 @@ use crate::config::write_atomic;
 pub struct AccountInfo {
     pub display_name: String,
     pub email: String,
-    /// The account's quota as last read (`crate::quota`), whoever read it; `quota_read_at`,
+    /// The account's quota as last read (`crate::account::quota`), whoever read it; `quota_read_at`,
     /// when (unix seconds). `remaining`, `state` and the time are missing in a file written
     /// before they were kept, which reads as not read.
     pub quota_used: u64,

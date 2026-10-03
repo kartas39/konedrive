@@ -57,7 +57,7 @@ pub const FILL_ADMISSION: usize = konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;
 /// hydration request for a file being dehydrated runs after the dehydration
 /// finishes", but nothing enforced that: `grep` finds no such lock anywhere
 /// in this crate before this, because nothing before it ever ran
-/// `serve_hydrations` and `root::dehydrate` at once — `main.rs` called
+/// `serve_hydrations` and `dehydrate::dehydrate` at once — `main.rs` called
 /// neither. This is what wires both into the same running daemon (see
 /// [`SyncService::dehydrate`], which shares the same `locks` table), so this
 /// is the first point at which two fills of the *same* file — one a

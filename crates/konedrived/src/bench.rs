@@ -536,7 +536,7 @@ fn read_only_cycle(store: &Store, changes: Vec<Change>) {
     store.call_blocking(|s| s.counts()).unwrap();
 }
 
-/// A read-write folder's delta cycle, its store work only (`sync::listing::rw`).
+/// A read-write folder's delta cycle, its store work only (`remote::listing::rw`).
 fn read_write_cycle(store: &Store, changes: Vec<Change>) {
     let staged = store.call_blocking(move |s| s.stage_rw(&changes, 0, false)).unwrap();
     let Some((ids, consumed)) = staged else { return };

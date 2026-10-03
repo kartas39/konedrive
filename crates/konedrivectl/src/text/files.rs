@@ -6,7 +6,7 @@ use super::formats::{human_bytes, local_time};
 /// same sentences, word for word, as `whyText` in `app/synccontroller.cpp`
 /// (each wrapped there in `i18n(...)`); `skip_reason_text_matches_the_windows_wording`
 /// below pins each one, and `the_window_uses_the_same_sentences` (in
-/// `tests/sync_cli.rs`) checks the C++ source directly, so the two cannot
+/// `tests/sync_cli/wording.rs`) checks the C++ source directly, so the two cannot
 /// drift apart unnoticed.
 pub fn skip_reason_text(reason: &str) -> &'static str {
     match reason {

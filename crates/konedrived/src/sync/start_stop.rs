@@ -195,7 +195,7 @@ impl SyncService {
 
     /// The daemon is stopping (issue #84): the outbox worker, if one runs,
     /// takes nothing more and lets the requests in flight return. The future
-    /// ends when it has; the caller bounds the wait (`crate::stop`).
+    /// ends when it has; the caller bounds the wait (`crate::daemon::stop`).
     pub fn close_outbox(&self) -> Option<impl std::future::Future<Output = ()> + Send + 'static> {
         self.syncing.lock().unwrap().as_ref().and_then(|s| s.outbox.as_ref()).map(|outbox| outbox.close())
     }

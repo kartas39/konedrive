@@ -1,5 +1,5 @@
 //! What the tests of `konedrivectl` share: the daemon, started as `konedrived` starts it
-//! (`konedrived::accounts::start`), on a private bus, and the binary run against it.
+//! (`konedrived::daemon::startup::start`), on a private bus, and the binary run against it.
 
 #![allow(dead_code)]
 

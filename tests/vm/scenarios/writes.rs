@@ -1,7 +1,7 @@
 //! The write phase end to end (`docs/design/writes.md` §12, "VM, `quick` (Btrfs), with a fake Graph server
 //! in the guest"): a read-write folder brought up by the daemon's own `SyncService` —
 //! the real helper, the watcher, the examination and the outbox worker — against the fake
-//! OneDrive the worker's host tests use (`konedrived::sync::upload::fake`, on wiremock, listening
+//! OneDrive the worker's host tests use (`konedrived::upload::fake`, on wiremock, listening
 //! on the guest's loopback; `fault-injection` builds it).
 //!
 //! The folder shares the suite's helper connection: an intercepted open in it is filled by the

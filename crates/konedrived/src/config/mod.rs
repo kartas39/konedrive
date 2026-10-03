@@ -1,7 +1,7 @@
 //! Daemon configuration (`~/.config/konedrive/config.toml`, version 2) and file locations.
 //!
 //! One [`ConfigStore`] owns the file: it loads it, migrates version 1 into account #1
-//! ([`crate::migrate`]), holds back accounts that collide ([`Config::holds`]), and runs every
+//! ([`crate::config::migrate`]), holds back accounts that collide ([`Config::holds`]), and runs every
 //! read-modify-write under one lock ([`ConfigStore::update`]).
 
 use std::future::Future;
@@ -229,18 +229,18 @@ pub struct AccountConfig {
     #[serde(default, skip_serializing_if = "is_false")]
     pub legacy_token: bool,
     /// Set only until `account.json` and `tree.sqlite` of version 1 are moved into this
-    /// account's directory ([`crate::migrate::finish_file_moves`]).
+    /// account's directory ([`crate::config::migrate::finish_file_moves`]).
     #[serde(default, skip_serializing_if = "is_false")]
     pub migrate_files: bool,
     /// The account's registered folder; `None` when it has none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root: Option<RootConfig>,
     /// Names of local files that are never uploaded (`docs/design/writes.md` §4.4), shell globs;
-    /// `None` for the defaults (`sync::local::ignore::DEFAULT_PATTERNS`).
+    /// `None` for the defaults (`local::ignore::DEFAULT_PATTERNS`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ignore: Option<Vec<String>>,
     /// The name a conflict copy carries (`docs/design/writes.md` §7); empty for the host's
-    /// (`sync::upload::default_machine_name`).
+    /// (`local::names::default_machine_name`).
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub machine_name: String,
     /// Whether Graph's thumbnails of the account's images and videos are fetched
@@ -249,7 +249,7 @@ pub struct AccountConfig {
     pub thumbnails: Option<bool>,
     /// `pause_on_metered` as an account had it before it became one setting for the whole
     /// app (issue #95): read only to be moved to [`Config::pause_on_metered`]
-    /// ([`crate::migrate::move_hold_settings`]), and gone from the file once moved.
+    /// ([`crate::config::migrate::move_hold_settings`]), and gone from the file once moved.
     #[serde(default, rename = "pause_on_metered", skip_serializing_if = "Option::is_none")]
     pub old_pause_on_metered: Option<bool>,
     /// `on_battery` as an account had it before issue #95; see
@@ -656,7 +656,7 @@ impl ConfigStore {
     /// as present), and is awaited only when nothing else says there is an account to carry
     /// over. A missing file is an empty configuration and is not written.
     ///
-    /// Next, before any account's services open a file: [`crate::migrate::finish_file_moves`].
+    /// Next, before any account's services open a file: [`crate::config::migrate::finish_file_moves`].
     pub async fn open(paths: &Paths, legacy_token: impl Future<Output = bool>) -> Self {
         let file = paths.config_file.clone();
         let loaded = match read(&file) {

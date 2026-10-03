@@ -1,6 +1,6 @@
 //! The notification group itself: `fanotify_init`, `fanotify_mark` and the
 //! events it reports, all without privilege (`docs/design/writes.md` §3 as amended
-//! by §17; `docs/kernel-behavior-7.2.md` §14).
+//! by §17; `docs/kernel-behavior-7.2/notification.md` §14).
 //!
 //! The group reports file handles: every event on an entry carries its
 //! directory and name (`DFID_NAME`) and the object's own handle (`FID`); a

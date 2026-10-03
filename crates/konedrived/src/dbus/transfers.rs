@@ -88,7 +88,7 @@ impl Transfers {
     }
 
     /// Files left to download: the pinned files waiting and every download under way
-    /// (issue #16, `sync::totals`).
+    /// (issue #16, `status::totals`).
     #[zbus(property)]
     async fn download_left_count(&self) -> u32 {
         self.service.state().get().queue.down.left_count

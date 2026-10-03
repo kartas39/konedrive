@@ -17,7 +17,7 @@ pub type ThumbnailBatch = (Vec<(Row, PathBuf)>, Option<String>);
 
 impl TreeStore {
     /// Placed images and videos whose cached thumbnail was not made for what
-    /// they are now (`thumb_key`, which `sync::thumbs::thumb_key` writes: the
+    /// they are now (`thumb_key`, which `desktop::thumbs::thumb_key` writes: the
     /// cTag, the path and the time), with their paths: up to `limit` of them,
     /// looking at the candidates after id `after` in id order (issue #39),
     /// [`THUMB_PAGE`] at a time and at most [`THUMB_SCAN`] in one call. Each

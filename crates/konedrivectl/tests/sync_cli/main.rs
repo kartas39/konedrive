@@ -226,7 +226,7 @@ async fn status_text_reports_no_folder_then_the_registered_one() {
     f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
     // `f.proxy` is a caching proxy (the same one `sync_status_text` is handed
     // in `main.rs`, built fresh per CLI invocation there); its properties
-    // update from the `PropertiesChanged` signal `sync::dbus::attach` emits,
+    // update from the `PropertiesChanged` signal `dbus::signals::start_signals` emits,
     // which lands on a task independent of the `RegisterRoot` reply this
     // test just awaited, so it is not yet guaranteed to have landed. Poll
     // rather than assert immediately — the same reason `status.rs` polls for

@@ -725,7 +725,7 @@ mod fault {
 
 /// Runs one blocking step of the walk on a blocking thread:
 /// `openat`, `getxattr`, `fallocate` and `fsync` are all blocking syscalls,
-/// and `sync/helper.rs`'s module doc treats a blocking call left on a tokio
+/// and `helper/mod.rs`'s module doc treats a blocking call left on a tokio
 /// worker as a first-class defect.
 async fn on_blocking_thread<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,

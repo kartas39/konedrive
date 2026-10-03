@@ -383,8 +383,8 @@ private Q_SLOTS:
     }
 
     /// The real daemon drops the transfer from Transfers before
-    /// the ActivityLog.Added(failed) for it goes out (crates/konedrived/src/sync/mod.rs
-    /// ~202, then the helper round trip). A removal must not finish the job
+    /// the ActivityLog.Added(failed) for it goes out (crates/konedrived/src/sync/hydrate.rs,
+    /// then the helper round trip). A removal must not finish the job
     /// at once: it is held for a 1.5 s grace window, and a matching failure
     /// inside that window still fails it.
     void removalThenFailureWithinTheGraceWindowGivesAnError()

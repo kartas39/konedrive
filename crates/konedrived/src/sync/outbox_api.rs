@@ -1,7 +1,7 @@
 //! The outbox as `org.konedrive.UploadQueue` shows it (`docs/design/writes.md` §11):
 //! what waits to be uploaded, the pause, the ignore list, the mass-delete
-//! guard's decision and what stays local. `sync::dbus` is the thin wrapper
-//! around these; the worker itself is `sync::upload`.
+//! guard's decision and what stays local. `dbus::upload_queue` is the thin wrapper
+//! around these; the worker itself is `upload`.
 //!
 //! **Pause** is per account and kept in the tree store (`meta.paused_until`),
 //! so it survives a restart and a timed one ends by itself. It stops the
@@ -110,7 +110,7 @@ impl SyncService {
     pub async fn pause_syncing(&self, seconds: u32) -> Result<(), SyncError> {
         let store = self.outbox_store()?;
         let until = if seconds == 0 { 0 } else { crate::status::activity::unix_now() + i64::from(seconds) };
-        upload::set_paused(&store, Some(until)).await.map_err(|e| SyncError::Io(e.to_string()))?;
+        crate::conditions::running::set_paused(&store, Some(until)).await.map_err(|e| SyncError::Io(e.to_string()))?;
         tracing::info!("syncing paused{}", if seconds == 0 { " until resumed".to_owned() } else { format!(" for {seconds} s") });
         self.show_pause();
         Ok(())
@@ -119,7 +119,7 @@ impl SyncService {
     /// `Resume()`: the pause ends now; the outbox and the poll go at once.
     pub async fn resume_syncing(&self) -> Result<(), SyncError> {
         let store = self.outbox_store()?;
-        upload::set_paused(&store, None).await.map_err(|e| SyncError::Io(e.to_string()))?;
+        crate::conditions::running::set_paused(&store, None).await.map_err(|e| SyncError::Io(e.to_string()))?;
         tracing::info!("syncing resumed");
         self.show_pause();
         Ok(())
@@ -438,9 +438,9 @@ impl SyncService {
     pub fn machine_name(&self) -> String {
         let configured = self.persist.as_ref().and_then(|p| p.store.account(&p.account)).map(|a| a.machine_name).unwrap_or_default();
         if configured.is_empty() {
-            upload::default_machine_name()
+            crate::local::names::default_machine_name()
         } else {
-            upload::machine_name(&configured)
+            crate::local::names::machine_name(&configured)
         }
     }
 

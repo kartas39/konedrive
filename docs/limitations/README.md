@@ -3,7 +3,7 @@
 One place for everything in konedrive that is limited, worked around, fragile, or knowingly
 below the quality we want. It is kept current: an entry is added whenever a decision accepts
 a limitation, builds a workaround, picks a number without measuring it, or parks a finding.
-Detail lives elsewhere (`docs/design/`, `docs/kernel-behavior-7.2.md`, the code); this log is the
+Detail lives elsewhere (`docs/design/`, `docs/kernel-behavior-7.2/`, the code); this log is the
 index of what is weak and why. "The write design" is `docs/design/writes.md`.
 
 **Kinds.** LIMIT — imposed by the kernel or the platform; we cannot change it, only live with
@@ -248,23 +248,23 @@ application must never read zeros where real content should be.
 | Upload fragment, and the most sent in one request (`CHUNK_SIZE`, `SMALL_UPLOAD_MAX`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
 | One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |
 | Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (write design §6.2) |
-| Transfers at once — fills on open, `Hydrate`, pinned downloads, replacements, thumbnails, uploads, metadata rows | **adaptive**, one pool per account (`crates/konedrived/src/pool.rs`, issue #3): the numbers below | see below |
+| Transfers at once — fills on open, `Hydrate`, pinned downloads, replacements, thumbnails, uploads, metadata rows | **adaptive**, one pool per account (`crates/konedrive-graph/src/pool.rs`, issue #3): the numbers below | see below |
 | Transfer pool: start (`START`) / ceiling (`[transfers] max`, `DEFAULT_CEILING`, clamped to 1–256) | 16 / 32, each account's pool separately | **guess** |
 | Transfer pool growth | +1 slot per successful transfer while work waits and every slot is busy; +1 per round (as many successes as slots) at and above the size the last `429`/`503` came at | **guess** |
 | Transfer pool: throttle level forgotten after (`THROTTLE_MEMORY`) / a throttle within the wait (+1 s, `BURST_GRACE`) is the same burst / no slot for, without `Retry-After` (`DEFAULT_THROTTLE_WAIT`) | 5 min / halves once / 10 s | **guess** |
 | A large file, from (`LARGE_FROM`) / streams of large sync transfers at once per account (`[transfers] large`, `DEFAULT_LARGE`, clamped to 1…`max`), files being opened outside it | 100 MiB / 4 | **guess** |
 | Slots above the pool only a file being opened may take (`RESERVE`) | 2 | **guess** |
-| A large pinned download's piece (`sync::source::parts::PIECE`) / how often a download in parts looks for a free slot to add a stream in (`LOOK_AGAIN`) | 256 MiB / 100 ms | **guess** (issue #28): large enough that a request's round trip is nothing beside it, small enough that the streams share a file's end |
+| A large pinned download's piece (`hydration::source::parts::PIECE`) / how often a download in parts looks for a free slot to add a stream in (`LOOK_AGAIN`) | 256 MiB / 100 ms | **guess** (issue #28): large enough that a request's round trip is nothing beside it, small enough that the streams share a file's end |
 | Speed shown (`DownloadSpeed`, `UploadSpeed`): the average of (`SPEED_SPAN`) / published every | 3 s / 1 s while anything moves or a `Retry-After` runs, and until nothing has moved for 10 s | **guess** |
 | A queue's time left (`DownloadTimeLeft`, `UploadTimeLeft`): the speed it is worked out from is the average of (`AVERAGE_SPAN`) / none once nothing has moved that way for (`STILL_AFTER`) | 30 s, or the run so far when shorter (never under 1 s) / 10 s | **guess** (F152) |
 | Queue totals counted at most every (`PUBLISH_EVERY`) | 1 s | the speeds' own rate |
 | Hydration requests taken off the helper's queue at once (`FILL_ADMISSION`) | 64, the helper's credit; each then waits for its account's pool | pinned by a test |
 | Window's transfer charts | the last 2 min, one sample a second | **guess** |
-| Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/sync/thumbs.rs`) |
-| Thumbnail candidates looked at per query / per store call (`THUMB_PAGE`, `THUMB_SCAN`) | 500 / 5 000 | **guess** (`crates/konedrived/src/tree.rs`, issue #39) |
-| Replacements downloading at once (`REPLACE_WORKERS`) | 8, each also in a pool slot | **guess** (`crates/konedrived/src/sync/listing.rs`, issue #39) |
-| Placed items recorded in one transaction (`PLACED_BATCH`) | 500 | **guess** (`crates/konedrived/src/sync/materialize.rs`, issue #39) |
-| Conflicts looked over per cycle (`PRUNE_BATCH`) / rows the window's Skipped and Conflicts pages list / how often the Skipped page asks again | 200 / 200 / at most once a second | **guess** (`crates/konedrived/src/sync/activity.rs`, `app/qml/SkippedPage.qml`, `app/conflictmodel.h`; issue #39) |
+| Thumbnails filled per run / how often regardless | 200 / every 10 min, each request in a pool slot (no pause between them any more) | **guess** (`crates/konedrived/src/desktop/thumbs.rs`) |
+| Thumbnail candidates looked at per query / per store call (`THUMB_PAGE`, `THUMB_SCAN`) | 500 / 5 000 | **guess** (`crates/konedrive-tree/src/thumbs.rs`, issue #39) |
+| Replacements downloading at once (`REPLACE_WORKERS`) | 8, each also in a pool slot | **guess** (`crates/konedrived/src/remote/listing/replacements.rs`, issue #39) |
+| Placed items recorded in one transaction (`PLACED_BATCH`) | 500 | **guess** (`crates/konedrived/src/remote/materialize.rs`, issue #39) |
+| Conflicts looked over per cycle (`PRUNE_BATCH`) / rows the window's Skipped and Conflicts pages list / how often the Skipped page asks again | 200 / 200 / at most once a second | **guess** (`crates/konedrived/src/status/activity.rs`, `app/qml/SkippedPage.qml`, `app/conflictmodel.h`; issue #39) |
 | Activity events kept / logged per kind in an incremental cycle | 200 / 50 | **guess** |
 | Shortest time between two `LocalBytes` walks | 5 s | **guess** |
 | Shortest time between two coalesced `PropertiesChanged` (counters, status, `Transfers.Downloads`) | 250 ms, at most 4 signals a second | the design's four a second |
@@ -327,7 +327,7 @@ application must never read zeros where real content should be.
 - [D26](D26.md) — The journal lines of the Graph client and the tree store carry the new crates' targets.
 - [D27](D27.md) — The daemon's journal lines carry its new module paths.
 - [D28](D28.md)
-- [D29](D29.md) — Some items moved down a layer have more than one name, and one sits lower than its users need.
+- [D29](D29.md) — Some items moved down a layer sit lower than their name suggests, and one lower than its users need.
 
 ---
 

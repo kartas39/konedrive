@@ -181,7 +181,7 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
     // hold whatever `HydrateRequest` needs, and the daemon would be waiting
     // for exactly that request. Interleaving is safe: the daemon's reader
     // tells `Ack` from `HydrateRequest` by variant and only pairs `Ack`s with
-    // its outstanding calls (see konedrived/src/sync/helper.rs), and one
+    // its outstanding calls (see konedrived/src/helper/mod.rs), and one
     // writer thread keeps each `send` a single datagram in queue order.
     //
     // Sending is a bounded queue plus that thread, not a mutex around the

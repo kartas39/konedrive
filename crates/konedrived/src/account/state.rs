@@ -32,7 +32,7 @@ pub struct AccountSnapshot {
     pub label: String,
     pub display_name: String,
     pub email: String,
-    /// The account's one quota (`crate::quota`): `QuotaUsed`, `QuotaTotal`, `QuotaRemaining`
+    /// The account's one quota (`crate::account::quota`): `QuotaUsed`, `QuotaTotal`, `QuotaRemaining`
     /// (Graph's `remaining`, less what went up since) and `QuotaState` (`normal`, `nearing`,
     /// `critical`, `exceeded`); 0 and empty until read.
     pub quota_used: u64,

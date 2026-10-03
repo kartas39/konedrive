@@ -671,7 +671,7 @@ impl crate::local::Liveness for Scanning {
 pub(super) struct ScanningHelper(Vec<PathBuf>);
 
 #[async_trait::async_trait]
-impl crate::upload::move_out::Helper for ScanningHelper {
+impl crate::helper::linked::Helper for ScanningHelper {
     async fn open_by_handle(&self, _dir: &File, handle: &FileHandle) -> Result<std::os::fd::OwnedFd, crate::helper::HelperError> {
         let stale = || crate::helper::HelperError::Refused(libc::ESTALE);
         let path = find_by_handle(&self.0, handle).ok_or_else(stale)?;

@@ -73,7 +73,7 @@ pub struct ThumbnailFiller {
     root: SyncRoot,
     cache: PathBuf,
     /// Whether thumbnails are asked for now: the account's setting, and its pause
-    /// (`sync::running`).
+    /// (`conditions::running`).
     running: Arc<Running>,
 }
 
