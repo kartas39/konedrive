@@ -43,54 +43,7 @@ impl TreeStore {
     /// not place, which is no object of a row placed again (issue #104).
     pub fn commit_staging(&mut self, delta_link: &str) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        if self.whole {
-            tx.execute(
-                "UPDATE staging SET thumb_key = (SELECT i.thumb_key FROM items i WHERE i.id = staging.id)
-                  WHERE thumb_key IS NULL",
-                [],
-            )?;
-            // A row that turns placed again takes no object from `items`:
-            // whatever was there when it stopped being placed is gone
-            // (issue #104).
-            tx.execute(
-                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND (i.placement = 'placed' OR staging.placement != 'placed'))
-                  WHERE local_handle IS NULL",
-                [],
-            )?;
-            tx.execute(
-                "UPDATE staging SET local_seq = MAX(local_seq, COALESCE((SELECT i.local_seq FROM items i WHERE i.id = staging.id), 0))",
-                [],
-            )?;
-            tx.execute("DELETE FROM items", [])?;
-            tx.execute(&format!("INSERT INTO items ({COLUMNS}) SELECT {COLUMNS} FROM staging"), [])?;
-        } else {
-            tx.execute(
-                &format!(
-                    "INSERT INTO items ({COLUMNS})
-                     SELECT s.id, s.parent_id, s.name, s.kind, s.size, s.mtime, s.etag, s.ctag, s.quickxor, s.mime, s.placement,
-                            COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, CASE WHEN i.placement = 'placed' OR s.placement != 'placed' THEN i.local_handle END),
-                            MAX(s.local_seq, COALESCE(i.local_seq, 0))
-                       FROM staging s LEFT JOIN items i ON i.id = s.id WHERE true
-                     ON CONFLICT(id) DO UPDATE SET
-                       parent_id = excluded.parent_id, name = excluded.name, kind = excluded.kind,
-                       size = excluded.size, mtime = excluded.mtime, etag = excluded.etag, ctag = excluded.ctag,
-                       quickxor = excluded.quickxor, mime = excluded.mime, placement = excluded.placement,
-                       thumb_key = excluded.thumb_key, local_handle = excluded.local_handle, local_seq = excluded.local_seq"
-                ),
-                [],
-            )?;
-            tx.execute("DELETE FROM items WHERE id IN (SELECT id FROM staging_gone)", [])?;
-        }
-        tx.execute("DELETE FROM staging", [])?;
-        tx.execute("DELETE FROM staging_gone", [])?;
-        tx.execute("DELETE FROM meta WHERE key = ?1", [STAGING_WHOLE])?;
-        tx.execute(
-            "INSERT INTO meta (key, value) VALUES ('delta_link', ?1)
-             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [delta_link],
-        )?;
-        // A first listing placed page by page ends here too.
-        tx.execute("DELETE FROM meta WHERE key = ?1", [LISTING_NEXT])?;
+        swap(&tx, self.whole, delta_link)?;
         tx.commit()?;
         self.whole = false;
         Ok(())
@@ -149,6 +102,62 @@ impl TreeStore {
         let ids = statement.query_map([], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
         Ok(ids)
     }
+}
+
+/// The swap of [`TreeStore::commit_staging`], inside the caller's
+/// transaction: the new tree (`whole`: a full listing's) becomes `items`, and
+/// `delta_link` the link to ask from next time. The caller commits, and only
+/// then takes the store's new tree for a delta's again.
+pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str) -> Result<(), TreeError> {
+    if whole {
+        tx.execute(
+            "UPDATE staging SET thumb_key = (SELECT i.thumb_key FROM items i WHERE i.id = staging.id)
+              WHERE thumb_key IS NULL",
+            [],
+        )?;
+        // A row that turns placed again takes no object from `items`:
+        // whatever was there when it stopped being placed is gone
+        // (issue #104).
+        tx.execute(
+            "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND (i.placement = 'placed' OR staging.placement != 'placed'))
+              WHERE local_handle IS NULL",
+            [],
+        )?;
+        tx.execute(
+            "UPDATE staging SET local_seq = MAX(local_seq, COALESCE((SELECT i.local_seq FROM items i WHERE i.id = staging.id), 0))",
+            [],
+        )?;
+        tx.execute("DELETE FROM items", [])?;
+        tx.execute(&format!("INSERT INTO items ({COLUMNS}) SELECT {COLUMNS} FROM staging"), [])?;
+    } else {
+        tx.execute(
+            &format!(
+                "INSERT INTO items ({COLUMNS})
+                 SELECT s.id, s.parent_id, s.name, s.kind, s.size, s.mtime, s.etag, s.ctag, s.quickxor, s.mime, s.placement,
+                        COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, CASE WHEN i.placement = 'placed' OR s.placement != 'placed' THEN i.local_handle END),
+                        MAX(s.local_seq, COALESCE(i.local_seq, 0))
+                   FROM staging s LEFT JOIN items i ON i.id = s.id WHERE true
+                 ON CONFLICT(id) DO UPDATE SET
+                   parent_id = excluded.parent_id, name = excluded.name, kind = excluded.kind,
+                   size = excluded.size, mtime = excluded.mtime, etag = excluded.etag, ctag = excluded.ctag,
+                   quickxor = excluded.quickxor, mime = excluded.mime, placement = excluded.placement,
+                   thumb_key = excluded.thumb_key, local_handle = excluded.local_handle, local_seq = excluded.local_seq"
+            ),
+            [],
+        )?;
+        tx.execute("DELETE FROM items WHERE id IN (SELECT id FROM staging_gone)", [])?;
+    }
+    tx.execute("DELETE FROM staging", [])?;
+    tx.execute("DELETE FROM staging_gone", [])?;
+    tx.execute("DELETE FROM meta WHERE key = ?1", [STAGING_WHOLE])?;
+    tx.execute(
+        "INSERT INTO meta (key, value) VALUES ('delta_link', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [delta_link],
+    )?;
+    // A first listing placed page by page ends here too.
+    tx.execute("DELETE FROM meta WHERE key = ?1", [LISTING_NEXT])?;
+    Ok(())
 }
 
 /// Delta entries applied to the tree `source`, in order (see

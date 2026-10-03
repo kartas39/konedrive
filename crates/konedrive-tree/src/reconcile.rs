@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, OptionalExtension};
 
+use super::staging::swap;
 use super::{apply, get_row, Change, Kind, Placement, Row, Source, Table, TreeError, TreeStore, COLUMNS};
 
 /// Created on every open (`IF NOT EXISTS`), so a schema-3 store made before
@@ -215,6 +216,7 @@ impl TreeStore {
     /// them already carries the deletes.
     pub fn commit_staging_deferring(&mut self, delta_link: &str, consumed: &[String], defer: &[String], content: &[String], seq: i64) -> Result<(), TreeError> {
         let source = self.source(Table::Staging);
+        let whole = self.whole;
         {
             let tx = self.conn.transaction()?;
             for id in consumed {
@@ -268,9 +270,13 @@ impl TreeStore {
                 }
             }
             tx.execute("DELETE FROM outbox_gone WHERE local_seq <= ?1", [seq])?;
+            // The swap in the same transaction (TR1): a swap that fails
+            // leaves the deferrals, and the tombstones, as they were.
+            swap(&tx, whole, delta_link)?;
             tx.commit()?;
         }
-        self.commit_staging(delta_link)
+        self.whole = false;
+        Ok(())
     }
 
     /// A replacement landed (`docs/design/writes.md` §9): the new version of `id` is
