@@ -1054,7 +1054,7 @@ fn what_left_is_marked_again_first_even_while_paused() {
         moved_out.as_mut().unwrap().route = Some(Arc::new(move |ids| routed.lock().unwrap().push(ids)));
     }
     let engine = w.h.engine();
-    engine.pause(None).unwrap();
+    super::pause(&engine);
     w.h.drain(&engine);
     assert_eq!(w.deletes(), 0, "paused");
     assert_eq!(w.helper.called("mark_file"), vec![q.clone()]);

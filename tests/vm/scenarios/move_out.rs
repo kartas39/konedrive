@@ -225,11 +225,18 @@ impl Base {
             }),
         });
         if paused {
-            worker.pause(None).map_err(|e| e.to_string())?;
+            konedrived::conditions::running::set_paused_blocking(&self.store, Some(0)).map_err(|e| e.to_string())?;
         }
         let _runtime = ctx.runtime.enter();
         worker.start();
         Ok(worker)
+    }
+
+    /// Ends the pause a worker was started under: the worker looks again.
+    fn resume(&self, worker: &OutboxWorker) -> Result<(), String> {
+        konedrived::conditions::running::set_paused_blocking(&self.store, None).map_err(|e| e.to_string())?;
+        worker.wake();
+        Ok(())
     }
 
     fn stop(&self, ctx: &Ctx, worker: OutboxWorker) {
@@ -331,7 +338,7 @@ pub fn placeholder_moved_out(ctx: &Ctx, checks: &mut Checks) -> Result<(), Strin
         if !seen.lock().unwrap().deletes.is_empty() {
             return Err("a paused worker deleted the item".into());
         }
-        worker.resume().map_err(|e| e.to_string())?;
+        base.resume(&worker)?;
         base.drained(WITHIN)?;
         one_delete(&seen, "ITEM_MO_FILE", "e-ITEM_MO_FILE")
     })();
@@ -493,7 +500,7 @@ pub fn crash_mid_download_then_restart(ctx: &Ctx, checks: &mut Checks) -> Result
         if !seen.lock().unwrap().deletes.is_empty() {
             return Err("the paused worker deleted the item".into());
         }
-        worker.resume().map_err(|e| e.to_string())?;
+        base.resume(&worker)?;
         base.drained(WITHIN)?;
         one_delete(&seen, "ITEM_MO_CRASH", "e-ITEM_MO_CRASH")
     })();

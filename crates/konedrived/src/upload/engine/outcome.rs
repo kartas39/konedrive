@@ -33,7 +33,7 @@ pub(in crate::upload) enum Outcome {
     /// OneDrive asked the whole account to wait (§4.10).
     Throttled(Option<Duration>),
     SignedOut,
-    /// `403`: the sign-in does not allow writes.
+    /// `403`: OneDrive does not allow this change. The row is blocked; the others go on.
     Forbidden,
     /// A fault point fired: the row stays `running`, as after a crash.
     Crashed,

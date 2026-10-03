@@ -77,10 +77,14 @@ const PICK_WANT: usize = 32;
 
 pub(super) struct Shared {
     started: bool,
-    online: bool,
     throttled_until: Option<i64>,
     throttle_step: Duration,
+    /// The token source said the account is signed out: nothing more is taken. Never
+    /// cleared: the sign-out stops the folder's sync, and this worker with it.
     needs_sign_in: bool,
+    /// The rows a `403` blocked were let go once, when this worker began
+    /// ([`Engine::release_forbidden`]).
+    forbidden_released: bool,
     last_error: String,
     in_flight: HashMap<i64, InFlight>,
     crashed: bool,
@@ -153,10 +157,10 @@ impl Engine {
             cfg,
             shared: Mutex::new(Shared {
                 started: false,
-                online: true,
                 throttled_until: None,
                 throttle_step: THROTTLE_FIRST,
                 needs_sign_in: false,
+                forbidden_released: false,
                 last_error: String::new(),
                 in_flight: HashMap::new(),
                 crashed: false,
@@ -246,34 +250,6 @@ impl Engine {
         self.cfg.host.stopped(self.store())
     }
 
-    pub(super) fn pause(&self, for_: Option<Duration>) -> Result<(), TreeError> {
-        let until = for_.map(|d| now() + d.as_secs().max(1) as i64).unwrap_or(0);
-        crate::conditions::running::set_paused_blocking(self.store(), Some(until))?;
-        self.publish();
-        self.wake();
-        Ok(())
-    }
-
-    pub(super) fn resume(&self) -> Result<(), TreeError> {
-        crate::conditions::running::set_paused_blocking(self.store(), None)?;
-        self.publish();
-        self.wake();
-        Ok(())
-    }
-
-    pub(crate) async fn set_online(&self, online: bool) {
-        self.shared().online = online;
-        if online {
-            // Rows that backed off on network errors the host never reported
-            // go now, not up to an hour later.
-            if let Err(e) = self.store().call(move |s| s.outbox_retry_now()).await {
-                tracing::warn!("cannot make the outbox's waiting rows due: {e}");
-            }
-        }
-        self.publish();
-        self.wake();
-    }
-
     /// Nothing is sent until the next [`cycle_done`](Self::cycle_done): the
     /// folder's first cycle, and the one after the network came back, run
     /// before the outbox (`docs/design/writes.md` §3, §9).
@@ -304,26 +280,24 @@ impl Engine {
         }
     }
 
-    pub(crate) async fn signed_in(&self) -> Result<(), TreeError> {
-        {
-            let mut shared = self.shared();
-            shared.needs_sign_in = false;
-            shared.last_error.clear();
+    /// The rows a `403` blocked are ready again, once in this worker's life, before its
+    /// first row: a worker begins after a sign-in (the sign-out before it stopped the
+    /// folder's sync), and also after a restart or a mode switch, where the rows are tried
+    /// once more and blocked again if OneDrive still refuses (`docs/design/writes.md` §6.3).
+    pub(super) async fn release_forbidden(&self) {
+        if self.shared().forbidden_released {
+            return;
         }
-        self.store().call(move |s| s.outbox_unblock(&[reason::FORBIDDEN])).await?;
-        self.publish();
-        self.wake();
-        Ok(())
+        match self.store().call(move |s| s.outbox_unblock(&[reason::FORBIDDEN])).await {
+            Ok(_) => self.shared().forbidden_released = true,
+            Err(e) => tracing::warn!("cannot let the rows a 403 blocked go: {e}"),
+        }
     }
 
     pub(crate) async fn retry_now(&self) -> Result<(), TreeError> {
         self.store().call(move |s| s.outbox_retry_now()).await?;
         self.wake();
         Ok(())
-    }
-
-    pub(super) fn subscribe(&self) -> watch::Receiver<WorkerStatus> {
-        self.status.subscribe()
     }
 
     pub(super) fn status(&self) -> WorkerStatus {
@@ -341,7 +315,6 @@ impl Engine {
             paused: paused.is_some(),
             paused_until: paused.unwrap_or(0),
             throttled_until: shared.throttled_until.filter(|&at| at > now),
-            online: shared.online,
             needs_sign_in: shared.needs_sign_in,
             last_error: shared.last_error.clone(),
             running: shared.in_flight.len(),
@@ -398,7 +371,6 @@ impl Engine {
             !paused
                 && !shared.crashed
                 && shared.cycled
-                && shared.online
                 && !shared.needs_sign_in
                 && shared.throttled_until.is_none_or(|at| at <= now)
         };

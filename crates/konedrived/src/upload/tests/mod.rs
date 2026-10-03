@@ -612,6 +612,15 @@ fn throttling_pauses_the_whole_worker() {
     }
 }
 
+/// The user pauses the account of `engine`, until resumed.
+fn pause(engine: &Engine) {
+    crate::conditions::running::set_paused_blocking(engine.store(), Some(0)).unwrap();
+}
+
+fn resume(engine: &Engine) {
+    crate::conditions::running::set_paused_blocking(engine.store(), None).unwrap();
+}
+
 fn http_date(at: i64) -> String {
     let text = konedrive_graph::drive::item::format_graph_time(at); // 2026-09-25T10:00:00Z
     let (date, time) = text.trim_end_matches('Z').split_once('T').unwrap();
@@ -621,17 +630,17 @@ fn http_date(at: i64) -> String {
     format!("Thu, {day} {} {year} {time} GMT", months[month.parse::<usize>().unwrap() - 1])
 }
 
-/// Pause (persisted), offline and a sign-in that does not allow writes each
-/// stop the worker without touching the rows; a refused name and a writer
-/// each block or hold their own row, and a full OneDrive holds the content
-/// (issue #2); the file's `user.konedrive.sync` says which.
+/// A pause (persisted) stops the worker without touching the rows; a `403`,
+/// a refused name and a writer each block or hold their own row, and a full
+/// OneDrive holds the content (issue #2); the file's `user.konedrive.sync`
+/// says which.
 #[test]
-fn pause_offline_sign_in_and_blocked_rows() {
+fn pause_and_blocked_rows() {
     let w = World::new(&[]);
     w.write("a.txt", b"a");
     w.examine(&[("", "a.txt")]);
     let engine = w.h.engine();
-    engine.pause(None).unwrap();
+    pause(&engine);
     w.h.drain(&engine);
     assert_eq!(w.cloud(|c| c.log.len()), 0);
     assert_eq!((engine.status().paused, engine.status().paused_until), (true, 0));
@@ -639,17 +648,13 @@ fn pause_offline_sign_in_and_blocked_rows() {
     let restarted = w.h.engine();
     w.h.drain(&restarted);
     assert!(restarted.status().paused, "the pause survives a restart");
-    restarted.resume().unwrap();
-    w.h.block_on(restarted.set_online(false));
-    w.h.drain(&restarted);
-    assert_eq!(w.cloud(|c| c.log.len()), 0);
-    w.h.block_on(restarted.set_online(true));
+    resume(&restarted);
     w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(403), 1));
     w.h.drain(&restarted);
-    assert!(restarted.status().needs_sign_in);
     assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Blocked)]);
     assert_eq!(w.attr("a.txt", XATTR_SYNC).as_deref(), Some("blocked"));
-    w.h.block_on(restarted.signed_in()).unwrap();
+    // The worker a sign-in starts lets the row go.
+    let restarted = w.h.engine();
     w.h.drain(&restarted);
     assert!(w.rows().is_empty());
     assert_eq!(w.attr("a.txt", XATTR_SYNC), None);
@@ -877,7 +882,7 @@ fn a_file_removed_while_it_waits_for_space_leaves_the_outbox() {
 /// waits for the drain to end.
 fn drain_paused_mid_request(w: &World, engine: &Arc<Engine>, method: &str, fragment: &str, meanwhile: impl FnOnce()) {
     drain_stopped_mid_request(w, engine, method, fragment, || {
-        engine.pause(None).unwrap();
+        pause(engine);
         meanwhile();
     });
 }
@@ -960,7 +965,7 @@ fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
         if expire {
             w.cloud(|c| c.expire_sessions());
         }
-        restarted.resume().unwrap();
+        resume(&restarted);
         w.h.drain(&restarted);
         assert!(w.rows().is_empty(), "{:?}", w.summary());
         let sent = w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/")));
@@ -999,7 +1004,7 @@ fn the_worker_runs_until_stopped() {
     let worker = OutboxWorker::new(w.h.config());
     w.h.runtime.block_on(async {
         worker.start();
-        assert!(worker.status().started);
+        assert!(worker.engine.status().started);
         w.write("a.txt", b"a");
         konedrive_tree::off_runtime(|| w.examine(&[("", "a.txt")]));
         worker.wake();
@@ -1011,7 +1016,7 @@ fn the_worker_runs_until_stopped() {
         worker.stop().await;
     });
     assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert!(!worker.status().started);
+    assert!(!worker.engine.status().started);
     assert_committed(&w, "a.txt", "a.txt");
 }
 
@@ -1087,7 +1092,7 @@ fn four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir() {
         let mut together = false;
         let mut waited = 0;
         while waited < 500 {
-            seen = worker.status().uploads.into_iter().map(|u| u.rel).collect::<Vec<_>>();
+            seen = worker.engine.status().uploads.into_iter().map(|u| u.rel).collect::<Vec<_>>();
             together = names.iter().all(|name| seen.iter().any(|rel| rel == Path::new(name)));
             if together {
                 break;
@@ -1389,6 +1394,8 @@ mod removed;
 mod sessions;
 
 mod move_out;
+
+mod candidates;
 
 /// Issue #87: a failure no step settles gives its row a stable key, never
 /// the error's own text.
