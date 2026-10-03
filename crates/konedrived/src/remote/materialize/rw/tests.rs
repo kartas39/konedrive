@@ -508,3 +508,41 @@ fn a_directory_the_walk_cannot_list_keeps_the_leaving_row() {
     let leaving = fx.store.call_blocking(|s| s.leaving()).unwrap();
     assert_eq!(leaving, vec![("E".to_owned(), PathBuf::from("docs/deep"))], "kept");
 }
+
+/// RE1: a directory kept aside under another name (`copy_aside`) takes what is leaving
+/// in it along, as it takes its outbox rows: the rebase of the rows is the store's, which
+/// moves the `leaving` rows at and below the directory too. What is leaving elsewhere
+/// stays where it is.
+#[test]
+fn a_directory_kept_aside_takes_what_is_leaving_in_it_along() {
+    let fx = Fx::new();
+    fx.store
+        .call_blocking(|s| {
+            s.leaving_add("G", Path::new("docs/deep/g.txt"), None)?;
+            s.leaving_add("E", Path::new("docs/deep"), None)?;
+            s.leaving_add("T", Path::new("top.txt"), None)
+        })
+        .unwrap();
+    fx.row(OutboxKind::Update, Some("F"), "docs/f.txt");
+    let plan = fx.store.call_blocking(|s| {
+        s.begin_staging(true)?;
+        Rw::read(s, "fedora".into(), false, IgnoreList::default())
+    }).unwrap();
+    let materializer = fx.materializer(Some(plan.clone()));
+    let top = materializer.disk.dir(Path::new("")).unwrap();
+    let mut run = crate::remote::materialize::Run::default();
+    materializer.copy_aside(&plan, &top, std::ffi::OsStr::new("docs"), Path::new("docs"), &mut run).unwrap();
+
+    assert!(fx.path("docs-fedora/deep/g.txt").exists() && !fx.path("docs").exists(), "kept aside as docs-fedora");
+    let leaving = fx.store.call_blocking(|s| s.leaving()).unwrap();
+    assert_eq!(
+        leaving,
+        vec![
+            ("E".to_owned(), PathBuf::from("docs-fedora/deep")),
+            ("G".to_owned(), PathBuf::from("docs-fedora/deep/g.txt")),
+            ("T".to_owned(), PathBuf::from("top.txt")),
+        ]
+    );
+    let rows: Vec<PathBuf> = fx.store.call_blocking(|s| s.outbox_rows()).unwrap().into_iter().map(|r| r.rel).collect();
+    assert_eq!(rows, vec![PathBuf::from("docs-fedora/f.txt")], "its rows follow it too");
+}

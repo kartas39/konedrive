@@ -453,3 +453,38 @@ async fn a_failed_switch_the_helper_may_still_hold_is_kept_intercepted_and_broug
     service.resume().await;
     assert_eq!(service.root_state(), "ready", "{}", service.last_error());
 }
+
+/// SY6: `source` in `[accounts.root]` is `onedrive` or `local`. Another value — here the
+/// first with a capital, typed by hand — is not read as `local` with no word of it: the
+/// folder would come up `ready`, show `local`, and never be kept in step with OneDrive.
+#[tokio::test]
+#[ignore = "shows SY6: an unknown source in config.toml is read as local, and nothing says so"]
+async fn a_source_that_config_toml_misspells_is_not_taken_for_local_in_silence() {
+    let sockets = tempfile::tempdir().unwrap();
+    let socket_path = sockets.path().join("helper.sock");
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_file = config_dir.path().join("config.toml");
+    let root_dir = tempfile::tempdir().unwrap();
+    let root_id = "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d";
+    xattr::set(root_dir.path(), "user.konedrive.root", root_id.as_bytes()).unwrap();
+    write_config(
+        &config_file,
+        &format!(
+            "path = \"{}\"\nid = \"{root_id}\"\nintercepted = true\nsource = \"OneDrive\"\nbaloo_excluded = false\n",
+            resolved(root_dir.path())
+        ),
+    );
+
+    let _helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+    let service = SyncService::new(Some(link), None, Some(persist(&config_file)));
+    service.restore().await;
+    service.resume().await;
+
+    assert!(
+        service.root_source() != "local" || !service.last_error().is_empty(),
+        "source = \"OneDrive\" came up as a {} folder, {}, with nothing in LastError",
+        service.root_source(),
+        service.root_state()
+    );
+}

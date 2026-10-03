@@ -682,3 +682,71 @@ async fn a_version_1_onedrive_folder_is_held_then_brought_up_at_the_first_connec
     .await;
     assert_ne!(sync.last_error().await.unwrap(), "", "OneDrive's listing is not mocked here, so the sync says so");
 }
+
+/// A wallet whose deletes fail while it is told to: a Secret Service that went away.
+#[derive(Default)]
+struct FailingDeletes {
+    inner: MemoryWallet,
+    failing: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl Wallet for FailingDeletes {
+    async fn exists(&self, slot: &Slot) -> Result<bool, konedrived::account::secret::SecretError> {
+        self.inner.exists(slot).await
+    }
+
+    async fn load(&self, slot: &Slot) -> Result<Option<String>, konedrived::account::secret::SecretError> {
+        self.inner.load(slot).await
+    }
+
+    async fn store(&self, slot: &Slot, label: &str, secret: &str) -> Result<(), konedrived::account::secret::SecretError> {
+        self.inner.store(slot, label, secret).await
+    }
+
+    async fn delete(&self, slot: &Slot) -> Result<(), konedrived::account::secret::SecretError> {
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(konedrived::account::secret::SecretError::Unavailable("gone".into()));
+        }
+        self.inner.delete(slot).await
+    }
+}
+
+/// SY5: a `Remove` that fails after the folder was forgotten — here the sign-in cannot be
+/// deleted — leaves the account listed. The account that stays is whole: it still has its
+/// folder, or takes one again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "shows SY5: an account whose Remove failed half-way stays listed and refuses every folder"]
+async fn an_account_whose_removal_failed_half_way_still_takes_a_folder() {
+    let (config, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let bus = TestBus::start();
+    let wallet = Arc::new(FailingDeletes::default());
+    let options = konedrived::daemon::manager::Options {
+        endpoints: Endpoints::microsoft(),
+        wallet: wallet.clone(),
+        sign_in_timeout: Duration::from_secs(5),
+        baloo: konedrived::desktop::baloo::Baloo::disabled,
+        thumbnails: None,
+        onedrive: false,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
+    };
+    let _daemon = start_daemon_with(&bus, config.path(), options).await;
+    let client = bus.connect().await;
+    let manager = AccountsProxy::builder(&client).cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
+    let path = manager.add("Personal").await.unwrap();
+    let sync = FolderProxies::uncached(&client, path.clone()).await.unwrap().folder;
+    let folder = dir.path().join("Folder");
+    std::fs::create_dir(&folder).unwrap();
+    sync.register_without_interception(folder.to_str().unwrap()).await.unwrap();
+
+    wallet.failing.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert!(manager.remove(&path.as_ref()).await.is_err(), "the sign-in cannot be deleted, so the removal fails");
+    wallet.failing.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(manager.list().await.unwrap(), vec![path.clone()], "the account stays");
+
+    if sync.state().await.unwrap() == "none" {
+        if let Err(refused) = sync.register_without_interception(folder.to_str().unwrap()).await {
+            panic!("the account stays listed, without its folder, and refuses one: {refused}");
+        }
+    }
+}

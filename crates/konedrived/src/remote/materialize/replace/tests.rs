@@ -200,3 +200,58 @@ async fn a_replacements_swap_waits_for_the_per_inode_lock() {
     assert!(matches!(outcome, ReplaceOutcome::Replaced), "{outcome:?}");
     assert_eq!(std::fs::read(&path).unwrap(), b"the new version", "swapped in once the lock is free");
 }
+
+/// RE10: a read-write replacement cut short right after its swap — where it waits for the
+/// store, which is busy — has still recorded the inode it swapped in: the job it sent
+/// before it waited (`land_deferred`) records it, whether or not anyone waits for it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_leased_replacement_stopped_right_after_its_swap_has_recorded_the_new_inode() {
+    use konedrive_fs::handle::FileHandle;
+    let f = fixture_async();
+    let (disk, path) = (Disk::open(&f.root, false).unwrap(), f.path("docs/f.txt"));
+    f.listed_async(false).await;
+    hydrate_by_hand(&path, b"old version", "c-F");
+    let old = FileHandle::of(&File::open(&path).unwrap()).unwrap();
+
+    // The store's thread is held: whatever is sent to it waits behind this job.
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (holding, held_now) = tokio::sync::oneshot::channel::<()>();
+    let store = f.store.clone();
+    let holder = tokio::spawn(async move {
+        store
+            .call(move |_| {
+                let _ = holding.send(());
+                let _ = held.recv();
+                Ok(())
+            })
+            .await
+    });
+    held_now.await.unwrap();
+
+    let (store, tree_lock) = (f.store.clone(), std::sync::Arc::new(tokio::sync::Mutex::new(())));
+    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
+    let worker = tokio::spawn(async move {
+        let source = Memory::new("c2", b"the new version");
+        let leased = Leased { tree_lock: &tree_lock, store: &store };
+        replace_leased(&disk, &InodeLocks::new(), &source, &replacement, Some(&leased)).await
+    });
+    for _ in 0..500 {
+        if std::fs::read(&path).unwrap() == b"the new version" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), b"the new version", "swapped in");
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!worker.is_finished(), "it waits for the store");
+    // The poller stops: the worker's future is dropped where it waits.
+    worker.abort();
+    assert!(worker.await.unwrap_err().is_cancelled());
+    release.send(()).unwrap();
+    holder.await.unwrap().unwrap();
+
+    let new = FileHandle::of(&File::open(&path).unwrap()).unwrap();
+    assert_ne!(new, old, "a new version is a new inode");
+    let recorded = f.store.call(|s| s.local_handle("F")).await.unwrap();
+    assert_eq!(recorded, Some(new), "the item's recorded object is the inode swapped in");
+}
