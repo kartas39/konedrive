@@ -13,7 +13,9 @@ By hand, two steps:
 Every push to `main` runs the release workflow
 (`.github/workflows/release.yml`) on GitHub Actions:
 
-1. It runs the daemon's unit tests (`cargo test -p konedrived --lib --features dev-tools`, the token export included) on the runner itself (below).
+1. It runs the unit tests of the daemon, the Graph client and the tree store
+   (`cargo test -p konedrived -p konedrive-graph -p konedrive-tree --lib --features konedrived/dev-tools`,
+   the token export included) on the runner itself (below).
    A failing test stops the run; nothing is built or tagged.
 2. In a `fedora:44` container, it installs the spec's build dependencies, checks that the
    container's Rust is the one the tests ran with (below), chooses the version (below) and builds
