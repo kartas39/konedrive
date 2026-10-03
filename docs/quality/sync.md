@@ -144,6 +144,9 @@ risky one.
     Likelihood: very low; only a hand edit produces another value.
   - **A fix must:** let a Forget of such a folder still reach the helper (`hold`, `bind` and
     `recorded_for_forget` all read `persisted_root()`).
+- **Fixed 2026-10-03** in `2cdf5dd` (#144): a `source` that is neither word refuses the bring-up and
+  is said in `LastError`; a folder held for it never comes up on a guess. What a folder in that
+  state can and cannot do is in `docs/limitations/F211.md`.
 
 ## SY7. Wiring by setters; a test-only surface on the production type
 

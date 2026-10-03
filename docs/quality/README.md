@@ -79,7 +79,7 @@ not fixed moves there.
 | [`HE1`](helper.md) | `konedrive-helper/src/jobs.rs:211`, `:238` | No bound per uid on suspended opens; one user can deny every other user's opens | confirmed |
 | [`HE2`](helper.md) | `konedrive-helper/src/connection.rs:285`, `roots.rs` | Roots unbounded per uid, `root_id` unvalidated, a re-registration that leaves marks | confirmed |
 | [`AC1`](account-config.md) | `account/sign_in.rs:13–36` | A cancelled sign-in can complete | fixed in `9cbcecf` |
-| [`RE6`](remote.md) | `remote/listing.rs:639` against `:645` | The same store failure is "blocking" or not by the line it happens on | confirmed; small |
+| [`RE6`](remote.md) | `remote/listing.rs:639` against `:645` | The same store failure is "blocking" or not by the line it happens on | fixed in `2cdf5dd` |
 | [`RE1`](remote.md) | `remote/materialize/rw.rs:651–669` | `copy_aside` renames a directory and does not rebase the `leaving` row's path | refuted (the `copy_aside` claim) |
 | [`RE10`](remote.md) | `remote/materialize/replace.rs:249`, `listing/replacements.rs:180` | A replacement cancelled between the swap and the record leaves the new inode unrecorded | refuted (the cancelled replacement) |
 | [`GR5`](graph.md) | `konedrive-graph/src/token.rs:176–196` | Every read-only token for a read-write account is a network request under the cache lock | fixed in `b5cffd9` |
@@ -87,7 +87,7 @@ not fixed moves there.
 | [`CL2`](ctl.md) | `konedrivectl/src/text/refusals.rs:277`, `:366`, `:406` | A wrong sentence for a refusal and action nobody wrote | refuted as written; the neighbouring defect fixed in `a62d487` |
 | [`CL5`](ctl.md) | `konedrivectl/src/cli.rs:80`, `text/refusals.rs:585` and three more | The label rule stated five times; four say "no @", the code allows it | fixed in `a62d487` |
 | [`SY5`](sync.md) | `daemon/manager.rs:323–325`, `:302` | `Accounts.Remove` that fails half-way leaves an account that refuses everything | fixed in `57216c9` |
-| [`SY6`](sync.md) | `sync/mod.rs:72–78` | A typo in `config.toml` silently makes a OneDrive folder local | confirmed |
+| [`SY6`](sync.md) | `sync/mod.rs:72–78` | A typo in `config.toml` silently makes a OneDrive folder local | fixed in `2cdf5dd` |
 
 ### The order of the fixes
 
