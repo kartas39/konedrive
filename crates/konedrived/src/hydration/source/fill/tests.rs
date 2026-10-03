@@ -101,6 +101,22 @@ impl ContentSource for RestartsFromZero {
     }
 }
 
+/// Serves a real file but declares an mtime 2^63 seconds before 1970: a
+/// `SystemTime` can hold it, and `set_mtime` refuses it (that count of
+/// seconds does not fit an `i64`). Everything about the *content* is correct.
+struct ImpossibleMtime {
+    inner: LocalDir,
+}
+
+#[async_trait]
+impl ContentSource for ImpossibleMtime {
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
+        let mut fetched = self.inner.fetch(item_id, from, end).await?;
+        fetched.mtime = SystemTime::UNIX_EPOCH.checked_sub(std::time::Duration::from_secs(1 << 63)).unwrap();
+        Ok(fetched)
+    }
+}
+
 /// Serves a real file but declares an mtime one second before 1970.
 struct PreEpochMtime {
     inner: LocalDir,
@@ -398,10 +414,8 @@ async fn a_declared_size_of_zero_does_not_truncate_a_live_placeholder() {
 /// and the stamp records it, so the file can be dehydrated again
 /// (`stamp_matches`).
 ///
-/// This test used to show that an mtime `set_mtime` refused did not cost the
-/// user a file whose content was correct. `set_mtime` takes such a time now;
-/// `commit` still goes on when `futimens` fails, which no test on the host
-/// can make it do.
+/// A time `set_mtime` does refuse is
+/// `an_mtime_the_filesystem_cannot_hold_still_hydrates_the_file`'s.
 #[tokio::test]
 async fn a_source_time_before_1970_is_applied_and_stamped() {
     let remote = tempfile::tempdir().unwrap();
@@ -421,6 +435,51 @@ async fn a_source_time_before_1970_is_applied_and_stamped() {
     assert!(konedrive_fs::placeholder::stamp_matches(&opened).unwrap(), "the stamp records the time the file has");
     let mtime = opened.metadata().unwrap().modified().unwrap();
     assert_eq!(mtime, SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1));
+}
+
+/// An mtime `set_mtime` refuses (one too far from 1970 for a `timespec`) must
+/// not cost the user a file whose **content is entirely correct**.
+///
+/// The governing property of this whole sub-project is "never serve
+/// zeros", and neither answer here serves zeros: the bytes are all
+/// present either way. So denying is not the fail-closed choice, it is
+/// simply a refusal to hand over correct content because of a timestamp
+/// — availability spent for no safety at all. (The previous round made
+/// this fatal, which went beyond its brief.)
+///
+/// The second half is what keeps it safe rather than merely lenient: the
+/// stamp has to record the mtime the file *actually ends up with*, not
+/// the one that could not be applied, or `stamp_matches` would be false
+/// from birth and would refuse to dehydrate the file ever again,
+/// reporting it as "modified locally".
+#[tokio::test]
+async fn an_mtime_the_filesystem_cannot_hold_still_hydrates_the_file() {
+    let remote = tempfile::tempdir().unwrap();
+    let payload = vec![5u8; 200_000];
+    std::fs::write(remote.path().join("ITEM11"), &payload).unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let file = placeholder(local.path(), "ITEM11", 4096);
+
+    let source = ImpossibleMtime { inner: LocalDir::new(remote.path()) };
+    assert_eq!(hydrate_file(&file, &source).await, 0, "correct content must not be denied");
+
+    let mut opened = std::fs::File::open(local.path().join("file.bin")).unwrap();
+    let mut content = Vec::new();
+    opened.read_to_end(&mut content).unwrap();
+    assert_eq!(content, payload, "every byte of the file is there");
+    assert_eq!(read_state(&opened).unwrap(), Some(State::Hydrated));
+    assert!(
+        konedrive_fs::placeholder::stamp_matches(&opened).unwrap(),
+        "the stamp must record the mtime the file actually has, or §8 would refuse to \
+         dehydrate this file for the rest of its life"
+    );
+    // And the stamp is a real one, not the unrepresentable value: the file
+    // kept a local mtime, which is exactly what makes the stamp agree with it.
+    let mtime = opened.metadata().unwrap().modified().unwrap();
+    assert!(
+        mtime > SystemTime::UNIX_EPOCH,
+        "the refused mtime was never applied; the file keeps a representable one"
+    );
 }
 
 /// Verified correct by the review and pinned here so it stays that way:
@@ -443,9 +502,10 @@ async fn the_shared_file_offset_is_untouched_by_a_fill() {
     assert_eq!(file.stream_position().unwrap(), 1234);
 }
 
-/// C1, pinned back onto the host suite. A test with an mtime `set_mtime`
-/// refused used to be this one, before `set_mtime`'s error was made non-fatal
-/// and took away the only post-data failure an unprivileged test could reach.
+/// C1, pinned back onto the host suite. This is the test
+/// `an_mtime_the_filesystem_cannot_hold_still_hydrates_the_file` used to
+/// be, before correctly made `set_mtime`'s error non-fatal and
+/// took away the only post-data failure an unprivileged test could reach.
 ///
 /// The injected fault fires unconditionally, right before the commit
 /// write, and — from *inside* the fault itself — re-opens the placeholder

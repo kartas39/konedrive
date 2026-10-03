@@ -170,9 +170,12 @@ impl TokenManager {
 
     /// Drops the cached access tokens, forcing the next call to refresh. Used when a
     /// Graph call rejects the cached token (401) without the refresh token itself being
-    /// invalid, e.g. after the daemon was suspended past the token's lifetime. It does not
-    /// wait for a refresh under way: the token that one caches is newer than the rejected
-    /// one.
+    /// invalid, e.g. after the daemon was suspended past the token's lifetime, and when the
+    /// account turns read-only, to drop a token that can write. It does not wait for a
+    /// refresh under way. After a 401 the token that one caches is newer than the rejected
+    /// one. After a turn to read-only it may be one that can write, asked for before the
+    /// read-only client was installed: its `asked` says so, and it is not handed out, here
+    /// (`fresh_own`) or as a read-only token (`fresh_read_only`).
     pub async fn invalidate(&self) {
         self.clear();
     }

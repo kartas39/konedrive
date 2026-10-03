@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use futures_util::FutureExt;
+
 use serde_json::json;
 use url::Url;
 use wiremock::matchers::{body_string_contains, method, path};
@@ -86,10 +88,10 @@ async fn a_refresh_asks_for_the_installed_scope_and_reports_the_grant() {
     assert_eq!(*granted.lock().unwrap(), vec![(crate::oauth::READ_WRITE_SCOPES, scope)]);
 }
 
-/// While a switch commits, no token can be refreshed — the cache is held — and
+/// While a switch commits, no token can be refreshed — the refresh lock is held — and
 /// the new token is cached only once the commit went through.
 #[tokio::test]
-async fn a_commit_holds_the_cache_and_seeds_only_when_it_succeeds() {
+async fn no_refresh_starts_during_a_commit_and_it_seeds_only_when_it_succeeds() {
     let server = MockServer::start().await;
     mock_refresh(&server, 200, rotated(), 0).await;
     let (tokens, _) = manager(&server, Arc::new(MemoryStore::with_token("RT0")));
@@ -103,7 +105,7 @@ async fn a_commit_holds_the_cache_and_seeds_only_when_it_succeeds() {
         })
         .await
         .unwrap();
-    assert!(held, "the cache is held while the commit runs");
+    assert!(held, "the refresh lock is held while the commit runs");
     assert_eq!(tokens.access_token().await.unwrap(), "AT-NEW");
 }
 
@@ -291,7 +293,7 @@ async fn forget_waits_for_an_in_flight_refresh_to_commit_first() {
 
     let refreshing = tokens.clone();
     let refresh = tokio::spawn(async move { refreshing.access_token().await });
-    // Give the refresh a chance to take the cache lock and start its (100ms-delayed)
+    // Give the refresh a chance to take the refresh lock and start its (100ms-delayed)
     // request before `forget` tries to take the same lock.
     tokio::time::sleep(Duration::from_millis(20)).await;
     tokens.forget().await.unwrap();
@@ -328,6 +330,8 @@ async fn a_read_write_accounts_read_only_token_is_cached() {
 
 /// While a read-write account's read-only token is fetched, the account's own
 /// cached token is still handed out: Graph calls do not wait for that request.
+/// The token comes at the first poll, with the read-only refresh still under
+/// way; the two seconds are only how long that refresh is sure to last.
 #[tokio::test]
 async fn the_accounts_own_token_does_not_wait_for_a_read_only_refresh() {
     let server = MockServer::start().await;
@@ -343,7 +347,8 @@ async fn the_accounts_own_token_does_not_wait_for_a_read_only_refresh() {
     while server.received_requests().await.unwrap().is_empty() {
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    let own = tokio::time::timeout(Duration::from_millis(500), tokens.access_token()).await;
+    let own = tokens.access_token().now_or_never();
+    assert!(!export.is_finished(), "the read-only refresh ended before the account's token was asked for");
     assert_eq!(own.expect("the account's cached token waits for the read-only refresh").unwrap(), "AT-RW");
     assert_eq!(export.await.unwrap().unwrap(), "AT-RO");
 }
@@ -380,4 +385,29 @@ async fn the_kept_read_only_token_is_dropped_with_the_accounts_own() {
     tokens.forget().await.unwrap();
     assert_eq!(tokens.read_only_token().await, Err(AuthError::SignedOut));
     assert_eq!(requests().await, 4);
+}
+
+/// An `invalid_grant` on a refresh of the account's own token drops the kept read-only
+/// token with it: the account is signed out, and nothing is handed out.
+#[tokio::test]
+async fn an_invalid_grant_drops_the_kept_read_only_token() {
+    let server = MockServer::start().await;
+    read_only_refresh(Duration::ZERO).mount(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("Files.ReadWrite"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error": "invalid_grant", "error_description": "expired"})))
+        .mount(&server)
+        .await;
+    let store = Arc::new(MemoryStore::with_token("RT0"));
+    let (tokens, _) = read_write_manager(&server, store.clone());
+    // The account's own token is about to expire; the read-only one is fresh.
+    tokens.seed(&TokenResponse { scope: Some("Files.ReadWrite User.Read".into()), ..response("AT-RW", 60) }).await;
+    assert_eq!(tokens.read_only_token().await.unwrap(), "AT-RO");
+    assert_eq!(tokens.read_only_token().await.unwrap(), "AT-RO", "kept");
+
+    assert_eq!(tokens.access_token().await, Err(AuthError::SignedOut));
+    assert_eq!(store.current(), None);
+    assert_eq!(tokens.read_only_token().await, Err(AuthError::SignedOut), "the kept token went with the sign-out");
+    assert_eq!(server.received_requests().await.unwrap().len(), 2);
 }
