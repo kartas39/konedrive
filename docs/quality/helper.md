@@ -34,6 +34,9 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
     back to be answered, never drop it.
   - **Correction:** `SECURITY.md:92–95` promises per-uid bounds in general and lists four; the
     general promise is the one not kept.
+- **Fixed 2026-10-04** in `d6bd569` (#138): each uid's waiting opens are counted over all its
+  connections and jobs, and past `MAX_SUSPENDED_OPENS_PER_UID` an open is answered `EAGAIN`.
+  An open is charged to the file's owner. What is still open is in `docs/limitations/F208.md`.
 
 ## HE2. Roots unbounded per uid; `root_id` not validated — **defect?**
 
@@ -66,6 +69,11 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   - **Corrections:** the steady contenders for the roots lock are the connection threads
     (`connection.rs:264`, `:316`), workers only in two cases (`events.rs:649–650`, `:722`). More
     unthrottled log lines print a peer-chosen id raw: `registration.rs:156, 250, 309`.
+- **Fixed 2026-10-04** in `d6bd569` (#138): a root id is a version 4 UUID or is refused; 32 roots for a
+  uid; the list is decided on a copy and saved outside the `roots` lock; a displaced root is
+  unmarked, and an id is not moved onto a directory that overlaps its old one; the refusals a
+  peer can cause are throttled and its paths and ids printed escaped and cut. The limits left
+  are in `docs/limitations/F208.md`.
 
 ## HE3. "Every open is answered exactly once" is held by convention
 

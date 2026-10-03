@@ -76,8 +76,8 @@ not fixed moves there.
 | [`HY8`](hydration.md) | `hydration/dehydrate.rs:220` | An error path skips the roll-back; a good local copy is lost | fixed in `6d9cdb6` |
 | [`HY7`](hydration.md) | `hydration/pin.rs:642` | A cancelled download is reported to the pool as a success | fixed in `6d9cdb6` |
 | [`HY5`](hydration.md) | `hydration/server.rs:257` | An errno the kernel cannot deliver; the opener gets `EIO`, not "gone" | fixed in `6d9cdb6` (the errno); one sub-claim refuted |
-| [`HE1`](helper.md) | `konedrive-helper/src/jobs.rs:211`, `:238` | No bound per uid on suspended opens; one user can deny every other user's opens | confirmed |
-| [`HE2`](helper.md) | `konedrive-helper/src/connection.rs:285`, `roots.rs` | Roots unbounded per uid, `root_id` unvalidated, a re-registration that leaves marks | confirmed |
+| [`HE1`](helper.md) | `konedrive-helper/src/jobs.rs:211`, `:238` | No bound per uid on suspended opens; one user can deny every other user's opens | fixed in `d6bd569` |
+| [`HE2`](helper.md) | `konedrive-helper/src/connection.rs:285`, `roots.rs` | Roots unbounded per uid, `root_id` unvalidated, a re-registration that leaves marks | fixed in `d6bd569` |
 | [`AC1`](account-config.md) | `account/sign_in.rs:13–36` | A cancelled sign-in can complete | fixed in `9cbcecf` |
 | [`RE6`](remote.md) | `remote/listing.rs:639` against `:645` | The same store failure is "blocking" or not by the line it happens on | fixed in `2cdf5dd` |
 | [`RE1`](remote.md) | `remote/materialize/rw.rs:651–669` | `copy_aside` renames a directory and does not rebase the `leaving` row's path | refuted (the `copy_aside` claim) |
