@@ -33,6 +33,9 @@
 //!   watched (the mark budget, the group cap, a filesystem id with no group).
 //!   The reader walks the folder on the same beat then, so a directory made
 //!   where no event is raised still gets its `MarkDir`.
+//! - **A thread that ends unasked** (a panic) says so in
+//!   [`WatchStatus::stopped`]; when it is the examiner, the reader is stopped
+//!   with it.
 //! - **The root's own events** stop the watcher and say so in
 //!   [`WatchStatus::root_gone`]; nothing is deleted in the cloud because the
 //!   folder went.
@@ -539,9 +542,34 @@ impl Drop for Watcher {
     }
 }
 
+/// However the examiner thread ends, the reader ends with it, since it would
+/// hand over to nobody; and an end nobody asked for (a panic in the
+/// examination) is said, as the reader's is ([`WatchStatus::stopped`]).
+struct ExaminerEnding(Arc<Shared>);
+
+impl Drop for ExaminerEnding {
+    fn drop(&mut self) {
+        let shared = &self.0;
+        // This runs while a panic unwinds. The status is read and written
+        // through a poisoned lock too; and a panic of the status hook is kept
+        // in here, since one that left this drop would abort the daemon.
+        let said = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if !shared.stopping() && !shared.status().root_gone {
+                tracing::error!("the examiner of local changes stopped unexpectedly");
+                shared.update(|s| s.stopped = true);
+            }
+        }));
+        if said.is_err() {
+            tracing::error!("the watcher's status hook panicked while the examiner was ending");
+        }
+        shared.stop();
+    }
+}
+
 /// The examiner thread: hands batches to `sink`, one examination at a time,
 /// merging whatever queued meanwhile.
 fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timing, shared: Arc<Shared>) {
+    let _ending = ExaminerEnding(Arc::clone(&shared));
     let mut pending = Batch::new();
     let mut acks: Vec<mpsc::Sender<bool>> = Vec::new();
     let mut retry_at: Option<Instant> = None;
