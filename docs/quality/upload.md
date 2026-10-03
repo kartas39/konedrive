@@ -82,6 +82,10 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   - **A fix must:** keep the bad item's id outside `reason`, so that it survives every settle and
     the examination's merge (`konedrive-tree/src/outbox/record.rs`); clear it exactly when the
     item is deleted, found gone or adopted; decide what `copy()` and `upload_as_new()` do with it.
+- **Fixed 2026-10-03** in `1bb7df2` (#137), the lost id: the bad item is kept beside the row
+  (`BadItem`, three columns of the outbox), survives every settle and the merge, and is deleted
+  only while its content tag is still the upload's. The rest of this finding (strings as control
+  state) is `B1`'s. What is left is in `docs/limitations/F200.md`.
 
 ## UP3. `kept_back::known_group` does not know the reasons the worker writes — **defect?**
 
@@ -106,6 +110,8 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   - **A fix must:** make the group follow the row's state as well as its reason; give suffixed
     reasons a key, as `refused: …` and `too-big:…` have; add a sentence for each new key in
     `app/uploadreasons.cpp` and `konedrivectl/src/text/uploads.rs`.
+- **Fixed 2026-10-03** in `1bb7df2` (#137): a blocked row is listed per file, never as waiting;
+  every reason the worker writes has a key and a sentence in both clients.
 
 ## UP4. `drain` and `settle` are the hardest functions to change safely
 
