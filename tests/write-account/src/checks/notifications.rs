@@ -1,5 +1,5 @@
 //! Graph's change notifications (issue #54): the drive's Socket.IO endpoint is opened with
-//! konedrive's own client (`konedrived::drive::socket`), one small file is written in the run
+//! konedrive's own client (`konedrive_graph::drive::socket`), one small file is written in the run
 //! folder, and the check waits for the `notification` event the daemon's live task relies on.
 //! It reports how long the event took, the Engine.IO timings the service sent, and whether the
 //! endpoint said when it expires (limitations log: without it, the daemon renews after an
@@ -7,7 +7,7 @@
 
 use std::time::{Duration, Instant, SystemTime};
 
-use konedrived::drive::socket::NotificationSocket;
+use konedrive_graph::drive::socket::NotificationSocket;
 
 use super::{show, Outcome, Run, T0};
 use Outcome::{Fail, Pass};

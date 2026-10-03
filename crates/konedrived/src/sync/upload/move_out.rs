@@ -68,8 +68,8 @@ use crate::sync::local::RECHECK;
 use crate::sync::root::SyncRoot;
 use crate::sync::source::{self, Answered, ContentSource, FillError};
 use crate::sync::{InodeKey, InodeLocks, SyncService};
-use crate::tree::outbox::{OutboxKind, OutboxRow};
-use crate::tree::{Kind, Placement, Store, Table, TreeError, TreeStore};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow};
+use konedrive_tree::{Kind, Placement, Store, Table, TreeError, TreeStore};
 
 /// A `move-out` row's marker, kept in its `snapshot`: the content was proved local, so what
 /// follows — the attributes taken off, the item deleted in OneDrive — may run. Written before the

@@ -21,15 +21,15 @@ use crate::sync::disk::Disk;
 use crate::sync::materialize::{Materializer, Scope};
 use crate::sync::root::SyncRoot;
 use crate::sync::InodeLocks;
-use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState};
-use crate::tree::{Change, Kind, Placement, Row, Store, TreeStore};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
+use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 use OutboxKind::{Create, Delete, Mkdir, Move, MoveOut, Update};
 
 const TIME: i64 = 1_700_000_000;
 
 fn qx(content: &[u8]) -> String {
-    let mut hasher = crate::quickxor::QuickXor::new();
+    let mut hasher = konedrive_graph::quickxor::QuickXor::new();
     hasher.update(content);
     hasher.finish_base64()
 }
@@ -834,7 +834,7 @@ struct Served(&'static [u8]);
 #[async_trait::async_trait]
 impl crate::sync::source::ContentSource for Served {
     async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<crate::sync::source::Fetched, crate::sync::source::SourceError> {
-        let mut hash = crate::quickxor::QuickXor::new();
+        let mut hash = konedrive_graph::quickxor::QuickXor::new();
         hash.update(self.0);
         Ok(crate::sync::source::Fetched {
             served_from: from,
@@ -929,7 +929,7 @@ fn a_row_being_sent_is_never_taken_from_under_the_worker() {
     let seq = n_create.seq;
     let commit = |fx: &Fx| {
         let answered = answered.clone();
-        fx.store.call_blocking(move |s| s.outbox_commit(seq, crate::tree::outbox::Committed::Item { row: &answered, handle: None }, None))
+        fx.store.call_blocking(move |s| s.outbox_commit(seq, konedrive_tree::outbox::Committed::Item { row: &answered, handle: None }, None))
     };
     commit(&fx).unwrap();
     assert!(commit(&fx).is_err(), "a row that is gone commits nothing");
@@ -1233,7 +1233,7 @@ fn a_folder_with_an_item_that_has_no_handle_is_unproven_not_rechecked() {
 fn w5_fixture_folder_replaced_offline_keeping_one_file() {
     use crate::sync::upload::fake::Harness;
     use crate::sync::upload::SWAP_PREFIX;
-    use crate::tree::outbox::{frees, takes};
+    use konedrive_tree::outbox::{frees, takes};
     let variants = [
         ("exports", None),
         ("Exports", None),

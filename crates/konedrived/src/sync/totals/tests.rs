@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use super::*;
-use crate::pool::{Direction, TransferPool, STILL_AFTER};
+use konedrive_graph::pool::{Direction, TransferPool, STILL_AFTER};
 use crate::sync::pin::Pins;
 
 const MIB: u64 = 1024 * 1024;
@@ -122,14 +122,14 @@ async fn the_totals_are_published_and_kept_up_to_date() {
         s.pending_count = 2;
         s.pending_bytes = MIB;
     });
-    tokio::time::sleep(crate::pool::PUBLISH_EVERY * 2).await;
+    tokio::time::sleep(konedrive_graph::pool::PUBLISH_EVERY * 2).await;
     assert_eq!((state.get().queue.up.left_count, state.get().queue.up.left_bytes), (2, MIB));
 
     let entry = transfers.start("/r/f.bin".into(), 3 * MIB);
-    tokio::time::sleep(crate::pool::PUBLISH_EVERY * 2).await;
+    tokio::time::sleep(konedrive_graph::pool::PUBLISH_EVERY * 2).await;
     assert_eq!((state.get().queue.down.left_count, state.get().queue.down.left_bytes), (1, 3 * MIB));
     drop(entry);
-    tokio::time::sleep(crate::pool::PUBLISH_EVERY * 2).await;
+    tokio::time::sleep(konedrive_graph::pool::PUBLISH_EVERY * 2).await;
     assert_eq!(state.get().queue.down, Totals::default());
     task.abort();
 }

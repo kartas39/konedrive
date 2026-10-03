@@ -9,13 +9,13 @@ use tokio::sync::{oneshot, Mutex};
 use crate::account_cache::{self, AccountInfo};
 use crate::quota::Quota;
 use crate::config::{is_valid_client_id, AccountPaths, Config, ConfigError, ConfigStore, Mode, Paths, MIGRATED_LABEL};
-use crate::graph::{GraphClient, GraphError};
-use crate::loopback::{Callback, LoopbackError, LoopbackListener};
-use crate::oauth::{grants_writes, is_read_only, scopes_for, Endpoints, OAuthClient, TokenResponse};
-use crate::pkce::{random_token, Pkce};
+use konedrive_graph::graph::{GraphClient, GraphError};
+use konedrive_graph::loopback::{Callback, LoopbackError, LoopbackListener};
+use konedrive_graph::oauth::{grants_writes, is_read_only, scopes_for, Endpoints, OAuthClient, TokenResponse};
+use konedrive_graph::pkce::{random_token, Pkce};
 use crate::secret::SecretStore;
 use crate::state::{AccountSnapshot, SignInState, StateHandle};
-use crate::token::{AuthError, TokenManager};
+use konedrive_graph::token::{AuthError, TokenManager};
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AccountError {
@@ -129,7 +129,7 @@ pub trait PendingUploads: Send + Sync {
     async fn drop_pending_uploads(&self);
     /// The account's quota was just read (`RefreshInfo`): a full OneDrive, or a file
     /// too big for what was left, is decided again by it (issue #2).
-    fn quota_read(&self, _quota: &crate::drive::DriveQuota) {}
+    fn quota_read(&self, _quota: &konedrive_graph::drive::DriveQuota) {}
 }
 
 /// Serializes sign-in commits, cancellation and sign-out against each other. `generation`
@@ -320,8 +320,8 @@ impl AccountService {
 
     /// A read-only Graph drive client for the sync side, on this account's
     /// tokens.
-    pub fn drive(&self) -> anyhow::Result<crate::drive::DriveClient> {
-        crate::drive::DriveClient::new(self.endpoints.graph.clone(), Arc::clone(&self.tokens) as Arc<dyn crate::token::TokenSource>)
+    pub fn drive(&self) -> anyhow::Result<konedrive_graph::drive::DriveClient> {
+        konedrive_graph::drive::DriveClient::new(self.endpoints.graph.clone(), Arc::clone(&self.tokens) as Arc<dyn konedrive_graph::token::TokenSource>)
     }
 
     fn graph(&self) -> GraphClient {
@@ -331,7 +331,7 @@ impl AccountService {
     /// A client asking for `mode`'s scope, for the authorization, the code exchange or a
     /// refresh.
     fn oauth_client(&self, client_id: &str, mode: Mode) -> OAuthClient {
-        OAuthClient::new(self.http.clone(), self.endpoints.clone(), client_id.to_owned()).with_scope(scopes_for(mode))
+        OAuthClient::new(self.http.clone(), self.endpoints.clone(), client_id.to_owned()).with_scope(scopes_for(mode == Mode::ReadWrite))
     }
 
     /// Every refresh asks for the scope of the mode the account runs in. A read-write account

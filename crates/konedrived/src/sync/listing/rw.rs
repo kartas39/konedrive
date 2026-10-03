@@ -32,13 +32,13 @@ use tokio::sync::OwnedMutexGuard;
 use tokio_util::sync::CancellationToken;
 
 use super::{applying, cancellable, drive_error, record, record_drive, CycleError, Commit, Fetched, Listing, Reconciled, Said, Turn};
-use crate::drive::DriveError;
+use konedrive_graph::drive::DriveError;
 use crate::sync::activity::{self, Kind as EventKind};
 use crate::sync::disk::{rescue_base, rescue_stamp, Disk};
 use crate::sync::local::Batch;
 use crate::sync::materialize::{Applied, ApplyError, Materializer, Rw, Scope};
-use crate::tree::outbox::OutboxRow;
-use crate::tree::{classify, Change};
+use konedrive_tree::outbox::OutboxRow;
+use konedrive_tree::{classify, Change};
 
 /// A read-write folder's cycle: what it shares with the folder's outbox
 /// worker and watcher.
@@ -68,7 +68,7 @@ pub struct Writes {
     /// (`Tidy::dropped`, `sync::upload::move_out`), off the runtime the
     /// reconcile's blocking task captured.
     ///
-    /// [`TreeStore::outbox_drop_removed`]: crate::tree::TreeStore::outbox_drop_removed
+    /// [`TreeStore::outbox_drop_removed`]: konedrive_tree::TreeStore::outbox_drop_removed
     pub dropped_removed: Arc<dyn Fn(Vec<OutboxRow>) + Send + Sync>,
     /// Tests only: run on the reconcile's thread after the folder was
     /// reconciled and before `staging` is swapped in — what an examination

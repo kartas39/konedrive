@@ -1386,7 +1386,7 @@ async fn a_large_file_being_opened_keeps_one_stream_and_a_pinned_one_goes_in_par
     std::fs::create_dir_all(&source).unwrap();
     // Placeholders as large as a large file (sparse, nothing on disk)...
     for name in ["opened.bin", "pinned.bin"] {
-        File::create(source.join(name)).unwrap().set_len(crate::pool::LARGE_FROM).unwrap();
+        File::create(source.join(name)).unwrap().set_len(konedrive_graph::pool::LARGE_FROM).unwrap();
     }
     let root_dir = tempfile::tempdir().unwrap();
     service.register_root_without_interception(root_dir.path()).await.unwrap();
@@ -3946,10 +3946,10 @@ mod onedrive {
 
     use super::super::*;
     use super::{persist, wait_until, Config, FakeHelper, Seen};
-    use crate::drive::{DriveClient, RetryPolicy};
+    use konedrive_graph::drive::{DriveClient, RetryPolicy};
     use crate::state::{AccountSnapshot, SignInState, StateHandle};
     use crate::sync::listing::Schedule;
-    use crate::token::{AuthError, StaticToken, TokenSource};
+    use konedrive_graph::token::{AuthError, StaticToken, TokenSource};
 
     struct World {
         server: MockServer,
@@ -4949,7 +4949,7 @@ mod onedrive {
         use crate::config::Mode;
         use wiremock::matchers::path_regex;
         let w = world().await;
-        let mut hasher = crate::quickxor::QuickXor::new();
+        let mut hasher = konedrive_graph::quickxor::QuickXor::new();
         hasher.update(b"new\n");
         Mock::given(method("POST"))
             .and(path_regex("/me/drive/items/D:/new.txt:/createUploadSession$"))
@@ -5048,7 +5048,7 @@ mod onedrive {
     /// waits to be uploaded, refused `NotUploaded`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up() {
-        use crate::tree::outbox::{Base, Detection, OutboxKind, OutboxState};
+        use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxState};
         let w = world().await;
         let service = connected(&w, true).await;
         service.register_root(w.folder.path()).await.unwrap();
@@ -5114,7 +5114,7 @@ mod onedrive {
     /// `Changes()` and `NotUploadedFiles()` through the read-only connection.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_bus_answers_while_the_store_is_held() {
-        use crate::tree::outbox::{Base, Detection, OutboxKind, OutboxState};
+        use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxState};
         let w = world().await;
         let service = connected(&w, true).await;
         service.register_root(w.folder.path()).await.unwrap();
@@ -5168,7 +5168,7 @@ mod onedrive {
     /// deletes nothing in OneDrive.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn restoring_held_deletes_brings_the_files_back_at_once() {
-        use crate::tree::outbox::{Base, Detection, OutboxKind, OutboxState};
+        use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxState};
         let w = world().await;
         let service = connected(&w, true).await;
         service.register_root(w.folder.path()).await.unwrap();
@@ -5351,7 +5351,7 @@ mod onedrive {
         use crate::config::{ConfigError, Mode};
         use wiremock::matchers::path_regex;
         let w = world().await;
-        let mut hasher = crate::quickxor::QuickXor::new();
+        let mut hasher = konedrive_graph::quickxor::QuickXor::new();
         hasher.update(b"new\n");
         Mock::given(method("POST"))
             .and(path_regex("createUploadSession$"))
@@ -5439,7 +5439,7 @@ mod onedrive {
         account.update(|s| {
             s.state = SignInState::SignedOut;
             if expired {
-                s.last_error = crate::token::SESSION_EXPIRED.into();
+                s.last_error = konedrive_graph::token::SESSION_EXPIRED.into();
             }
             s.clear_account();
         });
@@ -5620,7 +5620,7 @@ mod onedrive {
     async fn a_metered_connection_holds_the_account_back_until_it_ends() {
         use crate::account::PendingUploads;
         use crate::config::Mode;
-        use crate::pool::{Class, Size};
+        use konedrive_graph::pool::{Class, Size};
         use wiremock::matchers::path_regex;
         let w = world().await;
         Mock::given(method("POST"))

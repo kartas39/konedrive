@@ -23,14 +23,15 @@ dev-tools = []
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
-base64.workspace = true
 dirs.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 image.workspace = true
 konedrive-dbus = { path = "../konedrive-dbus" }
 konedrive-fs = { path = "../konedrive-fs" }
+konedrive-graph = { path = "../konedrive-graph" }
 konedrive-proto = { path = "../konedrive-proto" }
+konedrive-tree = { path = "../konedrive-tree" }
 libc.workspace = true
 md-5.workspace = true
 nix = { workspace = true, features = ["fs", "mount", "socket"] }
@@ -40,7 +41,6 @@ reqwest.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sha2.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["fs", "process", "signal"] }
 tokio-util.workspace = true
@@ -55,6 +55,8 @@ zbus.workspace = true
 wiremock = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Tests only: the store's test helpers (`konedrive_tree::off_runtime` and the bench's).
+konedrive-tree = { path = "../konedrive-tree", features = ["testing"] }
 tempfile.workspace = true
 # Tests only: the paused clock, which drives the 5 s spacing of `LocalBytes`
 # and the coalescing of `PropertiesChanged` without a real wait.

@@ -6,7 +6,7 @@
 //! once the folder has been quiet for [`QUIET`] (at the latest [`CEILING`]
 //! after the first event). The [`Examiner`] compares what is on disk there
 //! with the base (`items`) and records what differs as outbox rows
-//! ([`crate::tree::outbox`]); the outbox worker sends them. A
+//! ([`konedrive_tree::outbox`]); the outbox worker sends them. A
 //! [`Batch::full`] examines every directory: the Full local scan, run at
 //! bring-up, after a queue overflow, after a helper reconnect and when the
 //! ignore list shrinks.
@@ -40,7 +40,7 @@ pub use liveness::{HelperLiveness, Liveness, NoLiveness, Whereabouts};
 use konedrive_fs::handle::FileHandle;
 
 use crate::sync::disk::Disk;
-use crate::tree::Store;
+use konedrive_tree::Store;
 
 /// A batch is examined when no event came for this long (provisional).
 pub const QUIET: Duration = Duration::from_secs(2);

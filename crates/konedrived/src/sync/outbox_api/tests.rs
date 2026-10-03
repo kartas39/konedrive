@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::entries;
-use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
 
 fn row(seq: i64, state: OutboxState, reason: &str) -> OutboxRow {
     OutboxRow {

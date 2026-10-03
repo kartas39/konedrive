@@ -18,7 +18,7 @@ use nix::sys::stat::Mode;
 use nix::unistd::UnlinkatFlags;
 
 use super::root::SyncRoot;
-use crate::tree::usable_id;
+use konedrive_tree::usable_id;
 
 /// Where misplaced items wait during a reconcile.
 pub const HOLDING: &str = ".konedrive-holding";

@@ -7,7 +7,7 @@ use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{insert, rewrite, rows_for, rows_where, Base, OutboxKind, OutboxRow, OutboxState, OUTBOX_SEQ, SWAP_PREFIX};
-use crate::tree::{apply, upsert, ActivityRow, Change, Placement, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
+use crate::{apply, upsert, ActivityRow, Change, Placement, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
 
 fn gone(seq: i64) -> TreeError {
     TreeError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("outbox row {seq} is gone")))
@@ -405,9 +405,9 @@ impl TreeStore {
     /// mkdir that uploads the local object as new — in one transaction.
     pub fn outbox_orphan(&mut self, id: &str, seq: i64, amend: impl FnOnce(&mut OutboxRow), activity: Option<&ActivityRow>) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        apply(&tx, crate::tree::Source::Items, &[Change::Delete(id.to_owned())])?;
+        apply(&tx, crate::Source::Items, &[Change::Delete(id.to_owned())])?;
         let local_seq = next_local_seq(&tx)?;
-        crate::tree::reconcile::tombstone(&tx, &[id], local_seq)?;
+        crate::reconcile::tombstone(&tx, &[id], local_seq)?;
         amend_in(&tx, seq, amend)?;
         add_activity(&tx, activity)?;
         tx.commit()?;
@@ -496,7 +496,7 @@ impl TreeStore {
     }
 
     /// Rows written as they are, without merging: the bench seeds a large outbox fast.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn bench_insert(&mut self, rows: &[OutboxRow]) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         for row in rows {
@@ -507,11 +507,11 @@ impl TreeStore {
     }
 
     /// Every item of the base, for tests that seed a fake OneDrive from it.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn all_items(&self) -> Result<Vec<Row>, TreeError> {
-        let sql = format!("SELECT {} FROM items ORDER BY id", crate::tree::ROW_COLUMNS);
+        let sql = format!("SELECT {} FROM items ORDER BY id", crate::ROW_COLUMNS);
         let mut statement = self.conn.prepare(&sql)?;
-        let rows = statement.query_map([], crate::tree::row_from)?.collect::<Result<Vec<_>, _>>()?;
+        let rows = statement.query_map([], crate::row_from)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 }

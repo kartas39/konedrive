@@ -19,12 +19,12 @@ use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 use xattr::FileExt;
 
 use super::*;
-use crate::drive::RetryPolicy;
+use konedrive_graph::drive::RetryPolicy;
 use crate::sync::graph_source::GraphSource;
 use crate::sync::materialize::Rescued;
 use crate::sync::SyncSnapshot;
-use crate::token::StaticToken;
-use crate::tree::TreeStore;
+use konedrive_graph::token::StaticToken;
+use konedrive_tree::TreeStore;
 
 struct Setup {
     server: MockServer,
@@ -79,7 +79,7 @@ async fn setup_rescuing_into(rescue_dir: PathBuf) -> Setup {
     let state = SyncStateHandle::new(SyncSnapshot { root_path: folder.display().to_string(), ..SyncSnapshot::default() });
     let report = Report::new(state.clone());
     let pins = Pins::detached(state.clone());
-    crate::tree::off_runtime(|| report.activity.attach(store.clone(), &folder));
+    konedrive_tree::off_runtime(|| report.activity.attach(store.clone(), &folder));
     let helper = tempfile::tempdir().unwrap();
     let socket_path = helper.path().join("helper.sock");
     recording_helper(&socket_path);
@@ -132,7 +132,7 @@ impl Setup {
 
     /// Every event recorded so far, oldest first, as (kind, path, detail).
     fn activity(&self) -> Vec<(String, String, String)> {
-        let mut events = crate::tree::off_runtime(|| self.report.activity.recent(1000)).unwrap();
+        let mut events = konedrive_tree::off_runtime(|| self.report.activity.recent(1000)).unwrap();
         events.reverse();
         events.into_iter().map(|e| (e.kind, e.path, e.detail)).collect()
     }
@@ -229,7 +229,7 @@ impl Setup {
 
     /// Graph's metadata for F at version `ctag`, holding `content`.
     fn version(&self, ctag: &str, content: &[u8]) -> ResponseTemplate {
-        let mut hash = crate::quickxor::QuickXor::new();
+        let mut hash = konedrive_graph::quickxor::QuickXor::new();
         hash.update(content);
         ResponseTemplate::new(200).set_body_json(json!({
             "id": "F", "name": "f.txt", "size": content.len(), "cTag": ctag,
@@ -763,7 +763,7 @@ async fn the_conflict_names_the_directory_the_files_really_went_to() {
     let kept = &report.applied.rescued[0].rescued;
     assert!(kept.starts_with(&beside), "{}", kept.display());
     assert_eq!(std::fs::read(kept).unwrap(), b"mine");
-    let conflicts = crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
+    let conflicts = konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].rescued, kept.display().to_string());
     assert!(!conflicts[0].rescued.starts_with(&preferred.display().to_string()));
@@ -940,13 +940,13 @@ async fn conflict_events_are_capped_like_the_other_kinds() {
             Rescued { original: format!("docs/f{n:02}.txt").into(), rescued: at }
         })
         .collect();
-    crate::tree::off_runtime(|| record(&s.report, &s.store, &s.root.path, &Applied { rescued, ..Applied::default() }, Said::EachChange));
+    konedrive_tree::off_runtime(|| record(&s.report, &s.store, &s.root.path, &Applied { rescued, ..Applied::default() }, Said::EachChange));
 
     let folder = s.root.path.display().to_string();
     let events = s.activity();
     assert_eq!(events.iter().filter(|(kind, at, _)| kind == "conflict" && *at != folder).count(), 50);
     assert!(events.contains(&("conflict".to_owned(), folder, "and 3 more".to_owned())), "{events:?}");
-    assert_eq!(crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap().len(), 53, "every conflict is still listed");
+    assert_eq!(konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap().len(), 53, "every conflict is still listed");
 }
 
 /// A Changed pass that moves a local file out of
@@ -967,7 +967,7 @@ async fn a_rescue_made_before_a_full_hand_over_is_still_a_conflict() {
     assert!(report.full, "the Changed pass handed over to a Full one");
 
     let original = s.full("top.txt");
-    let rows = crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
+    let rows = konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
     assert_eq!(rows.iter().map(|c| c.original.as_str()).collect::<Vec<_>>(), vec![original.as_str()]);
     assert_eq!(std::fs::read(&rows[0].rescued).unwrap(), b"mine");
     assert!(s.activity().contains(&("conflict".to_owned(), original, rows[0].rescued.clone())), "{:?}", s.activity());
@@ -1027,7 +1027,7 @@ async fn a_rescue_is_a_conflict_until_its_file_is_gone() {
     let rescued = report.applied.rescued[0].rescued.display().to_string();
     let original = s.full("docs/new.txt");
 
-    let conflicts = crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
+    let conflicts = konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
     let rows: Vec<_> = conflicts.iter().map(|c| (c.original.clone(), c.rescued.clone())).collect();
     assert_eq!(rows, vec![(original.clone(), rescued.clone())]);
     assert_eq!(s.state.get().conflict_count, 1);
@@ -1042,7 +1042,7 @@ async fn a_rescue_is_a_conflict_until_its_file_is_gone() {
     s.feed(Some("L2"), json!([]), "L3").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
     assert_eq!(s.state.get().conflict_count, 0, "a conflict whose file is gone drops off by the next cycle");
-    assert!(crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap().is_empty());
+    assert!(konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap().is_empty());
 }
 
 /// `LastChecked` is when a cycle last succeeded — kept in the
@@ -1508,7 +1508,7 @@ async fn a_refused_resume_link_lists_again_from_the_start_without_duplicates() {
 
         assert!(report.full, "{refusal}");
         assert!(report.applied.rescued.is_empty(), "{refusal}: {:?}", report.applied.rescued);
-        assert!(crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap().is_empty(), "{refusal}");
+        assert!(konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap().is_empty(), "{refusal}");
         assert_eq!(tree_of(&s.root.path), ["docs", "docs/f.txt", "extra"], "{refusal}");
         assert_eq!(ino(&s.root.path.join("docs/f.txt")), placed, "{refusal}: the placeholder was found, not made again");
         let from = |t: &str| Some(t.to_owned());
@@ -1705,7 +1705,7 @@ async fn a_rescue_made_by_a_page_is_a_conflict_before_the_listing_ends() {
     let running = spawn_cycle(&s.listing(), &cancel);
     within(asked.recv()).await.unwrap();
 
-    let conflicts = crate::tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
+    let conflicts = konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
     assert_eq!(conflicts.iter().map(|c| c.original.clone()).collect::<Vec<_>>(), [s.full("docs")]);
     assert_eq!(std::fs::read(&conflicts[0].rescued).unwrap(), b"mine");
     assert!(s.activity().contains(&("conflict".to_owned(), s.full("docs"), conflicts[0].rescued.clone())), "{:?}", s.activity());

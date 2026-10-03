@@ -19,7 +19,7 @@ use konedrive_dbus::testing::TestBus;
 pub async fn start_daemon(bus: &TestBus, dir: &Path) -> konedrived::accounts::Daemon {
     let nowhere = |path: &str| url::Url::parse(&format!("http://127.0.0.1:9/{path}/")).unwrap();
     let options = konedrived::accounts::Options {
-        endpoints: konedrived::oauth::Endpoints { authority: nowhere("authority"), graph: nowhere("graph") },
+        endpoints: konedrive_graph::oauth::Endpoints { authority: nowhere("authority"), graph: nowhere("graph") },
         wallet: Arc::new(konedrived::secret::MemoryWallet::default()),
         sign_in_timeout: Duration::from_secs(5),
         baloo: konedrived::sync::baloo::Baloo::disabled,

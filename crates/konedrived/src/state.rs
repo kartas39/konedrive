@@ -137,5 +137,20 @@ impl StateHandle {
     }
 }
 
+/// What a failed token refresh does to the account's state.
+impl konedrive_graph::token::RefreshReport for StateHandle {
+    fn failed(&self, message: &str) {
+        self.update(|s| s.last_error = message.to_owned());
+    }
+
+    fn signed_out(&self, message: &str) {
+        self.update(|s| {
+            s.state = SignInState::SignedOut;
+            s.last_error = message.to_owned();
+            s.clear_account();
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests;

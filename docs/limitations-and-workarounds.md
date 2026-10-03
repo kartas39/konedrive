@@ -2838,6 +2838,22 @@ application must never read zeros where real content should be.
   the first batch after the degraded mode began was not the Full scan the test waits for
   (`assertion failed: next(&rx).is_full()`). It passed in the next run of the same tests. Not looked
   into; a timing-sensitive test under a loaded machine is the guess, not a measured cause.
+- **D23.** `konedrived/tests/sync_dbus.rs::each_property_changes_under_its_own_interface` failed
+  once in a full `cargo test --workspace` (on `refactor` before the crates were split, `TMPDIR` on
+  tmpfs): `Folder`'s `LastError`, `Path`, `Source` and `State` were announced beside the
+  properties the test expects, and it passed on the next full run. D15's test failed in the same
+  run, on tmpfs too. Seen once; not chased.
+- **D24. The tree store's test helpers are behind a feature.** `konedrive-tree`'s `off_runtime`,
+  `all_items`, `bench_sql` and `bench_insert` were `#[cfg(test)]` while the store was a module of
+  the daemon. The daemon's tests and its bench still use them, and a crate's `cfg(test)` does not
+  reach another crate, so they are built under the store's own tests or its `testing` feature,
+  which only `konedrived`'s dev-dependencies turn on. A workspace test build therefore compiles
+  the store with them; a build without tests (`cargo build`, the package) does not.
+- **D25. The token manager's tests use a stand-in for the account's state.** `konedrive-graph`
+  tells the account about a failed refresh through `token::RefreshReport`, which the daemon's
+  `StateHandle` implements. `token/tests.rs` implements it on a small state of its own, so
+  `invalid_grant_signs_out` and `locked_wallet_is_reported` check that the report is made, no
+  longer what `StateHandle` does with it (signed out, `LastError`).
 
 ---
 

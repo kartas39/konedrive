@@ -22,7 +22,7 @@ use nix::sys::stat::Mode;
 use xattr::FileExt as _;
 
 use crate::sync::disk::{open_subdir, Disk};
-use crate::tree::outbox::Inode;
+use konedrive_tree::outbox::Inode;
 
 /// `user.konedrive.sync` values (`docs/design/writes.md` §11).
 pub const SYNC_PENDING: &str = "pending";
@@ -326,7 +326,7 @@ pub fn copy_name(name: &str, machine: &str, n: u32) -> String {
         Some(dot) if dot > 0 => name.split_at(dot),
         _ => (name, ""),
     };
-    let room = crate::drive::item::NAME_MAX.saturating_sub(suffix.len() + ext.len());
+    let room = konedrive_graph::drive::item::NAME_MAX.saturating_sub(suffix.len() + ext.len());
     let mut cut = stem.len().min(room);
     while !stem.is_char_boundary(cut) {
         cut -= 1;

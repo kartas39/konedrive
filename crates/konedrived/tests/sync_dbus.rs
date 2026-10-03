@@ -35,7 +35,7 @@ use konedrive_dbus::{
     UPLOAD_QUEUE_INTERFACE_NAME,
 };
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
-use konedrived::oauth::Endpoints;
+use konedrive_graph::oauth::Endpoints;
 use konedrived::secret::MemoryWallet;
 use konedrived::state::{SignInState, StateHandle};
 use konedrived::sync::helper::HelperLink;
@@ -768,7 +768,7 @@ async fn the_folders_quota_read_is_the_accounts_quota() {
         .unwrap();
     let mut changes = properties.receive_properties_changed().await.unwrap();
 
-    f.sync.quota().read(&konedrived::drive::DriveQuota { total: 100, used: 40, remaining: Some(60), state: "nearing".into() });
+    f.sync.quota().read(&konedrive_graph::drive::DriveQuota { total: 100, used: 40, remaining: Some(60), state: "nearing".into() });
 
     assert_eq!(
         changed_on(&mut changes, konedrive_dbus::ACCOUNT_INTERFACE_NAME, Duration::from_millis(600)).await,

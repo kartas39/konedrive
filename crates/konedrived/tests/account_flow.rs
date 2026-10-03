@@ -7,10 +7,10 @@ use common::*;
 use konedrived::account::{AccountError, AccountService};
 use konedrived::account_cache::{self, AccountInfo};
 use konedrived::config::{ConfigStore, Paths};
-use konedrived::oauth::TokenResponse;
+use konedrive_graph::oauth::TokenResponse;
 use konedrived::secret::{MemoryStore, SecretStore};
 use konedrived::state::SignInState;
-use konedrived::token::SESSION_EXPIRED;
+use konedrive_graph::token::SESSION_EXPIRED;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

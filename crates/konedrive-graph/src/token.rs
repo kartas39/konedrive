@@ -5,13 +5,22 @@ use std::time::{Duration, Instant};
 
 use crate::oauth::{is_read_only, OAuthClient, OAuthError, TokenResponse, SCOPES};
 use crate::secret::{SecretError, SecretStore};
-use crate::state::{SignInState, StateHandle};
 
 /// Refresh when less than this remains.
 const REFRESH_MARGIN: Duration = Duration::from_secs(5 * 60);
 
 pub const SESSION_EXPIRED: &str = "Session expired. Sign in again.";
 pub const WALLET_LOCKED: &str = "Secret storage is locked.";
+
+/// What a refresh that fails says to the account it is for: the daemon's account state.
+pub trait RefreshReport: Send + Sync {
+    /// The refresh could not be made, and the user should know why. The account stays signed
+    /// in.
+    fn failed(&self, message: &str);
+    /// The refresh token is no longer valid: the account is signed out, and `message` says
+    /// why.
+    fn signed_out(&self, message: &str);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum AuthError {
@@ -55,7 +64,7 @@ pub type GrantedHook = Arc<dyn Fn(&'static str, &str) + Send + Sync>;
 
 pub struct TokenManager {
     secrets: Arc<dyn SecretStore>,
-    state: StateHandle,
+    state: Box<dyn RefreshReport>,
     /// `None` while no client ID is configured. Its scope is what every refresh asks for:
     /// the account's mode's (`AccountService::install_oauth`).
     oauth: std::sync::Mutex<Option<OAuthClient>>,
@@ -66,10 +75,10 @@ pub struct TokenManager {
 }
 
 impl TokenManager {
-    pub fn new(secrets: Arc<dyn SecretStore>, state: StateHandle) -> Self {
+    pub fn new(secrets: Arc<dyn SecretStore>, state: impl RefreshReport + 'static) -> Self {
         Self {
             secrets,
-            state,
+            state: Box::new(state),
             oauth: std::sync::Mutex::new(None),
             cached: tokio::sync::Mutex::new(None),
             on_granted: std::sync::Mutex::new(None),
@@ -194,7 +203,7 @@ impl TokenManager {
             Ok(Some(token)) => token,
             Ok(None) => return Err(AuthError::SignedOut),
             Err(SecretError::Locked) => {
-                self.state.update(|s| s.last_error = WALLET_LOCKED.into());
+                self.state.failed(WALLET_LOCKED);
                 return Err(AuthError::Locked);
             }
             Err(e) => return Err(AuthError::Transient(e.to_string())),
@@ -219,16 +228,12 @@ impl TokenManager {
                     tracing::warn!("cannot delete the stored refresh token after an invalid grant: {e}");
                 }
                 *cached = None;
-                self.state.update(|s| {
-                    s.state = SignInState::SignedOut;
-                    s.last_error = SESSION_EXPIRED.into();
-                    s.clear_account();
-                });
+                self.state.signed_out(SESSION_EXPIRED);
                 Err(AuthError::SignedOut)
             }
             Err(OAuthError::Rejected { error, description }) => {
                 let message = format!("Microsoft rejected the token refresh: {error}: {description}");
-                self.state.update(|s| s.last_error = message.clone());
+                self.state.failed(&message);
                 Err(AuthError::Transient(message))
             }
             Err(OAuthError::Transient(message)) => Err(AuthError::Transient(message)),

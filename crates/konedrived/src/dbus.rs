@@ -212,7 +212,7 @@ impl TokenExport {
     async fn read_only(&self) -> std::result::Result<String, ModeFault> {
         match self.service.read_only_token().await {
             Ok(token) => Ok(token),
-            Err(crate::token::AuthError::SignedOut) => Err(ModeFault::NotSignedIn("nobody is signed in".into())),
+            Err(konedrive_graph::token::AuthError::SignedOut) => Err(ModeFault::NotSignedIn("nobody is signed in".into())),
             Err(e) => Err(ModeFault::Failed(e.to_string())),
         }
     }

@@ -4,7 +4,7 @@
 //! **Order.** Rows run as the outbox's four rules allow ([`TreeStore::outbox_pick`]), in `seq`
 //! order: metadata rows (`mkdir`, `move`, `delete`) one at a time, content
 //! rows (`create`, `update`) beside them, each in a slot of the account's
-//! transfer pool (`crate::pool`), small or large alike. A row is `running` from the moment it is taken until its commit, so
+//! transfer pool (`konedrive_graph::pool`), small or large alike. A row is `running` from the moment it is taken until its commit, so
 //! an examination never merges into it; a `running` row the worker does not
 //! hold (a crash, a stop) is replayed first, as its dependencies allow.
 //!
@@ -32,8 +32,8 @@
 //! watcher and stops it with it (`sync::write_mode`); the watcher's
 //! examination wakes it whenever it records rows.
 //!
-//! [`TreeStore::outbox_pick`]: crate::tree::TreeStore::outbox_pick
-//! [`TreeStore::outbox_commit`]: crate::tree::TreeStore::outbox_commit
+//! [`TreeStore::outbox_pick`]: konedrive_tree::TreeStore::outbox_pick
+//! [`TreeStore::outbox_commit`]: konedrive_tree::TreeStore::outbox_commit
 
 mod content;
 mod engine;
@@ -62,24 +62,24 @@ pub use local::{copy_name, default_machine_name, machine_name};
 
 /// Takes `user.konedrive.sync` off the files of `rows`, which were dropped
 /// (a switch to read-only). Best effort, by name.
-pub fn clear_marks(root: &SyncRoot, rows: &[crate::tree::outbox::OutboxRow]) {
+pub fn clear_marks(root: &SyncRoot, rows: &[konedrive_tree::outbox::OutboxRow]) {
     let Ok(disk) = crate::sync::disk::Disk::open(root, false) else { return };
     for row in rows {
         local::mark(&disk, &row.rel, None);
     }
 }
 
-use crate::drive::DriveClient;
+use konedrive_graph::drive::DriveClient;
 use crate::sync::root::SyncRoot;
 use crate::sync::InodeLocks;
-use crate::tree::{ActivityRow, Store, TreeError};
+use konedrive_tree::{ActivityRow, Store, TreeError};
 
 pub(crate) use engine::Engine;
 
 /// A name the worker gives an item in OneDrive while the name it takes is
 /// still another item's (§4.4, F55 (7)); `.konedrive-*` names are never
 /// uploaded from the folder, so none can be a user's.
-pub use crate::tree::outbox::SWAP_PREFIX;
+pub use konedrive_tree::outbox::SWAP_PREFIX;
 
 /// Retries of a row that failed for a reason expected to pass: 1 s,
 /// doubling, at most an hour (§3.6; provisional). Never dropped.
@@ -105,11 +105,7 @@ pub mod reason {
     /// The local object is not where the row saw it: the examination
     /// catches up.
     pub const NOT_FOUND: &str = "not-found";
-    /// A change inside a folder no longer synced here whose item OneDrive
-    /// answers `404` for while its listing still has it (issue #104):
-    /// blocked until the listing says it is gone (the row goes) or it is
-    /// changed again.
-    pub const LEAVING_NOT_FOUND: &str = "leaving-not-found";
+    pub use konedrive_tree::outbox::LEAVING_NOT_FOUND;
     /// The file is not downloaded (WR1).
     pub const NOT_LOCAL: &str = "not-downloaded";
     /// Its size or time moved while it was being sent (§4.3).
@@ -287,7 +283,7 @@ pub struct NoHost;
 impl OutboxHost for NoHost {}
 
 /// How files are cut (provisional numbers; the tests make them small). How many
-/// run at once is the account's transfer pool's (`crate::pool`).
+/// run at once is the account's transfer pool's (`konedrive_graph::pool`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
     /// Up to this size a file goes up in one request.
@@ -298,7 +294,7 @@ pub struct Limits {
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { small_max: crate::drive::SMALL_UPLOAD_MAX, chunk: crate::drive::CHUNK_SIZE }
+        Self { small_max: konedrive_graph::drive::SMALL_UPLOAD_MAX, chunk: konedrive_graph::drive::CHUNK_SIZE }
     }
 }
 
@@ -431,9 +427,9 @@ impl OutboxCounts {
     /// The counts of the outbox whose rows are `groups` ([`TreeStore::outbox_groups`]),
     /// `full` while OneDrive is full.
     ///
-    /// [`TreeStore::outbox_groups`]: crate::tree::TreeStore::outbox_groups
-    pub fn of(groups: &[crate::tree::outbox::OutboxGroup], full: bool) -> Self {
-        use crate::tree::outbox::OutboxState;
+    /// [`TreeStore::outbox_groups`]: konedrive_tree::TreeStore::outbox_groups
+    pub fn of(groups: &[konedrive_tree::outbox::OutboxGroup], full: bool) -> Self {
+        use konedrive_tree::outbox::OutboxState;
         let mut counts = OutboxCounts::default();
         for group in groups {
             let n = u32::try_from(group.count).unwrap_or(u32::MAX);
@@ -451,7 +447,7 @@ impl OutboxCounts {
     }
 
     /// Counts `n` pending rows of `kind` and `reason`, of `bytes` in all, where they wait for space.
-    fn add_space(&mut self, kind: crate::tree::outbox::OutboxKind, reason: Option<&str>, full: bool, n: u32, bytes: u64) {
+    fn add_space(&mut self, kind: konedrive_tree::outbox::OutboxKind, reason: Option<&str>, full: bool, n: u32, bytes: u64) {
         if reason.is_some_and(|r| space::parse_too_big(r).is_some()) {
             self.too_big = self.too_big.saturating_add(n);
             self.too_big_bytes = self.too_big_bytes.saturating_add(bytes);
@@ -464,7 +460,7 @@ impl OutboxCounts {
 
 /// The counts of the outbox in `store`, `full` while OneDrive is full: one
 /// SQL sum, nothing read from the disk.
-pub fn outbox_counts(store: &crate::tree::TreeStore, full: bool) -> Result<OutboxCounts, TreeError> {
+pub fn outbox_counts(store: &konedrive_tree::TreeStore, full: bool) -> Result<OutboxCounts, TreeError> {
     Ok(OutboxCounts::of(&store.outbox_groups()?, full))
 }
 
@@ -605,7 +601,7 @@ impl OutboxWorker {
     /// The quota was read elsewhere (`RefreshInfo`, `Refresh`), into the
     /// account's quota already: *full* is decided again by it, and the
     /// waiting files that fit now go ([`space`]).
-    pub fn quota_read(&self, quota: &crate::drive::DriveQuota) {
+    pub fn quota_read(&self, quota: &konedrive_graph::drive::DriveQuota) {
         // Applied as a task of its own: it writes the rows it lets go.
         match tokio::runtime::Handle::try_current() {
             Ok(runtime) => {

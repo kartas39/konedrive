@@ -197,14 +197,14 @@ impl SyncService {
     /// Called before the sync is published, so that a read-write folder whose watcher cannot
     /// start runs that sync locked, as a read-only one (the watcher).
     #[cfg(test)]
-    pub(super) fn start_watcher(&self, root: &SyncRoot, store: &crate::tree::Store) -> Option<Watcher> {
+    pub(super) fn start_watcher(&self, root: &SyncRoot, store: &konedrive_tree::Store) -> Option<Watcher> {
         self.start_watcher_scanned(root, store, None)
     }
 
     /// [`start_watcher`](Self::start_watcher), and `scanned` is told once the watcher's first
     /// examination — the Full local scan — has been handed over, whatever came of it: the
     /// folder's first delta cycle waits for it (the bring-up order of `docs/design/writes.md` §2.2).
-    pub(super) fn start_watcher_scanned(&self, root: &SyncRoot, store: &crate::tree::Store, scanned: Option<watch::Sender<bool>>) -> Option<Watcher> {
+    pub(super) fn start_watcher_scanned(&self, root: &SyncRoot, store: &konedrive_tree::Store, scanned: Option<watch::Sender<bool>>) -> Option<Watcher> {
         if self.mode() != Mode::ReadWrite {
             return None;
         }
@@ -236,7 +236,7 @@ impl SyncService {
     /// watcher, without the lifecycle lock. Called in the critical section that publishes
     /// the sync: it spawns and returns, taking no lock. Rows a previous run left `running`
     /// are replayed first; the rest go as the watcher's examination records them.
-    pub(super) fn start_outbox(&self, root: &SyncRoot, store: &crate::tree::Store, drive: &crate::drive::DriveClient) -> Option<OutboxWorker> {
+    pub(super) fn start_outbox(&self, root: &SyncRoot, store: &konedrive_tree::Store, drive: &konedrive_graph::drive::DriveClient) -> Option<OutboxWorker> {
         if self.mode() != Mode::ReadWrite {
             return None;
         }
@@ -285,7 +285,7 @@ impl SyncService {
         // Off the reconcile's blocking task: it captured this runtime
         // before entering it, as the materializer's fills do.
         let runtime = tokio::runtime::Handle::current();
-        let dropped_removed: Arc<dyn Fn(Vec<crate::tree::outbox::OutboxRow>) + Send + Sync> = Arc::new(move |rows| {
+        let dropped_removed: Arc<dyn Fn(Vec<konedrive_tree::outbox::OutboxRow>) + Send + Sync> = Arc::new(move |rows| {
             let Some(service) = me.upgrade() else { return };
             // `HeldCount`/`PendingCount` count the drop at once, not at the
             // worker's own next wake (the outbox on the bus).
@@ -360,7 +360,7 @@ impl SyncService {
         if snapshot.mode != Mode::ReadWrite {
             return Some("the account is read-only".into());
         }
-        if !crate::oauth::grants_writes(&snapshot.granted_scopes) {
+        if !konedrive_graph::oauth::grants_writes(&snapshot.granted_scopes) {
             return Some("the account's sign-in does not allow changes".into());
         }
         match persist.store.write_standing(&persist.account) {
@@ -430,7 +430,7 @@ impl SyncService {
                 Ok(rows)
             })?;
             upload::clear_marks(&marked, &rows);
-            Ok::<_, crate::tree::TreeError>(rows)
+            Ok::<_, konedrive_tree::TreeError>(rows)
         })
         .await;
         drop(tree);
@@ -540,7 +540,7 @@ impl SyncService {
         if !tree_db.exists() {
             return Ok(0);
         }
-        let counted = tokio::task::spawn_blocking(move || crate::tree::TreeStore::open_read_only(&tree_db).and_then(|s| s.outbox_len()))
+        let counted = tokio::task::spawn_blocking(move || konedrive_tree::TreeStore::open_read_only(&tree_db).and_then(|s| s.outbox_len()))
             .await
             .map_err(|e| e.to_string())
             .and_then(|rows| rows.map_err(|e| e.to_string()));
@@ -558,12 +558,12 @@ impl SyncService {
 impl PendingUploads for SyncService {
     /// `RefreshInfo` read the quota: the outbox decides by it whether OneDrive is
     /// still full (issue #2).
-    fn quota_read(&self, quota: &crate::drive::DriveQuota) {
+    fn quota_read(&self, quota: &konedrive_graph::drive::DriveQuota) {
         self.quota_seen(quota);
     }
 
     /// How many changes wait to be uploaded — the outbox's live rows
-    /// (`crate::tree::outbox`). A switch to read-only is refused `PendingUploads` while
+    /// (`konedrive_tree::outbox`). A switch to read-only is refused `PendingUploads` while
     /// this is not 0 and the switch is not forced. The watcher hands over and has examined
     /// what it holds first (the watcher), so a change saved a moment ago counts; with no
     /// completed listing to examine it against, it cannot, and is not counted.

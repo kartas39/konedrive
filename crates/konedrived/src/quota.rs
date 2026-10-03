@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::drive::DriveQuota;
+use konedrive_graph::drive::DriveQuota;
 use crate::state::{AccountSnapshot, StateHandle};
 
 /// What a read writes beside the state: the account's cache, which keeps the quota across

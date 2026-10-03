@@ -30,8 +30,8 @@ use crate::sync::local::{IgnoreList, NoLiveness};
 use crate::sync::materialize::{Materializer, Scope};
 use crate::sync::source::LocalDir;
 use crate::sync::InodeLocks;
-use crate::tree::outbox::OutboxKind;
-use crate::tree::{Change, Kind, Placement, Row, Store, TreeStore};
+use konedrive_tree::outbox::OutboxKind;
+use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 const WAIT: Duration = Duration::from_secs(10);
 

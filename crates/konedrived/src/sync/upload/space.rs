@@ -29,10 +29,10 @@ use std::time::Duration;
 
 use super::engine::{now, Engine, Outcome};
 use super::local;
-use crate::drive::DriveQuota;
+use konedrive_graph::drive::DriveQuota;
 use crate::sync::disk::Disk;
-use crate::tree::outbox::{OutboxRow, OutboxState};
-use crate::tree::{Store, TreeError};
+use konedrive_tree::outbox::{OutboxRow, OutboxState};
+use konedrive_tree::{Store, TreeError};
 
 /// Less free space than this is none (a guess: the smallest file still goes,
 /// a real one does not).
@@ -131,7 +131,7 @@ pub(super) fn allows(row: &OutboxRow, full: bool, looked: &HashSet<i64>, removed
     if !waits(row.reason.as_deref()) && !(full && row.kind.sends_content()) {
         return Ok(true);
     }
-    Ok(row.kind == crate::tree::outbox::OutboxKind::Create && !looked.contains(&row.seq) && removed()?)
+    Ok(row.kind == konedrive_tree::outbox::OutboxKind::Create && !looked.contains(&row.seq) && removed()?)
 }
 
 /// The size a waiting row sends: its snapshot's, or the file's now.

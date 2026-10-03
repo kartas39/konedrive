@@ -16,8 +16,8 @@ use crate::sync::local::IgnoreList;
 use crate::sync::materialize::{Applied, ApplyError, Materializer, Scope};
 use crate::sync::root::SyncRoot;
 use crate::sync::InodeLocks;
-use crate::tree::outbox::{Base, Detection, OutboxKind, OutboxState};
-use crate::tree::{Change, Kind, Placement, Row, Store, Table, TreeStore};
+use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxState};
+use konedrive_tree::{Change, Kind, Placement, Row, Store, Table, TreeStore};
 
 struct Fx {
     _dir: tempfile::TempDir,
@@ -457,7 +457,7 @@ fn a_removal_that_fails_after_stopping_a_download_leaves_a_placeholder() {
 #[test]
 fn an_item_under_a_temporary_name_in_onedrive_stays_where_it_is_here() {
     let fx = Fx::new();
-    let swapped = Change::Upsert(Row { placement: Placement::Skipped(crate::tree::SkipReason::ReservedName), ..row("F", "D", ".konedrive-swap-F", Kind::File, "c1") });
+    let swapped = Change::Upsert(Row { placement: Placement::Skipped(konedrive_tree::SkipReason::ReservedName), ..row("F", "D", ".konedrive-swap-F", Kind::File, "c1") });
     fx.cycle(&[swapped], true).unwrap();
     assert_eq!(id_at(&fx.path("docs/f.txt")).as_deref(), Some("F"));
     assert_eq!(fx.base("F").unwrap().name, ".konedrive-swap-F", "the base says where it is in OneDrive");

@@ -739,7 +739,7 @@ pub(crate) struct Coalesced {
     space_waiting_count: u32,
     space_waiting_bytes: u64,
     too_big_count: u32,
-    throughput: crate::pool::Throughput,
+    throughput: konedrive_graph::pool::Throughput,
     queue: super::totals::QueueTotals,
     scan: super::local_scan::LocalScan,
 }

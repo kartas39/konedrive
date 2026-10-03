@@ -25,8 +25,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::root::SyncRoot;
 use super::running::Running;
-use crate::drive::{DriveClient, Thumbnail};
-use crate::tree::{Row, Store};
+use konedrive_graph::drive::{DriveClient, Thumbnail};
+use konedrive_tree::{Row, Store};
 
 /// The cache directories KIO consults, and the longest edge of each
 /// (`docs/kio-behavior.md` §A). `xx-large` is deliberately absent — see
@@ -137,7 +137,7 @@ impl ThumbnailFiller {
             let slot = loop {
                 tokio::select! {
                     () = cancel.cancelled() => break None,
-                    slot = self.drive.pool().acquire(crate::pool::Class::Download) => break Some(slot),
+                    slot = self.drive.pool().acquire(konedrive_graph::pool::Class::Download) => break Some(slot),
                     Some(done) = running.join_next(), if !running.is_empty() => written += usize::from(done.unwrap_or(false)),
                 }
             };
@@ -209,7 +209,7 @@ struct One {
 
 impl One {
     /// Asks Graph for the thumbnail of `row` and caches it; whether one was written.
-    async fn make(self, row: Row, rel: PathBuf, mut slot: crate::pool::Slot) -> bool {
+    async fn make(self, row: Row, rel: PathBuf, mut slot: konedrive_graph::pool::Slot) -> bool {
         let key = thumb_key(&row, &rel);
         let mut fetched = self.drive.thumbnail(&row.id, GRAPH_SIZE).await;
         if matches!(fetched, Ok(Thumbnail::Refused(reqwest::StatusCode::NOT_ACCEPTABLE))) {

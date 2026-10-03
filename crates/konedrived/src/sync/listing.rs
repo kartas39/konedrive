@@ -40,8 +40,8 @@ use super::pin::Pins;
 use super::root::SyncRoot;
 use super::source::ContentSource;
 use super::{InodeLocks, SyncStateHandle, SyncTrouble};
-use crate::drive::{DeltaFrom, DeltaNext, DriveClient, DriveError};
-use crate::tree::{classify, Change, ConflictKind, ConflictRow, Store, Table, TreeError, TreeStore};
+use konedrive_graph::drive::{DeltaFrom, DeltaNext, DriveClient, DriveError};
+use konedrive_tree::{classify, Change, ConflictKind, ConflictRow, Store, Table, TreeError, TreeStore};
 
 /// A read-write folder's cycle (`docs/design/writes.md` §9).
 mod rw;
@@ -720,7 +720,7 @@ impl Listing {
                 Ok(page) => page,
                 Err(e) if resuming && refused(&e) => {
                     tracing::info!("OneDrive would not go on with the listing ({e}); listing the drive again from the start");
-                    self.on_store(turn, |s| s.set_meta(crate::tree::LISTING_NEXT, None)).await?;
+                    self.on_store(turn, |s| s.set_meta(konedrive_tree::LISTING_NEXT, None)).await?;
                     self.ctx.state.update(|s| s.items_listed = 0);
                     return self.list_all_pages(turn, cancel).await;
                 }
@@ -1079,8 +1079,8 @@ impl Listing {
     async fn replace_through(&self, source: &Tracked, replacement: &Replacement) -> ReplaceOutcome {
         // A background download in the account's transfer pool; a large one also waits for
         // the large-file limit.
-        let size = crate::pool::Size::of(replacement.size);
-        let mut slot = self.ctx.drive.pool().acquire_sized(crate::pool::Class::Download, size).await;
+        let size = konedrive_graph::pool::Size::of(replacement.size);
+        let mut slot = self.ctx.drive.pool().acquire_sized(konedrive_graph::pool::Class::Download, size).await;
         // Opening reads the root's attribute to prove it is still this root:
         // on a blocking thread, like every open (part 1's).
         let (root, locked) = (self.ctx.root.clone(), self.ctx.locked);

@@ -26,7 +26,7 @@ use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection};
 
 use super::{circles, frees, path_value, rows_where, takes, OutboxKind, OutboxRow, OutboxState, FREES};
-use crate::tree::{Kind, TreeError, TreeStore, MAX_CHAIN};
+use crate::{Kind, TreeError, TreeStore, MAX_CHAIN};
 
 /// Due rows read at a time (a guess: large enough that a portion is one
 /// query's worth of work, small enough that a pick that finds its rows early

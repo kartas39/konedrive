@@ -45,6 +45,13 @@ mod worker;
 pub use pick::{due, Pick, Picked, PORTION};
 pub use sums::{OutboxGroup, SkippedGroup};
 
+/// The `reason` of a change inside a folder no longer synced here whose item OneDrive
+/// answers `404` for while its listing still has it (issue #104):
+/// blocked until the listing says it is gone (the row goes) or it is
+/// changed again. The one reason the store itself reads
+/// ([`TreeStore::outbox_settle_not_found`]); the others are the outbox worker's.
+pub const LEAVING_NOT_FOUND: &str = "leaving-not-found";
+
 /// A name the outbox worker gives an item in OneDrive while the name its
 /// row takes is still another item's (§4.4, F55 (7)).
 pub const SWAP_PREFIX: &str = ".konedrive-swap-";
@@ -1104,7 +1111,7 @@ impl TreeStore {
     /// (`ids`), or, `whole`, a whole listing of the drive has it — is tried
     /// again. What went, and how many are tried again.
     pub fn outbox_settle_not_found(&mut self, ids: &[String], whole: bool) -> Result<(usize, usize), TreeError> {
-        let reason = crate::sync::upload::reason::LEAVING_NOT_FOUND;
+        let reason = LEAVING_NOT_FOUND;
         let blocked: Vec<(i64, String)> = all_rows(&self.conn)?
             .into_iter()
             .filter(|r| r.state == OutboxState::Blocked && r.reason.as_deref() == Some(reason))
@@ -1421,7 +1428,7 @@ impl TreeStore {
                 }
             }
             Committed::Gone { item_id } => {
-                apply(&tx, crate::tree::Source::Items, &[Change::Delete(item_id.to_owned())])?;
+                apply(&tx, crate::Source::Items, &[Change::Delete(item_id.to_owned())])?;
                 // A delta fetched before this delete must not bring it back.
                 super::reconcile::tombstone(&tx, &[item_id], local_seq)?;
             }

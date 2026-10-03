@@ -132,14 +132,14 @@ pub struct Config {
 /// `[transfers]`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TransfersConfig {
-    /// The most requests one account's transfer pool has in flight (`crate::pool`), each
-    /// account's separately; [`crate::pool::DEFAULT_CEILING`] when missing. Clamped into
+    /// The most requests one account's transfer pool has in flight (`konedrive_graph::pool`), each
+    /// account's separately; [`konedrive_graph::pool::DEFAULT_CEILING`] when missing. Clamped into
     /// 1–256.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<i64>,
-    /// The streams of large sync transfers (files of [`crate::pool::LARGE_FROM`] and up; a
+    /// The streams of large sync transfers (files of [`konedrive_graph::pool::LARGE_FROM`] and up; a
     /// download in parts runs several) one account runs at once; a file being opened is outside
-    /// the limit and its count (issue #50). [`crate::pool::DEFAULT_LARGE`] when missing.
+    /// the limit and its count (issue #50). [`konedrive_graph::pool::DEFAULT_LARGE`] when missing.
     /// Clamped into 1…`max`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub large: Option<i64>,
@@ -147,10 +147,10 @@ pub struct TransfersConfig {
 
 impl Config {
     /// Each account's transfer pool ceiling: `[transfers] max`, clamped into
-    /// [`crate::pool::CEILING_MIN`]–[`crate::pool::CEILING_MAX`] with a warning when it is
-    /// outside, or [`crate::pool::DEFAULT_CEILING`].
+    /// [`konedrive_graph::pool::CEILING_MIN`]–[`konedrive_graph::pool::CEILING_MAX`] with a warning when it is
+    /// outside, or [`konedrive_graph::pool::DEFAULT_CEILING`].
     pub fn transfer_ceiling(&self) -> usize {
-        use crate::pool::{CEILING_MAX, CEILING_MIN, DEFAULT_CEILING};
+        use konedrive_graph::pool::{CEILING_MAX, CEILING_MIN, DEFAULT_CEILING};
         let Some(max) = self.transfers.as_ref().and_then(|t| t.max) else { return DEFAULT_CEILING };
         let clamped = max.clamp(CEILING_MIN as i64, CEILING_MAX as i64) as usize;
         if clamped as i64 != max {
@@ -162,11 +162,11 @@ impl Config {
     /// Each account's large-stream limit (the streams of large sync transfers, never an
     /// open): `[transfers] large`, clamped into 1…the ceiling
     /// ([`transfer_ceiling`](Self::transfer_ceiling)) with a warning when it is outside, or
-    /// [`crate::pool::DEFAULT_LARGE`] (never above the ceiling).
+    /// [`konedrive_graph::pool::DEFAULT_LARGE`] (never above the ceiling).
     pub fn transfer_large(&self) -> usize {
         let ceiling = self.transfer_ceiling();
         let Some(large) = self.transfers.as_ref().and_then(|t| t.large) else {
-            return crate::pool::DEFAULT_LARGE.min(ceiling);
+            return konedrive_graph::pool::DEFAULT_LARGE.min(ceiling);
         };
         let clamped = large.clamp(1, ceiling as i64) as usize;
         if clamped as i64 != large {

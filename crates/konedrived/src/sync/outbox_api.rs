@@ -21,8 +21,8 @@ use super::local::ignore::{IgnoreList, SharedIgnore};
 use super::upload::{self, OutboxHost, WorkerStatus};
 use super::{Persist, SyncError, SyncService};
 use crate::config::ConfigError;
-use crate::tree::outbox::{Inode, OutboxState};
-use crate::tree::{ActivityRow, Store};
+use konedrive_tree::outbox::{Inode, OutboxState};
+use konedrive_tree::{ActivityRow, Store};
 
 /// One row as `Changes()` lists it: (seq, kind, full path, state, bytes sent,
 /// bytes in all, reason, next try in unix seconds or 0).
@@ -47,7 +47,7 @@ impl SyncService {
     /// never behind a writer (issue #38).
     async fn read_outbox<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&mut crate::tree::TreeStore) -> Result<T, crate::tree::TreeError> + Send + 'static,
+        f: impl FnOnce(&mut konedrive_tree::TreeStore) -> Result<T, konedrive_tree::TreeError> + Send + 'static,
     ) -> Result<T, SyncError> {
         self.outbox_store()?.read(f).await.map_err(|e| SyncError::Io(e.to_string()))
     }
@@ -55,7 +55,7 @@ impl SyncService {
     /// Runs `f` on the store on a blocking thread.
     async fn with_outbox<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&mut crate::tree::TreeStore) -> Result<T, crate::tree::TreeError> + Send + 'static,
+        f: impl FnOnce(&mut konedrive_tree::TreeStore) -> Result<T, konedrive_tree::TreeError> + Send + 'static,
     ) -> Result<T, SyncError> {
         self.outbox_store()?.call(f).await.map_err(|e| SyncError::Io(e.to_string()))
     }
@@ -94,7 +94,7 @@ impl SyncService {
 
     /// A quota just read into the account's quota, here or by the account (`RefreshInfo`):
     /// the outbox decides by it, if there is one.
-    pub(super) fn quota_seen(&self, quota: &crate::drive::DriveQuota) {
+    pub(super) fn quota_seen(&self, quota: &konedrive_graph::drive::DriveQuota) {
         if !upload::space::known(quota) {
             return;
         }
@@ -276,7 +276,7 @@ const PAUSED_STATE: &str = "paused";
 /// in fragments still sending shows its bytes until it stops at the next).
 /// Otherwise, while OneDrive is `full`, a change that sends content and says
 /// nothing else says it waits for space (issue #2).
-pub(crate) fn entries(rows: Vec<crate::tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)], paused: bool, full: bool) -> Vec<OutboxEntry> {
+pub(crate) fn entries(rows: Vec<konedrive_tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)], paused: bool, full: bool) -> Vec<OutboxEntry> {
     rows
         .into_iter()
         .map(|row| {

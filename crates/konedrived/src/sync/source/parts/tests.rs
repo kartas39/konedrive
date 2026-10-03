@@ -27,7 +27,7 @@ struct Ranged {
     breaks: Option<(u64, u64, usize)>,
     delay: Duration,
     asked: Mutex<Vec<(u64, Option<u64>)>>,
-    hashes: Mutex<std::collections::HashMap<String, [u8; crate::quickxor::LEN]>>,
+    hashes: Mutex<std::collections::HashMap<String, [u8; konedrive_graph::quickxor::LEN]>>,
     in_flight: Arc<AtomicUsize>,
     peak: Arc<AtomicUsize>,
 }

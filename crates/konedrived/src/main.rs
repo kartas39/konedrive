@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use konedrived::accounts::{self, Options};
 use konedrived::config::Paths;
-use konedrived::oauth::Endpoints;
+use konedrive_graph::oauth::Endpoints;
 use konedrived::secret::SecretServiceWallet;
 use konedrived::stop;
 use konedrived::sync::{self, baloo::Baloo};

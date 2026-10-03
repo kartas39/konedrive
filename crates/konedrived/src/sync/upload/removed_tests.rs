@@ -2,7 +2,7 @@
 //! rows leave the outbox, with no retry, and nothing of it stays in OneDrive.
 
 use super::*;
-use crate::tree::outbox::{Detection, Inode};
+use konedrive_tree::outbox::{Detection, Inode};
 
 use OutboxKind::{Delete, Update};
 

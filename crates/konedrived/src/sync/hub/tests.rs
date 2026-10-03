@@ -1,5 +1,5 @@
 use super::*;
-use crate::tree::{Change, Kind, Placement, Row, Store, TreeStore};
+use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 /// An account on `hub` whose folder `dir` is registered without interception, with no
 /// helper anywhere.
@@ -75,7 +75,7 @@ async fn two_folders_on_one_filesystem_are_told_apart_by_path_then_by_item_id() 
             placement: Placement::Placed,
         };
         let store = Store::new(TreeStore::in_memory().unwrap());
-        crate::tree::off_runtime(|| store.call_blocking(move |s| s.commit_page(&[Change::Upsert(row)], "next"))).unwrap();
+        konedrive_tree::off_runtime(|| store.call_blocking(move |s| s.commit_page(&[Change::Upsert(row)], "next"))).unwrap();
         store
     };
     *a.store.lock().unwrap() = Some(store("ITEM-A"));
@@ -141,7 +141,7 @@ async fn another_accounts_item_ids_are_claimed() {
         }).await
         .unwrap();
     *a.store.lock().unwrap() = Some(store);
-    let claimed = |of: &Weak<SyncService>, id: &str| crate::tree::off_runtime(|| hub.claimed_elsewhere(of, id));
+    let claimed = |of: &Weak<SyncService>, id: &str| konedrive_tree::off_runtime(|| hub.claimed_elsewhere(of, id));
     assert!(claimed(&of_b, "ITEM-S"), "A's tree knows it");
     assert!(claimed(&of_b, "ABC123!42"), "the id names A's drive");
     assert!(!claimed(&of_b, "DEF456!42"));

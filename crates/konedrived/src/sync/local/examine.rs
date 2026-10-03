@@ -51,11 +51,11 @@ use super::ignore::IgnoreList;
 use super::liveness::{Liveness, Whereabouts};
 use super::names;
 use super::{snapshot, MASS_DELETE_FLOOR, MASS_DELETE_ITEMS, MASS_DELETE_PERCENT, RECHECK};
-use crate::drive::item::RESERVED_PREFIX;
+use konedrive_graph::drive::item::RESERVED_PREFIX;
 use crate::sync::disk::{Disk, HOLDING, NEW_PREFIX};
 use crate::sync::{InodeKey, InodeLocks};
-use crate::tree::outbox::{is_under, Base, Detection, Inode, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState};
-use crate::tree::{Kind, Located, Placement, Row, Store, Table, TreeError};
+use konedrive_tree::outbox::{is_under, Base, Detection, Inode, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState};
+use konedrive_tree::{Kind, Located, Placement, Row, Store, Table, TreeError};
 
 /// A row's reason while a writer has the file open (§4.3).
 pub const OPEN_FOR_WRITING: &str = "open-for-writing";
@@ -498,7 +498,7 @@ fn object(handle: FileHandle) -> Inode {
 }
 
 impl Run<'_, '_> {
-    fn store<T: Send + 'static>(&self, f: impl FnOnce(&mut crate::tree::TreeStore) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
+    fn store<T: Send + 'static>(&self, f: impl FnOnce(&mut konedrive_tree::TreeStore) -> Result<T, TreeError> + Send + 'static) -> Result<T, TreeError> {
         self.ex.store.call_blocking(f)
     }
 
@@ -2139,7 +2139,7 @@ fn size_and_time(file: &File) -> io::Result<(i64, i64, i64)> {
 
 /// The file's quickXorHash, base64, read once from the start.
 fn hash(file: &File) -> io::Result<String> {
-    let mut hasher = crate::quickxor::QuickXor::new();
+    let mut hasher = konedrive_graph::quickxor::QuickXor::new();
     let mut reader = file;
     let mut buffer = vec![0u8; 1 << 20];
     loop {
