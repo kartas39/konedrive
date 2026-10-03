@@ -766,9 +766,9 @@ lock that guards the registration, [sync.md](sync.md) §6.3):
 - a cycle takes the tree lock at staging and the lifecycle lock, as a reader, at the reconcile.
   Both waits end when its poller is stopped;
 - a writer of the lifecycle lock takes the tree lock only once it has stopped the folder's sync.
-  The two that do are the change of the mode and a forced drop of the outbox. The others — a
-  Forget, a bring-up, the watcher's word that the folder is gone — take no tree lock themselves,
-  but those of them that stop the sync wait for it all the same: stopping the sync waits for the
+  Only a forced drop of the outbox does. The others — a change of the mode, a Forget, a
+  bring-up, the watcher's word that the folder is gone — take no tree lock themselves, but
+  those of them that stop the sync wait for it all the same: stopping the sync waits for the
   watcher's examination under way, which holds the tree lock. So a stop ends the cycle first,
   then the outbox worker, then the watcher.
 
