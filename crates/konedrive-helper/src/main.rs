@@ -32,6 +32,7 @@ fn main() -> anyhow::Result<()> {
     let shared = Arc::new(Shared {
         marks: marks::Marks::new()?,
         roots: Mutex::new(load_roots()),
+        roots_saving: Mutex::new(()),
         jobs: Mutex::new(jobs::Jobs::default()),
         daemons: Mutex::new(Registry::default()),
         daemon_arrived: Condvar::new(),
@@ -73,7 +74,7 @@ fn main() -> anyhow::Result<()> {
     // boot rather than whatever order the map iterated in.
     let mut registered: Vec<roots::Root> = lock(&shared.roots).iter().cloned().collect();
     registered.sort_by(|a, b| a.root_id.cmp(&b.root_id));
-    let mut covered: Vec<roots::Root> = Vec::new();
+    let mut covered = roots::Roots::default();
     for root in &registered {
         if let Some(conflict) = overlap_with(&covered, root) {
             // The checks that ran at registration are re-run
@@ -92,7 +93,7 @@ fn main() -> anyhow::Result<()> {
             continue;
         }
         if cover_root(&shared, root) {
-            covered.push(root.clone());
+            covered.insert(root.clone());
         }
     }
 
@@ -123,12 +124,8 @@ fn load_roots() -> roots::Roots {
 /// nesting rule (`docs/design/hydration.md` §11) applies at every boot, not
 /// only at registration, because what a stored path leads to can change in
 /// between.
-fn overlap_with(covered: &[roots::Root], root: &roots::Root) -> Option<String> {
-    let mut seen = roots::Roots::default();
-    for other in covered {
-        seen.insert(other.clone());
-    }
-    seen.nesting_conflict(&root.path, root.dev, root.ino).map(|conflict| match conflict {
+fn overlap_with(covered: &roots::Roots, root: &roots::Root) -> Option<String> {
+    covered.nesting_conflict(&root.path, root.dev, root.ino).map(|conflict| match conflict {
         roots::Nesting::Inside(id) | roots::Nesting::Contains(id) | roots::Nesting::SameDirectory(id) => id,
     })
 }

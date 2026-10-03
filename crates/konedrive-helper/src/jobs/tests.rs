@@ -346,3 +346,108 @@ fn another_uids_hydration_of_the_same_inode_is_not_joined() {
     assert_eq!(enrollment.evicted.len(), 2, "both stranded openers come back to be answered");
     assert_eq!(jobs.finish(2, after).unwrap().waiters.len(), 1);
 }
+
+/// What `packaging/systemd/konedrive-helper.service` gives the helper:
+/// `LimitNOFILE=65536`.
+const HELPER_DESCRIPTORS: usize = 65536;
+
+/// Lets this test process hold `wanted` descriptors at once, where its hard
+/// limit allows it.
+fn allow_descriptors(wanted: u64) {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `limit` is a live, correctly sized `rlimit` for both calls.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+        if limit.rlim_cur < wanted {
+            limit.rlim_cur = wanted.min(limit.rlim_max);
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
+        }
+    }
+    assert!(limit.rlim_cur >= wanted, "this test needs {wanted} descriptors; the hard limit is lower");
+}
+
+/// One user must not be able to take every descriptor the helper has. Each
+/// suspended open is an event fd kept in its job until the daemon answers,
+/// and a daemon is free never to answer: the user's own program can connect,
+/// register a folder of its own, take the requests and say nothing, while its
+/// threads open placeholders in that folder. Once the helper is out of
+/// descriptors the kernel denies every other user's intercepted open `EPERM`
+/// and the helper denies the rest `EIO`
+/// (`docs/kernel-behavior-7.2/suite.md`, "A real `EMFILE` does not end the
+/// helper").
+///
+/// It raises the process's descriptor limit, to offer as many opens as the
+/// unit has descriptors; what the job table keeps of them is the bound.
+#[test]
+fn one_uid_cannot_take_every_descriptor_the_helper_has() {
+    allow_descriptors(HELPER_DESCRIPTORS as u64 + 1024);
+    let mut jobs = Jobs::default();
+    let silent = owner(1000, 1);
+    let event = fd();
+    let mut refused = 0;
+    for ino in 0..HELPER_DESCRIPTORS as u64 {
+        let opener = event.try_clone().expect("the test process has descriptors left");
+        // Whatever comes back — a request to send, an opener refused — is
+        // closed here; what the job table keeps is what counts.
+        let enrollment = jobs.enroll((42, ino), silent, opener, 0);
+        if enrollment.outcome == Enrolled::TooMany {
+            assert_eq!(enrollment.evicted.len(), 1, "a refused opener comes back to be answered");
+            assert!(enrollment.dispatch.is_none());
+            refused += 1;
+        }
+    }
+    let held: usize = jobs.jobs.values().map(|job| job.waiters.len()).sum();
+    assert!(
+        held < HELPER_DESCRIPTORS,
+        "uid 1000, whose daemon answered nothing, holds {held} suspended opens: every one of the \
+         {HELPER_DESCRIPTORS} descriptors the unit allows the helper, and nobody was refused"
+    );
+    assert_eq!(held, MAX_SUSPENDED_OPENS_PER_UID, "the bound, and not one more");
+    assert_eq!(refused, HELPER_DESCRIPTORS - MAX_SUSPENDED_OPENS_PER_UID);
+    // The burst of 3 000 opens has room twice over.
+    const { assert!(MAX_SUSPENDED_OPENS_PER_UID >= 2 * 3000) };
+
+    // Another of the uid's connections spends the same budget; another uid
+    // has its own.
+    assert_eq!(jobs.enroll((42, 1 << 40), owner(1000, 2), fd(), 0).outcome, Enrolled::TooMany);
+    assert!(matches!(
+        jobs.enroll((42, 1 << 40), owner(1001, 3), fd(), 0).outcome,
+        Enrolled::New { .. }
+    ));
+}
+
+/// The bound counts descriptors, not hydrations: an opener that joins a job
+/// is one more, the count goes down by every opener that leaves a job to be
+/// answered, and a uid at its bound is refused a join too — with nothing
+/// else changed, and its descriptor handed back.
+#[test]
+fn every_suspended_open_counts_against_its_uid_until_it_is_answered() {
+    let mut jobs = Jobs::default();
+    let a = owner(1000, 1);
+    let Enrolled::New { req_id } = jobs.enroll((42, 7), a, fd(), 0).outcome else {
+        panic!("expected a new job")
+    };
+    let _ = jobs.enroll((42, 7), a, fd(), 0);
+    let _ = jobs.enroll((42, 8), owner(1000, 2), fd(), 0);
+    assert_eq!(jobs.suspended_for(1000), 3, "two on one job, one on another connection's");
+    assert_eq!(jobs.suspended_for(1001), 0);
+
+    jobs.suspended.insert(1000, MAX_SUSPENDED_OPENS_PER_UID);
+    let joining = jobs.enroll((42, 7), a, fd(), 0);
+    assert_eq!(joining.outcome, Enrolled::TooMany, "a join is a descriptor like any other");
+    assert_eq!(joining.evicted.len(), 1);
+    assert_eq!(jobs.in_flight(), 2, "and nothing else changed");
+    jobs.suspended.insert(1000, 3);
+
+    assert_eq!(jobs.finish(req_id, a).unwrap().waiters.len(), 2);
+    assert_eq!(jobs.suspended_for(1000), 1);
+    // The file changes owner while connection 2 fills it: its waiter is
+    // handed back, and is no longer counted against uid 1000.
+    let taken_over = jobs.enroll((42, 8), owner(1001, 3), fd(), 0);
+    assert_eq!(taken_over.evicted.len(), 1);
+    assert_eq!(jobs.suspended_for(1000), 0);
+    assert_eq!(jobs.suspended_for(1001), 1);
+    assert_eq!(jobs.retire(3).len(), 1);
+    assert_eq!(jobs.suspended_for(1001), 0, "a connection that ends takes its openers with it");
+}
+

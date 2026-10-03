@@ -284,6 +284,13 @@ impl Registry {
 pub(crate) struct Shared {
     pub(crate) marks: marks::Marks,
     pub(crate) roots: Mutex<roots::Roots>,
+    /// Held by a registration or an unregistration from its decision until
+    /// the registrations it decided on are saved and in `roots`, so that the
+    /// save itself — two `fsync`s — runs without `roots`, which every
+    /// connection thread and some workers take. Always taken before `roots`,
+    /// never while holding it, and by nothing else: the one place in the
+    /// helper where a second lock is taken under a first.
+    pub(crate) roots_saving: Mutex<()>,
     pub(crate) jobs: Mutex<jobs::Jobs>,
     /// Every live connection, by uid.
     pub(crate) daemons: Mutex<Registry>,
@@ -536,10 +543,17 @@ pub(crate) enum Refusal {
     /// that is running (`ETXTBSY`), and whatever else `dentry_open` can
     /// refuse `O_RDWR` for.
     EventFdFailed,
+    /// An open for a uid that already has
+    /// [`jobs::MAX_SUSPENDED_OPENS_PER_UID`] waiting for its daemon to
+    /// answer (`EAGAIN`).
+    TooManySuspended,
+    /// A `RegisterRoot` or an `UnregisterRoot` that was refused — which any
+    /// local process can send as fast as it likes.
+    RootRefused,
 }
 
 impl Refusal {
-    const ALL: [Refusal; 9] = [
+    const ALL: [Refusal; 11] = [
         Refusal::PoolFull,
         Refusal::NoRoot,
         Refusal::TooManyWaiters,
@@ -549,6 +563,8 @@ impl Refusal {
         Refusal::TooManyConnections,
         Refusal::Unopenable,
         Refusal::EventFdFailed,
+        Refusal::TooManySuspended,
+        Refusal::RootRefused,
     ];
 
     /// What a line says when the occurrences it counts are not in front of
@@ -592,6 +608,14 @@ impl Refusal {
                 "{EVENT_FD_FAILED} — an open through a read-only mount, or of an executable that \
                  is running, most likely"
             ),
+            Refusal::TooManySuspended => format!(
+                "opens for a uid that already has {} opens waiting for its daemon to answer; \
+                 denied EAGAIN",
+                jobs::MAX_SUSPENDED_OPENS_PER_UID
+            ),
+            Refusal::RootRefused => {
+                "requests to register or unregister a root that were refused".into()
+            }
         }
     }
 }

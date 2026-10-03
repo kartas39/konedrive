@@ -117,9 +117,9 @@ fn a_root_may_not_nest_in_or_contain_another() {
     );
 
     // Re-announcing an existing root is still allowed, but only by
-    // lifting the previous entry out first — the check itself no longer
-    // trusts a matching id.
-    let previous = roots.take("a").expect("the entry is there");
+    // lifting the previous entry out first, as `with` does — the check
+    // itself no longer trusts a matching id.
+    let previous = roots.remove_owned(1000, "a").expect("the entry is there");
     assert_eq!(roots.nesting_conflict("/home/u/OneDrive", 42, 7), None);
     roots.insert(previous);
     assert_eq!(roots.iter().count(), 1);
@@ -187,4 +187,90 @@ fn has_root_for_is_per_user() {
     roots.insert(root(1000, 42, 7));
     assert!(roots.has_root_for(1000));
     assert!(!roots.has_root_for(1001));
+}
+
+/// A root id as the daemon mints them, different for each `n`.
+fn id(n: u32) -> String {
+    format!("{n:08x}-0000-4000-8000-000000000000")
+}
+
+fn registered(uid: u32, ino: u64) -> Root {
+    Root { uid, dev: 42, ino, path: format!("/home/u{uid}/folder{ino}"), root_id: id(ino as u32) }
+}
+
+/// `root_id` is whatever string a peer sends, up to a whole datagram, and it
+/// is stored in `roots.json` and written to the log: only the form the
+/// daemon mints is registered.
+#[test]
+fn a_root_is_registered_only_under_a_root_id() {
+    let roots = Roots::default();
+    for bad in ["", "measure-root", "x".repeat(60_000).as_str(), "1c2e4f5a-0b3c-1d5e-8f60-71829a3b4c5d"] {
+        let root = Root { root_id: bad.to_owned(), ..registered(1000, 7) };
+        assert_eq!(roots.with(root).unwrap_err(), Refused::NotAnId, "{:?}", shown_id(bad));
+    }
+    let accepted = roots.with(registered(1000, 7)).expect("a root id is taken");
+    assert_eq!(accepted.roots.owner_of(&id(7)), Some(1000));
+    assert!(accepted.displaced.is_none());
+    assert_eq!(roots.iter().count(), 0, "the registrations decided on are left as they were");
+}
+
+/// One uid cannot grow the helper's list without end, and its bound is its
+/// own: a root it already holds is still registered again, and another
+/// user is not refused for it.
+#[test]
+fn a_uid_holds_a_bounded_number_of_roots() {
+    let mut roots = Roots::default();
+    for ino in 0..MAX_ROOTS_PER_UID as u64 {
+        roots = roots.with(registered(1000, ino)).expect("within the bound").roots;
+    }
+    assert_eq!(roots.held_by(1000), MAX_ROOTS_PER_UID);
+    let one_more = roots.with(registered(1000, 500)).unwrap_err();
+    assert_eq!(one_more, Refused::TooMany);
+    assert_eq!(one_more.errno(), libc::EDQUOT);
+
+    let again = roots.with(registered(1000, 3)).expect("a root already held is announced again");
+    assert_eq!(again.roots.held_by(1000), MAX_ROOTS_PER_UID);
+    assert!(roots.with(registered(1001, 600)).is_ok(), "another user has a bound of its own");
+}
+
+/// An id registered again comes back with the entry it replaces, so that
+/// the caller can unmark the old directory when it is another one; another
+/// user's id is refused, and so is an overlap with any other root.
+#[test]
+fn registering_an_id_again_hands_back_the_entry_it_replaces() {
+    let roots = Roots::default().with(registered(1000, 7)).unwrap().roots;
+
+    let moved = Root { ino: 8, path: "/home/u1000/copy".into(), ..registered(1000, 7) };
+    let accepted = roots.with(moved).expect("the user's own id, on another directory");
+    let displaced = accepted.displaced.expect("the old entry");
+    assert_eq!((displaced.ino, displaced.path.as_str()), (7, "/home/u1000/folder7"));
+    assert_eq!(accepted.roots.iter().count(), 1);
+    assert_eq!(accepted.roots.iter().next().unwrap().ino, 8);
+
+    let same = roots.with(registered(1000, 7)).unwrap();
+    assert_eq!(same.displaced.map(|old| old.ino), Some(7), "the same directory: nothing to unmark");
+
+    let stolen = Root { uid: 1001, ..registered(1000, 7) };
+    assert_eq!(roots.with(stolen).unwrap_err(), Refused::AnotherUsers);
+    let nested = Root { path: "/home/u1000/folder7/sub".into(), ..registered(1000, 9) };
+    assert_eq!(roots.with(nested).unwrap_err(), Refused::Overlap(Nesting::Inside(id(7))));
+}
+
+/// A root registered before the form of its id was checked is still the
+/// user's to unregister, and nobody else's; and what the log says of such an
+/// id is short and escaped.
+#[test]
+fn a_root_with_an_older_id_can_still_be_unregistered() {
+    let mut roots = Roots::default();
+    roots.insert(Root { root_id: "measure-root".into(), ..registered(1000, 7) });
+    assert!(roots.without(1001, "measure-root").is_none(), "not another user's to remove");
+    let (left, removed) = roots.without(1000, "measure-root").expect("its owner's to remove");
+    assert_eq!(removed.ino, 7);
+    assert_eq!(left.iter().count(), 0);
+    assert_eq!(roots.iter().count(), 1, "the registrations decided on are left as they were");
+
+    assert_eq!(shown_id(&id(7)), id(7));
+    assert_eq!(shown_id("a\nb"), "\"a\\nb\"");
+    let long = shown_id(&"x".repeat(60_000));
+    assert!(long.len() < 80 && long.ends_with("(60000 bytes)"), "{long}");
 }

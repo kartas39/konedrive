@@ -128,7 +128,7 @@ pub(crate) fn measure_mode(helper_binary: &Path, dirs: usize, files: usize) -> i
     // Through `HelperLink` directly, as the DT_UNKNOWN scenario does:
     // `root::register_root` refuses a folder that is not empty,
     // and a tree that already exists is the whole point of timing the walk.
-    let root_id = "measure-root";
+    let root_id = "0e1d2c3b-4a59-4687-9675-6d6561737572";
     let root_handle = match File::open(&root) {
         Ok(handle) => handle,
         Err(e) => {

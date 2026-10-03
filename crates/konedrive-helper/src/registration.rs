@@ -10,7 +10,23 @@ use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 
 use konedrive_helper::jobs::Owner;
 
-use crate::shared::{lock, Shared, ROOTS_FILE};
+use crate::shared::{lock, Refusal, Shared, ROOTS_FILE};
+
+/// How many of a walk's failures are written out, one line each. A tree can
+/// hold as many directories that cannot be covered as its owner likes; the
+/// rest are counted in one line.
+const FAILURES_SHOWN: usize = 16;
+
+/// Writes a walk's failures: the first [`FAILURES_SHOWN`], and how many more
+/// there are.
+fn log_failures(failures: &[impl std::fmt::Display]) {
+    for failure in failures.iter().take(FAILURES_SHOWN) {
+        tracing::error!("  {failure}");
+    }
+    if failures.len() > FAILURES_SHOWN {
+        tracing::error!("  and {} more", failures.len() - FAILURES_SHOWN);
+    }
+}
 
 /// Opens an absolute path one component at a time, from a held `/`
 /// descriptor, refusing to resolve through anything that is not a real
@@ -119,9 +135,7 @@ pub(crate) fn record_walk(shared: &Shared, root: &roots::Root, report: marks::Wa
         report.marked,
         report.failures.len()
     );
-    for failure in &report.failures {
-        tracing::error!("  {failure}");
-    }
+    log_failures(&report.failures);
     lock(&shared.degraded_roots).insert(root.root_id.clone());
 }
 
@@ -144,41 +158,52 @@ pub(crate) fn errno_of(e: &io::Error) -> i32 {
 /// dehydration that never sent a `ClearIgnore` into a file that reads zeros
 /// once the folder is registered again (see `marks::walk_and_unmark`).
 ///
-/// The state file is written before anything is unmarked, and the entry goes
-/// back if that write fails: a restart between the two would re-walk the root
-/// and put the marks back, which is a correct, recoverable state. The reverse
-/// order — unmark, then fail to save — would leave a root that is registered,
-/// walked at every startup, and unmarked in between.
+/// The state file is written before anything is unmarked, and the entry
+/// leaves the helper's own list only once that write has succeeded: a restart
+/// between the two would re-walk the root and put the marks back, which is a
+/// correct, recoverable state. The reverse order — unmark, then fail to save
+/// — would leave a root that is registered, walked at every startup, and
+/// unmarked in between.
+///
+/// The write is not made under the roots lock (see [`Shared::roots_saving`]).
 pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> i32 {
     let root = {
-        let mut roots = lock(&shared.roots);
-        let Some(root) = roots.remove_owned(uid, root_id) else {
-            tracing::warn!("uid {uid} tried to unregister root {root_id}, which is not theirs");
+        let _saving = lock(&shared.roots_saving);
+        let removed = lock(&shared.roots).without(uid, root_id);
+        let Some((next, root)) = removed else {
+            // Throttled, and the id not as it came: any local user can send
+            // this as fast as it likes, with any 64 KiB it likes for an id.
+            shared.refusals.report(Refusal::RootRefused, || {
+                format!(
+                    "uid {uid} tried to unregister root {}, which is not theirs",
+                    roots::shown_id(root_id)
+                )
+            });
             return libc::EPERM;
         };
-        if let Err(e) = roots.save(Path::new(ROOTS_FILE)) {
+        if let Err(e) = next.save(Path::new(ROOTS_FILE)) {
             tracing::error!("cannot save {ROOTS_FILE}: {e}");
-            roots.insert(root);
             return errno_of(&e);
         }
+        *lock(&shared.roots) = next;
         root
     };
 
     // Outside the roots lock: the walk opens and marks its way through a whole
     // tree, and every other thread that wants to know whether a uid has a root
     // would be waiting behind it.
-    //
-    // Counted on both sides of the walk (second guard; see
-    // `mark_while_hydrated`): whatever a worker or a finishing hydration read
-    // before the walk ended, it does not mark behind it.
-    shared.unregistrations.bump(root.uid);
-    uncover_root(shared, &root);
-    shared.unregistrations.bump(root.uid);
+    uncover_root(shared, &root, "unregistered");
     lock(&shared.degraded_roots).remove(&root.root_id);
     0
 }
 
-/// Takes the marks off a tree whose registration has just been removed.
+/// Takes the marks off a tree whose registration has just gone: `how` says
+/// which way, for the log — unregistered, or displaced by a registration of
+/// the same id onto another directory.
+///
+/// Counted on both sides of the walk (second guard; see
+/// `mark_while_hydrated`): whatever a worker or a finishing hydration read
+/// before the walk ended, it does not mark behind it.
 ///
 /// Failures here are logged and not returned: the registration *is* gone, the
 /// state file already says so, and answering the daemon `EIO` would only
@@ -186,15 +211,21 @@ pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> i32 {
 /// it no longer owns. What matters is that the condition is named, because a
 /// tree left marked without a registration is one where every placeholder open
 /// is denied.
-fn uncover_root(shared: &Shared, root: &roots::Root) {
+fn uncover_root(shared: &Shared, root: &roots::Root, how: &str) {
+    shared.unregistrations.bump(root.uid);
+    unmark_tree(shared, root, how);
+    shared.unregistrations.bump(root.uid);
+}
+
+fn unmark_tree(shared: &Shared, root: &roots::Root, how: &str) {
+    let id = roots::shown_id(&root.root_id);
     let dir = match open_root(root) {
         Ok(dir) => dir,
         Err(e) => {
             tracing::error!(
-                "root {} ({}) was unregistered, but it could not be re-opened to remove its marks \
+                "root {id} ({}) was {how}, but it could not be re-opened to remove its marks \
                  ({e}); if the directory is still there and still marked, opens inside it are \
                  still intercepted and will be denied EIO",
-                root.root_id,
                 root.path
             );
             return;
@@ -202,40 +233,63 @@ fn uncover_root(shared: &Shared, root: &roots::Root) {
     };
     let report = marks::walk_and_unmark(&shared.marks, dir.as_fd(), &root.path);
     if !report.degraded() {
-        tracing::info!(
-            "root {} ({}) unregistered; unmarked {} directories",
-            root.root_id,
-            root.path,
-            report.marked
-        );
+        tracing::info!("root {id} ({}) {how}; unmarked {} directories", root.path, report.marked);
         return;
     }
     tracing::error!(
-        "root {} ({}) was unregistered but {} of its marks could not be removed ({} directories \
-         were unmarked); opens in a directory that kept its mark are still intercepted and will \
-         be denied EIO, and a file that kept its ignore mark must not be dehydrated without a \
+        "root {id} ({}) was {how} but {} of its marks could not be removed ({} directories were \
+         unmarked); opens in a directory that kept its mark are still intercepted and will be \
+         denied EIO, and a file that kept its ignore mark must not be dehydrated without a \
          ClearIgnore",
-        root.root_id,
         root.path,
         report.failures.len(),
         report.marked
     );
-    for failure in &report.failures {
-        tracing::error!("  {failure}");
-    }
+    log_failures(&report.failures);
 }
 
-/// The directory must be owned by the peer, live on a
-/// filesystem that can host placeholders, and neither contain nor sit inside
-/// another registered root. Only then is it stored, marked, and walked.
+/// Says that a registration was refused, and returns the errno it is
+/// answered. Throttled: every refusal is a request any local user can send
+/// as fast as it likes.
+fn refuse(shared: &Shared, uid: u32, refused: &roots::Refused, root_id: &str, path: &str) -> i32 {
+    shared.refusals.report(Refusal::RootRefused, || match refused {
+        roots::Refused::NotAnId => format!(
+            "uid {uid} tried to register a root under {}, which is not a root id",
+            roots::shown_id(root_id)
+        ),
+        roots::Refused::AnotherUsers => {
+            format!("uid {uid} tried to register root id {root_id}, which belongs to another user")
+        }
+        roots::Refused::Overlap(conflict) => format!("{path} cannot be registered: {conflict:?}"),
+        roots::Refused::TooMany => format!(
+            "uid {uid} already holds {} roots; refusing another",
+            roots::MAX_ROOTS_PER_UID
+        ),
+    });
+    refused.errno()
+}
+
+/// The id must be a root id, and the directory must be owned by the peer,
+/// live on a filesystem that can host placeholders, and neither contain nor
+/// sit inside another registered root; and the peer must hold fewer than
+/// [`roots::MAX_ROOTS_PER_UID`] roots, or this one already. Only then is it
+/// stored, marked, and walked.
 pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir: File) -> i32 {
     let uid = owner.uid;
+    // Before anything else, and before the id is stored, compared or written
+    // to the log: it is whatever string the peer sent, up to a whole
+    // datagram of it.
+    if !konedrive_proto::is_root_id(&root_id) {
+        return refuse(shared, uid, &roots::Refused::NotAnId, &root_id, "");
+    }
     let meta = match dir.metadata() {
         Ok(meta) => meta,
         Err(e) => return errno_of(&e),
     };
     if !meta.is_dir() || meta.uid() != uid {
-        tracing::warn!("uid {uid} offered a root it does not own, or that is not a directory");
+        shared.refusals.report(Refusal::RootRefused, || {
+            format!("uid {uid} offered a root it does not own, or that is not a directory")
+        });
         return libc::EPERM;
     }
 
@@ -245,12 +299,19 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     // another user's registration by reusing its id — and the victim's tree
     // would then go unwalked at the next restart, which is the "serve zeros"
     // outcome this whole component exists to prevent.
-    let previous_owner = lock(&shared.roots).owner_of(&root_id);
+    //
+    // And a uid that already holds every root it may is refused here, before
+    // the directory is resolved and probed for it. Both are asked again by
+    // the decision below, which is the one that counts.
+    let (previous_owner, held) = {
+        let roots = lock(&shared.roots);
+        (roots.owner_of(&root_id), roots.held_by(uid))
+    };
     if previous_owner.is_some_and(|other| other != uid) {
-        tracing::warn!(
-            "uid {uid} tried to register root id {root_id}, which belongs to another user"
-        );
-        return libc::EPERM;
+        return refuse(shared, uid, &roots::Refused::AnotherUsers, &root_id, "");
+    }
+    if previous_owner.is_none() && held >= roots::MAX_ROOTS_PER_UID {
+        return refuse(shared, uid, &roots::Refused::TooMany, &root_id, "");
     }
 
     let path = match resolve_root_path(&dir, meta.dev(), meta.ino()) {
@@ -298,40 +359,42 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     }
 
     let root = roots::Root { uid, dev: meta.dev(), ino: meta.ino(), path, root_id };
-    {
-        let mut roots = lock(&shared.roots);
-        // Asked again under the lock that will do the inserting. The check
-        // above ran before `resolve_root_path` and the filesystem checks, all
-        // of which do I/O the lock must not be held across — and in that gap
-        // another connection could have claimed this id. Re-asking here is
-        // what makes the refusal airtight rather than merely likely.
-        if roots.owner_of(&root.root_id).is_some_and(|other| other != uid) {
-            tracing::warn!(
-                "uid {uid} tried to register root id {}, which belongs to another user",
-                root.root_id
-            );
-            return libc::EPERM;
-        }
-        // Our own previous entry is lifted out so the nesting check does not
-        // report this root as overlapping itself; every *other* root is now
-        // compared, whatever id it carries.
-        let displaced = roots.take(&root.root_id);
-        if let Some(conflict) = roots.nesting_conflict(&root.path, root.dev, root.ino) {
-            tracing::warn!("{} cannot be registered: {conflict:?}", root.path);
-            if let Some(previous) = displaced {
-                roots.insert(previous);
-            }
-            return libc::EINVAL;
-        }
-        roots.insert(root.clone());
-        if let Err(e) = roots.save(Path::new(ROOTS_FILE)) {
+    let displaced = {
+        let _saving = lock(&shared.roots_saving);
+        // Decided on the registrations as they are now. The checks above ran
+        // before `resolve_root_path` and the filesystem checks, all of which
+        // do I/O no lock is held across — and in that gap another connection
+        // could have claimed this id, or taken the user's last free place.
+        // Asking here, with `roots_saving` held so that nothing is registered
+        // or unregistered until this is saved and in place, is what makes a
+        // refusal airtight rather than merely likely.
+        let decided = lock(&shared.roots).with(root.clone());
+        let roots::Accepted { roots: next, displaced } = match decided {
+            Ok(accepted) => accepted,
+            Err(refused) => return refuse(shared, uid, &refused, &root.root_id, &root.path),
+        };
+        // Saved before it is in place, and not under the roots lock: nobody
+        // sees a registration that is not on disk, and a save that fails
+        // leaves nothing to put back.
+        if let Err(e) = next.save(Path::new(ROOTS_FILE)) {
             tracing::error!("cannot save {ROOTS_FILE}: {e}");
-            let _ = roots.remove_owned(uid, &root.root_id);
-            if let Some(previous) = displaced {
-                roots.insert(previous);
-            }
             return errno_of(&e);
         }
+        *lock(&shared.roots) = next;
+        displaced
+    };
+
+    // The id was the user's already, on another directory: a folder replaced
+    // at its path by a copy that kept its attributes, or the copy registered
+    // beside it. The entry of the old directory is gone, so its tree is
+    // unmarked as an unregistration would — left marked, its placeholders are
+    // intercepted for a daemon that no longer knows them. Before the walk
+    // below, because the two trees may overlap (only *other* roots were
+    // compared), and what this takes off the new one the walk puts back. The
+    // same directory announced again is not unwalked: its marks are the ones
+    // it needs.
+    if let Some(old) = displaced.filter(|old| (old.dev, old.ino) != (root.dev, root.ino)) {
+        uncover_root(shared, &old, "displaced by a registration of its id onto another directory");
     }
 
     // A newly registered root is walked, not just marked at the top: it can
