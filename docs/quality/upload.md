@@ -47,6 +47,12 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   - **Corrections:** a `401` does not latch: `send_write` drops the token and retries once
     (`write.rs:182–186`), and a second `401` is `WriteError::Failed`. `Outcome::SignedOut` comes
     only from the token source, where the account signs out and the worker is dropped.
+- **Fixed 2026-10-03** in `a4ce8ee` (#136): the latch is gone for a `403`, which blocks only its
+  own row; a worker that begins, and may send, releases the `forbidden` rows; the dead facade
+  methods and `online` are gone. `LastError` still says nothing of a `403`:
+  `docs/design/writes.md` §6.2 was changed to say so. What the user sees beyond this finding
+  (a request, an event and a notification for each row when OneDrive refuses everything; the
+  release at every worker start) the user accepted on 2026-10-03; `docs/limitations/F197.md`.
 
 ## UP2. Row string columns are overloaded as control state — **defect?**
 

@@ -67,7 +67,7 @@ not fixed moves there.
 | [`TR1`](tree.md) | `konedrive-tree/src/reconcile.rs:216–274` | A commit said to be one transaction is two; deferred changes lost at a crash between them | fixed in `eff1fd2` |
 | [`TR2`](tree.md) | `konedrive-tree/src/lib.rs:710`, `outbox/worker.rs:41`, `outbox.rs:634` | "Forget the local objects below" in three copies with different reach (delete safety) | refuted as a defect; the difference is real |
 | [`UP2`](upload.md) | `upload/content.rs:41`, `:209`, `:852` | The id of a bad upload is lost; the next send makes a conflict copy against the worker's own upload | confirmed |
-| [`UP1`](upload.md) | `upload/engine.rs:307–317`, `engine/drain.rs:247`, `:255` | The "needs sign-in" latch is never cleared; one 401 or 403 stops the worker | confirmed for 403; the 401 part refuted |
+| [`UP1`](upload.md) | `upload/engine.rs:307–317`, `engine/drain.rs:247`, `:255` | The "needs sign-in" latch is never cleared; one 401 or 403 stops the worker | fixed in `a4ce8ee` (the 403); the 401 part refuted |
 | [`UP3`](upload.md) | `upload/kept_back.rs:64–81` | Blocked rows shown as "waiting, goes up by itself" | confirmed |
 | [`LO3`](local.md) | `local/examine/found.rs:200`, `classify.rs:340`, `:362` | One file's I/O error aborts the whole examination, again at every retry | refuted as written; a narrower form confirmed |
 | [`LO4`](local.md) | `local/watcher/mod.rs:544–641` | The examiner thread dies unnoticed; uploads stop with no error shown | fixed in `eba0828` (the panic); refuted (`RootGone`) |
