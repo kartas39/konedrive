@@ -104,6 +104,8 @@ impl From<NotCleared> for ResetError {
             NotCleared::Helper(e) => ResetError::Helper(e),
             NotCleared::Unlinked => ResetError::Unlinked,
             NotCleared::Unknown(why) => ResetError::Io(io::Error::other(why)),
+            // A fill's refusal, never an answer of `Clearance::clear`.
+            NotCleared::NoWay => ResetError::Helper(HelperError::NotRunning),
         }
     }
 }

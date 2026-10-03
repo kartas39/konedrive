@@ -6,6 +6,7 @@ use async_trait::async_trait;
 
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::{Answered, FillError};
+use crate::helper::NotCleared;
 use crate::folder::locks::InodeKey;
 use crate::sync::{SyncError, SyncService};
 use crate::hydration::pin;
@@ -192,21 +193,28 @@ pub(super) fn kept_by_folder(targets: &[PinTarget]) -> Option<SyncError> {
 #[async_trait]
 impl pin::PinFill for SyncService {
     async fn fill_pinned(&self, path: &Path) -> pin::Filled {
-        let Some(reg) = self.registration() else { return pin::Filled::Done };
+        let Some(reg) = self.registration() else { return pin::Filled::Skipped };
         let (root, target) = (reg.root.path.clone(), path.to_path_buf());
         let still = tokio::task::spawn_blocking(move || pin::pinned_by(&root, &target).is_some())
             .await
             .unwrap_or(false);
         if !still {
-            return pin::Filled::Done;
+            return pin::Filled::Skipped;
         }
         // The pins' worker holds a slot of the pool for it.
         match self.fill_now(path, None).await {
             Ok(Answered::Failed(FillError::Errno(errno))) if errno == libc::ENOSPC || errno == libc::EDQUOT => {
                 pin::Filled::NoSpace
             }
+            // No link to the helper for a file that may carry an ignore mark.
+            Ok(Answered::Failed(FillError::NotCleared(NotCleared::NoWay))) => {
+                tracing::info!("{} is kept on this device but was not downloaded: {}", path.display(), SyncError::NoHelper);
+                pin::Filled::Failed
+            }
             Ok(Answered::Failed(_)) => pin::Filled::Failed,
-            Ok(_) => pin::Filled::Done,
+            Ok(Answered::Filled) => pin::Filled::Done,
+            // Found downloaded already: nothing was transferred.
+            Ok(Answered::AlreadyThere | Answered::NotOurs) => pin::Filled::Skipped,
             Err(e) => {
                 tracing::info!("{} is kept on this device but was not downloaded: {e}", path.display());
                 pin::Filled::Failed

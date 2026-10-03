@@ -168,3 +168,28 @@ async fn a_large_file_waiting_for_the_limit_does_not_hold_up_the_small_ones() {
     until("the queue empty", || pins.queued().is_empty()).await;
     assert_eq!(held.order.lock().unwrap().last().unwrap(), Path::new("/r/big-2.bin"));
 }
+
+/// A download a Forget cancels moved nothing, so it is not a success for the
+/// account's transfer pool: the pool grows by one slot on a success made while
+/// other work waits, and must not grow on a cancellation.
+#[tokio::test]
+async fn a_download_cancelled_by_a_forget_is_not_a_success_for_the_pool() {
+    let held = Held::new(Filled::Done);
+    let pool = TransferPool::starting_at(PIN_SLOTS, PIN_SLOTS + 4);
+    let pins = pins_in(&held, Arc::clone(&pool));
+    pins.add(files(PIN_SLOTS));
+    until("four downloads under way", || held.started() == PIN_SLOTS).await;
+    // Other work of the account waits for a slot: what lets a success grow the pool.
+    let mut upload = Box::pin(pool.acquire(Class::Upload));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), upload.as_mut()).await.is_err(),
+        "every slot is taken by a pinned download"
+    );
+    assert_eq!(pool.size(), PIN_SLOTS);
+
+    pins.clear();
+
+    until("every download under way cancelled", || held.dropped.load(Ordering::SeqCst) == PIN_SLOTS).await;
+    until("their slots given back", || pool.held(Class::Download) == 0).await;
+    assert_eq!(pool.size(), PIN_SLOTS, "a cancelled download was counted as a successful transfer");
+}

@@ -427,3 +427,42 @@ async fn the_reader_reaches_acks_queued_behind_every_request_the_helper_may_send
         answered += 1;
     }
 }
+
+/// A fill stopped because OneDrive removed its file (issue #104) answers its
+/// opener like every other fill: with an errno the kernel delivers. `ENOENT`
+/// is not one (`ACCEPTED_DENY_ERRNOS`); the helper turns it into `EIO`, so the
+/// opener is never told the file is gone.
+#[tokio::test]
+async fn a_fill_stopped_by_a_removal_answers_an_errno_the_kernel_delivers() {
+    let dir = tempfile::tempdir().unwrap();
+    let socket_path = dir.path().join("helper.sock");
+    let mut seen = fake_helper(socket_path.clone());
+    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(remote.path().join("ITEM"), vec![1u8; 4096]).unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let fd = placeholder(local.path(), "file.bin", "ITEM", 4096);
+    let key = InodeKey::of_fd(&fd).unwrap();
+
+    // The fill parks in `fetch`, holding the inode's lock.
+    let source = Arc::new(LocalDir::new(remote.path()).delay(Duration::from_secs(3600)));
+    let locks = InodeLocks::new();
+    let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
+    tokio::spawn(serve_hydrations(link, rx, Arc::clone(&source) as Arc<dyn ContentSource>, locks.clone()));
+    tx.send(HydrateRequest { req_id: 31, fd }).await.unwrap();
+    wait_until("the fill is fetching", || source.fetches() == 1).await;
+
+    assert!(locks.cancel(key), "the fill holds the lock of the file being removed");
+
+    let (req_id, errno) = tokio::time::timeout(Duration::from_secs(10), seen.recv())
+        .await
+        .expect("a stopped fill must still answer the suspended open")
+        .expect("the helper connection must stay up");
+    assert_eq!(req_id, 31);
+    assert!(
+        konedrive_proto::ACCEPTED_DENY_ERRNOS.contains(&errno),
+        "the opener of a removed file is answered errno {errno}, which the kernel does not \
+         accept in a FAN_DENY response; the helper denies with EIO instead"
+    );
+}
