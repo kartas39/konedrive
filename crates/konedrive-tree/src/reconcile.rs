@@ -222,7 +222,7 @@ impl TreeStore {
             for id in consumed {
                 tx.execute("DELETE FROM deferred WHERE id = ?1", [id])?;
             }
-            for (id, whole) in defer.iter().map(|id| (id, true)).chain(content.iter().map(|id| (id, false))) {
+            for (id, all) in defer.iter().map(|id| (id, true)).chain(content.iter().map(|id| (id, false))) {
                 // The item's last commit, a delete's tombstone included.
                 let committed: i64 = tx.query_row(
                     "SELECT MAX(COALESCE((SELECT local_seq FROM items WHERE id = ?1), 0),
@@ -253,11 +253,11 @@ impl TreeStore {
                     )?,
                     None => tx.execute("INSERT OR REPLACE INTO deferred (id, seq, gone) VALUES (?1, ?2, 1)", params![id, seq])?,
                 };
-                if whole && source == Source::Overlay {
+                if all && source == Source::Overlay {
                     // Staged over `items`: what it has shows through again.
                     tx.execute("DELETE FROM staging WHERE id = ?1", [id])?;
                     tx.execute("DELETE FROM staging_gone WHERE id = ?1", [id])?;
-                } else if whole {
+                } else if all {
                     tx.execute("DELETE FROM staging WHERE id = ?1", [id])?;
                     tx.execute(&format!("INSERT INTO staging ({COLUMNS}) SELECT {COLUMNS} FROM items WHERE id = ?1"), [id])?;
                 } else {
