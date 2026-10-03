@@ -106,7 +106,7 @@ impl Poller {
         if let Some(live) = self.live {
             live.join().await;
         }
-        self.listing.ctx.state.set_live_changes(crate::remote::live::LiveChanges::Off);
+        self.listing.ctx.state.set_live_changes(crate::status::snapshot::LiveChanges::Off);
         self.listing.join_replacements().await;
     }
 }

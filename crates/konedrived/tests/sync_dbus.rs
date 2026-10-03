@@ -9,7 +9,7 @@
 //! not depend on that to fill a file.
 //!
 //! The daemon is started here exactly as `main.rs` starts it
-//! (`accounts::start`), so every account's objects are on the bus before the
+//! (`daemon::startup::start`), so every account's objects are on the bus before the
 //! name is claimed, and the helper is reached through the hub's supervisor
 //! rather than inline.
 
@@ -88,7 +88,7 @@ struct Setup {
 /// acknowledges `Hello`, and after that acknowledges every request with
 /// `Ack { errno: 0 }` — never sending a `HydrateRequest` of its own, since no
 /// fanotify group backs any of this. Built the same way
-/// `sync::helper`'s own test module builds its fake helpers.
+/// `helper`'s own test module builds its fake helpers.
 fn fake_helper(path: PathBuf) {
     let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None).unwrap();
     let addr = UnixAddr::new(&path).unwrap();
@@ -788,7 +788,7 @@ async fn the_folders_quota_read_is_the_accounts_quota() {
 /// progress travels with the counters, in one message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_local_scan_is_on_the_bus() {
-    use konedrived::local::scan::ScanState;
+    use konedrived::status::snapshot::ScanState;
     let f = setup().await;
     assert_eq!(f.scan.state().await.unwrap(), "none", "a read-only folder has no local scan");
     assert_eq!(f.scan.finished().await.unwrap(), 0);

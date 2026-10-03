@@ -328,7 +328,7 @@ Emblem itemEmblem(const QString &path, const QString &root, const PinMarkReader 
 
 namespace
 {
-/// Names konedrive keeps for itself (crates/konedrived/src/sync/root.rs);
+/// Names konedrive keeps for itself (crates/konedrived/src/status/activity.rs);
 /// never offered, so one of them can't make Pin/Unpin/FreeUp refuse the
 /// whole batch it is part of.
 bool isReservedName(const QString &path)

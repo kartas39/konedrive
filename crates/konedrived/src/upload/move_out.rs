@@ -40,7 +40,7 @@
 //! own lookups, checks that it is the same inode, and goes down one name at a time from there,
 //! never following a symlink.
 //!
-//! [`handles_current`]: crate::sync::local::liveness::handles_current_async
+//! [`handles_current`]: crate::local::liveness::handles_current_async
 
 mod cases;
 mod place;
@@ -63,9 +63,9 @@ use konedrive_fs::placeholder::{self, State};
 use super::engine::{Engine, Fail, Outcome};
 use super::reason;
 use crate::folder::disk::Disk;
+use crate::helper::linked::Helper;
 use crate::helper::{reopen_for_writing, Clearance, HelperError};
 
-pub use crate::helper::linked::{Helper, Linked};
 use crate::local::liveness::{absent_at, handles_current_async};
 use crate::local::RECHECK;
 use crate::hydration::source::{self, ContentSource, FillError};

@@ -1,6 +1,6 @@
 //! Everything this sub-project adds to the daemon: the helper link, the
 //! content source, the hydration loop, and `SyncService` — the `org.konedrive.Folder`
-//! D-Bus surface's own half of the work (`dbus.rs` is the thin zbus wrapper
+//! D-Bus surface's own half of the work (`dbus/folder.rs` is the thin zbus wrapper
 //! around it, the same split `crate::account`/`crate::dbus` uses for
 //! `Account`). There is one `SyncService` per account; the helper link, its
 //! supervisor and the per-inode locks are the daemon's, in `hub.rs`.
@@ -31,7 +31,7 @@ use crate::status::activity::Report;
 use crate::desktop::baloo::Baloo;
 use crate::helper::{Clearance, HelperLink};
 use crate::helper::status::HelperUnit;
-use crate::hydration::dehydrate::DehydrateError;
+use crate::folder::root::DehydrateError;
 use crate::folder::root::{RegisterError, SyncRoot};
 use crate::hydration::source::ContentSource;
 use crate::config::{ConfigStore, Mode};
@@ -48,7 +48,7 @@ use crate::upload::kept_back;
 
 // --- the folder's interfaces' own half of the work ------------------------
 //
-// `dbus.rs` is the thin zbus wrapper (the same split `crate::account` /
+// `dbus/folder.rs` is the thin zbus wrapper (the same split `crate::account` /
 // `crate::dbus` uses for `Account`); everything that actually does
 // something lives here, so it can be exercised without a bus at all.
 
@@ -231,7 +231,7 @@ pub struct SyncService {
     /// refuses `RegisterRoot` when nobody is signed in, and
     /// this is what it asks. `None` only where nothing wired it up.
     account: Option<StateHandle>,
-    /// The account's one quota (`crate::quota`), which the outbox's space check reads and
+    /// The account's one quota (`crate::account::quota`), which the outbox's space check reads and
     /// adjusts ([`set_quota`](Self::set_quota)): until one is set, the quota kept in
     /// `account`'s state, or one of its own without an account.
     quota: Mutex<crate::account::quota::Quota>,
@@ -282,7 +282,7 @@ pub struct SyncService {
     /// (`skipped`).
     store: Mutex<Option<konedrive_tree::Store>>,
     /// Keeps KDE's Baloo indexer out of a fresh OneDrive folder, and lets a
-    /// forgotten one back in (`sync::baloo`). Starts as
+    /// forgotten one back in (`desktop::baloo`). Starts as
     /// [`Baloo::disabled`], which runs no program at all — only `main`
     /// installs the real `balooctl6`; a test that forgets `set_baloo` must
     /// never reach the user's own indexer settings.

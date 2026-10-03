@@ -1,6 +1,6 @@
 //! The watcher (`docs/design/writes.md` §3, amended below): the daemon's own,
 //! unprivileged fanotify notification group over a read-write folder, which
-//! turns local changes into batches for the examination (`sync::local`).
+//! turns local changes into batches for the examination (`local`).
 //!
 //! - **The group** (`fan`): `FAN_CLASS_NOTIF | FAN_REPORT_DFID_NAME_TARGET`,
 //!   an inode mark on every directory (`FAN_CREATE | FAN_DELETE |

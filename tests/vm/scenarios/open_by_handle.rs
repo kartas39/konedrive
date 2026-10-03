@@ -4,7 +4,7 @@
 //!
 //! Two parts.
 //!
-//! **The measurement** (`docs/kernel-behavior-7.2.md` §15), run by
+//! **The measurement** (`docs/kernel-behavior-7.2/open-by-handle.md` §15), run by
 //! `tests/vm/run.sh unit`: `--obh-serve` runs as a service with **the helper
 //! unit's own sandbox** (`helper_unit_test.sh` copies the shipped unit and
 //! swaps its `ExecStart`), receives a directory descriptor from a process

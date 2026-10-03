@@ -59,8 +59,6 @@ use std::time::Duration;
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-pub use local::{copy_name, default_machine_name, machine_name};
-pub use crate::conditions::running::{set_paused, set_paused_blocking, user_pause as paused};
 
 /// Takes `user.konedrive.sync` off the files of `rows`, which were dropped
 /// (a switch to read-only). Best effort, by name.
@@ -202,11 +200,11 @@ pub trait OutboxHost: Send + Sync {
     /// the reconcile places what came back. The delta carries it: a plain
     /// cycle, not a Full reconcile, which scans the whole folder.
     fn cycle_wanted(&self) {}
-    /// Whether the account's background work stops now (`sync::running`): the user's pause,
+    /// Whether the account's background work stops now (`conditions::running`): the user's pause,
     /// kept in `store`, or what else the account's one place decides. Asked before each row
     /// is taken, and between the fragments of an upload.
     fn stopped(&self, store: &Store) -> bool {
-        paused(store).is_some()
+        crate::conditions::running::user_pause(store).is_some()
     }
     /// Whether the account may change OneDrive now (`docs/design/writes.md` §2): asked
     /// before each row is taken, and between the fragments of an upload. `Err` says why not:
@@ -318,7 +316,7 @@ pub struct WorkerConfig {
     /// The helper and the fills `move-out` rows need; `None` leaves
     /// them waiting.
     pub moved_out: Option<move_out::MoveOuts>,
-    /// The account's one quota (`crate::quota`): what the space check reads
+    /// The account's one quota (`crate::account::quota`): what the space check reads
     /// and adjusts, keeping no copy of its own ([`space`]).
     pub quota: crate::account::quota::Quota,
 }
@@ -513,7 +511,7 @@ impl OutboxWorker {
     /// the rows in flight finish what they sent — an opened session is
     /// persisted, an upload in fragments stops after the fragment in flight.
     /// The future ends once the worker has; the caller bounds the wait
-    /// (`crate::stop`), and whatever is still in flight then is cut as
+    /// (`crate::daemon::stop`), and whatever is still in flight then is cut as
     /// [`stop`](Self::stop) cuts it. For good: not started again.
     pub fn close(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
         self.engine.close();

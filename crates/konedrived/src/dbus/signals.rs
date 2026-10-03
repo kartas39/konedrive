@@ -115,7 +115,7 @@ pub(crate) struct Coalesced {
     too_big_count: u32,
     throughput: konedrive_graph::pool::Throughput,
     queue: crate::status::totals::QueueTotals,
-    scan: crate::local::scan::LocalScan,
+    scan: crate::status::snapshot::LocalScan,
 }
 
 /// The properties that changed, by interface, then by name, with their values now.

@@ -263,7 +263,7 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     // creating the probe's temporary file inside it (`O_TMPFILE`, and so
     // nameless since, but still an `open` in a marked directory)
     // can raise a permission event aimed at this very helper (kernel fact 7
-    // — `docs/kernel-behavior-7.2.md` §7) while this thread is blocked
+    // — `docs/kernel-behavior-7.2/interception.md` §7) while this thread is blocked
     // inside the probe. A worker answers it
     // today, but only because the pool is a separate thread set, and under a
     // saturated pool the probe is denied `EAGAIN` and a perfectly good

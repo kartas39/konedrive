@@ -587,8 +587,8 @@ fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete()
 fn the_sink_reports_a_full_scan_and_not_a_single_place() {
     use crate::config::Mode;
     use crate::local::ScanReason;
-    use crate::local::scan::{ScanReport, ScanState};
-    use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
+    use crate::local::scan::ScanReport;
+    use crate::status::snapshot::{ScanState, SyncSnapshot, SyncStateHandle};
     let fx = Fx::new();
     let store = Store::new(TreeStore::in_memory().unwrap());
     store

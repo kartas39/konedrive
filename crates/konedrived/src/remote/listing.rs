@@ -111,7 +111,7 @@ pub struct ListingContext {
     pub writes: Option<Writes>,
     /// The daemon's other parts a cycle asks or tells; `None` in tests.
     pub neighbours: Option<Neighbours>,
-    /// What background work runs now (`sync::running`): the poll and the replacements it
+    /// What background work runs now (`conditions::running`): the poll and the replacements it
     /// runs stop while the account's work does.
     pub running: Arc<crate::conditions::running::Running>,
 }

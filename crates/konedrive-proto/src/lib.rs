@@ -57,7 +57,7 @@ pub const MAX_OUTSTANDING_HYDRATIONS: usize = 64;
 
 /// The errno values the kernel accepts in a `FAN_DENY` response, measured
 /// (M2) by sweeping the errno space against a real `FAN_CLASS_PRE_CONTENT`
-/// group on Btrfs, ext4 and XFS — see `docs/kernel-behavior-7.2.md` §5.
+/// group on Btrfs, ext4 and XFS — see `docs/kernel-behavior-7.2/interception.md` §5.
 ///
 /// Anything outside this set makes `write()` on the group fail with `EINVAL`
 /// and leaves the opener suspended **forever**, which is the worst outcome

@@ -18,7 +18,7 @@ use crate::now_running;
 // ---------------------------------------------------------------------------
 //
 // These need no helper and no daemon: they are the two results
-// `docs/kernel-behavior-7.2.md` §10 listed as having no committed programme at
+// `docs/kernel-behavior-7.2/not-covered.md` §10 listed as having no committed programme at
 // all, both of them load-bearing. They run against a fanotify group of this
 // process's own, in a directory nobody else has marked, before the helper for
 // this filesystem is started.
@@ -119,7 +119,7 @@ fn own_marks(group: &Fanotify) -> Vec<Mark> {
         .collect()
 }
 
-/// `docs/kernel-behavior-7.2.md` §5.1, which had no committed programme: a
+/// `docs/kernel-behavior-7.2/interception.md` §5.1, which had no committed programme: a
 /// permission response is matched against the descriptor **number** the kernel
 /// handed out, not against the open file description behind it.
 ///
@@ -214,7 +214,7 @@ fn response_matched_by_number(dir: &Path) -> Result<(), String> {
     }
 }
 
-/// `docs/kernel-behavior-7.2.md` §2.1's decisive row, which had no committed
+/// `docs/kernel-behavior-7.2/interception.md` §2.1's decisive row, which had no committed
 /// programme: an ignore mark without `FAN_MARK_IGNORED_SURV_MODIFY` is
 /// silently refused whenever **anybody** holds the inode open for writing —
 /// no event fd is involved. That is what proves the refusal comes from

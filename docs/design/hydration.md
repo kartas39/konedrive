@@ -6,7 +6,7 @@ The processes involved are introduced in [README.md](README.md); how the folder 
 with the cloud is in [sync.md](sync.md).
 
 Measurements quoted here come from the privileged suite in `tests/vm/`, run in a virtme-ng VM
-against Btrfs, ext4 and XFS; `docs/kernel-behavior-7.2.md` has each one, its evidence and how to
+against Btrfs, ext4 and XFS; `docs/kernel-behavior-7.2/` has each one, its evidence and how to
 reproduce it (cited as *kernel* §n).
 
 ## 1. Scope
@@ -354,7 +354,7 @@ the opener suspended.
 ### 6.4 Concurrency and the per-inode lock
 
 Every transfer of an account takes a slot of that account's **transfer pool**
-(`crates/konedrived/src/pool.rs`): fills on open and `Hydrate`, pinned downloads, replacements of
+(`crates/konedrive-graph/src/pool.rs`): fills on open and `Hydrate`, pinned downloads, replacements of
 changed files, thumbnails, uploads and metadata changes alike; the delta feed and the account's
 information stay outside it. The pool's size is not fixed — OneDrive publishes no limit and
 throttles an account as a whole with `429`/`503` — so it finds its own level:
@@ -414,7 +414,7 @@ trait ContentSource {
 }
 ```
 
-- **Graph** (`sync/graph_source.rs`) serves a folder that shows OneDrive (§7).
+- **Graph** (`hydration/graph_source.rs`) serves a folder that shows OneDrive (§7).
 - **LocalDir** serves a local directory, for tests and for the developer's local folder
   (`PopulateFromDirectory`, §14.3). It is held in memory only: after a daemon restart an intercepted
   open of an `online-only` file there is denied `EIO`, and `Hydrate` answers `NoSource`, until the
@@ -441,7 +441,7 @@ are honoured with their `Retry-After` ([sync.md](sync.md) §4.3).
 `quickXorHash` is computed over the bytes as they are written, and **a file is marked `hydrated`
 only if it matches** the hash Graph reported. On a mismatch the file returns to `online-only` and
 the opener gets `EIO`: nobody sees wrong bytes. `quickXorHash` is the one hash Graph provides for
-personal and business drives alike; the implementation (`src/quickxor.rs`) follows Microsoft's
+personal and business drives alike; the implementation (`konedrive-graph/src/quickxor.rs`) follows Microsoft's
 published algorithm and is checked against hand-worked vectors and against real downloads.
 
 The version of the first answer is the one the file must end up as. A later answer for another
@@ -477,7 +477,7 @@ content by cTag and size, not by its time, which a fill's writes change ([sync.m
 
 One stream from OneDrive does not fill a fast link (about 17 MiB/s measured on a link that carries
 ~68 MiB/s), so a **pinned download of a large file** (100 MiB and up, by its placeholder's size)
-goes in parts (`sync/source/parts.rs`, issue #28). A file being opened, `Hydrate`, a replacement of
+goes in parts (`hydration/source/parts.rs`, issue #28). A file being opened, `Hydrate`, a replacement of
 a changed file and every small file keep one stream.
 
 **Pieces.** The file is cut into pieces of **256 MiB** (the last one shorter). Each stream downloads

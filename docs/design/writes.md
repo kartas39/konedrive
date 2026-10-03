@@ -135,7 +135,7 @@ the root also:    FAN_DELETE_SELF | FAN_MOVE_SELF
 that is missing means the object came from, or went to, a directory nobody watches.
 `FAN_MOVED_FROM`/`FAN_MOVED_TO` are not subscribed (they would triple the queue's use per rename),
 nor is `FAN_MODIFY`: a write is looked at when it is closed. What the kernel does with each of
-these was measured on 7.2 ([`../kernel-behavior-7.2.md`](../kernel-behavior-7.2.md) §14).
+these was measured on 7.2 ([`../kernel-behavior-7.2/notification.md`](../kernel-behavior-7.2/notification.md) §14).
 
 An unprivileged group has limits of its own, all measured: inode marks only, a queue of 16 384
 events, and a budget of marks per user that every group of the user shares. A full queue is
@@ -414,7 +414,7 @@ came last — never stops the worker.
 **The invariant.** When nothing in the outbox can run, it is because something runs, something
 waits for a time, or something waits for the user. Nothing else may leave the queue standing; a
 pick that finds due rows and none of these reports them as stalled, in the log
-(`tree/outbox/pick.rs`).
+(`konedrive-tree/src/outbox/pick.rs`).
 
 Metadata rows (`mkdir`, `move`, `delete`) run one at a time; content rows beside them, each in a
 slot of the account's transfer pool, which adapts to OneDrive's throttling
@@ -899,7 +899,7 @@ read-write connection to it: every other part of the daemon sends it jobs over a
 waits for the answer (`store.call`), so a long store operation delays only the store's own queue,
 never the async runtime or the bus.
 
-**What runs is decided in one place** per account (`sync/running.rs`), from the user's pause, the
+**What runs is decided in one place** per account (`conditions/running.rs`), from the user's pause, the
 automatic hold (below) and the thumbnail setting (desktop.md §8). The transfer pool, the outbox
 worker (before each row and between fragments), the poll and the replacements it runs, the
 notification socket ([sync.md](sync.md) §4.2) and the thumbnail filler all ask it, never the tree
@@ -917,7 +917,7 @@ the same work (the table below); thumbnails off stop only the thumbnail requests
   `net.hadess.PowerProfiles` when that is the name present) is `power-saver`; `pause`, always. On
   mains power the battery never holds an account back, whatever the profile.
 
-One watcher for the daemon (`sync/conditions.rs`, as `sync/network.rs` is) reads the three
+One watcher for the daemon (`conditions/mod.rs`, as `conditions/network.rs` is) reads the three
 sources at the start and follows each one's `PropertiesChanged`, and the hub tells every account,
 and any that joins later, what they say. A source that is missing or cannot be read is no reason
 to hold back, logged once at `info` (limitations log F175).

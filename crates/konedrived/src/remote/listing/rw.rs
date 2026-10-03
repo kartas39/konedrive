@@ -65,7 +65,7 @@ pub struct Writes {
     /// wakes the outbox worker at once, so `HeldCount`/`PendingCount` and the
     /// bus signal count it gone without waiting for the worker's own timer,
     /// and tidies a dropped `move-out`'s placeholder outside the folder
-    /// (`Tidy::dropped`, `sync::upload::move_out`), off the runtime the
+    /// (`Tidy::dropped`, `upload::move_out`), off the runtime the
     /// reconcile's blocking task captured.
     ///
     /// [`TreeStore::outbox_drop_removed`]: konedrive_tree::TreeStore::outbox_drop_removed

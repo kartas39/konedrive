@@ -28,9 +28,8 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::conditions::running::Running;
-use crate::status::snapshot::SyncStateHandle;
+use crate::status::snapshot::{LiveChanges, SyncStateHandle};
 
-pub use crate::status::snapshot::LiveChanges;
 use konedrive_graph::drive::socket::{Heard, NotificationSocket, SocketEndpoint};
 use konedrive_graph::drive::DriveClient;
 use konedrive_tree::Store;

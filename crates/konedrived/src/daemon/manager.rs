@@ -21,7 +21,7 @@ use crate::sync::{Persist, SyncError, SyncPaths, SyncService};
 
 /// What the daemon's accounts are made with. `main` gives Microsoft, the Secret Service, the
 /// real `balooctl6` and the freedesktop thumbnail cache; a test gives wiremock, a
-/// [`crate::secret::MemoryWallet`], [`Baloo::disabled`] and no thumbnails.
+/// [`crate::account::secret::MemoryWallet`], [`Baloo::disabled`] and no thumbnails.
 pub struct Options {
     pub endpoints: Endpoints,
     pub wallet: Arc<dyn Wallet>,

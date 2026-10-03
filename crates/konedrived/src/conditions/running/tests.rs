@@ -11,7 +11,7 @@ async fn thumbnails_go_only_while_on_and_nothing_stops() {
     assert!(!running.stopped(&store), "thumbnails off stop nothing else");
     running.change(|s| s.thumbnails = true);
     tokio::time::timeout(std::time::Duration::from_secs(1), running.thumbnails_turned_on()).await.expect("turned on wakes the filler");
-    crate::upload::set_paused(&store, Some(0)).await.unwrap();
+    super::set_paused(&store, Some(0)).await.unwrap();
     assert_eq!(running.stop(&store), Some(Stop::Paused(0)));
     assert!(!running.thumbnails_go(&store), "a pause stops thumbnails too");
 }
@@ -64,7 +64,7 @@ async fn sync_anyway_lasts_until_a_source_or_the_holds_settings_change() {
     assert_eq!(running.held(), None);
     assert!(running.set_hold_settings(HoldSettings { on_battery: OnBattery::Pause, ..HoldSettings::default() }));
     assert_eq!(running.held(), Some(Hold::Metered), "the hold's setting changed");
-    crate::upload::set_paused(&store, Some(0)).await.unwrap();
+    super::set_paused(&store, Some(0)).await.unwrap();
     assert_eq!(running.stop(&store), Some(Stop::Paused(0)), "the user's pause is said first");
 }
 

@@ -28,7 +28,7 @@ struct World {
     /// Where the fake `balooctl6` lives: `calls` gets every
     /// `add`/`rm` it is run with, appended one per line; its
     /// `baloofilerc` is what is excluded already — nothing, unless a
-    /// test writes it.; `crate::sync::baloo`.
+    /// test writes it.; `crate::desktop::baloo`.
     baloo: tempfile::TempDir,
     /// A helper that acknowledges everything, at `sockets/helper.sock`:
     /// a folder that shows OneDrive is kept in step only with one
@@ -113,7 +113,7 @@ fn let_write(service: &SyncService) {
 /// A fake `balooctl6`, so these tests never reach the real Baloo
 ///: `config add`/`config rm` are logged to `calls`, one
 /// call per line. What is excluded already is read from the
-/// `baloofilerc` beside it (`crate::sync::baloo`, B-I1b), never
+/// `baloofilerc` beside it (`crate::desktop::baloo`, B-I1b), never
 /// `~/.config`'s.
 fn write_fake_balooctl6(dir: &std::path::Path) {
     let script = dir.join("balooctl6");

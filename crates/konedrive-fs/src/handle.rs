@@ -2,7 +2,7 @@
 //!
 //! `name_to_handle_at(2)` needs no privilege, and its handle is byte-equal to
 //! the `FID`/`DFID` a fanotify notification group reports (measured, the kernel probe probe,
-//! `docs/kernel-behavior-7.2.md` §14). The write phase keys an item's local
+//! `docs/kernel-behavior-7.2/notification.md` §14). The write phase keys an item's local
 //! object on it (`items.local_handle`): an event's object handle finds the item
 //! it touched, and a missing item's handle tells a delete from a move out of
 //! the folder. Turning a handle back into a descriptor (`open_by_handle_at`)
@@ -76,7 +76,7 @@ impl FileHandle {
     /// filesystem and the mount of `mount`, with `flags`. No path is walked,
     /// so no directory's permissions are checked; the object's own are, as
     /// for any open. Needs `CAP_DAC_READ_SEARCH`: anyone else gets `EPERM`
-    /// (measured, `docs/kernel-behavior-7.2.md` §14.6). A handle that names
+    /// (measured, `docs/kernel-behavior-7.2/notification.md` §14.6). A handle that names
     /// nothing any more is `ESTALE`; a malformed one is `EINVAL`, without a
     /// system call.
     pub fn open(&self, mount: BorrowedFd<'_>, flags: libc::c_int) -> io::Result<OwnedFd> {

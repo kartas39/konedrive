@@ -4,7 +4,7 @@
 //! [`Report`] bundles them, so that everything that downloads, frees up or
 //! reconciles — `SyncService`, the hydration loop, a OneDrive folder's
 //! listing and its replacements — reports into the same four places, and
-//! `sync::dbus` publishes from there.
+//! `dbus::signals` publishes from there.
 //!
 //! The activity log and the conflicts live in the folder's tree store
 //! (`activity`, `conflicts`), which a Forget drops and a rebuild empties. A
@@ -216,7 +216,7 @@ pub fn capped(events: Vec<Event>, per_kind: usize, root: &str) -> Vec<Event> {
 ///
 /// Backed by the folder's tree store while a OneDrive folder syncs
 /// ([`attach`](Self::attach)), and by memory otherwise. Every event recorded
-/// is also sent to [`subscribe`](Self::subscribe)rs — `sync::dbus` turns them
+/// is also sent to [`subscribe`](Self::subscribe)rs — `dbus::signals` turns them
 /// into `ActivityLog.Added`.
 ///
 /// One lock holds both the store and the memory, and every write holds it for
@@ -500,7 +500,7 @@ pub fn large_files(downloads: &BTreeMap<u64, Transfer>, uploads: &[(String, u64,
 /// The downloads under way (`Transfers`): fills on open,
 /// `Hydrate`, and replacements of changed files — not thumbnails.
 ///
-/// Watched, so that `sync::dbus` can publish it coalesced. An entry is added
+/// Watched, so that `dbus::signals` can publish it coalesced. An entry is added
 /// by [`start`](Self::start) and removed when the [`TransferEntry`] it
 /// returns is dropped, however the download ends.
 #[derive(Clone)]

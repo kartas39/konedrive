@@ -349,7 +349,7 @@ async fn a_refill_whose_ignore_mark_cannot_be_cleared_touches_nothing() {
 /// The test above keeps its fills running, so their requests still hold
 /// credit and fewer new ones can be in flight; it passed with the queue
 /// cut to 59. This one fails at 62 and passes at 63 (measured by
-/// mutating the queue depth in `helper.rs`).
+/// mutating the queue depth in `helper/mod.rs`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_reader_reaches_acks_queued_behind_every_request_the_helper_may_send() {
     const MAX: usize = konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;

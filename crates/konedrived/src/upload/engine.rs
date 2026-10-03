@@ -237,10 +237,10 @@ impl Engine {
     /// `Some(until)` while the user paused the account (0: until resumed): what the status
     /// shows, and when a timed pause ends.
     fn paused(&self) -> Option<i64> {
-        super::paused(self.store())
+        crate::conditions::running::user_pause(self.store())
     }
 
-    /// Whether nothing may be sent now: asked of the account's one place (`sync::running`)
+    /// Whether nothing may be sent now: asked of the account's one place (`conditions::running`)
     /// through the host.
     pub(super) fn stopped(&self) -> bool {
         self.cfg.host.stopped(self.store())
@@ -248,14 +248,14 @@ impl Engine {
 
     pub(super) fn pause(&self, for_: Option<Duration>) -> Result<(), TreeError> {
         let until = for_.map(|d| now() + d.as_secs().max(1) as i64).unwrap_or(0);
-        super::set_paused_blocking(self.store(), Some(until))?;
+        crate::conditions::running::set_paused_blocking(self.store(), Some(until))?;
         self.publish();
         self.wake();
         Ok(())
     }
 
     pub(super) fn resume(&self) -> Result<(), TreeError> {
-        super::set_paused_blocking(self.store(), None)?;
+        crate::conditions::running::set_paused_blocking(self.store(), None)?;
         self.publish();
         self.wake();
         Ok(())

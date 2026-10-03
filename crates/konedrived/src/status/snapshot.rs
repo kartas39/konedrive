@@ -113,7 +113,7 @@ impl RootState {
     }
 }
 
-/// The observable sync state; `sync::dbus` turns changes into
+/// The observable sync state; `dbus::signals` turns changes into
 /// `PropertiesChanged`, exactly as `state::AccountSnapshot` does for
 /// `Account`.
 #[derive(Debug, Clone, PartialEq, Eq)]

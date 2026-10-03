@@ -20,7 +20,7 @@
 //! file is too big — ends *full* when there is space again and frees the
 //! files that now fit.
 //!
-//! The quota itself is the account's one (`crate::quota`, served by
+//! The quota itself is the account's one (`crate::account::quota`, served by
 //! `Account`): the worker reads into it, takes what it uploads off it, and
 //! keeps no copy of its own.
 
@@ -151,7 +151,7 @@ impl Engine {
         self.shared().space.full
     }
 
-    /// `bytes` went up: the account's quota says as much (`crate::quota`).
+    /// `bytes` went up: the account's quota says as much (`crate::account::quota`).
     pub(super) fn space_used(&self, bytes: u64) {
         self.cfg.quota.uploaded(bytes);
     }

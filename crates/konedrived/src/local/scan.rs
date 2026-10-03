@@ -10,9 +10,7 @@ use std::cell::Cell;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::local::{ScanProgress, ScanReason};
-use crate::status::snapshot::SyncStateHandle;
-
-pub use crate::status::snapshot::{LocalScan, ScanState};
+use crate::status::snapshot::{ScanState, SyncStateHandle};
 
 /// A running scan's counts reach the state at most this often.
 pub const PUBLISH_EVERY: Duration = Duration::from_secs(1);

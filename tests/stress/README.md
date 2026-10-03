@@ -12,7 +12,7 @@ after every scenario checks that the outbox drained cleanly, that nothing of the
 locally, that the item counts agree after a refresh, and — **read-only, straight against
 Microsoft Graph** (`graph_check.py`, `urllib` only, GET only, never anything else) — that every
 file OneDrive actually holds matches what is on disk: same set of paths, same size, same
-[QuickXorHash](../../crates/konedrived/src/quickxor.rs) (ported to Python in `quickxor.py`, with
+[QuickXorHash](../../crates/konedrive-graph/src/quickxor.rs) (ported to Python in `quickxor.py`, with
 Rust's own known-answer vectors run as a self-test on import). Matching item counts alone would
 not catch a file that went up with the wrong content or arrived at the wrong name — this checks
 the bytes.

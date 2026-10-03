@@ -7,7 +7,7 @@ use konedrive_fs::placeholder::{read_stamp, read_state, stamp_matches, State, St
 
 use crate::hydration::tracked::Tracked;
 use crate::helper::{Clearance, NotCleared};
-use crate::hydration::dehydrate::DehydrateError;
+use crate::folder::root::DehydrateError;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::{Answered, ContentSource, Fetched, FillError, SourceError};
 use crate::folder::locks::{InodeKey, unless_removed};

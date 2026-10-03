@@ -71,7 +71,7 @@ pub struct HelperHub {
     /// is now — outside every folder, or inside another account's (write
     /// design §4.6, §8.5).
     moved_out: Mutex<Vec<(Weak<SyncService>, HashSet<String>)>>,
-    /// What the machine's sources say (`sync::conditions`): every account is told, and one
+    /// What the machine's sources say (`conditions`): every account is told, and one
     /// that joins later is told what they say then.
     conditions: Mutex<crate::conditions::running::Conditions>,
     /// The hold's settings, one pair for every account (issue #95): every account is told,

@@ -2,7 +2,7 @@
 //! real materializer, rows made by the real examination, a fake OneDrive (wiremock), and a fake
 //! helper that opens a handle by a table of where each object went — as the real one answers:
 //! `ESTALE` for what is gone, `EPERM` for an object without the item id. What needs the real
-//! helper (the marks themselves) is in the VM suite (`tests/vm/move_out.rs`).
+//! helper (the marks themselves) is in the VM suite (`tests/vm/scenarios/move_out.rs`).
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
@@ -18,7 +18,8 @@ use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_ROOT};
 use tokio_util::sync::CancellationToken;
 
 use super::fake::{qx, Harness};
-use super::move_out::{trash_of, Filler, Helper, MoveOuts, SourceFill, Tidy, CONTENT_LOCAL};
+use super::move_out::{trash_of, Filler, MoveOuts, SourceFill, Tidy, CONTENT_LOCAL};
+use crate::helper::linked::Helper;
 use super::*;
 use crate::folder::disk::Disk;
 use crate::helper::{Clearance, HelperError};

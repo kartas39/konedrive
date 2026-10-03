@@ -113,14 +113,14 @@ pub(crate) const UNOPENABLE: &str = "intercepted opens the kernel could not hand
 
 /// What the helper says about an intercepted open whose descriptor the
 /// kernel could not create (see [`Refusal::EventFdFailed`]). The VM suite
-/// counts it (`tests/vm/scenarios.rs`, `EVENT_FD_FAILED`); keep the two in
+/// counts it (`tests/vm/scenarios/punch_rule.rs`, `EVENT_FD_FAILED`); keep the two in
 /// step.
 pub(crate) const EVENT_FD_FAILED: &str = "the kernel could not open the descriptor of an intercepted open \
                                and denied it EPERM itself";
 
 /// What every throttled line says after the number of occurrences it stands
 /// for. The VM suite reads the number off in front of it
-/// (`tests/vm/scenarios.rs`, `THROTTLE_MARK`); keep the two in step.
+/// (`tests/vm/scenarios/harness.rs`, `THROTTLE_MARK`); keep the two in step.
 const THROTTLE_MARK: &str = " occurrence(s) since the last line like this";
 
 /// How long to wait before reading the fanotify group again after the process
@@ -143,7 +143,7 @@ pub(crate) const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 /// suspended openers are denied instead of being left in the kernel forever.
 /// Both are only true if something unwinds, and — by design — nothing in the
 /// helper panics on any input any more. The VM scenario suite
-/// (`tests/vm/scenarios.rs`) therefore restarts the helper with one of these
+/// (`tests/vm/scenarios/faults.rs`) therefore restarts the helper with one of these
 /// armed and then asserts on what the *opener* got, which is the only
 /// evidence either ruling can have.
 ///

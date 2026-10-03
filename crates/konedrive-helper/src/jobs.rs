@@ -128,7 +128,7 @@ struct Job {
     owner: Owner,
     /// The exact descriptors `read_events()` handed out, never duplicates of
     /// them — the kernel matches a permission response by fd *number*
-    /// (`docs/kernel-behavior-7.2.md` §5.1).
+    /// (`docs/kernel-behavior-7.2/interception.md` §5.1).
     waiters: Vec<OwnedFd>,
     /// Whether its request has been handed out — whether it holds one of its
     /// connection's credits. A job that is not sent is in `queued`.

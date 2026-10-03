@@ -28,7 +28,7 @@
 //! # Looked at through `O_PATH` first
 //!
 //! An `O_PATH` open checks no permission, raises no fanotify event and breaks
-//! no lease (measured, `docs/kernel-behavior-7.2.md` §15), so the object is
+//! no lease (measured, `docs/kernel-behavior-7.2/open-by-handle.md` §15), so the object is
 //! stat'ed before anything that could have an effect on it happens. Only one
 //! that passes is opened for real: somebody else's file never is, nor a
 //! device node or a FIFO. The real open is what the attribute
@@ -42,7 +42,7 @@
 //! let the one root process every local user can talk to write any file on
 //! the machine. The daemon owns the file, so it reopens the descriptor for
 //! writing itself, through `/proc/self/fd`
-//! (`konedrived::sync::helper::reopen_for_writing`). `O_NONBLOCK`, because a
+//! (`konedrived::helper::reopen_for_writing`). `O_NONBLOCK`, because a
 //! file somebody holds a write lease on would otherwise stop this
 //! connection's thread until the lease is broken (up to 45 s; §12.4):
 //! the daemon gets `EAGAIN` and asks again.

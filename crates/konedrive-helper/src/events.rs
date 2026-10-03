@@ -252,7 +252,7 @@ pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Res
                 // the helper opens are those objects, handed straight to
                 // their owner's daemon, and the feature probe's nameless
                 // file at registration (`docs/design/writes.md` §8.2; SECURITY.md); measured in
-                // docs/kernel-behavior-7.2.md §15.
+                // docs/kernel-behavior-7.2/open-by-handle.md §15.
                 if pid == own_pid {
                     respond_allow(shared, fd);
                     continue;
@@ -283,7 +283,7 @@ pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Res
 /// `&mut Option<OwnedFd>`, so a panic anywhere below does not drop the fd
 /// while unwinding — the worker still has it and can deny `EIO` with the
 /// original descriptor. That matters because a response is matched by fd
-/// *number* (`docs/kernel-behavior-7.2.md` §5.1): once the number is closed
+/// *number* (`docs/kernel-behavior-7.2/interception.md` §5.1): once the number is closed
 /// it can be recycled, and answering a recycled number would answer somebody
 /// else's event. Taking it here, at the exact moment it is consumed, is also
 /// what makes "every path answers exactly once" checkable by reading.
@@ -345,7 +345,7 @@ pub(crate) fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pi
     // being opened belongs to that same user". A process with no root gets
     // nothing, and no daemon is ever exempted from another user's files.
     //
-    // Dehydration (`konedrived/src/sync/root.rs::dehydrate`) used
+    // Dehydration (`konedrived/src/hydration/dehydrate.rs::dehydrate`) used
     // to depend on this, and deliberately no longer does: it
     // opened the file again, by path, after clearing the ignore mark, and
     // that open was let through only because it hit this exemption first.
@@ -374,7 +374,7 @@ pub(crate) fn handle_open(shared: &Shared, slot: &mut Option<OwnedFd>, opener_pi
             // that descriptor, and only then links it in by name — so no name
             // ever shows a half-built file. But the O_TMPFILE open is itself
             // an open in a marked directory and raises a FAN_OPEN_PERM
-            // (kernel fact 7, docs/kernel-behavior-7.2.md §7) before a single
+            // (kernel fact 7, docs/kernel-behavior-7.2/interception.md §7) before a single
             // xattr exists; that is the event that arrives here with none.
             // Answered with an ignore mark, the mark — which survives
             // modification — would still be on the inode when the finished

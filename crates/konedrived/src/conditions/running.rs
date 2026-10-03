@@ -1,6 +1,6 @@
 //! What background work an account runs now (`docs/design/writes.md` §11): the one place
 //! that decides it, from the user's pause, the automatic hold (a metered connection, the
-//! battery: [`Conditions`], told by `sync::conditions`) and the settings. Every
+//! battery: [`Conditions`], told by `conditions`) and the settings. Every
 //! reader of the pause — the transfer pool (through `SyncService::show_pause`), the outbox
 //! worker, the poll and the replacements it runs, the thumbnail filler — asks here, not
 //! the tree store.
@@ -65,7 +65,7 @@ impl HoldSettings {
     }
 }
 
-/// What the machine's sources say now (`sync::conditions`): one value for the daemon,
+/// What the machine's sources say now (`conditions`): one value for the daemon,
 /// told to every account. A source that is missing or cannot be read says "no reason to
 /// hold back".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

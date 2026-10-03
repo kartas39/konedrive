@@ -44,7 +44,7 @@ impl super::SyncService {
         Ok(())
     }
 
-    /// What the machine's sources say now (`sync::conditions`, through the hub): the hold is
+    /// What the machine's sources say now (`conditions`, through the hub): the hold is
     /// worked out again, and what it held back goes at once when it ends.
     pub fn set_conditions(&self, conditions: Conditions) {
         if self.running.set_conditions(conditions) {

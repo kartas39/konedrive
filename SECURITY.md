@@ -117,7 +117,7 @@ is denied (`docs/limitations/`, W16).
   `ReadWritePaths=/var/lib/konedrive /run/konedrive`, plus a private `/tmp` (`PrivateTmp=yes`).
   A fill on open still works: the daemon writes through the descriptor the helper handed it, and
   the kernel opened that descriptor against the opener's mount, not the helper's. The VM suite
-  measured this (`docs/kernel-behavior-7.2.md`, §11.6). The same goes for `OpenByHandle`, which
+  measured this (`docs/kernel-behavior-7.2/`, §11.6). The same goes for `OpenByHandle`, which
   opens relative to the daemon's directory, on the daemon's mount (§15). Without
   `CAP_DAC_OVERRIDE`, the helper still cannot open a user's file for writing there.
 - **No way to undo that with `CAP_SYS_ADMIN`.** Without a filter, the helper could simply remount

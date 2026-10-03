@@ -8,7 +8,7 @@ use super::{TreeError, TreeStore};
 pub const ACTIVITY_KEPT: usize = 200;
 
 /// One event of the activity log, as stored: unix seconds, one
-/// of the kinds `sync::activity::Kind` names, a full path and a detail.
+/// of the kinds `status::activity::Kind` names, a full path and a detail.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityRow {
     pub at: i64,

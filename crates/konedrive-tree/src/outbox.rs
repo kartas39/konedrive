@@ -659,7 +659,7 @@ impl TreeStore {
     /// meets the `404` itself and drops it there ([`Committed::Gone`]).
     /// Returns what was dropped, so that a dropped `move-out`'s placeholder
     /// outside the folder can be tidied the way a dropped `move-out` always
-    /// is (`Tidy::dropped`, `sync::upload::move_out`), and the outbox's
+    /// is (`Tidy::dropped`, `upload::move_out`), and the outbox's
     /// counts and signals can be refreshed.
     pub fn outbox_drop_removed(&mut self) -> Result<Vec<OutboxRow>, TreeError> {
         let tx = self.conn.transaction()?;

@@ -36,7 +36,7 @@ fn parse_why_text_branches(cpp: &str) -> Vec<(String, String)> {
 
 /// `konedrivectl::skip_reason_text` and the window's `whyText`
 /// (`app/synccontroller.cpp`) are meant to say exactly the same thing for
-/// each reason (see `crates/konedrivectl/src/lib.rs`'s doc comment on
+/// each reason (see `crates/konedrivectl/src/text/files.rs`'s doc comment on
 /// `skip_reason_text`), so a person reading `konedrivectl sync skipped` and
 /// a person reading the window see one explanation, not two that happen to
 /// agree today. Checking only "does the Rust sentence appear somewhere in

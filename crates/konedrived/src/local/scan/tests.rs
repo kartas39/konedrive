@@ -1,6 +1,6 @@
 use super::*;
 use crate::config::Mode;
-use crate::status::snapshot::SyncSnapshot;
+use crate::status::snapshot::{LocalScan, SyncSnapshot};
 
 fn report(every: Duration) -> ScanReport {
     let state = SyncStateHandle::new(SyncSnapshot::default());

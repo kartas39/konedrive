@@ -1,7 +1,7 @@
 //! The quota of one account's drive (issue #78): one copy, served by `org.konedrive.Account`
 //! (`QuotaUsed`, `QuotaTotal`, `QuotaRemaining`, `QuotaState`), whoever reads it — the
 //! account's info (a sign-in, `RefreshInfo`) or the uploads' space check (`Folder.Refresh`, a
-//! refused upload, the check every 30 minutes, `sync::upload::space`). Between two reads the
+//! refused upload, the check every 30 minutes, `upload::space`). Between two reads the
 //! bytes uploaded come off `QuotaRemaining` and are added to `QuotaUsed`. It is kept in the
 //! account's state ([`AccountSnapshot`]), and cached in `account.json` at every read.
 
