@@ -416,6 +416,26 @@ impl TreeStore {
         Ok(())
     }
 
+    /// The leaving object of item `id` is now the inode `handle` — an
+    /// editor's save by rename at its place (issue #104).
+    pub fn leaving_set_handle(&self, id: &str, handle: &FileHandle) -> Result<(), TreeError> {
+        self.conn.execute("UPDATE leaving SET handle = ?2 WHERE id = ?1", params![id, handle.encode()])?;
+        Ok(())
+    }
+
+    /// Whether item `id` is placed — by the base or by the new tree — at
+    /// another place than `rel`: then an object carrying its id at `rel` may
+    /// be the user's (the copy placed again, moved there), and only the
+    /// leaving object's handle tells (issue #104).
+    pub fn placed_elsewhere(&self, id: &str, rel: &std::path::Path) -> Result<bool, TreeError> {
+        for table in [Table::Items, Table::Staging] {
+            if self.locate(table, id)?.is_some_and(|l| l.placed && l.rel != rel) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     /// The file handle of the leaving object of item `id`, if one was taken.
     pub fn leaving_handle(&self, id: &str) -> Result<Option<FileHandle>, TreeError> {
         let stored: Option<Option<Vec<u8>>> = self.conn.query_row("SELECT handle FROM leaving WHERE id = ?1", [id], |r| r.get(0)).optional()?;

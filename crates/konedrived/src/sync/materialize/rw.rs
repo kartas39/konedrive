@@ -456,18 +456,35 @@ impl Materializer {
         // Where a handle is kept, the recorded place counts only for the
         // object carrying it; elsewhere, only an object with one link (a hard
         // link carries the same handle, and is the user's name).
+        // At its recorded place, an object with its id is it — after an
+        // editor's save by rename too, its handle then taken anew — unless the
+        // item is placed elsewhere, where the copy placed again may stand
+        // here by the user's move: then only its handle tells.
+        let elsewhere = self.store.call_blocking({ let (id, rel) = (id.to_owned(), entry.rel.clone()); move |s| s.placed_elsewhere(&id, &rel) })?;
+        let mut renewed = None;
         let itself = leaving.as_ref().is_some_and(|(_, at, handle)| match handle {
             None => *at == entry.rel,
             Some(h) => {
                 let (parent, name) = (entry.rel.parent().unwrap_or(Path::new("")), entry.rel.file_name());
                 let dir = self.disk.dir(parent).ok();
-                let same = name.zip(dir.as_ref()).and_then(|(name, dir)| konedrive_fs::handle::FileHandle::at(dir, name).ok()).as_ref() == Some(h);
+                let here = name.zip(dir.as_ref()).and_then(|(name, dir)| konedrive_fs::handle::FileHandle::at(dir, name).ok());
+                let same = here.as_ref() == Some(h);
                 let single = name.zip(dir.as_ref()).is_some_and(|(name, dir)| {
                     nix::sys::stat::fstatat(dir.as_fd(), name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW).is_ok_and(|s| entry.is_dir || s.st_nlink <= 1)
                 });
-                same && (*at == entry.rel || single)
+                if same {
+                    *at == entry.rel || single
+                } else if *at == entry.rel && !elsewhere {
+                    renewed = here;
+                    true
+                } else {
+                    false
+                }
             }
         });
+        if let (true, Some(handle)) = (itself, renewed) {
+            self.store.call_blocking({ let id = id.to_owned(); move |s| s.leaving_set_handle(&id, &handle) })?;
+        }
         let leaving = leaving.map(|(_, at, _)| at).filter(|_| itself);
         let placed_here = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed && l.rel == entry.rel);
         if let (Some(at), Some(_), false) = (&leaving, &staged, placed_here) {
@@ -787,6 +804,9 @@ impl Materializer {
                     return Ok(Removal::Kept);
                 }
             }
+            if id.is_some() {
+                self.release_other_names(dir, name, rel)?;
+            }
             self.disk.remove(dir, name, false)?;
         }
         if id.is_some() {
@@ -794,6 +814,31 @@ impl Materializer {
             run.note(EventKind::Removed, rel, None);
         }
         Ok(Removal::Gone)
+    }
+
+    /// A file of ours about to be taken off the disk that has other names —
+    /// hard links the user made — keeps them, but not as the item: its item
+    /// id goes from the inode first, so that what stays is the user's own
+    /// file, never the item under another name (issue #104, decision 1). A
+    /// downloaded one goes up as new; one not downloaded waits as not
+    /// downloaded, its state kept, so that it is never read as zeros.
+    fn release_other_names(&self, dir: &File, name: &OsStr, rel: &Path) -> Result<(), ApplyError> {
+        let stat = match nix::sys::stat::fstatat(dir.as_fd(), name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            Err(nix::errno::Errno::ENOENT) => return Ok(()),
+            Err(e) => return Err(std::io::Error::from(e).into()),
+        };
+        if stat.st_nlink <= 1 {
+            return Ok(());
+        }
+        let file = self.disk.open_file(dir, name)?;
+        match xattr::FileExt::remove_xattr(&file, placeholder::XATTR_ITEM_ID) {
+            Ok(()) => {}
+            Err(e) if e.raw_os_error() == Some(libc::ENODATA) => {}
+            Err(e) => return Err(e.into()),
+        }
+        tracing::info!("{} has other names, which stay as the user's own files", rel.display());
+        Ok(())
     }
 
     /// `resyncChangesUploadDifferences` (§3.7): a download, a file with local
@@ -950,10 +995,20 @@ impl Materializer {
         // with its id there — the copy placed again, moved there by the
         // user — is not it.
         let kept = self.store.call_blocking({ let id = id.to_owned(); move |s| s.leaving_handle(&id) }).map_err(|e| std::io::Error::other(e.to_string()))?;
+        // But for that, an object with its id at its place is it — an
+        // editor's save by rename made a new inode — and its handle is
+        // taken anew.
+        let mut renewed = None;
         if let Some(kept) = kept {
             match konedrive_fs::handle::FileHandle::at(&dir, name) {
                 Ok(there) if there == kept => {}
-                Ok(_) => return Ok(None),
+                Ok(there) => {
+                    let elsewhere = self.store.call_blocking({ let (id, rel) = (id.to_owned(), rel.to_path_buf()); move |s| s.placed_elsewhere(&id, &rel) }).map_err(|e| std::io::Error::other(e.to_string()))?;
+                    if elsewhere {
+                        return Ok(None);
+                    }
+                    renewed = Some(there);
+                }
                 Err(e) if gone(&e) => return Ok(None),
                 // No handle to compare (a filesystem that gives none): by
                 // its id, as without one.
@@ -961,7 +1016,12 @@ impl Materializer {
             }
         }
         match self.disk.probe(&dir, name) {
-            Ok(Probe::Managed { id: there, is_dir }) if there == id => Ok(Some((is_dir, dir))),
+            Ok(Probe::Managed { id: there, is_dir }) if there == id => {
+                if let Some(handle) = renewed {
+                    self.store.call_blocking({ let id = id.to_owned(); move |s| s.leaving_set_handle(&id, &handle) }).map_err(|e| std::io::Error::other(e.to_string()))?;
+                }
+                Ok(Some((is_dir, dir)))
+            }
             Ok(_) => Ok(None),
             Err(e) if gone(&e) => Ok(None),
             Err(e) => Err(e),

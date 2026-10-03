@@ -181,7 +181,7 @@ impl Examiner<'_> {
         let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
         let leaving_items = self.store.call_blocking(|s| s.leaving_with_handles())?;
         let leaving = leaving_items.iter().map(|(_, rel, _)| rel.clone()).collect();
-        let leaving_all: HashSet<String> = leaving_items.iter().map(|(id, _, _)| id.clone()).collect();
+        let leaving_index: HashMap<String, usize> = leaving_items.iter().enumerate().map(|(n, (id, _, _))| (id.clone(), n)).collect();
         let leaving_ids = leaving_items.into_iter().enumerate().filter_map(|(n, (id, _, handle))| Some((id, (n, handle?)))).collect();
         if let Some(progress) = progress {
             progress.started();
@@ -198,7 +198,7 @@ impl Examiner<'_> {
             leaving,
             leaving_ids,
             leaving_elsewhere: HashSet::new(),
-            leaving_all,
+            leaving_index,
             entries: Vec::new(),
             at: HashMap::new(),
             whole: BTreeSet::new(),
@@ -302,8 +302,8 @@ struct Run<'e, 'a> {
     /// Places in `leaving` where another object than the leaving one stands
     /// now (its handle kept and not that one's): not leaving.
     leaving_elsewhere: HashSet<usize>,
-    /// Every item id that is leaving.
-    leaving_all: HashSet<String>,
+    /// Every item id that is leaving, with its place in `leaving`.
+    leaving_index: HashMap<String, usize>,
     entries: Vec<Entry>,
     at: HashMap<PathBuf, usize>,
     whole: BTreeSet<PathBuf>,
@@ -579,6 +579,17 @@ impl Run<'_, '_> {
         };
         self.expected.insert(id.to_owned(), expect.clone());
         Ok(expect)
+    }
+
+    /// Whether entry `i`, carrying item id `id`, is a name of the leaving
+    /// object's own inode — its handle, or, with none kept, the object at
+    /// its recorded place — not merely another object with that id.
+    fn is_leaving_inode(&self, id: &str, i: usize) -> bool {
+        let Some(&n) = self.leaving_index.get(id) else { return false };
+        match self.leaving_ids.get(id) {
+            Some((_, handle)) => self.entries[i].handle.as_ref() == Some(handle),
+            None => self.at.get(&self.leaving[n]).is_some_and(|&j| self.entries[j].same_object(&self.entries[i])),
+        }
     }
 
     /// Whether `rel` is at or below an object that is leaving (issue #104).
@@ -913,11 +924,21 @@ impl Run<'_, '_> {
         // before it was), by its path only.
         // A file with other links is followed by its path only: its hard
         // link carries the same handle, and is the user's name.
-        for (n, handle) in self.leaving_ids.values().cloned().collect::<Vec<_>>() {
-            if let Some(&i) = self.at.get(&self.leaving[n]) {
-                if self.entries[i].handle.as_ref().is_some_and(|h| *h != handle) {
-                    self.leaving_elsewhere.insert(n);
-                }
+        // At its recorded place, an object with its id is it — an editor's
+        // save by rename makes a new inode, whose handle is taken anew —
+        // unless the item is placed elsewhere: then the copy placed again may
+        // stand there by the user's move, and only the handle tells.
+        for (id, (n, handle)) in self.leaving_ids.clone() {
+            let Some(&i) = self.at.get(&self.leaving[n]) else { continue };
+            let Some(there) = self.entries[i].handle.clone().filter(|h| *h != handle) else { continue };
+            let rel = self.leaving[n].clone();
+            let ours = self.entries[i].id.as_deref() == Some(id.as_str())
+                && !self.store({ let (id, rel) = (id.clone(), rel.clone()); move |s| s.placed_elsewhere(&id, &rel) })?;
+            if ours {
+                self.leaving_ids.insert(id.clone(), (n, there.clone()));
+                self.store(move |s| s.leaving_set_handle(&id, &there))?;
+            } else {
+                self.leaving_elsewhere.insert(n);
             }
         }
         for i in 0..self.entries.len() {
@@ -969,7 +990,7 @@ impl Run<'_, '_> {
                 Some(_) if self.under_leaving(&e.rel) => leaving.push(i),
                 // Another name of a leaving file (a hard link the user made):
                 // never the item's name in OneDrive, listed as one.
-                Some(id) if e.ty == Type::File && e.nlink > 1 && self.leaving_all.contains(id) => {
+                Some(id) if e.ty == Type::File && e.nlink > 1 && self.is_leaving_inode(id, i) => {
                     let rel = e.rel.clone();
                     if !self.ex.ignore.matches(&e.name) {
                         self.skip(&rel, "hard-link");

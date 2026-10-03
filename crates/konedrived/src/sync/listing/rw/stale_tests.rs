@@ -1113,3 +1113,104 @@ async fn a_hard_link_to_a_leaving_file_is_not_taken_for_it() {
     assert!(w.path("f-link.txt").exists() && w.path("docs/f.txt").exists(), "both names stay");
     assert_eq!(w.patches_of("F"), 0);
 }
+
+/// Copies every `user.konedrive.*` attribute of `from` onto `to`, as
+/// `cp --preserve=xattr` or vim with `+xattr` does.
+fn copy_konedrive_xattrs(from: &Path, to: &Path) {
+    for name in xattr::list(from).unwrap() {
+        if name.to_string_lossy().starts_with("user.konedrive.") {
+            if let Some(value) = xattr::get(from, &name).unwrap() {
+                xattr::set(to, &name, &value).unwrap();
+            }
+        }
+    }
+}
+
+/// Sixth review, point 1: `docs/f.txt` is leaving (F renamed in OneDrive to
+/// a name over 255 bytes) and an editor saves it by writing a new file that
+/// copies its attributes and renaming it over. The new inode at its place is
+/// the leaving object: no `PATCH`, the name in OneDrive stays long, the
+/// change goes up as content, and the file goes after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_save_by_rename_over_a_leaving_file_uploads_content_only() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    let long = long_name();
+    w.graph.with(|c| c.rename("F", "D", &long));
+    w.cycle(&listing).await;
+    w.examine_handed().await;
+    assert_eq!(w.store.call(|s| s.leaving()).await.unwrap(), vec![("F".to_owned(), PathBuf::from("docs/f.txt"))]);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let temp = w.path("docs/.f.txt.swp");
+    std::fs::write(&temp, b"one, saved by rename").unwrap();
+    copy_konedrive_xattrs(&w.path("docs/f.txt"), &temp);
+    std::fs::rename(&temp, w.path("docs/f.txt")).unwrap();
+    for _ in 0..3 {
+        let mut batch = crate::sync::local::Batch::new();
+        batch.name(Path::new("docs"), std::ffi::OsStr::new("f.txt"));
+        w.examine(batch).await;
+        w.upload().await;
+        w.cycle(&listing).await;
+    }
+    assert_eq!(w.patches_of("F"), 0, "never renamed in OneDrive");
+    w.graph.with(|c| {
+        let f = c.item("F").unwrap();
+        assert_eq!(f.name, long, "its name in OneDrive stays");
+        assert_eq!(f.content, b"one, saved by rename", "the change went up as content");
+    });
+    assert!(!w.path("docs/f.txt").exists(), "and it went from the disk after");
+}
+
+/// Sixth review, point 2: a hard link the user made to a leaving file
+/// outlives it. When the daemon takes the leaving name off the disk, the
+/// inode loses its item id first: the link is the user's own file, uploaded
+/// as new — never the item, renamed in OneDrive to the link's name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hard_link_left_by_a_leaving_file_is_the_users_own_file() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    let long = long_name();
+    w.graph.with(|c| c.rename("F", "D", &long));
+    w.cycle(&listing).await;
+    w.examine_handed().await;
+    std::fs::hard_link(w.path("docs/f.txt"), w.path("f-link.txt")).unwrap();
+    w.rounds(&listing, 2).await;
+    assert!(!w.path("docs/f.txt").exists(), "the leaving name went");
+    w.scan_and_upload().await;
+    w.rounds(&listing, 1).await;
+    assert_eq!(w.patches_of("F"), 0, "never renamed in OneDrive");
+    assert_eq!(w.graph.with(|c| c.item("F").unwrap().name.clone()), long);
+    assert!(w.graph.with(|c| c.items.values().any(|i| i.name == "f-link.txt" && i.id != "F" && i.content == b"one")), "uploaded as new: {:?}", w.graph.with(|c| c.paths()));
+    assert_eq!(std::fs::read(w.path("f-link.txt")).unwrap(), b"one");
+}
+
+/// Sixth review, point 3: a hard link the user makes to the copy placed
+/// again of a leaving file — the same item id, another inode — is a hard
+/// link of that copy, not of the leaving object: the copy is still the item,
+/// and its change goes up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hard_link_to_the_copy_placed_again_leaves_the_copy_the_item() {
+    use std::io::Write;
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    w.graph.with(|c| c.rename("F", "D", &long_name()));
+    w.cycle(&listing).await;
+    w.examine_handed().await;
+    // What keeps the leaving file: a state that cannot be read.
+    xattr::set(w.path("docs/f.txt"), placeholder::XATTR_STATE, b"garbage").unwrap();
+    w.rounds(&listing, 2).await;
+    assert!(w.path("docs/f.txt").exists(), "held");
+    w.graph.with(|c| c.rename("F", "D", "g.txt"));
+    w.rounds(&listing, 2).await;
+    assert_eq!(id_at(&w.path("docs/g.txt")).as_deref(), Some("F"), "placed again");
+    write_version(&w.path("docs/g.txt"), b"one", &w.cloud_ctag("F"));
+    std::fs::hard_link(w.path("docs/g.txt"), w.path("h.txt")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::OpenOptions::new().append(true).open(w.path("docs/g.txt")).unwrap().write_all(b", changed").unwrap();
+    w.scan_and_upload().await;
+    assert_eq!(w.graph.with(|c| c.item("F").unwrap().content.clone()), b"one, changed", "the copy's change went up");
+    assert_eq!(w.patches_of("F"), 0, "never renamed or moved by the daemon");
+}

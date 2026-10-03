@@ -2563,11 +2563,17 @@ application must never read zeros where real content should be.
   it, and its `leaving` place with it), a parent renamed here (the examination's rebase), and anywhere
   else by its own file handle — an examination or a Full reconcile that meets it, or, for a cycle that
   comes first, a walk of the folder. Never by its item id alone: the copy placed again and a copy that
-  kept the attributes carry the id too, and are the user's; and where the handle is kept, the recorded
-  path counts only for the object carrying it (the user may have moved the copy placed again to where
-  the leaving object was: that is the user's move, sent to OneDrive). A hard link carries the same
-  handle and id: a file with other links is followed by its recorded path only, and its other names
-  are listed as `hard-link`, never taken for it. A store from before the handle was kept follows it by
+  kept the attributes carry the id too, and are the user's. At its recorded path an object with its
+  id is the leaving object — after an editor's save by rename too, whose new inode's handle is then
+  kept — unless the item is placed elsewhere (by the base or the new tree): then the copy placed again
+  may stand there by the user's move, which is sent to OneDrive, and only the kept handle tells. A hard
+  link carries the same handle and id: a file with other links is followed by its recorded path only,
+  and the other names of the leaving object's own inode are listed as `hard-link` while it stays —
+  names of another inode with the same id (the copy placed again) are not. When the daemon takes a file
+  with other names off the disk (leaving, or removed in OneDrive), it takes the item id off the inode
+  first: the names that stay are the user's own files — a downloaded one goes up as new, one not
+  downloaded waits as not downloaded, never read as zeros — and are found by the next examination that
+  meets them (a Full scan, if no event says it). A store from before the handle was kept follows it by
   its path only. Its row is dropped only when neither its path nor its
   handle finds it; any other error (a directory it may not read, on its path or on the walk) leaves it
   for the next cycle. The walk reads every directory of the folder, once per such cycle. From a later
@@ -2612,7 +2618,9 @@ application must never read zeros where real content should be.
   `…an_unreadable_directory_on_the_way_keeps_the_leaving_row`, `…a_blocked_404_row_goes_once_the_listing_removes_its_item`,
   `…a_blocked_404_row_without_its_file_goes_…`, `…a_large_delta_is_no_whole_listing_…`,
   `…moving_the_copy_placed_again_to_where_the_leaving_object_was_…`, `…a_hard_link_to_a_leaving_file_…`,
-  `sync::materialize::rw::tests::a_directory_the_walk_cannot_list_keeps_the_leaving_row`) · open.
+  `sync::materialize::rw::tests::a_directory_the_walk_cannot_list_keeps_the_leaving_row`,
+  `…a_save_by_rename_over_a_leaving_file_uploads_content_only`, `…a_hard_link_left_by_a_leaving_file_…`,
+  `…a_hard_link_to_the_copy_placed_again_…`) · open.
 - **F189. A row placed again carries no local object** (`konedrived/src/tree.rs` `write`,
   `commit_staging`; `tree/reconcile.rs` `land_deferred`; issue #104) — a row that turns placed over an
   `items` row that is not placed drops whatever object `items` recorded, in a delta's overlay, a full
