@@ -1397,6 +1397,8 @@ mod move_out;
 
 mod candidates;
 
+mod foreign_parent;
+
 /// Issue #87: a failure no step settles gives its row a stable key, never
 /// the error's own text.
 #[test]

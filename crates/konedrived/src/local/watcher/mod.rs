@@ -109,8 +109,10 @@ pub trait Sink: Send {
 /// What became of a batch.
 #[derive(Debug)]
 pub enum Handled {
-    /// Examined. `recheck` is handed back after [`Timing::recheck`].
-    Done { recheck: Batch },
+    /// Examined. `recheck` is handed back after [`Timing::recheck`];
+    /// `passed`, the entries passed over, after a wait that grows as a
+    /// failed batch's does while they keep being passed over.
+    Done { recheck: Batch, passed: Box<Batch> },
     /// Not examined yet (no listing has completed): offered again after
     /// [`Timing::retry`], with whatever came meanwhile.
     NotYet,
@@ -143,7 +145,9 @@ pub struct WatchStatus {
     /// The folder was moved or deleted; the watcher has stopped.
     pub root_gone: bool,
     /// Why the examination keeps failing ([`FAILING_AFTER`] times in a row
-    /// by now): no local change is uploaded until one passes.
+    /// by now): no local change is uploaded until one passes. The batch is
+    /// offered again after a wait that grows to [`DEGRADED_SCAN`], so this
+    /// can outlast its cause by that long.
     pub failing: Option<String>,
     pub overflows: u64,
     /// Batches handed to the examiner.
@@ -166,8 +170,13 @@ impl WatchStatus {
         if self.stopped {
             parts.push("local changes are no longer looked for: the watcher stopped (see the log)".to_owned());
         }
-        if let Some(why) = &self.failing {
-            parts.push(format!("local changes are not uploaded for now: they could not be examined ({why}); trying again"));
+        // A stopped watcher tries nothing again.
+        if let Some(why) = self.failing.as_ref().filter(|_| !self.stopped) {
+            parts.push(format!(
+                "local changes are not uploaded for now: examining them keeps failing (last: {why}); it is tried again, every {} \
+                 minutes at the longest",
+                DEGRADED_SCAN.as_secs() / 60
+            ));
         }
         if self.other_device > 0 {
             parts.push(format!(
@@ -567,7 +576,10 @@ impl Drop for ExaminerEnding {
         let said = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if !shared.stopping() && !shared.status().root_gone {
                 tracing::error!("the examiner of local changes stopped unexpectedly");
-                shared.update(|s| s.stopped = true);
+                shared.update(|s| {
+                    s.stopped = true;
+                    s.failing = None;
+                });
             }
         }));
         if said.is_err() {
@@ -586,6 +598,13 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
     let mut retry_at: Option<Instant> = None;
     let mut failures: u32 = 0;
     let mut rechecks: Vec<(Instant, Batch)> = Vec::new();
+    // The entries passed over: one pending recheck, however many runs passed
+    // them over, and a wait that doubles while a recheck passes any over again.
+    let mut passed = Batch::new();
+    let mut passed_at: Option<Instant> = None;
+    let mut passes: u32 = 0;
+    // The batch to examine holds the passed-over entries' recheck.
+    let mut rechecking = false;
     let mut next_scan: Option<Instant> = None;
     let absorb = |message: ToExaminer, pending: &mut Batch, acks: &mut Vec<mpsc::Sender<bool>>| match message {
         ToExaminer::Batch(batch) => pending.merge(batch),
@@ -622,11 +641,16 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
             }
         }
         rechecks = waiting;
+        if passed_at.is_some_and(|at| at <= now) {
+            pending.merge(std::mem::take(&mut passed));
+            passed_at = None;
+            rechecking = true;
+        }
         let flushing = !acks.is_empty();
         if !pending.is_empty() && (flushing || retry_at.is_none_or(|at| at <= now)) {
             let batch = std::mem::take(&mut pending);
             let examined = match sink.handle(&batch) {
-                Handled::Done { recheck } => {
+                Handled::Done { recheck, passed: again } => {
                     retry_at = None;
                     failures = 0;
                     shared.update(|s| {
@@ -636,9 +660,26 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
                     if !recheck.is_empty() {
                         rechecks.push((Instant::now() + timing.recheck, recheck));
                     }
+                    if again.is_empty() {
+                        if rechecking {
+                            passes = 0;
+                        }
+                    } else {
+                        // A run beside a pending recheck joins it, and leaves its time alone.
+                        if passed_at.is_none() {
+                            passes = passes.saturating_add(1);
+                            let wait = timing.retry.saturating_mul(1 << passes.min(16).saturating_sub(1)).min(timing.degraded_scan);
+                            passed_at = Some(Instant::now() + wait);
+                        }
+                        passed.merge(*again);
+                    }
+                    rechecking = false;
                     true
                 }
                 Handled::NotYet => {
+                    // Not a failure: what failed before is no longer what holds the batch.
+                    failures = 0;
+                    shared.update(|s| s.failing = None);
                     tracing::debug!("the folder has no completed listing yet; its local changes wait");
                     pending.merge(batch);
                     retry_at = Some(Instant::now() + timing.retry);
@@ -672,7 +713,7 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
         for ack in acks.drain(..) {
             let _ = ack.send(true);
         }
-        let wake = [(!pending.is_empty()).then_some(retry_at).flatten(), rechecks.iter().map(|(at, _)| *at).min(), next_scan]
+        let wake = [(!pending.is_empty()).then_some(retry_at).flatten(), rechecks.iter().map(|(at, _)| *at).min(), passed_at, next_scan]
             .into_iter()
             .flatten()
             .min();

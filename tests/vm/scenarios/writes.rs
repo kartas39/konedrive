@@ -379,14 +379,30 @@ pub fn round_trip(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
 /// scan and a delta cycle both read the mount point: it is listed as on another device, nothing
 /// inside it goes up, and what changes beside it does.
 pub fn mount_without_attributes_is_passed_over(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
-    with_world(ctx, "vfat", Seed { folders: &[], files: &[] }, |w| {
-        // Made while the sync is stopped, so that the directory under the mount is never an item.
+    vfat_mount(ctx, checks, false)
+}
+
+/// The same mount, made over a folder OneDrive has (F72: the mount hides the folder's own
+/// directory): the folder stays in OneDrive, and the cycle still completes.
+pub fn mount_without_attributes_over_a_synced_folder(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
+    vfat_mount(ctx, checks, true)
+}
+
+fn vfat_mount(ctx: &Ctx, checks: &mut Checks, synced: bool) -> Result<(), String> {
+    with_world(ctx, if synced { "vfat-over" } else { "vfat" }, Seed { folders: &[], files: &[] }, |w| {
+        if synced {
+            w.sh("mkdir stick")?;
+            w.wait("stick in OneDrive", || w.cloud("stick").map(drop))?;
+            w.wait("the outbox empty", || w.outbox_empty().then_some(()))?;
+        }
+        // Mounted while the sync is stopped: in the other case the directory under the mount is
+        // made now, and is never an item.
         ctx.runtime.block_on(w.service.stop_sync());
         let image = w.base.join("stick.img");
         let made = Command::new("sh")
             .arg("-c")
             .arg(format!(
-                "modprobe vfat; mkdir '{1}' && truncate -s 16M '{0}' && mkfs.vfat '{0}' >/dev/null && mount -t vfat -o loop '{0}' '{1}'",
+                "modprobe vfat; mkdir -p '{1}' && truncate -s 16M '{0}' && mkfs.vfat '{0}' >/dev/null && mount -t vfat -o loop '{0}' '{1}'",
                 image.display(),
                 w.path("stick").display()
             ))
@@ -395,6 +411,7 @@ pub fn mount_without_attributes_is_passed_over(ctx: &Ctx, checks: &mut Checks) -
         if !made.success() {
             return Err("cannot mount a vfat image inside the folder".into());
         }
+        let mounted = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
         // The kernel fact under it: what reading a user attribute of the mount point answers.
         let answer = match xattr::get(w.path("stick"), "user.konedrive.item-id") {
             Ok(value) => format!("{} attribute", if value.is_some() { "an" } else { "no" }),
@@ -414,20 +431,26 @@ pub fn mount_without_attributes_is_passed_over(ctx: &Ctx, checks: &mut Checks) -
                 return Err(format!("the mount is listed as {listed}, not as other-device"));
             }
             w.wait("the outbox empty", || w.outbox_empty().then_some(()))?;
-            if w.cloud("stick").is_some() || w.cloud("stick/inside.txt").is_some() {
-                return Err("the mount, or a file inside it, was uploaded".into());
+            if w.cloud("stick").is_some() != synced || w.cloud("stick/inside.txt").is_some() {
+                return Err(if synced { "the folder under the mount left OneDrive, or a file inside the mount was uploaded" } else { "the mount, or a file inside it, was uploaded" }.into());
             }
-            if w.service.last_error().contains("could not be") {
-                return Err("the folder is not brought up to date, or not examined".into());
+            // A delta cycle that began after the mount was made has completed: its scan walked
+            // into the mount. (The Full local scan passed, or the mount would not be listed.)
+            std::thread::sleep(Duration::from_millis(1100));
+            ctx.runtime.block_on(w.service.refresh()).map_err(|e| e.to_string())?;
+            w.wait("a cycle completed with the mount there", || (w.service.status().0 > mounted).then_some(()))?;
+            if w.service.last_error().contains("brought up to date") {
+                return Err("the cycle with the mount there failed".into());
             }
-            Ok(format!("the mount is listed as {listed}, nothing of it went up, and a file beside it did"))
+            let under = if synced { "the folder under it stays in OneDrive, nothing inside it went up" } else { "nothing of it went up" };
+            Ok(format!("the mount is listed as {listed}, {under}, and a file beside it did"))
         })();
         let _ = Command::new("umount").arg(w.path("stick")).status();
         match outcome {
             Ok(note) => Ok(format!("{note}; reading an attribute of the mount point answers: {answer}")),
             Err(e) => Err(format!("{e}; reading an attribute of the mount point answers: {answer}; LastError: {:?}", w.service.last_error())),
         }
-    }, checks, "writes: vfat mount")
+    }, checks, if synced { "writes: vfat mount over a synced folder" } else { "writes: vfat mount" })
 }
 
 /// `LO3`: a copy that kept its konedrive attributes and cannot be stripped (immutable, so even

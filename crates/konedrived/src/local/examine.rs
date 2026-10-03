@@ -29,10 +29,10 @@
 //! in a root that went away. The content check never fills a placeholder,
 //! reads only downloaded files (WR1), and probes for a writer with a read
 //! lease before trusting what it reads. A row the worker is running is never
-//! taken from under it: what changed since waits behind it. An entry that
-//! cannot be opened, stripped or read is passed over and examined again
-//! later; its trouble never fails the batch. Everything found is applied to
-//! the store in one transaction.
+//! taken from under it: what changed since waits behind it. An entry this
+//! daemon is refused to open, strip or read is passed over and examined
+//! again later; its trouble never fails the batch. Everything found is
+//! applied to the store in one transaction.
 
 mod classify;
 mod finish;
@@ -120,9 +120,12 @@ pub struct Examined {
     /// elsewhere, editors' backups.
     pub stripped: Vec<PathBuf>,
     /// Places this daemon may not read (a directory set to `000`), and
-    /// entries it could not open, strip or read (`Run::entry_io`): not
+    /// entries it was refused to open, strip or read (`Run::entry_io`): not
     /// examined, so nothing in or at them counts as missing.
     pub unreadable: Vec<PathBuf>,
+    /// The entries passed over, to examine again: kept apart from `recheck`,
+    /// since their cause may last, and the watcher backs their recheck off.
+    pub passed: Batch,
     /// The folder's filesystem had changed: its file handles were taken again
     /// (a Full scan), and nothing was decided by the old ones.
     pub renewed: bool,
@@ -225,7 +228,18 @@ impl Examiner<'_> {
         run.list(batch)?;
         run.probe_expected()?;
         run.classify(batch)?;
-        run.finish()
+        let out = run.finish()?;
+        if let Some(first) = out.unreadable.first() {
+            let shown: Vec<String> = out.unreadable.iter().take(3).map(|rel| rel.display().to_string()).collect();
+            let more = if out.unreadable.len() > shown.len() { ", ..." } else { "" };
+            tracing::warn!(
+                "{} place(s) this daemon may not read or change are not examined, and nothing in them is uploaded: {}{more} (the first is {})",
+                out.unreadable.len(),
+                shown.join(", "),
+                first.display()
+            );
+        }
+        Ok(out)
     }
 
     /// The Full local scan: every directory of the folder.
@@ -312,6 +326,10 @@ struct Run<'e, 'a> {
     at: HashMap<PathBuf, usize>,
     whole: BTreeSet<PathBuf>,
     named: BTreeMap<PathBuf, BTreeSet<OsString>>,
+    /// Places not examined in this run: unreadable, passed over, or a
+    /// directory with an id not its own that could not be stripped or went
+    /// while the run looked at it. Nothing at them counts as missing, and
+    /// nothing new below them gets a row.
     unreadable: HashSet<PathBuf>,
     base: HashMap<String, Option<Row>>,
     /// Item id → the local object the base records (`items.local_handle`),

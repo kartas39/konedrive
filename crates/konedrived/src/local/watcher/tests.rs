@@ -108,7 +108,7 @@ struct Recorder(mpsc::Sender<Batch>);
 impl Sink for Recorder {
     fn handle(&mut self, batch: &Batch) -> Handled {
         let _ = self.0.send(batch.clone());
-        Handled::Done { recheck: Batch::new() }
+        Handled::Done { recheck: Batch::new(), passed: Box::default() }
     }
 }
 
@@ -477,7 +477,7 @@ impl Sink for Failing {
             return Handled::Failed("the store is closed (this test's own failure)".into());
         }
         let _ = self.1.send(batch.clone());
-        Handled::Done { recheck: Batch::new() }
+        Handled::Done { recheck: Batch::new(), passed: Box::default() }
     }
 }
 
@@ -500,8 +500,45 @@ fn a_batch_that_keeps_failing_is_said_until_one_passes() {
     let said: Vec<String> = said.lock().unwrap().iter().flatten().cloned().collect();
     assert!(!said.is_empty() && said.iter().all(|why| why.contains("the store is closed")), "the failing batch was not said: {said:?}");
     let failing = WatchStatus { failing: said.first().cloned(), ..WatchStatus::default() };
-    assert!(failing.note().is_some_and(|note| note.contains("could not be examined")), "{:?}", failing.note());
+    assert!(failing.note().is_some_and(|note| note.contains("keeps failing")), "{:?}", failing.note());
     watcher.stop();
+}
+
+/// A sink that passes one entry over in every batch, and says each batch.
+struct PassingOver(mpsc::Sender<Batch>);
+
+impl Sink for PassingOver {
+    fn handle(&mut self, batch: &Batch) -> Handled {
+        let _ = self.0.send(batch.clone());
+        let mut passed = Batch::new();
+        passed.name(Path::new(""), OsStr::new("stuck.txt"));
+        Handled::Done { recheck: Batch::new(), passed: Box::new(passed) }
+    }
+}
+
+/// LO3: an entry that keeps being passed over has one recheck pending, however
+/// many runs passed it over, and its wait doubles: 0.2 s, 0.4 s, 0.8 s here,
+/// where a recheck for each run every 0.3 s would be a dozen batches.
+#[test]
+fn a_passed_over_entry_has_one_recheck_that_backs_off() {
+    let fx = Fx::new();
+    let (tx, rx) = mpsc::channel();
+    let mut config = fx.config();
+    // The longest wait, which the tests' clocks put at 0.3 s.
+    config.timing.degraded_scan = Duration::from_secs(3600);
+    let watcher = Watcher::start(config, Box::new(PassingOver(tx))).unwrap();
+    assert!(next(&rx).is_full());
+    // Two more runs beside the pending recheck: they join it.
+    for name in ["one.txt", "two.txt"] {
+        std::fs::write(fx.path(name), b"x").unwrap();
+        assert!(watcher.flush(WAIT));
+    }
+    std::thread::sleep(Duration::from_millis(1700));
+    watcher.stop();
+    let mut stuck = Batch::new();
+    stuck.name(Path::new(""), OsStr::new("stuck.txt"));
+    let rechecks = rx.try_iter().filter(|batch| *batch == stuck).count();
+    assert!((1..=3).contains(&rechecks), "{rechecks} rechecks of the passed-over entry in 1.7 s");
 }
 
 /// A sink that says it was handed a batch, and panics on it.

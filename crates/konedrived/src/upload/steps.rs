@@ -73,7 +73,15 @@ pub(super) fn swap_name(row: &OutboxRow) -> String {
 }
 
 /// The item id of the directory `dir` (relative to the root), read from the
-/// disk: the root's is the drive's root.
+/// disk: the root's is the drive's root. Only an id that is the directory's
+/// own counts: the base has it as a folder, and records this very object for
+/// it (or, with no object recorded, places it here; a folder that is leaving
+/// has its object, or its place, in `leaving`). A copy that kept its
+/// attributes, or a folder from elsewhere, carries an id that names another
+/// folder in OneDrive; nothing is sent into that one because of it. The
+/// examination strips such a directory when it can, but it does not always
+/// see it (a batch that names only what is below it), and cannot always strip
+/// it (`LO3`): this is the one place every row passes before it is sent.
 pub(super) async fn dir_id(e: &Engine, disk: &Disk, dir: &Path) -> Result<Option<String>, Fail> {
     if dir.as_os_str().is_empty() {
         return Ok(e.store().call(|s| s.root_item_id()).await?);
@@ -84,10 +92,35 @@ pub(super) async fn dir_id(e: &Engine, disk: &Disk, dir: &Path) -> Result<Option
         Err(err) if matches!(err.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => return Ok(None),
         Err(err) => return Err(err.into()),
     };
-    Ok(match disk.probe(&parent, name)? {
-        Probe::Managed { id, is_dir: true } => Some(id),
-        _ => None,
-    })
+    let Probe::Managed { id, is_dir: true } = disk.probe(&parent, name)? else { return Ok(None) };
+    let here = FileHandle::at(&parent, name).ok();
+    let (asked, at) = (id.clone(), dir.to_owned());
+    let own = e
+        .store()
+        .call(move |s| {
+            if !s.get(Table::Items, &asked)?.is_some_and(|row| row.kind == Kind::Folder) {
+                return Ok(false);
+            }
+            // The object the base records for it, or the one kept while it is leaving.
+            let recorded = match s.local_handle(&asked)? {
+                Some(handle) => Some(handle),
+                None => s.leaving_handle(&asked)?,
+            };
+            if let (Some(recorded), Some(here)) = (&recorded, &here) {
+                return Ok(recorded == here);
+            }
+            if s.locate(Table::Items, &asked)?.is_some_and(|l| l.placed && l.rel == at) {
+                return Ok(true);
+            }
+            // No longer placed, and no object recorded: a folder that is
+            // leaving, or one inside it, where what leaves stays.
+            Ok(s.leaving_had(&asked)? && s.leaving()?.iter().any(|(_, rel)| at.starts_with(rel)))
+        })
+        .await?;
+    if !own {
+        tracing::debug!("{} carries the id of another folder ({id}); nothing is sent into that one for it", dir.display());
+    }
+    Ok(own.then_some(id))
 }
 
 /// The folder in OneDrive the row's item goes into: the one the examination

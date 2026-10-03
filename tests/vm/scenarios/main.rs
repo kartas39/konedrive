@@ -680,6 +680,10 @@ fn scenarios() -> Vec<(&'static str, Scenario)> {
             writes::mount_without_attributes_is_passed_over,
         ),
         (
+            "writes: a mount that holds no user attributes over a synced folder leaves the folder in OneDrive, and the cycle completes",
+            writes::mount_without_attributes_over_a_synced_folder,
+        ),
+        (
             "writes: a copy that cannot be stripped is passed over, and does not stop the examination",
             writes::copy_that_cannot_be_stripped_is_passed_over,
         ),

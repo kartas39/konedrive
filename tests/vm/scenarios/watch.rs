@@ -25,7 +25,7 @@ struct Recorder(mpsc::Sender<Batch>);
 impl Sink for Recorder {
     fn handle(&mut self, batch: &Batch) -> Handled {
         let _ = self.0.send(batch.clone());
-        Handled::Done { recheck: Batch::new() }
+        Handled::Done { recheck: Batch::new(), passed: Box::default() }
     }
 }
 

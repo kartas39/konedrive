@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -177,7 +179,7 @@ impl Run<'_, '_> {
                     // A create or mkdir between its two commit steps (§5): its
                     // replay adopts it.
                 } else {
-                    self.stranger(i);
+                    self.stranger(i)?;
                 }
             }
             return Ok(None);
@@ -189,7 +191,7 @@ impl Run<'_, '_> {
                 same.push(i);
             } else {
                 // Its own id with the other kind: not the item.
-                self.stranger(i);
+                self.stranger(i)?;
             }
         }
         if same.is_empty() {
@@ -257,7 +259,7 @@ impl Run<'_, '_> {
                 Place::Outside(to) => {
                     // It left the folder: these are copies it left behind.
                     for &i in &same {
-                        self.stranger(i);
+                        self.stranger(i)?;
                     }
                     if let Some(rel) = &expected_rel {
                         self.removal(OutboxKind::MoveOut, id, &base, rel, Some(object(handle)), Some(to.as_path()))?;
@@ -300,7 +302,7 @@ impl Run<'_, '_> {
         for (n, other) in groups.iter().enumerate() {
             if n != pick {
                 for &i in other {
-                    self.stranger(i);
+                    self.stranger(i)?;
                 }
             }
         }
@@ -313,32 +315,37 @@ impl Run<'_, '_> {
     /// with its contents. A placeholder cannot be read here and is listed; so
     /// is a file with other links, whose other names stripping would change
     /// too.
-    fn stranger(&mut self, i: usize) {
+    fn stranger(&mut self, i: usize) -> Result<(), ExamineError> {
         let e = self.entries[i].clone();
-        let Some(dir) = self.entry_io(&e, self.ex.disk.dir(e.dir_rel())) else { return };
         let listed = |run: &mut Self, reason: &str| {
             if !run.ex.ignore.matches(&e.name) {
                 run.skip(&e.rel, reason);
             }
             run.consumed.insert(i);
         };
+        let strip = |opened: io::Result<File>| opened.and_then(|object| placeholder::strip_konedrive_xattrs(&object));
+        let dir = self.ex.disk.dir(e.dir_rel());
         let stripped = match e.ty {
-            Type::Dir => self.ex.disk.open_subdir(&dir, &e.name).and_then(|dir| placeholder::strip_konedrive_xattrs(&dir)),
+            Type::Dir => strip(dir.and_then(|dir| self.ex.disk.open_subdir(&dir, &e.name))),
             Type::File if e.hydrated() && e.nlink > 1 => {
                 listed(self, "hard-link");
-                return;
+                return Ok(());
             }
-            Type::File if e.hydrated() => self.ex.disk.open_file(&dir, &e.name).and_then(|file| placeholder::strip_konedrive_xattrs(&file)),
+            Type::File if e.hydrated() => strip(dir.and_then(|dir| self.ex.disk.open_file(&dir, &e.name))),
             _ => {
                 listed(self, "not-downloaded");
-                return;
+                return Ok(());
             }
         };
-        if self.entry_io(&e, stripped).is_none() {
-            // It still carries an id that is not its own: never uploaded as
-            // new, nor anything in it.
+        if self.entry_io(&e, stripped)?.is_none() {
+            // Not stripped, because it was refused or because it went: it
+            // is not uploaded as new, and what was listed inside it gets no
+            // row in this run (`unnamed`). In any other run, and at the
+            // worker, the id it may still carry is no folder to go into
+            // (`upload::steps::dir_id`).
             self.consumed.insert(i);
-            return;
+            self.unreadable.insert(e.rel.clone());
+            return Ok(());
         }
         if e.ty == Type::Dir && !self.whole.contains(&e.rel) {
             self.out.recheck.tree(&e.rel);
@@ -347,6 +354,7 @@ impl Run<'_, '_> {
         self.entries[i].id = None;
         self.entries[i].state = StateAttr::Absent;
         self.fresh.push(i);
+        Ok(())
     }
 
     /// Save-by-rename with a backup: item `id`'s inode (`group`) now sits
@@ -364,7 +372,7 @@ impl Run<'_, '_> {
                     .dir(e.dir_rel())
                     .and_then(|dir| self.ex.disk.open_file(&dir, &e.name))
                     .and_then(|file| placeholder::strip_konedrive_xattrs(&file));
-                if self.entry_io(&e, stripped).is_some() {
+                if self.entry_io(&e, stripped)?.is_some() {
                     self.out.stripped.push(e.rel);
                 }
             }
@@ -384,7 +392,7 @@ impl Run<'_, '_> {
     /// create of that file goes (never one being sent: callers exclude it).
     pub(super) fn save_by_rename(&mut self, id: &str, base: &Row, s: usize) -> Result<(), ExamineError> {
         let e = self.entries[s].clone();
-        let Some((state, reason, next_try)) = self.probe_writer(&e) else { return Ok(()) };
+        let Some((state, reason, next_try)) = self.probe_writer(&e)? else { return Ok(()) };
         if let Some(row) = self.pending_row(&e).filter(|row| row.state != OutboxState::Running) {
             self.ops.push(OutboxOp::Remove(row.seq));
         }
@@ -423,9 +431,8 @@ impl Run<'_, '_> {
     /// Rules 3–5: an entry without an item id.
     fn unnamed(&mut self, i: usize) -> Result<(), ExamineError> {
         let e = self.entries[i].clone();
-        // Inside a directory that was passed over (one that could not be
-        // stripped of an id that is not its own): it has no folder to go
-        // into, and waits with it.
+        // Inside a directory this run did not strip of an id that is not
+        // its own (refused, or gone meanwhile): it has no folder to go into.
         if e.dir_rel().ancestors().any(|dir| self.unreadable.contains(dir)) {
             return Ok(());
         }
@@ -509,7 +516,7 @@ impl Run<'_, '_> {
             d.reason = Some(refused.as_str().into());
         } else if !is_dir {
             // One that cannot be opened is passed over: no row.
-            let Some(probed) = self.probe_writer(&e) else { return Ok(()) };
+            let Some(probed) = self.probe_writer(&e)? else { return Ok(()) };
             (d.state, d.reason, d.next_try) = probed;
         }
         self.detections.push(d);
