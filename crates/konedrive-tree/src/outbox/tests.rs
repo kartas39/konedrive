@@ -332,3 +332,43 @@ fn a_path_that_is_not_utf8_is_kept_as_it_is() {
     s.outbox_apply(&[OutboxOp::Unskip(rel)], 9).unwrap();
     assert!(s.local_skipped().unwrap().is_empty());
 }
+
+/// Restoring held deletes, and a row dropped for what OneDrive decided,
+/// forget what is below the item by the new tree too, as
+/// `forget_local_objects` does: a row a delta staged meanwhile moves into
+/// the folder, and one it adds there.
+#[test]
+#[ignore = "shows TR2: only what `items` has below the item is forgotten"]
+fn dropping_a_row_forgets_what_the_new_tree_has_below_its_item() {
+    use OutboxKind::*;
+    let handle_of = |s: &TreeStore, table: &str, id: &str| -> Option<Vec<u8>> {
+        s.conn.query_row(&format!("SELECT local_handle FROM {table} WHERE id = ?1"), [id], |r| r.get(0)).optional().unwrap().flatten()
+    };
+    for restore in [true, false] {
+        let d = base_row("D", "R", "d", Kind::Folder);
+        let a = base_row("A", "D", "a", Kind::File);
+        let t = base_row("T", "R", "t", Kind::File);
+        let mut s = store(&[d.clone(), a.clone(), t.clone()]);
+        for (id, n) in [("D", 1), ("A", 2), ("T", 3)] {
+            s.set_local_handle(id, inode(n).handle.as_ref()).unwrap();
+        }
+        let state = if restore { OutboxState::Held } else { OutboxState::Ready };
+        let Recorded::Inserted(seq) = s.outbox_record(&Detection { state, ..detect(Delete, Some(&d), None, "d", None) }).unwrap() else { panic!() };
+        // A delta staged meanwhile moves `T` into `D` and adds `N` there.
+        s.begin_staging(true).unwrap();
+        s.stage(&[Change::Upsert(Row { parent_id: Some("D".into()), ..t.clone() }), Change::Upsert(base_row("N", "D", "n", Kind::File))]).unwrap();
+        s.set_local_handle("N", inode(4).handle.as_ref()).unwrap();
+        if restore {
+            assert_eq!(s.outbox_drop_held().unwrap().len(), 1);
+        } else {
+            s.outbox_drop(seq, None, Some("D"), None).unwrap();
+        }
+        for id in ["D", "A"] {
+            assert_eq!((handle_of(&s, "items", id), handle_of(&s, "staging", id)), (None, None), "{id}, restore={restore}");
+        }
+        assert_eq!(handle_of(&s, "staging", "N"), None, "N, added below D by the new tree, restore={restore}");
+        assert_eq!(handle_of(&s, "staging", "T"), None, "T, moved below D by the new tree, restore={restore}");
+        s.commit_staging("link-2").unwrap();
+        assert_eq!((s.local_handle("T").unwrap(), s.local_handle("N").unwrap()), (None, None), "the swap gives none back, restore={restore}");
+    }
+}

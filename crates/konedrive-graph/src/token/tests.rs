@@ -301,3 +301,51 @@ async fn forget_waits_for_an_in_flight_refresh_to_commit_first() {
     let _ = refresh.await.unwrap();
     assert_eq!(store.current(), None);
 }
+
+fn read_only_refresh(delay: Duration) -> Mock {
+    Mock::given(method("POST"))
+        .and(path("/token"))
+        .and(body_string_contains("scope=Files.Read+User.Read"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"access_token": "AT-RO", "expires_in": 3600, "scope": "Files.Read User.Read"}))
+                .set_delay(delay),
+        )
+}
+
+/// A read-write account's read-only token is kept while it is fresh: asked for
+/// again, it needs no request.
+#[tokio::test]
+#[ignore = "shows GR5: every read-only token of a read-write account is a refresh"]
+async fn a_read_write_accounts_read_only_token_is_cached() {
+    let server = MockServer::start().await;
+    read_only_refresh(Duration::ZERO).mount(&server).await;
+    let (tokens, _) = read_write_manager(&server, Arc::new(MemoryStore::with_token("RT0")));
+    tokens.seed(&scoped("AT-RW", "Files.ReadWrite User.Read")).await;
+    assert_eq!(tokens.read_only_token().await.unwrap(), "AT-RO");
+    assert_eq!(tokens.read_only_token().await.unwrap(), "AT-RO");
+    assert_eq!(server.received_requests().await.unwrap().len(), 1, "one refresh for both");
+}
+
+/// While a read-write account's read-only token is fetched, the account's own
+/// cached token is still handed out: Graph calls do not wait for that request.
+#[tokio::test]
+#[ignore = "shows GR5: the read-only refresh holds the cache every Graph call reads"]
+async fn the_accounts_own_token_does_not_wait_for_a_read_only_refresh() {
+    let server = MockServer::start().await;
+    read_only_refresh(Duration::from_secs(2)).mount(&server).await;
+    let (tokens, _) = read_write_manager(&server, Arc::new(MemoryStore::with_token("RT0")));
+    let tokens = Arc::new(tokens);
+    tokens.seed(&scoped("AT-RW", "Files.ReadWrite User.Read")).await;
+    let export = tokio::spawn({
+        let tokens = tokens.clone();
+        async move { tokens.read_only_token().await }
+    });
+    // The refresh is under way, and answers in two seconds.
+    while server.received_requests().await.unwrap().is_empty() {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let own = tokio::time::timeout(Duration::from_millis(500), tokens.access_token()).await;
+    assert_eq!(own.expect("the account's cached token waits for the read-only refresh").unwrap(), "AT-RW");
+    assert_eq!(export.await.unwrap().unwrap(), "AT-RO");
+}
