@@ -81,7 +81,7 @@ fn a_full_onedrive_is_one_line_and_names_are_listed_per_file() {
 fn what_keeps_a_leaving_folder_is_blocked() {
     use crate::local::examine::{MOUNTED_INSIDE, UNKNOWN_STATE};
     for key in [UNKNOWN_STATE, MOUNTED_INSIDE] {
-        assert_eq!(group_of(reason_key(key)), Group::PerFile, "{key}");
+        assert_eq!(group_of(reason_key(key), false), Group::PerFile, "{key}");
     }
     let mut store = TreeStore::in_memory().unwrap();
     store.outbox_apply(&[OutboxOp::Skip { rel: PathBuf::from("docs/u.txt"), reason: UNKNOWN_STATE.into(), size: 0 }], 1).unwrap();
@@ -95,4 +95,48 @@ fn failure_keys_wait() {
     for key in [reason::NETWORK, reason::LOCAL_IO, reason::STORE, reason::FAILED] {
         assert_eq!(known_group(key), Some(Group::Waiting), "{key}");
     }
+}
+
+/// UP3. A blocked row needs the user (`BlockedCount`): whatever the worker
+/// blocked it with, it is never listed among the changes that "go up by
+/// themselves".
+#[test]
+fn a_blocked_row_is_never_shown_as_going_up_by_itself() {
+    // What the worker blocks a row with, beside the names OneDrive refuses, `refused: …`,
+    // `forbidden` and what keeps a leaving folder: `steps.rs`, `content.rs`, `move_out.rs` —
+    // the last one an error's own text (`content.rs`, a state that cannot be read);
+    // and `blocked`, which `kept_reason` gives a blocked row that has no reason.
+    let reasons = ["no-name", "no-item", "no-guard", "no-handle", "bad-handle", "another-item", "f6.txt carries a state konedrive cannot read"];
+    let mut store = TreeStore::in_memory().unwrap();
+    let mut ops: Vec<OutboxOp> = reasons.iter().enumerate().map(|(i, why)| create(&format!("f{i}.txt"), OutboxState::Blocked, Some(why))).collect();
+    ops.push(create("bare.txt", OutboxState::Blocked, None));
+    store.outbox_apply(&ops, 1).unwrap();
+    let got = summary(&store.skipped_groups().unwrap(), &store.outbox_groups().unwrap(), false);
+    let waiting: Vec<&str> = got.iter().filter(|(group, ..)| group == Group::Waiting.as_str()).map(|(_, reason, ..)| reason.as_str()).collect();
+    assert!(waiting.is_empty(), "blocked rows listed as waiting, by reason: {waiting:?}");
+    assert_eq!(got.iter().map(|(.., n, _)| *n).sum::<u32>(), 8, "{got:?}");
+}
+
+/// UP3. Every reason the worker itself writes has its group in the table:
+/// none is "a reason not in the table", logged as unknown.
+#[test]
+fn every_reason_the_worker_writes_is_in_the_table() {
+    let written = [
+        // Constants of `upload::reason` the worker writes.
+        reason::PAUSED.to_owned(),
+        reason::SESSION_OPEN.to_owned(),
+        reason::NAME_HELD.to_owned(),
+        // Sentences (`steps.rs`, `engine/drain.rs`, `content.rs`).
+        "changed in OneDrive again and again".to_owned(),
+        "changing in OneDrive again and again".to_owned(),
+        "the upload session ended twice".to_owned(),
+        "not allowed now: the folder is read-only".to_owned(),
+        // A key with the error behind it (`move_out.rs`).
+        format!("{}: errno 5", reason::DOWNLOAD),
+        format!("{}: errno 5", reason::UNREACHABLE),
+        format!("{}: Resource temporarily unavailable", reason::NOT_OPENED),
+        format!("{}: Function not implemented", reason::NO_LEASE),
+    ];
+    let unknown: Vec<&str> = written.iter().map(String::as_str).filter(|why| known_group(reason_key(why)).is_none()).collect();
+    assert!(unknown.is_empty(), "not in the table: {unknown:?}");
 }

@@ -82,20 +82,37 @@ pub const OPENING_LEFT_KEEP: i64 = 7 * 24 * 3600;
 /// they leave. [`frees`] decides among them.
 pub(super) const FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AND (base_parent IS NOT target_parent OR base_name IS NOT target_name)";
 
-/// Columns added to schema 3 without a rebuild (issue #38): the size of what a
-/// row sends, and of what is never uploaded, as the examination saw it — so
-/// that counts and sums never read the disk.
-const ADDED: [(&str, &str); 2] = [("outbox", "size"), ("local_skipped", "size")];
+/// Columns added to schema 3 without a rebuild: the size of what a row
+/// sends, and of what is never uploaded, as the examination saw it — so
+/// that counts and sums never read the disk (issue #38); and the item a new
+/// file's upload left in OneDrive with other content ([`TreeStore::outbox_bad_item`]).
+const ADDED: [(&str, &str, &str); 5] = [
+    ("outbox", "size", "INTEGER"),
+    ("local_skipped", "size", "INTEGER"),
+    ("outbox", "bad_item", "TEXT"),
+    ("outbox", "bad_item_ctag", "TEXT"),
+    ("outbox", "bad_item_etag", "TEXT"),
+];
+
+/// A row an earlier version wrote while a bad item waited to be deleted kept
+/// its id in the reason, `hash-mismatch:<item id>`: the id moves to its own
+/// column, and the reason is the plain key. Such a row has no tag: the
+/// worker deletes its item as that version did, with the tag it reads then.
+/// A row that already has a bad item is not touched (limitations log F200).
+const BAD_ITEM_FROM_REASON: &str = "
+    UPDATE outbox SET bad_item = substr(reason, 15), reason = 'hash-mismatch'
+     WHERE reason LIKE 'hash-mismatch:_%' AND bad_item IS NULL;";
 
 /// Brings a schema-3 store up to what this daemon uses: the added columns
 /// and the indexes.
 pub(crate) fn upgrade(conn: &Connection) -> Result<(), TreeError> {
-    for (table, column) in ADDED {
+    for (table, column, kind) in ADDED {
         let has = conn.prepare(&format!("SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"))?.exists([column])?;
         if !has {
-            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} INTEGER"))?;
+            conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
         }
     }
+    conn.execute_batch(BAD_ITEM_FROM_REASON)?;
     conn.execute_batch(&INDEXES.replace("FREES", FREES))?;
     let has_last = conn.prepare("SELECT 1 FROM pragma_table_info('upload_openings') WHERE name = 'last'")?.exists([])?;
     let has_table = conn.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'upload_openings'")?.exists([])?;

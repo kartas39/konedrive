@@ -80,6 +80,45 @@ QString uploadReasonText(const QString &reason)
     if (reason == QLatin1String("refused")) {
         return i18n("Refused by OneDrive.");
     }
+    if (reason == QLatin1String("moved-out-not-opened")) {
+        return i18n("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later.");
+    }
+    if (reason.startsWith(QLatin1String("moved-out-not-opened: "))) {
+        return i18n("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later (%1).", reason.mid(22));
+    }
+    if (reason == QLatin1String("paused")) {
+        return i18n("Paused with the account: it goes on when the pause ends.");
+    }
+    if (reason == QLatin1String("upload-session-open")) {
+        return i18n("Its name in OneDrive is held by an upload of this folder that has not ended: tried again later.");
+    }
+    if (reason == QLatin1String("name-held-by-an-upload")) {
+        return i18n("Its name in OneDrive is held by an unfinished upload (another device, or one abandoned): tried again later.");
+    }
+    if (reason == QLatin1String("changed in OneDrive again and again") || reason == QLatin1String("changing in OneDrive again and again")) {
+        return i18n("It keeps changing in OneDrive: tried again later.");
+    }
+    if (reason == QLatin1String("the upload session ended twice")) {
+        return i18n("OneDrive ended the upload twice: tried again later.");
+    }
+    if (reason == QLatin1String("not allowed now")) {
+        return i18n("Uploads are not allowed now: it goes on when they are.");
+    }
+    if (reason.startsWith(QLatin1String("not allowed now: "))) {
+        return i18n("Uploads are not allowed now: it goes on when they are (%1).", reason.mid(17));
+    }
+    if (reason == QLatin1String("state-unreadable")) {
+        return i18n("The file's KOneDrive state cannot be read: it stays here until the file is replaced.");
+    }
+    if (reason.startsWith(QLatin1String("state-unreadable: "))) {
+        return i18n("The file's KOneDrive state cannot be read: it stays here until the file is replaced (%1).", reason.mid(18));
+    }
+    for (const QLatin1String key : {QLatin1String("no-name"), QLatin1String("no-item"), QLatin1String("no-guard"), QLatin1String("no-handle"),
+                                    QLatin1String("bad-handle"), QLatin1String("another-item"), QLatin1String("blocked")}) {
+        if (reason == key) {
+            return i18n("KOneDrive's record of this change is incomplete (%1): it stays here until the file is changed again.", reason);
+        }
+    }
     if (reason.startsWith(QLatin1String("refused: "))) {
         return i18n("OneDrive refused it: %1", reason.mid(9));
     }

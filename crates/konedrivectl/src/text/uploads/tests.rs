@@ -46,3 +46,36 @@ fn waiting_for_space_is_one_line_and_too_big_says_what_it_needs() {
     assert_eq!(quota_text("nearing", 5 << 30, false), "OneDrive: 5.0 GiB free (quota nearing).\n");
     assert_eq!(quota_text("", 0, false), "");
 }
+
+/// Quality finding `UP3`: every reason the worker's table gained has its sentence, and one
+/// with a detail behind it keeps the detail.
+#[test]
+fn the_reasons_the_worker_writes_have_sentences() {
+    let keys = [
+        "paused",
+        "moved-out-not-opened",
+        "upload-session-open",
+        "name-held-by-an-upload",
+        "changed in OneDrive again and again",
+        "changing in OneDrive again and again",
+        "the upload session ended twice",
+        "not allowed now",
+        "state-unreadable",
+        "no-name",
+        "no-item",
+        "no-guard",
+        "no-handle",
+        "bad-handle",
+        "another-item",
+        "blocked",
+    ];
+    for key in keys {
+        assert_ne!(upload_reason_text(key), key, "{key}");
+    }
+    assert_eq!(
+        upload_reason_text("not allowed now: the folder is read-only"),
+        "uploads are not allowed now: it goes on when they are (the folder is read-only)"
+    );
+    assert!(upload_reason_text("no-guard").contains("(no-guard)"));
+    assert_eq!(upload_reason_text("download-failed: errno 5"), "download-failed: errno 5", "a key with no sentence stays as stored");
+}

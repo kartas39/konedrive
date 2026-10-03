@@ -6,7 +6,7 @@
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{insert, rewrite, rows_for, rows_where, Base, OutboxKind, OutboxRow, OutboxState, OUTBOX_SEQ, SWAP_PREFIX};
+use super::{insert, rewrite, rows_for, rows_where, BadItem, Base, OutboxKind, OutboxRow, OutboxState, OUTBOX_SEQ, SWAP_PREFIX};
 use crate::{apply, upsert, ActivityRow, Change, Placement, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
 
 fn gone(seq: i64) -> TreeError {
@@ -106,6 +106,28 @@ impl TreeStore {
         )?;
         tx.commit()?;
         Ok(dropped.flatten())
+    }
+
+    /// The item a new file's upload left in OneDrive with other content
+    /// than was sent, still to be deleted before the file goes again
+    /// ([`BadItem`]). Kept in columns of their own, which no change of the
+    /// row's state or reason and no merge of an examination writes: they go
+    /// only with [`outbox_set_bad_item`](Self::outbox_set_bad_item), or with
+    /// the row.
+    pub fn outbox_bad_item(&self, seq: i64) -> Result<Option<BadItem>, TreeError> {
+        let bad: Option<(Option<String>, Option<String>, Option<String>)> = self
+            .conn
+            .query_row("SELECT bad_item, bad_item_ctag, bad_item_etag FROM outbox WHERE seq = ?1", [seq], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .optional()?;
+        Ok(bad.and_then(|(id, ctag, etag)| Some(BadItem { id: id?, ctag, etag })))
+    }
+
+    /// Remembers the bad item of row `seq`, or forgets it (`None`): deleted,
+    /// found gone, changed in OneDrive since, or adopted.
+    pub fn outbox_set_bad_item(&self, seq: i64, item: Option<&BadItem>) -> Result<(), TreeError> {
+        let (id, ctag, etag) = (item.map(|i| &i.id), item.and_then(|i| i.ctag.as_ref()), item.and_then(|i| i.etag.as_ref()));
+        self.conn.execute("UPDATE outbox SET bad_item = ?2, bad_item_ctag = ?3, bad_item_etag = ?4 WHERE seq = ?1", params![seq, id, ctag, etag])?;
+        Ok(())
     }
 
     /// Where a taking row sends its item: saved before the request that

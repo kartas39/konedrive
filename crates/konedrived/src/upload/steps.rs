@@ -47,7 +47,7 @@ pub(super) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> io::Result<T
 /// The name of the row's local object: the last part of where the
 /// examination saw it. A name OneDrive refuses is blocked here.
 pub(super) fn local_name(row: &OutboxRow) -> Result<String, Fail> {
-    let name = row.rel.file_name().ok_or(Fail::Now(Outcome::blocked("no-name")))?;
+    let name = row.rel.file_name().ok_or(Fail::Now(Outcome::blocked(reason::NO_NAME)))?;
     let refused = |r: names::Refused| Fail::Now(Outcome::blocked(r.as_str()));
     let name = name.to_str().ok_or_else(|| refused(names::Refused::NotUtf8))?;
     if let Some(r) = names::refused(OsStr::new(name)) {
@@ -451,12 +451,12 @@ async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::Fi
 }
 
 async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
-    let (Some(id), Some(base)) = (row.item_id.clone(), row.base.clone()) else { return Ok(Outcome::blocked("no-item")) };
+    let (Some(id), Some(base)) = (row.item_id.clone(), row.base.clone()) else { return Ok(Outcome::blocked(reason::NO_ITEM)) };
     let local = local_name(&row)?;
     let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
     let name = wanted_name(&row, &local);
     let found = locate(e, disk, &row).await?;
-    let Some(guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked("no-guard")) };
+    let Some(guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(reason::NO_GUARD)) };
     let change = ItemChange {
         name: (Some(name.as_str()) != base.name.as_deref()).then_some(name.as_str()),
         parent_id: (Some(parent.as_str()) != base.parent.as_deref()).then_some(parent.as_str()),
@@ -597,7 +597,7 @@ pub(super) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result<Outcome, F
     if folder {
         return delete_folder(e, &row, &id).await;
     }
-    let Some(guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked("no-guard")) };
+    let Some(guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(reason::NO_GUARD)) };
     match e.cfg.drive.delete_item(&id, &guard).await {
         Ok(()) => {
             e.fault(Fault::AfterSend)?;
@@ -656,7 +656,7 @@ async fn file_changed(e: &Engine, row: &OutboxRow, id: &str, base: &Base) -> Res
             Err(other) => return Err(other.into()),
         }
     }
-    Ok(Outcome::backoff("changed in OneDrive again and again"))
+    Ok(Outcome::backoff(reason::CHANGED_AGAIN))
 }
 
 /// A folder's delete (§4.7): one `DELETE` of the whole folder, unguarded —

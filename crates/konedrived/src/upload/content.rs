@@ -29,16 +29,12 @@ use crate::folder::disk::Disk;
 use crate::local::examine::OPEN_FOR_WRITING;
 use crate::local::{names, QUIET, RECHECK};
 use crate::folder::locks::InodeKey;
-use konedrive_tree::outbox::{Base, OutboxKind, OutboxRow};
+use konedrive_tree::outbox::{BadItem, Base, OutboxKind, OutboxRow};
 use konedrive_tree::Table;
 
 /// How far OneDrive's clock may be behind this machine's when a placeholder's
 /// creation time is compared with the recorded opening (issue #84).
 pub(super) const CLOCK_SLACK: i64 = 5 * 60;
-
-/// A new file's row whose upload OneDrive holds with other content, and
-/// could not be deleted yet: `hash-mismatch:<item id>`.
-const BAD_ITEM: &str = "hash-mismatch:";
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
     let local = local_name(&row)?;
@@ -53,7 +49,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     match found.state() {
         Ok(None | Some(State::Hydrated)) => {}
         Ok(Some(_)) => return Ok(Outcome::wait(reason::NOT_LOCAL, RECHECK)),
-        Err(err) => return Ok(Outcome::blocked(err.to_string())),
+        Err(err) => return Ok(Outcome::blocked(format!("{}: {err}", reason::BAD_STATE))),
     }
     let file = Arc::new(found.open()?);
     // Before the snapshot: the mark changes no size or time (§9).
@@ -168,7 +164,7 @@ async fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Res
         return Ok(Some(Stop::Wait(Outcome::Space(space::WAITING.into()))));
     }
     if let Err(why) = e.cfg.host.may_write() {
-        return Ok(Some(Stop::Wait(Outcome::wait(&format!("not allowed now: {why}"), std::time::Duration::ZERO))));
+        return Ok(Some(Stop::Wait(Outcome::wait(&format!("{}: {why}", reason::NOT_ALLOWED), std::time::Duration::ZERO))));
     }
     if locate(e, disk, row).await?.filter(|f| !f.is_dir).is_none() {
         return Ok(Some(Stop::Removed));
@@ -202,24 +198,71 @@ struct Job<'a> {
 }
 
 impl Job<'_> {
-    /// A new file's upload that OneDrive holds with other content:
-    /// that item goes before the file is sent again — or, holding this
-    /// content after all, is this file's.
+    /// A new file's upload that OneDrive holds with other content (the bad
+    /// item, remembered beside the row with the content tag the upload's
+    /// answer gave: [`Job::finish`]): that item goes before the file is sent
+    /// again — or, holding this content after all, is this file's.
+    ///
+    /// - The item is read again. It is still the bad upload while its cTag
+    ///   is the one remembered — the eTag moves by itself in OneDrive, with
+    ///   no change of content, and says nothing here (when the answer had no
+    ///   cTag, its eTag is what is compared). Then it is deleted, with the
+    ///   eTag just read as the guard, which covers the time between the read
+    ///   and the delete.
+    /// - Another cTag, or a `412` on that delete, means someone changed it
+    ///   in OneDrive since (another device, the web): theirs now, not this
+    ///   row's. It is left where it is and forgotten, and the name's holder
+    ///   is decided as any other's, by the `409` the create then gets
+    ///   ([`taken`]).
+    /// - With no tag remembered (a row an older version wrote, an answer
+    ///   that carried none) it is deleted as that version deleted it: with
+    ///   the tag just read, whatever happened to it meanwhile (F200).
+    /// - It is adopted only while nothing here knows it (no outbox row of
+    ///   the item, no local object: the test of [`taken`]): one the delta
+    ///   feed listed and a cycle placed here is that local file's.
+    /// - It is forgotten exactly when it is deleted, found gone, or left
+    ///   as someone else's; adopted, it goes with the row. Anything else —
+    ///   a read that fails, a delete OneDrive does not carry out — leaves it
+    ///   remembered for the next run, whatever the row's reason becomes.
+    ///
+    /// A `create` does this before anything it sends, so a row that goes
+    /// on to a copy (`steps::copy`) has no bad item left; a row made a
+    /// `create` again by `steps::upload_as_new` was an `update` or a
+    /// `move`, which never has one.
     async fn clear_bad_item(&self) -> Result<Option<Outcome>, Fail> {
-        let Some(bad) = self.row.reason.as_deref().and_then(|r| r.strip_prefix(BAD_ITEM)) else { return Ok(None) };
-        let item = match self.e.cfg.drive.item(bad).await {
+        let seq = self.row.seq;
+        let Some(bad) = self.e.store().call(move |s| s.outbox_bad_item(seq)).await? else { return Ok(None) };
+        let item = match self.e.cfg.drive.item(&bad.id).await {
             Ok(item) => item,
-            Err(DriveError::NotFound) => return Ok(None),
+            Err(DriveError::NotFound) => return self.forget_bad_item().await.map(|()| None),
             Err(err) => return Err(err.into()),
         };
         if item.quick_xor_hash() == Some(self.hash(None).await?.as_str()) {
-            return self.commit(item).await.map(Some);
+            let id = bad.id.clone();
+            let known_here = self.e.store().call(move |s| Ok(!s.outbox_for_item(&id)?.is_empty() || s.local_handle(&id)?.is_some())).await?;
+            if !known_here {
+                return self.commit(item).await.map(Some);
+            }
+        }
+        let left = || tracing::info!("what OneDrive holds for {} with other content was changed there since: it is left", self.found.rel.display());
+        if !bad.still(item.c_tag.as_deref(), item.e_tag.as_deref()) {
+            left();
+            return self.forget_bad_item().await.map(|()| None);
         }
         let guard = item.e_tag.clone().or(item.c_tag.clone()).unwrap_or_default();
-        match self.e.cfg.drive.delete_item(bad, &guard).await {
-            Ok(()) | Err(WriteError::NotFound) => Ok(None),
-            Err(err) => Err(err.into()),
+        match self.e.cfg.drive.delete_item(&bad.id, &guard).await {
+            Ok(()) | Err(WriteError::NotFound) => {}
+            Err(WriteError::Changed) => left(),
+            Err(err) => return Err(err.into()),
         }
+        self.forget_bad_item().await.map(|()| None)
+    }
+
+    /// The row's bad item is gone from OneDrive, or is not this row's any
+    /// more: nothing to delete.
+    async fn forget_bad_item(&self) -> Result<(), Fail> {
+        let seq = self.row.seq;
+        Ok(self.e.store().call(move |s| s.outbox_set_bad_item(seq, None)).await?)
     }
 
     async fn create(&self) -> Result<Outcome, Fail> {
@@ -354,11 +397,11 @@ impl Job<'_> {
 
     async fn update(&self) -> Result<Outcome, Fail> {
         let row = self.row;
-        let Some(id) = row.item_id.as_deref() else { return Ok(Outcome::blocked("no-item")) };
+        let Some(id) = row.item_id.as_deref() else { return Ok(Outcome::blocked(reason::NO_ITEM)) };
         let base = row.base.clone().unwrap_or_default();
         // F55 (4): a row queued against another version than the base's
         // carries that version's cTag, and no eTag.
-        let Some(mut guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked("no-guard")) };
+        let Some(mut guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(reason::NO_GUARD)) };
         let new_name = (Some(self.name) != base.name.as_deref()).then_some(self.name);
         let new_parent = (Some(self.parent) != base.parent.as_deref()).then_some(self.parent);
         if new_name.is_some() || new_parent.is_some() {
@@ -675,7 +718,7 @@ impl Job<'_> {
         tracing::info!("the upload session of {} ended: the upload starts over", self.found.rel.display());
         *restarts += 1;
         if *restarts > 1 {
-            return Err(Fail::Now(Outcome::backoff("the upload session ended twice")));
+            return Err(Fail::Now(Outcome::backoff(reason::SESSION_ENDED)));
         }
         Ok(None)
     }
@@ -847,14 +890,36 @@ impl Job<'_> {
         }
         tracing::warn!("OneDrive holds other content than was sent for {}: it goes again", self.found.rel.display());
         if self.row.kind == OutboxKind::Create {
-            // Remembered in the row, so that the next run deletes it first,
-            // whatever happens to this delete.
-            let outcome = Outcome::backoff(format!("{}{}", BAD_ITEM, item.id));
-            let guard = item.e_tag.clone().or(item.c_tag.clone()).unwrap_or_default();
-            return match self.e.cfg.drive.delete_item(&item.id, &guard).await {
-                Ok(()) | Err(WriteError::NotFound) => Ok(Outcome::backoff(reason::HASH)),
-                Err(_) => Ok(outcome),
-            };
+            // Remembered beside the row, with the content tag this answer
+            // gave, before its delete is asked for: the next run deletes it
+            // first whatever happens to this delete, and to the row
+            // meanwhile (`clear_bad_item`). The delete is asked even when
+            // the store fails: what cannot be remembered must not stay there.
+            let bad = BadItem::answered(&item.id, item.c_tag.as_deref(), item.e_tag.as_deref());
+            let seq = self.row.seq;
+            let remembered = self.e.store().call(move |s| s.outbox_set_bad_item(seq, Some(&bad))).await;
+            if let Err(err) = &remembered {
+                tracing::warn!("what OneDrive holds for {} with other content could not be recorded ({err})", self.found.rel.display());
+            }
+            // The answer's own tag: nothing came between. Neither tag in the
+            // answer: an empty guard, and what OneDrive makes of it (F200).
+            let tag = item.e_tag.clone().or(item.c_tag.clone());
+            match self.e.cfg.drive.delete_item(&item.id, tag.as_deref().unwrap_or_default()).await {
+                Ok(()) | Err(WriteError::NotFound) => {
+                    if remembered.is_ok() {
+                        self.forget_bad_item().await?;
+                    }
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "what OneDrive holds for {} with other content could not be deleted ({err}): it is deleted before the file goes again",
+                        self.found.rel.display()
+                    );
+                    // Neither deleted nor remembered: the store's failure is the row's.
+                    remembered?;
+                }
+            }
+            return Ok(Outcome::backoff(reason::HASH));
         }
         let made = Base {
             etag: item.e_tag.clone(),

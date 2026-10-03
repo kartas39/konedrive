@@ -54,7 +54,7 @@ pub(super) use changes::watch;
 pub use pick::{due, Pick, Picked, PORTION};
 use handles::set_local_handle;
 use record::record;
-pub use row::{Base, Committed, Detection, Inode, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded};
+pub use row::{BadItem, Base, Committed, Detection, Inode, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded};
 pub use schema::OPENING_LEFT_KEEP;
 pub(super) use schema::{upgrade, SCHEMA};
 use schema::FREES;

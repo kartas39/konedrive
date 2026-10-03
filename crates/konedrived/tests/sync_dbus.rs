@@ -691,8 +691,14 @@ async fn the_counters_travel_in_one_properties_changed_message() {
         s.skipped_count = 2;
     });
 
+    // Only the messages that carry a counter: what the registration itself changed (`Path`,
+    // `Source`, `State`, `LastError`) is sent by another task, and may come after the
+    // subscription above (limitations log D31).
+    let counters = ["ItemsListed", "ItemsPlaced", "SkippedCount"];
+    let mut carrying = messages_within(&mut changes, FOLDER_INTERFACE_NAME, Duration::from_millis(600)).await;
+    carrying.retain(|names| names.iter().any(|name| counters.contains(&name.as_str())));
     assert_eq!(
-        messages_within(&mut changes, FOLDER_INTERFACE_NAME, Duration::from_millis(600)).await,
+        carrying,
         vec![vec!["ItemsListed".to_owned(), "ItemsPlaced".to_owned(), "SkippedCount".to_owned()]],
         "all three counters must travel in one PropertiesChanged message, not one each"
     );
@@ -733,6 +739,11 @@ async fn each_property_changes_under_its_own_interface() {
         names.sort();
         seen.push((args.interface_name.to_string(), names));
     }
+    // Only the messages that carry one of the properties changed here: what the registration
+    // itself changed is sent by another task, and may come after the subscription above
+    // (limitations log D31).
+    let changed = ["Count", "ItemsListed", "Directories", "PoolSize", "PendingCount"];
+    seen.retain(|(_, names)| names.iter().any(|name| changed.contains(&name.as_str())));
     seen.sort();
     let one = |interface: &str, name: &str| (interface.to_owned(), vec![name.to_owned()]);
     assert_eq!(

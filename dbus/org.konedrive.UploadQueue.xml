@@ -52,10 +52,13 @@
          one-action (one action fixes every file: quota-exceeded, forbidden),
          per-file (each file needs the user: name-characters, name-spaces,
          name-reserved, name-not-utf8, too-large, refused — every
-         "refused: <message>" is summed as refused), never (never uploaded:
-         symlink, fifo, socket, device, other-device, reserved-name,
-         hard-link), waiting (goes up by itself; also every reason the
-         daemon does not know). Refused as NotUploaded is. -->
+         "refused: <message>" is summed as refused, and so is every reason
+         with a detail behind its key, "<key>: <detail>"; also every
+         blocked change whose reason is none of another group's, whatever
+         the reason), never (never uploaded: symlink, fifo, socket, device,
+         other-device, reserved-name, hard-link), waiting (goes up by
+         itself; also every reason the daemon does not know, of a change
+         that is not blocked). Refused as NotUploaded is. -->
     <method name="NotUploadedSummary">
       <arg name="reasons" type="a(ssut)" direction="out"/>
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveKeptBackList"/>

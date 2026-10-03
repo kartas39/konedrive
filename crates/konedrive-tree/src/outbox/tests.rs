@@ -306,6 +306,38 @@ fn dropping_held_rows_survives_a_cycles_swap() {
 }
 
 /// A kind or state no konedrive writes fails closed: blocked, never run.
+/// The item a bad upload left in OneDrive (quality finding `UP2`) is kept
+/// through every change of the row's state and reason and through an
+/// examination's merge, and goes only when it is cleared, or with the row.
+/// A row an earlier version wrote, with the id in its reason, is read as one.
+#[test]
+fn a_rows_bad_item_survives_a_settle_and_a_merge() {
+    let mut s = store(&[]);
+    let d = detect(OutboxKind::Create, None, Some(inode(1)), "a.txt", Some("R"));
+    let Recorded::Inserted(seq) = s.outbox_record(&d).unwrap() else { panic!() };
+    assert_eq!(s.outbox_bad_item(seq).unwrap(), None);
+    let bad = BadItem::answered("BAD", Some("c-BAD"), Some("e-BAD"));
+    assert_eq!((bad.ctag.as_deref(), bad.etag.as_deref()), (Some("c-BAD"), None), "the cTag alone when the answer has one");
+    assert!(bad.still(Some("c-BAD"), Some("e-moved")) && !bad.still(Some("c-moved"), Some("e-BAD")));
+    let by_etag = BadItem::answered("BAD", None, Some("e-BAD"));
+    assert!(by_etag.still(Some("c"), Some("e-BAD")) && !by_etag.still(Some("c"), Some("e-moved")));
+    s.outbox_set_bad_item(seq, Some(&bad)).unwrap();
+    s.outbox_set_state(seq, OutboxState::Retry, Some("network"), Some(5)).unwrap();
+    assert_eq!(s.outbox_record(&Detection { rel: "b.txt".into(), target_name: Some("b.txt".into()), state: OutboxState::Waiting, ..d.clone() }).unwrap(), Recorded::Merged(seq));
+    s.outbox_amend(seq, |row| row.snapshot = Some("1 2".into())).unwrap();
+    assert_eq!(s.outbox_bad_item(seq).unwrap(), Some(bad));
+    s.outbox_set_bad_item(seq, None).unwrap();
+    assert_eq!(s.outbox_bad_item(seq).unwrap(), None);
+
+    s.conn.execute("UPDATE outbox SET reason = 'hash-mismatch:OLD!1' WHERE seq = ?1", [seq]).unwrap();
+    upgrade(&s.conn).unwrap();
+    let old = s.outbox_bad_item(seq).unwrap().unwrap();
+    assert_eq!(old, BadItem { id: "OLD!1".into(), ctag: None, etag: None }, "an older row has no tag");
+    assert!(old.still(Some("c"), Some("e")), "and is taken for the bad upload, as that version took it");
+    assert_eq!(s.outbox_row(seq).unwrap().unwrap().reason.as_deref(), Some("hash-mismatch"));
+    assert_eq!(s.outbox_bad_item(seq + 1).unwrap(), None, "no such row");
+}
+
 #[test]
 fn an_unreadable_row_is_blocked() {
     let mut s = store(&[]);
