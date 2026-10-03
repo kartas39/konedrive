@@ -62,15 +62,29 @@ impl Cached {
 /// is valid for (`AccountService` keeps it, `docs/design/writes.md` §2).
 pub type GrantedHook = Arc<dyn Fn(&'static str, &str) + Send + Sync>;
 
+/// The access tokens kept between refreshes.
+#[derive(Default)]
+struct Slots {
+    /// The account's own token: what `access_token` hands out.
+    own: Option<Cached>,
+    /// A read-write account's read-only token (`read_only_token`), kept apart: `access_token`
+    /// never hands it out.
+    read_only: Option<Cached>,
+}
+
 pub struct TokenManager {
     secrets: Arc<dyn SecretStore>,
     state: Box<dyn RefreshReport>,
     /// `None` while no client ID is configured. Its scope is what every refresh asks for:
     /// the account's mode's (`AccountService::install_oauth`).
     oauth: std::sync::Mutex<Option<OAuthClient>>,
-    /// Held across a refresh, so concurrent callers wait for it instead of refreshing again.
-    cached: tokio::sync::Mutex<Option<Cached>>,
-    /// Called, with the cache's lock held, after every refresh of the account's token.
+    /// Held across a refresh, so concurrent callers wait for it instead of refreshing again,
+    /// and across everything that changes the stored refresh token. A fresh cached token is
+    /// handed out without it.
+    refreshing: tokio::sync::Mutex<()>,
+    /// Never held across an `await`. Taken after `refreshing` where both are held.
+    cached: std::sync::Mutex<Slots>,
+    /// Called, with the refresh lock held, after every refresh of the account's token.
     on_granted: std::sync::Mutex<Option<GrantedHook>>,
 }
 
@@ -80,7 +94,8 @@ impl TokenManager {
             secrets,
             state: Box::new(state),
             oauth: std::sync::Mutex::new(None),
-            cached: tokio::sync::Mutex::new(None),
+            refreshing: tokio::sync::Mutex::new(()),
+            cached: std::sync::Mutex::new(Slots::default()),
             on_granted: std::sync::Mutex::new(None),
         }
     }
@@ -90,7 +105,7 @@ impl TokenManager {
     }
 
     /// What each refreshed token turns out to be valid for is told to `hook`. It runs with
-    /// the token cache's lock held: it must not ask for a token.
+    /// the refresh lock held: it must not ask for a token.
     pub fn set_on_granted(&self, hook: GrantedHook) {
         *self.on_granted.lock().unwrap() = Some(hook);
     }
@@ -106,12 +121,38 @@ impl TokenManager {
         self.seed_as(response, self.asked()).await;
     }
 
-    /// Caches `response`'s access token, obtained by asking for `asked`.
+    /// Caches `response`'s access token, obtained by asking for `asked`, as the account's
+    /// own. A read-only token kept from before is dropped with the token it replaces.
     pub async fn seed_as(&self, response: &TokenResponse, asked: &'static str) {
-        *self.cached.lock().await = Some(Cached::from_response(response, asked));
+        let _refreshing = self.refreshing.lock().await;
+        self.set_own(response, asked);
     }
 
-    /// Runs `commit` with the token cache locked, and caches `response`'s token (obtained by
+    fn set_own(&self, response: &TokenResponse, asked: &'static str) {
+        *self.cached.lock().unwrap() = Slots { own: Some(Cached::from_response(response, asked)), read_only: None };
+    }
+
+    fn clear(&self) {
+        *self.cached.lock().unwrap() = Slots::default();
+    }
+
+    /// The account's own cached token and its scope, if it is fresh and was asked for under
+    /// `asked`.
+    fn fresh_own(&self, asked: &'static str) -> Option<(String, String)> {
+        let slots = self.cached.lock().unwrap();
+        slots.own.as_ref().filter(|c| c.fresh() && c.asked == asked).map(|c| (c.token.clone(), c.scope.clone()))
+    }
+
+    /// A cached token that can change nothing, if there is a fresh one: the account's own
+    /// when it is read-only, otherwise the one kept for `read_only_token`.
+    fn fresh_read_only(&self) -> Option<String> {
+        let slots = self.cached.lock().unwrap();
+        let usable = |c: &&Cached| c.fresh() && is_read_only(&c.scope);
+        let found = slots.own.as_ref().filter(usable).or(slots.read_only.as_ref().filter(usable));
+        found.map(|c| c.token.clone())
+    }
+
+    /// Runs `commit` with the refresh lock held, and caches `response`'s token (obtained by
     /// asking for `asked`) once it succeeds. No refresh can start in between: one
     /// that asked for the scope installed before the commit would record its narrower grant
     /// over the one `commit` records. `commit` must not ask for a token.
@@ -121,27 +162,32 @@ impl TokenManager {
         asked: &'static str,
         commit: impl FnOnce() -> Result<R, E>,
     ) -> Result<R, E> {
-        let mut cached = self.cached.lock().await;
+        let _refreshing = self.refreshing.lock().await;
         let committed = commit()?;
-        *cached = Some(Cached::from_response(response, asked));
+        self.set_own(response, asked);
         Ok(committed)
     }
 
-    /// Drops the cached access token, forcing the next call to refresh it. Used when a
+    /// Drops the cached access tokens, forcing the next call to refresh. Used when a
     /// Graph call rejects the cached token (401) without the refresh token itself being
-    /// invalid, e.g. after the daemon was suspended past the token's lifetime.
+    /// invalid, e.g. after the daemon was suspended past the token's lifetime, and when the
+    /// account turns read-only, to drop a token that can write. It does not wait for a
+    /// refresh under way. After a 401 the token that one caches is newer than the rejected
+    /// one. After a turn to read-only it may be one that can write, asked for before the
+    /// read-only client was installed: its `asked` says so, and it is not handed out, here
+    /// (`fresh_own`) or as a read-only token (`fresh_read_only`).
     pub async fn invalidate(&self) {
-        *self.cached.lock().await = None;
+        self.clear();
     }
 
-    /// Deletes the stored refresh token and clears the cached access token, holding the
-    /// cache lock across both so that an in-flight `access_token()` refresh (which holds
-    /// the same lock while it stores a rotated refresh token) always commits before this
-    /// deletes it, never after.
+    /// Deletes the stored refresh token and clears the cached access tokens, holding the
+    /// refresh lock across both so that an in-flight refresh (which holds the same lock
+    /// while it stores a rotated refresh token) always commits before this deletes it,
+    /// never after.
     pub async fn forget(&self) -> Result<(), SecretError> {
-        let mut cached = self.cached.lock().await;
+        let _refreshing = self.refreshing.lock().await;
         self.secrets.delete().await?;
-        *cached = None;
+        self.clear();
         Ok(())
     }
 
@@ -153,14 +199,17 @@ impl TokenManager {
     /// it was asked for under the scope installed now: after a switch, or a
     /// downgrade, to read-only, the next call refreshes down to `Files.Read`.
     pub async fn access_token_and_scope(&self) -> Result<(String, String), AuthError> {
-        let mut cached = self.cached.lock().await;
-        let asked = self.asked();
-        if let Some(c) = cached.as_ref().filter(|c| c.fresh() && c.asked == asked) {
-            return Ok((c.token.clone(), c.scope.clone()));
+        if let Some(own) = self.fresh_own(self.asked()) {
+            return Ok(own);
+        }
+        let _refreshing = self.refreshing.lock().await;
+        // Whoever held the lock may have refreshed it, or changed what is asked for.
+        if let Some(own) = self.fresh_own(self.asked()) {
+            return Ok(own);
         }
         let oauth = self.oauth.lock().unwrap().clone().ok_or(AuthError::SignedOut)?;
-        let (response, granted) = self.refresh_with(&oauth, &mut cached).await?;
-        *cached = Some(Cached::from_response(&response, oauth.scope()));
+        let (response, granted) = self.refresh_with(&oauth).await?;
+        self.cached.lock().unwrap().own = Some(Cached::from_response(&response, oauth.scope()));
         let hook = self.on_granted.lock().unwrap().clone();
         if let Some(hook) = hook {
             hook(oauth.scope(), &granted);
@@ -172,7 +221,8 @@ impl TokenManager {
     /// whatever the account's mode. The account's own token when it is read-only already;
     /// otherwise one obtained by a refresh that asks for `Files.Read` only — a subset of what
     /// was granted, which Microsoft allows — kept apart from the account's own, which stays
-    /// what it was. Refused if Microsoft answers with more than that.
+    /// what it was and is handed out meanwhile, and kept while it is fresh. Refused if
+    /// Microsoft answers with more than that.
     pub async fn read_only_token(&self) -> Result<String, AuthError> {
         if self.asked() == SCOPES {
             // A read-only account: its own token, refreshed and cached as usual, is the one.
@@ -181,24 +231,28 @@ impl TokenManager {
                 return Ok(token);
             }
         }
-        let mut cached = self.cached.lock().await;
-        if let Some(c) = cached.as_ref().filter(|c| c.fresh() && is_read_only(&c.scope)) {
-            return Ok(c.token.clone());
+        if let Some(token) = self.fresh_read_only() {
+            return Ok(token);
+        }
+        let _refreshing = self.refreshing.lock().await;
+        if let Some(token) = self.fresh_read_only() {
+            return Ok(token);
         }
         let oauth = self.oauth.lock().unwrap().clone().ok_or(AuthError::SignedOut)?.with_scope(SCOPES);
-        let (response, granted) = self.refresh_with(&oauth, &mut cached).await?;
+        let (response, granted) = self.refresh_with(&oauth).await?;
         if !is_read_only(&granted) {
             return Err(AuthError::Transient(format!(
                 "Microsoft answered a request for a read-only token with one valid for {granted:?}; it is not handed out"
             )));
         }
+        self.cached.lock().unwrap().read_only = Some(Cached::from_response(&response, SCOPES));
         Ok(response.access_token)
     }
 
-    /// One refresh with `oauth`, under the cache's lock (`cached` is its guard): the rotated
+    /// One refresh with `oauth`, under the refresh lock, which the caller holds: the rotated
     /// refresh token stored, and an `invalid_grant` turned into a sign-out. The response and
     /// what its token is valid for; the cache itself is the caller's to fill.
-    async fn refresh_with(&self, oauth: &OAuthClient, cached: &mut Option<Cached>) -> Result<(TokenResponse, String), AuthError> {
+    async fn refresh_with(&self, oauth: &OAuthClient) -> Result<(TokenResponse, String), AuthError> {
         let refresh_token = match self.secrets.load().await {
             Ok(Some(token)) => token,
             Ok(None) => return Err(AuthError::SignedOut),
@@ -227,7 +281,7 @@ impl TokenManager {
                 if let Err(e) = self.secrets.delete().await {
                     tracing::warn!("cannot delete the stored refresh token after an invalid grant: {e}");
                 }
-                *cached = None;
+                self.clear();
                 self.state.signed_out(SESSION_EXPIRED);
                 Err(AuthError::SignedOut)
             }

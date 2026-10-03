@@ -135,7 +135,7 @@ impl AccountService {
             drop(session);
             return self.abort_read_write(generation, format!("{e}; the account stays read-only.")).await;
         }
-        // All with the token cache held: no refresh can run between recording the
+        // All with the token manager's refresh lock held: no refresh can run between recording the
         // grant and caching the new token, so none can record its narrower grant over it. The
         // grant and the drive are recorded before config.toml says read-write, so
         // a crash in between finds them; the new token is cached only once it does, and the

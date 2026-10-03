@@ -318,3 +318,25 @@ fn stripping_leaves_no_konedrive_attribute_and_keeps_the_others() {
     }
     assert!(names.iter().any(|n| n == std::ffi::OsStr::new("user.other")), "user.other attribute was not preserved");
 }
+
+/// A time before 1970 is one a file can carry (`futimens` takes a negative
+/// `tv_sec`), so a placeholder for a file dated then is made, with that time.
+/// The daemon's read phase never asks for one (it cuts the cloud's time to
+/// 1970 first); `PopulateFromDirectory` passes a source file's own time.
+#[test]
+fn a_placeholder_can_carry_a_time_before_1970() {
+    let (dir, handle) = dir();
+    let mtime = UNIX_EPOCH - Duration::from_secs(86_400);
+    create_placeholder(&handle, "old.txt", "ITEM1", 4096, mtime).unwrap();
+    assert_eq!(std::fs::metadata(dir.path().join("old.txt")).unwrap().mtime(), -86_400);
+}
+
+/// A time before 1970 that is not on a whole second: `tv_nsec` counts forward
+/// from the second before it.
+#[test]
+fn a_time_before_1970_keeps_its_part_of_a_second() {
+    let (dir, handle) = dir();
+    create_placeholder(&handle, "old.txt", "ITEM1", 4096, UNIX_EPOCH - Duration::from_millis(1_250)).unwrap();
+    let meta = std::fs::metadata(dir.path().join("old.txt")).unwrap();
+    assert_eq!((meta.mtime(), meta.mtime_nsec()), (-2, 750_000_000));
+}

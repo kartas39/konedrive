@@ -101,15 +101,29 @@ impl ContentSource for RestartsFromZero {
     }
 }
 
-/// Serves a real file but declares a pre-epoch mtime — one `futimens`
-/// cannot be given. Everything about the *content* is correct; only the
-/// timestamp is unrepresentable here.
+/// Serves a real file but declares an mtime 2^63 seconds before 1970: a
+/// `SystemTime` can hold it, and `set_mtime` refuses it (that count of
+/// seconds does not fit an `i64`). Everything about the *content* is correct.
 struct ImpossibleMtime {
     inner: LocalDir,
 }
 
 #[async_trait]
 impl ContentSource for ImpossibleMtime {
+    async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
+        let mut fetched = self.inner.fetch(item_id, from, end).await?;
+        fetched.mtime = SystemTime::UNIX_EPOCH.checked_sub(std::time::Duration::from_secs(1 << 63)).unwrap();
+        Ok(fetched)
+    }
+}
+
+/// Serves a real file but declares an mtime one second before 1970.
+struct PreEpochMtime {
+    inner: LocalDir,
+}
+
+#[async_trait]
+impl ContentSource for PreEpochMtime {
     async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError> {
         let mut fetched = self.inner.fetch(item_id, from, end).await?;
         fetched.mtime = SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1);
@@ -396,8 +410,35 @@ async fn a_declared_size_of_zero_does_not_truncate_a_live_placeholder() {
     assert_eq!(read_state(&opened).unwrap(), Some(State::OnlineOnly));
 }
 
-/// An mtime the local filesystem cannot represent must not
-/// cost the user a file whose **content is entirely correct**.
+/// A source's time before 1970 is one a file can carry: the fill applies it,
+/// and the stamp records it, so the file can be dehydrated again
+/// (`stamp_matches`).
+///
+/// A time `set_mtime` does refuse is
+/// `an_mtime_the_filesystem_cannot_hold_still_hydrates_the_file`'s.
+#[tokio::test]
+async fn a_source_time_before_1970_is_applied_and_stamped() {
+    let remote = tempfile::tempdir().unwrap();
+    let payload = vec![5u8; 200_000];
+    std::fs::write(remote.path().join("ITEM11"), &payload).unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let file = placeholder(local.path(), "ITEM11", 4096);
+
+    let source = PreEpochMtime { inner: LocalDir::new(remote.path()) };
+    assert_eq!(hydrate_file(&file, &source).await, 0);
+
+    let mut opened = std::fs::File::open(local.path().join("file.bin")).unwrap();
+    let mut content = Vec::new();
+    opened.read_to_end(&mut content).unwrap();
+    assert_eq!(content, payload, "every byte of the file is there");
+    assert_eq!(read_state(&opened).unwrap(), Some(State::Hydrated));
+    assert!(konedrive_fs::placeholder::stamp_matches(&opened).unwrap(), "the stamp records the time the file has");
+    let mtime = opened.metadata().unwrap().modified().unwrap();
+    assert_eq!(mtime, SystemTime::UNIX_EPOCH - std::time::Duration::from_secs(1));
+}
+
+/// An mtime `set_mtime` refuses (one too far from 1970 for a `timespec`) must
+/// not cost the user a file whose **content is entirely correct**.
 ///
 /// The governing property of this whole sub-project is "never serve
 /// zeros", and neither answer here serves zeros: the bytes are all
@@ -433,12 +474,11 @@ async fn an_mtime_the_filesystem_cannot_hold_still_hydrates_the_file() {
          dehydrate this file for the rest of its life"
     );
     // And the stamp is a real one, not the unrepresentable value: the file
-    // kept a local, post-epoch mtime, which is exactly what makes the
-    // stamp agree with it.
+    // kept a local mtime, which is exactly what makes the stamp agree with it.
     let mtime = opened.metadata().unwrap().modified().unwrap();
     assert!(
         mtime > SystemTime::UNIX_EPOCH,
-        "the pre-epoch mtime was never applied; the file keeps a representable one"
+        "the refused mtime was never applied; the file keeps a representable one"
     );
 }
 

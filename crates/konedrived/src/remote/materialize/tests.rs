@@ -811,3 +811,18 @@ fn helper_answering(path: PathBuf, errno: i32) -> std::sync::mpsc::Receiver<Mark
     });
     rx
 }
+
+/// An item OneDrive dates before 1970 gets its placeholder like any other:
+/// the time the placeholder carries is cut to 1970-01-01 (`file::cloud_time`).
+#[test]
+fn an_item_dated_before_1970_gets_a_placeholder_dated_1970() {
+    let f = fixture();
+    let mut old = row("F", "R", "old.txt", Kind::File, 4096);
+    old.mtime = -86_400;
+    let applied = f.listed(&[root_row(), up(old)], false);
+    assert_eq!(applied.created, 1);
+    let path = f.path("old.txt");
+    assert_eq!(id_at(&path).as_deref(), Some("F"));
+    let meta = std::fs::metadata(&path).unwrap();
+    assert_eq!((meta.len(), meta.mtime()), (4096, 0));
+}
