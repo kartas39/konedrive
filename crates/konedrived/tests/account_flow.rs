@@ -719,3 +719,113 @@ async fn a_retired_account_begins_no_sign_in() {
     f.svc.retire().await.unwrap();
     assert_eq!(f.svc.begin_sign_in().await, Err(AccountError::Failed("this account is being removed".into())));
 }
+
+/// A wallet whose `delete` waits, once it has said it was entered, until the test lets it go:
+/// a sign-out held inside the wallet, with the session locked.
+#[derive(Default)]
+struct HeldWallet {
+    inner: MemoryStore,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl SecretStore for HeldWallet {
+    async fn exists(&self) -> Result<bool, konedrived::account::secret::SecretError> {
+        self.inner.exists().await
+    }
+
+    async fn load(&self) -> Result<Option<String>, konedrived::account::secret::SecretError> {
+        self.inner.load().await
+    }
+
+    async fn store(&self, refresh_token: &str) -> Result<(), konedrived::account::secret::SecretError> {
+        self.inner.store(refresh_token).await
+    }
+
+    async fn delete(&self) -> Result<(), konedrived::account::secret::SecretError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        self.inner.delete().await
+    }
+}
+
+/// Finding AC1. The start of a sign-in is one step under the session lock: the state, the
+/// generation and the cancel channel change together. A sign-out that holds the lock (here
+/// across the wallet's delete) while a sign-in begins therefore ends before the attempt
+/// starts, and cannot put the state back to `signed-out` under a live attempt.
+///
+/// The sign-out is of a signed-out account, so the sign-in passes what is asked without the
+/// lock and reaches the lock while the sign-out holds it.
+///
+/// Right is either answer that keeps the two together: the sign-in refused, or the account
+/// shown as `signing-in` for as long as its attempt can still sign it in.
+#[tokio::test]
+async fn a_sign_in_that_answered_a_url_is_shown_as_signing_in() {
+    let server = MockServer::start().await;
+    mock_microsoft(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = Arc::new(HeldWallet::default());
+    let svc = AccountService::single(dir.path(), endpoints(&server), wallet.clone(), Duration::from_secs(10)).await.unwrap();
+    svc.set_client_id(CLIENT_ID).unwrap();
+
+    // A sign-out of the signed-out account, now inside the wallet with the session locked.
+    let signing_out = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        async move { svc.sign_out().await }
+    });
+    wallet.entered.notified().await;
+    // The sign-in, begun meanwhile, as far as it goes: to the session lock. (Before the fix
+    // it was `signing-in` by now, and the sign-out then put it back with the attempt live.)
+    let mut beginning = std::pin::pin!(svc.begin_sign_in());
+    assert!(futures_util::poll!(beginning.as_mut()).is_pending(), "the sign-in waits for the sign-out");
+    wallet.release.notify_one();
+    signing_out.await.unwrap().unwrap();
+    // Refused is right too: then there is no attempt.
+    let Ok(url) = beginning.await else { return };
+
+    let shown = svc.state().get().state;
+    assert_eq!(simulate_browser(&url, "code=good-code").await.status(), 200);
+    assert_eq!(
+        shown,
+        SignInState::SigningIn,
+        "begin_sign_in answered a sign-in URL and the account showed {shown:?}"
+    );
+    wait_for(svc.state(), |s| s.state == SignInState::SignedIn).await;
+    assert_eq!(wallet.inner.current().as_deref(), Some("RT1"));
+}
+
+/// Finding AC1, the commit's side: an attempt whose account no longer shows `signing-in`
+/// stores nothing, even when nothing superseded it. Here the state is ended as a token
+/// refresh that found the stored token dead ends it, which bumps no generation
+/// (limitations log F204).
+#[tokio::test]
+async fn a_sign_in_commits_only_while_the_account_is_signing_in() {
+    use konedrive_graph::token::RefreshReport;
+    let f = Fixture::new(Duration::from_secs(5)).await;
+    f.svc.set_client_id(CLIENT_ID).unwrap();
+    let url = f.svc.begin_sign_in().await.unwrap();
+    f.svc.state().signed_out(SESSION_EXPIRED);
+
+    assert_eq!(simulate_browser(&url, "code=good-code").await.status(), 200);
+    // The commit has the tokens and has asked who they are for: the last it asks of
+    // Microsoft before it decides.
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let asked = f.server.received_requests().await.unwrap_or_default();
+            let got = |p: &str| asked.iter().any(|r| r.method.as_str() == "GET" && r.url.path() == p);
+            if got("/me") && got("/me/drive") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("the commit asks which account the tokens are for");
+    // Time for it to decide, and to store if it wrongly would.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(f.store.current(), None);
+    // The commit, had it gone through, would have made it `signed-in`.
+    let s = f.svc.state().get();
+    assert_eq!((s.state, s.last_error.as_str()), (SignInState::SignedOut, SESSION_EXPIRED));
+}

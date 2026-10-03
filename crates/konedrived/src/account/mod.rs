@@ -143,7 +143,9 @@ pub trait PendingUploads: Send + Sync {
 /// identifies the current sign-in attempt (if any): a spawned attempt only writes state
 /// while holding this lock and only if the generation it was started with is still
 /// current, so a superseded attempt (cancelled, signed out, or replaced by a newer
-/// `begin_sign_in`) can never resurrect state after the fact.
+/// `begin_sign_in`) can never resurrect state after the fact. An attempt also starts under this
+/// lock, in one step with the state it starts from (`begin_sign_in`, the switch to
+/// read-write), and commits only while the account still shows that attempt's state.
 struct Session {
     generation: u64,
     /// Interrupts a pending `listener.wait()`. Only ever `Some` for the current attempt.

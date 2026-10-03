@@ -2,14 +2,26 @@ use super::*;
 
 impl AccountService {
     /// Starts a sign-in and returns the URL the user must open in a browser.
+    ///
+    /// The start is one step under the session lock: the state becomes `signing-in`, the
+    /// generation is bumped and the cancel channel becomes this attempt's, with nothing of a
+    /// cancel or a sign-out in between. So an attempt is live only while the account shows
+    /// `signing-in`, and whatever ends that state ends the attempt. A start that is refused
+    /// leaves the state as it was.
+    ///
+    /// What can be refused without the lock is refused before it is taken: the lock is held
+    /// across a wallet prompt (a commit) and across a refresh in flight (a sign-out), and an
+    /// account that is signed in or signing in answers `Busy` at once, not after them. The
+    /// same is asked again under the lock, which is what decides.
     pub async fn begin_sign_in(self: &Arc<Self>) -> Result<String, AccountError> {
-        if self.is_retired() {
-            return Err(AccountError::Failed(RETIRED.into()));
+        self.may_begin_sign_in()?;
+        if self.state.get().state != SignInState::SignedOut {
+            return Err(AccountError::Busy);
         }
-        let client_id = self.state.get().client_id;
-        if client_id.is_empty() {
-            return Err(AccountError::NoClientId);
-        }
+        let mut session = self.session.lock().await;
+        // Asked again under the lock: a removal's sign-out, a sign-in or a restored session
+        // that came first leaves no attempt behind.
+        let client_id = self.may_begin_sign_in()?;
         if !self.state.try_transition(SignInState::SignedOut, SignInState::SigningIn) {
             return Err(AccountError::Busy);
         }
@@ -32,16 +44,27 @@ impl AccountService {
         let csrf = random_token();
         let url = self.authorize_url(&oauth, &redirect_uri, &pkce, &csrf);
         let (cancel_tx, cancel_rx) = oneshot::channel();
-        let generation = {
-            let mut session = self.session.lock().await;
-            session.generation += 1;
-            session.cancel = Some(cancel_tx);
-            session.generation
-        };
+        session.generation += 1;
+        session.cancel = Some(cancel_tx);
+        let generation = session.generation;
+        drop(session);
         let attempt = SignInAttempt { oauth, listener, redirect_uri, pkce, csrf, cancel: cancel_rx, generation };
         let this = Arc::clone(self);
         tokio::spawn(async move { this.finish_sign_in(attempt).await });
         Ok(url)
+    }
+
+    /// What refuses a sign-in whatever the state is, in the order it is said; otherwise the
+    /// client id the sign-in uses. Changes nothing.
+    fn may_begin_sign_in(&self) -> Result<String, AccountError> {
+        if self.is_retired() {
+            return Err(AccountError::Failed(RETIRED.into()));
+        }
+        let client_id = self.state.get().client_id;
+        if client_id.is_empty() {
+            return Err(AccountError::NoClientId);
+        }
+        Ok(client_id)
     }
 
     /// The authorization URL of a sign-in with `oauth`: Microsoft's account picker for a
@@ -393,9 +416,10 @@ impl AccountService {
     }
 
     /// Stores the refresh token and marks the session signed in, but only if `generation`
-    /// is still the current attempt, and only once the identity guard (§8.2) has let this
-    /// drive into this slot. Otherwise (a cancel or a sign-out ran first, a newer
-    /// `begin_sign_in` superseded this one, or the guard refused) the tokens are discarded
+    /// is still the current attempt and the account still shows `signing-in`, and only once
+    /// the identity guard (§8.2) has let this drive into this slot. Otherwise (a cancel or a
+    /// sign-out ran first, a newer `begin_sign_in` superseded this one, something else ended
+    /// the `signing-in` state, or the guard refused) the tokens are discarded
     /// without ever touching Secret Service. The guard is fail-closed: a drive that cannot
     /// be asked for refuses the sign-in too.
     async fn commit_sign_in(&self, generation: u64, asked: &'static str, tokens: TokenResponse) {
@@ -415,6 +439,18 @@ impl AccountService {
         let session = self.session.lock().await;
         // A retired account (`Accounts.Remove`) stores nothing, whatever the browser said.
         if session.generation != generation || self.is_retired() {
+            return;
+        }
+        // Nor does an account that is not signing in: whatever ended that state said the
+        // attempt had ended. Only a refresh that found the stored token dead does so without
+        // superseding the attempt (limitations log F204), and nothing else says it.
+        let state = self.state.get().state;
+        if state != SignInState::SigningIn {
+            tracing::warn!(
+                "the sign-in of account {:?} is dropped: the browser answered, but the account was {state:?} by \
+                 then, no longer signing in; signing in again works",
+                self.id
+            );
             return;
         }
         let recorded = match self.claim(&identity.drive, identity.email.as_deref(), &unsettled) {
