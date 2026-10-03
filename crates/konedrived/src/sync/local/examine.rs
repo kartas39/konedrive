@@ -54,7 +54,7 @@ use super::{snapshot, MASS_DELETE_FLOOR, MASS_DELETE_ITEMS, MASS_DELETE_PERCENT,
 use crate::drive::item::RESERVED_PREFIX;
 use crate::sync::disk::{Disk, HOLDING, NEW_PREFIX};
 use crate::sync::{InodeKey, InodeLocks};
-use crate::tree::outbox::{is_under, Base, Detection, Inode, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState};
+use crate::tree::outbox::{is_under, Base, Detection, Inode, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, SWAP_PREFIX};
 use crate::tree::{Kind, Located, Placement, Row, Store, Table, TreeError};
 
 /// A row's reason while a writer has the file open (§4.3).
@@ -1189,6 +1189,9 @@ impl Run<'_, '_> {
     fn found(&mut self, id: &str, i: usize, batch: &Batch) -> Result<(), ExamineError> {
         let e = self.entries[i].clone();
         let Some(base) = self.base_row(id)? else { return Ok(()) };
+        if !self.located(id)?.is_some_and(|l| l.placed) && !base.name.starts_with(SWAP_PREFIX) {
+            return self.found_leaving(id, &base, &e, batch);
+        }
         let recorded = self.local_handle(id)?;
         if e.handle.is_some() && e.handle != recorded {
             self.ops.push(OutboxOp::SetHandle { item_id: id.to_owned(), handle: e.handle.clone() });
@@ -1228,6 +1231,31 @@ impl Run<'_, '_> {
         // In place, unchanged or unknown, with no row: nothing to record.
         if d.kind == OutboxKind::Move && at_base && self.rows.of_item(id).next().is_none() {
             return Ok(());
+        }
+        self.detections.push(d);
+        Ok(())
+    }
+
+    /// Item `id`, which the base does not place here (a name too long, the
+    /// Personal Vault...), found as `e`: an object that stays on disk only
+    /// until what waits inside it is uploaded (issue #104). It is never
+    /// moved in OneDrive to where it is here, nor recorded as the item's
+    /// object again; only its content, changed here, goes up into the item
+    /// where OneDrive has it.
+    fn found_leaving(&mut self, id: &str, base: &Row, e: &Entry, batch: &Batch) -> Result<(), ExamineError> {
+        if e.ty != Type::File {
+            return Ok(());
+        }
+        let mut d = self.detection(OutboxKind::Update, id, base, e, e.ctag.as_deref());
+        (d.target_parent, d.target_name) = (base.parent_id.clone(), Some(base.name.clone()));
+        match self.content(id, base, e, batch)? {
+            Content::Changed => {}
+            Content::Waiting => {
+                d.state = OutboxState::Waiting;
+                d.reason = Some(OPEN_FOR_WRITING.into());
+                d.next_try = Some(self.ex.now + RECHECK.as_secs() as i64);
+            }
+            Content::Same | Content::Unknown => return Ok(()),
         }
         self.detections.push(d);
         Ok(())

@@ -1036,6 +1036,30 @@ impl TreeStore {
         rows_under(&self.conn, rel)
     }
 
+    /// Rows at `rel` or below it.
+    pub fn outbox_at_or_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
+        let mut rows = rows_under(&self.conn, rel)?;
+        rows.extend(all_rows(&self.conn)?.into_iter().filter(|row| row.rel == rel));
+        rows.sort_by_key(|row| row.seq);
+        Ok(rows)
+    }
+
+    /// What OneDrive removed at `rel` was taken off the disk (issue #104):
+    /// the rows that would upload, create or move something there or below
+    /// it have nothing left to send, and go — not one the worker is running,
+    /// whose commit meets OneDrive's answer, nor a removal, which the cycle's
+    /// [`outbox_drop_removed`](Self::outbox_drop_removed) settles. What went.
+    pub fn outbox_drop_under(&mut self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
+        let rows: Vec<OutboxRow> =
+            self.outbox_at_or_under(rel)?.into_iter().filter(|row| row.state != OutboxState::Running && !row.kind.removes()).collect();
+        let tx = self.conn.transaction()?;
+        for row in &rows {
+            tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+        }
+        tx.commit()?;
+        Ok(rows)
+    }
+
     /// Every row's blockers: the live rows it waits for (the module's four
     /// rules), computed for all rows at once, as the worker did before issue
     /// #38: what the tests hold the point queries of [`pick`] to.
@@ -1370,6 +1394,41 @@ impl TreeStore {
         for table in [Table::Items, Table::Staging] {
             self.conn.execute(&format!("UPDATE {} SET local_handle = NULL", table.name()), [])?;
         }
+        Ok(())
+    }
+
+    /// What the daemon is about to take off the disk itself (issue #104):
+    /// items `ids` and everything below them — by `items` and by the new
+    /// tree in `staging` — forget their local objects, in both tables, and so
+    /// does every row that records one of `handles`, the objects themselves.
+    /// Done before anything is removed, in one transaction: an examination
+    /// that then misses one of them finds it unproven, never gone, and a row
+    /// placed again later carries no object that is not there.
+    pub fn forget_local_objects(&mut self, ids: &[String], handles: &[FileHandle]) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        for id in ids {
+            for table in ["items", "staging"] {
+                tx.execute(
+                    &format!(
+                        "WITH RECURSIVE below(id, depth) AS (
+                             SELECT ?1, 0
+                             UNION
+                             SELECT c.id, b.depth + 1
+                               FROM (SELECT id, parent_id FROM items UNION SELECT id, parent_id FROM staging) c
+                               JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
+                         UPDATE {table} SET local_handle = NULL WHERE id IN (SELECT id FROM below)"
+                    ),
+                    [id],
+                )?;
+            }
+        }
+        for handle in handles {
+            let stored = handle.encode();
+            for table in ["items", "staging"] {
+                tx.execute(&format!("UPDATE {table} SET local_handle = NULL WHERE local_handle = ?1"), [&stored])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 

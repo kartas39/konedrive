@@ -92,8 +92,13 @@ pub struct Applied {
     /// watcher keeps says (the daemon's own changes are dropped by pid).
     pub examine: Vec<(PathBuf, bool)>,
     /// Read-write mode: folders gone from OneDrive whose directory stays
-    /// here, holding local work, to be made again there (F82 (4)).
+    /// here, holding local work, to be made again there: a
+    /// `resyncChangesUploadDifferences` listing only (F116).
     pub recreated: Vec<String>,
+    /// Read-write mode: items whose change the base takes in this cycle
+    /// whatever a local change holds — removed in OneDrive and taken off the
+    /// disk, or no longer placed here (issue #104). Never deferred.
+    pub taken: HashSet<String>,
 }
 
 /// A local version kept beside the cloud's under a new name (write design
@@ -196,6 +201,9 @@ struct Run {
     /// The inodes items were placed as, not recorded yet: written
     /// [`PLACED_BATCH`] at a time, and at the end of the run (issue #39).
     placed: Vec<(String, konedrive_fs::handle::FileHandle)>,
+    /// Read-write mode: items this run found no longer placed (issue #104):
+    /// examined first, and removed by a later cycle at the earliest.
+    unplaced: HashSet<String>,
 }
 
 /// Placed items recorded in one transaction (issue #39; a guess).
@@ -245,6 +253,7 @@ impl Materializer {
             done.copies.append(&mut run.out.copies);
             done.examine.append(&mut run.out.examine);
             done.recreated.append(&mut run.out.recreated);
+            done.taken.extend(std::mem::take(&mut run.out.taken));
             *moved_from = std::mem::take(&mut run.moved_from);
         }
         result.map(|()| run.out)
@@ -302,7 +311,10 @@ impl Materializer {
         }
         match &self.rw {
             None => self.drain_holding(run)?,
-            Some(rw) => self.drain_holding_rw(rw, run)?,
+            Some(rw) => {
+                self.leaving_rw(rw, run)?;
+                self.drain_holding_rw(rw, run)?;
+            }
         }
         for rel in run.made.iter().rev() {
             if let Ok(dir) = self.disk.dir(rel) {
@@ -700,6 +712,9 @@ impl Materializer {
                 .to_str()
                 .and_then(|id| run.moved_from.get(id).cloned())
                 .unwrap_or_else(|| PathBuf::from(HOLDING).join(&name));
+            // What goes is forgotten first, and its downloads stop (issue
+            // #104); what is rescued keeps its content, out of the folder.
+            self.forget_before_removing(&holding, &name, true)?;
             let deleted = run.out.deleted;
             self.delete_tree(&holding, &name, &shown, run)?;
             // One event for what went, however much was inside it; what was
@@ -1425,6 +1440,36 @@ mod tests {
         let reused = FileIdentity { dev: 1, ino: 7, fingerprint: Fingerprint::Born(t2) };
         assert_eq!(a, same, "the same dev, ino and birth time is the same file");
         assert_ne!(a, reused, "the same ino with a different birth time is a different file");
+    }
+
+    /// Issue #104, decisions 4 and 5, read-only: what the reconcile takes
+    /// off the disk — here a folder that is no longer placed (a name too
+    /// long) — is forgotten in the store before it goes, and a download into
+    /// a file in it stops; placed again, it records its new objects.
+    #[test]
+    fn a_read_only_removal_forgets_first_and_stops_a_download() {
+        let fx = fixture();
+        fx.listed(&tree(), false);
+        let handle = |id: &str| { let id = id.to_owned(); fx.store.call_blocking(move |s| s.local_handle(&id)).unwrap() };
+        assert!(handle("E").is_some() && handle("G").is_some());
+        let locks = InodeLocks::new();
+        let file = File::open(fx.path("docs/deep/g.txt")).unwrap();
+        let rt = fx.runtime.as_ref().unwrap();
+        let guard = rt.block_on(locks.lock(crate::sync::InodeKey::of(&file).unwrap()));
+        let skipped = up(Row { placement: Placement::Skipped(crate::tree::SkipReason::NameTooLong), ..row("E", "D", &"x".repeat(300), Kind::Folder, 0) });
+        { let changes = vec![skipped.clone()]; fx.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&changes) }).unwrap(); }
+        Materializer { locks: locks.clone(), ..fx.materializer(false, None) }.apply(Scope::Changed(vec!["E".into()])).unwrap();
+        assert_eq!((handle("E"), handle("G")), (None, None), "forgotten before the swap");
+        fx.store.call_blocking(move |s| s.commit_staging("link-2")).unwrap();
+        assert!(!fx.path("docs/deep").exists());
+        assert_eq!((handle("E"), handle("G")), (None, None), "and after it");
+        rt.block_on(async { tokio::time::timeout(Duration::from_secs(5), guard.cancelled()).await }).expect("the download was told to stop");
+        drop(guard);
+
+        fx.delta(&[folder("E", "D", "deep")], false).unwrap();
+        fx.store.call_blocking(move |s| s.commit_staging("link-3")).unwrap();
+        let placed = konedrive_fs::handle::FileHandle::of(&File::open(fx.path("docs/deep/g.txt")).unwrap()).unwrap();
+        assert_eq!(handle("G"), Some(placed), "placed again, with its new object");
     }
 
     use std::os::unix::fs::FileExt as _;

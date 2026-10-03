@@ -303,6 +303,8 @@ impl SyncService {
             examine,
             cycled,
             dropped_removed,
+            #[cfg(test)]
+            before_swap: None,
         }
     }
 

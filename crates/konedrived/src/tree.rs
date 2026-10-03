@@ -744,7 +744,8 @@ impl TreeStore {
     /// removes only what it removed (issue #39); a full listing's replaces
     /// every row. The version a cached thumbnail was made for, the local
     /// inode and the last outbox commit travel along: a row staged without
-    /// them keeps what `items` has.
+    /// them keeps what `items` has — but for the inode of a row `items` does
+    /// not place, which is no object of a row placed again (issue #104).
     pub fn commit_staging(&mut self, delta_link: &str) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         if self.whole {
@@ -753,8 +754,11 @@ impl TreeStore {
                   WHERE thumb_key IS NULL",
                 [],
             )?;
+            // A row that turns placed again takes no object from `items`:
+            // whatever was there when it stopped being placed is gone
+            // (issue #104).
             tx.execute(
-                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id)
+                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND (i.placement = 'placed' OR staging.placement != 'placed'))
                   WHERE local_handle IS NULL",
                 [],
             )?;
@@ -769,7 +773,7 @@ impl TreeStore {
                 &format!(
                     "INSERT INTO items ({COLUMNS})
                      SELECT s.id, s.parent_id, s.name, s.kind, s.size, s.mtime, s.etag, s.ctag, s.quickxor, s.mime, s.placement,
-                            COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, i.local_handle),
+                            COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, CASE WHEN i.placement = 'placed' OR s.placement != 'placed' THEN i.local_handle END),
                             MAX(s.local_seq, COALESCE(i.local_seq, 0))
                        FROM staging s LEFT JOIN items i ON i.id = s.id WHERE true
                      ON CONFLICT(id) DO UPDATE SET
@@ -1164,7 +1168,11 @@ fn apply(tx: &rusqlite::Transaction<'_>, source: Source, changes: &[Change]) -> 
 fn write(tx: &rusqlite::Transaction<'_>, source: Source, row: &Row) -> Result<(), TreeError> {
     match source {
         Source::Items => {
+            let was = placement_in_items(tx, &row.id)?;
             upsert(tx, Table::Items, row)?;
+            if turns_placed(was, row) {
+                tx.prepare_cached("UPDATE items SET local_handle = NULL WHERE id = ?1")?.execute([&row.id])?;
+            }
         }
         Source::Whole => {
             upsert(tx, Table::Staging, row)?;
@@ -1174,9 +1182,29 @@ fn write(tx: &rusqlite::Transaction<'_>, source: Source, row: &Row) -> Result<()
                 .execute([&row.id])?;
             tx.prepare_cached("DELETE FROM staging_gone WHERE id = ?1")?.execute([&row.id])?;
             upsert(tx, Table::Staging, row)?;
+            if turns_placed(placement_in_items(tx, &row.id)?, row) {
+                tx.prepare_cached("UPDATE staging SET local_handle = NULL WHERE id = ?1")?.execute([&row.id])?;
+            }
         }
     }
     Ok(())
+}
+
+/// Item `id`'s own placement in `items`, if it has a row there.
+fn placement_in_items(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<Option<Placement>, TreeError> {
+    let placement: Option<String> = tx
+        .prepare_cached("SELECT placement FROM items WHERE id = ?1")?
+        .query_row([id], |r| r.get(0))
+        .optional()?;
+    Ok(placement.as_deref().map(Placement::decode))
+}
+
+/// Whether `row` turns placed again over a row of `items` that was not
+/// (`was`). Such a row carries no local object (issue #104): what was on
+/// disk when it stopped being placed was taken off, and its placement
+/// records the object it is placed as.
+fn turns_placed(was: Option<Placement>, row: &Row) -> bool {
+    row.placement == Placement::Placed && was.is_some_and(|was| was != Placement::Placed)
 }
 
 fn upsert(tx: &rusqlite::Transaction<'_>, table: Table, row: &Row) -> rusqlite::Result<usize> {

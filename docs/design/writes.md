@@ -795,11 +795,30 @@ again only with something to place: new in OneDrive, a file whose content change
 with no local object on record (and the folders above such an item); otherwise its absence is a
 delete or a move not examined yet (F114, F115).
 
-**What OneDrive removed** is removed in place, not through the holding directory: a placeholder
-goes; a downloaded file only under a write lease; a changed file stays, stripped, and goes up
-again; a folder that holds local work stays, and is made again in OneDrive as a new item, while one
-that keeps only what is not local work (a file in use, an ignored name) waits (F116). An object
-whose item id the base does not know is never removed: it may be another account's.
+**What OneDrive removed** is removed here at once, whole, in place, not through the holding
+directory: everything on disk under the item goes in the same cycle — copies of OneDrive's content,
+files changed here, new files not uploaded yet, files open in a program, ignored names, symlinks,
+objects from elsewhere. Nothing is rescued, nothing
+is uploaded again, no folder is made again in OneDrive: deleted there means deleted. A download in
+progress inside it is stopped; the rows that would still upload or move something there go (F116,
+F187). Only `resyncChangesUploadDifferences` keeps what its listing left out (below).
+
+**What stops being placed** while OneDrive still has it (a name too long, a reserved name, the
+Personal Vault, shared, OneNote, unsupported) keeps its item id, so what waits to be uploaded from
+inside it still goes up, into the item under its new name or place. Its placement is the base's at
+once, whatever a local change holds, and it is listed in `Skipped()`; its object stays on disk and is
+handed to the examination, so that a change not yet handed to the outbox gets its row. While any
+outbox row has a place inside it, or anything in it would be uploaded, it stays; once nothing does,
+a later cycle removes it whole, as above. The examination never moves such an item in OneDrive to
+where it is here (F188).
+
+**The daemon never deletes or moves anything in OneDrive because it took something off the disk
+itself.** Before the reconcile removes anything — what OneDrive removed, what stops being placed, and
+in a read-only folder what it deletes — the store forgets the recorded local object of everything it
+removes, in `items` and in `staging`: the item, what the tree has below it, and every object found
+there by its own id and file handle. A row that turns placed again carries no local object, and a
+deferred change landed or applied never brings one back (F189). An examination that then misses such
+an item finds it unproven, never deleted (§3.4, WR4).
 
 **Replacements** of a downloaded file run under a write lease on the old file, taken before the
 file is checked and granted only while nobody has it open: a writer is not left writing into an

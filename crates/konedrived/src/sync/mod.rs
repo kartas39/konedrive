@@ -279,20 +279,26 @@ async fn serve(
             // What the request finds under the lock decides what it does
             //: a file filled while the request waited is
             // answered as it is — see `source::answer_request`.
-            let filled = AssertUnwindSafe(source::answer_request(fd, &tracked, Some(&link)))
-                .catch_unwind()
-                .await;
+            //
+            // A file taken off the disk meanwhile, because OneDrive removed
+            // its item, stops its fill where it is (issue #104): its opener is
+            // told it is gone.
+            let filled = unless_removed(inode_guard.as_ref(), AssertUnwindSafe(source::answer_request(fd, &tracked, Some(&link))).catch_unwind()).await;
             let size = tracked.fetched();
             // Whatever came of it, the download is over.
             drop(tracked);
             let (errno, event) = match filled {
-                Ok(answered) => {
+                None => {
+                    tracing::info!("the hydration of request {req_id} stopped: its file was removed in OneDrive");
+                    (libc::ENOENT, Some(activity::event(Kind::Failed, shown, "removed in OneDrive".to_owned())))
+                }
+                Some(Ok(answered)) => {
                     if matches!(answered, Answered::Filled) {
                         slot.succeeded();
                     }
                     (answered.errno(), fill_event(&answered, &shown, size))
                 }
-                Err(_) => {
+                Some(Err(_)) => {
                     tracing::error!(
                         "the hydration of request {req_id} panicked; denying that open with EIO \
                          rather than leaving it suspended forever"
@@ -372,6 +378,10 @@ impl InodeKey {
 /// waiting for it.
 struct Slot {
     mutex: Arc<tokio::sync::Mutex<()>>,
+    /// Cancelled when the inode is taken off the disk because OneDrive
+    /// removed its item ([`InodeLocks::cancel`]): a fill that holds the lock
+    /// stops (issue #104).
+    cancel: CancellationToken,
     /// Incremented before the caller starts waiting and decremented when it
     /// lets go — whether it acquired the lock or was cancelled while parked
     /// (see [`Row`]). The row is removed when this reaches zero.
@@ -417,10 +427,11 @@ impl InodeLocks {
             let mut map = self.inner.lock().unwrap();
             let slot = map
                 .entry(key)
-                .or_insert_with(|| Slot { mutex: Arc::new(tokio::sync::Mutex::new(())), users: 0 });
+                .or_insert_with(|| Slot { mutex: Arc::new(tokio::sync::Mutex::new(())), cancel: CancellationToken::new(), users: 0 });
             slot.users += 1;
-            Arc::clone(&slot.mutex)
+            (Arc::clone(&slot.mutex), slot.cancel.clone())
         };
+        let (mutex, cancel) = mutex;
         // Armed *before* the await, so a caller whose future is dropped
         // while it is parked below still takes itself out of the count. A
         // D-Bus method's future is dropped whenever its caller goes away,
@@ -428,7 +439,7 @@ impl InodeLocks {
         // same file takes, which has no time limit.
         let row = Row { table: Arc::clone(&self.inner), key };
         let guard = mutex.lock_owned().await;
-        InodeGuard { _guard: guard, _row: row }
+        InodeGuard { _guard: guard, cancel, _row: row }
     }
 
     /// Exclusive use of `key` if nobody holds or awaits it now, and `None`
@@ -442,16 +453,30 @@ impl InodeLocks {
             let mut map = self.inner.lock().unwrap();
             let slot = map
                 .entry(key)
-                .or_insert_with(|| Slot { mutex: Arc::new(tokio::sync::Mutex::new(())), users: 0 });
+                .or_insert_with(|| Slot { mutex: Arc::new(tokio::sync::Mutex::new(())), cancel: CancellationToken::new(), users: 0 });
             slot.users += 1;
-            Arc::clone(&slot.mutex)
+            (Arc::clone(&slot.mutex), slot.cancel.clone())
         };
+        let (mutex, cancel) = mutex;
         // Counted like any other user until it gives up: dropped with the
         // refusal, it takes itself out of the count and, if it was the only
         // one, the row out of the table.
         let row = Row { table: Arc::clone(&self.inner), key };
         let guard = mutex.try_lock_owned().ok()?;
-        Some(InodeGuard { _guard: guard, _row: row })
+        Some(InodeGuard { _guard: guard, cancel, _row: row })
+    }
+
+    /// The inode `key` is being taken off the disk because OneDrive removed
+    /// its item (issue #104): whoever holds or awaits its lock — a fill — is
+    /// told to stop ([`InodeGuard::cancelled`]). Whether anyone was.
+    pub fn cancel(&self, key: InodeKey) -> bool {
+        match self.inner.lock().unwrap().get(&key) {
+            Some(slot) => {
+                slot.cancel.cancel();
+                true
+            }
+            None => false,
+        }
     }
 
     /// How many inodes the table is tracking. Tests only: the table growing
@@ -500,7 +525,28 @@ pub struct InodeGuard {
     // leaves the count — a waiter woken by that release has already counted
     // itself, so its row cannot be removed from under it either way.
     _guard: tokio::sync::OwnedMutexGuard<()>,
+    cancel: CancellationToken,
     _row: Row,
+}
+
+impl InodeGuard {
+    /// Done when the inode is being taken off the disk ([`InodeLocks::cancel`]).
+    pub async fn cancelled(&self) {
+        self.cancel.cancelled().await
+    }
+}
+
+/// Runs `fill` — a download into a file — unless the file is taken off the
+/// disk meanwhile because OneDrive removed its item: then it is dropped where
+/// it is, and `None` says so (issue #104). Without a guard it runs to its end.
+pub(crate) async fn unless_removed<T>(guard: Option<&InodeGuard>, fill: impl std::future::Future<Output = T>) -> Option<T> {
+    match guard {
+        Some(guard) => tokio::select! {
+            done = fill => Some(done),
+            () = guard.cancelled() => None,
+        },
+        None => Some(fill.await),
+    }
 }
 
 // --- the folder's interfaces' own half of the work ------------------------
@@ -3186,10 +3232,15 @@ impl SyncService {
         } else {
             Tracked::new(source, self.report.transfers.clone(), shown.clone())
         };
-        let filled = match &split {
-            Some(split) => source::hydrate_in_parts(fd, &tracked, clearance.as_ref(), split).await,
-            None => source::hydrate_with(fd, &tracked, clearance.as_ref()).await,
+        // Stopped where it is when the file is taken off the disk because
+        // OneDrive removed its item (issue #104).
+        let fill = async {
+            match &split {
+                Some(split) => source::hydrate_in_parts(fd, &tracked, clearance.as_ref(), split).await,
+                None => source::hydrate_with(fd, &tracked, clearance.as_ref()).await,
+            }
         };
+        let filled = unless_removed(Some(&guard), fill).await.unwrap_or(Err(FillError::Errno(libc::ENOENT)));
         let size = tracked.fetched();
         drop(tracked);
         drop(guard);

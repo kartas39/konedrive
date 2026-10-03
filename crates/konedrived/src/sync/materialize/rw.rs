@@ -24,11 +24,19 @@
 //! - **keeps both where the read phase rescued** (§6): a local version in the
 //!   way is renamed beside the cloud's, `name-<machine>.ext`, and uploaded
 //!   as new ([`Materializer::copy_aside`]);
-//! - **removes what OneDrive removed only where nothing local is lost**: a
-//!   changed file stays, its konedrive attributes off, and is uploaded
-//!   again; a folder that holds local work stays, and is made again in
-//!   OneDrive (F82 (4)); one that holds only what is in use (or ignored)
-//!   waits, keeping its id; a downloaded file goes only under a write lease;
+//! - **removes what OneDrive removed, whole, in the cycle** (issue #104):
+//!   whatever is there — a changed file, a new one, a file open in a
+//!   program, an ignored name, a symlink, an object from elsewhere — goes,
+//!   a download into it stopped; nothing is rescued, uploaded again or made
+//!   again in OneDrive (`resyncChangesUploadDifferences` alone keeps
+//!   downloads and local work, §3.7);
+//! - **lets what is no longer placed leave once its uploads are done**
+//!   (issue #104): its placement is the base's at once, its object stays
+//!   and is examined, and goes once nothing in it waits for the outbox
+//!   ([`Materializer::leaving_rw`]);
+//! - **forgets before it removes**: the local objects of everything it takes
+//!   off the disk are forgotten in the store first, so that no examination
+//!   can prove one gone and delete it in OneDrive;
 //! - **never moves anything out of the folder**: what it moved to the holding
 //!   directory — this run, or one a stop cut short — is placed from there or
 //!   put back where it was, never rescued outside, where it would be taken
@@ -39,7 +47,6 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use konedrive_fs::lease::WriteLease;
 use konedrive_fs::placeholder::{self, read_state, State};
 
 use std::os::fd::AsFd;
@@ -81,8 +88,8 @@ pub struct Rw {
     /// left out and was downloaded here is uploaded again as new, and a
     /// downloaded file that differs from OneDrive's version is kept beside it.
     pub upload_differences: bool,
-    /// The account's ignore list: an ignored name is never uploaded, so it is
-    /// no local work that makes a folder removed in OneDrive come back.
+    /// The account's ignore list: an ignored name is never uploaded, so it
+    /// keeps no folder that stopped being placed waiting on disk.
     pub ignore: IgnoreList,
 }
 
@@ -200,15 +207,24 @@ fn is_new_name(rel: &Path) -> bool {
 /// What became of something OneDrive removed ([`Materializer::remove_in_place`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum Removal {
-    /// Gone from the disk: it held only what OneDrive had.
+    /// Gone from the disk, whole.
     Gone,
-    /// Still here, holding nothing the examination would upload — open,
-    /// being filled, an ignored name, a symlink, an object from elsewhere:
-    /// its removal (and its folder's) waits, attributes and base kept.
-    Busy,
-    /// Still here, holding local work: its attributes off, uploaded again
-    /// as new, and its folder made again in OneDrive.
+    /// `resyncChangesUploadDifferences` only (§3.7): a download or local
+    /// work the new listing left out stays, its attributes off, uploaded
+    /// again as new — and its folder with it, made again in OneDrive.
     Kept,
+}
+
+/// What is on disk at and below something about to be taken off it: what
+/// the daemon forgets first, and the fills it stops (issue #104).
+#[derive(Default)]
+pub(super) struct Survey {
+    /// Item ids the objects carry.
+    ids: Vec<String>,
+    /// The objects themselves.
+    handles: Vec<konedrive_fs::handle::FileHandle>,
+    /// The files, for their fills.
+    files: Vec<crate::sync::InodeKey>,
 }
 
 /// Whether an object the examination meets without an item id would be
@@ -231,9 +247,14 @@ enum Was {
     /// At its base place, and the new tree places it elsewhere: moved in
     /// OneDrive — or not the base's at all, as the read phase takes it.
     Moved,
-    /// At its base place, and the new tree does not place it: removed in
-    /// OneDrive, or no longer placeable.
+    /// At its base place, or where it stays while it leaves, and the new
+    /// tree does not have it: removed in OneDrive.
     Removed,
+    /// At its base place, and the new tree has it but does not place it: no
+    /// longer placeable here (issue #104).
+    Unplaced,
+    /// Where it stays while it leaves ([`Materializer::leaving_rw`]).
+    Leaving,
     /// Away from its base place: a local move or copy not examined yet.
     Elsewhere,
     /// Under the outbox's temporary name in OneDrive (F82 (5)): the local
@@ -259,6 +280,9 @@ impl Materializer {
         // Directories a local change holds, with everything below them. The
         // scan lists a directory's entry before what is in it.
         let mut left_dirs: HashSet<PathBuf> = HashSet::new();
+        // Directories no longer placed, which stay on disk for now with
+        // everything in them, as it is (issue #104).
+        let mut leaving_dirs: HashSet<PathBuf> = HashSet::new();
         // What moved in OneDrive goes to the holding directory, what it
         // removed goes in place: deepest first, in one order, so that nothing
         // is moved out from above what is still to be done below it.
@@ -296,6 +320,9 @@ impl Materializer {
                 misplaced.push((entry, false));
                 continue;
             }
+            if entry.rel.ancestors().skip(1).any(|a| leaving_dirs.contains(a)) {
+                continue;
+            }
             if entry.rel.ancestors().skip(1).any(|a| left_dirs.contains(a)) {
                 leave(run, &mut left_dirs);
                 continue;
@@ -309,7 +336,20 @@ impl Materializer {
                 continue;
             }
             if rw.held.contains(id) || rw.removing.contains(id) {
-                leave(run, &mut left_dirs);
+                // Whatever a local change holds, what OneDrive removed goes,
+                // and what is no longer placed is the base's (issue #104).
+                let was = if self.is_misplaced(entry, id)? { Some(self.where_it_was(entry, id)?) } else { None };
+                match was {
+                    Some(Was::Removed) => misplaced.push((entry, true)),
+                    Some(Was::Unplaced) => {
+                        self.unplace(&entry.rel, id, entry.is_dir, run)?;
+                        leaving_dirs.insert(entry.rel.clone());
+                    }
+                    Some(Was::Leaving) => {
+                        leaving_dirs.insert(entry.rel.clone());
+                    }
+                    _ => leave(run, &mut left_dirs),
+                }
                 continue;
             }
             if !self.is_misplaced(entry, id)? {
@@ -318,6 +358,15 @@ impl Materializer {
             match self.where_it_was(entry, id)? {
                 Was::Moved => misplaced.push((entry, false)),
                 Was::Removed => misplaced.push((entry, true)),
+                Was::Unplaced => {
+                    self.unplace(&entry.rel, id, entry.is_dir, run)?;
+                    leaving_dirs.insert(entry.rel.clone());
+                }
+                // What is below it stays with it, as it is: the leaving pass
+                // decides.
+                Was::Leaving => {
+                    leaving_dirs.insert(entry.rel.clone());
+                }
                 Was::Elsewhere => leave(run, &mut left_dirs),
                 Was::Swapped | Was::Stranger => {
                     if entry.is_dir {
@@ -376,6 +425,21 @@ impl Materializer {
             let placed = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed);
             return Ok(if staged.is_some() && placed { Was::Moved } else { Was::Stranger });
         };
+        let placed = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed);
+        let base_placed = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Items, &id) })?.is_some_and(|l| l.placed);
+        if !base_placed {
+            // Not placed by the base: an object that stays while it leaves
+            // (issue #104) — or one a stop left before it was recorded so.
+            let leaving = self.store.call_blocking(|s| s.leaving())?.into_iter().any(|(left, at)| left == id && at == entry.rel);
+            return Ok(match (staged.is_some(), placed) {
+                (false, _) => Was::Removed,
+                _ if leaving => Was::Leaving,
+                (true, false) => Was::Unplaced,
+                // Placed by the tree, and not by the base: as for anything
+                // away from its base place, the examination decides first.
+                (true, true) => Was::Elsewhere,
+            });
+        }
         let at_base = base.placement == Placement::Placed
             && base.parent_id == entry.parent_id
             && entry.rel.file_name() == Some(OsStr::new(&base.name))
@@ -383,8 +447,11 @@ impl Materializer {
         if !at_base {
             return Ok(Was::Elsewhere);
         }
-        let placed = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed);
-        Ok(if staged.is_some() && placed { Was::Moved } else { Was::Removed })
+        Ok(match (staged.is_some(), placed) {
+            (true, true) => Was::Moved,
+            (true, false) => Was::Unplaced,
+            (false, _) => Was::Removed,
+        })
     }
 
     /// The Changed scope (§3.7): as the read phase's, but a disagreement a
@@ -420,17 +487,23 @@ impl Materializer {
             if rw.removing.contains(id) {
                 continue;
             }
-            if rw.held.contains(id) {
-                run.out.unsettled.insert(id.clone());
-                continue;
-            }
+            let staged = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?;
+            let placed_now = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed);
             let parent = old.rel.parent().unwrap_or(Path::new(""));
             let Some(name) = old.rel.file_name() else { continue };
             let found = match self.disk.dir(parent) {
                 Ok(dir) => self.disk.probe(&dir, name)?,
                 Err(_) => Probe::Absent,
             };
-            if !matches!(&found, Probe::Managed { id: found, .. } if found == id) {
+            let at_place = matches!(&found, Probe::Managed { id: found, .. } if found == id);
+            // A local change holds it — unless OneDrive removed it, or it is
+            // no longer placed, and its object is where the base has it: that
+            // goes, or is the base's, whatever holds it (issue #104).
+            if rw.held.contains(id) && (placed_now || !at_place) {
+                run.out.unsettled.insert(id.clone());
+                continue;
+            }
+            if !at_place {
                 // Deleted or moved here, not examined yet. Where the tree
                 // still places it, phase 2 decides; where it removes it, the
                 // removal waits: the examination takes the local change
@@ -442,16 +515,17 @@ impl Materializer {
                 continue;
             }
             let old_row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Items, &id) })?;
-            let new_row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?;
-            let stays = matches!((&old_row, &new_row), (Some(o), Some(n))
+            let stays = matches!((&old_row, &staged), (Some(o), Some(n))
                 if n.placement == Placement::Placed && n.parent_id == o.parent_id && n.name == o.name);
             if stays {
                 continue;
             }
-            if self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed) {
-                self.to_holding(&old.rel, id, run)?;
-            } else {
-                self.remove_in_place(rw, parent, name, run)?;
+            match (&staged, placed_now) {
+                (Some(_), true) => self.to_holding(&old.rel, id, run)?,
+                (Some(_), false) => self.unplace(&old.rel, id, matches!(found, Probe::Managed { is_dir: true, .. }), run)?,
+                (None, _) => {
+                    self.remove_in_place(rw, parent, name, run)?;
+                }
             }
         }
 
@@ -545,119 +619,247 @@ impl Materializer {
         Ok(())
     }
 
-    /// What OneDrive removed, at `parent/name`: whatever holds only what the
-    /// cloud had goes; a file with local work stays, its konedrive
-    /// attributes off (the examination uploads it again, §6 edit × delete);
-    /// a folder that keeps local work stays too, made local, and is made
-    /// again in OneDrive (F82 (4)). What cannot go now and is no local work —
-    /// a file open somewhere or being filled, an ignored name, a symlink, an
-    /// object from elsewhere — keeps its attributes and its base, and so does
-    /// every folder above it: their removal waits.
+    /// What OneDrive removed, at `parent/name`, goes from the disk whole,
+    /// in this cycle (issue #104): copies of OneDrive's content, files
+    /// changed here, new files, files open in a program, ignored names,
+    /// symlinks, objects from elsewhere — nothing is rescued, uploaded again
+    /// or made again in OneDrive. Before anything goes, every object there
+    /// is forgotten in the store ([`TreeStore::forget_local_objects`]), and
+    /// a download into one of them stops. The rows that would still upload
+    /// or move something there go too. Only `resyncChangesUploadDifferences`
+    /// keeps what was downloaded or changed here (§3.7). An object that will
+    /// not go fails the cycle.
+    ///
+    /// [`TreeStore::forget_local_objects`]: crate::tree::TreeStore::forget_local_objects
     pub(super) fn remove_in_place(&self, rw: &Rw, parent: &Path, name: &OsStr, run: &mut Run) -> Result<Removal, ApplyError> {
         let rel = parent.join(name);
         let dir = self.disk.dir(parent)?;
-        match self.disk.probe(&dir, name)? {
-            Probe::Absent => Ok(Removal::Gone),
-            Probe::Unmanaged { is_dir } => {
-                if uploadable(rw, &dir, name)? {
-                    run.out.examine.push((rel, is_dir));
-                    Ok(Removal::Kept)
-                } else {
-                    Ok(Removal::Busy)
-                }
-            }
-            Probe::Managed { id, is_dir } => {
-                // A local change the outbox or the examination takes on.
-                if rw.held.contains(&id) || run.left.contains(&id) {
-                    return Ok(Removal::Kept);
-                }
-                if rw.removing.contains(&id) {
-                    return Ok(Removal::Busy);
-                }
-                // An id the base does not have: a file from elsewhere — another
-                // folder, another account whose outbox may still have to fetch
-                // it (§4.5) — never ours to remove; the examination decides.
-                if self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Items, &id) })?.is_none() {
-                    run.out.examine.push((rel, is_dir));
-                    return Ok(Removal::Busy);
-                }
-                // Moved here, and still placed elsewhere by the tree: its own
-                // change, not this folder's.
-                if self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed && l.rel != rel) {
-                    run.out.unsettled.insert(id);
-                    return Ok(Removal::Busy);
-                }
-                if !is_dir {
-                    let file = self.disk.open_file(&dir, name)?;
-                    return self.remove_file_in_place(rw, &dir, name, &rel, &id, file, run);
-                }
-                let sub = self.disk.open_subdir(&dir, name)?;
-                let mut outcome = Removal::Gone;
-                for child in self.disk.list(&sub)? {
-                    self.check_cancel()?;
-                    outcome = outcome.max(self.remove_in_place(rw, &rel, &child, run)?);
-                }
-                match outcome {
-                    Removal::Gone => {
-                        self.disk.remove(&dir, name, true)?;
-                        run.out.deleted += 1;
-                        run.note(EventKind::Removed, &rel, None);
-                    }
-                    Removal::Busy => {
-                        tracing::info!("{} was removed from OneDrive; it goes once nothing in it is in use", rel.display());
-                        run.out.unsettled.insert(id);
-                    }
-                    Removal::Kept => {
-                        placeholder::strip_konedrive_xattrs(&sub)?;
-                        tracing::info!("{} was removed from OneDrive but holds local work: it stays, and is made again there", rel.display());
-                        run.out.recreated.push(id);
-                        run.out.examine.push((rel, true));
-                    }
-                }
-                Ok(outcome)
-            }
+        if matches!(self.disk.probe(&dir, name)?, Probe::Absent) {
+            return Ok(Removal::Gone);
         }
+        let survey = self.forget_before_removing(&dir, name, true)?;
+        run.out.taken.extend(survey.ids);
+        let outcome = self.remove_whole(rw.upload_differences.then_some(rw), &dir, name, &rel, run)?;
+        let dropped = self.store.call_blocking({ let rel = rel.clone(); move |s| s.outbox_drop_under(&rel) })?;
+        if !dropped.is_empty() {
+            tracing::info!("{} was removed from OneDrive: {} change(s) waiting there are dropped", rel.display(), dropped.len());
+        }
+        Ok(outcome)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn remove_file_in_place(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, id: &str, file: File, run: &mut Run) -> Result<Removal, ApplyError> {
-        let keep = |run: &mut Run| -> Result<Removal, ApplyError> {
-            placeholder::strip_konedrive_xattrs(&file)?;
-            tracing::info!("{} was removed from OneDrive but holds local work: it stays, and is uploaded again", rel.display());
-            run.out.examine.push((rel.to_path_buf(), false));
-            Ok(Removal::Kept)
+    /// Decision 5 of issue #104: before anything at `dir/name` is taken off
+    /// the disk, the store forgets every local object there — and, `by_id`,
+    /// the local objects of every item whose id an object there carries, and
+    /// of everything the tree has below it — and fills into its files stop.
+    /// What was found.
+    pub(super) fn forget_before_removing(&self, dir: &File, name: &OsStr, by_id: bool) -> Result<Survey, ApplyError> {
+        let mut survey = Survey::default();
+        let dev = nix::sys::stat::fstat(dir.as_fd()).map_err(std::io::Error::from)?.st_dev;
+        self.survey(dir, name, dev, &mut survey)?;
+        let ids = if by_id { survey.ids.clone() } else { Vec::new() };
+        let handles = survey.handles.clone();
+        self.store.call_blocking(move |s| s.forget_local_objects(&ids, &handles))?;
+        for key in &survey.files {
+            if self.locks.cancel(*key) {
+                tracing::info!("a download into a file being removed is stopped");
+            }
+        }
+        Ok(survey)
+    }
+
+    fn survey(&self, dir: &File, name: &OsStr, dev: libc::dev_t, survey: &mut Survey) -> Result<(), ApplyError> {
+        let stat = match nix::sys::stat::fstatat(dir.as_fd(), name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
+            Ok(stat) => stat,
+            Err(nix::errno::Errno::ENOENT) => return Ok(()),
+            Err(e) => return Err(std::io::Error::from(e).into()),
         };
-        match read_state(&file) {
-            Ok(Some(State::Hydrating | State::Dehydrating)) => {
-                run.out.deferred += 1;
-                run.out.unsettled.insert(id.to_owned());
-                Ok(Removal::Busy)
-            }
-            Ok(Some(State::Hydrated)) => {
-                // Nobody writes into it as it goes: a writer that opened it
-                // would lose what it writes into an unlinked inode (§3.7). The
-                // lease first, then the look at its content.
-                let Some(_lease) = WriteLease::take(&file)? else {
-                    run.out.unsettled.insert(id.to_owned());
-                    return Ok(Removal::Busy);
-                };
-                if self.local_work(&file) || rw.upload_differences {
-                    return keep(run);
+        if let Ok(handle) = konedrive_fs::handle::FileHandle::at(dir, name) {
+            survey.handles.push(handle);
+        }
+        let probed = self.disk.probe(dir, name)?;
+        if let Probe::Managed { id, .. } = &probed {
+            survey.ids.push(id.clone());
+        }
+        match stat.st_mode & libc::S_IFMT {
+            libc::S_IFREG => survey.files.push(crate::sync::InodeKey { dev: stat.st_dev as u64, ino: stat.st_ino as u64 }),
+            // Never into another filesystem mounted here: removing the
+            // directory it is mounted on fails the cycle instead.
+            libc::S_IFDIR if stat.st_dev == dev => {
+                let sub = self.disk.open_subdir(dir, name)?;
+                for child in self.disk.list(&sub)? {
+                    self.survey(&sub, &child, dev, survey)?;
                 }
-                self.disk.remove(dir, name, false)?;
-                run.out.deleted += 1;
-                run.note(EventKind::Removed, rel, None);
-                Ok(Removal::Gone)
             }
-            _ if self.local_work(&file) => keep(run),
-            _ => {
-                if rw.upload_differences {
-                    tracing::info!("{} is not in OneDrive's new listing and held nothing here: removed", rel.display());
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Takes `dir/name` (at `rel`) off the disk with everything below it.
+    /// `keep` is the plan of a `resyncChangesUploadDifferences` listing,
+    /// which keeps downloads and local work (§3.7).
+    fn remove_whole(&self, keep: Option<&Rw>, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<Removal, ApplyError> {
+        self.check_cancel()?;
+        let probed = self.disk.probe(dir, name)?;
+        let id = match &probed {
+            Probe::Absent => return Ok(Removal::Gone),
+            Probe::Managed { id, .. } => Some(id.clone()),
+            Probe::Unmanaged { .. } => None,
+        };
+        let is_dir = matches!(probed, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true });
+        if is_dir {
+            let sub = self.disk.open_subdir(dir, name)?;
+            let mut outcome = Removal::Gone;
+            if nix::sys::stat::fstat(sub.as_fd()).map_err(std::io::Error::from)?.st_dev == nix::sys::stat::fstat(dir.as_fd()).map_err(std::io::Error::from)?.st_dev {
+                for child in self.disk.list(&sub)? {
+                    outcome = outcome.max(self.remove_whole(keep, &sub, &child, &rel.join(&child), run)?);
                 }
-                self.disk.remove(dir, name, false)?;
-                run.out.deleted += 1;
-                run.note(EventKind::Removed, rel, None);
-                Ok(Removal::Gone)
+            }
+            if outcome == Removal::Kept {
+                if let Some(id) = id {
+                    placeholder::strip_konedrive_xattrs(&sub)?;
+                    tracing::info!("{} is not in OneDrive's new listing but holds local work: it stays, and is made again there", rel.display());
+                    run.out.recreated.push(id);
+                }
+                run.out.examine.push((rel.to_path_buf(), true));
+                return Ok(Removal::Kept);
+            }
+            self.disk.remove(dir, name, true)?;
+        } else {
+            if let Some(rw) = keep {
+                if self.kept_by_resync(rw, dir, name, id.is_some())? {
+                    run.out.examine.push((rel.to_path_buf(), false));
+                    return Ok(Removal::Kept);
+                }
+            }
+            self.disk.remove(dir, name, false)?;
+        }
+        if id.is_some() {
+            run.out.deleted += 1;
+            run.note(EventKind::Removed, rel, None);
+        }
+        Ok(Removal::Gone)
+    }
+
+    /// `resyncChangesUploadDifferences` (§3.7): a download, a file with local
+    /// work, or a new file the new listing left out stays, to be uploaded
+    /// again as new — its konedrive attributes off.
+    fn kept_by_resync(&self, rw: &Rw, dir: &File, name: &OsStr, managed: bool) -> Result<bool, ApplyError> {
+        if !managed {
+            return Ok(uploadable(rw, dir, name)?);
+        }
+        let file = self.disk.open_file(dir, name)?;
+        if !(matches!(read_state(&file), Ok(Some(State::Hydrated))) || self.local_work(&file)) {
+            return Ok(false);
+        }
+        placeholder::strip_konedrive_xattrs(&file)?;
+        tracing::info!("{} is not in OneDrive's new listing and was downloaded here: it stays, and is uploaded again", name.to_string_lossy());
+        Ok(true)
+    }
+
+    /// Item `id`, at `rel`, stays in OneDrive but is no longer placed here —
+    /// a name too long, a reserved one, the Personal Vault, shared, OneNote
+    /// (issue #104, decision 3). Its placement is the base's in this cycle
+    /// whatever holds it, and its local objects are forgotten; its object
+    /// stays where it is for now, and is examined, so that what waits to be
+    /// uploaded from inside it gets its row and goes up into the item in
+    /// OneDrive. [`Self::leaving_rw`] removes it once nothing does.
+    fn unplace(&self, rel: &Path, id: &str, is_dir: bool, run: &mut Run) -> Result<(), ApplyError> {
+        let parent = rel.parent().unwrap_or(Path::new(""));
+        let name = rel.file_name().ok_or_else(|| ApplyError::Io(format!("{} has no name", rel.display())))?;
+        let dir = self.disk.dir(parent)?;
+        let handles: Vec<_> = konedrive_fs::handle::FileHandle::at(&dir, name).ok().into_iter().collect();
+        let (ids, at) = (vec![id.to_owned()], rel.to_path_buf());
+        self.store.call_blocking(move |s| {
+            s.forget_local_objects(&ids, &handles)?;
+            s.leaving_add(&ids[0], &at)
+        })?;
+        tracing::info!("{} is no longer placed here; it goes once nothing in it waits to be uploaded", rel.display());
+        run.out.examine.push((rel.to_path_buf(), is_dir));
+        run.out.taken.insert(id.to_owned());
+        run.unplaced.insert(id.to_owned());
+        Ok(())
+    }
+
+    /// What stopped being placed and stays on disk for now ([`Self::unplace`]):
+    /// placed again where it is, it is the item's again; removed in OneDrive
+    /// since, it goes as [`Self::remove_in_place`] says; otherwise it goes
+    /// whole once no outbox row has a place at or below it and nothing in it
+    /// waits to be examined and uploaded (a new file, a changed download).
+    /// Until then it is examined again.
+    pub(super) fn leaving_rw(&self, rw: &Rw, run: &mut Run) -> Result<(), ApplyError> {
+        let leaving = self.store.call_blocking(|s| s.leaving())?;
+        for (id, rel) in leaving {
+            self.check_cancel()?;
+            if run.unplaced.contains(&id) {
+                // Examined first: a later cycle decides.
+                continue;
+            }
+            let parent = rel.parent().unwrap_or(Path::new("")).to_path_buf();
+            let Some(name) = rel.file_name().map(OsStr::to_os_string) else {
+                self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
+                continue;
+            };
+            let found = match self.disk.dir(&parent) {
+                Ok(dir) => Some((self.disk.probe(&dir, &name)?, dir)),
+                Err(_) => None,
+            };
+            let Some((Probe::Managed { id: there, is_dir }, dir)) = found.filter(|(p, _)| matches!(p, Probe::Managed { id: there, .. } if *there == id)) else {
+                // Gone, or not its object any more.
+                self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
+                continue;
+            };
+            debug_assert_eq!(there, id);
+            let (staged, located) = self.store.call_blocking({ let id = id.clone(); move |s| Ok((s.get(Table::Staging, &id)?, s.locate(Table::Staging, &id)?)) })?;
+            if located.as_ref().is_some_and(|l| l.placed && l.rel == rel) {
+                // Placed again where it is: the placement found it.
+                self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
+                continue;
+            }
+            if staged.is_none() {
+                self.remove_in_place(rw, &parent, &name, run)?;
+                self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
+                continue;
+            }
+            let rows = self.store.call_blocking({ let rel = rel.clone(); move |s| s.outbox_at_or_under(&rel) })?;
+            if !rows.is_empty() {
+                tracing::debug!("{} waits for {} upload(s) before it goes", rel.display(), rows.len());
+                continue;
+            }
+            let dev = nix::sys::stat::fstat(dir.as_fd()).map_err(std::io::Error::from)?.st_dev;
+            if self.waits_to_upload(rw, &dir, &name, dev)? {
+                run.out.examine.push((rel.clone(), is_dir));
+                continue;
+            }
+            // Placed elsewhere now, the item's own object is the new one: only
+            // what is here is forgotten.
+            let placed_elsewhere = located.is_some_and(|l| l.placed);
+            self.forget_before_removing(&dir, &name, !placed_elsewhere)?;
+            self.remove_whole(None, &dir, &name, &rel, run)?;
+            tracing::info!("{} is no longer placed here, and nothing in it waits to be uploaded: removed", rel.display());
+            self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
+        }
+        Ok(())
+    }
+
+    /// Whether something at or below `dir/name` would be uploaded by an
+    /// examination: a new file or folder, or a download changed here.
+    fn waits_to_upload(&self, rw: &Rw, dir: &File, name: &OsStr, dev: libc::dev_t) -> Result<bool, ApplyError> {
+        match self.disk.probe(dir, name)? {
+            Probe::Absent => Ok(false),
+            Probe::Unmanaged { .. } => Ok(uploadable(rw, dir, name)?),
+            Probe::Managed { is_dir: false, .. } => Ok(self.local_work(&self.disk.open_file(dir, name)?)),
+            Probe::Managed { is_dir: true, .. } => {
+                let sub = self.disk.open_subdir(dir, name)?;
+                if nix::sys::stat::fstat(sub.as_fd()).map_err(std::io::Error::from)?.st_dev != dev {
+                    return Ok(false);
+                }
+                for child in self.disk.list(&sub)? {
+                    if self.waits_to_upload(rw, &sub, &child, dev)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
             }
         }
     }
@@ -719,7 +921,16 @@ impl Materializer {
             if !placed && self.finish_new_folder(&holding, &name, id.as_deref(), run)? {
                 continue;
             }
-            if !placed && self.remove_in_place(rw, Path::new(HOLDING), &name, run)? == Removal::Gone {
+            // Removed in OneDrive: it goes (issue #104). One that is still
+            // there but no longer placed goes back, and leaves from there.
+            let removed = match &id {
+                Some(id) => {
+                    matches!(self.disk.probe(&holding, &name)?, Probe::Managed { id: ref there, .. } if there == id)
+                        && self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?.is_none()
+                }
+                None => false,
+            };
+            if !placed && removed && self.remove_in_place(rw, Path::new(HOLDING), &name, run)? == Removal::Gone {
                 continue;
             }
             if let Some(id) = &id {
