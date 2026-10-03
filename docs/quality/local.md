@@ -65,6 +65,10 @@ inside it. `LO5` after these.
     give `EOPNOTSUPP` at `entry.rs:144` and abort every examination, since each Full scan lists
     the mount point. F72 expects such a mount to be listed as `other-device`. The VM suite could
     confirm it with a vfat mount.
+- **Fixed 2026-10-04** in `5af7191` (#143), the narrow form: one policy (`Run::entry_io`) for an entry
+  that cannot be opened, stripped or read; an entry's own error passes it over, any other fails
+  the batch, and a batch that keeps failing reaches `LastError`. What a passed-over entry costs is
+  in `docs/limitations/F210.md`.
 
 ## LO4. The examiner thread can die unnoticed — **defect?**
 
@@ -158,4 +162,8 @@ inside it. `LO5` after these.
   point again. F72 expects such a mount to be listed as `other-device`.
 - **To confirm:** a VM scenario with a vfat mount inside the folder.
 - **Fix:** the per-entry policy of `LO3`, with `EOPNOTSUPP` on a directory read as "not ours".
+- **Verified 2026-10-04: confirmed, in the VM** (a vfat mount inside the folder: a file beside it
+  was never uploaded, `LastError` read "Operation not supported"). **Fixed** in `5af7191` (#143):
+  `EOPNOTSUPP` reads as "no attribute" where an attribute is read by name, and the mount is
+  listed as `other-device`. What the safety of that rests on is in `docs/limitations/F210.md`.
 

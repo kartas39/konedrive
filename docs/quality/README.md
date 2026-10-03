@@ -69,9 +69,9 @@ not fixed moves there.
 | [`UP2`](upload.md) | `upload/content.rs:41`, `:209`, `:852` | The id of a bad upload is lost; the next send makes a conflict copy against the worker's own upload | fixed in `1bb7df2` |
 | [`UP1`](upload.md) | `upload/engine.rs:307–317`, `engine/drain.rs:247`, `:255` | The "needs sign-in" latch is never cleared; one 401 or 403 stops the worker | fixed in `a4ce8ee` (the 403); the 401 part refuted |
 | [`UP3`](upload.md) | `upload/kept_back.rs:64–81` | Blocked rows shown as "waiting, goes up by itself" | fixed in `1bb7df2` |
-| [`LO3`](local.md) | `local/examine/found.rs:200`, `classify.rs:340`, `:362` | One file's I/O error aborts the whole examination, again at every retry | refuted as written; a narrower form confirmed |
+| [`LO3`](local.md) | `local/examine/found.rs:200`, `classify.rs:340`, `:362` | One file's I/O error aborts the whole examination, again at every retry | refuted as written; the narrower form fixed in `5af7191` |
 | [`LO4`](local.md) | `local/watcher/mod.rs:544–641` | The examiner thread dies unnoticed; uploads stop with no error shown | fixed in `eba0828` (the panic); refuted (`RootGone`) |
-| [`LO13`](local.md) | `local/entry.rs:144`, `local/examine/run.rs:145` | A mount without user attributes inside the folder aborts every examination | open |
+| [`LO13`](local.md) | `local/entry.rs:144`, `local/examine/run.rs:145` | A mount without user attributes inside the folder aborts every examination | confirmed in the VM; fixed in `5af7191` |
 | [`HY1`](hydration.md) | `hydration/source/fill.rs:196–249`, `:351` | A fill without clearance punches a file on the strength of a comment (the zeros path) | refuted as reachable; the latent hole fixed in `6d9cdb6` |
 | [`HY8`](hydration.md) | `hydration/dehydrate.rs:220` | An error path skips the roll-back; a good local copy is lost | fixed in `6d9cdb6` |
 | [`HY7`](hydration.md) | `hydration/pin.rs:642` | A cancelled download is reported to the pool as a success | fixed in `6d9cdb6` |
