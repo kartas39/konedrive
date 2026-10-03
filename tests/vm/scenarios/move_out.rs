@@ -37,7 +37,7 @@ use konedrive_graph::token::StaticToken;
 use konedrive_tree::outbox::{OutboxKind, OutboxState};
 use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
-use crate::{dir_mark_present, Checks, Ctx};
+use crate::harness::{dir_mark_present, Checks, Ctx};
 
 const ROOT_ID: &str = "ROOT_MO";
 const WITHIN: Duration = Duration::from_secs(30);

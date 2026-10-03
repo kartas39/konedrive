@@ -46,7 +46,7 @@ use konedrive_graph::token::StaticToken;
 use konedrive_tree::{Kind, Placement, Row, Table, TreeStore};
 use tokio::io::{AsyncRead, ReadBuf};
 
-use crate::HelperProc;
+use crate::harness::HelperProc;
 
 const GRAPH: &str = "https://graph.microsoft.com/v1.0/";
 const MIB: u64 = 1 << 20;
@@ -339,7 +339,7 @@ pub(crate) fn graph_mode(helper_binary: &Path, token_file: &Path, guard: Option<
 
 async fn scenarios(token: &str, base: &Path, folder: &Path, guard: Option<&str>, scope: Scope) -> bool {
     let account = StateHandle::new(AccountSnapshot { state: SignInState::SignedIn, ..AccountSnapshot::default() });
-    let persist = match crate::one_account(base).await {
+    let persist = match crate::registration::one_account(base).await {
         Ok(persist) => persist,
         Err(why) => return report("the account's config.toml", Err(why)),
     };
