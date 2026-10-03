@@ -346,3 +346,54 @@ fn another_uids_hydration_of_the_same_inode_is_not_joined() {
     assert_eq!(enrollment.evicted.len(), 2, "both stranded openers come back to be answered");
     assert_eq!(jobs.finish(2, after).unwrap().waiters.len(), 1);
 }
+
+/// What `packaging/systemd/konedrive-helper.service` gives the helper:
+/// `LimitNOFILE=65536`.
+const HELPER_DESCRIPTORS: usize = 65536;
+
+/// Lets this test process hold `wanted` descriptors at once, where its hard
+/// limit allows it.
+fn allow_descriptors(wanted: u64) {
+    let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `limit` is a live, correctly sized `rlimit` for both calls.
+    unsafe {
+        assert_eq!(libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit), 0);
+        if limit.rlim_cur < wanted {
+            limit.rlim_cur = wanted.min(limit.rlim_max);
+            assert_eq!(libc::setrlimit(libc::RLIMIT_NOFILE, &limit), 0);
+        }
+    }
+    assert!(limit.rlim_cur >= wanted, "this test needs {wanted} descriptors; the hard limit is lower");
+}
+
+/// One user must not be able to take every descriptor the helper has. Each
+/// suspended open is an event fd kept in its job until the daemon answers,
+/// and a daemon is free never to answer: the user's own program can connect,
+/// register a folder of its own, take the requests and say nothing, while its
+/// threads open placeholders in that folder. Once the helper is out of
+/// descriptors the kernel denies every other user's intercepted open `EPERM`
+/// and the helper denies the rest `EIO`
+/// (`docs/kernel-behavior-7.2/suite.md`, "A real `EMFILE` does not end the
+/// helper").
+///
+/// Run alone: it raises the process's descriptor limit and holds 65 536.
+#[test]
+#[ignore = "shows HE1: no bound per uid on suspended opens"]
+fn one_uid_cannot_take_every_descriptor_the_helper_has() {
+    allow_descriptors(HELPER_DESCRIPTORS as u64 + 1024);
+    let mut jobs = Jobs::default();
+    let silent = owner(1000, 1);
+    let event = fd();
+    for ino in 0..HELPER_DESCRIPTORS as u64 {
+        let opener = event.try_clone().expect("the test process has descriptors left");
+        // Whatever comes back — a request to send, an opener refused — is
+        // closed here; what the job table keeps is what counts.
+        drop(jobs.enroll((42, ino), silent, opener, 0));
+    }
+    let held: usize = jobs.jobs.values().map(|job| job.waiters.len()).sum();
+    assert!(
+        held < HELPER_DESCRIPTORS,
+        "uid 1000, whose daemon answered nothing, holds {held} suspended opens: every one of the \
+         {HELPER_DESCRIPTORS} descriptors the unit allows the helper, and nobody was refused"
+    );
+}
