@@ -1095,37 +1095,31 @@ impl TreeStore {
         Ok(rows)
     }
 
-    /// OneDrive's listing has items `ids` again — this cycle's delta brought
-    /// them, or, `whole`, a full listing has every item it lists: a change
-    /// blocked because OneDrive answered `404` for one of them while it was
-    /// leaving (`leaving-not-found`) is retried (issue #104). How many.
-    ///
-    /// One whose item the listing says is gone (`items` has it no more) has
-    /// nothing left to send and goes, whatever it was in (issue #104).
-    pub fn outbox_unblock_found(&self, ids: &[String], whole: bool) -> Result<usize, TreeError> {
-        self.conn.execute(
-            "DELETE FROM outbox WHERE state = 'blocked' AND reason = ?1 AND item_id IS NOT NULL
-               AND NOT EXISTS (SELECT 1 FROM items WHERE id = outbox.item_id)",
-            [crate::sync::upload::reason::LEAVING_NOT_FOUND],
-        )?;
-        let mut n = 0;
-        let sql = "UPDATE outbox SET state = 'ready', reason = NULL, next_try = NULL
-                    WHERE state = 'blocked' AND reason = ?1 AND item_id = ?2 AND EXISTS (SELECT 1 FROM items WHERE id = ?2)";
-        if whole {
-            let blocked: Vec<String> = all_rows(&self.conn)?
-                .into_iter()
-                .filter(|r| r.state == OutboxState::Blocked && r.reason.as_deref() == Some(crate::sync::upload::reason::LEAVING_NOT_FOUND))
-                .filter_map(|r| r.item_id)
-                .collect();
-            for id in blocked {
-                n += self.conn.execute(sql, params![crate::sync::upload::reason::LEAVING_NOT_FOUND, id])?;
-            }
-        } else {
-            for id in ids {
-                n += self.conn.execute(sql, params![crate::sync::upload::reason::LEAVING_NOT_FOUND, id])?;
+    /// The changes blocked because OneDrive answered `404` for their item
+    /// while it was leaving (`leaving-not-found`, issue #104), settled by
+    /// this cycle's listing, read from the new tree before the swap (where
+    /// the item's removal would wait behind the row itself): one whose item
+    /// the listing removed has nothing left to send and goes, whatever it was
+    /// in; one whose item it lists again — this cycle's delta brought it
+    /// (`ids`), or, `whole`, a whole listing of the drive has it — is tried
+    /// again. What went, and how many are tried again.
+    pub fn outbox_settle_not_found(&mut self, ids: &[String], whole: bool) -> Result<(usize, usize), TreeError> {
+        let reason = crate::sync::upload::reason::LEAVING_NOT_FOUND;
+        let blocked: Vec<(i64, String)> = all_rows(&self.conn)?
+            .into_iter()
+            .filter(|r| r.state == OutboxState::Blocked && r.reason.as_deref() == Some(reason))
+            .filter_map(|r| Some((r.seq, r.item_id?)))
+            .collect();
+        let brought: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let (mut gone, mut again) = (0, 0);
+        for (seq, id) in blocked {
+            if self.get(Table::Staging, &id)?.is_none() {
+                gone += self.conn.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+            } else if whole || brought.contains(id.as_str()) {
+                again += self.conn.execute("UPDATE outbox SET state = 'ready', reason = NULL, next_try = NULL WHERE seq = ?1", [seq])?;
             }
         }
-        Ok(n)
+        Ok((gone, again))
     }
 
     /// Rows at `rel` or below it.

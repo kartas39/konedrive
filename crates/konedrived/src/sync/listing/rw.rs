@@ -100,6 +100,9 @@ pub(super) struct RwCycle {
     /// The drive was listed whole (not a delta, however large): every item
     /// it has is listed again.
     pub whole_listing: bool,
+    /// The items this cycle's delta brought — not what waited and was
+    /// staged again: what OneDrive lists anew.
+    pub brought: Vec<String>,
 }
 
 impl Listing {
@@ -139,7 +142,7 @@ impl Listing {
                     s.deferred_ids()
                 })
                 .await?;
-                let rw = RwCycle { tree, fetch_seq, consumed, upload_differences, whole_listing: true };
+                let rw = RwCycle { tree, fetch_seq, consumed, upload_differences, whole_listing: true, brought: Vec::new() };
                 Ok((self.reconcile_rw(turn, Scope::Full, Commit::Swap { link, listing: false }, rw, cancel).await?, 0))
             }
             Fetched::Changes { changes, link } => {
@@ -147,13 +150,14 @@ impl Listing {
                 let tree = self.tree_lock(cancel).await?;
                 let changes = self.guard_delta(turn, changes, fetch_seq, cancel).await?;
                 let since = self.revisit_from.load(Ordering::SeqCst);
+                let brought: Vec<String> = changes.iter().map(|c| c.id().to_owned()).collect();
                 let staged = self.on_store(turn, move |s| s.stage_rw(&changes, since, full_requested)).await?;
                 let Some((ids, consumed)) = staged else {
                     self.on_store(turn, move |s| s.set_meta("delta_link", Some(&link))).await?;
                     return Ok((Reconciled::default(), count));
                 };
                 let scope = if full_requested || count > self.ctx.full_threshold { Scope::Full } else { Scope::Changed(ids) };
-                let rw = RwCycle { tree, fetch_seq, consumed, upload_differences: false, whole_listing: false };
+                let rw = RwCycle { tree, fetch_seq, consumed, upload_differences: false, whole_listing: false, brought };
                 Ok((self.reconcile_rw(turn, scope, Commit::Swap { link, listing: false }, rw, cancel).await?, count))
             }
         }
@@ -204,7 +208,7 @@ impl Listing {
         if link.is_none() {
             return Err(CycleError::NoHelper);
         }
-        let RwCycle { tree, fetch_seq, consumed, upload_differences, whole_listing } = rw;
+        let RwCycle { tree, fetch_seq, consumed, upload_differences, whole_listing, brought } = rw;
         let held = (Arc::clone(turn), lifecycle, tree);
         let (root, preferred, store) = (self.ctx.root.clone(), self.ctx.rescue_dir.clone(), self.ctx.store.clone());
         let (locks, cancel, locked) = (self.ctx.locks.clone(), cancel.clone(), self.ctx.locked);
@@ -296,17 +300,18 @@ impl Listing {
                     if !defer.is_empty() || !content.is_empty() {
                         tracing::debug!("{} change(s) wait for the folder to take them", defer.len() + content.len());
                     }
-                    store.call_blocking(move |s| s.commit_staging_deferring(&link, &consumed, &defer, &content, fetch_seq))?;
-                    // What OneDrive lists again is tried again, if a `404`
-                    // blocked a change of it while it was leaving (issue #104).
+                    // Changes a `404` blocked while their item was leaving go, or
+                    // are tried again, by what this listing says of the item
+                    // (issue #104) — read before the swap, from the new tree.
                     // Only a real full listing lists every item again; a large
                     // delta, or a Full reconcile of one, does not.
                     let whole = whole_listing;
-                    match store.call_blocking(move |s| s.outbox_unblock_found(&changed, whole)) {
-                        Ok(0) => {}
-                        Ok(n) => tracing::info!("{n} change(s) blocked by a 404 are tried again: OneDrive lists their items"),
-                        Err(e) => tracing::warn!("cannot try again the changes OneDrive lists again: {e}"),
+                    match store.call_blocking(move |s| s.outbox_settle_not_found(&brought, whole)) {
+                        Ok((0, 0)) => {}
+                        Ok((gone, again)) => tracing::info!("of the changes a 404 blocked, {gone} went with their item and {again} are tried again"),
+                        Err(e) => tracing::warn!("cannot settle the changes a 404 blocked: {e}"),
                     }
+                    store.call_blocking(move |s| s.commit_staging_deferring(&link, &consumed, &defer, &content, fetch_seq))?;
                     if listing || full {
                         Said::Listed
                     } else {

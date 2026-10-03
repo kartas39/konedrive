@@ -761,7 +761,8 @@ impl Listing {
                     let fetch_seq = self.on_store(turn, |s| s.outbox_seq()).await?;
                     // The last page ends a whole listing of the drive.
                     let whole_listing = next.is_none();
-                    let rw = RwCycle { tree, fetch_seq, consumed: Vec::new(), upload_differences: false, whole_listing };
+                    let brought = Vec::new();
+                    let rw = RwCycle { tree, fetch_seq, consumed: Vec::new(), upload_differences: false, whole_listing, brought };
                     self.reconcile_rw(turn, scope, commit, rw, cancel).await?
                 }
             };

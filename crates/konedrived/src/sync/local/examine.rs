@@ -181,6 +181,7 @@ impl Examiner<'_> {
         let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
         let leaving_items = self.store.call_blocking(|s| s.leaving_with_handles())?;
         let leaving = leaving_items.iter().map(|(_, rel, _)| rel.clone()).collect();
+        let leaving_all: HashSet<String> = leaving_items.iter().map(|(id, _, _)| id.clone()).collect();
         let leaving_ids = leaving_items.into_iter().enumerate().filter_map(|(n, (id, _, handle))| Some((id, (n, handle?)))).collect();
         if let Some(progress) = progress {
             progress.started();
@@ -196,6 +197,8 @@ impl Examiner<'_> {
             rows,
             leaving,
             leaving_ids,
+            leaving_elsewhere: HashSet::new(),
+            leaving_all,
             entries: Vec::new(),
             at: HashMap::new(),
             whole: BTreeSet::new(),
@@ -296,6 +299,11 @@ struct Run<'e, 'a> {
     /// The item ids of what is leaving, each with its place in `leaving`:
     /// the object is recognised by its id wherever it is.
     leaving_ids: HashMap<String, (usize, FileHandle)>,
+    /// Places in `leaving` where another object than the leaving one stands
+    /// now (its handle kept and not that one's): not leaving.
+    leaving_elsewhere: HashSet<usize>,
+    /// Every item id that is leaving.
+    leaving_all: HashSet<String>,
     entries: Vec<Entry>,
     at: HashMap<PathBuf, usize>,
     whole: BTreeSet<PathBuf>,
@@ -575,7 +583,7 @@ impl Run<'_, '_> {
 
     /// Whether `rel` is at or below an object that is leaving (issue #104).
     fn under_leaving(&self, rel: &Path) -> bool {
-        self.leaving.iter().any(|at| rel.starts_with(at))
+        self.leaving.iter().enumerate().any(|(n, at)| !self.leaving_elsewhere.contains(&n) && rel.starts_with(at))
     }
 
     fn push(&mut self, e: Entry) -> usize {
@@ -903,13 +911,24 @@ impl Run<'_, '_> {
         // #104) — never by its item id alone: the copy placed again, a copy
         // or a hard link carry the id too. With no handle kept (a store from
         // before it was), by its path only.
+        // A file with other links is followed by its path only: its hard
+        // link carries the same handle, and is the user's name.
+        for (n, handle) in self.leaving_ids.values().cloned().collect::<Vec<_>>() {
+            if let Some(&i) = self.at.get(&self.leaving[n]) {
+                if self.entries[i].handle.as_ref().is_some_and(|h| *h != handle) {
+                    self.leaving_elsewhere.insert(n);
+                }
+            }
+        }
         for i in 0..self.entries.len() {
             let Some(id) = self.entries[i].id.clone() else { continue };
             let Some((n, handle)) = self.leaving_ids.get(&id).cloned() else { continue };
             let rel = self.entries[i].rel.clone();
-            if self.leaving[n] == rel || self.entries[i].handle.as_ref() != Some(&handle) {
+            let linked = self.entries[i].ty == Type::File && self.entries[i].nlink > 1;
+            if self.leaving[n] == rel || linked || self.entries[i].handle.as_ref() != Some(&handle) {
                 continue;
             }
+            self.leaving_elsewhere.remove(&n);
             self.leaving[n] = rel.clone();
             self.store(move |s| s.leaving_set_rel(&id, &rel))?;
         }
@@ -948,6 +967,14 @@ impl Run<'_, '_> {
                 // An object that is leaving, or inside one: never the item
                 // where it is placed now, never a stranger (issue #104).
                 Some(_) if self.under_leaving(&e.rel) => leaving.push(i),
+                // Another name of a leaving file (a hard link the user made):
+                // never the item's name in OneDrive, listed as one.
+                Some(id) if e.ty == Type::File && e.nlink > 1 && self.leaving_all.contains(id) => {
+                    let rel = e.rel.clone();
+                    if !self.ex.ignore.matches(&e.name) {
+                        self.skip(&rel, "hard-link");
+                    }
+                }
                 Some(id) => by_id.entry(id.clone()).or_default().push(i),
                 None => unnamed.push(i),
             }
@@ -1339,6 +1366,15 @@ impl Run<'_, '_> {
             // Whether it holds anything cannot be told: listed, and its
             // folder stays (issue #104).
             self.skip(&e.rel, UNKNOWN_STATE);
+            return Ok(());
+        }
+        // A change OneDrive answered `404` for while it still lists the item
+        // stays blocked until the listing settles it, or the file changes
+        // again (issue #104): looking at it again is no reason to retry.
+        let now = snapshot(e.size, e.mtime.0, e.mtime.1);
+        if self.rows.of_item(id).any(|row| {
+            row.state == OutboxState::Blocked && row.reason.as_deref() == Some(crate::sync::upload::reason::LEAVING_NOT_FOUND) && row.snapshot.as_deref() == Some(now.as_str())
+        }) {
             return Ok(());
         }
         let mut d = self.detection(OutboxKind::Update, id, base, e, e.ctag.as_deref());

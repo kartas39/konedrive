@@ -2562,9 +2562,13 @@ application must never read zeros where real content should be.
   handle. The object is followed wherever it goes: a parent renamed in OneDrive (the reconcile moves
   it, and its `leaving` place with it), a parent renamed here (the examination's rebase), and anywhere
   else by its own file handle — an examination or a Full reconcile that meets it, or, for a cycle that
-  comes first, a walk of the folder. Never by its item id alone: the copy placed again, a copy that
-  kept the attributes and a hard link carry the id too, and are the user's. A store from before the
-  handle was kept follows it by its path only. Its row is dropped only when neither its path nor its
+  comes first, a walk of the folder. Never by its item id alone: the copy placed again and a copy that
+  kept the attributes carry the id too, and are the user's; and where the handle is kept, the recorded
+  path counts only for the object carrying it (the user may have moved the copy placed again to where
+  the leaving object was: that is the user's move, sent to OneDrive). A hard link carries the same
+  handle and id: a file with other links is followed by its recorded path only, and its other names
+  are listed as `hard-link`, never taken for it. A store from before the handle was kept follows it by
+  its path only. Its row is dropped only when neither its path nor its
   handle finds it; any other error (a directory it may not read, on its path or on the walk) leaves it
   for the next cycle. The walk reads every directory of the folder, once per such cycle. From a later
   cycle on, each cycle examines it itself, after its reconcile: the object goes whole only when that
@@ -2586,10 +2590,12 @@ application must never read zeros where real content should be.
   never uploaded again — unless the listing is a `resyncChangesUploadDifferences` one, which does not
   mean removed: what was downloaded or changed there is kept and goes up again as new, as anywhere
   (F116). A `404` for such a row ends it only once OneDrive's listing says the item is gone; until then
-  the row is blocked, `leaving-not-found`, shown with what needs the user, and keeps the folder; as
-  soon as OneDrive's listing brings the item again (a delta that changes it, or a whole listing of the
-  drive that has it — not a large delta), the row is tried again; once the listing says the item is
-  gone, the row goes, whatever the item was (one the user moved in included), and its file with it. An object whose id the base never had is a
+  the row is blocked, `leaving-not-found`, shown with what needs the user, and keeps the folder; an
+  examination does not retry it unless the file changed again. Each cycle settles such rows from its
+  new tree, before the swap (the item's removal would otherwise wait behind the row): one whose item the
+  listing removed goes, whatever the item was (one the user moved in included), and its file with it;
+  one whose item this cycle's delta brought, or a whole listing of the drive has — not a large delta,
+  nor a deferred change staged again — is tried again. An object whose id the base never had is a
   stranger there as anywhere and goes up as new, and so does one with no id. Its `leaving` row goes
   only when it is removed, or placed again where it is. Something the user moves out of a leaving folder
   is followed only by an examination that sees it (a Full scan, if no event says it): its move is then
@@ -2603,7 +2609,10 @@ application must never read zeros where real content should be.
   `…a_404_not_confirmed_by_the_listing_…`, `…a_leaving_folder_whose_parent_is_renamed_here_is_found_by_its_handle`,
   `…an_error_other_than_gone_keeps_the_leaving_row`, `…a_change_blocked_by_a_404_is_retried_…`,
   `…renaming_the_copy_placed_again_is_the_users_rename_only`, `…a_full_reconcile_moves_the_copy_placed_again_…`,
-  `…an_unreadable_directory_on_the_way_keeps_the_leaving_row`, `…a_blocked_404_row_goes_once_the_listing_removes_its_item`) · open.
+  `…an_unreadable_directory_on_the_way_keeps_the_leaving_row`, `…a_blocked_404_row_goes_once_the_listing_removes_its_item`,
+  `…a_blocked_404_row_without_its_file_goes_…`, `…a_large_delta_is_no_whole_listing_…`,
+  `…moving_the_copy_placed_again_to_where_the_leaving_object_was_…`, `…a_hard_link_to_a_leaving_file_…`,
+  `sync::materialize::rw::tests::a_directory_the_walk_cannot_list_keeps_the_leaving_row`) · open.
 - **F189. A row placed again carries no local object** (`konedrived/src/tree.rs` `write`,
   `commit_staging`; `tree/reconcile.rs` `land_deferred`; issue #104) — a row that turns placed over an
   `items` row that is not placed drops whatever object `items` recorded, in a delta's overlay, a full
@@ -2658,6 +2667,17 @@ application must never read zeros where real content should be.
   inside a folder OneDrive removed (its mount point cannot be removed), fails the whole cycle, every
   cycle, until it is fixed or unmounted; nothing else of the folder syncs meanwhile. The error is
   logged, as any failed cycle's is. LIMIT · reasoned · open.
+- **F196. What the user does inside a folder that is leaving does not reach OneDrive**
+  (`konedrived/src/tree/outbox.rs` `outbox_drop_moves`, `sync/local/examine.rs` `found_leaving`;
+  issue #104) — a folder no longer placed here (F188) stays on disk only while what waits in it is
+  uploaded. If the user deletes, moves or renames something inside it meanwhile — something that was in
+  it when it began to leave — that delete, move or rename is not sent: the item stays in OneDrive as it
+  is, and the folder goes from the disk as planned. Only changed content goes up. Why: the daemon takes
+  the folder and what is in it off the disk itself, and must never take its own removal for the user's
+  and delete or move the item in OneDrive (decision 1); inside a leaving folder the two cannot be told
+  apart safely. Moves out of the folder to a placed folder, and moves of placed files into it, are the
+  user's and are sent (F188). Accepted with the user. DESIGN · measured
+  (`sync::listing::rw::stale_tests::what_keeps_a_leaving_folder_is_shown_and_a_move_from_before_does_not`) · open.
 ---
 
 ## 5. Provisional numbers

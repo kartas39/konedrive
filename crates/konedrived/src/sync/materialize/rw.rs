@@ -453,12 +453,20 @@ impl Materializer {
         // recorded file handle — never another object with its id (the copy
         // placed again, a copy, a hard link).
         let leaving = self.store.call_blocking(|s| s.leaving_with_handles())?.into_iter().find(|(left, _, _)| left == id);
-        let itself = leaving.as_ref().is_some_and(|(_, at, handle)| {
-            *at == entry.rel
-                || handle.as_ref().is_some_and(|h| {
-                    let (parent, name) = (entry.rel.parent().unwrap_or(Path::new("")), entry.rel.file_name());
-                    name.and_then(|name| self.disk.dir(parent).ok().and_then(|dir| konedrive_fs::handle::FileHandle::at(&dir, name).ok())).as_ref() == Some(h)
-                })
+        // Where a handle is kept, the recorded place counts only for the
+        // object carrying it; elsewhere, only an object with one link (a hard
+        // link carries the same handle, and is the user's name).
+        let itself = leaving.as_ref().is_some_and(|(_, at, handle)| match handle {
+            None => *at == entry.rel,
+            Some(h) => {
+                let (parent, name) = (entry.rel.parent().unwrap_or(Path::new("")), entry.rel.file_name());
+                let dir = self.disk.dir(parent).ok();
+                let same = name.zip(dir.as_ref()).and_then(|(name, dir)| konedrive_fs::handle::FileHandle::at(dir, name).ok()).as_ref() == Some(h);
+                let single = name.zip(dir.as_ref()).is_some_and(|(name, dir)| {
+                    nix::sys::stat::fstatat(dir.as_fd(), name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW).is_ok_and(|s| entry.is_dir || s.st_nlink <= 1)
+                });
+                same && (*at == entry.rel || single)
+            }
         });
         let leaving = leaving.map(|(_, at, _)| at).filter(|_| itself);
         let placed_here = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed && l.rel == entry.rel);
@@ -938,6 +946,20 @@ impl Materializer {
             Err(e) if gone(&e) => return Ok(None),
             Err(e) => return Err(e),
         };
+        // Where its handle is kept, only the object carrying it: another
+        // with its id there — the copy placed again, moved there by the
+        // user — is not it.
+        let kept = self.store.call_blocking({ let id = id.to_owned(); move |s| s.leaving_handle(&id) }).map_err(|e| std::io::Error::other(e.to_string()))?;
+        if let Some(kept) = kept {
+            match konedrive_fs::handle::FileHandle::at(&dir, name) {
+                Ok(there) if there == kept => {}
+                Ok(_) => return Ok(None),
+                Err(e) if gone(&e) => return Ok(None),
+                // No handle to compare (a filesystem that gives none): by
+                // its id, as without one.
+                Err(_) => {}
+            }
+        }
         match self.disk.probe(&dir, name) {
             Ok(Probe::Managed { id: there, is_dir }) if there == id => Ok(Some((is_dir, dir))),
             Ok(_) => Ok(None),
@@ -963,7 +985,10 @@ impl Materializer {
                 Err(e) => return Err(e.into()),
             };
             for name in names {
-                if konedrive_fs::handle::FileHandle::at(&dir, &name).is_ok_and(|h| h == handle) {
+                // A file with other links: which name is the object's cannot
+                // be told, so none is taken (the user's hard link).
+                let single = || nix::sys::stat::fstatat(dir.as_fd(), name.as_os_str(), nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW).is_ok_and(|s| s.st_mode & libc::S_IFMT == libc::S_IFDIR || s.st_nlink <= 1);
+                if konedrive_fs::handle::FileHandle::at(&dir, &name).is_ok_and(|h| h == handle) && single() {
                     return Ok(Some(rel.join(&name)));
                 }
                 let is_dir = match nix::sys::stat::fstatat(dir.as_fd(), name.as_os_str(), nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
