@@ -12,7 +12,8 @@ rest 4; `daemon/stop.rs` 5.
 part's state (`start_stop.rs:259–262`, `:131–140`, `write_mode.rs:334`, `resume.rs:280`, `SY1`);
 tests that need the whole service are not yet a problem. Do not take it apart wholesale. Clusters
 of its 33 fields that come out cleanly: the pause clock (`pause_timer`, `pause_shown`, `running`),
-the mode switch flags (`mode`, `drop_at_read_only`, `switched_to_read_write`, `mode_check`), and
+the mode switch flags (`mode`, `switched_to_read_write`, `mode_check`; `drop_at_read_only` went
+with the fix of `SY1`), and
 the running sync (`syncing`, `store`, `source`, `tree_lock`), which is the valuable one and the
 risky one.
 
@@ -55,6 +56,11 @@ risky one.
     lock and waiting for the inode lock; `free_one` holding the inode lock and waiting for
     `lifecycle.read` behind a queued writer; the writer waiting for `drop_pending_uploads`, which
     holds the read and waits for the tree lock). Not tested.
+- **Fixed 2026-10-03** in `e3d9f89` (#135): a forced drop stops the tasks, takes `lifecycle` for
+  writing, then the tree lock, and turns the folder read-only itself; the only holder of the tree
+  lock that waits for `lifecycle` is the cycle, which a stop cancels. The `free_one` variant goes
+  with it, by reading. The order is in `docs/design/writes.md` §9; that it is kept by hand, and
+  what a forced switch now costs, in `docs/limitations/F198.md`.
 
 ## SY2. The lifecycle protocol is kept by comments
 

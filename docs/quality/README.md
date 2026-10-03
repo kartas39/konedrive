@@ -63,7 +63,7 @@ not fixed moves there.
 
 | Id | Where | What it would do | Status |
 |---|---|---|---|
-| [`SY1`](sync.md) | `sync/write_mode.rs:593`, `:426`; `remote/listing/rw.rs:131`, `:206` | Two lock orders; a hang that stops fills for every account | confirmed |
+| [`SY1`](sync.md) | `sync/write_mode.rs:593`, `:426`; `remote/listing/rw.rs:131`, `:206` | Two lock orders; a hang that stops fills for every account | fixed in `e3d9f89` |
 | [`TR1`](tree.md) | `konedrive-tree/src/reconcile.rs:216–274` | A commit said to be one transaction is two; deferred changes lost at a crash between them | fixed in `eff1fd2` |
 | [`TR2`](tree.md) | `konedrive-tree/src/lib.rs:710`, `outbox/worker.rs:41`, `outbox.rs:634` | "Forget the local objects below" in three copies with different reach (delete safety) | refuted as a defect; the difference is real |
 | [`UP2`](upload.md) | `upload/content.rs:41`, `:209`, `:852` | The id of a bad upload is lost; the next send makes a conflict copy against the worker's own upload | confirmed |
