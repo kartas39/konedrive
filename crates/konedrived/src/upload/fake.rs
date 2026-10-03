@@ -9,31 +9,29 @@
 //! endpoint and a local Engine.IO / Socket.IO websocket that sends a `notification` event
 //! whenever the drive changes (issue #54). Never a real network.
 
-use std::collections::{BTreeMap, HashMap};
 #[cfg(test)]
-use std::sync::atomic::{AtomicUsize, Ordering};
+mod harness;
+mod sockets;
+
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::{json, Value};
-#[cfg(test)]
-use tokio_util::sync::CancellationToken;
 use url::Url;
 use wiremock::matchers::any;
 use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
-#[cfg(test)]
-use super::{Engine, Limits, OutboxHost, WorkerConfig};
 use konedrive_graph::drive::item::format_graph_time;
 use konedrive_graph::drive::{DriveClient, RetryPolicy};
 use konedrive_graph::quickxor::QuickXor;
-#[cfg(test)]
-use crate::folder::root::SyncRoot;
-#[cfg(test)]
-use crate::folder::locks::InodeLocks;
 use konedrive_graph::token::StaticToken;
 #[cfg(test)]
-use konedrive_tree::{ActivityRow, Kind, Store};
+use konedrive_tree::{Kind, Store};
+
+#[cfg(test)]
+pub(crate) use harness::Harness;
+pub use sockets::{Early, FakeSockets, PING_INTERVAL};
 
 pub const ROOT: &str = "R";
 
@@ -791,147 +789,6 @@ impl Respond for Responder {
     }
 }
 
-/// The fake's notification socket (issue #54): Engine.IO v4 over a local websocket, as
-/// Graph's Socket.IO endpoint speaks it. Every connection gets the open packet, has its
-/// namespace joins answered, gets a ping every [`PING_INTERVAL`], and a `notification` event
-/// in the namespace `/notifications` whenever the drive changes.
-pub struct FakeSockets {
-    /// Bumped with every change of the drive.
-    changes: tokio::sync::watch::Sender<u64>,
-    /// Bumped to drop every open connection, as a network failure would.
-    drops: tokio::sync::watch::Sender<u64>,
-    /// While set, a connection is closed as soon as it is accepted.
-    refuse: std::sync::atomic::AtomicBool,
-    /// What a connection gets right after the open packet ([`Early`] as a number).
-    early: std::sync::atomic::AtomicU8,
-    /// Connections accepted (refused ones too), and open now.
-    accepted: std::sync::atomic::AtomicUsize,
-    open: std::sync::atomic::AtomicUsize,
-}
-
-/// What the fake's socket does right after the open packet, to play a service that
-/// accepts a connection and drops it at once.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Early {
-    /// Nothing: the connection goes on as usual.
-    Nothing = 0,
-    /// Refuses the namespace (`44/notifications,{…}`).
-    Refuse = 1,
-    /// Closes the websocket.
-    Close = 2,
-}
-
-/// The fake's Engine.IO ping interval; its `pingTimeout` is the same.
-pub const PING_INTERVAL: Duration = Duration::from_secs(25);
-
-impl FakeSockets {
-    fn new() -> Self {
-        Self {
-            changes: tokio::sync::watch::channel(0).0,
-            drops: tokio::sync::watch::channel(0).0,
-            refuse: false.into(),
-            early: 0.into(),
-            accepted: 0.into(),
-            open: 0.into(),
-        }
-    }
-
-    fn changed(&self) {
-        self.changes.send_modify(|n| *n += 1);
-    }
-
-    /// Every open connection is dropped, without a close.
-    pub fn drop_all(&self) {
-        self.drops.send_modify(|n| *n += 1);
-    }
-
-    /// From now on (`true`), a connection is closed as soon as it opens; the endpoint still
-    /// answers.
-    pub fn refuse(&self, refuse: bool) {
-        self.refuse.store(refuse, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// From now on, what a connection gets right after the open packet.
-    pub fn early(&self, early: Early) {
-        self.early.store(early as u8, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// Connections accepted so far.
-    pub fn accepted(&self) -> usize {
-        self.accepted.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    /// Connections open now.
-    pub fn open(&self) -> usize {
-        self.open.load(std::sync::atomic::Ordering::SeqCst)
-    }
-
-    async fn listen(self: Arc<Self>, listener: tokio::net::TcpListener) {
-        while let Ok((stream, _)) = listener.accept().await {
-            tokio::spawn(Arc::clone(&self).serve(stream));
-        }
-    }
-
-    async fn serve(self: Arc<Self>, stream: tokio::net::TcpStream) {
-        use futures_util::{SinkExt, StreamExt};
-        use std::sync::atomic::Ordering::SeqCst;
-        use tokio_tungstenite::tungstenite::Message;
-        let Ok(mut ws) = tokio_tungstenite::accept_async(stream).await else { return };
-        self.accepted.fetch_add(1, SeqCst);
-        if self.refuse.load(SeqCst) {
-            let _ = ws.close(None).await;
-            return;
-        }
-        let (mut changes, mut drops) = (self.changes.subscribe(), self.drops.subscribe());
-        changes.mark_unchanged();
-        drops.mark_unchanged();
-        let ms = PING_INTERVAL.as_millis();
-        let open = format!(r#"0{{"sid":"fake","upgrades":[],"pingInterval":{ms},"pingTimeout":{ms},"maxPayload":1000000}}"#);
-        if ws.send(Message::text(open)).await.is_err() {
-            return;
-        }
-        match self.early.load(SeqCst) {
-            1 => {
-                // The client leaves: read until it has.
-                let _ = ws.send(Message::text(r#"44/notifications,{"message":"not now"}"#)).await;
-                while let Some(Ok(_)) = ws.next().await {}
-                return;
-            }
-            2 => {
-                let _ = ws.close(None).await;
-                return;
-            }
-            _ => {}
-        }
-        self.open.fetch_add(1, SeqCst);
-        let mut ping = tokio::time::interval_at(tokio::time::Instant::now() + PING_INTERVAL, PING_INTERVAL);
-        loop {
-            let out = tokio::select! {
-                message = ws.next() => match message {
-                    // A namespace joined: `40` or `40/<namespace>`.
-                    Some(Ok(Message::Text(text))) if text.starts_with("40") => {
-                        let namespace = text.as_str()[2..].to_owned();
-                        let comma = if namespace.is_empty() { "" } else { "," };
-                        Message::text(format!(r#"40{namespace}{comma}{{"sid":"s"}}"#))
-                    }
-                    Some(Ok(_)) => continue,
-                    _ => break,
-                },
-                changed = changes.changed() => match changed {
-                    Ok(()) => Message::text(r#"42/notifications,["notification","{\"clientState\":null}"]"#),
-                    Err(_) => break,
-                },
-                _ = drops.changed() => break,
-                _ = ping.tick() => Message::text("2"),
-            };
-            if ws.send(out).await.is_err() {
-                break;
-            }
-        }
-        self.open.fetch_sub(1, SeqCst);
-    }
-}
-
 pub struct FakeGraph {
     pub server: MockServer,
     pub cloud: Arc<Mutex<Cloud>>,
@@ -1004,119 +861,5 @@ impl FakeGraph {
         DriveClient::new(base, Arc::new(StaticToken::new("T")))
             .unwrap()
             .with_retry(RetryPolicy { attempts: 2, default_wait: Duration::from_millis(5), max_wait: Duration::from_millis(20) })
-    }
-}
-
-/// Records what the worker tells its host.
-#[cfg(test)]
-#[derive(Default)]
-pub(crate) struct Recorder {
-    pub events: Mutex<Vec<ActivityRow>>,
-    pub cycles: AtomicUsize,
-    /// Cycles asked for with a Full reconcile.
-    pub fulls: AtomicUsize,
-    /// Why the write gate is closed; open while `None`.
-    pub gate: Mutex<Option<String>>,
-}
-
-#[cfg(test)]
-impl OutboxHost for Recorder {
-    fn activity(&self, event: &ActivityRow) {
-        self.events.lock().unwrap().push(event.clone());
-    }
-
-    fn cycle_wanted(&self) {
-        self.cycles.fetch_add(1, Ordering::SeqCst);
-    }
-
-    fn full_cycle_wanted(&self) {
-        self.fulls.fetch_add(1, Ordering::SeqCst);
-    }
-
-    fn may_write(&self) -> Result<(), String> {
-        self.gate.lock().unwrap().clone().map_or(Ok(()), Err)
-    }
-}
-
-#[cfg(test)]
-impl Recorder {
-    pub fn kinds(&self) -> Vec<String> {
-        self.events.lock().unwrap().iter().map(|e| e.kind.clone()).collect()
-    }
-}
-
-#[cfg(test)]
-/// A worker for one folder against a fake OneDrive, driven by hand: each
-/// [`engine`](Harness::engine) is a fresh start on the same store.
-pub(crate) struct Harness {
-    pub runtime: tokio::runtime::Runtime,
-    pub graph: FakeGraph,
-    pub host: Arc<Recorder>,
-    pub tree_lock: Arc<tokio::sync::Mutex<()>>,
-    root: SyncRoot,
-    store: Store,
-    locks: InodeLocks,
-    pub limits: Limits,
-    /// The helper and the fills a `move-out` row needs; `None` by default.
-    pub moved_out: Mutex<Option<super::move_out::MoveOuts>>,
-    /// The account's one quota, which every start shares, as the daemon's
-    /// workers share their account's.
-    pub quota: crate::account::quota::Quota,
-}
-
-#[cfg(test)]
-impl Harness {
-    /// The fake OneDrive starts as the base is.
-    pub fn new(root: &SyncRoot, store: &Store, locks: &InodeLocks) -> Self {
-        let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
-        let graph = runtime.block_on(FakeGraph::from_store(store));
-        Self {
-            runtime,
-            graph,
-            host: Arc::new(Recorder::default()),
-            tree_lock: Arc::new(tokio::sync::Mutex::new(())),
-            root: root.clone(),
-            store: store.clone(),
-            locks: locks.clone(),
-            limits: Limits { small_max: 320 * 1024, chunk: 320 * 1024 },
-            moved_out: Mutex::new(None),
-            quota: crate::account::quota::Quota::detached(),
-        }
-    }
-
-    pub fn config(&self) -> WorkerConfig {
-        WorkerConfig {
-            root: self.root.clone(),
-            store: self.store.clone(),
-            drive: self.graph.client(),
-            locks: self.locks.clone(),
-            machine_name: "fedora".into(),
-            tree_lock: Arc::clone(&self.tree_lock),
-            host: self.host.clone(),
-            limits: self.limits,
-            moved_out: self.moved_out.lock().unwrap().clone(),
-            quota: self.quota.clone(),
-        }
-    }
-
-    /// A worker as a new daemon start would build it.
-    pub fn engine(&self) -> Arc<Engine> {
-        Arc::new(Engine::new(self.config()))
-    }
-
-    /// Runs `future` on the harness's runtime.
-    pub fn block_on<T>(&self, future: impl std::future::Future<Output = T>) -> T {
-        self.runtime.block_on(future)
-    }
-
-    pub fn drain(&self, engine: &Arc<Engine>) {
-        self.runtime.block_on(engine.drain(&CancellationToken::new()));
-    }
-
-    /// A fresh worker, run until nothing more can run.
-    pub fn run(&self) -> Arc<Engine> {
-        let engine = self.engine();
-        self.drain(&engine);
-        engine
     }
 }
