@@ -88,6 +88,8 @@ not fixed moves there.
 | [`CL5`](ctl.md) | `konedrivectl/src/cli.rs:80`, `text/refusals.rs:585` and three more | The label rule stated five times; four say "no @", the code allows it | fixed in `a62d487` |
 | [`SY5`](sync.md) | `daemon/manager.rs:323–325`, `:302` | `Accounts.Remove` that fails half-way leaves an account that refuses everything | fixed in `57216c9` |
 | [`SY6`](sync.md) | `sync/mod.rs:72–78` | A typo in `config.toml` silently makes a OneDrive folder local | fixed in `2cdf5dd` |
+| [`SY13`](sync.md) | `daemon/startup.rs:91–92`, `:108`; `dbus/export.rs:87` | The first call to a daemon that has just started is dropped with no reply; the caller waits for ever | open; suspected, by reading |
+| [`DB2`](ctl.md) | `konedrive-dbus/src/testing.rs:12–23` | The tests' private bus can start the installed daemon against the real `~/.config` | open; by reading |
 
 ### The order of the fixes
 
@@ -138,6 +140,9 @@ attribute, with the fix of its finding.
 - One of the eight test failures that #101 puts down to the built-in client id has another
   cause: `accounts_are_added_chosen_renamed_and_removed` (`konedrivectl/tests/accounts_cli.rs`)
   still asserts that a label with "@" is refused (see `CL5`).
+- [`SY13`](sync.md), found 2026-10-04 when a test of `dbus_api` hung: the daemon's object server
+  may not be listening when the first call arrives. With it [`DB2`](ctl.md), a risk in the
+  tests' private bus. Neither has a task in the quality plan yet.
 
 ## What is good and is left alone
 

@@ -204,3 +204,26 @@ risky one.
   `registration.rs:65, 169, 215`, `dbus/fault.rs:8`, `dbus/signals.rs:36, 40`, `populate.rs:83–112`,
   `hydrate.rs:220–227`, `:236–242`, `dbus/mod.rs:1–13`, `sync/mod.rs:198–220`.
 - **Fix:** `pause.rs`, `outbox.rs`, one `watcher.rs`; repair the comments. **Size:** S to M.
+
+## SY13. The daemon's first call can be lost at start — **defect?**
+
+- **Where:** `daemon/startup.rs:91–92`, `:108` (`start_on`, `serve`, `request_name`);
+  `dbus/export.rs:87–88`.
+- **What:** `bus.serve` makes the first `connection.object_server()` call, and zbus then only
+  spawns the object-server task, which still has to register its match rule before it gets
+  method calls. Nothing waits for it. If a call reaches the daemon's socket before that task has
+  run, the socket reader finds no channel for method calls and drops it, with no reply and no
+  error. The name is claimed right after, so a call that activated the daemon over D-Bus arrives
+  in exactly that window; neither `konedrivectl` nor the window sets a method timeout, so the
+  caller waits for ever.
+- **Fix:** let the object server exist before the socket is read: build the connection with
+  `serve_at(ACCOUNTS_PATH, ObjectManager)` (zbus then waits for the server to listen), and take
+  that line out of `OnBus::serve`. **Size:** S. **Risk:** low.
+- **Found 2026-10-04, by reading, after a test hung:** `set_client_id_validates_and_notifies`
+  (`tests/dbus_api.rs`) ran for 57 minutes in one whole-workspace run, with every thread parked
+  and none blocked on a mutex. A trace of `Accounts.SetClientId`, `Accounts.Add` and the property
+  reads found no lock held across a wait and no inversion, and no commit of 2026-10-03 on that
+  path; `startup.rs` is as at `4aeefb9`. The lost first call fits the stacks (the test's `setup`
+  calls `Accounts.Add` with no timeout). **Status: open; suspected, not reproduced.** Which wait
+  was pending is not known. What would settle it: a method timeout on the tests' connection
+  (`konedrive-dbus/src/testing.rs`, `TestBus::connect`), so that a lost reply fails by name.

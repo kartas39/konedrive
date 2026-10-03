@@ -94,3 +94,15 @@ A correction to an earlier measurement: there is no 350-line `commit` in
 
 - `lib.rs` exports `pub mod testing` unconditionally (`:19`) and holds user-facing prose
   (`helper_advice`); row types in `accounts.rs` are anonymous tuples up to eight wide.
+
+## DB2. The tests' private bus can start the installed daemon — **defect?**
+
+- **Where:** `konedrive-dbus/src/testing.rs:12–23` (`TestBus`: `dbus-daemon --session`).
+- **What:** a session `dbus-daemon` reads the standard service directories. With the package
+  installed (`/usr/share/dbus-1/services/org.konedrive.Daemon.service`), a test call to
+  `org.konedrive.Daemon` while the name has no owner would make the private bus start
+  `/usr/bin/konedrived` with the environment of the test run: the real `~/.config` unless the run
+  set another `HOME`. No test does that today (the "not running" test of
+  `konedrivectl/tests/version_cli.rs` asks `NameHasOwner`).
+- **Fix:** give `TestBus` a `--config-file` with no service directories. **Size:** S.
+- **Found 2026-10-04, by reading; not run.** **Status: open.**
