@@ -89,6 +89,32 @@ not fixed moves there.
 | [`SY5`](sync.md) | `daemon/manager.rs:323–325`, `:302` | `Accounts.Remove` that fails half-way leaves an account that refuses everything | confirmed |
 | [`SY6`](sync.md) | `sync/mod.rs:72–78` | A typo in `config.toml` silently makes a OneDrive folder local | confirmed |
 
+### The order of the fixes
+
+Ranked by what the user loses, how silently, and how likely; a small fix does not wait for the
+structural change behind it (`X1`, `X2`), which comes after.
+
+1. **Work that stops with nothing shown.**
+   - `SY1`: the hang; it can stop fills for every account.
+   - `UP1`: one `403` stops every upload of the account, and nothing says so.
+   - `LO4`: the examiner dies and uploads stop; no panic is reachable today, but the guard is
+     small and any later bug in the examination would land here.
+   - `TR1`: the disk and the store disagree for good after a failure between two commits.
+2. **A wrong result the user sees.**
+   - `UP2`: a conflict copy against the worker's own upload.
+   - `UP3`: blocked rows shown as going up by themselves.
+   - `SY5`: an account whose removal failed half-way refuses everything.
+   - `CL5` and the neighbour of `CL2`: wrong sentences, every time; with them the stale test
+     that #101 misattributes.
+3. **The helper's bounds:** `HE1`, `HE2`. Root code, but only a hostile local user reaches them,
+   so they matter on a machine with several users.
+4. **Rare or small:** `AC1`, `HY8`, `SY6`, `RE6`, `HY5`, `HY7`, the narrow form of `LO3`, `FS1`,
+   `GR5`. With `HY1`'s latent hole closed here too, since it sits on the zeros path.
+5. **To confirm:** `LO13`, in the VM.
+
+Each fix is a pull request into `dev` that carries the test of its finding from the `verify-*`
+branch, without the `#[ignore]`.
+
 ### The tests behind the verdicts
 
 The tests are on branches that are not merged, one for each group of candidates. A test that
