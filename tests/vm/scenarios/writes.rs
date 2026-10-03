@@ -22,7 +22,7 @@ use konedrived::account::state::{AccountSnapshot, SignInState, StateHandle};
 use konedrived::upload::fake::{FakeGraph, FakeItem, ROOT};
 use konedrived::sync::{SyncPaths, SyncService};
 
-use crate::{dir_mark_present, Checks, Ctx};
+use crate::harness::{dir_mark_present, Checks, Ctx};
 
 /// The drive the fake OneDrive answers `GET /me/drive` with.
 const FAKE_DRIVE: &str = "D";
@@ -81,7 +81,7 @@ impl<'c> World<'c> {
         for (id, _, content) in seed.files {
             std::fs::write(ctx.source_dir.join(id), content).map_err(|e| e.to_string())?;
         }
-        let persist = ctx.runtime.block_on(crate::one_account(&base))?;
+        let persist = ctx.runtime.block_on(crate::registration::one_account(&base))?;
         // The write gate open for the fake drive, as a read-write account on the list has it
         // (write design §2.3): `config.toml` says read-write, lists the drive and records it as
         // the account's; the account runs read-write, its token can write, and was seen to reach

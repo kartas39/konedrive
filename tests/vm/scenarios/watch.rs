@@ -18,7 +18,7 @@ use konedrive_fs::handle::FileHandle;
 use konedrived::local::Batch;
 use konedrived::local::watcher::{Handled, Sink, Timing, WatchConfig, Watcher};
 
-use crate::{dir_mark_present, Checks, Ctx};
+use crate::harness::{dir_mark_present, Checks, Ctx};
 
 struct Recorder(mpsc::Sender<Batch>);
 

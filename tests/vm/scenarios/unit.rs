@@ -43,7 +43,8 @@ use konedrived::hydration::source::ContentSource;
 use konedrived::hydration::server::serve_hydrations;
 use konedrived::folder::locks::InodeLocks;
 
-use crate::{dir_mark_present, ignore_mark_present, statfs_type, Checks, Reader, TestSource};
+use crate::harness::{dir_mark_present, ignore_mark_present, Checks, Reader, TestSource};
+use crate::statfs_type;
 
 /// The uid (and gid) the folders, their files and the daemon connection
 /// belong to. Nothing in the guest needs to know it by name.

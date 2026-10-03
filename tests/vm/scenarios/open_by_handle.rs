@@ -39,7 +39,7 @@ use nix::sys::socket::{
     accept, bind, connect, listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr,
 };
 
-use crate::{dir_mark_present, ignore_mark_present, Checks, Ctx};
+use crate::harness::{dir_mark_present, ignore_mark_present, Checks, Ctx};
 
 /// The uid the measured objects belong to.
 const USER: u32 = 1000;
