@@ -38,6 +38,10 @@ A correction to an earlier measurement: there is no 350-line `commit` in
   - **A fix must know:** one name carries two causes. The CLI can tell them apart by
     `Folder.Path` being empty, which `explained()` already reads (`commands/sync.rs:419`); a
     second name would change the bus contract for the window too.
+- **Fixed 2026-10-03** in `a62d487` (#134), the neighbouring defect: an outbox command says "no
+  sync folder is registered" only when `Folder.Path` was read and is empty. For that the daemon
+  publishes the path of a folder without interception before it is brought up; what that
+  start-up window shows is in `docs/limitations/F199.md`.
 
 ## CL3. Refusal data travels inside English sentences
 
@@ -67,6 +71,9 @@ A correction to an earlier measurement: there is no 350-line `commit` in
   - **Correction:** `app/accountsmodel.h:150` does not rely on the old rule. It relies on nobody
     naming an account "Signing in…": `AccountsModel::probe` (`accountsmodel.cpp:183–193`) removes
     any such account at the next start, and both rules allow that label (limitation A15).
+- **Fixed 2026-10-03** in `a62d487` (#134): the rule is `konedrive_dbus::LABEL_RULE`, used by the
+  help and the refusal text; the other places are corrected. Nothing ties the sentence to
+  `check_label` but a doc comment, so the two can drift again. The eight tests of #101 pass.
 
 ## CL6. `folder_command` and `sync` split one enum across two functions
 
