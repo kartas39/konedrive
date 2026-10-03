@@ -42,6 +42,9 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
   - **Corrections:** `outbox_record_opening` has two statements only in its "recorded at another
     place" branch (`outbox/worker.rs:226, 234`). Neither `outbox_settle_not_found`'s doc nor its
     module's says "one transaction", and a partial loop is settled again by the next cycle.
+- **Fixed 2026-10-03** in `eff1fd2` (#133): `swap` runs in the caller's transaction. The two
+  autocommit statements of `outbox_record_opening` stay as they are: a crash between them leaves
+  at worst a second `upload_openings_left` row, which `left_at` prunes later.
 
 ## TR2. "Forget the local objects below X" three times, with different reach — **defect?**
 
