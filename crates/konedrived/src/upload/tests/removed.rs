@@ -132,8 +132,11 @@ fn a_file_replaced_mid_upload_leaves_and_the_new_one_goes_up() {
     std::fs::remove_file(w.path("d/big.bin")).unwrap();
     w.write("d/big.bin", b"the new version");
     w.examine(&[("d", "big.bin")]);
-    w.run();
-    assert!(w.rows().is_empty(), "{:?}", w.summary());
+    let engine = w.run();
+    // The new row may meet the old one's session still open (they run together): one backoff.
+    w.h.block_on(engine.retry_now()).unwrap();
+    w.h.drain(&engine);
+    assert!(w.rows().is_empty(), "{:?}", w.rows());
     assert_eq!(w.cloud(|c| c.paths()), vec!["d", "d/big.bin"]);
     assert_eq!(w.content("d/big.bin").unwrap(), b"the new version");
     assert_committed(&w, "d/big.bin", "d/big.bin");
