@@ -23,6 +23,7 @@ use std::collections::HashMap;
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, OptionalExtension};
 
+use super::staging::swap;
 use super::{apply, get_row, Change, Kind, Placement, Row, Source, Table, TreeError, TreeStore, COLUMNS};
 
 /// Created on every open (`IF NOT EXISTS`), so a schema-3 store made before
@@ -215,12 +216,13 @@ impl TreeStore {
     /// them already carries the deletes.
     pub fn commit_staging_deferring(&mut self, delta_link: &str, consumed: &[String], defer: &[String], content: &[String], seq: i64) -> Result<(), TreeError> {
         let source = self.source(Table::Staging);
+        let whole = self.whole;
         {
             let tx = self.conn.transaction()?;
             for id in consumed {
                 tx.execute("DELETE FROM deferred WHERE id = ?1", [id])?;
             }
-            for (id, whole) in defer.iter().map(|id| (id, true)).chain(content.iter().map(|id| (id, false))) {
+            for (id, all) in defer.iter().map(|id| (id, true)).chain(content.iter().map(|id| (id, false))) {
                 // The item's last commit, a delete's tombstone included.
                 let committed: i64 = tx.query_row(
                     "SELECT MAX(COALESCE((SELECT local_seq FROM items WHERE id = ?1), 0),
@@ -251,11 +253,11 @@ impl TreeStore {
                     )?,
                     None => tx.execute("INSERT OR REPLACE INTO deferred (id, seq, gone) VALUES (?1, ?2, 1)", params![id, seq])?,
                 };
-                if whole && source == Source::Overlay {
+                if all && source == Source::Overlay {
                     // Staged over `items`: what it has shows through again.
                     tx.execute("DELETE FROM staging WHERE id = ?1", [id])?;
                     tx.execute("DELETE FROM staging_gone WHERE id = ?1", [id])?;
-                } else if whole {
+                } else if all {
                     tx.execute("DELETE FROM staging WHERE id = ?1", [id])?;
                     tx.execute(&format!("INSERT INTO staging ({COLUMNS}) SELECT {COLUMNS} FROM items WHERE id = ?1"), [id])?;
                 } else {
@@ -268,9 +270,13 @@ impl TreeStore {
                 }
             }
             tx.execute("DELETE FROM outbox_gone WHERE local_seq <= ?1", [seq])?;
+            // The swap in the same transaction (TR1): a swap that fails
+            // leaves the deferrals, and the tombstones, as they were.
+            swap(&tx, whole, delta_link)?;
             tx.commit()?;
         }
-        self.commit_staging(delta_link)
+        self.whole = false;
+        Ok(())
     }
 
     /// A replacement landed (`docs/design/writes.md` §9): the new version of `id` is

@@ -214,3 +214,35 @@ fn a_row_placed_again_carries_no_local_object() {
     assert_eq!(s.local_handle("X").unwrap(), Some(handle(9)), "not placed again: as it was");
 }
 
+/// A read-write cycle's swap is all or nothing: when it fails after the
+/// deferrals are written, the deferred changes it staged still wait, and
+/// the next cycle brings them into the base. The delta cursor never sends
+/// them again.
+#[test]
+fn a_swap_that_fails_keeps_the_deferred_changes_it_consumed() {
+    let mut s = TreeStore::in_memory().unwrap();
+    s.begin_staging(false).unwrap();
+    s.stage(&[Change::Root(root()), Change::Upsert(file("X", "R", "x", "c1"))]).unwrap();
+    s.commit_staging("L1").unwrap();
+    // A cycle defers the new version of `X`: the link moves on past it.
+    s.begin_staging(true).unwrap();
+    s.stage(&[Change::Upsert(file("X", "R", "x", "c2"))]).unwrap();
+    s.commit_staging_deferring("L2", &[], &["X".to_owned()], &[], 1).unwrap();
+    assert_eq!(s.deferred_ids().unwrap(), vec!["X".to_owned()]);
+
+    // The next cycle stages it again, the folder takes it, and the swap
+    // fails (a full disk, a crash) once the deferrals are written.
+    let (ids, consumed) = s.stage_rw(&[], 0, true).unwrap().unwrap();
+    assert_eq!((ids, consumed.clone()), (vec!["X".to_owned()], vec!["X".to_owned()]));
+    s.conn.execute_batch("CREATE TEMP TRIGGER fail_swap BEFORE INSERT ON items BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+    assert!(s.commit_staging_deferring("L3", &consumed, &[], &[], 1).is_err());
+    s.conn.execute_batch("DROP TRIGGER fail_swap;").unwrap();
+    assert_eq!(s.delta_link().unwrap().as_deref(), Some("L2"), "the link stays");
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c1"), "the base stays");
+    assert_eq!(s.deferred_ids().unwrap(), vec!["X".to_owned()], "what the failed swap consumed still waits");
+
+    // The cycle after it: the same link answers with nothing new.
+    let (_, consumed) = s.stage_rw(&[], 0, true).unwrap().unwrap();
+    s.commit_staging_deferring("L3", &consumed, &[], &[], 1).unwrap();
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().ctag.as_deref(), Some("c2"), "the base has the version OneDrive has");
+}

@@ -329,6 +329,7 @@ application must never read zeros where real content should be.
 - [D28](D28.md)
 - [D29](D29.md) — Some items moved down a layer sit lower than their name suggests, and one lower than its users need.
 - [D30](D30.md) — The structure guard reads lines, not Rust.
+- [D31](D31.md) — Some tests fail now and then when the machine is busy.
 
 ---
 
