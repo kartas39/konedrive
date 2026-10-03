@@ -33,7 +33,7 @@ pub(super) const TABLES: &str = "
         parent_id TEXT, name TEXT, kind TEXT, size INTEGER, mtime INTEGER, etag TEXT, ctag TEXT,
         quickxor TEXT, mime TEXT, placement TEXT);
     CREATE TABLE IF NOT EXISTS outbox_gone (id TEXT PRIMARY KEY, local_seq INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS leaving (id TEXT PRIMARY KEY, rel BLOB NOT NULL);
+    CREATE TABLE IF NOT EXISTS leaving (id TEXT PRIMARY KEY, rel BLOB NOT NULL, handle BLOB);
     CREATE TABLE IF NOT EXISTS leaving_items (id TEXT PRIMARY KEY, leaving TEXT NOT NULL);";
 
 /// A read-write cycle's delta, staged ([`TreeStore::stage_rw`]): the ids
@@ -46,6 +46,15 @@ pub type RwStaged = (Vec<String>, Vec<String>);
 pub struct Committed {
     pub etag: Option<String>,
     pub gone: bool,
+}
+
+/// A store made before `leaving.handle` gains it (issue #104).
+pub(super) fn upgrade(conn: &rusqlite::Connection) -> Result<(), TreeError> {
+    let has = conn.prepare("SELECT 1 FROM pragma_table_info('leaving') WHERE name = 'handle'")?.exists([])?;
+    if !has {
+        conn.execute_batch("ALTER TABLE leaving ADD COLUMN handle BLOB")?;
+    }
+    Ok(())
 }
 
 /// Records that the outbox deleted `ids` in OneDrive at commit `local_seq`
@@ -354,14 +363,17 @@ impl TreeStore {
     /// The items the base has at and below it are remembered with it: one of
     /// them found inside it once the base no longer has it was removed in
     /// OneDrive, and is never uploaded as new (review fixes, round 2).
-    pub fn leaving_add(&mut self, id: &str, rel: &std::path::Path) -> Result<(), TreeError> {
+    /// Its object's file handle is kept too: it finds the object again when
+    /// its path is gone (a parent renamed here, not examined yet).
+    pub fn leaving_add(&mut self, id: &str, rel: &std::path::Path, handle: Option<&FileHandle>) -> Result<(), TreeError> {
         use std::os::unix::ffi::OsStrExt;
         let mut items = self.descendants(Table::Items, id)?;
         items.push(id.to_owned());
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO leaving (id, rel) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET rel = excluded.rel",
-            params![id, rel.as_os_str().as_bytes()],
+            "INSERT INTO leaving (id, rel, handle) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET rel = excluded.rel, handle = COALESCE(excluded.handle, leaving.handle)",
+            params![id, rel.as_os_str().as_bytes(), handle.map(FileHandle::encode)],
         )?;
         {
             let mut had = tx.prepare_cached("INSERT OR REPLACE INTO leaving_items (id, leaving) VALUES (?1, ?2)")?;
@@ -371,6 +383,63 @@ impl TreeStore {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// What is leaving, each item id with its object's place and file handle
+    /// (none in a store from before the handle was kept).
+    pub fn leaving_with_handles(&self) -> Result<Vec<(String, std::path::PathBuf, Option<FileHandle>)>, TreeError> {
+        use std::os::unix::ffi::OsStrExt;
+        let mut statement = self.conn.prepare_cached("SELECT id, rel, handle FROM leaving ORDER BY id")?;
+        let rows = statement
+            .query_map([], |r| {
+                let rel: Vec<u8> = r.get(1)?;
+                let handle: Option<Vec<u8>> = r.get(2)?;
+                Ok((r.get::<_, String>(0)?, std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&rel)), handle.as_deref().and_then(FileHandle::decode)))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// The items the base has now at and below the leaving item `id` are
+    /// remembered with it too: one moved in and committed there since, once
+    /// OneDrive removes it, goes as what was in it does (issue #104).
+    pub fn leaving_refresh_items(&mut self, id: &str) -> Result<(), TreeError> {
+        let items = self.descendants(Table::Items, id)?;
+        let tx = self.conn.transaction()?;
+        {
+            let mut had = tx.prepare_cached("INSERT OR IGNORE INTO leaving_items (id, leaving) VALUES (?1, ?2)")?;
+            for item in &items {
+                had.execute(params![item, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// The leaving object of item `id` is now the inode `handle` — an
+    /// editor's save by rename at its place (issue #104).
+    pub fn leaving_set_handle(&self, id: &str, handle: &FileHandle) -> Result<(), TreeError> {
+        self.conn.execute("UPDATE leaving SET handle = ?2 WHERE id = ?1", params![id, handle.encode()])?;
+        Ok(())
+    }
+
+    /// Whether item `id` is placed — by the base or by the new tree — at
+    /// another place than `rel`: then an object carrying its id at `rel` may
+    /// be the user's (the copy placed again, moved there), and only the
+    /// leaving object's handle tells (issue #104).
+    pub fn placed_elsewhere(&self, id: &str, rel: &std::path::Path) -> Result<bool, TreeError> {
+        for table in [Table::Items, Table::Staging] {
+            if self.locate(table, id)?.is_some_and(|l| l.placed && l.rel != rel) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// The file handle of the leaving object of item `id`, if one was taken.
+    pub fn leaving_handle(&self, id: &str) -> Result<Option<FileHandle>, TreeError> {
+        let stored: Option<Option<Vec<u8>>> = self.conn.query_row("SELECT handle FROM leaving WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        Ok(stored.flatten().as_deref().and_then(FileHandle::decode))
     }
 
     /// Whether item `id` was at or below something leaving when it began to
@@ -393,10 +462,27 @@ impl TreeStore {
     }
 
     /// Item `id` left, or is placed again: nothing of it is leaving now.
-    pub fn leaving_drop(&self, id: &str) -> Result<(), TreeError> {
-        self.conn.execute("DELETE FROM leaving WHERE id = ?1", [id])?;
-        self.conn.execute("DELETE FROM leaving_items WHERE leaving = ?1", [id])?;
+    pub fn leaving_drop(&mut self, id: &str) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM leaving WHERE id = ?1", [id])?;
+        tx.execute("DELETE FROM leaving_items WHERE leaving = ?1", [id])?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// The object of item `id`, leaving, is at `rel` now: found there by its
+    /// id, wherever a move took it (issue #104).
+    pub fn leaving_set_rel(&self, id: &str, rel: &std::path::Path) -> Result<(), TreeError> {
+        use std::os::unix::ffi::OsStrExt;
+        self.conn.execute("UPDATE leaving SET rel = ?2 WHERE id = ?1", params![id, rel.as_os_str().as_bytes()])?;
+        Ok(())
+    }
+
+    /// Whatever was moved from `from` to `to` takes what is leaving at or
+    /// below it along (issue #104): a parent renamed in OneDrive and moved by
+    /// the reconcile, or renamed here and seen by the examination.
+    pub fn leaving_rebase(&self, from: &std::path::Path, to: &std::path::Path) -> Result<(), TreeError> {
+        super::outbox::rebase_leaving(&self.conn, from, to)
     }
 
     /// Stages `changes` on top of what `staging` holds: the fresh versions a
@@ -526,6 +612,28 @@ mod tests {
         }
         s.commit_staging("L2").unwrap();
         assert_eq!(s.local_handle("T").unwrap(), None, "the swap gives none back");
+    }
+
+    /// Third review, point 5: leaving an object is dropped whole — its row
+    /// and the items remembered with it, in one transaction.
+    #[test]
+    fn dropping_what_is_leaving_drops_its_items_with_it() {
+        let mut s = TreeStore::in_memory().unwrap();
+        s.begin_staging(false).unwrap();
+        s.stage(&[Change::Root(root()), Change::Upsert(folder("D", "R", "d")), Change::Upsert(file("F", "D", "f", "c1"))]).unwrap();
+        s.commit_staging("L1").unwrap();
+        s.leaving_add("D", std::path::Path::new("d"), None).unwrap();
+        assert!(s.leaving_had("F").unwrap());
+        // A failure between the two statements leaves both tables as they
+        // were: the row and its items go together or not at all.
+        s.conn.execute_batch("CREATE TEMP TRIGGER fail_items BEFORE DELETE ON leaving_items BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        assert!(s.leaving_drop("D").is_err());
+        assert_eq!(s.leaving().unwrap().len(), 1, "the leaving row is still there");
+        assert!(s.leaving_had("F").unwrap());
+        s.conn.execute_batch("DROP TRIGGER fail_items;").unwrap();
+        s.leaving_drop("D").unwrap();
+        assert!(s.leaving().unwrap().is_empty());
+        assert!(!s.leaving_had("F").unwrap() && !s.leaving_had("D").unwrap());
     }
 
     /// Review fix 7 of issue #104: many subtree roots and handles at once —

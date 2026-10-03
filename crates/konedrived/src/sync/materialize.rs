@@ -555,6 +555,10 @@ impl Materializer {
                         self.mark(&waiting, &rel)?;
                     }
                     self.disk.rename(&holding, OsStr::new(&row.id), &dir, name)?;
+                    {
+                        let (from, to) = (PathBuf::from(HOLDING).join(&row.id), rel.clone());
+                        self.store.call_blocking(move |s| s.leaving_rebase(&from, &to))?;
+                    }
                     self.record_placed(run, &dir, name, &row.id)?;
                     run.out.moved += 1;
                     let from = run.moved_from.get(&row.id).cloned();
@@ -705,6 +709,9 @@ impl Materializer {
         let dir = self.disk.dir(parent)?;
         self.disk.rename(&dir, name, &holding, OsStr::new(id))?;
         run.moved_from.entry(id.to_owned()).or_insert_with(|| rel.to_path_buf());
+        // What is leaving inside it goes along (issue #104).
+        let (from, to) = (rel.to_path_buf(), PathBuf::from(HOLDING).join(id));
+        self.store.call_blocking(move |s| s.leaving_rebase(&from, &to))?;
         Ok(())
     }
 

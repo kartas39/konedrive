@@ -940,6 +940,26 @@ fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
             update.execute(params![row.seq, path_value(&to.join(rest))])?;
         }
     }
+    rebase_leaving(conn, from, to)
+}
+
+/// What is leaving at or below `from` is at `to` now, with the same path
+/// below it (issue #104).
+pub(super) fn rebase_leaving(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
+    let moved: Vec<(String, PathBuf)> = {
+        let mut statement = conn.prepare_cached("SELECT id, rel FROM leaving")?;
+        let rows = statement
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, PathBuf::from(OsStr::from_bytes(&r.get::<_, Vec<u8>>(1)?)))))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    let mut update = conn.prepare_cached("UPDATE leaving SET rel = ?2 WHERE id = ?1")?;
+    for (id, rel) in moved {
+        if let Ok(rest) = rel.strip_prefix(from) {
+            let to = if rest.as_os_str().is_empty() { to.to_path_buf() } else { to.join(rest) };
+            update.execute(params![id, to.as_os_str().as_bytes()])?;
+        }
+    }
     Ok(())
 }
 
@@ -1046,6 +1066,9 @@ impl TreeStore {
             .outbox_at_or_under(rel)?
             .into_iter()
             .filter(|row| row.state != OutboxState::Running && matches!(row.kind, OutboxKind::Move | OutboxKind::Delete))
+            // An item that was not in it when it began to leave — a placed
+            // file the user moved in — is the user's to move or delete.
+            .filter(|row| row.item_id.as_deref().is_some_and(|id| self.leaving_had(id).unwrap_or(true)))
             .collect();
         let tx = self.conn.transaction()?;
         for row in &rows {
@@ -1070,6 +1093,33 @@ impl TreeStore {
         }
         tx.commit()?;
         Ok(rows)
+    }
+
+    /// The changes blocked because OneDrive answered `404` for their item
+    /// while it was leaving (`leaving-not-found`, issue #104), settled by
+    /// this cycle's listing, read from the new tree before the swap (where
+    /// the item's removal would wait behind the row itself): one whose item
+    /// the listing removed has nothing left to send and goes, whatever it was
+    /// in; one whose item it lists again — this cycle's delta brought it
+    /// (`ids`), or, `whole`, a whole listing of the drive has it — is tried
+    /// again. What went, and how many are tried again.
+    pub fn outbox_settle_not_found(&mut self, ids: &[String], whole: bool) -> Result<(usize, usize), TreeError> {
+        let reason = crate::sync::upload::reason::LEAVING_NOT_FOUND;
+        let blocked: Vec<(i64, String)> = all_rows(&self.conn)?
+            .into_iter()
+            .filter(|r| r.state == OutboxState::Blocked && r.reason.as_deref() == Some(reason))
+            .filter_map(|r| Some((r.seq, r.item_id?)))
+            .collect();
+        let brought: HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let (mut gone, mut again) = (0, 0);
+        for (seq, id) in blocked {
+            if self.get(Table::Staging, &id)?.is_none() {
+                gone += self.conn.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+            } else if whole || brought.contains(id.as_str()) {
+                again += self.conn.execute("UPDATE outbox SET state = 'ready', reason = NULL, next_try = NULL WHERE seq = ?1", [seq])?;
+            }
+        }
+        Ok((gone, again))
     }
 
     /// Rows at `rel` or below it.

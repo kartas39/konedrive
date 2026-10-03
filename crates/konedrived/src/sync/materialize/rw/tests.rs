@@ -484,3 +484,27 @@ fn a_new_folder_a_stop_left_under_its_temporary_name_is_finished_when_onedrive_r
         assert!(applied.examine.iter().all(|(rel, _)| rel == Path::new("docs/mine.txt")), "{:?}", applied.examine);
     }
 }
+
+/// Fifth review, point 2: the walk for a leaving object whose path is gone
+/// meets a directory it cannot list — here the folder itself, open already
+/// and no longer readable — and decides nothing: the leaving row stays.
+#[test]
+fn a_directory_the_walk_cannot_list_keeps_the_leaving_row() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    let handle = konedrive_fs::handle::FileHandle::of(&File::open(fx.path("docs/deep")).unwrap()).unwrap();
+    fx.store.call_blocking(move |s| s.leaving_add("E", Path::new("docs/deep"), Some(&handle))).unwrap();
+    std::fs::rename(fx.path("docs/deep"), fx.path("docs/deeper")).unwrap();
+    let plan = fx.store.call_blocking(|s| {
+        s.begin_staging(true)?;
+        Rw::read(s, "fedora".into(), false, IgnoreList::default())
+    }).unwrap();
+    let materializer = fx.materializer(Some(plan));
+    // Lookups by name work, listing does not.
+    std::fs::set_permissions(&fx.root.path, std::fs::Permissions::from_mode(0o300)).unwrap();
+    let applied = materializer.apply(Scope::Changed(Vec::new()));
+    std::fs::set_permissions(&fx.root.path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = applied;
+    let leaving = fx.store.call_blocking(|s| s.leaving()).unwrap();
+    assert_eq!(leaving, vec![("E".to_owned(), PathBuf::from("docs/deep"))], "kept");
+}

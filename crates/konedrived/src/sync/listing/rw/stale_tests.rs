@@ -5,7 +5,7 @@
 //! from where objects really are ([`Scanning`]), so that a stale local
 //! object would be proved gone and turned into a `DELETE`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use konedrive_fs::placeholder::{self, State};
@@ -595,4 +595,622 @@ async fn a_file_removed_in_onedrive_inside_a_leaving_folder_is_never_uploaded_ag
     assert!(w.path("docs").exists(), "the folder is still held");
     assert_eq!(uploads(), before, "nothing of it was sent: {:?}", w.graph.with(|c| c.log.clone()));
     assert!(w.graph.with(|c| c.items.values().all(|i| i.name != "f.txt")));
+}
+
+fn folder_item(id: &str, parent: &str, name: &str) -> crate::sync::upload::fake::FakeItem {
+    crate::sync::upload::fake::FakeItem {
+        id: id.into(),
+        parent: Some(parent.into()),
+        name: name.into(),
+        folder: true,
+        content: Vec::new(),
+        hash: None,
+        size: 0,
+        etag: format!("e-{id}"),
+        ctag: format!("c-{id}"),
+        mtime: 0,
+    }
+}
+
+impl World {
+    /// `PATCH` requests for item `id`: a rename or a move of it.
+    fn patches_of(&self, id: &str) -> usize {
+        self.graph.with(|c| c.log.iter().filter(|(m, p)| m == "PATCH" && p.ends_with(&format!("items/{id}"))).count())
+    }
+
+    /// A new file whose name OneDrive refuses in `dir`: a blocked `create`
+    /// that keeps a leaving folder on disk.
+    async fn blocked_file_in(&self, dir: &str) {
+        std::fs::write(self.path(&format!("{dir}/n:ew.txt")), b"new").unwrap();
+        let mut batch = crate::sync::local::Batch::new();
+        batch.name(Path::new(dir), std::ffi::OsStr::new("n:ew.txt"));
+        self.examine(batch).await;
+    }
+
+    async fn rounds(&self, listing: &Arc<Listing>, n: usize) {
+        for _ in 0..n {
+            self.cycle(listing).await;
+            self.examine_handed().await;
+            self.upload().await;
+        }
+    }
+}
+
+/// Third review, point 1: `papers/docs` leaves (a name over 255 bytes in
+/// OneDrive) and a blocked row holds it on disk; then `papers` is renamed in
+/// OneDrive to `archive`, and the reconcile moves it with `docs` inside.
+/// The leaving object is followed by its id: no `PATCH` of `docs` (its long
+/// name in OneDrive stands), and it goes once nothing in it waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_leaving_folder_whose_parent_is_renamed_in_onedrive_is_never_moved_back() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.graph.with(|c| {
+        c.add(folder_item("P", ROOT, "papers"));
+        c.rename("D", "P", "docs");
+    });
+    w.rounds(&listing, 1).await;
+    assert_eq!(id_at(&w.path("papers/docs")).as_deref(), Some("D"));
+    w.blocked_file_in("papers/docs").await;
+    let long = long_name();
+    w.graph.with(|c| c.rename("D", "P", &long));
+    w.rounds(&listing, 2).await;
+    assert!(w.path("papers/docs").exists(), "held by its blocked row");
+    w.graph.with(|c| c.rename("P", ROOT, "archive"));
+    w.rounds(&listing, 3).await;
+    assert!(w.path("archive/docs/n:ew.txt").exists(), "moved along with its parent, still held");
+    assert_eq!(w.patches_of("D"), 0, "docs was moved or renamed in OneDrive");
+    w.scan_and_upload().await;
+    w.rounds(&listing, 1).await;
+    assert_eq!(w.patches_of("D"), 0, "after a Full scan too");
+    assert!(w.graph.with(|c| c.item("D").unwrap().name == long));
+    std::fs::rename(w.path("archive/docs/n:ew.txt"), w.path("archive/docs/new.txt")).unwrap();
+    w.scan_and_upload().await;
+    w.rounds(&listing, 3).await;
+    assert!(w.graph.with(|c| c.items.values().any(|i| i.name == "new.txt" && i.parent.as_deref() == Some("D"))), "{:?}", w.graph.with(|c| c.paths()));
+    assert!(!w.path("archive/docs").exists(), "gone once nothing in it waits");
+    assert_eq!(w.patches_of("D"), 0);
+    assert_eq!(w.deletes(), 0);
+}
+
+/// Third review, point 1, the variant: `docs` is moved in OneDrive into a
+/// folder this folder does not place (a name over 255 bytes): it is never
+/// moved back, and goes from the disk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_moved_in_onedrive_into_a_skipped_folder_is_never_moved_back() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.graph.with(|c| {
+        c.add(folder_item("S", ROOT, &long_name()));
+        c.rename("D", "S", "docs");
+    });
+    w.rounds(&listing, 3).await;
+    w.scan_and_upload().await;
+    w.rounds(&listing, 1).await;
+    assert_eq!(w.patches_of("D"), 0);
+    assert_eq!(w.graph.with(|c| c.item("D").unwrap().parent.clone()).as_deref(), Some("S"));
+    assert!(!w.path("docs").exists());
+    assert_eq!(w.deletes(), 0);
+}
+
+/// Third review, point 2: a placed file the user moves into a folder that is
+/// leaving: its move is carried out — it ends inside that folder's item in
+/// OneDrive — with no `DELETE`, and it is not placed again where it was.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_placed_file_moved_into_a_leaving_folder_keeps_its_move() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.blocked_file_in("docs").await;
+    w.graph.with(|c| c.rename("D", ROOT, &long_name()));
+    w.rounds(&listing, 2).await;
+    assert!(w.path("docs").exists());
+    std::fs::rename(w.path("top.txt"), w.path("docs/top.txt")).unwrap();
+    let mut batch = crate::sync::local::Batch::new();
+    batch.name(Path::new(""), std::ffi::OsStr::new("top.txt"));
+    batch.name(Path::new("docs"), std::ffi::OsStr::new("top.txt"));
+    w.examine(batch).await;
+    w.rounds(&listing, 3).await;
+    w.graph.with(|c| {
+        let t = c.item("T").unwrap();
+        assert_eq!((t.parent.as_deref(), t.name.as_str()), (Some("D"), "top.txt"), "moved into the folder's item");
+    });
+    assert_eq!(w.patches_of("D"), 0, "the leaving item itself is never moved");
+    assert_eq!(w.deletes(), 0);
+    assert!(!w.path("top.txt").exists(), "not placed again where it was");
+}
+
+/// Third review, point 3: `resyncChangesUploadDifferences` does not mean
+/// removed: a changed file inside a leaving folder that the new listing
+/// leaves out is kept and goes up again as new, as anywhere.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_resync_upload_differences_keeps_local_changes_inside_a_leaving_folder() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(w.path("docs/f.txt"), b"one, changed").unwrap();
+    w.blocked_file_in("docs").await;
+    w.graph.with(|c| c.rename("D", ROOT, &long_name()));
+    w.cycle(&listing).await;
+    w.graph.with(|c| {
+        c.trash("F");
+        c.script(
+            "GET",
+            "root/delta",
+            wiremock::ResponseTemplate::new(410).set_body_json(serde_json::json!({"error": {"code": "resyncRequired", "innerError": {"code": "resyncChangesUploadDifferences"}}})),
+            1,
+        );
+    });
+    w.cycle(&listing).await;
+    w.rounds(&listing, 2).await;
+    assert_eq!(std::fs::read(w.path("docs/f.txt")).unwrap(), b"one, changed", "kept");
+    assert!(w.graph.with(|c| c.items.values().any(|i| i.name == "f.txt" && i.parent.as_deref() == Some("D") && i.content == b"one, changed")), "{:?}", w.graph.with(|c| c.paths()));
+}
+
+/// Third review, point 4: a change inside a leaving folder answered `404`
+/// while OneDrive's listing still has the item is kept, blocked with a
+/// reason the user sees — not dropped; once the listing says the item is
+/// gone, the row goes and so does the file.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_404_not_confirmed_by_the_listing_keeps_the_change_blocked() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    w.blocked_file_in("docs").await;
+    w.graph.with(|c| c.rename("D", ROOT, &long_name()));
+    w.rounds(&listing, 2).await;
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(w.path("docs/f.txt"), b"one, changed").unwrap();
+    let mut batch = crate::sync::local::Batch::new();
+    batch.written(Path::new("docs"), std::ffi::OsStr::new("f.txt"), None);
+    w.examine(batch).await;
+    w.graph.with(|c| c.script("POST", "items/F/createUploadSession", wiremock::ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": {"code": "itemNotFound"}})), 1));
+    w.upload().await;
+    let rows = w.store.call(|s| s.outbox_rows()).await.unwrap();
+    let row = rows.iter().find(|r| r.item_id.as_deref() == Some("F")).unwrap_or_else(|| panic!("the change is kept: {rows:?} {:?}", w.graph.with(|c| c.log.clone())));
+    assert_eq!((row.state, row.reason.as_deref()), (crate::tree::outbox::OutboxState::Blocked, Some(crate::sync::upload::reason::LEAVING_NOT_FOUND)));
+    assert!(w.path("docs/f.txt").exists());
+    w.graph.with(|c| c.trash("F"));
+    w.rounds(&listing, 2).await;
+    assert!(w.store.call(|s| s.outbox_rows()).await.unwrap().iter().all(|r| r.item_id.as_deref() != Some("F")), "dropped once the listing says it is gone");
+    assert!(!w.path("docs/f.txt").exists());
+    assert!(w.graph.with(|c| c.items.values().all(|i| i.name != "f.txt")), "never uploaded as new");
+}
+
+/// Leaving by handle: `papers/docs` leaves, held on disk by a blocked row;
+/// the user renames `papers` here to `archive`, and a cycle runs before any
+/// examination sees the rename. The leaving object is found by its file
+/// handle and its path followed: no `PATCH` of `docs`, and it still goes
+/// once nothing in it waits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_leaving_folder_whose_parent_is_renamed_here_is_found_by_its_handle() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.graph.with(|c| {
+        c.add(folder_item("P", ROOT, "papers"));
+        c.rename("D", "P", "docs");
+    });
+    w.rounds(&listing, 1).await;
+    w.blocked_file_in("papers/docs").await;
+    let long = long_name();
+    w.graph.with(|c| c.rename("D", "P", &long));
+    w.rounds(&listing, 2).await;
+    assert!(w.path("papers/docs").exists());
+    std::fs::rename(w.path("papers"), w.path("archive")).unwrap();
+    w.cycle(&listing).await;
+    let leaving = w.store.call(|s| s.leaving()).await.unwrap();
+    assert_eq!(leaving, vec![("D".to_owned(), PathBuf::from("archive/docs"))], "found by its handle, its path followed");
+    w.scan_and_upload().await;
+    w.rounds(&listing, 2).await;
+    assert_eq!(w.patches_of("D"), 0, "the leaving item is never moved or renamed");
+    assert!(w.graph.with(|c| c.item("D").unwrap().name == long));
+    std::fs::rename(w.path("archive/docs/n:ew.txt"), w.path("archive/docs/new.txt")).unwrap();
+    w.scan_and_upload().await;
+    w.rounds(&listing, 3).await;
+    assert!(!w.path("archive/docs").exists(), "gone once nothing in it waits");
+    assert_eq!(w.patches_of("D"), 0);
+    assert_eq!(w.deletes(), 0);
+}
+
+/// Leaving by handle, (b): an error other than "gone" — the parent of a
+/// leaving folder made unreadable — keeps the leaving row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_error_other_than_gone_keeps_the_leaving_row() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.graph.with(|c| {
+        c.add(folder_item("P", ROOT, "papers"));
+        c.rename("D", "P", "docs");
+    });
+    w.rounds(&listing, 1).await;
+    w.blocked_file_in("papers/docs").await;
+    w.graph.with(|c| c.rename("D", "P", &long_name()));
+    w.rounds(&listing, 2).await;
+    std::fs::set_permissions(w.path("papers"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let cycled = listing.cycle(&tokio_util::sync::CancellationToken::new()).await;
+    std::fs::set_permissions(w.path("papers"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let _ = cycled;
+    let leaving = w.store.call(|s| s.leaving()).await.unwrap();
+    assert_eq!(leaving, vec![("D".to_owned(), PathBuf::from("papers/docs"))], "kept");
+    w.rounds(&listing, 1).await;
+    assert!(w.path("papers/docs").exists());
+    assert_eq!(w.patches_of("D"), 0);
+}
+
+/// A change blocked as `leaving-not-found` is not stuck: once OneDrive's
+/// listing brings its item again, it is retried and goes up into the item.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_blocked_by_a_404_is_retried_when_onedrive_lists_its_item_again() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    w.blocked_file_in("docs").await;
+    w.graph.with(|c| c.rename("D", ROOT, &long_name()));
+    w.rounds(&listing, 2).await;
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(w.path("docs/f.txt"), b"one, changed").unwrap();
+    let mut batch = crate::sync::local::Batch::new();
+    batch.written(Path::new("docs"), std::ffi::OsStr::new("f.txt"), None);
+    w.examine(batch).await;
+    w.graph.with(|c| c.script("POST", "items/F/createUploadSession", wiremock::ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": {"code": "itemNotFound"}})), 1));
+    w.upload().await;
+    let blocked = |w: &World| {
+        let w = w.store.clone();
+        async move { w.call(|s| s.outbox_rows()).await.unwrap().into_iter().any(|r| r.reason.as_deref() == Some(crate::sync::upload::reason::LEAVING_NOT_FOUND)) }
+    };
+    assert!(blocked(&w).await, "blocked by the 404");
+    w.graph.with(|c| c.touch("F"));
+    w.cycle(&listing).await;
+    assert!(!blocked(&w).await, "retried once OneDrive lists it again");
+    w.upload().await;
+    assert_eq!(w.graph.with(|c| c.item("F").unwrap().content.clone()), b"one, changed");
+}
+
+impl World {
+    fn posts_of_children(&self) -> usize {
+        self.graph.with(|c| c.log.iter().filter(|(m, p)| m == "POST" && p.ends_with("/children")).count())
+    }
+
+    /// `docs` leaves, held on disk by a blocked row, and is placed again in
+    /// OneDrive at `papers/docs`.
+    async fn docs_leaving_and_placed_again_in_papers(&self, listing: &Arc<Listing>) {
+        self.graph.with(|c| c.add(folder_item("P", ROOT, "papers")));
+        self.rounds(listing, 1).await;
+        self.blocked_file_in("docs").await;
+        self.graph.with(|c| c.rename("D", ROOT, &long_name()));
+        self.rounds(listing, 2).await;
+        self.graph.with(|c| c.rename("D", "P", "docs"));
+        self.rounds(listing, 2).await;
+        assert_eq!(id_at(&self.path("papers/docs")).as_deref(), Some("D"), "placed again");
+        assert!(self.path("docs").exists(), "the old object is still held");
+    }
+}
+
+/// Fourth review, point 1: the copy placed again is never taken for the
+/// leaving object by its id. The user renames `papers/docs` (placed again)
+/// to `papers/docs2`: one `PATCH` (the user's rename), no `DELETE`, nothing
+/// created, and `papers/docs2/f.txt` stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn renaming_the_copy_placed_again_is_the_users_rename_only() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.docs_leaving_and_placed_again_in_papers(&listing).await;
+    let patches = w.patches_of("D");
+    std::fs::rename(w.path("papers/docs"), w.path("papers/docs2")).unwrap();
+    w.scan_and_upload().await;
+    w.rounds(&listing, 2).await;
+    w.scan_and_upload().await;
+    assert_eq!(w.patches_of("D") - patches, 1, "the user's rename only");
+    assert_eq!(w.deletes(), 0);
+    assert_eq!(w.posts_of_children(), 0, "nothing created in OneDrive");
+    assert!(w.path("papers/docs2/f.txt").exists());
+    assert_eq!(w.graph.with(|c| c.item("D").unwrap().name.clone()), "docs2");
+}
+
+/// Fourth review, point 2: the copy placed again, renamed in OneDrive to
+/// `docs3`, is followed there by a Full reconcile (a `410`); the leaving
+/// object stays where it is, and nothing is sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_full_reconcile_moves_the_copy_placed_again_not_the_leaving_object() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.docs_leaving_and_placed_again_in_papers(&listing).await;
+    let writes = |w: &World| w.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").count());
+    let before = writes(&w);
+    w.graph.with(|c| {
+        c.rename("D", "P", "docs3");
+        c.script(
+            "GET",
+            "root/delta",
+            wiremock::ResponseTemplate::new(410).set_body_json(serde_json::json!({"error": {"code": "resyncRequired", "innerError": {"code": "resyncChangesApplyDifferences"}}})),
+            1,
+        );
+    });
+    let report = w.cycle(&listing).await;
+    assert!(report.full);
+    w.rounds(&listing, 1).await;
+    assert_eq!(id_at(&w.path("papers/docs3")).as_deref(), Some("D"), "the copy followed to docs3");
+    assert!(!w.path("papers/docs").exists());
+    assert_eq!(w.store.call(|s| s.leaving()).await.unwrap(), vec![("D".to_owned(), PathBuf::from("docs"))], "the leaving object stays where it is");
+    assert_eq!(writes(&w), before, "nothing sent: {:?}", w.graph.with(|c| c.log.clone()));
+}
+
+/// Fourth review, point 3: a leaving object whose path is gone, behind a
+/// directory that cannot be read: nothing is decided, and its row stays;
+/// readable again, it is found by its handle.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unreadable_directory_on_the_way_keeps_the_leaving_row() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.graph.with(|c| {
+        c.add(folder_item("P", ROOT, "papers"));
+        c.rename("D", "P", "docs");
+    });
+    w.rounds(&listing, 1).await;
+    w.blocked_file_in("papers/docs").await;
+    w.graph.with(|c| c.rename("D", "P", &long_name()));
+    w.rounds(&listing, 2).await;
+    std::fs::create_dir(w.path("lock")).unwrap();
+    std::fs::rename(w.path("papers"), w.path("lock/papers")).unwrap();
+    std::fs::set_permissions(w.path("lock"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let _ = listing.cycle(&tokio_util::sync::CancellationToken::new()).await;
+    std::fs::set_permissions(w.path("lock"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert_eq!(w.store.call(|s| s.leaving()).await.unwrap(), vec![("D".to_owned(), PathBuf::from("papers/docs"))], "kept");
+    w.cycle(&listing).await;
+    assert_eq!(w.store.call(|s| s.leaving()).await.unwrap(), vec![("D".to_owned(), PathBuf::from("lock/papers/docs"))], "found by its handle");
+    assert_eq!(w.patches_of("D"), 0);
+}
+
+/// Fourth review, point 4: a placed file the user moved into a leaving
+/// folder (moved in OneDrive too), then changed: its upload is answered
+/// `404` and blocked; then OneDrive removes it. The blocked row goes, the
+/// file leaves the disk, nothing is uploaded as new, and the folder is not
+/// held by it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_blocked_404_row_goes_once_the_listing_removes_its_item() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.blocked_file_in("docs").await;
+    w.graph.with(|c| c.rename("D", ROOT, &long_name()));
+    w.rounds(&listing, 2).await;
+    write_version(&w.path("top.txt"), b"top", &w.cloud_ctag("T"));
+    std::fs::rename(w.path("top.txt"), w.path("docs/top.txt")).unwrap();
+    let mut batch = crate::sync::local::Batch::new();
+    batch.name(Path::new(""), std::ffi::OsStr::new("top.txt"));
+    batch.name(Path::new("docs"), std::ffi::OsStr::new("top.txt"));
+    w.examine(batch).await;
+    w.rounds(&listing, 2).await;
+    assert_eq!(w.graph.with(|c| c.item("T").unwrap().parent.clone()).as_deref(), Some("D"));
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(w.path("docs/top.txt"), b"top, changed").unwrap();
+    let mut batch = crate::sync::local::Batch::new();
+    batch.written(Path::new("docs"), std::ffi::OsStr::new("top.txt"), None);
+    w.examine(batch).await;
+    w.graph.with(|c| c.script("POST", "items/T/createUploadSession", wiremock::ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": {"code": "itemNotFound"}})), 1));
+    w.upload().await;
+    let reasons = || async { w.store.call(|s| s.outbox_rows()).await.unwrap().into_iter().filter_map(|r| r.reason).collect::<Vec<_>>() };
+    assert!(reasons().await.iter().any(|r| r == crate::sync::upload::reason::LEAVING_NOT_FOUND), "{:?}", reasons().await);
+    w.graph.with(|c| c.trash("T"));
+    w.rounds(&listing, 2).await;
+    assert!(!reasons().await.iter().any(|r| r == crate::sync::upload::reason::LEAVING_NOT_FOUND), "the blocked row went");
+    assert!(!w.path("docs/top.txt").exists(), "removed here as OneDrive removed it");
+    assert!(w.graph.with(|c| c.items.values().all(|i| i.name != "top.txt")), "never uploaded as new");
+}
+
+impl World {
+    /// `docs/f.txt`, downloaded and changed here inside a leaving `docs`
+    /// (held by a blocked row), its upload answered `404` while OneDrive's
+    /// listing still has it: blocked as `leaving-not-found`.
+    async fn f_blocked_by_a_404_in_leaving_docs(&self, listing: &Arc<Listing>) {
+        write_version(&self.path("docs/f.txt"), b"one", &self.cloud_ctag("F"));
+        self.blocked_file_in("docs").await;
+        self.graph.with(|c| c.rename("D", ROOT, &long_name()));
+        self.rounds(listing, 2).await;
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::fs::write(self.path("docs/f.txt"), b"one, changed").unwrap();
+        let mut batch = crate::sync::local::Batch::new();
+        batch.written(Path::new("docs"), std::ffi::OsStr::new("f.txt"), None);
+        self.examine(batch).await;
+        self.graph.with(|c| c.script("POST", "items/F/createUploadSession", wiremock::ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": {"code": "itemNotFound"}})), 1));
+        self.upload().await;
+        assert!(self.not_found_rows().await > 0, "blocked by the 404");
+    }
+
+    async fn not_found_rows(&self) -> usize {
+        self.store.call(|s| s.outbox_rows()).await.unwrap().into_iter().filter(|r| r.reason.as_deref() == Some(crate::sync::upload::reason::LEAVING_NOT_FOUND)).count()
+    }
+}
+
+/// Fifth review, point 1: a `leaving-not-found` row whose file the user
+/// removed meanwhile — nothing on disk for the reconcile to remove — goes
+/// once OneDrive's listing says its item is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_blocked_404_row_without_its_file_goes_once_the_listing_removes_its_item() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.f_blocked_by_a_404_in_leaving_docs(&listing).await;
+    std::fs::remove_file(w.path("docs/f.txt")).unwrap();
+    w.graph.with(|c| c.trash("F"));
+    w.cycle(&listing).await;
+    assert_eq!(w.not_found_rows().await, 0, "the blocked row went");
+}
+
+/// Fifth review, point 2: a large delta, reconciled Full, is no whole
+/// listing of the drive: a `leaving-not-found` row stays blocked.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_large_delta_is_no_whole_listing_for_blocked_rows() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.f_blocked_by_a_404_in_leaving_docs(&listing).await;
+    let large = Listing::new(ListingContext { writes: Some(w.writes(None)), full_threshold: 1, ..w.context_parts() });
+    w.graph.with(|c| {
+        c.add_file("X1", ROOT, "x1.txt", b"1");
+        c.add_file("X2", ROOT, "x2.txt", b"2");
+    });
+    let report = w.cycle(&large).await;
+    assert!(report.full, "reconciled Full");
+    assert_eq!(w.not_found_rows().await, 1, "still blocked: a large delta does not list F again");
+}
+
+/// Fifth review, point 3: `docs` is leaving and its copy is placed again at
+/// `papers/docs`; the user removes the old `docs` and moves `papers/docs` to
+/// `docs`. The move reaches OneDrive as a `PATCH`; nothing is removed from
+/// disk and nothing downloaded.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn moving_the_copy_placed_again_to_where_the_leaving_object_was_is_the_users_move() {
+    use std::os::unix::fs::MetadataExt;
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.docs_leaving_and_placed_again_in_papers(&listing).await;
+    std::fs::remove_dir_all(w.path("docs")).unwrap();
+    std::fs::rename(w.path("papers/docs"), w.path("docs")).unwrap();
+    let ino = std::fs::metadata(w.path("docs/f.txt")).unwrap().ino();
+    let patches = w.patches_of("D");
+    w.scan_and_upload().await;
+    w.rounds(&listing, 2).await;
+    w.scan_and_upload().await;
+    w.rounds(&listing, 1).await;
+    assert!(w.patches_of("D") > patches, "the user's move reached OneDrive");
+    w.graph.with(|c| {
+        let d = c.item("D").unwrap();
+        assert_eq!((d.parent.as_deref(), d.name.as_str()), (Some(ROOT), "docs"));
+    });
+    assert_eq!(std::fs::metadata(w.path("docs/f.txt")).unwrap().ino(), ino, "nothing removed from disk");
+    assert!(!w.path("papers/docs").exists(), "not placed again where it was");
+    assert_eq!(w.graph.with(|c| c.count("GET", "dl/")), 0, "nothing downloaded");
+    assert_eq!(w.deletes(), 0);
+}
+
+/// Fifth review, point 4: a hard link the user makes to a leaving file
+/// carries its handle and its id, but is not taken for it: a Full scan
+/// leaves the leaving object where it is recorded, and the link stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hard_link_to_a_leaving_file_is_not_taken_for_it() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    w.graph.with(|c| c.rename("F", "D", &long_name()));
+    w.cycle(&listing).await;
+    w.examine_handed().await;
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(w.path("docs/f.txt"), b"one, changed").unwrap();
+    let mut batch = crate::sync::local::Batch::new();
+    batch.written(Path::new("docs"), std::ffi::OsStr::new("f.txt"), None);
+    w.examine(batch).await;
+    w.graph.with(|c| c.script("POST", "items/F/createUploadSession", wiremock::ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": {"code": "itemNotFound"}})), 1));
+    w.upload().await;
+    assert_eq!(w.not_found_rows().await, 1, "held by its blocked row");
+    assert_eq!(w.store.call(|s| s.leaving()).await.unwrap(), vec![("F".to_owned(), PathBuf::from("docs/f.txt"))], "leaving");
+    std::fs::hard_link(w.path("docs/f.txt"), w.path("f-link.txt")).unwrap();
+    w.scan_and_upload().await;
+    assert_eq!(w.store.call(|s| s.leaving()).await.unwrap(), vec![("F".to_owned(), PathBuf::from("docs/f.txt"))], "after the scan");
+    w.cycle(&listing).await;
+    assert_eq!(w.store.call(|s| s.leaving()).await.unwrap(), vec![("F".to_owned(), PathBuf::from("docs/f.txt"))], "after the cycle");
+    w.scan_and_upload().await;
+    assert_eq!(w.store.call(|s| s.leaving()).await.unwrap(), vec![("F".to_owned(), PathBuf::from("docs/f.txt"))], "still where it is recorded");
+    assert!(w.path("f-link.txt").exists() && w.path("docs/f.txt").exists(), "both names stay");
+    assert_eq!(w.patches_of("F"), 0);
+}
+
+/// Copies every `user.konedrive.*` attribute of `from` onto `to`, as
+/// `cp --preserve=xattr` or vim with `+xattr` does.
+fn copy_konedrive_xattrs(from: &Path, to: &Path) {
+    for name in xattr::list(from).unwrap() {
+        if name.to_string_lossy().starts_with("user.konedrive.") {
+            if let Some(value) = xattr::get(from, &name).unwrap() {
+                xattr::set(to, &name, &value).unwrap();
+            }
+        }
+    }
+}
+
+/// Sixth review, point 1: `docs/f.txt` is leaving (F renamed in OneDrive to
+/// a name over 255 bytes) and an editor saves it by writing a new file that
+/// copies its attributes and renaming it over. The new inode at its place is
+/// the leaving object: no `PATCH`, the name in OneDrive stays long, the
+/// change goes up as content, and the file goes after.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_save_by_rename_over_a_leaving_file_uploads_content_only() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    let long = long_name();
+    w.graph.with(|c| c.rename("F", "D", &long));
+    w.cycle(&listing).await;
+    w.examine_handed().await;
+    assert_eq!(w.store.call(|s| s.leaving()).await.unwrap(), vec![("F".to_owned(), PathBuf::from("docs/f.txt"))]);
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    let temp = w.path("docs/.f.txt.swp");
+    std::fs::write(&temp, b"one, saved by rename").unwrap();
+    copy_konedrive_xattrs(&w.path("docs/f.txt"), &temp);
+    std::fs::rename(&temp, w.path("docs/f.txt")).unwrap();
+    for _ in 0..3 {
+        let mut batch = crate::sync::local::Batch::new();
+        batch.name(Path::new("docs"), std::ffi::OsStr::new("f.txt"));
+        w.examine(batch).await;
+        w.upload().await;
+        w.cycle(&listing).await;
+    }
+    assert_eq!(w.patches_of("F"), 0, "never renamed in OneDrive");
+    w.graph.with(|c| {
+        let f = c.item("F").unwrap();
+        assert_eq!(f.name, long, "its name in OneDrive stays");
+        assert_eq!(f.content, b"one, saved by rename", "the change went up as content");
+    });
+    assert!(!w.path("docs/f.txt").exists(), "and it went from the disk after");
+}
+
+/// Sixth review, point 2: a hard link the user made to a leaving file
+/// outlives it. When the daemon takes the leaving name off the disk, the
+/// inode loses its item id first: the link is the user's own file, uploaded
+/// as new — never the item, renamed in OneDrive to the link's name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hard_link_left_by_a_leaving_file_is_the_users_own_file() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    let long = long_name();
+    w.graph.with(|c| c.rename("F", "D", &long));
+    w.cycle(&listing).await;
+    w.examine_handed().await;
+    std::fs::hard_link(w.path("docs/f.txt"), w.path("f-link.txt")).unwrap();
+    w.rounds(&listing, 2).await;
+    assert!(!w.path("docs/f.txt").exists(), "the leaving name went");
+    w.scan_and_upload().await;
+    w.rounds(&listing, 1).await;
+    assert_eq!(w.patches_of("F"), 0, "never renamed in OneDrive");
+    assert_eq!(w.graph.with(|c| c.item("F").unwrap().name.clone()), long);
+    assert!(w.graph.with(|c| c.items.values().any(|i| i.name == "f-link.txt" && i.id != "F" && i.content == b"one")), "uploaded as new: {:?}", w.graph.with(|c| c.paths()));
+    assert_eq!(std::fs::read(w.path("f-link.txt")).unwrap(), b"one");
+}
+
+/// Sixth review, point 3: a hard link the user makes to the copy placed
+/// again of a leaving file — the same item id, another inode — is a hard
+/// link of that copy, not of the leaving object: the copy is still the item,
+/// and its change goes up.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hard_link_to_the_copy_placed_again_leaves_the_copy_the_item() {
+    use std::io::Write;
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    w.graph.with(|c| c.rename("F", "D", &long_name()));
+    w.cycle(&listing).await;
+    w.examine_handed().await;
+    // What keeps the leaving file: a state that cannot be read.
+    xattr::set(w.path("docs/f.txt"), placeholder::XATTR_STATE, b"garbage").unwrap();
+    w.rounds(&listing, 2).await;
+    assert!(w.path("docs/f.txt").exists(), "held");
+    w.graph.with(|c| c.rename("F", "D", "g.txt"));
+    w.rounds(&listing, 2).await;
+    assert_eq!(id_at(&w.path("docs/g.txt")).as_deref(), Some("F"), "placed again");
+    write_version(&w.path("docs/g.txt"), b"one", &w.cloud_ctag("F"));
+    std::fs::hard_link(w.path("docs/g.txt"), w.path("h.txt")).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::OpenOptions::new().append(true).open(w.path("docs/g.txt")).unwrap().write_all(b", changed").unwrap();
+    w.scan_and_upload().await;
+    assert_eq!(w.graph.with(|c| c.item("F").unwrap().content.clone()), b"one, changed", "the copy's change went up");
+    assert_eq!(w.patches_of("F"), 0, "never renamed or moved by the daemon");
 }
