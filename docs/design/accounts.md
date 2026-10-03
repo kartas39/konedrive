@@ -396,11 +396,12 @@ A removal that fails at step 2 (the refresh token cannot be deleted) or at step 
 cannot be taken out of `config.toml`) is refused under the name the failure has (`Failed`;
 `NoAccount` when `config.toml` no longer holds the account), and the account stays, no longer
 retired: it is listed, takes a folder, a sign-in and a mode as before, and can be removed again.
-What the steps before the failure did is not taken back: a folder that was forgotten stays
-forgotten, a sign-in under way is given up, and after step 2 the account is signed out. The
-refusal says what failed and what was done: whether the account is signed out, and whether its
-folder is no longer registered, was forgotten while `config.toml` still records it, or was left
-as it was (limitations log F205).
+(An account `config.toml` no longer holds is the exception: it goes only when konedrived
+starts again, and the refusal says that.) What the steps before the failure did is not taken
+back: a folder that was forgotten stays forgotten, a sign-in under way is given up, and after
+step 2 the account is signed out. The refusal says what failed and what was done: whether the
+account is signed out, and whether its folder is no longer registered, was forgotten while
+`config.toml` still records it, or was left as it was (limitations log F205).
 
 `Add`, `Remove` and `SetClientId` run one at a time.
 

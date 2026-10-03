@@ -43,26 +43,38 @@ pub async fn export(
 
 /// Takes one account's folder off the bus (`Accounts.Remove`, and an `Accounts.Add` that
 /// failed while putting it there): every interface, whatever the one before answered.
-pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()> {
-    let server = connection.object_server();
+/// `partly`: see [`take_off`].
+pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
     all_taken_off([
-        server.remove::<ActivityLog, _>(path).await,
-        server.remove::<LocalScan, _>(path).await,
-        server.remove::<Conflicts, _>(path).await,
-        server.remove::<UploadQueue, _>(path).await,
-        server.remove::<Transfers, _>(path).await,
-        server.remove::<Folder, _>(path).await,
+        take_off::<ActivityLog>(connection, path, partly).await,
+        take_off::<LocalScan>(connection, path, partly).await,
+        take_off::<Conflicts>(connection, path, partly).await,
+        take_off::<UploadQueue>(connection, path, partly).await,
+        take_off::<Transfers>(connection, path, partly).await,
+        take_off::<Folder>(connection, path, partly).await,
     ])
 }
 
-/// What taking several interfaces off the bus comes to: an interface that was not there is
-/// off, and the first other failure is the answer.
-pub(crate) fn all_taken_off(taken: impl IntoIterator<Item = zbus::Result<bool>>) -> zbus::Result<()> {
-    let mut failures = taken.into_iter().filter_map(|taken| match taken {
-        Ok(_) | Err(zbus::Error::InterfaceNotFound) => None,
-        Err(e) => Some(e),
-    });
-    failures.next().map_or(Ok(()), Err)
+/// Takes the interface `I` off `path`. One that is not there is off, and no failure; it is
+/// worth a warning unless `partly`, which the cleanup of an `Accounts.Add` that failed part
+/// of the way gives: on a removal every interface is there.
+pub(crate) async fn take_off<I: zbus::object_server::Interface>(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+    match connection.object_server().remove::<I, _>(path).await {
+        Ok(_) => Ok(()),
+        Err(zbus::Error::InterfaceNotFound) => {
+            if !partly {
+                tracing::warn!("{} was not on the bus at {path}", I::name());
+            }
+            Ok(())
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// What taking several interfaces off the bus comes to: the first failure, after every one
+/// was tried.
+pub(crate) fn all_taken_off(taken: impl IntoIterator<Item = zbus::Result<()>>) -> zbus::Result<()> {
+    taken.into_iter().find(Result::is_err).unwrap_or(Ok(()))
 }
 
 /// The daemon's objects on a bus: what the account manager and the startup are given
@@ -92,12 +104,12 @@ impl Bus for OnBus {
         export(connection, path, sync).await
     }
 
-    async fn unexport_folder(&self, connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()> {
-        unexport(connection, path).await
+    async fn unexport_folder(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+        unexport(connection, path, partly).await
     }
 
-    async fn unexport_account(&self, connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()> {
-        crate::dbus::account::unexport(connection, path).await
+    async fn unexport_account(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+        crate::dbus::account::unexport(connection, path, partly).await
     }
 }
 

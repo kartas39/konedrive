@@ -805,12 +805,12 @@ impl konedrived::daemon::manager::Bus for FailingExports {
         Ok(signals)
     }
 
-    async fn unexport_folder(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()> {
-        konedrived::dbus::export::OnBus.unexport_folder(connection, path).await
+    async fn unexport_folder(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.unexport_folder(connection, path, partly).await
     }
 
-    async fn unexport_account(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()> {
-        konedrived::dbus::export::OnBus.unexport_account(connection, path).await
+    async fn unexport_account(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.unexport_account(connection, path, partly).await
     }
 }
 

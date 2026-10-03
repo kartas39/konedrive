@@ -20,9 +20,13 @@ fn a_half_removal_says_what_was_done_under_the_failures_own_name() {
     assert!(untouched.contains("left as it was") && !untouched.contains("no longer registered"), "{untouched}");
     assert!(!said(None, false, false).contains("folder"));
 
-    let gone = ManagerError::from(ConfigError::NoAccount("3f9a".into())).saying(|why| format!("not removed: {why}"));
+    let half = |forgotten| HalfRemoved { forgotten, still_recorded: true, signed_out: true };
+    let gone = half(folder()).refusal("Personal", ManagerError::from(ConfigError::NoAccount("3f9a".into())));
     assert!(matches!(gone, ManagerError::NoAccount(_)), "{gone:?}");
-    assert!(gone.to_string().starts_with("there is no account \"3f9a\" in config.toml, so not removed"), "{gone}");
-    let unwritable = ManagerError::from(ConfigError::Write("read-only file system".into())).saying(|why| format!("not removed: {why}"));
-    assert!(matches!(&unwritable, ManagerError::Failed(said) if said == "not removed: read-only file system"), "{unwritable:?}");
+    let gone = gone.to_string();
+    assert!(gone.starts_with("there is no account \"3f9a\" in config.toml any more"), "{gone}");
+    assert!(gone.contains("its sign-in is deleted and its folder /home/u/OneDrive forgotten"), "{gone}");
+    assert!(gone.contains("Start konedrived again") && !gone.contains("Remove it again") && !gone.contains("still records"), "{gone}");
+    let unwritable = half(None).refusal("Personal", ManagerError::from(ConfigError::Write("read-only file system".into())));
+    assert!(matches!(&unwritable, ManagerError::Failed(said) if said.contains("is not removed: read-only file system")), "{unwritable:?}");
 }

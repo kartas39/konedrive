@@ -54,10 +54,13 @@ pub trait Bus: Send + Sync {
     /// Puts the interfaces of an account's folder at `path`; the tasks that send their
     /// signals.
     async fn export_folder(&self, connection: &Connection, path: &ObjectPath<'_>, sync: Arc<SyncService>) -> zbus::Result<Vec<JoinHandle<()>>>;
-    /// Takes the interfaces of an account's folder off the bus.
-    async fn unexport_folder(&self, connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()>;
-    /// Takes an account's `Account` off the bus.
-    async fn unexport_account(&self, connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()>;
+    /// Takes the interfaces of an account's folder off the bus, every one whatever the one
+    /// before answered. `partly`: some may not be there (an `Add` that failed while putting
+    /// them), which is then not worth a warning.
+    async fn unexport_folder(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()>;
+    /// Takes an account's `Account` off the bus, as [`unexport_folder`](Self::unexport_folder)
+    /// takes the folder.
+    async fn unexport_account(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()>;
 }
 
 /// Announces changes of `Accounts.HelperState` ([`Bus::helper_state`]).
@@ -272,16 +275,16 @@ impl AccountManager {
         Ok(())
     }
 
-    /// Takes `account`'s objects off the bus.
-    async fn unexport(&self, connection: &Connection, account: &Account) {
+    /// Takes `account`'s objects off the bus; `partly` when not all of them may be there.
+    async fn unexport(&self, connection: &Connection, account: &Account, partly: bool) {
         let path = account.path.as_ref();
         for signals in account.signals.lock().unwrap().drain(..) {
             signals.abort();
         }
-        if let Err(e) = self.options.bus.unexport_folder(connection, &path).await {
+        if let Err(e) = self.options.bus.unexport_folder(connection, &path, partly).await {
             tracing::warn!("cannot take {path} off the bus: {e}");
         }
-        if let Err(e) = self.options.bus.unexport_account(connection, &path).await {
+        if let Err(e) = self.options.bus.unexport_account(connection, &path, partly).await {
             tracing::warn!("cannot take {path} off the bus: {e}");
         }
     }
@@ -306,7 +309,7 @@ impl AccountManager {
             // Nothing of the account is to be left: not half of its objects on the bus, and
             // not an entry in `config.toml` that would come up as an account at the next
             // start (which stays all the same if the file cannot be written now: F205).
-            self.unexport(connection, &account).await;
+            self.unexport(connection, &account, true).await;
             self.hub.leave(&account.sync);
             self.siblings.remove(&account.id);
             if let Err(e) = self.config.remove_account(&entry.id) {
@@ -355,12 +358,12 @@ impl AccountManager {
                 still_recorded: self.config.account(&account.id).is_some_and(|a| a.root.is_some()),
                 signed_out,
             };
-            let error = error.saying(|why| left.text(&account.account.state().get().label, why));
+            let error = left.refusal(&account.account.state().get().label, error);
             tracing::error!("{error}");
             return Err(error);
         }
         remove_account_dir(&account.paths.dir);
-        self.unexport(connection, &account).await;
+        self.unexport(connection, &account, false).await;
         self.accounts.lock().unwrap().retain(|a| a.id != account.id);
         self.hub.leave(&account.sync);
         self.siblings.remove(&account.id);
@@ -499,7 +502,35 @@ struct HalfRemoved {
 }
 
 impl HalfRemoved {
-    /// What the removal answers, `why` being what failed.
+    /// `error`, which is what failed, under the same name and saying what the removal had
+    /// done by then.
+    fn refusal(&self, label: &str, error: ManagerError) -> ManagerError {
+        match error {
+            ManagerError::InvalidArgs(why) => ManagerError::InvalidArgs(self.text(label, &why)),
+            ManagerError::Failed(why) => ManagerError::Failed(self.text(label, &why)),
+            ManagerError::NoAccount(id) => ManagerError::NoAccount(self.gone_from_config(label, &id)),
+            sync @ ManagerError::Sync(_) => sync,
+        }
+    }
+
+    /// What follows "there is no account " when `config.toml` no longer holds the account
+    /// (taken out by hand while the daemon runs): the third step's failure, so the sign-in is
+    /// deleted by then. Neither another `Remove` nor going on with the account works, and
+    /// what the daemon's copy of the file records is not what the file says, so neither is
+    /// said.
+    fn gone_from_config(&self, label: &str, id: &str) -> String {
+        let folder = match &self.forgotten {
+            Some(folder) => format!(" and its folder {} forgotten (the files in it are kept)", folder.display()),
+            None => String::new(),
+        };
+        format!(
+            "{id:?} in config.toml any more, so the account {label:?} cannot be taken out of it; its sign-in is \
+             deleted{folder}. Start konedrived again and the account is gone"
+        )
+    }
+
+    /// What the removal answers, `why` being what failed, while `config.toml` still holds
+    /// the account.
     fn text(&self, label: &str, why: &str) -> String {
         let mut left = String::from("the account stays");
         if self.signed_out {
@@ -518,19 +549,6 @@ impl HalfRemoved {
             (None, false) => {}
         }
         format!("the account {label:?} is not removed: {why}; {left}. Remove it again, or go on using it")
-    }
-}
-
-impl ManagerError {
-    /// The same refusal, under the same name, with `text` made of what it said.
-    fn saying(self, text: impl FnOnce(&str) -> String) -> Self {
-        match self {
-            Self::InvalidArgs(why) => Self::InvalidArgs(text(&why)),
-            Self::Failed(why) => Self::Failed(text(&why)),
-            // Its message begins "there is no account ": the rest goes on from there.
-            Self::NoAccount(id) => Self::NoAccount(format!("{id:?} in config.toml, so {}", text("it cannot be taken out of it"))),
-            Self::Sync(_) => self,
-        }
     }
 }
 

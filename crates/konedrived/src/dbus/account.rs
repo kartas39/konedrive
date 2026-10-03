@@ -142,12 +142,12 @@ pub async fn export(connection: &Connection, path: &ObjectPath<'_>, service: Arc
 }
 
 /// Takes one account's `Account` and `TokenExport` off the bus (`Accounts.Remove`).
-pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()> {
-    let server = connection.object_server();
-    crate::dbus::export::all_taken_off([
+pub async fn unexport(connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+    use crate::dbus::export::{all_taken_off, take_off};
+    all_taken_off([
         #[cfg(feature = "dev-tools")]
-        server.remove::<TokenExport, _>(path).await,
-        server.remove::<Account, _>(path).await,
+        take_off::<TokenExport>(connection, path, partly).await,
+        take_off::<Account>(connection, path, partly).await,
     ])
 }
 
