@@ -61,10 +61,11 @@ Root is never used outside that VM. If a change needs anything privileged to exe
 
 ## The limitations log
 
-`docs/limitations-and-workarounds.md` is the one place for everything in KOneDrive that is
+`docs/limitations/` is the one place for everything in KOneDrive that is
 limited, worked around, fragile, or knowingly below the quality the project wants. If your
 change accepts a limitation, builds a workaround, picks a number without measuring it, or
-leaves something fragile on purpose, add an entry — the log explains its own format (kind,
+leaves something fragile on purpose, add an entry: a file named by its id (`F71.md`) and a line
+for it in the index, `docs/limitations/README.md` — the index explains the format (kind,
 evidence, status) at the top. A change is not really finished until the corner it cut is
 written down there.
 

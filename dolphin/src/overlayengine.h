@@ -16,7 +16,7 @@
 // directory Dolphin has browsed (so it is cached here, as the directory
 // itself or as a root) reaches every file cached under it; a pin set on an
 // ancestor Dolphin has only passed through, never watched on its own, is
-// picked up the next time Dolphin asks (docs/limitations-and-workarounds.md).
+// picked up the next time Dolphin asks (docs/limitations/).
 //
 // The cache holds an answer only while a watch backs it: a directory's entry
 // and its watch are created, evicted and dropped together, and the sync root

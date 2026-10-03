@@ -30,7 +30,7 @@ Related documents elsewhere in the repository:
   filesystems were measured to do on Linux 7.2, and how to reproduce each measurement.
 - [`../kio-behavior.md`](../kio-behavior.md) — what KIO and Dolphin open, and how the thumbnail
   cache is named.
-- [`../limitations-and-workarounds.md`](../limitations-and-workarounds.md) — every known limit,
+- [`../limitations/`](../limitations/) — every known limit,
   workaround, fragile spot and provisional number. Its entries have short identifiers (Z1, P6,
   W2, F33, K1, …), which these documents use to point at them.
 - [`../acceptance-check.md`](../acceptance-check.md) — a manual check of a build against a real

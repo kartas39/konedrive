@@ -73,12 +73,12 @@ directory the request is about. A request carries a descriptor for that object, 
   inode, so a directory the user cannot reach by path is not walked. Two smaller things are disclosed. The answer tells a
   handle that names a live object from one that names nothing (`EPERM` against `ESTALE`), for any
   object on that filesystem, which says that an inode exists but nothing about its name or
-  content. And a refused request is not logged. `docs/limitations-and-workarounds.md`, F90.
+  content. And a refused request is not logged. `docs/limitations/`, F90.
 - **The helper's own opens.** The object `OpenByHandle` opens may be one the helper itself
   intercepts, and an open it had to decide on would wait for the very connection that asked. So
   events caused by the helper's own process are let through at once. The helper opens no file
   but those objects and, at registration, its probe's nameless file, and it reads neither
-  (`docs/limitations-and-workarounds.md`, F92).
+  (`docs/limitations/`, F92).
 - **Unregister.** Only a folder the asking uid registered.
 - **Answer opens.** An intercepted open is handed, as a descriptor, to the daemon of the uid that
   owns the file, and waits for that daemon's answer. So an open of a user's placeholder waits on
@@ -92,7 +92,7 @@ handed-over file is in; nothing about accounts crosses the socket.
 Per-uid bounds keep one local user from starving another. Each uid may hold at most 16
 connections. At most 8 workers wait for one uid's daemon to connect, and at most 32 across all
 uids. Each connection has at most 64 fills in flight. These numbers were chosen, not all of them
-measured (`docs/limitations-and-workarounds.md`, "Provisional numbers").
+measured (`docs/limitations/`, "Provisional numbers").
 
 **The registration's write probe.** The first time a folder is registered, the helper checks that
 its filesystem can hold placeholders: as root, it creates a nameless temporary file (`O_TMPFILE`)
@@ -107,7 +107,7 @@ then relies on its filesystem type check, and on the same probe, which the daemo
 `packaging/systemd/konedrive-helper.service` narrows what the helper can do. `systemd-analyze
 security` rates it 2.4 ("OK"). `tests/vm/run.sh unit` boots a VM with systemd, installs this unit
 and checks, through it, that a folder is registered, marked and intercepted and that no system call
-is denied (`docs/limitations-and-workarounds.md`, W16).
+is denied (`docs/limitations/`, W16).
 
 - **No new privileges.** `NoNewPrivileges=yes`, and the two capabilities above as its whole
   bounding set. (`RestrictSUIDSGID=yes` is left out: it makes every `openat2()` fail with `ENOSYS`,
@@ -167,7 +167,7 @@ account, uses that access token to talk to Microsoft Graph, and never writes the
 disk, to a log, or anywhere else. In a development build only (the `dev-tools` cargo feature,
 which `scripts/dev-install.sh` uses), each account's `TokenExport` D-Bus interface hands out a
 short-lived (about one hour), read-only access token of that account for test runs, whatever the
-account's mode, never the refresh token; see `docs/limitations-and-workarounds.md`, W11. The
+account's mode, never the refresh token; see `docs/limitations/`, W11. The
 released package has neither that interface nor `konedrivectl dev`, and its build fails if the
 daemon names the interface. A token that can change files (`TokenExport.ReadWrite`) is handed out
 only for a test account listed in `write_test_drive_ids`, the write phase's development gate (F60). Removing an account deletes its

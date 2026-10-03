@@ -1096,7 +1096,7 @@ test-account run (§12.1), each handled safely either way:
 
 ## 14. Known limits
 
-Recorded in [`../limitations-and-workarounds.md`](../limitations-and-workarounds.md):
+Recorded in [`../limitations/`](../limitations/):
 
 - the gate (F60), the mode following the grant (F61), the lock walks of a switch (F62), the
   switch's outcome (F64), file modes lost across a round trip (F65), consent that stays with
