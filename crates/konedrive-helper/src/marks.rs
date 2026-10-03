@@ -1,7 +1,7 @@
 //! The fanotify permission group: marks on directories, ignore marks on files.
 //!
 //! Every fanotify call in this file follows the two rules the proof of
-//! concept in `tests/vm/poc_marks.rs` established (`docs/kernel-behavior-7.2.md`,
+//! concept in `tests/vm/poc_marks.rs` established (`docs/kernel-behavior-7.2/interception.md`,
 //! §7): fanotify does not exempt the process holding the group, so
 //!
 //! 1. files are marked by `(dirfd, name)` or by an fd we did not open
@@ -37,7 +37,7 @@ pub use konedrive_proto::{clamp_deny_errno, ACCEPTED_DENY_ERRNOS};
 /// `FAN_MARK_REMOVE` on an object that carries no mark returns `ENOENT`, and
 /// that is a **normal** outcome here rather than a failure: ignore marks are
 /// added `FAN_MARK_EVICTABLE`, so the kernel is entitled to drop one at any
-/// moment under memory pressure (`docs/kernel-behavior-7.2.md` §2), and the
+/// moment under memory pressure (`docs/kernel-behavior-7.2/interception.md` §2), and the
 /// daemon clears an ignore mark before every dehydration whether or not the
 /// mark survived that long. Reporting it as an error is what made a routine
 /// `ClearIgnore` tear down the daemon connection.
@@ -89,7 +89,7 @@ impl Marks {
             // and the kernel answers it itself: `FAN_DENY`, which the opener
             // sees as `EPERM` — never left suspended, never allowed. Measured
             // in the VM suite (`leased_file_does_not_stall_others`); see
-            // `docs/kernel-behavior-7.2.md` §12.4. The flag changes nothing
+            // `docs/kernel-behavior-7.2/leases.md` §12.4. The flag changes nothing
             // else about a descriptor on a regular file: the daemon's
             // `pwrite`s and `fsync`s through it are unaffected.
             EventFFlags::O_RDWR
@@ -140,7 +140,7 @@ impl Marks {
     /// Stops asking about a file whose content is already there (invariant
     /// M3: only ever called on a file just read `hydrated`, and taken off
     /// again unless it still reads `hydrated` once the mark is in place —
-    /// `main.rs`, `mark_while_hydrated`).
+    /// `events.rs`, `mark_while_hydrated`).
     ///
     /// # `FAN_MARK_IGNORED_SURV_MODIFY` is what makes this work at all
     ///
@@ -159,7 +159,7 @@ impl Marks {
     /// hands out for a permission event is `O_RDWR` (see `Marks::new`), and
     /// the daemon holds an `SCM_RIGHTS` copy of that same open file
     /// description until it has finished filling the file. Measured on Btrfs,
-    /// ext4 and XFS (`docs/kernel-behavior-7.2.md` §2.1): with a writable
+    /// ext4 and XFS (`docs/kernel-behavior-7.2/interception.md` §2.1): with a writable
     /// descriptor open the mark never appears in `/proc/self/fdinfo/<group>`
     /// and the next open still raises an event; with `SURV_MODIFY` it appears
     /// and suppresses, whoever holds the inode open and whether the mark is
@@ -349,7 +349,7 @@ impl WalkReport {
 ///
 /// A mark placed *during* this walk, behind it, is placed by a helper that
 /// has just read the file `hydrated` and read it again after marking
-/// (`main.rs`, `mark_while_hydrated`): it is a correct mark, not a stale
+/// (`events.rs`, `mark_while_hydrated`): it is a correct mark, not a stale
 /// one. The cost is one `fanotify_mark` per file — a lookup of its name —
 /// on top of one per directory; a fresh group, at startup, has nothing to
 /// clear, and every call then simply answers `ENOENT`.
@@ -388,7 +388,7 @@ pub fn walk_and_mark(marks: &Marks, root: BorrowedFd<'_>, label: &str) -> WalkRe
 /// was hydrated while the root was registered carries an ignore mark of its
 /// own, and that mark belongs to this helper's group, not to the
 /// registration: it outlives the unregistration for as long as the inode
-/// stays in cache. Measured (`tests/vm/scenarios.rs`,
+/// stays in cache. Measured (`tests/vm/scenarios/dehydrate.rs`,
 /// `unregistered_ignore_mark`), on Btrfs, ext4 and XFS alike: a folder
 /// unregistered, registered again without interception, a file in it
 /// dehydrated with no helper link — so no `ClearIgnore` was ever sent — and
@@ -568,71 +568,4 @@ fn clear_file(marks: &Marks, dir: BorrowedFd<'_>, name: &CStr, label: &str, repo
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The self-exemption in main.rs's event loop compares pids (see
-    /// `INIT_FLAGS`).
-    #[test]
-    fn init_flags_report_pids_not_thread_ids() {
-        assert!(!INIT_FLAGS.contains(InitFlags::FAN_REPORT_TID));
-    }
-
-    /// M2's set, and the errnos the daemon will actually report that are not
-    /// in it. A value outside the set is not a curiosity: `ENOENT` is what a
-    /// deleted OneDrive item looks like and `ETIMEDOUT` is what a slow network
-    /// looks like, and either one reaching `write()` unclamped leaves every
-    /// waiting opener suspended for the lifetime of the helper.
-    #[test]
-    fn accepted_errnos_pass_through_unchanged() {
-        for errno in ACCEPTED_DENY_ERRNOS {
-            assert_eq!(clamp_deny_errno(errno), errno, "errno {errno} is accepted by the kernel");
-        }
-    }
-
-    #[test]
-    fn everything_else_becomes_eio() {
-        for errno in [
-            libc::ENOENT,
-            libc::EACCES,
-            libc::ECONNRESET,
-            libc::ENETDOWN,
-            libc::ETIMEDOUT,
-            libc::ECANCELED,
-            libc::EINVAL,
-            libc::ENOMEM,
-            libc::EEXIST,
-            libc::ENODEV,
-            libc::EPIPE,
-            libc::EHOSTUNREACH,
-        ] {
-            assert_eq!(clamp_deny_errno(errno), libc::EIO, "errno {errno} must be downgraded");
-        }
-    }
-
-    /// A daemon is not trusted to send a sensible number at all, and the
-    /// response word only has a byte to put it in.
-    #[test]
-    fn nonsense_values_become_eio_and_never_corrupt_the_response() {
-        for errno in [-1, -4095, i32::MIN, i32::MAX, 256, 512, 0x100, 0xdead_beefu32 as i32] {
-            let clamped = clamp_deny_errno(errno);
-            assert_eq!(clamped, libc::EIO, "errno {errno} must be downgraded");
-        }
-        // The masking is what guarantees the invariant even if the clamp were
-        // ever widened: only the low byte can reach the response word.
-        for errno in [-1i32, 0x1234, i32::MIN] {
-            assert_eq!((errno as u32 & 0xff) << 24 & !0xff00_0000, 0);
-        }
-    }
-
-    /// `ClearIgnore` and `UnmarkDir` run against marks the kernel is free to
-    /// have thrown away already; only that one errno is normal, and the rest
-    /// must still be reported.
-    #[test]
-    fn a_missing_mark_is_not_a_failure_but_other_errors_still_are() {
-        assert!(tolerate_missing_mark(Ok(())).is_ok());
-        assert!(tolerate_missing_mark(Err(Errno::ENOENT)).is_ok());
-        let error = tolerate_missing_mark(Err(Errno::EBADF)).unwrap_err();
-        assert_eq!(error.raw_os_error(), Some(libc::EBADF));
-    }
-}
+mod tests;

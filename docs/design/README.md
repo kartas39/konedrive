@@ -26,16 +26,18 @@ someone who wants to understand, review or change the system.
 
 Related documents elsewhere in the repository:
 
-- [`../kernel-behavior-7.2.md`](../kernel-behavior-7.2.md) — what fanotify, leases and the
+- [`../code-map.md`](../code-map.md) — where everything is: every crate, directory and file,
+  where its tests are, and how each suite is run.
+- [`../kernel-behavior-7.2/`](../kernel-behavior-7.2/README.md) — what fanotify, leases and the
   filesystems were measured to do on Linux 7.2, and how to reproduce each measurement.
 - [`../kio-behavior.md`](../kio-behavior.md) — what KIO and Dolphin open, and how the thumbnail
   cache is named.
-- [`../limitations-and-workarounds.md`](../limitations-and-workarounds.md) — every known limit,
+- [`../limitations/`](../limitations/) — every known limit,
   workaround, fragile spot and provisional number. Its entries have short identifiers (Z1, P6,
   W2, F33, K1, …), which these documents use to point at them.
 - [`../acceptance-check.md`](../acceptance-check.md) — a manual check of a build against a real
   account.
-- [original-proposal.md](original-proposal.md) — the original proposal for
+- [../history/original-proposal.md](../history/original-proposal.md) — the original proposal for
   the whole client. Where it and these documents differ, these documents describe what the code
   does, and [decisions.md](decisions.md) says what changed and why.
 
@@ -202,7 +204,9 @@ under a hardened systemd unit. Whatever can run as the user runs in the daemon.
 | `crates/konedrive-helper` | the privileged helper |
 | `crates/konedrive-proto` | the helper–daemon wire protocol |
 | `crates/konedrive-fs` | placeholder operations: extended attributes, sparse files, hole punching, leases, `O_TMPFILE`, the filesystem probe, the read-only lock's write window |
-| `crates/konedrived` | the daemon: the accounts and `config.toml` with its migration, sign-in and tokens, the Graph client, the tree store, and `sync/` (the helper hub, registration, fills, recovery, listing, reconcile, replacements, pins, thumbnails, activity, D-Bus) |
+| `crates/konedrive-graph` | sign-in with Microsoft and the Graph client: OAuth, tokens, the drive API, upload sessions, the notification socket, the transfer pool, QuickXorHash |
+| `crates/konedrive-tree` | the tree store (SQLite): items, staging, the outbox, the activity log, the conflicts |
+| `crates/konedrived` | the daemon, a directory for each area: `config/`, `account/`, `helper/`, `folder/`, `conditions/`, `status/`, `hydration/`, `local/`, `upload/`, `remote/`, `desktop/`, `sync/` (`SyncService` and the helper hub), `daemon/`, `dbus/` |
 | `crates/konedrive-dbus` | shared D-Bus names and error names, client proxies, the helper-state sentences |
 | `crates/konedrivectl` | the command line |
 | `dbus/` | the D-Bus interface definitions |

@@ -5,12 +5,12 @@ use std::time::Duration;
 
 use common::*;
 use konedrived::account::{AccountError, AccountService};
-use konedrived::account_cache::{self, AccountInfo};
+use konedrived::account::cache::AccountInfo;
 use konedrived::config::{ConfigStore, Paths};
-use konedrived::oauth::TokenResponse;
-use konedrived::secret::{MemoryStore, SecretStore};
-use konedrived::state::SignInState;
-use konedrived::token::SESSION_EXPIRED;
+use konedrive_graph::oauth::TokenResponse;
+use konedrived::account::secret::{MemoryStore, SecretStore};
+use konedrived::account::state::SignInState;
+use konedrive_graph::token::SESSION_EXPIRED;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -327,7 +327,7 @@ async fn startup_restores_session_from_wallet_and_cache() {
     let config = ConfigStore::open(&paths, async { false }).await;
     config.set_client_id(CLIENT_ID).unwrap();
     let account = config.add_account("Personal").unwrap();
-    account_cache::save(
+    konedrived::account::cache::save(
         &paths.account(&account.id).unwrap().account_cache,
         &AccountInfo {
             display_name: "Cached User".into(),
@@ -360,7 +360,7 @@ async fn startup_restores_session_from_wallet_and_cache() {
     // their last values, and the cache has the quota as it stands now.
     let s = wait_for(svc.state(), |s| s.quota_total == 5368709120).await;
     assert_eq!((s.quota_used, s.quota_remaining, s.quota_state.as_str()), (1073741824, 3, "nearing"));
-    let cached = account_cache::load(&paths.account(&account.id).unwrap().account_cache).unwrap();
+    let cached = konedrived::account::cache::load(&paths.account(&account.id).unwrap().account_cache).unwrap();
     assert_eq!((cached.quota_used, cached.quota_total, cached.quota_remaining, cached.quota_state.as_str()), (1073741824, 5368709120, 3, "nearing"));
     assert!(cached.quota_read_at > 100);
 }
@@ -581,7 +581,7 @@ async fn two_accounts() -> Two {
 }
 
 /// Signs `account` in with the browser's `code`, and waits until the sign-in is over.
-async fn sign_in_with(account: &Arc<AccountService>, code: &str) -> konedrived::state::AccountSnapshot {
+async fn sign_in_with(account: &Arc<AccountService>, code: &str) -> konedrived::account::state::AccountSnapshot {
     let url = account.begin_sign_in().await.unwrap();
     simulate_browser(&url, &format!("code={code}")).await;
     wait_for(account.state(), |s| s.state == SignInState::SignedOut || s.quota_total != 0).await
@@ -655,16 +655,16 @@ struct RefusingWallet;
 
 #[async_trait::async_trait]
 impl SecretStore for RefusingWallet {
-    async fn exists(&self) -> Result<bool, konedrived::secret::SecretError> {
+    async fn exists(&self) -> Result<bool, konedrived::account::secret::SecretError> {
         Ok(false)
     }
-    async fn load(&self) -> Result<Option<String>, konedrived::secret::SecretError> {
+    async fn load(&self) -> Result<Option<String>, konedrived::account::secret::SecretError> {
         Ok(None)
     }
-    async fn store(&self, _: &str) -> Result<(), konedrived::secret::SecretError> {
-        Err(konedrived::secret::SecretError::Locked)
+    async fn store(&self, _: &str) -> Result<(), konedrived::account::secret::SecretError> {
+        Err(konedrived::account::secret::SecretError::Locked)
     }
-    async fn delete(&self) -> Result<(), konedrived::secret::SecretError> {
+    async fn delete(&self) -> Result<(), konedrived::account::secret::SecretError> {
         Ok(())
     }
 }

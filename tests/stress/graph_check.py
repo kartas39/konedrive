@@ -9,7 +9,7 @@ on disk.
 Every request here is a plain HTTP GET, made with `urllib.request` from the standard library —
 nothing else touches the network, and nothing here can write to OneDrive. The token used is
 `konedrivectl dev export-access-token`'s: read-only if Microsoft honours the read-only refresh
-(`crates/konedrived/src/token.rs`'s `read_only_token`), and the run refuses to send anything but
+(`crates/konedrive-graph/src/token.rs`'s `read_only_token`), and the run refuses to send anything but
 GET with it even when the daemon falls back to a wider one.
 """
 
@@ -219,7 +219,7 @@ def compare_subtree_with_retry(local_root, token_getter, account_relative_path: 
 def get_read_only_token(ctl, base_tmp_dir: str) -> str:
     """A short-lived Graph token for verification only: `konedrivectl dev export-access-token`
     (no `--read-write`), which the daemon only ever hands out after a refresh scoped to
-    `Files.Read` — refused, per `crates/konedrived/src/token.rs`, if Microsoft answers with
+    `Files.Read` — refused, per `crates/konedrive-graph/src/token.rs`, if Microsoft answers with
     anything wider. If that refusal happens, this falls back to `--read-write` (the only token
     available for a read-write account when Microsoft will not narrow it), but this whole module
     never sends anything but GET with whatever token it is given, so nothing here can write. The

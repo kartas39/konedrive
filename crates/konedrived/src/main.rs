@@ -2,12 +2,13 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use konedrived::accounts::{self, Options};
+use konedrived::daemon::manager::Options;
 use konedrived::config::Paths;
-use konedrived::oauth::Endpoints;
-use konedrived::secret::SecretServiceWallet;
-use konedrived::stop;
-use konedrived::sync::{self, baloo::Baloo};
+use konedrive_graph::oauth::Endpoints;
+use konedrived::account::secret::SecretServiceWallet;
+use konedrived::daemon::stop;
+use konedrived::sync;
+use konedrived::desktop::baloo::Baloo;
 use futures_util::FutureExt;
 use tracing_subscriber::EnvFilter;
 
@@ -40,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
         baloo: Baloo::default,
         thumbnails: Some(paths.thumbnails.clone()),
         onedrive: true,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     // `config.toml` migrated, every account brought up as far as it can be
     // without the helper, every object exported, and only then the bus name
@@ -48,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
     // the connection would drop the bus name and every object with it.
     // A stop before the daemon is up has nothing in flight to wait for.
     let daemon = tokio::select! {
-        daemon = accounts::start(zbus::connection::Builder::session()?, paths, options) => daemon?,
+        daemon = konedrived::daemon::startup::start(zbus::connection::Builder::session()?, paths, options) => daemon?,
         _ = signals.next() => {
             tracing::info!("stopped before the daemon was up");
             std::process::exit(0)
@@ -59,7 +61,7 @@ async fn main() -> anyhow::Result<()> {
     // HS1: with no link, `HelperState` says what systemd says of the
     // helper's unit (read-only, on the system bus). The one place that asks
     // the real systemd.
-    hub.set_unit(Arc::new(sync::helper_status::Systemd::default()));
+    hub.set_unit(Arc::new(konedrived::helper::status::Systemd::default()));
     // Everything that can be slow — the helper connection, which can take up
     // to 30 s against a helper that accepts and then says nothing, and each
     // folder's registration and recovery walk — happens in the supervisor,
@@ -73,10 +75,10 @@ async fn main() -> anyhow::Result<()> {
     // `HelperState` follows the link, and systemd every 30 s without one.
     tokio::spawn(sync::hub::watch(Arc::clone(&hub)));
     // Every account holds back by itself on a metered connection or on battery, as its
-    // settings say (`sync::conditions`).
-    tokio::spawn(sync::conditions::watch(Arc::clone(&hub)));
+    // settings say (`conditions`).
+    tokio::spawn(konedrived::conditions::watch(Arc::clone(&hub)));
     // Every OneDrive folder is brought up to date the moment the network is back.
-    tokio::spawn(sync::network::watch(hub));
+    tokio::spawn(konedrived::conditions::network::watch(hub));
 
     tracing::info!("konedrived ready");
     let _connection = daemon.connection;

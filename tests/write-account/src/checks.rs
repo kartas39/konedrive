@@ -6,10 +6,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
-use konedrived::drive::{
+use konedrive_graph::drive::{
     ChunkOutcome, DeltaFrom, DeltaNext, DriveClient, DriveError, DriveItem, ItemChange, UploadTarget, WriteError, CHUNK_SIZE,
 };
-use konedrived::quickxor::QuickXor;
+use konedrive_graph::quickxor::QuickXor;
 use serde_json::{json, Value};
 
 use crate::guard::{Guard, TOP};

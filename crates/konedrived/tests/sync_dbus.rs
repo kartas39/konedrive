@@ -9,7 +9,7 @@
 //! not depend on that to fill a file.
 //!
 //! The daemon is started here exactly as `main.rs` starts it
-//! (`accounts::start`), so every account's objects are on the bus before the
+//! (`daemon::startup::start`), so every account's objects are on the bus before the
 //! name is claimed, and the helper is reached through the hub's supervisor
 //! rather than inline.
 
@@ -35,11 +35,12 @@ use konedrive_dbus::{
     UPLOAD_QUEUE_INTERFACE_NAME,
 };
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
-use konedrived::oauth::Endpoints;
-use konedrived::secret::MemoryWallet;
-use konedrived::state::{SignInState, StateHandle};
-use konedrived::sync::helper::HelperLink;
-use konedrived::sync::{SyncService, SyncTrouble};
+use konedrive_graph::oauth::Endpoints;
+use konedrived::account::secret::MemoryWallet;
+use konedrived::account::state::{SignInState, StateHandle};
+use konedrived::helper::HelperLink;
+use konedrived::sync::SyncService;
+use konedrived::status::snapshot::SyncTrouble;
 use nix::sys::socket::{
     accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr,
 };
@@ -77,7 +78,7 @@ struct Setup {
     /// The daemon's own half, for what no method can reach: the state a sync
     /// with OneDrive publishes.
     sync: Arc<SyncService>,
-    _daemon: konedrived::accounts::Daemon,
+    _daemon: konedrived::daemon::startup::Daemon,
     _config: tempfile::TempDir,
     _helper_dir: tempfile::TempDir,
     _bus: TestBus,
@@ -87,7 +88,7 @@ struct Setup {
 /// acknowledges `Hello`, and after that acknowledges every request with
 /// `Ack { errno: 0 }` — never sending a `HydrateRequest` of its own, since no
 /// fanotify group backs any of this. Built the same way
-/// `sync::helper`'s own test module builds its fake helpers.
+/// `helper`'s own test module builds its fake helpers.
 fn fake_helper(path: PathBuf) {
     let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None).unwrap();
     let addr = UnixAddr::new(&path).unwrap();
@@ -566,7 +567,7 @@ impl FakeUnit {
 }
 
 #[async_trait::async_trait]
-impl konedrived::sync::helper_status::HelperUnit for FakeUnit {
+impl konedrived::helper::status::HelperUnit for FakeUnit {
     async fn states(&self) -> Option<(String, String)> {
         Some(self.0.lock().unwrap().clone())
     }
@@ -581,7 +582,7 @@ impl konedrived::sync::helper_status::HelperUnit for FakeUnit {
 async fn helper_state_follows_the_link_and_then_what_systemd_says() {
     let f = setup().await;
     let unit = Arc::new(FakeUnit(std::sync::Mutex::new(("loaded".into(), "inactive".into()))));
-    f.sync.set_helper_unit(Arc::clone(&unit) as Arc<dyn konedrived::sync::helper_status::HelperUnit>);
+    f.sync.set_helper_unit(Arc::clone(&unit) as Arc<dyn konedrived::helper::status::HelperUnit>);
     let watching = tokio::spawn(konedrived::sync::watch_helper_every(Arc::clone(&f.sync), Duration::from_millis(100)));
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
@@ -768,7 +769,7 @@ async fn the_folders_quota_read_is_the_accounts_quota() {
         .unwrap();
     let mut changes = properties.receive_properties_changed().await.unwrap();
 
-    f.sync.quota().read(&konedrived::drive::DriveQuota { total: 100, used: 40, remaining: Some(60), state: "nearing".into() });
+    f.sync.quota().read(&konedrive_graph::drive::DriveQuota { total: 100, used: 40, remaining: Some(60), state: "nearing".into() });
 
     assert_eq!(
         changed_on(&mut changes, konedrive_dbus::ACCOUNT_INTERFACE_NAME, Duration::from_millis(600)).await,
@@ -787,7 +788,7 @@ async fn the_folders_quota_read_is_the_accounts_quota() {
 /// progress travels with the counters, in one message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_local_scan_is_on_the_bus() {
-    use konedrived::sync::local_scan::ScanState;
+    use konedrived::status::snapshot::ScanState;
     let f = setup().await;
     assert_eq!(f.scan.state().await.unwrap(), "none", "a read-only folder has no local scan");
     assert_eq!(f.scan.finished().await.unwrap(), 0);

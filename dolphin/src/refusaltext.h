@@ -2,7 +2,7 @@
 //
 // Matches the D-Bus error *name*, never the message, and says what happened
 // to their file and what they can do -- the same things `konedrivectl` says
-// (crates/konedrivectl/src/lib.rs, `refusal_text`), in Dolphin's words.
+// (crates/konedrivectl/src/text/refusals.rs, `refusal_text`), in Dolphin's words.
 
 #pragma once
 

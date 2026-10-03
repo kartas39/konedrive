@@ -7,9 +7,9 @@ use std::time::Duration;
 
 use konedrived::account::AccountService;
 use konedrived::config::Paths;
-use konedrived::oauth::Endpoints;
-use konedrived::secret::MemoryStore;
-use konedrived::state::{AccountSnapshot, StateHandle};
+use konedrive_graph::oauth::Endpoints;
+use konedrived::account::secret::MemoryStore;
+use konedrived::account::state::{AccountSnapshot, StateHandle};
 use serde_json::json;
 use url::Url;
 use wiremock::matchers::{body_string_contains, header, method, path};
@@ -96,16 +96,17 @@ pub async fn start_daemon(
     bus: &konedrive_dbus::testing::TestBus,
     dir: &Path,
     endpoints: Endpoints,
-    wallet: Arc<konedrived::secret::MemoryWallet>,
+    wallet: Arc<konedrived::account::secret::MemoryWallet>,
     sign_in_timeout: Duration,
-) -> konedrived::accounts::Daemon {
-    let options = konedrived::accounts::Options {
+) -> konedrived::daemon::startup::Daemon {
+    let options = konedrived::daemon::manager::Options {
         endpoints,
         wallet,
         sign_in_timeout,
-        baloo: konedrived::sync::baloo::Baloo::disabled,
+        baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
         onedrive: false,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     start_daemon_with(bus, dir, options).await
 }
@@ -115,11 +116,11 @@ pub async fn start_daemon(
 pub async fn start_daemon_with(
     bus: &konedrive_dbus::testing::TestBus,
     dir: &Path,
-    options: konedrived::accounts::Options,
-) -> konedrived::accounts::Daemon {
+    options: konedrived::daemon::manager::Options,
+) -> konedrived::daemon::startup::Daemon {
     let hub = konedrived::sync::hub::HelperHub::new();
     hub.set_socket(dir.join("no-helper.sock"));
-    konedrived::accounts::start_on(bus.builder(), Paths::in_dir(dir), options, hub).await.unwrap()
+    konedrived::daemon::startup::start_on(bus.builder(), Paths::in_dir(dir), options, hub).await.unwrap()
 }
 
 /// Polls `check` until it holds (proxy properties are read from the daemon each time).

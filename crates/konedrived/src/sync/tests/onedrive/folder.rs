@@ -1,0 +1,758 @@
+use super::*;
+
+/// `WebUrl` (issue #53): the address of the page of a file, of a folder and of
+/// the account's folder itself, each from one GET and nothing else.
+#[tokio::test]
+async fn web_url_asks_onedrive_for_the_items_page_with_one_get() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    mount_page(&w, "/me/drive/items/F", "F", "https://onedrive.example/f").await;
+    mount_page(&w, "/me/drive/items/D", "D", "https://onedrive.example/docs").await;
+    mount_page(&w, "/me/drive/root", "R", "https://onedrive.example/root").await;
+    let before = requests(&w).await;
+
+    let file = w.folder.path().join("docs/f.txt");
+    assert_eq!(service.web_url(&file).await.unwrap(), "https://onedrive.example/f");
+    assert_eq!(service.web_url(&w.folder.path().join("docs")).await.unwrap(), "https://onedrive.example/docs");
+    assert_eq!(service.root_web_url().await.unwrap(), "https://onedrive.example/root");
+
+    let asked: Vec<(String, String)> = w.server.received_requests().await.unwrap()[before..]
+        .iter()
+        .map(|r| (r.method.to_string(), r.url.path().to_owned()))
+        .collect();
+    let get = |route: &str| ("GET".to_owned(), route.to_owned());
+    assert_eq!(asked, [get("/me/drive/items/F"), get("/me/drive/items/D"), get("/me/drive/root")]);
+    assert_eq!(
+        konedrive_fs::placeholder::read_state(&std::fs::File::open(&file).unwrap()).unwrap(),
+        Some(konedrive_fs::placeholder::State::OnlineOnly),
+        "asking for the page downloads nothing"
+    );
+    service.stop_sync().await;
+}
+
+/// A file with no item id is not in OneDrive yet: refused by that name, and
+/// OneDrive is not asked.
+#[tokio::test]
+async fn web_url_of_a_file_not_uploaded_yet_is_refused_without_asking() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    std::fs::set_permissions(w.folder.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let new = w.folder.path().join("new.txt");
+    std::fs::write(&new, b"new").unwrap();
+    konedrive_fs::placeholder::write_state(&std::fs::File::open(&new).unwrap(), konedrive_fs::placeholder::State::Hydrated).unwrap();
+    let before = requests(&w).await;
+
+    let refused = service.web_url(&new).await.unwrap_err();
+    assert!(matches!(refused, SyncError::NotInOneDrive(_)), "{refused:?}");
+    assert!(matches!(crate::dbus::fault::to_fault(refused), crate::dbus::fault::SyncFault::NotUploaded(_)));
+    assert_eq!(requests(&w).await, before);
+    service.stop_sync().await;
+}
+
+/// OneDrive answering 503 until the retries run out is `Unreachable`, not a
+/// plain failure; an answer without an address, and an item gone, are failures.
+#[tokio::test]
+async fn web_url_says_when_onedrive_could_not_be_reached() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    Mock::given(method("GET")).and(path("/me/drive/items/F"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&w.server).await;
+    Mock::given(method("GET")).and(path("/me/drive/items/D"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "D"})))
+        .mount(&w.server).await;
+
+    let refused = service.web_url(&w.folder.path().join("docs/f.txt")).await.unwrap_err();
+    assert!(matches!(refused, SyncError::Unreachable(_)), "{refused:?}");
+    assert!(matches!(crate::dbus::fault::to_fault(refused), crate::dbus::fault::SyncFault::Unreachable(_)));
+    let refused = service.web_url(&w.folder.path().join("docs")).await.unwrap_err();
+    assert!(matches!(&refused, SyncError::Io(why) if why.contains("no address")), "{refused:?}");
+    service.stop_sync().await;
+}
+
+#[tokio::test]
+async fn a_folder_registered_while_signed_in_shows_onedrive_read_only() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    let file = w.folder.path().join("docs/f.txt");
+    assert!(file.is_file());
+    assert_eq!(config_of(&w).sync_root_source, "onedrive");
+    assert_eq!((mode(&file), mode(&w.folder.path().join("docs"))), (0o444, 0o555));
+    assert_eq!(service.root_state(), "ready");
+    // A fresh OneDrive folder is excluded from KDE's
+    // Baloo indexer, so reading a placeholder to index it does not
+    // download the whole drive.
+    let folder = std::fs::canonicalize(w.folder.path()).unwrap();
+    assert_eq!(baloo_calls(&w), format!("config add excludeFolders {}\n", folder.display()));
+    assert!(config_of(&w).sync_root_baloo_excluded);
+    service.stop_sync().await;
+}
+
+/// A fresh OneDrive folder that is not already excluded
+/// from Baloo is excluded, and included again on Forget — the plain
+/// case, and the one the fake `balooctl6`'s empty `excluded` file
+/// gives by default.
+#[tokio::test]
+async fn baloo_excludes_a_fresh_onedrive_folder_and_includes_it_again_on_forget() {
+    let w = world().await;
+    let folder = std::fs::canonicalize(w.folder.path()).unwrap();
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    assert_eq!(baloo_calls(&w), format!("config add excludeFolders {}\n", folder.display()));
+
+    service.unregister_root().await.unwrap();
+    assert_eq!(
+        baloo_calls(&w),
+        format!("config add excludeFolders {folder}\nconfig rm excludeFolders {folder}\n", folder = folder.display())
+    );
+}
+
+/// Design §8.3 (test 7): a OneDrive folder remembers its account's
+/// drive — written once the first cycle has recorded it, and at the
+/// bring-up of a folder from before multiple accounts, which carries
+/// none — and, forgotten, it is refused `NotEmpty` to another account,
+/// while its own account may register it again.
+#[tokio::test]
+async fn a_onedrive_folder_remembers_its_drive_and_is_refused_to_another_account() {
+    use std::os::unix::fs::PermissionsExt;
+    let w = world().await;
+    let drive = || xattr::get(w.folder.path(), konedrive_fs::placeholder::XATTR_DRIVE).unwrap();
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    assert_eq!(drive().as_deref(), Some(&b"D1"[..]), "written with the drive the first cycle recorded");
+    service.stop_sync().await;
+    drop(service);
+
+    // A folder from before carries no drive: its first bring-up writes it.
+    let open = |mode| std::fs::set_permissions(w.folder.path(), std::fs::Permissions::from_mode(mode)).unwrap();
+    open(0o755);
+    xattr::remove(w.folder.path(), konedrive_fs::placeholder::XATTR_DRIVE).unwrap();
+    open(0o555);
+    {
+        let restarted = connected(&w, true).await;
+        restarted.restore().await;
+        restarted.resume().await;
+        assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
+        assert_eq!(drive().as_deref(), Some(&b"D1"[..]));
+        restarted.unregister_root().await.unwrap();
+    }
+
+    // The world's helper serves one connection at a time: each service
+    // here goes before the next one connects.
+    {
+        let elsewhere = tempfile::tempdir().unwrap();
+        let other = persist(&elsewhere.path().join("config.toml"));
+        other.store.record_drive(&other.account, "D2").unwrap();
+        let stranger = SyncService::new(Some(link(&w).await), Some(account(true)), Some(other));
+        let refused = stranger.register_root(w.folder.path()).await;
+        assert!(matches!(refused, Err(SyncError::ForeignFolder)), "{refused:?}");
+    }
+
+    let own = connected(&w, true).await;
+    own.register_root(w.folder.path()).await.unwrap();
+    own.stop_sync().await;
+}
+
+/// A folder the user has already excluded from Baloo —
+/// themselves, or through a parent directory — is never added again,
+/// and a later Forget must not remove an exclusion this daemon did
+/// not add.
+#[tokio::test]
+async fn baloo_leaves_a_folder_the_user_already_excluded_alone() {
+    let w = world().await;
+    let folder = std::fs::canonicalize(w.folder.path()).unwrap();
+    mark_already_excluded(&w, &folder);
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    assert_eq!(baloo_calls(&w), "", "already excluded, so nothing is added");
+    assert!(!config_of(&w).sync_root_baloo_excluded);
+
+    service.unregister_root().await.unwrap();
+    assert_eq!(baloo_calls(&w), "", "we never added it, so Forget must not remove it");
+}
+
+/// Whether this daemon added the exclusion is persisted
+/// (`sync_root_baloo_excluded` in `config.toml`), so a restart
+/// between a registration and its Forget still gets the Forget
+/// right — the exclusion comes off, and it is not re-checked or
+/// re-added at the restart in between.
+#[tokio::test]
+async fn baloo_exclusion_survives_a_restart_and_is_still_removed_on_forget() {
+    let w = world().await;
+    let folder = std::fs::canonicalize(w.folder.path()).unwrap();
+    {
+        let first = connected(&w, true).await;
+        first.register_root(w.folder.path()).await.unwrap();
+        first.stop_sync().await;
+    }
+    let after_first = format!("config add excludeFolders {}\n", folder.display());
+    assert_eq!(baloo_calls(&w), after_first);
+    assert!(config_of(&w).sync_root_baloo_excluded);
+
+    let second = connected(&w, false).await;
+    second.restore().await;
+    second.resume().await;
+    assert_eq!(baloo_calls(&w), after_first, "not re-checked or re-added at a restart");
+    assert!(config_of(&w).sync_root_baloo_excluded, "the flag survives the restart");
+
+    second.unregister_root().await.unwrap();
+    assert_eq!(baloo_calls(&w), format!("{after_first}config rm excludeFolders {}\n", folder.display()));
+}
+
+/// the exclusion used to be tried only by a
+/// fresh registration's commit. A registration kept after it failed
+/// (the helper could not confirm it let go) commits nothing, and when
+/// it was brought up later nothing asked Baloo again — the folder
+/// stayed indexed, and Baloo downloaded the whole drive. Every commit
+/// of a folder not recorded as excluded asks now.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_kept_after_a_failed_registration_is_kept_out_of_baloo_when_brought_up() {
+    let w = world().await;
+    let folder = std::fs::canonicalize(w.folder.path()).unwrap();
+    let sockets = tempfile::tempdir().unwrap();
+    let socket_path = sockets.path().join("helper.sock");
+    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+    let service = service_with(&w, account(true), Some(link), Arc::new(StaticToken::new("T")));
+    helper.refuse(Seen::RegisterRoot, libc::EIO);
+    helper.refuse(Seen::UnregisterRoot, libc::EIO);
+    service.register_root(w.folder.path()).await.unwrap_err();
+    assert!(service.root().is_some(), "kept: the helper may still hold it");
+    assert_eq!(baloo_calls(&w), "");
+
+    helper.refuse(Seen::RegisterRoot, 0);
+    service.resume().await;
+
+    assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+    assert_eq!(baloo_calls(&w), format!("config add excludeFolders {}\n", folder.display()));
+    assert!(config_of(&w).sync_root_baloo_excluded);
+    service.stop_sync().await;
+}
+
+/// A `SyncService` that never had `set_baloo` called on it — as a
+/// test that forgot to, would be — starts with a `Baloo` that runs
+/// no program at all, so it never reaches the real `balooctl6` or
+/// `~/.config/baloofilerc`, on this host or the one running CI. This
+/// deliberately does not go through `service`/`service_with`, which
+/// always install the fake.
+#[tokio::test]
+async fn a_service_without_set_baloo_runs_no_program_on_registration() {
+    let w = world().await;
+    let account = account(true);
+    let service = SyncService::new(Some(link(&w).await), Some(account), Some(persist(&w.config.path().join("config.toml"))));
+    let drive = DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), Arc::new(StaticToken::new("T")))
+        .unwrap();
+    service.set_drive(drive);
+    service.set_sync_paths(SyncPaths {
+        tree_db: w.config.path().join("tree.sqlite"),
+        rescue_dir: w.config.path().join("rescued"),
+        thumbnails: Some(w.config.path().join("thumbnails")),
+    });
+    service.set_helper_socket(w.config.path().join("no-helper.sock"));
+    // No `set_baloo`: the default `Baloo::disabled()` stands.
+
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+
+    assert!(!w.baloo.path().join("calls").exists(), "the fake was never even pointed to");
+    assert!(!config_of(&w).sync_root_baloo_excluded, "nothing ran, so nothing was excluded");
+    service.stop_sync().await;
+}
+
+/// A folder registered signed out is local, as in part 1 — and, since
+/// HS2, so is every folder registered without interception, signed
+/// in or not: that is the developer's mode, filled from a directory.
+#[tokio::test]
+async fn a_folder_registered_while_signed_out_or_without_interception_is_local() {
+    for signed_in in [false, true] {
+        let w = world().await;
+        let service = service(&w, signed_in);
+        service.register_root_without_interception(w.folder.path()).await.unwrap();
+        assert_eq!(config_of(&w).sync_root_source, "local", "signed in: {signed_in}");
+        let source = tempfile::tempdir().unwrap();
+        std::fs::write(source.path().join("a.txt"), b"abc").unwrap();
+        assert_eq!(service.populate_from_directory(source.path()).await.unwrap(), 1);
+        assert_eq!(mode(&w.folder.path().join("a.txt")), 0o644, "no lock on a local folder");
+        assert_eq!(requests(&w).await, 0, "a local folder never asks OneDrive");
+    }
+}
+
+#[tokio::test]
+async fn populating_a_onedrive_folder_from_a_directory_is_refused() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    let source = tempfile::tempdir().unwrap();
+    let err = service.populate_from_directory(source.path()).await.unwrap_err();
+    assert!(matches!(err, SyncError::Unsupported(_)), "{err:?}");
+    service.stop_sync().await;
+}
+
+#[tokio::test]
+async fn forgetting_a_onedrive_folder_stops_its_sync_unlocks_it_and_drops_its_tree() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    // A reader of the test's own — another program reading the store,
+    // `sqlite3` say — so that the daemon's connection is not the last
+    // one: SQLite then leaves its journal files when that closes, and
+    // only the Forget itself removes them.
+    let reader = rusqlite::Connection::open_with_flags(w.config.path().join("tree.sqlite"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    reader.query_row("SELECT count(*) FROM sqlite_master", [], |row| row.get::<_, i64>(0)).unwrap();
+    for name in ["tree.sqlite-wal", "tree.sqlite-shm"] {
+        assert!(w.config.path().join(name).exists(), "no {name} to remove");
+    }
+    service.unregister_root().await.unwrap();
+    let file = w.folder.path().join("docs/f.txt");
+    assert!(file.is_file(), "the files stay (spec §3.1)");
+    assert_eq!((mode(&file), mode(&w.folder.path().join("docs"))), (0o644, 0o755));
+    for name in ["tree.sqlite", "tree.sqlite-wal", "tree.sqlite-shm"] {
+        assert!(!w.config.path().join(name).exists(), "{name} was left");
+    }
+    drop(reader);
+    assert_eq!(service.items(), (0, 0, 0));
+    assert_eq!(service.root_state(), "none");
+    assert_eq!(config_of(&w).sync_root_source, "local");
+    let before = requests(&w).await;
+    service.refresh_now();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(requests(&w).await, before, "nothing syncs any more");
+}
+
+/// A restart brings a OneDrive folder back syncing, and its first
+/// cycle reconciles the whole folder: the stored link has
+/// no changes since, so only a Full reconcile puts back the file
+/// removed while the daemon was down.
+///
+/// The restarted daemon reads "signed out" (its Graph token here is
+/// static, so the cycle still succeeds): a restored folder keeps the
+/// source `config.toml` records, and a restart after a sign-out must
+/// not turn a OneDrive folder into a local one.
+#[tokio::test]
+async fn a_restart_brings_a_onedrive_folder_back_and_repairs_it() {
+    let w = world().await;
+    {
+        let first = connected(&w, true).await;
+        first.register_root(w.folder.path()).await.unwrap();
+        listed(&first).await;
+        first.stop_sync().await;
+    }
+    assert_eq!(config_of(&w).sync_root_source, "onedrive");
+    std::process::Command::new("chmod").args(["-R", "u+w"]).arg(w.folder.path()).status().unwrap();
+    std::fs::remove_file(w.folder.path().join("docs/f.txt")).unwrap();
+    let listings = full_listings(&w).await;
+
+    let second = connected(&w, false).await;
+    second.restore().await;
+    second.resume().await;
+    wait_until("repaired by the first cycle's Full reconcile", || {
+        w.folder.path().join("docs/f.txt").is_file()
+    })
+    .await;
+    assert_eq!(full_listings(&w).await, listings, "asked from the stored link, not listed again");
+    assert_eq!(config_of(&w).sync_root_source, "onedrive");
+    second.stop_sync().await;
+}
+
+#[tokio::test]
+async fn refresh_runs_a_cycle_now() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    let before = deltas(&w).await;
+    service.refresh().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(deltas(&w).await, before + 1);
+    service.stop_sync().await;
+}
+
+#[tokio::test]
+async fn refresh_on_a_local_folder_is_refused() {
+    let w = world().await;
+    let service = service(&w, false);
+    service.register_root_without_interception(w.folder.path()).await.unwrap();
+    assert!(matches!(service.refresh().await, Err(SyncError::Unsupported(_))));
+}
+
+#[tokio::test]
+async fn skipped_names_what_is_not_in_the_folder_by_its_full_path() {
+    let w = world().await;
+    Mock::given(method("GET")).and(path("/me/drive/root/delta"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "value": [
+                {"id": "R", "root": {}, "folder": {}},
+                {"id": "D", "name": "docs", "folder": {}, "parentReference": {"id": "R"}},
+                {"id": "F", "name": "f.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "D"}},
+                {"id": "V", "name": "Personal Vault", "folder": {}, "specialFolder": {"name": "vault"}, "parentReference": {"id": "R"}}
+            ],
+            "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", w.server.uri())
+        })))
+        .with_priority(4)
+        .mount(&w.server).await;
+    let service = connected(&w, true).await;
+    assert_eq!(service.skipped().await.unwrap(), Vec::<(String, String)>::new());
+    service.register_root(w.folder.path()).await.unwrap();
+    wait_until("listed", || service.items() == (3, 2, 1)).await;
+    let vault = std::fs::canonicalize(w.folder.path()).unwrap().join("Personal Vault");
+    assert_eq!(
+        service.skipped().await.unwrap(),
+        vec![(vault.display().to_string(), "personal-vault".to_owned())]
+    );
+    service.stop_sync().await;
+}
+
+/// A folder that reads "signed out" is brought up to date the moment
+/// the account signs in again, not up to a poll interval later (an
+/// hour here).
+#[tokio::test]
+async fn signing_in_brings_a_folder_that_reads_signed_out_up_to_date_at_once() {
+    let w = world().await;
+    let account = account(true);
+    let tokens = Arc::new(AccountTokens { account: account.clone(), refused: AtomicUsize::new(0) });
+    let service = service_with(&w, account.clone(), Some(link(&w).await), Arc::clone(&tokens) as Arc<dyn TokenSource>);
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+
+    account.update(|s| s.state = SignInState::SignedOut);
+    service.refresh_now();
+    wait_until("the folder reads signed out", || service.root_state() == "error").await;
+    assert!(service.last_error().contains("signed out"), "{}", service.last_error());
+    // The one retry the schedule has, and then the hour-long wait.
+    wait_until("the retry failed too", || tokens.refused.load(Ordering::SeqCst) >= 2).await;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(tokens.refused.load(Ordering::SeqCst), 2, "the poller waits out its interval now");
+
+    let before = deltas(&w).await;
+    account.update(|s| s.state = SignInState::SigningIn);
+    account.update(|s| s.state = SignInState::SignedIn);
+    wait_until("the folder is in step again", || service.root_state() == "ready").await;
+    assert_eq!(deltas(&w).await, before + 1);
+    service.stop_sync().await;
+}
+
+/// A Forget the helper refuses keeps the folder registered — and so
+/// locked, and kept in step.
+#[tokio::test]
+async fn a_forget_the_helper_refuses_leaves_the_folder_locked_and_in_step() {
+    let w = world().await;
+    let sockets = tempfile::tempdir().unwrap();
+    let socket_path = sockets.path().join("helper.sock");
+    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+    let service = service_with(&w, account(true), Some(link), Arc::new(StaticToken::new("T")));
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    helper.refuse(Seen::UnregisterRoot, libc::EIO);
+
+    let refused = service.unregister_root().await;
+
+    assert!(matches!(refused, Err(SyncError::Io(_))), "{refused:?}");
+    assert_eq!(mode(&w.folder.path().join("docs/f.txt")), 0o444);
+    assert!(w.config.path().join("tree.sqlite").exists());
+    assert_eq!(config_of(&w).sync_root_source, "onedrive");
+    let before = deltas(&w).await;
+    service.refresh().await.unwrap();
+    wait_for_deltas(&w, before).await;
+    service.stop_sync().await;
+}
+
+/// A listing's reconcile takes the very lock registrations and
+/// Forgets take: while that is held, the listing waits. (A replacement
+/// of a changed file does not take it — it swaps in one file under its
+/// inode lock — so this is about the listing, not every change.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_listing_waits_for_the_services_lifecycle_lock() {
+    let w = world().await;
+    // The first listing answers late enough for the lock to be taken first.
+    Mock::given(method("GET")).and(path("/me/drive/root/delta"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "value": [
+                {"id": "R", "root": {}, "folder": {}},
+                {"id": "D", "name": "docs", "folder": {}, "parentReference": {"id": "R"}},
+                {"id": "F", "name": "f.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "D"}}
+            ],
+            "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", w.server.uri())
+        })).set_delay(Duration::from_millis(300)))
+        .with_priority(4)
+        .mount(&w.server).await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+
+    let held = service.lifecycle.write().await;
+    wait_for_deltas(&w, 0).await;
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    assert!(!w.folder.path().join("docs").exists(), "the folder was changed under the lock");
+    drop(held);
+    listed(&service).await;
+    service.stop_sync().await;
+}
+
+/// A Forget stops the sync before it waits for the lifecycle lock, so
+/// that no reconcile keeps it waiting; a helper's reconnect that takes
+/// the lock first may start the sync again in between. That one is
+/// stopped too, before the folder is let go.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sync_started_again_while_a_forget_waits_is_stopped_too() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+
+    let held = service.lifecycle.write().await;
+    let forgetting = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move { service.unregister_root().await })
+    };
+    wait_until("the Forget stopped the sync", || service.syncing.lock().unwrap().is_none()).await;
+    // What a `resume` that has the lock does to a OneDrive folder.
+    service.start_sync().await;
+    drop(held);
+    forgetting.await.unwrap().unwrap();
+
+    let before = requests(&w).await;
+    service.refresh_now();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(requests(&w).await, before, "a sync runs on a forgotten folder");
+    assert_eq!(mode(&w.folder.path().join("docs/f.txt")), 0o644);
+}
+
+/// `start_sync` waits for the tree store to open before it keeps the
+/// sync it starts. Two of them at once — which only the lifecycle lock
+/// its callers hold keeps from happening — must still leave one sync
+/// running, not a second one that nothing could ever stop.
+#[tokio::test]
+async fn two_starts_at_once_leave_one_sync() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    service.stop_sync().await;
+    let before = deltas(&w).await;
+
+    tokio::join!(service.start_sync(), service.start_sync());
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    assert_eq!(deltas(&w).await, before + 1, "two syncs ran their first cycle");
+    service.stop_sync().await;
+}
+
+/// A folder whose sync could not start (F18: its tree store could not
+/// be opened) is not reported as refreshed: `Refresh()` tries to start
+/// it again, says why when it still cannot, and starts it once it can.
+#[tokio::test]
+async fn refresh_starts_a_sync_that_could_not_start_or_says_why() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    // A file where the tree store's directory has to be.
+    let blocker = w.config.path().join("state");
+    std::fs::write(&blocker, b"").unwrap();
+    service.set_sync_paths(SyncPaths {
+        tree_db: blocker.join("tree.sqlite"),
+        rescue_dir: w.config.path().join("rescued"),
+        thumbnails: Some(w.config.path().join("thumbnails")),
+    });
+    service.register_root(w.folder.path()).await.unwrap();
+    assert_eq!(service.root_state(), "error");
+
+    let refused = service.refresh().await;
+    assert!(
+        matches!(&refused, Err(SyncError::Io(why)) if why.contains("the tree store cannot be opened")),
+        "{refused:?}"
+    );
+    assert_eq!(requests(&w).await, 0, "nothing synced");
+
+    std::fs::remove_file(&blocker).unwrap();
+    service.refresh().await.unwrap();
+    listed(&service).await;
+    assert_eq!(service.root_state(), "ready");
+    service.stop_sync().await;
+}
+
+/// A folder held at startup until its helper is back has not been
+/// brought up — nor recovered — yet: `Refresh()` says so rather than
+/// start its sync ahead of that.
+#[tokio::test]
+async fn refresh_of_a_folder_waiting_for_its_helper_says_so() {
+    let w = world().await;
+    let sockets = tempfile::tempdir().unwrap();
+    let socket_path = sockets.path().join("helper.sock");
+    let _helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    {
+        let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+        let first = service_with(&w, account(true), Some(link), Arc::new(StaticToken::new("T")));
+        first.register_root(w.folder.path()).await.unwrap();
+        listed(&first).await;
+        first.stop_sync().await;
+    }
+    let restarted = service(&w, true);
+    restarted.restore().await;
+    let before = requests(&w).await;
+
+    let refused = restarted.refresh().await;
+
+    assert!(matches!(refused, Err(SyncError::NoHelper)), "{refused:?}");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(requests(&w).await, before, "a sync started ahead of the bring-up");
+    restarted.stop_sync().await;
+}
+
+/// A OneDrive folder is locked read-only after its first listing,
+/// the folder itself too, and bringing it up again after a restart
+/// re-checked it with a write probe — refused, so no locked folder came
+/// back after a restart, in either mode: "cannot bring up the sync
+/// folder: Permission denied". Found by, whose switch to
+/// interception goes through the same check. A folder that already
+/// carries its root id was probed when it was first registered, and is
+/// not probed again — the helper's own re-registration skips its probe
+/// for the same reason. The mode without interception is
+/// a folder recorded that way before HS2 (`legacy_without_interception`):
+/// no new OneDrive folder is made so.
+#[tokio::test]
+async fn a_locked_onedrive_folder_comes_back_after_a_restart_in_either_mode() {
+    for intercepted in [false, true] {
+        let w = world().await;
+        {
+            let first = connected(&w, true).await;
+            first.register_root(w.folder.path()).await.unwrap();
+            listed(&first).await;
+            first.stop_sync().await;
+            first.set_link(None);
+        }
+        if !intercepted {
+            legacy_without_interception(&w);
+        }
+        assert_eq!(mode(w.folder.path()), 0o555, "the folder itself is locked");
+
+        let restarted = connected(&w, true).await;
+        restarted.restore().await;
+        restarted.resume().await;
+
+        assert!(
+            !restarted.last_error().contains("cannot bring up"),
+            "intercepted = {intercepted}: {}",
+            restarted.last_error()
+        );
+        assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
+        assert_eq!(mode(w.folder.path()), 0o555, "and it stays locked");
+        restarted.stop_sync().await;
+    }
+}
+
+/// Rewrites `config.toml` as a daemon from before HS2 left a folder
+/// that shows OneDrive registered without interception on purpose —
+/// with a helper connected, so not one to switch.
+fn legacy_without_interception(w: &World) {
+    let persist = persist(&w.config.path().join("config.toml"));
+    persist
+        .store
+        .update_account(&persist.account, |account| {
+            let root = account.root.as_mut().expect("a folder");
+            root.intercepted = false;
+            root.upgrade_when_helper = Some(false);
+            Ok::<_, crate::config::ConfigError>(())
+        })
+        .unwrap();
+}
+
+/// HS2: a folder that shows OneDrive and is not intercepted — as a
+/// daemon from before HS left one registered on purpose, with a helper
+/// connected — is not kept in step while there is no helper: OneDrive
+/// is not asked, `Refresh()` is refused `NoHelper`, and the folder
+/// reads `error` with the helper's advice first in `LastError`. When
+/// the helper connects it switches to interception whatever it was
+/// registered as (switch; there is no "on purpose" for a
+/// OneDrive folder any more). And, Ruling 1: the switch keeps
+/// invariant M1 for everything its sync places afterwards — the sync
+/// starts intercepted, so a folder that arrives from the drive later is
+/// marked before it is filled.
+#[tokio::test]
+async fn a_onedrive_folder_without_interception_waits_for_the_helper_then_switches() {
+    let w = world().await;
+    {
+        let first = connected(&w, true).await;
+        first.register_root(w.folder.path()).await.unwrap();
+        listed(&first).await;
+        first.stop_sync().await;
+    }
+    legacy_without_interception(&w);
+
+    // From now on the drive holds a new folder, `new/g.txt`.
+    w.server.reset().await;
+    Mock::given(method("GET")).and(path("/me/drive"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "D1"})))
+        .mount(&w.server).await;
+    Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "L1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "value": [
+                {"id": "N", "name": "new", "folder": {}, "parentReference": {"id": "R"}},
+                {"id": "G", "name": "g.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "N"}}
+            ],
+            "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L2", w.server.uri())
+        })))
+        .mount(&w.server).await;
+    Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "L2"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [], "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L2", w.server.uri())})))
+        .mount(&w.server).await;
+
+    // A restart with no helper.
+    let service = service(&w, true);
+    service.restore().await;
+    service.resume().await;
+    assert_eq!(service.root_state(), "error");
+    assert!(service.last_error().starts_with("the konedrive helper is not connected"), "{}", service.last_error());
+    assert!(matches!(service.refresh().await, Err(SyncError::NoHelper)));
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(deltas(&w).await, 0, "OneDrive was asked with no helper");
+
+    // The helper starts, and connects.
+    w.helper.forget();
+    service.set_link(Some(link(&w).await));
+    service.resume().await;
+
+    wait_until("the new folder was placed", || w.folder.path().join("new/g.txt").exists()).await;
+    let seen = w.helper.seen();
+    assert_eq!(seen.first(), Some(&Seen::RegisterRoot), "{seen:?}: {}", service.last_error());
+    let marks: Vec<_> = seen.iter().filter(|s| matches!(s, Seen::MarkDir { .. })).collect();
+    assert!(!marks.is_empty(), "the sync placed a directory after the switch without marking it: {seen:?}");
+    assert!(
+        marks.iter().all(|s| matches!(s, Seen::MarkDir { entries: 0 })),
+        "a directory was filled before it was marked: {seen:?}"
+    );
+    assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+    service.stop_sync().await;
+}
+
+/// `Skipped()` reads the tree store under the lifecycle lock, so a
+/// Forget — which removes the store with that lock held for writing —
+/// waits for a read under way instead of removing the files under it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn skipped_reads_the_tree_under_the_lifecycle_lock() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+
+    let held = service.lifecycle.write().await;
+    let reading = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move { service.skipped().await })
+    };
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!reading.is_finished(), "Skipped() read the tree while the lock was held for writing");
+    drop(held);
+    assert_eq!(reading.await.unwrap().unwrap(), Vec::<(String, String)>::new());
+    service.stop_sync().await;
+}

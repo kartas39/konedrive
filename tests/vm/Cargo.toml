@@ -27,7 +27,7 @@ path = "ignore_mark.rs"
 # the whole mechanism runs for real.
 [[bin]]
 name = "vm-scenarios"
-path = "scenarios.rs"
+path = "scenarios/main.rs"
 
 # The write phase's watcher probe (writes design, task W4): what an
 # unprivileged fanotify notification group may do on this kernel, and which
@@ -35,7 +35,7 @@ path = "scenarios.rs"
 # for the helper's side; the daemon's side runs as uid 1000 in a child.
 [[bin]]
 name = "watch-probe"
-path = "watch_probe.rs"
+path = "watch_probe/main.rs"
 
 [dependencies]
 async-trait = "0.1"
@@ -43,9 +43,11 @@ async-trait = "0.1"
 # (`konedrive_dbus::testing::TestBus`, a `dbus-daemon` in the guest).
 konedrive-dbus = { path = "../../crates/konedrive-dbus" }
 konedrive-fs = { path = "../../crates/konedrive-fs" }
+konedrive-graph = { path = "../../crates/konedrive-graph" }
 konedrive-helper = { path = "../../crates/konedrive-helper" }
 konedrived = { path = "../../crates/konedrived", features = ["fault-injection"] }
 konedrive-proto = { path = "../../crates/konedrive-proto" }
+konedrive-tree = { path = "../../crates/konedrive-tree" }
 libc = "0.2"
 nix = { version = "0.31", features = ["fanotify", "fs", "mount", "user", "signal", "resource"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "sync"] }

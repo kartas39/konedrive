@@ -103,7 +103,7 @@ void PlacesController::addEntry(const QString &text, const QUrl &url, const QStr
     // addPlace does not hand back the new row, and a user could already
     // have a place at this exact url, so take the last match rather than the
     // first: addPlace appends, so the last matching row is the one just made
-    // (docs/limitations-and-workarounds.md, A12).
+    // (docs/limitations/, A12).
     for (int row = m_model->rowCount() - 1; row >= 0; --row) {
         const QModelIndex idx = m_model->index(row, 0);
         if (m_model->url(idx) == url) {

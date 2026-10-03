@@ -161,8 +161,8 @@ run_pass() {
 }
 
 # --- measure: open_by_handle_at inside the helper's sandbox ------------------
-# docs/kernel-behavior-7.2.md §15. A copy of the shipped unit, with every line of
-# its sandbox, runs the probe (tests/vm/open_by_handle.rs) instead of the
+# docs/kernel-behavior-7.2/open-by-handle.md §15. A copy of the shipped unit, with every line of
+# its sandbox, runs the probe (tests/vm/scenarios/open_by_handle.rs) instead of the
 # helper; it is handed a directory descriptor from outside the sandbox, as the
 # helper is by a daemon, and reports what open_by_handle_at gives relative to
 # it. Only ExecStart, Restart and the runtime directory's name differ, so its

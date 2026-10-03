@@ -103,7 +103,7 @@ absent or ambiguous.
 THUMBNAILS: FILL FullyEncoded normal,large,x-large,xx-large
 
 (What was built fills `normal`, `large` and `x-large` only: `xx-large` is left out on purpose.
-See `docs/design/desktop.md` §8 and `docs/limitations-and-workarounds.md`, K15.)
+See `docs/design/desktop.md` §8 and `docs/limitations/`, K15.)
 
 Section B measured the mechanism directly at `normal` (128) and `large` (256): a correctly tagged
 (`Thumb::URI` + matching `Thumb::MTime`) PNG in those directories is drawn without an open.

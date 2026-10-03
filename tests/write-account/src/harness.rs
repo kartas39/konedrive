@@ -5,8 +5,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use konedrived::config::Config;
-use konedrived::drive::{DeltaFrom, DeltaNext, DriveClient};
-use konedrived::token::StaticToken;
+use konedrive_graph::drive::{DeltaFrom, DeltaNext, DriveClient};
+use konedrive_graph::token::StaticToken;
 use serde_json::Value;
 use url::Url;
 

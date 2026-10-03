@@ -31,19 +31,19 @@ All of this runs in the daemon, as the user, once for each account.
 
 | Component | Where | Responsibility |
 |---|---|---|
-| Graph client | `drive/` | `/me/drive/root/delta` with its pages, item metadata, content, thumbnails; `Retry-After`; for a read-write account, the guarded writes ([writes.md](writes.md) §6) |
-| Tree store | `tree.rs` | SQLite: one row per file and folder, the delta link, the activity log, the conflicts (§5) |
-| Listing and poller | `sync/listing.rs` | One folder's sync cycles: when to run, what to fetch, which scope to reconcile, when to commit (§4, §6) |
-| Live changes | `sync/live.rs`, `drive/socket.rs` | Graph's notification socket: a cycle as soon as the drive changes (§4.2) |
-| Materializer | `sync/materialize.rs`, `sync/disk.rs` | Makes the folder match a tree (§7), rescues local work (§10), keeps the lock (§11) |
-| Graph content source | `sync/graph_source.rs` | Serves fills from Graph ([hydration.md](hydration.md) §7) |
-| Replacements | `sync/materialize.rs` | Brings a downloaded file up to a new version (§9) |
-| Thumbnail filler | `sync/thumbs.rs` | Puts OneDrive's thumbnails into KDE's cache ([desktop.md](desktop.md) §8) |
-| Baloo exclusion | `sync/baloo.rs` | Keeps the file indexer out of the folder ([desktop.md](desktop.md) §9) |
-| Account | `account.rs`, `oauth.rs`, `token.rs`, `secret.rs` | Sign-in, tokens, the account's name and quota (§12) |
-| Configuration | `config.rs` | `config.toml`: the client id, and each account with its folder ([accounts.md](accounts.md) §4.1) |
-| Watcher, examination, outbox worker | `sync/watcher/`, `sync/local/`, `sync/upload/` | a read-write folder's local changes, found and sent ([writes.md](writes.md) §3–§8) |
-| Read-write reconcile | `sync/listing/rw.rs`, `sync/materialize/rw.rs` | a read-write folder's cycle, keeping local work ([writes.md](writes.md) §9) |
+| Graph client | `konedrive-graph/src/drive/` | `/me/drive/root/delta` with its pages, item metadata, content, thumbnails; `Retry-After`; for a read-write account, the guarded writes ([writes.md](writes.md) §6) |
+| Tree store | `konedrive-tree/src/` | SQLite: one row per file and folder, the delta link, the activity log, the conflicts (§5) |
+| Listing and poller | `remote/listing.rs`, `remote/listing/` | One folder's sync cycles: when to run, what to fetch, which scope to reconcile, when to commit (§4, §6) |
+| Live changes | `remote/live.rs`, `konedrive-graph/src/drive/socket.rs` | Graph's notification socket: a cycle as soon as the drive changes (§4.2) |
+| Materializer | `remote/materialize.rs`, `remote/materialize/`, `folder/disk.rs` | Makes the folder match a tree (§7), rescues local work (§10), keeps the lock (§11) |
+| Graph content source | `hydration/graph_source.rs` | Serves fills from Graph ([hydration.md](hydration.md) §7) |
+| Replacements | `remote/materialize/replace.rs`, `remote/listing/replacements.rs` | Brings a downloaded file up to a new version (§9) |
+| Thumbnail filler | `desktop/thumbs.rs` | Puts OneDrive's thumbnails into KDE's cache ([desktop.md](desktop.md) §8) |
+| Baloo exclusion | `desktop/baloo.rs` | Keeps the file indexer out of the folder ([desktop.md](desktop.md) §9) |
+| Account | `account/`, `konedrive-graph/src/oauth.rs`, `konedrive-graph/src/token.rs` | Sign-in, tokens, the account's name and quota (§12) |
+| Configuration | `config/mod.rs` | `config.toml`: the client id, and each account with its folder ([accounts.md](accounts.md) §4.1) |
+| Watcher, examination, outbox worker | `local/watcher/`, `local/`, `upload/` | a read-write folder's local changes, found and sent ([writes.md](writes.md) §3–§8) |
+| Read-write reconcile | `remote/listing/rw.rs`, `remote/materialize/rw.rs` | a read-write folder's cycle, keeping local work ([writes.md](writes.md) §9) |
 
 ## 3. Which folders sync
 
@@ -94,8 +94,8 @@ never overlap. While the account is paused (`Folder.Pause`) or holds back by its
 cycle runs; the pause is kept in the tree store and outlasts a restart ([writes.md](writes.md) §11).
 
 **Changes as they happen** (issue #54). Next to the poller, and started and stopped with it, one
-task per account (`sync/live.rs`) keeps Graph's Socket.IO endpoint for the drive open
-(`GET /me/drive/root/subscriptions/socketIo`; the client is `drive/socket.rs`). An event only says
+task per account (`remote/live.rs`) keeps Graph's Socket.IO endpoint for the drive open
+(`GET /me/drive/root/subscriptions/socketIo`; the client is `konedrive-graph/src/drive/socket.rs`). An event only says
 that something changed — its content is not read — and the task asks the poller for a cycle 2 s
 after the first event of a burst, so a burst gives one cycle. Webhooks are not used: they need a
 public HTTPS address.

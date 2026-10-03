@@ -29,7 +29,7 @@ QString fileName(const QString &path)
 }
 
 /// A capped cycle's own summary event (activity::capped,
-/// crates/konedrived/src/sync/listing.rs ~901): "and N more", nothing else.
+/// crates/konedrived/src/status/activity.rs): "and N more", nothing else.
 const QRegularExpression cappedMore(QStringLiteral("^and (\\d+) more$"));
 
 /// The title of a conflict that kept a copy beside the file.

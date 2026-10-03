@@ -7,7 +7,7 @@
 
 use std::time::Duration;
 
-use konedrived::drive::{ChunkOutcome, WriteError, CHUNK_SIZE};
+use konedrive_graph::drive::{ChunkOutcome, WriteError, CHUNK_SIZE};
 use serde_json::{json, Value};
 
 use super::{follow, message, show, Outcome, Run, T0};

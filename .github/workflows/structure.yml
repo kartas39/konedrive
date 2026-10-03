@@ -1,0 +1,22 @@
+# The guard of the structure rules (CONTRIBUTING.md, "The structure of the code"),
+# on every pull request: the size limits, no tests in a source file, the order
+# of the daemon's layers. scripts/check-structure.sh reads the files only:
+# nothing is built.
+name: Structure
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Check the structure rules
+        run: scripts/check-structure.sh

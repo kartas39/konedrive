@@ -26,7 +26,7 @@ systemctl=${KONEDRIVE_SYSTEMCTL:-systemctl}
 installed_binary="$root/usr/local/libexec/konedrive-helper"
 installed_unit="$root/etc/systemd/system/konedrive-helper.service"
 # The helper's own list of registered folders (ROOTS_FILE in
-# crates/konedrive-helper/src/main.rs): {"by_id": {"<id>": {..., "path": ...,
+# crates/konedrive-helper/src/shared.rs): {"by_id": {"<id>": {..., "path": ...,
 # "root_id": ...}}}, pretty-printed, one key per line.
 roots_file="$root/var/lib/konedrive/roots.json"
 
@@ -70,7 +70,7 @@ warn_if_running() {
     if "$systemctl" is-active --quiet konedrive-helper.service 2>/dev/null; then
         echo
         echo "The helper is running and will be $1. A program waiting for a file to download"
-        echo "at that moment gets it as empty (docs/limitations-and-workarounds.md, Z1): close"
+        echo "at that moment gets it as empty (docs/limitations/, Z1): close"
         echo "programs that are opening files in the sync folder first."
     fi
 }

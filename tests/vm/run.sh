@@ -77,7 +77,7 @@ write_inner() {
         echo 'set -eu'
         if [ -n "$network" ]; then
             # Fedora's /etc/resolv.conf is a symlink into /run, which is a
-            # fresh tmpfs in the guest (docs/kernel-behavior-7.2.md §9): with
+            # fresh tmpfs in the guest (docs/kernel-behavior-7.2/vm-tests.md §9): with
             # `--network user`, QEMU's own resolver sits at 10.0.2.3, but
             # nothing in the guest points at it until this writes the stub
             # systemd-resolved expects.

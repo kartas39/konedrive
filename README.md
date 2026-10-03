@@ -58,7 +58,7 @@ UI (see `konedrivectl --help`).
   Linux 6.0. Telling a program *why* a download failed (`ENOSPC`, `EIO`, … through `FAN_DENY`
   with an errno) needs Linux 6.14; on older kernels the helper falls back to a plain deny, so the
   program sees `EPERM`. Only 7.2.5 and 7.2.7 (Fedora 44) were measured and exercised; older
-  kernels are untested. See `docs/kernel-behavior-7.2.md` for what was actually tested and on
+  kernels are untested. See `docs/kernel-behavior-7.2/` for what was actually tested and on
   which filesystems (Btrfs, ext4, XFS).
 - **Desktop:** KDE Plasma 6, Qt 6.8+, KDE Frameworks (KF6) 6.8+.
 - **Toolchain:** a stable Rust toolchain (edition 2021), CMake 3.24+ and Extra CMake Modules.
@@ -94,7 +94,7 @@ On Fedora 44 (x86_64), KOneDrive installs as two packages (there is no package r
 sudo dnf install ./konedrive-*.rpm
 ```
 
-The packages are not signed (`docs/limitations-and-workarounds.md`, R6); `dnf` installs a local
+The packages are not signed (`docs/limitations/`, R6); `dnf` installs a local
 file without checking a signature.
 
 **From a checkout.** Build them as yourself, never as root. `rpm-build` and the build
@@ -124,7 +124,7 @@ to the helper within half a minute; `konedrivectl sync status` then says `Helper
 
 - **Upgrading** is the same `dnf install` with the newer RPMs. It restarts the helper when it
   finishes, and a program waiting for a file to download at that moment reads it as zeros
-  (`docs/limitations-and-workarounds.md`, Z1 and R1): close programs that are opening files in
+  (`docs/limitations/`, Z1 and R1): close programs that are opening files in
   the sync folder first. `dnf` treats a rebuild with the same version and release as the package
   already installed; install such a rebuild with `sudo dnf reinstall` and the same paths.
 - **Upgrading from a single-account version.** The first start of the new daemon turns your setup
@@ -432,7 +432,7 @@ helper's `Cargo.toml`). It checks one root-owned copy of the binary and
 installs that same copy. It always says exactly what it is about to do and
 asks before doing it — pass `--yes` to skip the question. Running it again
 updates the helper in place; if it is already running, the installer restarts
-it and says so before it asks (see `docs/limitations-and-workarounds.md`, Z1:
+it and says so before it asks (see `docs/limitations/`, Z1:
 a program waiting for a file to download at that moment gets it as empty).
 
 If it says the binary is older than its sources right after a build, cargo
@@ -567,7 +567,7 @@ rm /tmp/konedrive-token
 with `..` is refused; a leading `/` is fine), and the run fails if nothing in the listing lies
 inside it. The dropped-connection and restart-resume checks (G3, G4) run against the real account
 only if you add `--graph-resume-checks`. The token is never the refresh token and is read only
-inside the guest. See `docs/limitations-and-workarounds.md`, W15.
+inside the guest. See `docs/limitations/`, W15.
 
 Uploads are checked against a real account only on a separate test account, by hand, with
 `konedrive-write-test` (`tests/write-account/`): it refuses to start unless the drive is the test
@@ -584,7 +584,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full checklist before sending a c
 ## Troubleshooting
 
 - Daemon log: `journalctl --user -u konedrived -f`; more detail with
-  `systemctl --user edit konedrived` → `Environment=RUST_LOG=konedrived=debug`.
+  `systemctl --user edit konedrived` →
+  `Environment=RUST_LOG=konedrived=debug,konedrive_graph=debug,konedrive_tree=debug`.
 - Files: `~/.config/konedrive/config.toml` (the client ID, and each account with its name and
   folder; `config.toml.v1` is the single-account file it was migrated from, if any). Each
   account's state is in `~/.local/state/konedrive/accounts/<id>/`: `account.json` (cached name
@@ -603,7 +604,7 @@ How the pieces fit together, the invariants they keep, and why each notable deci
 
 Every limitation, workaround and fragile spot this project knows about — kernel quirks, chosen
 numbers that are not yet measured, debt taken on deliberately — is tracked in one place:
-[`docs/limitations-and-workarounds.md`](docs/limitations-and-workarounds.md). Read it before
+[`docs/limitations/`](docs/limitations/). Read it before
 filing a bug that might already be there.
 
 ## Roadmap
@@ -619,7 +620,7 @@ keep on this device") and multiple accounts. In order, what comes next:
    changes"); released once checked against a real test account.
 
 Work or school accounts (Microsoft 365, OneDrive for Business) come later, in a phase of their own
-(`docs/limitations-and-workarounds.md`, F49).
+(`docs/limitations/`, F49).
 
 ## Security
 

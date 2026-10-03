@@ -9,7 +9,7 @@
 //! The write phase's later tasks fill the hooks here, each named for what it does:
 //!
 //! - [`SyncService::start_watcher`] and [`SyncService::stop_watcher`] — the notification
-//!   watcher (`sync::watcher`), started with a read-write folder's sync and kept in it
+//!   watcher (`local::watcher`), started with a read-write folder's sync and kept in it
 //!   ([`Watcher`]), so that it stops exactly when that sync does. Its bring-up walk marks every
 //!   directory and then runs the Full local scan (the examination of `local::Batch::full()`,
 //!   whose rows the outbox worker sends): at bring-up, and right after a switch to read-write, whose lock
@@ -17,7 +17,7 @@
 //! - [`PendingUploads`] — the outbox worker's outbox: how many changes wait, asked before a switch to
 //!   read-only (the watcher hands over what it holds first), and dropping them when that
 //!   switch is forced;
-//! - [`SyncService::start_outbox`] — the outbox worker (`sync::upload`), which sends those
+//! - [`SyncService::start_outbox`] — the outbox worker (`upload`), which sends those
 //!   rows: started beside the watcher, kept in the same sync, stopped with it, and woken by
 //!   the watcher's examination whenever it records rows.
 
@@ -28,14 +28,15 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use super::disk::Disk;
-use super::root::SyncRoot;
-use super::upload::{self, OutboxWorker, WorkerConfig};
-use super::watcher::WalkState;
-use super::{InodeKey, RootSource, SyncError, SyncService};
+use crate::folder::disk::Disk;
+use crate::folder::root::SyncRoot;
+use crate::upload::{self, OutboxWorker, WorkerConfig};
+use crate::local::watcher::WalkState;
+use crate::folder::locks::InodeKey;
+use super::{RootSource, SyncError, SyncService};
 use crate::account::PendingUploads;
 use crate::config::Mode;
-use crate::state::AccountSnapshot;
+use crate::account::state::AccountSnapshot;
 
 impl SyncService {
     /// The mode the folder follows now.
@@ -197,14 +198,14 @@ impl SyncService {
     /// Called before the sync is published, so that a read-write folder whose watcher cannot
     /// start runs that sync locked, as a read-only one (the watcher).
     #[cfg(test)]
-    pub(super) fn start_watcher(&self, root: &SyncRoot, store: &crate::tree::Store) -> Option<Watcher> {
+    pub(crate) fn start_watcher(&self, root: &SyncRoot, store: &konedrive_tree::Store) -> Option<Watcher> {
         self.start_watcher_scanned(root, store, None)
     }
 
     /// [`start_watcher`](Self::start_watcher), and `scanned` is told once the watcher's first
     /// examination — the Full local scan — has been handed over, whatever came of it: the
     /// folder's first delta cycle waits for it (the bring-up order of `docs/design/writes.md` §2.2).
-    pub(super) fn start_watcher_scanned(&self, root: &SyncRoot, store: &crate::tree::Store, scanned: Option<watch::Sender<bool>>) -> Option<Watcher> {
+    pub(super) fn start_watcher_scanned(&self, root: &SyncRoot, store: &konedrive_tree::Store, scanned: Option<watch::Sender<bool>>) -> Option<Watcher> {
         if self.mode() != Mode::ReadWrite {
             return None;
         }
@@ -227,7 +228,7 @@ impl SyncService {
     /// Stops `watcher` and waits for it, with no lock taken. Called by whoever
     /// stops the sync that started it, and only by them: a Forget, a switch to read-only
     /// (before the lock goes back on), a switch to interception.
-    pub(super) async fn stop_watcher(&self, watcher: Watcher) {
+    pub(crate) async fn stop_watcher(&self, watcher: Watcher) {
         self.stop_spawned_watcher(watcher.inner).await;
     }
 
@@ -236,7 +237,7 @@ impl SyncService {
     /// watcher, without the lifecycle lock. Called in the critical section that publishes
     /// the sync: it spawns and returns, taking no lock. Rows a previous run left `running`
     /// are replayed first; the rest go as the watcher's examination records them.
-    pub(super) fn start_outbox(&self, root: &SyncRoot, store: &crate::tree::Store, drive: &crate::drive::DriveClient) -> Option<OutboxWorker> {
+    pub(super) fn start_outbox(&self, root: &SyncRoot, store: &konedrive_tree::Store, drive: &konedrive_graph::drive::DriveClient) -> Option<OutboxWorker> {
         if self.mode() != Mode::ReadWrite {
             return None;
         }
@@ -264,9 +265,9 @@ impl SyncService {
     /// (`docs/design/writes.md` §9): the tree lock, the watcher's first scan to wait for, where to
     /// hand what the reconcile kept or copied for examination, and the word that a cycle
     /// went through.
-    pub(super) fn cycle_writes(&self, scanned: Option<watch::Receiver<bool>>) -> super::listing::Writes {
+    pub(super) fn cycle_writes(&self, scanned: Option<watch::Receiver<bool>>) -> crate::remote::listing::Writes {
         let me = self.me.clone();
-        let examine: Arc<dyn Fn(super::local::Batch) + Send + Sync> = Arc::new(move |batch| {
+        let examine: Arc<dyn Fn(crate::local::Batch) + Send + Sync> = Arc::new(move |batch| {
             let Some(service) = me.upgrade() else { return };
             let handle = service.syncing.lock().unwrap().as_ref().and_then(|s| s.watcher.as_ref()).map(|w| w.inner.handle());
             if let Some(handle) = handle {
@@ -285,7 +286,7 @@ impl SyncService {
         // Off the reconcile's blocking task: it captured this runtime
         // before entering it, as the materializer's fills do.
         let runtime = tokio::runtime::Handle::current();
-        let dropped_removed: Arc<dyn Fn(Vec<crate::tree::outbox::OutboxRow>) + Send + Sync> = Arc::new(move |rows| {
+        let dropped_removed: Arc<dyn Fn(Vec<konedrive_tree::outbox::OutboxRow>) + Send + Sync> = Arc::new(move |rows| {
             let Some(service) = me.upgrade() else { return };
             // `HeldCount`/`PendingCount` count the drop at once, not at the
             // worker's own next wake (the outbox on the bus).
@@ -295,7 +296,7 @@ impl SyncService {
             let Some(store) = store else { return };
             runtime.spawn(async move { service.tidy_dropped(&reg.root, &store, &rows).await });
         });
-        super::listing::Writes {
+        crate::remote::listing::Writes {
             tree_lock: Arc::clone(&self.tree_lock),
             machine_name: self.machine_name(),
             ignore: Arc::clone(&self.ignore),
@@ -360,7 +361,7 @@ impl SyncService {
         if snapshot.mode != Mode::ReadWrite {
             return Some("the account is read-only".into());
         }
-        if !crate::oauth::grants_writes(&snapshot.granted_scopes) {
+        if !konedrive_graph::oauth::grants_writes(&snapshot.granted_scopes) {
             return Some("the account's sign-in does not allow changes".into());
         }
         match persist.store.write_standing(&persist.account) {
@@ -430,7 +431,7 @@ impl SyncService {
                 Ok(rows)
             })?;
             upload::clear_marks(&marked, &rows);
-            Ok::<_, crate::tree::TreeError>(rows)
+            Ok::<_, konedrive_tree::TreeError>(rows)
         })
         .await;
         drop(tree);
@@ -474,23 +475,23 @@ const FLUSH_WITHIN: Duration = Duration::from_secs(30);
 /// How the folder's `LastError` begins while the write gate is closed.
 const GATE_NOTE: &str = "nothing is uploaded: ";
 
-/// A read-write folder's watcher (`sync::watcher`), as its sync keeps it. Made only by
+/// A read-write folder's watcher (`local::watcher`), as its sync keeps it. Made only by
 /// [`SyncService::start_watcher`], and given back to [`SyncService::stop_watcher`] by whoever
 /// stops that sync.
 pub struct Watcher {
-    inner: super::watcher::Watcher,
+    inner: crate::local::watcher::Watcher,
 }
 
 impl Watcher {
     /// How far the watcher's bring-up walk got: the lock comes off a folder turning
     /// read-write only once it is done.
-    pub(super) fn walked(&self) -> watch::Receiver<WalkState> {
+    pub(crate) fn walked(&self) -> watch::Receiver<WalkState> {
         self.inner.walked()
     }
 
     /// A Full local scan now: the ignore list changed (`docs/design/writes.md` §4.4).
     pub(super) fn full_scan(&self) {
-        self.inner.full_scan(super::local::ScanReason::IgnoreList);
+        self.inner.full_scan(crate::local::ScanReason::IgnoreList);
     }
 }
 
@@ -540,7 +541,7 @@ impl SyncService {
         if !tree_db.exists() {
             return Ok(0);
         }
-        let counted = tokio::task::spawn_blocking(move || crate::tree::TreeStore::open_read_only(&tree_db).and_then(|s| s.outbox_len()))
+        let counted = tokio::task::spawn_blocking(move || konedrive_tree::TreeStore::open_read_only(&tree_db).and_then(|s| s.outbox_len()))
             .await
             .map_err(|e| e.to_string())
             .and_then(|rows| rows.map_err(|e| e.to_string()));
@@ -558,12 +559,12 @@ impl SyncService {
 impl PendingUploads for SyncService {
     /// `RefreshInfo` read the quota: the outbox decides by it whether OneDrive is
     /// still full (issue #2).
-    fn quota_read(&self, quota: &crate::drive::DriveQuota) {
+    fn quota_read(&self, quota: &konedrive_graph::drive::DriveQuota) {
         self.quota_seen(quota);
     }
 
     /// How many changes wait to be uploaded — the outbox's live rows
-    /// (`crate::tree::outbox`). A switch to read-only is refused `PendingUploads` while
+    /// (`konedrive_tree::outbox`). A switch to read-only is refused `PendingUploads` while
     /// this is not 0 and the switch is not forced. The watcher hands over and has examined
     /// what it holds first (the watcher), so a change saved a moment ago counts; with no
     /// completed listing to examine it against, it cannot, and is not counted.

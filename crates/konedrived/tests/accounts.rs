@@ -19,10 +19,10 @@ use konedrive_dbus::testing::TestBus;
 use konedrive_dbus::{error_name, ACCOUNTS_INTERFACE_NAME, ACCOUNTS_PATH, ACCOUNT_INTERFACE_NAME, FILES_INTERFACE_NAME};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use konedrived::config::Paths;
-use konedrived::oauth::Endpoints;
-use konedrived::secret::{MemoryWallet, Slot, Wallet};
-use konedrived::state::SignInState;
-use konedrived::sync::helper::HelperLink;
+use konedrive_graph::oauth::Endpoints;
+use konedrived::account::secret::{MemoryWallet, Slot, Wallet};
+use konedrived::account::state::SignInState;
+use konedrived::helper::HelperLink;
 use nix::sys::socket::{accept, bind, listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr};
 use wiremock::MockServer;
 use zbus::zvariant::OwnedObjectPath;
@@ -101,7 +101,7 @@ impl FakeHelper {
 
 /// The daemon, with no account yet, and a client of it.
 struct Daemon {
-    daemon: konedrived::accounts::Daemon,
+    daemon: konedrived::daemon::startup::Daemon,
     client: zbus::Connection,
     manager: AccountsProxy<'static>,
     files: FilesProxy<'static>,
@@ -136,7 +136,7 @@ impl Daemon {
     }
 
     /// The daemon's own half of an account, for what no method reaches.
-    fn account(&self, path: &OwnedObjectPath) -> Arc<konedrived::accounts::Account> {
+    fn account(&self, path: &OwnedObjectPath) -> Arc<konedrived::daemon::manager::Account> {
         self.daemon.manager.account(&path.as_ref()).unwrap()
     }
 
@@ -544,15 +544,16 @@ async fn removing_a_held_account_forgets_its_folder_through_the_helper() {
 async fn a_second_daemon_on_the_same_configuration_is_refused() {
     let d = Daemon::start().await;
     let other_bus = TestBus::start();
-    let options = konedrived::accounts::Options {
+    let options = konedrived::daemon::manager::Options {
         endpoints: Endpoints::microsoft(),
         wallet: Arc::new(MemoryWallet::default()),
         sign_in_timeout: Duration::from_secs(5),
-        baloo: konedrived::sync::baloo::Baloo::disabled,
+        baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
         onedrive: false,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
     };
-    let second = konedrived::accounts::start(other_bus.builder(), Paths::in_dir(d.config.path()), options).await;
+    let second = konedrived::daemon::startup::start(other_bus.builder(), Paths::in_dir(d.config.path()), options).await;
     let error = second.err().expect("a second daemon was started").to_string();
     assert!(error.contains("another konedrived is running"), "{error}");
 }
@@ -587,7 +588,7 @@ async fn a_version_1_configuration_starts_as_personal_with_its_folder() {
         r#"{"display_name":"Ann","email":"ann@outlook.com","quota_used":1,"quota_total":2,"fetched_at":0}"#,
     )
     .unwrap();
-    drop(konedrived::tree::TreeStore::open(&paths.tree_db).unwrap());
+    drop(konedrive_tree::TreeStore::open(&paths.tree_db).unwrap());
     let wallet = Arc::new(MemoryWallet::with_v1("RT0"));
 
     let daemon = start_daemon(&bus, config.path(), endpoints(&server), Arc::clone(&wallet), Duration::from_secs(5)).await;
@@ -645,13 +646,14 @@ async fn a_version_1_onedrive_folder_is_held_then_brought_up_at_the_first_connec
         ),
     )
     .unwrap();
-    let options = konedrived::accounts::Options {
+    let options = konedrived::daemon::manager::Options {
         endpoints: endpoints(&server),
         wallet: Arc::new(MemoryWallet::with_v1("RT0")),
         sign_in_timeout: Duration::from_secs(5),
-        baloo: konedrived::sync::baloo::Baloo::disabled,
+        baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
         onedrive: true,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     let daemon = start_daemon_with(&bus, config.path(), options).await;
 
