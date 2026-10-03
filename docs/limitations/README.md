@@ -227,6 +227,7 @@ application must never read zeros where real content should be.
 - [F197](F197.md) — A `403` blocks only its row, and the row is tried again whenever a worker begins
 - [F198](F198.md) — The order of the tree lock and the lifecycle lock is kept by hand
 - [F199](F199.md) — A folder without interception has its path, and nothing else, while the daemon starts
+- [F203](F203.md) — A free-up whose last step cannot be joined leaves the file `dehydrating`
 - [F204](F204.md) — A sign-in whose account is reported signed out meanwhile ends in silence
 
 ---

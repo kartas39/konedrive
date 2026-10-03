@@ -192,13 +192,13 @@ pub(super) fn kept_by_folder(targets: &[PinTarget]) -> Option<SyncError> {
 #[async_trait]
 impl pin::PinFill for SyncService {
     async fn fill_pinned(&self, path: &Path) -> pin::Filled {
-        let Some(reg) = self.registration() else { return pin::Filled::Done };
+        let Some(reg) = self.registration() else { return pin::Filled::Skipped };
         let (root, target) = (reg.root.path.clone(), path.to_path_buf());
         let still = tokio::task::spawn_blocking(move || pin::pinned_by(&root, &target).is_some())
             .await
             .unwrap_or(false);
         if !still {
-            return pin::Filled::Done;
+            return pin::Filled::Skipped;
         }
         // The pins' worker holds a slot of the pool for it.
         match self.fill_now(path, None).await {
@@ -206,7 +206,9 @@ impl pin::PinFill for SyncService {
                 pin::Filled::NoSpace
             }
             Ok(Answered::Failed(_)) => pin::Filled::Failed,
-            Ok(_) => pin::Filled::Done,
+            Ok(Answered::Filled) => pin::Filled::Done,
+            // Found downloaded already: nothing was transferred.
+            Ok(Answered::AlreadyThere | Answered::NotOurs) => pin::Filled::Skipped,
             Err(e) => {
                 tracing::info!("{} is kept on this device but was not downloaded: {e}", path.display());
                 pin::Filled::Failed

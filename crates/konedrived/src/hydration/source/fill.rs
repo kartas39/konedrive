@@ -8,7 +8,7 @@ use std::time::SystemTime;
 
 use konedrive_fs::placeholder::{
     punch_all, punch_from, read_item_id, read_progress, read_state, remove_progress, remove_stamp,
-    stamp_matches, write_ctag, write_progress, write_stamp, write_state, Progress, State, XATTR_PROGRESS,
+    stamp_matches, with_owner_write, write_ctag, write_progress, write_stamp, write_state, Progress, State, XATTR_PROGRESS,
     XATTR_STATE,
 };
 use konedrive_proto::clamp_deny_errno;
@@ -59,10 +59,9 @@ impl FillError {
 /// Fills a placeholder in place through the event fd. Returns the errno to
 /// answer the suspended open with; 0 means "let it through".
 ///
-/// Unconditional: the caller has already decided the file needs filling, and
-/// that no ignore mark needs clearing first — see [`hydrate_with`], which
-/// this is with no clearance at all. Only a file known to be `online-only`
-/// qualifies (see `hydrate_with` for why); the tests are its callers.
+/// The caller has already decided the file needs filling. This is
+/// [`hydrate_with`] with no clearance at all, so only an `online-only` file
+/// is filled (see `hydrate_with` for why); the tests are its callers.
 ///
 /// Every value returned here is in `konedrive_proto::ACCEPTED_DENY_ERRNOS`:
 /// `FAN_DENY | (errno << 24)` is only accepted by the kernel for that set,
@@ -189,8 +188,11 @@ impl Answered {
 /// fetched. If the way is not cleared, nothing is fetched, the state it was
 /// found in is put back, and the answer is [`FillError::NotCleared`].
 ///
-/// `clearance` is `None` only where the caller knows the file to be
-/// `online-only` — the case above that needs nothing — and never on the
+/// Which of the two it is, is decided here and nowhere else, from the state
+/// this fill reads itself. `clearance` is what the caller has to clear the
+/// way with, and `None` is "nothing": an `online-only` file — the case above
+/// that needs nothing — is filled all the same, and any other is refused
+/// [`FillError::NotCleared`] before it is touched. It is never `None` on the
 /// strength of the folder's mode: a folder without interception is cleared
 /// like any other (H146).
 pub async fn hydrate_with(
@@ -227,24 +229,40 @@ async fn fill_file(
     let Ok(Some(item_id)) = read_item_id(&file) else {
         return Err(FillError::Errno(libc::EIO));
     };
-    let found = read_state(&file).ok().flatten();
+    // The state as it is on the file, for putting back exactly; one that
+    // does not parse is not "no state", and is not `online-only` either.
+    let found_raw = xattr::FileExt::get_xattr(&file, XATTR_STATE).map_err(|e| FillError::Errno(errno_of(&e)))?;
+    let found: Option<State> = found_raw.as_deref().and_then(|raw| String::from_utf8_lossy(raw).parse().ok());
+    // Only an `online-only` file needs no clearing. With no way to clear,
+    // any other is not filled: a failed fill would empty a file that may
+    // still be ignored.
+    let clearance = match (found, clearance) {
+        (Some(State::OnlineOnly), _) => None,
+        (_, Some(clearance)) => Some(clearance),
+        (_, None) => {
+            tracing::error!(
+                "{item_id}: a file found {found:?} was to be filled with no way to clear its \
+                 ignore mark; not filling it, since a failed fill would empty a file that may \
+                 still be ignored"
+            );
+            return Err(FillError::NotCleared(NotCleared::NoWay));
+        }
+    };
     // §5.3 step 1: `state=hydrating`, `fsync`. The marker has to be durable
     // before the first byte lands, or a power loss leaves a file that looks
     // `online-only` while holding allocated blocks full of partial content,
     // and §4.4 startup recovery has nothing to find it by.
     write_state(&file, State::Hydrating).map_err(|e| FillError::Errno(errno_of(&e)))?;
     file.sync_all().map_err(|e| FillError::Errno(errno_of(&e)))?;
-    if found != Some(State::OnlineOnly) {
-        if let Some(clearance) = clearance {
-            if let Err(e) = clearance.clear(&file).await {
-                tracing::error!(
-                    "{item_id}: the way was not cleared for filling a file found {found:?} \
-                     ({e}); not filling it, since a failed fill would empty a file that may \
-                     still be ignored"
-                );
-                put_back(&file, found);
-                return Err(FillError::NotCleared(e));
-            }
+    if let Some(clearance) = clearance {
+        if let Err(e) = clearance.clear(&file).await {
+            tracing::error!(
+                "{item_id}: the way was not cleared for filling a file found {found:?} \
+                 ({e}); not filling it, since a failed fill would empty a file that may \
+                 still be ignored"
+            );
+            put_back(&file, found_raw.as_deref());
+            return Err(FillError::NotCleared(e));
         }
     }
 
@@ -287,16 +305,20 @@ pub(crate) fn back_to_placeholder(file: &File) {
     }
 }
 
-/// Undoes the `hydrating` a fill wrote before it had touched anything else.
-fn put_back(file: &File, found: Option<State>) {
+/// Undoes the `hydrating` a fill wrote before it had touched anything else:
+/// the state attribute gets back the bytes it was found with, whether they
+/// parse as a state or not, and is taken off only if there was none.
+fn put_back(file: &File, found: Option<&[u8]>) {
     let restored = match found {
-        Some(state) => write_state(file, state),
+        // As `write_state` writes it: a file may not be writable by its owner.
+        Some(raw) => with_owner_write(file, || xattr::FileExt::set_xattr(file, XATTR_STATE, raw)),
         None => xattr::FileExt::remove_xattr(file, XATTR_STATE),
     };
     if let Err(e) = restored {
         tracing::error!(
-            "cannot put the state back to {found:?} ({e}); the file is left `hydrating`, which \
-             the next open fills again"
+            "cannot put the state back to {:?} ({e}); the file is left `hydrating`, which \
+             the next open fills again",
+            found.map(String::from_utf8_lossy)
         );
     }
 }
@@ -335,10 +357,11 @@ fn put_back(file: &File, found: Option<State>) {
 /// quickXorHash before it is ever `hydrated`. With no usable checkpoint, the
 /// checkpoint attribute goes first and then every block, as before.
 ///
-/// The punch below is safe to make because of [`hydrate_with`]: the way was
-/// cleared by local rule once `hydrating` was durable, or the
-/// file was `online-only`, and nothing places a mark on a file that reads
-/// `hydrating`.
+/// The punch below is safe to make because of what `fill_file` did before
+/// it fetched ([`hydrate_with`]): it found the file `online-only`, or it
+/// cleared the way by local rule once `hydrating` was durable — a file it
+/// could do neither for was refused — and nothing places a mark on a file
+/// that reads `hydrating`.
 ///
 /// The file gets back the time it had before the fill (`original_mtime`, the
 /// cloud's for a placeholder): the fill's writes moved it to now, and a

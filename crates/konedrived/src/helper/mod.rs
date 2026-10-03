@@ -696,6 +696,11 @@ pub enum NotCleared {
     Unlinked,
     #[error("cannot tell whether a konedrive helper is running: {0}")]
     Unknown(String),
+    /// A fill was given no [`Clearance`] at all for a file that is not
+    /// `online-only` (`source::hydrate_with`): never an answer of
+    /// [`Clearance::clear`].
+    #[error("the file may carry an ignore mark, and there is no link to the konedrive helper to clear it with")]
+    NoWay,
 }
 
 impl Clearance {

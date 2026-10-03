@@ -166,7 +166,7 @@ async fn a_queued_file_no_longer_pinned_is_not_downloaded() {
     let (service, root, _root_dir, _dir) = folder_to_pin().await;
     let a = root.join("docs/a.bin");
 
-    assert_eq!(service.fill_pinned(&a).await, pin::Filled::Done);
+    assert_eq!(service.fill_pinned(&a).await, pin::Filled::Skipped);
 
     assert_eq!(service.item_state(&a).await, "online-only");
     assert!(activity_of(&service).await.is_empty(), "nothing was fetched");

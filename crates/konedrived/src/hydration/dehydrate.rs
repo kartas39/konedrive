@@ -178,7 +178,8 @@ fn roll_back(file: &File, cause: DehydrateError) -> DehydrateError {
 /// that punches with no helper involvement puts the project's one silent,
 /// unrecoverable failure behind nothing but a doc comment.
 ///
-/// Only the two refusals *before* the punch roll the state back. Once
+/// Only what stops the sequence *before* the punch rolls the state back: a
+/// lease that is refused, or that cannot be asked for. Once
 /// `fallocate` has run there is nothing to roll back to — the blocks are
 /// gone and the file is not `hydrated` any more — so a failure from there on
 /// leaves it `dehydrating` deliberately: startup recovery punches
@@ -216,10 +217,14 @@ fn punch_clean_file_watched(
 ) -> Result<(), DehydrateError> {
     // Step 3. The kernel grants this only while nobody else holds the file
     // open, which is what makes emptying it safe; a refusal is "in use", and
-    // the state must go back to `hydrated` before we report it.
-    let lease = match WriteLease::take(file).map_err(io_error)? {
-        Some(lease) => lease,
-        None => return Err(roll_back(file, DehydrateError::InUse)),
+    // the state must go back to `hydrated` before we report it. A lease that
+    // cannot be asked for at all (leases switched off, a file of another
+    // user, no memory for the lock) stops here just the same, with nothing
+    // punched, and rolls back just the same.
+    let lease = match WriteLease::take(file) {
+        Ok(Some(lease)) => lease,
+        Ok(None) => return Err(roll_back(file, DehydrateError::InUse)),
+        Err(e) => return Err(roll_back(file, io_error(e))),
     };
 
     watch(Watch::UnderLease, file);

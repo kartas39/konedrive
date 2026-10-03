@@ -47,7 +47,8 @@ impl SyncService {
     pub async fn hydrate_now(&self, path: &Path) -> Result<(), SyncError> {
         // "Download now" is an open, for the pool: it goes first.
         match self.fill_now(path, Some(konedrive_graph::pool::Class::Open)).await? {
-            Answered::Failed(FillError::NotCleared(NotCleared::Unlinked)) => Err(SyncError::NoHelper),
+            // No link to the helper, on a file that may carry an ignore mark.
+            Answered::Failed(FillError::NotCleared(NotCleared::Unlinked | NotCleared::NoWay)) => Err(SyncError::NoHelper),
             Answered::Failed(FillError::NotCleared(e)) => Err(SyncError::Io(format!("nothing was filled: {e}"))),
             Answered::Failed(FillError::Errno(errno)) => Err(SyncError::Io(format!(
                 "hydration failed: {}",
@@ -97,22 +98,20 @@ impl SyncService {
         })
         .await
         .map_err(|e| SyncError::Io(format!("the hydration task failed: {e}")))?;
-        let may_be_marked = match decision? {
+        match decision? {
             Fill::AlreadyThere => return Ok(Answered::AlreadyThere),
-            Fill::Needed { may_be_marked } => may_be_marked,
-        };
+            Fill::Needed => {}
+        }
         // A file that could be carrying an ignore mark has the way cleared
-        // before the fill can fail and punch it (`source::hydrate_with`), by
-        // local rule. An intercepted root needs its link for
-        // that — without one, refuse rather than fill a file a failure would
-        // then empty under its mark. A root registered without interception
-        // clears it the same way when there is a link, and otherwise goes by
-        // whether a helper is running at all (`Clearance`).
-        let clearance = match (may_be_marked, reg.intercepted) {
-            (false, _) => None,
-            (true, true) => Some(Clearance::Link(self.require_link()?)),
-            (true, false) => Some(self.clearance()),
-        };
+        // before the fill can fail and punch it, by local rule. Whether this
+        // file is one is the fill's to decide (`source::hydrate_with`); here
+        // it is only given what there is to clear with. An intercepted root
+        // needs its link for that — without one the fill gets nothing, and
+        // refuses rather than fill a file a failure would then empty under
+        // its mark. A root registered without interception clears it the
+        // same way when there is a link, and otherwise goes by whether a
+        // helper is running at all (`Clearance`).
+        let clearance = if reg.intercepted { self.link().map(Clearance::Link) } else { Some(self.clearance()) };
 
         let fd: std::os::fd::OwnedFd = file.into();
         // Shown in `Transfers.Downloads` while it downloads; `Hydrate` (an open, for the pool)
@@ -165,10 +164,9 @@ pub(super) fn open_shown(root: &SyncRoot, path: &Path) -> Result<(File, String),
 
 /// Whether [`SyncService::hydrate_now`] still has work to do.
 enum Fill {
-    /// It does. `may_be_marked` is false only for an `online-only` file:
-    /// every other state it can be found in is one an ignore mark can be
-    /// on (see `source::hydrate_with`).
-    Needed { may_be_marked: bool },
+    /// It does. Whether the file may carry an ignore mark, and so has to be
+    /// cleared first, is decided by the fill (`source::hydrate_with`).
+    Needed,
     AlreadyThere,
 }
 
@@ -207,7 +205,7 @@ fn classify_for_hydration(file: &File) -> Result<Fill, SyncError> {
                 return Ok(Fill::AlreadyThere);
             }
             match read_stamp(file).map_err(|e| SyncError::Io(e.to_string()))? {
-                None => Ok(Fill::Needed { may_be_marked: true }),
+                None => Ok(Fill::Needed),
                 Some(_) => {
                     if stamp_matches(file).map_err(|e| SyncError::Io(e.to_string()))? {
                         Ok(Fill::AlreadyThere)
@@ -224,8 +222,7 @@ fn classify_for_hydration(file: &File) -> Result<Fill, SyncError> {
         // exactly what to do with it: treat it as "hydrate it again".
         // Reporting success over whatever the punch got to is the one thing
         // that must not happen.
-        Ok(Some(State::OnlineOnly)) => Ok(Fill::Needed { may_be_marked: false }),
-        Ok(Some(State::Hydrating | State::Dehydrating)) => Ok(Fill::Needed { may_be_marked: true }),
+        Ok(Some(State::OnlineOnly | State::Hydrating | State::Dehydrating)) => Ok(Fill::Needed),
         Err(StateError::Io(e)) => Err(SyncError::Io(e.to_string())),
         Err(StateError::Corrupt(value)) => {
             Err(SyncError::Io(format!("unrecognised state {value:?}")))

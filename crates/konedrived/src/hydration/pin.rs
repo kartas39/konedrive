@@ -262,8 +262,11 @@ pub fn downloaded_under(start: &Path, inherited: bool) -> (Vec<PathBuf>, u32) {
 /// What one pinned download came to, as far as the queue cares.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Filled {
-    /// Downloaded, found downloaded already, or no longer pinned.
+    /// Downloaded: the one outcome that is a success for the transfer pool.
     Done,
+    /// Nothing was transferred and nothing is owed: found downloaded already,
+    /// no longer pinned, its folder forgotten, or cancelled by a Forget.
+    Skipped,
     /// Failed: the file is still online-only, and the sweep after the next
     /// cycle that succeeds queues it again.
     Failed,
@@ -639,8 +642,9 @@ impl Pins {
             running.spawn(async move {
                 // Cancelled by a Forget: the fill's future is dropped, as a
                 // `Hydrate` whose caller went away is.
-                let filled = cancel.run_until_cancelled(fill.fill_pinned(&path)).await.unwrap_or(Filled::Done);
+                let filled = cancel.run_until_cancelled(fill.fill_pinned(&path)).await.unwrap_or(Filled::Skipped);
                 drop(fill);
+                // Only a transfer that was made lets the pool grow.
                 if filled == Filled::Done {
                     permit.succeeded();
                 }
@@ -653,7 +657,7 @@ impl Pins {
     }
 
     fn finished(&self, path: &Path, filled: Filled) {
-        if filled != Filled::Done {
+        if matches!(filled, Filled::Failed | Filled::NoSpace) {
             self.resweep.store(true, Ordering::SeqCst);
         }
         let mut queue = self.queue.lock().unwrap();
