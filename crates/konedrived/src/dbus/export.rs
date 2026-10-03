@@ -3,11 +3,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use konedrive_dbus::ACCOUNTS_PATH;
 use tokio::task::JoinHandle;
+use zbus::object_server::InterfaceRef;
 use zbus::zvariant::ObjectPath;
 use zbus::{fdo, Connection};
 
 use crate::account::AccountService;
-use crate::daemon::manager::{AccountManager, Bus};
+use crate::daemon::manager::{AccountManager, Bus, HelperStateSignal};
 use crate::dbus::accounts::Accounts;
 use crate::dbus::files::Files;
 use crate::sync::SyncService;
@@ -65,10 +66,9 @@ impl Bus for OnBus {
         Ok(())
     }
 
-    async fn helper_state_changed(&self, connection: &Connection) -> zbus::Result<()> {
+    async fn helper_state(&self, connection: &Connection) -> zbus::Result<Box<dyn HelperStateSignal>> {
         let iface = connection.object_server().interface::<_, Accounts>(ACCOUNTS_PATH).await?;
-        let accounts = iface.get().await;
-        accounts.helper_state_changed(iface.signal_emitter()).await
+        Ok(Box::new(AccountsOnBus(iface)))
     }
 
     async fn export_account(&self, connection: &Connection, path: &ObjectPath<'_>, account: Arc<AccountService>) -> zbus::Result<JoinHandle<()>> {
@@ -85,5 +85,15 @@ impl Bus for OnBus {
 
     async fn unexport_account(&self, connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()> {
         crate::dbus::account::unexport(connection, path).await
+    }
+}
+
+/// `Accounts` as it is on the bus, for announcing `HelperState`.
+struct AccountsOnBus(InterfaceRef<Accounts>);
+
+#[async_trait]
+impl HelperStateSignal for AccountsOnBus {
+    async fn changed(&self) -> zbus::Result<()> {
+        self.0.get().await.helper_state_changed(self.0.signal_emitter()).await
     }
 }

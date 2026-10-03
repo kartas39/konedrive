@@ -94,13 +94,13 @@ async fn serve(connection: &Connection, manager: &Arc<AccountManager>) -> zbus::
         manager.export(connection, &account).await?;
     }
     // `HelperState` is the hub's: every change of it is `Accounts`'s to announce.
+    let signal = bus.helper_state(connection).await?;
     let mut helper = manager.hub.subscribe();
     helper.borrow_and_update();
-    let on = connection.clone();
     tokio::spawn(async move {
         while helper.changed().await.is_ok() {
             helper.borrow_and_update();
-            if let Err(e) = bus.helper_state_changed(&on).await {
+            if let Err(e) = signal.changed().await {
                 tracing::warn!("cannot emit PropertiesChanged for HelperState: {e}");
             }
         }

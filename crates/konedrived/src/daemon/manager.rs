@@ -34,19 +34,21 @@ pub struct Options {
     /// the daemon. A test of local folders turns it off, and every folder is then filled
     /// with `PopulateFromDirectory`, as a service with no drive always was.
     pub onedrive: bool,
-    /// How the objects get on the bus: `dbus::export::OnBus`, in the daemon and in a test.
+    /// How the objects get on the bus: `dbus::export::OnBus`, which `main` and every test
+    /// give alike.
     pub bus: Arc<dyn Bus>,
 }
 
 /// The bus, as the daemon uses it: the manager's own objects and each account's are put on
-/// it and taken off it by `dbus/`, which implements this (`dbus::export::OnBus`).
+/// it and taken off it by `dbus/`, whose `dbus::export::OnBus` is the one implementation.
 #[async_trait]
 pub trait Bus: Send + Sync {
     /// Puts the `ObjectManager`, `org.konedrive.Accounts` and `org.konedrive.Files` at
     /// `/org/konedrive/Accounts`, over `manager`.
     async fn serve(&self, connection: &Connection, manager: &Arc<AccountManager>) -> zbus::Result<()>;
-    /// Announces that `Accounts.HelperState` changed.
-    async fn helper_state_changed(&self, connection: &Connection) -> zbus::Result<()>;
+    /// What announces a change of `Accounts.HelperState`: the `Accounts` interface
+    /// [`serve`](Self::serve) put on the bus, looked up once, at startup.
+    async fn helper_state(&self, connection: &Connection) -> zbus::Result<Box<dyn HelperStateSignal>>;
     /// Puts an account's `Account` at `path`; the task that sends its signals.
     async fn export_account(&self, connection: &Connection, path: &ObjectPath<'_>, account: Arc<AccountService>) -> zbus::Result<JoinHandle<()>>;
     /// Puts the interfaces of an account's folder at `path`; the tasks that send their
@@ -56,6 +58,13 @@ pub trait Bus: Send + Sync {
     async fn unexport_folder(&self, connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()>;
     /// Takes an account's `Account` off the bus.
     async fn unexport_account(&self, connection: &Connection, path: &ObjectPath<'_>) -> zbus::Result<()>;
+}
+
+/// Announces changes of `Accounts.HelperState` ([`Bus::helper_state`]).
+#[async_trait]
+pub trait HelperStateSignal: Send + Sync {
+    /// `PropertiesChanged` for `HelperState`.
+    async fn changed(&self) -> zbus::Result<()>;
 }
 
 /// A path that is in no account's folder ([`AccountManager::route_all`]).
