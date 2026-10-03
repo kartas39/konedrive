@@ -15,8 +15,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use konedrive_fs::handle::FileHandle;
-use konedrived::sync::local::Batch;
-use konedrived::sync::watcher::{Handled, Sink, Timing, WatchConfig, Watcher};
+use konedrived::local::Batch;
+use konedrived::local::watcher::{Handled, Sink, Timing, WatchConfig, Watcher};
 
 use crate::{dir_mark_present, Checks, Ctx};
 
@@ -188,10 +188,10 @@ pub fn own_fill_is_silent(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String>
 /// helper refuses), and `LastError` says so.
 pub fn other_device_not_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     use konedrive_fs::placeholder::XATTR_ROOT;
-    use konedrived::sync::local::{IgnoreList, NoLiveness};
-    use konedrived::sync::root::SyncRoot;
-    use konedrived::sync::watcher::ExamineSink;
-    use konedrived::sync::InodeLocks;
+    use konedrived::local::{IgnoreList, NoLiveness};
+    use konedrived::folder::root::SyncRoot;
+    use konedrived::local::watcher::ExamineSink;
+    use konedrived::folder::locks::InodeLocks;
     use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
     if ctx.fs != "btrfs" {

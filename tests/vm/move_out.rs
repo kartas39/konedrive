@@ -27,12 +27,12 @@ use std::time::{Duration, Instant};
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{State, XATTR_ITEM_ID};
 use konedrive_graph::drive::DriveClient;
-use konedrived::sync::disk::Disk;
-use konedrived::sync::helper::HelperLink;
-use konedrived::sync::local::{Batch, Examiner, HelperLiveness, IgnoreList};
-use konedrived::sync::source::ContentSource;
-use konedrived::sync::upload::move_out::{Linked, MoveOuts, SourceFill};
-use konedrived::sync::upload::{Limits, NoHost, OutboxWorker, WorkerConfig};
+use konedrived::folder::disk::Disk;
+use konedrived::helper::HelperLink;
+use konedrived::local::{Batch, Examiner, HelperLiveness, IgnoreList};
+use konedrived::hydration::source::ContentSource;
+use konedrived::upload::move_out::{Linked, MoveOuts, SourceFill};
+use konedrived::upload::{Limits, NoHost, OutboxWorker, WorkerConfig};
 use konedrive_graph::token::StaticToken;
 use konedrive_tree::outbox::{OutboxKind, OutboxState};
 use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
@@ -211,7 +211,7 @@ impl Base {
             tree_lock: Arc::new(tokio::sync::Mutex::new(())),
             host: Arc::new(NoHost),
             limits: Limits::default(),
-            quota: konedrived::quota::Quota::detached(),
+            quota: konedrived::account::quota::Quota::detached(),
             moved_out: Some(MoveOuts {
                 helper: Arc::new(Linked(Arc::clone(&self.link))),
                 filler: Arc::new(SourceFill(Arc::clone(&ctx.source) as Arc<dyn ContentSource>)),

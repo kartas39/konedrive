@@ -36,10 +36,11 @@ use konedrive_dbus::{
 };
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use konedrive_graph::oauth::Endpoints;
-use konedrived::secret::MemoryWallet;
-use konedrived::state::{SignInState, StateHandle};
-use konedrived::sync::helper::HelperLink;
-use konedrived::sync::{SyncService, SyncTrouble};
+use konedrived::account::secret::MemoryWallet;
+use konedrived::account::state::{SignInState, StateHandle};
+use konedrived::helper::HelperLink;
+use konedrived::sync::SyncService;
+use konedrived::status::snapshot::SyncTrouble;
 use nix::sys::socket::{
     accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr,
 };
@@ -77,7 +78,7 @@ struct Setup {
     /// The daemon's own half, for what no method can reach: the state a sync
     /// with OneDrive publishes.
     sync: Arc<SyncService>,
-    _daemon: konedrived::accounts::Daemon,
+    _daemon: konedrived::daemon::startup::Daemon,
     _config: tempfile::TempDir,
     _helper_dir: tempfile::TempDir,
     _bus: TestBus,
@@ -566,7 +567,7 @@ impl FakeUnit {
 }
 
 #[async_trait::async_trait]
-impl konedrived::sync::helper_status::HelperUnit for FakeUnit {
+impl konedrived::helper::status::HelperUnit for FakeUnit {
     async fn states(&self) -> Option<(String, String)> {
         Some(self.0.lock().unwrap().clone())
     }
@@ -581,7 +582,7 @@ impl konedrived::sync::helper_status::HelperUnit for FakeUnit {
 async fn helper_state_follows_the_link_and_then_what_systemd_says() {
     let f = setup().await;
     let unit = Arc::new(FakeUnit(std::sync::Mutex::new(("loaded".into(), "inactive".into()))));
-    f.sync.set_helper_unit(Arc::clone(&unit) as Arc<dyn konedrived::sync::helper_status::HelperUnit>);
+    f.sync.set_helper_unit(Arc::clone(&unit) as Arc<dyn konedrived::helper::status::HelperUnit>);
     let watching = tokio::spawn(konedrived::sync::watch_helper_every(Arc::clone(&f.sync), Duration::from_millis(100)));
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
@@ -787,7 +788,7 @@ async fn the_folders_quota_read_is_the_accounts_quota() {
 /// progress travels with the counters, in one message.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_local_scan_is_on_the_bus() {
-    use konedrived::sync::local_scan::ScanState;
+    use konedrived::local::scan::ScanState;
     let f = setup().await;
     assert_eq!(f.scan.state().await.unwrap(), "none", "a read-only folder has no local scan");
     assert_eq!(f.scan.finished().await.unwrap(), 0);

@@ -29,8 +29,8 @@ use konedrive_dbus::testing::TestBus;
 use konedrive_fs::placeholder::{write_state, State};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use konedrived::account::AccountService;
-use konedrived::state::SignInState;
-use konedrived::sync::helper::HelperLink;
+use konedrived::account::state::SignInState;
+use konedrived::helper::HelperLink;
 use konedrived::sync::SyncService;
 use nix::sys::socket::{
     accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr,
@@ -61,7 +61,7 @@ struct Harness {
     /// The account service, so the token-export test can seed an access
     /// token directly rather than going through a real sign-in.
     account: Arc<AccountService>,
-    _daemon: konedrived::accounts::Daemon,
+    _daemon: konedrived::daemon::startup::Daemon,
     _config_dir: tempfile::TempDir,
     _helper_dir: tempfile::TempDir,
     _bus: TestBus,
@@ -1563,7 +1563,7 @@ fn kinds_the_window_branches_on(cpp: &str) -> Vec<String> {
 /// word — so a rename on either side fails here, not in a user's tray.
 #[test]
 fn the_window_branches_on_the_daemons_own_activity_words() {
-    use konedrived::sync::activity::{Kind, NO_DISK_SPACE};
+    use konedrived::status::activity::{Kind, NO_DISK_SPACE};
     let cpp = app_source("activitymodel.cpp");
     let sent: Vec<&str> = Kind::ALL.iter().map(|kind| kind.as_str()).collect();
     let window = kinds_the_window_branches_on(&cpp);
@@ -1700,7 +1700,7 @@ async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it
     let line = |status: &str| status.lines().find(|l| l.starts_with("Paused by itself:")).map(str::to_owned);
 
     assert_eq!(out_text(&run(addr, &["sync", "anyway"])).trim(), "Not paused by itself: nothing to lift.");
-    f.service.set_conditions(konedrived::sync::running::Conditions { metered: true, ..Default::default() });
+    f.service.set_conditions(konedrived::conditions::running::Conditions { metered: true, ..Default::default() });
     let status = out_text(&run(addr, &["sync", "status"]));
     let said = line(&status).unwrap_or_else(|| panic!("{status}"));
     assert!(said.contains("metered connection (`konedrivectl sync anyway` syncs now)"), "{said}");
@@ -1718,7 +1718,7 @@ async fn binary_status_says_why_the_account_paused_by_itself_and_anyway_lifts_it
 /// back by itself, but not the user's pause; with `--account` it is a usage error.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_status_says_how_changes_arrive_and_anyway_all_lifts_every_hold() {
-    use konedrived::sync::live::LiveChanges;
+    use konedrived::remote::live::LiveChanges;
     let (f, _graph) = harness_onedrive().await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
@@ -1736,7 +1736,7 @@ async fn binary_status_says_how_changes_arrive_and_anyway_all_lifts_every_hold()
     assert_eq!(out.status.code(), Some(2), "{out:?}");
     assert_eq!(out_text(&run(addr, &["sync", "anyway", "--all"])).trim(), "No account is paused by itself: nothing to lift.");
 
-    f.service.set_conditions(konedrived::sync::running::Conditions { metered: true, ..Default::default() });
+    f.service.set_conditions(konedrived::conditions::running::Conditions { metered: true, ..Default::default() });
     wait_for(|| live() == LiveChanges::Off).await;
     let status = out_text(&run(addr, &["sync", "status"]));
     assert_eq!(line(&status), None, "{status}");

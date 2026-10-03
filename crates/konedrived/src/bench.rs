@@ -20,12 +20,12 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::XATTR_ROOT;
 use tokio_util::sync::CancellationToken;
 
-use crate::sync::disk::Disk;
-use crate::sync::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
-use crate::sync::materialize::{Materializer, Scope};
-use crate::sync::root::SyncRoot;
-use crate::sync::upload::fake::Harness;
-use crate::sync::InodeLocks;
+use crate::folder::disk::Disk;
+use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
+use crate::remote::materialize::{Materializer, Scope};
+use crate::folder::root::SyncRoot;
+use crate::upload::fake::Harness;
+use crate::folder::locks::InodeLocks;
 use konedrive_tree::outbox::{Committed, Detection, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState};
 use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
@@ -265,7 +265,7 @@ fn full_scan_of_100000_items_and_30000_rows() {
 }
 
 /// A worker on a store whose outbox is `rows`, in `seq` order.
-fn engine_with(rows: &[OutboxRow]) -> (tempfile::TempDir, Harness, Arc<crate::sync::upload::Engine>) {
+fn engine_with(rows: &[OutboxRow]) -> (tempfile::TempDir, Harness, Arc<crate::upload::Engine>) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().canonicalize().unwrap().join("OneDrive");
     std::fs::create_dir(&path).unwrap();
@@ -279,7 +279,7 @@ fn engine_with(rows: &[OutboxRow]) -> (tempfile::TempDir, Harness, Arc<crate::sy
 }
 
 /// What the worker would take next.
-fn pick(h: &Harness, engine: &crate::sync::upload::Engine) -> usize {
+fn pick(h: &Harness, engine: &crate::upload::Engine) -> usize {
     h.block_on(engine.candidates()).unwrap().len()
 }
 
@@ -345,7 +345,7 @@ fn mixed_rows() -> Vec<OutboxRow> {
         .map(|i| {
             let (state, reason) = match i % 30 {
                 0 => (OutboxState::Blocked, Some("name-characters")),
-                1..=4 => (OutboxState::Ready, Some(crate::sync::upload::space::WAITING)),
+                1..=4 => (OutboxState::Ready, Some(crate::upload::space::WAITING)),
                 _ => (OutboxState::Ready, None),
             };
             new_row(OutboxKind::Create, &format!("d/f{i:06}"), Some("R"), object(i), state, reason)
@@ -355,9 +355,9 @@ fn mixed_rows() -> Vec<OutboxRow> {
 
 /// `NotUploadedSummary()` as the daemon sums it when it has no sum in
 /// memory: through the store's read-only connection.
-fn summary_now(store: &Store, _root: &Path) -> Vec<crate::sync::kept_back::SummaryRow> {
+fn summary_now(store: &Store, _root: &Path) -> Vec<crate::upload::kept_back::SummaryRow> {
     let (skipped, groups) = store.read_blocking(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).unwrap();
-    crate::sync::kept_back::summary(&skipped, &groups, false)
+    crate::upload::kept_back::summary(&skipped, &groups, false)
 }
 
 /// A D-Bus count or the Not Uploaded summary while an `outbox_apply` of 30 000 runs.
@@ -395,7 +395,7 @@ fn the_first_rows_and_files_of_a_reason() {
     });
     assert_eq!(entries.len(), 21);
     let ((files, total), second) = timed("NotUploadedFiles(name-characters, 20) of 30 000", || {
-        store.read_blocking(|s| crate::sync::kept_back::files(s, root, false, "name-characters", 20)).unwrap()
+        store.read_blocking(|s| crate::upload::kept_back::files(s, root, false, "name-characters", 20)).unwrap()
     });
     assert_eq!((files.len(), total), (20, 1000));
     within("Changes(21)", first, Duration::from_millis(50));
@@ -541,7 +541,7 @@ fn read_write_cycle(store: &Store, changes: Vec<Change>) {
     let staged = store.call_blocking(move |s| s.stage_rw(&changes, 0, false)).unwrap();
     let Some((ids, consumed)) = staged else { return };
     store
-        .call_blocking(|s| crate::sync::materialize::Rw::read(s, "bench".into(), false, crate::sync::local::IgnoreList::default()))
+        .call_blocking(|s| crate::remote::materialize::Rw::read(s, "bench".into(), false, crate::local::IgnoreList::default()))
         .unwrap();
     materializer_reads(store, &ids);
     let changed = store.call_blocking(|s| s.changed_ids()).unwrap();
@@ -659,8 +659,8 @@ fn the_conflicts_at_the_end_of_a_cycle() {
         })
         .collect();
     store.call_blocking(move |s| s.add_conflicts(&rows)).unwrap();
-    let state = crate::sync::SyncStateHandle::new(crate::sync::SyncSnapshot::default());
-    let activity = crate::sync::activity::Activity::new(state.clone());
+    let state = crate::status::snapshot::SyncStateHandle::new(crate::status::snapshot::SyncSnapshot::default());
+    let activity = crate::status::activity::Activity::new(state.clone());
     activity.attach(store.clone(), Path::new("/nowhere/OneDrive"));
     let (_, took) = timed("the conflicts looked over at the end of a cycle, 2 000", || activity.prune());
     assert_eq!(state.get().conflict_count, 2000);
@@ -735,7 +735,7 @@ fn recording_a_full_placement() {
         for n in 0..100_000u64 {
             let (d, i) = (n / 1000, n % 1000);
             placed.push((format!("F{d:02}-{i:03}"), object(n).handle.unwrap()));
-            if placed.len() == crate::sync::materialize::PLACED_BATCH || n == 99_999 {
+            if placed.len() == crate::remote::materialize::PLACED_BATCH || n == 99_999 {
                 let batch = std::mem::take(&mut placed);
                 store.call_blocking(move |s| s.set_local_handles(&batch)).unwrap();
             }

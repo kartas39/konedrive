@@ -2865,6 +2865,18 @@ application must never read zeros where real content should be.
   filter by target has to name the new crates: `RUST_LOG=konedrived=debug` alone no longer shows
   their debug lines (`README.md`, "Troubleshooting", gives the full setting). The default level
   (`info`, every target) is unaffected.
+- **D27. The daemon's journal lines carry its new module paths.** A line's target is the module
+  that logs it, and the daemon's modules moved out of `sync` into directories of their own: what
+  was logged under `konedrived::sync::listing`, `konedrived::sync::upload::…` or
+  `konedrived::accounts` is now under `konedrived::remote::listing`, `konedrived::upload::…` or
+  `konedrived::daemon::manager`, and so on for every moved module. The message texts are
+  unchanged, and so is a filter by crate (`RUST_LOG=konedrived=debug`); a filter that names a
+  module (`RUST_LOG=konedrived::sync=debug`) now reaches only what is still in `sync/`.
+- **D28.** `konedrivectl/tests/sync_cli.rs::binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_partial`
+  failed once in a full `cargo test --workspace` (2026-10-03, while the daemon's files were being
+  moved to their directories): the folder already read `ready` where the test waits to see
+  `listing` during the delayed answer of its mock (`the delay must still be in effect`). It passed
+  in the next full run, on the finished tree. Seen once; not chased.
 
 ---
 

@@ -16,20 +16,20 @@ use konedrive_dbus::testing::TestBus;
 /// signs in for real. Its helper hub looks for the helper at a socket in `dir`, where
 /// nothing is bound, from before the daemon starts: a test that wants a helper connects a
 /// fake one itself.
-pub async fn start_daemon(bus: &TestBus, dir: &Path) -> konedrived::accounts::Daemon {
+pub async fn start_daemon(bus: &TestBus, dir: &Path) -> konedrived::daemon::startup::Daemon {
     let nowhere = |path: &str| url::Url::parse(&format!("http://127.0.0.1:9/{path}/")).unwrap();
-    let options = konedrived::accounts::Options {
+    let options = konedrived::daemon::manager::Options {
         endpoints: konedrive_graph::oauth::Endpoints { authority: nowhere("authority"), graph: nowhere("graph") },
-        wallet: Arc::new(konedrived::secret::MemoryWallet::default()),
+        wallet: Arc::new(konedrived::account::secret::MemoryWallet::default()),
         sign_in_timeout: Duration::from_secs(5),
-        baloo: konedrived::sync::baloo::Baloo::disabled,
+        baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
         onedrive: false,
     };
     let hub = konedrived::sync::hub::HelperHub::new();
     hub.set_socket(dir.join("no-helper.sock"));
     let paths = konedrived::config::Paths::in_dir(dir);
-    konedrived::accounts::start_on(bus.builder(), paths, options, hub).await.unwrap()
+    konedrived::daemon::startup::start_on(bus.builder(), paths, options, hub).await.unwrap()
 }
 
 /// The `konedrivectl` binary on the bus at `bus_addr`, as a user's shell runs it, with
