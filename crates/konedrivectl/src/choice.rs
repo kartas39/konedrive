@@ -14,9 +14,10 @@ pub struct AccountInfo {
 }
 
 /// The account `wanted` names (design §5.1): the one whose id is exactly `wanted`, or whose
-/// label or email is `wanted` whatever the case. The daemon refuses a label with an `@` or
-/// shaped like an id, but a hand-edited `config.toml` can still give two accounts one label,
-/// or one account another's id as its label: so every account any of the three names counts,
+/// label or email is `wanted` whatever the case. The daemon refuses a label shaped like an id
+/// or already used, but a label may be an email, which may be another account's, and a
+/// hand-edited `config.toml` can still give two accounts one label, or one account another's
+/// id as its label: so every account any of the three names counts,
 /// and `Err` holds them all when there is not exactly one — none, or several, which a command
 /// must refuse rather than guess between (`account remove` asks nothing).
 pub fn resolve<'a>(accounts: &'a [AccountInfo], wanted: &str) -> Result<&'a AccountInfo, Vec<&'a AccountInfo>> {

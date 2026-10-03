@@ -19,7 +19,7 @@ async fn status_reports_state_and_client_id() {
     let text = konedrivectl::status_text(&proxy, Some(&manager.client_id().await.unwrap())).await.unwrap();
     assert!(text.lines().any(|l| l == "Label:      Personal"), "{text}");
     assert!(text.contains("signed-out"), "{text}");
-    assert!(text.contains("(not set)"), "{text}");
+    assert!(text.contains(konedrived::config::DEFAULT_CLIENT_ID), "the built-in client ID: {text}");
     assert!(!text.contains("Account:"), "{text}");
 
     manager.set_client_id(CLIENT_ID).await.unwrap();

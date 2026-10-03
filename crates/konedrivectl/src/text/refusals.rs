@@ -1,4 +1,4 @@
-use konedrive_dbus::{error_name, ERROR_PREFIX};
+use konedrive_dbus::{error_name, ERROR_PREFIX, LABEL_RULE};
 
 use super::files::pinned_parts;
 use super::formats::{sentence, shell_word};
@@ -400,7 +400,10 @@ fn refusal_text_as(action: SyncAction<'_>, name: Option<&str>, detail: &str, roo
         (Some("Unsupported"), Settings | Anyway) => {
             "this folder is not connected to OneDrive, so it has no sync settings".to_owned()
         }
-        (Some("NoRoot"), Outbox | Pause | Resume | Ignore | NotUploaded | Deletes) => {
+        // `NoRoot` is the daemon's answer to these both with no folder registered and before
+        // the folder's sync has opened its store. Only a registered folder has a path; with
+        // none, the arm for every other command says what to do.
+        (Some("NoRoot"), Outbox | Pause | Resume | Ignore | NotUploaded | Deletes) if !root.is_empty() => {
             "the folder's sync has not started yet; try again in a moment".to_owned()
         }
         (Some("Unsupported"), _) => {
@@ -581,10 +584,9 @@ pub fn account_refusal_text(action: AccountAction<'_>, name: Option<&str>, detai
              switches anyway"
         ),
         SetMode(label, mode, _) => format!("{label} was not switched to {mode}: {detail}"),
-        Add(label) | Rename(_, label) if invalid => format!(
-            "{label:?} cannot be an account's label: {detail}. A label has 1 to 40 characters, no \"/\" \
-             and no \"@\", and is not another account's label, whatever the case"
-        ),
+        Add(label) | Rename(_, label) if invalid => {
+            format!("{label:?} cannot be an account's label: {detail}. {LABEL_RULE}")
+        }
         SetClientId(id, _) if invalid => format!(
             "{id:?} is not an Application (client) ID. It is a GUID like \
              00000000-0000-0000-0000-000000000000: copy it from the Overview page of your app \

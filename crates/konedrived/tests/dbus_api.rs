@@ -11,6 +11,7 @@ use konedrive_dbus::accounts::{AccountProxy, AccountsProxy};
 use konedrive_dbus::testing::TestBus;
 use konedrive_dbus::ACCOUNT_INTERFACE_NAME;
 use konedrived::account::secret::{MemoryWallet, Slot};
+use konedrived::config::DEFAULT_CLIENT_ID;
 use wiremock::MockServer;
 
 const XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Account.xml"));
@@ -52,7 +53,7 @@ async fn exposes_initial_properties() {
     assert_eq!(s.proxy.id().await.unwrap(), s.id);
     assert_eq!(s.proxy.label().await.unwrap(), "Personal");
     assert_eq!(s.proxy.mode().await.unwrap(), "read-only");
-    assert_eq!(s.manager.client_id().await.unwrap(), "");
+    assert_eq!(s.manager.client_id().await.unwrap(), DEFAULT_CLIENT_ID);
 }
 
 /// The daemon's build, as `konedrivectl --version` and the window read it.
@@ -72,7 +73,7 @@ async fn set_client_id_validates_and_notifies() {
         matches!(&err, zbus::Error::MethodError(name, _, _) if name.as_str() == "org.freedesktop.DBus.Error.InvalidArgs"),
         "{err:?}"
     );
-    assert_eq!(s.manager.client_id().await.unwrap(), "");
+    assert_eq!(s.manager.client_id().await.unwrap(), DEFAULT_CLIENT_ID);
     s.manager.set_client_id(CLIENT_ID).await.unwrap();
     let manager = &s.manager;
     eventually("ClientId", || async move { manager.client_id().await.unwrap() == CLIENT_ID }).await;

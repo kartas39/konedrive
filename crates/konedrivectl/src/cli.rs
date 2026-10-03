@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use konedrive_dbus::LABEL_RULE;
 
 #[derive(Parser)]
 #[command(
@@ -10,10 +11,10 @@ use clap::{Parser, Subcommand};
                   else the one KONEDRIVE_ACCOUNT names, else the only account there is. With several \
                   accounts and none named, or a name that fits more than one, it stops and lists them. \
                   `status` and `sync status` show every account when none is named. The commands that take \
-                  a path (`sync hydrate`, `dehydrate`, `state`, `pin`, `unpin`, `free`) act on the account \
-                  whose folder holds the path; they, `account list`, `account add`, `account rename`, \
-                  `account remove`, `set-client-id` and `settings` refuse --account and ignore \
-                  KONEDRIVE_ACCOUNT."
+                  a path (`sync hydrate`, `dehydrate`, `state`, `pin`, `unpin`, `free`, `open`) act on the \
+                  account whose folder holds the path; they, `account list`, `account add`, `account \
+                  rename`, `account remove`, `set-client-id`, `settings` and `sync anyway --all` refuse \
+                  --account and ignore KONEDRIVE_ACCOUNT."
 )]
 pub(crate) struct Cli {
     /// The account to act on: its id, its label or its email, as `account list` shows them
@@ -76,10 +77,11 @@ pub(crate) enum AccountCmd {
     /// List every account: id, label, email, sign-in state, mode, and folder with its state
     List,
     /// Add an account, signed out and with no folder yet, and print its id
-    ///
-    /// A label has 1 to 40 characters, no "/" and no "@", is not 12 hexadecimal digits (the
-    /// shape of an id), and is not another account's label, whatever the case. Then sign it
-    /// in: `konedrivectl --account <label> login`.
+    // The rule is the daemon's sentence, so the help says what the daemon takes.
+    #[command(long_about = format!(
+        "Add an account, signed out and with no folder yet, and print its id\n\n{LABEL_RULE}. Then sign it \
+         in: `konedrivectl --account <label> login`."
+    ))]
     Add {
         #[arg(allow_hyphen_values = true)]
         label: String,
