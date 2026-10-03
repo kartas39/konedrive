@@ -467,6 +467,43 @@ fn a_flush_examines_what_is_pending_at_once() {
     watcher.stop();
 }
 
+/// A sink that fails a number of batches, and examines what comes after.
+struct Failing(u32, mpsc::Sender<Batch>);
+
+impl Sink for Failing {
+    fn handle(&mut self, batch: &Batch) -> Handled {
+        if self.0 > 0 {
+            self.0 -= 1;
+            return Handled::Failed("the store is closed (this test's own failure)".into());
+        }
+        let _ = self.1.send(batch.clone());
+        Handled::Done { recheck: Batch::new() }
+    }
+}
+
+/// LO3: a batch that keeps failing is said in `LastError`, until one passes.
+#[test]
+fn a_batch_that_keeps_failing_is_said_until_one_passes() {
+    let fx = Fx::new();
+    let said: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+    let mut config = fx.config();
+    config.on_status = Some({
+        let said = Arc::clone(&said);
+        Arc::new(move |status: &WatchStatus| said.lock().unwrap().push(status.failing.clone()))
+    });
+    let (tx, rx) = mpsc::channel();
+    let watcher = Watcher::start(config, Box::new(Failing(FAILING_AFTER, tx))).unwrap();
+    // The bring-up's Full local scan fails three times, and passes at the fourth.
+    assert!(next(&rx).is_full());
+    assert!(watcher.flush(WAIT));
+    assert_eq!(watcher.status().failing, None);
+    let said: Vec<String> = said.lock().unwrap().iter().flatten().cloned().collect();
+    assert!(!said.is_empty() && said.iter().all(|why| why.contains("the store is closed")), "the failing batch was not said: {said:?}");
+    let failing = WatchStatus { failing: said.first().cloned(), ..WatchStatus::default() };
+    assert!(failing.note().is_some_and(|note| note.contains("could not be examined")), "{:?}", failing.note());
+    watcher.stop();
+}
+
 /// A sink that says it was handed a batch, and panics on it.
 struct Panicking(mpsc::Sender<()>);
 

@@ -235,6 +235,7 @@ application must never read zeros where real content should be.
 - [F212](F212.md) — Some failures of the tree store inside a reconcile still do not stop the folder
 - [F220](F220.md) — A OneDrive item dated before 1970 shows 1970-01-01 locally
 - [F221](F221.md) — One refresh at a time, and a cached token handed out beside it
+- [F210](F210.md) — An entry the examination cannot open, strip or read is passed over, and the user is not told which
 
 ---
 

@@ -29,8 +29,10 @@
 //! in a root that went away. The content check never fills a placeholder,
 //! reads only downloaded files (WR1), and probes for a writer with a read
 //! lease before trusting what it reads. A row the worker is running is never
-//! taken from under it: what changed since waits behind it. Everything found
-//! is applied to the store in one transaction.
+//! taken from under it: what changed since waits behind it. An entry that
+//! cannot be opened, stripped or read is passed over and examined again
+//! later; its trouble never fails the batch. Everything found is applied to
+//! the store in one transaction.
 
 mod classify;
 mod finish;
@@ -117,8 +119,9 @@ pub struct Examined {
     /// Entries whose konedrive attributes were taken off: copies, files from
     /// elsewhere, editors' backups.
     pub stripped: Vec<PathBuf>,
-    /// Places this daemon may not read (a directory set to `000`): not
-    /// examined, so nothing in them counts as missing.
+    /// Places this daemon may not read (a directory set to `000`), and
+    /// entries it could not open, strip or read (`Run::entry_io`): not
+    /// examined, so nothing in or at them counts as missing.
     pub unreadable: Vec<PathBuf>,
     /// The folder's filesystem had changed: its file handles were taken again
     /// (a Full scan), and nothing was decided by the old ones.

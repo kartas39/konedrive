@@ -28,7 +28,8 @@
 //! - **The examiner**: a second thread that hands what was handed over to a
 //!   [`Sink`] (the daemon's is [`ExamineSink`], the examination), merged,
 //!   feeds back what it asks to see again after [`RECHECK`], retries a batch
-//!   it could not take yet (no completed listing, an error), and runs a Full
+//!   it could not take yet (no completed listing, an error; one that keeps
+//!   failing is said in [`WatchStatus::failing`]), and runs a Full
 //!   local scan every [`DEGRADED_SCAN`] while part of the folder cannot be
 //!   watched (the mark budget, the group cap, a filesystem id with no group).
 //!   The reader walks the folder on the same beat then, so a directory made
@@ -76,6 +77,10 @@ pub const DEGRADED_SCAN: Duration = Duration::from_secs(600);
 /// offered again after this long; one it failed on, after this long doubled
 /// at each failure in a row, up to [`DEGRADED_SCAN`].
 pub const RETRY: Duration = Duration::from_secs(5);
+/// A batch that failed this many times in a row is said in `LastError`
+/// ([`WatchStatus::failing`]): one failure may be a busy store, three in a
+/// row (some 15 s) are something the user should know (provisional).
+pub const FAILING_AFTER: u32 = 3;
 /// A `MarkDir` the helper did not answer is asked again after this long.
 pub const MARK_RETRY: Duration = Duration::from_secs(60);
 
@@ -137,6 +142,9 @@ pub struct WatchStatus {
     pub degraded: Option<String>,
     /// The folder was moved or deleted; the watcher has stopped.
     pub root_gone: bool,
+    /// Why the examination keeps failing ([`FAILING_AFTER`] times in a row
+    /// by now): no local change is uploaded until one passes.
+    pub failing: Option<String>,
     pub overflows: u64,
     /// Batches handed to the examiner.
     pub handed_over: u64,
@@ -157,6 +165,9 @@ impl WatchStatus {
         let mut parts = Vec::new();
         if self.stopped {
             parts.push("local changes are no longer looked for: the watcher stopped (see the log)".to_owned());
+        }
+        if let Some(why) = &self.failing {
+            parts.push(format!("local changes are not uploaded for now: they could not be examined ({why}); trying again"));
         }
         if self.other_device > 0 {
             parts.push(format!(
@@ -618,7 +629,10 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
                 Handled::Done { recheck } => {
                     retry_at = None;
                     failures = 0;
-                    shared.update(|s| s.examined += 1);
+                    shared.update(|s| {
+                        s.examined += 1;
+                        s.failing = None;
+                    });
                     if !recheck.is_empty() {
                         rechecks.push((Instant::now() + timing.recheck, recheck));
                     }
@@ -634,6 +648,9 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
                     failures = failures.saturating_add(1);
                     let wait = timing.retry.saturating_mul(1 << failures.min(16).saturating_sub(1)).min(timing.degraded_scan);
                     tracing::warn!("local changes could not be examined: {why}; trying again in {} s", wait.as_secs());
+                    if failures >= FAILING_AFTER {
+                        shared.update(|s| s.failing = Some(why));
+                    }
                     pending.merge(batch);
                     retry_at = Some(Instant::now() + wait);
                     false

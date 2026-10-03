@@ -133,6 +133,29 @@ impl Run<'_, '_> {
         }
     }
 
+    /// The one policy for an entry that cannot be opened, stripped or read
+    /// (`LO3`): its trouble is its own, never the batch's. Gone since it was
+    /// listed, it is skipped. Anything else (not this daemon's to open or
+    /// change, a read error) passes it over: noted as unreadable, so that
+    /// nothing at its place counts as missing, and examined again after
+    /// [`RECHECK`](crate::local::RECHECK). `None` either way.
+    pub(super) fn entry_io<T>(&mut self, e: &Entry, tried: io::Result<T>) -> Option<T> {
+        match tried {
+            Ok(value) => Some(value),
+            Err(err) => {
+                if !gone(&err) {
+                    self.pass_over(e, &err);
+                }
+                None
+            }
+        }
+    }
+
+    pub(super) fn pass_over(&mut self, e: &Entry, why: &io::Error) {
+        self.mark_unreadable(&e.rel, why);
+        self.recheck(e);
+    }
+
     /// `name` in `dir`, or `None` when there is nothing there, or nothing
     /// this daemon may read (then noted as unreadable).
     pub(super) fn read_entry(&mut self, dir: &File, dir_rel: &Path, name: &OsStr) -> Result<Option<Entry>, ExamineError> {
