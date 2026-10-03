@@ -696,3 +696,87 @@ async fn a_retired_account_begins_no_sign_in() {
     f.svc.retire().await.unwrap();
     assert_eq!(f.svc.begin_sign_in().await, Err(AccountError::Failed("this account is being removed".into())));
 }
+
+/// A wallet whose `delete` waits, once it has said it was entered, until the test lets it go:
+/// a sign-out held inside the wallet, with the session locked.
+#[derive(Default)]
+struct HeldWallet {
+    inner: MemoryStore,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl SecretStore for HeldWallet {
+    async fn exists(&self) -> Result<bool, konedrived::account::secret::SecretError> {
+        self.inner.exists().await
+    }
+
+    async fn load(&self) -> Result<Option<String>, konedrived::account::secret::SecretError> {
+        self.inner.load().await
+    }
+
+    async fn store(&self, refresh_token: &str) -> Result<(), konedrived::account::secret::SecretError> {
+        self.inner.store(refresh_token).await
+    }
+
+    async fn delete(&self) -> Result<(), konedrived::account::secret::SecretError> {
+        self.entered.notify_one();
+        self.release.notified().await;
+        self.inner.delete().await
+    }
+}
+
+/// Finding AC1. `begin_sign_in` makes the account `signing-in` first, and only later, under
+/// the session lock, makes its attempt the session's (the generation, the cancel channel),
+/// without looking at the state again. What takes the session lock in between and puts the
+/// state back to `signed-out` — `cancel_sign_in`, or as here a `sign_out` — does not stop
+/// the attempt: the caller gets its URL, the account shows `signed-out`, and the browser's
+/// answer still signs it in.
+///
+/// The gap is forced with a sign-out, which holds the session lock across the wallet's
+/// delete: the sign-in started meanwhile waits for the lock with the state already set.
+/// A cancel in the same gap cannot be forced from a test (nothing in the gap waits unless the
+/// lock is taken); it takes the same path from there on.
+///
+/// Right is either answer that keeps the two together: the sign-in refused, or the account
+/// shown as `signing-in` for as long as its attempt can still sign it in.
+#[tokio::test]
+#[ignore = "shows AC1: a sign-in attempt runs on, and signs in, while the account shows signed-out"]
+async fn a_sign_in_that_answered_a_url_is_shown_as_signing_in() {
+    let server = MockServer::start().await;
+    mock_microsoft(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let wallet = Arc::new(HeldWallet::default());
+    let svc = AccountService::single(dir.path(), endpoints(&server), wallet.clone(), Duration::from_secs(10)).await.unwrap();
+    svc.set_client_id(CLIENT_ID).unwrap();
+
+    // A sign-out of the signed-out account, now inside the wallet with the session locked.
+    let signing_out = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        async move { svc.sign_out().await }
+    });
+    wallet.entered.notified().await;
+    // The sign-in: `signing-in` at once, then it waits for the session lock.
+    let beginning = tokio::spawn({
+        let svc = Arc::clone(&svc);
+        async move { svc.begin_sign_in().await }
+    });
+    wait_for(svc.state(), |s| s.state == SignInState::SigningIn).await;
+    wallet.release.notify_one();
+    signing_out.await.unwrap().unwrap();
+    // Refused is right too: then there is no attempt.
+    let Ok(url) = beginning.await.unwrap() else { return };
+
+    let shown = svc.state().get().state;
+    assert_eq!(simulate_browser(&url, "code=good-code").await.status(), 200);
+    let ended = wait_for(svc.state(), |s| s.state == SignInState::SignedIn).await;
+    assert_eq!(
+        shown,
+        SignInState::SigningIn,
+        "begin_sign_in answered a sign-in URL and the account showed {shown:?}; the browser's answer then \
+         made it {:?}, with the refresh token {:?} stored",
+        ended.state,
+        wallet.inner.current()
+    );
+}

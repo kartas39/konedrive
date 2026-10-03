@@ -294,3 +294,21 @@ async fn binary_an_io_failure_names_the_file_it_was_about() {
     assert!(told.contains(&format!("downloading {} failed", file.display())), "{told}");
     assert!(told.contains("Input/output error"), "the cause stays: {told}");
 }
+
+/// Found while checking finding CL2. The daemon answers `NoRoot` to `UploadQueue.Changes`,
+/// `Folder.Pause`, `Resume` and the like in two cases: no folder is registered at all, and
+/// the folder's sync has not opened its store yet. The CLI has one sentence for both, the
+/// second case's, so with no folder it says to try again in a moment — which never helps —
+/// where every other command says that no folder is registered and how to register one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "shows CL2: with no folder registered, `sync outbox` and `sync pause` say to try again in a moment"]
+async fn binary_an_outbox_command_with_no_folder_says_no_folder_is_registered() {
+    let f = harness().await;
+    let addr = f._bus.address();
+
+    for command in ["outbox", "pause"] {
+        let told = refused(addr, &["sync", command]);
+        assert!(told.contains("no sync folder is registered"), "sync {command}: {told}");
+        assert!(told.contains("konedrivectl sync register"), "sync {command}: {told}");
+    }
+}

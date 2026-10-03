@@ -274,3 +274,33 @@ async fn login_with_no_account_adds_personal() {
     assert!(err_text(&out).contains("cancelled"), "{}", err_text(&out));
     assert_eq!(manager.list().await.unwrap().len(), 1);
 }
+
+/// Finding CL5. The daemon takes a label with an "@" (`config::check_label`: an account is
+/// commonly named by its email), and the CLI still tells people it does not: in the help of
+/// `account add`, and in what it adds to every refused label, whatever it was refused for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "shows CL5: the help of `account add` and a refused label still say a label has no \"@\""]
+async fn what_the_cli_says_of_a_label_is_what_the_daemon_takes() {
+    let bus = TestBus::start();
+    let dir = tempfile::tempdir().unwrap();
+    let daemon = common::start_daemon(&bus, dir.path()).await;
+
+    // The rule itself: an email is a label.
+    let added = succeeded(&bus, &["account", "add", "ann@outlook.com"], &[]);
+    assert!(added.contains("Added the account ann@outlook.com"), "{added}");
+    assert_eq!(daemon.manager.accounts()[0].account.state().get().label, "ann@outlook.com");
+    assert!(succeeded(&bus, &["account", "rename", "ann@outlook.com", "a@b"], &[]).contains("to a@b"));
+
+    let mut wrong = Vec::new();
+    let help = succeeded(&bus, &["account", "add", "--help"], &[]);
+    if help.contains("no \"@\"") {
+        wrong.push(format!("`account add --help`: {help}"));
+    }
+    // Refused for its length, and told a rule about "@" on the way.
+    let (_, told) = failed(&bus, &["account", "add", &"x".repeat(41)], &[]);
+    assert!(told.contains("at most 40"), "{told}");
+    if told.contains("no \"@\"") {
+        wrong.push(format!("a label refused for its length: {told}"));
+    }
+    assert!(wrong.is_empty(), "the CLI says a label has no \"@\", and the daemon takes one:\n{}", wrong.join("\n"));
+}
