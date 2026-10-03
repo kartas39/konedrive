@@ -261,19 +261,7 @@ impl SyncService {
         if fresh && !root::drive_allows(path, self.account_drive()).await {
             return Err(SyncError::ForeignFolder);
         }
-        // A folder brought back shows what `config.toml` records, and is not brought up
-        // when that cannot be read: it is not taken for a local folder (`SY6`).
-        if let Some(why) = self.persisted_root().filter(|_| !fresh).and_then(|p| p.unread_source()) {
-            return Err(SyncError::Io(why));
-        }
-        let source = if fresh {
-            self.fresh_source(intercepted)
-        } else {
-            self.registration()
-                .map(|reg| reg.source)
-                .or_else(|| self.persisted_root().map(|p| p.source))
-                .unwrap_or(RootSource::Local)
-        };
+        let source = if fresh { self.fresh_source(intercepted) } else { self.source_brought_back()? };
         if fresh && source == RootSource::OneDrive {
             // A tree store left by a folder forgotten earlier describes
             // another folder.
@@ -336,6 +324,32 @@ impl SyncService {
                 }
                 Err(error)
             }
+        }
+    }
+
+    /// What a folder brought back shows (`SY6`). One that is up, or held with a
+    /// `source` that was read, keeps the one it has, whatever `config.toml` says by
+    /// now. Otherwise `config.toml` says, and a word that is neither `"onedrive"` nor
+    /// `"local"` refuses the bring-up: it is not taken for a local folder. A folder
+    /// held with a guess for such a word never comes up on the guess: the file is
+    /// read again, now, so that a word corrected meanwhile counts.
+    fn source_brought_back(&self) -> Result<RootSource, SyncError> {
+        let recorded = match self.registration() {
+            Some(reg) if !reg.source_guessed => return Ok(reg.source),
+            Some(reg) => Some(self.persisted_root_now().ok_or_else(|| {
+                SyncError::Io(format!(
+                    "config.toml cannot be read, or no longer records {}; forget the folder and add it again",
+                    reg.root.path.display()
+                ))
+            })?),
+            None => self.persisted_root(),
+        };
+        match recorded {
+            Some(persisted) => match persisted.unread_source() {
+                Some(why) => Err(SyncError::Io(why)),
+                None => Ok(persisted.source),
+            },
+            None => Ok(RootSource::Local),
         }
     }
 
@@ -457,6 +471,7 @@ impl SyncService {
             recovery_deferred,
             source,
             brought_up: true,
+            source_guessed: false,
             baloo_excluded,
             upgrade_when_helper,
             dev,
@@ -546,6 +561,7 @@ impl SyncService {
                     recovery_deferred: false,
                     source,
                     brought_up: false,
+                    source_guessed: false,
                     baloo_excluded: false,
                     upgrade_when_helper: false,
                     dev,
@@ -603,17 +619,13 @@ impl SyncService {
 
     pub(super) fn persisted_root(&self) -> Option<Persisted> {
         let persist = self.persist.as_ref()?;
-        let root = persist.store.account(&persist.account)?.root?;
-        let upgrade_when_helper = root.upgrades_when_helper();
-        Some(Persisted {
-            path: root.path,
-            root_id: root.id,
-            intercepted: root.intercepted,
-            // Unreadable: held for a Forget as a OneDrive folder, and never brought up.
-            source: RootSource::parse(&root.source).unwrap_or(RootSource::OneDrive),
-            source_as_written: RootSource::parse(&root.source).is_none().then_some(root.source),
-            baloo_excluded: root.baloo_excluded,
-            upgrade_when_helper,
-        })
+        Some(Persisted::read(persist.store.account(&persist.account)?.root?))
+    }
+
+    /// [`persisted_root`](Self::persisted_root) from `config.toml` as it is now, read
+    /// again: a hand edit made while the daemon runs counts.
+    fn persisted_root_now(&self) -> Option<Persisted> {
+        let persist = self.persist.as_ref()?;
+        Some(Persisted::read(persist.store.current()?.account(&persist.account)?.root.clone()?))
     }
 }

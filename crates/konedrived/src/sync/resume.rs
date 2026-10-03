@@ -271,6 +271,7 @@ impl SyncService {
                     recovery_deferred: false,
                     source: reg.source,
                     brought_up: false,
+                    source_guessed: false,
                     baloo_excluded: reg.baloo_excluded,
                     upgrade_when_helper: false,
                 });
@@ -336,6 +337,7 @@ impl SyncService {
             recovery_deferred: false,
             source: persisted.source,
             brought_up: false,
+            source_guessed: unread.is_some(),
             // Held, not yet brought up: a Forget with no link fails before it
             // reaches Baloo (`forget_locked`), and a bring-up asks `config.toml`
             // again (`commit`). What is left is a folder that stays held with

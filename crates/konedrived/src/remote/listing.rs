@@ -152,9 +152,12 @@ pub enum CycleError {
     Offline(String),
     #[error("the helper is not connected; the folder is brought up to date when it is back")]
     NoHelper,
-    /// A failure of the tree store, in its own words ("the tree store: …"), wherever
-    /// the cycle met it: [`From<TreeError>`](CycleError::from) and [`applying`] are the
-    /// two ways in, and both end here (quality finding `RE6`).
+    /// A failure of the tree store, in its own words ("the tree store: …"), that ends
+    /// the cycle: at a store call of the cycle's own ([`From<TreeError>`](CycleError::from))
+    /// or inside the materializer ([`applying`]); both are this, and stop the folder
+    /// (quality finding `RE6`). Not every store failure ends a cycle: those the leaving
+    /// walk and the read-write reconcile only log and pass over do not come here
+    /// (limitations log F212).
     #[error("{0}")]
     Store(String),
     #[error("the folder could not be brought up to date: {0}")]
@@ -391,8 +394,14 @@ impl Listing {
     /// part-way, leaves the next one a Full reconcile.
     pub async fn cycle(self: &Arc<Self>, cancel: &CancellationToken) -> Result<CycleReport, CycleError> {
         let result = self.take_turn(cancel).await;
+        let was_stopped = self.ctx.state.get().sync_trouble.is_some_and(|t| t.blocking);
         self.publish_outcome(&result);
         if result.is_ok() {
+            // The trouble that closed the write gate is gone only now, after the cycle's
+            // own word to the outbox (`Writes::cycled`): the worker is told again.
+            if let Some(writes) = self.ctx.writes.as_ref().filter(|_| was_stopped) {
+                (writes.reopened)();
+            }
             if let Some(kick) = &self.ctx.after_cycle {
                 kick.notify_one();
             }

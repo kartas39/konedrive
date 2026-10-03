@@ -385,8 +385,13 @@ struct Registration {
     /// the next link runs it again ([`SyncService::resume`]).
     recovery_deferred: bool,
     /// What it shows, decided when it was first registered and
-    /// kept with it for good.
+    /// kept with it for good — unless it is only a guess (`source_guessed`).
     source: RootSource,
+    /// `source` is the guess made for a folder held with a `source` that `config.toml`
+    /// does not say in either of its two words ([`Persisted::source_as_written`]): good
+    /// for a Forget, never for a bring-up, which reads `config.toml` again
+    /// ([`SyncService::source_brought_back`]). False for every folder that is up.
+    source_guessed: bool,
     /// Registered and recovered ([`SyncService::commit`]), so that a OneDrive
     /// folder's sync may run. False for a root only held until its helper is
     /// back ([`SyncService::hold`]), and for one kept after a registration
@@ -394,10 +399,11 @@ struct Registration {
     brought_up: bool,
     /// Whether *this daemon* excluded the root from Baloo, so
     /// [`unregister_root`](SyncService::unregister_root) knows whether to
-    /// take that exclusion back off. Always false outside
-    /// [`SyncService::commit`]: `hold` and `abandon`'s kept-registered branch
-    /// construct a `Registration` before `commit` has run, so nothing has
-    /// been added to Baloo yet either.
+    /// take that exclusion back off. Decided by [`SyncService::commit`] for a
+    /// folder that is up. Before that, [`SyncService::hold`] carries what
+    /// `config.toml` records, for the Forget of a folder that stays held; a
+    /// registration kept after it failed (`abandon`, a failed switch) says
+    /// false, since nothing was added to Baloo for it.
     baloo_excluded: bool,
     /// Registered without interception only because no helper was connected
     ///, so it switches to interception when one connects
@@ -447,6 +453,21 @@ impl Persisted {
             source,
             source_as_written: None,
             baloo_excluded,
+            upgrade_when_helper,
+        }
+    }
+
+    fn read(root: crate::config::RootConfig) -> Self {
+        let upgrade_when_helper = root.upgrades_when_helper();
+        let source = RootSource::parse(&root.source);
+        Self {
+            path: root.path,
+            root_id: root.id,
+            intercepted: root.intercepted,
+            // Unreadable: held for a Forget as a OneDrive folder, and never brought up.
+            source: source.unwrap_or(RootSource::OneDrive),
+            source_as_written: source.is_none().then_some(root.source),
+            baloo_excluded: root.baloo_excluded,
             upgrade_when_helper,
         }
     }

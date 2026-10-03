@@ -78,6 +78,7 @@ impl SyncService {
             recovery_deferred: false,
             source: persisted.source,
             brought_up: false,
+            source_guessed: persisted.source_as_written.is_some(),
             baloo_excluded: persisted.baloo_excluded,
             upgrade_when_helper: false,
         }))

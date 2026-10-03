@@ -476,11 +476,9 @@ async fn a_failed_switch_the_helper_may_still_hold_is_kept_intercepted_and_broug
     assert_eq!(service.root_state(), "ready", "{}", service.last_error());
 }
 
-/// SY6: `source` in `[accounts.root]` is `onedrive` or `local`. Another value — here the
-/// first with a capital, typed by hand — is not read as `local` with no word of it: the
-/// folder would come up `ready`, show `local`, and never be kept in step with OneDrive.
-#[tokio::test]
-async fn a_source_that_config_toml_misspells_is_not_taken_for_local_in_silence() {
+/// A daemon started with a helper and an intercepted folder whose `source` in
+/// `config.toml` is `word`; restored and resumed.
+async fn started_with_source(word: &str) -> (Arc<SyncService>, FakeHelper, PathBuf, Vec<tempfile::TempDir>) {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
     let config_dir = tempfile::tempdir().unwrap();
@@ -491,16 +489,24 @@ async fn a_source_that_config_toml_misspells_is_not_taken_for_local_in_silence()
     write_config(
         &config_file,
         &format!(
-            "path = \"{}\"\nid = \"{root_id}\"\nintercepted = true\nsource = \"OneDrive\"\nbaloo_excluded = false\n",
+            "path = \"{}\"\nid = \"{root_id}\"\nintercepted = true\nsource = \"{word}\"\nbaloo_excluded = false\n",
             resolved(root_dir.path())
         ),
     );
-
     let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
     let service = SyncService::new(Some(link), None, Some(persist(&config_file)));
     service.restore().await;
     service.resume().await;
+    (service, helper, config_file, vec![sockets, config_dir, root_dir])
+}
+
+/// SY6: `source` in `[accounts.root]` is `onedrive` or `local`. Another value — here the
+/// first with a capital, typed by hand — is not read as `local` with no word of it: the
+/// folder would come up `ready`, show `local`, and never be kept in step with OneDrive.
+#[tokio::test]
+async fn a_source_that_config_toml_misspells_is_not_taken_for_local_in_silence() {
+    let (service, helper, config_file, _dirs) = started_with_source("OneDrive").await;
 
     assert!(
         service.root_source() != "local" || !service.last_error().is_empty(),
@@ -508,12 +514,10 @@ async fn a_source_that_config_toml_misspells_is_not_taken_for_local_in_silence()
         service.root_source(),
         service.root_state()
     );
-    // Refused, and said: the folder is not brought up, and `config.toml` keeps the word
-    // as it was typed, for the user to correct.
+    // Refused, and said: the folder is not brought up.
     assert_eq!(service.root_state(), "error");
     assert!(service.last_error().contains("source = \"OneDrive\""), "{}", service.last_error());
     assert!(!helper.seen().contains(&Seen::RegisterRoot), "not brought up: {:?}", helper.seen());
-    assert!(std::fs::read_to_string(&config_file).unwrap().contains("source = \"OneDrive\""));
     // Its Forget still reaches the helper, which may hold the folder from an earlier session.
     service.unregister_root().await.unwrap();
     assert!(helper.seen().contains(&Seen::UnregisterRoot), "{:?}", helper.seen());
@@ -521,10 +525,57 @@ async fn a_source_that_config_toml_misspells_is_not_taken_for_local_in_silence()
     assert!(Config::load(&config_file).unwrap().sync_root.is_empty());
 }
 
+/// SY6: the folder held for a misspelt word is held with a guess (a OneDrive folder, for
+/// its Forget). The guess never brings it up: once the word is corrected — to `local`, which
+/// the guess is not — the next bring-up reads `config.toml` again and takes what it says.
+#[tokio::test]
+async fn a_word_corrected_while_the_folder_is_held_wins_over_the_guess() {
+    let (service, helper, config_file, _dirs) = started_with_source("Local").await;
+    assert_eq!(service.root_state(), "error");
+    assert_eq!(service.root_source(), "onedrive", "the guess a Forget goes by");
+    // Still misspelt at the next connect: refused again.
+    service.resume().await;
+    assert!(service.last_error().contains("source = \"Local\""), "{}", service.last_error());
+    assert!(!helper.seen().contains(&Seen::RegisterRoot), "{:?}", helper.seen());
+
+    let text = std::fs::read_to_string(&config_file).unwrap();
+    std::fs::write(&config_file, text.replace("source = \"Local\"", "source = \"local\"")).unwrap();
+    service.resume().await;
+
+    assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+    assert_eq!(service.root_source(), "local");
+    assert!(helper.seen().contains(&Seen::RegisterRoot), "{:?}", helper.seen());
+    assert!(std::fs::read_to_string(&config_file).unwrap().contains("source = \"local\""), "the correction stays");
+}
+
+/// SY6: a folder that is up keeps the source it came up with. A word misspelt in
+/// `config.toml` while the daemon runs does not keep it from being registered again with a
+/// helper that came back.
+#[tokio::test]
+async fn a_word_misspelt_while_the_folder_is_up_does_not_keep_it_from_the_helper() {
+    let (service, helper, config_file, _dirs) = started_with_source("local").await;
+    assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+    let text = std::fs::read_to_string(&config_file).unwrap();
+    std::fs::write(&config_file, text.replace("source = \"local\"", "source = \"Local\"")).unwrap();
+    // Any write of `config.toml` reads the file again: the daemon has the misspelt word now.
+    let store = &service.persist.as_ref().unwrap().store;
+    store.update(|_| Ok::<(), crate::config::ConfigError>(())).unwrap();
+    assert!(service.persisted_root().unwrap().source_as_written.is_some());
+    helper.forget();
+
+    service.resume().await;
+
+    assert!(helper.seen().contains(&Seen::RegisterRoot), "{:?}", helper.seen());
+    assert_eq!((service.root_state().as_str(), service.root_source().as_str()), ("ready", "local"), "{}", service.last_error());
+}
+
 /// SY6, for a folder recorded without interception: it is not brought up as a local
-/// folder either, `LastError` says why, and `config.toml` is left as it was typed.
+/// folder either, and `LastError` says why. A record put back after a registration that
+/// failed (`abandon`) is put back as it was typed, never as the guess.
 #[tokio::test]
 async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
+    let sockets = tempfile::tempdir().unwrap();
+    let socket_path = sockets.path().join("helper.sock");
     let config_dir = tempfile::tempdir().unwrap();
     let config_file = config_dir.path().join("config.toml");
     let root_dir = tempfile::tempdir().unwrap();
@@ -543,7 +594,17 @@ async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
     assert_eq!(service.root_state(), "error");
     assert!(service.last_error().contains("source = \"one-drive\""), "{}", service.last_error());
     assert!(service.root().is_none(), "not brought up");
-    assert!(std::fs::read_to_string(&config_file).unwrap().contains("source = \"one-drive\""));
-    // F211: there is nothing to forget; the word is corrected by hand.
+    // F211: there is nothing to forget.
     assert!(matches!(service.unregister_root().await, Err(SyncError::NoRoot)));
+
+    // A new registration is taken, and replaces the record; this one fails at the helper,
+    // which lets go, and the record is put back.
+    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    helper.refuse(Seen::RegisterRoot, libc::EIO);
+    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+    service.set_link(Some(link));
+    service.register_root(root_dir.path()).await.unwrap_err();
+    assert!(helper.seen().contains(&Seen::UnregisterRoot), "{:?}", helper.seen());
+    let text = std::fs::read_to_string(&config_file).unwrap();
+    assert!(text.contains("source = \"one-drive\"") && text.contains("intercepted = false"), "{text}");
 }
