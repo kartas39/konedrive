@@ -85,6 +85,12 @@ impl Poller {
         }
     }
 
+    /// Tests only: the listing whose cycles this poller runs.
+    #[cfg(test)]
+    pub(crate) fn listing(&self) -> &Listing {
+        &self.listing
+    }
+
     /// Whether the notification socket is up, as the poller reads it.
     pub fn live_up(&self) -> Arc<watch::Sender<bool>> {
         Arc::clone(&self.up)

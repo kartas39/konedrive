@@ -250,6 +250,9 @@ pub struct Listing {
     /// started at; items the outbox committed after it are looked at again
     /// by the next cycle.
     revisit_from: std::sync::atomic::AtomicI64,
+    /// Tests only: a read-write cycle is queued for the tree lock (`rw`'s `waits_for_tree`).
+    #[cfg(test)]
+    waits_for_tree: AtomicBool,
 }
 
 /// Runs its closure when dropped, unless disarmed first.
@@ -384,6 +387,8 @@ impl Listing {
             queued_replacements: std::sync::Mutex::new((VecDeque::new(), 0)),
             cancel_replacements: CancellationToken::new(),
             revisit_from: std::sync::atomic::AtomicI64::new(0),
+            #[cfg(test)]
+            waits_for_tree: AtomicBool::new(false),
         })
     }
 
