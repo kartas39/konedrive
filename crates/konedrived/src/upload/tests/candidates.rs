@@ -115,8 +115,48 @@ fn a_bad_upload_whose_delete_fails_twice_is_still_deleted_before_the_file_goes_a
     assert_committed(&w, "a.txt", "a.txt");
 }
 
+/// UP2. The bad item is deleted only as the upload left it: the tag its
+/// answer gave is the delete's guard. Edited in OneDrive since (another
+/// device, the web), it is someone's now: left there and forgotten, and the
+/// file goes up beside it as it does beside any other holder of its name.
+#[test]
+fn a_bad_upload_changed_in_onedrive_since_is_left_there() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"what the user wrote");
+    w.examine(&[("", "a.txt")]);
+    let bad = serde_json::json!({
+        "id": "BAD",
+        "name": "a.txt",
+        "eTag": "e-BAD",
+        "cTag": "c-BAD",
+        "size": 5,
+        "parentReference": { "id": "R", "driveId": "D" },
+        "file": { "hashes": { "quickXorHash": qx(b"other") } },
+    });
+    w.cloud(|c| {
+        c.script("PUT", "upload/", ResponseTemplate::new(201).set_body_json(bad), 1);
+        c.script("DELETE", "items/BAD", ResponseTemplate::new(502), 1);
+    });
+    let engine = w.h.engine();
+    w.h.drain(&engine);
+    w.cloud(|c| {
+        c.expire_sessions();
+        c.add_file("BAD", "R", "a.txt", b"other");
+        c.edit("BAD", b"edited elsewhere");
+    });
+    assert_eq!(bad_item_of(&w, "a.txt").as_deref(), Some("BAD"));
+
+    w.h.block_on(engine.retry_now()).unwrap();
+    w.h.drain(&engine);
+    assert_eq!(w.cloud(|c| c.count("DELETE", "items/BAD")), 2, "asked once more, with the upload's tag");
+    assert_eq!(w.cloud(|c| c.item("BAD").map(|i| i.content.clone())), Some(b"edited elsewhere".to_vec()), "what was edited elsewhere stays");
+    assert_eq!(w.cloud(|c| c.at("a.txt").map(|i| i.id.clone())).as_deref(), Some("BAD"));
+    assert!(w.rows().iter().all(|r| bad_item_of(&w, &r.rel.display().to_string()).is_none()), "forgotten: {:?}", w.summary());
+    assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::CONFLICT).count(), 1, "the file goes up as a copy beside it: {:?}", w.summary());
+}
+
 /// The item a row's bad upload left in OneDrive, as the store remembers it.
 fn bad_item_of(w: &World, rel: &str) -> Option<String> {
     let seq = w.rows().into_iter().find(|r| r.rel == Path::new(rel))?.seq;
-    konedrive_tree::off_runtime(|| w.store.call_blocking(move |s| s.outbox_bad_item(seq))).unwrap()
+    konedrive_tree::off_runtime(|| w.store.call_blocking(move |s| s.outbox_bad_item(seq))).unwrap().map(|(id, _)| id)
 }

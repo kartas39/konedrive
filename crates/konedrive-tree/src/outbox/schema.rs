@@ -86,11 +86,14 @@ pub(super) const FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NUL
 /// sends, and of what is never uploaded, as the examination saw it — so
 /// that counts and sums never read the disk (issue #38); and the item a new
 /// file's upload left in OneDrive with other content ([`TreeStore::outbox_bad_item`]).
-const ADDED: [(&str, &str, &str); 3] = [("outbox", "size", "INTEGER"), ("local_skipped", "size", "INTEGER"), ("outbox", "bad_item", "TEXT")];
+const ADDED: [(&str, &str, &str); 4] =
+    [("outbox", "size", "INTEGER"), ("local_skipped", "size", "INTEGER"), ("outbox", "bad_item", "TEXT"), ("outbox", "bad_item_tag", "TEXT")];
 
 /// A row an earlier version wrote while a bad item waited to be deleted kept
 /// its id in the reason, `hash-mismatch:<item id>`: the id moves to its own
-/// column, and the reason is the plain key.
+/// column, and the reason is the plain key. Such a row has no tag
+/// (`bad_item_tag`): the worker leaves its item where it is. A row that
+/// already has a bad item is not touched (limitations log F200).
 const BAD_ITEM_FROM_REASON: &str = "
     UPDATE outbox SET bad_item = substr(reason, 15), reason = 'hash-mismatch'
      WHERE reason LIKE 'hash-mismatch:_%' AND bad_item IS NULL;";

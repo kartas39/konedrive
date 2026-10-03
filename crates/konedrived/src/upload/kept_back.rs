@@ -83,7 +83,7 @@ fn known_group(key: &str) -> Option<Group> {
         "symlink" | "fifo" | "socket" | "device" | OTHER_DEVICE | "reserved-name" | "hard-link" | "ignored" => Group::Never,
         OPEN_FOR_WRITING | LOCKED | NOT_FOUND | NOT_LOCAL | CHANGED | PARENT | HASH | MOVE_OUT | NO_HELPER | UNREACHABLE
         | BACK_INSIDE | PLACE_UNKNOWN | DOWNLOAD | GONE_ONCE | STALE_HANDLE | GONE_UNPROVED | NO_LEASE | NETWORK | LOCAL_IO | STORE
-        | FAILED | PAUSED | SESSION_OPEN | NAME_HELD | CHANGED_AGAIN | CHANGING_AGAIN | SESSION_ENDED | NOT_ALLOWED => Group::Waiting,
+        | FAILED | NOT_OPENED | PAUSED | SESSION_OPEN | NAME_HELD | CHANGED_AGAIN | CHANGING_AGAIN | SESSION_ENDED | NOT_ALLOWED => Group::Waiting,
         _ => return None,
     })
 }

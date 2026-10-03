@@ -127,6 +127,10 @@ pub mod reason {
     /// Where a moved-out object is cannot be proved (its path does not open
     /// on it again): nothing is taken off or deleted until it can.
     pub const PLACE_UNKNOWN: &str = "moved-out-place-unknown";
+    /// A moved-out placeholder cannot be opened for writing to download it
+    /// (leased, or not writable by its owner): `moved-out-not-opened: <the
+    /// error>`. Its item stays in OneDrive; in backoff.
+    pub const NOT_OPENED: &str = "moved-out-not-opened";
     /// A moved-out placeholder's download failed: its item stays in OneDrive.
     pub const DOWNLOAD: &str = "download-failed";
     /// `ESTALE` once for a moved-out object: asked again before it is

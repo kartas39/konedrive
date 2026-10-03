@@ -53,6 +53,7 @@ fn waiting_for_space_is_one_line_and_too_big_says_what_it_needs() {
 fn the_reasons_the_worker_writes_have_sentences() {
     let keys = [
         "paused",
+        "moved-out-not-opened",
         "upload-session-open",
         "name-held-by-an-upload",
         "changed in OneDrive again and again",

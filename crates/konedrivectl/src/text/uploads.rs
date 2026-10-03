@@ -57,6 +57,7 @@ pub fn upload_reason_text(reason: &str) -> String {
         "index-error" => "konedrive's local index failed: tried again later".to_owned(),
         "upload-error" => "the upload failed: tried again later".to_owned(),
         "refused" => "refused by OneDrive".to_owned(),
+        "moved-out-not-opened" => "moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later".to_owned(),
         "paused" => "paused with the account: it goes on when the pause ends".to_owned(),
         "upload-session-open" => "its name in OneDrive is held by an upload of this folder that has not ended: tried again later".to_owned(),
         "name-held-by-an-upload" => "its name in OneDrive is held by an unfinished upload (another device, or one abandoned): tried again later".to_owned(),
@@ -81,7 +82,7 @@ pub fn upload_reason_text(reason: &str) -> String {
 }
 
 /// The keys that come with a detail behind them, `<key>: <detail>`, beside `refused`.
-const DETAILED: [&str; 2] = ["not allowed now", "state-unreadable"];
+const DETAILED: [&str; 3] = ["not allowed now", "state-unreadable", "moved-out-not-opened"];
 
 /// `too-big:<needs>:<free>`: a file too big for the space left in OneDrive.
 fn too_big(reason: &str) -> Option<(u64, u64)> {

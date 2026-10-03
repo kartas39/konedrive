@@ -253,7 +253,7 @@ impl Engine {
         let writable = match reopened {
             Ok(writable) => writable,
             // Leased (`EAGAIN`, F91), or not writable by its owner: tried again later.
-            Err(Fail::Io(err)) => return Ok(Local::No(Outcome::backoff(format!("{}: {err}", reason::NOT_LOCAL)))),
+            Err(Fail::Io(err)) => return Ok(Local::No(Outcome::backoff(format!("{}: {err}", reason::NOT_OPENED)))),
             Err(other) => return Err(other),
         };
         match mo.filler.fill(writable, shown, clearance.as_ref()).await {

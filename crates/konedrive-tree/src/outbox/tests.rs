@@ -316,17 +316,17 @@ fn a_rows_bad_item_survives_a_settle_and_a_merge() {
     let d = detect(OutboxKind::Create, None, Some(inode(1)), "a.txt", Some("R"));
     let Recorded::Inserted(seq) = s.outbox_record(&d).unwrap() else { panic!() };
     assert_eq!(s.outbox_bad_item(seq).unwrap(), None);
-    s.outbox_set_bad_item(seq, Some("BAD")).unwrap();
+    s.outbox_set_bad_item(seq, Some(("BAD", Some("e-BAD")))).unwrap();
     s.outbox_set_state(seq, OutboxState::Retry, Some("network"), Some(5)).unwrap();
     assert_eq!(s.outbox_record(&Detection { rel: "b.txt".into(), target_name: Some("b.txt".into()), state: OutboxState::Waiting, ..d.clone() }).unwrap(), Recorded::Merged(seq));
     s.outbox_amend(seq, |row| row.snapshot = Some("1 2".into())).unwrap();
-    assert_eq!(s.outbox_bad_item(seq).unwrap().as_deref(), Some("BAD"));
+    assert_eq!(s.outbox_bad_item(seq).unwrap(), Some(("BAD".to_owned(), Some("e-BAD".to_owned()))));
     s.outbox_set_bad_item(seq, None).unwrap();
     assert_eq!(s.outbox_bad_item(seq).unwrap(), None);
 
     s.conn.execute("UPDATE outbox SET reason = 'hash-mismatch:OLD!1' WHERE seq = ?1", [seq]).unwrap();
     upgrade(&s.conn).unwrap();
-    assert_eq!(s.outbox_bad_item(seq).unwrap().as_deref(), Some("OLD!1"));
+    assert_eq!(s.outbox_bad_item(seq).unwrap(), Some(("OLD!1".to_owned(), None)), "an older row has no tag");
     assert_eq!(s.outbox_row(seq).unwrap().unwrap().reason.as_deref(), Some("hash-mismatch"));
     assert_eq!(s.outbox_bad_item(seq + 1).unwrap(), None, "no such row");
 }

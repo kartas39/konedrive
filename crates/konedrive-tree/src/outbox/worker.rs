@@ -109,19 +109,26 @@ impl TreeStore {
     }
 
     /// The item a new file's upload left in OneDrive with other content
-    /// than was sent, still to be deleted before the file goes again. Kept
-    /// in a column of its own, which no change of the row's state or reason
-    /// and no merge of an examination writes: it goes only with
-    /// [`outbox_set_bad_item`](Self::outbox_set_bad_item), or with the row.
-    pub fn outbox_bad_item(&self, seq: i64) -> Result<Option<String>, TreeError> {
-        let bad: Option<Option<String>> = self.conn.query_row("SELECT bad_item FROM outbox WHERE seq = ?1", [seq], |r| r.get(0)).optional()?;
-        Ok(bad.flatten())
+    /// than was sent, still to be deleted before the file goes again: its
+    /// id, and the tag (eTag, or cTag) the upload's answer gave for it — the
+    /// guard of that delete, so that an item changed in OneDrive since is
+    /// never deleted. No tag for a row an older version wrote, or when the
+    /// answer carried none. Kept in columns of their own, which no change
+    /// of the row's state or reason and no merge of an examination writes:
+    /// they go only with [`outbox_set_bad_item`](Self::outbox_set_bad_item),
+    /// or with the row.
+    pub fn outbox_bad_item(&self, seq: i64) -> Result<Option<(String, Option<String>)>, TreeError> {
+        let bad: Option<(Option<String>, Option<String>)> =
+            self.conn.query_row("SELECT bad_item, bad_item_tag FROM outbox WHERE seq = ?1", [seq], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+        Ok(bad.and_then(|(id, tag)| Some((id?, tag))))
     }
 
-    /// Remembers the bad item of row `seq`, or forgets it (`None`): deleted,
-    /// found gone, or adopted.
-    pub fn outbox_set_bad_item(&self, seq: i64, item_id: Option<&str>) -> Result<(), TreeError> {
-        self.conn.execute("UPDATE outbox SET bad_item = ?2 WHERE seq = ?1", params![seq, item_id])?;
+    /// Remembers the bad item of row `seq` (its id, and its tag) or forgets
+    /// it (`None`): deleted, found gone, changed in OneDrive since, or
+    /// adopted.
+    pub fn outbox_set_bad_item(&self, seq: i64, item: Option<(&str, Option<&str>)>) -> Result<(), TreeError> {
+        let (id, tag) = (item.map(|(id, _)| id), item.and_then(|(_, tag)| tag));
+        self.conn.execute("UPDATE outbox SET bad_item = ?2, bad_item_tag = ?3 WHERE seq = ?1", params![seq, id, tag])?;
         Ok(())
     }
 

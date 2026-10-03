@@ -80,6 +80,12 @@ QString uploadReasonText(const QString &reason)
     if (reason == QLatin1String("refused")) {
         return i18n("Refused by OneDrive.");
     }
+    if (reason == QLatin1String("moved-out-not-opened")) {
+        return i18n("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later.");
+    }
+    if (reason.startsWith(QLatin1String("moved-out-not-opened: "))) {
+        return i18n("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later (%1).", reason.mid(22));
+    }
     if (reason == QLatin1String("paused")) {
         return i18n("Paused with the account: it goes on when the pause ends.");
     }

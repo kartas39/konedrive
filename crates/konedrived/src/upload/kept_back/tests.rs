@@ -134,7 +134,7 @@ fn every_reason_the_worker_writes_is_in_the_table() {
         // A key with the error behind it (`move_out.rs`).
         format!("{}: errno 5", reason::DOWNLOAD),
         format!("{}: errno 5", reason::UNREACHABLE),
-        format!("{}: Resource temporarily unavailable", reason::NOT_LOCAL),
+        format!("{}: Resource temporarily unavailable", reason::NOT_OPENED),
         format!("{}: Function not implemented", reason::NO_LEASE),
     ];
     let unknown: Vec<&str> = written.iter().map(String::as_str).filter(|why| known_group(reason_key(why)).is_none()).collect();
