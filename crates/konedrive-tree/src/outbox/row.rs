@@ -105,6 +105,38 @@ pub struct Base {
     pub name: Option<String>,
 }
 
+/// The item a new file's upload left in OneDrive with other content than
+/// was sent, as the upload's answer gave it: what says later whether the
+/// item is still that upload, or was changed by someone since.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BadItem {
+    pub id: String,
+    /// The answer's cTag: the item is still the bad upload while its
+    /// content tag is this one, whatever became of its eTag.
+    pub ctag: Option<String>,
+    /// The answer's eTag, kept only when it carried no cTag.
+    pub etag: Option<String>,
+}
+
+impl BadItem {
+    /// What the upload's answer says of the item: its cTag, or its eTag
+    /// when it has no cTag.
+    pub fn answered(id: &str, ctag: Option<&str>, etag: Option<&str>) -> Self {
+        Self { id: id.to_owned(), ctag: ctag.map(str::to_owned), etag: if ctag.is_some() { None } else { etag.map(str::to_owned) } }
+    }
+
+    /// Whether an item with these tags now is still the bad upload. With no
+    /// tag remembered (a row an older version wrote, an answer that carried
+    /// none) nothing says it is not.
+    pub fn still(&self, ctag: Option<&str>, etag: Option<&str>) -> bool {
+        match (&self.ctag, &self.etag) {
+            (Some(kept), _) => ctag == Some(kept.as_str()),
+            (None, Some(kept)) => etag == Some(kept.as_str()),
+            (None, None) => true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboxRow {
     pub seq: i64,

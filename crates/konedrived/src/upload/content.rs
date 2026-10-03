@@ -29,7 +29,7 @@ use crate::folder::disk::Disk;
 use crate::local::examine::OPEN_FOR_WRITING;
 use crate::local::{names, QUIET, RECHECK};
 use crate::folder::locks::InodeKey;
-use konedrive_tree::outbox::{Base, OutboxKind, OutboxRow};
+use konedrive_tree::outbox::{BadItem, Base, OutboxKind, OutboxRow};
 use konedrive_tree::Table;
 
 /// How far OneDrive's clock may be behind this machine's when a placeholder's
@@ -199,18 +199,24 @@ struct Job<'a> {
 
 impl Job<'_> {
     /// A new file's upload that OneDrive holds with other content (the bad
-    /// item, remembered beside the row with the tag the upload's answer
-    /// gave: [`Job::finish`]): that item goes before the file is sent again
-    /// — or, holding this content after all, is this file's.
+    /// item, remembered beside the row with the content tag the upload's
+    /// answer gave: [`Job::finish`]): that item goes before the file is sent
+    /// again — or, holding this content after all, is this file's.
     ///
-    /// - It is deleted only with the remembered tag as the guard. A `412`
-    ///   means it was changed in OneDrive since (edited, renamed, moved, by
-    ///   another device or on the web): someone's now, not this row's. It is
-    ///   left where it is and forgotten, and the name's holder is decided as
-    ///   any other's, by the `409` the create then gets ([`taken`]).
+    /// - The item is read again. It is still the bad upload while its cTag
+    ///   is the one remembered — the eTag moves by itself in OneDrive, with
+    ///   no change of content, and says nothing here (when the answer had no
+    ///   cTag, its eTag is what is compared). Then it is deleted, with the
+    ///   eTag just read as the guard, which covers the time between the read
+    ///   and the delete.
+    /// - Another cTag, or a `412` on that delete, means someone changed it
+    ///   in OneDrive since (another device, the web): theirs now, not this
+    ///   row's. It is left where it is and forgotten, and the name's holder
+    ///   is decided as any other's, by the `409` the create then gets
+    ///   ([`taken`]).
     /// - With no tag remembered (a row an older version wrote, an answer
-    ///   that carried none) nothing can tell whether it changed: left and
-    ///   forgotten as well.
+    ///   that carried none) it is deleted as that version deleted it: with
+    ///   the tag just read, whatever happened to it meanwhile (F200).
     /// - It is adopted only while nothing here knows it (no outbox row of
     ///   the item, no local object: the test of [`taken`]): one the delta
     ///   feed listed and a cycle placed here is that local file's.
@@ -225,34 +231,31 @@ impl Job<'_> {
     /// `move`, which never has one.
     async fn clear_bad_item(&self) -> Result<Option<Outcome>, Fail> {
         let seq = self.row.seq;
-        let Some((bad, tag)) = self.e.store().call(move |s| s.outbox_bad_item(seq)).await? else { return Ok(None) };
-        let item = match self.e.cfg.drive.item(&bad).await {
+        let Some(bad) = self.e.store().call(move |s| s.outbox_bad_item(seq)).await? else { return Ok(None) };
+        let item = match self.e.cfg.drive.item(&bad.id).await {
             Ok(item) => item,
             Err(DriveError::NotFound) => return self.forget_bad_item().await.map(|()| None),
             Err(err) => return Err(err.into()),
         };
         if item.quick_xor_hash() == Some(self.hash(None).await?.as_str()) {
-            let id = bad.clone();
+            let id = bad.id.clone();
             let known_here = self.e.store().call(move |s| Ok(!s.outbox_for_item(&id)?.is_empty() || s.local_handle(&id)?.is_some())).await?;
             if !known_here {
                 return self.commit(item).await.map(Some);
             }
         }
-        let Some(tag) = tag else {
-            tracing::warn!(
-                "what OneDrive holds for {} with other content is left there: nothing recorded says whether it was changed since",
-                self.found.rel.display()
-            );
+        let left = || tracing::info!("what OneDrive holds for {} with other content was changed there since: it is left", self.found.rel.display());
+        if !bad.still(item.c_tag.as_deref(), item.e_tag.as_deref()) {
+            left();
             return self.forget_bad_item().await.map(|()| None);
-        };
-        match self.e.cfg.drive.delete_item(&bad, &tag).await {
-            Ok(()) | Err(WriteError::NotFound) => self.forget_bad_item().await.map(|()| None),
-            Err(WriteError::Changed) => {
-                tracing::info!("what OneDrive holds for {} with other content was changed there since: it is left", self.found.rel.display());
-                self.forget_bad_item().await.map(|()| None)
-            }
-            Err(err) => Err(err.into()),
         }
+        let guard = item.e_tag.clone().or(item.c_tag.clone()).unwrap_or_default();
+        match self.e.cfg.drive.delete_item(&bad.id, &guard).await {
+            Ok(()) | Err(WriteError::NotFound) => {}
+            Err(WriteError::Changed) => left(),
+            Err(err) => return Err(err.into()),
+        }
+        self.forget_bad_item().await.map(|()| None)
     }
 
     /// The row's bad item is gone from OneDrive, or is not this row's any
@@ -887,17 +890,20 @@ impl Job<'_> {
         }
         tracing::warn!("OneDrive holds other content than was sent for {}: it goes again", self.found.rel.display());
         if self.row.kind == OutboxKind::Create {
-            // Remembered beside the row, with the tag this answer gave,
-            // before its delete is asked for: the next run deletes it first
-            // whatever happens to this delete, and to the row meanwhile
-            // (`clear_bad_item`). The delete is asked even when the store
-            // fails: what cannot be remembered must not stay there.
-            let tag = item.e_tag.clone().or(item.c_tag.clone());
-            let (seq, id, kept) = (self.row.seq, item.id.clone(), tag.clone());
-            let remembered = self.e.store().call(move |s| s.outbox_set_bad_item(seq, Some((&id, kept.as_deref())))).await;
+            // Remembered beside the row, with the content tag this answer
+            // gave, before its delete is asked for: the next run deletes it
+            // first whatever happens to this delete, and to the row
+            // meanwhile (`clear_bad_item`). The delete is asked even when
+            // the store fails: what cannot be remembered must not stay there.
+            let bad = BadItem::answered(&item.id, item.c_tag.as_deref(), item.e_tag.as_deref());
+            let seq = self.row.seq;
+            let remembered = self.e.store().call(move |s| s.outbox_set_bad_item(seq, Some(&bad))).await;
             if let Err(err) = &remembered {
                 tracing::warn!("what OneDrive holds for {} with other content could not be recorded ({err})", self.found.rel.display());
             }
+            // The answer's own tag: nothing came between. Neither tag in the
+            // answer: an empty guard, and what OneDrive makes of it (F200).
+            let tag = item.e_tag.clone().or(item.c_tag.clone());
             match self.e.cfg.drive.delete_item(&item.id, tag.as_deref().unwrap_or_default()).await {
                 Ok(()) | Err(WriteError::NotFound) => {
                     if remembered.is_ok() {
