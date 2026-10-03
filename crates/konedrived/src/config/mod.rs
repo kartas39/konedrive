@@ -338,7 +338,8 @@ pub struct RootConfig {
     #[serde(default = "yes")]
     pub intercepted: bool,
     /// `"onedrive"` (listed from the account's drive) or `"local"` (filled with
-    /// `PopulateFromDirectory`). A missing key reads as `"local"`.
+    /// `PopulateFromDirectory`). A missing key reads as `"local"`; any other value is kept
+    /// as it is, and the folder is not brought up (`SyncService`, limitations log F211).
     #[serde(default = "local_source")]
     pub source: String,
     /// Whether this daemon excluded the folder from Baloo, so a Forget takes off only an

@@ -475,3 +475,75 @@ async fn a_failed_switch_the_helper_may_still_hold_is_kept_intercepted_and_broug
     service.resume().await;
     assert_eq!(service.root_state(), "ready", "{}", service.last_error());
 }
+
+/// SY6: `source` in `[accounts.root]` is `onedrive` or `local`. Another value — here the
+/// first with a capital, typed by hand — is not read as `local` with no word of it: the
+/// folder would come up `ready`, show `local`, and never be kept in step with OneDrive.
+#[tokio::test]
+async fn a_source_that_config_toml_misspells_is_not_taken_for_local_in_silence() {
+    let sockets = tempfile::tempdir().unwrap();
+    let socket_path = sockets.path().join("helper.sock");
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_file = config_dir.path().join("config.toml");
+    let root_dir = tempfile::tempdir().unwrap();
+    let root_id = "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d";
+    xattr::set(root_dir.path(), "user.konedrive.root", root_id.as_bytes()).unwrap();
+    write_config(
+        &config_file,
+        &format!(
+            "path = \"{}\"\nid = \"{root_id}\"\nintercepted = true\nsource = \"OneDrive\"\nbaloo_excluded = false\n",
+            resolved(root_dir.path())
+        ),
+    );
+
+    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
+    let service = SyncService::new(Some(link), None, Some(persist(&config_file)));
+    service.restore().await;
+    service.resume().await;
+
+    assert!(
+        service.root_source() != "local" || !service.last_error().is_empty(),
+        "source = \"OneDrive\" came up as a {} folder, {}, with nothing in LastError",
+        service.root_source(),
+        service.root_state()
+    );
+    // Refused, and said: the folder is not brought up, and `config.toml` keeps the word
+    // as it was typed, for the user to correct.
+    assert_eq!(service.root_state(), "error");
+    assert!(service.last_error().contains("source = \"OneDrive\""), "{}", service.last_error());
+    assert!(!helper.seen().contains(&Seen::RegisterRoot), "not brought up: {:?}", helper.seen());
+    assert!(std::fs::read_to_string(&config_file).unwrap().contains("source = \"OneDrive\""));
+    // Its Forget still reaches the helper, which may hold the folder from an earlier session.
+    service.unregister_root().await.unwrap();
+    assert!(helper.seen().contains(&Seen::UnregisterRoot), "{:?}", helper.seen());
+    assert_eq!(service.root_state(), "none");
+    assert!(Config::load(&config_file).unwrap().sync_root.is_empty());
+}
+
+/// SY6, for a folder recorded without interception: it is not brought up as a local
+/// folder either, `LastError` says why, and `config.toml` is left as it was typed.
+#[tokio::test]
+async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_file = config_dir.path().join("config.toml");
+    let root_dir = tempfile::tempdir().unwrap();
+    let root_id = "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d";
+    xattr::set(root_dir.path(), "user.konedrive.root", root_id.as_bytes()).unwrap();
+    let recorded = format!(
+        "path = \"{}\"\nid = \"{root_id}\"\nintercepted = false\nsource = \"one-drive\"\nbaloo_excluded = false\n",
+        resolved(root_dir.path())
+    );
+    write_config(&config_file, &recorded);
+
+    let service = SyncService::new(None, None, Some(persist(&config_file)));
+    service.restore().await;
+    service.resume().await;
+
+    assert_eq!(service.root_state(), "error");
+    assert!(service.last_error().contains("source = \"one-drive\""), "{}", service.last_error());
+    assert!(service.root().is_none(), "not brought up");
+    assert!(std::fs::read_to_string(&config_file).unwrap().contains("source = \"one-drive\""));
+    // F211: there is nothing to forget; the word is corrected by hand.
+    assert!(matches!(service.unregister_root().await, Err(SyncError::NoRoot)));
+}

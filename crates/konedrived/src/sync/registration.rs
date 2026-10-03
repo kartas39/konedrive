@@ -261,6 +261,11 @@ impl SyncService {
         if fresh && !root::drive_allows(path, self.account_drive()).await {
             return Err(SyncError::ForeignFolder);
         }
+        // A folder brought back shows what `config.toml` records, and is not brought up
+        // when that cannot be read: it is not taken for a local folder (`SY6`).
+        if let Some(why) = self.persisted_root().filter(|_| !fresh).and_then(|p| p.unread_source()) {
+            return Err(SyncError::Io(why));
+        }
         let source = if fresh {
             self.fresh_source(intercepted)
         } else {
@@ -569,7 +574,7 @@ impl SyncService {
             path: root.path.clone(),
             id: root.root_id.clone(),
             intercepted: root.intercepted,
-            source: root.source.as_str().into(),
+            source: root.source_as_written.clone().unwrap_or_else(|| root.source.as_str().into()),
             baloo_excluded: root.baloo_excluded,
             upgrade_when_helper: Some(root.upgrade_when_helper),
         });
@@ -604,7 +609,9 @@ impl SyncService {
             path: root.path,
             root_id: root.id,
             intercepted: root.intercepted,
-            source: RootSource::parse(&root.source),
+            // Unreadable: held for a Forget as a OneDrive folder, and never brought up.
+            source: RootSource::parse(&root.source).unwrap_or(RootSource::OneDrive),
+            source_as_written: RootSource::parse(&root.source).is_none().then_some(root.source),
             baloo_excluded: root.baloo_excluded,
             upgrade_when_helper,
         })

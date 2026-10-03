@@ -69,11 +69,13 @@ impl RootSource {
         }
     }
 
-    fn parse(value: &str) -> Self {
-        if value == "onedrive" {
-            RootSource::OneDrive
-        } else {
-            RootSource::Local
+    /// One of the two words `config.toml` has for it; `None` for anything else, which
+    /// is never taken for either (quality finding `SY6`).
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "onedrive" => Some(RootSource::OneDrive),
+            "local" => Some(RootSource::Local),
+            _ => None,
         }
     }
 }
@@ -417,6 +419,12 @@ struct Persisted {
     root_id: String,
     intercepted: bool,
     source: RootSource,
+    /// What `config.toml` has for `source` when it is neither of its two words (a hand
+    /// edit: `"OneDrive"`). Such a folder is never brought up
+    /// ([`unread_source`](Persisted::unread_source)); `source` then reads `OneDrive`, for
+    /// a Forget alone, which so takes off everything a OneDrive folder may carry. Written
+    /// back as it was read, never as a guess.
+    source_as_written: Option<String>,
     /// Whether this daemon is the one that excluded the root from Baloo
     ///; `false` in a config written before this existed.
     baloo_excluded: bool,
@@ -437,9 +445,19 @@ impl Persisted {
             root_id: root.root_id.clone(),
             intercepted,
             source,
+            source_as_written: None,
             baloo_excluded,
             upgrade_when_helper,
         }
+    }
+
+    /// Why this folder is not brought up, when `config.toml` does not say what it shows.
+    fn unread_source(&self) -> Option<String> {
+        let written = self.source_as_written.as_ref()?;
+        Some(format!(
+            "config.toml has source = {written:?} for it, which is neither \"onedrive\" nor \"local\"; \
+             correct it and start konedrive again, or forget the folder and add it again"
+        ))
     }
 }
 

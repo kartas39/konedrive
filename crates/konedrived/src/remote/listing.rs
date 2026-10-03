@@ -152,7 +152,10 @@ pub enum CycleError {
     Offline(String),
     #[error("the helper is not connected; the folder is brought up to date when it is back")]
     NoHelper,
-    #[error("the tree store: {0}")]
+    /// A failure of the tree store, in its own words ("the tree store: …"), wherever
+    /// the cycle met it: [`From<TreeError>`](CycleError::from) and [`applying`] are the
+    /// two ways in, and both end here (quality finding `RE6`).
+    #[error("{0}")]
     Store(String),
     #[error("the folder could not be brought up to date: {0}")]
     Apply(String),
@@ -194,10 +197,13 @@ fn drive_error(e: DriveError) -> CycleError {
     }
 }
 
-/// What making the folder match the tree ran into.
+/// What making the folder match the tree ran into. A failure of the tree store is the
+/// trouble it is anywhere else in a cycle: it stops the folder ([`CycleError::blocking`]),
+/// and is not the kind that is only said and tried again.
 fn applying(e: ApplyError) -> CycleError {
     match e {
         ApplyError::Cancelled => CycleError::Cancelled,
+        ApplyError::Tree(e) => CycleError::from(e),
         other => CycleError::Apply(other.to_string()),
     }
 }
