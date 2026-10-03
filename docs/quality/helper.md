@@ -147,6 +147,9 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
     whole populate.
   - **A fix must:** change both copies of `set_mtime` (`placeholder.rs:228`, the daemon's
     `hydration/source/fill.rs:808`); if real earlier times are wanted, drop the three clamps too.
+- **Fixed 2026-10-03** in `b5cffd9` (#142), the function: `set_mtime` takes a time before 1970, and the
+  daemon's copy is gone. The three clamps to 1970 for OneDrive items stay
+  (`docs/limitations/F220.md`).
 
 ## HE12. Comments and dead code
 

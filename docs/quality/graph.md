@@ -45,6 +45,9 @@ the rest 4.
   - **A fix must:** clear a second cache slot in `invalidate`, `forget`, `commit_as` and the
     `invalid_grant` path; never hand it out from `access_token`; keep the "refused if it can
     write" check; keep the refresh-token rotation (`token.rs:213–221`) under the lock.
+- **Fixed 2026-10-03** in `b5cffd9` (#142): the cache has a slot for the read-only token; refreshes are
+  one at a time under a refresh lock, and a fresh cached token is handed out during one. The
+  windows this opens are in `docs/limitations/F221.md`.
 
 ## GR6. Smaller
 

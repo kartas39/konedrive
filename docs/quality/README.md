@@ -82,8 +82,8 @@ not fixed moves there.
 | [`RE6`](remote.md) | `remote/listing.rs:639` against `:645` | The same store failure is "blocking" or not by the line it happens on | confirmed; small |
 | [`RE1`](remote.md) | `remote/materialize/rw.rs:651–669` | `copy_aside` renames a directory and does not rebase the `leaving` row's path | refuted (the `copy_aside` claim) |
 | [`RE10`](remote.md) | `remote/materialize/replace.rs:249`, `listing/replacements.rs:180` | A replacement cancelled between the swap and the record leaves the new inode unrecorded | refuted (the cancelled replacement) |
-| [`GR5`](graph.md) | `konedrive-graph/src/token.rs:176–196` | Every read-only token for a read-write account is a network request under the cache lock | confirmed; effect negligible |
-| [`FS1`](helper.md) | `konedrive-fs/src/placeholder.rs:229–231` | An item dated before 1970 cannot get a placeholder | refuted for OneDrive items; confirmed for the function |
+| [`GR5`](graph.md) | `konedrive-graph/src/token.rs:176–196` | Every read-only token for a read-write account is a network request under the cache lock | fixed in `b5cffd9` |
+| [`FS1`](helper.md) | `konedrive-fs/src/placeholder.rs:229–231` | An item dated before 1970 cannot get a placeholder | refuted for OneDrive items; the function fixed in `b5cffd9` |
 | [`CL2`](ctl.md) | `konedrivectl/src/text/refusals.rs:277`, `:366`, `:406` | A wrong sentence for a refusal and action nobody wrote | refuted as written; the neighbouring defect fixed in `a62d487` |
 | [`CL5`](ctl.md) | `konedrivectl/src/cli.rs:80`, `text/refusals.rs:585` and three more | The label rule stated five times; four say "no @", the code allows it | fixed in `a62d487` |
 | [`SY5`](sync.md) | `daemon/manager.rs:323–325`, `:302` | `Accounts.Remove` that fails half-way leaves an account that refuses everything | fixed in `57216c9` |
