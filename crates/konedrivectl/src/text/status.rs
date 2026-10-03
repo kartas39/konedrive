@@ -70,9 +70,10 @@ pub async fn status_text(proxy: &AccountProxy<'_>, client_id: Option<&str>) -> z
 /// line once above them and each block is printed with `helper = None`.
 ///
 /// `Last checked:` is added for a folder that shows OneDrive — "20 s
-/// ago", or "never" — and `On this computer:` for any registered folder:
-/// what its files take on this disk — and `Always on this device:`, how
-/// many files and folders are pinned (`konedrivectl sync pin`).
+/// ago", or "never" — and `On this computer:` for any registered folder
+/// that is up (not one the daemon has only just started with, whose state is
+/// still `none`): what its files take on this disk — and `Always on this
+/// device:`, how many files and folders are pinned (`konedrivectl sync pin`).
 /// `Conflicts:` says how many local versions were moved out of the way,
 /// when there are any: they are not a problem, so `LastError` does not carry
 /// them.
@@ -151,7 +152,8 @@ pub async fn sync_status_text(proxy: &FolderProxies<'_>, helper: Option<&str>, p
             out.push_str(&format!("{:<W$}{} (`{prefix} sync anyway` syncs now)\n", "Paused by itself:", held_text(&held)));
         }
     }
-    if !path.is_empty() {
+    // A folder not brought up yet has its path and the state `none`: nothing has measured it.
+    if !path.is_empty() && state != "none" {
         out.push_str(&format!("{:<W$}{}\n", "On this computer:", human_bytes(proxy.folder.local_bytes().await?)));
         out.push_str(&format!("{:<W$}{}\n", "Always on this device:", proxy.folder.pinned_count().await?));
     }

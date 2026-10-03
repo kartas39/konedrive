@@ -28,6 +28,21 @@ async fn binary_status_says_plainly_that_nothing_intercepts_opens() {
     assert!(opens.contains("konedrivectl sync hydrate"), "say how to get the real bytes: {text}");
 }
 
+/// The daemon has started and not brought the folder up yet: it has its path, its state is
+/// `none`, and nothing has measured it, so no size and no count of pins is printed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn binary_status_of_a_folder_not_brought_up_yet_says_no_size() {
+    let f = harness_with_helper(false).await;
+    f.service.state().update(|s| s.root_path = "/home/u/OneDrive".into());
+
+    let out = run(f._bus.address(), &["sync", "status"]);
+    assert!(out.status.success(), "{out:?}");
+    let text = out_text(&out);
+    assert!(text.lines().any(|l| l.starts_with("Folder:") && l.ends_with("/home/u/OneDrive")), "{text}");
+    assert!(text.lines().any(|l| l.starts_with("State:") && l.ends_with("none")), "{text}");
+    assert!(!text.contains("On this computer:") && !text.contains("Always on this device:"), "{text}");
+}
+
 /// The contrast: an intercepted folder must not carry the zeros warning, or
 /// the warning becomes noise a user learns to skip.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -109,7 +109,7 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 
 | Property | Meaning |
 |---|---|
-| `Path` (`s`) | the registered folder, empty when none |
+| `Path` (`s`) | the account's folder, empty when it has none. A folder `config.toml` records has its path from the daemon's start, while `State` may still be `none`: it is not brought up yet |
 | `State` (`s`) | `none`, `listing`, `ready`, `no-interception` or `error` (§2.5) |
 | `Source` (`s`) | `onedrive`, `local`, or empty ([sync.md](sync.md) §3) |
 | `LastError` (`s`) | what needs attention, in words: the registration's trouble and the sync's, joined; while the folder waits for the helper, it begins with the helper's advice (§2.5) |
