@@ -76,6 +76,9 @@ pub const UNKNOWN_STATE: &str = "unknown-state";
 /// is unmounted.
 pub const MOUNTED_INSIDE: &str = "mounted-inside";
 
+/// How many of the places a run did not examine its one warning names.
+const UNREADABLE_NAMED: usize = 20;
+
 #[derive(Debug, thiserror::Error)]
 pub enum ExamineError {
     #[error(transparent)]
@@ -229,14 +232,14 @@ impl Examiner<'_> {
         run.probe_expected()?;
         run.classify(batch)?;
         let out = run.finish()?;
-        if let Some(first) = out.unreadable.first() {
-            let shown: Vec<String> = out.unreadable.iter().take(3).map(|rel| rel.display().to_string()).collect();
-            let more = if out.unreadable.len() > shown.len() { ", ..." } else { "" };
+        if !out.unreadable.is_empty() {
+            let shown: Vec<String> = out.unreadable.iter().take(UNREADABLE_NAMED).map(|rel| rel.display().to_string()).collect();
+            let more = out.unreadable.len() - shown.len();
+            let rest = if more > 0 { format!(", and {more} more") } else { String::new() };
             tracing::warn!(
-                "{} place(s) this daemon may not read or change are not examined, and nothing in them is uploaded: {}{more} (the first is {})",
+                "{} place(s) this daemon may not read or change are not examined, and nothing in them is uploaded: {}{rest}",
                 out.unreadable.len(),
-                shown.join(", "),
-                first.display()
+                shown.join(", ")
             );
         }
         Ok(out)

@@ -75,8 +75,8 @@ pub(super) fn swap_name(row: &OutboxRow) -> String {
 /// The item id of the directory `dir` (relative to the root), read from the
 /// disk: the root's is the drive's root. Only an id that is the directory's
 /// own counts: the base has it as a folder, and records this very object for
-/// it (or, with no object recorded, places it here; a folder that is leaving
-/// has its object, or its place, in `leaving`). A copy that kept its
+/// it (or, with no object recorded, places it here; what is leaving counts
+/// by the object or the place `leaving` keeps). A copy that kept its
 /// attributes, or a folder from elsewhere, carries an id that names another
 /// folder in OneDrive; nothing is sent into that one because of it. The
 /// examination strips such a directory when it can, but it does not always
@@ -101,20 +101,26 @@ pub(super) async fn dir_id(e: &Engine, disk: &Disk, dir: &Path) -> Result<Option
             if !s.get(Table::Items, &asked)?.is_some_and(|row| row.kind == Kind::Folder) {
                 return Ok(false);
             }
-            // The object the base records for it, or the one kept while it is leaving.
-            let recorded = match s.local_handle(&asked)? {
-                Some(handle) => Some(handle),
-                None => s.leaving_handle(&asked)?,
-            };
-            if let (Some(recorded), Some(here)) = (&recorded, &here) {
-                return Ok(recorded == here);
-            }
-            if s.locate(Table::Items, &asked)?.is_some_and(|l| l.placed && l.rel == at) {
+            // The object the base records for it, or the one kept while it
+            // is leaving: a folder that leaves and is placed again elsewhere
+            // meanwhile has both, and the leaving one still takes what waits
+            // inside it (issue #104).
+            let (placed, left) = (s.local_handle(&asked)?, s.leaving_handle(&asked)?);
+            if here.is_some() && (placed == here || left == here) {
                 return Ok(true);
             }
-            // No longer placed, and no object recorded: a folder that is
-            // leaving, or one inside it, where what leaves stays.
-            Ok(s.leaving_had(&asked)? && s.leaving()?.iter().any(|(_, rel)| at.starts_with(rel)))
+            // With no object to compare: where the base places it.
+            if (placed.is_none() || here.is_none()) && s.locate(Table::Items, &asked)?.is_some_and(|l| l.placed && l.rel == at) {
+                return Ok(true);
+            }
+            // What leaves stays where it is. The leaving folder itself, when
+            // no object was kept for it, by its place; a folder that was
+            // inside one has no object of its own there (the base's, if any,
+            // is the copy placed again), and counts below the leaving place.
+            if !s.leaving_had(&asked)? {
+                return Ok(false);
+            }
+            Ok(s.leaving()?.iter().any(|(id, rel)| if *id == asked { left.is_none() && at == *rel } else { at != *rel && at.starts_with(rel) }))
         })
         .await?;
     if !own {
