@@ -23,7 +23,7 @@ use std::panic::AssertUnwindSafe;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 
-use crate::Shared;
+use crate::shared::Shared;
 
 /// One suspended open, on its way to a worker.
 pub struct OpenEvent {
@@ -73,7 +73,7 @@ impl Pool {
                     // an opener suspended forever.
                     let mut slot = Some(event.fd);
                     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                        crate::handle_open(&shared, &mut slot, event.pid, event.since);
+                        crate::events::handle_open(&shared, &mut slot, event.pid, event.since);
                     }));
                     if outcome.is_err() {
                         tracing::error!(
