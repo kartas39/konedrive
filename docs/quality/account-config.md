@@ -40,6 +40,10 @@ Scores: `account/mod.rs`, `account/sign_in.rs`, `account/mode.rs`, `account/secr
   - **Corrections:** `LoopbackListener::bind().await` at `:17` is not a suspension point; the gap
     needs a second thread or a contended lock at `:36`. `sign_out` (`:98–120`) does the same as
     the cancel, with a far wider window.
+- **Fixed 2026-10-03** in `9cbcecf` (#140): the start of an attempt is one step under the session
+  lock, after an unlocked check that answers what `dev` answered at once; `commit_sign_in`
+  refuses unless the account still shows `signing-in`. A refresh that reports signed-out during
+  a sign-in now ends it in silence but for a warning: `docs/limitations/F204.md`.
 
 ## AC4. `LastError` is one string with many writers, cleared by prefix matching
 

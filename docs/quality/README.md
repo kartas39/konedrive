@@ -78,7 +78,7 @@ not fixed moves there.
 | [`HY5`](hydration.md) | `hydration/server.rs:257` | An errno the kernel cannot deliver; the opener gets `EIO`, not "gone" | confirmed (the errno); one sub-claim refuted |
 | [`HE1`](helper.md) | `konedrive-helper/src/jobs.rs:211`, `:238` | No bound per uid on suspended opens; one user can deny every other user's opens | confirmed |
 | [`HE2`](helper.md) | `konedrive-helper/src/connection.rs:285`, `roots.rs` | Roots unbounded per uid, `root_id` unvalidated, a re-registration that leaves marks | confirmed |
-| [`AC1`](account-config.md) | `account/sign_in.rs:13–36` | A cancelled sign-in can complete | confirmed |
+| [`AC1`](account-config.md) | `account/sign_in.rs:13–36` | A cancelled sign-in can complete | fixed in `9cbcecf` |
 | [`RE6`](remote.md) | `remote/listing.rs:639` against `:645` | The same store failure is "blocking" or not by the line it happens on | confirmed; small |
 | [`RE1`](remote.md) | `remote/materialize/rw.rs:651–669` | `copy_aside` renames a directory and does not rebase the `leaving` row's path | refuted (the `copy_aside` claim) |
 | [`RE10`](remote.md) | `remote/materialize/replace.rs:249`, `listing/replacements.rs:180` | A replacement cancelled between the swap and the record leaves the new inode unrecorded | refuted (the cancelled replacement) |
