@@ -306,6 +306,31 @@ fn dropping_held_rows_survives_a_cycles_swap() {
 }
 
 /// A kind or state no konedrive writes fails closed: blocked, never run.
+/// The item a bad upload left in OneDrive (quality finding `UP2`) is kept
+/// through every change of the row's state and reason and through an
+/// examination's merge, and goes only when it is cleared, or with the row.
+/// A row an earlier version wrote, with the id in its reason, is read as one.
+#[test]
+fn a_rows_bad_item_survives_a_settle_and_a_merge() {
+    let mut s = store(&[]);
+    let d = detect(OutboxKind::Create, None, Some(inode(1)), "a.txt", Some("R"));
+    let Recorded::Inserted(seq) = s.outbox_record(&d).unwrap() else { panic!() };
+    assert_eq!(s.outbox_bad_item(seq).unwrap(), None);
+    s.outbox_set_bad_item(seq, Some("BAD")).unwrap();
+    s.outbox_set_state(seq, OutboxState::Retry, Some("network"), Some(5)).unwrap();
+    assert_eq!(s.outbox_record(&Detection { rel: "b.txt".into(), target_name: Some("b.txt".into()), state: OutboxState::Waiting, ..d.clone() }).unwrap(), Recorded::Merged(seq));
+    s.outbox_amend(seq, |row| row.snapshot = Some("1 2".into())).unwrap();
+    assert_eq!(s.outbox_bad_item(seq).unwrap().as_deref(), Some("BAD"));
+    s.outbox_set_bad_item(seq, None).unwrap();
+    assert_eq!(s.outbox_bad_item(seq).unwrap(), None);
+
+    s.conn.execute("UPDATE outbox SET reason = 'hash-mismatch:OLD!1' WHERE seq = ?1", [seq]).unwrap();
+    upgrade(&s.conn).unwrap();
+    assert_eq!(s.outbox_bad_item(seq).unwrap().as_deref(), Some("OLD!1"));
+    assert_eq!(s.outbox_row(seq).unwrap().unwrap().reason.as_deref(), Some("hash-mismatch"));
+    assert_eq!(s.outbox_bad_item(seq + 1).unwrap(), None, "no such row");
+}
+
 #[test]
 fn an_unreadable_row_is_blocked() {
     let mut s = store(&[]);

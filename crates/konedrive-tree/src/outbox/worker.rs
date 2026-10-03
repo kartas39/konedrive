@@ -108,6 +108,23 @@ impl TreeStore {
         Ok(dropped.flatten())
     }
 
+    /// The item a new file's upload left in OneDrive with other content
+    /// than was sent, still to be deleted before the file goes again. Kept
+    /// in a column of its own, which no change of the row's state or reason
+    /// and no merge of an examination writes: it goes only with
+    /// [`outbox_set_bad_item`](Self::outbox_set_bad_item), or with the row.
+    pub fn outbox_bad_item(&self, seq: i64) -> Result<Option<String>, TreeError> {
+        let bad: Option<Option<String>> = self.conn.query_row("SELECT bad_item FROM outbox WHERE seq = ?1", [seq], |r| r.get(0)).optional()?;
+        Ok(bad.flatten())
+    }
+
+    /// Remembers the bad item of row `seq`, or forgets it (`None`): deleted,
+    /// found gone, or adopted.
+    pub fn outbox_set_bad_item(&self, seq: i64, item_id: Option<&str>) -> Result<(), TreeError> {
+        self.conn.execute("UPDATE outbox SET bad_item = ?2 WHERE seq = ?1", params![seq, item_id])?;
+        Ok(())
+    }
+
     /// Where a taking row sends its item: saved before the request that
     /// uses it, so that a replay asks for the same name (WR7).
     pub fn outbox_set_target(&self, seq: i64, parent: Option<&str>, name: Option<&str>) -> Result<(), TreeError> {

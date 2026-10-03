@@ -383,7 +383,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
         return Ok(Outcome::later(reason::MOVE_OUT, Duration::from_secs(3600)));
     };
     let (Some(id), Some(handle)) = (row.item_id.clone(), row.inode.as_ref().and_then(|i| i.handle.clone())) else {
-        return Ok(Outcome::blocked("no-handle"));
+        return Ok(Outcome::blocked(reason::NO_HANDLE));
     };
     let root = disk.dir(Path::new(""))?;
     let object = match mo.helper.open_by_handle(&root, &handle).await {
@@ -421,7 +421,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
         // Never "gone" (F90): kept, and asked again now and then.
         Err(HelperError::Refused(libc::EPERM)) => return Ok(Outcome::backoff(reason::UNREACHABLE)),
         Err(HelperError::Refused(libc::EAGAIN)) => return Ok(Outcome::later(reason::NOT_LOCAL, RECHECK)),
-        Err(HelperError::Refused(libc::EINVAL)) => return Ok(Outcome::blocked("bad-handle")),
+        Err(HelperError::Refused(libc::EINVAL)) => return Ok(Outcome::blocked(reason::BAD_HANDLE)),
         Err(HelperError::Refused(errno)) => return Ok(Outcome::backoff(format!("{}: errno {errno}", reason::UNREACHABLE))),
         Err(other) => {
             tracing::debug!("{}: {other}", row.rel.display());
@@ -430,7 +430,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     };
     if item_id_of(&object).as_deref() != Some(id.as_str()) {
         // The helper hands over only an object carrying an item id: another one's is no answer.
-        return Ok(Outcome::blocked("another-item"));
+        return Ok(Outcome::blocked(reason::ANOTHER_ITEM));
     }
     remember_place(e, &row, &object).await?;
     let is_dir = object.metadata()?.is_dir();

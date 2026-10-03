@@ -36,10 +36,6 @@ use konedrive_tree::Table;
 /// creation time is compared with the recorded opening (issue #84).
 pub(super) const CLOCK_SLACK: i64 = 5 * 60;
 
-/// A new file's row whose upload OneDrive holds with other content, and
-/// could not be deleted yet: `hash-mismatch:<item id>`.
-const BAD_ITEM: &str = "hash-mismatch:";
-
 pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
     let local = local_name(&row)?;
     let Some(found) = locate(e, disk, &row).await?.filter(|f| !f.is_dir) else {
@@ -53,7 +49,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     match found.state() {
         Ok(None | Some(State::Hydrated)) => {}
         Ok(Some(_)) => return Ok(Outcome::wait(reason::NOT_LOCAL, RECHECK)),
-        Err(err) => return Ok(Outcome::blocked(err.to_string())),
+        Err(err) => return Ok(Outcome::blocked(format!("{}: {err}", reason::BAD_STATE))),
     }
     let file = Arc::new(found.open()?);
     // Before the snapshot: the mark changes no size or time (§9).
@@ -168,7 +164,7 @@ async fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Res
         return Ok(Some(Stop::Wait(Outcome::Space(space::WAITING.into()))));
     }
     if let Err(why) = e.cfg.host.may_write() {
-        return Ok(Some(Stop::Wait(Outcome::wait(&format!("not allowed now: {why}"), std::time::Duration::ZERO))));
+        return Ok(Some(Stop::Wait(Outcome::wait(&format!("{}: {why}", reason::NOT_ALLOWED), std::time::Duration::ZERO))));
     }
     if locate(e, disk, row).await?.filter(|f| !f.is_dir).is_none() {
         return Ok(Some(Stop::Removed));
@@ -202,24 +198,40 @@ struct Job<'a> {
 }
 
 impl Job<'_> {
-    /// A new file's upload that OneDrive holds with other content:
-    /// that item goes before the file is sent again — or, holding this
-    /// content after all, is this file's.
+    /// A new file's upload that OneDrive holds with other content (the bad
+    /// item, remembered beside the row: [`Job::finish`]): that item goes
+    /// before the file is sent again — or, holding this content after all,
+    /// is this file's. It is forgotten exactly when it is deleted or found
+    /// gone; adopted, it goes with the row. Anything else — a read that
+    /// fails, a delete OneDrive does not carry out — leaves it remembered
+    /// for the next run, whatever the row's reason becomes.
+    ///
+    /// A `create` does this before anything it sends, so a row that goes
+    /// on to a copy (`steps::copy`) has no bad item left; a row made a
+    /// `create` again by `steps::upload_as_new` was an `update` or a
+    /// `move`, which never has one.
     async fn clear_bad_item(&self) -> Result<Option<Outcome>, Fail> {
-        let Some(bad) = self.row.reason.as_deref().and_then(|r| r.strip_prefix(BAD_ITEM)) else { return Ok(None) };
-        let item = match self.e.cfg.drive.item(bad).await {
+        let seq = self.row.seq;
+        let Some(bad) = self.e.store().call(move |s| s.outbox_bad_item(seq)).await? else { return Ok(None) };
+        let item = match self.e.cfg.drive.item(&bad).await {
             Ok(item) => item,
-            Err(DriveError::NotFound) => return Ok(None),
+            Err(DriveError::NotFound) => return self.forget_bad_item().await.map(|()| None),
             Err(err) => return Err(err.into()),
         };
         if item.quick_xor_hash() == Some(self.hash(None).await?.as_str()) {
             return self.commit(item).await.map(Some);
         }
         let guard = item.e_tag.clone().or(item.c_tag.clone()).unwrap_or_default();
-        match self.e.cfg.drive.delete_item(bad, &guard).await {
-            Ok(()) | Err(WriteError::NotFound) => Ok(None),
+        match self.e.cfg.drive.delete_item(&bad, &guard).await {
+            Ok(()) | Err(WriteError::NotFound) => self.forget_bad_item().await.map(|()| None),
             Err(err) => Err(err.into()),
         }
+    }
+
+    /// The row's bad item is gone from OneDrive: nothing to delete any more.
+    async fn forget_bad_item(&self) -> Result<(), Fail> {
+        let seq = self.row.seq;
+        Ok(self.e.store().call(move |s| s.outbox_set_bad_item(seq, None)).await?)
     }
 
     async fn create(&self) -> Result<Outcome, Fail> {
@@ -354,11 +366,11 @@ impl Job<'_> {
 
     async fn update(&self) -> Result<Outcome, Fail> {
         let row = self.row;
-        let Some(id) = row.item_id.as_deref() else { return Ok(Outcome::blocked("no-item")) };
+        let Some(id) = row.item_id.as_deref() else { return Ok(Outcome::blocked(reason::NO_ITEM)) };
         let base = row.base.clone().unwrap_or_default();
         // F55 (4): a row queued against another version than the base's
         // carries that version's cTag, and no eTag.
-        let Some(mut guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked("no-guard")) };
+        let Some(mut guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(reason::NO_GUARD)) };
         let new_name = (Some(self.name) != base.name.as_deref()).then_some(self.name);
         let new_parent = (Some(self.parent) != base.parent.as_deref()).then_some(self.parent);
         if new_name.is_some() || new_parent.is_some() {
@@ -675,7 +687,7 @@ impl Job<'_> {
         tracing::info!("the upload session of {} ended: the upload starts over", self.found.rel.display());
         *restarts += 1;
         if *restarts > 1 {
-            return Err(Fail::Now(Outcome::backoff("the upload session ended twice")));
+            return Err(Fail::Now(Outcome::backoff(reason::SESSION_ENDED)));
         }
         Ok(None)
     }
@@ -847,14 +859,20 @@ impl Job<'_> {
         }
         tracing::warn!("OneDrive holds other content than was sent for {}: it goes again", self.found.rel.display());
         if self.row.kind == OutboxKind::Create {
-            // Remembered in the row, so that the next run deletes it first,
-            // whatever happens to this delete.
-            let outcome = Outcome::backoff(format!("{}{}", BAD_ITEM, item.id));
+            // Remembered beside the row before its delete is asked for, so
+            // that the next run deletes it first whatever happens to this
+            // delete, and to the row meanwhile (`clear_bad_item`).
+            let (seq, id) = (self.row.seq, item.id.clone());
+            self.e.store().call(move |s| s.outbox_set_bad_item(seq, Some(&id))).await?;
             let guard = item.e_tag.clone().or(item.c_tag.clone()).unwrap_or_default();
-            return match self.e.cfg.drive.delete_item(&item.id, &guard).await {
-                Ok(()) | Err(WriteError::NotFound) => Ok(Outcome::backoff(reason::HASH)),
-                Err(_) => Ok(outcome),
-            };
+            match self.e.cfg.drive.delete_item(&item.id, &guard).await {
+                Ok(()) | Err(WriteError::NotFound) => self.forget_bad_item().await?,
+                Err(err) => tracing::warn!(
+                    "what OneDrive holds for {} with other content could not be deleted ({err}): it is deleted before the file goes again",
+                    self.found.rel.display()
+                ),
+            }
+            return Ok(Outcome::backoff(reason::HASH));
         }
         let made = Base {
             etag: item.e_tag.clone(),

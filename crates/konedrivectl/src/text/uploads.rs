@@ -57,14 +57,31 @@ pub fn upload_reason_text(reason: &str) -> String {
         "index-error" => "konedrive's local index failed: tried again later".to_owned(),
         "upload-error" => "the upload failed: tried again later".to_owned(),
         "refused" => "refused by OneDrive".to_owned(),
+        "paused" => "paused with the account: it goes on when the pause ends".to_owned(),
+        "upload-session-open" => "its name in OneDrive is held by an upload of this folder that has not ended: tried again later".to_owned(),
+        "name-held-by-an-upload" => "its name in OneDrive is held by an unfinished upload (another device, or one abandoned): tried again later".to_owned(),
+        "changed in OneDrive again and again" | "changing in OneDrive again and again" => "it keeps changing in OneDrive: tried again later".to_owned(),
+        "the upload session ended twice" => "OneDrive ended the upload twice: tried again later".to_owned(),
+        "not allowed now" => "uploads are not allowed now: it goes on when they are".to_owned(),
+        "state-unreadable" => "the file's konedrive state cannot be read: it stays here until the file is replaced".to_owned(),
+        "no-name" | "no-item" | "no-guard" | "no-handle" | "bad-handle" | "another-item" | "blocked" => {
+            format!("konedrive's record of this change is incomplete ({reason}): it stays here until the file is changed again")
+        }
         "too-big" => "too big for the space left in OneDrive: free up space there, then `sync refresh`".to_owned(),
         other => match (other.strip_prefix("refused: "), too_big(other)) {
             (Some(message), _) => format!("OneDrive refused it: {message}"),
             (None, Some((needs, free))) => format!("too big: needs {}, {} free", human_bytes(needs), human_bytes(free)),
-            (None, None) => other.to_owned(),
+            (None, None) => match other.split_once(": ") {
+                // `<key>: <detail>`: the key's sentence, then what the daemon said.
+                Some((key, detail)) if DETAILED.contains(&key) => format!("{} ({detail})", upload_reason_text(key)),
+                _ => other.to_owned(),
+            },
         },
     }
 }
+
+/// The keys that come with a detail behind them, `<key>: <detail>`, beside `refused`.
+const DETAILED: [&str; 2] = ["not allowed now", "state-unreadable"];
 
 /// `too-big:<needs>:<free>`: a file too big for the space left in OneDrive.
 fn too_big(reason: &str) -> Option<(u64, u64)> {

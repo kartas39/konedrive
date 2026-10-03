@@ -211,7 +211,7 @@ impl Engine {
                     // off like a failure.
                     let attempts = store.call_blocking(move |s| s.outbox_count_attempt(seq))?;
                     if attempts > AGAIN_LIMIT {
-                        (state, reason, next_try) = (OutboxState::Retry, Some("changing in OneDrive again and again".into()), Some(now + backoff_after(attempts)));
+                        (state, reason, next_try) = (OutboxState::Retry, Some(reason::CHANGING_AGAIN.into()), Some(now + backoff_after(attempts)));
                     }
                 }
                 let written = reason.clone();

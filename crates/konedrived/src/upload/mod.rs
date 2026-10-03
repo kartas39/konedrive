@@ -156,6 +156,34 @@ pub mod reason {
     /// one abandoned (issue #89). Never copied around, never deleted; tried
     /// again later, until the name is free or the holder has content.
     pub const NAME_HELD: &str = "name-held-by-an-upload";
+    /// The item changed in OneDrive each time its removal was sent, though
+    /// its content stayed what was deleted here: in backoff.
+    pub const CHANGED_AGAIN: &str = "changed in OneDrive again and again";
+    /// A row rewritten and sent again at once more often than
+    /// `AGAIN_LIMIT` in a row: in backoff, like a failure.
+    pub const CHANGING_AGAIN: &str = "changing in OneDrive again and again";
+    /// The upload session ended under the upload twice in one run: in backoff.
+    pub const SESSION_ENDED: &str = "the upload session ended twice";
+    /// The write gate closed between two fragments: `not allowed now: <why>`.
+    /// Waiting until it opens; the session is kept.
+    pub const NOT_ALLOWED: &str = "not allowed now";
+    /// The file carries a `user.konedrive.state` no konedrive writes, or
+    /// one that cannot be read: `state-unreadable: <the error>`. Blocked.
+    pub const BAD_STATE: &str = "state-unreadable";
+    /// Blocked: the row's place has no name.
+    pub const NO_NAME: &str = "no-name";
+    /// Blocked: a change, move or removal whose row names no item, or no base.
+    pub const NO_ITEM: &str = "no-item";
+    /// Blocked: the row's base has neither an eTag nor a cTag to send with.
+    pub const NO_GUARD: &str = "no-guard";
+    /// Blocked: a moved-out object's row has no handle to find it by.
+    pub const NO_HANDLE: &str = "no-handle";
+    /// Blocked: the helper refuses the handle of a moved-out object (`EINVAL`).
+    pub const BAD_HANDLE: &str = "bad-handle";
+    /// Blocked: the object a `move-out` row's handle opens carries another item's id.
+    pub const ANOTHER_ITEM: &str = "another-item";
+    /// What a blocked row with no reason is listed under.
+    pub const BLOCKED: &str = "blocked";
     /// OneDrive could not be reached: a network error, a `5xx`, an answer
     /// that could not be read (issue #87). In backoff; the error's own text
     /// is in the journal only.
