@@ -81,20 +81,30 @@ impl SyncService {
         if was_syncing {
             self.let_go_of_activity().await;
         }
+        // Looked at again under the lock: a forced drop may have turned the folder already.
+        if self.mode() != mode {
+            // Nothing is dropped: a sign-out, the gate, `config.toml`, a narrower grant keep
+            // the changes waiting to upload — the folder is locked, and its sync holds its
+            // cycles while they wait, so no read-only reconcile puts back what they describe
+            // (`listing`'s poller). Only a forced switch drops them, and turns the folder
+            // itself (`PendingUploads::drop_pending_uploads`).
+            self.turn(mode, false).await;
+        }
+        if was_syncing {
+            self.start_sync().await;
+        }
+    }
+
+    /// The switch itself, to `mode`: the caller holds `lifecycle` for writing, has stopped the
+    /// folder's tasks, and starts the sync again. `dropping`: the changes waiting to upload
+    /// are dropped as the folder turns read-only, a forced switch's.
+    async fn turn(&self, mode: Mode, dropping: bool) {
         *self.mode.lock().unwrap() = mode;
         // The watcher that starts next says why its Full local scan runs.
         self.switched_to_read_write.store(mode == Mode::ReadWrite, Ordering::SeqCst);
         self.state.update(|s| s.scan.follow(mode));
-        let forced = self.drop_at_read_only.swap(false, Ordering::SeqCst);
-        if mode == Mode::ReadOnly {
-            // Only a forced switch drops the changes waiting to upload; what
-            // the watcher recorded after it dropped the others goes too. Any other
-            // way here — a sign-out, the gate, `config.toml`, a narrower grant — keeps them: the
-            // folder is locked, and its sync holds its cycles while they wait, so no read-only
-            // reconcile puts back what they describe (`listing`'s poller).
-            if forced {
-                self.drop_outbox().await;
-            }
+        if dropping {
+            self.drop_outbox().await;
         }
         // What the folder said in the other mode goes with it: the watcher's
         // and the handles' notes of a read-write folder, and why the outbox waits in either;
@@ -115,9 +125,6 @@ impl SyncService {
                 Mode::ReadWrite => {}
                 Mode::ReadOnly => self.relock(&reg.root).await,
             }
-        }
-        if was_syncing {
-            self.start_sync().await;
         }
     }
 
@@ -582,20 +589,19 @@ impl PendingUploads for SyncService {
 
     /// A forced switch to read-only drops the outbox's rows (`docs/design/writes.md`
     /// §2); the files stay, as ordinary local changes, protected by the read phase's stamp
-    /// check and rescue. Called once `config.toml` says read-only, before the
-    /// folder follows. The worker stops first, so nothing more is sent.
+    /// check and rescue. Called once `config.toml` says read-only. The worker stops first, so
+    /// nothing more is sent.
     ///
-    /// The folder's sync stops for the drop and starts again after it, in either mode: the
-    /// rows go with `lifecycle` held for writing and no task running, as at any switch, so
-    /// nothing here holds `lifecycle` or the tree lock while it waits for the other with a
-    /// cycle under way (`docs/design/writes.md` §9). The mode is read under that lock, which
-    /// every change of it holds.
+    /// The folder's sync stops for the drop and starts again after it: the rows go with
+    /// `lifecycle` held for writing and no task running, as at any switch, so nothing here
+    /// holds `lifecycle` or the tree lock while it waits for the other with a cycle under
+    /// way (`docs/design/writes.md` §9). The mode is read under that lock, which every change
+    /// of it holds.
     ///
-    /// A read-write folder's sync starts again read-write, since the folder has not followed
-    /// yet: its worker sends nothing, the write gate being closed by `config.toml`, and what
-    /// its watcher records until the folder turns read-only is dropped then
-    /// ([`SyncService::follow_mode`]), and only then: any other switch to read-only keeps
-    /// such rows.
+    /// A read-write folder turns read-only here, in the same step, rather than when it
+    /// follows its account ([`SyncService::follow_mode`], which then finds it turned): its
+    /// watcher is stopped and no other starts, so no scan records again what was dropped,
+    /// whether or not the folder is ever told to follow.
     ///
     /// A folder read-only already — its sync holding its cycles for these changes — starts
     /// its sync again without them, as a read-only start does: what a read-write cycle
@@ -608,9 +614,10 @@ impl PendingUploads for SyncService {
         if was_syncing {
             self.let_go_of_activity().await;
         }
-        self.drop_outbox().await;
         if self.mode() == Mode::ReadWrite {
-            self.drop_at_read_only.store(true, Ordering::SeqCst);
+            self.turn(Mode::ReadOnly, true).await;
+        } else {
+            self.drop_outbox().await;
         }
         if was_syncing {
             self.start_sync().await;

@@ -765,11 +765,12 @@ lock that guards the registration, [sync.md](sync.md) §6.3):
 
 - a cycle takes the tree lock at staging and the lifecycle lock, as a reader, at the reconcile.
   Both waits end when its poller is stopped;
-- whoever holds the lifecycle lock as a writer — a change of the mode, a forced drop of the
-  outbox, a Forget, a bring-up, the watcher's word that the folder is gone — takes the tree lock
-  only once it has stopped the folder's sync (the two drops of the outbox do). Stopping the
-  sync is itself a wait for the tree lock: it waits for the watcher's examination under way, which
-  holds that lock. So the stop ends the cycle first, then the outbox worker, then the watcher.
+- a writer of the lifecycle lock takes the tree lock only once it has stopped the folder's sync.
+  The two that do are the change of the mode and a forced drop of the outbox. The others — a
+  Forget, a bring-up, the watcher's word that the folder is gone — take no tree lock themselves,
+  but those of them that stop the sync wait for it all the same: stopping the sync waits for the
+  watcher's examination under way, which holds the tree lock. So a stop ends the cycle first,
+  then the outbox worker, then the watcher.
 
 The lifecycle lock is fair: a writer waiting for it keeps new readers out. So nothing but a cycle
 may hold the tree lock while it waits for the lifecycle lock, and nothing may wait for the tree
@@ -778,8 +779,10 @@ other and a writer waiting between them, the three would wait for each other for
 a caller that held the tree lock and waited behind a writer that is stopping the watcher. What
 holds the tree lock alone (an outbox commit, an examination, a replacement, `RestoreDeletes`)
 never waits for the lifecycle lock. A forced switch to read-only therefore drops the rows as a
-writer, with the sync stopped, in a read-write folder as in a read-only one, and starts the sync
-again; until the folder follows, the write gate keeps the worker from sending (§2.3).
+writer, with the sync stopped, and turns a read-write folder read-only in the same step: no
+watcher runs between the drop and the turn, so nothing dropped is recorded again, and the sync
+that starts again is a read-only one. The folder told to follow its account afterwards finds
+itself turned.
 
 A file's inode lock comes after the tree lock (an outbox commit, a replacement). A cycle, which
 holds the lifecycle lock, only tries a file's lock, or waits for it for a bounded time (a removal's
