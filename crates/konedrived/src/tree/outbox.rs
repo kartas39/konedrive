@@ -1036,40 +1036,33 @@ impl TreeStore {
         rows_under(&self.conn, rel)
     }
 
-    /// Whether the base does not place item `id` here — the item, or a
-    /// folder above it, skipped (a name too long, the Personal Vault...) —
-    /// for a reason other than the outbox's own temporary name (F82 (5)).
-    /// A row for such an item uploads content only: it never renames or
-    /// moves the item in OneDrive, and records no local object for it
-    /// (issue #104, decision 1).
-    pub fn held_out(&self, id: &str) -> Result<bool, TreeError> {
-        let root = self.root_item_id()?;
-        let mut at = Some(id.to_owned());
-        let mut depth = 0;
-        while let Some(id) = at.take() {
-            if Some(&id) == root.as_ref() || depth > MAX_CHAIN {
-                return Ok(false);
-            }
-            depth += 1;
-            let Some(row) = super::get_row(&self.conn, super::Source::Items, &id)? else { return Ok(false) };
-            if row.placement != super::Placement::Placed && !row.name.starts_with(SWAP_PREFIX) {
-                return Ok(true);
-            }
-            at = row.parent_id;
+    /// What is leaving at `rel` is never moved or deleted in OneDrive by the
+    /// daemon (issue #104): the `move` and `delete` rows whose local path is
+    /// `rel` or below it go, but for one the worker is running. A row the
+    /// user's own move out of it made — its path elsewhere — stays, and is
+    /// carried out. What went.
+    pub fn outbox_drop_moves(&mut self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
+        let rows: Vec<OutboxRow> = self
+            .outbox_at_or_under(rel)?
+            .into_iter()
+            .filter(|row| row.state != OutboxState::Running && matches!(row.kind, OutboxKind::Move | OutboxKind::Delete))
+            .collect();
+        let tx = self.conn.transaction()?;
+        for row in &rows {
+            tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
         }
-        Ok(false)
+        tx.commit()?;
+        Ok(rows)
     }
 
-    /// What is leaving at `rel` — items `ids`, the leaving item and what the
-    /// base has below it — is never moved or deleted in OneDrive by the
-    /// daemon (issue #104): the `move` and `delete` rows of those items, and
-    /// any at or below `rel`, go, but for one the worker is running. What went.
-    pub fn outbox_drop_moves(&mut self, ids: &[String], rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
+    /// Items `ids` were removed in OneDrive while their objects waited inside
+    /// something leaving (issue #104, decision 2): their rows go, but for
+    /// one the worker is running. What went.
+    pub fn outbox_drop_items(&mut self, ids: &[String]) -> Result<Vec<OutboxRow>, TreeError> {
         let ids: HashSet<&str> = ids.iter().map(String::as_str).collect();
         let rows: Vec<OutboxRow> = all_rows(&self.conn)?
             .into_iter()
-            .filter(|row| row.state != OutboxState::Running && matches!(row.kind, OutboxKind::Move | OutboxKind::Delete))
-            .filter(|row| row.item_id.as_deref().is_some_and(|id| ids.contains(id)) || row.rel == rel || is_under(&row.rel, rel))
+            .filter(|row| row.state != OutboxState::Running && row.item_id.as_deref().is_some_and(|id| ids.contains(id)))
             .collect();
         let tx = self.conn.transaction()?;
         for row in &rows {

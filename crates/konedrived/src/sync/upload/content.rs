@@ -73,15 +73,14 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
         cancel_session(e, &stale).await?;
     }
     e.upload_progress(row.seq, 0, snap.size);
-    // An item this folder does not place (issue #104, decision 1): its
-    // content goes up into the item where OneDrive has it, whatever the
-    // local path says — never a rename or a move.
-    // So too an object of an item that is leaving, placed again elsewhere
-    // meanwhile: its content goes up into the item, wherever that is now.
+    // A row whose local path is an object that is leaving, or below one
+    // (issue #104, decision 1): its content goes up into the item where
+    // OneDrive has it — never a rename or a move. A row elsewhere (the
+    // user's own move out of it) is carried out as any other.
     let held_out = match (&row.item_id, row.kind) {
-        (Some(id), OutboxKind::Update) => {
-            let (id, rel) = (id.clone(), row.rel.clone());
-            e.store().call(move |s| Ok(s.held_out(&id)? || s.leaving()?.iter().any(|(_, at)| rel.starts_with(at)))).await?
+        (Some(_), OutboxKind::Update) => {
+            let rel = row.rel.clone();
+            e.store().call(move |s| Ok(s.leaving()?.iter().any(|(_, at)| rel.starts_with(at)))).await?
         }
         _ => false,
     };
@@ -189,7 +188,7 @@ struct Job<'a> {
     /// A session opened for exactly this content (the same snapshot), to
     /// resume.
     session: Option<String>,
-    /// The item is not placed here (`TreeStore::held_out`): its content
+    /// The row's local path is a leaving object's, or below it: its content
     /// only, into the item where OneDrive has it — no rename, no move, no
     /// local object recorded (issue #104).
     content_only: bool,
@@ -373,7 +372,7 @@ impl Job<'_> {
                     Some(fresh) => guard = fresh,
                     None => return self.changed(None).await,
                 },
-                Err(WriteError::NotFound) => return upload_as_new(self.e, row, self.found, self.parent, id).await,
+                Err(WriteError::NotFound) => return self.gone_or_new(id).await,
                 Err(other) => return Err(other.into()),
             }
         }
@@ -382,9 +381,25 @@ impl Job<'_> {
             Ok(item) => self.finish(item, sent.hash).await,
             Err(WriteError::Changed) => self.changed(sent.hash).await,
             // Deleted in OneDrive while changed here: local wins (§6).
-            Err(WriteError::NotFound) => upload_as_new(self.e, row, self.found, self.parent, id).await,
+            Err(WriteError::NotFound) => self.gone_or_new(id).await,
             Err(other) => Err(other.into()),
         }
+    }
+
+    /// The item is gone from OneDrive. Changed here, it goes up again as new
+    /// (§6: local wins) — but not from inside a leaving object: removed in
+    /// OneDrive means removed (issue #104, decision 2), and the row ends.
+    async fn gone_or_new(&self, id: &str) -> Result<Outcome, Fail> {
+        if !self.content_only {
+            return upload_as_new(self.e, self.row, self.found, self.parent, id).await;
+        }
+        tracing::info!("{} was removed from OneDrive: its change is not uploaded", self.found.rel.display());
+        if let Some(url) = &self.row.session_url {
+            cancel_session(self.e, url).await?;
+        }
+        let seq = self.row.seq;
+        self.e.store().call(move |s| s.outbox_drop(seq, None, None, None)).await?;
+        Ok(Outcome::Done)
     }
 
     /// A `412` on the move before the content: has OneDrive the item where
@@ -410,7 +425,7 @@ impl Job<'_> {
         let id = row.item_id.as_deref().unwrap_or_default();
         let remote = match self.e.cfg.drive.item(id).await {
             Ok(remote) => remote,
-            Err(DriveError::NotFound) => return upload_as_new(self.e, row, self.found, self.parent, id).await,
+            Err(DriveError::NotFound) => return self.gone_or_new(id).await,
             Err(err) => return Err(err.into()),
         };
         let hash = self.hash(hash).await?;

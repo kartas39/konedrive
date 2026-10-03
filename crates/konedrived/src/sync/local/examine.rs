@@ -54,7 +54,7 @@ use super::{snapshot, MASS_DELETE_FLOOR, MASS_DELETE_ITEMS, MASS_DELETE_PERCENT,
 use crate::drive::item::RESERVED_PREFIX;
 use crate::sync::disk::{Disk, HOLDING, NEW_PREFIX};
 use crate::sync::{InodeKey, InodeLocks};
-use crate::tree::outbox::{is_under, Base, Detection, Inode, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, SWAP_PREFIX};
+use crate::tree::outbox::{is_under, Base, Detection, Inode, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState};
 use crate::tree::{Kind, Located, Placement, Row, Store, Table, TreeError};
 
 /// A row's reason while a writer has the file open (§4.3).
@@ -938,6 +938,11 @@ impl Run<'_, '_> {
             let id = self.entries[i].id.clone().expect("only entries with an id");
             if self.base_row(&id)?.is_some() {
                 ours.push(i);
+            } else if self.store({ let id = id.clone(); move |s| s.leaving_had(&id) })? {
+                // Was inside it when it began to leave, and is gone from the
+                // base since: removed in OneDrive, never uploaded as new
+                // (issue #104, decision 2). The reconcile removes it.
+                self.consumed.insert(i);
             } else {
                 by_id.entry(id).or_default().push(i);
             }
@@ -1236,8 +1241,15 @@ impl Run<'_, '_> {
     fn found(&mut self, id: &str, i: usize, batch: &Batch) -> Result<(), ExamineError> {
         let e = self.entries[i].clone();
         let Some(base) = self.base_row(id)? else { return Ok(()) };
-        if !self.located(id)?.is_some_and(|l| l.placed) && !base.name.starts_with(SWAP_PREFIX) {
-            return self.found_leaving(id, &base, &e, batch);
+        if !self.located(id)?.is_some_and(|l| l.placed) {
+            // Not placed by the base, and placed right here by the new tree:
+            // a reconcile is placing it now, and its swap follows — never a
+            // move of the user's (issue #104).
+            let placing = self.store({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed && l.rel == e.rel);
+            if placing {
+                self.recheck(&e);
+                return Ok(());
+            }
         }
         let recorded = self.local_handle(id)?;
         if e.handle.is_some() && e.handle != recorded {
@@ -1284,8 +1296,8 @@ impl Run<'_, '_> {
         Ok(())
     }
 
-    /// Item `id`, which the base does not place here (a name too long, the
-    /// Personal Vault...), found as `e`: an object that stays on disk only
+    /// Item `id` found as `e` at or below an object that is leaving (a name
+    /// too long, the Personal Vault...): an object that stays on disk only
     /// until what waits inside it is uploaded (issue #104). It is never
     /// moved in OneDrive to where it is here, nor recorded as the item's
     /// object again; only its content, changed here, goes up into the item

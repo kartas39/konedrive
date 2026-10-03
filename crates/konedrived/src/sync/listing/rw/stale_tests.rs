@@ -491,3 +491,108 @@ async fn a_store_left_with_stale_objects_below_a_skipped_folder_deletes_nothing_
     assert_eq!(id_at(&w.path("docs/f.txt")).as_deref(), Some("F"), "its child is back on disk");
     assert!(w.graph.with(|c| c.item("F").is_some() && c.bin.is_empty()));
 }
+
+impl World {
+    /// `docs` gets a name too long in OneDrive while a new file whose name
+    /// OneDrive refuses (a blocked `create`) keeps it on disk.
+    async fn docs_leaving_and_held(&self, listing: &Arc<Listing>) {
+        std::fs::write(self.path("docs/n:ew.txt"), b"new").unwrap();
+        let mut batch = crate::sync::local::Batch::new();
+        batch.name(Path::new("docs"), std::ffi::OsStr::new("n:ew.txt"));
+        self.examine(batch).await;
+        self.graph.with(|c| c.rename("D", ROOT, &long_name()));
+        self.cycle(listing).await;
+        self.examine_handed().await;
+        self.cycle(listing).await;
+        assert!(self.path("docs").exists(), "held by its blocked row");
+    }
+}
+
+/// Round 2, point 1: `docs` leaves, held on disk by a blocked row, and is
+/// placed again elsewhere; the user deletes `f.txt` in its new place. The
+/// `DELETE` reaches OneDrive: only rows inside the old object are dropped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delete_in_the_new_place_of_a_folder_still_leaving_reaches_onedrive() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    w.graph.with(|c| c.add(crate::sync::upload::fake::FakeItem {
+        id: "P".into(),
+        parent: Some(ROOT.into()),
+        name: "papers".into(),
+        folder: true,
+        content: Vec::new(),
+        hash: None,
+        size: 0,
+        etag: "e-P".into(),
+        ctag: "c-P".into(),
+        mtime: 0,
+    }));
+    w.cycle(&listing).await;
+    w.docs_leaving_and_held(&listing).await;
+    w.graph.with(|c| c.rename("D", "P", "docs"));
+    w.cycle(&listing).await;
+    assert_eq!(id_at(&w.path("papers/docs/f.txt")).as_deref(), Some("F"));
+    std::fs::remove_file(w.path("papers/docs/f.txt")).unwrap();
+    {
+        let w = Arc::clone(&w);
+        tokio::task::spawn_blocking(move || scan_now(&w)).await.unwrap();
+    }
+    assert!(w.store.call(|s| s.outbox_rows()).await.unwrap().iter().any(|r| r.kind == crate::tree::outbox::OutboxKind::Delete));
+    w.cycle(&listing).await;
+    w.upload().await;
+    assert_eq!(w.deletes(), 1, "the user's delete reached OneDrive");
+    assert!(w.graph.with(|c| c.bin.contains_key("F")));
+    assert!(w.path("docs").exists(), "the old object is still held");
+}
+
+/// Round 2, point 1: `f.txt` moved by the user out of `docs` before `docs`
+/// stops being placed stays where the user put it, and its move reaches
+/// OneDrive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_moved_out_before_its_folder_stops_being_placed_keeps_its_move() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    std::fs::rename(w.path("docs/f.txt"), w.path("f2.txt")).unwrap();
+    let mut batch = crate::sync::local::Batch::new();
+    batch.name(Path::new("docs"), std::ffi::OsStr::new("f.txt"));
+    batch.name(Path::new(""), std::ffi::OsStr::new("f2.txt"));
+    w.examine(batch).await;
+    w.graph.with(|c| c.rename("D", ROOT, &long_name()));
+    for _ in 0..3 {
+        w.cycle(&listing).await;
+        w.examine_handed().await;
+        w.upload().await;
+    }
+    assert_eq!(id_at(&w.path("f2.txt")).as_deref(), Some("F"), "where the user put it");
+    w.graph.with(|c| {
+        let f = c.item("F").unwrap();
+        assert_eq!((f.parent.as_deref(), f.name.as_str()), (Some(ROOT), "f2.txt"), "its move reached OneDrive");
+    });
+    assert!(!w.path("docs").exists());
+    assert_eq!(w.deletes(), 0);
+}
+
+/// Round 2, point 2: `f.txt`, changed here, is removed in OneDrive while
+/// `docs` leaves and a blocked row holds it on disk. Nothing of it is sent —
+/// no `create`, no upload — and it leaves the disk.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_file_removed_in_onedrive_inside_a_leaving_folder_is_never_uploaded_again() {
+    let w = Arc::new(world().await);
+    let listing = w.listed().await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(w.path("docs/f.txt"), b"one, changed").unwrap();
+    w.docs_leaving_and_held(&listing).await;
+    w.graph.with(|c| c.trash("F"));
+    let uploads = || w.graph.with(|c| c.log.iter().filter(|(m, p)| (m == "PUT" || m == "POST") && !p.contains("/D/children")).count());
+    let before = uploads();
+    for _ in 0..3 {
+        w.cycle(&listing).await;
+        w.examine_handed().await;
+        w.upload().await;
+    }
+    assert!(!w.path("docs/f.txt").exists(), "it left the disk");
+    assert!(w.path("docs").exists(), "the folder is still held");
+    assert_eq!(uploads(), before, "nothing of it was sent: {:?}", w.graph.with(|c| c.log.clone()));
+    assert!(w.graph.with(|c| c.items.values().all(|i| i.name != "f.txt")));
+}

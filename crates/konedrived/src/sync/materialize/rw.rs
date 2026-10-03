@@ -215,6 +215,10 @@ pub(super) enum Removal {
     Kept,
 }
 
+/// How long one removal waits in all for the downloads it stopped to let go
+/// of their files (a guess; the cycle waits meanwhile).
+const SETTLE_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// What is on disk at and below something about to be taken off it: what
 /// the daemon forgets first, and the fills it stops (issue #104).
 #[derive(Default)]
@@ -447,11 +451,14 @@ impl Materializer {
             return Ok(Was::Leaving);
         }
         if !base_placed {
-            // Not placed by the base — or one a stop left before it was
-            // recorded as leaving.
+            // Not placed by the base. Where the base has it, it is no longer
+            // placeable; anywhere else it is the user's move out of what is
+            // leaving, carried out as any other (issue #104).
+            let at_base_place = base.parent_id == entry.parent_id && entry.rel.file_name() == Some(OsStr::new(&base.name)) && (base.kind == Kind::Folder) == entry.is_dir;
             return Ok(match (staged.is_some(), placed) {
                 (false, _) => Was::Removed,
-                (true, false) => Was::Unplaced,
+                (true, false) if at_base_place => Was::Unplaced,
+                (true, false) => Was::Elsewhere,
                 // Placed by the tree, and not by the base: as for anything
                 // away from its base place, the examination decides first.
                 (true, true) => Was::Elsewhere,
@@ -845,11 +852,12 @@ impl Materializer {
             }
             // The daemon never moves or deletes in OneDrive for what is
             // leaving: such rows from before go; only content keeps it.
-            let mut ids = self.store.call_blocking({ let id = id.clone(); move |s| s.descendants(Table::Items, &id) })?;
-            ids.push(id.clone());
-            let dropped = self.store.call_blocking({ let rel = rel.clone(); move |s| s.outbox_drop_moves(&ids, &rel) })?;
+            let dropped = self.store.call_blocking({ let rel = rel.clone(); move |s| s.outbox_drop_moves(&rel) })?;
             if !dropped.is_empty() {
                 tracing::info!("{} is no longer placed here: {} move(s) or delete(s) waiting for it are dropped", rel.display(), dropped.len());
+            }
+            if is_dir {
+                self.remove_gone_inside(&dir, &name, &rel, run)?;
             }
             if self.keeps_leaving(rw, &rel, is_dir)? {
                 continue;
@@ -865,6 +873,47 @@ impl Materializer {
             removed?;
             tracing::info!("{} is no longer placed here, and nothing in it waits to be uploaded: removed", rel.display());
             self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
+        }
+        Ok(())
+    }
+
+    /// Objects below the leaving folder at `dir/name` (at `rel`) whose items
+    /// were in it when it began to leave and are gone from OneDrive since:
+    /// removed as anything OneDrive removed, and their rows dropped — never
+    /// uploaded again (issue #104, decision 2). An object with no item id
+    /// (made here) is left to go up.
+    fn remove_gone_inside(&self, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<(), ApplyError> {
+        let sub = self.disk.open_subdir(dir, name)?;
+        if nix::sys::stat::fstat(sub.as_fd()).map_err(std::io::Error::from)?.st_dev != nix::sys::stat::fstat(dir.as_fd()).map_err(std::io::Error::from)?.st_dev {
+            return Ok(());
+        }
+        for child in self.disk.list(&sub)? {
+            self.check_cancel()?;
+            let at = rel.join(&child);
+            match self.disk.probe(&sub, &child)? {
+                Probe::Managed { id, is_dir } => {
+                    let gone = self.store.call_blocking({ let id = id.clone(); move |s| Ok(s.get(Table::Staging, &id)?.is_none() && s.leaving_had(&id)?) })?;
+                    if gone {
+                        let survey = self.forget_before_removing(&sub, &child, true)?;
+                        let removed = self.remove_whole(None, &sub, &child, &at, run);
+                        if removed.is_err() {
+                            self.settle_stopped(&sub, &child, &survey);
+                        }
+                        removed?;
+                        let ids = survey.ids.clone();
+                        let dropped = self.store.call_blocking({ let at = at.clone(); move |s| {
+                            let mut dropped = s.outbox_drop_under(&at)?;
+                            dropped.extend(s.outbox_drop_items(&ids)?);
+                            Ok(dropped)
+                        } })?;
+                        tracing::info!("{} was removed from OneDrive while its folder was leaving: removed here, {} change(s) dropped", at.display(), dropped.len());
+                    } else if is_dir {
+                        self.remove_gone_inside(&sub, &child, &at, run)?;
+                    }
+                }
+                Probe::Unmanaged { is_dir: true } => self.remove_gone_inside(&sub, &child, &at, run)?,
+                _ => {}
+            }
         }
         Ok(())
     }
@@ -924,13 +973,16 @@ impl Materializer {
             Err(_) => return,
         };
         self.files_below(dir, name, dev, &mut files);
+        // 10 s in all for the removal, not for each file: the cycle waits.
+        let deadline = std::time::Instant::now() + SETTLE_WAIT;
         for file in files {
             let Ok(key) = crate::sync::InodeKey::of(&file) else { continue };
             if !survey.stopped.contains(&key) {
                 continue;
             }
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
             // The fill lets go of the lock once it has stopped.
-            let guard = self.runtime.block_on(async { tokio::time::timeout(std::time::Duration::from_secs(10), self.locks.lock(key)).await });
+            let guard = self.runtime.block_on(async { tokio::time::timeout(left, self.locks.lock(key)).await });
             match guard {
                 Ok(_guard) => crate::sync::source::back_to_placeholder(&file),
                 Err(_) => tracing::warn!("a stopped download did not let go of its file in time; it is left as it is"),

@@ -814,12 +814,14 @@ where it is here (F188).
 
 Concretely: the object's place is recorded (`leaving`), and from the next cycle on each cycle
 examines it itself after its reconcile; it is removed only when that examination records and holds
-back nothing and no outbox row has a place inside it. Its `move` and `delete` rows from before are
-dropped; what keeps it — a content row the outbox cannot finish, a file whose state cannot be read,
-a filesystem mounted inside — is listed with its reason. A row for an item not placed here, or for
-anything inside a leaving object, uploads content only, into the item where OneDrive has it: never a
-rename or a move, and no local object recorded. An object recorded as leaving is never uploaded as
-new nor stripped, even once its item is placed again elsewhere (F188).
+back nothing and no outbox row has a place inside it. The `move` and `delete` rows whose local path is
+inside it are dropped; a row elsewhere (the user's own move out of it, a delete in the item's new
+place) is carried out. What keeps it — a content row the outbox cannot finish, a file whose state
+cannot be read, a filesystem mounted inside — is listed with its reason, among what needs the user. A
+row whose local path is inside a leaving object uploads content only, into the item where OneDrive
+has it: never a rename or a move, and no local object recorded. An object recorded as leaving is never
+uploaded as new nor stripped, even once its item is placed again elsewhere; one inside it whose item
+OneDrive removed since is removed here and never uploaded again (F188).
 
 **The daemon never deletes or moves anything in OneDrive because it took something off the disk
 itself.** Before the reconcile removes anything — what OneDrive removed, what stops being placed, and

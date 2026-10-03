@@ -470,9 +470,13 @@ impl InodeLocks {
     /// its item (issue #104): whoever holds or awaits its lock — a fill — is
     /// told to stop ([`InodeGuard::cancelled`]). Whether anyone was.
     pub fn cancel(&self, key: InodeKey) -> bool {
-        match self.inner.lock().unwrap().get(&key) {
+        match self.inner.lock().unwrap().get_mut(&key) {
             Some(slot) => {
                 slot.cancel.cancel();
+                // Whoever comes for the lock from now on gets a token of its
+                // own: a download that starts after the stop is not stopped
+                // by it.
+                slot.cancel = CancellationToken::new();
                 true
             }
             None => false,
@@ -5051,6 +5055,28 @@ mod tests {
 
     /// A waiter whose future is dropped — a D-Bus method whose caller went
     /// away, a `select!` that lost — must not leave its row behind. Measured
+    /// Issue #104: a stop reaches the fill that holds the lock (and one
+    /// already waiting), never one that comes for the lock after it, even
+    /// while the slot is still in use.
+    #[tokio::test]
+    async fn a_stop_does_not_reach_a_fill_that_starts_after_it() {
+        let locks = InodeLocks::new();
+        let key = InodeKey { dev: 1, ino: 2 };
+        let holder = locks.lock(key).await;
+        assert!(locks.cancel(key));
+        tokio::time::timeout(Duration::from_secs(1), holder.cancelled()).await.expect("the holder is told");
+        let later = {
+            let locks = locks.clone();
+            tokio::spawn(async move {
+                let guard = locks.lock(key).await;
+                tokio::time::timeout(Duration::from_millis(200), guard.cancelled()).await.is_err()
+            })
+        };
+        tokio::task::yield_now().await;
+        drop(holder);
+        assert!(later.await.unwrap(), "a fill that came after the stop is not stopped");
+    }
+
     /// before the fix: holder releases, parked waiter is cancelled, one row
     /// stays in the table forever.
     #[tokio::test]

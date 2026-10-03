@@ -25,6 +25,7 @@ struct Fx {
     store: Store,
     rescue: tempfile::TempDir,
     runtime: tokio::runtime::Runtime,
+    locks: InodeLocks,
 }
 
 fn row(id: &str, parent: &str, name: &str, kind: Kind, ctag: &str) -> Row {
@@ -77,6 +78,7 @@ impl Fx {
             store: Store::new(TreeStore::in_memory().unwrap()),
             rescue: tempfile::tempdir().unwrap(),
             runtime: tokio::runtime::Runtime::new().unwrap(),
+            locks: InodeLocks::new(),
         };
         fx.store.call_blocking(move |s| {
             s.begin_staging(false)?;
@@ -94,7 +96,7 @@ impl Fx {
             store: self.store.clone(),
             link: None,
             runtime: self.runtime.handle().clone(),
-            locks: InodeLocks::new(),
+            locks: self.locks.clone(),
             root_item_id: "R".into(),
             rescue_into: self.rescue.path().join("now"),
             cancel: CancellationToken::new(),
@@ -410,6 +412,43 @@ fn a_removal_that_fails_fails_the_cycle_and_commits_nothing() {
     std::fs::set_permissions(fx.path("docs/deep"), std::fs::Permissions::from_mode(0o755)).unwrap();
     assert!(failed.is_err(), "{failed:?}");
     assert!(fx.base("D").is_some() && fx.base("G").is_some(), "the base keeps what the disk still has");
+}
+
+/// Review fixes, round 2, point 6: a removal that fails after it stopped a
+/// download leaves the file that survives a placeholder again, not partly
+/// filled.
+#[test]
+fn a_removal_that_fails_after_stopping_a_download_leaves_a_placeholder() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    let at = fx.path("docs/deep/g.txt");
+    {
+        use std::os::unix::fs::FileExt;
+        let file = placeholder::reopen_writable(&File::open(&at).unwrap()).unwrap();
+        file.write_all_at(&[7u8; 3], 0).unwrap();
+        placeholder::write_state(&file, State::Hydrating).unwrap();
+    }
+    let key = crate::sync::InodeKey::of(&File::open(&at).unwrap()).unwrap();
+    let (held, holding) = std::sync::mpsc::channel();
+    let fill = fx.runtime.spawn({
+        let locks = fx.locks.clone();
+        async move {
+            let guard = locks.lock(key).await;
+            held.send(()).unwrap();
+            guard.cancelled().await;
+        }
+    });
+    holding.recv().unwrap();
+    std::fs::set_permissions(fx.path("docs/deep"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = fx.cycle(&[Change::Delete("D".into())], false);
+    std::fs::set_permissions(fx.path("docs/deep"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(failed.is_err());
+    fx.runtime.block_on(fill).unwrap();
+    let file = File::open(&at).unwrap();
+    assert_eq!(placeholder::read_state(&file).unwrap(), Some(State::OnlineOnly), "a placeholder again");
+    let mut left = Vec::new();
+    std::io::Read::read_to_end(&mut &file, &mut left).unwrap();
+    assert!(left.iter().all(|&b| b == 0), "nothing of the stopped download left: {left:?}");
 }
 
 /// F82 (5): an item OneDrive has under the outbox's temporary name (a store

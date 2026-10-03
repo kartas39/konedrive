@@ -33,7 +33,8 @@ pub(super) const TABLES: &str = "
         parent_id TEXT, name TEXT, kind TEXT, size INTEGER, mtime INTEGER, etag TEXT, ctag TEXT,
         quickxor TEXT, mime TEXT, placement TEXT);
     CREATE TABLE IF NOT EXISTS outbox_gone (id TEXT PRIMARY KEY, local_seq INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS leaving (id TEXT PRIMARY KEY, rel BLOB NOT NULL);";
+    CREATE TABLE IF NOT EXISTS leaving (id TEXT PRIMARY KEY, rel BLOB NOT NULL);
+    CREATE TABLE IF NOT EXISTS leaving_items (id TEXT PRIMARY KEY, leaving TEXT NOT NULL);";
 
 /// A read-write cycle's delta, staged ([`TreeStore::stage_rw`]): the ids
 /// to reconcile, and the deferred changes consumed.
@@ -350,13 +351,32 @@ impl TreeStore {
 
     /// Item `id` stopped being placed, and its object stays at `rel` for now
     /// (issue #104).
-    pub fn leaving_add(&self, id: &str, rel: &std::path::Path) -> Result<(), TreeError> {
+    /// The items the base has at and below it are remembered with it: one of
+    /// them found inside it once the base no longer has it was removed in
+    /// OneDrive, and is never uploaded as new (review fixes, round 2).
+    pub fn leaving_add(&mut self, id: &str, rel: &std::path::Path) -> Result<(), TreeError> {
         use std::os::unix::ffi::OsStrExt;
-        self.conn.execute(
+        let mut items = self.descendants(Table::Items, id)?;
+        items.push(id.to_owned());
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "INSERT INTO leaving (id, rel) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET rel = excluded.rel",
             params![id, rel.as_os_str().as_bytes()],
         )?;
+        {
+            let mut had = tx.prepare_cached("INSERT OR REPLACE INTO leaving_items (id, leaving) VALUES (?1, ?2)")?;
+            for item in &items {
+                had.execute(params![item, id])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
+    }
+
+    /// Whether item `id` was at or below something leaving when it began to
+    /// leave.
+    pub fn leaving_had(&self, id: &str) -> Result<bool, TreeError> {
+        Ok(self.conn.query_row("SELECT 1 FROM leaving_items WHERE id = ?1", [id], |_| Ok(())).optional()?.is_some())
     }
 
     /// What is leaving: each item id with where its object stays.
@@ -375,6 +395,7 @@ impl TreeStore {
     /// Item `id` left, or is placed again: nothing of it is leaving now.
     pub fn leaving_drop(&self, id: &str) -> Result<(), TreeError> {
         self.conn.execute("DELETE FROM leaving WHERE id = ?1", [id])?;
+        self.conn.execute("DELETE FROM leaving_items WHERE leaving = ?1", [id])?;
         Ok(())
     }
 
