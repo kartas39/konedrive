@@ -118,6 +118,11 @@ risky one.
     simply restore it.
   - **Correction:** not only a restart ends it: a second `Remove` that succeeds does too
     (`forget.rs:160–163`).
+- **Fixed 2026-10-03** in `57216c9` (#139): a removal that fails at its second or third step takes both
+  retirements back, and its refusal says what failed and what became of the folder; the folder's
+  retirement is its own flag, `SyncService::retiring`; an `Add` whose export fails takes its
+  objects, its entry and its directory back. What is still left behind is in
+  `docs/limitations/F205.md`. The standing enum of the "Fix" line is not started.
 
 ## SY6. States and refusals as strings — **defect?** in part
 

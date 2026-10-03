@@ -86,7 +86,7 @@ not fixed moves there.
 | [`FS1`](helper.md) | `konedrive-fs/src/placeholder.rs:229–231` | An item dated before 1970 cannot get a placeholder | refuted for OneDrive items; confirmed for the function |
 | [`CL2`](ctl.md) | `konedrivectl/src/text/refusals.rs:277`, `:366`, `:406` | A wrong sentence for a refusal and action nobody wrote | refuted as written; the neighbouring defect fixed in `a62d487` |
 | [`CL5`](ctl.md) | `konedrivectl/src/cli.rs:80`, `text/refusals.rs:585` and three more | The label rule stated five times; four say "no @", the code allows it | fixed in `a62d487` |
-| [`SY5`](sync.md) | `daemon/manager.rs:323–325`, `:302` | `Accounts.Remove` that fails half-way leaves an account that refuses everything | confirmed |
+| [`SY5`](sync.md) | `daemon/manager.rs:323–325`, `:302` | `Accounts.Remove` that fails half-way leaves an account that refuses everything | fixed in `57216c9` |
 | [`SY6`](sync.md) | `sync/mod.rs:72–78` | A typo in `config.toml` silently makes a OneDrive folder local | confirmed |
 
 ### The order of the fixes
