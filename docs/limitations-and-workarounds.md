@@ -2558,13 +2558,15 @@ application must never read zeros where real content should be.
   `tree/reconcile.rs` table `leaving`; `sync/local/examine.rs` `found_leaving`; issue #104) — an item
   OneDrive still has but this folder no longer places (a name too long, a reserved name, the Personal
   Vault, shared, OneNote, unsupported) has its placement committed and its local objects forgotten at
-  once, is listed in `Skipped()`, and its object is recorded in `leaving` where it stays. The object is
-  followed by its item id wherever it goes: a parent renamed in OneDrive (the reconcile moves it, and
-  its `leaving` place with it), a parent renamed here (the examination's rebase, or its finding the id
-  elsewhere — and, for a cycle that comes first, the object's file handle, kept with it, found by a walk
-  of the folder), and a Full scan that finds it by its id. Its row is dropped only when neither its
-  path nor its handle finds it; any other error (a parent it may not read) leaves it for the next
-  cycle. The walk reads every directory of the folder, once per such cycle. From a later
+  once, is listed in `Skipped()`, and its object is recorded in `leaving` where it stays, with its file
+  handle. The object is followed wherever it goes: a parent renamed in OneDrive (the reconcile moves
+  it, and its `leaving` place with it), a parent renamed here (the examination's rebase), and anywhere
+  else by its own file handle — an examination or a Full reconcile that meets it, or, for a cycle that
+  comes first, a walk of the folder. Never by its item id alone: the copy placed again, a copy that
+  kept the attributes and a hard link carry the id too, and are the user's. A store from before the
+  handle was kept follows it by its path only. Its row is dropped only when neither its path nor its
+  handle finds it; any other error (a directory it may not read, on its path or on the walk) leaves it
+  for the next cycle. The walk reads every directory of the folder, once per such cycle. From a later
   cycle on, each cycle examines it itself, after its reconcile: the object goes whole only when that
   examination records and holds back nothing and no outbox row has a place at or below it — so a file
   moved in within the watcher's quiet spell, another account's included, goes up before the folder
@@ -2585,8 +2587,9 @@ application must never read zeros where real content should be.
   mean removed: what was downloaded or changed there is kept and goes up again as new, as anywhere
   (F116). A `404` for such a row ends it only once OneDrive's listing says the item is gone; until then
   the row is blocked, `leaving-not-found`, shown with what needs the user, and keeps the folder; as
-  soon as OneDrive's listing brings the item again (a delta that changes it, or a full listing that
-  has it), the row is tried again. An object whose id the base never had is a
+  soon as OneDrive's listing brings the item again (a delta that changes it, or a whole listing of the
+  drive that has it — not a large delta), the row is tried again; once the listing says the item is
+  gone, the row goes, whatever the item was (one the user moved in included), and its file with it. An object whose id the base never had is a
   stranger there as anywhere and goes up as new, and so does one with no id. Its `leaving` row goes
   only when it is removed, or placed again where it is. Something the user moves out of a leaving folder
   is followed only by an examination that sees it (a Full scan, if no event says it): its move is then
@@ -2598,7 +2601,9 @@ application must never read zeros where real content should be.
   `…a_leaving_folder_whose_parent_is_renamed_in_onedrive_…`, `…a_folder_moved_in_onedrive_into_a_skipped_folder_…`,
   `…a_placed_file_moved_into_a_leaving_folder_keeps_its_move`, `…a_resync_upload_differences_keeps_…`,
   `…a_404_not_confirmed_by_the_listing_…`, `…a_leaving_folder_whose_parent_is_renamed_here_is_found_by_its_handle`,
-  `…an_error_other_than_gone_keeps_the_leaving_row`, `…a_change_blocked_by_a_404_is_retried_…`) · open.
+  `…an_error_other_than_gone_keeps_the_leaving_row`, `…a_change_blocked_by_a_404_is_retried_…`,
+  `…renaming_the_copy_placed_again_is_the_users_rename_only`, `…a_full_reconcile_moves_the_copy_placed_again_…`,
+  `…an_unreadable_directory_on_the_way_keeps_the_leaving_row`, `…a_blocked_404_row_goes_once_the_listing_removes_its_item`) · open.
 - **F189. A row placed again carries no local object** (`konedrived/src/tree.rs` `write`,
   `commit_staging`; `tree/reconcile.rs` `land_deferred`; issue #104) — a row that turns placed over an
   `items` row that is not placed drops whatever object `items` recorded, in a delta's overlay, a full

@@ -449,7 +449,18 @@ impl Materializer {
         // Recognised by its item id wherever it is — a parent renamed in
         // OneDrive or here took it along — unless it is the object the new
         // tree places right there; its place is followed.
-        let leaving = self.store.call_blocking(|s| s.leaving())?.into_iter().find(|(left, _)| left == id).map(|(_, at)| at);
+        // Only the object itself: at its recorded place, or carrying its
+        // recorded file handle — never another object with its id (the copy
+        // placed again, a copy, a hard link).
+        let leaving = self.store.call_blocking(|s| s.leaving_with_handles())?.into_iter().find(|(left, _, _)| left == id);
+        let itself = leaving.as_ref().is_some_and(|(_, at, handle)| {
+            *at == entry.rel
+                || handle.as_ref().is_some_and(|h| {
+                    let (parent, name) = (entry.rel.parent().unwrap_or(Path::new("")), entry.rel.file_name());
+                    name.and_then(|name| self.disk.dir(parent).ok().and_then(|dir| konedrive_fs::handle::FileHandle::at(&dir, name).ok())).as_ref() == Some(h)
+                })
+        });
+        let leaving = leaving.map(|(_, at, _)| at).filter(|_| itself);
         let placed_here = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed && l.rel == entry.rel);
         if let (Some(at), Some(_), false) = (&leaving, &staged, placed_here) {
             if *at != entry.rel {
@@ -845,16 +856,25 @@ impl Materializer {
             };
             let found = match found {
                 Some(found) => Some((rel.clone(), found)),
-                None => match self.leaving_by_handle(&id)? {
-                    Some(at) => match self.leaving_at(&at, &id) {
+                None => match self.leaving_by_handle(&id) {
+                    Ok(Some(at)) => match self.leaving_at(&at, &id) {
                         Ok(Some(found)) => {
                             tracing::info!("{} is leaving and was found at {} by its handle", rel.display(), at.display());
                             self.store.call_blocking({ let (id, at) = (id.clone(), at.clone()); move |s| s.leaving_set_rel(&id, &at) })?;
                             Some((at, found))
                         }
-                        _ => None,
+                        Ok(None) => None,
+                        Err(e) => {
+                            tracing::warn!("{} is leaving and cannot be looked at ({e}); it is looked at again later", at.display());
+                            continue;
+                        }
                     },
-                    None => None,
+                    Ok(None) => None,
+                    Err(ApplyError::Cancelled) => return Err(ApplyError::Cancelled),
+                    Err(e) => {
+                        tracing::warn!("{} is leaving and the folder cannot be searched for it ({e}); it is looked at again later", rel.display());
+                        continue;
+                    }
                 },
             };
             let Some((rel, (is_dir, dir))) = found else {
@@ -884,6 +904,9 @@ impl Materializer {
                 tracing::info!("{} is no longer placed here: {} move(s) or delete(s) waiting for it are dropped", rel.display(), dropped.len());
             }
             if is_dir {
+                if !located.as_ref().is_some_and(|l| l.placed) {
+                    self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_refresh_items(&id) })?;
+                }
                 self.remove_gone_inside(rw, &dir, &name, &rel, run)?;
             }
             if self.keeps_leaving(rw, &rel, is_dir)? {
@@ -933,16 +956,30 @@ impl Materializer {
         let mut queue = std::collections::VecDeque::from([(PathBuf::new(), root)]);
         while let Some((rel, dir)) = queue.pop_front() {
             self.check_cancel()?;
-            let Ok(names) = self.disk.list(&dir) else { continue };
+            // A directory that cannot be read may hold it: nothing is decided.
+            let names = match self.disk.list(&dir) {
+                Ok(names) => names,
+                Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => continue,
+                Err(e) => return Err(e.into()),
+            };
             for name in names {
                 if konedrive_fs::handle::FileHandle::at(&dir, &name).is_ok_and(|h| h == handle) {
                     return Ok(Some(rel.join(&name)));
                 }
-                if matches!(self.disk.probe(&dir, &name), Ok(Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true })) {
-                    if let Ok(sub) = self.disk.open_subdir(&dir, &name) {
-                        if nix::sys::stat::fstat(sub.as_fd()).is_ok_and(|s| s.st_dev == dev) {
-                            queue.push_back((rel.join(&name), sub));
+                let is_dir = match nix::sys::stat::fstatat(dir.as_fd(), name.as_os_str(), nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {
+                    Ok(stat) => stat.st_mode & libc::S_IFMT == libc::S_IFDIR,
+                    Err(nix::errno::Errno::ENOENT) => false,
+                    Err(e) => return Err(std::io::Error::from(e).into()),
+                };
+                if is_dir {
+                    match self.disk.open_subdir(&dir, &name) {
+                        Ok(sub) => {
+                            if nix::sys::stat::fstat(sub.as_fd()).is_ok_and(|s| s.st_dev == dev) {
+                                queue.push_back((rel.join(&name), sub));
+                            }
                         }
+                        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR | libc::ELOOP)) => {}
+                        Err(e) => return Err(e.into()),
                     }
                 }
             }

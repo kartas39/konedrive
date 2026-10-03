@@ -385,6 +385,37 @@ impl TreeStore {
         Ok(())
     }
 
+    /// What is leaving, each item id with its object's place and file handle
+    /// (none in a store from before the handle was kept).
+    pub fn leaving_with_handles(&self) -> Result<Vec<(String, std::path::PathBuf, Option<FileHandle>)>, TreeError> {
+        use std::os::unix::ffi::OsStrExt;
+        let mut statement = self.conn.prepare_cached("SELECT id, rel, handle FROM leaving ORDER BY id")?;
+        let rows = statement
+            .query_map([], |r| {
+                let rel: Vec<u8> = r.get(1)?;
+                let handle: Option<Vec<u8>> = r.get(2)?;
+                Ok((r.get::<_, String>(0)?, std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&rel)), handle.as_deref().and_then(FileHandle::decode)))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// The items the base has now at and below the leaving item `id` are
+    /// remembered with it too: one moved in and committed there since, once
+    /// OneDrive removes it, goes as what was in it does (issue #104).
+    pub fn leaving_refresh_items(&mut self, id: &str) -> Result<(), TreeError> {
+        let items = self.descendants(Table::Items, id)?;
+        let tx = self.conn.transaction()?;
+        {
+            let mut had = tx.prepare_cached("INSERT OR IGNORE INTO leaving_items (id, leaving) VALUES (?1, ?2)")?;
+            for item in &items {
+                had.execute(params![item, id])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// The file handle of the leaving object of item `id`, if one was taken.
     pub fn leaving_handle(&self, id: &str) -> Result<Option<FileHandle>, TreeError> {
         let stored: Option<Option<Vec<u8>>> = self.conn.query_row("SELECT handle FROM leaving WHERE id = ?1", [id], |r| r.get(0)).optional()?;
@@ -573,6 +604,13 @@ mod tests {
         s.commit_staging("L1").unwrap();
         s.leaving_add("D", std::path::Path::new("d"), None).unwrap();
         assert!(s.leaving_had("F").unwrap());
+        // A failure between the two statements leaves both tables as they
+        // were: the row and its items go together or not at all.
+        s.conn.execute_batch("CREATE TEMP TRIGGER fail_items BEFORE DELETE ON leaving_items BEGIN SELECT RAISE(ABORT, 'injected'); END;").unwrap();
+        assert!(s.leaving_drop("D").is_err());
+        assert_eq!(s.leaving().unwrap().len(), 1, "the leaving row is still there");
+        assert!(s.leaving_had("F").unwrap());
+        s.conn.execute_batch("DROP TRIGGER fail_items;").unwrap();
         s.leaving_drop("D").unwrap();
         assert!(s.leaving().unwrap().is_empty());
         assert!(!s.leaving_had("F").unwrap() && !s.leaving_had("D").unwrap());

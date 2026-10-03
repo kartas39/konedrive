@@ -1099,7 +1099,15 @@ impl TreeStore {
     /// them, or, `whole`, a full listing has every item it lists: a change
     /// blocked because OneDrive answered `404` for one of them while it was
     /// leaving (`leaving-not-found`) is retried (issue #104). How many.
+    ///
+    /// One whose item the listing says is gone (`items` has it no more) has
+    /// nothing left to send and goes, whatever it was in (issue #104).
     pub fn outbox_unblock_found(&self, ids: &[String], whole: bool) -> Result<usize, TreeError> {
+        self.conn.execute(
+            "DELETE FROM outbox WHERE state = 'blocked' AND reason = ?1 AND item_id IS NOT NULL
+               AND NOT EXISTS (SELECT 1 FROM items WHERE id = outbox.item_id)",
+            [crate::sync::upload::reason::LEAVING_NOT_FOUND],
+        )?;
         let mut n = 0;
         let sql = "UPDATE outbox SET state = 'ready', reason = NULL, next_try = NULL
                     WHERE state = 'blocked' AND reason = ?1 AND item_id = ?2 AND EXISTS (SELECT 1 FROM items WHERE id = ?2)";

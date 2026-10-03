@@ -179,9 +179,9 @@ impl Examiner<'_> {
         };
         let handles_current = super::liveness::handles_current(self.store, &root);
         let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
-        let leaving_items: Vec<(String, PathBuf)> = self.store.call_blocking(|s| s.leaving())?;
-        let leaving = leaving_items.iter().map(|(_, rel)| rel.clone()).collect();
-        let leaving_ids = leaving_items.into_iter().enumerate().map(|(n, (id, _))| (id, n)).collect();
+        let leaving_items = self.store.call_blocking(|s| s.leaving_with_handles())?;
+        let leaving = leaving_items.iter().map(|(_, rel, _)| rel.clone()).collect();
+        let leaving_ids = leaving_items.into_iter().enumerate().filter_map(|(n, (id, _, handle))| Some((id, (n, handle?)))).collect();
         if let Some(progress) = progress {
             progress.started();
         }
@@ -295,7 +295,7 @@ struct Run<'e, 'a> {
     leaving: Vec<PathBuf>,
     /// The item ids of what is leaving, each with its place in `leaving`:
     /// the object is recognised by its id wherever it is.
-    leaving_ids: HashMap<String, usize>,
+    leaving_ids: HashMap<String, (usize, FileHandle)>,
     entries: Vec<Entry>,
     at: HashMap<PathBuf, usize>,
     whole: BTreeSet<PathBuf>,
@@ -898,14 +898,16 @@ impl Run<'_, '_> {
         let mut by_id: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         let mut unnamed: Vec<usize> = Vec::new();
         let mut leaving: Vec<usize> = Vec::new();
-        // A leaving object is found by its item id wherever it is now — a
-        // parent renamed here or in OneDrive took it along (issue #104) —
-        // unless it is the object the base places right there.
+        // A leaving object is found by its own file handle wherever it is
+        // now — a parent renamed here or in OneDrive took it along (issue
+        // #104) — never by its item id alone: the copy placed again, a copy
+        // or a hard link carry the id too. With no handle kept (a store from
+        // before it was), by its path only.
         for i in 0..self.entries.len() {
             let Some(id) = self.entries[i].id.clone() else { continue };
-            let Some(&n) = self.leaving_ids.get(&id) else { continue };
+            let Some((n, handle)) = self.leaving_ids.get(&id).cloned() else { continue };
             let rel = self.entries[i].rel.clone();
-            if self.leaving[n] == rel || self.located(&id)?.is_some_and(|l| l.placed && l.rel == rel) {
+            if self.leaving[n] == rel || self.entries[i].handle.as_ref() != Some(&handle) {
                 continue;
             }
             self.leaving[n] = rel.clone();
