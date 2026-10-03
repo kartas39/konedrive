@@ -42,6 +42,9 @@ hour-sized.
     fix proposes; if that fix is not wanted they are dropped, not kept ignored.
   - **The risk that remains:** the state is classified by caller and callee, so a new caller that
     passes `None` wrongly gets no refusal. The severity is "latent", not "the zeros path".
+- **Fixed 2026-10-03** in `6d9cdb6` (#141), the latent hole: `fill_file` decides from the state it
+  reads; a file that is not `online-only` is cleared first, and with no clearance it is refused
+  before it is touched (`NotCleared::NoWay`).
 
 ## HY2. "Turn a file back into a placeholder" is written four times
 
@@ -88,6 +91,9 @@ hour-sized.
   - **After a caught panic the file stays `hydrating`:** true by trace (`fill.rs:235`, a panic in
     `fetch` at `:569`, caught at `server.rs:250`). It heals at the next open or at startup
     recovery; not zeros.
+- **Fixed 2026-10-03** in `6d9cdb6` (#141), the errno: a fill stopped by a removal answers `EIO`,
+  and the comment says what is true. The stale module docs and the file left `hydrating` after a
+  caught panic are as they were.
 
 ## HY6. `helper/mod.rs` holds five things; its reader drops messages silently
 
@@ -118,6 +124,8 @@ hour-sized.
     `Filled::Done` also covers "found downloaded already", "no longer pinned" and "no
     registration" (`sync/pins.rs:195–202, 209`), which are counted as pool successes too with no
     transfer made: a `Filled::Cancelled` alone does not cover those.
+- **Fixed 2026-10-03** in `6d9cdb6` (#141), the slip in the worker: `Filled::Skipped` for a
+  download that was cancelled or transferred nothing; only `Filled::Done` is a pool success.
 
 ## HY8. `dehydrate.rs`: an error path skips the roll-back — **defect?**
 
@@ -139,6 +147,9 @@ hour-sized.
     open gets `EIO`; the next startup recovery punches it. Never zeros. Likelihood: very low.
   - **A fix must:** roll back on the `Err` arm as on `None`. The same gap exists if the
     `spawn_blocking` at `:386–388` fails to join.
+- **Fixed 2026-10-03** in `6d9cdb6` (#141), the error path: a lease that cannot be asked for rolls
+  the state back to `hydrated`. What can still leave a file `dehydrating` is in
+  `docs/limitations/F203.md`.
 
 ## HY9. `disk.rs`: a process-global lock kept by convention; walks that disagree on errors
 

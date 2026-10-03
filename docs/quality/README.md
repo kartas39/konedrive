@@ -72,10 +72,10 @@ not fixed moves there.
 | [`LO3`](local.md) | `local/examine/found.rs:200`, `classify.rs:340`, `:362` | One file's I/O error aborts the whole examination, again at every retry | refuted as written; a narrower form confirmed |
 | [`LO4`](local.md) | `local/watcher/mod.rs:544–641` | The examiner thread dies unnoticed; uploads stop with no error shown | fixed in `eba0828` (the panic); refuted (`RootGone`) |
 | [`LO13`](local.md) | `local/entry.rs:144`, `local/examine/run.rs:145` | A mount without user attributes inside the folder aborts every examination | open |
-| [`HY1`](hydration.md) | `hydration/source/fill.rs:196–249`, `:351` | A fill without clearance punches a file on the strength of a comment (the zeros path) | refuted as reachable; a latent hole confirmed |
-| [`HY8`](hydration.md) | `hydration/dehydrate.rs:220` | An error path skips the roll-back; a good local copy is lost | confirmed |
-| [`HY7`](hydration.md) | `hydration/pin.rs:642` | A cancelled download is reported to the pool as a success | confirmed; low impact |
-| [`HY5`](hydration.md) | `hydration/server.rs:257` | An errno the kernel cannot deliver; the opener gets `EIO`, not "gone" | confirmed (the errno); one sub-claim refuted |
+| [`HY1`](hydration.md) | `hydration/source/fill.rs:196–249`, `:351` | A fill without clearance punches a file on the strength of a comment (the zeros path) | refuted as reachable; the latent hole fixed in `6d9cdb6` |
+| [`HY8`](hydration.md) | `hydration/dehydrate.rs:220` | An error path skips the roll-back; a good local copy is lost | fixed in `6d9cdb6` |
+| [`HY7`](hydration.md) | `hydration/pin.rs:642` | A cancelled download is reported to the pool as a success | fixed in `6d9cdb6` |
+| [`HY5`](hydration.md) | `hydration/server.rs:257` | An errno the kernel cannot deliver; the opener gets `EIO`, not "gone" | fixed in `6d9cdb6` (the errno); one sub-claim refuted |
 | [`HE1`](helper.md) | `konedrive-helper/src/jobs.rs:211`, `:238` | No bound per uid on suspended opens; one user can deny every other user's opens | confirmed |
 | [`HE2`](helper.md) | `konedrive-helper/src/connection.rs:285`, `roots.rs` | Roots unbounded per uid, `root_id` unvalidated, a re-registration that leaves marks | confirmed |
 | [`AC1`](account-config.md) | `account/sign_in.rs:13–36` | A cancelled sign-in can complete | fixed in `9cbcecf` |
