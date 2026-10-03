@@ -225,14 +225,22 @@ pub fn create_placeholder(
     Ok(())
 }
 
+/// Sets the file's times to `mtime`, which may be before 1970: `futimens` takes a negative
+/// `tv_sec`, with `tv_nsec` counting forward from it.
 pub fn set_mtime(file: &File, mtime: SystemTime) -> io::Result<()> {
-    let since_epoch = mtime
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "mtime before the epoch"))?;
-    let spec = nix::sys::time::TimeSpec::new(
-        since_epoch.as_secs() as i64,
-        since_epoch.subsec_nanos() as i64,
-    );
+    let too_far = |_| io::Error::new(io::ErrorKind::InvalidInput, "mtime out of range");
+    let (seconds, nanos) = match mtime.duration_since(SystemTime::UNIX_EPOCH) {
+        Ok(after) => (i64::try_from(after.as_secs()).map_err(too_far)?, after.subsec_nanos()),
+        Err(before) => {
+            let before = before.duration();
+            let seconds = -i64::try_from(before.as_secs()).map_err(too_far)?;
+            match before.subsec_nanos() {
+                0 => (seconds, 0),
+                nanos => (seconds - 1, 1_000_000_000 - nanos),
+            }
+        }
+    };
+    let spec = nix::sys::time::TimeSpec::new(seconds, nanos as i64);
     nix::sys::stat::futimens(file.as_fd(), &spec, &spec)?;
     Ok(())
 }

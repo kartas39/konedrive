@@ -413,7 +413,7 @@ impl AccountService {
 
     /// A token asked for with `asked` turned out valid for `granted` (`docs/design/writes.md` §2):
     /// recorded, and the mode worked out again. The token manager calls this after every
-    /// refresh, with its cache locked.
+    /// refresh, with its refresh lock held.
     fn note_granted(&self, asked: &str, granted: &str) {
         self.record_granted(asked, granted);
         self.recompute_mode();

@@ -7,8 +7,9 @@ use std::os::unix::fs::FileExt;
 use std::time::SystemTime;
 
 use konedrive_fs::placeholder::{
-    punch_all, punch_from, read_item_id, read_progress, read_state, remove_progress, remove_stamp,
-    stamp_matches, with_owner_write, write_ctag, write_progress, write_stamp, write_state, Progress, State, XATTR_PROGRESS,
+    punch_all, punch_from, read_item_id, read_progress, read_state, remove_progress, remove_stamp, set_mtime,
+    stamp_matches, with_owner_write, write_ctag, write_progress, write_stamp, write_state, Progress, State,
+    XATTR_PROGRESS,
     XATTR_STATE,
 };
 use konedrive_proto::clamp_deny_errno;
@@ -825,19 +826,6 @@ fn clear_post_data_fault() {
 #[cfg(test)]
 fn fire_post_data_fault() -> Option<i32> {
     POST_DATA_FAULT.with(|cell| cell.borrow_mut().as_mut().and_then(|hook| hook()))
-}
-
-fn set_mtime(file: &File, mtime: SystemTime) -> io::Result<()> {
-    use std::os::fd::AsFd;
-    let since_epoch = mtime
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "mtime before the epoch"))?;
-    let spec = nix::sys::time::TimeSpec::new(
-        since_epoch.as_secs() as i64,
-        since_epoch.subsec_nanos() as i64,
-    );
-    nix::sys::stat::futimens(file.as_fd(), &spec, &spec)?;
-    Ok(())
 }
 
 #[cfg(test)]
