@@ -17,4 +17,5 @@ pub mod dbus;
 
 /// The outbox at scale (issue #38): ignored tests, run by hand in release.
 #[cfg(test)]
+#[path = "tests/bench.rs"]
 mod bench;

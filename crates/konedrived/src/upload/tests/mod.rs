@@ -1384,11 +1384,11 @@ fn renames_moves_and_removals_reach_onedrive_as_the_disk_is() {
 }
 
 /// A file or folder removed before its upload finished (issue #27).
-#[path = "removed_tests.rs"]
 mod removed;
 
-#[path = "sessions_tests.rs"]
 mod sessions;
+
+mod move_out;
 
 /// Issue #87: a failure no step settles gives its row a stable key, never
 /// the error's own text.

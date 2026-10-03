@@ -26,6 +26,8 @@ someone who wants to understand, review or change the system.
 
 Related documents elsewhere in the repository:
 
+- [`../code-map.md`](../code-map.md) — where everything is: every crate, directory and file,
+  where its tests are, and how each suite is run.
 - [`../kernel-behavior-7.2/`](../kernel-behavior-7.2/README.md) — what fanotify, leases and the
   filesystems were measured to do on Linux 7.2, and how to reproduce each measurement.
 - [`../kio-behavior.md`](../kio-behavior.md) — what KIO and Dolphin open, and how the thumbnail

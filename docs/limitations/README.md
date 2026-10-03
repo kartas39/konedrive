@@ -290,7 +290,7 @@ application must never read zeros where real content should be.
 | Due rows a pick reads at a time (`PORTION`) / rows it looks for before it stops reading (`PICK_WANT`) / portions before rule 1 is asked only of rows that share a key (`PORTIONS_ASKED`) | 100 / 32 / 8 | **guess** (F159) |
 | The counts and the Not Uploaded summary summed again at most every (`TALLY_EVERY`) | 1 s | **guess** (F160) |
 | Changed outbox rows remembered one by one for the marks (`DIRTY_MAX`) | 100 000; past it, every row once | **guess** (F163) |
-| The outbox's budgets at scale (`bench.rs`) | see F158 | **guess** |
+| The outbox's budgets at scale (`tests/bench.rs`) | see F158 | **guess** |
 | Jobs a tree store's channel holds before a sender waits (`tree::QUEUE`) | 1 024 | **guess** (F162) |
 | The notification endpoint's lifetime without `expirationDateTime` (`socket::DEFAULT_LIFETIME`) / replaced before its expiry by (`RENEW_EARLY`) / opening the socket, bound (`CONNECT_TIMEOUT`) / largest message taken (`MAX_MESSAGE`) | 1 h / 2 min / 30 s / 1 MiB | **guess** (issue #54, F180) |
 | The poll while the notification socket is up (`Schedule::live_interval`) | 5 min | the user's choice; how often the service drops an event is not known (F183) |
@@ -328,6 +328,7 @@ application must never read zeros where real content should be.
 - [D27](D27.md) — The daemon's journal lines carry its new module paths.
 - [D28](D28.md)
 - [D29](D29.md) — Some items moved down a layer sit lower than their name suggests, and one lower than its users need.
+- [D30](D30.md) — The structure guard reads lines, not Rust.
 
 ---
 

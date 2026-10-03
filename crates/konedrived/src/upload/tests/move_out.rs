@@ -17,10 +17,10 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_ROOT};
 use tokio_util::sync::CancellationToken;
 
-use super::fake::{qx, Harness};
-use super::move_out::{trash_of, Filler, MoveOuts, SourceFill, Tidy, CONTENT_LOCAL};
+use crate::upload::fake::{qx, Harness};
+use crate::upload::move_out::{trash_of, Filler, MoveOuts, SourceFill, Tidy, CONTENT_LOCAL};
 use crate::helper::linked::Helper;
-use super::*;
+use crate::upload::*;
 use crate::folder::disk::Disk;
 use crate::helper::{Clearance, HelperError};
 use crate::local::liveness::answered;

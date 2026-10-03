@@ -959,3 +959,5 @@ async fn a_delta_that_brings_an_upload_before_its_commit_changes_nothing() {
     assert!(w.store.call(move |s| s.deferred_ids()).await.unwrap().is_empty());
     assert_eq!(w.graph.with(|c| c.paths()).len(), 4, "no copy in OneDrive: {:?}", w.graph.with(|c| c.paths()));
 }
+
+mod stale;
