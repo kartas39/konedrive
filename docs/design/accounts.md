@@ -357,7 +357,9 @@ account.
 other, and answers its object path; the object is on the bus by the time the call answers, and
 `Accounts` changes. A label the rules refuse (§2) is `InvalidArgs`, with the reason. Signing in
 (`Account.BeginSignIn`) and choosing a folder (`Folder.Register`) are separate calls, made on the
-account's own object as they were for the single account.
+account's own object as they were for the single account. An `Add` whose object cannot be put on
+the bus is refused `Failed` and leaves nothing: no account in `config.toml`, no `accounts/<id>/`,
+no object.
 
 The window's **Sign in…** makes several calls in a row, not one transaction: `Add` with a temporary
 label, `BeginSignIn` on the new account, whose URL it opens in the browser, and, once the sign-in
@@ -388,6 +390,13 @@ already has (limitations log A15).
 What stays: the folder's files, as a Forget leaves them — unlocked, and a file that was never
 downloaded left as an empty placeholder, which reads as zeros — and the rescued files, in
 `rescued/<id>/` (limitations log F47). A path that names no account is refused `NoAccount`.
+
+A removal that fails at step 2 (the refresh token cannot be deleted) or at step 3 (`config.toml`
+cannot be written) is refused `Failed`, and the account stays, no longer retired: it is listed,
+takes a folder, a sign-in and a mode as before, and can be removed again. What the steps before
+the failure did is not taken back: the folder is forgotten, and after step 2 the account is signed
+out. The refusal says what failed and names the folder that is no longer registered (limitations
+log F205).
 
 `Add`, `Remove` and `SetClientId` run one at a time.
 

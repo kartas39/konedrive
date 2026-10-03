@@ -682,3 +682,157 @@ async fn a_version_1_onedrive_folder_is_held_then_brought_up_at_the_first_connec
     .await;
     assert_ne!(sync.last_error().await.unwrap(), "", "OneDrive's listing is not mocked here, so the sync says so");
 }
+
+/// A wallet whose deletes fail while it is told to: a Secret Service that went away.
+#[derive(Default)]
+struct FailingDeletes {
+    inner: MemoryWallet,
+    failing: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl Wallet for FailingDeletes {
+    async fn exists(&self, slot: &Slot) -> Result<bool, konedrived::account::secret::SecretError> {
+        self.inner.exists(slot).await
+    }
+
+    async fn load(&self, slot: &Slot) -> Result<Option<String>, konedrived::account::secret::SecretError> {
+        self.inner.load(slot).await
+    }
+
+    async fn store(&self, slot: &Slot, label: &str, secret: &str) -> Result<(), konedrived::account::secret::SecretError> {
+        self.inner.store(slot, label, secret).await
+    }
+
+    async fn delete(&self, slot: &Slot) -> Result<(), konedrived::account::secret::SecretError> {
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(konedrived::account::secret::SecretError::Unavailable("gone".into()));
+        }
+        self.inner.delete(slot).await
+    }
+}
+
+/// SY5: a `Remove` that fails after the folder was forgotten — here the sign-in cannot be
+/// deleted — leaves the account listed. The account that stays is whole: it still has its
+/// folder, or takes one again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_account_whose_removal_failed_half_way_still_takes_a_folder() {
+    let (config, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let bus = TestBus::start();
+    let wallet = Arc::new(FailingDeletes::default());
+    let options = konedrived::daemon::manager::Options {
+        endpoints: Endpoints::microsoft(),
+        wallet: wallet.clone(),
+        sign_in_timeout: Duration::from_secs(5),
+        baloo: konedrived::desktop::baloo::Baloo::disabled,
+        thumbnails: None,
+        onedrive: false,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
+    };
+    let _daemon = start_daemon_with(&bus, config.path(), options).await;
+    let client = bus.connect().await;
+    let manager = AccountsProxy::builder(&client).cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
+    let path = manager.add("Personal").await.unwrap();
+    let sync = FolderProxies::uncached(&client, path.clone()).await.unwrap().folder;
+    let folder = dir.path().join("Folder");
+    std::fs::create_dir(&folder).unwrap();
+    sync.register_without_interception(folder.to_str().unwrap()).await.unwrap();
+
+    wallet.failing.store(true, std::sync::atomic::Ordering::SeqCst);
+    let refused = manager.remove(&path.as_ref()).await.expect_err("the sign-in cannot be deleted, so the removal fails");
+    wallet.failing.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(manager.list().await.unwrap(), vec![path.clone()], "the account stays");
+    let said = refused.to_string();
+    assert!(
+        said.contains("cannot delete the sign-in") && said.contains("no longer registered") && said.contains("Folder"),
+        "the refusal says what failed and what became of the folder: {said}"
+    );
+
+    if sync.state().await.unwrap() == "none" {
+        if let Err(refused) = sync.register_without_interception(folder.to_str().unwrap()).await {
+            panic!("the account stays listed, without its folder, and refuses one: {refused}");
+        }
+    }
+
+    manager.remove(&path.as_ref()).await.expect("the account is removed at the second try");
+    assert!(manager.list().await.unwrap().is_empty());
+}
+
+/// A bus on which an account's folder cannot be put while it is told so.
+struct FailingExports {
+    failing: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait::async_trait]
+impl konedrived::daemon::manager::Bus for FailingExports {
+    async fn serve(&self, connection: &zbus::Connection, manager: &Arc<konedrived::daemon::manager::AccountManager>) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.serve(connection, manager).await
+    }
+
+    async fn helper_state(&self, connection: &zbus::Connection) -> zbus::Result<Box<dyn konedrived::daemon::manager::HelperStateSignal>> {
+        konedrived::dbus::export::OnBus.helper_state(connection).await
+    }
+
+    async fn export_account(
+        &self,
+        connection: &zbus::Connection,
+        path: &zbus::zvariant::ObjectPath<'_>,
+        account: Arc<konedrived::account::AccountService>,
+    ) -> zbus::Result<tokio::task::JoinHandle<()>> {
+        konedrived::dbus::export::OnBus.export_account(connection, path, account).await
+    }
+
+    async fn export_folder(
+        &self,
+        connection: &zbus::Connection,
+        path: &zbus::zvariant::ObjectPath<'_>,
+        sync: Arc<konedrived::sync::SyncService>,
+    ) -> zbus::Result<Vec<tokio::task::JoinHandle<()>>> {
+        if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(zbus::Error::Failure("no folder on this bus".into()));
+        }
+        konedrived::dbus::export::OnBus.export_folder(connection, path, sync).await
+    }
+
+    async fn unexport_folder(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.unexport_folder(connection, path).await
+    }
+
+    async fn unexport_account(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.unexport_account(connection, path).await
+    }
+}
+
+/// SY5: an `Add` whose account cannot be put on the bus leaves nothing: no account in
+/// `config.toml` to come up at the next start, no object, no directory, and the label free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_add_that_cannot_be_put_on_the_bus_leaves_nothing_behind() {
+    let config = tempfile::tempdir().unwrap();
+    let bus = TestBus::start();
+    let exports = Arc::new(FailingExports { failing: true.into() });
+    let options = konedrived::daemon::manager::Options {
+        endpoints: Endpoints::microsoft(),
+        wallet: Arc::new(MemoryWallet::default()),
+        sign_in_timeout: Duration::from_secs(5),
+        baloo: konedrived::desktop::baloo::Baloo::disabled,
+        thumbnails: None,
+        onedrive: false,
+        bus: exports.clone(),
+    };
+    let _daemon = start_daemon_with(&bus, config.path(), options).await;
+    let client = bus.connect().await;
+    let manager = AccountsProxy::builder(&client).cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
+
+    assert!(manager.add("Personal").await.is_err(), "the account's folder cannot be put on the bus");
+    assert!(manager.list().await.unwrap().is_empty());
+    let written = std::fs::read_to_string(Paths::in_dir(config.path()).config_file).unwrap_or_default();
+    assert!(!written.contains("Personal"), "config.toml keeps no account: {written}");
+    let accounts = Paths::in_dir(config.path()).state_dir.join("accounts");
+    let left: Vec<_> = std::fs::read_dir(&accounts).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    assert!(left.is_empty(), "no directory of the account is left: {left:?}");
+
+    exports.failing.store(false, std::sync::atomic::Ordering::SeqCst);
+    let path = manager.add("Personal").await.expect("the label is free, and the account's object path too");
+    let account = AccountProxy::builder(&client).path(path.clone()).unwrap().build().await.unwrap();
+    assert_eq!(account.label().await.unwrap(), "Personal");
+}

@@ -114,6 +114,14 @@ impl AccountService {
         self.sign_out().await
     }
 
+    /// Takes [`retire`](Self::retire) back, for an `Accounts.Remove` that failed: the
+    /// account stays, so it signs in and changes its mode again. What `retire` did stays
+    /// done: a sign-in that was under way is given up, and a sign-in that was deleted is
+    /// gone.
+    pub fn unretire(&self) {
+        self.retired.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub(super) fn is_retired(&self) -> bool {
         self.retired.load(std::sync::atomic::Ordering::SeqCst)
     }

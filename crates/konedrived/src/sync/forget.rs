@@ -26,7 +26,23 @@ impl SyncService {
     /// No registration, bring-up or switch for this account from now on
     /// (`Accounts.Remove`). Called with `lifecycle` held for writing.
     fn retire_locked(&self) {
-        *self.held.lock().unwrap() = Some("this account is being removed".into());
+        self.retiring.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether `Accounts.Remove` is taking this account away.
+    pub(super) fn is_retiring(&self) -> bool {
+        self.retiring.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Takes [`retire`](Self::retire) back, for an `Accounts.Remove` whose
+    /// later steps failed: the account stays, so it registers a folder again.
+    /// The folder it had is not brought back: it is forgotten, at the helper
+    /// too, and a OneDrive folder's tree store is gone. An account that was
+    /// held back is held back again, and says why.
+    pub async fn unretire(&self) {
+        let _lifecycle = self.lifecycle.write().await;
+        self.retiring.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.publish_held();
     }
 
     /// The folder a held-back account records, as a registration to forget

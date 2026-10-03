@@ -61,7 +61,7 @@ impl SyncService {
     /// to a second registration, `NoHelper` to a Forget or a dehydration.
     pub async fn resume(&self) {
         let _lifecycle = self.lifecycle.write().await;
-        if self.held.lock().unwrap().is_some() {
+        if self.is_retiring() || self.held.lock().unwrap().is_some() {
             return;
         }
         self.restore_locked().await;
@@ -123,7 +123,7 @@ impl SyncService {
     /// the root `config.toml` records has been looked at, whichever of them
     /// reaches a freshly started daemon first.
     pub(super) async fn restore_locked(&self) {
-        if self.registration().is_some() || self.held.lock().unwrap().is_some() {
+        if self.registration().is_some() || self.is_retiring() || self.held.lock().unwrap().is_some() {
             return;
         }
         match self.persisted_root() {

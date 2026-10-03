@@ -299,7 +299,18 @@ impl AccountManager {
         };
         account.account.startup().await;
         follow_mode(&account);
-        self.export(connection, &account).await.map_err(|e| ManagerError::Failed(e.to_string()))?;
+        if let Err(e) = self.export(connection, &account).await {
+            // Nothing of the account is left: not half of its objects on the bus, and not an
+            // entry in `config.toml` that would come up as an account at the next start.
+            self.unexport(connection, &account).await;
+            self.hub.leave(&account.sync);
+            self.siblings.remove(&account.id);
+            if let Err(e) = self.config.remove_account(&entry.id) {
+                tracing::warn!("cannot take the account {:?} out of config.toml again: {e}", entry.label);
+            }
+            remove_account_dir(&account.paths.dir);
+            return Err(ManagerError::Failed(format!("cannot put the account on the bus: {e}")));
+        }
         self.accounts.lock().unwrap().push(Arc::clone(&account));
         tracing::info!("added the account {:?} ({})", entry.label, entry.id);
         Ok(account)
@@ -311,6 +322,12 @@ impl AccountManager {
     /// cancelled, the refresh token, the cached name and quota and the tree store deleted,
     /// the account taken out of `config.toml`, and its object off the bus. The folder's
     /// files and the rescued files are kept.
+    ///
+    /// A removal that fails after the folder was forgotten — the sign-in cannot be deleted,
+    /// or `config.toml` cannot be written — leaves the account as an account: listed, taking
+    /// a folder, a sign-in and a mode again, and removable again. Its folder is not brought
+    /// back (it is forgotten at the helper, and a OneDrive folder's tree store is gone), and
+    /// the refusal says so.
     pub async fn remove(&self, path: &ObjectPath<'_>, connection: &Connection) -> Result<(), ManagerError> {
         let _changing = self.changing.lock().await;
         let account = self.account(path).ok_or_else(|| ManagerError::NoAccount(path.to_string()))?;
@@ -320,14 +337,21 @@ impl AccountManager {
         // Retired first, each under its own lock, so that no call on the account's own
         // objects can register a folder or store a sign-in in between: the folder
         // forgotten (a held account's through the helper too), then the sign-in.
+        // The folder `config.toml` records: a held-back account's too, which `root()` has not.
+        let folder = self.config.account(&account.id).and_then(|a| a.root).map(|root| root.path);
         account.sync.retire().await?;
-        account.account.retire().await.map_err(|e| ManagerError::Failed(format!("cannot delete the sign-in: {e}")))?;
-        self.config.remove_account(&account.id)?;
-        if let Err(e) = std::fs::remove_dir_all(&account.paths.dir) {
-            if e.kind() != std::io::ErrorKind::NotFound {
-                tracing::warn!("cannot remove {}: {e}", account.paths.dir.display());
-            }
+        let failed = match account.account.retire().await {
+            Err(e) => Some(format!("cannot delete the sign-in: {e}")),
+            Ok(()) => self.config.remove_account(&account.id).err().map(|e| e.to_string()),
+        };
+        if let Some(why) = failed {
+            account.account.unretire();
+            account.sync.unretire().await;
+            let message = half_removed(&account.account.state().get().label, &why, folder.as_deref());
+            tracing::error!("{message}");
+            return Err(ManagerError::Failed(message));
         }
+        remove_account_dir(&account.paths.dir);
         self.unexport(connection, &account).await;
         self.accounts.lock().unwrap().retain(|a| a.id != account.id);
         self.hub.leave(&account.sync);
@@ -452,6 +476,28 @@ impl AccountManager {
     pub async fn resume_all(&self) {
         for account in self.accounts() {
             account.sync.resume().await;
+        }
+    }
+}
+
+/// What `Accounts.Remove` answers when it failed with `why` after the account's folder,
+/// `folder`, was forgotten.
+fn half_removed(label: &str, why: &str, folder: Option<&Path>) -> String {
+    let left = match folder {
+        Some(folder) => format!(
+            "the account stays, and its folder {} is no longer registered (the files in it are kept)",
+            folder.display()
+        ),
+        None => "the account stays".to_owned(),
+    };
+    format!("the account {label:?} is not removed: {why}; {left}. Remove it again, or go on using it")
+}
+
+/// Removes an account's own directory, with everything the daemon kept in it.
+fn remove_account_dir(dir: &Path) {
+    if let Err(e) = std::fs::remove_dir_all(dir) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!("cannot remove {}: {e}", dir.display());
         }
     }
 }

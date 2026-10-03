@@ -107,6 +107,9 @@ impl SyncService {
     }
 
     fn check_held(&self) -> Result<(), SyncError> {
+        if self.is_retiring() {
+            return Err(SyncError::Io("this account is being removed".into()));
+        }
         match self.held.lock().unwrap().clone() {
             Some(why) => Err(SyncError::Io(why)),
             None => Ok(()),
