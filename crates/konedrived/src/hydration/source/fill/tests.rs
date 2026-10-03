@@ -874,3 +874,61 @@ fn checkpointed(dir: &std::path::Path, data: &[u8], ctag: &str, bytes: u64) -> s
     write_progress(&file, &Progress { ctag: ctag.into(), bytes }).unwrap();
     file
 }
+
+/// `fill_file` alone decides whether a file needs its ignore mark cleared: a
+/// file it finds `dehydrating` (or `hydrating`) may carry one, and a fill that
+/// fails empties the file. Handed no clearance for such a file, it has no way
+/// to clear the mark, so it must not fetch and must not empty.
+///
+/// No caller in the daemon does this today: each reads the state itself,
+/// under the per-inode lock, and passes no clearance only for `online-only`.
+#[tokio::test]
+#[ignore = "shows HY1: fill_file empties a dehydrating file when its caller passed no clearance"]
+async fn a_file_found_dehydrating_is_not_emptied_by_a_fill_given_no_clearance() {
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(remote.path().join("ITEM"), vec![7u8; 1024 * 1024]).unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let file = placeholder(local.path(), "ITEM", 4096);
+    let path = local.path().join("file.bin");
+    std::fs::write(&path, vec![3u8; 4096]).unwrap();
+    write_state(&file, State::Dehydrating).unwrap();
+
+    // The download breaks, so the fill rolls back.
+    let source = LocalDir::new(remote.path()).fail_at(512 * 1024);
+    let filled = hydrate_with(file.as_fd().try_clone_to_owned().unwrap(), &source, None).await;
+
+    assert!(filled.is_err());
+    assert!(
+        std::fs::read(&path).unwrap() == vec![3u8; 4096],
+        "a file that may carry an ignore mark was emptied without the mark being cleared"
+    );
+}
+
+/// A fill that is refused because the way could not be cleared puts the file
+/// back as it found it. A state it could not read is not "no state": taking
+/// the attribute off leaves a file with an item id and no state at all.
+///
+/// No caller in the daemon gets here today: each refuses a file whose state
+/// it cannot read before it asks for a fill.
+#[tokio::test]
+#[ignore = "shows HY1: a refused fill removes a state attribute it could not read"]
+async fn a_refused_fill_does_not_take_off_a_state_it_could_not_read() {
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(remote.path().join("ITEM"), vec![7u8; 4096]).unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let file = placeholder(local.path(), "ITEM", 4096);
+    xattr::FileExt::set_xattr(&file, XATTR_STATE, b"hydrat").unwrap();
+    // Whether a helper runs cannot be told (the socket's path leads through a
+    // file), so the way is not cleared.
+    let clearance = Clearance::NoLink(local.path().join("file.bin").join("helper.sock"));
+
+    let source = LocalDir::new(remote.path());
+    let filled = hydrate_with(file.as_fd().try_clone_to_owned().unwrap(), &source, Some(&clearance)).await;
+
+    assert!(matches!(filled, Err(FillError::NotCleared(_))), "{filled:?}");
+    assert_eq!(source.fetches(), 0, "nothing is fetched");
+    assert!(
+        xattr::FileExt::get_xattr(&file, XATTR_STATE).unwrap().is_some(),
+        "the refused fill took the state attribute off the file"
+    );
+}

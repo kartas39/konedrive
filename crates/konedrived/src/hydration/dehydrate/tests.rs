@@ -757,3 +757,42 @@ async fn dehydrate_refuses_anything_that_is_not_a_file_inside_the_root() {
     assert!(matches!(error, DehydrateError::OutsideRoot), "{error:?}");
     assert!(blocks_of(&inside) > 0, "a root that is not registered punched a file");
 }
+
+/// A lease that cannot even be asked for — `F_SETLEASE` failing with anything
+/// but `EAGAIN`: leases switched off (`fs.leases-enable=0`), a file owned by
+/// another user, no memory for the lock — stops the dehydration before
+/// anything is punched, exactly as a refused lease does, and so has to roll
+/// the state back as a refused lease does. Left `dehydrating`, a fully
+/// downloaded file is downloaded again by its next open, or emptied by the
+/// next startup recovery.
+///
+/// `fcntl` is made to fail on a thread of its own, as `fsync` is above.
+#[test]
+#[ignore = "shows HY8: a lease that fails outright leaves the file dehydrating"]
+fn a_lease_that_cannot_be_asked_for_rolls_the_state_back_like_a_refused_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = hydrated_file(dir.path(), "f.bin", 1 << 20);
+    let file = open_rw(&path);
+    let restore = mark_dehydrating(&file).unwrap();
+
+    let punched = std::thread::spawn(move || match deny_syscalls(&[libc::SYS_fcntl]) {
+        Err(()) => None,
+        Ok(()) => Some(punch_clean_file(&file, restore).is_ok()),
+    })
+    .join()
+    .expect("the thread running the punch must not panic");
+
+    match punched {
+        None => eprintln!("seccomp is unavailable here; skipping the lease check"),
+        Some(true) => panic!("the dehydration reported success although no lease could be taken"),
+        Some(false) => {
+            assert!(blocks_of(&path) > 64, "nothing may be punched without the lease");
+            assert_eq!(
+                read_state(&File::open(&path).unwrap()).unwrap(),
+                Some(State::Hydrated),
+                "a file whose lease could not be asked for must go back to `hydrated`, as one \
+                 whose lease was refused does: it is still fully downloaded"
+            );
+        }
+    }
+}
