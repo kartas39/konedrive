@@ -2,15 +2,16 @@ use std::os::fd::AsRawFd;
 use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use futures_util::FutureExt;
 
-use crate::status::activity::{Kind, Report, Tracked};
+use crate::status::activity::{Kind, Report};
+use crate::hydration::tracked::Tracked;
 use crate::helper::{HelperLink, HydrateRequest};
 use crate::hydration::source::{Answered, ContentSource, FillError};
 use crate::folder::locks::{InodeKey, InodeLocks, unless_removed};
 use crate::hydration::source;
 use crate::status::activity;
-use crate::sync::hub;
 
 /// Hydration requests taken off the queue at once: the helper's whole credit
 /// (`konedrive_proto::MAX_OUTSTANDING_HYDRATIONS`). Each is routed to its account and then
@@ -88,7 +89,7 @@ pub async fn serve_hydrations(
 /// [`serve_hydrations`], reporting each fill into `report`: a
 /// `Transfers` entry while it downloads, then a `downloaded` or `failed`
 /// event, and a new measurement of the folder's space. The daemon runs the
-/// same loop with every fill routed to its account ([`hub::supervise`]);
+/// same loop with every fill routed to its account (`sync::hub::supervise`);
 /// what a fill answers the opener is the same either way, and it is
 /// answered before anything is recorded.
 pub async fn serve_hydrations_reporting(
@@ -102,21 +103,32 @@ pub async fn serve_hydrations_reporting(
     serve(link, requests, locks, Fillers::One(source, report, pool)).await;
 }
 
+/// What fills a hydration request: its source, where it is reported, and the transfer pool
+/// it takes a slot of.
+pub(crate) type Filler = (Arc<dyn ContentSource>, Report, Arc<konedrive_graph::pool::TransferPool>);
+
+/// Says which account an open file belongs to. The hub implements it
+/// (`sync::hub::HelperHub`).
+#[async_trait]
+pub(crate) trait Router: Send + Sync {
+    /// What fills the file `fd` is open on; `None` when it is in no account's folder.
+    async fn route(&self, fd: &std::os::fd::OwnedFd) -> Option<Filler>;
+}
+
 /// Who fills a hydration request, and where it is reported.
 #[derive(Clone)]
 pub(crate) enum Fillers {
     /// One source, one report, one pool, whatever the file (tests, the VM suite).
     One(Arc<dyn ContentSource>, Report, Arc<konedrive_graph::pool::TransferPool>),
-    /// The account the file belongs to ([`hub::HelperHub::route`]): the
-    /// daemon's.
-    Routed(Arc<hub::HelperHub>),
+    /// The account the file belongs to ([`Router::route`]): the daemon's.
+    Routed(Arc<dyn Router>),
 }
 
 impl Fillers {
-    async fn route(&self, fd: &std::os::fd::OwnedFd) -> Option<(Arc<dyn ContentSource>, Report, Arc<konedrive_graph::pool::TransferPool>)> {
+    async fn route(&self, fd: &std::os::fd::OwnedFd) -> Option<Filler> {
         match self {
             Fillers::One(source, report, pool) => Some((Arc::clone(source), report.clone(), Arc::clone(pool))),
-            Fillers::Routed(hub) => hub.route(fd).await.map(hub::filler),
+            Fillers::Routed(router) => router.route(fd).await,
         }
     }
 }

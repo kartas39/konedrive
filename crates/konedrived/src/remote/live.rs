@@ -29,32 +29,11 @@ use tokio_util::sync::CancellationToken;
 
 use crate::conditions::running::Running;
 use crate::status::snapshot::SyncStateHandle;
+
+pub use crate::status::snapshot::LiveChanges;
 use konedrive_graph::drive::socket::{Heard, NotificationSocket, SocketEndpoint};
 use konedrive_graph::drive::DriveClient;
 use konedrive_tree::Store;
-
-/// `LiveChanges` on the bus: how changes made in OneDrive reach this computer now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LiveChanges {
-    /// No socket: the account is stopped (pause or hold), or the folder is not a OneDrive
-    /// folder, or no sync runs.
-    #[default]
-    Off,
-    /// Trying to connect, or waiting before the next try: the poll runs at its normal interval.
-    Connecting,
-    /// The socket is up: changes arrive at once.
-    Connected,
-}
-
-impl LiveChanges {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Off => "off",
-            Self::Connecting => "connecting",
-            Self::Connected => "connected",
-        }
-    }
-}
 
 /// The live task's waits.
 #[derive(Debug, Clone)]

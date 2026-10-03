@@ -551,6 +551,7 @@ async fn a_second_daemon_on_the_same_configuration_is_refused() {
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
         onedrive: false,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     let second = konedrived::daemon::startup::start(other_bus.builder(), Paths::in_dir(d.config.path()), options).await;
     let error = second.err().expect("a second daemon was started").to_string();
@@ -652,6 +653,7 @@ async fn a_version_1_onedrive_folder_is_held_then_brought_up_at_the_first_connec
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
         onedrive: true,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     let daemon = start_daemon_with(&bus, config.path(), options).await;
 

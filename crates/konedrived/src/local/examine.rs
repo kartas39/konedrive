@@ -1394,7 +1394,7 @@ impl Run<'_, '_> {
         // again (issue #104): looking at it again is no reason to retry.
         let now = snapshot(e.size, e.mtime.0, e.mtime.1);
         if self.rows.of_item(id).any(|row| {
-            row.state == OutboxState::Blocked && row.reason.as_deref() == Some(crate::upload::reason::LEAVING_NOT_FOUND) && row.snapshot.as_deref() == Some(now.as_str())
+            row.state == OutboxState::Blocked && row.reason.as_deref() == Some(konedrive_tree::outbox::LEAVING_NOT_FOUND) && row.snapshot.as_deref() == Some(now.as_str())
         }) {
             return Ok(());
         }

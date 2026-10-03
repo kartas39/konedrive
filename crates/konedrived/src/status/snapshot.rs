@@ -3,8 +3,83 @@ use std::sync::Arc;
 use tokio::sync::watch;
 
 use crate::helper::status::HelperState;
-use crate::remote::live;
+use crate::config::Mode;
 use crate::status::totals;
+
+/// `LiveChanges` on the bus: how changes made in OneDrive reach this computer now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LiveChanges {
+    /// No socket: the account is stopped (pause or hold), or the folder is not a OneDrive
+    /// folder, or no sync runs.
+    #[default]
+    Off,
+    /// Trying to connect, or waiting before the next try: the poll runs at its normal interval.
+    Connecting,
+    /// The socket is up: changes arrive at once.
+    Connected,
+}
+
+impl LiveChanges {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Connecting => "connecting",
+            Self::Connected => "connected",
+        }
+    }
+}
+
+/// `LocalScan.State`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ScanState {
+    /// A read-only folder: no watcher, no local scan.
+    #[default]
+    None,
+    Idle,
+    Running,
+}
+
+impl ScanState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Idle => "idle",
+            Self::Running => "running",
+        }
+    }
+}
+
+/// The folder's local scan, as `LocalScan`'s properties publish it. While idle, the
+/// reason, the start and the counts are the last scan's.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LocalScan {
+    pub state: ScanState,
+    /// Empty before the first scan.
+    pub reason: String,
+    /// Unix seconds; 0 before the first scan.
+    pub started: i64,
+    /// Directories and other entries seen so far, the root not counted.
+    pub directories: u64,
+    pub files: u64,
+    /// Items the base has placed in the folder when the scan started: about how many it
+    /// will see. The disk's own count is not known in advance.
+    pub expected: u64,
+    /// Unix seconds when the last scan finished; 0 for none since the daemon started.
+    pub finished: i64,
+    /// How long the last finished scan took, in seconds.
+    pub took: u32,
+}
+
+impl LocalScan {
+    /// Follows the folder's mode: read-only has no scan; read-write is idle until one runs.
+    pub fn follow(&mut self, mode: Mode) {
+        self.state = match (mode, self.state) {
+            (Mode::ReadOnly, _) => ScanState::None,
+            (Mode::ReadWrite, ScanState::None) => ScanState::Idle,
+            (Mode::ReadWrite, state) => state,
+        };
+    }
+}
 
 /// What `Folder.State` reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,7 +178,7 @@ pub struct SyncSnapshot {
     pub held_back: String,
     /// `LiveChanges`: whether changes made in OneDrive arrive at once, through the
     /// notification socket (`live`).
-    pub live_changes: live::LiveChanges,
+    pub live_changes: LiveChanges,
     /// `Transfers.Uploads`: (full path, bytes sent, bytes in all), as `Downloads`.
     pub uploads: Vec<(String, u64, u64)>,
     /// `QuotaFull`: OneDrive is full and no content goes up (issue #2).
@@ -128,7 +203,7 @@ pub struct SyncSnapshot {
     pub queue: totals::QueueTotals,
     /// `LocalScan`'s `State`, `Reason`, `Started`, `Directories`, `Files`,
     /// `Expected`, `Finished`, `Took`: the Full local scan (issue #8).
-    pub scan: crate::local::scan::LocalScan,
+    pub scan: LocalScan,
 }
 
 impl SyncSnapshot {
@@ -165,7 +240,7 @@ impl Default for SyncSnapshot {
             held_count: 0,
             paused_until: None,
             held_back: String::new(),
-            live_changes: live::LiveChanges::Off,
+            live_changes: LiveChanges::Off,
             uploads: Vec::new(),
             quota_full: false,
             space_waiting_count: 0,
@@ -175,7 +250,7 @@ impl Default for SyncSnapshot {
             throughput: konedrive_graph::pool::Throughput::default(),
             pinned_waiting: (0, 0),
             queue: totals::QueueTotals::default(),
-            scan: crate::local::scan::LocalScan::default(),
+            scan: LocalScan::default(),
         }
     }
 }
@@ -265,7 +340,7 @@ impl SyncStateHandle {
     }
 
     /// `LiveChanges`, told only when it changed.
-    pub fn set_live_changes(&self, live: live::LiveChanges) {
+    pub fn set_live_changes(&self, live: LiveChanges) {
         self.tx.send_if_modified(|s| std::mem::replace(&mut s.live_changes, live) != live);
     }
 

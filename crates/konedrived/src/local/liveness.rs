@@ -27,9 +27,9 @@ use std::time::Duration;
 use konedrive_fs::handle::FileHandle;
 use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 
+use crate::helper::linked::Helper;
 use crate::helper::HelperError;
 use crate::folder::root::SyncRoot;
-use crate::upload::move_out::Helper;
 use konedrive_tree::Store;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

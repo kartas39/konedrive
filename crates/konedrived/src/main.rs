@@ -41,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
         baloo: Baloo::default,
         thumbnails: Some(paths.thumbnails.clone()),
         onedrive: true,
+        bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     // `config.toml` migrated, every account brought up as far as it can be
     // without the helper, every object exported, and only then the bus name

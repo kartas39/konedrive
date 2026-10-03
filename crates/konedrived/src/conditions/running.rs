@@ -19,11 +19,12 @@
 //! the hub tells every account, as it tells the conditions. Thumbnails stay per account.
 
 use std::sync::Mutex;
+use std::time::SystemTime;
 
 use tokio::sync::Notify;
 
 use crate::config::{AccountConfig, Config, OnBattery};
-use konedrive_tree::Store;
+use konedrive_tree::{Store, TreeError};
 
 /// An account's own settings that decide what runs, as its section of `config.toml` gives
 /// them (`Folder.Thumbnails`).
@@ -222,10 +223,34 @@ impl Running {
     }
 }
 
-/// The user's pause of the account whose tree store is `store`
-/// ([`crate::sync::upload::paused`]): `Paused` and `PausedUntil` show it.
+/// The user's pause of the account whose tree store is `store` (`docs/design/writes.md` §11):
+/// `Some(until)` while paused, unix seconds, 0 meaning until resumed; `Paused` and
+/// `PausedUntil` show it. A timed pause that has run out is taken off here. Kept in the
+/// store's `meta`, so it survives a restart.
+/// Answered from the store's memory of it ([`Store::pause`]), never by a job:
+/// callable from anywhere.
 pub fn user_pause(store: &Store) -> Option<i64> {
-    crate::upload::paused(store)
+    let until = store.pause()?;
+    if until != 0 && until <= unix_now() {
+        store.pause_ended(until);
+        return None;
+    }
+    Some(until)
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Pauses the account whose tree store is `store` until `until` (unix
+/// seconds, 0 for until resumed), or resumes it (`None`).
+pub async fn set_paused(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
+    store.set_pause(until).await
+}
+
+/// [`set_paused`] for plain threads.
+pub fn set_paused_blocking(store: &Store, until: Option<i64>) -> Result<(), TreeError> {
+    store.set_pause_blocking(until)
 }
 #[cfg(test)]
 mod tests;

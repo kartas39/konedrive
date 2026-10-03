@@ -40,42 +40,11 @@ use std::path::Path;
 use konedrive_fs::lease::WriteLease;
 use konedrive_fs::placeholder::{punch_all, read_stamp, read_state, remove_stamp, stamp_matches, write_state, State};
 
-use crate::helper::{Clearance, HelperLink, NotCleared};
+use crate::helper::{Clearance, HelperLink};
 use crate::folder::root::SyncRoot;
 
-#[derive(Debug, thiserror::Error)]
-pub enum DehydrateError {
-    #[error("not a OneDrive file")]
-    NotManaged,
-    #[error("the file is not downloaded")]
-    NotHydrated,
-    #[error("the file was modified locally")]
-    ModifiedLocally,
-    #[error("the file is in use")]
-    InUse,
-    #[error("not a plain file inside this sync root")]
-    OutsideRoot,
-    /// A helper is running and this daemon has no link to it, so a mark its
-    /// group may hold on the file cannot be cleared. Nothing
-    /// was changed; try again once the link is up.
-    #[error("the konedrive helper is running but not connected to this daemon")]
-    HelperNotConnected,
-    #[error("{0}")]
-    Io(String),
-}
-
-pub(crate) fn io_error(e: impl std::fmt::Display) -> DehydrateError {
-    DehydrateError::Io(e.to_string())
-}
-
-impl From<NotCleared> for DehydrateError {
-    fn from(e: NotCleared) -> Self {
-        match e {
-            NotCleared::Unlinked => DehydrateError::HelperNotConnected,
-            other => io_error(other),
-        }
-    }
-}
+pub use crate::folder::root::DehydrateError;
+pub(crate) use crate::folder::root::io_error;
 
 /// The guard: only a clean, fully downloaded file may be emptied
 /// (dehydration's step 1). It runs on the very descriptor the punch will

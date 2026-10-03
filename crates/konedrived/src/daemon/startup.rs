@@ -2,15 +2,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use konedrive_dbus::{ACCOUNTS_PATH, SERVICE_NAME};
+use konedrive_dbus::SERVICE_NAME;
 use zbus::{fdo, Connection};
 
 use crate::config::{ConfigStore, Paths};
 use crate::account::secret::Slot;
 use crate::sync::hub::HelperHub;
 use crate::daemon::manager::{AccountManager, Options};
-use crate::dbus::accounts::Accounts;
-use crate::dbus::files::Files;
 
 /// How long the migration waits for the wallet to say whether version 1's refresh token is
 /// there; a wallet that does not answer counts as "maybe".
@@ -90,21 +88,19 @@ pub async fn start_on(
 /// Exports the manager and every account on `connection`, then claims `org.konedrive.Daemon`:
 /// every object a client may call is there before the name is.
 async fn serve(connection: &Connection, manager: &Arc<AccountManager>) -> zbus::Result<()> {
-    let server = connection.object_server();
-    server.at(ACCOUNTS_PATH, fdo::ObjectManager).await?;
-    server.at(ACCOUNTS_PATH, Accounts { manager: Arc::clone(manager) }).await?;
-    server.at(ACCOUNTS_PATH, Files { manager: Arc::clone(manager) }).await?;
+    let bus = manager.bus();
+    bus.serve(connection, manager).await?;
     for account in manager.accounts() {
         manager.export(connection, &account).await?;
     }
     // `HelperState` is the hub's: every change of it is `Accounts`'s to announce.
-    let iface = server.interface::<_, Accounts>(ACCOUNTS_PATH).await?;
     let mut helper = manager.hub.subscribe();
     helper.borrow_and_update();
+    let on = connection.clone();
     tokio::spawn(async move {
         while helper.changed().await.is_ok() {
             helper.borrow_and_update();
-            if let Err(e) = iface.get().await.helper_state_changed(iface.signal_emitter()).await {
+            if let Err(e) = bus.helper_state_changed(&on).await {
                 tracing::warn!("cannot emit PropertiesChanged for HelperState: {e}");
             }
         }

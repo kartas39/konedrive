@@ -4,10 +4,16 @@ use std::sync::Arc;
 use zbus::interface;
 
 use crate::dbus::fault::{to_fault, SyncFault};
-use crate::daemon::manager::AccountManager;
+use crate::daemon::manager::{AccountManager, Outside};
 
 pub(crate) fn outside(path: &str) -> SyncFault {
     SyncFault::OutsideRoot(format!("{path} is in no account's folder"))
+}
+
+impl From<Outside> for SyncFault {
+    fn from(Outside(path): Outside) -> Self {
+        outside(&path)
+    }
 }
 
 /// `org.konedrive.Files` (`dbus/org.konedrive.Files.xml`): the per-file calls, each
