@@ -3,6 +3,7 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use konedrive_fs::placeholder::{write_stamp, write_state, State, XATTR_ROOT};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
@@ -13,17 +14,17 @@ use super::*;
 use crate::folder::root::SyncRoot;
 use konedrive_tree::{Change, TreeStore};
 
-struct Fixture {
-    _dir: tempfile::TempDir,
-    root: SyncRoot,
-    store: Store,
-    rescue: tempfile::TempDir,
+pub(super) struct Fixture {
+    pub(super) _dir: tempfile::TempDir,
+    pub(super) root: SyncRoot,
+    pub(super) store: Store,
+    pub(super) rescue: tempfile::TempDir,
     /// `None` in an async test: the `Materializer`'s handle then comes
     /// from `Handle::current()`, since there is already a runtime here.
-    runtime: Option<tokio::runtime::Runtime>,
+    pub(super) runtime: Option<tokio::runtime::Runtime>,
 }
 
-fn build_fixture(runtime: Option<tokio::runtime::Runtime>) -> Fixture {
+pub(super) fn build_fixture(runtime: Option<tokio::runtime::Runtime>) -> Fixture {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().canonicalize().unwrap();
     let root_id = "8f6c0a3e-3b0e-4d7a-9c1e-5b2d7e4f1a90".to_owned();
@@ -37,32 +38,32 @@ fn build_fixture(runtime: Option<tokio::runtime::Runtime>) -> Fixture {
     }
 }
 
-fn fixture() -> Fixture {
+pub(super) fn fixture() -> Fixture {
     build_fixture(Some(tokio::runtime::Runtime::new().unwrap()))
 }
 
 /// A fixture for an already-`async` test: no `Runtime` of its own.
-fn fixture_async() -> Fixture {
+pub(super) fn fixture_async() -> Fixture {
     build_fixture(None)
 }
 
-fn row(id: &str, parent: &str, name: &str, kind: Kind, size: u64) -> Row {
+pub(super) fn row(id: &str, parent: &str, name: &str, kind: Kind, size: u64) -> Row {
     Row { id: id.into(), parent_id: Some(parent.into()), name: name.into(), kind, size, mtime: 1_700_000_000, etag: None, ctag: Some(format!("c-{id}")), quickxor: None, mime: None, placement: Placement::Placed }
 }
 
-fn root_row() -> Change {
+pub(super) fn root_row() -> Change {
     Change::Root(Row { id: "R".into(), parent_id: None, name: String::new(), kind: Kind::Folder, size: 0, mtime: 0, etag: None, ctag: None, quickxor: None, mime: None, placement: Placement::Placed })
 }
 
-fn up(row: Row) -> Change {
+pub(super) fn up(row: Row) -> Change {
     Change::Upsert(row)
 }
 
-fn folder(id: &str, parent: &str, name: &str) -> Change {
+pub(super) fn folder(id: &str, parent: &str, name: &str) -> Change {
     up(row(id, parent, name, Kind::Folder, 0))
 }
 
-fn file(id: &str, parent: &str, name: &str) -> Change {
+pub(super) fn file(id: &str, parent: &str, name: &str) -> Change {
     up(row(id, parent, name, Kind::File, 4096))
 }
 
@@ -79,14 +80,14 @@ impl Fixture {
     /// The handle a `Materializer` waits on the helper through: this
     /// fixture's own runtime, or — in an async test, which has none of
     /// its own — the one already running it.
-    fn handle(&self) -> tokio::runtime::Handle {
+    pub(super) fn handle(&self) -> tokio::runtime::Handle {
         match &self.runtime {
             Some(rt) => rt.handle().clone(),
             None => tokio::runtime::Handle::current(),
         }
     }
 
-    fn materializer(&self, locked: bool, link: Option<HelperLink>) -> Materializer {
+    pub(super) fn materializer(&self, locked: bool, link: Option<HelperLink>) -> Materializer {
         Materializer {
             disk: Disk::open(&self.root, locked).unwrap(),
             store: self.store.clone(),
@@ -102,7 +103,7 @@ impl Fixture {
     }
 
     /// A full listing of `changes`, reconciled and committed.
-    fn listed(&self, changes: &[Change], locked: bool) -> Applied {
+    pub(super) fn listed(&self, changes: &[Change], locked: bool) -> Applied {
         { let changes = changes.to_vec(); self.store.call_blocking(move |s| { s.begin_staging(false)?; s.stage(&changes) }).unwrap(); }
         let applied = self.materializer(locked, None).apply(Scope::Full).unwrap();
         self.store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
@@ -110,7 +111,7 @@ impl Fixture {
     }
 
     /// A delta on top of what is committed, reconciled in the Changed scope.
-    fn delta(&self, changes: &[Change], locked: bool) -> Result<Applied, ApplyError> {
+    pub(super) fn delta(&self, changes: &[Change], locked: bool) -> Result<Applied, ApplyError> {
         { let changes = changes.to_vec(); self.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&changes) }).unwrap(); }
         let ids = changes.iter().map(|c| c.id().to_owned()).collect();
         self.materializer(locked, None).apply(Scope::Changed(ids))
@@ -119,7 +120,7 @@ impl Fixture {
     /// [`Self::listed`] with `tree()`, from an async test: the reconcile
     /// itself runs on a blocking thread, since it may wait on the
     /// runtime it is itself running on (`Materializer::mark`).
-    async fn listed_async(&self, locked: bool) -> Applied {
+    pub(super) async fn listed_async(&self, locked: bool) -> Applied {
         self.store.call(move |s| { s.begin_staging(false)?; s.stage(&tree()) }).await.unwrap();
         let m = self.materializer(locked, None);
         let applied = tokio::task::spawn_blocking(move || m.apply(Scope::Full)).await.unwrap().unwrap();
@@ -127,40 +128,25 @@ impl Fixture {
         applied
     }
 
-    fn path(&self, rel: &str) -> PathBuf {
+    pub(super) fn path(&self, rel: &str) -> PathBuf {
         self.root.path.join(rel)
     }
 }
 
-fn id_at(path: &Path) -> Option<String> {
+pub(super) fn id_at(path: &Path) -> Option<String> {
     xattr::get(path, "user.konedrive.item-id").unwrap().map(|v| String::from_utf8(v).unwrap())
 }
 
-fn ino(path: &Path) -> u64 {
+pub(super) fn ino(path: &Path) -> u64 {
     std::fs::symlink_metadata(path).unwrap().ino()
 }
 
-fn mode(path: &Path) -> u32 {
+pub(super) fn mode(path: &Path) -> u32 {
     std::fs::symlink_metadata(path).unwrap().permissions().mode() & 0o7777
 }
 
-fn tree() -> Vec<Change> {
+pub(super) fn tree() -> Vec<Change> {
     vec![root_row(), folder("D", "R", "docs"), file("F", "D", "f.txt"), folder("E", "D", "deep"), file("G", "E", "g.txt"), file("T", "R", "top.bin")]
-}
-
-/// Round 2: `(dev, ino)` alone is not a strong enough identity for a file
-/// that was dropped and reopened later — an inode can be freed and
-/// reused by an unrelated file in between. `FileIdentity` must tell that
-/// case apart, which an ino-only comparison cannot.
-#[test]
-fn a_reused_inode_with_a_different_birth_time_is_a_different_file() {
-    let t1 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-    let t2 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_500);
-    let a = FileIdentity { dev: 1, ino: 7, fingerprint: Fingerprint::Born(t1) };
-    let same = FileIdentity { dev: 1, ino: 7, fingerprint: Fingerprint::Born(t1) };
-    let reused = FileIdentity { dev: 1, ino: 7, fingerprint: Fingerprint::Born(t2) };
-    assert_eq!(a, same, "the same dev, ino and birth time is the same file");
-    assert_ne!(a, reused, "the same ino with a different birth time is a different file");
 }
 
 /// Issue #104, decisions 4 and 5, read-only: what the reconcile takes
@@ -233,14 +219,10 @@ fn a_stopped_download_set_aside_for_another_account_is_a_placeholder_again() {
 
 use std::os::unix::fs::FileExt as _;
 
-use async_trait::async_trait;
 use konedrive_fs::placeholder::{read_ctag, read_progress, write_ctag, write_progress, Progress};
 
-use konedrive_graph::quickxor::QuickXor;
-use crate::hydration::source::{ContentSource, Fetched, SourceError, Version};
-
 /// Downloads a file the way a finished fill leaves it: content, cTag, stamp.
-fn hydrate_by_hand(path: &Path, content: &[u8], ctag: &str) {
+pub(super) fn hydrate_by_hand(path: &Path, content: &[u8], ctag: &str) {
     let file = konedrive_fs::placeholder::reopen_writable(&File::open(path).unwrap()).unwrap();
     file.set_len(0).unwrap();
     file.write_all_at(content, 0).unwrap();
@@ -421,181 +403,6 @@ fn a_file_being_filled_is_left_for_the_next_cycle() {
     let applied = m.apply(Scope::Changed(vec!["F".into()])).unwrap();
     assert_eq!((applied.updated, applied.deferred), (0, 1));
     assert_eq!(std::fs::metadata(&path).unwrap().len(), 4096);
-}
-
-/// Serves `content` as version `ctag`, with its hash; `on_fetch` runs first.
-/// `damaged` flips one byte of what it streams, not of what it hashes.
-struct Memory {
-    ctag: String,
-    content: Vec<u8>,
-    damaged: bool,
-    on_fetch: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
-}
-
-impl Memory {
-    fn new(ctag: &str, content: &[u8]) -> Self {
-        Self { ctag: ctag.into(), content: content.to_vec(), damaged: false, on_fetch: std::sync::Mutex::new(None) }
-    }
-}
-
-#[async_trait]
-impl ContentSource for Memory {
-    async fn fetch(&self, _item_id: &str, from: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
-        if let Some(hook) = self.on_fetch.lock().unwrap().take() {
-            hook();
-        }
-        let mut hash = QuickXor::new();
-        hash.update(&self.content);
-        let mut served = self.content.clone();
-        if self.damaged {
-            served[0] ^= 1;
-        }
-        let start = (from as usize).min(served.len());
-        Ok(Fetched {
-            served_from: from,
-            size: self.content.len() as u64,
-            mtime: SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_500),
-            version: Some(Version { ctag: self.ctag.clone(), quick_xor: Some(hash.finish()) }),
-            stream: Box::new(std::io::Cursor::new(served[start..].to_vec())),
-        })
-    }
-}
-
-#[tokio::test]
-async fn a_replacement_swaps_in_the_new_version_and_a_reader_keeps_the_old() {
-    let f = fixture_async();
-    let (disk, path) = (Disk::open(&f.root, true).unwrap(), f.path("docs/f.txt"));
-    f.listed_async(true).await;
-    hydrate_by_hand(&path, b"old version", "c-F");
-    let reader = File::open(&path).unwrap();
-    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
-    let outcome = replace(&disk, &InodeLocks::new(), &Memory::new("c2", b"the new version"), &replacement).await;
-    assert!(matches!(outcome, ReplaceOutcome::Replaced), "{outcome:?}");
-    assert_eq!(std::fs::read(&path).unwrap(), b"the new version");
-    let file = File::open(&path).unwrap();
-    assert_eq!(read_state(&file).unwrap(), Some(State::Hydrated));
-    assert_eq!(read_ctag(&file).unwrap().as_deref(), Some("c2"));
-    assert!(stamp_matches(&file).unwrap());
-    assert_eq!(mode(&path), 0o444);
-    let mut old = vec![0u8; 11];
-    reader.read_exact_at(&mut old, 0).unwrap();
-    assert_eq!(&old, b"old version", "a reader of the old file keeps it");
-}
-
-#[tokio::test]
-async fn a_replacement_that_does_not_match_its_hash_leaves_the_old_version() {
-    let f = fixture_async();
-    let (disk, path) = (Disk::open(&f.root, false).unwrap(), f.path("docs/f.txt"));
-    f.listed_async(false).await;
-    hydrate_by_hand(&path, b"old version", "c-F");
-    let before = ino(&path);
-    let damaged = Memory { damaged: true, ..Memory::new("c2", b"the new version") };
-    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
-    let outcome = replace(&disk, &InodeLocks::new(), &damaged, &replacement).await;
-    assert!(matches!(outcome, ReplaceOutcome::Failed(_)), "{outcome:?}");
-    assert_eq!((ino(&path), std::fs::read(&path).unwrap()), (before, b"old version".to_vec()));
-}
-
-#[tokio::test]
-async fn a_replacement_that_cannot_be_downloaded_leaves_the_old_version() {
-    struct Gone;
-    #[async_trait]
-    impl ContentSource for Gone {
-        async fn fetch(&self, _: &str, _: u64, _end: Option<u64>) -> Result<Fetched, SourceError> {
-            Err(SourceError::NotFound("gone".into()))
-        }
-    }
-    let f = fixture_async();
-    let (disk, path) = (Disk::open(&f.root, false).unwrap(), f.path("docs/f.txt"));
-    f.listed_async(false).await;
-    hydrate_by_hand(&path, b"old version", "c-F");
-    let before = ino(&path);
-    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
-    let outcome = replace(&disk, &InodeLocks::new(), &Gone, &replacement).await;
-    assert!(matches!(outcome, ReplaceOutcome::Failed(_)), "{outcome:?}");
-    assert_eq!((ino(&path), std::fs::read(&path).unwrap()), (before, b"old version".to_vec()));
-}
-
-#[tokio::test]
-async fn a_file_freed_up_while_its_replacement_downloaded_is_left_as_it_is() {
-    let f = fixture_async();
-    let (disk, path) = (Disk::open(&f.root, false).unwrap(), f.path("docs/f.txt"));
-    f.listed_async(false).await;
-    hydrate_by_hand(&path, b"old version", "c-F");
-    let before = ino(&path);
-    let source = Memory::new("c2", b"the new version");
-    let freed = path.clone();
-    *source.on_fetch.lock().unwrap() = Some(Box::new(move || {
-        let file = File::options().read(true).write(true).open(&freed).unwrap();
-        // `old` must not still be open here, or Free up
-        // space could not take this file's write lease while its
-        // replacement downloads.
-        assert!(
-            konedrive_fs::lease::WriteLease::take(&file).unwrap().is_some(),
-            "the old file's write lease is free while its replacement downloads"
-        );
-        write_state(&file, State::OnlineOnly).unwrap();
-    }));
-    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
-    let outcome = replace(&disk, &InodeLocks::new(), &source, &replacement).await;
-    assert!(matches!(outcome, ReplaceOutcome::Current), "{outcome:?}");
-    assert_eq!(ino(&path), before, "the user freed it up; it is not filled behind their back");
-}
-
-/// A folder above the file moves (or is removed) while
-/// its replacement downloads. `disk.dir(parent)` then answers ENOENT —
-/// the same "nothing to do any more, the next cycle looks again" case as
-/// any other change underneath the replacement, not a download failure to
-/// report and keep retrying forever.
-#[tokio::test]
-async fn a_folder_moved_while_its_replacement_downloaded_is_left_as_it_is() {
-    let f = fixture_async();
-    let (disk, path) = (Disk::open(&f.root, false).unwrap(), f.path("docs/f.txt"));
-    f.listed_async(false).await;
-    hydrate_by_hand(&path, b"old version", "c-F");
-    let before = ino(&path);
-    let source = Memory::new("c2", b"the new version");
-    let root = f.root.path.clone();
-    *source.on_fetch.lock().unwrap() = Some(Box::new(move || {
-        std::fs::rename(root.join("docs"), root.join("papers")).unwrap();
-    }));
-    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
-    let outcome = replace(&disk, &InodeLocks::new(), &source, &replacement).await;
-    assert!(matches!(outcome, ReplaceOutcome::Current), "{outcome:?}");
-    assert_eq!(ino(&f.path("papers/f.txt")), before, "the file is untouched at its new path");
-    assert_eq!(std::fs::read(f.path("papers/f.txt")).unwrap(), b"old version");
-}
-
-/// The swap under the old file's lock really does
-/// wait for it — untested until now — rather than racing whoever holds
-/// it (a fill, a Free up, another replacement of the same file).
-#[tokio::test]
-async fn a_replacements_swap_waits_for_the_per_inode_lock() {
-    let f = fixture_async();
-    let (disk, path) = (Disk::open(&f.root, false).unwrap(), f.path("docs/f.txt"));
-    f.listed_async(false).await;
-    hydrate_by_hand(&path, b"old version", "c-F");
-    let locks = InodeLocks::new();
-    let key = crate::folder::locks::InodeKey::of(&File::open(&path).unwrap()).unwrap();
-    let held = locks.lock(key).await;
-
-    let task_locks = locks.clone();
-    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
-    let handle = tokio::spawn(async move {
-        let source = Memory::new("c2", b"the new version");
-        replace(&disk, &task_locks, &source, &replacement).await
-    });
-
-    // The download itself is instant (an in-memory source, no delay);
-    // this is time enough for the task to reach the lock and block on it.
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!handle.is_finished(), "the swap has not gone ahead while the lock is held");
-    assert_eq!(std::fs::read(&path).unwrap(), b"old version", "not swapped in yet");
-
-    drop(held);
-    let outcome = handle.await.unwrap();
-    assert!(matches!(outcome, ReplaceOutcome::Replaced), "{outcome:?}");
-    assert_eq!(std::fs::read(&path).unwrap(), b"the new version", "swapped in once the lock is free");
 }
 
 /// A file mid-fill (`Hydrating`) is left exactly

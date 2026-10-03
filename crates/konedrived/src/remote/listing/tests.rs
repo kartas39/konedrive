@@ -2,7 +2,6 @@ use crate::helper::HelperLink;
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -27,25 +26,25 @@ use crate::status::snapshot::SyncSnapshot;
 use konedrive_graph::token::StaticToken;
 use konedrive_tree::TreeStore;
 
-struct Setup {
-    server: MockServer,
-    _dir: tempfile::TempDir,
-    root: SyncRoot,
-    store: Store,
-    state: SyncStateHandle,
+pub(super) struct Setup {
+    pub(super) server: MockServer,
+    pub(super) _dir: tempfile::TempDir,
+    pub(super) root: SyncRoot,
+    pub(super) store: Store,
+    pub(super) state: SyncStateHandle,
     /// Where every listing made from this setup reports,
     /// its activity kept in `store`.
-    report: Report,
+    pub(super) report: Report,
     /// The preferred rescue directory (`ListingContext::rescue_dir`).
-    rescue_dir: PathBuf,
-    _rescue: Option<tempfile::TempDir>,
+    pub(super) rescue_dir: PathBuf,
+    pub(super) _rescue: Option<tempfile::TempDir>,
     /// A link to a helper that acknowledges everything: a folder that
     /// shows OneDrive is kept in step only with one (HS2).
-    link: HelperLink,
-    _helper: tempfile::TempDir,
+    pub(super) link: HelperLink,
+    pub(super) _helper: tempfile::TempDir,
     /// What every listing made from this setup queues for pins, and
     /// never downloads.
-    pins: Arc<Pins>,
+    pub(super) pins: Arc<Pins>,
 }
 
 impl Drop for Setup {
@@ -56,7 +55,7 @@ impl Drop for Setup {
     }
 }
 
-async fn setup() -> Setup {
+pub(super) async fn setup() -> Setup {
     let rescue = tempfile::tempdir().unwrap();
     let mut s = setup_rescuing_into(rescue.path().to_path_buf()).await;
     s._rescue = Some(rescue);
@@ -65,7 +64,7 @@ async fn setup() -> Setup {
 
 /// The folder is `OneDrive` inside a temporary directory, so that a
 /// rescue directory made beside it is cleaned up with it.
-async fn setup_rescuing_into(rescue_dir: PathBuf) -> Setup {
+pub(super) async fn setup_rescuing_into(rescue_dir: PathBuf) -> Setup {
     let server = MockServer::start().await;
     Mock::given(method("GET")).and(path("/me/drive"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"id": "D1"})))
@@ -101,13 +100,13 @@ async fn setup_rescuing_into(rescue_dir: PathBuf) -> Setup {
 }
 
 impl Setup {
-    fn drive(&self) -> DriveClient {
+    pub(super) fn drive(&self) -> DriveClient {
         DriveClient::new(Url::parse(&format!("{}/", self.server.uri())).unwrap(), Arc::new(StaticToken::new("T")))
             .unwrap()
             .with_retry(RetryPolicy { attempts: 2, default_wait: Duration::from_millis(5), max_wait: Duration::from_millis(10) })
     }
 
-    fn context(&self) -> ListingContext {
+    pub(super) fn context(&self) -> ListingContext {
         ListingContext {
             root: self.root.clone(),
             intercepted: true,
@@ -132,37 +131,37 @@ impl Setup {
     }
 
     /// Every event recorded so far, oldest first, as (kind, path, detail).
-    fn activity(&self) -> Vec<(String, String, String)> {
+    pub(super) fn activity(&self) -> Vec<(String, String, String)> {
         let mut events = konedrive_tree::off_runtime(|| self.report.activity.recent(1000)).unwrap();
         events.reverse();
         events.into_iter().map(|e| (e.kind, e.path, e.detail)).collect()
     }
 
     /// A full path in the folder, as events name it.
-    fn full(&self, rel: &str) -> String {
+    pub(super) fn full(&self, rel: &str) -> String {
         self.root.path.join(rel).display().to_string()
     }
 
-    fn listing(&self) -> Arc<Listing> {
+    pub(super) fn listing(&self) -> Arc<Listing> {
         Listing::new(self.context())
     }
 
-    fn listing_with(&self, full_threshold: usize) -> Arc<Listing> {
+    pub(super) fn listing_with(&self, full_threshold: usize) -> Arc<Listing> {
         Listing::new(ListingContext { full_threshold, ..self.context() })
     }
 
-    fn link(&self, token: &str) -> String {
+    pub(super) fn link(&self, token: &str) -> String {
         format!("{}/me/drive/root/delta?token={token}", self.server.uri())
     }
 
     /// The delta feed from `from` (None: the start) answers `items` and
     /// ends with the link `next`, once.
-    async fn feed(&self, from: Option<&str>, items: Value, next: &str) {
+    pub(super) async fn feed(&self, from: Option<&str>, items: Value, next: &str) {
         self.feed_after(from, items, next, Duration::ZERO).await;
     }
 
     /// [`Self::feed`], answering only after `delay`.
-    async fn feed_after(&self, from: Option<&str>, items: Value, next: &str, delay: Duration) {
+    pub(super) async fn feed_after(&self, from: Option<&str>, items: Value, next: &str, delay: Duration) {
         let mock = Mock::given(method("GET")).and(path("/me/drive/root/delta"));
         let mock = match from {
             Some(token) => mock.and(query_param("token", token)),
@@ -181,14 +180,14 @@ impl Setup {
 
     /// Page `from` of the delta feed (None: the first) holds `items`,
     /// and the page after it is at the link `next`, once.
-    async fn page(&self, from: Option<&str>, items: Value, next: &str) {
+    pub(super) async fn page(&self, from: Option<&str>, items: Value, next: &str) {
         let body = json!({"value": items, "@odata.nextLink": self.link(next)});
         self.answer(from, ResponseTemplate::new(200).set_body_json(body)).await;
     }
 
     /// The delta request from `from` (None: the start) is answered by
     /// `respond`, once.
-    async fn answer(&self, from: Option<&str>, respond: impl wiremock::Respond + 'static) {
+    pub(super) async fn answer(&self, from: Option<&str>, respond: impl wiremock::Respond + 'static) {
         let mock = Mock::given(method("GET")).and(path("/me/drive/root/delta"));
         let mock = match from {
             Some(token) => mock.and(query_param("token", token)),
@@ -205,7 +204,7 @@ impl Setup {
     /// asked, and the answer — no page at all — comes only after twice
     /// [`PATIENCE`], longer than any test step waits (see [`within`]),
     /// so a test sees the request still open for as long as it looks.
-    async fn held(&self, from: Option<&str>) -> tokio::sync::mpsc::UnboundedReceiver<()> {
+    pub(super) async fn held(&self, from: Option<&str>) -> tokio::sync::mpsc::UnboundedReceiver<()> {
         let (asked, heard) = tokio::sync::mpsc::unbounded_channel();
         self.answer(from, move |_: &Request| {
             let _ = asked.send(());
@@ -217,7 +216,7 @@ impl Setup {
 
     /// The `token` of every delta request so far, in order; `None` for
     /// one from the start.
-    async fn delta_tokens(&self) -> Vec<Option<String>> {
+    pub(super) async fn delta_tokens(&self) -> Vec<Option<String>> {
         self.server
             .received_requests()
             .await
@@ -229,7 +228,7 @@ impl Setup {
     }
 
     /// Graph's metadata for F at version `ctag`, holding `content`.
-    fn version(&self, ctag: &str, content: &[u8]) -> ResponseTemplate {
+    pub(super) fn version(&self, ctag: &str, content: &[u8]) -> ResponseTemplate {
         let mut hash = konedrive_graph::quickxor::QuickXor::new();
         hash.update(content);
         ResponseTemplate::new(200).set_body_json(json!({
@@ -240,19 +239,19 @@ impl Setup {
     }
 
     /// Graph's metadata for F at version c2, holding `content`.
-    fn new_version(&self, content: &[u8]) -> ResponseTemplate {
+    pub(super) fn new_version(&self, content: &[u8]) -> ResponseTemplate {
         self.version("c2", content)
     }
 
     /// The bytes of F's version `ctag`.
-    async fn serve_download(&self, ctag: &str, content: &[u8]) {
+    pub(super) async fn serve_download(&self, ctag: &str, content: &[u8]) {
         Mock::given(method("GET")).and(path(format!("/dl/F/{ctag}")))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(content.to_vec()))
             .mount(&self.server).await;
     }
 
     /// Serves `content` as F's version c2, its metadata answered by `metadata`.
-    async fn serve_new_version(&self, content: &[u8], metadata: impl wiremock::Respond + 'static) {
+    pub(super) async fn serve_new_version(&self, content: &[u8], metadata: impl wiremock::Respond + 'static) {
         Mock::given(method("GET")).and(path("/me/drive/items/F"))
             .respond_with(metadata)
             .with_priority(2)
@@ -261,33 +260,33 @@ impl Setup {
     }
 }
 
-fn root_item() -> Value {
+pub(super) fn root_item() -> Value {
     json!({"id": "R", "root": {}, "folder": {}})
 }
 
-fn folder(id: &str, parent: &str, name: &str) -> Value {
+pub(super) fn folder(id: &str, parent: &str, name: &str) -> Value {
     json!({"id": id, "name": name, "folder": {}, "parentReference": {"id": parent}})
 }
 
-fn file(id: &str, parent: &str, name: &str, ctag: &str) -> Value {
+pub(super) fn file(id: &str, parent: &str, name: &str, ctag: &str) -> Value {
     json!({"id": id, "name": name, "size": 10, "cTag": ctag, "file": {}, "parentReference": {"id": parent},
            "fileSystemInfo": {"lastModifiedDateTime": "2024-05-01T10:00:00Z"}})
 }
 
-fn vault() -> Value {
+pub(super) fn vault() -> Value {
     json!({"id": "V", "name": "Personal Vault", "folder": {}, "specialFolder": {"name": "vault"}, "parentReference": {"id": "R"}})
 }
 
-async fn delta_requests(server: &MockServer) -> usize {
+pub(super) async fn delta_requests(server: &MockServer) -> usize {
     server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/me/drive/root/delta").count()
 }
 
-async fn listed(s: &Setup) -> Arc<Listing> {
+pub(super) async fn listed(s: &Setup) -> Arc<Listing> {
     listed_with(s, s.context()).await
 }
 
 /// [`listed`], through a listing made from `context`.
-async fn listed_with(s: &Setup, context: ListingContext) -> Arc<Listing> {
+pub(super) async fn listed_with(s: &Setup, context: ListingContext) -> Arc<Listing> {
     s.feed(None, json!([root_item(), folder("D", "R", "docs"), file("F", "D", "f.txt", "c1"), vault()]), "L1").await;
     let listing = Listing::new(context);
     listing.cycle(&CancellationToken::new()).await.unwrap();
@@ -296,21 +295,21 @@ async fn listed_with(s: &Setup, context: ListingContext) -> Arc<Listing> {
 
 /// The longest a page-by-page test waits for anything: a regression that
 /// would hang it fails it in seconds instead.
-const PATIENCE: Duration = Duration::from_secs(10);
+pub(super) const PATIENCE: Duration = Duration::from_secs(10);
 
 /// `work`, or a failure once [`PATIENCE`] is out.
-async fn within<T>(work: impl std::future::Future<Output = T>) -> T {
+pub(super) async fn within<T>(work: impl std::future::Future<Output = T>) -> T {
     tokio::time::timeout(PATIENCE, work).await.expect("waited longer than a test should")
 }
 
 /// A cycle of `listing` in the background, stopped by `cancel`.
-fn spawn_cycle(listing: &Arc<Listing>, cancel: &CancellationToken) -> tokio::task::JoinHandle<Result<CycleReport, CycleError>> {
+pub(super) fn spawn_cycle(listing: &Arc<Listing>, cancel: &CancellationToken) -> tokio::task::JoinHandle<Result<CycleReport, CycleError>> {
     let (listing, cancel) = (Arc::clone(listing), cancel.clone());
     tokio::spawn(async move { listing.cycle(&cancel).await })
 }
 
 /// Everything beneath `root`, hidden names too, as sorted relative paths.
-fn tree_of(root: &Path) -> Vec<String> {
+pub(super) fn tree_of(root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     let mut pending = vec![PathBuf::new()];
     while let Some(rel) = pending.pop() {
@@ -327,18 +326,18 @@ fn tree_of(root: &Path) -> Vec<String> {
     out
 }
 
-fn ino(at: &Path) -> u64 {
+pub(super) fn ino(at: &Path) -> u64 {
     std::fs::symlink_metadata(at).unwrap().ino()
 }
 
-fn mode(at: &Path) -> u32 {
+pub(super) fn mode(at: &Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     std::fs::symlink_metadata(at).unwrap().permissions().mode() & 0o7777
 }
 
 /// Downloads the file at `at` by hand, as a finished fill leaves it:
 /// `content` at version c1.
-fn hydrate_by_hand(at: &Path, content: &[u8]) {
+pub(super) fn hydrate_by_hand(at: &Path, content: &[u8]) {
     use std::os::unix::fs::FileExt as _;
     let file = placeholder::reopen_writable(&File::open(at).unwrap()).unwrap();
     file.write_all_at(content, 0).unwrap();
@@ -349,7 +348,7 @@ fn hydrate_by_hand(at: &Path, content: &[u8]) {
 
 /// Renames `docs` to `papers` in the (locked) folder, as a user with
 /// their own chmod might while a replacement downloads.
-fn move_docs_away(root: &Path) {
+pub(super) fn move_docs_away(root: &Path) {
     let dir = File::open(root).unwrap();
     placeholder::with_owner_write(&dir, || std::fs::rename(root.join("docs"), root.join("papers"))).unwrap();
 }
@@ -357,7 +356,7 @@ fn move_docs_away(root: &Path) {
 /// A helper that acknowledges everything at once, except the marking of
 /// the directory whose path ends in `stall_on`: it says so on the first
 /// channel, and acknowledges only when told to on the second.
-fn stalling_helper(socket_path: &Path, stall_on: &'static str) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
+pub(super) fn stalling_helper(socket_path: &Path, stall_on: &'static str) -> (mpsc::Receiver<()>, mpsc::Sender<()>) {
     let listener = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None).unwrap();
     bind(listener.as_raw_fd(), &UnixAddr::new(socket_path).unwrap()).unwrap();
     listen(&listener, Backlog::new(4).unwrap()).unwrap();
@@ -389,10 +388,10 @@ fn stalling_helper(socket_path: &Path, stall_on: &'static str) -> (mpsc::Receive
 /// What a [`recording_helper`] was asked to mark, in order: each
 /// directory's item id (None for the holding directory), and how many
 /// entries it held right then.
-type Marks = Arc<std::sync::Mutex<Vec<(Option<String>, usize)>>>;
+pub(super) type Marks = Arc<std::sync::Mutex<Vec<(Option<String>, usize)>>>;
 
 /// A helper that acknowledges everything, and keeps what it marked.
-fn recording_helper(socket_path: &Path) -> Marks {
+pub(super) fn recording_helper(socket_path: &Path) -> Marks {
     let listener = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None).unwrap();
     bind(listener.as_raw_fd(), &UnixAddr::new(socket_path).unwrap()).unwrap();
     listen(&listener, Backlog::new(4).unwrap()).unwrap();
@@ -510,7 +509,7 @@ async fn a_very_large_delta_is_reconciled_in_full() {
 }
 
 /// Pins the folder at `rel` in the (locked) folder, as `Pin` does.
-fn pin_by_hand(root: &Path, rel: &str) {
+pub(super) fn pin_by_hand(root: &Path, rel: &str) {
     placeholder::write_pin(&File::open(root.join(rel)).unwrap()).unwrap();
 }
 
@@ -620,87 +619,6 @@ async fn a_failed_reconcile_makes_the_next_cycle_full() {
     assert!(s.root.path.join("docs/renamed.txt").is_file());
 }
 
-#[tokio::test]
-async fn the_poller_runs_again_on_refresh_and_stops() {
-    let s = setup().await;
-    s.feed(None, json!([root_item()]), "L1").await;
-    Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "L1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [], "@odata.deltaLink": s.link("L1")})))
-        .mount(&s.server).await;
-    let poller = Poller::start(s.listing(), Schedule::polled(Duration::from_secs(3600), vec![]));
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(delta_requests(&s.server).await, 1, "the first cycle runs at once");
-    poller.refresh();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(delta_requests(&s.server).await, 2, "Refresh() runs another now, not in an hour");
-    tokio::time::timeout(Duration::from_secs(5), poller.stop()).await.expect("stop returns");
-}
-
-/// Issue #54: while the notification socket is up the poll waits `live_interval`; once it
-/// goes down, the next cycle is due `interval` after the last one.
-#[tokio::test]
-async fn the_poll_waits_longer_while_the_socket_is_up_and_not_once_it_drops() {
-    let s = setup().await;
-    s.feed(None, json!([root_item()]), "L1").await;
-    Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "L1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"value": [], "@odata.deltaLink": s.link("L1")})))
-        .mount(&s.server).await;
-    let schedule = Schedule { live_interval: Duration::from_secs(3600), ..Schedule::polled(Duration::from_millis(400), vec![]) };
-    let poller = Poller::start(s.listing(), schedule);
-    let up = poller.live_up();
-    up.send_replace(true);
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert_eq!(delta_requests(&s.server).await, 1, "the first cycle, then the live interval");
-    up.send_replace(false);
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    assert_eq!(delta_requests(&s.server).await, 2, "overdue by the normal interval: a cycle at once");
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    assert_eq!(delta_requests(&s.server).await, 3, "and every normal interval after");
-    tokio::time::timeout(Duration::from_secs(5), poller.stop()).await.expect("stop returns");
-}
-
-#[tokio::test]
-async fn a_failed_cycle_is_retried_on_the_retry_schedule() {
-    let s = setup().await;
-    Mock::given(method("GET")).and(path("/me/drive/root/delta"))
-        .respond_with(ResponseTemplate::new(503))
-        .up_to_n_times(2).with_priority(1)
-        .mount(&s.server).await;
-    s.feed(None, json!([root_item(), folder("D", "R", "docs")]), "L1").await;
-    let poller = Poller::start(s.listing(), Schedule::polled(Duration::from_secs(3600), vec![Duration::from_millis(100)]));
-    tokio::time::sleep(Duration::from_millis(1500)).await;
-    assert!(s.root.path.join("docs").is_dir(), "retried after 100 ms rather than an hour");
-    assert_eq!(s.state.get().sync_trouble, None, "the trouble clears once a cycle succeeds");
-    poller.stop().await;
-}
-
-/// Forget stops the sync before it takes the lifecycle lock for writing,
-/// but whoever holds that lock must never make a stop wait for it. The
-/// cycle asks Graph without the lock, and changes nothing without it.
-#[tokio::test]
-async fn stopping_does_not_wait_for_the_lifecycle_lock() {
-    let s = setup().await;
-    s.feed(None, json!([root_item(), folder("D", "R", "docs")]), "L1").await;
-    let lifecycle = Arc::new(tokio::sync::RwLock::new(()));
-    let held = Arc::clone(&lifecycle).write_owned().await;
-    let listing = Listing::new(ListingContext { lifecycle: Arc::clone(&lifecycle), ..s.context() });
-    let poller = Poller::start(listing, Schedule::polled(Duration::from_secs(3600), vec![]));
-    let docs = s.root.path.join("docs");
-    let mut staged = false;
-    for _ in 0..100 {
-        staged = s.store.call(|t| t.get(Table::Staging, "D")).await.unwrap().is_some();
-        if staged || docs.exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(!docs.exists(), "the folder is not changed without the lock");
-    assert!(staged, "Graph is asked, and its answer staged, without the lock");
-    assert_eq!(delta_requests(&s.server).await, 1);
-    tokio::time::timeout(Duration::from_secs(2), poller.stop()).await.expect("stop does not wait for the lock's holder");
-    drop(held);
-}
-
 /// A helper's reconnect takes the lifecycle lock for writing before it
 /// serves fills again; a listing that takes minutes must not keep it
 /// waiting (Z1: opens meanwhile would not be intercepted).
@@ -729,19 +647,6 @@ async fn a_cycle_asking_graph_does_not_hold_the_lifecycle_lock() {
     assert!(matches!(running.await.unwrap(), Err(CycleError::Cancelled)));
 }
 
-/// Nor for Graph: a request that hangs is dropped, not waited out.
-#[tokio::test]
-async fn stopping_does_not_wait_for_a_slow_answer_from_graph() {
-    let s = setup().await;
-    s.feed_after(None, json!([root_item()]), "L1", Duration::from_secs(30)).await;
-    let poller = Poller::start(s.listing(), Schedule::polled(Duration::from_secs(3600), vec![]));
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(delta_requests(&s.server).await, 1, "the listing has asked");
-    assert!(s.state.get().listing);
-    tokio::time::timeout(Duration::from_secs(2), poller.stop()).await.expect("stop does not wait for the answer");
-    assert!(!s.state.get().listing, "a stopped listing is not said to run");
-}
-
 /// A rescue is one rename, never a copy (ruling): with the
 /// preferred rescue directory on another filesystem than the folder, the
 /// files go beside the folder instead — and the conflict says so, not
@@ -768,164 +673,6 @@ async fn the_conflict_names_the_directory_the_files_really_went_to() {
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].rescued, kept.display().to_string());
     assert!(!conflicts[0].rescued.starts_with(&preferred.display().to_string()));
-}
-
-#[tokio::test]
-async fn a_file_changed_in_the_cloud_is_replaced_after_the_cycle() {
-    let s = setup().await;
-    let listing = listed(&s).await;
-    let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
-    let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.new_version(&new)).await;
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-    assert_eq!(std::fs::read(&f_txt).unwrap(), new);
-}
-
-/// A pinned file replaced by its new version — another inode — is still
-/// pinned.
-#[tokio::test]
-async fn a_replacement_keeps_the_files_own_pin() {
-    let s = setup().await;
-    let listing = listed(&s).await;
-    let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
-    pin_by_hand(&s.root.path, "docs/f.txt");
-    let before = ino(&f_txt);
-    let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.new_version(&new)).await;
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-
-    assert_eq!(std::fs::read(&f_txt).unwrap(), new);
-    assert_ne!(ino(&f_txt), before);
-    assert_eq!(File::open(&f_txt).unwrap().get_xattr(placeholder::XATTR_PIN).unwrap(), Some(b"1".to_vec()));
-}
-
-/// When the new version cannot be had, the old one stays, the
-/// status says why, and it is tried again.
-#[tokio::test]
-async fn a_replacement_that_fails_is_said_and_tried_again() {
-    let s = setup().await;
-    let listing = listed(&s).await;
-    let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
-    Mock::given(method("GET")).and(path("/me/drive/items/F"))
-        .respond_with(ResponseTemplate::new(404))
-        .up_to_n_times(1).with_priority(1)
-        .mount(&s.server).await;
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-    assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten", "the old version stays");
-    assert!(s.state.get().replacement_note.contains("could not be updated"), "{:?}", s.state.get().replacement_note);
-
-    let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.new_version(&new)).await;
-    s.feed(Some("L2"), json!([]), "L3").await;
-    let report = listing.cycle(&CancellationToken::new()).await.unwrap();
-    assert!(!report.full, "a failed replacement is retried as it is, with no Full reconcile");
-    listing.join_replacements().await;
-    assert_eq!(std::fs::read(&f_txt).unwrap(), new);
-    assert_eq!(s.state.get().replacement_note, "");
-}
-
-/// A replacement the disk has no room for is an
-/// `update-failed` event whose detail is exactly "not enough disk space"
-/// — the words the window's notifier turns into "disk full".
-#[tokio::test]
-async fn a_replacement_with_no_room_on_the_disk_says_exactly_that() {
-    let s = setup().await;
-    let listing = listed(&s).await;
-    let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
-    // A new version no disk here holds beside the old one.
-    let huge = json!({"id": "F", "name": "f.txt", "size": 1u64 << 60, "cTag": "c2", "file": {},
-                      "parentReference": {"id": "D"}, "fileSystemInfo": {"lastModifiedDateTime": "2024-05-01T10:00:00Z"}});
-    s.feed(Some("L1"), json!([huge]), "L2").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-    assert_eq!(
-        s.activity().pop().unwrap(),
-        ("update-failed".to_owned(), s.full("docs/f.txt"), activity::NO_DISK_SPACE.to_owned())
-    );
-    assert!(s.state.get().replacement_note.contains("not enough space"), "{:?}", s.state.get().replacement_note);
-    assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten", "the old version stays");
-}
-
-/// A replacement that goes through is an `updated` event,
-/// one that fails an `update-failed` event saying why — not `failed`,
-/// which is a download's.
-#[tokio::test]
-async fn a_replacement_is_recorded_as_updated_or_failed() {
-    let s = setup().await;
-    let listing = listed(&s).await;
-    let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
-    Mock::given(method("GET")).and(path("/me/drive/items/F"))
-        .respond_with(ResponseTemplate::new(404))
-        .up_to_n_times(1).with_priority(1)
-        .mount(&s.server).await;
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-    let (kind, at, why) = s.activity().pop().unwrap();
-    assert_eq!((kind.as_str(), at.as_str()), ("update-failed", s.full("docs/f.txt").as_str()));
-    assert!(why.contains("could not be downloaded"), "{why}");
-
-    let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.new_version(&new)).await;
-    s.feed(Some("L2"), json!([]), "L3").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-    assert_eq!(s.activity().pop().unwrap(), ("updated".into(), s.full("docs/f.txt"), "11 B".into()));
-    assert!(s.report.transfers.list().is_empty(), "no download is left showing");
-}
-
-/// A replacement retried after every cycle and failing
-/// the same way each time is one `update-failed` event, not one a
-/// minute — on a full disk, where it fails at once, that flushed the
-/// log and notified every minute.
-#[tokio::test]
-async fn a_replacement_that_keeps_failing_the_same_way_is_recorded_once() {
-    let s = setup().await;
-    let listing = listed(&s).await;
-    hydrate_by_hand(&s.root.path.join("docs/f.txt"), b"old conten");
-    Mock::given(method("GET")).and(path("/me/drive/items/F"))
-        .respond_with(ResponseTemplate::new(404))
-        .with_priority(1)
-        .mount(&s.server).await;
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-    s.feed(Some("L2"), json!([]), "L3").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.join_replacements().await;
-
-    let asked = s.server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/me/drive/items/F").count();
-    assert_eq!(asked, 2, "it was tried again");
-    let recorded = s.activity().into_iter().filter(|(kind, _, _)| kind == "update-failed").count();
-    assert_eq!(recorded, 1, "the same failure again is not news: {:?}", s.activity());
-    assert!(s.state.get().replacement_note.contains("could not be updated"), "the status still says it");
-}
-
-/// I1's other half: a failure is news again when its reason changes,
-/// when it is for a newer version, and when the file was replaced since.
-#[tokio::test]
-async fn a_failure_with_a_new_reason_or_version_is_recorded_again() {
-    let s = setup().await;
-    let listing = s.listing();
-    let r = |ctag: &str| Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: ctag.into(), size: 10 };
-    assert!(listing.record_replacement(&r("c2"), ReplaceOutcome::Failed("a".into())));
-    assert!(!listing.record_replacement(&r("c2"), ReplaceOutcome::Failed("a".into())), "the same again");
-    assert!(listing.record_replacement(&r("c2"), ReplaceOutcome::NoSpace("b".into())), "another reason");
-    assert!(listing.record_replacement(&r("c3"), ReplaceOutcome::NoSpace("b".into())), "a newer version");
-    assert!(listing.record_replacement(&r("c3"), ReplaceOutcome::Replaced));
-    assert!(listing.record_replacement(&r("c3"), ReplaceOutcome::NoSpace("b".into())), "failing after it went through");
 }
 
 /// `conflict` events are capped like every other
@@ -1092,151 +839,6 @@ async fn a_cycle_that_leaves_a_file_for_later_makes_the_next_one_full() {
     assert_eq!(placeholder::read_ctag(&File::open(&f_txt).unwrap()).unwrap().as_deref(), Some("c2"));
 }
 
-/// A replacement that ends with nothing to do (here: the folder above the
-/// file moved while it downloaded) makes the next cycle Full, and that
-/// cycle finds the file again and issues its replacement anew.
-#[tokio::test]
-async fn a_replacement_that_finds_its_file_moved_makes_the_next_cycle_full_and_issues_it_again() {
-    let s = setup().await;
-    let listing = listed(&s).await;
-    hydrate_by_hand(&s.root.path.join("docs/f.txt"), b"old conten");
-    let new = b"new content".to_vec();
-    let (root, moved, answer) = (s.root.path.clone(), AtomicBool::new(false), s.new_version(&new));
-    s.serve_new_version(&new, move |_: &Request| {
-        if !moved.swap(true, Ordering::SeqCst) {
-            move_docs_away(&root);
-        }
-        answer.clone()
-    })
-    .await;
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-    let report = listing.cycle(&CancellationToken::new()).await.unwrap();
-    assert_eq!(report.applied.replacements.len(), 1);
-    listing.join_replacements().await;
-    assert_eq!(std::fs::read(s.root.path.join("papers/f.txt")).unwrap(), b"old conten", "nothing was swapped in");
-
-    s.feed(Some("L2"), json!([]), "L3").await;
-    let report = listing.cycle(&CancellationToken::new()).await.unwrap();
-    assert!(report.full, "only a Full reconcile finds the replacement again");
-    assert_eq!(report.applied.replacements.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["F"]);
-    listing.join_replacements().await;
-    assert_eq!(std::fs::read(s.root.path.join("docs/f.txt")).unwrap(), new);
-}
-
-/// A replacement cut short because the poller stops has no outcome:
-/// it asks for no Full reconcile and changes no note.
-#[tokio::test]
-async fn a_replacement_stopped_with_the_poller_asks_for_nothing() {
-    let s = setup().await;
-    let listing = listed(&s).await;
-    let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
-    let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.new_version(&new).set_delay(Duration::from_secs(30))).await;
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-    let poller = Poller::start(Arc::clone(&listing), Schedule::polled(Duration::from_secs(3600), vec![]));
-    let mut asked = false;
-    for _ in 0..100 {
-        asked = s.server.received_requests().await.unwrap().iter().any(|r| r.url.path() == "/me/drive/items/F");
-        if asked {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(asked, "the replacement is under way");
-    tokio::time::timeout(Duration::from_secs(2), poller.stop()).await.expect("the stop cuts the download short");
-    assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten");
-    assert_eq!(s.state.get().replacement_note, "");
-    s.feed(Some("L2"), json!([]), "L3").await;
-    let report = listing.cycle(&CancellationToken::new()).await.unwrap();
-    assert!(!report.full, "a replacement the stop cut short is no reason for a Full reconcile");
-}
-
-/// A replacement that ends while a cycle reconciles asks for a Full
-/// reconcile after it — the cycle that was running must not swallow the
-/// request when it succeeds. Made deterministic by holding both
-/// replacement slots until the running cycle is stuck marking a folder.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_replacement_that_ends_while_a_cycle_runs_still_makes_the_next_one_full() {
-    let s = setup().await;
-    let sockets = tempfile::tempdir().unwrap();
-    let socket_path = sockets.path().join("helper.sock");
-    let (reached, release) = stalling_helper(&socket_path, "/.konedrive-new-N");
-    let link = HelperLink::connect(&socket_path).await.unwrap().0;
-    let listing = Listing::new(ListingContext { intercepted: true, link: Arc::new(std::sync::Mutex::new(Some(link))), ..s.context() });
-    s.feed(None, json!([root_item(), folder("D", "R", "docs"), file("F", "D", "f.txt", "c1")]), "L1").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    hydrate_by_hand(&s.root.path.join("docs/f.txt"), b"old conten");
-    let new = b"new content".to_vec();
-    let (root, moved, answer) = (s.root.path.clone(), AtomicBool::new(false), s.new_version(&new));
-    s.serve_new_version(&new, move |_: &Request| {
-        if !moved.swap(true, Ordering::SeqCst) {
-            move_docs_away(&root);
-        }
-        answer.clone()
-    })
-    .await;
-
-    // The replacement is issued, and waits for a slot.
-    // A paused pool hands no background slot out: the replacement waits.
-    listing.ctx.drive.pool().set_paused(true);
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    // The next cycle starts, and is stuck marking the folder it makes.
-    s.feed(Some("L2"), json!([folder("N", "R", "new")]), "L3").await;
-    let running = tokio::spawn({
-        let listing = Arc::clone(&listing);
-        async move { listing.cycle(&CancellationToken::new()).await }
-    });
-    tokio::task::spawn_blocking(move || reached.recv().unwrap()).await.unwrap();
-    // Meanwhile the replacement runs, and ends with nothing to do.
-    listing.ctx.drive.pool().set_paused(false);
-    listing.join_replacements().await;
-    assert!(!running.is_finished());
-    release.send(()).unwrap();
-    running.await.unwrap().unwrap();
-
-    s.feed(Some("L3"), json!([]), "L4").await;
-    let report = listing.cycle(&CancellationToken::new()).await.unwrap();
-    assert!(report.full, "the replacement's request outlived the cycle that was running when it came");
-    listing.join_replacements().await;
-    assert_eq!(std::fs::read(s.root.path.join("docs/f.txt")).unwrap(), new);
-}
-
-/// A newer version that arrives while an older one of the same file is
-/// still being fetched is fetched after it, not dropped: nothing else
-/// would ever look at that file again.
-#[tokio::test]
-async fn a_newer_version_that_arrives_while_a_replacement_runs_is_fetched_after_it() {
-    let s = setup().await;
-    let listing = listed(&s).await;
-    let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
-    let (two, three) = (b"version two".to_vec(), b"version three".to_vec());
-    // Graph serves version two once, and version three from then on.
-    Mock::given(method("GET")).and(path("/me/drive/items/F"))
-        .respond_with(s.version("c2", &two))
-        .up_to_n_times(1).with_priority(1)
-        .mount(&s.server).await;
-    Mock::given(method("GET")).and(path("/me/drive/items/F"))
-        .respond_with(s.version("c3", &three))
-        .with_priority(2)
-        .mount(&s.server).await;
-    s.serve_download("c2", &two).await;
-    s.serve_download("c3", &three).await;
-
-    // A paused pool hands no background slot out: the replacement waits.
-    listing.ctx.drive.pool().set_paused(true);
-    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    s.feed(Some("L2"), json!([file("F", "D", "f.txt", "c3")]), "L3").await;
-    listing.cycle(&CancellationToken::new()).await.unwrap();
-    listing.ctx.drive.pool().set_paused(false);
-    listing.join_replacements().await;
-    assert_eq!(std::fs::read(&f_txt).unwrap(), three);
-    assert_eq!(placeholder::read_ctag(&File::open(&f_txt).unwrap()).unwrap().as_deref(), Some("c3"));
-}
-
 /// at every cycle: signing out and in as another account
 /// between two cycles stops the folder before anything is placed.
 #[tokio::test]
@@ -1378,340 +980,6 @@ async fn a_dropped_cycle_keeps_its_locks_until_its_reconcile_stops() {
     assert!(later.is_ok(), "and the lock is let go once the reconcile has stopped");
     drop(later);
     assert!(s.root.path.join("new").is_dir());
-}
-
-/// A first listing places each page as it comes. While page 2
-/// is still being asked for, page 1 is in the folder, under the lock,
-/// and in the counts, the store knows where to go on from, and the
-/// lifecycle lock is free for a Forget or a helper's reconnect.
-#[tokio::test]
-async fn a_first_listing_shows_each_page_while_the_next_is_asked_for() {
-    let s = setup().await;
-    s.page(None, json!([root_item(), folder("D", "R", "docs"), file("F", "D", "f.txt", "c1"), folder("E", "R", "extra")]), "P2").await;
-    let mut asked = s.held(Some("P2")).await;
-    let lifecycle = Arc::new(tokio::sync::RwLock::new(()));
-    let listing = Listing::new(ListingContext { lifecycle: Arc::clone(&lifecycle), ..s.context() });
-    let cancel = CancellationToken::new();
-    let running = spawn_cycle(&listing, &cancel);
-    within(asked.recv()).await.unwrap();
-
-    assert!(lifecycle.try_write().is_ok(), "the lifecycle lock is let go between pages");
-    assert_eq!(tree_of(&s.root.path), ["docs", "docs/f.txt", "extra"]);
-    assert_eq!(mode(&s.root.path.join("docs")), placeholder::LOCKED_DIR_MODE, "the folder is under the read-only lock between pages");
-    assert_eq!(mode(&s.root.path), placeholder::LOCKED_DIR_MODE);
-    let snapshot = s.state.get();
-    assert!(snapshot.listing, "the listing is still said to run");
-    assert_eq!((snapshot.items_listed, snapshot.items_placed), (3, 3));
-    assert_eq!(s.store.call(move |t| t.listing_next()).await.unwrap(), Some(s.link("P2")));
-    assert_eq!(s.store.call(move |t| t.delta_link()).await.unwrap(), None);
-    assert!(s.activity().is_empty(), "the one `listed` event comes at the end: {:?}", s.activity());
-
-    cancel.cancel();
-    assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
-}
-
-/// Across pages: an item whose folder has not come yet waits
-/// for it, and is placed with it. One whose folder never comes is listed
-/// and not placed, as a Full reconcile leaves it.
-#[tokio::test]
-async fn an_item_whose_folder_comes_on_a_later_page_waits_for_it() {
-    let s = setup().await;
-    s.page(None, json!([root_item(), file("C", "P", "c.txt", "c1"), folder("Q", "R", "q"), file("O", "NOWHERE", "o.txt", "c1")]), "P2").await;
-    let seen = Arc::new(std::sync::Mutex::new(None));
-    let (root, look) = (s.root.path.clone(), Arc::clone(&seen));
-    let answer = ResponseTemplate::new(200)
-        .set_body_json(json!({"value": [folder("P", "R", "papers")], "@odata.deltaLink": s.link("L1")}));
-    s.answer(Some("P2"), move |_: &Request| {
-        *look.lock().unwrap() = Some(tree_of(&root));
-        answer.clone()
-    })
-    .await;
-    within(s.listing().cycle(&CancellationToken::new())).await.unwrap();
-
-    assert_eq!(seen.lock().unwrap().take().expect("page 2 was asked for"), ["q"], "c.txt waited for its folder");
-    assert_eq!(tree_of(&s.root.path), ["papers", "papers/c.txt", "q"]);
-    let snapshot = s.state.get();
-    assert_eq!((snapshot.items_listed, snapshot.items_placed), (4, 3), "o.txt is listed, and nowhere");
-}
-
-/// The riskiest case of across pages: an entry whose folder has
-/// not come yet is held only in `items` once its page is committed. A
-/// stop before its folder comes must not lose it: the listing resumed in
-/// a new `Listing`, as after a restart, places it with its folder.
-#[tokio::test]
-async fn an_entry_waiting_for_its_folder_survives_a_stop() {
-    let s = setup().await;
-    s.page(None, json!([root_item(), file("C", "P", "c.txt", "c1")]), "P2").await;
-    let mut asked = s.held(Some("P2")).await;
-    let cancel = CancellationToken::new();
-    let running = spawn_cycle(&s.listing(), &cancel);
-    within(asked.recv()).await.unwrap();
-    cancel.cancel();
-    assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
-    assert_eq!(tree_of(&s.root.path), Vec::<String>::new(), "c.txt waits for its folder");
-
-    s.feed(Some("P2"), json!([folder("P", "R", "papers")]), "L1").await;
-    within(s.listing().cycle(&CancellationToken::new())).await.unwrap();
-    assert_eq!(tree_of(&s.root.path), ["papers", "papers/c.txt"]);
-    assert_eq!(s.delta_tokens().await, [None, Some("P2".to_owned()), Some("P2".to_owned())]);
-}
-
-/// Ruling 1 of: a listing stopped between pages resumes where it
-/// stopped — in a new `Listing`, as after a restart — and asks for no
-/// page it placed again. It still ends in one `listed` event.
-#[tokio::test]
-async fn a_listing_stopped_part_way_resumes_where_it_stopped() {
-    let s = setup().await;
-    s.page(None, json!([root_item(), folder("D", "R", "docs")]), "P2").await;
-    s.page(Some("P2"), json!([file("F", "D", "f.txt", "c1")]), "P3").await;
-    let mut asked = s.held(Some("P3")).await;
-    let cancel = CancellationToken::new();
-    let running = spawn_cycle(&s.listing(), &cancel);
-    within(asked.recv()).await.unwrap();
-    cancel.cancel();
-    assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
-    assert!(!s.state.get().listing);
-
-    s.feed(Some("P3"), json!([folder("E", "R", "extra")]), "L1").await;
-    let report = within(s.listing().cycle(&CancellationToken::new())).await.unwrap();
-    assert!(report.full);
-    let from = |t: &str| Some(t.to_owned());
-    assert_eq!(s.delta_tokens().await, [None, from("P2"), from("P3"), from("P3")], "pages 1 and 2 are not asked for again");
-    assert_eq!(tree_of(&s.root.path), ["docs", "docs/f.txt", "extra"]);
-    assert_eq!(s.store.call(move |t| Ok((t.delta_link()?, t.listing_next()?))).await.unwrap(), (Some(s.link("L1")), None));
-    let folder = s.root.path.display().to_string();
-    assert_eq!(s.activity(), vec![("listed".to_owned(), folder, "3 items".to_owned())]);
-    let snapshot = s.state.get();
-    assert_eq!((snapshot.listing, snapshot.items_listed, snapshot.items_placed), (false, 3, 3));
-}
-
-/// A stopped listing whose resume link Graph refuses — expired (`410`),
-/// or a token it no longer takes (`400`) — lists the drive again from
-/// the start and reconciles the folder once in full, as after any
-/// expired feed: what is placed is found by its id, not made again, and
-/// none of it is rescued.
-#[tokio::test]
-async fn a_refused_resume_link_lists_again_from_the_start_without_duplicates() {
-    for refusal in [410, 400] {
-        let s = setup().await;
-        s.page(None, json!([root_item(), folder("D", "R", "docs"), file("F", "D", "f.txt", "c1")]), "P2").await;
-        let mut asked = s.held(Some("P2")).await;
-        let cancel = CancellationToken::new();
-        let running = spawn_cycle(&s.listing(), &cancel);
-        within(asked.recv()).await.unwrap();
-        cancel.cancel();
-        assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
-        let placed = ino(&s.root.path.join("docs/f.txt"));
-
-        s.answer(Some("P2"), ResponseTemplate::new(refusal)).await;
-        s.feed(None, json!([root_item(), folder("D", "R", "docs"), file("F", "D", "f.txt", "c1"), folder("E", "R", "extra")]), "L1").await;
-        let report = within(s.listing().cycle(&CancellationToken::new())).await.unwrap();
-
-        assert!(report.full, "{refusal}");
-        assert!(report.applied.rescued.is_empty(), "{refusal}: {:?}", report.applied.rescued);
-        assert!(konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap().is_empty(), "{refusal}");
-        assert_eq!(tree_of(&s.root.path), ["docs", "docs/f.txt", "extra"], "{refusal}");
-        assert_eq!(ino(&s.root.path.join("docs/f.txt")), placed, "{refusal}: the placeholder was found, not made again");
-        let from = |t: &str| Some(t.to_owned());
-        assert_eq!(s.delta_tokens().await, [None, from("P2"), from("P2"), None], "{refusal}");
-        assert_eq!(s.store.call(move |t| Ok((t.delta_link()?, t.listing_next()?))).await.unwrap(), (Some(s.link("L1")), None), "{refusal}");
-        let folder = s.root.path.display().to_string();
-        assert_eq!(s.activity(), vec![("listed".to_owned(), folder, "3 items".to_owned())], "{refusal}");
-    }
-}
-
-/// Only the resume link a stopped listing left is one Graph may refuse
-/// and send the listing back to the start. A next-page link handed out
-/// earlier in the same cycle that Graph turns down fails the cycle as
-/// any trouble with Graph does; the listing stays page by page, and the
-/// next cycle resumes at that page.
-#[tokio::test]
-async fn a_next_page_turned_down_fails_the_cycle_and_the_listing_resumes_there() {
-    let s = setup().await;
-    s.page(None, json!([root_item(), folder("D", "R", "docs")]), "P2").await;
-    s.answer(Some("P2"), ResponseTemplate::new(400)).await;
-    let listing = s.listing();
-    let err = within(listing.cycle(&CancellationToken::new())).await.unwrap_err();
-    assert!(matches!(err, CycleError::Offline(_)), "{err:?}");
-    assert_eq!(s.store.call(move |t| t.listing_next()).await.unwrap(), Some(s.link("P2")), "still page by page, at page 2");
-    assert_eq!(tree_of(&s.root.path), ["docs"]);
-
-    s.feed(Some("P2"), json!([folder("E", "R", "extra")]), "L1").await;
-    within(listing.cycle(&CancellationToken::new())).await.unwrap();
-    let from = |t: &str| Some(t.to_owned());
-    assert_eq!(s.delta_tokens().await, [None, from("P2"), from("P2")], "page 1 is not asked for again");
-    assert_eq!(tree_of(&s.root.path), ["docs", "extra"]);
-    assert_eq!(s.store.call(move |t| Ok((t.delta_link()?, t.listing_next()?))).await.unwrap(), (Some(s.link("L1")), None));
-}
-
-/// Only the first listing is placed page by page (Ruling 2 of):
-/// a later cycle's delta, however many pages it has, still goes into
-/// `staging` and changes the folder only once all of it is in.
-#[tokio::test]
-async fn a_later_cycle_still_changes_the_folder_only_once_its_delta_is_all_in() {
-    let s = setup().await;
-    let listing = listed(&s).await;
-    s.page(Some("L1"), json!([folder("N", "R", "new")]), "P2").await;
-    let mut asked = s.held(Some("P2")).await;
-    let cancel = CancellationToken::new();
-    let running = spawn_cycle(&listing, &cancel);
-    within(asked.recv()).await.unwrap();
-
-    assert!(!s.root.path.join("new").exists(), "nothing of the delta is placed before all of it is in");
-    assert_eq!(s.store.call(move |t| Ok((t.delta_link()?, t.listing_next()?))).await.unwrap(), (Some(s.link("L1")), None));
-    cancel.cancel();
-    assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
-}
-
-/// Invariant M1, page by page: every folder is marked through the helper
-/// while it is still empty, the folder above it before it — page 1's
-/// before page 2 is even asked for.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn every_folder_placed_page_by_page_is_marked_before_anything_is_put_in_it() {
-    let s = setup().await;
-    let sockets = tempfile::tempdir().unwrap();
-    let socket_path = sockets.path().join("helper.sock");
-    let marks = recording_helper(&socket_path);
-    let link = HelperLink::connect(&socket_path).await.unwrap().0;
-    let listing = Listing::new(ListingContext { intercepted: true, link: Arc::new(std::sync::Mutex::new(Some(link))), ..s.context() });
-    s.page(None, json!([root_item(), folder("A", "R", "a"), file("AF", "A", "a.txt", "c1"), folder("C", "B", "c"), file("CF", "C", "c.txt", "c1")]), "P2").await;
-    let seen = Arc::new(std::sync::Mutex::new(None));
-    let (look, marked) = (Arc::clone(&seen), Arc::clone(&marks));
-    let answer = ResponseTemplate::new(200).set_body_json(json!({"value": [folder("B", "R", "b")], "@odata.deltaLink": s.link("L1")}));
-    s.answer(Some("P2"), move |_: &Request| {
-        *look.lock().unwrap() = Some(marked.lock().unwrap().clone());
-        answer.clone()
-    })
-    .await;
-    within(listing.cycle(&CancellationToken::new())).await.unwrap();
-
-    let id = |s: &str| Some(s.to_owned());
-    assert_eq!(seen.lock().unwrap().take().expect("page 2 was asked for"), [(id("A"), 0)], "page 1's folder was marked, empty, before page 2");
-    assert_eq!(*marks.lock().unwrap(), [(id("A"), 0), (id("B"), 0), (id("C"), 0)], "each folder marked while empty, b before the c inside it");
-    assert_eq!(tree_of(&s.root.path), ["a", "a/a.txt", "b", "b/c", "b/c/c.txt"]);
-}
-
-/// A page stopped while it was being placed is not committed: the
-/// listing resumes at that page, and what it had placed already is found
-/// by its id — nothing made twice, nothing rescued, the lock back on it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_page_stopped_while_it_was_being_placed_is_placed_again_without_duplicates() {
-    let s = setup().await;
-    let sockets = tempfile::tempdir().unwrap();
-    let socket_path = sockets.path().join("helper.sock");
-    let (reached, release) = stalling_helper(&socket_path, "/.konedrive-new-G");
-    let link = HelperLink::connect(&socket_path).await.unwrap().0;
-    let context = || ListingContext { intercepted: true, link: Arc::new(std::sync::Mutex::new(Some(link.clone()))), ..s.context() };
-    s.page(None, json!([root_item(), folder("D", "R", "docs")]), "P2").await;
-    let page_two = json!({"value": [folder("G", "R", "g"), file("Y", "G", "y.txt", "c1")], "@odata.deltaLink": s.link("L1")});
-    Mock::given(method("GET")).and(path("/me/drive/root/delta")).and(query_param("token", "P2"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(page_two))
-        .with_priority(1)
-        .mount(&s.server).await;
-    let cancel = CancellationToken::new();
-    let running = spawn_cycle(&Listing::new(context()), &cancel);
-    tokio::task::spawn_blocking(move || reached.recv_timeout(PATIENCE).unwrap()).await.unwrap();
-    cancel.cancel();
-    release.send(()).unwrap();
-    assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
-    assert_eq!(s.store.call(move |t| t.listing_next()).await.unwrap(), Some(s.link("P2")), "page 2 was not committed");
-    assert_eq!(tree_of(&s.root.path), ["docs", "g"], "g was placed before the stop was seen");
-    let g = ino(&s.root.path.join("g"));
-
-    let report = within(Listing::new(context()).cycle(&CancellationToken::new())).await.unwrap();
-    let from = |t: &str| Some(t.to_owned());
-    assert_eq!(s.delta_tokens().await, [None, from("P2"), from("P2")]);
-    assert_eq!(tree_of(&s.root.path), ["docs", "g", "g/y.txt"]);
-    assert_eq!(ino(&s.root.path.join("g")), g, "g was found by its id, not made again");
-    assert_eq!(mode(&s.root.path.join("g")), placeholder::LOCKED_DIR_MODE);
-    assert!(report.applied.rescued.is_empty(), "{:?}", report.applied.rescued);
-}
-
-/// A first page stopped while it was being placed has committed nothing,
-/// yet the folder holds what it placed: the listing is still one placed
-/// page by page, and starts again from the start as one — page 1's
-/// items found by their ids, page 1 placed before page 2 is asked for.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_first_page_stopped_while_it_was_being_placed_starts_again_page_by_page() {
-    let s = setup().await;
-    let sockets = tempfile::tempdir().unwrap();
-    let socket_path = sockets.path().join("helper.sock");
-    let (reached, release) = stalling_helper(&socket_path, "/.konedrive-new-G");
-    let link = HelperLink::connect(&socket_path).await.unwrap().0;
-    let context = || ListingContext { intercepted: true, link: Arc::new(std::sync::Mutex::new(Some(link.clone()))), ..s.context() };
-    let page_one = json!([root_item(), folder("A", "R", "a"), file("AF", "A", "a.txt", "c1"), folder("G", "R", "g")]);
-    s.page(None, page_one.clone(), "P2").await;
-    let cancel = CancellationToken::new();
-    let running = spawn_cycle(&Listing::new(context()), &cancel);
-    tokio::task::spawn_blocking(move || reached.recv_timeout(PATIENCE).unwrap()).await.unwrap();
-    cancel.cancel();
-    release.send(()).unwrap();
-    assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
-    assert_eq!(tree_of(&s.root.path), ["a", "g"], "the stop was seen before a.txt");
-    let g = ino(&s.root.path.join("g"));
-
-    s.page(None, page_one, "P2").await;
-    let mut asked = s.held(Some("P2")).await;
-    let cancel = CancellationToken::new();
-    let running = spawn_cycle(&Listing::new(context()), &cancel);
-    within(asked.recv()).await.unwrap();
-    assert_eq!(tree_of(&s.root.path), ["a", "a/a.txt", "g"], "page 1 was placed before page 2 was asked for");
-    assert_eq!(ino(&s.root.path.join("g")), g, "g was found by its id, not made again");
-    cancel.cancel();
-    assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
-    assert_eq!(s.delta_tokens().await, [None, None, Some("P2".to_owned())]);
-}
-
-/// A folder that already shows the drive — its tree store lost, or the
-/// folder forgotten and registered again — is not placed page by page:
-/// part-way through, an item not listed yet cannot be told from one that
-/// is gone. It is reconciled once, when the whole listing is in, and
-/// what it has is found by its id.
-#[tokio::test]
-async fn a_folder_that_already_shows_the_drive_is_reconciled_once_the_listing_is_in() {
-    let s = setup().await;
-    listed(&s).await;
-    let placed = ino(&s.root.path.join("docs/f.txt"));
-    let fresh = Store::new(TreeStore::in_memory().unwrap());
-    let listing = Listing::new(ListingContext { store: fresh.clone(), ..s.context() });
-    s.page(None, json!([root_item(), folder("E", "R", "extra")]), "P2").await;
-    let seen = Arc::new(std::sync::Mutex::new(None));
-    let (root, look) = (s.root.path.clone(), Arc::clone(&seen));
-    let answer = ResponseTemplate::new(200).set_body_json(
-        json!({"value": [folder("D", "R", "docs"), file("F", "D", "f.txt", "c1"), vault()], "@odata.deltaLink": s.link("L2")}),
-    );
-    s.answer(Some("P2"), move |_: &Request| {
-        *look.lock().unwrap() = Some(tree_of(&root));
-        answer.clone()
-    })
-    .await;
-    within(listing.cycle(&CancellationToken::new())).await.unwrap();
-
-    assert_eq!(seen.lock().unwrap().take().expect("page 2 was asked for"), ["docs", "docs/f.txt"], "nothing changed part-way");
-    assert_eq!(tree_of(&s.root.path), ["docs", "docs/f.txt", "extra"]);
-    assert_eq!(ino(&s.root.path.join("docs/f.txt")), placed);
-    assert_eq!(fresh.call(move |t| t.delta_link()).await.unwrap(), Some(s.link("L2")));
-}
-
-/// A rescue made while a page is placed is a conflict at once (spec
-/// §16.2), not at the end of the listing: a listing that never ends must
-/// still say where the file went.
-#[tokio::test]
-async fn a_rescue_made_by_a_page_is_a_conflict_before_the_listing_ends() {
-    let s = setup().await;
-    std::fs::write(s.root.path.join("docs"), b"mine").unwrap();
-    s.page(None, json!([root_item(), folder("D", "R", "docs")]), "P2").await;
-    let mut asked = s.held(Some("P2")).await;
-    let cancel = CancellationToken::new();
-    let running = spawn_cycle(&s.listing(), &cancel);
-    within(asked.recv()).await.unwrap();
-
-    let conflicts = konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap();
-    assert_eq!(conflicts.iter().map(|c| c.original.clone()).collect::<Vec<_>>(), [s.full("docs")]);
-    assert_eq!(std::fs::read(&conflicts[0].rescued).unwrap(), b"mine");
-    assert!(s.activity().contains(&("conflict".to_owned(), s.full("docs"), conflicts[0].rescued.clone())), "{:?}", s.activity());
-    cancel.cancel();
-    assert!(matches!(within(running).await.unwrap(), Err(CycleError::Cancelled)));
 }
 
 /// a download cut off by a restart keeps its
