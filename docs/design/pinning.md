@@ -256,7 +256,7 @@ about pins is shown there.
 
 ## 11. Costs and limits
 
-Recorded in [`../limitations-and-workarounds.md`](../limitations-and-workarounds.md):
+Recorded in [`../limitations/`](../limitations/):
 
 - pinning a big folder downloads everything in it, four large files at a time, with no prompt (P10);
 - a large pinned file in parts keeps only its gap-free start across a failure or a restart, and a

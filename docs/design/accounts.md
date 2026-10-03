@@ -533,7 +533,7 @@ sign-in before it starts it and asks before it drops changes waiting to upload
 
 ## 11. Costs and limits
 
-Recorded in [`../limitations-and-workarounds.md`](../limitations-and-workarounds.md):
+Recorded in [`../limitations/`](../limitations/):
 
 - moving the single-account tree store can give up, and then the account lists its drive again and
   loses its earlier activity and conflicts (F40); there is no way back to a single-account version

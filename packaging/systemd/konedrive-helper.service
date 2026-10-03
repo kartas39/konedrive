@@ -44,7 +44,7 @@ LimitNOFILE=65536
 # one AF_UNIX socket). `tests/vm/run.sh unit` runs this file under systemd and
 # works a daemon through it. Left out on purpose, not yet tried there: a
 # SystemCallFilter allow-list, PrivateDevices, and a non-root User=.
-# docs/limitations-and-workarounds.md, W16.
+# docs/limitations/, W16.
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes
