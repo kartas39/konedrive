@@ -271,6 +271,7 @@ impl SyncService {
                     recovery_deferred: false,
                     source: reg.source,
                     brought_up: false,
+                    source_guessed: false,
                     baloo_excluded: reg.baloo_excluded,
                     upgrade_when_helper: false,
                 });
@@ -305,6 +306,11 @@ impl SyncService {
     /// published as a startup failure always was; that leaves the one case
     /// lists.
     async fn hold(&self, persisted: Persisted) {
+        // A `source` that cannot be read is said at once, helper or no helper; the folder
+        // is held all the same, so that a Forget still reaches the helper (`SY6`).
+        let unread = persisted
+            .unread_source()
+            .map(|why| format!("cannot bring up the sync folder {}: {why}", persisted.path.display()));
         let root_id = if root::looks_like_a_root_id(&persisted.root_id) {
             persisted.root_id
         } else if let Some(root_id) = root::recorded_root_id(&persisted.path).await {
@@ -331,17 +337,19 @@ impl SyncService {
             recovery_deferred: false,
             source: persisted.source,
             brought_up: false,
-            // Held, not yet brought up: a Forget of a held root always
-            // fails before it reaches Baloo (`forget_locked` needs a link,
-            // which is exactly what held means there is none of), so what
-            // this says here is never acted on either way.
-            baloo_excluded: false,
+            source_guessed: unread.is_some(),
+            // Held, not yet brought up: a Forget with no link fails before it
+            // reaches Baloo (`forget_locked`), and a bring-up asks `config.toml`
+            // again (`commit`). What is left is a folder that stays held with
+            // the helper connected — its `source` cannot be read — and its
+            // Forget takes off the exclusion `config.toml` records.
+            baloo_excluded: persisted.baloo_excluded,
             upgrade_when_helper: false,
         });
         self.state.update(|s| {
             s.root_path = shown;
             s.root_state = RootState::Error;
-            s.last_error.clear();
+            s.last_error = unread.unwrap_or_default();
             s.waits_for_helper = true;
         });
     }

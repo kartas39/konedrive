@@ -152,7 +152,13 @@ pub enum CycleError {
     Offline(String),
     #[error("the helper is not connected; the folder is brought up to date when it is back")]
     NoHelper,
-    #[error("the tree store: {0}")]
+    /// A failure of the tree store, in its own words ("the tree store: …"), that ends
+    /// the cycle: at a store call of the cycle's own ([`From<TreeError>`](CycleError::from))
+    /// or inside the materializer ([`applying`]); both are this, and stop the folder
+    /// (quality finding `RE6`). Not every store failure ends a cycle: those the leaving
+    /// walk and the read-write reconcile only log and pass over do not come here
+    /// (limitations log F212).
+    #[error("{0}")]
     Store(String),
     #[error("the folder could not be brought up to date: {0}")]
     Apply(String),
@@ -194,10 +200,13 @@ fn drive_error(e: DriveError) -> CycleError {
     }
 }
 
-/// What making the folder match the tree ran into.
+/// What making the folder match the tree ran into. A failure of the tree store is the
+/// trouble it is anywhere else in a cycle: it stops the folder ([`CycleError::blocking`]),
+/// and is not the kind that is only said and tried again.
 fn applying(e: ApplyError) -> CycleError {
     match e {
         ApplyError::Cancelled => CycleError::Cancelled,
+        ApplyError::Tree(e) => CycleError::from(e),
         other => CycleError::Apply(other.to_string()),
     }
 }
@@ -385,7 +394,15 @@ impl Listing {
     /// part-way, leaves the next one a Full reconcile.
     pub async fn cycle(self: &Arc<Self>, cancel: &CancellationToken) -> Result<CycleReport, CycleError> {
         let result = self.take_turn(cancel).await;
+        let was_stopped = self.ctx.state.get().sync_trouble.is_some_and(|t| t.blocking);
         self.publish_outcome(&result);
+        // The trouble that closed the write gate is gone only now, after the cycle's own
+        // word to the outbox (`Writes::cycled`): the worker is told again. Whatever the
+        // cycle came to: one that failed with trouble that is only said opens the gate too.
+        let is_stopped = self.ctx.state.get().sync_trouble.is_some_and(|t| t.blocking);
+        if let Some(writes) = self.ctx.writes.as_ref().filter(|_| was_stopped && !is_stopped) {
+            (writes.reopened)();
+        }
         if result.is_ok() {
             if let Some(kick) = &self.ctx.after_cycle {
                 kick.notify_one();

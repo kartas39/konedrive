@@ -69,11 +69,13 @@ impl RootSource {
         }
     }
 
-    fn parse(value: &str) -> Self {
-        if value == "onedrive" {
-            RootSource::OneDrive
-        } else {
-            RootSource::Local
+    /// One of the two words `config.toml` has for it; `None` for anything else, which
+    /// is never taken for either (quality finding `SY6`).
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "onedrive" => Some(RootSource::OneDrive),
+            "local" => Some(RootSource::Local),
+            _ => None,
         }
     }
 }
@@ -383,8 +385,13 @@ struct Registration {
     /// the next link runs it again ([`SyncService::resume`]).
     recovery_deferred: bool,
     /// What it shows, decided when it was first registered and
-    /// kept with it for good.
+    /// kept with it for good — unless it is only a guess (`source_guessed`).
     source: RootSource,
+    /// `source` is the guess made for a folder held with a `source` that `config.toml`
+    /// does not say in either of its two words ([`Persisted::source_as_written`]): good
+    /// for a Forget, never for a bring-up, which reads `config.toml` again
+    /// ([`SyncService::source_brought_back`]). False for every folder that is up.
+    source_guessed: bool,
     /// Registered and recovered ([`SyncService::commit`]), so that a OneDrive
     /// folder's sync may run. False for a root only held until its helper is
     /// back ([`SyncService::hold`]), and for one kept after a registration
@@ -392,10 +399,11 @@ struct Registration {
     brought_up: bool,
     /// Whether *this daemon* excluded the root from Baloo, so
     /// [`unregister_root`](SyncService::unregister_root) knows whether to
-    /// take that exclusion back off. Always false outside
-    /// [`SyncService::commit`]: `hold` and `abandon`'s kept-registered branch
-    /// construct a `Registration` before `commit` has run, so nothing has
-    /// been added to Baloo yet either.
+    /// take that exclusion back off. Decided by [`SyncService::commit`] for a
+    /// folder that is up. Before that, [`SyncService::hold`] carries what
+    /// `config.toml` records, for the Forget of a folder that stays held; a
+    /// registration kept after it failed (`abandon`, a failed switch) says
+    /// false, since nothing was added to Baloo for it.
     baloo_excluded: bool,
     /// Registered without interception only because no helper was connected
     ///, so it switches to interception when one connects
@@ -417,6 +425,12 @@ struct Persisted {
     root_id: String,
     intercepted: bool,
     source: RootSource,
+    /// What `config.toml` has for `source` when it is neither of its two words (a hand
+    /// edit: `"OneDrive"`). Such a folder is never brought up
+    /// ([`unread_source`](Persisted::unread_source)); `source` then reads `OneDrive`, for
+    /// a Forget alone, which so takes off everything a OneDrive folder may carry. Written
+    /// back as it was read, never as a guess.
+    source_as_written: Option<String>,
     /// Whether this daemon is the one that excluded the root from Baloo
     ///; `false` in a config written before this existed.
     baloo_excluded: bool,
@@ -437,9 +451,34 @@ impl Persisted {
             root_id: root.root_id.clone(),
             intercepted,
             source,
+            source_as_written: None,
             baloo_excluded,
             upgrade_when_helper,
         }
+    }
+
+    fn read(root: crate::config::RootConfig) -> Self {
+        let upgrade_when_helper = root.upgrades_when_helper();
+        let source = RootSource::parse(&root.source);
+        Self {
+            path: root.path,
+            root_id: root.id,
+            intercepted: root.intercepted,
+            // Unreadable: held for a Forget as a OneDrive folder, and never brought up.
+            source: source.unwrap_or(RootSource::OneDrive),
+            source_as_written: source.is_none().then_some(root.source),
+            baloo_excluded: root.baloo_excluded,
+            upgrade_when_helper,
+        }
+    }
+
+    /// Why this folder is not brought up, when `config.toml` does not say what it shows.
+    fn unread_source(&self) -> Option<String> {
+        let written = self.source_as_written.as_ref()?;
+        Some(format!(
+            "config.toml has source = {written:?} for it, which is neither \"onedrive\" nor \"local\"; \
+             correct it and start konedrive again, or forget the folder and add it again"
+        ))
     }
 }
 

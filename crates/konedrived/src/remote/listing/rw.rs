@@ -60,6 +60,11 @@ pub struct Writes {
     pub examine: Arc<dyn Fn(Batch) + Send + Sync>,
     /// A cycle went through: the outbox worker may send (§4.9).
     pub cycled: Arc<dyn Fn() + Send + Sync>,
+    /// A cycle cleared trouble that stopped the folder ([`CycleError::blocking`]) — it
+    /// went through, or failed with trouble that is only said: the write gate that
+    /// trouble closed is open again, and
+    /// the outbox worker that met it closed is woken, rather than left to its own timer.
+    pub reopened: Arc<dyn Fn() + Send + Sync>,
     /// A held or pending `delete` or `move-out` row was dropped because its
     /// item is already gone from OneDrive ([`TreeStore::outbox_drop_removed`]):
     /// wakes the outbox worker at once, so `HeldCount`/`PendingCount` and the

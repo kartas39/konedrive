@@ -160,6 +160,7 @@ impl World {
             cycled: Arc::new(move || {
                 cycles.fetch_add(1, Ordering::SeqCst);
             }),
+            reopened: Arc::new(|| {}),
             dropped_removed: Arc::new(move |rows| dropped.lock().unwrap().extend(rows)),
             before_swap: None,
         }
@@ -961,3 +962,41 @@ async fn a_delta_that_brings_an_upload_before_its_commit_changes_nothing() {
 }
 
 mod stale;
+
+/// RE6: trouble that stops the folder closes the write gate, and the cycle that clears it
+/// says so to the outbox worker — after the trouble is gone, not only with `cycled`, which
+/// comes while the gate is still closed. A cycle with no such trouble before it says nothing.
+/// A cycle that fails with trouble that is only said clears it too, and says so.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
+    use crate::status::snapshot::SyncTrouble;
+    let w = world().await;
+    let reopened = Arc::new(Mutex::new(Vec::new()));
+    let writes = Writes {
+        reopened: Arc::new({
+            let (reopened, state) = (Arc::clone(&reopened), w.state.clone());
+            // What the worker would find at its wake.
+            move || reopened.lock().unwrap().push(state.get().sync_trouble)
+        }),
+        ..w.writes(None)
+    };
+    let listing = Listing::new(ListingContext { writes: Some(writes), ..w.context_parts() });
+    w.cycle(&listing).await;
+    assert!(reopened.lock().unwrap().is_empty(), "nothing was stopped");
+
+    w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "said and tried again".into(), blocking: false }));
+    w.cycle(&listing).await;
+    assert!(reopened.lock().unwrap().is_empty(), "trouble that closes no gate");
+
+    w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    w.cycle(&listing).await;
+    assert_eq!(*reopened.lock().unwrap(), vec![None], "woken once, with the trouble already cleared");
+
+    w.state.update(|s| s.sync_trouble = Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    w.graph.with(|c| c.script("GET", "root/delta", ResponseTemplate::new(503), 10));
+    let err = listing.cycle(&CancellationToken::new()).await.unwrap_err();
+    assert!(!err.blocking(), "{err:?}");
+    let woken = reopened.lock().unwrap().clone();
+    assert_eq!(woken.len(), 2, "woken by the cycle that failed, too");
+    assert_eq!(woken[1], Some(SyncTrouble { text: err.to_string(), blocking: false }), "the gate reads open by then");
+}

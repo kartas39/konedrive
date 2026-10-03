@@ -1016,3 +1016,25 @@ async fn a_partial_download_survives_recovery_and_the_full_reconcile_after_it() 
     assert_eq!(&std::fs::read(&path).unwrap()[..6], b"abcd\0\0", "the checkpointed bytes stay, the rest is punched");
     assert_eq!(file.metadata().unwrap().mtime(), 1_714_557_600, "the cloud's time is back");
 }
+
+/// RE6: one failure of the tree store is the same trouble wherever a reconcile meets it,
+/// and it stops the folder. Reading the root's id and every call the materializer makes go
+/// through `applying`; the commit and every `on_store` call go through `From<TreeError>`.
+#[tokio::test]
+async fn a_store_failure_is_the_same_trouble_wherever_a_reconcile_meets_it() {
+    let failure = || konedrive_tree::TreeError::Io(std::io::Error::other("disk I/O error"));
+    let reading_the_root = applying(ApplyError::from(failure()));
+    let committing = CycleError::from(failure());
+    assert!(matches!(reading_the_root, CycleError::Store(_)), "{reading_the_root:?}");
+    assert!(reading_the_root.blocking() && committing.blocking(), "{reading_the_root:?}, {committing:?}");
+    assert_eq!(reading_the_root.to_string(), "the tree store: disk I/O error");
+    assert_eq!(committing.to_string(), reading_the_root.to_string());
+
+    // As published: the folder reads `error`, and `LastError` has the store's words once.
+    let s = setup().await;
+    let listing = Listing::new(s.context());
+    listing.publish_outcome(&Err(reading_the_root));
+    let published = s.state.get();
+    assert_eq!(published.sync_trouble, Some(SyncTrouble { text: "the tree store: disk I/O error".into(), blocking: true }));
+    assert_eq!(crate::status::snapshot::published_state(&SyncSnapshot { root_state: crate::status::snapshot::RootState::Ready, ..published }), "error");
+}

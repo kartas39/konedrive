@@ -310,6 +310,7 @@ impl SyncService {
             scanned,
             examine,
             cycled,
+            reopened: self.outbox_waker(),
             dropped_removed,
             #[cfg(test)]
             before_swap: None,
@@ -330,8 +331,9 @@ impl SyncService {
     /// ([`OutboxHost::may_write`](upload::OutboxHost::may_write)). It may while the folder and
     /// the account are read-write, `config.toml` — read again now — says read-write and lets the
     /// account's drive through, the drive its token was last seen to reach is that one, its
-    /// token can write, and the folder's sync is not stopped by something only a person can fix
-    /// (another account's drive, a sign-out). Closed, the folder's `LastError`
+    /// token can write, and the folder's sync is not stopped by blocking trouble (`CycleError::blocking`:
+    /// another account's drive, a sign-out, a failure of the tree store; the cycle that
+    /// clears it wakes the worker, `Writes::reopened`). Closed, the folder's `LastError`
     /// says why until it opens, and the account's mode is worked out again, which turns it
     /// read-only and says why in the account's `LastError`.
     pub(super) fn write_gate(&self) -> Result<(), String> {
