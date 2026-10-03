@@ -1390,6 +1390,8 @@ mod sessions;
 
 mod move_out;
 
+mod candidates;
+
 /// Issue #87: a failure no step settles gives its row a stable key, never
 /// the error's own text.
 #[test]
