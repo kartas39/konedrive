@@ -129,6 +129,14 @@ fn is_within(path: &str, within: &str) -> bool {
 }
 
 impl Root {
+    /// Whether `other` is this very registration: the same user's, of the
+    /// same directory, found by the same path.
+    pub fn same_entry(&self, other: &Root) -> bool {
+        (self.uid, self.dev, self.ino) == (other.uid, other.dev, other.ino)
+            && self.path == other.path
+            && self.root_id == other.root_id
+    }
+
     /// How a directory at `path` would overlap this root's, going by the two
     /// paths: inside it, containing it, or at the same path. This is the
     /// question [`Roots::nesting_conflict`] asks of every *other* root; the
@@ -197,6 +205,11 @@ impl Roots {
         }
         roots.insert(root);
         Ok(Accepted { roots, displaced })
+    }
+
+    /// The entry registered under this id, whoever holds it.
+    pub fn get(&self, root_id: &str) -> Option<&Root> {
+        self.by_id.get(root_id)
     }
 
     /// How many roots this user holds.

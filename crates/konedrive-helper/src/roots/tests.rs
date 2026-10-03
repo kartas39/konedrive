@@ -304,3 +304,18 @@ fn an_ids_own_previous_directory_is_asked_about_an_overlap() {
     assert_eq!(overlap("/home/u1000/folder7"), Some(Nesting::Inside(id(7))), "the same path");
     assert_eq!(overlap("/home/u1000/folder70"), None, "a sibling shares nothing");
 }
+
+/// The old directory of an id is opened before the registrations are
+/// decided on, with no lock held; the decision goes on only if the entry is
+/// still the one that was opened.
+#[test]
+fn an_entry_is_the_same_only_with_the_same_owner_directory_and_path() {
+    let entry = registered(1000, 7);
+    assert!(entry.same_entry(&registered(1000, 7)));
+    assert!(!entry.same_entry(&Root { ino: 8, ..registered(1000, 7) }));
+    assert!(!entry.same_entry(&Root { path: "/home/u1000/moved".into(), ..registered(1000, 7) }));
+    assert!(!entry.same_entry(&Root { uid: 1001, ..registered(1000, 7) }));
+    let roots = Roots::default().with(registered(1000, 7)).unwrap().roots;
+    assert!(roots.get(&id(7)).is_some_and(|held| held.same_entry(&entry)));
+    assert!(roots.get(&id(8)).is_none());
+}

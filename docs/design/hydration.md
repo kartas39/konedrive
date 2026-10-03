@@ -666,7 +666,8 @@ descriptor, not a path.
   `UnregisterRoot` (best effort the same way; limitations log F208). If the old directory is
   still at its path and the new one lies inside it or contains it, the request is refused
   `EINVAL` instead, like an overlap with another root: unmarking the old tree would leave the
-  shared part unmarked until the new walk.
+  shared part unmarked until the new walk. The old directory is opened before the decision, with
+  no lock held; if the id's entry changed in between, the request is refused `EAGAIN`.
 - **`UnregisterRoot`** — only a root the peer's uid owns, from any of its connections (roots
   outlive connections), under whatever id it was registered (the form is not asked here). It removes the marks the helper placed on the tree, including files' ignore
   marks, as well as the entry: removing the entry alone would leave the tree intercepted with no

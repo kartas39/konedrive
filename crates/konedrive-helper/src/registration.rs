@@ -17,12 +17,18 @@ use crate::shared::{lock, Refusal, Shared, ROOTS_FILE};
 /// rest are counted in one line.
 const FAILURES_SHOWN: usize = 16;
 
+/// One failure of a walk, as the log has it. The path is inside the tree, so
+/// its owner's to name: escaped and cut, like the root's. The reason is the
+/// helper's own words and stays whole, however long the path.
+fn failure_line(failure: &marks::WalkFailure) -> String {
+    format!("{}: {}", roots::shown_path(&failure.path), failure.what)
+}
+
 /// Writes a walk's failures: the first [`FAILURES_SHOWN`], and how many more
 /// there are.
-fn log_failures(failures: &[impl std::fmt::Display]) {
+fn log_failures(failures: &[marks::WalkFailure]) {
     for failure in failures.iter().take(FAILURES_SHOWN) {
-        // It names a path inside the tree: escaped and cut, like the root's.
-        tracing::error!("  {}", roots::shown_path(&failure.to_string()));
+        tracing::error!("  {}", failure_line(failure));
     }
     if failures.len() > FAILURES_SHOWN {
         tracing::error!("  and {} more", failures.len() - FAILURES_SHOWN);
@@ -372,7 +378,10 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
             Some(roots::Nesting::SameDirectory(_)) | Some(roots::Nesting::Inside(_))
         );
     let outcome = if already_marked {
-        check_filesystem_type(shared, &dir, &path)
+        check_filesystem_type(&dir, &path).map_err(|unusable| {
+            shared.refusals.report(Refusal::RootRefused, || unusable.why);
+            unusable.errno
+        })
     } else {
         check_filesystem(shared, &dir, &path)
     };
@@ -381,6 +390,24 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     }
 
     let root = roots::Root { uid, dev: meta.dev(), ino: meta.ino(), path, root_id };
+
+    // The id may be the user's already, on another directory. That directory
+    // is found again here, by its stored path, with no lock held: every
+    // component of the path is its owner's, who can put a mount that never
+    // answers over one of them, and an open made under `roots_saving` would
+    // then hold up every other user's registration for as long as the mount
+    // liked. What is opened here is what is unmarked below; the decision,
+    // under the lock, only checks that the entry is still the one this open
+    // was made for.
+    let held = lock(&shared.roots)
+        .get(&root.root_id)
+        .filter(|old| old.uid == uid && (old.dev, old.ino) != (root.dev, root.ino))
+        .cloned();
+    let mut opened = held.map(|old| {
+        let dir = open_root(&old);
+        (old, dir)
+    });
+
     let displaced = {
         let _saving = lock(&shared.roots_saving);
         // Decided on the registrations as they are now. The checks above ran
@@ -399,27 +426,42 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
         // directory announced again is not looked at: its marks are the ones
         // it needs.
         //
-        // The old directory is found again now, once, and that answer serves
-        // both the refusal here and the unmarking below. If it is still where
-        // it was registered and the new directory lies inside it or contains
-        // it, the move is refused, as an overlap with any other root is
-        // (`EINVAL`): unmarking the old tree would take the marks off the part
-        // the two share, and until the new walk had put them back an open of
-        // a placeholder there would not be intercepted — zeros. Refusing
-        // drops no mark at all, and a peer that means it unregisters the id
-        // first. The daemon is answered `EINVAL` like for any overlap, and
-        // does not ask this by itself: it registers the folder that carries
-        // the id, and a copy of a folder inside itself, or of a parent over
-        // it, is not one it is pointed at while the old one stands. If the old
-        // directory is not there any more — replaced at its path by a copy,
-        // or gone — there is nothing to unmark by that path, so nothing the
-        // new root needs can be dropped, and the registration goes on.
-        let displaced = displaced
-            .filter(|old| (old.dev, old.ino) != (root.dev, root.ino))
-            .map(|old| {
-                let dir = open_root(&old);
-                (old, dir)
-            });
+        // The entry must be the one that was opened above. If the id was
+        // registered, or registered elsewhere, in between, this request is
+        // refused `EAGAIN` and nothing is changed: no mark is dropped, and
+        // the peer asks again against what is there now.
+        //
+        // If the old directory is still where it was registered and the new
+        // directory lies inside it or contains it, the move is refused, as an
+        // overlap with any other root is (`EINVAL`): unmarking the old tree
+        // would take the marks off the part the two share, and until the new
+        // walk had put them back an open of a placeholder there would not be
+        // intercepted — zeros. Refusing drops no mark at all, and a peer that
+        // means it unregisters the id first. The daemon is answered `EINVAL`
+        // like for any overlap, and does not ask this by itself: it registers
+        // the folder that carries the id, and a copy of a folder inside
+        // itself, or of a parent over it, is not one it is pointed at while
+        // the old one stands. If the old directory is not there any more —
+        // replaced at its path by a copy, or gone — there is nothing to
+        // unmark by that path, so nothing the new root needs can be dropped,
+        // and the registration goes on.
+        let displaced = match displaced.filter(|old| (old.dev, old.ino) != (root.dev, root.ino)) {
+            None => None,
+            Some(old) => match opened.take() {
+                Some((seen, dir)) if seen.same_entry(&old) => Some((old, dir)),
+                _ => {
+                    shared.refusals.report(Refusal::RootRefused, || {
+                        format!(
+                            "uid {uid}'s root {} was registered anew while a registration of \
+                             its id onto another directory was being prepared; refusing this \
+                             one EAGAIN",
+                            root.root_id
+                        )
+                    });
+                    return libc::EAGAIN;
+                }
+            },
+        };
         if let Some((old, Ok(_))) = &displaced {
             if let Some(conflict) = old.overlap_with(&root.path) {
                 let refused = roots::Refused::Overlap(conflict);
@@ -529,8 +571,11 @@ fn resolve_root_path(shared: &Shared, dir: &File, dev: u64, ino: u64) -> Result<
 /// What it says is throttled, and the path in it escaped and cut: a peer can
 /// offer such a directory as often as it likes.
 fn check_filesystem(shared: &Shared, dir: &File, path: &str) -> Result<(), i32> {
-    check_filesystem_type(shared, dir, path)?;
     let refused = |line: String| shared.refusals.report(Refusal::RootRefused, || line);
+    check_filesystem_type(dir, path).map_err(|unusable| {
+        refused(unusable.why);
+        unusable.errno
+    })?;
     let path = roots::shown_path(path);
 
     // Probed through `/proc/self/fd/<n>` rather than by path, so the probe
@@ -548,10 +593,14 @@ fn check_filesystem(shared: &Shared, dir: &File, path: &str) -> Result<(), i32> 
             errno: Some(libc::EROFS) | Some(libc::EACCES) | Some(libc::EPERM),
             ..
         }) => {
-            refused(format!(
-                "{path}: the helper's own sandbox stopped the feature probe ({why}); relying on \
-                 the filesystem type check and the daemon's own probe instead"
-            ));
+            // Not a refusal, so not under the refusals' key: the registration
+            // goes on, and under the shipped unit this is the ordinary case.
+            shared.refusals.report(Refusal::ProbeSkipped, || {
+                format!(
+                    "{path}: the helper's own sandbox stopped the feature probe ({why}); relying \
+                     on the filesystem type check and the daemon's own probe instead"
+                )
+            });
             Ok(())
         }
         Err(e) => {
@@ -568,28 +617,40 @@ fn check_filesystem(shared: &Shared, dir: &File, path: &str) -> Result<(), i32> 
 /// which is why this is the only half that runs at startup and on a
 /// re-registration.
 ///
-/// Throttled like [`check_filesystem`]'s lines.
-pub(crate) fn check_filesystem_type(shared: &Shared, dir: &File, path: &str) -> Result<(), i32> {
-    let refused = |line: String| shared.refusals.report(Refusal::RootRefused, || line);
+/// It writes nothing itself: the reason comes back with the errno, for the
+/// caller to say — throttled for a registration, which a peer can repeat at
+/// will, and in its own line at the helper's start.
+pub(crate) fn check_filesystem_type(dir: &File, path: &str) -> Result<(), Unusable> {
     let path = roots::shown_path(path);
     // SAFETY: `dir` is an open descriptor and `buf` is a live, correctly sized
     // `statfs` that `fstatfs` fills in.
     let mut buf: libc::statfs = unsafe { std::mem::zeroed() };
     if unsafe { libc::fstatfs(dir.as_raw_fd(), &mut buf) } != 0 {
         let e = io::Error::last_os_error();
-        refused(format!("cannot identify the filesystem under {path}: {e}"));
-        return Err(errno_of(&e));
+        return Err(Unusable {
+            errno: errno_of(&e),
+            why: format!("cannot identify the filesystem under {path}: {e}"),
+        });
     }
     if let Some((_, name)) =
         REFUSED_FILESYSTEMS.iter().find(|(magic, _)| *magic == buf.f_type as i64)
     {
-        refused(format!(
-            "{path} is on {name}, which konedrive cannot host placeholders on: its files can \
-             change without any open on this machine, so interception would miss them"
-        ));
-        return Err(libc::EOPNOTSUPP);
+        return Err(Unusable {
+            errno: libc::EOPNOTSUPP,
+            why: format!(
+                "{path} is on {name}, which konedrive cannot host placeholders on: its files can \
+                 change without any open on this machine, so interception would miss them"
+            ),
+        });
     }
     Ok(())
+}
+
+/// A filesystem a root cannot live on: the errno a registration is answered,
+/// and the reason in words, the path in it escaped and cut.
+pub(crate) struct Unusable {
+    pub(crate) errno: i32,
+    pub(crate) why: String,
 }
 
 /// Filesystems a sync root may never live on. A denylist rather

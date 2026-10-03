@@ -148,11 +148,12 @@ fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
     // and writing into every user's sync folder on every boot is both
     // unnecessary (it was probed at registration) and, once this root is
     // marked, exactly the self-interception hazard is about.
-    if let Err(errno) = check_filesystem_type(shared, &dir, &root.path) {
+    if let Err(unusable) = check_filesystem_type(&dir, &root.path) {
         tracing::error!(
-            "root {} ({}) is on a filesystem konedrive cannot use (errno {errno}); not covering it",
+            "root {} is on a filesystem konedrive cannot use, and is not covered: {} (errno {})",
             roots::shown_id(&root.root_id),
-            roots::shown_path(&root.path)
+            unusable.why,
+            unusable.errno
         );
         lock(&shared.degraded_roots).insert(root.root_id.clone());
         return false;
