@@ -2561,8 +2561,10 @@ application must never read zeros where real content should be.
   once, is listed in `Skipped()`, and its object is recorded in `leaving` where it stays. The object is
   followed by its item id wherever it goes: a parent renamed in OneDrive (the reconcile moves it, and
   its `leaving` place with it), a parent renamed here (the examination's rebase, or its finding the id
-  elsewhere), and a Full scan that finds it by its id. Its row is dropped only when nothing is there
-  (`ENOENT`) or another object is; any other error leaves it for the next cycle. From a later
+  elsewhere — and, for a cycle that comes first, the object's file handle, kept with it, found by a walk
+  of the folder), and a Full scan that finds it by its id. Its row is dropped only when neither its
+  path nor its handle finds it; any other error (a parent it may not read) leaves it for the next
+  cycle. The walk reads every directory of the folder, once per such cycle. From a later
   cycle on, each cycle examines it itself, after its reconcile: the object goes whole only when that
   examination records and holds back nothing and no outbox row has a place at or below it — so a file
   moved in within the watcher's quiet spell, another account's included, goes up before the folder
@@ -2582,8 +2584,9 @@ application must never read zeros where real content should be.
   never uploaded again — unless the listing is a `resyncChangesUploadDifferences` one, which does not
   mean removed: what was downloaded or changed there is kept and goes up again as new, as anywhere
   (F116). A `404` for such a row ends it only once OneDrive's listing says the item is gone; until then
-  the row is blocked, `leaving-not-found`, shown with what needs the user, and keeps the folder; one
-  whose item reappears stays blocked until the file is changed again. An object whose id the base never had is a
+  the row is blocked, `leaving-not-found`, shown with what needs the user, and keeps the folder; as
+  soon as OneDrive's listing brings the item again (a delta that changes it, or a full listing that
+  has it), the row is tried again. An object whose id the base never had is a
   stranger there as anywhere and goes up as new, and so does one with no id. Its `leaving` row goes
   only when it is removed, or placed again where it is. Something the user moves out of a leaving folder
   is followed only by an examination that sees it (a Full scan, if no event says it): its move is then
@@ -2594,15 +2597,8 @@ application must never read zeros where real content should be.
   `…a_filesystem_mounted_inside_keeps_…`, `…a_change_to_an_item_no_longer_placed_never_renames_it_…`,
   `…a_leaving_folder_whose_parent_is_renamed_in_onedrive_…`, `…a_folder_moved_in_onedrive_into_a_skipped_folder_…`,
   `…a_placed_file_moved_into_a_leaving_folder_keeps_its_move`, `…a_resync_upload_differences_keeps_…`,
-  `…a_404_not_confirmed_by_the_listing_…`) · open.
-- **F195. A leaving folder whose parent is renamed here can lose its record if a cycle comes first**
-  (`konedrived/src/sync/materialize/rw.rs` `leaving_rw`; issue #104) — a leaving object's place follows
-  the reconcile's own moves at once, but a rename made here follows only when an examination sees the
-  renamed parent. A cycle that runs between the rename and that examination finds nothing at the old
-  place (`ENOENT`) and drops the object's `leaving` row; from then on the object is an ordinary object
-  of an item not placed here, and a later examination may record a move that renames the item in
-  OneDrive back to the local name. Narrow: the watcher examines a rename within seconds of its quiet
-  spell. FRAGILE · reasoned · open.
+  `…a_404_not_confirmed_by_the_listing_…`, `…a_leaving_folder_whose_parent_is_renamed_here_is_found_by_its_handle`,
+  `…an_error_other_than_gone_keeps_the_leaving_row`, `…a_change_blocked_by_a_404_is_retried_…`) · open.
 - **F189. A row placed again carries no local object** (`konedrived/src/tree.rs` `write`,
   `commit_staging`; `tree/reconcile.rs` `land_deferred`; issue #104) — a row that turns placed over an
   `items` row that is not placed drops whatever object `items` recorded, in a delta's overlay, a full

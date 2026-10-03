@@ -808,7 +808,7 @@ impl Materializer {
         let (ids, at) = (vec![id.to_owned()], rel.to_path_buf());
         self.store.call_blocking(move |s| {
             s.forget_local_objects(&ids, &handles)?;
-            s.leaving_add(&ids[0], &at)
+            s.leaving_add(&ids[0], &at, handles.first())
         })?;
         tracing::info!("{} is no longer placed here; it goes once nothing in it waits to be uploaded", rel.display());
         run.out.examine.push((rel.to_path_buf(), is_dir));
@@ -831,34 +831,40 @@ impl Materializer {
                 // Examined first: a later cycle decides.
                 continue;
             }
-            let parent = rel.parent().unwrap_or(Path::new("")).to_path_buf();
-            let Some(name) = rel.file_name().map(OsStr::to_os_string) else {
-                self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
-                continue;
-            };
-            // Gone (`ENOENT`), or another object there: its row goes. Any
-            // other error decides nothing, and the row stays.
-            let gone = |e: &std::io::Error| matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR));
-            let found = match self.disk.dir(&parent) {
-                Ok(dir) => match self.disk.probe(&dir, &name) {
-                    Ok(probe) => Some((probe, dir)),
-                    Err(e) if gone(&e) => None,
-                    Err(e) => {
-                        tracing::warn!("{} is leaving and cannot be looked at ({e}); it is looked at again later", rel.display());
-                        continue;
-                    }
-                },
-                Err(e) if gone(&e) => None,
+            // At its path; else, gone from there (`ENOENT`) or another object
+            // there, wherever its file handle finds it — a parent renamed here
+            // and not examined yet — its path followed. Its row goes only when
+            // neither finds it. Any other error decides nothing, and the row
+            // stays.
+            let found = match self.leaving_at(&rel, &id) {
+                Ok(found) => found,
                 Err(e) => {
                     tracing::warn!("{} is leaving and cannot be looked at ({e}); it is looked at again later", rel.display());
                     continue;
                 }
             };
-            let Some((Probe::Managed { id: there, is_dir }, dir)) = found.filter(|(p, _)| matches!(p, Probe::Managed { id: there, .. } if *there == id)) else {
+            let found = match found {
+                Some(found) => Some((rel.clone(), found)),
+                None => match self.leaving_by_handle(&id)? {
+                    Some(at) => match self.leaving_at(&at, &id) {
+                        Ok(Some(found)) => {
+                            tracing::info!("{} is leaving and was found at {} by its handle", rel.display(), at.display());
+                            self.store.call_blocking({ let (id, at) = (id.clone(), at.clone()); move |s| s.leaving_set_rel(&id, &at) })?;
+                            Some((at, found))
+                        }
+                        _ => None,
+                    },
+                    None => None,
+                },
+            };
+            let Some((rel, (is_dir, dir))) = found else {
                 // Gone, or not its object any more.
                 self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
                 continue;
             };
+            let parent = rel.parent().unwrap_or(Path::new("")).to_path_buf();
+            let name = rel.file_name().map(OsStr::to_os_string).expect("a found object has a name");
+            let there = id.clone();
             debug_assert_eq!(there, id);
             let (staged, located) = self.store.call_blocking({ let id = id.clone(); move |s| Ok((s.get(Table::Staging, &id)?, s.locate(Table::Staging, &id)?)) })?;
             if located.as_ref().is_some_and(|l| l.placed && l.rel == rel) {
@@ -896,6 +902,52 @@ impl Materializer {
             self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
         }
         Ok(())
+    }
+
+    /// The leaving object of item `id` at `rel`: whether it is a directory,
+    /// and the directory it is in. `None` when nothing is there (`ENOENT`) or
+    /// another object is; any other error is returned.
+    fn leaving_at(&self, rel: &Path, id: &str) -> std::io::Result<Option<(bool, File)>> {
+        let gone = |e: &std::io::Error| matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR));
+        let (Some(name), parent) = (rel.file_name(), rel.parent().unwrap_or(Path::new(""))) else { return Ok(None) };
+        let dir = match self.disk.dir(parent) {
+            Ok(dir) => dir,
+            Err(e) if gone(&e) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        match self.disk.probe(&dir, name) {
+            Ok(Probe::Managed { id: there, is_dir }) if there == id => Ok(Some((is_dir, dir))),
+            Ok(_) => Ok(None),
+            Err(e) if gone(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Where in the folder the leaving object of item `id` is, by the file
+    /// handle taken when it began to leave: a walk of the folder, made only
+    /// when its path no longer finds it.
+    fn leaving_by_handle(&self, id: &str) -> Result<Option<PathBuf>, ApplyError> {
+        let Some(handle) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.leaving_handle(&id) })? else { return Ok(None) };
+        let root = self.disk.dir(Path::new(""))?;
+        let dev = nix::sys::stat::fstat(root.as_fd()).map_err(std::io::Error::from)?.st_dev;
+        let mut queue = std::collections::VecDeque::from([(PathBuf::new(), root)]);
+        while let Some((rel, dir)) = queue.pop_front() {
+            self.check_cancel()?;
+            let Ok(names) = self.disk.list(&dir) else { continue };
+            for name in names {
+                if konedrive_fs::handle::FileHandle::at(&dir, &name).is_ok_and(|h| h == handle) {
+                    return Ok(Some(rel.join(&name)));
+                }
+                if matches!(self.disk.probe(&dir, &name), Ok(Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true })) {
+                    if let Ok(sub) = self.disk.open_subdir(&dir, &name) {
+                        if nix::sys::stat::fstat(sub.as_fd()).is_ok_and(|s| s.st_dev == dev) {
+                            queue.push_back((rel.join(&name), sub));
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
     }
 
     /// Objects below the leaving folder at `dir/name` (at `rel`) whose items

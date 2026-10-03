@@ -33,7 +33,7 @@ pub(super) const TABLES: &str = "
         parent_id TEXT, name TEXT, kind TEXT, size INTEGER, mtime INTEGER, etag TEXT, ctag TEXT,
         quickxor TEXT, mime TEXT, placement TEXT);
     CREATE TABLE IF NOT EXISTS outbox_gone (id TEXT PRIMARY KEY, local_seq INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS leaving (id TEXT PRIMARY KEY, rel BLOB NOT NULL);
+    CREATE TABLE IF NOT EXISTS leaving (id TEXT PRIMARY KEY, rel BLOB NOT NULL, handle BLOB);
     CREATE TABLE IF NOT EXISTS leaving_items (id TEXT PRIMARY KEY, leaving TEXT NOT NULL);";
 
 /// A read-write cycle's delta, staged ([`TreeStore::stage_rw`]): the ids
@@ -46,6 +46,15 @@ pub type RwStaged = (Vec<String>, Vec<String>);
 pub struct Committed {
     pub etag: Option<String>,
     pub gone: bool,
+}
+
+/// A store made before `leaving.handle` gains it (issue #104).
+pub(super) fn upgrade(conn: &rusqlite::Connection) -> Result<(), TreeError> {
+    let has = conn.prepare("SELECT 1 FROM pragma_table_info('leaving') WHERE name = 'handle'")?.exists([])?;
+    if !has {
+        conn.execute_batch("ALTER TABLE leaving ADD COLUMN handle BLOB")?;
+    }
+    Ok(())
 }
 
 /// Records that the outbox deleted `ids` in OneDrive at commit `local_seq`
@@ -354,14 +363,17 @@ impl TreeStore {
     /// The items the base has at and below it are remembered with it: one of
     /// them found inside it once the base no longer has it was removed in
     /// OneDrive, and is never uploaded as new (review fixes, round 2).
-    pub fn leaving_add(&mut self, id: &str, rel: &std::path::Path) -> Result<(), TreeError> {
+    /// Its object's file handle is kept too: it finds the object again when
+    /// its path is gone (a parent renamed here, not examined yet).
+    pub fn leaving_add(&mut self, id: &str, rel: &std::path::Path, handle: Option<&FileHandle>) -> Result<(), TreeError> {
         use std::os::unix::ffi::OsStrExt;
         let mut items = self.descendants(Table::Items, id)?;
         items.push(id.to_owned());
         let tx = self.conn.transaction()?;
         tx.execute(
-            "INSERT INTO leaving (id, rel) VALUES (?1, ?2) ON CONFLICT(id) DO UPDATE SET rel = excluded.rel",
-            params![id, rel.as_os_str().as_bytes()],
+            "INSERT INTO leaving (id, rel, handle) VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET rel = excluded.rel, handle = COALESCE(excluded.handle, leaving.handle)",
+            params![id, rel.as_os_str().as_bytes(), handle.map(FileHandle::encode)],
         )?;
         {
             let mut had = tx.prepare_cached("INSERT OR REPLACE INTO leaving_items (id, leaving) VALUES (?1, ?2)")?;
@@ -371,6 +383,12 @@ impl TreeStore {
         }
         tx.commit()?;
         Ok(())
+    }
+
+    /// The file handle of the leaving object of item `id`, if one was taken.
+    pub fn leaving_handle(&self, id: &str) -> Result<Option<FileHandle>, TreeError> {
+        let stored: Option<Option<Vec<u8>>> = self.conn.query_row("SELECT handle FROM leaving WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        Ok(stored.flatten().as_deref().and_then(FileHandle::decode))
     }
 
     /// Whether item `id` was at or below something leaving when it began to
@@ -553,7 +571,7 @@ mod tests {
         s.begin_staging(false).unwrap();
         s.stage(&[Change::Root(root()), Change::Upsert(folder("D", "R", "d")), Change::Upsert(file("F", "D", "f", "c1"))]).unwrap();
         s.commit_staging("L1").unwrap();
-        s.leaving_add("D", std::path::Path::new("d")).unwrap();
+        s.leaving_add("D", std::path::Path::new("d"), None).unwrap();
         assert!(s.leaving_had("F").unwrap());
         s.leaving_drop("D").unwrap();
         assert!(s.leaving().unwrap().is_empty());

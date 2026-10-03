@@ -1095,6 +1095,31 @@ impl TreeStore {
         Ok(rows)
     }
 
+    /// OneDrive's listing has items `ids` again — this cycle's delta brought
+    /// them, or, `whole`, a full listing has every item it lists: a change
+    /// blocked because OneDrive answered `404` for one of them while it was
+    /// leaving (`leaving-not-found`) is retried (issue #104). How many.
+    pub fn outbox_unblock_found(&self, ids: &[String], whole: bool) -> Result<usize, TreeError> {
+        let mut n = 0;
+        let sql = "UPDATE outbox SET state = 'ready', reason = NULL, next_try = NULL
+                    WHERE state = 'blocked' AND reason = ?1 AND item_id = ?2 AND EXISTS (SELECT 1 FROM items WHERE id = ?2)";
+        if whole {
+            let blocked: Vec<String> = all_rows(&self.conn)?
+                .into_iter()
+                .filter(|r| r.state == OutboxState::Blocked && r.reason.as_deref() == Some(crate::sync::upload::reason::LEAVING_NOT_FOUND))
+                .filter_map(|r| r.item_id)
+                .collect();
+            for id in blocked {
+                n += self.conn.execute(sql, params![crate::sync::upload::reason::LEAVING_NOT_FOUND, id])?;
+            }
+        } else {
+            for id in ids {
+                n += self.conn.execute(sql, params![crate::sync::upload::reason::LEAVING_NOT_FOUND, id])?;
+            }
+        }
+        Ok(n)
+    }
+
     /// Rows at `rel` or below it.
     pub fn outbox_at_or_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
         let mut rows = rows_under(&self.conn, rel)?;

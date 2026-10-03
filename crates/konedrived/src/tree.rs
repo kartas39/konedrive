@@ -609,6 +609,7 @@ impl TreeStore {
         // The read-write cycle's own tables, added to schema 3 without a
         // rebuild: a store made before them gains them here.
         conn.execute_batch(reconcile::TABLES)?;
+        reconcile::upgrade(&conn)?;
         conn.execute_batch(SCALE)?;
         outbox::upgrade(&conn)?;
         let whole = conn.query_row("SELECT 1 FROM meta WHERE key = ?1", [STAGING_WHOLE], |_| Ok(())).optional()?.is_some();

@@ -294,6 +294,14 @@ impl Listing {
                         tracing::debug!("{} change(s) wait for the folder to take them", defer.len() + content.len());
                     }
                     store.call_blocking(move |s| s.commit_staging_deferring(&link, &consumed, &defer, &content, fetch_seq))?;
+                    // What OneDrive lists again is tried again, if a `404`
+                    // blocked a change of it while it was leaving (issue #104).
+                    let whole = listing || full;
+                    match store.call_blocking(move |s| s.outbox_unblock_found(&changed, whole)) {
+                        Ok(0) => {}
+                        Ok(n) => tracing::info!("{n} change(s) blocked by a 404 are tried again: OneDrive lists their items"),
+                        Err(e) => tracing::warn!("cannot try again the changes OneDrive lists again: {e}"),
+                    }
                     if listing || full {
                         Said::Listed
                     } else {
