@@ -18,6 +18,22 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   exist.
 - **Fix:** count waiters per uid in `Jobs`; past a cap, `EAGAIN`. **Size:** S. **Risk:** a cap
   too low refuses a legitimate burst (the 3,000-open burst is the reference).
+- **Verified 2026-10-03: confirmed, by a test.**
+  `jobs::tests::one_uid_cannot_take_every_descriptor_the_helper_has`
+  (`konedrive-helper/src/jobs/tests.rs`, branch `verify-helper`, ignored): one uid enrolls 65,536
+  opens, the unit's `LimitNOFILE`, and nobody is refused. `jobs.rs:231` is a third place that keeps
+  an fd. Nothing upstream bounds it: a worker enrolls and returns, and the liveness rule ends only
+  a daemon whose send is blocked, not one that reads its requests and never answers.
+  - **Effect:** every other user's opens in sync folders fail with `EPERM` or `EIO`, new
+    connections and registrations fail; no zeros, the helper stays up. Needs a hostile local user,
+    so it matters on a multi-user machine only.
+  - **A fix must:** count per uid, not per connection (a uid may hold 16); count joined waiters
+    (`:212`); decide whose budget an open of another user's readable placeholder is charged to;
+    keep the 3,000-open burst and the test
+    `beyond_the_credit_a_new_hydration_waits_instead_of_being_refused` passing; hand a refused fd
+    back to be answered, never drop it.
+  - **Correction:** `SECURITY.md:92–95` promises per-uid bounds in general and lists four; the
+    general promise is the one not kept.
 
 ## HE2. Roots unbounded per uid; `root_id` not validated — **defect?**
 
@@ -29,6 +45,27 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   tree. Walk failures are logged unthrottled.
 - **Fix:** validate and cap at entry; save outside the lock; unwalk a displaced root.
 - **Size:** S to M. **Risk:** check the daemon's id format first.
+- **Verified 2026-10-03: confirmed, by a traced path** (a test would need fanotify, so root, or a
+  production change that splits the acceptance decision out of `register_root`). Every sub-claim
+  holds: `root_id` goes from `connection.rs:285` to `register_root` unchecked and is stored twice
+  in `roots.json`; nothing counts roots; the save runs under the lock (`registration.rs:302`,
+  `:327`, `:154–159`); the overlap check clones every covered root per root (`main.rs:77–97`,
+  `:126–130`); a re-registration onto another inode walks only the new directory (`:318–342`),
+  and `walk_and_unmark` is reached only from `unregister_root`.
+  - **Who can start it:** not the shipped daemon (it mints and checks a UUID v4,
+    `konedrived/src/folder/root.rs:372–433`, one root per account); a hostile local client on the
+    socket can. The displaced root can come from the real daemon, rarely: a folder replaced at its
+    path by a copy that keeps xattrs (`cp -a`, `rsync -X`, a restore).
+  - **Effect:** `roots.json` and the helper's memory grow by up to about 128 KiB per
+    registration; saves slow down under the lock; at the next helper start the walk loop runs
+    before the event loop, so opens hang and trees not yet covered read zeros. A displaced root's
+    placeholders fail with `EIO` until the helper restarts, and read zeros after.
+  - **A fix must:** validate against the daemon's format, and still let a root with an older id be
+    unregistered; leave room for several accounts per user; keep the roll-back correct when the
+    save moves outside the lock; unwalk a displaced root only when `(dev, ino)` differs.
+  - **Corrections:** the steady contenders for the roots lock are the connection threads
+    (`connection.rs:264`, `:316`), workers only in two cases (`events.rs:649–650`, `:722`). More
+    unthrottled log lines print a peer-chosen id raw: `registration.rs:156, 250, 309`.
 
 ## HE3. "Every open is answered exactly once" is held by convention
 
@@ -95,6 +132,21 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
 - **defect?** `set_mtime` (`:229–231`) rejects a time before 1970. `with_owner_write`
   (`:102–112`) is a chmod window with no exclusion. `create_placeholder` (`:195`) and
   `create_placeholder_with` (`:392`) duplicate each other.
+- **Verified 2026-10-03 (only `set_mtime`): refuted for a OneDrive item; confirmed for the
+  function.**
+  - **Every caller for OneDrive cuts the time to 1970 first:**
+    `konedrived/src/remote/materialize/file.rs:173–175`, `hydration/graph_source.rs` `mtime_of`,
+    `local/examine/found.rs:234`; the two fill-side calls treat a failure as non-fatal. Shown by
+    the passing test
+    `remote::materialize::tests::an_item_dated_before_1970_gets_a_placeholder_dated_1970`
+    (branch `verify-hydration`). The cost is that such a file shows 1970-01-01 locally.
+  - **The function does refuse:** `placeholder::tests::a_placeholder_can_carry_a_time_before_1970`
+    (`konedrive-fs/src/placeholder/tests.rs`, same branch, ignored), although `futimens` accepts
+    such a time. The one caller that passes an uncut time is `sync/populate.rs:261`
+    (`PopulateFromDirectory`, the local test source): one source file dated before 1970 fails the
+    whole populate.
+  - **A fix must:** change both copies of `set_mtime` (`placeholder.rs:228`, the daemon's
+    `hydration/source/fill.rs:808`); if real earlier times are wanted, drop the three clamps too.
 
 ## HE12. Comments and dead code
 

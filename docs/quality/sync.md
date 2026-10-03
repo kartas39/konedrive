@@ -32,6 +32,29 @@ risky one.
 - **Fix:** take the tree lock first in the read-write branch, or stop the tasks as the read-only
   branch does; write the order (tree, lifecycle, inode, `syncing`) into `docs/design/writes.md`.
 - **Size:** S. **Risk:** low.
+- **Verified 2026-10-03: confirmed, by a test.**
+  `sync::tests::onedrive::read_write::a_cycle_a_forced_switch_and_a_bring_up_at_once_all_end`
+  (`sync/tests/onedrive/read_write.rs`, branch `verify-sync-remote`, ignored): the forced switch
+  and the bring-up never end within 15 s; the same arrangement without the queued writer ends in
+  5.6 s, so the hang needs all three parties.
+  - **What starts it:** `Account.SetMode read-only` with force on a read-write account
+    (`account/mode.rs:228`), while a cycle that reconciles is between its tree lock and
+    `remote/listing/rw.rs:206` (a window that includes Graph requests), and a writer that does
+    not stop the poller arrives: a helper reconnect (`sync/hub.rs:458–460`), `RegisterRoot` or
+    `RegisterWithoutInterception`, or the watcher's "root gone" hook. `resume.rs:115` (`restore`)
+    queues the same way.
+  - **Effect:** the `SetMode` call never answers and the folder's cycles stop. If the writer is
+    the reconnect's `resume()`, `supervise` never reaches `serve_routed`, so intercepted opens are
+    not filled for every account. It lasts until something calls `stop_tasks` (a Forget, a mode
+    change from another cause) or the daemon restarts. Likelihood: low.
+  - **A fix must:** keep one order for the tree lock and `lifecycle` everywhere; mind that
+    `drop_outbox` is also called under `lifecycle.write()` after the tasks are stopped
+    (`write_mode.rs:96, 604`), that `restore_deletes` takes the tree lock with no `lifecycle`
+    (`outbox_api.rs:376`), and that replacements take the tree lock, then the inode lock.
+  - **The `free_one` variant**, by reading only: a chain of four (a replacement holding the tree
+    lock and waiting for the inode lock; `free_one` holding the inode lock and waiting for
+    `lifecycle.read` behind a queued writer; the writer waiting for `drop_pending_uploads`, which
+    holds the read and waits for the tree lock). Not tested.
 
 ## SY2. The lifecycle protocol is kept by comments
 
@@ -76,6 +99,19 @@ risky one.
   until the daemon restarts. When `export` fails in `add`, the config entry and the `siblings`
   entry stay.
 - **Fix:** an enum (`Active`, `HeldBack(why)`, `Retiring`) and an undo on failure. **Size:** S.
+- **Verified 2026-10-03: confirmed, by a test.**
+  `an_account_whose_removal_failed_half_way_still_takes_a_folder` (`konedrived/tests/accounts.rs`,
+  branch `verify-sync-remote`, ignored), with a wallet whose delete fails: the account stays
+  listed, without its folder, and answers "this account is being removed" to Register, sign-in
+  and `SetMode`. The same state by trace when `config.remove_account` fails (`manager.rs:325`),
+  with the sign-in already deleted. The `add` whose `export` fails is traced too.
+  - **Effect:** a OneDrive folder's tree store is deleted and its lock taken off; the files stay.
+    Likelihood: low (the Secret Service must refuse the delete, or `config.toml` be unwritable).
+  - **A fix must know:** there are two flags (`SyncService::held`, `AccountService::retired`), and
+    the folder is already forgotten at the helper when the later steps fail, so an undo cannot
+    simply restore it.
+  - **Correction:** not only a restart ends it: a second `Remove` that succeeds does too
+    (`forget.rs:160–163`).
 
 ## SY6. States and refusals as strings — **defect?** in part
 
@@ -86,6 +122,17 @@ risky one.
   `Local`: a typo in `config.toml` makes a OneDrive folder local and its sync never starts.
 - **Fix:** `parse` returning `Result`; more `SyncError` variants; typed note slots (`X1`).
 - **Size:** M. **Risk:** D-Bus error names would change.
+- **Verified 2026-10-03 (`RootSource::parse`): confirmed, by a test.**
+  `sync::tests::registration::a_source_that_config_toml_misspells_is_not_taken_for_local_in_silence`
+  (`sync/tests/registration.rs`, branch `verify-sync-remote`, ignored): `source = "OneDrive"`
+  comes up as a local folder, ready, with nothing in `LastError`. `config/mod.rs:342` does not
+  validate the value.
+  - **Effect:** the folder is never listed or kept in step, and files not downloaded cannot be
+    filled. If the entry had `baloo_excluded = true`, the entry is rewritten as `source =
+    "local"`: the typo becomes permanent and a later Forget leaves the Baloo exclusion on.
+    Likelihood: very low; only a hand edit produces another value.
+  - **A fix must:** let a Forget of such a folder still reach the helper (`hold`, `bind` and
+    `recorded_for_forget` all read `persisted_root()`).
 
 ## SY7. Wiring by setters; a test-only surface on the production type
 

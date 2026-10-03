@@ -20,6 +20,26 @@ Scores: `account/mod.rs`, `account/sign_in.rs`, `account/mode.rs`, `account/secr
 - **Fix:** one `start_attempt(kind)` that checks, bumps the generation and swaps the cancel
   channel under the session lock; `enum AttemptEnd { Cancelled, Failed(SignInError) }`.
 - **Size:** M. **Risk:** medium to high: the identity guard and the write gate's order.
+- **Verified 2026-10-03: confirmed, by a test for the mechanism and a trace for the cancel.**
+  `a_sign_in_that_answered_a_url_is_shown_as_signing_in` (`konedrived/tests/account_flow.rs`,
+  branch `verify-account-ctl`, ignored): forced with a sign-out held in the wallet's delete, the
+  account shows `SignedOut` while an attempt is live, and the browser's answer then signs it in
+  and stores the refresh token. `commit_sign_in` checks only the generation and `is_retired`
+  (`sign_in.rs:417`), never the state. The cancel takes the same path by trace
+  (`sign_in.rs:71–83`, then `:36–44`); a test cannot force it without a hook.
+  - **What starts it:** zbus runs each method call in its own task and the runtime is
+    multi-threaded, so `BeginSignIn` and `CancelSignIn` or `SignOut` on one account run in
+    parallel.
+  - **Effect:** `konedrivectl login` prints "sign-in was cancelled" and exits non-zero; finishing
+    in the browser then signs the account in, after the user was told otherwise. No data is lost;
+    the identity guard still runs. Likelihood: low; the cancel's window is tens to hundreds of
+    microseconds and needs a second client.
+  - **A fix must:** make the state change, the generation bump and the cancel-channel swap one
+    step under the session lock, or re-check the state there as `mode.rs:66` does; not leave
+    `SigningIn` behind on a refused start; keep the order `session`, then the token cache.
+  - **Corrections:** `LoopbackListener::bind().await` at `:17` is not a suspension point; the gap
+    needs a second thread or a contended lock at `:36`. `sign_out` (`:98–120`) does the same as
+    the cancel, with a far wider window.
 
 ## AC4. `LastError` is one string with many writers, cleared by prefix matching
 

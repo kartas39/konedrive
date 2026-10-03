@@ -19,6 +19,29 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
   (`outbox.rs:545–562`) a loop of them, under a doc that says each is one transaction.
 - **Fix:** extract the swap into `fn swap(tx, whole, delta_link)`, called inside one transaction.
 - **Size:** S. **Risk:** low.
+- **Verified 2026-10-03: confirmed, by a test.**
+  `reconcile::tests::a_swap_that_fails_keeps_the_deferred_changes_it_consumed`
+  (`konedrive-tree/src/reconcile/tests.rs`, branch `verify-tree-graph`, ignored): a swap made to
+  fail leaves `items` and the link as they were, and the consumed `deferred` row already gone.
+  The daemon calls it at `remote/listing/rw.rs:314`; the next cycle's `stage_rw` reads an empty
+  `deferred` and wipes `staging`; the consumed deferrals came from earlier cycles whose link is
+  past them, so they never come back.
+  - **Effect:** the disk already matches the consumed change and `items` keeps the old row for
+    good. The next Full reconcile makes the disk match the old row again: an online-only
+    placeholder gets the old size, time and cTag back, a downloaded file is queued for
+    replacement to the old cTag, a rename or move is undone, a consumed delete is made a
+    placeholder again. A likely follow-on, not traced: an upload from the stale base ends as a
+    conflict copy. No user content is deleted as far as traced. It heals when the item changes
+    again in OneDrive, an outbox commit rewrites it, or a full listing runs.
+  - **Likelihood:** low: a read-write folder, a cycle that settles a deferred change, and a crash
+    between two adjacent commits or an SQLite error in the second (full disk, I/O error). Silent
+    and lasting when it happens.
+  - **A fix must:** one transaction for both parts; set `self.whole = false` only after the
+    commit; roll the `outbox_gone` prune back with the rest; keep `commit_staging` usable alone
+    for the read-only path.
+  - **Corrections:** `outbox_record_opening` has two statements only in its "recorded at another
+    place" branch (`outbox/worker.rs:226, 234`). Neither `outbox_settle_not_found`'s doc nor its
+    module's says "one transaction", and a partial loop is settled again by the next cycle.
 
 ## TR2. "Forget the local objects below X" three times, with different reach — **defect?**
 
@@ -29,6 +52,25 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
   `outbox.rs:640`, `outbox/pick.rs:256`, `outbox/worker.rs:47`).
 - **Fix:** one `forget_subtrees`; every subtree walk through `source::below_sql`.
 - **Size:** S. **Risk:** more is forgotten, the safe direction.
+- **Verified 2026-10-03: the difference is real; refuted as a delete-safety defect.**
+  `outbox::tests::dropping_a_row_forgets_what_the_new_tree_has_below_its_item`
+  (`konedrive-tree/src/outbox/tests.rs`, branch `verify-tree-graph`, ignored) shows a row that is
+  below the folder only by the staged tree keeping its handle.
+  - **Why it does no harm today:** every caller that forgets holds the tree lock
+    (`upload/steps.rs:272, 630`, `upload/move_out/cases.rs:380`, `sync/outbox_api.rs:376`,
+    `sync/write_mode.rs:426`, the examiner), and a read-write delta cycle holds that lock from
+    before `begin_staging` to after the swap, so `staging` is empty when these run. In the
+    remaining cases (a failed cycle's leftover, a read-write full listing, a read-only cycle) a
+    row below the folder only by the staged tree has its object, if any, outside the folder's
+    directory on disk. `sync/move_outs.rs:114` is the one caller without the lock; the store is
+    dropped right after.
+  - **For the merge into one function:** "more is forgotten, the safe direction" is not
+    automatic. An item OneDrive moved into the folder would lose the handle of an object that
+    still exists elsewhere, and the reconcile must then find it by its id rather than place a
+    second one: that needs a materializer test. Today's safety rests on the tree lock, not on the
+    SQL; the comments at `outbox/worker.rs:42` and `outbox.rs:635` describe a state the lock no
+    longer allows.
+  - **Correction:** the walk is over `items` only, but the `UPDATE` runs on both tables by id.
 
 ## TR3. The schema version does not describe the schema
 

@@ -21,6 +21,32 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
 - **Fix:** wire `signed_in` from the account state, or delete the latch and rely on
   `OutboxHost::may_write`; delete the dead methods and `online`. **Size:** S after M of
   investigation.
+- **Verified 2026-10-03: confirmed for a `403`, by a test and a trace; the `401` part refuted.**
+  `upload::tests::candidates::a_row_blocked_by_403_goes_again_with_the_worker_a_sign_in_builds`
+  (`upload/tests/candidates.rs`, branch `verify-upload`, ignored): after a `403` a newly built
+  worker leaves the row `blocked` with `forbidden`.
+  - **The path:** a `403` on any write becomes `WriteError::Forbidden`
+    (`konedrive-graph/src/drive/write.rs:253`), then `Outcome::Forbidden`; `settle` sets
+    `needs_sign_in` and blocks the row (`engine/drain.rs:252–262`); `may_start` is false from
+    then on (`engine.rs:402`). No caller of `OutboxWorker::signed_in` or of `outbox_unblock`
+    exists outside `upload/` and tests. `Refresh()` only calls `retry_outbox`
+    (`sync/start_stop.rs:288–291`). The host drops the worker's `needs_sign_in` and `last_error`
+    (`sync/outbox_api.rs:523–540`), so nothing tells the user to sign in.
+  - **Does a sign-in rebuild the worker? Yes, always:** a sign-in is possible only from
+    `SignedOut`, every sign-out sets the mode to read-only, which stops the sync with its worker,
+    and the return to read-write starts a new one (`sync/write_mode.rs:74–121, 240`). So the
+    latch goes with a sign-out and sign-in, a restart, a mode switch or a Forget. The `forbidden`
+    row does not: it stays blocked until the file changes again.
+  - **Effect:** one `403` on one item (it can be item-specific) stops every upload of the account
+    silently, with no `LastError`. `docs/design/writes.md:568` promises that `LastError` says to
+    sign in again and that a new sign-in releases the rows. Likelihood: low to moderate.
+  - **A fix must:** decide whether one `403` should stop the whole account at all, given
+    `OutboxHost::may_write` already gates on the granted scope; if the latch stays, wire
+    `signed_in` from the account state and carry `needs_sign_in` and `last_error` through the
+    host's status; release `forbidden` rows when a worker starts after a sign-in.
+  - **Corrections:** a `401` does not latch: `send_write` drops the token and retries once
+    (`write.rs:182–186`), and a second `401` is `WriteError::Failed`. `Outcome::SignedOut` comes
+    only from the token source, where the account signs out and the worker is dropped.
 
 ## UP2. Row string columns are overloaded as control state — **defect?**
 
@@ -34,6 +60,22 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   bad upload. `content.rs:856` drops the delete error without logging it.
 - **Fix:** typed accessors in `konedrive-tree` (`TR4`, `X1`). **Size:** M. **Risk:** touches the
   store's encoding.
+- **Verified 2026-10-03: confirmed, by a test.**
+  `upload::tests::candidates::a_bad_upload_whose_delete_fails_twice_is_still_deleted_before_the_file_goes_again`
+  (`upload/tests/candidates.rs`, branch `verify-upload`, ignored): the file ends as
+  `a-<machine>.txt` with a conflict event, and the bad item stays in OneDrive as `a.txt`.
+  - **Effect:** a conflict the user did not cause; no content of theirs is lost, but the name
+    holds content they never wrote, and the next cycle places it in the folder. Likelihood: very
+    low (OneDrive must answer an upload with another hash, the delete must fail, and the next
+    run must be disturbed).
+  - **The second disturbance is wider than stated:** anything that settles the row before
+    `clear_bad_item` succeeds overwrites the reason: the waits at the start of `content::run`
+    (`content.rs:50, 55, 62, 98`), a read failure in `hash()` (`:215`), `Throttled` and
+    `SignedOut` (`engine/drain.rs:242, 250`), an examination's merge. A file that is open for
+    writing at the next try is enough. The failing delete at `content.rs:219–221` does it too.
+  - **A fix must:** keep the bad item's id outside `reason`, so that it survives every settle and
+    the examination's merge (`konedrive-tree/src/outbox/record.rs`); clear it exactly when the
+    item is deleted, found gone or adopted; decide what `copy()` and `upload_as_new()` do with it.
 
 ## UP3. `kept_back::known_group` does not know the reasons the worker writes — **defect?**
 
@@ -44,6 +86,20 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   at `steps.rs:659`, `engine/drain.rs:212`, `content.rs:56, 171, 678`; suffixed forms never match
   (`move_out.rs:227, 256, 264, 425`). All fall to `Group::Waiting` plus a warning.
 - **Fix:** the `Reason` enum of `X1`. **Size:** S for the table. D20 covers four keys only.
+- **Verified 2026-10-03: confirmed, by two tests** (`upload/kept_back/tests.rs`, branch
+  `verify-upload`, ignored).
+  - `a_blocked_row_is_never_shown_as_going_up_by_itself` is the real harm: rows in state
+    `blocked` with `another-item`, `bad-handle`, `no-guard`, `no-handle`, `no-item`, `no-name`, an
+    unreadable state, or the bare `blocked` of `kept_back.rs:110` are grouped as waiting, which
+    the window and `konedrivectl` word as "these go up by themselves". `BlockedCount` still counts
+    them, so the two disagree. These reasons are rare.
+  - `every_reason_the_worker_writes_is_in_the_table`: `paused`, `upload-session-open`,
+    `name-held-by-an-upload`, the sentences and the suffixed forms are not in the table. For
+    these `Waiting` is the right group; the cost is a wrong warning and summary lines keyed by a
+    suffixed string, one per errno. These reasons are ordinary.
+  - **A fix must:** make the group follow the row's state as well as its reason; give suffixed
+    reasons a key, as `refused: …` and `too-big:…` have; add a sentence for each new key in
+    `app/uploadreasons.cpp` and `konedrivectl/src/text/uploads.rs`.
 
 ## UP4. `drain` and `settle` are the hardest functions to change safely
 

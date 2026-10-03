@@ -33,6 +33,18 @@ the rest 4.
   stores the one it gets: every call is a token-endpoint request made while holding `cached`,
   which every Graph call of the account waits on. How often the daemon calls it was not checked.
 - **Fix:** a second cache slot. **Size:** S.
+- **Verified 2026-10-03: confirmed as described, by two tests; the effect is negligible.**
+  `a_read_write_accounts_read_only_token_is_cached` and
+  `the_accounts_own_token_does_not_wait_for_a_read_only_refresh`
+  (`konedrive-graph/src/token/tests.rs`, branch `verify-tree-graph`, ignored; the second depends
+  on timing, with wide margins).
+  - **How often it is called:** only from `TokenExport.ReadOnly` (`dbus/token_export.rs:19`
+    through `account/mode.rs:240`), which exists only in a `dev-tools` build and is called by
+    `konedrivectl dev export-access-token`, by hand. Nothing periodic calls it. W11 already
+    records what a process on the session bus can do with that interface.
+  - **A fix must:** clear a second cache slot in `invalidate`, `forget`, `commit_as` and the
+    `invalid_grant` path; never hand it out from `access_token`; keep the "refused if it can
+    write" check; keep the refresh-token rotation (`token.rs:213–221`) under the lock.
 
 ## GR6. Smaller
 

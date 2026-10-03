@@ -38,6 +38,33 @@ inside it. `LO5` after these.
   (`watcher/mod.rs:605–611`) and meets the same file. F55 covers unreadable directories only.
 - **Fix:** one per-entry policy (gone means skip; denied means `mark_unreadable` and a recheck) at
   every open in the examination. **Size:** S to M. **Risk:** low.
+- **Verified 2026-10-03: refuted as written; a narrower form confirmed by a traced path.**
+  - **The mode-000 case does not happen.** `entry::read` reads the attributes by name
+    (`local/entry.rs:132`), which gives `EACCES` first; `Run::read_entry`
+    (`local/examine/run.rs:141–144`) takes `denied`, calls `mark_unreadable` and goes on. Shown by
+    two passing tests in `local/tests.rs` (branch `verify-local`):
+    `an_unreadable_downloaded_file_does_not_stop_the_examination` and
+    `a_read_only_copy_that_kept_its_attributes_is_stripped_and_uploaded_as_new`.
+  - **What holds:** the sites have no per-entry policy (`found.rs:195–204`;
+    `classify.rs:318–322, 331, 340, 362–363`): any error that is not `gone` becomes
+    `ExamineError::Io`, the batch is merged back and retried with a backoff of 5 s to 600 s.
+    Persistent causes need root or bad hardware: a readable file owned by another user that
+    carries konedrive attributes and must be stripped, a read error in `hash` (`found.rs:178`),
+    `restore` on a foreign-owned placeholder (`found.rs:227–234`).
+  - **Effect:** local changes of the whole account stop being uploaded while the file is there;
+    the only sign is a log warning, nothing reaches `WatchStatus` or `LastError`. Likelihood: low.
+  - **A fix must:** apply one policy at every open, strip and read; not count a passed-over entry
+    as missing; not upload a stranger that could not be stripped; bring a batch that keeps failing
+    to `LastError`.
+  - **Corrections:** `read_entry` already covers every entry, files included; F55's text mentions
+    only directories. `Examined::unreadable` is read by nothing but tests, so the user is never
+    told a file is not uploaded.
+  - **Found beside it, traced and not run:** `entry::read` reads a directory's attributes before
+    `classify.rs:80` checks its device, and the `xattr` crate maps only `ENODATA` to "none". A
+    filesystem without user attributes mounted inside the folder (vfat, some FUSE mounts) should
+    give `EOPNOTSUPP` at `entry.rs:144` and abort every examination, since each Full scan lists
+    the mount point. F72 expects such a mount to be listed as `other-device`. The VM suite could
+    confirm it with a vfat mount.
 
 ## LO4. The examiner thread can die unnoticed — **defect?**
 
@@ -48,6 +75,20 @@ inside it. `LO5` after these.
   is never set. On `Handled::RootGone` the examiner returns (`mod.rs:613–619`) while the reader
   keeps walking.
 - **Fix:** the same drop guard on the examiner; its exit sets `stop`. **Size:** S.
+- **Verified 2026-10-03: confirmed for a panic, by a test; the `RootGone` part refuted.**
+  `local::watcher::tests::an_examiner_that_dies_says_the_watcher_stopped`
+  (`local/watcher/tests.rs`, branch `verify-local`, ignored): after the sink panics the examiner
+  thread is gone, the reader keeps handing over into a closed channel, and `stopped` stays false,
+  so `LastError` says nothing. `WatchHandle::flush` does return `false` at once.
+  - **`RootGone` is not a defect:** `watcher/mod.rs:613–619` calls `shared.root_gone()`, and the
+    status hook (`sync/watching.rs:70–84`) sets the folder to error and stops the sync.
+  - **Effect:** nothing is shown; local changes are no longer examined or uploaded until the sync
+    restarts. Likelihood: low. No panic reachable today was found: `classify.rs:108` and `:464`
+    cannot fire. What remains is a poisoned mutex after a panic on another thread
+    (`watcher/service.rs:126`, `sync/write_mode.rs:407`), `runtime.block_on` on a runtime being
+    shut down (`service.rs:133`), and any future bug in the examination.
+  - **A fix must:** put a guard on the examiner like the reader's `Ending`; the guard runs during
+    unwinding, so it takes poisoned locks and must not panic itself; wake the reader so it ends.
 
 ## LO5. `Reader::visit` and the settle path are hard to change safely
 
@@ -103,3 +144,16 @@ inside it. `LO5` after these.
 - `local/mod.rs:16–17` ("Nothing here runs from the daemon yet"), `:90–112`;
   `desktop/baloo.rs:17, 24, 73`; `desktop/thumbs.rs:97–98`; `examine.rs:9–26`. Items reachable
   by two paths (`local/mod.rs:35–40`).
+
+## LO13. A mount without user attributes inside the folder aborts every examination — **defect?**
+
+- **Found on 2026-10-03 while verifying `LO3`; traced, not run** (it needs a mount).
+- **Where:** `local/entry.rs:144`, `local/examine/run.rs:145`, `local/examine/classify.rs:80`.
+- **What:** `entry::read` reads a directory's attributes before `classify.rs:80` checks its
+  device, and the `xattr` crate maps only `ENODATA` to "none". A filesystem without user
+  attributes mounted inside the folder (vfat, some FUSE mounts) should give `EOPNOTSUPP`, which
+  passes `run.rs:145` as an error and aborts the examination; each Full scan lists the mount
+  point again. F72 expects such a mount to be listed as `other-device`.
+- **To confirm:** a VM scenario with a vfat mount inside the folder.
+- **Fix:** the per-entry policy of `LO3`, with `EOPNOTSUPP` on a directory read as "not ours".
+

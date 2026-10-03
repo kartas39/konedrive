@@ -44,6 +44,13 @@ the #104 test gaps filled first. `RE4` waits for these.
   one `Materializer::rename_tracked` that rebases. Shares `LO9` and `TR2`.
 - **Size:** L. **Risk:** high: the delete-safety path (F193, F194, F196); the #104 test gaps are
   open; `listing/rw/tests/stale.rs` is the net.
+- **Verified 2026-10-03 (only the `copy_aside` claim): refuted, by a passing test.**
+  `remote::materialize::rw::tests::a_directory_kept_aside_takes_what_is_leaving_in_it_along`
+  (`remote/materialize/rw/tests.rs`, branch `verify-sync-remote`): `copy_aside` applies
+  `OutboxOp::Rebase` (`rw.rs:669–670`), and the store's `rebase` ends in `rebase_leaving`
+  (`konedrive-tree/src/outbox.rs:381–390`), which moves the `leaving` rows at and below the
+  directory. The three hand-written sites are renames that apply no `Rebase` op. The rest of this
+  finding is about structure and stands.
 
 ## RE2. `reconcile` and `reconcile_rw` are two copies
 
@@ -93,6 +100,17 @@ the #104 test gaps filled first. `RE4` waits for these.
   (`listing.rs:151–158`) and `ApplyError::Io(String)` (`materialize.rs:148–158`) discard the
   source error.
 - **Fix:** keep `#[source]` errors; one mapping function. **Size:** S. **Risk:** low.
+- **Verified 2026-10-03: confirmed as stated, by a test of the two mappings; small as a defect.**
+  `remote::listing::tests::a_store_failure_is_the_same_trouble_wherever_a_reconcile_meets_it`
+  (`remote/listing/tests.rs`, branch `verify-sync-remote`, ignored).
+  - **What differs:** blocking trouble makes `RootState` read `error` (`status/snapshot.rs:276`)
+    and closes the write gate (`sync/write_mode.rs:379`); the other kind is only a line in
+    `LastError`. The poller retries both on the same schedule, and both are logged.
+  - **Wider than the lines named:** `ApplyError::Tree` (`materialize.rs:150`) sends every store
+    failure inside the materializer through `applying` (`listing.rs:198`) to the non-blocking
+    `Apply`.
+  - **A fix must:** decide which of the two a store failure is; `CycleError::blocking`
+    (`listing.rs:168`) is the only place that says.
 
 ## RE7. `sync_once` does everything
 
@@ -128,6 +146,15 @@ the #104 test gaps filled first. `RE4` waits for these.
   the new inode unrecorded; whether the next cycle repairs it was not traced.
 - **Fix:** a `Replacements` struct with one mutex and a typed failure reason;
   `Listing::request_full()`. **Size:** M. **Risk:** medium.
+- **Verified 2026-10-03 (only the cancelled replacement): refuted, by a passing test and a trace.**
+  `remote::materialize::replace::tests::a_leased_replacement_stopped_right_after_its_swap_has_recorded_the_new_inode`
+  (`remote/materialize/replace/tests.rs`, branch `verify-sync-remote`). In read-write mode the only
+  await between the swap and `record_replaced_async` is `land_deferred` (`replace.rs:255`), whose
+  job is already sent and records the handle itself (`konedrive-tree/src/reconcile.rs:300–305`).
+  In read-only mode there is no await between the swap and the sending of `set_local_handle`.
+  What is left is a cancel while the send waits on a full store queue of 1,024 jobs; the next
+  examination that sees the file repairs it (`local/examine/found.rs:34–37`). The rest of this
+  finding is about structure and stands.
 
 ## RE11. `status/activity.rs` holds four things
 

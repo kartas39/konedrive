@@ -21,6 +21,23 @@ A correction to an earlier measurement: there is no 350-line `commit` in
   exhaustive match; every unwritten pair falls to a generic sentence. Fold the four copies of the
   detail extraction (`:125–129, 171–175, 494–498, 556–560`).
 - **Size:** M. **Risk:** low; wording is pinned by tests.
+- **Verified 2026-10-03: refuted as written; a neighbouring defect confirmed by a test.**
+  - **The three wildcard arms give no wrong sentence today.** Every place the daemon raises
+    `NotSignedIn`, `NoHelper` and `Unsupported` was traced: each pair lands on an arm written for
+    it, or on the wildcard for a registration, where its sentence is right. The arms stay a
+    hazard for the next refusal someone adds.
+  - **What is wrong today:** the arm at `text/refusals.rs:403–405` maps `NoRoot` for
+    `Outbox | Pause | Resume | Ignore | NotUploaded | Deletes` to "the folder's sync has not
+    started yet; try again in a moment". The daemon answers `NoRoot` both when no folder is
+    registered at all and when the store is not opened yet
+    (`konedrived/src/sync/outbox_api.rs:41–44`). Test
+    `binary_an_outbox_command_with_no_folder_says_no_folder_is_registered`
+    (`konedrivectl/tests/sync_cli/refusals.rs`, branch `verify-account-ctl`, ignored).
+  - **Effect:** an account with no folder yet is told to wait instead of to register, every time
+    one of these commands runs before `sync register`.
+  - **A fix must know:** one name carries two causes. The CLI can tell them apart by
+    `Folder.Path` being empty, which `explained()` already reads (`commands/sync.rs:419`); a
+    second name would change the bus contract for the window too.
 
 ## CL3. Refusal data travels inside English sentences
 
@@ -35,6 +52,21 @@ A correction to an earlier measurement: there is no 350-line `commit` in
   `dbus/org.konedrive.Accounts.xml:17`; `app/accountsmodel.h:150` relies on the old rule. Also
   stale: `cli.rs:13–16`.
 - **Fix:** one sentence, owned by the daemon's refusal message. **Size:** S.
+- **Verified 2026-10-03: confirmed, by a test.**
+  `what_the_cli_says_of_a_label_is_what_the_daemon_takes` (`konedrivectl/tests/accounts_cli.rs`,
+  branch `verify-account-ctl`, ignored): `account add ann@outlook.com` succeeds, and the help of
+  `account add` and the text after a refused label still say "no @".
+  - **Reach the user:** `cli.rs:80` and `text/refusals.rs:585–586` (appended to every
+    `InvalidArgs` of `Add` or `Rename`, whatever the reason). `choice.rs:17` is a comment;
+    `dbus/org.konedrive.Accounts.xml:17` is the contract the window reads.
+  - **A sixth place:** the existing test `accounts_are_added_chosen_renamed_and_removed`
+    (`accounts_cli.rs:94–95`) still asserts that `account rename home a@b` is refused, and fails
+    on `dev` for that reason. It is one of the eight failures #101 puts down to the client id.
+  - **A fix must:** take the sentence from one place; it also omits two rules the daemon
+    enforces (not 12 hexadecimal digits, no control characters).
+  - **Correction:** `app/accountsmodel.h:150` does not rely on the old rule. It relies on nobody
+    naming an account "Signing in…": `AccountsModel::probe` (`accountsmodel.cpp:183–193`) removes
+    any such account at the next start, and both rules allow that label (limitation A15).
 
 ## CL6. `folder_command` and `sync` split one enum across two functions
 

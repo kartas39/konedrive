@@ -12,9 +12,12 @@ not fixed moves there.
 
 ## How to read the findings
 
-- **Nothing here is confirmed.** Every finding comes from reading the code. None was reproduced,
-  built or run. A finding marked **defect?** claims the program does something wrong; it is a
-  candidate until a test shows it.
+- **A finding is unconfirmed unless it says otherwise.** Every finding comes from reading the
+  code, without building or running it. A finding marked **defect?** claims the program does
+  something wrong. The candidates in the table below were each checked on 2026-10-03, by a test
+  or by a traced path: the table has the verdict, and the finding has a "Verified" paragraph with
+  the evidence, the effect, and what a fix has to take care of. Every other finding is still
+  only read.
 - **Coverage is guessed.** Where a finding says tests cover something, that rests on the size
   and name of the test file, not on its assertions.
 - **The limitations log was searched, not read whole.** A finding may already be recorded in
@@ -60,30 +63,55 @@ not fixed moves there.
 
 | Id | Where | What it would do | Status |
 |---|---|---|---|
-| [`SY1`](sync.md) | `sync/write_mode.rs:593`, `:426`; `remote/listing/rw.rs:131`, `:206` | Two lock orders; a hang that stops fills for every account | open |
-| [`TR1`](tree.md) | `konedrive-tree/src/reconcile.rs:216–274` | A commit said to be one transaction is two; deferred changes lost at a crash between them | open |
-| [`TR2`](tree.md) | `konedrive-tree/src/lib.rs:710`, `outbox/worker.rs:41`, `outbox.rs:634` | "Forget the local objects below" in three copies with different reach (delete safety) | open |
-| [`UP2`](upload.md) | `upload/content.rs:41`, `:209`, `:852` | The id of a bad upload is lost; the next send makes a conflict copy against the worker's own upload | open |
-| [`UP1`](upload.md) | `upload/engine.rs:307–317`, `engine/drain.rs:247`, `:255` | The "needs sign-in" latch is never cleared; one 401 or 403 stops the worker | open |
-| [`UP3`](upload.md) | `upload/kept_back.rs:64–81` | Blocked rows shown as "waiting, goes up by itself" | open |
-| [`LO3`](local.md) | `local/examine/found.rs:200`, `classify.rs:340`, `:362` | One file's I/O error aborts the whole examination, again at every retry | open |
-| [`LO4`](local.md) | `local/watcher/mod.rs:544–641` | The examiner thread dies unnoticed; uploads stop with no error shown | open |
-| [`HY1`](hydration.md) | `hydration/source/fill.rs:196–249`, `:351` | A fill without clearance punches a file on the strength of a comment (the zeros path) | open |
-| [`HY8`](hydration.md) | `hydration/dehydrate.rs:220` | An error path skips the roll-back; a good local copy is lost | open |
-| [`HY7`](hydration.md) | `hydration/pin.rs:642` | A cancelled download is reported to the pool as a success | open |
-| [`HY5`](hydration.md) | `hydration/server.rs:257` | An errno the kernel cannot deliver; the opener gets `EIO`, not "gone" | open |
-| [`HE1`](helper.md) | `konedrive-helper/src/jobs.rs:211`, `:238` | No bound per uid on suspended opens; one user can deny every other user's opens | open |
-| [`HE2`](helper.md) | `konedrive-helper/src/connection.rs:285`, `roots.rs` | Roots unbounded per uid, `root_id` unvalidated, a re-registration that leaves marks | open |
-| [`AC1`](account-config.md) | `account/sign_in.rs:13–36` | A cancelled sign-in can complete | open |
-| [`RE6`](remote.md) | `remote/listing.rs:639` against `:645` | The same store failure is "blocking" or not by the line it happens on | open |
-| [`RE1`](remote.md) | `remote/materialize/rw.rs:651–669` | `copy_aside` renames a directory and does not rebase the `leaving` row's path | open |
-| [`RE10`](remote.md) | `remote/materialize/replace.rs:249`, `listing/replacements.rs:180` | A replacement cancelled between the swap and the record leaves the new inode unrecorded | open |
-| [`GR5`](graph.md) | `konedrive-graph/src/token.rs:176–196` | Every read-only token for a read-write account is a network request under the cache lock | open |
-| [`FS1`](helper.md) | `konedrive-fs/src/placeholder.rs:229–231` | An item dated before 1970 cannot get a placeholder | open |
-| [`CL2`](ctl.md) | `konedrivectl/src/text/refusals.rs:277`, `:366`, `:406` | A wrong sentence for a refusal and action nobody wrote | open |
-| [`CL5`](ctl.md) | `konedrivectl/src/cli.rs:80`, `text/refusals.rs:585` and three more | The label rule stated five times; four say "no @", the code allows it | open |
-| [`SY5`](sync.md) | `daemon/manager.rs:323–325`, `:302` | `Accounts.Remove` that fails half-way leaves an account that refuses everything | open |
-| [`SY6`](sync.md) | `sync/mod.rs:72–78` | A typo in `config.toml` silently makes a OneDrive folder local | open |
+| [`SY1`](sync.md) | `sync/write_mode.rs:593`, `:426`; `remote/listing/rw.rs:131`, `:206` | Two lock orders; a hang that stops fills for every account | confirmed |
+| [`TR1`](tree.md) | `konedrive-tree/src/reconcile.rs:216–274` | A commit said to be one transaction is two; deferred changes lost at a crash between them | confirmed |
+| [`TR2`](tree.md) | `konedrive-tree/src/lib.rs:710`, `outbox/worker.rs:41`, `outbox.rs:634` | "Forget the local objects below" in three copies with different reach (delete safety) | refuted as a defect; the difference is real |
+| [`UP2`](upload.md) | `upload/content.rs:41`, `:209`, `:852` | The id of a bad upload is lost; the next send makes a conflict copy against the worker's own upload | confirmed |
+| [`UP1`](upload.md) | `upload/engine.rs:307–317`, `engine/drain.rs:247`, `:255` | The "needs sign-in" latch is never cleared; one 401 or 403 stops the worker | confirmed for 403; the 401 part refuted |
+| [`UP3`](upload.md) | `upload/kept_back.rs:64–81` | Blocked rows shown as "waiting, goes up by itself" | confirmed |
+| [`LO3`](local.md) | `local/examine/found.rs:200`, `classify.rs:340`, `:362` | One file's I/O error aborts the whole examination, again at every retry | refuted as written; a narrower form confirmed |
+| [`LO4`](local.md) | `local/watcher/mod.rs:544–641` | The examiner thread dies unnoticed; uploads stop with no error shown | confirmed (the panic); refuted (`RootGone`) |
+| [`LO13`](local.md) | `local/entry.rs:144`, `local/examine/run.rs:145` | A mount without user attributes inside the folder aborts every examination | open |
+| [`HY1`](hydration.md) | `hydration/source/fill.rs:196–249`, `:351` | A fill without clearance punches a file on the strength of a comment (the zeros path) | refuted as reachable; a latent hole confirmed |
+| [`HY8`](hydration.md) | `hydration/dehydrate.rs:220` | An error path skips the roll-back; a good local copy is lost | confirmed |
+| [`HY7`](hydration.md) | `hydration/pin.rs:642` | A cancelled download is reported to the pool as a success | confirmed; low impact |
+| [`HY5`](hydration.md) | `hydration/server.rs:257` | An errno the kernel cannot deliver; the opener gets `EIO`, not "gone" | confirmed (the errno); one sub-claim refuted |
+| [`HE1`](helper.md) | `konedrive-helper/src/jobs.rs:211`, `:238` | No bound per uid on suspended opens; one user can deny every other user's opens | confirmed |
+| [`HE2`](helper.md) | `konedrive-helper/src/connection.rs:285`, `roots.rs` | Roots unbounded per uid, `root_id` unvalidated, a re-registration that leaves marks | confirmed |
+| [`AC1`](account-config.md) | `account/sign_in.rs:13–36` | A cancelled sign-in can complete | confirmed |
+| [`RE6`](remote.md) | `remote/listing.rs:639` against `:645` | The same store failure is "blocking" or not by the line it happens on | confirmed; small |
+| [`RE1`](remote.md) | `remote/materialize/rw.rs:651–669` | `copy_aside` renames a directory and does not rebase the `leaving` row's path | refuted (the `copy_aside` claim) |
+| [`RE10`](remote.md) | `remote/materialize/replace.rs:249`, `listing/replacements.rs:180` | A replacement cancelled between the swap and the record leaves the new inode unrecorded | refuted (the cancelled replacement) |
+| [`GR5`](graph.md) | `konedrive-graph/src/token.rs:176–196` | Every read-only token for a read-write account is a network request under the cache lock | confirmed; effect negligible |
+| [`FS1`](helper.md) | `konedrive-fs/src/placeholder.rs:229–231` | An item dated before 1970 cannot get a placeholder | refuted for OneDrive items; confirmed for the function |
+| [`CL2`](ctl.md) | `konedrivectl/src/text/refusals.rs:277`, `:366`, `:406` | A wrong sentence for a refusal and action nobody wrote | refuted as written; a neighbouring defect confirmed |
+| [`CL5`](ctl.md) | `konedrivectl/src/cli.rs:80`, `text/refusals.rs:585` and three more | The label rule stated five times; four say "no @", the code allows it | confirmed |
+| [`SY5`](sync.md) | `daemon/manager.rs:323–325`, `:302` | `Accounts.Remove` that fails half-way leaves an account that refuses everything | confirmed |
+| [`SY6`](sync.md) | `sync/mod.rs:72–78` | A typo in `config.toml` silently makes a OneDrive folder local | confirmed |
+
+### The tests behind the verdicts
+
+The tests are on branches that are not merged, one for each group of candidates. A test that
+fails because of a defect carries `#[ignore = "shows <ID>: …"]`; it is merged, without the
+attribute, with the fix of its finding.
+
+| Branch | Candidates |
+|---|---|
+| `verify-sync-remote` | `SY1`, `SY5`, `SY6`, `RE6`, `RE1`, `RE10` |
+| `verify-tree-graph` | `TR1`, `TR2`, `GR5` |
+| `verify-upload` | `UP1`, `UP2`, `UP3` |
+| `verify-local` | `LO3`, `LO4` |
+| `verify-hydration` | `HY1`, `HY5`, `HY7`, `HY8`, `FS1` |
+| `verify-helper` | `HE1`, `HE2` |
+| `verify-account-ctl` | `AC1`, `CL2`, `CL5` |
+
+### Found while verifying
+
+- [`LO13`](local.md): a filesystem without user attributes mounted inside the folder should abort
+  every examination. Traced, not run.
+- One of the eight test failures that #101 puts down to the built-in client id has another
+  cause: `accounts_are_added_chosen_renamed_and_removed` (`konedrivectl/tests/accounts_cli.rs`)
+  still asserts that a label with "@" is refused (see `CL5`).
 
 ## What is good and is left alone
 
