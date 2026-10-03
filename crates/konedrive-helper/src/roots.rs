@@ -83,22 +83,37 @@ pub struct Accepted {
     pub roots: Roots,
     /// The entry the same user held under the same id, which the new one
     /// replaces. Its directory is the caller's to unmark when it is another
-    /// directory than the new root's.
+    /// directory than the new root's — and the caller's to compare with the
+    /// new one first ([`Root::overlap_with`]): only *other* roots were
+    /// compared here, since a root announcing itself again must not be
+    /// refused for overlapping itself.
     pub displaced: Option<Root>,
 }
 
 /// What a line of the log says for an id a peer sent: a root id as it is,
 /// anything else cut short and escaped, since it is any bytes the peer liked.
 pub fn shown_id(id: &str) -> String {
-    const SHOWN: usize = 40;
     if is_root_id(id) {
         return id.to_owned();
     }
-    let head: String = id.chars().take(SHOWN).collect();
-    if head.len() == id.len() {
+    shown(id, 40)
+}
+
+/// What a line of the log says for a path: escaped and cut. A directory's
+/// name is its owner's to choose — line breaks and all, up to `PATH_MAX` —
+/// and so is every path the helper prints for a root.
+pub fn shown_path(path: &str) -> String {
+    shown(path, 200)
+}
+
+/// `text` in quotes with everything but plain characters escaped, and only
+/// its first `most` characters when it is longer.
+fn shown(text: &str, most: usize) -> String {
+    let head: String = text.chars().take(most).collect();
+    if head.len() == text.len() {
         format!("{head:?}")
     } else {
-        format!("{head:?}… ({} bytes)", id.len())
+        format!("{head:?}… ({} bytes)", text.len())
     }
 }
 
@@ -111,6 +126,23 @@ fn is_within(path: &str, within: &str) -> bool {
         return path.starts_with('/');
     }
     path == within || path.strip_prefix(within).is_some_and(|rest| rest.starts_with('/'))
+}
+
+impl Root {
+    /// How a directory at `path` would overlap this root's, going by the two
+    /// paths: inside it, containing it, or at the same path. This is the
+    /// question [`Roots::nesting_conflict`] asks of every *other* root; the
+    /// helper asks it of an id's own previous directory before it lets the
+    /// id move there (see `register_root`).
+    pub fn overlap_with(&self, path: &str) -> Option<Nesting> {
+        if is_within(path, &self.path) {
+            return Some(Nesting::Inside(self.root_id.clone()));
+        }
+        if is_within(&self.path, path) {
+            return Some(Nesting::Contains(self.root_id.clone()));
+        }
+        None
+    }
 }
 
 impl Roots {

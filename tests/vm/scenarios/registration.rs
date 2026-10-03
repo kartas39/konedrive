@@ -643,7 +643,8 @@ fn upgraded_steps(
 
 /// Quality findings `HE2`: the helper registers a root only under a root id,
 /// and an id registered again onto another directory takes the marks off
-/// the directory it had.
+/// the directory it had — unless the two overlap, which is refused with
+/// every mark left where it was.
 ///
 /// The helper stored whatever string `RegisterRoot` carried, and a
 /// re-registration onto another inode dropped the old entry and walked only
@@ -718,6 +719,31 @@ fn displaced_root_steps(
             "the directory the id named before kept its marks, with no registration behind them"
                 .into(),
         );
+    }
+
+    // The id onto a directory inside the one it names: unmarking the old
+    // tree would take the marks off the new one until its walk — a window
+    // in which a placeholder there reads zeros. Refused, and nothing moves.
+    let inside = File::open(second.join("b")).map_err(|e| e.to_string())?;
+    match ctx.runtime.block_on(link.register_root(&inside, root_id)) {
+        Err(HelperError::Refused(errno)) if errno == libc::EINVAL => {}
+        other => {
+            return Err(format!(
+                "the id registered onto a directory inside its own → {other:?}, not EINVAL"
+            ))
+        }
+    }
+    let stored = std::fs::read_to_string(ROOTS_FILE).unwrap_or_default();
+    let still_named = stored.contains(&format!("\"{}\"", second.display()));
+    let root_marked = dir_mark_present(ctx.helper_pid(), ctx.ino_of(second)?);
+    let below_marked = dir_mark_present(ctx.helper_pid(), below_second);
+    println!(
+        "    the id registered onto a directory inside its own → EINVAL; roots.json still names \
+         the root: {still_named}; directory mark on the root: {root_marked}, below it: \
+         {below_marked}"
+    );
+    if !still_named || !root_marked || !below_marked {
+        return Err("a refused move of the id changed the registration or dropped a mark".into());
     }
     Ok(())
 }

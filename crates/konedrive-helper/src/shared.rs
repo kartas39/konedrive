@@ -550,10 +550,18 @@ pub(crate) enum Refusal {
     /// A `RegisterRoot` or an `UnregisterRoot` that was refused — which any
     /// local process can send as fast as it likes.
     RootRefused,
+    /// A `RegisterRoot` under an id another user holds. Counted apart from
+    /// the other refusals, so that a flood of those does not reduce the one
+    /// line that names somebody reaching for another user's registration
+    /// to a count.
+    RootIdTaken,
+    /// `roots.json` could not be written. The helper's own trouble, but
+    /// while it lasts every registration a peer sends repeats it.
+    RootsNotSaved,
 }
 
 impl Refusal {
-    const ALL: [Refusal; 11] = [
+    const ALL: [Refusal; 13] = [
         Refusal::PoolFull,
         Refusal::NoRoot,
         Refusal::TooManyWaiters,
@@ -565,6 +573,8 @@ impl Refusal {
         Refusal::EventFdFailed,
         Refusal::TooManySuspended,
         Refusal::RootRefused,
+        Refusal::RootIdTaken,
+        Refusal::RootsNotSaved,
     ];
 
     /// What a line says when the occurrences it counts are not in front of
@@ -616,6 +626,13 @@ impl Refusal {
             Refusal::RootRefused => {
                 "requests to register or unregister a root that were refused".into()
             }
+            Refusal::RootIdTaken => {
+                "requests to register a root id which belongs to another user; refused".into()
+            }
+            Refusal::RootsNotSaved => format!(
+                "registrations and unregistrations refused because the helper cannot save \
+                 {ROOTS_FILE}"
+            ),
         }
     }
 }

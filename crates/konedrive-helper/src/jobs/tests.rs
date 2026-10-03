@@ -376,11 +376,14 @@ fn allow_descriptors(wanted: u64) {
 /// (`docs/kernel-behavior-7.2/suite.md`, "A real `EMFILE` does not end the
 /// helper").
 ///
-/// It raises the process's descriptor limit, to offer as many opens as the
-/// unit has descriptors; what the job table keeps of them is the bound.
+/// It offers as many opens as the unit has descriptors; what the job table
+/// keeps of them is the bound, and the process's descriptor limit is raised
+/// only as far as that.
 #[test]
 fn one_uid_cannot_take_every_descriptor_the_helper_has() {
-    allow_descriptors(HELPER_DESCRIPTORS as u64 + 1024);
+    // What the test holds at once is the bound, not what it offers: an opener
+    // that is refused is closed before the next is made.
+    allow_descriptors(MAX_SUSPENDED_OPENS_PER_UID as u64 + 1024);
     let mut jobs = Jobs::default();
     let silent = owner(1000, 1);
     let event = fd();

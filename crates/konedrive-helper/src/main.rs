@@ -86,8 +86,9 @@ fn main() -> anyhow::Result<()> {
             tracing::error!(
                 "root {} ({}) now overlaps root {conflict} and will NOT be covered; opens inside \
                  it are not intercepted until it is re-registered",
-                root.root_id,
-                root.path
+                roots::shown_id(&root.root_id),
+                roots::shown_path(&root.path),
+                conflict = roots::shown_id(&conflict)
             );
             lock(&shared.degraded_roots).insert(root.root_id.clone());
             continue;
@@ -136,7 +137,7 @@ fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
     let dir = match open_root(root) {
         Ok(dir) => dir,
         Err(e) => {
-            tracing::error!("root {} is not covered: {e}", root.root_id);
+            tracing::error!("root {} is not covered: {e}", roots::shown_id(&root.root_id));
             lock(&shared.degraded_roots).insert(root.root_id.clone());
             return false;
         }
@@ -147,11 +148,11 @@ fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
     // and writing into every user's sync folder on every boot is both
     // unnecessary (it was probed at registration) and, once this root is
     // marked, exactly the self-interception hazard is about.
-    if let Err(errno) = check_filesystem_type(&dir, &root.path) {
+    if let Err(errno) = check_filesystem_type(shared, &dir, &root.path) {
         tracing::error!(
             "root {} ({}) is on a filesystem konedrive cannot use (errno {errno}); not covering it",
-            root.root_id,
-            root.path
+            roots::shown_id(&root.root_id),
+            roots::shown_path(&root.path)
         );
         lock(&shared.degraded_roots).insert(root.root_id.clone());
         return false;

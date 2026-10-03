@@ -274,3 +274,33 @@ fn a_root_with_an_older_id_can_still_be_unregistered() {
     let long = shown_id(&"x".repeat(60_000));
     assert!(long.len() < 80 && long.ends_with("(60000 bytes)"), "{long}");
 }
+
+/// A directory's name is its owner's to choose, line breaks and all, and a
+/// path is up to `PATH_MAX` of them: what the log says of one is one line,
+/// and short.
+#[test]
+fn a_path_in_the_log_is_escaped_and_cut() {
+    assert_eq!(shown_path("/home/u/One\nDrive"), "\"/home/u/One\\nDrive\"");
+    let long = shown_path(&format!("/{}", "d/".repeat(2000)));
+    assert!(long.len() < 240 && long.ends_with("(4001 bytes)"), "{long}");
+}
+
+/// `with` compares the new directory with every *other* root, and hands the
+/// id's own previous entry back: whether the id may move from that directory
+/// to this one is asked of the entry. A directory inside the old one, or
+/// containing it, shares marks with it, and taking the old tree's marks off
+/// would leave the shared part unmarked until the new walk — so the helper
+/// refuses the move while the old directory is still where it was.
+#[test]
+fn an_ids_own_previous_directory_is_asked_about_an_overlap() {
+    let roots = Roots::default().with(registered(1000, 7)).unwrap().roots;
+    let overlap = |path: &str| {
+        let moved = Root { ino: 8, path: path.into(), ..registered(1000, 7) };
+        let old = roots.with(moved).expect("no other root is in the way").displaced.unwrap();
+        old.overlap_with(path)
+    };
+    assert_eq!(overlap("/home/u1000/folder7/sub"), Some(Nesting::Inside(id(7))));
+    assert_eq!(overlap("/home/u1000"), Some(Nesting::Contains(id(7))));
+    assert_eq!(overlap("/home/u1000/folder7"), Some(Nesting::Inside(id(7))), "the same path");
+    assert_eq!(overlap("/home/u1000/folder70"), None, "a sibling shares nothing");
+}

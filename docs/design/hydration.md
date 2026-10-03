@@ -663,7 +663,10 @@ descriptor, not a path.
   and can still register one it holds again. The whole tree is walked and marked, and the ignore
   mark of every file walked is cleared. An id the uid already holds, registered onto another
   directory, replaces the old entry, and the old directory's tree is unmarked as by
-  `UnregisterRoot` (best effort the same way; limitations log F208).
+  `UnregisterRoot` (best effort the same way; limitations log F208). If the old directory is
+  still at its path and the new one lies inside it or contains it, the request is refused
+  `EINVAL` instead, like an overlap with another root: unmarking the old tree would leave the
+  shared part unmarked until the new walk.
 - **`UnregisterRoot`** — only a root the peer's uid owns, from any of its connections (roots
   outlive connections), under whatever id it was registered (the form is not asked here). It removes the marks the helper placed on the tree, including files' ignore
   marks, as well as the entry: removing the entry alone would leave the tree intercepted with no
