@@ -130,7 +130,7 @@ impl HelperHub {
             let (id, drive) = (id.to_owned(), drive.clone());
             store
                 .call_blocking(move |s| {
-                    let known = s.get(crate::tree::Table::Items, &id)?.is_some() || s.get(crate::tree::Table::Staging, &id)?.is_some();
+                    let known = s.get(konedrive_tree::Table::Items, &id)?.is_some() || s.get(konedrive_tree::Table::Staging, &id)?.is_some();
                     let ours = drive.as_deref().is_some_and(|d| s.meta("drive_id").ok().flatten().is_some_and(|m| m.eq_ignore_ascii_case(d)));
                     Ok(known || ours)
                 })
@@ -416,7 +416,7 @@ async fn by_item_id(candidates: Vec<Arc<SyncService>>, fd: &OwnedFd) -> Option<A
         let known = tokio::task::spawn_blocking(move || {
             let _lifecycle = lifecycle;
             store.call_blocking(move |s| {
-                Ok(s.get(crate::tree::Table::Items, &id)?.is_some() || s.get(crate::tree::Table::Staging, &id)?.is_some())
+                Ok(s.get(konedrive_tree::Table::Items, &id)?.is_some() || s.get(konedrive_tree::Table::Staging, &id)?.is_some())
             })
         })
         .await;
@@ -526,7 +526,7 @@ pub(super) fn device_of(path: &Path) -> Option<u64> {
 }
 
 /// A content source is what an account is, to the fill loop.
-pub(super) fn filler(account: Arc<SyncService>) -> (Arc<dyn ContentSource>, super::activity::Report, Arc<crate::pool::TransferPool>) {
+pub(super) fn filler(account: Arc<SyncService>) -> (Arc<dyn ContentSource>, super::activity::Report, Arc<konedrive_graph::pool::TransferPool>) {
     let report = account.report().clone();
     let pool = Arc::clone(account.pool());
     (account as Arc<dyn ContentSource>, report, pool)

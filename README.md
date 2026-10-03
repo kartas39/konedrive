@@ -584,7 +584,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full checklist before sending a c
 ## Troubleshooting
 
 - Daemon log: `journalctl --user -u konedrived -f`; more detail with
-  `systemctl --user edit konedrived` → `Environment=RUST_LOG=konedrived=debug`.
+  `systemctl --user edit konedrived` →
+  `Environment=RUST_LOG=konedrived=debug,konedrive_graph=debug,konedrive_tree=debug`.
 - Files: `~/.config/konedrive/config.toml` (the client ID, and each account with its name and
   folder; `config.toml.v1` is the single-account file it was migrated from, if any). Each
   account's state is in `~/.local/state/konedrive/accounts/<id>/`: `account.json` (cached name

@@ -4,7 +4,7 @@ use super::*;
 use crate::sync::running::Conditions;
 use crate::sync::upload::fake::{Early, FakeGraph, ROOT};
 use crate::sync::SyncSnapshot;
-use crate::tree::TreeStore;
+use konedrive_tree::TreeStore;
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
 

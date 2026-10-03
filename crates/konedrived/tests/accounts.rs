@@ -19,7 +19,7 @@ use konedrive_dbus::testing::TestBus;
 use konedrive_dbus::{error_name, ACCOUNTS_INTERFACE_NAME, ACCOUNTS_PATH, ACCOUNT_INTERFACE_NAME, FILES_INTERFACE_NAME};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
 use konedrived::config::Paths;
-use konedrived::oauth::Endpoints;
+use konedrive_graph::oauth::Endpoints;
 use konedrived::secret::{MemoryWallet, Slot, Wallet};
 use konedrived::state::SignInState;
 use konedrived::sync::helper::HelperLink;
@@ -587,7 +587,7 @@ async fn a_version_1_configuration_starts_as_personal_with_its_folder() {
         r#"{"display_name":"Ann","email":"ann@outlook.com","quota_used":1,"quota_total":2,"fetched_at":0}"#,
     )
     .unwrap();
-    drop(konedrived::tree::TreeStore::open(&paths.tree_db).unwrap());
+    drop(konedrive_tree::TreeStore::open(&paths.tree_db).unwrap());
     let wallet = Arc::new(MemoryWallet::with_v1("RT0"));
 
     let daemon = start_daemon(&bus, config.path(), endpoints(&server), Arc::clone(&wallet), Duration::from_secs(5)).await;

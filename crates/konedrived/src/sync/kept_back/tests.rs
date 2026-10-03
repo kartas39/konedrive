@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::tree::outbox::{Detection, OutboxKind, OutboxOp};
-use crate::tree::TreeStore;
+use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp};
+use konedrive_tree::TreeStore;
 
 fn create(rel: &str, state: OutboxState, reason: Option<&str>) -> OutboxOp {
     OutboxOp::Record(Detection {

@@ -36,8 +36,8 @@ use crate::sync::root::SyncRoot;
 use crate::sync::upload::fake::{FakeGraph, FakeItem, ROOT};
 use crate::sync::upload::{Engine, Limits, NoHost, OutboxWorker, WorkerConfig};
 use crate::sync::{InodeLocks, SyncSnapshot, SyncStateHandle};
-use crate::tree::outbox::{Base, Committed, Detection, OutboxKind, OutboxState, Recorded};
-use crate::tree::{classify, Change, Store, Table, TreeStore};
+use konedrive_tree::outbox::{Base, Committed, Detection, OutboxKind, OutboxState, Recorded};
+use konedrive_tree::{classify, Change, Store, Table, TreeStore};
 
 pub(super) struct World {
     pub(super) graph: FakeGraph,
@@ -59,7 +59,7 @@ pub(super) struct World {
     pub(super) cycles: Arc<AtomicUsize>,
     /// Rows `Writes::dropped_removed` heard were dropped: a held or pending
     /// removal whose item was already gone from OneDrive.
-    pub(super) dropped: Arc<Mutex<Vec<crate::tree::outbox::OutboxRow>>>,
+    pub(super) dropped: Arc<Mutex<Vec<konedrive_tree::outbox::OutboxRow>>>,
 }
 
 /// A helper that acknowledges everything.
@@ -117,7 +117,7 @@ pub(super) async fn world_in(base: Option<&Path>) -> World {
     let store = Store::new(TreeStore::in_memory().unwrap());
     let state = SyncStateHandle::new(SyncSnapshot { root_path: folder.display().to_string(), ..SyncSnapshot::default() });
     let report = Report::new(state.clone());
-    crate::tree::off_runtime(|| report.activity.attach(store.clone(), &folder));
+    konedrive_tree::off_runtime(|| report.activity.attach(store.clone(), &folder));
     let pins = Pins::detached(state.clone());
     let helper_dir = tempfile::tempdir().unwrap();
     let socket_path = helper_dir.path().join("helper.sock");
@@ -245,12 +245,12 @@ impl World {
         .unwrap()
     }
 
-    pub(super) fn base(&self, id: &str) -> Option<crate::tree::Row> {
-        { let id = id.to_owned(); crate::tree::off_runtime(|| self.store.call_blocking(move |s| s.get(Table::Items, &id))).unwrap() }
+    pub(super) fn base(&self, id: &str) -> Option<konedrive_tree::Row> {
+        { let id = id.to_owned(); konedrive_tree::off_runtime(|| self.store.call_blocking(move |s| s.get(Table::Items, &id))).unwrap() }
     }
 
     pub(super) fn deferred(&self, id: &str) -> Option<Change> {
-        { let id = id.to_owned(); crate::tree::off_runtime(|| self.store.call_blocking(move |s| s.deferred(&id))).unwrap() }
+        { let id = id.to_owned(); konedrive_tree::off_runtime(|| self.store.call_blocking(move |s| s.deferred(&id))).unwrap() }
     }
 
     pub(super) fn cloud_ctag(&self, id: &str) -> String {
@@ -276,7 +276,7 @@ impl World {
             next_try: None,
             size: None,
         };
-        match crate::tree::off_runtime(|| self.store.call_blocking(move |s| s.outbox_record(&detection))).unwrap() {
+        match konedrive_tree::off_runtime(|| self.store.call_blocking(move |s| s.outbox_record(&detection))).unwrap() {
             Recorded::Inserted(seq) | Recorded::Merged(seq) => seq,
             other => panic!("{other:?}"),
         }
@@ -433,7 +433,7 @@ async fn the_outbox_own_changes_coming_back_in_the_delta_change_nothing() {
     assert!(w.graph.with(|c| c.bin.contains_key(&id)));
     let report = w.cycle(&listing).await;
     assert!(report.applied.changes.is_empty() && !new.exists() && w.base(&id).is_none());
-    let said: Vec<String> = crate::tree::off_runtime(|| w.report.activity.recent(100)).unwrap().into_iter().filter(|e| e.path.ends_with("new.txt")).map(|e| e.kind).collect();
+    let said: Vec<String> = konedrive_tree::off_runtime(|| w.report.activity.recent(100)).unwrap().into_iter().filter(|e| e.path.ends_with("new.txt")).map(|e| e.kind).collect();
     assert!(said.iter().all(|kind| kind != "added" && kind != "updated" && kind != "removed"), "{said:?}");
 }
 

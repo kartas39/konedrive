@@ -55,7 +55,7 @@ impl World {
         assert_eq!(self.graph.with(|c| c.count("PATCH", "items/")), 0, "{when}: a move reached OneDrive");
         let rows = self.store.call(move |s| s.outbox_rows()).await.unwrap();
         assert!(
-            !rows.iter().any(|r| r.kind.removes() || r.kind == crate::tree::outbox::OutboxKind::Move),
+            !rows.iter().any(|r| r.kind.removes() || r.kind == konedrive_tree::outbox::OutboxKind::Move),
             "{when}: a removal or a move in the outbox: {rows:?}"
         );
     }
@@ -236,7 +236,7 @@ async fn a_new_file_in_a_folder_that_stops_being_placed_reaches_onedrive_first()
     w.cycle(&listing).await;
     assert!(w.path("docs/new.txt").exists(), "stays until what is in it is uploaded");
     let skipped = w.store.call(|s| s.skipped()).await.unwrap();
-    assert!(skipped.iter().any(|(_, reason)| *reason == crate::tree::SkipReason::NameTooLong), "{skipped:?}");
+    assert!(skipped.iter().any(|(_, reason)| *reason == konedrive_tree::SkipReason::NameTooLong), "{skipped:?}");
     w.examine_handed().await;
     w.cycle(&listing).await;
     assert!(w.path("docs").exists(), "its rows still wait");
@@ -263,7 +263,7 @@ async fn a_blocked_row_keeps_a_folder_that_stopped_being_placed() {
     batch.name(Path::new("docs"), std::ffi::OsStr::new("n:ew.txt"));
     w.examine(batch).await;
     let rows = w.store.call(|s| s.outbox_rows()).await.unwrap();
-    assert!(rows.iter().any(|r| r.state == crate::tree::outbox::OutboxState::Blocked), "{rows:?}");
+    assert!(rows.iter().any(|r| r.state == konedrive_tree::outbox::OutboxState::Blocked), "{rows:?}");
     w.graph.with(|c| c.rename("D", ROOT, &long_name()));
     for _ in 0..3 {
         w.cycle(&listing).await;
@@ -371,7 +371,7 @@ async fn what_keeps_a_leaving_folder_is_shown_and_a_move_from_before_does_not() 
     batch.name(Path::new("docs"), std::ffi::OsStr::new("f.txt"));
     batch.name(Path::new("docs"), std::ffi::OsStr::new("g.txt"));
     w.examine(batch).await;
-    assert!(w.store.call(|s| s.outbox_rows()).await.unwrap().iter().any(|r| r.kind == crate::tree::outbox::OutboxKind::Move));
+    assert!(w.store.call(|s| s.outbox_rows()).await.unwrap().iter().any(|r| r.kind == konedrive_tree::outbox::OutboxKind::Move));
     w.graph.with(|c| c.add_file("U", "D", "u.txt", b"u"));
     w.cycle(&listing).await;
     xattr::set(w.path("docs/u.txt"), placeholder::XATTR_STATE, b"garbage").unwrap();
@@ -537,7 +537,7 @@ async fn a_delete_in_the_new_place_of_a_folder_still_leaving_reaches_onedrive() 
         let w = Arc::clone(&w);
         tokio::task::spawn_blocking(move || scan_now(&w)).await.unwrap();
     }
-    assert!(w.store.call(|s| s.outbox_rows()).await.unwrap().iter().any(|r| r.kind == crate::tree::outbox::OutboxKind::Delete));
+    assert!(w.store.call(|s| s.outbox_rows()).await.unwrap().iter().any(|r| r.kind == konedrive_tree::outbox::OutboxKind::Delete));
     w.cycle(&listing).await;
     w.upload().await;
     assert_eq!(w.deletes(), 1, "the user's delete reached OneDrive");
@@ -768,7 +768,7 @@ async fn a_404_not_confirmed_by_the_listing_keeps_the_change_blocked() {
     w.upload().await;
     let rows = w.store.call(|s| s.outbox_rows()).await.unwrap();
     let row = rows.iter().find(|r| r.item_id.as_deref() == Some("F")).unwrap_or_else(|| panic!("the change is kept: {rows:?} {:?}", w.graph.with(|c| c.log.clone())));
-    assert_eq!((row.state, row.reason.as_deref()), (crate::tree::outbox::OutboxState::Blocked, Some(crate::sync::upload::reason::LEAVING_NOT_FOUND)));
+    assert_eq!((row.state, row.reason.as_deref()), (konedrive_tree::outbox::OutboxState::Blocked, Some(crate::sync::upload::reason::LEAVING_NOT_FOUND)));
     assert!(w.path("docs/f.txt").exists());
     w.graph.with(|c| c.trash("F"));
     w.rounds(&listing, 2).await;

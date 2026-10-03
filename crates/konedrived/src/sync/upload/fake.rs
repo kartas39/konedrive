@@ -24,16 +24,16 @@ use wiremock::{Mock, MockServer, Request, Respond, ResponseTemplate};
 
 #[cfg(test)]
 use super::{Engine, Limits, OutboxHost, WorkerConfig};
-use crate::drive::item::format_graph_time;
-use crate::drive::{DriveClient, RetryPolicy};
-use crate::quickxor::QuickXor;
+use konedrive_graph::drive::item::format_graph_time;
+use konedrive_graph::drive::{DriveClient, RetryPolicy};
+use konedrive_graph::quickxor::QuickXor;
 #[cfg(test)]
 use crate::sync::root::SyncRoot;
 #[cfg(test)]
 use crate::sync::InodeLocks;
-use crate::token::StaticToken;
+use konedrive_graph::token::StaticToken;
 #[cfg(test)]
-use crate::tree::{ActivityRow, Kind, Store};
+use konedrive_tree::{ActivityRow, Kind, Store};
 
 pub const ROOT: &str = "R";
 
@@ -595,7 +595,7 @@ impl Cloud {
             entry.name = name;
             entry.etag = etag;
             if let Some(time) = body["fileSystemInfo"]["lastModifiedDateTime"].as_str() {
-                entry.mtime = crate::drive::item::parse_graph_time(time).unwrap_or(0);
+                entry.mtime = konedrive_graph::drive::item::parse_graph_time(time).unwrap_or(0);
             }
         }
         if moved {
@@ -641,7 +641,7 @@ impl Cloud {
             return error(400, "invalidRequest");
         }
         let size = 0;
-        let mtime = body["item"]["fileSystemInfo"]["lastModifiedDateTime"].as_str().and_then(crate::drive::item::parse_graph_time).unwrap_or(0);
+        let mtime = body["item"]["fileSystemInfo"]["lastModifiedDateTime"].as_str().and_then(konedrive_graph::drive::item::parse_graph_time).unwrap_or(0);
         self.counter += 1;
         let sid = format!("s{}", self.counter);
         if let Target::New { parent, name } = &target {

@@ -29,7 +29,7 @@ use tokio::sync::{broadcast, watch, Notify};
 
 use super::source::{ContentSource, Fetched, SourceError};
 use super::SyncStateHandle;
-use crate::tree::{ActivityRow, ConflictRow, Store, TreeError, ACTIVITY_KEPT};
+use konedrive_tree::{ActivityRow, ConflictRow, Store, TreeError, ACTIVITY_KEPT};
 
 /// One event of the activity log: unix seconds, a [`Kind`]'s
 /// name, a full path and a detail. `ActivityLog.Recent` and `ActivityLog.Added` carry
@@ -492,11 +492,11 @@ pub struct Transfer {
     pub open: bool,
 }
 
-/// `Transfers.LargeFiles` (issue #50): the large files ([`LARGE_FROM`](crate::pool::LARGE_FROM)
+/// `Transfers.LargeFiles` (issue #50): the large files ([`LARGE_FROM`](konedrive_graph::pool::LARGE_FROM)
 /// and up) the sync moves now, each once however many streams it runs — the downloads of that
 /// size but the files being opened, and the uploads of that size.
 pub fn large_files(downloads: &BTreeMap<u64, Transfer>, uploads: &[(String, u64, u64)]) -> u32 {
-    let large = |total: u64| total >= crate::pool::LARGE_FROM;
+    let large = |total: u64| total >= konedrive_graph::pool::LARGE_FROM;
     let down = downloads.values().filter(|t| !t.open && large(t.total)).count();
     let up = uploads.iter().filter(|(_, _, total)| large(*total)).count();
     u32::try_from(down + up).unwrap_or(u32::MAX)
@@ -786,7 +786,7 @@ async fn walker(kick: Arc<Notify>, state: SyncStateHandle, measure: Measure) {
 /// Whether a name is one konedrive keeps for itself (`.konedrive-holding`, a
 /// replacement's `.konedrive-new-<id>`, ...), never a user's file.
 pub(super) fn reserved(name: &std::ffi::OsStr) -> bool {
-    name.as_encoded_bytes().starts_with(crate::drive::item::RESERVED_PREFIX.as_bytes())
+    name.as_encoded_bytes().starts_with(konedrive_graph::drive::item::RESERVED_PREFIX.as_bytes())
 }
 
 /// Every regular file under `root` with its `lstat` metadata: `.konedrive-*`

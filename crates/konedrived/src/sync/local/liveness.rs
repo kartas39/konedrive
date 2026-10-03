@@ -30,7 +30,7 @@ use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 use crate::sync::helper::HelperError;
 use crate::sync::root::SyncRoot;
 use crate::sync::upload::move_out::Helper;
-use crate::tree::Store;
+use konedrive_tree::Store;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Whereabouts {
@@ -212,8 +212,8 @@ pub async fn handles_current_async(store: &Store, root: &File) -> bool {
 /// `move-out` row takes the handle of what stands at the place it last proved
 /// if that carries the row's item id, or goes (the item stays in OneDrive and
 /// is placed again). Then `now` is recorded. How many rows went.
-pub fn renew_handles(store: &Store, now: &str) -> Result<usize, crate::tree::TreeError> {
-    use crate::tree::outbox::Inode;
+pub fn renew_handles(store: &Store, now: &str) -> Result<usize, konedrive_tree::TreeError> {
+    use konedrive_tree::outbox::Inode;
     let rows = store.call_blocking(move |s| s.outbox_move_outs())?;
     let mut dropped = 0;
     for row in rows {

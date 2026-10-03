@@ -26,8 +26,8 @@ use crate::sync::materialize::{Materializer, Scope};
 use crate::sync::root::SyncRoot;
 use crate::sync::upload::fake::Harness;
 use crate::sync::InodeLocks;
-use crate::tree::outbox::{Committed, Detection, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState};
-use crate::tree::{Change, Kind, Placement, Row, Store, TreeStore};
+use konedrive_tree::outbox::{Committed, Detection, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState};
+use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 const TIME: i64 = 1_700_000_000;
 
@@ -468,7 +468,7 @@ fn big_tree() -> Vec<Change> {
                 row.mime = Some("image/jpeg".into());
             }
             if i % 20 == 1 {
-                row.placement = Placement::Skipped(crate::tree::SkipReason::NameTooLong);
+                row.placement = Placement::Skipped(konedrive_tree::SkipReason::NameTooLong);
             }
             changes.push(Change::Upsert(row));
         }
@@ -499,7 +499,7 @@ fn changed_files(n: usize) -> Vec<Change> {
                 row.mime = Some("image/jpeg".into());
             }
             if i % 20 == 1 {
-                row.placement = Placement::Skipped(crate::tree::SkipReason::NameTooLong);
+                row.placement = Placement::Skipped(konedrive_tree::SkipReason::NameTooLong);
             }
             Change::Upsert(row)
         })
@@ -509,7 +509,7 @@ fn changed_files(n: usize) -> Vec<Change> {
 /// What the reconcile asks the store of each changed id (`Materializer::changed`):
 /// where it is and was, and its row in both trees.
 fn materializer_reads(store: &Store, ids: &[String]) {
-    use crate::tree::Table;
+    use konedrive_tree::Table;
     for id in ids {
         let id = id.clone();
         let (a, b, c) = (id.clone(), id.clone(), id.clone());
@@ -646,15 +646,15 @@ fn the_conflicts_at_the_end_of_a_cycle() {
     let store = store_at(dir.path(), &[]);
     let rescued = dir.path().join("rescued");
     std::fs::create_dir(&rescued).unwrap();
-    let rows: Vec<crate::tree::ConflictRow> = (0..2000)
+    let rows: Vec<konedrive_tree::ConflictRow> = (0..2000)
         .map(|i| {
             let file = rescued.join(format!("c{i:04}.txt"));
             std::fs::write(&file, b"x").unwrap();
-            crate::tree::ConflictRow {
+            konedrive_tree::ConflictRow {
                 at: TIME + i,
                 original: format!("/nowhere/OneDrive/c{i:04}.txt"),
                 rescued: file.display().to_string(),
-                kind: crate::tree::ConflictKind::Rescued,
+                kind: konedrive_tree::ConflictKind::Rescued,
             }
         })
         .collect();
@@ -675,7 +675,7 @@ fn the_conflicts_at_the_end_of_a_cycle() {
 #[test]
 #[ignore]
 fn the_pool_with_30000_waiters() {
-    use crate::pool::{Class, TransferPool};
+    use konedrive_graph::pool::{Class, TransferPool};
     use std::future::Future;
     use std::task::{Context, Poll};
     guard();

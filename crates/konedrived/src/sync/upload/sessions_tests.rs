@@ -459,7 +459,7 @@ fn an_opening_record_is_carried_at_the_same_place_without_case() {
     assert!(!record("b.txt", 300));
     assert_eq!((opening_at(&w, "a.txt"), opening_at(&w, "b.txt")), (Some(100), Some(300)));
     // Kept without a row for a week, then gone (left at 300 here).
-    let keep = crate::tree::outbox::OPENING_LEFT_KEEP;
+    let keep = konedrive_tree::outbox::OPENING_LEFT_KEEP;
     w.store.call_blocking(move |s| s.upload_openings_expire(300 + keep)).unwrap();
     assert_eq!(opening_at(&w, "a.txt"), Some(100));
     w.store.call_blocking(move |s| s.upload_openings_expire(301 + keep)).unwrap();

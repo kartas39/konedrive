@@ -22,8 +22,8 @@ use super::*;
 use crate::sync::disk::Disk;
 use crate::sync::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
 use crate::sync::materialize::{Materializer, Scope};
-use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState};
-use crate::tree::{Change, Kind, Placement, Row, Table, TreeStore};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
+use konedrive_tree::{Change, Kind, Placement, Row, Table, TreeStore};
 
 use OutboxKind::{Create, Mkdir, Move, Update};
 
@@ -123,7 +123,7 @@ impl World {
     }
 
     fn rows(&self) -> Vec<OutboxRow> {
-        crate::tree::off_runtime(|| self.store.call_blocking(move |s| s.outbox_rows())).unwrap()
+        konedrive_tree::off_runtime(|| self.store.call_blocking(move |s| s.outbox_rows())).unwrap()
     }
 
     fn summary(&self) -> Vec<(OutboxKind, String, OutboxState)> {
@@ -613,7 +613,7 @@ fn throttling_pauses_the_whole_worker() {
 }
 
 fn http_date(at: i64) -> String {
-    let text = crate::drive::item::format_graph_time(at); // 2026-09-25T10:00:00Z
+    let text = konedrive_graph::drive::item::format_graph_time(at); // 2026-09-25T10:00:00Z
     let (date, time) = text.trim_end_matches('Z').split_once('T').unwrap();
     let mut parts = date.split('-');
     let (year, month, day) = (parts.next().unwrap(), parts.next().unwrap(), parts.next().unwrap());
@@ -787,7 +787,7 @@ fn a_file_too_big_for_the_space_left_waits_alone() {
 fn the_worker_reads_and_adjusts_the_accounts_one_quota() {
     let w = World::new(&[]);
     let quota = |s: &crate::state::AccountSnapshot| (s.quota_used, s.quota_total, s.quota_remaining, s.quota_state.clone());
-    w.h.quota.read(&crate::drive::DriveQuota { total: 10 << 20, used: 1 << 20, remaining: Some(1280 * 1024), state: "normal".into() });
+    w.h.quota.read(&konedrive_graph::drive::DriveQuota { total: 10 << 20, used: 1 << 20, remaining: Some(1280 * 1024), state: "normal".into() });
     let big = vec![7u8; 1536 * 1024];
     w.cloud(|c| c.free = Some(1280 * 1024));
     w.write("big.bin", &big);
@@ -815,7 +815,7 @@ fn the_worker_reads_and_adjusts_the_accounts_one_quota() {
 fn a_file_not_refused_goes_whatever_the_known_free_space_says() {
     let w = World::new(&[]);
     let engine = w.h.engine();
-    w.h.block_on(engine.apply_quota(&crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(space::NO_SPACE + 1), state: "critical".into() }));
+    w.h.block_on(engine.apply_quota(&konedrive_graph::drive::DriveQuota { total: 0, used: 0, remaining: Some(space::NO_SPACE + 1), state: "critical".into() }));
     w.write("big.bin", &vec![1u8; 1536 * 1024]);
     w.examine(&[("", "big.bin")]);
     w.h.drain(&engine);
@@ -862,7 +862,7 @@ fn a_file_removed_while_it_waits_for_space_leaves_the_outbox() {
     assert_eq!(w.summary(), vec![(Create, "big.bin".into(), OutboxState::Running), (OutboxKind::Delete, "big.bin".into(), OutboxState::Ready)]);
 
     let engine = w.h.engine();
-    w.h.block_on(engine.apply_quota(&crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() }));
+    w.h.block_on(engine.apply_quota(&konedrive_graph::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() }));
     let from = w.cloud(|c| c.log.len());
     w.h.drain(&engine);
     assert!(w.rows().is_empty(), "{:?}", w.summary());
@@ -912,7 +912,7 @@ fn a_full_onedrive_stops_a_session_after_its_fragment_and_space_resumes_it() {
     w.write("big.bin", &content);
     w.examine(&[("", "big.bin")]);
     let engine = w.h.engine();
-    let exceeded = crate::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() };
+    let exceeded = konedrive_graph::drive::DriveQuota { total: 0, used: 0, remaining: Some(0), state: "exceeded".into() };
     drain_stopped_mid_request(&w, &engine, "PUT", "upload/", || w.h.block_on(engine.apply_quota(&exceeded)));
     assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 1, "no fragment after the one in flight");
     let row = w.rows().remove(0);
@@ -1001,7 +1001,7 @@ fn the_worker_runs_until_stopped() {
         worker.start();
         assert!(worker.status().started);
         w.write("a.txt", b"a");
-        crate::tree::off_runtime(|| w.examine(&[("", "a.txt")]));
+        konedrive_tree::off_runtime(|| w.examine(&[("", "a.txt")]));
         worker.wake();
         let mut waited = 0;
         while !w.rows().is_empty() && waited < 200 {
@@ -1096,7 +1096,7 @@ fn four_independent_files_run_at_once_and_a_child_waits_for_its_mkdir() {
             waited += 1;
         }
         waited = 0;
-        while !crate::tree::off_runtime(|| w.rows()).is_empty() && waited < 500 {
+        while !konedrive_tree::off_runtime(|| w.rows()).is_empty() && waited < 500 {
             tokio::time::sleep(Duration::from_millis(10)).await;
             waited += 1;
         }
@@ -1395,14 +1395,14 @@ mod sessions;
 #[test]
 fn a_failure_is_one_of_four_keys() {
     use super::engine::{outcome_of, Fail, Outcome};
-    use crate::drive::write::WriteError;
+    use konedrive_graph::drive::write::WriteError;
     let key = |fail: Fail| match outcome_of(fail) {
         Outcome::Again { reason, backoff: true, detail: Some(_), .. } => reason.unwrap(),
         other => panic!("not a backoff with a detail: {other:?}"),
     };
     assert_eq!(key(Fail::Write(WriteError::Transient("cannot reach Microsoft Graph: error sending request".into()))), reason::NETWORK);
     assert_eq!(key(Fail::Io(std::io::Error::other("disk"))), reason::LOCAL_IO);
-    assert_eq!(key(Fail::Store(crate::tree::TreeError::Schema(None))), reason::STORE);
+    assert_eq!(key(Fail::Store(konedrive_tree::TreeError::Schema(None))), reason::STORE);
     for e in [WriteError::Failed("odd".into()), WriteError::Changed, WriteError::NameExists, WriteError::NotFound, WriteError::SessionGone] {
         assert_eq!(key(Fail::Write(e)), reason::FAILED);
     }

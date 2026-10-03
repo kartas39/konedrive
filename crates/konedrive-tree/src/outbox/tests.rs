@@ -1,5 +1,5 @@
 use super::*;
-use crate::tree::Placement;
+use crate::Placement;
 
 fn base_row(id: &str, parent: &str, name: &str, kind: Kind) -> Row {
     Row {

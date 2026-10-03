@@ -9,10 +9,10 @@ use wiremock::matchers::{header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
-use crate::drive::RetryPolicy;
-use crate::quickxor::QuickXor;
+use konedrive_graph::drive::RetryPolicy;
+use konedrive_graph::quickxor::QuickXor;
 use crate::sync::source::hydrate;
-use crate::token::StaticToken;
+use konedrive_graph::token::StaticToken;
 
 fn data(size: usize) -> Vec<u8> {
     (0..size).map(|i| (i % 251) as u8).collect()
@@ -26,7 +26,7 @@ fn quickxor(data: &[u8]) -> String {
 
 fn source(server: &MockServer) -> GraphSource {
     let base = Url::parse(&format!("{}/", server.uri())).unwrap();
-    let drive = crate::drive::DriveClient::new(base, Arc::new(StaticToken::new("T")))
+    let drive = konedrive_graph::drive::DriveClient::new(base, Arc::new(StaticToken::new("T")))
         .unwrap()
         .with_retry(RetryPolicy { attempts: 3, default_wait: Duration::from_millis(10), max_wait: Duration::from_millis(20) });
     GraphSource::new(drive)

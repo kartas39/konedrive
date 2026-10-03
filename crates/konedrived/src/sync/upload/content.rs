@@ -22,15 +22,15 @@ use super::engine::{now, Engine, Fail, Outcome};
 use super::local::{self, Found, Read, Snap, SYNC_UPLOADING};
 use super::steps::{answer_row, blocking, cancel_session, commit_row, copy, follow_cloud, held, local_name, locate, never_uploaded, parent_of, taken, temporary, upload_as_new, wanted_name, Ours, Taken};
 use super::{kind, reason, space, Fault};
-use crate::drive::item::parse_graph_time;
-use crate::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
-use crate::quickxor::QuickXor;
+use konedrive_graph::drive::item::parse_graph_time;
+use konedrive_graph::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
+use konedrive_graph::quickxor::QuickXor;
 use crate::sync::disk::Disk;
 use crate::sync::local::examine::OPEN_FOR_WRITING;
 use crate::sync::local::{names, QUIET, RECHECK};
 use crate::sync::InodeKey;
-use crate::tree::outbox::{Base, OutboxKind, OutboxRow};
-use crate::tree::Table;
+use konedrive_tree::outbox::{Base, OutboxKind, OutboxRow};
+use konedrive_tree::Table;
 
 /// How far OneDrive's clock may be behind this machine's when a placeholder's
 /// creation time is compared with the recorded opening (issue #84).
@@ -85,7 +85,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
             e.store()
                 .call(move |s| {
                     let inside = s.leaving()?.iter().any(|(_, at)| rel.starts_with(at));
-                    Ok(inside && (s.leaving_had(&id)? || !s.locate(crate::tree::Table::Items, &id)?.is_some_and(|l| l.placed)))
+                    Ok(inside && (s.leaving_had(&id)? || !s.locate(konedrive_tree::Table::Items, &id)?.is_some_and(|l| l.placed)))
                 })
                 .await?
         }
@@ -403,7 +403,7 @@ impl Job<'_> {
         // Dropped only once OneDrive's own listing says the item is gone
         // (the base no longer has it); until then the row waits, blocked,
         // with a reason the user sees.
-        let known = { let id = id.to_owned(); self.e.store().call(move |s| s.get(crate::tree::Table::Items, &id)).await?.is_some() };
+        let known = { let id = id.to_owned(); self.e.store().call(move |s| s.get(konedrive_tree::Table::Items, &id)).await?.is_some() };
         if known {
             tracing::warn!("{} is not found in OneDrive, which still lists it: its change waits", self.found.rel.display());
             return Ok(Outcome::blocked(reason::LEAVING_NOT_FOUND));

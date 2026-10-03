@@ -26,8 +26,8 @@ use crate::sync::local::liveness::answered;
 use crate::sync::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList, Whereabouts};
 use crate::sync::materialize::{Materializer, Scope};
 use crate::sync::source::LocalDir;
-use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState};
-use crate::tree::{Change, Kind, Placement, Row, Table, TreeStore};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
+use konedrive_tree::{Change, Kind, Placement, Row, Table, TreeStore};
 
 const TIME: i64 = 1_700_000_000;
 

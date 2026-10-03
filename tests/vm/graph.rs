@@ -35,15 +35,15 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use konedrive_fs::placeholder::{read_ctag, read_progress, read_state, State};
-use konedrived::drive::DriveClient;
-use konedrived::quickxor::QuickXor;
+use konedrive_graph::drive::DriveClient;
+use konedrive_graph::quickxor::QuickXor;
 use konedrived::state::{AccountSnapshot, SignInState, StateHandle};
 use konedrived::sync::graph_source::GraphSource;
 use konedrived::sync::helper::Clearance;
 use konedrived::sync::source::{ContentSource, Fetched, SourceError};
 use konedrived::sync::{root, SyncPaths, SyncService};
-use konedrived::token::StaticToken;
-use konedrived::tree::{Kind, Placement, Row, Table, TreeStore};
+use konedrive_graph::token::StaticToken;
+use konedrive_tree::{Kind, Placement, Row, Table, TreeStore};
 use tokio::io::{AsyncRead, ReadBuf};
 
 use crate::HelperProc;

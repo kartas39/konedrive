@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use crate::drive::item::{DriveItem, NAME_MAX, RESERVED_PREFIX};
+use konedrive_graph::drive::item::{DriveItem, NAME_MAX, RESERVED_PREFIX};
 
 pub mod outbox;
 pub mod reconcile;
@@ -1099,7 +1099,7 @@ impl TreeStore {
     }
 
     /// Runs `sql` as it is: the bench seeds a large store fast.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "testing"))]
     pub fn bench_sql(&self, sql: &str) -> Result<(), TreeError> {
         self.conn.execute_batch(sql)?;
         Ok(())
@@ -1338,7 +1338,7 @@ fn upsert(tx: &rusqlite::Transaction<'_>, table: Table, row: &Row) -> rusqlite::
 
 /// Runs `f` on a plain thread of its own and waits for it: for tests that
 /// call blocking code (the activity log, the examiner) from async code.
-#[cfg(test)]
+#[cfg(any(test, feature = "testing"))]
 pub fn off_runtime<T: Send>(f: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| scope.spawn(f).join().expect("the plain thread panicked"))
 }

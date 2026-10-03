@@ -18,7 +18,7 @@
 //!   OneDrive's `Retry-After` runs, and — for uploads — while syncing is paused or held back.
 //!
 //! [`run`] counts them into the published state at most once a
-//! [`PUBLISH_EVERY`](crate::pool::PUBLISH_EVERY), as the pool publishes its speeds.
+//! [`PUBLISH_EVERY`](konedrive_graph::pool::PUBLISH_EVERY), as the pool publishes its speeds.
 
 use std::collections::BTreeMap;
 
@@ -89,7 +89,7 @@ impl Counter {
 }
 
 /// Counts the totals into `state`: at once, then whenever the state or the downloads under
-/// way change — at most once a [`PUBLISH_EVERY`](crate::pool::PUBLISH_EVERY). Never returns
+/// way change — at most once a [`PUBLISH_EVERY`](konedrive_graph::pool::PUBLISH_EVERY). Never returns
 /// while `state` is held here; the caller aborts it when the account goes.
 pub async fn run(state: SyncStateHandle, transfers: Transfers) {
     let mut changes = state.subscribe();
@@ -99,7 +99,7 @@ pub async fn run(state: SyncStateHandle, transfers: Transfers) {
         // Both borrows end with the statement, before the state is written.
         let totals = counter.count(&changes.borrow_and_update(), &moving.borrow_and_update());
         state.set_queue(totals);
-        tokio::time::sleep(crate::pool::PUBLISH_EVERY).await;
+        tokio::time::sleep(konedrive_graph::pool::PUBLISH_EVERY).await;
         tokio::select! {
             changed = changes.changed() => if changed.is_err() { return },
             changed = moving.changed() => if changed.is_err() { return },

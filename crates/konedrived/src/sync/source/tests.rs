@@ -11,7 +11,7 @@ use konedrive_fs::placeholder::{
 use konedrive_proto::ACCEPTED_DENY_ERRNOS;
 use tokio::io::ReadBuf;
 
-use crate::quickxor::QuickXor;
+use konedrive_graph::quickxor::QuickXor;
 
 use super::*;
 

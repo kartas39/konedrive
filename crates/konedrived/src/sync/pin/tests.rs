@@ -150,7 +150,7 @@ async fn a_large_file_waiting_for_the_limit_does_not_hold_up_the_small_ones() {
     let pool = TransferPool::starting_at(PIN_SLOTS, PIN_SLOTS);
     pool.set_limits(PIN_SLOTS, 1);
     let pins = pins_in(&held, pool);
-    let large = crate::pool::LARGE_FROM;
+    let large = konedrive_graph::pool::LARGE_FROM;
     pins.add(vec![
         (PathBuf::from("/r/big-1.bin"), large),
         (PathBuf::from("/r/big-2.bin"), large),

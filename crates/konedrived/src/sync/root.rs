@@ -602,7 +602,7 @@ impl SyncRoot {
         // `.konedrive-*` is the daemon's own — the holding directory, a new
         // folder before its label, a replacement before its swap — and
         // nothing in or under it is anyone's to pin or free up.
-        let reserved = crate::drive::item::RESERVED_PREFIX.as_bytes();
+        let reserved = konedrive_graph::drive::item::RESERVED_PREFIX.as_bytes();
         if relative.components().any(|part| part.as_os_str().as_encoded_bytes().starts_with(reserved)) {
             return Err(DehydrateError::NotManaged);
         }

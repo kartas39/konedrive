@@ -8,10 +8,42 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 use super::*;
 use crate::oauth::Endpoints;
 use crate::secret::MemoryStore;
-use crate::state::{AccountSnapshot, SignInState};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignInState {
+    SignedOut,
+    SignedIn,
+}
+
+#[derive(Debug, Clone)]
+struct AccountSnapshot {
+    state: SignInState,
+    last_error: String,
+}
+
+/// The account's state as a refresh changes it: what the daemon's `StateHandle` does with a
+/// [`RefreshReport`].
+#[derive(Clone)]
+struct StateHandle(Arc<std::sync::Mutex<AccountSnapshot>>);
+
+impl StateHandle {
+    fn get(&self) -> AccountSnapshot {
+        self.0.lock().unwrap().clone()
+    }
+}
+
+impl RefreshReport for StateHandle {
+    fn failed(&self, message: &str) {
+        self.0.lock().unwrap().last_error = message.to_owned();
+    }
+
+    fn signed_out(&self, message: &str) {
+        *self.0.lock().unwrap() = AccountSnapshot { state: SignInState::SignedOut, last_error: message.to_owned() };
+    }
+}
 
 fn manager(server: &MockServer, store: Arc<MemoryStore>) -> (TokenManager, StateHandle) {
-    let state = StateHandle::new(AccountSnapshot { state: SignInState::SignedIn, ..AccountSnapshot::default() });
+    let state = StateHandle(Arc::new(std::sync::Mutex::new(AccountSnapshot { state: SignInState::SignedIn, last_error: String::new() })));
     let base = Url::parse(&format!("{}/", server.uri())).unwrap();
     let tokens = TokenManager::new(store, state.clone());
     tokens.set_oauth(Some(OAuthClient::new(

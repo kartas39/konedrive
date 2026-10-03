@@ -14,7 +14,7 @@ use crate::sync::local::{Batch, ExamineError, Examiner, Liveness, ScanProgress, 
 use crate::sync::local_scan::ScanReport;
 use crate::sync::root::SyncRoot;
 use crate::sync::{InodeLocks, RootState, SyncService};
-use crate::tree::Store;
+use konedrive_tree::Store;
 
 /// The daemon's [`Sink`]: the examination of each batch against the
 /// folder's base, which records outbox rows, and `MarkFile` for the

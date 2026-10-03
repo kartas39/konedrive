@@ -20,7 +20,7 @@ use zbus::{fdo, interface, Connection, DBusError};
 
 use crate::account::{AccountService, Siblings};
 use crate::config::{is_valid_client_id, AccountConfig, AccountPaths, ConfigError, ConfigStore, OnBattery, Paths};
-use crate::oauth::Endpoints;
+use konedrive_graph::oauth::Endpoints;
 use crate::secret::{AccountSecrets, Slot, Wallet};
 use crate::state::SignInState;
 use crate::sync::baloo::Baloo;

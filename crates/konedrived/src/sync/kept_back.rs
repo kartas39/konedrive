@@ -14,8 +14,8 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use super::upload::{reason, space};
-use crate::tree::outbox::{OutboxGroup, OutboxKind, OutboxState, SkippedGroup};
-use crate::tree::{TreeError, TreeStore};
+use konedrive_tree::outbox::{OutboxGroup, OutboxKind, OutboxState, SkippedGroup};
+use konedrive_tree::{TreeError, TreeStore};
 
 /// What the user can do about a reason, in the order the window shows them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

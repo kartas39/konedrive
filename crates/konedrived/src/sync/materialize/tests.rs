@@ -11,7 +11,7 @@ use xattr::FileExt;
 
 use super::*;
 use crate::sync::root::SyncRoot;
-use crate::tree::{Change, TreeStore};
+use konedrive_tree::{Change, TreeStore};
 
 struct Fixture {
     _dir: tempfile::TempDir,
@@ -177,7 +177,7 @@ fn a_read_only_removal_forgets_first_and_stops_a_download() {
     let file = File::open(fx.path("docs/deep/g.txt")).unwrap();
     let rt = fx.runtime.as_ref().unwrap();
     let guard = rt.block_on(locks.lock(crate::sync::InodeKey::of(&file).unwrap()));
-    let skipped = up(Row { placement: Placement::Skipped(crate::tree::SkipReason::NameTooLong), ..row("E", "D", &"x".repeat(300), Kind::Folder, 0) });
+    let skipped = up(Row { placement: Placement::Skipped(konedrive_tree::SkipReason::NameTooLong), ..row("E", "D", &"x".repeat(300), Kind::Folder, 0) });
     { let changes = vec![skipped.clone()]; fx.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&changes) }).unwrap(); }
     Materializer { locks: locks.clone(), ..fx.materializer(false, None) }.apply(Scope::Changed(vec!["E".into()])).unwrap();
     assert_eq!((handle("E"), handle("G")), (None, None), "forgotten before the swap");
@@ -236,7 +236,7 @@ use std::os::unix::fs::FileExt as _;
 use async_trait::async_trait;
 use konedrive_fs::placeholder::{read_ctag, read_progress, write_ctag, write_progress, Progress};
 
-use crate::quickxor::QuickXor;
+use konedrive_graph::quickxor::QuickXor;
 use crate::sync::source::{ContentSource, Fetched, SourceError, Version};
 
 /// Downloads a file the way a finished fill leaves it: content, cTag, stamp.
@@ -747,11 +747,11 @@ fn a_name_too_long_is_not_created_and_a_folder_renamed_to_one_leaves() {
     let f = fixture();
     let long = "я".repeat(128);
     let mut skipped = row("L", "R", &long, Kind::File, 1);
-    skipped.placement = Placement::Skipped(crate::tree::SkipReason::NameTooLong);
+    skipped.placement = Placement::Skipped(konedrive_tree::SkipReason::NameTooLong);
     f.listed(&[root_row(), up(skipped), folder("D", "R", "docs"), file("F", "D", "f.txt")], true);
     assert_eq!(std::fs::read_dir(&f.root.path).unwrap().count(), 1, "only docs");
     let mut renamed = row("D", "R", &long, Kind::Folder, 0);
-    renamed.placement = Placement::Skipped(crate::tree::SkipReason::NameTooLong);
+    renamed.placement = Placement::Skipped(konedrive_tree::SkipReason::NameTooLong);
     f.delta(&[up(renamed)], true).unwrap();
     assert!(!f.path("docs").exists(), "a folder that can no longer be shown is removed; its clean files are in the cloud");
 }

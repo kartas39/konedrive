@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use rusqlite::types::Value;
 
 use super::{path_from, OutboxKind, OutboxState};
-use crate::tree::{TreeError, TreeStore};
+use crate::{TreeError, TreeStore};
 
 /// The bytes a row sends, in SQL: its snapshot's size (`<size> <mtime_ns>`),
 /// or the size recorded when it was detected; nothing for what sends no content.

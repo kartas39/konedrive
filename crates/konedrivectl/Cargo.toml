@@ -22,7 +22,9 @@ zbus.workspace = true
 [dev-dependencies]
 konedrived = { path = "../konedrived" }
 konedrive-fs = { path = "../konedrive-fs" }
+konedrive-graph = { path = "../konedrive-graph" }
 konedrive-proto = { path = "../konedrive-proto" }
+konedrive-tree = { path = "../konedrive-tree" }
 nix = { workspace = true, features = ["socket"] }
 serde_json.workspace = true
 tempfile.workspace = true

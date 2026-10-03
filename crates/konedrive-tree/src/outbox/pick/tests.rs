@@ -3,8 +3,8 @@ use std::path::Path;
 use konedrive_fs::handle::FileHandle;
 
 use super::*;
-use crate::tree::outbox::{Base, Inode};
-use crate::tree::{Change, Placement, Row};
+use crate::outbox::{Base, Inode};
+use crate::{Change, Placement, Row};
 
 fn item(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
     Row {

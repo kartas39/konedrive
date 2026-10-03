@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use konedrived::config::Config;
-use konedrived::drive::{DriveClient, UploadTarget};
-use konedrived::token::StaticToken;
+use konedrive_graph::drive::{DriveClient, UploadTarget};
+use konedrive_graph::token::StaticToken;
 use reqwest::Method;
 use serde_json::{json, Value};
 use url::Url;

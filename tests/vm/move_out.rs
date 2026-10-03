@@ -26,16 +26,16 @@ use std::time::{Duration, Instant};
 
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{State, XATTR_ITEM_ID};
-use konedrived::drive::DriveClient;
+use konedrive_graph::drive::DriveClient;
 use konedrived::sync::disk::Disk;
 use konedrived::sync::helper::HelperLink;
 use konedrived::sync::local::{Batch, Examiner, HelperLiveness, IgnoreList};
 use konedrived::sync::source::ContentSource;
 use konedrived::sync::upload::move_out::{Linked, MoveOuts, SourceFill};
 use konedrived::sync::upload::{Limits, NoHost, OutboxWorker, WorkerConfig};
-use konedrived::token::StaticToken;
-use konedrived::tree::outbox::{OutboxKind, OutboxState};
-use konedrived::tree::{Change, Kind, Placement, Row, Store, TreeStore};
+use konedrive_graph::token::StaticToken;
+use konedrive_tree::outbox::{OutboxKind, OutboxState};
+use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 use crate::{dir_mark_present, Checks, Ctx};
 

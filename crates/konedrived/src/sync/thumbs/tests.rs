@@ -6,8 +6,8 @@ use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::*;
-use crate::token::StaticToken;
-use crate::tree::{Change, Kind, Placement, Row, TreeStore};
+use konedrive_graph::token::StaticToken;
+use konedrive_tree::{Change, Kind, Placement, Row, TreeStore};
 
 fn jpeg(width: u32, height: u32) -> Vec<u8> {
     let image = image::RgbImage::from_pixel(width, height, image::Rgb([200, 30, 30]));
@@ -51,8 +51,8 @@ async fn world(items: &[Change]) -> World {
 impl World {
     fn filler(&self) -> ThumbnailFiller {
         // Short throttle waits, so a `503` is given up on in milliseconds.
-        let retry = crate::drive::RetryPolicy { attempts: 2, default_wait: Duration::from_millis(10), max_wait: Duration::from_millis(50) };
-        let drive = crate::drive::DriveClient::new(Url::parse(&format!("{}/", self.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap().with_retry(retry);
+        let retry = konedrive_graph::drive::RetryPolicy { attempts: 2, default_wait: Duration::from_millis(10), max_wait: Duration::from_millis(50) };
+        let drive = konedrive_graph::drive::DriveClient::new(Url::parse(&format!("{}/", self.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap().with_retry(retry);
         let root = SyncRoot { path: self.folder.path().canonicalize().unwrap(), root_id: "r".into() };
         ThumbnailFiller::new(drive, self.store.clone(), root, self.cache.path().to_path_buf(), Arc::default())
     }
@@ -220,7 +220,7 @@ async fn a_batch_of_local_failures_ends_the_drain() {
         .mount(&w.server).await;
     let cache = w.cache.path().join("not-a-directory");
     std::fs::write(&cache, b"").unwrap();
-    let drive = crate::drive::DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap();
+    let drive = konedrive_graph::drive::DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), Arc::new(StaticToken::new("T"))).unwrap();
     let root = SyncRoot { path: w.folder.path().canonicalize().unwrap(), root_id: "r".into() };
     let filler = ThumbnailFiller::new(drive, w.store.clone(), root, cache, Arc::default());
     let total = filler.drain(&CancellationToken::new(), 2).await;

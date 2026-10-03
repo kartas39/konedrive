@@ -26,7 +26,7 @@ use super::activity::Kind as EventKind;
 use super::helper::HelperLink;
 use super::source::ContentSource;
 use super::InodeLocks;
-use crate::tree::{Kind, Placement, Row, Store, Table, TreeError};
+use konedrive_tree::{Kind, Placement, Row, Store, Table, TreeError};
 
 /// Read-write mode's rules (`docs/design/writes.md` §9).
 mod rw;

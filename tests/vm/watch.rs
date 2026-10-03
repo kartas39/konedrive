@@ -192,7 +192,7 @@ pub fn other_device_not_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
     use konedrived::sync::root::SyncRoot;
     use konedrived::sync::watcher::ExamineSink;
     use konedrived::sync::InodeLocks;
-    use konedrived::tree::{Change, Kind, Placement, Row, Store, TreeStore};
+    use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
     if ctx.fs != "btrfs" {
         checks.note(ctx.fs, "watcher: nested subvolume", "not Btrfs; nothing to check");

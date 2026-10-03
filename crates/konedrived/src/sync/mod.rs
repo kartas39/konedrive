@@ -62,7 +62,7 @@ use crate::state::{SignInState, StateHandle};
 
 /// Hydration requests taken off the queue at once: the helper's whole credit
 /// (`konedrive_proto::MAX_OUTSTANDING_HYDRATIONS`). Each is routed to its account and then
-/// waits for a slot of that account's transfer pool (`crate::pool`, `Class::Open`).
+/// waits for a slot of that account's transfer pool (`konedrive_graph::pool`, `Class::Open`).
 pub const FILL_ADMISSION: usize = konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;
 
 /// Answers hydration requests until the helper goes away. Each request is routed
@@ -146,7 +146,7 @@ pub async fn serve_hydrations_reporting(
     locks: InodeLocks,
     report: Report,
 ) {
-    let pool = crate::pool::TransferPool::new(crate::pool::DEFAULT_CEILING);
+    let pool = konedrive_graph::pool::TransferPool::new(konedrive_graph::pool::DEFAULT_CEILING);
     serve(link, requests, locks, Fillers::One(source, report, pool)).await;
 }
 
@@ -154,14 +154,14 @@ pub async fn serve_hydrations_reporting(
 #[derive(Clone)]
 enum Fillers {
     /// One source, one report, one pool, whatever the file (tests, the VM suite).
-    One(Arc<dyn ContentSource>, Report, Arc<crate::pool::TransferPool>),
+    One(Arc<dyn ContentSource>, Report, Arc<konedrive_graph::pool::TransferPool>),
     /// The account the file belongs to ([`hub::HelperHub::route`]): the
     /// daemon's.
     Routed(Arc<hub::HelperHub>),
 }
 
 impl Fillers {
-    async fn route(&self, fd: &std::os::fd::OwnedFd) -> Option<(Arc<dyn ContentSource>, Report, Arc<crate::pool::TransferPool>)> {
+    async fn route(&self, fd: &std::os::fd::OwnedFd) -> Option<(Arc<dyn ContentSource>, Report, Arc<konedrive_graph::pool::TransferPool>)> {
         match self {
             Fillers::One(source, report, pool) => Some((Arc::clone(source), report.clone(), Arc::clone(pool))),
             Fillers::Routed(hub) => hub.route(fd).await.map(hub::filler),
@@ -234,7 +234,7 @@ async fn serve(
             // large-file limit.
             let bytes = nix::sys::stat::fstat(&fd).map_or(0, |stat| stat.st_size.max(0) as u64);
             let mut slot = tokio::select! {
-                slot = pool.acquire_sized(crate::pool::Class::Open, crate::pool::Size::of(bytes)) => slot,
+                slot = pool.acquire_sized(konedrive_graph::pool::Class::Open, konedrive_graph::pool::Size::of(bytes)) => slot,
                 () = link.closed() => {
                     tracing::warn!("hydration request {req_id} waited for a transfer slot until its helper connection ended; not filled");
                     return;
@@ -672,7 +672,7 @@ pub struct SyncSnapshot {
     /// `LargeStreamLimit`, `RetryAfter`: the account's transfer pool, once a second while
     /// anything moves or a `Retry-After` runs. `ActiveDownloads`, `ActiveUploads` and
     /// `LargeFiles` count the files of `Transfers.Downloads` and `Uploads` instead (issue #50).
-    pub throughput: crate::pool::Throughput,
+    pub throughput: konedrive_graph::pool::Throughput,
     /// The pinned files waiting to download (not those under way), and their size
     /// ([`pin::Pins`]).
     pub pinned_waiting: (u32, u64),
@@ -725,7 +725,7 @@ impl Default for SyncSnapshot {
             space_waiting_bytes: 0,
             too_big_count: 0,
             too_big_bytes: 0,
-            throughput: crate::pool::Throughput::default(),
+            throughput: konedrive_graph::pool::Throughput::default(),
             pinned_waiting: (0, 0),
             queue: totals::QueueTotals::default(),
             scan: local_scan::LocalScan::default(),
@@ -855,7 +855,7 @@ impl SyncStateHandle {
     }
 
     /// The transfer pool's throughput, told only when it changed.
-    pub fn set_throughput(&self, throughput: crate::pool::Throughput) {
+    pub fn set_throughput(&self, throughput: konedrive_graph::pool::Throughput) {
         self.tx.send_if_modified(|s| std::mem::replace(&mut s.throughput, throughput) != throughput);
     }
 
@@ -1050,7 +1050,7 @@ pub struct SyncService {
     locks: InodeLocks,
     /// A read-only Graph client, for a folder that shows OneDrive. `None`
     /// until `main` sets it; without it every folder is local.
-    drive: Mutex<Option<crate::drive::DriveClient>>,
+    drive: Mutex<Option<konedrive_graph::drive::DriveClient>>,
     sync_paths: Mutex<Option<SyncPaths>>,
     schedule: Mutex<listing::Schedule>,
     /// The running sync of a OneDrive folder. Shared with the task that
@@ -1067,7 +1067,7 @@ pub struct SyncService {
     /// returns (`Poller::stop` waits for every task that holds one). Any
     /// other clone is taken, and dropped, with `lifecycle` held for reading
     /// (`skipped`).
-    store: Mutex<Option<crate::tree::Store>>,
+    store: Mutex<Option<konedrive_tree::Store>>,
     /// Keeps KDE's Baloo indexer out of a fresh OneDrive folder, and lets a
     /// forgotten one back in (`sync::baloo`). Starts as
     /// [`Baloo::disabled`], which runs no program at all — only `main`
@@ -1124,10 +1124,10 @@ pub struct SyncService {
     /// Told the drive the account's token reaches when a cycle finds it is not the folder's:
     /// the account's own, set where the account is wired up.
     drive_seen: Mutex<Option<listing::DriveSeen>>,
-    /// The account's transfer pool (`crate::pool`): every download, upload and change of
+    /// The account's transfer pool (`konedrive_graph::pool`): every download, upload and change of
     /// an item takes a slot of it. The drive set with [`set_drive`](Self::set_drive) reports
     /// into it.
-    pool: Arc<crate::pool::TransferPool>,
+    pool: Arc<konedrive_graph::pool::TransferPool>,
     /// The large pinned files downloading in parts, and how many streams each has: who is
     /// due the next free large slot of `pool` (`source::parts`, issue #28).
     parts: Arc<source::Share>,
@@ -1268,7 +1268,7 @@ impl SyncService {
     pub fn on_hub(hub: &Arc<hub::HelperHub>, account: Option<StateHandle>, persist: Option<Persist>) -> Arc<Self> {
         hub.join(|helper_state| {
             let state = SyncStateHandle::new(SyncSnapshot { helper_state, ..SyncSnapshot::default() });
-            let pool = crate::pool::TransferPool::new(crate::pool::DEFAULT_CEILING);
+            let pool = konedrive_graph::pool::TransferPool::new(konedrive_graph::pool::DEFAULT_CEILING);
             let shown = state.clone();
             pool.set_observer(Arc::new(move |throughput| shown.set_throughput(throughput)));
             // The pins' downloads go through this very service, which they must
@@ -1349,12 +1349,12 @@ impl SyncService {
 
     /// The drive a folder registered while signed in shows.
     /// Without one, every folder is local.
-    pub fn set_drive(&self, drive: crate::drive::DriveClient) {
+    pub fn set_drive(&self, drive: konedrive_graph::drive::DriveClient) {
         *self.drive.lock().unwrap() = Some(drive.with_pool(Arc::clone(&self.pool)));
     }
 
     /// The account's transfer pool.
-    pub fn pool(&self) -> &Arc<crate::pool::TransferPool> {
+    pub fn pool(&self) -> &Arc<konedrive_graph::pool::TransferPool> {
         &self.pool
     }
 
@@ -2325,8 +2325,8 @@ impl SyncService {
         let source: Arc<dyn ContentSource> = Arc::new(graph_source::GraphSource::new(drive.clone()));
         *self.source.lock().unwrap() = Some(Arc::clone(&source));
         let tree_db = paths.tree_db.clone();
-        let store = match tokio::task::spawn_blocking(move || crate::tree::TreeStore::open(&tree_db)).await {
-            Ok(Ok(store)) => crate::tree::Store::new(store),
+        let store = match tokio::task::spawn_blocking(move || konedrive_tree::TreeStore::open(&tree_db)).await {
+            Ok(Ok(store)) => konedrive_tree::Store::new(store),
             Ok(Err(e)) => return self.cannot_start(&reg.root, format!("the tree store cannot be opened: {e}")).await,
             Err(e) => return self.cannot_start(&reg.root, format!("the tree store cannot be opened: {e}")).await,
         };
@@ -3160,7 +3160,7 @@ impl SyncService {
     /// finished the job.
     pub async fn hydrate_now(&self, path: &Path) -> Result<(), SyncError> {
         // "Download now" is an open, for the pool: it goes first.
-        match self.fill_now(path, Some(crate::pool::Class::Open)).await? {
+        match self.fill_now(path, Some(konedrive_graph::pool::Class::Open)).await? {
             Answered::Failed(FillError::NotCleared(NotCleared::Unlinked)) => Err(SyncError::NoHelper),
             Answered::Failed(FillError::NotCleared(e)) => Err(SyncError::Io(format!("nothing was filled: {e}"))),
             Answered::Failed(FillError::Errno(errno)) => Err(SyncError::Io(format!(
@@ -3180,7 +3180,7 @@ impl SyncService {
     /// already (a pinned download). A pinned download of a large file goes in parallel parts
     /// (`source::parts`, issue #28), the slot held for it being its first stream's; a file
     /// being opened, and `Hydrate`, keep one stream.
-    async fn fill_now(&self, path: &Path, class: Option<crate::pool::Class>) -> Result<Answered, SyncError> {
+    async fn fill_now(&self, path: &Path, class: Option<konedrive_graph::pool::Class>) -> Result<Answered, SyncError> {
         let reg = self.require_registration()?;
         let Some(source) = self.source.lock().unwrap().clone() else {
             return Err(SyncError::NoSource);
@@ -3194,12 +3194,12 @@ impl SyncService {
         let key = InodeKey::of(&file).map_err(|e| SyncError::Io(e.to_string()))?;
 
         // A placeholder has its full size: whether this is a large transfer.
-        let size = crate::pool::Size::of(file.metadata().map_or(0, |meta| meta.len()));
+        let size = konedrive_graph::pool::Size::of(file.metadata().map_or(0, |meta| meta.len()));
         let mut slot = match class {
             Some(class) => Some(self.pool.acquire_sized(class, size).await),
             None => None,
         };
-        let split = (class.is_none() && size == crate::pool::Size::Large)
+        let split = (class.is_none() && size == konedrive_graph::pool::Size::Large)
             .then(|| source::Split::new(Arc::clone(&self.pool), Arc::clone(&self.parts)));
         // Serializes against `dehydrate()` and against `serve_hydrations`'s
         // own fills of the same inode (both share this table).
@@ -3231,7 +3231,7 @@ impl SyncService {
         let fd: std::os::fd::OwnedFd = file.into();
         // Shown in `Transfers.Downloads` while it downloads; `Hydrate` (an open, for the pool)
         // as a file being opened.
-        let tracked = if class == Some(crate::pool::Class::Open) {
+        let tracked = if class == Some(konedrive_graph::pool::Class::Open) {
             Tracked::opening(source, self.report.transfers.clone(), shown.clone())
         } else {
             Tracked::new(source, self.report.transfers.clone(), shown.clone())
@@ -3678,7 +3678,7 @@ impl SyncService {
 
     /// `Conflicts.List()`: (time, original, rescued), newest first; one whose
     /// rescued file is gone is dropped on the way.
-    pub async fn conflicts(&self) -> Result<Vec<crate::tree::ConflictRow>, SyncError> {
+    pub async fn conflicts(&self) -> Result<Vec<konedrive_tree::ConflictRow>, SyncError> {
         let report = self.report.clone();
         tokio::task::spawn_blocking(move || report.activity.conflicts())
             .await
@@ -3794,8 +3794,8 @@ impl SyncService {
 }
 
 /// The page's address out of OneDrive's answer about the item shown as `shown`.
-fn page_of(answer: Result<crate::drive::DriveItem, crate::drive::DriveError>, shown: &str) -> Result<String, SyncError> {
-    use crate::drive::DriveError;
+fn page_of(answer: Result<konedrive_graph::drive::DriveItem, konedrive_graph::drive::DriveError>, shown: &str) -> Result<String, SyncError> {
+    use konedrive_graph::drive::DriveError;
     match answer {
         Ok(item) => item
             .web_url

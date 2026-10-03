@@ -19,7 +19,7 @@ use konedrive_proto::clamp_deny_errno;
 use tokio::io::{AsyncRead, AsyncReadExt};
 
 use super::helper::{Clearance, HelperLink, NotCleared};
-use crate::quickxor::QuickXor;
+use konedrive_graph::quickxor::QuickXor;
 
 pub mod parts;
 
@@ -59,7 +59,7 @@ pub struct Fetched {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Version {
     pub ctag: String,
-    pub quick_xor: Option<[u8; crate::quickxor::LEN]>,
+    pub quick_xor: Option<[u8; konedrive_graph::quickxor::LEN]>,
 }
 
 #[async_trait]

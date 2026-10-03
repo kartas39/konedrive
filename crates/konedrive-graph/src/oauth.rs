@@ -3,7 +3,6 @@
 use serde::Deserialize;
 use url::Url;
 
-use crate::config::Mode;
 use crate::pkce::Pkce;
 
 /// What a read-only account asks for: reading its files, its profile, and a refresh token.
@@ -12,14 +11,16 @@ pub const SCOPES: &str = "Files.Read User.Read offline_access";
 /// What a read-write account asks for: changing its files too (`docs/design/writes.md` §2).
 pub const READ_WRITE_SCOPES: &str = "Files.ReadWrite User.Read offline_access";
 
-/// The scope an account in `mode` signs in and refreshes with. A read-only account keeps
+/// The scope an account signs in and refreshes with: `read_write` says whether its mode is
+/// read-write. A read-only account keeps
 /// asking for `Files.Read` at every refresh, so its access tokens cannot write even when
 /// its grant is wider (design §9): Microsoft allows a refresh to ask for "equivalent to or
 /// a subset of" what was granted, and so keeps enforcing that nothing is written.
-pub fn scopes_for(mode: Mode) -> &'static str {
-    match mode {
-        Mode::ReadOnly => SCOPES,
-        Mode::ReadWrite => READ_WRITE_SCOPES,
+pub fn scopes_for(read_write: bool) -> &'static str {
+    if read_write {
+        READ_WRITE_SCOPES
+    } else {
+        SCOPES
     }
 }
 

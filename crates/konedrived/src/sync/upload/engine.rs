@@ -13,12 +13,12 @@ use tokio_util::sync::CancellationToken;
 
 use super::local::{self, SYNC_BLOCKED, SYNC_PENDING, SYNC_UPLOADING};
 use super::{kind, reason, space, Fault, OutboxCounts, Upload, WorkerConfig, WorkerStatus, BACKOFF_FIRST, BACKOFF_MAX, THROTTLE_FIRST};
-use crate::drive::write::MAX_RETRY_AFTER;
-use crate::pool::{Class as PoolClass, Size, Slot};
-use crate::drive::{DriveError, WriteError};
+use konedrive_graph::drive::write::MAX_RETRY_AFTER;
+use konedrive_graph::pool::{Class as PoolClass, Size, Slot};
+use konedrive_graph::drive::{DriveError, WriteError};
 use crate::sync::disk::Disk;
-use crate::tree::outbox::{OutboxKind, OutboxRow, OutboxState, Pick, Picked};
-use crate::tree::{ActivityRow, Store, TreeError, TreeStore};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState, Pick, Picked};
+use konedrive_tree::{ActivityRow, Store, TreeError, TreeStore};
 
 /// The slot of the account's transfer pool a row of `class` takes: content is an upload;
 /// metadata, and a move out of the folder (a download, then a delete), go before transfers.
@@ -601,7 +601,7 @@ impl Engine {
     /// off the async runtime. What stands in front of the rest is kept
     /// (`Shared::waits`), and a time it names wakes the worker.
     ///
-    /// [`TreeStore::outbox_pick`]: crate::tree::TreeStore::outbox_pick
+    /// [`TreeStore::outbox_pick`]: konedrive_tree::TreeStore::outbox_pick
     pub(crate) async fn candidates(&self) -> Result<Vec<(OutboxRow, Class)>, TreeError> {
         let now = now();
         let flying: HashSet<i64> = self.shared().in_flight.keys().copied().collect();
@@ -630,7 +630,7 @@ impl Engine {
     /// since the last look ([`OutboxChanges`]), every row the first time.
     /// The attributes are written with no lock held. The counts follow.
     ///
-    /// [`OutboxChanges`]: crate::tree::outbox::OutboxChanges
+    /// [`OutboxChanges`]: konedrive_tree::outbox::OutboxChanges
     fn mark_rows(&self, disk: &Disk) {
         let store = self.store();
         let first = !self.shared().marks_read;
@@ -669,7 +669,7 @@ impl Engine {
             // A move taken back (the file went back to its base place): the
             // mark is on the file there.
             if let Some(id) = mark.item {
-                if let Ok(Some(at)) = store.call_blocking(move |s| s.locate(crate::tree::Table::Items, &id)) {
+                if let Ok(Some(at)) = store.call_blocking(move |s| s.locate(konedrive_tree::Table::Items, &id)) {
                     if !at.rel.as_os_str().is_empty() {
                         local::mark(disk, &at.rel, None);
                         cleared.insert(at.rel);

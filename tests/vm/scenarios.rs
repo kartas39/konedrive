@@ -58,7 +58,7 @@ use konedrive_dbus::testing::TestBus;
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION, SOCKET_PATH};
 use konedrived::accounts::{self, Account, Options};
 use konedrived::config::{ConfigStore, Paths};
-use konedrived::oauth::Endpoints;
+use konedrive_graph::oauth::Endpoints;
 use konedrived::secret::MemoryWallet;
 use konedrived::state::SignInState;
 use konedrived::sync::baloo::Baloo;

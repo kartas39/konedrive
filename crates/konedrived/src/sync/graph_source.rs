@@ -9,8 +9,8 @@ use std::time::{Duration, SystemTime};
 use async_trait::async_trait;
 
 use super::source::{ContentSource, Fetched, SourceError, Version};
-use crate::drive::{DriveClient, DriveError, DriveItem};
-use crate::quickxor::decode_base64;
+use konedrive_graph::drive::{DriveClient, DriveError, DriveItem};
+use konedrive_graph::quickxor::decode_base64;
 
 pub struct GraphSource {
     drive: DriveClient,

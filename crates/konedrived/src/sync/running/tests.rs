@@ -1,5 +1,5 @@
 use super::*;
-use crate::tree::TreeStore;
+use konedrive_tree::TreeStore;
 
 #[tokio::test]
 async fn thumbnails_go_only_while_on_and_nothing_stops() {

@@ -13,8 +13,8 @@ use konedrive_fs::placeholder::{Stamp, State, XATTR_CTAG, XATTR_ITEM_ID, XATTR_S
 use nix::errno::Errno;
 use nix::fcntl::AtFlags;
 
-use crate::tree::outbox::Inode;
-use crate::tree::usable_id;
+use konedrive_tree::outbox::Inode;
+use konedrive_tree::usable_id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Type {

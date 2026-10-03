@@ -1,0 +1,25 @@
+[package]
+name = "konedrive-tree"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[features]
+# What the daemon's tests use of the store beside its own: `off_runtime`, `all_items` and the
+# bench's `bench_sql` and `bench_insert`. Only a crate's tests turn it on (as a
+# dev-dependency); nothing that ships is built with it.
+testing = []
+
+[dependencies]
+konedrive-fs = { path = "../konedrive-fs" }
+konedrive-graph = { path = "../konedrive-graph" }
+rusqlite.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+libc.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true

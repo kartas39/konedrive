@@ -10,7 +10,7 @@
 //! [`Pins`] is the queue: every online-only file a pin covers is downloaded
 //! through the ordinary fill path ([`PinFill`], which `SyncService`
 //! implements), each in a background slot of the account's transfer pool
-//! (`crate::pool`, `Class::Download`), each file once however often it is asked for.
+//! (`konedrive_graph::pool`, `Class::Download`), each file once however often it is asked for.
 //! They go folder by folder, in alphabetical order ([`folder_order`]); a large file waiting
 //! for the pool's large-file limit lets the small ones behind it go.
 
@@ -30,7 +30,7 @@ use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
 use super::SyncStateHandle;
-use crate::pool::{Acquire, Class, Size, Slot, TransferPool};
+use konedrive_graph::pool::{Acquire, Class, Size, Slot, TransferPool};
 
 /// Whether the item at `path` carries its own pin.
 pub fn carries_pin(path: &Path) -> bool {
@@ -392,7 +392,7 @@ impl Pins {
 
     /// A queue that only keeps what it is given: tests of what is queued.
     pub fn detached(state: SyncStateHandle) -> Arc<Self> {
-        Arc::new(Self::with(state, None, TransferPool::new(crate::pool::DEFAULT_CEILING)))
+        Arc::new(Self::with(state, None, TransferPool::new(konedrive_graph::pool::DEFAULT_CEILING)))
     }
 
     fn with(state: SyncStateHandle, filler: Option<Weak<dyn PinFill>>, pool: Arc<TransferPool>) -> Self {

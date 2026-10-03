@@ -1,5 +1,5 @@
 //! Changes from OneDrive at once (issue #54): one task per account, started and stopped with
-//! its poller, keeps Graph's notification socket open ([`crate::drive::socket`]) and asks the
+//! its poller, keeps Graph's notification socket open ([`konedrive_graph::drive::socket`]) and asks the
 //! poller for a cycle when an event says the drive changed. The poll stays as the safety net:
 //! every [`Schedule::live_interval`](super::listing::Schedule::live_interval) while the socket
 //! is up, every `interval` otherwise (`docs/design/sync.md`, "Changes as they happen").
@@ -10,7 +10,7 @@
 //!   own.
 //! - Events within [`Timing::debounce`] of the first give one cycle.
 //! - The endpoint is fetched again, and a new connection opened before the old one is
-//!   closed, [`RENEW_EARLY`](crate::drive::socket::RENEW_EARLY) before it expires; the
+//!   closed, [`RENEW_EARLY`](konedrive_graph::drive::socket::RENEW_EARLY) before it expires; the
 //!   renewal asks for one cycle, since the old socket was not read while the new one opened.
 //!   The deadline is also kept as wall-clock time, so a machine that slept past it renews at
 //!   its first wake-up.
@@ -29,9 +29,9 @@ use tokio_util::sync::CancellationToken;
 
 use super::running::Running;
 use super::SyncStateHandle;
-use crate::drive::socket::{Heard, NotificationSocket, SocketEndpoint};
-use crate::drive::DriveClient;
-use crate::tree::Store;
+use konedrive_graph::drive::socket::{Heard, NotificationSocket, SocketEndpoint};
+use konedrive_graph::drive::DriveClient;
+use konedrive_tree::Store;
 
 /// `LiveChanges` on the bus: how changes made in OneDrive reach this computer now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

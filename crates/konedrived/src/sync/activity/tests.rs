@@ -8,7 +8,7 @@ use super::*;
 #[test]
 fn large_files_are_the_large_downloads_but_opens_and_the_large_uploads() {
     let transfers = Transfers::default();
-    let large = crate::pool::LARGE_FROM;
+    let large = konedrive_graph::pool::LARGE_FROM;
     let _pinned = transfers.start("/r/pinned.iso".into(), large);
     let _opened = transfers.start_as("/r/opened.iso".into(), large, true);
     let _small = transfers.start("/r/small.txt".into(), 10);
@@ -28,7 +28,7 @@ fn event_at(kind: &str, path: &str) -> Event {
 #[test]
 fn conflicts_are_looked_over_a_batch_at_a_time() {
     let dir = tempfile::tempdir().unwrap();
-    let store = crate::tree::Store::new(crate::tree::TreeStore::open(&dir.path().join("tree.sqlite")).unwrap());
+    let store = konedrive_tree::Store::new(konedrive_tree::TreeStore::open(&dir.path().join("tree.sqlite")).unwrap());
     let rows: Vec<ConflictRow> = (0..450)
         .map(|i| {
             let rescued = dir.path().join(format!("c{i:03}"));
@@ -36,7 +36,7 @@ fn conflicts_are_looked_over_a_batch_at_a_time() {
             if i % 10 != 0 {
                 File::create(&rescued).unwrap();
             }
-            ConflictRow { at: i, original: format!("/r/c{i:03}"), rescued: rescued.display().to_string(), kind: crate::tree::ConflictKind::Rescued }
+            ConflictRow { at: i, original: format!("/r/c{i:03}"), rescued: rescued.display().to_string(), kind: konedrive_tree::ConflictKind::Rescued }
         })
         .collect();
     store.call_blocking(move |s| s.add_conflicts(&rows)).unwrap();
@@ -105,7 +105,7 @@ fn in_folder(root: &str) -> SyncStateHandle {
 }
 
 fn fresh_store() -> Store {
-    Store::new(crate::tree::TreeStore::in_memory().unwrap())
+    Store::new(konedrive_tree::TreeStore::in_memory().unwrap())
 }
 
 /// An event of the folder registered before is

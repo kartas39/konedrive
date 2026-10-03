@@ -23,7 +23,7 @@ use std::sync::Mutex;
 use tokio::sync::Notify;
 
 use crate::config::{AccountConfig, Config, OnBattery};
-use crate::tree::Store;
+use konedrive_tree::Store;
 
 /// An account's own settings that decide what runs, as its section of `config.toml` gives
 /// them (`Folder.Thumbnails`).

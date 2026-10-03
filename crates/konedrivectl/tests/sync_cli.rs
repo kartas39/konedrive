@@ -190,9 +190,9 @@ async fn harness_onedrive() -> (Harness, wiremock::MockServer) {
         .mount(&graph)
         .await;
     let f = build_harness(true, true, false).await;
-    let drive = konedrived::drive::DriveClient::new(
+    let drive = konedrive_graph::drive::DriveClient::new(
         url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
-        std::sync::Arc::new(konedrived::token::StaticToken::new("T")),
+        std::sync::Arc::new(konedrive_graph::token::StaticToken::new("T")),
     )
     .unwrap();
     f.service.set_drive(drive);
@@ -959,9 +959,9 @@ async fn binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_
         .mount(&graph)
         .await;
     let f = build_harness(true, true, false).await;
-    let drive = konedrived::drive::DriveClient::new(
+    let drive = konedrive_graph::drive::DriveClient::new(
         url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
-        std::sync::Arc::new(konedrived::token::StaticToken::new("T")),
+        std::sync::Arc::new(konedrive_graph::token::StaticToken::new("T")),
     )
     .unwrap();
     f.service.set_drive(drive);
@@ -1102,12 +1102,12 @@ async fn binary_conflicts_are_listed_and_dismissed() {
     std::fs::write(&rescued, b"mine").unwrap();
     let activity = &f.service.report().activity;
     // The activity log is blocking code: a plain thread of its own, off the runtime.
-    std::thread::scope(|scope| scope.spawn(|| activity.attach(konedrived::tree::Store::new(konedrived::tree::TreeStore::in_memory().unwrap()), f.dir.path())).join().unwrap());
-    let conflict = konedrived::tree::ConflictRow {
+    std::thread::scope(|scope| scope.spawn(|| activity.attach(konedrive_tree::Store::new(konedrive_tree::TreeStore::in_memory().unwrap()), f.dir.path())).join().unwrap());
+    let conflict = konedrive_tree::ConflictRow {
         at: 1_700_000_000,
         original: "/home/u/OneDrive/docs/f.txt".into(),
         rescued: rescued.display().to_string(),
-        kind: konedrived::tree::ConflictKind::Rescued,
+        kind: konedrive_tree::ConflictKind::Rescued,
     };
     std::thread::scope(|scope| scope.spawn(|| activity.add_conflicts(vec![conflict])).join().unwrap());
 
@@ -1145,12 +1145,12 @@ async fn binary_remove_says_where_the_listed_rescues_are() {
     std::fs::write(&rescued, b"mine").unwrap();
     let activity = &f.service.report().activity;
     // The activity log is blocking code: a plain thread of its own, off the runtime.
-    std::thread::scope(|scope| scope.spawn(|| activity.attach(konedrived::tree::Store::new(konedrived::tree::TreeStore::in_memory().unwrap()), f.dir.path())).join().unwrap());
-    let conflict = konedrived::tree::ConflictRow {
+    std::thread::scope(|scope| scope.spawn(|| activity.attach(konedrive_tree::Store::new(konedrive_tree::TreeStore::in_memory().unwrap()), f.dir.path())).join().unwrap());
+    let conflict = konedrive_tree::ConflictRow {
         at: 1_700_000_000,
         original: root.join("docs/f.txt").display().to_string(),
         rescued: rescued.display().to_string(),
-        kind: konedrived::tree::ConflictKind::Rescued,
+        kind: konedrive_tree::ConflictKind::Rescued,
     };
     std::thread::scope(|scope| scope.spawn(|| activity.add_conflicts(vec![conflict])).join().unwrap());
 
@@ -1384,7 +1384,7 @@ async fn binary_exports_the_access_token_and_nothing_else_readable_only_by_the_u
     let f = harness().await;
     f.account
         .tokens()
-        .seed(&konedrived::oauth::TokenResponse {
+        .seed(&konedrive_graph::oauth::TokenResponse {
             access_token: "AT-EXPORT".into(),
             expires_in: 3600,
             refresh_token: Some("RT-NEVER".into()),
@@ -1417,7 +1417,7 @@ async fn binary_export_access_token_replaces_a_symlink_without_touching_its_targ
     let f = harness().await;
     f.account
         .tokens()
-        .seed(&konedrived::oauth::TokenResponse {
+        .seed(&konedrive_graph::oauth::TokenResponse {
             access_token: "AT-EXPORT".into(),
             expires_in: 3600,
             refresh_token: Some("RT-NEVER".into()),

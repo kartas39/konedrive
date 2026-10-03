@@ -52,13 +52,13 @@ use konedrive_fs::placeholder::{self, read_state, State};
 use std::os::fd::AsFd;
 
 use super::{is_leftover_replacement, ApplyError, Copied, Materializer, Run};
-use crate::drive::item::RESERVED_PREFIX;
+use konedrive_graph::drive::item::RESERVED_PREFIX;
 use crate::sync::activity::Kind as EventKind;
 use crate::sync::disk::{Probe, Scanned, HOLDING, NEW_PREFIX};
 use crate::sync::local::{names, IgnoreList};
 use crate::sync::upload::copy_name;
-use crate::tree::outbox::{OutboxOp, SWAP_PREFIX};
-use crate::tree::{Kind, Placement, Table, TreeError, TreeStore};
+use konedrive_tree::outbox::{OutboxOp, SWAP_PREFIX};
+use konedrive_tree::{Kind, Placement, Table, TreeError, TreeStore};
 
 /// What a read-write folder's reconcile needs to know besides the tree.
 #[derive(Debug, Default, Clone)]
@@ -661,7 +661,7 @@ impl Materializer {
     /// decides by the object; the outbox then meets OneDrive's change (a
     /// delete or a move out answered `412` is dropped, its object forgotten)
     /// and the next cycle places the item again.
-    pub(super) fn place_again(&self, rw: &Rw, row: &crate::tree::Row, rel: &Path, run: &mut Run) -> Result<bool, ApplyError> {
+    pub(super) fn place_again(&self, rw: &Rw, row: &konedrive_tree::Row, rel: &Path, run: &mut Run) -> Result<bool, ApplyError> {
         if !rw.revive.contains(&row.id) {
             return Ok(false);
         }
@@ -697,7 +697,7 @@ impl Materializer {
     /// keeps what was downloaded or changed here (§3.7). An object that will
     /// not go fails the cycle.
     ///
-    /// [`TreeStore::forget_local_objects`]: crate::tree::TreeStore::forget_local_objects
+    /// [`TreeStore::forget_local_objects`]: konedrive_tree::TreeStore::forget_local_objects
     pub(super) fn remove_in_place(&self, rw: &Rw, parent: &Path, name: &OsStr, run: &mut Run) -> Result<Removal, ApplyError> {
         let rel = parent.join(name);
         let dir = self.disk.dir(parent)?;

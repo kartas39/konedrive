@@ -15,12 +15,12 @@ use konedrive_fs::placeholder::State;
 use super::engine::{now, outcome_of, Engine, Fail, Outcome};
 use super::local::{self, Found};
 use super::{kind, reason, Fault, SWAP_PREFIX};
-use crate::drive::item::RESERVED_PREFIX;
-use crate::drive::{DriveError, DriveItem, ItemChange, WriteError};
+use konedrive_graph::drive::item::RESERVED_PREFIX;
+use konedrive_graph::drive::{DriveError, DriveItem, ItemChange, WriteError};
 use crate::sync::disk::{Disk, Probe};
 use crate::sync::local::{names, RECHECK};
-use crate::tree::outbox::{frees, Base, Committed, OutboxKind, OutboxOp, OutboxRow, OutboxState};
-use crate::tree::{classify, ActivityRow, Change, Kind, Placement, Row, Table};
+use konedrive_tree::outbox::{frees, Base, Committed, OutboxKind, OutboxOp, OutboxRow, OutboxState};
+use konedrive_tree::{classify, ActivityRow, Change, Kind, Placement, Row, Table};
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Outcome {
     let rel = row.rel.clone();

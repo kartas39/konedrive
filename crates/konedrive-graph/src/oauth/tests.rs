@@ -33,12 +33,12 @@ fn authorize_url_carries_all_parameters() {
 #[test]
 fn each_mode_asks_for_its_own_scope() {
     let pkce = Pkce::from_verifier("verifier".into());
-    let url = client().with_scope(scopes_for(Mode::ReadWrite)).authorize_url("http://localhost:1", &pkce, "s");
+    let url = client().with_scope(scopes_for(true)).authorize_url("http://localhost:1", &pkce, "s");
     let q: HashMap<String, String> = url.query_pairs().into_owned().collect();
     assert_eq!(q["scope"], "Files.ReadWrite User.Read offline_access");
-    assert_eq!(scopes_for(Mode::ReadOnly), "Files.Read User.Read offline_access");
-    assert!(grants_writes(scopes_for(Mode::ReadWrite)) && !grants_writes(scopes_for(Mode::ReadOnly)));
-    assert!(is_read_only(scopes_for(Mode::ReadOnly)) && !is_read_only(scopes_for(Mode::ReadWrite)));
+    assert_eq!(scopes_for(false), "Files.Read User.Read offline_access");
+    assert!(grants_writes(scopes_for(true)) && !grants_writes(scopes_for(false)));
+    assert!(is_read_only(scopes_for(false)) && !is_read_only(scopes_for(true)));
 
     let pinned = client().pinned_authorize_url("http://localhost:1", &pkce, "s", Some("test@outlook.com"));
     let q: HashMap<String, String> = pinned.query_pairs().into_owned().collect();
