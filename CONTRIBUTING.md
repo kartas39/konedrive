@@ -59,6 +59,38 @@ Root is never used outside that VM. If a change needs anything privileged to exe
 (mounting a filesystem, running as root to poke at fanotify directly), do it inside
 `virtme-ng`, not on your own machine — see `tests/vm/run.sh` for how the suite boots one.
 
+## The structure of the code
+
+[`docs/code-map.md`](docs/code-map.md) says where everything is: every crate, directory and
+file, where its tests are, how each suite is run. The structure is extended, never regrouped: a
+new file goes into the crate or directory whose area it belongs to, and gets its line in the
+code map in the same change.
+
+These rules hold for every change:
+
+1. **Size.** A source file is at most 1,000 lines; a test file at most 1,500; a Markdown
+   document at most 1,200.
+2. **Tests are never in a source file.** The unit tests of `x.rs` are in `x/tests.rs`, or in
+   `x/tests/` by topic. Integration tests stay in `crates/*/tests/`.
+3. **Layers.** In `konedrived`, a directory of `crates/konedrived/src` uses only the
+   directories before it in this order: `config/`, `account/`, `helper/`, `folder/`,
+   `conditions/`, `status/`, `hydration/`, `local/`, `upload/`, `remote/`, `desktop/`, `sync/`,
+   `daemon/`, `dbus/`. And `remote/` does not use `upload/`. Test code is exempt. What a lower
+   directory needs from a higher one, it asks through a trait the higher one implements.
+4. **One D-Bus interface, one file** in `crates/konedrived/src/dbus/`, named like its XML in
+   `dbus/`.
+5. **Every `impl SyncService` is in `sync/`.** The directories before `sync/` do not know
+   `SyncService`.
+6. **A guard**, `scripts/check-structure.sh`, checks rules 1–3. It runs on every pull request
+   (`.github/workflows/structure.yml`); run it yourself before sending a change:
+
+```
+scripts/check-structure.sh
+```
+
+Between crates the compiler keeps the order: `konedrive-graph` and `konedrive-tree` know
+nothing of the daemon.
+
 ## The limitations log
 
 `docs/limitations/` is the one place for everything in KOneDrive that is

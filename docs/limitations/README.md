@@ -328,6 +328,7 @@ application must never read zeros where real content should be.
 - [D27](D27.md) — The daemon's journal lines carry its new module paths.
 - [D28](D28.md)
 - [D29](D29.md) — Some items moved down a layer sit lower than their name suggests, and one lower than its users need.
+- [D30](D30.md) — The structure guard reads lines, not Rust.
 
 ---
 
