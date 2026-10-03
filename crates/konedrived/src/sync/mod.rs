@@ -291,6 +291,12 @@ pub struct SyncService {
     /// gives it what an earlier account has), if it is: it is not brought
     /// up, and no registration is made.
     held: Mutex<Option<String>>,
+    /// `Accounts.Remove` is taking this account away: nothing is registered
+    /// or brought up for it. Set by [`retire`](Self::retire) and taken back
+    /// by [`unretire`](Self::unretire), both with `lifecycle` held for
+    /// writing. Apart from `held`, so that a removal that fails gives a
+    /// held-back account its own reason back.
+    retiring: std::sync::atomic::AtomicBool,
     /// The activity log, the conflicts, the downloads under way and the
     /// folder's space, shared with the hydration loop and a
     /// OneDrive folder's sync. Its store is a clone of `store`'s, attached by
@@ -502,6 +508,7 @@ impl SyncService {
                 store: Mutex::new(None),
                 baloo: Mutex::new(Arc::new(Baloo::disabled())),
                 held: Mutex::new(None),
+                retiring: std::sync::atomic::AtomicBool::new(false),
                 mode: Mutex::new(Mode::ReadOnly),
                 me: me.clone(),
                 tree_lock: Arc::new(tokio::sync::Mutex::new(())),

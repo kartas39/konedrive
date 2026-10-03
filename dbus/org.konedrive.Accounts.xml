@@ -30,7 +30,9 @@
          The folder's files and the rescued files are kept. NoAccount for a
          path that names no account. Refused PendingUploads, as
          Folder.Unregister is, while changes made here wait to be
-         uploaded. -->
+         uploaded. Failed when the token cannot be deleted or config.toml
+         cannot be written after the folder was forgotten: the account stays,
+         and the message says what was done to its folder and its sign-in. -->
     <method name="Remove">
       <arg name="account" type="o" direction="in"/>
     </method>

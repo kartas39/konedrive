@@ -26,7 +26,23 @@ impl SyncService {
     /// No registration, bring-up or switch for this account from now on
     /// (`Accounts.Remove`). Called with `lifecycle` held for writing.
     fn retire_locked(&self) {
-        *self.held.lock().unwrap() = Some("this account is being removed".into());
+        self.retiring.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Whether `Accounts.Remove` is taking this account away.
+    pub(super) fn is_retiring(&self) -> bool {
+        self.retiring.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Takes [`retire`](Self::retire) back, for an `Accounts.Remove` whose
+    /// later steps failed: the account stays, so it registers a folder again.
+    /// The folder it had is not brought back: it is forgotten, at the helper
+    /// too, and a OneDrive folder's tree store is gone. An account that was
+    /// held back is held back again, and says why.
+    pub async fn unretire(&self) {
+        let _lifecycle = self.lifecycle.write().await;
+        self.retiring.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.publish_held();
     }
 
     /// The folder a held-back account records, as a registration to forget
@@ -112,7 +128,7 @@ impl SyncService {
     /// and so starts its sync again; that one is stopped under the lock, where
     /// stopping cannot wait for a reconcile — none can hold the lock.
     pub async fn unregister_root(&self) -> Result<(), SyncError> {
-        self.forget(false).await
+        self.forget(false).await.map(drop)
     }
 
     /// `Accounts.Remove`'s first step: the folder forgotten exactly as
@@ -120,8 +136,10 @@ impl SyncService {
     /// the same rule — and, under the same `lifecycle` lock so that nothing
     /// comes in between, the account retired: no registration, bring-up or
     /// switch is made for it from then on. An account with no folder is
-    /// retired all the same.
-    pub async fn retire(&self) -> Result<(), SyncError> {
+    /// retired all the same. The answer is the folder that was forgotten: `None` for an
+    /// account with no folder, and for one whose folder is recorded without interception and
+    /// not brought up yet, which is left as it is recorded.
+    pub async fn retire(&self) -> Result<Option<PathBuf>, SyncError> {
         self.forget(true).await
     }
 
@@ -130,7 +148,8 @@ impl SyncService {
     /// Refused `PendingUploads` while changes wait to be uploaded: the tree
     /// store that holds them goes with the folder. Asked before anything changes — the watcher
     /// hands over what it holds first — and again once the sync has stopped.
-    async fn forget(&self, retire: bool) -> Result<(), SyncError> {
+    /// The folder that was forgotten.
+    async fn forget(&self, retire: bool) -> Result<Option<PathBuf>, SyncError> {
         // Without the lifecycle lock: a reconcile, or a switch waiting for it, must not keep
         // the Forget from stopping the sync first.
         self.flush_watcher().await;
@@ -159,7 +178,7 @@ impl SyncService {
                 Some(reg) => (reg, true),
                 None if retire => {
                     self.retire_locked();
-                    return Ok(());
+                    return Ok(None);
                 }
                 None => return Err(SyncError::NoRoot),
             },
@@ -197,7 +216,7 @@ impl SyncService {
                 Err(_) => {}
             }
         }
-        result
+        result.map(|()| Some(reg.root.path))
     }
 
     /// The Forget itself, under `lifecycle` held for writing: through the

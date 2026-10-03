@@ -114,10 +114,24 @@ impl AccountService {
         self.sign_out().await
     }
 
+    /// Takes [`retire`](Self::retire) back, for an `Accounts.Remove` that failed: the
+    /// account stays, so it signs in and changes its mode again. What `retire` did stays
+    /// done: a sign-in that was under way is given up, and a sign-in that was deleted is
+    /// gone.
+    pub fn unretire(&self) {
+        self.retired.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub(super) fn is_retired(&self) -> bool {
         self.retired.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Signs the account out: a sign-in under way is given up, the refresh token deleted,
+    /// the cached name and quota forgotten.
+    ///
+    /// When the wallet refuses the delete, this fails and the token stays. An account that
+    /// was signed in stays signed in, as it was. One that was signing in is `signed-out` by
+    /// then, its attempt given up: that does not wait for the wallet.
     pub async fn sign_out(&self) -> Result<(), AccountError> {
         // Held for the whole call: supersedes any in-flight sign-in attempt, and makes
         // this mutually exclusive with `refresh_account_info`'s cache-save-and-apply step,
@@ -127,6 +141,14 @@ impl AccountService {
         if let Some(cancel) = session.cancel.take() {
             let _ = cancel.send(());
         }
+        // The attempt is over whatever the wallet answers below: an account never shows
+        // `signing-in` with no attempt behind it.
+        self.state.update(|s| {
+            if s.state == SignInState::SigningIn {
+                s.state = SignInState::SignedOut;
+                s.last_error.clear();
+            }
+        });
         // Takes TokenManager's own lock, so an in-flight access-token refresh commits its
         // rotated refresh token to the wallet before this deletes it.
         self.tokens.forget().await.map_err(|e| AccountError::Failed(e.to_string()))?;

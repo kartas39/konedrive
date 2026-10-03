@@ -92,6 +92,25 @@ async fn a_retired_account_registers_nothing() {
     assert_eq!(xattr::get(dir.path(), "user.konedrive.root").unwrap(), None, "the folder is not touched");
 }
 
+/// SY5: a removal taken back leaves the account as it was: one held back is held back
+/// again, for its own reason, and one that was not registers a folder.
+#[tokio::test]
+async fn a_removal_taken_back_gives_the_account_its_standing_back() {
+    let dir = tempfile::tempdir().unwrap();
+    let held = SyncService::new(None, None, None);
+    held.hold_back("its label repeats");
+    held.retire().await.unwrap();
+    held.unretire().await;
+    let refused = held.register_root_without_interception(dir.path()).await;
+    assert!(matches!(&refused, Err(SyncError::Io(why)) if why.contains("its label repeats")), "{refused:?}");
+    assert!(held.last_error().contains("its label repeats"), "{}", held.last_error());
+
+    let free = SyncService::new(None, None, None);
+    free.retire().await.unwrap();
+    free.unretire().await;
+    free.register_root_without_interception(dir.path()).await.unwrap();
+}
+
 /// N6. The persisted "intercepted" flag must survive a restart. A root
 /// registered without interception on a machine with no helper would
 /// otherwise be restored as an
