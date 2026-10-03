@@ -47,6 +47,23 @@ fn a_path_in_no_folder_is_told_which_folders_there_are() {
     assert!(text.contains("/home/u/OneDrive, /home/u/Family"), "{text}");
 }
 
+/// `NoRoot` to an outbox command has two causes. Only an account known to have no folder is
+/// told to register one; a folder not brought up yet, and a `Folder.Path` that could not be
+/// read, are told to try again.
+#[test]
+fn an_outbox_command_is_told_to_register_only_when_there_is_no_folder() {
+    let told = |action, context| refusal_text_in(action, Some("org.konedrive.Error.NoRoot"), "", context);
+    for action in [SyncAction::Outbox, SyncAction::Pause] {
+        let none = told(action, Context { no_folder: true, ..Context::default() });
+        assert!(none.contains("no sync folder is registered") && none.contains("sync register"), "{none}");
+        // The daemon starting: the folder has its path, and its sync has no store yet.
+        let starting = told(action, Context { root: "/home/u/OneDrive", ..Context::default() });
+        assert_eq!(starting, "the folder's sync has not started yet; try again in a moment");
+        // `Folder.Path` could not be read: nothing says there is no folder.
+        assert_eq!(told(action, Context::default()), starting);
+    }
+}
+
 /// Being signed out gets its own sentence, distinct from a locked wallet
 /// or a network error, which keep the daemon's own message: the fix for
 /// each is different, so folding them into one generic sentence would

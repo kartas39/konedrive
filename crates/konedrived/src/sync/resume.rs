@@ -107,7 +107,8 @@ impl SyncService {
     }
 
     /// Holds the intercepted root `config.toml` records, if the daemon does
-    /// not hold one yet — see [`resume`](Self::resume). Called by `main`
+    /// not hold one yet — see [`resume`](Self::resume) — and publishes the
+    /// path of one that is not intercepted. Called by `main`
     /// before the bus name is claimed, so that the first thing a client
     /// reads is the folder rather than `none`; quick, since nothing is asked
     /// of the helper and at most one xattr is read.
@@ -125,8 +126,18 @@ impl SyncService {
         if self.registration().is_some() || self.held.lock().unwrap().is_some() {
             return;
         }
-        if let Some(persisted) = self.persisted_root().filter(|p| p.intercepted) {
-            self.hold(persisted).await;
+        match self.persisted_root() {
+            Some(persisted) if persisted.intercepted => self.hold(persisted).await,
+            // Not held: `resume` brings it up, after the bus name is claimed. Until then it
+            // is published by its path alone, so that a client can tell a folder that is
+            // not brought up yet from an account that has none.
+            Some(persisted) => {
+                let path = persisted.path.display().to_string();
+                if self.state.get().root_path != path {
+                    self.state.update(|s| s.root_path = path);
+                }
+            }
+            None => {}
         }
     }
 
