@@ -54,7 +54,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 
@@ -94,7 +93,8 @@ pub mod reason {
     /// blocked a row with. Such rows wait for space now, from the start
     /// ([`space`](super::space)).
     pub const QUOTA: &str = "quota-exceeded";
-    /// `403`: the sign-in does not allow writes. Blocked until signed in again.
+    /// `403`: OneDrive does not allow this change. Blocked until a worker begins anew,
+    /// as it does after a sign-in.
     pub const FORBIDDEN: &str = "forbidden";
     /// `400`: `refused: <the service's message>`. Blocked.
     pub const REFUSED: &str = "refused";
@@ -328,8 +328,8 @@ pub struct Upload {
     pub total: u64,
 }
 
-/// The worker's own state, published on every change ([`OutboxWorker::subscribe`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The worker's own state, handed to the host on every change ([`OutboxHost::status`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkerStatus {
     /// Started and not stopped.
     pub started: bool,
@@ -338,9 +338,8 @@ pub struct WorkerStatus {
     pub paused_until: i64,
     /// OneDrive asked to wait until then (unix seconds).
     pub throttled_until: Option<i64>,
-    pub online: bool,
-    /// Signed out, or the sign-in does not allow writes (`403`): nothing is
-    /// sent until [`OutboxWorker::signed_in`].
+    /// Signed out: nothing is sent by this worker any more; the sign-in that follows
+    /// starts a new one.
     pub needs_sign_in: bool,
     /// The last thing that stopped the worker or a row, for `LastError`.
     pub last_error: String,
@@ -353,24 +352,6 @@ pub struct WorkerStatus {
     pub counts: OutboxCounts,
     /// `QuotaFull`: OneDrive is full, and no content goes up ([`space`]).
     pub quota_full: bool,
-}
-
-impl Default for WorkerStatus {
-    fn default() -> Self {
-        Self {
-            started: false,
-            paused: false,
-            paused_until: 0,
-            throttled_until: None,
-            online: true,
-            needs_sign_in: false,
-            last_error: String::new(),
-            running: 0,
-            uploads: Vec::new(),
-            counts: OutboxCounts::default(),
-            quota_full: false,
-        }
-    }
 }
 
 /// What the outbox holds, for `PendingCount`, `PendingBytes` and
@@ -527,24 +508,6 @@ impl OutboxWorker {
         self.engine.wake();
     }
 
-    /// `Pause(seconds)` (§9): nothing is sent until `for_` has passed, or
-    /// until [`resume`](Self::resume) when `None`. Persisted in the store, so
-    /// it survives a restart. Rows keep their states; detection goes on.
-    pub fn pause(&self, for_: Option<Duration>) -> Result<(), TreeError> {
-        self.engine.pause(for_)
-    }
-
-    pub fn resume(&self) -> Result<(), TreeError> {
-        self.engine.resume()
-    }
-
-    /// NetworkManager's word. Going online, the host runs a delta cycle
-    /// first (§4.9) and then calls this.
-    pub fn set_online(&self, online: bool) {
-        let engine = Arc::clone(&self.engine);
-        detach(async move { engine.set_online(online).await });
-    }
-
     /// Sends nothing until [`cycle_done`](Self::cycle_done): a folder's
     /// first delta cycle runs before its outbox (`docs/design/writes.md` §3), and so
     /// does the one after the network came back (§4.9, `network_back`),
@@ -557,17 +520,6 @@ impl OutboxWorker {
     pub fn cycle_done(&self) {
         let engine = Arc::clone(&self.engine);
         detach(async move { engine.cycle_done().await });
-    }
-
-    /// After a sign-in: rows blocked by `403` are ready again, and the
-    /// worker sends again.
-    pub fn signed_in(&self) {
-        let engine = Arc::clone(&self.engine);
-        detach(async move {
-            if let Err(e) = engine.signed_in().await {
-                tracing::warn!("cannot let the rows a sign-in held go: {e}");
-            }
-        });
     }
 
     /// The quota was read elsewhere (`RefreshInfo`, `Refresh`), into the
@@ -599,14 +551,6 @@ impl OutboxWorker {
     /// the pending `move-out` rows name is marked again, before any row runs.
     pub fn helper_back(&self) {
         self.engine.helper_back();
-    }
-
-    pub fn status(&self) -> WorkerStatus {
-        self.engine.status()
-    }
-
-    pub fn subscribe(&self) -> watch::Receiver<WorkerStatus> {
-        self.engine.subscribe()
     }
 
     /// Arms a fault point (tests and the VM suite only).

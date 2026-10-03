@@ -34,6 +34,8 @@ impl Engine {
         // The quota, read again when it is due (while full, while a file is
         // too big, once after a start that found waiting rows).
         if self.may_start() {
+            // Only when the worker may send: until then the rows stay blocked, and listed.
+            self.release_forbidden().await;
             self.space_check(now()).await;
             self.cancel_given_up().await;
         }
@@ -249,12 +251,9 @@ impl Engine {
                 }
                 store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Ready, None, None))
             }
+            // Its own row only: a `403` can be about one item, and whether the sign-in
+            // allows writes at all is the write gate's to say. The other rows go on.
             Outcome::Forbidden => {
-                {
-                    let mut shared = self.shared();
-                    shared.needs_sign_in = true;
-                    shared.last_error = "OneDrive does not allow changes with this sign-in: sign in again".into();
-                }
                 let set = store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some(reason::FORBIDDEN), None));
                 if before.as_deref() != Some(reason::FORBIDDEN) {
                     self.activity(self.event(kind::UPLOAD_FAILED, &rel, reason::FORBIDDEN));

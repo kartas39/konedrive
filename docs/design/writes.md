@@ -565,7 +565,7 @@ limitations log F172).
 | `507`, `quotaLimitReached` | the quota is read at once and decides: the account full, or only this file too big (§6.4) |
 | `400` | `blocked`, with the service's message |
 | `401` | the token refreshed once |
-| `403` | `blocked` (`forbidden`), and `LastError` says to sign in again; a new sign-in releases the rows |
+| `403` | the row is `blocked` (`forbidden`), and listed in Not Uploaded, whose words say to sign in again (the Sign In Again action there starts a sign-in only while the account is signed out; signed in, it is refused as busy, and the user signs out first); the other rows go on (whether the sign-in allows writes at all is the write gate's to say, §2.3). A worker that begins — after a sign-in, which always starts a new one, and after a restart or a mode switch — makes the rows `ready` once, at the first look at which it may send (limitations log F197) |
 | `429`, `503` | a fragment to an upload session is sent again to the same session first (§6.1); then, or for any other request, the whole account's worker waits until `Retry-After` (in seconds or as an HTTP date, at most an hour; without one, 10 s doubling) |
 | another `5xx`, the network | the row retries after 1 s, doubling to an hour |
 

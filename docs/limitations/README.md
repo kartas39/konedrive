@@ -224,6 +224,7 @@ application must never read zeros where real content should be.
 - [F193](F193.md) — A stale handle can still record a `delete` for a file moved into a leaving folder
 - [F194](F194.md) — Some leaving or removed folders fail every cycle until their cause is gone
 - [F196](F196.md) — What the user does inside a folder that is leaving does not reach OneDrive
+- [F197](F197.md) — A `403` blocks only its row, and the row is tried again whenever a worker begins
 
 ---
 
