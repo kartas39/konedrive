@@ -13,7 +13,12 @@ use tokio::io::ReadBuf;
 
 use konedrive_graph::quickxor::QuickXor;
 
+use super::super::{Fetched, LocalDir};
 use super::*;
+use async_trait::async_trait;
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use tokio::io::AsyncRead;
 
 fn placeholder(dir: &std::path::Path, item_id: &str, size: u64) -> std::fs::File {
     let handle = std::fs::File::open(dir).unwrap();
