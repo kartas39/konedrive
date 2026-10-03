@@ -1,4 +1,6 @@
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
@@ -11,7 +13,7 @@ use konedrive_graph::drive::item::RESERVED_PREFIX;
 use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::{Kind, Row, Table};
 
-use super::{daemon_owned, depth, ExamineError, Expect, gone, lossy, MOUNTED_INSIDE, object, OTHER_DEVICE, Place, Run, Settle};
+use super::{daemon_owned, depth, ExamineError, Expect, lossy, MOUNTED_INSIDE, object, OTHER_DEVICE, Place, Run, Settle};
 
 impl Run<'_, '_> {
     pub(super) fn classify(&mut self, batch: &Batch) -> Result<(), ExamineError> {
@@ -315,33 +317,38 @@ impl Run<'_, '_> {
     /// too.
     fn stranger(&mut self, i: usize) -> Result<(), ExamineError> {
         let e = self.entries[i].clone();
-        let dir = match self.ex.disk.dir(e.dir_rel()) {
-            Ok(dir) => dir,
-            Err(err) if gone(&err) => return Ok(()),
-            Err(err) => return Err(err.into()),
-        };
         let listed = |run: &mut Self, reason: &str| {
             if !run.ex.ignore.matches(&e.name) {
                 run.skip(&e.rel, reason);
             }
             run.consumed.insert(i);
         };
-        match e.ty {
-            Type::Dir => {
-                placeholder::strip_konedrive_xattrs(&self.ex.disk.open_subdir(&dir, &e.name)?)?;
-                if !self.whole.contains(&e.rel) {
-                    self.out.recheck.tree(&e.rel);
-                }
-            }
+        let strip = |opened: io::Result<File>| opened.and_then(|object| placeholder::strip_konedrive_xattrs(&object));
+        let dir = self.ex.disk.dir(e.dir_rel());
+        let stripped = match e.ty {
+            Type::Dir => strip(dir.and_then(|dir| self.ex.disk.open_subdir(&dir, &e.name))),
             Type::File if e.hydrated() && e.nlink > 1 => {
                 listed(self, "hard-link");
                 return Ok(());
             }
-            Type::File if e.hydrated() => placeholder::strip_konedrive_xattrs(&self.ex.disk.open_file(&dir, &e.name)?)?,
+            Type::File if e.hydrated() => strip(dir.and_then(|dir| self.ex.disk.open_file(&dir, &e.name))),
             _ => {
                 listed(self, "not-downloaded");
                 return Ok(());
             }
+        };
+        if self.entry_io(&e, stripped)?.is_none() {
+            // Not stripped, because it was refused or because it went: it
+            // is not uploaded as new, and what was listed inside it gets no
+            // row in this run (`unnamed`). In any other run, and at the
+            // worker, the id it may still carry is no folder to go into
+            // (`upload::steps::dir_id`).
+            self.consumed.insert(i);
+            self.unreadable.insert(e.rel.clone());
+            return Ok(());
+        }
+        if e.ty == Type::Dir && !self.whole.contains(&e.rel) {
+            self.out.recheck.tree(&e.rel);
         }
         self.out.stripped.push(e.rel.clone());
         self.entries[i].id = None;
@@ -359,9 +366,15 @@ impl Run<'_, '_> {
             self.consumed.insert(i);
             let e = self.entries[i].clone();
             if e.hydrated() {
-                let dir = self.ex.disk.dir(e.dir_rel())?;
-                placeholder::strip_konedrive_xattrs(&self.ex.disk.open_file(&dir, &e.name)?)?;
-                self.out.stripped.push(e.rel);
+                let stripped = self
+                    .ex
+                    .disk
+                    .dir(e.dir_rel())
+                    .and_then(|dir| self.ex.disk.open_file(&dir, &e.name))
+                    .and_then(|file| placeholder::strip_konedrive_xattrs(&file));
+                if self.entry_io(&e, stripped)?.is_some() {
+                    self.out.stripped.push(e.rel);
+                }
             }
         }
         self.consumed.insert(s);
@@ -379,10 +392,10 @@ impl Run<'_, '_> {
     /// create of that file goes (never one being sent: callers exclude it).
     pub(super) fn save_by_rename(&mut self, id: &str, base: &Row, s: usize) -> Result<(), ExamineError> {
         let e = self.entries[s].clone();
+        let Some((state, reason, next_try)) = self.probe_writer(&e)? else { return Ok(()) };
         if let Some(row) = self.pending_row(&e).filter(|row| row.state != OutboxState::Running) {
             self.ops.push(OutboxOp::Remove(row.seq));
         }
-        let (state, reason, next_try) = self.probe_writer(&e)?;
         let mut d = self.detection(OutboxKind::Update, id, base, &e, None);
         (d.state, d.reason, d.next_try) = (state, reason, next_try);
         self.detections.push(d);
@@ -418,6 +431,11 @@ impl Run<'_, '_> {
     /// Rules 3–5: an entry without an item id.
     fn unnamed(&mut self, i: usize) -> Result<(), ExamineError> {
         let e = self.entries[i].clone();
+        // Inside a directory this run did not strip of an id that is not
+        // its own (refused, or gone meanwhile): it has no folder to go into.
+        if e.dir_rel().ancestors().any(|dir| self.unreadable.contains(dir)) {
+            return Ok(());
+        }
         let pending = self.pending_row(&e).cloned();
         let target_parent = self.dir_id(e.dir_rel());
         // 3. Ignored — its name, or a directory of the user's own above it
@@ -497,7 +515,9 @@ impl Run<'_, '_> {
             d.state = OutboxState::Blocked;
             d.reason = Some(refused.as_str().into());
         } else if !is_dir {
-            (d.state, d.reason, d.next_try) = self.probe_writer(&e)?;
+            // One that cannot be opened is passed over: no row.
+            let Some(probed) = self.probe_writer(&e)? else { return Ok(()) };
+            (d.state, d.reason, d.next_try) = probed;
         }
         self.detections.push(d);
         Ok(())

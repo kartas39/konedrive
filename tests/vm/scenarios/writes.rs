@@ -374,6 +374,118 @@ pub fn round_trip(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     }, checks, "writes: round trip")
 }
 
+/// F72, `LO13`: a filesystem that holds no user attributes (vfat) mounted inside the folder, on a
+/// directory OneDrive does not have. Reading an attribute there answers `EOPNOTSUPP`. A Full local
+/// scan and a delta cycle both read the mount point: it is listed as on another device, nothing
+/// inside it goes up, and what changes beside it does.
+pub fn mount_without_attributes_is_passed_over(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
+    vfat_mount(ctx, checks, false)
+}
+
+/// The same mount, made over a folder OneDrive has (F72: the mount hides the folder's own
+/// directory): the folder stays in OneDrive, and the cycle still completes.
+pub fn mount_without_attributes_over_a_synced_folder(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
+    vfat_mount(ctx, checks, true)
+}
+
+fn vfat_mount(ctx: &Ctx, checks: &mut Checks, synced: bool) -> Result<(), String> {
+    with_world(ctx, if synced { "vfat-over" } else { "vfat" }, Seed { folders: &[], files: &[] }, |w| {
+        if synced {
+            w.sh("mkdir stick")?;
+            w.wait("stick in OneDrive", || w.cloud("stick").map(drop))?;
+            w.wait("the outbox empty", || w.outbox_empty().then_some(()))?;
+        }
+        // Mounted while the sync is stopped: in the other case the directory under the mount is
+        // made now, and is never an item.
+        ctx.runtime.block_on(w.service.stop_sync());
+        let image = w.base.join("stick.img");
+        let made = Command::new("sh")
+            .arg("-c")
+            .arg(format!(
+                "modprobe vfat; mkdir -p '{1}' && truncate -s 16M '{0}' && mkfs.vfat '{0}' >/dev/null && mount -t vfat -o loop '{0}' '{1}'",
+                image.display(),
+                w.path("stick").display()
+            ))
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !made.success() {
+            return Err("cannot mount a vfat image inside the folder".into());
+        }
+        let mounted = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+        // The kernel fact under it: what reading a user attribute of the mount point answers.
+        let answer = match xattr::get(w.path("stick"), "user.konedrive.item-id") {
+            Ok(value) => format!("{} attribute", if value.is_some() { "an" } else { "no" }),
+            Err(e) => e.to_string(),
+        };
+        let outcome = (|| {
+            std::fs::write(w.path("stick/inside.txt"), b"INSIDE").map_err(|e| e.to_string())?;
+            // The sync starts again: its Full local scan and its cycle read the mount point.
+            ctx.runtime.block_on(w.service.refresh()).map_err(|e| format!("the sync did not start again: {e}"))?;
+            w.sh("printf 'beside' > beside.txt")?;
+            w.uploaded("beside.txt", b"beside")?;
+            let listed = w.wait("the mount listed as not uploaded", || {
+                let kept = ctx.runtime.block_on(w.service.not_uploaded()).unwrap_or_default();
+                kept.into_iter().find(|(path, _)| Path::new(path) == w.path("stick")).map(|(_, reason)| reason)
+            })?;
+            if listed != "other-device" {
+                return Err(format!("the mount is listed as {listed}, not as other-device"));
+            }
+            w.wait("the outbox empty", || w.outbox_empty().then_some(()))?;
+            if w.cloud("stick").is_some() != synced || w.cloud("stick/inside.txt").is_some() {
+                return Err(if synced { "the folder under the mount left OneDrive, or a file inside the mount was uploaded" } else { "the mount, or a file inside it, was uploaded" }.into());
+            }
+            // A delta cycle that began after the mount was made has completed: its scan walked
+            // into the mount. (The Full local scan passed, or the mount would not be listed.)
+            std::thread::sleep(Duration::from_millis(1100));
+            ctx.runtime.block_on(w.service.refresh()).map_err(|e| e.to_string())?;
+            w.wait("a cycle completed with the mount there", || (w.service.status().0 > mounted).then_some(()))?;
+            if w.service.last_error().contains("brought up to date") {
+                return Err("the cycle with the mount there failed".into());
+            }
+            let under = if synced { "the folder under it stays in OneDrive, nothing inside it went up" } else { "nothing of it went up" };
+            Ok(format!("the mount is listed as {listed}, {under}, and a file beside it did"))
+        })();
+        let _ = Command::new("umount").arg(w.path("stick")).status();
+        match outcome {
+            Ok(note) => Ok(format!("{note}; reading an attribute of the mount point answers: {answer}")),
+            Err(e) => Err(format!("{e}; reading an attribute of the mount point answers: {answer}; LastError: {:?}", w.service.last_error())),
+        }
+    }, checks, if synced { "writes: vfat mount over a synced folder" } else { "writes: vfat mount" })
+}
+
+/// `LO3`: a copy that kept its konedrive attributes and cannot be stripped (immutable, so even
+/// root may not change it). It is passed over, never uploaded as new, and what changed beside it
+/// goes up.
+pub fn copy_that_cannot_be_stripped_is_passed_over(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
+    let seed = Seed { folders: &[], files: &[("W9-ORIG", "orig.txt", b"ORIGINAL")] };
+    with_world(ctx, "immutable", seed, |w| {
+        ctx.read(&w.path("orig.txt"))?;
+        // Made outside, and moved in inside its directory: an immutable file cannot be renamed.
+        let outside = w.base.join("in");
+        std::fs::create_dir_all(&outside).map_err(|e| e.to_string())?;
+        let copy = outside.join("copy.txt");
+        w.sh(&format!("cp --preserve=xattr orig.txt '{0}' && chattr +i '{0}'", copy.display()))?;
+        let outcome = (|| {
+            std::fs::write(outside.join("plain.txt"), b"PLAIN").map_err(|e| e.to_string())?;
+            w.sh(&format!("mv '{}' in", outside.display()))?;
+            w.uploaded("in/plain.txt", b"PLAIN")?;
+            w.sh("printf 'later' > later.txt")?;
+            w.uploaded("later.txt", b"later")?;
+            if w.cloud("in/copy.txt").is_some() {
+                return Err("the copy that could not be stripped was uploaded as new".into());
+            }
+            if w.cloud("orig.txt").is_none_or(|(id, content)| id != "W9-ORIG" || content != b"ORIGINAL") {
+                return Err("the original changed in OneDrive".into());
+            }
+            Ok("the copy is passed over; its folder, the file beside it and a later change went up".to_owned())
+        })();
+        for at in [copy, w.path("in/copy.txt")] {
+            let _ = Command::new("chattr").arg("-i").arg(at).stderr(std::process::Stdio::null()).status();
+        }
+        outcome
+    }, checks, "writes: copy not stripped")
+}
+
 /// Every entry below `folder` as OneDrive paths name it, with a file's size.
 fn walk(folder: &Path) -> Result<Vec<(String, Option<usize>)>, String> {
     let mut out = Vec::new();

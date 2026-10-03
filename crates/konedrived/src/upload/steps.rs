@@ -73,7 +73,15 @@ pub(super) fn swap_name(row: &OutboxRow) -> String {
 }
 
 /// The item id of the directory `dir` (relative to the root), read from the
-/// disk: the root's is the drive's root.
+/// disk: the root's is the drive's root. Only an id that is the directory's
+/// own counts: the base has it as a folder, and records this very object for
+/// it (or, with no object recorded, places it here; what is leaving counts
+/// by the object or the place `leaving` keeps). A copy that kept its
+/// attributes, or a folder from elsewhere, carries an id that names another
+/// folder in OneDrive; nothing is sent into that one because of it. The
+/// examination strips such a directory when it can, but it does not always
+/// see it (a batch that names only what is below it), and cannot always strip
+/// it (`LO3`): this is the one place every row passes before it is sent.
 pub(super) async fn dir_id(e: &Engine, disk: &Disk, dir: &Path) -> Result<Option<String>, Fail> {
     if dir.as_os_str().is_empty() {
         return Ok(e.store().call(|s| s.root_item_id()).await?);
@@ -84,10 +92,41 @@ pub(super) async fn dir_id(e: &Engine, disk: &Disk, dir: &Path) -> Result<Option
         Err(err) if matches!(err.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => return Ok(None),
         Err(err) => return Err(err.into()),
     };
-    Ok(match disk.probe(&parent, name)? {
-        Probe::Managed { id, is_dir: true } => Some(id),
-        _ => None,
-    })
+    let Probe::Managed { id, is_dir: true } = disk.probe(&parent, name)? else { return Ok(None) };
+    let here = FileHandle::at(&parent, name).ok();
+    let (asked, at) = (id.clone(), dir.to_owned());
+    let own = e
+        .store()
+        .call(move |s| {
+            if !s.get(Table::Items, &asked)?.is_some_and(|row| row.kind == Kind::Folder) {
+                return Ok(false);
+            }
+            // The object the base records for it, or the one kept while it
+            // is leaving: a folder that leaves and is placed again elsewhere
+            // meanwhile has both, and the leaving one still takes what waits
+            // inside it (issue #104).
+            let (placed, left) = (s.local_handle(&asked)?, s.leaving_handle(&asked)?);
+            if here.is_some() && (placed == here || left == here) {
+                return Ok(true);
+            }
+            // With no object to compare: where the base places it.
+            if (placed.is_none() || here.is_none()) && s.locate(Table::Items, &asked)?.is_some_and(|l| l.placed && l.rel == at) {
+                return Ok(true);
+            }
+            // What leaves stays where it is. The leaving folder itself, when
+            // no object was kept for it, by its place; a folder that was
+            // inside one has no object of its own there (the base's, if any,
+            // is the copy placed again), and counts below the leaving place.
+            if !s.leaving_had(&asked)? {
+                return Ok(false);
+            }
+            Ok(s.leaving()?.iter().any(|(id, rel)| if *id == asked { left.is_none() && at == *rel } else { at != *rel && at.starts_with(rel) }))
+        })
+        .await?;
+    if !own {
+        tracing::debug!("{} carries the id of another folder ({id}); nothing is sent into that one for it", dir.display());
+    }
+    Ok(own.then_some(id))
 }
 
 /// The folder in OneDrive the row's item goes into: the one the examination

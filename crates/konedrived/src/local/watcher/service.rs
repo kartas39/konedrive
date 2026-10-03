@@ -90,7 +90,7 @@ impl Sink for ExamineSink {
                         wake();
                     }
                 }
-                Handled::Done { recheck: done.recheck }
+                Handled::Done { recheck: done.recheck, passed: Box::new(done.passed) }
             }
             Err(ExamineError::NoBase) => Handled::NotYet,
             Err(ExamineError::RootGone) => Handled::RootGone,

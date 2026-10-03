@@ -91,7 +91,7 @@ pub(super) fn proc_path(file: &File) -> PathBuf {
 }
 
 fn attr(path: &Path, name: &str) -> io::Result<Option<String>> {
-    Ok(xattr::get(path, name)?.map(|raw| String::from_utf8_lossy(&raw).into_owned()))
+    Ok(crate::folder::disk::attr_by_name(path, name)?.map(|raw| String::from_utf8_lossy(&raw).into_owned()))
 }
 
 /// `name` in `dir` (at `dir_rel`); `None` when there is nothing there.

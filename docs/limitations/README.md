@@ -231,6 +231,7 @@ application must never read zeros where real content should be.
 - [F203](F203.md) — A free-up whose blocking task cannot be joined leaves the file `dehydrating`
 - [F204](F204.md) — A sign-in whose account is reported signed out meanwhile ends in silence
 - [F205](F205.md) — A removal that fails half-way leaves the account without its folder, and a failed `Add` can leave its entry
+- [F210](F210.md) — An entry the examination is refused to open, strip or read is passed over, and the user is not told which
 - [F211](F211.md) — A folder whose `source` in `config.toml` is neither word is held, not repaired
 - [F212](F212.md) — Some failures of the tree store inside a reconcile still do not stop the folder
 - [F220](F220.md) — A OneDrive item dated before 1970 shows 1970-01-01 locally

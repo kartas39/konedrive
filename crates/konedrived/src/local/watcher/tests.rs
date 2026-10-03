@@ -108,7 +108,7 @@ struct Recorder(mpsc::Sender<Batch>);
 impl Sink for Recorder {
     fn handle(&mut self, batch: &Batch) -> Handled {
         let _ = self.0.send(batch.clone());
-        Handled::Done { recheck: Batch::new() }
+        Handled::Done { recheck: Batch::new(), passed: Box::default() }
     }
 }
 
@@ -465,6 +465,80 @@ fn a_flush_examines_what_is_pending_at_once() {
     assert_eq!(rx.try_recv().unwrap(), expected, "examined before `flush` returned");
     assert!(watcher.flush(WAIT), "nothing pending is flushed at once");
     watcher.stop();
+}
+
+/// A sink that fails a number of batches, and examines what comes after.
+struct Failing(u32, mpsc::Sender<Batch>);
+
+impl Sink for Failing {
+    fn handle(&mut self, batch: &Batch) -> Handled {
+        if self.0 > 0 {
+            self.0 -= 1;
+            return Handled::Failed("the store is closed (this test's own failure)".into());
+        }
+        let _ = self.1.send(batch.clone());
+        Handled::Done { recheck: Batch::new(), passed: Box::default() }
+    }
+}
+
+/// LO3: a batch that keeps failing is said in `LastError`, until one passes.
+#[test]
+fn a_batch_that_keeps_failing_is_said_until_one_passes() {
+    let fx = Fx::new();
+    let said: Arc<Mutex<Vec<Option<String>>>> = Arc::default();
+    let mut config = fx.config();
+    config.on_status = Some({
+        let said = Arc::clone(&said);
+        Arc::new(move |status: &WatchStatus| said.lock().unwrap().push(status.failing.clone()))
+    });
+    let (tx, rx) = mpsc::channel();
+    let watcher = Watcher::start(config, Box::new(Failing(FAILING_AFTER, tx))).unwrap();
+    // The bring-up's Full local scan fails three times, and passes at the fourth.
+    assert!(next(&rx).is_full());
+    assert!(watcher.flush(WAIT));
+    assert_eq!(watcher.status().failing, None);
+    let said: Vec<String> = said.lock().unwrap().iter().flatten().cloned().collect();
+    assert!(!said.is_empty() && said.iter().all(|why| why.contains("the store is closed")), "the failing batch was not said: {said:?}");
+    let failing = WatchStatus { failing: said.first().cloned(), ..WatchStatus::default() };
+    assert!(failing.note().is_some_and(|note| note.contains("keeps failing")), "{:?}", failing.note());
+    watcher.stop();
+}
+
+/// A sink that passes one entry over in every batch, and says each batch.
+struct PassingOver(mpsc::Sender<Batch>);
+
+impl Sink for PassingOver {
+    fn handle(&mut self, batch: &Batch) -> Handled {
+        let _ = self.0.send(batch.clone());
+        let mut passed = Batch::new();
+        passed.name(Path::new(""), OsStr::new("stuck.txt"));
+        Handled::Done { recheck: Batch::new(), passed: Box::new(passed) }
+    }
+}
+
+/// LO3: an entry that keeps being passed over has one recheck pending, however
+/// many runs passed it over, and its wait doubles: 0.2 s, 0.4 s, 0.8 s here,
+/// where a recheck for each run every 0.3 s would be a dozen batches.
+#[test]
+fn a_passed_over_entry_has_one_recheck_that_backs_off() {
+    let fx = Fx::new();
+    let (tx, rx) = mpsc::channel();
+    let mut config = fx.config();
+    // The longest wait, which the tests' clocks put at 0.3 s.
+    config.timing.degraded_scan = Duration::from_secs(3600);
+    let watcher = Watcher::start(config, Box::new(PassingOver(tx))).unwrap();
+    assert!(next(&rx).is_full());
+    // Two more runs beside the pending recheck: they join it.
+    for name in ["one.txt", "two.txt"] {
+        std::fs::write(fx.path(name), b"x").unwrap();
+        assert!(watcher.flush(WAIT));
+    }
+    std::thread::sleep(Duration::from_millis(1700));
+    watcher.stop();
+    let mut stuck = Batch::new();
+    stuck.name(Path::new(""), OsStr::new("stuck.txt"));
+    let rechecks = rx.try_iter().filter(|batch| *batch == stuck).count();
+    assert!((1..=3).contains(&rechecks), "{rechecks} rechecks of the passed-over entry in 1.7 s");
 }
 
 /// A sink that says it was handed a batch, and panics on it.

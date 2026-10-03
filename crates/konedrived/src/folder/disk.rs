@@ -94,6 +94,23 @@ fn proc_path(file: &File) -> PathBuf {
     PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
+/// The user attribute `name` of what is at `path`, read by name (`lgetxattr`).
+/// A filesystem that holds no user attributes (vfat, some FUSE mounts) answers
+/// `EOPNOTSUPP`: nothing on it carries one of ours, so that reads as none
+/// (`LO13`). For the examination's entries and [`Disk::probe`]: the
+/// reconcile's scan walks into such a mount, and probes the place of a folder
+/// the mount stands over (measured in the VM: with the scan alone lenient,
+/// every cycle still fails there). What is on another device is never an
+/// item's object: the examination skips it before any id is used, and the
+/// worker takes a directory's id only when the base records that object
+/// (`upload::steps::dir_id`).
+pub fn attr_by_name(path: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
+    match xattr::get(path, name) {
+        Err(e) if e.raw_os_error() == Some(libc::EOPNOTSUPP) => Ok(None),
+        read => read,
+    }
+}
+
 pub fn open_subdir(dir: &File, name: &OsStr) -> io::Result<File> {
     let fd = nix::fcntl::openat(dir.as_fd(), name, OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC, Mode::empty())?;
     Ok(File::from(fd))
@@ -149,7 +166,7 @@ impl Disk {
             return Ok(Probe::Unmanaged { is_dir: false });
         }
         let is_dir = kind == libc::S_IFDIR;
-        match xattr::get(proc_path(dir).join(name), XATTR_ITEM_ID)? {
+        match attr_by_name(&proc_path(dir).join(name), XATTR_ITEM_ID)? {
             Some(id) => {
                 let id = String::from_utf8_lossy(&id).into_owned();
                 // An id is a name in the holding directory; one that cannot

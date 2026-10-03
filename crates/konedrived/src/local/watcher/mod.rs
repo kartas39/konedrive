@@ -28,7 +28,8 @@
 //! - **The examiner**: a second thread that hands what was handed over to a
 //!   [`Sink`] (the daemon's is [`ExamineSink`], the examination), merged,
 //!   feeds back what it asks to see again after [`RECHECK`], retries a batch
-//!   it could not take yet (no completed listing, an error), and runs a Full
+//!   it could not take yet (no completed listing, an error; one that keeps
+//!   failing is said in [`WatchStatus::failing`]), and runs a Full
 //!   local scan every [`DEGRADED_SCAN`] while part of the folder cannot be
 //!   watched (the mark budget, the group cap, a filesystem id with no group).
 //!   The reader walks the folder on the same beat then, so a directory made
@@ -76,6 +77,10 @@ pub const DEGRADED_SCAN: Duration = Duration::from_secs(600);
 /// offered again after this long; one it failed on, after this long doubled
 /// at each failure in a row, up to [`DEGRADED_SCAN`].
 pub const RETRY: Duration = Duration::from_secs(5);
+/// A batch that failed this many times in a row is said in `LastError`
+/// ([`WatchStatus::failing`]): one failure may be a busy store, three in a
+/// row (some 15 s) are something the user should know (provisional).
+pub const FAILING_AFTER: u32 = 3;
 /// A `MarkDir` the helper did not answer is asked again after this long.
 pub const MARK_RETRY: Duration = Duration::from_secs(60);
 
@@ -104,8 +109,10 @@ pub trait Sink: Send {
 /// What became of a batch.
 #[derive(Debug)]
 pub enum Handled {
-    /// Examined. `recheck` is handed back after [`Timing::recheck`].
-    Done { recheck: Batch },
+    /// Examined. `recheck` is handed back after [`Timing::recheck`];
+    /// `passed`, the entries passed over, after a wait that grows as a
+    /// failed batch's does while they keep being passed over.
+    Done { recheck: Batch, passed: Box<Batch> },
     /// Not examined yet (no listing has completed): offered again after
     /// [`Timing::retry`], with whatever came meanwhile.
     NotYet,
@@ -137,6 +144,11 @@ pub struct WatchStatus {
     pub degraded: Option<String>,
     /// The folder was moved or deleted; the watcher has stopped.
     pub root_gone: bool,
+    /// Why the examination keeps failing ([`FAILING_AFTER`] times in a row
+    /// by now): no local change is uploaded until one passes. The batch is
+    /// offered again after a wait that grows to [`DEGRADED_SCAN`], so this
+    /// can outlast its cause by that long.
+    pub failing: Option<String>,
     pub overflows: u64,
     /// Batches handed to the examiner.
     pub handed_over: u64,
@@ -157,6 +169,14 @@ impl WatchStatus {
         let mut parts = Vec::new();
         if self.stopped {
             parts.push("local changes are no longer looked for: the watcher stopped (see the log)".to_owned());
+        }
+        // A stopped watcher tries nothing again.
+        if let Some(why) = self.failing.as_ref().filter(|_| !self.stopped) {
+            parts.push(format!(
+                "local changes are not uploaded for now: examining them keeps failing (last: {why}); it is tried again, every {} \
+                 minutes at the longest",
+                DEGRADED_SCAN.as_secs() / 60
+            ));
         }
         if self.other_device > 0 {
             parts.push(format!(
@@ -556,7 +576,10 @@ impl Drop for ExaminerEnding {
         let said = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             if !shared.stopping() && !shared.status().root_gone {
                 tracing::error!("the examiner of local changes stopped unexpectedly");
-                shared.update(|s| s.stopped = true);
+                shared.update(|s| {
+                    s.stopped = true;
+                    s.failing = None;
+                });
             }
         }));
         if said.is_err() {
@@ -575,6 +598,13 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
     let mut retry_at: Option<Instant> = None;
     let mut failures: u32 = 0;
     let mut rechecks: Vec<(Instant, Batch)> = Vec::new();
+    // The entries passed over: one pending recheck, however many runs passed
+    // them over, and a wait that doubles while a recheck passes any over again.
+    let mut passed = Batch::new();
+    let mut passed_at: Option<Instant> = None;
+    let mut passes: u32 = 0;
+    // The batch to examine holds the passed-over entries' recheck.
+    let mut rechecking = false;
     let mut next_scan: Option<Instant> = None;
     let absorb = |message: ToExaminer, pending: &mut Batch, acks: &mut Vec<mpsc::Sender<bool>>| match message {
         ToExaminer::Batch(batch) => pending.merge(batch),
@@ -611,20 +641,45 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
             }
         }
         rechecks = waiting;
+        if passed_at.is_some_and(|at| at <= now) {
+            pending.merge(std::mem::take(&mut passed));
+            passed_at = None;
+            rechecking = true;
+        }
         let flushing = !acks.is_empty();
         if !pending.is_empty() && (flushing || retry_at.is_none_or(|at| at <= now)) {
             let batch = std::mem::take(&mut pending);
             let examined = match sink.handle(&batch) {
-                Handled::Done { recheck } => {
+                Handled::Done { recheck, passed: again } => {
                     retry_at = None;
                     failures = 0;
-                    shared.update(|s| s.examined += 1);
+                    shared.update(|s| {
+                        s.examined += 1;
+                        s.failing = None;
+                    });
                     if !recheck.is_empty() {
                         rechecks.push((Instant::now() + timing.recheck, recheck));
                     }
+                    if again.is_empty() {
+                        if rechecking {
+                            passes = 0;
+                        }
+                    } else {
+                        // A run beside a pending recheck joins it, and leaves its time alone.
+                        if passed_at.is_none() {
+                            passes = passes.saturating_add(1);
+                            let wait = timing.retry.saturating_mul(1 << passes.min(16).saturating_sub(1)).min(timing.degraded_scan);
+                            passed_at = Some(Instant::now() + wait);
+                        }
+                        passed.merge(*again);
+                    }
+                    rechecking = false;
                     true
                 }
                 Handled::NotYet => {
+                    // Not a failure: what failed before is no longer what holds the batch.
+                    failures = 0;
+                    shared.update(|s| s.failing = None);
                     tracing::debug!("the folder has no completed listing yet; its local changes wait");
                     pending.merge(batch);
                     retry_at = Some(Instant::now() + timing.retry);
@@ -634,6 +689,9 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
                     failures = failures.saturating_add(1);
                     let wait = timing.retry.saturating_mul(1 << failures.min(16).saturating_sub(1)).min(timing.degraded_scan);
                     tracing::warn!("local changes could not be examined: {why}; trying again in {} s", wait.as_secs());
+                    if failures >= FAILING_AFTER {
+                        shared.update(|s| s.failing = Some(why));
+                    }
                     pending.merge(batch);
                     retry_at = Some(Instant::now() + wait);
                     false
@@ -655,7 +713,7 @@ fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timi
         for ack in acks.drain(..) {
             let _ = ack.send(true);
         }
-        let wake = [(!pending.is_empty()).then_some(retry_at).flatten(), rechecks.iter().map(|(at, _)| *at).min(), next_scan]
+        let wake = [(!pending.is_empty()).then_some(retry_at).flatten(), rechecks.iter().map(|(at, _)| *at).min(), passed_at, next_scan]
             .into_iter()
             .flatten()
             .min();

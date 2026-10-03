@@ -128,9 +128,37 @@ impl Run<'_, '_> {
 
     pub(super) fn mark_unreadable(&mut self, rel: &Path, why: &io::Error) {
         if self.unreadable.insert(rel.to_path_buf()) {
-            tracing::warn!("{} cannot be read ({why}); it is not examined", rel.display());
+            // One line for the run says how many (`Examiner::examine_reporting`).
+            tracing::debug!("{} cannot be read ({why}); it is not examined", rel.display());
             self.out.unreadable.push(rel.to_path_buf());
         }
+    }
+
+    /// The one policy for an entry that cannot be opened, stripped or read
+    /// (`LO3`). Gone since it was listed, it is skipped (`None`). Refused to
+    /// this daemon (`EACCES`, `EPERM`: another user's file, an immutable
+    /// one), the trouble is the entry's own: it is passed over
+    /// ([`pass_over`](Self::pass_over), `None`), never the batch's failure.
+    /// Any other error may be anybody's (no descriptors, no memory, the
+    /// disk): the batch fails, as it always did, and is offered again.
+    pub(super) fn entry_io<T>(&mut self, e: &Entry, tried: io::Result<T>) -> Result<Option<T>, ExamineError> {
+        match tried {
+            Ok(value) => Ok(Some(value)),
+            Err(err) if gone(&err) => Ok(None),
+            Err(err) if denied(&err) => {
+                self.pass_over(e, &err);
+                Ok(None)
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// `e` is not examined in this run: noted as unreadable, so that nothing
+    /// at its place counts as missing, and asked for again
+    /// ([`Examined::passed`]).
+    pub(super) fn pass_over(&mut self, e: &Entry, why: &io::Error) {
+        self.mark_unreadable(&e.rel, why);
+        self.out.passed.name(e.dir_rel(), &e.name);
     }
 
     /// `name` in `dir`, or `None` when there is nothing there, or nothing
