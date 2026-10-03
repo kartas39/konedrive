@@ -37,10 +37,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use konedrive_fs::placeholder::{create_placeholder, read_state, State};
 use konedrive_proto::SOCKET_PATH;
-use konedrived::sync::helper::HelperLink;
-use konedrived::sync::root;
-use konedrived::sync::source::ContentSource;
-use konedrived::sync::{serve_hydrations, InodeLocks};
+use konedrived::helper::HelperLink;
+use konedrived::folder::root;
+use konedrived::hydration::source::ContentSource;
+use konedrived::hydration::server::serve_hydrations;
+use konedrived::folder::locks::InodeLocks;
 
 use crate::{dir_mark_present, ignore_mark_present, statfs_type, Checks, Reader, TestSource};
 

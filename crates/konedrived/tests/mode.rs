@@ -18,9 +18,9 @@ use konedrive_dbus::testing::TestBus;
 use konedrived::account::{
     AccountService, ModeError, PendingUploads, CONFIG_UNREADABLE, DRIVE_NOT_SEEN, GATE_KEEPS_READ_ONLY, SIGN_IN_TO_WRITE,
 };
-use konedrived::account_cache::{self, AccountInfo};
+use konedrived::account::cache::AccountInfo;
 use konedrived::config::{ConfigError, ConfigStore, Mode, Paths};
-use konedrived::secret::{MemoryStore, MemoryWallet, Slot};
+use konedrived::account::secret::{MemoryStore, MemoryWallet, Slot};
 use serde_json::json;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -103,7 +103,7 @@ async fn refreshes(server: &MockServer) -> Vec<String> {
 struct Setup {
     server: MockServer,
     wallet: Arc<MemoryWallet>,
-    daemon: konedrived::accounts::Daemon,
+    daemon: konedrived::daemon::startup::Daemon,
     account: AccountProxy<'static>,
     /// Served only by a development build (the `dev-tools` feature).
     #[cfg_attr(not(feature = "dev-tools"), allow(dead_code))]
@@ -246,7 +246,7 @@ async fn read_write_is_written_only_once_the_grant_arrives_and_read_only_is_a_su
     assert_eq!(s.account.state().await.unwrap(), "signed-in");
     assert_eq!(s.account.last_error().await.unwrap(), "");
     let cache = Paths::in_dir(s._dir.path()).account(&s.id).unwrap().account_cache;
-    assert_eq!(account_cache::load(&cache).unwrap().granted_scopes, READ_WRITE, "kept with the account");
+    assert_eq!(konedrived::account::cache::load(&cache).unwrap().granted_scopes, READ_WRITE, "kept with the account");
 
     assert_eq!(s.export.read_only().await.unwrap(), "AT-RO", "TokenExport's token stays read-only");
     assert_eq!(refreshes(&s.server).await, vec!["Files.Read User.Read offline_access"]);
@@ -417,7 +417,7 @@ async fn a_read_write_account_runs_read_write_only_with_the_grant_and_the_gate()
                 drive_id: seen.into(),
                 ..AccountInfo::default()
             };
-            account_cache::save(&paths.account(&id).unwrap().account_cache, &info).unwrap();
+            konedrived::account::cache::save(&paths.account(&id).unwrap().account_cache, &info).unwrap();
         }
         let svc = AccountService::single(dir.path(), endpoints(&server), Arc::new(MemoryStore::with_token("RT0")), Duration::from_secs(5))
             .await

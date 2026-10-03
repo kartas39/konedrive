@@ -18,8 +18,8 @@ use std::time::{Duration, Instant};
 
 use konedrive_fs::placeholder::{read_state, State};
 use konedrived::config::{ConfigError, Mode};
-use konedrived::state::{AccountSnapshot, SignInState, StateHandle};
-use konedrived::sync::upload::fake::{FakeGraph, FakeItem, ROOT};
+use konedrived::account::state::{AccountSnapshot, SignInState, StateHandle};
+use konedrived::upload::fake::{FakeGraph, FakeItem, ROOT};
 use konedrived::sync::{SyncPaths, SyncService};
 
 use crate::{dir_mark_present, Checks, Ctx};

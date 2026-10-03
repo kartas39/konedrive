@@ -22,11 +22,13 @@ use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 use tokio::sync::{watch, Notify};
 use xattr::FileExt;
 
-use super::helper::{Clearance, HelperError, HelperLink, HydrateRequest};
-use super::helper_status::{self, HelperState, HelperUnit};
-use super::listing::LinkCell;
-use super::source::ContentSource;
-use super::{serve, Fillers, InodeKey, InodeLocks, SyncService, MAX_HELPER_BACKOFF};
+use crate::helper::{Clearance, HelperError, HelperLink, HydrateRequest};
+use crate::helper::status::{HelperState, HelperUnit};
+use crate::helper::LinkCell;
+use crate::hydration::source::ContentSource;
+use crate::hydration::server::{serve, Fillers};
+use crate::folder::locks::{InodeKey, InodeLocks};
+use super::{SyncService, MAX_HELPER_BACKOFF};
 
 /// The link to the helper and everything that goes with it, for every account of one
 /// daemon.
@@ -71,10 +73,10 @@ pub struct HelperHub {
     moved_out: Mutex<Vec<(Weak<SyncService>, HashSet<String>)>>,
     /// What the machine's sources say (`sync::conditions`): every account is told, and one
     /// that joins later is told what they say then.
-    conditions: Mutex<super::running::Conditions>,
+    conditions: Mutex<crate::conditions::running::Conditions>,
     /// The hold's settings, one pair for every account (issue #95): every account is told,
     /// and one that joins later is told what they are then.
-    hold: Mutex<super::running::HoldSettings>,
+    hold: Mutex<crate::conditions::running::HoldSettings>,
 }
 
 impl HelperHub {
@@ -89,15 +91,15 @@ impl HelperHub {
             link: Arc::new(Mutex::new(link)),
             locks: InodeLocks::new(),
             socket: Mutex::new(PathBuf::from(konedrive_proto::SOCKET_PATH)),
-            unit: Mutex::new(Arc::new(helper_status::NotAsked)),
+            unit: Mutex::new(Arc::new(crate::helper::status::NotAsked)),
             changed: Arc::new(Notify::new()),
             state: watch::Sender::new(state),
             publishing: Mutex::new(()),
             accounts: Mutex::new(Vec::new()),
             registering: tokio::sync::Mutex::new(()),
             moved_out: Mutex::new(Vec::new()),
-            conditions: Mutex::new(super::running::Conditions::default()),
-            hold: Mutex::new(super::running::HoldSettings::default()),
+            conditions: Mutex::new(crate::conditions::running::Conditions::default()),
+            hold: Mutex::new(crate::conditions::running::HoldSettings::default()),
         })
     }
 
@@ -250,14 +252,14 @@ impl HelperHub {
     }
 
     /// The hold's settings every account runs on now.
-    pub fn hold_settings(&self) -> super::running::HoldSettings {
+    pub fn hold_settings(&self) -> crate::conditions::running::HoldSettings {
         *self.hold.lock().unwrap()
     }
 
     /// The hold's settings, one pair for every account (`Accounts.SetPauseOnMetered`,
     /// `SetOnBattery`): every account works its hold out again, and a change ends its
     /// `SyncAnyway`.
-    pub fn set_hold_settings(&self, hold: super::running::HoldSettings) {
+    pub fn set_hold_settings(&self, hold: crate::conditions::running::HoldSettings) {
         let accounts = {
             let _accounts = self.accounts.lock().unwrap();
             let mut kept = self.hold.lock().unwrap();
@@ -274,7 +276,7 @@ impl HelperHub {
     }
 
     /// What the machine's sources say now: every account works its hold out again.
-    pub fn set_conditions(&self, conditions: super::running::Conditions) {
+    pub fn set_conditions(&self, conditions: crate::conditions::running::Conditions) {
         let accounts = {
             let _accounts = self.accounts.lock().unwrap();
             let mut kept = self.conditions.lock().unwrap();
@@ -333,7 +335,7 @@ impl HelperHub {
     /// file's `user.konedrive.item-id` in a candidate's tree store, for a file
     /// renamed or unlinked while its open was suspended. `None` otherwise:
     /// routing never guesses.
-    pub(super) async fn route(&self, fd: &OwnedFd) -> Option<Arc<SyncService>> {
+    pub(crate) async fn route(&self, fd: &OwnedFd) -> Option<Arc<SyncService>> {
         // An object that left an account's folder is that account's, by its
         // item id, whatever folder its path is in now (`docs/design/writes.md` §8, §8.3).
         if let Some(account) = self.by_moved_out(fd) {
@@ -499,7 +501,7 @@ pub(super) async fn serve_routed(link: HelperLink, requests: tokio::sync::mpsc::
 /// [`helper_status::RECHECK`] while there is none — a helper installed,
 /// started or failed meanwhile shows within that.
 pub async fn watch(hub: Arc<HelperHub>) {
-    watch_every(hub, helper_status::RECHECK).await
+    watch_every(hub, crate::helper::status::RECHECK).await
 }
 
 /// [`watch`], asking systemd again every `every` while there is no link
@@ -526,7 +528,7 @@ pub(super) fn device_of(path: &Path) -> Option<u64> {
 }
 
 /// A content source is what an account is, to the fill loop.
-pub(super) fn filler(account: Arc<SyncService>) -> (Arc<dyn ContentSource>, super::activity::Report, Arc<konedrive_graph::pool::TransferPool>) {
+pub(crate) fn filler(account: Arc<SyncService>) -> (Arc<dyn ContentSource>, crate::status::activity::Report, Arc<konedrive_graph::pool::TransferPool>) {
     let report = account.report().clone();
     let pool = Arc::clone(account.pool());
     (account as Arc<dyn ContentSource>, report, pool)

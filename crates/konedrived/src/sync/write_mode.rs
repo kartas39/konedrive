@@ -28,14 +28,15 @@ use std::time::Duration;
 
 use tokio::sync::watch;
 
-use super::disk::Disk;
-use super::root::SyncRoot;
-use super::upload::{self, OutboxWorker, WorkerConfig};
-use super::watcher::WalkState;
-use super::{InodeKey, RootSource, SyncError, SyncService};
+use crate::folder::disk::Disk;
+use crate::folder::root::SyncRoot;
+use crate::upload::{self, OutboxWorker, WorkerConfig};
+use crate::local::watcher::WalkState;
+use crate::folder::locks::InodeKey;
+use super::{RootSource, SyncError, SyncService};
 use crate::account::PendingUploads;
 use crate::config::Mode;
-use crate::state::AccountSnapshot;
+use crate::account::state::AccountSnapshot;
 
 impl SyncService {
     /// The mode the folder follows now.
@@ -197,7 +198,7 @@ impl SyncService {
     /// Called before the sync is published, so that a read-write folder whose watcher cannot
     /// start runs that sync locked, as a read-only one (the watcher).
     #[cfg(test)]
-    pub(super) fn start_watcher(&self, root: &SyncRoot, store: &konedrive_tree::Store) -> Option<Watcher> {
+    pub(crate) fn start_watcher(&self, root: &SyncRoot, store: &konedrive_tree::Store) -> Option<Watcher> {
         self.start_watcher_scanned(root, store, None)
     }
 
@@ -227,7 +228,7 @@ impl SyncService {
     /// Stops `watcher` and waits for it, with no lock taken. Called by whoever
     /// stops the sync that started it, and only by them: a Forget, a switch to read-only
     /// (before the lock goes back on), a switch to interception.
-    pub(super) async fn stop_watcher(&self, watcher: Watcher) {
+    pub(crate) async fn stop_watcher(&self, watcher: Watcher) {
         self.stop_spawned_watcher(watcher.inner).await;
     }
 
@@ -264,9 +265,9 @@ impl SyncService {
     /// (`docs/design/writes.md` §9): the tree lock, the watcher's first scan to wait for, where to
     /// hand what the reconcile kept or copied for examination, and the word that a cycle
     /// went through.
-    pub(super) fn cycle_writes(&self, scanned: Option<watch::Receiver<bool>>) -> super::listing::Writes {
+    pub(super) fn cycle_writes(&self, scanned: Option<watch::Receiver<bool>>) -> crate::remote::listing::Writes {
         let me = self.me.clone();
-        let examine: Arc<dyn Fn(super::local::Batch) + Send + Sync> = Arc::new(move |batch| {
+        let examine: Arc<dyn Fn(crate::local::Batch) + Send + Sync> = Arc::new(move |batch| {
             let Some(service) = me.upgrade() else { return };
             let handle = service.syncing.lock().unwrap().as_ref().and_then(|s| s.watcher.as_ref()).map(|w| w.inner.handle());
             if let Some(handle) = handle {
@@ -295,7 +296,7 @@ impl SyncService {
             let Some(store) = store else { return };
             runtime.spawn(async move { service.tidy_dropped(&reg.root, &store, &rows).await });
         });
-        super::listing::Writes {
+        crate::remote::listing::Writes {
             tree_lock: Arc::clone(&self.tree_lock),
             machine_name: self.machine_name(),
             ignore: Arc::clone(&self.ignore),
@@ -478,19 +479,19 @@ const GATE_NOTE: &str = "nothing is uploaded: ";
 /// [`SyncService::start_watcher`], and given back to [`SyncService::stop_watcher`] by whoever
 /// stops that sync.
 pub struct Watcher {
-    inner: super::watcher::Watcher,
+    inner: crate::local::watcher::Watcher,
 }
 
 impl Watcher {
     /// How far the watcher's bring-up walk got: the lock comes off a folder turning
     /// read-write only once it is done.
-    pub(super) fn walked(&self) -> watch::Receiver<WalkState> {
+    pub(crate) fn walked(&self) -> watch::Receiver<WalkState> {
         self.inner.walked()
     }
 
     /// A Full local scan now: the ignore list changed (`docs/design/writes.md` §4.4).
     pub(super) fn full_scan(&self) {
-        self.inner.full_scan(super::local::ScanReason::IgnoreList);
+        self.inner.full_scan(crate::local::ScanReason::IgnoreList);
     }
 }
 

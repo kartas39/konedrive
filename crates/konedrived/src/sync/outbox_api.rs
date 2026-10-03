@@ -17,8 +17,8 @@ use std::time::Duration;
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder;
 
-use super::local::ignore::{IgnoreList, SharedIgnore};
-use super::upload::{self, OutboxHost, WorkerStatus};
+use crate::local::ignore::{IgnoreList, SharedIgnore};
+use crate::upload::{self, OutboxHost, WorkerStatus};
 use super::{Persist, SyncError, SyncService};
 use crate::config::ConfigError;
 use konedrive_tree::outbox::{Inode, OutboxState};
@@ -109,7 +109,7 @@ impl SyncService {
     /// Kept in the tree store, so it outlasts a restart.
     pub async fn pause_syncing(&self, seconds: u32) -> Result<(), SyncError> {
         let store = self.outbox_store()?;
-        let until = if seconds == 0 { 0 } else { crate::sync::activity::unix_now() + i64::from(seconds) };
+        let until = if seconds == 0 { 0 } else { crate::status::activity::unix_now() + i64::from(seconds) };
         upload::set_paused(&store, Some(until)).await.map_err(|e| SyncError::Io(e.to_string()))?;
         tracing::info!("syncing paused{}", if seconds == 0 { " until resumed".to_owned() } else { format!(" for {seconds} s") });
         self.show_pause();
@@ -146,7 +146,7 @@ impl SyncService {
             return;
         };
         self.pause_shown.fetch_add(1, Ordering::SeqCst);
-        let paused = super::running::user_pause(&store);
+        let paused = crate::conditions::running::user_pause(&store);
         let stopped = self.running.stopped(&store);
         let before = self.state.get();
         self.state.update(|s| {
@@ -180,7 +180,7 @@ impl SyncService {
                 let Some(service) = me.upgrade() else { return };
                 let seen = service.pause_shown.load(Ordering::SeqCst);
                 let left = match service.state.get().paused_until {
-                    Some(until) if until > 0 => (until - crate::sync::activity::unix_now()).max(0) as u64 + 1,
+                    Some(until) if until > 0 => (until - crate::status::activity::unix_now()).max(0) as u64 + 1,
                     _ if service.pause_timer_done(seen, false) => return,
                     _ => continue,
                 };
@@ -189,7 +189,7 @@ impl SyncService {
                 let Some(service) = me.upgrade() else { return };
                 let store = service.store.lock().unwrap().clone();
                 let Some(store) = store else { return };
-                let still = super::running::user_pause(&store);
+                let still = crate::conditions::running::user_pause(&store);
                 if still.is_none() && service.pause_timer_done(seen, true) {
                     service.wake_outbox();
                     service.nudge();
@@ -340,14 +340,14 @@ impl SyncService {
 
     /// `NotUploadedSummary()`: what is kept back, one row per reason:
     /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
-    pub async fn not_uploaded_summary(&self) -> Result<Vec<super::kept_back::SummaryRow>, SyncError> {
+    pub async fn not_uploaded_summary(&self) -> Result<Vec<crate::upload::kept_back::SummaryRow>, SyncError> {
         self.require_onedrive()?;
         if let Some(kept) = self.kept_back.lock().unwrap().clone() {
             return Ok(kept);
         }
         let (skipped, groups) = self.read_outbox(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).await?;
         let full = self.state.get().quota_full;
-        Ok(super::kept_back::summary(&skipped, &groups, full))
+        Ok(crate::upload::kept_back::summary(&skipped, &groups, full))
     }
 
     /// `NotUploadedFiles(reason, limit)`: the files kept back for `reason`,
@@ -355,7 +355,7 @@ impl SyncService {
     pub async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32), SyncError> {
         let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
         let full = self.state.get().quota_full;
-        self.read_outbox(move |s| super::kept_back::files(s, &root, full, &reason, limit)).await
+        self.read_outbox(move |s| crate::upload::kept_back::files(s, &root, full, &reason, limit)).await
     }
 
     /// `ConfirmDeletes()`: the removals the mass-delete guard held go ahead;
@@ -513,7 +513,7 @@ impl OutboxHost for Host {
     }
 
     /// `NotUploadedSummary()`'s answer from now on.
-    fn kept_back(&self, summary: &[super::kept_back::SummaryRow]) {
+    fn kept_back(&self, summary: &[crate::upload::kept_back::SummaryRow]) {
         if let Some(service) = self.sync.upgrade() {
             *service.kept_back.lock().unwrap() = Some(summary.to_vec());
         }
@@ -561,7 +561,7 @@ impl OutboxHost for Host {
     fn stopped(&self, store: &Store) -> bool {
         match self.sync.upgrade() {
             Some(service) => service.running.stopped(store),
-            None => super::running::user_pause(store).is_some(),
+            None => crate::conditions::running::user_pause(store).is_some(),
         }
     }
 

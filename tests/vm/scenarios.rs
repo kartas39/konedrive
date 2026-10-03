@@ -56,17 +56,20 @@ use konedrive_fs::placeholder::{
 };
 use konedrive_dbus::testing::TestBus;
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION, SOCKET_PATH};
-use konedrived::accounts::{self, Account, Options};
+use konedrived::daemon::manager::{Account, Options};
 use konedrived::config::{ConfigStore, Paths};
 use konedrive_graph::oauth::Endpoints;
-use konedrived::secret::MemoryWallet;
-use konedrived::state::SignInState;
-use konedrived::sync::baloo::Baloo;
-use konedrived::sync::helper::{Clearance, HelperLink};
+use konedrived::account::secret::MemoryWallet;
+use konedrived::account::state::SignInState;
+use konedrived::desktop::baloo::Baloo;
+use konedrived::helper::{Clearance, HelperLink};
 use konedrived::sync::hub;
-use konedrived::sync::root::{self, DehydrateError, SyncRoot};
-use konedrived::sync::source::{ContentSource, Fetched, LocalDir, SourceError};
-use konedrived::sync::{serve_hydrations, supervise_helper, InodeKey, InodeLocks, Persist, SyncError, SyncService};
+use konedrived::folder::root::{self, SyncRoot};
+use konedrived::hydration::dehydrate::DehydrateError;
+use konedrived::hydration::source::{ContentSource, Fetched, LocalDir, SourceError};
+use konedrived::hydration::server::serve_hydrations;
+use konedrived::sync::{supervise_helper, Persist, SyncError, SyncService};
+use konedrived::folder::locks::{InodeKey, InodeLocks};
 use nix::sys::fanotify::{
     EventFFlags, Fanotify, FanotifyResponse, InitFlags, MarkFlags, MaskFlags, Response,
 };
@@ -2817,7 +2820,7 @@ fn dehydrate_in_use(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
     let holder = Holder::start(&ctx.exe, &path)?;
     let link = ctx.link()?;
     let sync_root = ctx.sync_root();
-    let outcome = ctx.runtime.block_on(root::dehydrate(&link, &sync_root, &path));
+    let outcome = ctx.runtime.block_on(konedrived::hydration::dehydrate::dehydrate(&link, &sync_root, &path));
     let result = match outcome {
         Err(DehydrateError::InUse) => Ok(()),
         Err(other) => Err(format!("the dehydration was refused with {other}, not \"in use\"")),
@@ -2857,7 +2860,7 @@ fn dehydrate_then_open(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> {
     let link = ctx.link()?;
     let sync_root = ctx.sync_root();
     ctx.runtime
-        .block_on(root::dehydrate(&link, &sync_root, &path))
+        .block_on(konedrived::hydration::dehydrate::dehydrate(&link, &sync_root, &path))
         .map_err(|e| format!("the dehydration failed: {e}"))?;
 
     if ignore_mark_present(ctx.helper_pid(), ino) {
@@ -3836,7 +3839,7 @@ fn two_accounts_one_link(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
         onedrive: false,
     };
     let daemon = runtime
-        .block_on(accounts::start(bus.builder(), Paths::in_dir(&config_dir), options))
+        .block_on(konedrived::daemon::startup::start(bus.builder(), Paths::in_dir(&config_dir), options))
         .map_err(|e| format!("cannot start the daemon's accounts: {e:#}"))?;
     let result = two_accounts_steps(ctx, checks, &runtime, &daemon, &base);
 
@@ -3873,7 +3876,7 @@ fn two_accounts_steps(
     ctx: &Ctx,
     checks: &mut Checks,
     runtime: &tokio::runtime::Runtime,
-    daemon: &accounts::Daemon,
+    daemon: &konedrived::daemon::startup::Daemon,
     base: &Path,
 ) -> Result<(), String> {
     let manager = &daemon.manager;
@@ -4062,7 +4065,7 @@ fn stale_request_after_direct_fill(ctx: &Ctx, checks: &mut Checks) -> Result<(),
         let source = Arc::clone(&ctx.source) as Arc<dyn ContentSource>;
         let errno = ctx.runtime.block_on(async move {
             let _guard = locks.lock(key).await;
-            konedrived::sync::source::hydrate(file.into(), source.as_ref()).await
+            konedrived::hydration::source::hydrate(file.into(), source.as_ref()).await
         });
         trace.push(format!("X filled directly (errno {errno}), state {:?}", ctx.state_of(&x)?));
     }
@@ -5136,7 +5139,7 @@ fn recovery_overtaken_by_old_fill(ctx: &Ctx, checks: &mut Checks) -> Result<(), 
         }
         Ok(())
     })();
-    konedrived::sync::root::fault::set_recovery_stall(Duration::ZERO);
+    konedrived::hydration::recovery::fault::set_recovery_stall(Duration::ZERO);
     if service.root().is_some() {
         let _ = ctx.runtime.block_on(service.unregister_root());
     }
@@ -5184,7 +5187,7 @@ fn old_fill_against_recovery(
 
     // The reconnect: re-registration, then recovery, stalled between its
     // `ClearIgnore` and its lease.
-    konedrived::sync::root::fault::set_recovery_stall(Duration::from_millis(2000));
+    konedrived::hydration::recovery::fault::set_recovery_stall(Duration::from_millis(2000));
     let resuming = Arc::clone(service);
     let recovery = ctx.runtime.spawn(async move { resuming.resume().await });
     std::thread::sleep(Duration::from_millis(700));
@@ -5199,7 +5202,7 @@ fn old_fill_against_recovery(
     let b = ctx.read(&x)?;
     let b_marked = ignore_mark_present(pid, ino);
     ctx.runtime.block_on(recovery).map_err(|e| format!("resume panicked: {e}"))?;
-    konedrived::sync::root::fault::set_recovery_stall(Duration::ZERO);
+    konedrived::hydration::recovery::fault::set_recovery_stall(Duration::ZERO);
 
     let after = ctx.state_of(&x)?;
     let allocated = ctx.blocks_of(&x)? * 512;
@@ -6287,7 +6290,7 @@ fn cross_device_recovery(ctx: &Ctx, _checks: &mut Checks) -> Result<(), String> 
         let sync_root = ctx.sync_root();
         let report = ctx
             .runtime
-            .block_on(root::recover(&Clearance::Link(link), &sync_root, &ctx.locks))
+            .block_on(konedrived::hydration::recovery::recover(&Clearance::Link(link), &sync_root, &ctx.locks))
             .map_err(|e| format!("recovery failed: {e}"))?;
         if report.skipped == 0 {
             return Err(format!(

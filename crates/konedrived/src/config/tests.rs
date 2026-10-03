@@ -398,6 +398,6 @@ async fn an_unreadable_or_newer_file_poisons_the_store() {
         assert!(store.last_error().contains(&paths.config_file.display().to_string()), "{}", store.last_error());
         assert!(matches!(store.add_account("Personal"), Err(ConfigError::Unreadable(_))));
         assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), text, "never written");
-        assert!(!crate::migrate::v1_copy(&paths.config_file).exists(), "never migrated");
+        assert!(!crate::config::migrate::v1_copy(&paths.config_file).exists(), "never migrated");
     }
 }

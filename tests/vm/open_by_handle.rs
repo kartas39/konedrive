@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{create_placeholder, State, XATTR_ITEM_ID};
 use konedrive_proto::Channel;
-use konedrived::sync::helper::{reopen_for_writing, HelperError, HelperLink};
+use konedrived::helper::{reopen_for_writing, HelperError, HelperLink};
 use nix::sys::fanotify::{
     EventFFlags, Fanotify, FanotifyResponse, InitFlags, MarkFlags, MaskFlags, Response,
 };

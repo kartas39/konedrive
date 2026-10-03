@@ -37,11 +37,11 @@ use async_trait::async_trait;
 use konedrive_fs::placeholder::{read_ctag, read_progress, read_state, State};
 use konedrive_graph::drive::DriveClient;
 use konedrive_graph::quickxor::QuickXor;
-use konedrived::state::{AccountSnapshot, SignInState, StateHandle};
-use konedrived::sync::graph_source::GraphSource;
-use konedrived::sync::helper::Clearance;
-use konedrived::sync::source::{ContentSource, Fetched, SourceError};
-use konedrived::sync::{root, SyncPaths, SyncService};
+use konedrived::account::state::{AccountSnapshot, SignInState, StateHandle};
+use konedrived::hydration::graph_source::GraphSource;
+use konedrived::helper::Clearance;
+use konedrived::hydration::source::{ContentSource, Fetched, SourceError};
+use konedrived::sync::{SyncPaths, SyncService};
 use konedrive_graph::token::StaticToken;
 use konedrive_tree::{Kind, Placement, Row, Table, TreeStore};
 use tokio::io::{AsyncRead, ReadBuf};
@@ -636,7 +636,7 @@ async fn g4(
     // What the next start runs first: recovery, on the same helper link.
     let link = service.link().ok_or("no helper link")?;
     let sync_root = service.root().ok_or("no root")?;
-    root::recover(&Clearance::Link(link), &sync_root, &service.locks()).await.map_err(|e| e.to_string())?;
+    konedrived::hydration::recovery::recover(&Clearance::Link(link), &sync_root, &service.locks()).await.map_err(|e| e.to_string())?;
     let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
     let kept = read_progress(&file).ok().flatten().map(|p| p.bytes);
     if read_state(&file).ok().flatten() != Some(State::OnlineOnly) || kept.is_none() {

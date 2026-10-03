@@ -10,7 +10,7 @@ use common::*;
 use konedrive_dbus::accounts::{AccountProxy, AccountsProxy};
 use konedrive_dbus::testing::TestBus;
 use konedrive_dbus::ACCOUNT_INTERFACE_NAME;
-use konedrived::secret::{MemoryWallet, Slot};
+use konedrived::account::secret::{MemoryWallet, Slot};
 use wiremock::MockServer;
 
 const XML: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../dbus/org.konedrive.Account.xml"));
@@ -21,7 +21,7 @@ struct Setup {
     id: String,
     wallet: Arc<MemoryWallet>,
     client: zbus::Connection,
-    _daemon: konedrived::accounts::Daemon,
+    _daemon: konedrived::daemon::startup::Daemon,
     _server: MockServer,
     _dir: tempfile::TempDir,
     _bus: TestBus,
