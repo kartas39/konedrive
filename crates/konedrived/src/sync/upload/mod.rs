@@ -105,6 +105,11 @@ pub mod reason {
     /// The local object is not where the row saw it: the examination
     /// catches up.
     pub const NOT_FOUND: &str = "not-found";
+    /// A change inside a folder no longer synced here whose item OneDrive
+    /// answers `404` for while its listing still has it (issue #104):
+    /// blocked until the listing says it is gone (the row goes) or it is
+    /// changed again.
+    pub const LEAVING_NOT_FOUND: &str = "leaving-not-found";
     /// The file is not downloaded (WR1).
     pub const NOT_LOCAL: &str = "not-downloaded";
     /// Its size or time moved while it was being sent (§4.3).

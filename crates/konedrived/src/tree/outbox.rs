@@ -940,6 +940,26 @@ fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
             update.execute(params![row.seq, path_value(&to.join(rest))])?;
         }
     }
+    rebase_leaving(conn, from, to)
+}
+
+/// What is leaving at or below `from` is at `to` now, with the same path
+/// below it (issue #104).
+pub(super) fn rebase_leaving(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
+    let moved: Vec<(String, PathBuf)> = {
+        let mut statement = conn.prepare_cached("SELECT id, rel FROM leaving")?;
+        let rows = statement
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, PathBuf::from(OsStr::from_bytes(&r.get::<_, Vec<u8>>(1)?)))))?
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    let mut update = conn.prepare_cached("UPDATE leaving SET rel = ?2 WHERE id = ?1")?;
+    for (id, rel) in moved {
+        if let Ok(rest) = rel.strip_prefix(from) {
+            let to = if rest.as_os_str().is_empty() { to.to_path_buf() } else { to.join(rest) };
+            update.execute(params![id, to.as_os_str().as_bytes()])?;
+        }
+    }
     Ok(())
 }
 
@@ -1046,6 +1066,9 @@ impl TreeStore {
             .outbox_at_or_under(rel)?
             .into_iter()
             .filter(|row| row.state != OutboxState::Running && matches!(row.kind, OutboxKind::Move | OutboxKind::Delete))
+            // An item that was not in it when it began to leave — a placed
+            // file the user moved in — is the user's to move or delete.
+            .filter(|row| row.item_id.as_deref().is_some_and(|id| self.leaving_had(id).unwrap_or(true)))
             .collect();
         let tx = self.conn.transaction()?;
         for row in &rows {

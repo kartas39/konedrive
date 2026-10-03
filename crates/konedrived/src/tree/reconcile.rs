@@ -393,10 +393,27 @@ impl TreeStore {
     }
 
     /// Item `id` left, or is placed again: nothing of it is leaving now.
-    pub fn leaving_drop(&self, id: &str) -> Result<(), TreeError> {
-        self.conn.execute("DELETE FROM leaving WHERE id = ?1", [id])?;
-        self.conn.execute("DELETE FROM leaving_items WHERE leaving = ?1", [id])?;
+    pub fn leaving_drop(&mut self, id: &str) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        tx.execute("DELETE FROM leaving WHERE id = ?1", [id])?;
+        tx.execute("DELETE FROM leaving_items WHERE leaving = ?1", [id])?;
+        tx.commit()?;
         Ok(())
+    }
+
+    /// The object of item `id`, leaving, is at `rel` now: found there by its
+    /// id, wherever a move took it (issue #104).
+    pub fn leaving_set_rel(&self, id: &str, rel: &std::path::Path) -> Result<(), TreeError> {
+        use std::os::unix::ffi::OsStrExt;
+        self.conn.execute("UPDATE leaving SET rel = ?2 WHERE id = ?1", params![id, rel.as_os_str().as_bytes()])?;
+        Ok(())
+    }
+
+    /// Whatever was moved from `from` to `to` takes what is leaving at or
+    /// below it along (issue #104): a parent renamed in OneDrive and moved by
+    /// the reconcile, or renamed here and seen by the examination.
+    pub fn leaving_rebase(&self, from: &std::path::Path, to: &std::path::Path) -> Result<(), TreeError> {
+        super::outbox::rebase_leaving(&self.conn, from, to)
     }
 
     /// Stages `changes` on top of what `staging` holds: the fresh versions a
@@ -526,6 +543,21 @@ mod tests {
         }
         s.commit_staging("L2").unwrap();
         assert_eq!(s.local_handle("T").unwrap(), None, "the swap gives none back");
+    }
+
+    /// Third review, point 5: leaving an object is dropped whole — its row
+    /// and the items remembered with it, in one transaction.
+    #[test]
+    fn dropping_what_is_leaving_drops_its_items_with_it() {
+        let mut s = TreeStore::in_memory().unwrap();
+        s.begin_staging(false).unwrap();
+        s.stage(&[Change::Root(root()), Change::Upsert(folder("D", "R", "d")), Change::Upsert(file("F", "D", "f", "c1"))]).unwrap();
+        s.commit_staging("L1").unwrap();
+        s.leaving_add("D", std::path::Path::new("d")).unwrap();
+        assert!(s.leaving_had("F").unwrap());
+        s.leaving_drop("D").unwrap();
+        assert!(s.leaving().unwrap().is_empty());
+        assert!(!s.leaving_had("F").unwrap() && !s.leaving_had("D").unwrap());
     }
 
     /// Review fix 7 of issue #104: many subtree roots and handles at once —

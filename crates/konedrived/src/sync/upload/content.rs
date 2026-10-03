@@ -77,10 +77,17 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     // (issue #104, decision 1): its content goes up into the item where
     // OneDrive has it — never a rename or a move. A row elsewhere (the
     // user's own move out of it) is carried out as any other.
+    // A placed item the user moved in is not one of them: its move is
+    // carried out.
     let held_out = match (&row.item_id, row.kind) {
-        (Some(_), OutboxKind::Update) => {
-            let rel = row.rel.clone();
-            e.store().call(move |s| Ok(s.leaving()?.iter().any(|(_, at)| rel.starts_with(at)))).await?
+        (Some(id), OutboxKind::Update) => {
+            let (rel, id) = (row.rel.clone(), id.clone());
+            e.store()
+                .call(move |s| {
+                    let inside = s.leaving()?.iter().any(|(_, at)| rel.starts_with(at));
+                    Ok(inside && (s.leaving_had(&id)? || !s.locate(crate::tree::Table::Items, &id)?.is_some_and(|l| l.placed)))
+                })
+                .await?
         }
         _ => false,
     };
@@ -392,6 +399,14 @@ impl Job<'_> {
     async fn gone_or_new(&self, id: &str) -> Result<Outcome, Fail> {
         if !self.content_only {
             return upload_as_new(self.e, self.row, self.found, self.parent, id).await;
+        }
+        // Dropped only once OneDrive's own listing says the item is gone
+        // (the base no longer has it); until then the row waits, blocked,
+        // with a reason the user sees.
+        let known = { let id = id.to_owned(); self.e.store().call(move |s| s.get(crate::tree::Table::Items, &id)).await?.is_some() };
+        if known {
+            tracing::warn!("{} is not found in OneDrive, which still lists it: its change waits", self.found.rel.display());
+            return Ok(Outcome::blocked(reason::LEAVING_NOT_FOUND));
         }
         tracing::info!("{} was removed from OneDrive: its change is not uploaded", self.found.rel.display());
         if let Some(url) = &self.row.session_url {

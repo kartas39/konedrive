@@ -179,7 +179,9 @@ impl Examiner<'_> {
         };
         let handles_current = super::liveness::handles_current(self.store, &root);
         let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
-        let leaving = self.store.call_blocking(|s| s.leaving())?.into_iter().map(|(_, rel)| rel).collect();
+        let leaving_items: Vec<(String, PathBuf)> = self.store.call_blocking(|s| s.leaving())?;
+        let leaving = leaving_items.iter().map(|(_, rel)| rel.clone()).collect();
+        let leaving_ids = leaving_items.into_iter().enumerate().map(|(n, (id, _))| (id, n)).collect();
         if let Some(progress) = progress {
             progress.started();
         }
@@ -193,6 +195,7 @@ impl Examiner<'_> {
             handles_current,
             rows,
             leaving,
+            leaving_ids,
             entries: Vec::new(),
             at: HashMap::new(),
             whole: BTreeSet::new(),
@@ -290,6 +293,9 @@ struct Run<'e, 'a> {
     /// (issue #104): what is at or below them is never uploaded as new,
     /// never stripped, never moved in OneDrive.
     leaving: Vec<PathBuf>,
+    /// The item ids of what is leaving, each with its place in `leaving`:
+    /// the object is recognised by its id wherever it is.
+    leaving_ids: HashMap<String, usize>,
     entries: Vec<Entry>,
     at: HashMap<PathBuf, usize>,
     whole: BTreeSet<PathBuf>,
@@ -892,6 +898,19 @@ impl Run<'_, '_> {
         let mut by_id: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         let mut unnamed: Vec<usize> = Vec::new();
         let mut leaving: Vec<usize> = Vec::new();
+        // A leaving object is found by its item id wherever it is now — a
+        // parent renamed here or in OneDrive took it along (issue #104) —
+        // unless it is the object the base places right there.
+        for i in 0..self.entries.len() {
+            let Some(id) = self.entries[i].id.clone() else { continue };
+            let Some(&n) = self.leaving_ids.get(&id) else { continue };
+            let rel = self.entries[i].rel.clone();
+            if self.leaving[n] == rel || self.located(&id)?.is_some_and(|l| l.placed && l.rel == rel) {
+                continue;
+            }
+            self.leaving[n] = rel.clone();
+            self.store(move |s| s.leaving_set_rel(&id, &rel))?;
+        }
         for i in 0..self.entries.len() {
             let e = &self.entries[i];
             // 1. The daemon's own names; a user's `.konedrive-*` is listed.
@@ -937,7 +956,15 @@ impl Run<'_, '_> {
         for i in leaving {
             let id = self.entries[i].id.clone().expect("only entries with an id");
             if self.base_row(&id)?.is_some() {
-                ours.push(i);
+                // A placed item the user moved in is the user's move, carried
+                // out as any other; what was in it, or is placed nowhere,
+                // only uploads its content (issue #104).
+                let placed = self.located(&id)?.is_some_and(|l| l.placed);
+                if placed && !self.store({ let id = id.clone(); move |s| s.leaving_had(&id) })? {
+                    by_id.entry(id).or_default().push(i);
+                } else {
+                    ours.push(i);
+                }
             } else if self.store({ let id = id.clone(); move |s| s.leaving_had(&id) })? {
                 // Was inside it when it began to leave, and is gone from the
                 // base since: removed in OneDrive, never uploaded as new

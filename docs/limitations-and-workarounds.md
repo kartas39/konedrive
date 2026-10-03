@@ -2558,7 +2558,11 @@ application must never read zeros where real content should be.
   `tree/reconcile.rs` table `leaving`; `sync/local/examine.rs` `found_leaving`; issue #104) — an item
   OneDrive still has but this folder no longer places (a name too long, a reserved name, the Personal
   Vault, shared, OneNote, unsupported) has its placement committed and its local objects forgotten at
-  once, is listed in `Skipped()`, and its object is recorded in `leaving` where it stays. From a later
+  once, is listed in `Skipped()`, and its object is recorded in `leaving` where it stays. The object is
+  followed by its item id wherever it goes: a parent renamed in OneDrive (the reconcile moves it, and
+  its `leaving` place with it), a parent renamed here (the examination's rebase, or its finding the id
+  elsewhere), and a Full scan that finds it by its id. Its row is dropped only when nothing is there
+  (`ENOENT`) or another object is; any other error leaves it for the next cycle. From a later
   cycle on, each cycle examines it itself, after its reconcile: the object goes whole only when that
   examination records and holds back nothing and no outbox row has a place at or below it — so a file
   moved in within the watcher's quiet spell, another account's included, goes up before the folder
@@ -2566,14 +2570,20 @@ application must never read zeros where real content should be.
   shown: a content row (a blocked or kept-back one keeps it as long as it stays, listed where blocked
   rows are), a file whose state cannot be read (`unknown-state`), another filesystem mounted inside
   (`mounted-inside`), both in `NotUploaded()` among what needs the user. `move` and `delete` rows
-  whose local path is inside it are dropped: the daemon never moves or deletes for what is leaving. A
-  row elsewhere — the user's delete in the item's new place, the user's move of a file out of the
-  folder — is carried out as any other. An object recorded in `leaving`, and everything of ours in it,
+  whose local path is inside it, for items that were in it when it began to leave, are dropped: the
+  daemon never moves or deletes for what is leaving. A row elsewhere — the user's delete in the item's
+  new place, the user's move of a file out of the folder — is carried out as any other, and so is a
+  placed file the user moves in: it is moved into the leaving item in OneDrive (never the leaving
+  item itself), and the folder waits for that row. An object recorded in `leaving`, and everything of ours in it,
   is never uploaded as new nor stripped, even once its item is placed again elsewhere: a row whose
   local path is inside it uploads changed content into the item, wherever OneDrive has it, without a
   rename or a move and without recording its object. An object in it whose item was in it when it
   began to leave and is gone from OneDrive since (`leaving_items`) is removed, its rows dropped, and is
-  never uploaded again (a `404` for such a row ends it); an object whose id the base never had is a
+  never uploaded again — unless the listing is a `resyncChangesUploadDifferences` one, which does not
+  mean removed: what was downloaded or changed there is kept and goes up again as new, as anywhere
+  (F116). A `404` for such a row ends it only once OneDrive's listing says the item is gone; until then
+  the row is blocked, `leaving-not-found`, shown with what needs the user, and keeps the folder; one
+  whose item reappears stays blocked until the file is changed again. An object whose id the base never had is a
   stranger there as anywhere and goes up as new, and so does one with no id. Its `leaving` row goes
   only when it is removed, or placed again where it is. Something the user moves out of a leaving folder
   is followed only by an examination that sees it (a Full scan, if no event says it): its move is then
@@ -2581,8 +2591,18 @@ application must never read zeros where real content should be.
   (`sync::listing::rw::stale_tests::a_new_file_in_a_folder_that_stops_being_placed_…`,
   `…a_blocked_row_keeps_…`, `…a_leaving_folder_placed_again_elsewhere_…`,
   `…a_file_moved_in_from_another_account_…`, `…what_keeps_a_leaving_folder_is_shown_…`,
-  `…a_filesystem_mounted_inside_keeps_…`, `…a_change_to_an_item_no_longer_placed_never_renames_it_…`) ·
-  open.
+  `…a_filesystem_mounted_inside_keeps_…`, `…a_change_to_an_item_no_longer_placed_never_renames_it_…`,
+  `…a_leaving_folder_whose_parent_is_renamed_in_onedrive_…`, `…a_folder_moved_in_onedrive_into_a_skipped_folder_…`,
+  `…a_placed_file_moved_into_a_leaving_folder_keeps_its_move`, `…a_resync_upload_differences_keeps_…`,
+  `…a_404_not_confirmed_by_the_listing_…`) · open.
+- **F195. A leaving folder whose parent is renamed here can lose its record if a cycle comes first**
+  (`konedrived/src/sync/materialize/rw.rs` `leaving_rw`; issue #104) — a leaving object's place follows
+  the reconcile's own moves at once, but a rename made here follows only when an examination sees the
+  renamed parent. A cycle that runs between the rename and that examination finds nothing at the old
+  place (`ENOENT`) and drops the object's `leaving` row; from then on the object is an ordinary object
+  of an item not placed here, and a later examination may record a move that renames the item in
+  OneDrive back to the local name. Narrow: the watcher examines a rename within seconds of its quiet
+  spell. FRAGILE · reasoned · open.
 - **F189. A row placed again carries no local object** (`konedrived/src/tree.rs` `write`,
   `commit_staging`; `tree/reconcile.rs` `land_deferred`; issue #104) — a row that turns placed over an
   `items` row that is not placed drops whatever object `items` recorded, in a delta's overlay, a full

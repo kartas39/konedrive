@@ -70,7 +70,7 @@ fn known_group(key: &str) -> Option<Group> {
         "name-characters" | "name-spaces" | "name-reserved" | "name-not-utf8" | "too-large" | REFUSED => Group::PerFile,
         // What keeps a folder no longer synced here on disk (issue #104):
         // the user unmounts, or fixes or removes the file.
-        UNKNOWN_STATE | MOUNTED_INSIDE => Group::PerFile,
+        UNKNOWN_STATE | MOUNTED_INSIDE | LEAVING_NOT_FOUND => Group::PerFile,
         // `reserved-name` is a `.konedrive-` name, which the daemon keeps for itself.
         "symlink" | "fifo" | "socket" | "device" | OTHER_DEVICE | "reserved-name" | "hard-link" | "ignored" => Group::Never,
         OPEN_FOR_WRITING | LOCKED | NOT_FOUND | NOT_LOCAL | CHANGED | PARENT | HASH | MOVE_OUT | NO_HELPER | UNREACHABLE

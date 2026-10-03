@@ -446,8 +446,15 @@ impl Materializer {
         let base_placed = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Items, &id) })?.is_some_and(|l| l.placed);
         // An object that stays while it leaves (issue #104), whether or not
         // its item is placed again elsewhere since.
-        let leaving = self.store.call_blocking(|s| s.leaving())?.into_iter().any(|(left, at)| left == id && at == entry.rel);
-        if leaving && staged.is_some() {
+        // Recognised by its item id wherever it is — a parent renamed in
+        // OneDrive or here took it along — unless it is the object the new
+        // tree places right there; its place is followed.
+        let leaving = self.store.call_blocking(|s| s.leaving())?.into_iter().find(|(left, _)| left == id).map(|(_, at)| at);
+        let placed_here = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed && l.rel == entry.rel);
+        if let (Some(at), Some(_), false) = (&leaving, &staged, placed_here) {
+            if *at != entry.rel {
+                self.store.call_blocking({ let (id, rel) = (id.to_owned(), entry.rel.clone()); move |s| s.leaving_set_rel(&id, &rel) })?;
+            }
             return Ok(Was::Leaving);
         }
         if !base_placed {
@@ -829,9 +836,23 @@ impl Materializer {
                 self.store.call_blocking({ let id = id.clone(); move |s| s.leaving_drop(&id) })?;
                 continue;
             };
+            // Gone (`ENOENT`), or another object there: its row goes. Any
+            // other error decides nothing, and the row stays.
+            let gone = |e: &std::io::Error| matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR));
             let found = match self.disk.dir(&parent) {
-                Ok(dir) => Some((self.disk.probe(&dir, &name)?, dir)),
-                Err(_) => None,
+                Ok(dir) => match self.disk.probe(&dir, &name) {
+                    Ok(probe) => Some((probe, dir)),
+                    Err(e) if gone(&e) => None,
+                    Err(e) => {
+                        tracing::warn!("{} is leaving and cannot be looked at ({e}); it is looked at again later", rel.display());
+                        continue;
+                    }
+                },
+                Err(e) if gone(&e) => None,
+                Err(e) => {
+                    tracing::warn!("{} is leaving and cannot be looked at ({e}); it is looked at again later", rel.display());
+                    continue;
+                }
             };
             let Some((Probe::Managed { id: there, is_dir }, dir)) = found.filter(|(p, _)| matches!(p, Probe::Managed { id: there, .. } if *there == id)) else {
                 // Gone, or not its object any more.
@@ -857,7 +878,7 @@ impl Materializer {
                 tracing::info!("{} is no longer placed here: {} move(s) or delete(s) waiting for it are dropped", rel.display(), dropped.len());
             }
             if is_dir {
-                self.remove_gone_inside(&dir, &name, &rel, run)?;
+                self.remove_gone_inside(rw, &dir, &name, &rel, run)?;
             }
             if self.keeps_leaving(rw, &rel, is_dir)? {
                 continue;
@@ -882,7 +903,7 @@ impl Materializer {
     /// removed as anything OneDrive removed, and their rows dropped — never
     /// uploaded again (issue #104, decision 2). An object with no item id
     /// (made here) is left to go up.
-    fn remove_gone_inside(&self, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<(), ApplyError> {
+    fn remove_gone_inside(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, run: &mut Run) -> Result<(), ApplyError> {
         let sub = self.disk.open_subdir(dir, name)?;
         if nix::sys::stat::fstat(sub.as_fd()).map_err(std::io::Error::from)?.st_dev != nix::sys::stat::fstat(dir.as_fd()).map_err(std::io::Error::from)?.st_dev {
             return Ok(());
@@ -895,7 +916,9 @@ impl Materializer {
                     let gone = self.store.call_blocking({ let id = id.clone(); move |s| Ok(s.get(Table::Staging, &id)?.is_none() && s.leaving_had(&id)?) })?;
                     if gone {
                         let survey = self.forget_before_removing(&sub, &child, true)?;
-                        let removed = self.remove_whole(None, &sub, &child, &at, run);
+                        // `resyncChangesUploadDifferences` does not mean removed: what
+                        // was downloaded or changed here is kept, as anywhere (F116).
+                        let removed = self.remove_whole(rw.upload_differences.then_some(rw), &sub, &child, &at, run);
                         if removed.is_err() {
                             self.settle_stopped(&sub, &child, &survey);
                         }
@@ -908,10 +931,10 @@ impl Materializer {
                         } })?;
                         tracing::info!("{} was removed from OneDrive while its folder was leaving: removed here, {} change(s) dropped", at.display(), dropped.len());
                     } else if is_dir {
-                        self.remove_gone_inside(&sub, &child, &at, run)?;
+                        self.remove_gone_inside(rw, &sub, &child, &at, run)?;
                     }
                 }
-                Probe::Unmanaged { is_dir: true } => self.remove_gone_inside(&sub, &child, &at, run)?,
+                Probe::Unmanaged { is_dir: true } => self.remove_gone_inside(rw, &sub, &child, &at, run)?,
                 _ => {}
             }
         }
@@ -1159,6 +1182,9 @@ impl Materializer {
         for candidate in candidates {
             match self.disk.rename(holding, name, &dir, &candidate) {
                 Ok(()) => {
+                    // What is leaving inside it went along (issue #104).
+                    let (from, to) = (PathBuf::from(HOLDING).join(name), parent.join(&candidate));
+                    self.store.call_blocking(move |s| s.leaving_rebase(&from, &to))?;
                     let is_dir = matches!(self.disk.probe(&dir, &candidate)?, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true });
                     run.out.examine.push((parent.join(&candidate), is_dir));
                     return Ok(true);
