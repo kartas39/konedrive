@@ -1006,6 +1006,50 @@ fn an_unreadable_directory_does_not_stop_the_examination() {
     assert_eq!(fx.summary(), vec![(Create, "new.txt".into(), None)]);
 }
 
+/// LO3's case: a downloaded file whose time changed and which this daemon may
+/// not read (`chmod 000`). Its attributes cannot be read by name either, so
+/// it is passed over and reported before anything opens it: the rest of the
+/// batch is examined, and the item does not count as missing.
+#[test]
+fn an_unreadable_downloaded_file_does_not_stop_the_examination() {
+    use std::os::unix::fs::PermissionsExt;
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipping: running as root, which chmod 000 cannot refuse");
+        return;
+    }
+    let fx = Fx::new(&[file("A", "R", "a.txt", b"hello")]);
+    fx.hydrate("a.txt", b"hello");
+    File::options().write(true).open(fx.path("a.txt")).unwrap().set_modified(SystemTime::now()).unwrap();
+    fx.write("new.txt", b"n");
+    std::fs::set_permissions(fx.path("a.txt"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let named = fx.try_examine(&fx.disk(), &names(&[("", "a.txt"), ("", "new.txt")]), &fx.liveness);
+    let full = fx.try_examine(&fx.disk(), &Batch::full(), &fx.liveness);
+    std::fs::set_permissions(fx.path("a.txt"), std::fs::Permissions::from_mode(0o644)).unwrap();
+    let named = named.expect("the places named are examined");
+    let full = full.expect("the Full local scan is examined");
+    assert_eq!(named.unreadable, vec![PathBuf::from("a.txt")]);
+    assert_eq!(full.unreadable, vec![PathBuf::from("a.txt")]);
+    assert_eq!(fx.summary(), vec![(Create, "new.txt".into(), None)], "the new file goes up, and a.txt is neither changed nor deleted");
+}
+
+/// LO3's other place: a copy that kept its attributes and is read-only. The
+/// owner cannot take an attribute off a `0444` file as it is; the strip lifts
+/// the mode for that one call, so the copy is uploaded as new and stays
+/// read-only.
+#[test]
+fn a_read_only_copy_that_kept_its_attributes_is_stripped_and_uploaded_as_new() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new(&[file("A", "R", "a.txt", b"hello")]);
+    fx.hydrate("a.txt", b"hello");
+    copy_keeping_attributes(&fx.path("a.txt"), &fx.path("copy.txt"));
+    std::fs::set_permissions(fx.path("copy.txt"), std::fs::Permissions::from_mode(0o444)).unwrap();
+    let out = fx.try_examine(&fx.disk(), &names(&[("", "copy.txt")]), &fx.liveness).expect("the copy does not stop the examination");
+    assert_eq!(out.stripped, vec![PathBuf::from("copy.txt")]);
+    assert_eq!(id_of(&fx.path("copy.txt")), None);
+    assert_eq!(std::fs::metadata(fx.path("copy.txt")).unwrap().permissions().mode() & 0o7777, 0o444);
+    assert_eq!(fx.summary(), vec![(Create, "copy.txt".into(), None)]);
+}
+
 // Fix round 2 (the examination re-review): each of these failed before its fix.
 
 fn runnable(fx: &Fx) -> Vec<(OutboxKind, String)> {

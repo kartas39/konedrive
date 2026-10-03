@@ -467,6 +467,41 @@ fn a_flush_examines_what_is_pending_at_once() {
     watcher.stop();
 }
 
+/// A sink that says it was handed a batch, and panics on it.
+struct Panicking(mpsc::Sender<()>);
+
+impl Sink for Panicking {
+    fn handle(&mut self, _batch: &Batch) -> Handled {
+        let _ = self.0.send(());
+        panic!("the examination panicked (this test's own panic)");
+    }
+}
+
+/// LO4: an examiner thread that ends with nobody asking it to says so, as the
+/// reader does: nothing is examined any more, so `LastError` must tell.
+#[test]
+#[ignore = "shows LO4: the examiner thread dies unnoticed"]
+fn an_examiner_that_dies_says_the_watcher_stopped() {
+    let fx = Fx::new();
+    let (tx, handed) = mpsc::channel();
+    let watcher = Watcher::start(fx.config(), Box::new(Panicking(tx))).unwrap();
+    // The bring-up's Full local scan: the sink panics on it, and its thread ends.
+    handed.recv_timeout(WAIT).expect("the bring-up's Full local scan is handed to the sink");
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !watcher.status().stopped && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    // What is changed from now on is handed to nobody.
+    std::fs::write(fx.path("after.txt"), b"a").unwrap();
+    assert!(!watcher.flush(WAIT), "nothing examines any more");
+    let status = watcher.status();
+    assert!(
+        status.stopped && status.note().is_some_and(|note| note.contains("the watcher stopped")),
+        "the examiner thread ended on a panic and the watcher does not say it stopped: {status:?}"
+    );
+    watcher.stop();
+}
+
 /// the mode switch's hook: a watcher only for a read-write folder, started without
 /// waiting for its walk; and when the folder is moved away it reads `error`
 /// with the reason.
