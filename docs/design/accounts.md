@@ -358,8 +358,9 @@ other, and answers its object path; the object is on the bus by the time the cal
 `Accounts` changes. A label the rules refuse (§2) is `InvalidArgs`, with the reason. Signing in
 (`Account.BeginSignIn`) and choosing a folder (`Folder.Register`) are separate calls, made on the
 account's own object as they were for the single account. An `Add` whose object cannot be put on
-the bus is refused `Failed` and leaves nothing: no account in `config.toml`, no `accounts/<id>/`,
-no object.
+the bus is refused `Failed`, and what it made is taken back: the interfaces already on the bus,
+the account's entry in `config.toml`, and `accounts/<id>/`. If `config.toml` cannot be written at
+that moment the entry stays, and comes up as an account at the next start (limitations log F205).
 
 The window's **Sign in…** makes several calls in a row, not one transaction: `Add` with a temporary
 label, `BeginSignIn` on the new account, whose URL it opens in the browser, and, once the sign-in
@@ -391,12 +392,15 @@ What stays: the folder's files, as a Forget leaves them — unlocked, and a file
 downloaded left as an empty placeholder, which reads as zeros — and the rescued files, in
 `rescued/<id>/` (limitations log F47). A path that names no account is refused `NoAccount`.
 
-A removal that fails at step 2 (the refresh token cannot be deleted) or at step 3 (`config.toml`
-cannot be written) is refused `Failed`, and the account stays, no longer retired: it is listed,
-takes a folder, a sign-in and a mode as before, and can be removed again. What the steps before
-the failure did is not taken back: the folder is forgotten, and after step 2 the account is signed
-out. The refusal says what failed and names the folder that is no longer registered (limitations
-log F205).
+A removal that fails at step 2 (the refresh token cannot be deleted) or at step 3 (the account
+cannot be taken out of `config.toml`) is refused under the name the failure has (`Failed`;
+`NoAccount` when `config.toml` no longer holds the account), and the account stays, no longer
+retired: it is listed, takes a folder, a sign-in and a mode as before, and can be removed again.
+What the steps before the failure did is not taken back: a folder that was forgotten stays
+forgotten, a sign-in under way is given up, and after step 2 the account is signed out. The
+refusal says what failed and what was done: whether the account is signed out, and whether its
+folder is no longer registered, was forgotten while `config.toml` still records it, or was left
+as it was (limitations log F205).
 
 `Add`, `Remove` and `SetClientId` run one at a time.
 

@@ -128,7 +128,7 @@ impl SyncService {
     /// and so starts its sync again; that one is stopped under the lock, where
     /// stopping cannot wait for a reconcile — none can hold the lock.
     pub async fn unregister_root(&self) -> Result<(), SyncError> {
-        self.forget(false).await
+        self.forget(false).await.map(drop)
     }
 
     /// `Accounts.Remove`'s first step: the folder forgotten exactly as
@@ -136,8 +136,10 @@ impl SyncService {
     /// the same rule — and, under the same `lifecycle` lock so that nothing
     /// comes in between, the account retired: no registration, bring-up or
     /// switch is made for it from then on. An account with no folder is
-    /// retired all the same.
-    pub async fn retire(&self) -> Result<(), SyncError> {
+    /// retired all the same. The answer is the folder that was forgotten: `None` for an
+    /// account with no folder, and for one whose folder is recorded without interception and
+    /// not brought up yet, which is left as it is recorded.
+    pub async fn retire(&self) -> Result<Option<PathBuf>, SyncError> {
         self.forget(true).await
     }
 
@@ -146,7 +148,8 @@ impl SyncService {
     /// Refused `PendingUploads` while changes wait to be uploaded: the tree
     /// store that holds them goes with the folder. Asked before anything changes — the watcher
     /// hands over what it holds first — and again once the sync has stopped.
-    async fn forget(&self, retire: bool) -> Result<(), SyncError> {
+    /// The folder that was forgotten.
+    async fn forget(&self, retire: bool) -> Result<Option<PathBuf>, SyncError> {
         // Without the lifecycle lock: a reconcile, or a switch waiting for it, must not keep
         // the Forget from stopping the sync first.
         self.flush_watcher().await;
@@ -175,7 +178,7 @@ impl SyncService {
                 Some(reg) => (reg, true),
                 None if retire => {
                     self.retire_locked();
-                    return Ok(());
+                    return Ok(None);
                 }
                 None => return Err(SyncError::NoRoot),
             },
@@ -213,7 +216,7 @@ impl SyncService {
                 Err(_) => {}
             }
         }
-        result
+        result.map(|()| Some(reg.root.path))
     }
 
     /// The Forget itself, under `lifecycle` held for writing: through the

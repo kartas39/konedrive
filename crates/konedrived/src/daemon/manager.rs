@@ -263,8 +263,11 @@ impl AccountManager {
     /// Puts `account`'s objects on the bus.
     pub(crate) async fn export(&self, connection: &Connection, account: &Account) -> zbus::Result<()> {
         let path = account.path.as_ref();
-        let mut signals = vec![self.options.bus.export_account(connection, &path, Arc::clone(&account.account)).await?];
-        signals.extend(self.options.bus.export_folder(connection, &path, Arc::clone(&account.sync)).await?);
+        // Kept at once: when the folder cannot be put on the bus, whoever takes the account
+        // off again stops this task with the others.
+        let signals = self.options.bus.export_account(connection, &path, Arc::clone(&account.account)).await?;
+        account.signals.lock().unwrap().push(signals);
+        let signals = self.options.bus.export_folder(connection, &path, Arc::clone(&account.sync)).await?;
         account.signals.lock().unwrap().extend(signals);
         Ok(())
     }
@@ -300,8 +303,9 @@ impl AccountManager {
         account.account.startup().await;
         follow_mode(&account);
         if let Err(e) = self.export(connection, &account).await {
-            // Nothing of the account is left: not half of its objects on the bus, and not an
-            // entry in `config.toml` that would come up as an account at the next start.
+            // Nothing of the account is to be left: not half of its objects on the bus, and
+            // not an entry in `config.toml` that would come up as an account at the next
+            // start (which stays all the same if the file cannot be written now: F205).
             self.unexport(connection, &account).await;
             self.hub.leave(&account.sync);
             self.siblings.remove(&account.id);
@@ -323,11 +327,12 @@ impl AccountManager {
     /// the account taken out of `config.toml`, and its object off the bus. The folder's
     /// files and the rescued files are kept.
     ///
-    /// A removal that fails after the folder was forgotten — the sign-in cannot be deleted,
-    /// or `config.toml` cannot be written — leaves the account as an account: listed, taking
-    /// a folder, a sign-in and a mode again, and removable again. Its folder is not brought
-    /// back (it is forgotten at the helper, and a OneDrive folder's tree store is gone), and
-    /// the refusal says so.
+    /// A removal that fails after the account was retired — the sign-in cannot be deleted,
+    /// or the account cannot be taken out of `config.toml` — leaves the account as an
+    /// account: listed, taking a folder, a sign-in and a mode again, and removable again.
+    /// What the steps before did is not taken back (a folder forgotten is forgotten at the
+    /// helper, and a OneDrive folder's tree store is gone), and the refusal, under the name
+    /// the failure always had, says what was done.
     pub async fn remove(&self, path: &ObjectPath<'_>, connection: &Connection) -> Result<(), ManagerError> {
         let _changing = self.changing.lock().await;
         let account = self.account(path).ok_or_else(|| ManagerError::NoAccount(path.to_string()))?;
@@ -337,19 +342,22 @@ impl AccountManager {
         // Retired first, each under its own lock, so that no call on the account's own
         // objects can register a folder or store a sign-in in between: the folder
         // forgotten (a held account's through the helper too), then the sign-in.
-        // The folder `config.toml` records: a held-back account's too, which `root()` has not.
-        let folder = self.config.account(&account.id).and_then(|a| a.root).map(|root| root.path);
-        account.sync.retire().await?;
+        let forgotten = account.sync.retire().await?;
         let failed = match account.account.retire().await {
-            Err(e) => Some(format!("cannot delete the sign-in: {e}")),
-            Ok(()) => self.config.remove_account(&account.id).err().map(|e| e.to_string()),
+            Err(e) => Some((ManagerError::Failed(format!("cannot delete the sign-in: {e}")), false)),
+            Ok(()) => self.config.remove_account(&account.id).err().map(|e| (ManagerError::from(e), true)),
         };
-        if let Some(why) = failed {
+        if let Some((error, signed_out)) = failed {
             account.account.unretire();
             account.sync.unretire().await;
-            let message = half_removed(&account.account.state().get().label, &why, folder.as_deref());
-            tracing::error!("{message}");
-            return Err(ManagerError::Failed(message));
+            let left = HalfRemoved {
+                forgotten,
+                still_recorded: self.config.account(&account.id).is_some_and(|a| a.root.is_some()),
+                signed_out,
+            };
+            let error = error.saying(|why| left.text(&account.account.state().get().label, why));
+            tracing::error!("{error}");
+            return Err(error);
         }
         remove_account_dir(&account.paths.dir);
         self.unexport(connection, &account).await;
@@ -480,17 +488,50 @@ impl AccountManager {
     }
 }
 
-/// What `Accounts.Remove` answers when it failed with `why` after the account's folder,
-/// `folder`, was forgotten.
-fn half_removed(label: &str, why: &str, folder: Option<&Path>) -> String {
-    let left = match folder {
-        Some(folder) => format!(
-            "the account stays, and its folder {} is no longer registered (the files in it are kept)",
-            folder.display()
-        ),
-        None => "the account stays".to_owned(),
-    };
-    format!("the account {label:?} is not removed: {why}; {left}. Remove it again, or go on using it")
+/// What an `Accounts.Remove` that failed after the account was retired had done by then.
+struct HalfRemoved {
+    /// The folder that was forgotten, if one was.
+    forgotten: Option<PathBuf>,
+    /// Whether `config.toml`, as the daemon holds it, still records a folder for the account.
+    still_recorded: bool,
+    /// Whether the sign-in was deleted.
+    signed_out: bool,
+}
+
+impl HalfRemoved {
+    /// What the removal answers, `why` being what failed.
+    fn text(&self, label: &str, why: &str) -> String {
+        let mut left = String::from("the account stays");
+        if self.signed_out {
+            left.push_str(", signed out");
+        }
+        match (&self.forgotten, self.still_recorded) {
+            (Some(folder), false) => {
+                left.push_str(&format!(", and its folder {} is no longer registered (the files in it are kept)", folder.display()));
+            }
+            (Some(folder), true) => left.push_str(&format!(
+                ", and its folder {} was forgotten (the files in it are kept), but config.toml still records it, so it \
+                 may be taken for registered again",
+                folder.display()
+            )),
+            (None, true) => left.push_str(", and its folder is left as it was"),
+            (None, false) => {}
+        }
+        format!("the account {label:?} is not removed: {why}; {left}. Remove it again, or go on using it")
+    }
+}
+
+impl ManagerError {
+    /// The same refusal, under the same name, with `text` made of what it said.
+    fn saying(self, text: impl FnOnce(&str) -> String) -> Self {
+        match self {
+            Self::InvalidArgs(why) => Self::InvalidArgs(text(&why)),
+            Self::Failed(why) => Self::Failed(text(&why)),
+            // Its message begins "there is no account ": the rest goes on from there.
+            Self::NoAccount(id) => Self::NoAccount(format!("{id:?} in config.toml, so {}", text("it cannot be taken out of it"))),
+            Self::Sync(_) => self,
+        }
+    }
 }
 
 /// Removes an account's own directory, with everything the daemon kept in it.
@@ -527,3 +568,6 @@ fn resolve_parent(path: &Path) -> Option<PathBuf> {
         None => std::fs::canonicalize(path).ok(),
     }
 }
+
+#[cfg(test)]
+mod tests;

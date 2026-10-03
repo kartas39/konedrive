@@ -737,6 +737,9 @@ async fn an_account_whose_removal_failed_half_way_still_takes_a_folder() {
     let folder = dir.path().join("Folder");
     std::fs::create_dir(&folder).unwrap();
     sync.register_without_interception(folder.to_str().unwrap()).await.unwrap();
+    // A sign-in under way: the removal gives it up before the wallet refuses.
+    let account = AccountProxy::builder(&client).path(path.clone()).unwrap().cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
+    account.begin_sign_in().await.unwrap();
 
     wallet.failing.store(true, std::sync::atomic::Ordering::SeqCst);
     let refused = manager.remove(&path.as_ref()).await.expect_err("the sign-in cannot be deleted, so the removal fails");
@@ -747,6 +750,8 @@ async fn an_account_whose_removal_failed_half_way_still_takes_a_folder() {
         said.contains("cannot delete the sign-in") && said.contains("no longer registered") && said.contains("Folder"),
         "the refusal says what failed and what became of the folder: {said}"
     );
+    assert_eq!(account.state().await.unwrap(), "signed-out", "no sign-in is left under way with nothing behind it");
+    account.begin_sign_in().await.expect("the account takes a sign-in again");
 
     if sync.state().await.unwrap() == "none" {
         if let Err(refused) = sync.register_without_interception(folder.to_str().unwrap()).await {
@@ -788,10 +793,16 @@ impl konedrived::daemon::manager::Bus for FailingExports {
         path: &zbus::zvariant::ObjectPath<'_>,
         sync: Arc<konedrived::sync::SyncService>,
     ) -> zbus::Result<Vec<tokio::task::JoinHandle<()>>> {
+        let signals = konedrived::dbus::export::OnBus.export_folder(connection, path, sync).await?;
         if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
+            // As an export that failed part of the way leaves it: some of the folder's
+            // interfaces on the bus, one in the middle not.
+            signals.iter().for_each(|task| task.abort());
+            let transfers = zbus::names::InterfaceName::from_static_str(konedrive_dbus::TRANSFERS_INTERFACE_NAME)?;
+            connection.object_server().remove_named(path, transfers).await?;
             return Err(zbus::Error::Failure("no folder on this bus".into()));
         }
-        konedrived::dbus::export::OnBus.export_folder(connection, path, sync).await
+        Ok(signals)
     }
 
     async fn unexport_folder(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>) -> zbus::Result<()> {
@@ -830,6 +841,8 @@ async fn an_add_that_cannot_be_put_on_the_bus_leaves_nothing_behind() {
     let accounts = Paths::in_dir(config.path()).state_dir.join("accounts");
     let left: Vec<_> = std::fs::read_dir(&accounts).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
     assert!(left.is_empty(), "no directory of the account is left: {left:?}");
+    let objects = introspect(&client, ACCOUNTS_PATH).await;
+    assert!(!objects.contains("<node name="), "no object of the account is left on the bus: {objects}");
 
     exports.failing.store(false, std::sync::atomic::Ordering::SeqCst);
     let path = manager.add("Personal").await.expect("the label is free, and the account's object path too");

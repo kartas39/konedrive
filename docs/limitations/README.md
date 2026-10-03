@@ -229,7 +229,7 @@ application must never read zeros where real content should be.
 - [F199](F199.md) — A folder without interception has its path, and nothing else, while the daemon starts
 - [F203](F203.md) — A free-up whose blocking task cannot be joined leaves the file `dehydrating`
 - [F204](F204.md) — A sign-in whose account is reported signed out meanwhile ends in silence
-- [F205](F205.md) — A removal that fails half-way leaves the account without its folder
+- [F205](F205.md) — A removal that fails half-way leaves the account without its folder, and a failed `Add` can leave its entry
 
 ---
 

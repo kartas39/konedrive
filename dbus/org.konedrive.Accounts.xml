@@ -32,7 +32,7 @@
          Folder.Unregister is, while changes made here wait to be
          uploaded. Failed when the token cannot be deleted or config.toml
          cannot be written after the folder was forgotten: the account stays,
-         without its folder, and the message says so. -->
+         and the message says what was done to its folder and its sign-in. -->
     <method name="Remove">
       <arg name="account" type="o" direction="in"/>
     </method>
