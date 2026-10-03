@@ -30,11 +30,12 @@ impl Engine {
                 return;
             }
         };
-        self.release_forbidden().await;
         self.space_start().await;
         // The quota, read again when it is due (while full, while a file is
         // too big, once after a start that found waiting rows).
         if self.may_start() {
+            // Only when the worker may send: until then the rows stay blocked, and listed.
+            self.release_forbidden().await;
             self.space_check(now()).await;
             self.cancel_given_up().await;
         }

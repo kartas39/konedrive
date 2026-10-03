@@ -225,7 +225,6 @@ application must never read zeros where real content should be.
 - [F194](F194.md) — Some leaving or removed folders fail every cycle until their cause is gone
 - [F196](F196.md) — What the user does inside a folder that is leaving does not reach OneDrive
 - [F197](F197.md) — A `403` blocks only its row, and the row is tried again whenever a worker begins
-- [F198](F198.md) — `binary_activity_lists_what_happened_newest_first` can fail with "the file is in use"
 
 ---
 

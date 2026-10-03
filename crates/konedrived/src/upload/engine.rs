@@ -82,7 +82,7 @@ pub(super) struct Shared {
     /// The token source said the account is signed out: nothing more is taken. Never
     /// cleared: the sign-out stops the folder's sync, and this worker with it.
     needs_sign_in: bool,
-    /// The rows a `403` blocked were let go once, when this worker began
+    /// The rows a `403` blocked were let go once, when this worker could first send
     /// ([`Engine::release_forbidden`]).
     forbidden_released: bool,
     last_error: String,
@@ -280,10 +280,11 @@ impl Engine {
         }
     }
 
-    /// The rows a `403` blocked are ready again, once in this worker's life, before its
-    /// first row: a worker begins after a sign-in (the sign-out before it stopped the
-    /// folder's sync), and also after a restart or a mode switch, where the rows are tried
-    /// once more and blocked again if OneDrive still refuses (`docs/design/writes.md` §6.3).
+    /// The rows a `403` blocked are ready again, once in this worker's life, at the first
+    /// drain in which it may send (while it may not, they stay blocked and listed): a worker
+    /// begins after a sign-in (the sign-out before it stopped the folder's sync), and also
+    /// after a restart or a mode switch, where the rows are tried once more and blocked
+    /// again if OneDrive still refuses (`docs/design/writes.md` §6.2).
     pub(super) async fn release_forbidden(&self) {
         if self.shared().forbidden_released {
             return;
