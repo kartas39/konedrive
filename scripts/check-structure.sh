@@ -13,8 +13,10 @@
 #   scripts/check-structure.sh
 #
 # What it takes for test code: a file under a `tests` directory, a Rust file
-# named `tests.rs` or `*_tests.rs`, and a Rust module declared under
-# `#[cfg(test)]` (with every file below it).
+# named `tests.rs`, and a Rust module declared under `#[cfg(test)]` (with
+# every file below it). Such a module is test code for the layer order and
+# the size limit; a test (`#[test]`) is allowed only in `tests.rs` and under
+# `tests/`.
 #
 # What it does not see is in docs/limitations/D30.md.
 set -eu
@@ -36,7 +38,7 @@ BEGIN {
 
 # A file under a `tests` directory, or a Rust file named for tests.
 function test_by_path(file) {
-    return file ~ /(^|\/)tests\// || file ~ /(^|\/|_)tests\.rs$/
+    return file ~ /(^|\/)tests\// || file ~ /(^|\/)tests\.rs$/
 }
 
 # Where the modules a Rust file declares are: the file`s directory for
@@ -106,7 +108,8 @@ function read_rust(file,    line, number, pending, own, top, name, by_path) {
         if (line ~ /^[ \t]*#\[(tokio::)?test[]( ]/) {
             found++
             found_file[found] = file
-            found_text[found] = file ":" number ": a test in a source file (rule 2)"
+            found_rule[found] = 2
+            found_text[found] = file ":" number ": a test outside tests.rs and tests/ (rule 2)"
         }
         if (line ~ /^[ \t]*#\[cfg\(test\)\][ \t]*$/) {
             pending = 1
@@ -123,6 +126,7 @@ function read_rust(file,    line, number, pending, own, top, name, by_path) {
         if (line ~ /\{/) {
             found++
             found_file[found] = file
+            found_rule[found] = 2
             found_text[found] = file ":" number ": a test module in a source file (rule 2)"
             continue
         }
@@ -179,9 +183,11 @@ END {
             bad++
         }
     }
-    # Rules 2 and 3 are for source files: what was found in test code is dropped.
+    # Rule 3 is for source files: what was found in test code is dropped.
+    # Rule 2 has no such exemption: a test is in tests.rs or under tests/,
+    # which were not read for it at all.
     for (i = 1; i <= found; i++) {
-        if (is_test[found_file[i]])
+        if (found_rule[i] != 2 && is_test[found_file[i]])
             continue
         print found_text[i]
         bad++

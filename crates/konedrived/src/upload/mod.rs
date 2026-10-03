@@ -47,8 +47,6 @@ mod steps;
 #[cfg(any(test, feature = "fault-injection"))]
 pub mod fake;
 #[cfg(test)]
-mod move_out_tests;
-#[cfg(test)]
 mod tests;
 pub mod kept_back;
 

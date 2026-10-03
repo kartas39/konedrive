@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 use konedrive_fs::placeholder::{self, State};
 
-use super::super::{Listing, ListingContext};
-use super::tests::{now, world, write_version, Scanning, World};
+use crate::remote::listing::{Listing, ListingContext};
+use super::{now, world, write_version, Scanning, World};
 use crate::folder::disk::Disk;
 use crate::upload::fake::ROOT;
 use crate::local::{Examined, Examiner, IgnoreList};
@@ -398,7 +398,7 @@ async fn what_keeps_a_leaving_folder_is_shown_and_a_move_from_before_does_not() 
 async fn a_filesystem_mounted_inside_keeps_a_leaving_folder_and_says_so() {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp-btrfs");
     std::fs::create_dir_all(&base).unwrap();
-    let w = Arc::new(super::tests::world_in(Some(&base)).await);
+    let w = Arc::new(super::world_in(Some(&base)).await);
     let listing = w.listed().await;
     let made = std::process::Command::new("btrfs").arg("subvolume").arg("create").arg(w.path("docs/sub")).output();
     if !made.is_ok_and(|o| o.status.success()) {
@@ -422,7 +422,7 @@ fn id_at(path: &Path) -> Option<String> {
     if std::fs::symlink_metadata(path).is_err() {
         return None;
     }
-    super::tests::id_at(path)
+    super::id_at(path)
 }
 
 /// Review fix 1: `docs/f.txt` is changed here, and before the change is

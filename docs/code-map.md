@@ -9,9 +9,9 @@ A change that adds, moves or removes a file changes its line here.
 ## How to read it
 
 - A heading names a directory; the files under it are named from that directory.
-- `[tests]` after a Rust file `x.rs` means its unit tests are in `x/tests.rs`. After `mod.rs`,
-  `lib.rs` or `main.rs` it means `tests.rs` or `tests/` in the same directory. Those test files
-  have no line of their own; every other test file has one.
+- `[tests]` after a Rust file `x.rs` means its unit tests are in `x/tests.rs`, or in `x/tests/`
+  by topic. After `mod.rs`, `lib.rs` or `main.rs` it means `tests.rs` or `tests/` in the same
+  directory. A `tests.rs` has no line of its own; the files of a `tests/` directory have.
 - "Design" names the document in [`docs/design/`](design/README.md) that explains the area.
 
 ## The parts
@@ -45,13 +45,13 @@ Which crate uses which, lowest first: `konedrive-proto` and `konedrive-fs`; `kon
 | The Rust workspace | `cargo test --workspace` | The unit tests of every crate and the integration tests in `crates/*/tests/`, on private buses, temporary directories and wiremock |
 | One crate, or one test binary | `cargo test -p konedrived --lib`, `cargo test -p konedrivectl --test sync_cli` | The same, narrowed while working on one part |
 | The development build's tests | `cargo test -p konedrived -p konedrivectl --features konedrived/dev-tools,konedrivectl/dev-tools` | The token export (`dbus/token_export.rs`, `konedrivectl dev`) |
-| The outbox at scale | `cargo test -p konedrived --release --lib bench:: -- --ignored --nocapture --test-threads 1` | `crates/konedrived/src/bench.rs`: ignored tests, run by hand |
+| The outbox at scale | `cargo test -p konedrived --release --lib bench:: -- --ignored --nocapture --test-threads 1` | `crates/konedrived/src/tests/bench.rs`: ignored tests, run by hand |
 | The window | `cmake -S app -B build/app -DBUILD_TESTING=ON && cmake --build build/app && ctest --test-dir build/app --output-on-failure` | `app/tests/` |
 | The Dolphin plugins | `cmake -S dolphin -B build/dolphin -DBUILD_TESTING=ON && cmake --build build/dolphin && ctest --test-dir build/dolphin --output-on-failure` | `dolphin/tests/` |
 | The VM suite | `tests/vm/run.sh quick` (btrfs); `tests/vm/run.sh full` (btrfs, ext4, xfs) | `tests/vm/scenarios/`: the real helper as root. Only when a change touches the helper path |
 | The helper's unit | `tests/vm/run.sh unit` | `tests/vm/helper_unit_test.sh`: the shipped systemd unit, under systemd in the VM |
 | The helper's installer | `tests/vm/run.sh tests/vm/install_helper_test.sh` | `scripts/install-helper.sh`, as root in the VM |
-| The kernel measurements | `tests/vm/run.sh measure`; `tests/vm/run.sh <binary>` for the built `poc-marks`, `vm-ignore-mark` and `watch-probe` | The probes behind `docs/kernel-behavior-7.2.md` |
+| The kernel measurements | `tests/vm/run.sh measure`; `tests/vm/run.sh <binary>` for the built `poc-marks`, `vm-ignore-mark` and `watch-probe` | The probes behind `docs/kernel-behavior-7.2/` |
 | The test account | `konedrive-write-test` (`tests/write-account`) | Writes to OneDrive itself, through the guards; rare, never the user's real account |
 | The structure | `scripts/check-structure.sh` | The size limits, tests outside source files, the daemon's layer order |
 
@@ -72,7 +72,8 @@ The directories are in layer order: a directory uses only the directories before
 - `main.rs` — the program: reads the configuration, starts the daemon on the session bus,
   keeps the helper link up.
 - `lib.rs` — the list of the directories below.
-- `bench.rs` — the outbox and the cloud side at scale: ignored tests, run by hand in release.
+- `tests/bench.rs` — the module `bench`: the outbox and the cloud side at scale, ignored
+  tests run by hand in release.
 
 ### `crates/konedrived/src/config/`
 
@@ -206,9 +207,15 @@ The outbox worker: sends the recorded changes to OneDrive; what is kept back. De
 - `fake.rs` — a fake OneDrive, for the worker's tests and the VM suite's write scenarios.
 - `fake/harness.rs` — the tests' worker around the fake.
 - `fake/sockets.rs` — the fake's notification socket.
-- `move_out_tests.rs` — tests: moves out of the folder, on the host.
-- `removed_tests.rs` — tests: a file or folder removed before its upload finished.
-- `sessions_tests.rs` — tests: upload sessions and their placeholders.
+
+### `crates/konedrived/src/upload/tests/`
+
+The tests of the worker, by topic.
+
+- `mod.rs` — the worker's steps, its order, its crash points; what the topics share.
+- `move_out.rs` — moves out of the folder, on the host.
+- `removed.rs` — a file or folder removed before its upload finished.
+- `sessions.rs` — upload sessions and their placeholders.
 
 ### `crates/konedrived/src/remote/`
 
@@ -224,8 +231,6 @@ reconcile in read-write mode).
 - `listing/poller.rs` — when a cycle runs. `[tests]`
 - `listing/replacements.rs` — replacing changed files, several at once. `[tests]`
 - `listing/rw.rs` — a read-write folder's cycle. `[tests]`
-- `listing/rw/stale_tests.rs` — tests: what the daemon takes off the disk itself is never
-  deleted or moved in OneDrive.
 - `materialize.rs` — `Materializer`: makes the folder match the tree. `[tests]`
 - `materialize/file.rs` — a file already in place, and what its content needs.
 - `materialize/holding.rs` — deleting what OneDrive no longer has; rescues.
@@ -235,6 +240,14 @@ reconcile in read-write mode).
   longer placed here.
 - `materialize/rw/removal.rs` — what OneDrive removed, and what is kept of it.
 - `materialize/rw/holding.rs` — putting back what was held.
+
+### `crates/konedrived/src/remote/listing/rw/tests/`
+
+The tests of a read-write folder's cycle.
+
+- `mod.rs` — the cycle with the outbox and the examination; what the topics share.
+- `stale.rs` — what the daemon takes off the disk itself is never deleted or moved in
+  OneDrive.
 
 ### `crates/konedrived/src/desktop/`
 
@@ -623,8 +636,8 @@ Design: `desktop.md`; `docs/kio-behavior.md` for what Dolphin opens.
 ## `tests/vm`: the VM suite
 
 A crate of its own, outside the workspace. Everything that needs root runs here, in a
-virtme-ng VM, never on the host. Design: `hydration.md`; `docs/kernel-behavior-7.2.md` for
-what the probes measured.
+virtme-ng VM, never on the host. Design: `hydration.md`; `docs/kernel-behavior-7.2/` for what
+the probes measured.
 
 ### `tests/vm/`
 
@@ -743,8 +756,9 @@ Design: `packaging.md`; `docs/releasing.md`.
 - `docs/design/` — how the system works and why; its `README.md` is the index.
 - `docs/limitations/` — every limit, workaround, fragile spot and shortcut, one file each;
   its `README.md` is the index.
-- `docs/kernel-behavior-7.2.md` — what fanotify, leases and the filesystems were measured to
-  do.
+- `docs/kernel-behavior-7.2/` — what fanotify, leases and the filesystems were measured to
+  do, by topic; its `README.md` is the index.
+- `docs/history/original-proposal.md` — the original proposal for the whole client.
 - `docs/kio-behavior.md` — what KIO and Dolphin open.
 - `docs/releasing.md` — the version, and how a release is made.
 - `docs/acceptance-check.md` — a manual check of a build against a real account.
