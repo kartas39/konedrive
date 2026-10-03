@@ -313,12 +313,6 @@ pub struct SyncService {
     /// across each commit that touches `items`, and a cycle must hold it from
     /// staging to swap, or the swap reverts the commit.
     tree_lock: Arc<tokio::sync::Mutex<()>>,
-    /// One at a time: a drop of the outbox (`PendingUploads::drop_pending_uploads`) and a
-    /// change of the mode ([`write_mode`]'s switch). The lock order (`docs/design/writes.md`
-    /// §9) is this lock, the tree lock, `lifecycle`; the switch alone takes the tree lock
-    /// with `lifecycle` held for writing, and this lock keeps out the drop that would hold
-    /// the tree lock and wait for `lifecycle` meanwhile.
-    switching: tokio::sync::Mutex<()>,
     /// The account's ignore list (`docs/design/writes.md` §4.4), from `config.toml`: the
     /// watcher's examination reads it, `SetIgnorePatterns` changes it.
     ignore: local::ignore::SharedIgnore,
@@ -516,7 +510,6 @@ impl SyncService {
                 mode: Mutex::new(Mode::ReadOnly),
                 me: me.clone(),
                 tree_lock: Arc::new(tokio::sync::Mutex::new(())),
-                switching: tokio::sync::Mutex::new(()),
                 drive_seen: Mutex::new(None),
             })
         })

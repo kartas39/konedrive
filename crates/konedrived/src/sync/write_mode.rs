@@ -76,9 +76,6 @@ impl SyncService {
             return;
         }
         let was_syncing = self.stop_tasks().await;
-        // Before `lifecycle`: no drop of the outbox holds the tree lock while this switch,
-        // which takes it below with `lifecycle` held, is under way (`switching`).
-        let _switching = self.switching.lock().await;
         let _lifecycle = self.lifecycle.write().await;
         let was_syncing = self.stop_tasks().await || was_syncing;
         if was_syncing {
@@ -420,23 +417,17 @@ impl SyncService {
     /// dropped, the item would stay under that name, and its local object
     /// would go.
     ///
-    /// Takes the tree lock, so the caller holds `lifecycle` for writing with the folder's
-    /// tasks stopped, and `switching`: nothing that holds the tree lock then waits for
-    /// `lifecycle` (`docs/design/writes.md` §9). A caller whose sync runs takes the tree lock
-    /// first, and calls [`drop_outbox_under`](Self::drop_outbox_under).
+    /// The caller holds `lifecycle` for writing, with the folder's tasks stopped: this takes
+    /// the tree lock, and only a cycle, which those stops end, holds the tree lock while it
+    /// waits for `lifecycle` (`docs/design/writes.md` §9).
     async fn drop_outbox(&self) {
-        let tree = self.tree_lock.lock().await;
-        self.drop_outbox_under(tree).await;
-    }
-
-    /// [`drop_outbox`](Self::drop_outbox) with the tree lock taken by the caller, before
-    /// `lifecycle`. Under the tree lock: a cycle's swap must not give a moved-out item back
-    /// the object it forgets here.
-    async fn drop_outbox_under(&self, tree: tokio::sync::MutexGuard<'_, ()>) {
         let store = self.store.lock().unwrap().clone();
         let root = self.registration().map(|reg| reg.root);
         let (Some(store), Some(root)) = (store, root) else { return };
         let (dropping, marked) = (store.clone(), root.clone());
+        // Under the tree lock: a cycle's swap must not give a moved-out item back the object
+        // it forgets here.
+        let tree = self.tree_lock.lock().await;
         let dropped = tokio::task::spawn_blocking(move || {
             let rows = dropping.call_blocking(move |s| {
                 let mut rows = upload::move_out::drop_rows(s)?;
@@ -592,28 +583,25 @@ impl PendingUploads for SyncService {
     /// A forced switch to read-only drops the outbox's rows (`docs/design/writes.md`
     /// §2); the files stay, as ordinary local changes, protected by the read phase's stamp
     /// check and rescue. Called once `config.toml` says read-only, before the
-    /// folder follows. The worker stops first, so nothing more is sent. A
-    /// row the examination adds after it — the watcher still runs until then — is dropped
-    /// when the folder turns read-only ([`SyncService::follow_mode`]), and only then: any
-    /// other switch to read-only keeps them.
+    /// folder follows. The worker stops first, so nothing more is sent.
+    ///
+    /// The folder's sync stops for the drop and starts again after it, in either mode: the
+    /// rows go with `lifecycle` held for writing and no task running, as at any switch, so
+    /// nothing here holds `lifecycle` or the tree lock while it waits for the other with a
+    /// cycle under way (`docs/design/writes.md` §9). The mode is read under that lock, which
+    /// every change of it holds.
+    ///
+    /// A read-write folder's sync starts again read-write, since the folder has not followed
+    /// yet: its worker sends nothing, the write gate being closed by `config.toml`, and what
+    /// its watcher records until the folder turns read-only is dropped then
+    /// ([`SyncService::follow_mode`]), and only then: any other switch to read-only keeps
+    /// such rows.
     ///
     /// A folder read-only already — its sync holding its cycles for these changes — starts
     /// its sync again without them, as a read-only start does: what a read-write cycle
     /// deferred is the base's, and the first cycle is a Full reconcile.
     async fn drop_pending_uploads(&self) {
         self.stop_outbox().await;
-        // The mode stays as it is read here until this is done.
-        let _switching = self.switching.lock().await;
-        if self.mode() == Mode::ReadWrite {
-            // The sync runs on: the tree lock first, then `lifecycle`, as its cycles take
-            // them (`docs/design/writes.md` §9). The other way round, a cycle holding the
-            // tree lock and a writer waiting for `lifecycle` between the two never end.
-            let tree = self.tree_lock.lock().await;
-            let _lifecycle = self.lifecycle.read().await;
-            self.drop_outbox_under(tree).await;
-            self.drop_at_read_only.store(true, Ordering::SeqCst);
-            return;
-        }
         let was_syncing = self.stop_tasks().await;
         let _lifecycle = self.lifecycle.write().await;
         let was_syncing = self.stop_tasks().await || was_syncing;
@@ -621,6 +609,9 @@ impl PendingUploads for SyncService {
             self.let_go_of_activity().await;
         }
         self.drop_outbox().await;
+        if self.mode() == Mode::ReadWrite {
+            self.drop_at_read_only.store(true, Ordering::SeqCst);
+        }
         if was_syncing {
             self.start_sync().await;
         }

@@ -717,11 +717,12 @@ async fn a_read_write_folder_whose_sync_cannot_start_is_locked_again() {
 }
 
 /// SY1: three callers of a read-write folder end, whatever order they come in. A cycle
-/// takes the tree lock and then `lifecycle` for reading, and so does a forced switch to
-/// read-only; a bring-up after the helper reconnects takes `lifecycle` for writing. When
-/// the switch took `lifecycle` first, the three waited for each other for good. The test
-/// holds the tree lock itself first, as a commit of the outbox worker does, so that the
-/// cycle and the switch both wait for it when the bring-up comes.
+/// takes the tree lock and then `lifecycle` for reading; a forced switch to read-only stops
+/// the folder's tasks and takes `lifecycle` for writing, then the tree lock; a bring-up after
+/// the helper reconnects waits for `lifecycle` for writing behind it. When the switch held
+/// `lifecycle` for reading with the cycle running, the three waited for each other for good.
+/// The test holds the tree lock itself first, as a commit of the outbox worker does, so that
+/// the cycle and then the switch wait for it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cycle_a_forced_switch_and_a_bring_up_at_once_all_end() {
     use crate::account::PendingUploads;
@@ -754,16 +755,17 @@ async fn a_cycle_a_forced_switch_and_a_bring_up_at_once_all_end() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     tokio::time::sleep(Duration::from_millis(300)).await;
-    // The forced switch: it waits for the tree lock, and holds no `lifecycle` meanwhile.
+    // The forced switch: it holds `lifecycle`, and waits for the tree lock.
     let switching = Arc::clone(&service);
     let switch = tokio::spawn(async move { switching.drop_pending_uploads().await });
     within(Duration::from_secs(3), || service.lifecycle.try_write().is_err()).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
-    // The helper reconnected: the bring-up takes `lifecycle` for writing.
+    assert!(service.lifecycle.try_write().is_err() && !switch.is_finished(), "the switch holds `lifecycle` and waits for the tree lock");
+    // The helper reconnected: the bring-up waits for `lifecycle` for writing.
     let resuming = Arc::clone(&service);
     let bring_up = tokio::spawn(async move { resuming.resume().await });
-    within(Duration::from_secs(3), || service.lifecycle.try_read().is_err()).await;
     tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!switch.is_finished() && !bring_up.is_finished(), "the switch and the bring-up both wait");
     drop(held);
 
     let ended = tokio::time::timeout(Duration::from_secs(15), async {
