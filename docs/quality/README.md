@@ -70,7 +70,7 @@ not fixed moves there.
 | [`UP1`](upload.md) | `upload/engine.rs:307–317`, `engine/drain.rs:247`, `:255` | The "needs sign-in" latch is never cleared; one 401 or 403 stops the worker | confirmed for 403; the 401 part refuted |
 | [`UP3`](upload.md) | `upload/kept_back.rs:64–81` | Blocked rows shown as "waiting, goes up by itself" | confirmed |
 | [`LO3`](local.md) | `local/examine/found.rs:200`, `classify.rs:340`, `:362` | One file's I/O error aborts the whole examination, again at every retry | refuted as written; a narrower form confirmed |
-| [`LO4`](local.md) | `local/watcher/mod.rs:544–641` | The examiner thread dies unnoticed; uploads stop with no error shown | confirmed (the panic); refuted (`RootGone`) |
+| [`LO4`](local.md) | `local/watcher/mod.rs:544–641` | The examiner thread dies unnoticed; uploads stop with no error shown | fixed in `eba0828` (the panic); refuted (`RootGone`) |
 | [`LO13`](local.md) | `local/entry.rs:144`, `local/examine/run.rs:145` | A mount without user attributes inside the folder aborts every examination | open |
 | [`HY1`](hydration.md) | `hydration/source/fill.rs:196–249`, `:351` | A fill without clearance punches a file on the strength of a comment (the zeros path) | refuted as reachable; a latent hole confirmed |
 | [`HY8`](hydration.md) | `hydration/dehydrate.rs:220` | An error path skips the roll-back; a good local copy is lost | confirmed |

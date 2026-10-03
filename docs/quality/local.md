@@ -89,6 +89,8 @@ inside it. `LO5` after these.
     shut down (`service.rs:133`), and any future bug in the examination.
   - **A fix must:** put a guard on the examiner like the reader's `Ending`; the guard runs during
     unwinding, so it takes poisoned locks and must not panic itself; wake the reader so it ends.
+- **Fixed 2026-10-03** in `eba0828` (#132): the examiner has the guard `ExaminerEnding`; what an
+  unasked end leaves is in `docs/limitations/F74.md` (11).
 
 ## LO5. `Reader::visit` and the settle path are hard to change safely
 
