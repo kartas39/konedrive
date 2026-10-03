@@ -239,12 +239,11 @@ async fn fill_file(
     let clearance = match (found, clearance) {
         (Some(State::OnlineOnly), _) => None,
         (_, Some(clearance)) => Some(clearance),
+        // The ordinary way here is a helper that is away (an intercepted
+        // folder with no link): the caller says so where it used to, so
+        // this is not an error to write at every attempt.
         (_, None) => {
-            tracing::error!(
-                "{item_id}: a file found {found:?} was to be filled with no way to clear its \
-                 ignore mark; not filling it, since a failed fill would empty a file that may \
-                 still be ignored"
-            );
+            tracing::debug!("{item_id}: found {found:?}, and nothing to clear its ignore mark with; not filled");
             return Err(FillError::NotCleared(NotCleared::NoWay));
         }
     };

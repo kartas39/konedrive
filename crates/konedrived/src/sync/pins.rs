@@ -6,6 +6,7 @@ use async_trait::async_trait;
 
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::{Answered, FillError};
+use crate::helper::NotCleared;
 use crate::folder::locks::InodeKey;
 use crate::sync::{SyncError, SyncService};
 use crate::hydration::pin;
@@ -204,6 +205,11 @@ impl pin::PinFill for SyncService {
         match self.fill_now(path, None).await {
             Ok(Answered::Failed(FillError::Errno(errno))) if errno == libc::ENOSPC || errno == libc::EDQUOT => {
                 pin::Filled::NoSpace
+            }
+            // No link to the helper for a file that may carry an ignore mark.
+            Ok(Answered::Failed(FillError::NotCleared(NotCleared::NoWay))) => {
+                tracing::info!("{} is kept on this device but was not downloaded: {}", path.display(), SyncError::NoHelper);
+                pin::Filled::Failed
             }
             Ok(Answered::Failed(_)) => pin::Filled::Failed,
             Ok(Answered::Filled) => pin::Filled::Done,

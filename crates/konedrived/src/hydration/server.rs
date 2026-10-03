@@ -246,9 +246,9 @@ pub(crate) async fn serve(
             //
             // A file taken off the disk meanwhile, because OneDrive removed
             // its item, stops its fill where it is (issue #104). Its opener is
-            // answered `EIO`: the kernel delivers no errno that says "gone"
-            // (`ENOENT` is not in `ACCEPTED_DENY_ERRNOS`), and the helper
-            // would turn any other into `EIO` with a warning.
+            // answered `EIO`: the kernel delivers no errno that says "gone".
+            // `ENOENT` is not in `ACCEPTED_DENY_ERRNOS`, and the helper
+            // turns an errno outside that set into `EIO`, with a warning.
             let filled = unless_removed(inode_guard.as_ref(), AssertUnwindSafe(source::answer_request(fd, &tracked, Some(&link))).catch_unwind()).await;
             let size = tracked.fetched();
             // Whatever came of it, the download is over.
