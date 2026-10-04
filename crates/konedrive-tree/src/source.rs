@@ -1,6 +1,7 @@
 //! Where the rows of a tree are, and the queries that walk it.
 
-use super::{COLUMNS, MAX_CHAIN};
+use crate::model::{COLUMNS, PLACED};
+use crate::MAX_CHAIN;
 
 /// An `items` row `p` the delta laid over it leaves as it is.
 pub(crate) const UNTOUCHED: &str =
@@ -76,12 +77,12 @@ pub(crate) fn chains_sql(source: Source, start: &str) -> String {
 pub(crate) fn chains_then(source: Source, start: &str, then: &str) -> String {
     format!(
         "WITH RECURSIVE chain(start, parent_id, path, above, own, depth) AS (
-             SELECT id, parent_id, name, 1, placement = 'placed', 0 FROM ({start}) WHERE id != ?1
+             SELECT id, parent_id, name, 1, placement = '{PLACED}', 0 FROM ({start}) WHERE id != ?1
              UNION ALL
              {step})
          {then}",
         step = source.step(
-            "c.start, p.parent_id, p.name || '/' || c.path, c.above AND p.placement = 'placed', c.own, c.depth + 1",
+            &format!("c.start, p.parent_id, p.name || '/' || c.path, c.above AND p.placement = '{PLACED}', c.own, c.depth + 1"),
             "chain",
             "p.id = c.parent_id",
             &format!("c.depth < {MAX_CHAIN} AND c.parent_id != ?1")

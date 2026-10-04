@@ -31,9 +31,12 @@ use konedrive_fs::handle::FileHandle;
 use rusqlite::types::{Value, ValueRef};
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{apply, forget_subtrees, row_from, upsert, ActivityRow, Change, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
+use crate::model::{upsert, Change, Table};
 #[cfg(test)]
-use super::{Kind, Row};
+use crate::model::{Kind, Row};
+use crate::source::Source;
+use crate::staging::apply;
+use crate::{ActivityRow, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
 
 mod changes;
 /// What a row's `snapshot` and `target_name` hold.
@@ -194,18 +197,49 @@ pub fn is_under(path: &Path, dir: &Path) -> bool {
     path != dir && path.starts_with(dir)
 }
 
+/// Where each column of [`OUTBOX_COLUMNS`] is in a row [`outbox_row`] reads.
+mod at {
+    use super::OUTBOX_COLUMNS;
+    use crate::model::column;
+
+    pub(super) const SEQ: usize = column(OUTBOX_COLUMNS, "seq");
+    pub(super) const KIND: usize = column(OUTBOX_COLUMNS, "kind");
+    pub(super) const ITEM_ID: usize = column(OUTBOX_COLUMNS, "item_id");
+    pub(super) const DEV: usize = column(OUTBOX_COLUMNS, "dev");
+    pub(super) const INO: usize = column(OUTBOX_COLUMNS, "ino");
+    pub(super) const REL: usize = column(OUTBOX_COLUMNS, "rel");
+    pub(super) const BASE_ETAG: usize = column(OUTBOX_COLUMNS, "base_etag");
+    pub(super) const BASE_CTAG: usize = column(OUTBOX_COLUMNS, "base_ctag");
+    pub(super) const BASE_PARENT: usize = column(OUTBOX_COLUMNS, "base_parent");
+    pub(super) const BASE_NAME: usize = column(OUTBOX_COLUMNS, "base_name");
+    pub(super) const TARGET_PARENT: usize = column(OUTBOX_COLUMNS, "target_parent");
+    pub(super) const TARGET_NAME: usize = column(OUTBOX_COLUMNS, "target_name");
+    pub(super) const STATE: usize = column(OUTBOX_COLUMNS, "state");
+    pub(super) const REASON: usize = column(OUTBOX_COLUMNS, "reason");
+    pub(super) const ATTEMPTS: usize = column(OUTBOX_COLUMNS, "attempts");
+    pub(super) const NEXT_TRY: usize = column(OUTBOX_COLUMNS, "next_try");
+    pub(super) const SNAPSHOT: usize = column(OUTBOX_COLUMNS, "snapshot");
+    pub(super) const SESSION_URL: usize = column(OUTBOX_COLUMNS, "session_url");
+    pub(super) const SESSION_EXPIRES: usize = column(OUTBOX_COLUMNS, "session_expires");
+    pub(super) const SESSION_NEXT: usize = column(OUTBOX_COLUMNS, "session_next");
+    pub(super) const HANDLE: usize = column(OUTBOX_COLUMNS, "handle");
+    pub(super) const CONFIRMED: usize = column(OUTBOX_COLUMNS, "confirmed");
+    pub(super) const SIZE: usize = column(OUTBOX_COLUMNS, "size");
+}
+
+/// A row of the outbox, read from a query that selects [`OUTBOX_COLUMNS`].
 fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
-    let kind: String = row.get(1)?;
-    let state: String = row.get(12)?;
-    let dev: Option<i64> = row.get(3)?;
-    let ino: Option<i64> = row.get(4)?;
-    let handle: Option<Vec<u8>> = row.get(20)?;
+    let kind: String = row.get(at::KIND)?;
+    let state: String = row.get(at::STATE)?;
+    let dev: Option<i64> = row.get(at::DEV)?;
+    let ino: Option<i64> = row.get(at::INO)?;
+    let handle: Option<Vec<u8>> = row.get(at::HANDLE)?;
     let handle = handle.as_deref().and_then(FileHandle::decode);
     let inode = match (dev, ino) {
         (Some(dev), Some(ino)) => Some(Inode { dev: dev as u64, ino: ino as u64, handle }),
         _ => handle.map(|handle| Inode { dev: 0, ino: 0, handle: Some(handle) }),
     };
-    let base = Base { etag: row.get(6)?, ctag: row.get(7)?, parent: row.get(8)?, name: row.get(9)? };
+    let base = Base { etag: row.get(at::BASE_ETAG)?, ctag: row.get(at::BASE_CTAG)?, parent: row.get(at::BASE_PARENT)?, name: row.get(at::BASE_NAME)? };
     let has_base = base != Base::default();
     // A value no konedrive writes fails closed: the row is blocked, never
     // run as a guess.
@@ -216,27 +250,27 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
         _ => None,
     };
     Ok(OutboxRow {
-        seq: row.get(0)?,
+        seq: row.get(at::SEQ)?,
         kind: known_kind.unwrap_or(OutboxKind::Update),
-        item_id: row.get(2)?,
+        item_id: row.get(at::ITEM_ID)?,
         inode,
-        rel: path_from(row.get_ref(5)?),
+        rel: path_from(row.get_ref(at::REL)?),
         base: has_base.then_some(base),
-        target_parent: row.get(10)?,
-        target_name: row.get(11)?,
+        target_parent: row.get(at::TARGET_PARENT)?,
+        target_name: row.get(at::TARGET_NAME)?,
         state: if unreadable.is_some() { OutboxState::Blocked } else { known_state.unwrap_or(OutboxState::Blocked) },
         reason: match unreadable {
             Some(why) => Some(Reason::Other(why)),
-            None => row.get::<_, Option<String>>(13)?.map(Reason::from),
+            None => row.get::<_, Option<String>>(at::REASON)?.map(Reason::from),
         },
-        attempts: row.get::<_, i64>(14)? as u32,
-        next_try: row.get(15)?,
-        snapshot: row.get(16)?,
-        session_url: row.get(17)?,
-        session_expires: row.get(18)?,
-        session_next: row.get::<_, Option<i64>>(19)?.map(|n| n as u64),
-        confirmed: row.get::<_, i64>(21)? != 0,
-        size: row.get::<_, Option<i64>>(22)?.map(|n| n.max(0) as u64),
+        attempts: row.get::<_, i64>(at::ATTEMPTS)? as u32,
+        next_try: row.get(at::NEXT_TRY)?,
+        snapshot: row.get(at::SNAPSHOT)?,
+        session_url: row.get(at::SESSION_URL)?,
+        session_expires: row.get(at::SESSION_EXPIRES)?,
+        session_next: row.get::<_, Option<i64>>(at::SESSION_NEXT)?.map(|n| n as u64),
+        confirmed: row.get::<_, i64>(at::CONFIRMED)? != 0,
+        size: row.get::<_, Option<i64>>(at::SIZE)?.map(|n| n.max(0) as u64),
     })
 }
 
@@ -725,9 +759,9 @@ impl TreeStore {
                 }
             }
             Committed::Gone { item_id } => {
-                apply(&tx, crate::Source::Items, &[Change::Delete(item_id.to_owned())])?;
+                apply(&tx, Source::Items, &[Change::Delete(item_id.to_owned())])?;
                 // A delta fetched before this delete must not bring it back.
-                super::reconcile::tombstone(&tx, &[item_id], local_seq)?;
+                crate::reconcile::tombstone(&tx, &[item_id], local_seq)?;
             }
         }
         tx.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;

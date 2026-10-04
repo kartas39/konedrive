@@ -2,7 +2,12 @@
 
 use rusqlite::{params, OptionalExtension};
 
-use super::{descendants_in, forget_subtrees, upsert, Change, Placement, Row, Source, Table, TreeError, TreeStore, COLUMNS, LISTING_NEXT, MAX_CHAIN, ROW_COLUMNS, STAGING_WHOLE};
+use crate::forget::forget_subtrees;
+use crate::model::{upsert, Change, Placement, Row, Table, COLUMNS, PLACED, ROW_COLUMNS};
+use crate::query::descendants_in;
+use crate::schema::{LISTING_NEXT, STAGING_WHOLE};
+use crate::source::Source;
+use crate::{TreeError, TreeStore, MAX_CHAIN};
 
 impl TreeStore {
     /// Starts building a new tree: a full listing's from nothing
@@ -119,8 +124,10 @@ pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str
         // whatever was there when it stopped being placed is gone
         // (issue #104).
         tx.execute(
-            "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND (i.placement = 'placed' OR staging.placement != 'placed'))
-              WHERE local_handle IS NULL",
+            &format!(
+                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND (i.placement = '{PLACED}' OR staging.placement != '{PLACED}'))
+              WHERE local_handle IS NULL"
+            ),
             [],
         )?;
         tx.execute(
@@ -134,7 +141,7 @@ pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str
             &format!(
                 "INSERT INTO items ({COLUMNS})
                  SELECT s.id, s.parent_id, s.name, s.kind, s.size, s.mtime, s.etag, s.ctag, s.quickxor, s.mime, s.placement,
-                        COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, CASE WHEN i.placement = 'placed' OR s.placement != 'placed' THEN i.local_handle END),
+                        COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, CASE WHEN i.placement = '{PLACED}' OR s.placement != '{PLACED}' THEN i.local_handle END),
                         MAX(s.local_seq, COALESCE(i.local_seq, 0))
                    FROM staging s LEFT JOIN items i ON i.id = s.id WHERE true
                  ON CONFLICT(id) DO UPDATE SET

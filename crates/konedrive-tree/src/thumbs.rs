@@ -4,7 +4,9 @@ use std::path::PathBuf;
 
 use rusqlite::params;
 
-use super::{chains_then, row_from, Row, Source, TreeError, TreeStore, ROW_COLUMNS};
+use crate::model::{row_from, Row, FILE, PLACED, ROW_COLUMNS, ROW_WIDTH};
+use crate::source::{chains_then, Source};
+use crate::{TreeError, TreeStore};
 
 /// Thumbnail candidates looked at by one query, and in one call
 /// ([`TreeStore::thumbnail_candidates`]; guesses, issue #39).
@@ -27,10 +29,12 @@ impl TreeStore {
         if limit == 0 {
             return Ok((Vec::new(), Some(after.to_owned())));
         }
-        const PAGE: &str = "SELECT id, parent_id, name, placement FROM items
-              WHERE kind = 'file' AND placement = 'placed' AND ctag IS NOT NULL
+        let page = format!(
+            "SELECT id, parent_id, name, placement FROM items
+              WHERE kind = '{FILE}' AND placement = '{PLACED}' AND ctag IS NOT NULL
                 AND (mime LIKE 'image/%' OR mime LIKE 'video/%') AND id > ?2
-              ORDER BY id LIMIT ?3";
+              ORDER BY id LIMIT ?3"
+        );
         let Some(root) = self.root_item_id()? else { return Ok((Vec::new(), None)) };
         let wanted = format!(
             "SELECT {}, c.path FROM chain c JOIN items i ON i.id = c.start
@@ -39,18 +43,18 @@ impl TreeStore {
               ORDER BY i.id",
             ROW_COLUMNS.split(", ").map(|c| format!("i.{c}")).collect::<Vec<_>>().join(", ")
         );
-        let sql = chains_then(Source::Items, PAGE, &wanted);
+        let sql = chains_then(Source::Items, &page, &wanted);
         let mut out = Vec::new();
         let mut from = after.to_owned();
         let mut scanned = 0;
         loop {
-            let (last, n): (Option<String>, usize) = self.conn.prepare_cached(&format!("SELECT max(id), count(*) FROM ({PAGE})"))?.query_row(
+            let (last, n): (Option<String>, usize) = self.conn.prepare_cached(&format!("SELECT max(id), count(*) FROM ({page})"))?.query_row(
                 params![root, from, THUMB_PAGE as i64],
                 |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)),
             )?;
             let Some(last) = last else { return Ok((out, None)) };
             let mut statement = self.conn.prepare_cached(&sql)?;
-            let found = statement.query_map(params![root, from, THUMB_PAGE as i64], |r| Ok((row_from(r)?, PathBuf::from(r.get::<_, String>(11)?))))?;
+            let found = statement.query_map(params![root, from, THUMB_PAGE as i64], |r| Ok((row_from(r)?, PathBuf::from(r.get::<_, String>(ROW_WIDTH)?))))?;
             for candidate in found {
                 out.push(candidate?);
                 if out.len() == limit {

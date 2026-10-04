@@ -1140,11 +1140,9 @@ name = "konedrive-tree"
 version = "0.1.1"
 dependencies = [
  "konedrive-fs",
- "konedrive-graph",
  "konedrive-reason",
  "libc",
  "rusqlite",
- "serde_json",
  "tempfile",
  "thiserror",
  "tokio",

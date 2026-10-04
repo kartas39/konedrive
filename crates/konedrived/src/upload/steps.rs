@@ -14,12 +14,13 @@ use konedrive_fs::placeholder::State;
 use super::engine::{now, outcome_of, Engine, Fail, Outcome};
 use super::local::{self, Found};
 use super::{kind, Fault, SWAP_PREFIX};
-use konedrive_graph::drive::item::RESERVED_PREFIX;
+use konedrive_fs::RESERVED_PREFIX;
 use konedrive_graph::drive::{DriveError, DriveItem, ItemChange, WriteError};
 use crate::folder::disk::{Disk, Probe};
 use crate::local::{names, RECHECK};
 use konedrive_tree::outbox::{frees, Base, Committed, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
-use konedrive_tree::{classify, ActivityRow, Change, Kind, Placement, Row, Table};
+use crate::folder::classify::classify;
+use konedrive_tree::{ActivityRow, Change, Kind, Placement, Row, Table};
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Outcome {
     let rel = row.rel.clone();

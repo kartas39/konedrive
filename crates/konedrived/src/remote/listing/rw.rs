@@ -38,7 +38,8 @@ use crate::folder::disk::{rescue_base, rescue_stamp, Disk};
 use crate::local::Batch;
 use crate::remote::materialize::{Applied, ApplyError, Materializer, Rw, Scope};
 use konedrive_tree::outbox::OutboxRow;
-use konedrive_tree::{classify, Change};
+use crate::folder::classify::classify;
+use konedrive_tree::Change;
 
 /// A read-write folder's cycle: what it shares with the folder's outbox
 /// worker and watcher.

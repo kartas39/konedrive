@@ -7,7 +7,11 @@ use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{insert, rewrite, rows_for, rows_where, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, Snapshot, OUTBOX_SEQ, SWAP_PREFIX};
-use crate::{apply, upsert, ActivityRow, Change, Placement, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
+use crate::conflicts::ConflictKind;
+use crate::model::{upsert, Change, Placement, Row, Table};
+use crate::source::Source;
+use crate::staging::apply;
+use crate::{ActivityRow, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
 
 fn gone(seq: i64) -> TreeError {
     TreeError::Io(std::io::Error::new(std::io::ErrorKind::NotFound, format!("outbox row {seq} is gone")))
@@ -428,7 +432,7 @@ impl TreeStore {
     /// mkdir that uploads the local object as new — in one transaction.
     pub fn outbox_orphan(&mut self, id: &str, seq: i64, amend: impl FnOnce(&mut OutboxRow), activity: Option<&ActivityRow>) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        apply(&tx, crate::Source::Items, &[Change::Delete(id.to_owned())])?;
+        apply(&tx, Source::Items, &[Change::Delete(id.to_owned())])?;
         let local_seq = next_local_seq(&tx)?;
         crate::reconcile::tombstone(&tx, &[id], local_seq)?;
         amend_in(&tx, seq, amend)?;
@@ -459,8 +463,11 @@ impl TreeStore {
             forget_local(&tx, id)?;
         }
         tx.execute(
-            "INSERT INTO conflicts (rescued, at, original, kind) VALUES (?1, ?2, ?3, 'copy')
-             ON CONFLICT(rescued) DO UPDATE SET at = excluded.at, original = excluded.original, kind = 'copy'",
+            &format!(
+                "INSERT INTO conflicts (rescued, at, original, kind) VALUES (?1, ?2, ?3, '{kind}')
+             ON CONFLICT(rescued) DO UPDATE SET at = excluded.at, original = excluded.original, kind = '{kind}'",
+                kind = ConflictKind::Copy.as_str()
+            ),
             params![copy, at, original],
         )?;
         add_activity(&tx, activity)?;
@@ -532,9 +539,9 @@ impl TreeStore {
     /// Every item of the base, for tests that seed a fake OneDrive from it.
     #[cfg(any(test, feature = "testing"))]
     pub fn all_items(&self) -> Result<Vec<Row>, TreeError> {
-        let sql = format!("SELECT {} FROM items ORDER BY id", crate::ROW_COLUMNS);
+        let sql = format!("SELECT {} FROM items ORDER BY id", crate::model::ROW_COLUMNS);
         let mut statement = self.conn.prepare(&sql)?;
-        let rows = statement.query_map([], crate::row_from)?.collect::<Result<Vec<_>, _>>()?;
+        let rows = statement.query_map([], crate::model::row_from)?.collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 }

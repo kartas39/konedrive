@@ -36,8 +36,8 @@ A change that adds, moves or removes a file changes its line here.
 | `scripts/`, `packaging/`, `.github/` | Building, installing, the RPM packages, the release workflow |
 
 Which crate uses which, lowest first: `konedrive-proto`, `konedrive-fs` and `konedrive-reason`
-(which uses nothing); `konedrive-graph`; `konedrive-tree` (uses `konedrive-graph` for a drive
-item, and re-exports `konedrive-reason` in `outbox`); `konedrive-dbus`; then
+(which use nothing); `konedrive-graph`; `konedrive-tree` (uses `konedrive-fs`, and re-exports
+`konedrive-reason` in `outbox`; it does not know `konedrive-graph`); `konedrive-dbus`; then
 `konedrive-helper`, `konedrived` and `konedrivectl`.
 
 ## How each suite is run
@@ -109,10 +109,12 @@ The daemon's end of the helper socket, and the helper's state. Design: `hydratio
 ### `crates/konedrived/src/folder/`
 
 The folder on disk: the root and its registration, descriptor-based changes, the per-file
-locks. Design: `hydration.md`, `sync.md`.
+locks, and which item of the drive has a place in it. Design: `hydration.md`, `sync.md`.
 
 - `mod.rs` — the list of the modules.
 - `root.rs` — `SyncRoot`: opening, checking and registering a root; `DehydrateError`. `[tests]`
+- `classify.rs` — what a Graph item becomes in the tree, and whether it has a place in the
+  folder. `[tests]`
 - `disk.rs` — every change made to the folder, by descriptor. `[tests]`
 - `locks.rs` — `InodeLocks`: one fill or free-up per inode at a time. `[tests]`
 
@@ -472,7 +474,13 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 
 ### `crates/konedrive-tree/src/`
 
-- `lib.rs` — `Store`: one row per file and folder of the drive. `[tests]`
+- `lib.rs` — the tree store: the list of the modules, `TreeStore`, `TreeError`. `[tests]`
+- `model.rs` — a row, a delta entry, the stored words, and the one place a row is read and
+  written. `[tests]`
+- `schema.rs` — the schema: its version, what an open creates and upgrades, when a store is
+  rebuilt.
+- `query.rs` — reading the tree: a row, what is below it, where it is, the counts.
+- `forget.rs` — forgetting the local objects of a subtree.
 - `shared.rs` — the store shared by the tasks of one folder.
 - `source.rs` — where the rows of a tree are, and the queries that walk it.
 - `staging.rs` — the new tree a cycle builds, and its swap into `items`.
@@ -503,7 +511,8 @@ Design: `hydration.md`.
 
 ### `crates/konedrive-fs/src/`
 
-- `lib.rs` — the list of the modules.
+- `lib.rs` — the list of the modules, and the limits the crates share: `MAX_DEPTH`, `NAME_MAX`,
+  `RESERVED_PREFIX`.
 - `placeholder.rs` — a placeholder: a sparse file whose state is in its extended attributes.
   `[tests]`
 - `lease.rs` — a write lease: proof that no other process has the file open. `[tests]`

@@ -13,7 +13,6 @@ testing = []
 
 [dependencies]
 konedrive-fs = { path = "../konedrive-fs" }
-konedrive-graph = { path = "../konedrive-graph" }
 konedrive-reason = { path = "../konedrive-reason" }
 rusqlite.workspace = true
 thiserror.workspace = true
@@ -22,5 +21,4 @@ tracing.workspace = true
 
 [dev-dependencies]
 libc.workspace = true
-serde_json.workspace = true
 tempfile.workspace = true

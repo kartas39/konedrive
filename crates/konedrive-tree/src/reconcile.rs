@@ -23,8 +23,13 @@ use std::collections::HashMap;
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, OptionalExtension};
 
-use super::staging::swap;
-use super::{apply, get_row, Change, Kind, Placement, Row, Source, Table, TreeError, TreeStore, COLUMNS};
+use crate::model::{at, row_from, Change, Table, COLUMNS, PLACED, ROW_COLUMNS, ROW_WIDTH};
+#[cfg(test)]
+use crate::model::{Kind, Placement, Row};
+use crate::query::get_row;
+use crate::source::{Source, UNTOUCHED};
+use crate::staging::{apply, swap};
+use crate::{TreeError, TreeStore};
 
 /// Created on every open (`IF NOT EXISTS`), so a schema-3 store made before
 /// the read-write reconcile gains them without a rebuild.
@@ -71,29 +76,23 @@ pub(super) fn tombstone(tx: &rusqlite::Transaction<'_>, ids: &[&str], local_seq:
     Ok(())
 }
 
+/// What a deferred change's query selects: the tree's row, read as every
+/// row is ([`row_from`]), then the change's own columns.
+fn deferred_columns() -> String {
+    format!("{ROW_COLUMNS}, seq, gone")
+}
+
+const SEQ: usize = ROW_WIDTH;
+const GONE: usize = ROW_WIDTH + 1;
+
 fn deferred_change(r: &rusqlite::Row<'_>) -> rusqlite::Result<(Change, i64)> {
-    let id: String = r.get(0)?;
-    let seq: i64 = r.get(1)?;
-    if r.get::<_, i64>(2)? != 0 {
-        return Ok((Change::Delete(id), seq));
+    let seq: i64 = r.get(SEQ)?;
+    if r.get::<_, i64>(GONE)? != 0 {
+        // A removal keeps the id alone: the row's other columns are null.
+        return Ok((Change::Delete(r.get(at::ID)?), seq));
     }
-    let kind: String = r.get(5)?;
-    let placement: String = r.get(12)?;
-    let row = Row {
-        id,
-        parent_id: r.get(3)?,
-        name: r.get(4)?,
-        kind: if kind == "folder" { Kind::Folder } else { Kind::File },
-        size: r.get::<_, i64>(6)? as u64,
-        mtime: r.get(7)?,
-        etag: r.get(8)?,
-        ctag: r.get(9)?,
-        quickxor: r.get(10)?,
-        mime: r.get(11)?,
-        placement: Placement::decode(&placement),
-    };
     // The drive's root never waits here: it is the folder itself.
-    Ok((Change::Upsert(row), seq))
+    Ok((Change::Upsert(row_from(r)?), seq))
 }
 
 impl TreeStore {
@@ -124,10 +123,7 @@ impl TreeStore {
             [],
         )?;
         let changes = {
-            let mut statement = tx.prepare(
-                "SELECT id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement
-                   FROM deferred ORDER BY id",
-            )?;
+            let mut statement = tx.prepare(&format!("SELECT {} FROM deferred ORDER BY id", deferred_columns()))?;
             let rows = statement.query_map([], deferred_change)?.collect::<Result<Vec<_>, _>>()?;
             rows.into_iter().map(|(change, _)| change).collect()
         };
@@ -162,12 +158,7 @@ impl TreeStore {
     pub fn deferred(&self, id: &str) -> Result<Option<Change>, TreeError> {
         Ok(self
             .conn
-            .query_row(
-                "SELECT id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement
-                   FROM deferred WHERE id = ?1",
-                [id],
-                deferred_change,
-            )
+            .query_row(&format!("SELECT {} FROM deferred WHERE id = ?1", deferred_columns()), [id], deferred_change)
             .optional()?
             .map(|(change, _)| change))
     }
@@ -180,14 +171,13 @@ impl TreeStore {
     /// (issue #39): no walk of the whole tree.
     pub fn unplaced(&self, table: Table) -> Result<Vec<String>, TreeError> {
         let start = match self.source(table) {
-            Source::Items => "SELECT id, parent_id, name, placement FROM items WHERE local_handle IS NULL AND placement = 'placed'".to_owned(),
-            Source::Whole => "SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND placement = 'placed'".to_owned(),
+            Source::Items => format!("SELECT id, parent_id, name, placement FROM items WHERE local_handle IS NULL AND placement = '{PLACED}'"),
+            Source::Whole => format!("SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND placement = '{PLACED}'"),
             Source::Overlay => format!(
-                "SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND placement = 'placed'
+                "SELECT id, parent_id, name, placement FROM staging WHERE local_handle IS NULL AND placement = '{PLACED}'
                  UNION ALL
                  SELECT id, parent_id, name, placement FROM items p
-                  WHERE local_handle IS NULL AND placement = 'placed' AND {}",
-                super::UNTOUCHED
+                  WHERE local_handle IS NULL AND placement = '{PLACED}' AND {UNTOUCHED}"
             ),
         };
         Ok(self.chains(table, &start, &[])?.into_iter().filter(|c| c.above && c.own).map(|c| c.id).collect())
@@ -286,12 +276,7 @@ impl TreeStore {
     pub fn land_deferred(&mut self, id: &str, ctag: Option<&str>, handle: Option<&FileHandle>) -> Result<bool, TreeError> {
         let tx = self.conn.transaction()?;
         let waiting = tx
-            .query_row(
-                "SELECT id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement
-                   FROM deferred WHERE id = ?1",
-                [id],
-                deferred_change,
-            )
+            .query_row(&format!("SELECT {} FROM deferred WHERE id = ?1", deferred_columns()), [id], deferred_change)
             .optional()?;
         let landed = match waiting {
             Some((Change::Upsert(row), _)) if row.ctag.is_some() && row.ctag.as_deref() == ctag => {
@@ -488,7 +473,7 @@ impl TreeStore {
     /// below it along (issue #104): a parent renamed in OneDrive and moved by
     /// the reconcile, or renamed here and seen by the examination.
     pub fn leaving_rebase(&self, from: &std::path::Path, to: &std::path::Path) -> Result<(), TreeError> {
-        super::outbox::rebase_leaving(&self.conn, from, to)
+        crate::outbox::rebase_leaving(&self.conn, from, to)
     }
 
     /// Stages `changes` on top of what `staging` holds: the fresh versions a

@@ -6,7 +6,8 @@ use tokio_util::sync::CancellationToken;
 use crate::folder::disk::Disk;
 use crate::remote::materialize::Scope;
 use konedrive_graph::drive::{DeltaFrom, DeltaNext, DriveError};
-use konedrive_tree::{classify, Change, Table};
+use crate::folder::classify::classify;
+use konedrive_tree::{Change, Table};
 use super::rw::RwCycle;
 use super::{applying, cancellable, drive_error, refused, Commit, CycleError, Fetched, Listing, OnDrop, Reconciled, Turn};
 
