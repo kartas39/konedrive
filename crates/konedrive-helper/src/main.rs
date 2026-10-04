@@ -6,12 +6,11 @@ mod pool;
 mod registration;
 mod shared;
 
-use konedrive_helper::{jobs, marks, roots};
+use konedrive_helper::{marks, roots};
 
-use std::collections::{HashMap, HashSet};
 use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::path::Path;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::Arc;
 
 use konedrive_proto::SOCKET_PATH;
 use nix::sys::socket::{
@@ -22,26 +21,11 @@ use nix::sys::socket::{
 use connection::serve;
 use events::event_loop;
 use registration::{check_filesystem_type, open_root, record_walk};
-use shared::{
-    lock, Refusals, Registry, Shared, Unregistrations, EVENT_QUEUE_DEPTH, EVENT_WORKERS,
-    FLUSH_EVERY, ROOTS_FILE,
-};
+use shared::{Shared, EVENT_QUEUE_DEPTH, EVENT_WORKERS, FLUSH_EVERY, ROOTS_FILE};
 
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().init();
-    let shared = Arc::new(Shared {
-        marks: Arc::new(marks::Marks::new()?),
-        roots: Mutex::new(load_roots()),
-        roots_saving: Mutex::new(()),
-        jobs: Mutex::new(jobs::Jobs::default()),
-        daemons: Mutex::new(Registry::default()),
-        daemon_arrived: Condvar::new(),
-        degraded_roots: Mutex::new(HashSet::new()),
-        daemon_waiters: Mutex::new(HashMap::new()),
-        refusals: Refusals::new(),
-        unregistrations: Unregistrations::new(),
-        connections: Arc::new(Mutex::new(HashMap::new())),
-    });
+    let shared = Arc::new(Shared::new(marks::Marks::new()?, load_roots()));
     // The last count of a burst of refusals is written by this thread, a
     // moment after its interval ends, since no further refusal may come to
     // write it.
@@ -72,7 +56,7 @@ fn main() -> anyhow::Result<()> {
     // Cover every registered root before anyone can open anything in it.
     // Sorted so that which of two overlapping roots wins is the same on every
     // boot rather than whatever order the map iterated in.
-    let mut registered: Vec<roots::Root> = lock(&shared.roots).iter().cloned().collect();
+    let mut registered: Vec<roots::Root> = shared.roots.all();
     registered.sort_by(|a, b| a.root_id.cmp(&b.root_id));
     let mut covered = roots::Roots::default();
     for root in &registered {
@@ -90,7 +74,6 @@ fn main() -> anyhow::Result<()> {
                 roots::shown_path(&root.path),
                 conflict = roots::shown_id(&conflict)
             );
-            lock(&shared.degraded_roots).insert(root.root_id.clone());
             continue;
         }
         if cover_root(&shared, root) {
@@ -138,7 +121,6 @@ fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
         Ok(dir) => dir,
         Err(e) => {
             tracing::error!("root {} is not covered: {e}", roots::shown_id(&root.root_id));
-            lock(&shared.degraded_roots).insert(root.root_id.clone());
             return false;
         }
     };
@@ -155,10 +137,9 @@ fn cover_root(shared: &Shared, root: &roots::Root) -> bool {
             unusable.why,
             unusable.errno
         );
-        lock(&shared.degraded_roots).insert(root.root_id.clone());
         return false;
     }
-    record_walk(shared, root, marks::walk_and_mark(&shared.marks, dir.as_fd(), &root.path));
+    record_walk(root, marks::walk_and_mark(&shared.marks, dir.as_fd(), &root.path));
     true
 }
 

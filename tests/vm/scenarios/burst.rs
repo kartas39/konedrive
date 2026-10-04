@@ -161,12 +161,12 @@ fn proc_status(pid: u32) -> Option<(u64, u64)> {
 
 /// The two waiter caps, measured end to end instead of asserted on a counter.
 ///
-/// `wait_for_daemon` is the one place a worker sleeps for tens of seconds, so
+/// `Daemons::wait_for` is the one place a worker sleeps for tens of seconds, so
 /// it is the one lever an unprivileged caller has on the pool.
 /// [`MAX_DAEMON_WAITERS`] (8, per uid) and `GLOBAL_MAX_DAEMON_WAITERS` (32,
 /// machine-wide) were both chosen rather than measured. With the daemon gone
 /// but the root still registered, every open of a placeholder reaches
-/// `wait_for_daemon`, so the shape of the answer says exactly which cap binds:
+/// `Daemons::wait_for`, so the shape of the answer says exactly which cap binds:
 /// an open that waited the full `DAEMON_WAIT` held a slot; one that came back
 /// at once was refused by a cap.
 pub(crate) fn waiter_caps(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {

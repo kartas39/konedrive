@@ -17,8 +17,7 @@ use konedrive_helper::outbox::{Outbox, Outgoing};
 use crate::events::{dispatch, settle, Finish};
 use crate::registration::{errno_of, register_root, unregister_root};
 use crate::shared::{
-    fault, lock, ConnectionSlot, Daemon, Refusal, Shared, Throttle, ACCEPT_BACKOFF,
-    MAX_CONNECTIONS_PER_UID,
+    fault, Daemon, Refusal, Shared, Throttle, ACCEPT_BACKOFF, MAX_CONNECTIONS_PER_UID,
 };
 
 pub(crate) fn serve(shared: Arc<Shared>, listener: OwnedFd) {
@@ -68,7 +67,7 @@ pub(crate) fn serve(shared: Arc<Shared>, listener: OwnedFd) {
         // credentials cannot be read is not served at all — `serve_one`
         // would refuse it too.
         let slot = match getsockopt(&stream, PeerCredentials) {
-            Ok(peer) => match ConnectionSlot::take(&shared.connections, peer.uid()) {
+            Ok(peer) => match shared.connections.take(peer.uid()) {
                 Some(slot) => slot,
                 None => {
                     let uid = peer.uid();
@@ -129,7 +128,7 @@ impl Drop for Disconnect<'_> {
         // This connection only, wherever it sits: an older one
         // going away leaves a newer one on top, and a newer one going away
         // hands the uid back to whichever live connection is under it.
-        lock(&self.shared.daemons).deregister(self.uid, self.conn);
+        self.shared.daemons.deregister(self.uid, self.conn);
         // Everything *this connection* was going to hydrate now fails rather
         // than hangs. Not everything in the system: the socket is 0666, and
         // draining every pending job on any disconnect let any local user
@@ -137,11 +136,7 @@ impl Drop for Disconnect<'_> {
         // `retire` marks the connection dead before it drains,
         // so a worker still holding a `Daemon` clone cannot slip a new job in
         // behind the drain.
-        let (stranded, still_running) = {
-            let mut jobs = lock(&self.shared.jobs);
-            let stranded = jobs.retire(self.conn);
-            (stranded, jobs.in_flight())
-        };
+        let (stranded, still_running) = self.shared.jobs.retire(self.conn);
         let suspended: usize = stranded.iter().map(Vec::len).sum();
         if suspended > 0 {
             tracing::warn!(
@@ -206,16 +201,12 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
     {
         anyhow::bail!("cannot greet a new daemon connection");
     }
-    {
-        let mut daemons = lock(&shared.daemons);
-        let daemon = Daemon { conn, uid, pid, outbox: Arc::clone(&outbox) };
-        if !daemons.register(daemon) {
-            tracing::info!(
-                "uid {uid} connection {conn} registered after a newer connection from the same \
-                 uid; it stays underneath, and takes over only if the newer one goes"
-            );
-        }
-        shared.daemon_arrived.notify_all();
+    // Registering wakes every open that was waiting for this uid's daemon.
+    if !shared.daemons.register(Daemon { conn, uid, pid, outbox: Arc::clone(&outbox) }) {
+        tracing::info!(
+            "uid {uid} connection {conn} registered after a newer connection from the same \
+             uid; it stays underneath, and takes over only if the newer one goes"
+        );
     }
 
     loop {
@@ -261,7 +252,7 @@ fn apply(
     let object = fd.map(File::from);
     let allowed = |object: &File| -> bool {
         match object.metadata() {
-            Ok(meta) => lock(&shared.roots).may_act_on(uid, meta.dev(), meta.uid()),
+            Ok(meta) => shared.roots.may_act_on(uid, meta.dev(), meta.uid()),
             Err(e) => {
                 tracing::warn!("cannot stat an object sent by uid {uid}: {e}");
                 false
@@ -313,7 +304,7 @@ fn apply(
         // answer, and any local user can ask.
         (ToHelper::OpenByHandle { handle_type, handle }, Some(dir)) => {
             let handle = FileHandle { kind: handle_type, bytes: handle };
-            let on_a_root = |dev| lock(&shared.roots).may_act_on(uid, dev, uid);
+            let on_a_root = |dev| shared.roots.may_act_on(uid, dev, uid);
             match by_handle::open(uid, &dir, &handle, on_a_root) {
                 Ok(opened) => {
                     *reply = Some(opened);

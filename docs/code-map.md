@@ -347,8 +347,15 @@ Design: `hydration.md`; [`SECURITY.md`](../SECURITY.md). Its end-to-end tests ar
 
 - `main.rs` — the startup.
 - `lib.rs` — the modules worth exercising on their own.
-- `shared.rs` — the shared state and the limits. `[tests]`
-- `events.rs` — the event loop and the answers to opens. `[tests]`
+- `shared.rs` — what the helper's threads share, by subject; the hydrations in hand.
+- `shared/registrations.rs` — the registered roots behind their two locks; the count of
+  unregistrations. `[tests]`
+- `shared/daemons.rs` — the connected daemons, and waiting for one. `[tests]`
+- `shared/slots.rs` — a bounded number of places per uid. `[tests]`
+- `shared/refusals.rs` — the throttled log of refusals. `[tests]`
+- `events.rs` — the loop that reads the fanotify group. `[tests]`
+- `events/decision.rs` — what an intercepted open is answered, and carrying it out. `[tests]`
+- `events/hydration.rs` — asking the owner's daemon, and passing its answer on.
 - `connection.rs` — the connection with one daemon.
 - `registration.rs` — registering and unregistering a root, with its filesystem checks.
   `[tests]`

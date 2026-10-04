@@ -222,7 +222,7 @@ impl<W: AsFd> Jobs<W> {
     /// always sees it.
     ///
     /// A connection that has already been retired is refused. A
-    /// worker that took its `Daemon` clone out of `wait_for_daemon` a moment
+    /// worker that took its `Daemon` clone out of `Daemons::wait_for` a moment
     /// before that connection's cleanup ran would otherwise create a job
     /// nobody is left to finish: usually the send that follows fails and
     /// drains it, but when the connection ended on a *deserialisation* error
