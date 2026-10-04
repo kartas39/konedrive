@@ -852,3 +852,37 @@ async fn a_change_to_an_item_moved_in_onedrive_out_of_what_the_folder_holds_neve
     w.scan_and_upload().await;
     assert_eq!((w.patches_of("F"), w.deletes()), (0, 0));
 }
+
+/// Another filesystem mounted inside a folder OneDrive removed — a Btrfs
+/// subvolume — cannot be removed: the folder's removal waits, nothing of the
+/// user's in the mount is touched, the cycle goes through, and the rest of
+/// the folder syncs. Once it is gone the folder goes. Skipped where the
+/// test's folder is not on Btrfs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_filesystem_mounted_inside_a_folder_removed_in_onedrive_makes_its_removal_wait() {
+    let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp-btrfs");
+    std::fs::create_dir_all(&base).unwrap();
+    let w = Arc::new(super::World::read_write_in(Some(&base)).await);
+    let listing = w.listed().await;
+    let made = std::process::Command::new("btrfs").arg("subvolume").arg("create").arg(w.path("docs/sub")).output();
+    if !made.is_ok_and(|o| o.status.success()) {
+        eprintln!("no Btrfs subvolume can be made here: skipped");
+        return;
+    }
+    std::fs::write(w.path("docs/sub/mine.txt"), b"mine").unwrap();
+    w.graph.with(|c| {
+        c.trash("D");
+        c.add_file("N", ROOT, "next.txt", b"next");
+    });
+    w.rounds(&listing, 2).await;
+    assert_eq!(std::fs::read(w.path("docs/sub/mine.txt")).unwrap(), b"mine");
+    assert_eq!(id_at(&w.path("docs")).as_deref(), Some("D"), "not touched: still the item's folder");
+    assert_eq!(id_at(&w.path("next.txt")).as_deref(), Some("N"), "the rest of the folder syncs");
+    assert!(w.base("D").is_some(), "its removal waits");
+    assert!(w.graph.with(|c| c.items.values().all(|i| i.name != "docs")), "nothing is made again in OneDrive");
+    std::fs::remove_file(w.path("docs/sub/mine.txt")).unwrap();
+    std::fs::remove_dir(w.path("docs/sub")).unwrap();
+    w.rounds(&listing, 1).await;
+    assert!(!w.path("docs").exists() && w.base("D").is_none(), "gone once nothing is mounted inside");
+    assert_eq!(w.deletes(), 0);
+}

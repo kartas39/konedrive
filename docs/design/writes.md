@@ -876,7 +876,7 @@ ignored name stay where their folder stays, and keep no folder by themselves. Wh
 ignored or refused name stays on this computer only (F243). Nothing is rescued out of the folder.
 What is kept is handed to the examination, and said, also when the cycle then fails. The activity
 log has one `removed` entry for what OneDrive removed, saying how many files go up as new and how
-many items stay on this computer only (F116, F187). `resyncChangesUploadDifferences` keeps every download too, changed or not (below). A mount inside stays (F194).
+many items stay on this computer only (F116, F187). `resyncChangesUploadDifferences` keeps every download too, changed or not (below). A mount inside makes it wait (F194).
 
 **What can no longer be placed** while OneDrive still has it (a name too long, a reserved name, the
 Personal Vault, shared, OneNote, unsupported; or a folder above it that is one of these) is a change

@@ -60,7 +60,10 @@ pub(super) enum Policy {
 /// What [`Materializer::take_off`] did.
 pub(super) struct TakenOff {
     pub(super) removal: Removal,
-    /// [`Policy::Unplaced`]: it stays for now, and this is what keeps it.
+    /// Nothing of it was touched, and this is what keeps it: what an item
+    /// that can no longer be placed waits for ([`Policy::Unplaced`]), or
+    /// another filesystem mounted inside what OneDrive removed. The caller
+    /// lets its change wait.
     pub(super) waits: Option<WaitsFor>,
 }
 
@@ -183,6 +186,16 @@ impl Materializer {
         }
         if policy == Policy::Unplaced {
             return self.take_off_unplaced(dir, name, rel, &survey, run);
+        }
+        // Read-write mode: another filesystem mounted in it is not entered
+        // and its mount point cannot be removed. Nothing of the folder is
+        // touched; its removal waits until it is unmounted, and the rest of
+        // the cycle goes on.
+        if self.rw.is_some() {
+            if let Some(mount) = self.mount_below(dir, name, rel, device(dir)?)? {
+                tracing::info!("{} is gone from OneDrive and stays for now: another filesystem is mounted at {}", rel.display(), mount.display());
+                return Ok(TakenOff { removal: Removal::Kept, waits: Some(WaitsFor::MountedInside(shown(&mount))) });
+            }
         }
         let stopped = self.forget(&survey, policy, run)?;
         let before = run.kept;
@@ -312,15 +325,7 @@ impl Materializer {
             let mut outcome = Removal::Gone;
             // What stays only where its folder stays, and whether it is a directory.
             let mut beside = Vec::new();
-            // Another filesystem mounted here is not entered, and cannot be
-            // removed: it stays where it is, on this computer only, with
-            // the folders above it (the examination lists it as on another
-            // device).
-            if device(&sub)? != device(dir)? {
-                run.kept.local += 1;
-                return Ok(Removal::Kept);
-            }
-            {
+            if device(&sub)? == device(dir)? {
                 for child in self.disk.list(&sub)? {
                     let unmarked = matches!(self.disk.probe(&sub, &child)?, Probe::Unmanaged { .. });
                     if unmarked && self.unmanaged(all.rw, &sub, &child)? == Unmanaged::Beside {
@@ -511,6 +516,25 @@ impl Materializer {
 }
 
 impl Materializer {
+    /// Where another filesystem is mounted at or below `dir/name` (at
+    /// `rel`), if one is: the first directory found on another device than
+    /// `dev`.
+    fn mount_below(&self, dir: &File, name: &OsStr, rel: &Path, dev: libc::dev_t) -> Result<Option<std::path::PathBuf>, ApplyError> {
+        if !matches!(self.disk.probe(dir, name)?, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true }) {
+            return Ok(None);
+        }
+        let sub = self.disk.open_subdir(dir, name)?;
+        if device(&sub)? != dev {
+            return Ok(Some(rel.to_path_buf()));
+        }
+        for child in self.disk.list(&sub)? {
+            if let Some(mount) = self.mount_below(&sub, &child, &rel.join(&child), dev)? {
+                return Ok(Some(mount));
+            }
+        }
+        Ok(None)
+    }
+
     /// [`Self::take_off`] for [`Policy::Unplaced`], once something is found
     /// there. Nothing is touched while anything waits. Otherwise the
     /// objects are forgotten and it goes whole; each file is looked at once

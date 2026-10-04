@@ -226,7 +226,7 @@ fn a_path_is_the_chain_of_names_and_placed_only_if_every_link_is() {
     ]);
     assert_eq!(store.locate(Table::Items, "F").unwrap(), Some(Located { rel: "docs/f.txt".into(), placed: true, depth: 2 }));
     assert_eq!(store.locate(Table::Items, "R").unwrap(), Some(Located { rel: "".into(), placed: true, depth: 0 }));
-    assert_eq!(store.locate(Table::Items, "G").unwrap().unwrap().placed, false, "inside a skipped folder");
+    assert!(!store.locate(Table::Items, "G").unwrap().unwrap().placed, "inside a skipped folder");
     assert_eq!(store.locate(Table::Items, "O").unwrap(), None, "an orphan is nowhere");
 }
 

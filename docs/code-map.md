@@ -207,7 +207,7 @@ in the outbox. Design: `writes.md` §3 (the watcher), §4 (the examination).
 - `examine/list.rs` — reading every place the batch names.
 - `examine/classify.rs` — which entry is which item; strangers and backups.
 - `examine/found.rs` — an item found: where it is, and its content.
-- `examine/missing.rs` — an item not found: removed, moved away, or leaving.
+- `examine/missing.rs` — an item not found: removed, moved away, or moved out of the folder.
 - `examine/finish.rs` — the end of a run: the skipped list, the counts, the order of the rows.
 - `ignore.rs` — the ignore list: names that stay local. `[tests]`
 - `names.rs` — the names OneDrive refuses, and the name of a kept copy. `[tests]`

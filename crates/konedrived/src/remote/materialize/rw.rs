@@ -399,7 +399,12 @@ impl Materializer {
             if removed {
                 let parent = entry.rel.parent().unwrap_or(Path::new(""));
                 let name = entry.rel.file_name().expect("a scanned entry has a name");
-                self.take_off(&self.disk.dir(parent)?, name, &entry.rel, rw.removed(), run)?;
+                if self.take_off(&self.disk.dir(parent)?, name, &entry.rel, rw.removed(), run)?.waits.is_some() {
+                    // A mount inside it: its removal waits.
+                    let id = entry.id.as_deref().expect("filtered above");
+                    run.left.insert(id.to_owned());
+                    run.out.pending.unsettled.insert(id.to_owned());
+                }
             } else {
                 self.to_holding(&entry.rel, entry.id.as_deref().expect("filtered above"), run)?;
             }
@@ -520,7 +525,10 @@ impl Materializer {
                     }
                 }
                 (None, _) => {
-                    self.take_off(&self.disk.dir(parent)?, name, &old.rel, rw.removed(), run)?;
+                    if self.take_off(&self.disk.dir(parent)?, name, &old.rel, rw.removed(), run)?.waits.is_some() {
+                        // A mount inside it: its removal waits.
+                        run.out.pending.unsettled.insert(id.clone());
+                    }
                 }
             }
         }
@@ -613,7 +621,7 @@ impl Materializer {
     /// to the watcher.
     pub(super) fn wait_to_leave(&self, id: &str, rel: &Path, is_dir: bool, waits: konedrive_tree::WaitsFor, run: &mut Run) -> Result<(), ApplyError> {
         use konedrive_tree::WaitsFor;
-        tracing::info!("{} can no longer be placed here; it stays until nothing in it waits ({waits})", rel.display());
+        tracing::debug!("{} can no longer be placed here; it stays until nothing in it waits ({waits})", rel.display());
         let folder = id.to_owned();
         let below = self.store.call_blocking(move |s| {
             let mut ids = s.descendants(Table::Staging, &folder)?;
