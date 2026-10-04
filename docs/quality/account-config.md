@@ -82,3 +82,7 @@ Scores: `account/mod.rs`, `account/sign_in.rs`, `account/mode.rs`, `account/secr
   `upload/content.rs:170`).
 - **Fix:** `paths.rs`, `model.rs`, `store.rs`, `atomic.rs`; `AccountId` and `DriveId` newtypes; a
   `WriteStanding` struct. **Size:** M. **Risk:** low to medium.
+- **Fixed in part 2026-10-04** in `8a4a9a6` (#153), the re-read on the write path: the upload worker asks
+  the write gate in one blocking section. The file is still read and parsed at every asking;
+  the other readers on runtime threads are in `docs/limitations/F231.md`. The split of the file,
+  the newtypes and `WriteStanding` are `B12`'s.

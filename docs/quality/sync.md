@@ -168,6 +168,9 @@ risky one.
   and deliver outside the lock. Blocking syscalls on the runtime: `hub.rs:149–150` (where
   `:409` uses `spawn_blocking` for the same read), `:386–399`, `:317–318`, `:526`.
 - **Fix:** split the registry from the link. **Size:** M. Part of `X2`.
+- **Fixed in part 2026-10-04** in `8a4a9a6` (#153), the blocking calls: `by_moved_out`, `by_path`,
+  `overlapping` and `device_of` are blocking sections. The split of the registry from the link,
+  the two setters and the two account lists are `B5`'s.
 
 ## SY9. The traits for calling upward
 
