@@ -2,18 +2,23 @@
 //! record and how the examination looks at it, with the outcome asserted, not the steps.
 //!
 //! The folder: a downloaded file (`a.txt`, item A), a file not downloaded (`p.bin`, P), a
-//! folder (`docs`, D) with a downloaded file (`docs/f.txt`, F). One act, then a second one
+//! folder (`docs`, D) with a downloaded file (`docs/f.txt`, F), an empty folder (`keep`, K). One act, then a second one
 //! on the same object or beside it; the store with each item's object on record, or with
 //! none (as after a rebuild); and three ways to look: a batch naming the names the acts
 //! touched, a Full scan, and a Full scan in which the second act lands after the folder
-//! was listed and before anything is decided.
+//! was listed and before anything is decided. Some acts move an object out of the folder,
+//! to a directory beside it; some are not seen where they end (a move whose second name
+//! no batch names), so that only asking after the object finds it.
 //!
 //! What must hold, whatever the combination:
 //!
 //! - the item is still the item (its object keeps its marks, and the store records that
 //!   object), unless the user removed or replaced it;
 //! - the rows are exactly those the acts call for: no `delete`, `move` or `move-out` the
-//!   user did not make, one `create` for a copy with content;
+//!   user did not make, one `create` for a copy with content; a folder that went is one
+//!   row, in front of which goes the `move-out` of what left it first; nothing is said of
+//!   an item that is alive in the folder where the look did not look, nor of the folder
+//!   it was in, until it is found;
 //! - nothing with data leaves the disk; an empty copy is removed only when the item's own
 //!   recorded object was seen (listed) in the same run, and that is said in Activity;
 //! - a second and a third look change nothing.
@@ -46,9 +51,21 @@ enum Act {
     SaveByRename,
     NewFile,
     NewIgnored,
+    /// `a.txt` goes into `docs`, and only the name it left is named.
+    MoveInUnseen,
+    /// `a.txt` goes out of the folder.
+    MoveOut,
+    /// `rm -r docs`.
+    DeleteFolder,
+    /// `docs` goes out of the folder, with what is in it.
+    MoveOutFolder,
+    /// `docs/f.txt` goes out of the folder, and nothing is named.
+    DragOut,
+    /// `docs/f.txt` goes into `keep`, and nothing is named.
+    LeaveUnseen,
 }
 
-const ACTS: [Act; 12] = [
+const ACTS: [Act; 18] = [
     Act::Nothing,
     Act::Edit,
     Act::Rename,
@@ -61,6 +78,12 @@ const ACTS: [Act; 12] = [
     Act::SaveByRename,
     Act::NewFile,
     Act::NewIgnored,
+    Act::MoveInUnseen,
+    Act::MoveOut,
+    Act::DeleteFolder,
+    Act::MoveOutFolder,
+    Act::DragOut,
+    Act::LeaveUnseen,
 ];
 
 /// The second act.
@@ -74,11 +97,14 @@ enum Then {
     /// A new file beside the rest.
     NewBeside,
     /// What the first act was about is removed: the item's own object under its first
-    /// name (the original of a copy; of a copied folder, the folder), or the new file.
+    /// name (the original of a copy; of a copied folder, the folder), or the new file;
+    /// where it stands now, outside the folder too.
     DeleteIt,
+    /// `rm -r docs`, if it is in the folder.
+    DeleteFolder,
 }
 
-const THEN: [Then; 5] = [Then::Nothing, Then::EditSibling, Then::DeleteSibling, Then::NewBeside, Then::DeleteIt];
+const THEN: [Then; 6] = [Then::Nothing, Then::EditSibling, Then::DeleteSibling, Then::NewBeside, Then::DeleteIt, Then::DeleteFolder];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Look {
@@ -91,13 +117,15 @@ enum Look {
 const LOOKS: [Look; 3] = [Look::Named, Look::Full, Look::Interrupted];
 
 /// The items of the listing: id, place, whether a folder.
-const ITEMS: [(&str, &str, bool); 4] = [("A", "a.txt", false), ("P", "p.bin", false), ("D", "docs", true), ("F", "docs/f.txt", false)];
+const ITEMS: [(&str, &str, bool); 5] = [("A", "a.txt", false), ("P", "p.bin", false), ("D", "docs", true), ("F", "docs/f.txt", false), ("K", "keep", true)];
 
 /// One object on disk, as the model has it.
 #[derive(Debug, Clone)]
 struct Object {
-    /// Its names, relative to the folder.
+    /// Its names, relative to the folder; of one that left the folder (`out`), to the
+    /// directory beside it.
     names: Vec<String>,
+    out: bool,
     /// The id mark it carries.
     id: Option<&'static str>,
     /// Which object it is, whatever its names: the model's own number for it.
@@ -113,7 +141,7 @@ struct Object {
 fn object(name: &str, id: Option<&'static str>, own: bool, data: Option<&[u8]>) -> Object {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let key = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Object { names: vec![name.to_owned()], id, key, own, dir: false, data: data.map(<[u8]>::to_vec), edited: false }
+    Object { names: vec![name.to_owned()], out: false, id, key, own, dir: false, data: data.map(<[u8]>::to_vec), edited: false }
 }
 
 struct Scene<'f> {
@@ -121,11 +149,14 @@ struct Scene<'f> {
     objects: Vec<Object>,
     /// The names the acts touched: what a batch of names names.
     touched: Vec<(String, String)>,
+    /// Objects moved where no batch names them: a batch of names lists one only once its
+    /// name is named.
+    unseen: Vec<usize>,
 }
 
 /// The folder, placed; with the store's record of each object, or without.
 fn placed(handles: bool) -> Fx {
-    let fx = Fx::new(&[folder("D", "R", "docs"), file("A", "R", "a.txt", b"abc"), file("P", "R", "p.bin", b"only in the cloud"), file("F", "D", "f.txt", b"ff")]);
+    let fx = Fx::new(&[folder("D", "R", "docs"), folder("K", "R", "keep"), file("A", "R", "a.txt", b"abc"), file("P", "R", "p.bin", b"only in the cloud"), file("F", "D", "f.txt", b"ff")]);
     fx.hydrate("a.txt", b"abc");
     fx.hydrate("docs/f.txt", b"ff");
     if !handles {
@@ -141,8 +172,9 @@ impl<'f> Scene<'f> {
             object("p.bin", Some("P"), true, None),
             Object { dir: true, ..object("docs", Some("D"), true, None) },
             object("docs/f.txt", Some("F"), true, Some(b"ff")),
+            Object { dir: true, ..object("keep", Some("K"), true, None) },
         ];
-        Scene { fx, objects, touched: Vec::new() }
+        Scene { fx, objects, touched: Vec::new(), unseen: Vec::new() }
     }
 
     fn touch(&mut self, rel: &str) {
@@ -154,38 +186,72 @@ impl<'f> Scene<'f> {
         self.objects.iter().position(|o| o.own && o.id == Some(id))
     }
 
+    fn path(&self, name: &str, out: bool) -> PathBuf {
+        if out { self.fx.outside.join(name) } else { self.fx.path(name) }
+    }
+
     /// `rm -r name`.
     fn remove(&mut self, name: &str) {
-        let path = self.fx.path(name);
+        self.remove_at(name, false);
+        self.touch(name);
+    }
+
+    /// `rm -r name`, in the folder or (`out`) beside it.
+    fn remove_at(&mut self, name: &str, out: bool) {
+        let path = self.path(name, out);
         if path.is_dir() {
             std::fs::remove_dir_all(path).unwrap();
         } else {
             std::fs::remove_file(path).unwrap();
         }
         let below = format!("{name}/");
-        for o in &mut self.objects {
+        for o in self.objects.iter_mut().filter(|o| o.out == out) {
             o.names.retain(|n| n != name && !n.starts_with(&below));
         }
         self.objects.retain(|o| !o.names.is_empty());
-        self.touch(name);
     }
 
     fn rename(&mut self, from: &str, to: &str) {
-        self.fx.rename(from, to);
-        for name in self.objects.iter_mut().flat_map(|o| o.names.iter_mut()).filter(|n| *n == from) {
-            *name = to.to_owned();
-        }
+        let unseen = self.unseen.len();
+        self.rename_unseen(from, to);
+        self.unseen.truncate(unseen);
         self.touch(from);
         self.touch(to);
     }
 
+    /// A rename no batch names: the object is not seen where it is now.
+    fn rename_unseen(&mut self, from: &str, to: &str) {
+        self.fx.rename(from, to);
+        for o in self.objects.iter_mut().filter(|o| !o.out) {
+            for name in o.names.iter_mut().filter(|n| *n == from) {
+                *name = to.to_owned();
+                self.unseen.push(o.key);
+            }
+        }
+    }
+
+    /// `name` goes out of the folder, to the directory beside it, with what is below it.
+    fn move_out(&mut self, name: &str) {
+        let to = Path::new(name).file_name().unwrap().to_string_lossy().into_owned();
+        std::fs::rename(self.fx.path(name), self.fx.outside.join(&to)).unwrap();
+        let below = format!("{name}/");
+        for o in self.objects.iter_mut().filter(|o| o.names.iter().any(|n| n == name || n.starts_with(&below))) {
+            assert_eq!(o.names.len(), 1);
+            o.names[0] = format!("{to}{}", &o.names[0][name.len()..]);
+            o.out = true;
+        }
+    }
+
     /// Other content, of another size, in the same object.
     fn edit(&mut self, name: &str, content: &[u8]) {
-        self.fx.write(name, content);
         let o = self.objects.iter_mut().find(|o| o.names.iter().any(|n| n == name)).unwrap();
         o.data = Some(content.to_vec());
         o.edited = true;
-        self.touch(name);
+        let out = o.out;
+        std::fs::write(self.path(name, out), content).unwrap();
+        if !out {
+            self.touch(name);
+        }
     }
 
     fn create(&mut self, name: &str, content: &[u8]) {
@@ -230,28 +296,68 @@ impl<'f> Scene<'f> {
             }
             Act::NewFile => self.create("n.txt", b"new"),
             Act::NewIgnored => self.create("n.txt~", b"a backup"),
+            Act::MoveInUnseen => {
+                self.rename_unseen("a.txt", "docs/a.txt");
+                self.touch("a.txt");
+            }
+            Act::MoveOut => {
+                self.move_out("a.txt");
+                self.touch("a.txt");
+            }
+            Act::DeleteFolder => self.remove("docs"),
+            Act::MoveOutFolder => {
+                self.move_out("docs");
+                self.touch("docs");
+            }
+            Act::DragOut => self.move_out("docs/f.txt"),
+            Act::LeaveUnseen => self.rename_unseen("docs/f.txt", "keep/f.txt"),
         }
     }
 
     fn then(&mut self, act: Act, then: Then) {
         match then {
             Then::Nothing => {}
-            Then::EditSibling => self.edit("docs/f.txt", b"edited there too"),
+            Then::EditSibling => {
+                // Where it stands now; nothing if it went with its folder.
+                if let Some(f) = self.own("F") {
+                    let name = self.objects[f].names[0].clone();
+                    self.edit(&name, b"edited there too");
+                }
+            }
             Then::DeleteSibling => self.remove("p.bin"),
             Then::NewBeside => self.create("z.txt", b"beside"),
+            Then::DeleteFolder => {
+                if self.fx.path("docs").is_dir() {
+                    self.remove("docs");
+                }
+            }
             Then::DeleteIt => {
-                let name = match act {
-                    Act::Delete => return,
-                    Act::CopyPlaceholder => "p.bin".to_owned(),
-                    Act::CopyFolder => "docs".to_owned(),
-                    Act::SaveByRename => "a.txt".to_owned(),
-                    Act::NewFile => "n.txt".to_owned(),
-                    Act::NewIgnored => "n.txt~".to_owned(),
-                    _ => self.objects[self.own("A").unwrap()].names[0].clone(),
+                let own = |id: &str| self.own(id).map(|i| (self.objects[i].names[0].clone(), self.objects[i].out));
+                let it = match act {
+                    Act::Delete | Act::DeleteFolder => None,
+                    Act::CopyPlaceholder => own("P"),
+                    Act::CopyFolder | Act::MoveOutFolder => own("D"),
+                    Act::DragOut | Act::LeaveUnseen => own("F"),
+                    Act::SaveByRename => Some(("a.txt".to_owned(), false)),
+                    Act::NewFile => Some(("n.txt".to_owned(), false)),
+                    Act::NewIgnored => Some(("n.txt~".to_owned(), false)),
+                    _ => own("A"),
                 };
-                self.remove(&name);
+                match it {
+                    Some((name, false)) => self.remove(&name),
+                    Some((name, true)) => self.remove_at(&name, true),
+                    None => {}
+                }
             }
         }
+    }
+
+    /// The objects in the folder a look can list: all of them, but for a batch of names
+    /// those moved where it does not look and that nothing `found` since.
+    fn listed(&self, look: Look, found: &[usize]) -> Vec<Object> {
+        let looked = looked_at(&self.touched, &self.objects);
+        let hidden = |o: &Object| look == Look::Named && self.unseen.contains(&o.key) && !found.contains(&o.key) && !o.names.iter().any(|n| looked(n));
+        self.objects.iter().filter(|o| !o.out && !hidden(o)).cloned().collect()
     }
 
     fn named(&self) -> Batch {
@@ -277,6 +383,16 @@ impl<'f> Scene<'f> {
     }
 }
 
+/// Where a batch naming the names `touched` looks: at each name, and at the whole of a
+/// directory in which a name it names is not there (a delete, a rename's old side).
+fn looked_at(touched: &[(String, String)], objects: &[Object]) -> impl Fn(&str) -> bool {
+    let rel = |(dir, name): &(String, String)| if dir.is_empty() { name.clone() } else { format!("{dir}/{name}") };
+    let there = |rel: &String| objects.iter().any(|o| !o.out && o.names.contains(rel));
+    let whole: BTreeSet<String> = touched.iter().filter(|t| !there(&rel(t))).map(|t| t.0.clone()).collect();
+    let named: BTreeSet<String> = touched.iter().map(rel).collect();
+    move |place: &str| named.contains(place) || whole.contains(&Path::new(place).parent().unwrap().display().to_string())
+}
+
 /// What the acts call for.
 #[derive(Debug, Default)]
 struct Outcome {
@@ -288,6 +404,12 @@ struct Outcome {
     stripped: Vec<String>,
     /// Empty copies that go.
     removed: Vec<String>,
+    /// Objects found by asking after them: alive in the folder where the look did not
+    /// look. The look after it is told to look there.
+    found: Vec<usize>,
+    /// Rows a look may make on the way: the `move` of an item it saw moved before it was
+    /// edited there (the `update` then says both).
+    on_the_way: Vec<(OutboxKind, String, Option<String>)>,
 }
 
 /// What the store knows of the items when a look begins, as the model has it: the object
@@ -304,8 +426,42 @@ struct Known {
 #[derive(Clone)]
 enum Expected {
     At(String),
-    /// A row says it left; the row is at this place.
-    Removed(String),
+    /// A row says it left (a `delete` or a `move-out`); the row is at this place.
+    Removed(OutboxKind, String),
+}
+
+/// What became of an item no listed object is.
+enum Missing {
+    /// The store records no object for it: nothing proves anything.
+    NoRecord,
+    /// Its recorded object is alive in the folder, where the look did not look.
+    Elsewhere(usize),
+    /// Its recorded object is alive outside the folder, at this name there.
+    Outside(String),
+    Gone,
+}
+
+fn missing(id: &str, known: &Known, alive: &[Object]) -> Missing {
+    let Some(key) = known.record.get(id) else { return Missing::NoRecord };
+    match alive.iter().find(|o| o.key == *key) {
+        None => Missing::Gone,
+        Some(o) if o.out => Missing::Outside(o.names[0].clone()),
+        Some(o) => Missing::Elsewhere(o.key),
+    }
+}
+
+/// What a look can know of the folder.
+struct Seen<'a> {
+    /// The objects it listed.
+    listed: &'a [Object],
+    /// Every object there is when it decides, in the folder and outside: what the helper
+    /// answers from.
+    alive: &'a [Object],
+    /// Directories it did not get to read (gone by the time it came to them): nothing
+    /// expected inside them is judged.
+    unread: &'a [String],
+    /// The names a batch of names named; `None` for a Full scan, which looks everywhere.
+    named: Option<&'a dyn Fn(&str) -> bool>,
 }
 
 /// The object at `name`, if one is there.
@@ -326,14 +482,14 @@ fn known_at_first(objects: &[Object], handles: bool) -> Known {
 fn listed_around(before: &[Object], after: &[Object]) -> Vec<Object> {
     let top = |name: &String| !name.contains('/');
     let mut seen: Vec<Object> = Vec::new();
-    for old in before {
+    for old in before.iter().filter(|o| !o.out) {
         let now = after.iter().find(|o| o.key == old.key);
         let mut o = now.unwrap_or(old).clone();
         o.names = old.names.iter().filter(|n| top(n)).cloned().collect();
         o.names.extend(now.into_iter().flat_map(|o| o.names.iter().filter(|n| !top(n)).cloned()));
         seen.push(o);
     }
-    for new in after.iter().filter(|o| !before.iter().any(|old| old.key == o.key)) {
+    for new in after.iter().filter(|o| !o.out && !before.iter().any(|old| old.key == o.key)) {
         let mut o = new.clone();
         o.names.retain(|n| !top(n));
         seen.push(o);
@@ -344,26 +500,39 @@ fn listed_around(before: &[Object], after: &[Object]) -> Vec<Object> {
 
 /// The outcome by the one rule of identity: an item's object is the one the store records;
 /// with that one not there, or none recorded, the one standing at the item's place; every
-/// other object carrying the id is a copy. A missing item is deleted only on the evidence
-/// of its recorded object, and a folder only when everything in it has one. An empty copy
-/// goes only when the item's object is the recorded one. Also what the store knows after
-/// such a look: the object found for an item is on record, and a row says where the item
-/// was last seen. `unread`: directories the look did not get to read (gone by the time it
-/// came to them): nothing expected inside them is judged.
-fn outcome(fx: &Fx, objects: &[Object], known: &Known, unread: &[String]) -> (Outcome, Known) {
+/// other object carrying the id is a copy. An item that is not found is judged only where
+/// the look looked: at a place it named, or inside a folder that went. It is judged by its
+/// recorded object alone: gone, a `delete`; alive outside the folder, a `move-out`; alive
+/// in the folder, nothing yet, and the look after it looks there; none recorded, nothing.
+/// A folder goes as one row, and only when everything in it is decided: what went with it
+/// (gone, or where the folder is now) has no row, what left it first has its own
+/// `move-out`, what is elsewhere in the folder or has no record keeps the folder. An empty
+/// copy goes only when the item's object is the recorded one. Also what the store knows
+/// after such a look: the object found for an item is on record, and a row says where the
+/// item was last seen.
+fn outcome(fx: &Fx, seen: &Seen, known: &Known) -> (Outcome, Known) {
+    let objects = seen.listed;
     let mut out = Outcome::default();
     let mut next = known.clone();
     let ignored = |name: &str| fx.ignore.matches(Path::new(name).file_name().unwrap());
-    let mut taken: Vec<usize> = Vec::new();
-    let mut deleted: Vec<String> = Vec::new();
-    for (id, base, is_dir) in ITEMS {
-        let (place, removed) = match &known.expect[id] {
-            Expected::At(place) => (place.as_str(), None),
-            Expected::Removed(at) => (base, Some(at.clone())),
-        };
+    let under = |place: &str, dirs: &[String]| dirs.iter().any(|dir| Path::new(place).starts_with(dir));
+    let find = |id: &str, place: &str, is_dir: bool| {
         let carriers: Vec<usize> = (0..objects.len()).filter(|&i| objects[i].id == Some(id) && objects[i].dir == is_dir).collect();
         let recorded = known.record.get(id).and_then(|key| carriers.iter().copied().find(|&i| objects[i].key == *key));
         let item = recorded.or_else(|| carriers.iter().copied().find(|&i| objects[i].names.iter().any(|n| n == place)));
+        (carriers, recorded, item)
+    };
+    let mut taken: Vec<usize> = Vec::new();
+    // Folders that left: nothing whose place is inside one is judged on its own.
+    let mut left: Vec<String> = Vec::new();
+    // Items asked after because their folder went.
+    let mut asked: Vec<&str> = Vec::new();
+    for (id, base, is_dir) in ITEMS {
+        let (place, removed) = match &known.expect[id] {
+            Expected::At(place) => (place.as_str(), None),
+            Expected::Removed(kind, at) => (base, Some((*kind, at.clone()))),
+        };
+        let (carriers, recorded, item) = find(id, place, is_dir);
         let mut copies: Vec<(usize, bool)> = Vec::new();
         match item {
             Some(i) => {
@@ -372,6 +541,9 @@ fn outcome(fx: &Fx, objects: &[Object], known: &Known, unread: &[String]) -> (Ou
                 out.list.extend(o.names.iter().filter(|n| **n != at && !ignored(n)).map(|n| (n.clone(), "hard-link".to_owned())));
                 if o.edited {
                     out.rows.push((Update, at.clone(), Some(id.into())));
+                    if at != base {
+                        out.on_the_way.push((Move, at.clone(), Some(id.into())));
+                    }
                 } else if at != base {
                     out.rows.push((Move, at.clone(), Some(id.into())));
                 }
@@ -380,25 +552,60 @@ fn outcome(fx: &Fx, objects: &[Object], known: &Known, unread: &[String]) -> (Ou
                 out.items.push((id, at));
                 copies.extend(carriers.iter().filter(|&&c| c != i).map(|&c| (c, recorded == Some(i))));
             }
-            None if unread.iter().any(|dir| Path::new(place).starts_with(dir)) => {}
             None => {
+                copies.extend(carriers.iter().map(|&c| (c, false)));
                 let newcomer = (0..objects.len()).find(|&n| !is_dir && removed.is_none() && objects[n].id.is_none() && !objects[n].dir && objects[n].names.iter().any(|n| n == place));
+                let looked = seen.named.is_none_or(|named| named(place)) || asked.contains(&id);
                 if let Some(n) = newcomer {
                     out.rows.push((Update, place.into(), Some(id.into())));
                     taken.push(n);
-                } else if let Some(at) = removed {
+                } else if let Some((kind, at)) = removed {
                     if is_dir {
-                        deleted.push(at.clone());
+                        left.push(at.clone());
                     }
-                    out.rows.push((Delete, at, Some(id.into())));
-                } else if known.record.contains_key(id) && (!is_dir || known.record.contains_key("F")) && !deleted.iter().any(|dir| Path::new(place).starts_with(dir)) {
-                    out.rows.push((Delete, place.into(), Some(id.into())));
-                    next.expect.insert(id, Expected::Removed(place.to_owned()));
-                    if is_dir {
-                        deleted.push(place.to_owned());
+                    out.rows.push((kind, at, Some(id.into())));
+                } else if !looked || under(place, seen.unread) || under(place, &left) {
+                } else {
+                    let how = missing(id, known, seen.alive);
+                    // What is in a folder that went: only `F` in `docs`.
+                    let inside = if id == "D" { Some(("F", missing("F", known, seen.alive))) } else { None };
+                    let with_it = |to: &str| matches!(&how, Missing::Outside(went) if Path::new(to).starts_with(went));
+                    let goes = match (&how, &inside) {
+                        (Missing::Gone | Missing::Outside(_), None) => true,
+                        (Missing::Gone | Missing::Outside(_), Some((child, within))) => match (find(child, "docs/f.txt", false).2, within) {
+                            (Some(_), _) => known.record.contains_key(child),
+                            (None, Missing::NoRecord) => false,
+                            (None, Missing::Elsewhere(key)) => {
+                                out.found.push(*key);
+                                false
+                            }
+                            (None, Missing::Gone) => true,
+                            (None, Missing::Outside(to)) => {
+                                if !with_it(to) {
+                                    out.rows.push((MoveOut, "docs/f.txt".into(), Some((*child).into())));
+                                    next.expect.insert(child, Expected::Removed(MoveOut, "docs/f.txt".into()));
+                                }
+                                true
+                            }
+                        },
+                        (Missing::Elsewhere(key), _) => {
+                            out.found.push(*key);
+                            false
+                        }
+                        (Missing::NoRecord, _) => false,
+                    };
+                    if goes {
+                        let kind = if matches!(how, Missing::Gone) { Delete } else { MoveOut };
+                        out.rows.push((kind, place.into(), Some(id.into())));
+                        next.expect.insert(id, Expected::Removed(kind, place.to_owned()));
+                        if is_dir {
+                            left.push(place.to_owned());
+                        }
+                    }
+                    if id == "D" {
+                        asked.push("F");
                     }
                 }
-                copies.extend(carriers.iter().map(|&c| (c, false)));
             }
         }
         for (c, certain) in copies {
@@ -433,8 +640,8 @@ fn disk(scene: &Scene, want: &Outcome, exact: bool, records: bool) -> Vec<String
     let mut wrong = Vec::new();
     for o in &scene.objects {
         for name in &o.names {
-            let path = scene.fx.path(name);
-            let may_go = want.removed.contains(name);
+            let path = scene.path(name, o.out);
+            let may_go = !o.out && want.removed.contains(name);
             match (&o.data, path.symlink_metadata().is_ok()) {
                 (_, false) if may_go => {}
                 (_, false) => wrong.push(format!("{name} is gone from the disk")),
@@ -477,6 +684,7 @@ fn run(act: Act, then: Then, handles: bool, look: Look) -> Vec<String> {
     let second_act = || {
         scene.borrow_mut().then(act, then);
         fx.liveness.alive_tree(&fx.root.path);
+        fx.liveness.alive_tree(&fx.outside);
     };
     let first = if look == Look::Interrupted {
         let done = Cell::new(false);
@@ -497,20 +705,23 @@ fn run(act: Act, then: Then, handles: bool, look: Look) -> Vec<String> {
     // they are, or, interrupted, the folder's own directory as it was before the second
     // act). It may do less than that (it acts only on what still stands), never anything
     // else.
-    let listed = if look == Look::Interrupted { listed_around(&after_first_act, &scene.objects) } else { scene.objects.clone() };
+    let named = looked_at(&scene.touched, &scene.objects);
+    let named: Option<&dyn Fn(&str) -> bool> = if look == Look::Named { Some(&named) } else { None };
+    let listed = if look == Look::Interrupted { listed_around(&after_first_act, &scene.objects) } else { scene.listed(look, &[]) };
     let unread: Vec<String> = listed.iter().filter(|o| o.dir && !scene.objects.iter().any(|now| now.key == o.key)).map(|o| o.names[0].clone()).collect();
-    let (first_calls_for, then_known) = outcome(&fx, &listed, &at_first, &unread);
+    let (first_calls_for, then_known) = outcome(&fx, &Seen { listed: &listed, alive: &scene.objects, unread: &unread, named }, &at_first);
     // An empty copy that look removed: it had listed the item's own recorded object (which
     // the second act may have removed since: seen in that run all the same).
     let went = first_calls_for.removed.clone();
-    scene.objects.retain(|o| !went.contains(&o.names[0]));
+    scene.objects.retain(|o| o.out || !went.contains(&o.names[0]));
     // Whether a look records every item it finds: a batch of names finds only those named.
     let records = handles || look != Look::Named;
-    // The outcome: the objects as they are after both acts, and what the model says the
-    // store knows after the first look.
-    let (want, _) = outcome(&fx, &scene.objects, &then_known, &[]);
+    // The outcome: the objects as they are after both acts, with what the first look found
+    // by asking, and what the model says the store knows after the first look.
+    let listed = scene.listed(look, &first_calls_for.found);
+    let (want, _) = outcome(&fx, &Seen { listed: &listed, alive: &scene.objects, unread: &[], named }, &then_known);
     for row in scene.rows() {
-        if matches!(row.0, Delete | Move | MoveOut) && !first_calls_for.rows.contains(&row) {
+        if matches!(row.0, Delete | Move | MoveOut) && !first_calls_for.rows.contains(&row) && !first_calls_for.on_the_way.contains(&row) {
             wrong.push(format!("the first look made the row {row:?}"));
         }
     }
@@ -559,6 +770,6 @@ fn every_small_combination_of_two_local_acts_the_record_and_the_look_has_the_out
             }
         }
     }
-    assert_eq!(ran, 360);
+    assert_eq!(ran, 648);
     assert!(wrong.is_empty(), "{} wrong:\n{}", wrong.len(), wrong.join("\n"));
 }
