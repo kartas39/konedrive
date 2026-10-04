@@ -2,7 +2,8 @@ use konedrive_dbus::rows::Conflict;
 use zbus::interface;
 
 use crate::dbus::Conflicts;
-use crate::dbus::fault::{Result, to_fault};
+use crate::dbus::fault::Result;
+use crate::dbus::properties::CONFLICT_COUNT;
 
 #[interface(name = "org.konedrive.Conflicts")]
 impl Conflicts {
@@ -10,17 +11,17 @@ impl Conflicts {
     /// was kept: `rescued` or `copy`), newest first; one whose kept file is
     /// gone is dropped.
     async fn list(&self) -> Result<Vec<Conflict>> {
-        let rows = self.service.conflicts().await.map_err(to_fault)?;
+        let rows = self.service.conflicts().await?;
         Ok(rows.into_iter().map(|c| Conflict { at: c.at, original: c.original, kept: c.rescued, how: c.kind.as_str().to_owned() }).collect())
     }
 
     async fn dismiss(&self, rescued_path: &str) -> Result<()> {
-        self.service.dismiss_conflict(rescued_path).await.map_err(to_fault)
+        Ok(self.service.dismiss_conflict(rescued_path).await?)
     }
 
     #[zbus(property)]
     async fn count(&self) -> u32 {
-        self.service.status().2
+        CONFLICT_COUNT.of(&self.service)
     }
 
     #[zbus(property)]

@@ -424,7 +424,7 @@ fn vfat_mount(ctx: &Ctx, checks: &mut Checks, synced: bool) -> Result<(), String
             w.uploaded("beside.txt", b"beside")?;
             let listed = w.wait("the mount listed as not uploaded", || {
                 let kept = ctx.runtime.block_on(w.service.not_uploaded()).unwrap_or_default();
-                kept.into_iter().find(|(path, _)| Path::new(path) == w.path("stick")).map(|(_, reason)| reason)
+                kept.into_iter().find(|kept| Path::new(&kept.path) == w.path("stick")).map(|kept| kept.reason)
             })?;
             if listed != "other-device" {
                 return Err(format!("the mount is listed as {listed}, not as other-device"));

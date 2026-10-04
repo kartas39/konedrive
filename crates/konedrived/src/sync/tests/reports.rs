@@ -62,7 +62,7 @@ async fn a_download_shows_in_transfers_until_it_ends_however_it_ends() {
     writer.write_all(&[9u8; 48 * 1024]).await.unwrap();
     drop(writer);
     filling.await.unwrap().unwrap();
-    assert_eq!(service.transfers(), Vec::new(), "a finished download is not listed");
+    assert_eq!(service.report().transfers.list(), Vec::new(), "a finished download is not listed");
 
     drop(placeholder(root_dir.path(), "g.bin", "g.bin", 100));
     let failing_target = root_dir.path().join("g.bin");
@@ -77,7 +77,7 @@ async fn a_download_shows_in_transfers_until_it_ends_however_it_ends() {
     tokio::time::timeout(Duration::from_secs(10), transfers.wait_for(listed)).await.unwrap().unwrap();
     open.send(()).unwrap();
     assert!(failing.await.unwrap().is_err());
-    assert_eq!(service.transfers(), Vec::new(), "a failed download is not listed either");
+    assert_eq!(service.report().transfers.list(), Vec::new(), "a failed download is not listed either");
 }
 
 /// A service with a folder registered without interception and no
@@ -146,7 +146,7 @@ async fn local_bytes_are_what_the_downloaded_file_takes() {
     let mut state = service.state().subscribe();
     tokio::time::timeout(Duration::from_secs(60), state.wait_for(|s| s.local.local_bytes == expected))
         .await
-        .unwrap_or_else(|_| panic!("LocalBytes stayed {}, not {expected}", service.status().1))
+        .unwrap_or_else(|_| panic!("LocalBytes stayed {}, not {expected}", service.state().get().local.local_bytes))
         .unwrap();
 }
 

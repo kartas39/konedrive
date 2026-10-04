@@ -558,7 +558,8 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
   fragment is in flight, completes) with its session kept — and the daemon exits once they have,
   or after 10 s at
   most (`stop::STOP_BOUND`). What is still in flight then is cut, and the recorded place covers
-  it. A second signal exits at once.
+  it. A second signal exits at once. The daemon stops the same way, and exits with a failure,
+  when a task it cannot work without is gone (the helper's supervisor; limitations log F273).
 
 A session opened before sessions were listed, or before openings were recorded, is known to
 nothing: its placeholder holds the name, and the row waits for it as for another device's (§6.2;

@@ -313,7 +313,7 @@ async fn binary_status_says_when_it_last_checked_and_what_the_folder_takes() {
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
     f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-    wait_for(|| f.service.status().0 > 0).await;
+    wait_for(|| f.service.state().get().cycle.last_checked > 0).await;
 
     let text = out_text(&run(addr, &["sync", "status"]));
     let checked = text.lines().find(|l| l.starts_with("Last checked:")).unwrap_or_else(|| panic!("{text}"));

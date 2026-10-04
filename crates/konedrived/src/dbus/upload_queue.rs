@@ -1,87 +1,91 @@
+use konedrive_dbus::rows;
 use zbus::interface;
 
-use crate::dbus::fault::{Result, to_fault};
+use crate::dbus::fault::Result;
+use crate::dbus::properties::*;
 use crate::dbus::UploadQueue;
+
+fn kept_back(kept: crate::sync::outbox::KeptBack) -> rows::KeptBack {
+    rows::KeptBack { path: kept.path, reason: kept.reason }
+}
 
 #[interface(name = "org.konedrive.UploadQueue")]
 impl UploadQueue {
-    /// The changes waiting to be uploaded, oldest first, at most `limit` (0 for
-    /// all): (seq, kind, full path, state, bytes sent, bytes in all, reason,
-    /// next try).
-    async fn changes(&self, limit: u32) -> Result<Vec<(u64, String, String, String, u64, u64, String, i64)>> {
-        self.service.outbox(limit).await.map_err(to_fault)
+    /// The changes waiting to be uploaded, oldest first, at most `limit` (0 for all).
+    async fn changes(&self, limit: u32) -> Result<Vec<rows::Change>> {
+        let changes = self.service.outbox(limit).await?;
+        Ok(changes
+            .into_iter()
+            .map(|c| rows::Change { seq: c.seq, kind: c.kind, path: c.path, state: c.state, sent: c.sent, total: c.total, reason: c.reason, next_try: c.next_try })
+            .collect())
     }
 
     /// The removals the mass-delete guard held go ahead; how many.
     async fn confirm_deletes(&self) -> Result<u32> {
-        self.service.confirm_deletes().await.map_err(to_fault)
+        Ok(self.service.confirm_deletes().await?)
     }
 
     /// The removals the mass-delete guard held are dropped, and their items
     /// placed again; how many.
     async fn restore_deletes(&self) -> Result<u32> {
-        self.service.restore_deletes().await.map_err(to_fault)
+        Ok(self.service.restore_deletes().await?)
     }
 
-    /// What stays on this computer and why: (full path, reason).
-    async fn not_uploaded(&self) -> Result<Vec<(String, String)>> {
-        self.service.not_uploaded().await.map_err(to_fault)
+    /// What stays on this computer and why.
+    async fn not_uploaded(&self) -> Result<Vec<rows::KeptBack>> {
+        Ok(self.service.not_uploaded().await?.into_iter().map(kept_back).collect())
     }
 
-    /// What is kept back, one row per reason: (group, reason, count, bytes).
-    async fn not_uploaded_summary(&self) -> Result<Vec<(String, String, u32, u64)>> {
-        self.service.not_uploaded_summary().await.map_err(to_fault)
+    /// What is kept back, one row per reason.
+    async fn not_uploaded_summary(&self) -> Result<Vec<rows::KeptBackReason>> {
+        let summary = self.service.not_uploaded_summary().await?;
+        Ok(summary.into_iter().map(|(group, reason, count, bytes)| rows::KeptBackReason { group, reason, count, bytes }).collect())
     }
 
     /// The files kept back for one reason, at most `limit` (0 for all), and how many there are.
     #[zbus(out_args("items", "total"))]
-    async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32)> {
-        self.service.not_uploaded_files(reason, limit).await.map_err(to_fault)
+    async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<rows::KeptBack>, u32)> {
+        let (items, total) = self.service.not_uploaded_files(reason, limit).await?;
+        Ok((items.into_iter().map(kept_back).collect(), total))
     }
 
-    /// Changes waiting to be uploaded (not blocked, not held).
     #[zbus(property)]
     async fn pending_count(&self) -> u32 {
-        self.service.state().get().outbox.pending_count
+        PENDING_COUNT.of(&self.service)
     }
 
-    /// The size of the files those changes send.
     #[zbus(property)]
     async fn pending_bytes(&self) -> u64 {
-        self.service.state().get().outbox.pending_bytes
+        PENDING_BYTES.of(&self.service)
     }
 
-    /// Changes that need the user to go up.
     #[zbus(property)]
     async fn blocked_count(&self) -> u32 {
-        self.service.state().get().outbox.blocked_count
+        BLOCKED_COUNT.of(&self.service)
     }
 
-    /// Removals the mass-delete guard holds for `ConfirmDeletes` or
-    /// `RestoreDeletes`.
     #[zbus(property)]
     async fn held_count(&self) -> u32 {
-        self.service.state().get().outbox.held_count
+        HELD_COUNT.of(&self.service)
     }
 
-    /// OneDrive is full: no content goes up (issue #2).
     #[zbus(property)]
     async fn quota_full(&self) -> bool {
-        self.service.state().get().outbox.quota_full
+        QUOTA_FULL.of(&self.service)
     }
 
     #[zbus(property)]
     async fn quota_waiting_count(&self) -> u32 {
-        self.service.state().get().outbox.space_waiting_count
+        QUOTA_WAITING_COUNT.of(&self.service)
     }
 
     #[zbus(property)]
     async fn quota_waiting_bytes(&self) -> u64 {
-        self.service.state().get().outbox.space_waiting_bytes
+        QUOTA_WAITING_BYTES.of(&self.service)
     }
 
     #[zbus(property)]
     async fn too_big_count(&self) -> u32 {
-        self.service.state().get().outbox.too_big_count
+        TOO_BIG_COUNT.of(&self.service)
     }
 }

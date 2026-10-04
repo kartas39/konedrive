@@ -798,28 +798,16 @@ impl konedrived::daemon::manager::Bus for FailingExports {
         konedrived::dbus::export::OnBus.serve(connection, manager).await
     }
 
-    async fn helper_state(&self, connection: &zbus::Connection) -> zbus::Result<Box<dyn konedrived::daemon::manager::HelperStateSignal>> {
-        konedrived::dbus::export::OnBus.helper_state(connection).await
-    }
-
-    async fn export_account(
+    async fn export(
         &self,
         connection: &zbus::Connection,
         path: &zbus::zvariant::ObjectPath<'_>,
         account: Arc<konedrived::account::AccountService>,
-    ) -> zbus::Result<tokio::task::JoinHandle<()>> {
-        konedrived::dbus::export::OnBus.export_account(connection, path, account).await
-    }
-
-    async fn export_folder(
-        &self,
-        connection: &zbus::Connection,
-        path: &zbus::zvariant::ObjectPath<'_>,
         sync: Arc<konedrived::sync::SyncService>,
     ) -> zbus::Result<Vec<tokio::task::JoinHandle<()>>> {
-        let signals = konedrived::dbus::export::OnBus.export_folder(connection, path, sync).await?;
+        let signals = konedrived::dbus::export::OnBus.export(connection, path, account, sync).await?;
         if self.failing.load(std::sync::atomic::Ordering::SeqCst) {
-            // As an export that failed part of the way leaves it: some of the folder's
+            // As an export that failed part of the way leaves it: some of the account's
             // interfaces on the bus, one in the middle not.
             signals.iter().for_each(|task| task.abort());
             let transfers = zbus::names::InterfaceName::from_static_str(konedrive_dbus::TRANSFERS_INTERFACE_NAME)?;
@@ -829,12 +817,8 @@ impl konedrived::daemon::manager::Bus for FailingExports {
         Ok(signals)
     }
 
-    async fn unexport_folder(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
-        konedrived::dbus::export::OnBus.unexport_folder(connection, path, partly).await
-    }
-
-    async fn unexport_account(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
-        konedrived::dbus::export::OnBus.unexport_account(connection, path, partly).await
+    async fn unexport(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.unexport(connection, path, partly).await
     }
 }
 
@@ -894,34 +878,18 @@ impl konedrived::daemon::manager::Bus for HeldServe {
         konedrived::dbus::export::OnBus.serve(connection, manager).await
     }
 
-    async fn helper_state(&self, connection: &zbus::Connection) -> zbus::Result<Box<dyn konedrived::daemon::manager::HelperStateSignal>> {
-        konedrived::dbus::export::OnBus.helper_state(connection).await
-    }
-
-    async fn export_account(
+    async fn export(
         &self,
         connection: &zbus::Connection,
         path: &zbus::zvariant::ObjectPath<'_>,
         account: Arc<konedrived::account::AccountService>,
-    ) -> zbus::Result<tokio::task::JoinHandle<()>> {
-        konedrived::dbus::export::OnBus.export_account(connection, path, account).await
-    }
-
-    async fn export_folder(
-        &self,
-        connection: &zbus::Connection,
-        path: &zbus::zvariant::ObjectPath<'_>,
         sync: Arc<konedrived::sync::SyncService>,
     ) -> zbus::Result<Vec<tokio::task::JoinHandle<()>>> {
-        konedrived::dbus::export::OnBus.export_folder(connection, path, sync).await
+        konedrived::dbus::export::OnBus.export(connection, path, account, sync).await
     }
 
-    async fn unexport_folder(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
-        konedrived::dbus::export::OnBus.unexport_folder(connection, path, partly).await
-    }
-
-    async fn unexport_account(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
-        konedrived::dbus::export::OnBus.unexport_account(connection, path, partly).await
+    async fn unexport(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.unexport(connection, path, partly).await
     }
 }
 

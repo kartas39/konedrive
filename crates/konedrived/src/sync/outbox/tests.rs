@@ -39,7 +39,7 @@ fn rows_waiting_while_paused_read_paused() {
         row(5, OutboxState::Held, "mass-delete"),
     ];
     let root = Path::new("/nowhere");
-    let seen = |paused| entries(rows.clone(), root, &[], paused, false).into_iter().map(|e| (e.3, e.6, e.7)).collect::<Vec<_>>();
+    let seen = |paused| entries(rows.clone(), root, &[], paused, false).into_iter().map(|e| (e.state, e.reason, e.next_try)).collect::<Vec<_>>();
     let t = 1_700_000_000;
     assert_eq!(
         seen(true),

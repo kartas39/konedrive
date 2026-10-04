@@ -4,12 +4,13 @@ use zbus::object_server::SignalEmitter;
 use zbus::interface;
 
 use crate::dbus::Folder;
-use crate::dbus::fault::{Fault, Result, to_fault};
+use crate::dbus::fault::{Fault, Result};
+use crate::dbus::properties::*;
 
 #[interface(name = "org.konedrive.Folder")]
 impl Folder {
     async fn register(&self, path: &str) -> Result<()> {
-        self.service.register_root(Path::new(path)).await.map_err(to_fault)
+        Ok(self.service.register_root(Path::new(path)).await?)
     }
 
     /// Binds a folder with **nothing intercepting opens inside it**.
@@ -18,44 +19,41 @@ impl Folder {
     /// intercepts reads as zeros, which `State = no-interception` and
     /// `LastError` then say in as many words.
     async fn register_without_interception(&self, path: &str) -> Result<()> {
-        self.service
-            .register_root_without_interception(Path::new(path))
-            .await
-            .map_err(to_fault)
+        Ok(self.service.register_root_without_interception(Path::new(path)).await?)
     }
 
     async fn unregister(&self) -> Result<()> {
-        self.service.unregister_root().await.map_err(to_fault)
+        Ok(self.service.unregister_root().await?)
     }
 
     /// Mirrors a local directory as placeholders. Part 2 replaces the source
     /// with the Graph listing; this stays as the offline test path.
     async fn populate_from_directory(&self, source_dir: &str) -> Result<u64> {
-        self.service.populate_from_directory(Path::new(source_dir)).await.map_err(to_fault)
+        Ok(self.service.populate_from_directory(Path::new(source_dir)).await?)
     }
 
     async fn refresh(&self) -> Result<()> {
-        self.service.refresh().await.map_err(to_fault)
+        Ok(self.service.refresh().await?)
     }
 
     async fn skipped(&self) -> Result<Vec<(String, String)>> {
-        self.service.skipped().await.map_err(to_fault)
+        Ok(self.service.skipped().await?)
     }
 
     #[zbus(out_args("files", "bytes", "busy"))]
     async fn free_up_space(&self) -> Result<(u32, u64, u32)> {
-        let freed = self.service.free_up_space().await.map_err(to_fault)?;
+        let freed = self.service.free_up_space().await?;
         Ok((freed.files, freed.bytes, freed.busy))
     }
 
     /// Nothing is uploaded, and OneDrive is not asked for changes, for
     /// `seconds` — or until `Resume()` when 0.
     async fn pause(&self, seconds: u32) -> Result<()> {
-        self.service.pause_syncing(seconds).await.map_err(to_fault)
+        Ok(self.service.pause_syncing(seconds).await?)
     }
 
     async fn resume(&self) -> Result<()> {
-        self.service.resume_syncing().await.map_err(to_fault)
+        Ok(self.service.resume_syncing().await?)
     }
 
     /// The account's ignore list from now on; a Full local scan follows.
@@ -64,65 +62,100 @@ impl Folder {
         patterns: Vec<String>,
         #[zbus(signal_emitter)] emitter: SignalEmitter<'_>,
     ) -> Result<()> {
-        self.service.set_ignore_patterns(patterns).await.map_err(to_fault)?;
+        self.service.set_ignore_patterns(patterns).await?;
         self.ignore_patterns_changed(&emitter).await.map_err(Fault::ZBus)
     }
 
     /// Whether Graph's thumbnails of images and videos are fetched; written to `config.toml`.
     async fn set_thumbnails(&self, on: bool, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) -> Result<()> {
-        self.service.change_run_settings(move |s| s.thumbnails = on).await.map_err(to_fault)?;
+        self.service.change_run_settings(move |s| s.thumbnails = on).await?;
         self.thumbnails_changed(&emitter).await.map_err(Fault::ZBus)
     }
 
     /// Lifts the automatic hold now, until a source or the global `Accounts.PauseOnMetered` /
     /// `OnBattery` changes.
     async fn sync_anyway(&self) -> Result<()> {
-        self.service.sync_anyway().map_err(to_fault)
+        Ok(self.service.sync_anyway()?)
     }
 
-    /// Why the account holds back by itself now: `metered`, `on-battery`, `power-saver`, or
-    /// empty.
-    #[zbus(property)]
-    async fn held_back(&self) -> String {
-        self.service.state().get().pause.held_back
-    }
-
-    /// Whether what is changed in the folder is uploaded now: false for a folder that runs
-    /// read-only although its account is read-write.
-    #[zbus(property)]
-    async fn writable(&self) -> bool {
-        self.service.writable()
-    }
-
-    /// How changes made in OneDrive reach this computer: `connected` (at once, through the
-    /// notification socket), `connecting` (trying; the poll runs meanwhile), or `off`
-    /// (stopped, or not a OneDrive folder).
-    #[zbus(property)]
-    async fn live_changes(&self) -> String {
-        self.service.state().get().cycle.live_changes.as_str().to_owned()
-    }
+    // The properties the daemon announces by itself: each a row of `properties`, which
+    // says what it is.
 
     #[zbus(property)]
-    async fn thumbnails(&self) -> bool {
-        self.service.run_settings().thumbnails
-    }
-
-    #[zbus(property)]
-    /// From the published state, as `State` and `LastError` are: a
-    /// folder that could not be brought up reads
-    /// `error` and still says which folder it is.
     async fn path(&self) -> String {
-        self.service.state().get().folder.root_path
+        PATH.of(&self.service)
     }
 
     #[zbus(property)]
     async fn state(&self) -> String {
-        self.service.root_state()
+        STATE.of(&self.service)
     }
 
     #[zbus(property)]
     async fn last_error(&self) -> String {
-        self.service.last_error()
+        LAST_ERROR.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn paused(&self) -> bool {
+        PAUSED.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn paused_until(&self) -> i64 {
+        PAUSED_UNTIL.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn held_back(&self) -> String {
+        HELD_BACK.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn writable(&self) -> bool {
+        WRITABLE.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn live_changes(&self) -> String {
+        LIVE_CHANGES.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn items_listed(&self) -> u64 {
+        ITEMS_LISTED.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn items_placed(&self) -> u64 {
+        ITEMS_PLACED.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn skipped_count(&self) -> u64 {
+        SKIPPED_COUNT.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn last_checked(&self) -> i64 {
+        LAST_CHECKED.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn local_bytes(&self) -> u64 {
+        LOCAL_BYTES.of(&self.service)
+    }
+
+    #[zbus(property)]
+    async fn pinned_count(&self) -> u32 {
+        PINNED_COUNT.of(&self.service)
+    }
+
+    // The properties a call sets and announces, and the folder's record.
+
+    #[zbus(property)]
+    async fn thumbnails(&self) -> bool {
+        self.service.run_settings().thumbnails
     }
 
     #[zbus(property)]
@@ -131,49 +164,7 @@ impl Folder {
     }
 
     #[zbus(property)]
-    async fn items_listed(&self) -> u64 {
-        self.service.items().0
-    }
-
-    #[zbus(property)]
-    async fn items_placed(&self) -> u64 {
-        self.service.items().1
-    }
-
-    #[zbus(property)]
-    async fn skipped_count(&self) -> u64 {
-        self.service.items().2
-    }
-
-    #[zbus(property)]
-    async fn last_checked(&self) -> i64 {
-        self.service.status().0
-    }
-
-    #[zbus(property)]
-    async fn local_bytes(&self) -> u64 {
-        self.service.status().1
-    }
-
-    /// Files and folders with a pin of their own.
-    #[zbus(property)]
-    async fn pinned_count(&self) -> u32 {
-        self.service.pinned_count()
-    }
-
-    #[zbus(property)]
     async fn ignore_patterns(&self) -> Vec<String> {
         self.service.ignore_patterns()
-    }
-
-    #[zbus(property)]
-    async fn paused(&self) -> bool {
-        self.service.state().get().pause.paused_until.is_some()
-    }
-
-    /// Unix seconds; 0 while paused until resumed, and while not paused.
-    #[zbus(property)]
-    async fn paused_until(&self) -> i64 {
-        self.service.state().get().pause.paused_until.unwrap_or(0)
     }
 }

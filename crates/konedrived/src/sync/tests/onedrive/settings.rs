@@ -109,7 +109,7 @@ async fn a_metered_connection_holds_the_account_back_until_it_ends() {
     assert_eq!(service.pending_uploads().await, 1, "the change waits");
     let asked = || async { w.server.received_requests().await.unwrap().iter().filter(|r| r.method.as_str() == "POST").count() };
     assert_eq!(asked().await, 0, "nothing is uploaded");
-    assert!(service.outbox(0).await.unwrap().iter().all(|row| row.3 == "paused"), "the rows read paused");
+    assert!(service.outbox(0).await.unwrap().iter().all(|row| row.state == "paused"), "the rows read paused");
 
     service.registry().set_conditions(running::Conditions::default());
     assert_eq!(service.state().get().pause.held_back, "");

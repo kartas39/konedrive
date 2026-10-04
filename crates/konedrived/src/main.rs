@@ -66,22 +66,33 @@ async fn main() -> anyhow::Result<()> {
     // folder's registration and recovery walk — happens in the supervisor,
     // where it delays nobody's first call. On every connect it brings every
     // account's folder up, one after another, before it serves a fill.
-    tokio::spawn(konedrived::helper::hub::supervise(
-        Arc::clone(&hub),
-        PathBuf::from(konedrive_proto::SOCKET_PATH),
-        HELPER_BACKOFF,
-    ));
+    // Kept, each of them: one that is gone ends the daemon (quality finding `SY11`).
+    let mut tasks = stop::Tasks::default();
+    tasks.spawn(
+        "the helper's supervisor",
+        stop::Need::Always,
+        konedrived::helper::hub::supervise(Arc::clone(&hub), PathBuf::from(konedrive_proto::SOCKET_PATH), HELPER_BACKOFF),
+    );
     // `HelperState` follows the link, and systemd every 30 s without one.
-    tokio::spawn(konedrived::helper::hub::watch(hub));
+    tasks.spawn("the watch of the helper's state", stop::Need::Always, konedrived::helper::hub::watch(hub));
     // Every account holds back by itself on a metered connection or on battery, as its
-    // settings say (`conditions`).
-    tokio::spawn(konedrived::conditions::watch(Arc::clone(&registry)));
+    // settings say (`conditions`). With no system bus it has nothing to follow, and ends.
+    tasks.spawn("the watcher of power and metering", stop::Need::WhileItCan, konedrived::conditions::watch(Arc::clone(&registry)));
     // Every OneDrive folder is brought up to date the moment the network is back.
-    tokio::spawn(konedrived::conditions::network::watch(Arc::clone(&registry)));
+    tasks.spawn("the network's watcher", stop::Need::WhileItCan, konedrived::conditions::network::watch(Arc::clone(&registry)));
 
     tracing::info!("konedrived ready");
     let _connection = daemon.connection;
-    signals.next().await;
+    // A signal stops the daemon; so does the end of a task it cannot work without, and then
+    // it leaves with a failure, for systemd to start it again (`Restart=on-failure`): a
+    // daemon that stays up with no supervisor says ready and fills nothing.
+    let code = tokio::select! {
+        _ = signals.next() => 0,
+        died = tasks.died() => {
+            tracing::error!("{died}; stopping, to be started again");
+            1
+        }
+    };
     // The stop (issue #84): nothing new is sent, and the requests in flight
     // get a bounded time to return and be persisted; a second signal ends it.
     tracing::info!("stopping: the uploads in flight get up to {} s", stop::STOP_BOUND.as_secs());
@@ -92,5 +103,5 @@ async fn main() -> anyhow::Result<()> {
         stop::Ended::Again => tracing::warn!("stopped at once by a second signal"),
     }
     // Not through the runtime's drop, which would wait for blocking tasks.
-    std::process::exit(0)
+    std::process::exit(code)
 }

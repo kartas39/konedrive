@@ -48,7 +48,7 @@ async fn web_url_of_a_file_not_uploaded_yet_is_refused_without_asking() {
 
     let refused = service.web_url(&new).await.unwrap_err();
     assert!(matches!(refused, SyncError::NotInOneDrive(_)), "{refused:?}");
-    assert!(matches!(crate::dbus::fault::to_fault(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::NotUploaded, _)));
+    assert!(matches!(crate::dbus::fault::Fault::from(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::NotUploaded, _)));
     assert_eq!(requests(&w).await, before);
     service.stop_sync().await;
 }
@@ -70,7 +70,7 @@ async fn web_url_says_when_onedrive_could_not_be_reached() {
 
     let refused = service.web_url(&w.folder.path().join("docs/f.txt")).await.unwrap_err();
     assert!(matches!(refused, SyncError::Unreachable(_)), "{refused:?}");
-    assert!(matches!(crate::dbus::fault::to_fault(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::Unreachable, _)));
+    assert!(matches!(crate::dbus::fault::Fault::from(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::Unreachable, _)));
     let refused = service.web_url(&w.folder.path().join("docs")).await.unwrap_err();
     assert!(matches!(&refused, SyncError::Io(why) if why.contains("no address")), "{refused:?}");
     service.stop_sync().await;

@@ -46,6 +46,13 @@ async fn binary_pauses_resumes_and_keeps_the_ignore_list() {
     assert!(run(addr, &["sync", "ignore", "remove", "*.bak"]).status.success());
     assert!(!f.proxy.folder.ignore_patterns().await.unwrap().contains(&"*.bak".to_owned()));
     assert_eq!(run(addr, &["sync", "ignore", "remove", "*.bak"]).status.code(), Some(2));
+    // A pattern that can match no name is refused under the bus's own `InvalidArgs`, and
+    // said once, in words: no error name in front of the reason.
+    let refused = run(addr, &["sync", "ignore", "add", "a/b"]);
+    assert!(!refused.status.success(), "{refused:?}");
+    let said = err_text(&refused);
+    assert!(said.contains("the ignore list was not changed: \"a/b\""), "{said}");
+    assert!(!said.contains("org.freedesktop"), "{said}");
 
     assert_eq!(out_text(&run(addr, &["sync", "outbox"])).trim(), "Uploading:    0 now, 0 B/s\nNothing is waiting to upload.");
     assert_eq!(out_text(&run(addr, &["sync", "not-uploaded"])).trim(), "Everything here is uploaded or waits to be.");

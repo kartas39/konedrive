@@ -5,7 +5,7 @@ use zbus::interface;
 
 use konedrive_dbus::Refusal;
 
-use crate::dbus::fault::{to_fault, Fault};
+use crate::dbus::fault::Fault;
 use crate::daemon::manager::{AccountManager, Outside};
 
 pub(crate) fn outside(path: &str) -> Fault {
@@ -29,12 +29,12 @@ pub struct Files {
 impl Files {
     async fn hydrate(&self, path: &str) -> Result<(), Fault> {
         let account = self.manager.route(Path::new(path)).await.ok_or_else(|| outside(path))?;
-        account.sync.hydrate_now(Path::new(path)).await.map_err(to_fault)
+        Ok(account.sync.hydrate_now(Path::new(path)).await?)
     }
 
     async fn dehydrate(&self, path: &str) -> Result<(), Fault> {
         let account = self.manager.route(Path::new(path)).await.ok_or_else(|| outside(path))?;
-        account.sync.dehydrate(Path::new(path)).await.map_err(to_fault)
+        Ok(account.sync.dehydrate(Path::new(path)).await?)
     }
 
     async fn item_state(&self, path: &str) -> String {
@@ -50,11 +50,11 @@ impl Files {
     async fn pin(&self, paths: Vec<String>) -> Result<u32, Fault> {
         let groups = self.manager.route_all(&paths).await?;
         for (account, paths) in &groups {
-            account.sync.check_pinnable(paths).await.map_err(to_fault)?;
+            account.sync.check_pinnable(paths).await?;
         }
         let mut queued = 0;
         for (account, paths) in groups {
-            queued += account.sync.pin(&paths).await.map_err(to_fault)?;
+            queued += account.sync.pin(&paths).await?;
         }
         Ok(queued)
     }
@@ -65,11 +65,11 @@ impl Files {
     async fn unpin(&self, paths: Vec<String>) -> Result<u32, Fault> {
         let groups = self.manager.route_all(&paths).await?;
         for (account, paths) in &groups {
-            account.sync.check_unpinnable(paths).await.map_err(to_fault)?;
+            account.sync.check_unpinnable(paths).await?;
         }
         let mut unpinned = 0;
         for (account, paths) in groups {
-            unpinned += account.sync.unpin(&paths).await.map_err(to_fault)?;
+            unpinned += account.sync.unpin(&paths).await?;
         }
         Ok(unpinned)
     }
@@ -81,11 +81,11 @@ impl Files {
     async fn free_up(&self, paths: Vec<String>) -> Result<(u32, u64, u32, u32), Fault> {
         let groups = self.manager.route_all(&paths).await?;
         for (account, paths) in &groups {
-            account.sync.check_free_up(paths).await.map_err(to_fault)?;
+            account.sync.check_free_up(paths).await?;
         }
         let mut total = (0, 0, 0, 0);
         for (account, paths) in groups {
-            let freed = account.sync.free_up(&paths).await.map_err(to_fault)?;
+            let freed = account.sync.free_up(&paths).await?;
             total.0 += freed.files;
             total.1 += freed.bytes;
             total.2 += freed.busy + freed.modified;
@@ -100,9 +100,9 @@ impl Files {
     #[zbus(out_args("url"))]
     async fn web_url(&self, path: &str) -> Result<String, Fault> {
         if let Some(account) = self.manager.folder_itself(Path::new(path)).await {
-            return account.sync.root_web_url().await.map_err(to_fault);
+            return Ok(account.sync.root_web_url().await?);
         }
         let account = self.manager.route(Path::new(path)).await.ok_or_else(|| outside(path))?;
-        account.sync.web_url(Path::new(path)).await.map_err(to_fault)
+        Ok(account.sync.web_url(Path::new(path)).await?)
     }
 }

@@ -295,6 +295,10 @@ pub struct SyncService {
     /// What background work runs now (`running`): the one place every reader of the pause
     /// asks, with the account's settings from `config.toml`.
     running: Arc<running::Running>,
+    /// The task that counts the queue totals into the published state
+    /// (`status::totals`): the service's own, from its making to its drop, whether or not
+    /// anything shows the account.
+    totals: tokio::task::AbortHandle,
 }
 
 /// What `LastError` says while a root is registered without interception.
@@ -306,8 +310,9 @@ pub const NO_INTERCEPTION_WARNING: &str =
      opened, so files in this folder read as zeros until they are explicitly hydrated";
 
 impl SyncService {
-    /// One account's folder, made with `wiring`. It is not one of the daemon's accounts
-    /// until whoever made it adds it to the registry ([`registry::Registry::add`]).
+    /// One account's folder, made with `wiring`, on a tokio runtime: its totals are counted
+    /// from now on. It is not one of the daemon's accounts until whoever made it adds it
+    /// to the registry ([`registry::Registry::add`]).
     pub fn new(mut wiring: Wiring) -> Arc<Self> {
         let registry = Arc::clone(&wiring.registry);
         let hub = Arc::clone(registry.hub());
@@ -322,6 +327,7 @@ impl SyncService {
             wiring.onedrive = Some(OneDrive { drive: onedrive.drive.with_pool(Arc::clone(&pool)), paths: onedrive.paths });
         }
         let settings = wiring.persist.store.account(&wiring.persist.account).map(|a| running::Settings::of(&a)).unwrap_or_default();
+        let report = Report::new(state.clone());
         // The pins' downloads go through this very service, which they must
         // not keep alive: a weak reference.
         Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
@@ -340,7 +346,8 @@ impl SyncService {
                     }
                 }
             }),
-            report: Report::new(state.clone()),
+            totals: tokio::spawn(crate::status::totals::run(state.clone(), report.transfers.clone())).abort_handle(),
+            report,
             state,
             folder: Arc::new(tokio::sync::RwLock::new(Folder::new())),
             view: watch::Sender::new(View::default()),
@@ -534,8 +541,10 @@ impl Drop for SyncService {
     /// The view lets go of the running sync's handles: a part of that sync reads the view
     /// (the write gate), so left there they would keep each other, and the tree store,
     /// alive after the service. The sync itself goes with the folder's state, which tells
-    /// its parts to stop.
+    /// its parts to stop. The totals' task holds the published state, and would count for
+    /// nobody.
     fn drop(&mut self) {
+        self.totals.abort();
         self.view.send_replace(View::default());
     }
 }

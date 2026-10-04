@@ -7,7 +7,7 @@ use zbus::{interface, Connection};
 
 use crate::account::AccountService;
 use crate::account::state::AccountSnapshot;
-use crate::dbus::fault::{Fault, Result};
+use crate::dbus::fault::Result;
 #[cfg(feature = "dev-tools")]
 use crate::dbus::token_export::TokenExport;
 
@@ -18,7 +18,7 @@ pub struct Account {
 #[interface(name = "org.konedrive.Account")]
 impl Account {
     async fn begin_sign_in(&self) -> Result<String> {
-        self.service.begin_sign_in().await.map_err(Fault::from)
+        Ok(self.service.begin_sign_in().await?)
     }
 
     async fn cancel_sign_in(&self) {
@@ -26,7 +26,7 @@ impl Account {
     }
 
     async fn sign_out(&self) -> Result<()> {
-        self.service.sign_out().await.map_err(Fault::from)
+        Ok(self.service.sign_out().await?)
     }
 
     async fn refresh_info(&self) {
@@ -36,14 +36,14 @@ impl Account {
 
     /// The rules of `Accounts.Add`; `InvalidArgs` otherwise.
     async fn set_label(&self, label: &str) -> Result<()> {
-        self.service.set_label(label).map_err(Fault::from)
+        Ok(self.service.set_label(label)?)
     }
 
     /// Switches the account's mode (`docs/design/writes.md` §2); the URL of the sign-in the switch
     /// needs, empty when it needs none.
     #[zbus(out_args("sign_in_url"))]
     async fn set_mode(&self, mode: &str, force: bool) -> Result<String> {
-        self.service.set_mode(mode, force).await.map_err(Fault::from)
+        Ok(self.service.set_mode(mode, force).await?)
     }
 
     #[zbus(property)]
