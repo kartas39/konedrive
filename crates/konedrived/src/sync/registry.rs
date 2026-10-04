@@ -15,18 +15,20 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
 
 use konedrive_fs::placeholder::XATTR_ITEM_ID;
-use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
+use konedrive_fs::proc_path;
+use nix::fcntl::{openat2, OFlag, OpenHow};
 use xattr::FileExt;
 
 use super::SyncService;
 use crate::conditions::running::{Conditions, HoldSettings};
 use crate::config::AccountId;
+use crate::folder::disk::beneath;
 use crate::folder::locks::{InodeKey, InodeLocks};
 use crate::helper::hub::{HelperHub, Served};
 use crate::helper::status::HelperState;
@@ -351,7 +353,7 @@ async fn by_path(candidates: &[Arc<SyncService>], fd: &OwnedFd, key: InodeKey) -
 }
 
 fn by_path_blocking(candidates: &[Arc<SyncService>], fd: &OwnedFd, key: InodeKey) -> Option<Arc<SyncService>> {
-    let shown = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).ok()?;
+    let shown = std::fs::read_link(proc_path(fd)).ok()?;
     candidates
         .iter()
         .find(|account| {
@@ -363,7 +365,7 @@ fn by_path_blocking(candidates: &[Arc<SyncService>], fd: &OwnedFd, key: InodeKey
             let Ok(Some(dir)) = reg.root.open_registered() else { return false };
             let how = OpenHow::new()
                 .flags(OFlag::O_PATH | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
-                .resolve(ResolveFlag::RESOLVE_BENEATH | ResolveFlag::RESOLVE_NO_SYMLINKS | ResolveFlag::RESOLVE_NO_MAGICLINKS);
+                .resolve(beneath());
             openat2(dir.as_fd(), rel, how).is_ok_and(|found| InodeKey::of_fd(&found).is_ok_and(|k| k == key))
         })
         .cloned()

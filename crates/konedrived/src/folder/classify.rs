@@ -1,7 +1,7 @@
 //! What a Graph item becomes in the tree, and whether it has a place in the
 //! folder.
 
-use konedrive_fs::{NAME_MAX, RESERVED_PREFIX};
+use konedrive_fs::NAME_MAX;
 use konedrive_graph::drive::item::DriveItem;
 use konedrive_tree::{usable_id, Change, Kind, Placement, Row, SkipReason};
 
@@ -60,7 +60,7 @@ fn skip_reason(item: &DriveItem, name: &str) -> Option<SkipReason> {
     if name.len() > NAME_MAX {
         return Some(SkipReason::NameTooLong);
     }
-    if name.starts_with(RESERVED_PREFIX) {
+    if super::walk::reserved(std::ffi::OsStr::new(name)) {
         return Some(SkipReason::ReservedName);
     }
     None

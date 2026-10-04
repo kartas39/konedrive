@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use konedrive_fs::lease::WriteLease;
 use konedrive_fs::placeholder::{read_state, State, StateError};
-use konedrive_fs::MAX_DEPTH;
+use konedrive_fs::{proc_path, MAX_DEPTH};
 use nix::errno::Errno;
 use nix::fcntl::OFlag;
 use nix::sys::stat::Mode;
@@ -16,7 +16,7 @@ use nix::sys::stat::Mode;
 use crate::helper::{Clearance, HelperError, NotCleared};
 use crate::folder::locks::{InodeKey, InodeLocks};
 use crate::hydration::demote::{demote, Demoted, FileTimes, Held, Keep, Shape};
-use crate::folder::root::{SyncRoot, proc_path};
+use crate::folder::root::SyncRoot;
 
 /// How much of a registered root a startup [`recover`] found, fixed, and
 /// could not reach.

@@ -15,13 +15,13 @@ use std::path::Path;
 
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{self, read_state, State};
-use konedrive_fs::RESERVED_PREFIX;
 use konedrive_tree::outbox::OutboxKind;
 use konedrive_tree::{Kind, Placement, Table, WaitsFor};
 
 use super::{holds_local_work, ApplyError, Materializer, Run, Rw};
 use crate::folder::disk::Probe;
 use crate::folder::locks::InodeKey;
+use crate::folder::walk::reserved;
 use crate::local::names;
 use crate::status::activity::Kind as EventKind;
 
@@ -131,7 +131,7 @@ enum Unmanaged {
 
 impl Materializer {
     fn unmanaged(&self, rw: &Rw, dir: &File, name: &OsStr) -> std::io::Result<Unmanaged> {
-        if name.as_encoded_bytes().starts_with(RESERVED_PREFIX.as_bytes()) {
+        if reserved(name) {
             return Ok(Unmanaged::Ours);
         }
         let stat = match nix::sys::stat::fstatat(dir.as_fd(), name, nix::fcntl::AtFlags::AT_SYMLINK_NOFOLLOW) {

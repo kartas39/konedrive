@@ -18,6 +18,7 @@ use std::sync::Arc;
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::lease::{self, WriteLease};
 use konedrive_fs::placeholder::{self, Stamp, State, XATTR_STATE, XATTR_SYNC};
+use konedrive_fs::proc_path;
 use nix::errno::Errno;
 use nix::fcntl::{AtFlags, OFlag};
 use nix::sys::stat::Mode;
@@ -95,10 +96,6 @@ pub(super) struct Found {
     pub name: OsString,
     pub inode: Inode,
     pub is_dir: bool,
-}
-
-pub(super) fn proc_path(file: &File) -> PathBuf {
-    PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()))
 }
 
 fn missing(e: &io::Error) -> bool {

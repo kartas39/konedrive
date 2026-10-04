@@ -176,5 +176,5 @@ impl Drop for FakeHelper {
 /// a name.
 fn entries_of(fd: Option<&OwnedFd>) -> usize {
     let Some(fd) = fd else { return usize::MAX };
-    std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd())).map(|entries| entries.count()).unwrap_or(usize::MAX)
+    std::fs::read_dir(konedrive_fs::proc_path(fd)).map(|entries| entries.count()).unwrap_or(usize::MAX)
 }

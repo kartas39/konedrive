@@ -15,12 +15,13 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use konedrive_fs::placeholder::{self, State};
+use konedrive_fs::proc_path;
 use konedrive_tree::{Store, Table, TreeError};
 use nix::errno::Errno;
 use nix::fcntl::AtFlags;
 use nix::unistd::UnlinkatFlags;
 
-use super::place::{parent_has, proc_path, reopen_parent, verified_path};
+use super::place::{parent_has, reopen_parent, verified_path};
 use super::trash::TrashEntry;
 use super::walk::{dir_below, open_met, reopen_dir, walk, Met};
 use super::{unmark, MoveOuts};

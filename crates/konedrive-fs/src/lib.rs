@@ -30,3 +30,14 @@ pub const NAME_MAX: usize = 255;
 
 /// The prefix of the daemon's own working names in a folder.
 pub const RESERVED_PREFIX: &str = ".konedrive-";
+
+/// The path of an open descriptor, for the few APIs that still take one.
+///
+/// Using `/proc/self/fd/<n>` rather than a path string means that whatever is
+/// done through it lands on the exact object the descriptor was opened on,
+/// and cannot be redirected by swapping a component of a path afterwards.
+/// The path is good only while the descriptor is open.
+pub fn proc_path(fd: &impl std::os::fd::AsFd) -> std::path::PathBuf {
+    use std::os::fd::AsRawFd;
+    std::path::PathBuf::from(format!("/proc/self/fd/{}", fd.as_fd().as_raw_fd()))
+}
