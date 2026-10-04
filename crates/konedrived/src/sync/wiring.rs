@@ -38,7 +38,7 @@ pub struct SyncPaths {
 pub struct Persist {
     pub store: Arc<ConfigStore>,
     /// The account's id.
-    pub account: String,
+    pub account: crate::config::AccountId,
 }
 
 /// The drive a folder registered while signed in shows, and where the daemon keeps what it

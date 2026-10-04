@@ -97,10 +97,10 @@ fn let_write(service: &SyncService) {
     persist
         .store
         .update(|c| {
-            c.write_test_drive_ids = vec!["D1".into()];
+            c.write_test_drive_ids = crate::config::DriveId::new("D1").into_iter().collect();
             let account = c.accounts.iter_mut().find(|a| a.id == persist.account).unwrap();
             account.mode = Mode::ReadWrite;
-            account.drive_id = "D1".into();
+            account.drive_id = crate::config::DriveId::new("D1");
             Ok::<_, ConfigError>(())
         })
         .unwrap();

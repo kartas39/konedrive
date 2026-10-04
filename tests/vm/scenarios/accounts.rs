@@ -7,7 +7,7 @@ use konedrive_proto::SOCKET_PATH;
 use konedrived::daemon::manager::{Account, Options};
 use konedrived::config::Paths;
 use konedrive_graph::oauth::Endpoints;
-use konedrived::account::secret::MemoryWallet;
+use konedrived::account::testing::MemoryWallet;
 use konedrived::account::state::SignInState;
 use konedrived::desktop::baloo::Baloo;
 use konedrived::sync::hub;

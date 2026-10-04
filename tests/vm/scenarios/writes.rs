@@ -89,14 +89,14 @@ impl<'c> World<'c> {
         persist
             .store
             .update(|config| {
-                config.write_test_drive_ids = vec![FAKE_DRIVE.into()];
+                config.write_test_drive_ids = konedrived::config::DriveId::new(FAKE_DRIVE).into_iter().collect();
                 let account = config
                     .accounts
                     .iter_mut()
                     .find(|a| a.id == persist.account)
                     .ok_or_else(|| ConfigError::NoAccount(persist.account.clone()))?;
                 account.mode = Mode::ReadWrite;
-                account.drive_id = FAKE_DRIVE.into();
+                account.drive_id = konedrived::config::DriveId::new(FAKE_DRIVE);
                 Ok::<_, ConfigError>(())
             })
             .map_err(|e| format!("cannot open the write gate in config.toml: {e}"))?;

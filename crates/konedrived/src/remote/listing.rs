@@ -70,7 +70,7 @@ pub const FULL_THRESHOLD: usize = 5000;
 pub struct DriveRecord {
     pub store: Arc<crate::config::ConfigStore>,
     /// The account's id.
-    pub account: String,
+    pub account: crate::config::AccountId,
     /// What `config.toml` recorded when the sync started; `None` when
     /// nothing was, and the first cycle writes it.
     pub recorded: Option<String>,
@@ -539,7 +539,7 @@ impl Listing {
         // listed a second time into this folder.
         if let Some(record) = self.ctx.drive_record.as_ref().filter(|_| kept.is_none()) {
             let config = record.store.snapshot();
-            if let Some(other) = config.accounts.iter().find(|a| a.id != record.account && a.drive_id == id) {
+            if let Some(other) = config.accounts.iter().find(|a| a.id != record.account && a.drive_id.as_ref().is_some_and(|drive| *drive == id)) {
                 return Err(CycleError::DriveTaken(other.label.clone()));
             }
         }

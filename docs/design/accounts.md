@@ -59,7 +59,7 @@ konedrived
 
 | Component | Where | Responsibility |
 |---|---|---|
-| `ConfigStore` | `config/mod.rs`, `config/migrate.rs` | Loads `config.toml`, migrates a single-account file (§8), validates it, and runs every change as re-read, change and atomic write under one lock (§4.1) |
+| `ConfigStore` | `config/store.rs`, `config/migrate.rs` | Loads `config.toml`, migrates a single-account file (§8), validates it, and runs every change as re-read, change and atomic write under one lock (§4.1) |
 | `AccountManager` | `daemon/manager.rs`, `daemon/startup.rs`, `dbus/accounts.rs` | The ordered list of accounts; startup; `Add`, `Remove` and `SetClientId`; putting each account's objects on the bus and taking them off; routing per-file calls by path (§3.5) |
 | `Account` | `daemon/manager.rs` | One account: its `AccountService`, its `SyncService`, its paths, and the tasks that turn their state into `PropertiesChanged` |
 | `AccountService` | `account/`, `konedrive-graph/src/oauth.rs` | Per account: sign-in, tokens, the account's own wallet item (§4.3), its drive, and the identity check at sign-in (§6.2) |

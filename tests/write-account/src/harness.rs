@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use konedrived::config::Config;
+use konedrived::config::{Config, DriveId};
 use konedrive_graph::drive::{DeltaFrom, DeltaNext, DriveClient};
 use konedrive_graph::token::StaticToken;
 use serde_json::Value;
@@ -121,7 +121,7 @@ pub struct Preflight {
 
 pub async fn run(options: Options) -> Ended {
     // Guard 1's first half, and guard 5's part here, before any request.
-    if !options.config.writes_allowed(&options.test_drive) {
+    if !DriveId::new(options.test_drive.as_str()).is_some_and(|drive| options.config.writes_allowed(&drive)) {
         return Ended::Refused(format!(
             "--graph-test-drive {} is not in write_test_drive_ids in the daemon's config.toml",
             options.test_drive

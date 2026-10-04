@@ -18,9 +18,10 @@ use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, FilesProxy, FolderPr
 use konedrive_dbus::testing::TestBus;
 use konedrive_dbus::{error_name, ACCOUNTS_INTERFACE_NAME, ACCOUNTS_PATH, ACCOUNT_INTERFACE_NAME, FILES_INTERFACE_NAME};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
-use konedrived::config::Paths;
+use konedrived::config::{AccountId, Paths};
 use konedrive_graph::oauth::Endpoints;
-use konedrived::account::secret::{MemoryWallet, Slot, Wallet};
+use konedrived::account::secret::{Slot, Wallet};
+use konedrived::account::testing::MemoryWallet;
 use konedrived::account::state::SignInState;
 use konedrived::helper::HelperLink;
 use nix::sys::socket::{accept, bind, listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr};
@@ -483,7 +484,7 @@ async fn removing_an_account_forgets_its_folder_and_keeps_its_rescued_files() {
     assert_eq!(d.wallet.current(&item).as_deref(), Some("RT"), "nothing changed");
     assert!(files.tree_db.exists() && files.account_cache.exists());
     let config = std::fs::read_to_string(d.config.path().join("config.toml")).unwrap();
-    assert!(config.contains(&account.id), "{config}");
+    assert!(config.contains(account.id.as_str()), "{config}");
     assert!(config.contains("[accounts.root]") && config.contains(&folder.canonicalize().unwrap().display().to_string()), "{config}");
 
     d.link(&socket).await;
@@ -494,8 +495,27 @@ async fn removing_an_account_forgets_its_folder_and_keeps_its_rescued_files() {
     assert_eq!(d.wallet.current(&item), None, "the refresh token is deleted");
     assert!(!files.dir.exists(), "the cached name and quota and the tree store are deleted");
     assert_eq!(std::fs::read_to_string(files.rescue_dir.join("2026-09-25/mine.txt")).unwrap(), "rescued");
-    assert!(!std::fs::read_to_string(d.config.path().join("config.toml")).unwrap().contains(&account.id));
+    assert!(!std::fs::read_to_string(d.config.path().join("config.toml")).unwrap().contains(account.id.as_str()));
     assert!(folder.exists(), "the folder's files are kept");
+}
+
+/// A hand-edited id that is not an account id: the account is not loaded, the others are,
+/// and `Accounts.LastError` says which and why, with the id as the file has it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_account_whose_id_is_not_one_is_not_loaded_and_last_error_says_so() {
+    let (config, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::write(
+        config.path().join("config.toml"),
+        "config_version = 2\n\n[[accounts]]\nid = \"0123456789ab\"\nlabel = \"Personal\"\n\n\
+         [[accounts]]\nid = \"bad\"\nlabel = \"Work\"\n",
+    )
+    .unwrap();
+    let d = Daemon::start_in(config, dir).await;
+    assert_eq!(d.manager.list().await.unwrap().len(), 1);
+    assert_eq!(
+        d.manager.last_error().await.unwrap(),
+        "the account \"Work\" is not loaded: its id \"bad\" is not 12 lowercase hexadecimal characters"
+    );
 }
 
 /// Review I1: an account held back (§3.1) never brings its folder up, but a folder it
@@ -611,7 +631,7 @@ async fn a_version_1_configuration_starts_as_personal_with_its_folder() {
     assert_eq!(sync.path().await.unwrap(), folder.display().to_string());
     assert_eq!(sync.state().await.unwrap(), "no-interception");
 
-    let id = account.id().await.unwrap();
+    let id = AccountId::new(account.id().await.unwrap());
     let moved = paths.account(&id).unwrap();
     assert!(moved.tree_db.exists() && !paths.tree_db.exists(), "the tree store is the account's");
     assert!(paths.config_file.with_file_name("config.toml.v1").exists(), "version 1 is kept");
@@ -659,13 +679,13 @@ async fn a_version_1_onedrive_folder_is_held_then_brought_up_at_the_first_connec
 
     let client = bus.connect().await;
     let path = AccountsProxy::new(&client).await.unwrap().list().await.unwrap().remove(0);
-    let id = path.as_str().rsplit('/').next().unwrap().to_owned();
+    let id = AccountId::new(path.as_str().rsplit('/').next().unwrap());
     let sync =
         FolderProxy::builder(&client).path(path).unwrap().cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
     assert_eq!(sync.path().await.unwrap(), folder.display().to_string());
     assert_eq!(sync.state().await.unwrap(), "waiting", "held until the helper is back, and nothing is known to be wrong");
     assert_eq!(sync.last_error().await.unwrap(), "");
-    assert_eq!(daemon.manager.config().account(&id).unwrap().drive_id, "D1", "the folder's drive is the account's");
+    assert_eq!(daemon.manager.config().account(&id).unwrap().drive_id.as_deref(), Some("D1"), "the folder's drive is the account's");
 
     let socket = folders.path().join("helper.sock");
     let helper = FakeHelper::start(&socket);

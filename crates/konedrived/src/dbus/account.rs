@@ -48,7 +48,7 @@ impl Account {
 
     #[zbus(property)]
     async fn id(&self) -> String {
-        self.service.id().to_owned()
+        self.service.id().to_string()
     }
 
     #[zbus(property)]
@@ -85,24 +85,24 @@ impl Account {
 
     #[zbus(property)]
     async fn quota_used(&self) -> u64 {
-        self.service.state().get().quota_used
+        self.service.state().get().quota.used
     }
 
     #[zbus(property)]
     async fn quota_total(&self) -> u64 {
-        self.service.state().get().quota_total
+        self.service.state().get().quota.total
     }
 
     /// Graph's `quota.remaining` as last read, less what went up since (`crate::account::quota`).
     #[zbus(property)]
     async fn quota_remaining(&self) -> u64 {
-        self.service.state().get().quota_remaining
+        self.service.state().get().quota.remaining
     }
 
     /// Graph's `quota.state` as last read: `normal`, `nearing`, `critical`, `exceeded`.
     #[zbus(property)]
     async fn quota_state(&self) -> String {
-        self.service.state().get().quota_state
+        self.service.state().get().quota.state
     }
 }
 
@@ -166,16 +166,16 @@ async fn emit_changes(
     if old.email != new.email {
         account.email_changed(emitter).await?;
     }
-    if old.quota_used != new.quota_used {
+    if old.quota.used != new.quota.used {
         account.quota_used_changed(emitter).await?;
     }
-    if old.quota_total != new.quota_total {
+    if old.quota.total != new.quota.total {
         account.quota_total_changed(emitter).await?;
     }
-    if old.quota_remaining != new.quota_remaining {
+    if old.quota.remaining != new.quota.remaining {
         account.quota_remaining_changed(emitter).await?;
     }
-    if old.quota_state != new.quota_state {
+    if old.quota.state != new.quota.state {
         account.quota_state_changed(emitter).await?;
     }
     if old.mode != new.mode {

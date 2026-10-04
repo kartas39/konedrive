@@ -468,7 +468,7 @@ impl SyncService {
     /// The drive `config.toml` records for this account, if it records one.
     fn account_drive(&self) -> Option<String> {
         let persist = &self.wiring.persist;
-        persist.store.account(&persist.account).map(|a| a.drive_id).filter(|drive| !drive.is_empty())
+        persist.store.account(&persist.account).and_then(|a| a.drive_id).map(|drive| drive.into_string())
     }
 
     /// The device the folder is on, as it was when its record was made, for the hub's

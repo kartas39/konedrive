@@ -11,7 +11,7 @@ use zbus::Connection;
 use konedrive_graph::oauth::Endpoints;
 
 use crate::account::{AccountService, Siblings};
-use crate::config::{is_valid_client_id, AccountConfig, AccountPaths, ConfigError, ConfigStore, OnBattery, Paths};
+use crate::config::{is_valid_client_id, AccountConfig, AccountId, AccountPaths, ConfigError, ConfigStore, OnBattery, Paths};
 use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
 use crate::desktop::baloo::Baloo;
@@ -35,7 +35,7 @@ pub fn no_drive() -> DriveOf {
 
 /// What the daemon's accounts are made with. `main` gives Microsoft, the Secret Service, the
 /// real `balooctl6`, the freedesktop thumbnail cache and each account's own drive; a test
-/// gives wiremock, a [`crate::account::secret::MemoryWallet`], [`Baloo::disabled`], no
+/// gives wiremock, a wallet in memory (`account::testing::MemoryWallet`), [`Baloo::disabled`], no
 /// thumbnails, and the drive its folders show, or none.
 pub struct Options {
     pub endpoints: Endpoints,
@@ -91,7 +91,7 @@ pub struct Outside(pub String);
 /// One account: its sign-in, its folder, and the tasks that turn their state into
 /// `PropertiesChanged`.
 pub struct Account {
-    pub id: String,
+    pub id: AccountId,
     pub path: OwnedObjectPath,
     pub account: Arc<AccountService>,
     pub sync: Arc<SyncService>,
@@ -119,7 +119,7 @@ impl From<ConfigError> for ManagerError {
     fn from(error: ConfigError) -> Self {
         match error {
             ConfigError::InvalidLabel(_) | ConfigError::InvalidClientId => ManagerError::InvalidArgs(error.to_string()),
-            ConfigError::NoAccount(id) => ManagerError::NoAccount(id),
+            ConfigError::NoAccount(id) => ManagerError::NoAccount(id.to_string()),
             other => ManagerError::Failed(other.to_string()),
         }
     }

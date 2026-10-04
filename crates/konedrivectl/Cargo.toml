@@ -23,7 +23,8 @@ zbus.workspace = true
 [dev-dependencies]
 # Tests only: the private session bus.
 konedrive-dbus = { path = "../konedrive-dbus", features = ["testing"] }
-konedrived = { path = "../konedrived" }
+# Tests only: the daemon in the test's process, with the wallet in memory (`account::testing`).
+konedrived = { path = "../konedrived", features = ["testing"] }
 konedrive-fs = { path = "../konedrive-fs" }
 konedrive-graph = { path = "../konedrive-graph" }
 konedrive-proto = { path = "../konedrive-proto" }

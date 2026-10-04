@@ -275,7 +275,8 @@ impl Reconcile {
     /// folder (design §8.3), when this is the reconcile that learnt it.
     fn record_drive(&mut self) {
         let Some((record, id)) = self.drive.take() else { return };
-        if let Err(e) = record.store.record_drive(&record.account, &id) {
+        let recorded = crate::config::DriveId::new(id.as_str()).map(|drive| record.store.record_drive(&record.account, &drive));
+        if let Some(Err(e)) = recorded {
             tracing::warn!("cannot record the account's drive in config.toml: {e}");
         }
         if let Err(e) = crate::folder::root::mark_drive(&self.root, &id) {

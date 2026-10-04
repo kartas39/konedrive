@@ -6,15 +6,17 @@ use std::future::Future;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
+use crate::config::atomic::write_atomic;
+use crate::config::store::write_config;
 use crate::config::{
-    new_account_id, write_atomic, write_config, AccountConfig, Config, ConfigError, ConfigStore, Mode, OnBattery, Origin,
-    Paths, RootConfig, CONFIG_VERSION, MIGRATED_LABEL,
+    AccountConfig, AccountId, Config, ConfigError, ConfigStore, DriveId, HoldSettings, Origin, Paths, RootConfig, CONFIG_VERSION,
+    MIGRATED_LABEL,
 };
 
-/// `config.toml`, version 1: no `config_version`, one account, one folder.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `config.toml`, version 1: no `config_version`, one account, one folder. Only read.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct V1Config {
     #[serde(default)]
     pub client_id: String,
@@ -59,7 +61,7 @@ pub struct V1Config {
     /// registered that way because no helper was connected, `false` when a
     /// helper was and the mode was a choice. Missing in a config written
     /// before this existed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub sync_root_upgrade_when_helper: Option<bool>,
     /// The drive a OneDrive folder was listed from, recorded
     /// when its sync first learns it, so the check that the account signed
@@ -67,7 +69,7 @@ pub struct V1Config {
     /// Empty until then, for a local folder, and in a
     /// config written before it existed. It goes with `sync_root_id`: a
     /// different root never inherits it.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub sync_root_drive_id: String,
 }
 
@@ -77,46 +79,6 @@ fn intercepted_by_default() -> bool {
 
 fn local_source() -> String {
     "local".into()
-}
-
-impl Default for V1Config {
-    fn default() -> Self {
-        Self {
-            client_id: String::new(),
-            sync_root: String::new(),
-            sync_root_intercepted: true,
-            sync_root_id: String::new(),
-            sync_root_source: local_source(),
-            sync_root_baloo_excluded: false,
-            sync_root_upgrade_when_helper: None,
-            sync_root_drive_id: String::new(),
-        }
-    }
-}
-
-impl V1Config {
-    /// A missing file yields the default configuration.
-    pub fn load(path: &Path) -> anyhow::Result<Self> {
-        match std::fs::read_to_string(path) {
-            Ok(text) => Ok(toml::from_str(&text)?),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    pub fn save(&self, path: &Path) -> anyhow::Result<()> {
-        write_atomic(path, toml::to_string(self)?.as_bytes())
-    }
-
-    /// `sync_root_upgrade_when_helper`, with a config written before it
-    /// existed read as Ruling 4 says: a root without interception
-    /// switches — such a config cannot tell a folder registered that way on
-    /// purpose from one registered before the helper was installed, and the
-    /// second reads as zeros until it switches — and an intercepted root has
-    /// nothing to switch.
-    pub fn sync_root_upgrades_when_helper(&self) -> bool {
-        self.sync_root_upgrade_when_helper.unwrap_or(!self.sync_root_intercepted)
-    }
 }
 
 /// Where the version-1 file is kept once migrated: `config.toml.v1`, the way back by hand.
@@ -152,20 +114,11 @@ async fn to_v2(v1: V1Config, paths: &Paths, legacy_token: impl Future<Output = b
     });
     let accounts = if carry {
         vec![AccountConfig {
-            id: new_account_id([]),
-            label: MIGRATED_LABEL.into(),
-            mode: Mode::ReadOnly,
-            origin: Origin::Migrated,
-            drive_id: v1.sync_root_drive_id,
-            login_hint: String::new(),
+            drive_id: DriveId::new(v1.sync_root_drive_id),
             legacy_token: true,
             migrate_files: true,
             root,
-            ignore: None,
-            machine_name: String::new(),
-            thumbnails: None,
-            old_pause_on_metered: None,
-            old_on_battery: None,
+            ..AccountConfig::new(AccountId::fresh([]), MIGRATED_LABEL, Origin::Migrated)
         }]
     } else {
         Vec::new()
@@ -269,7 +222,7 @@ pub fn move_hold_settings(store: &ConfigStore) {
     });
     match moved {
         Ok(None) => {}
-        Ok(Some((pause_on_metered, on_battery))) => tracing::info!(
+        Ok(Some(HoldSettings { pause_on_metered, on_battery })) => tracing::info!(
             "the accounts' pause_on_metered and on_battery moved to one setting for every account, the strictest: \
              pause_on_metered = {pause_on_metered}, on_battery = {:?}",
             on_battery.as_str()

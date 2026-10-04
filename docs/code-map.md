@@ -85,7 +85,12 @@ The directories are in layer order: a directory uses only the directories before
 
 `config.toml`, file locations, the version 1 migration. Design: `accounts.md`.
 
-- `mod.rs` — the configuration (version 2) and where each account's files are. `[tests]`
+- `mod.rs` — what the module gives the rest of the daemon. `[tests]`
+- `paths.rs` — where the daemon's files are, and each account's.
+- `ids.rs` — `AccountId` and `DriveId`: the two ids of an account, as types.
+- `model.rs` — what `config.toml` holds (version 2), and the rules of labels, client ids and held accounts.
+- `store.rs` — `ConfigStore`, the one owner of the file; `WriteStanding`.
+- `atomic.rs` — one file replaced in one step.
 - `migrate.rs` — version 1 of `config.toml` and its migration to version 2. `[tests]`
 
 ### `crates/konedrived/src/account/`
@@ -93,13 +98,15 @@ The directories are in layer order: a directory uses only the directories before
 One account: its sign-in, mode, state, quota, cached profile, stored secret. Design: `sync.md`
 (the account), `accounts.md`, `writes.md` §2 (the mode).
 
-- `mod.rs` — `AccountService`: the sign-in state machine of one Microsoft account.
+- `mod.rs` — `AccountService`: the sign-in state machine of one Microsoft account; the order of its locks.
 - `sign_in.rs` — starting, finishing and cancelling a sign-in; sign-out; the account's drive.
 - `mode.rs` — `Account.SetMode`: the switch between read-only and read-write.
 - `state.rs` — the observable account state, and the mode's note in `LastError`. `[tests]`
-- `quota.rs` — the quota of the account's drive. `[tests]`
+- `quota.rs` — the quota of the account's drive, and its figures (`QuotaFigures`). `[tests]`
 - `cache.rs` — the cached profile and quota (`account.json`), shown offline. `[tests]`
-- `secret.rs` — the refresh token's storage: the Secret Service, or memory in tests. `[tests]`
+- `secret.rs` — the refresh token's storage in the Secret Service, an item for each account. `[tests]`
+- `testing.rs` — test support, also for `konedrivectl`'s tests and the VM suite: a wallet in
+  memory, and one account with no accounts manager. Built only under the `testing` feature.
 
 ### `crates/konedrived/src/helper/`
 

@@ -1,4 +1,39 @@
 //! Sign-in state machine behind the D-Bus interface: one Microsoft account.
+//!
+//! # The order of the locks
+//!
+//! An [`AccountService`] works under these locks, and takes them only in this order, outer
+//! first. Whoever holds a later one never asks for an earlier one.
+//!
+//! 1. **`session`** (async): one sign-in attempt, cancel, sign-out, commit or account-info
+//!    write at a time. Held across the wallet (`commit_sign_in` and `commit_read_write`
+//!    store the refresh token under it, which can show the wallet's unlock prompt, and
+//!    `sign_out` deletes it): on purpose, so that an attempt is checked and stored in one
+//!    step. So nothing that must answer at once waits for it: `begin_sign_in` and the
+//!    switch to read-write refuse what they can before they ask for it.
+//! 2. **The token manager's refresh lock** (async, `konedrive_graph::token`): taken under
+//!    `session` by `forget`, `seed_as` and `commit_as`, and alone by every refresh. What a
+//!    refresh calls back (`note_granted`) and what `commit_as` runs under it take only the
+//!    locks below, never `session`.
+//!    - The account's folder is asked under `session` too (`PendingUploads::quota_read`, from
+//!      `refresh_account_info`): what answers there never calls back into what takes
+//!      `session` (a sign-out, a switch of the mode).
+//!    - Between accounts: no account's `session` is held while another account is asked.
+//!      The identity guard asks the other accounts for their drives (`settle_siblings`: their
+//!      refresh lock, then `ConfigStore`'s) before it takes its own `session`.
+//! 3. **The leaves**, none held while another is asked for, none held across an `await`:
+//!    - `ConfigStore`'s lock, across one read or one read-modify-write of `config.toml`; the
+//!      change it runs touches the configuration and nothing else;
+//!    - `cache_lock`, across one read-modify-write of `account.json` (`save_cache`, the
+//!      quota's `keep_quota`);
+//!    - the state (`StateHandle::update`): the change it runs only assigns, and what it
+//!      needs from `config.toml` or `account.json` is read before or written after;
+//!    - `uploads` and `siblings`, each for one read or one assignment;
+//!    - the token manager's own (`oauth`, the cached tokens, the grant's hook), each for one
+//!      read or one assignment, under either of the two above (`install_oauth`).
+//!
+//! The file writes of the leaves are blocking and `fsync`ed, also where they run under the
+//! refresh lock on a runtime thread (limitations log F231, F249).
 
 pub mod cache;
 mod mode;
@@ -6,8 +41,10 @@ pub mod quota;
 pub mod secret;
 mod sign_in;
 pub mod state;
+#[cfg(any(test, feature = "testing"))]
+pub mod testing;
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,7 +52,7 @@ use tokio::sync::{oneshot, Mutex};
 
 use crate::account::cache::AccountInfo;
 use crate::account::quota::Quota;
-use crate::config::{is_valid_client_id, AccountPaths, Config, ConfigError, ConfigStore, Mode, Paths, MIGRATED_LABEL};
+use crate::config::{AccountId, AccountPaths, Config, ConfigError, ConfigStore, DriveId, Mode, WriteStanding};
 use konedrive_graph::drive::{DriveClient, Status};
 use konedrive_graph::loopback::{Callback, LoopbackError, LoopbackListener};
 use konedrive_graph::oauth::{grants_writes, is_read_only, scopes_for, Endpoints, OAuthClient, TokenResponse};
@@ -150,7 +187,7 @@ impl FolderAccount for AccountService {
     }
 
     fn recheck_mode(&self) {
-        AccountService::recheck_mode(self);
+        self.recompute_mode();
     }
 
     fn drive_seen(&self, drive: &str) {
@@ -175,7 +212,7 @@ struct Session {
 /// `config.toml` (label, mode, drive) is read and written through the daemon's one
 /// [`ConfigStore`].
 pub struct AccountService {
-    id: String,
+    id: AccountId,
     config: Arc<ConfigStore>,
     state: StateHandle,
     /// `account.json`: the cached name and quota, and what the last token was valid for.
@@ -217,7 +254,7 @@ struct SignInAttempt {
 /// Who a sign-in turned out to be (design §8.2): the drive, and the email when `/me`
 /// answered.
 struct Identity {
-    drive: String,
+    drive: DriveId,
     email: Option<String>,
 }
 
@@ -227,7 +264,7 @@ impl AccountService {
     /// one every account shares.
     pub fn new(
         config: Arc<ConfigStore>,
-        id: &str,
+        id: &AccountId,
         paths: AccountPaths,
         endpoints: Endpoints,
         secrets: Arc<dyn SecretStore>,
@@ -251,7 +288,7 @@ impl AccountService {
         let cache_lock = Arc::new(std::sync::Mutex::new(()));
         let quota = Quota::new(state.clone(), Some(keep_quota(paths.account_cache.clone(), Arc::clone(&cache_lock))));
         let service = Arc::new(Self {
-            id: id.to_owned(),
+            id: id.clone(),
             config,
             state,
             cache: paths.account_cache,
@@ -280,26 +317,7 @@ impl AccountService {
         Ok(service)
     }
 
-    /// One account in a configuration of its own under `dir` (`config.toml`, and the
-    /// account's files in `accounts/<id>/`): the configuration's first account, or a new
-    /// one called `Personal`. For tests and tools that run no accounts manager.
-    pub async fn single(
-        dir: &Path,
-        endpoints: Endpoints,
-        secrets: Arc<dyn SecretStore>,
-        sign_in_timeout: Duration,
-    ) -> anyhow::Result<Arc<Self>> {
-        let paths = Paths::in_dir(dir);
-        let config = Arc::new(ConfigStore::open(&paths, async { false }).await);
-        let id = match config.snapshot().accounts.first() {
-            Some(account) => account.id.clone(),
-            None => config.add_account(MIGRATED_LABEL)?.id,
-        };
-        let account_paths = paths.account(&id).ok_or_else(|| anyhow::anyhow!("{id:?} is not an account id"))?;
-        Self::new(config, &id, account_paths, endpoints, secrets, sign_in_timeout)
-    }
-
-    pub fn id(&self) -> &str {
+    pub fn id(&self) -> &AccountId {
         &self.id
     }
 
@@ -314,7 +332,7 @@ impl AccountService {
     /// the user's choice, which it runs in only when the gate and its token allow
     /// ([`mode`](Self::mode)). A file that cannot be read now reads as read-only.
     pub fn configured_mode(&self) -> Mode {
-        self.config.write_standing(&self.id).map(|(mode, _)| mode).unwrap_or_default()
+        self.config.write_standing(&self.id).map(|standing| standing.mode).unwrap_or_default()
     }
 
     /// What a sign-in asks for: read-write when `config.toml` says so and the gate lets the
@@ -322,7 +340,7 @@ impl AccountService {
     /// read-write account read-write.
     fn sign_in_mode(&self) -> Mode {
         match self.config.write_standing(&self.id) {
-            Some((Mode::ReadWrite, Some(_))) => Mode::ReadWrite,
+            Some(standing) if standing.allows_writes() => Mode::ReadWrite,
             _ => Mode::ReadOnly,
         }
     }
@@ -388,18 +406,20 @@ impl AccountService {
     ///   I2: a recorded drive is never trusted on its own);
     /// - its last token carrying `Files.ReadWrite`.
     ///
-    /// Called whenever one of them may have changed. The folder follows `Mode`
-    /// (`crate::sync::write_mode::follow`).
+    /// Called whenever one of them may have changed, the folder's outbox worker finding the
+    /// write gate closed included ([`FolderAccount::recheck_mode`]). The folder follows
+    /// `Mode` (`crate::sync::write_mode::follow`).
     fn recompute_mode(&self) {
         // The mode and the list it is gated by, from one reading of the file. A
         // file that cannot be read now fails closed: read-only, and `LastError` says why when
         // the file last read said read-write.
         let standing = self.config.write_standing(&self.id);
         let unreadable = standing.is_none() && self.config.account(&self.id).is_some_and(|a| a.mode == Mode::ReadWrite);
-        let (configured, allowed) = standing.unwrap_or((Mode::ReadOnly, None));
+        let WriteStanding { mode: configured, writable_drive: allowed } =
+            standing.unwrap_or(WriteStanding { mode: Mode::ReadOnly, writable_drive: None });
         self.state.update(|s| {
             let granted = grants_writes(&s.granted_scopes);
-            let same_drive = allowed.as_deref().is_some_and(|drive| drive == s.live_drive);
+            let same_drive = allowed.as_ref().is_some_and(|drive| *drive == s.live_drive);
             s.mode = if configured == Mode::ReadWrite && same_drive && granted { Mode::ReadWrite } else { Mode::ReadOnly };
             let signed_in = s.state == SignInState::SignedIn;
             let why = if signed_in && !s.wider_grant.is_empty() {
@@ -411,7 +431,7 @@ impl AccountService {
                     None => Some(ModeNote::GateKeepsReadOnly),
                     // Another drive seen comes first: signing in again cannot cure it.
                     Some(drive) if !s.live_drive.is_empty() && !same_drive => {
-                        Some(ModeNote::DriveMismatch { live: s.live_drive.clone(), recorded: drive.clone() })
+                        Some(ModeNote::DriveMismatch { live: s.live_drive.clone(), recorded: drive.to_string() })
                     }
                     Some(_) if !granted => Some(ModeNote::SignInToWrite),
                     Some(_) if s.live_drive.is_empty() => Some(ModeNote::DriveNotSeen),
@@ -425,13 +445,6 @@ impl AccountService {
             s.set_mode_note(why);
         });
         self.install_oauth(&self.state.get().client_id);
-    }
-
-    /// The mode worked out again now: the folder's outbox worker found the
-    /// write gate closed — `config.toml` edited, the drive taken off the list — before any
-    /// trigger here saw it.
-    pub fn recheck_mode(&self) {
-        self.recompute_mode();
     }
 
     /// A token asked for with `asked` turned out valid for `granted` (`docs/design/writes.md` §2):
@@ -541,24 +554,6 @@ impl AccountService {
         }
     }
 
-    /// Sets the client id every account signs in with, when this account is signed out: the
-    /// single-account form of `Accounts.SetClientId`, whose manager checks every account
-    /// and then calls [`use_client_id`](Self::use_client_id) on each.
-    pub fn set_client_id(&self, id: &str) -> Result<(), AccountError> {
-        let id = id.trim();
-        if !is_valid_client_id(id) {
-            return Err(AccountError::InvalidClientId);
-        }
-        if self.state.get().state != SignInState::SignedOut {
-            return Err(AccountError::Busy);
-        }
-        // Through the store: `config.toml` also holds every account and its folder, and a
-        // file that cannot be read is refused, never written back from defaults.
-        self.config.set_client_id(id)?;
-        self.use_client_id(id);
-        Ok(())
-    }
-
     /// Signs in with `id` from now on (already validated and saved).
     pub fn use_client_id(&self, id: &str) {
         self.install_oauth(id);
@@ -596,27 +591,22 @@ impl Siblings {
     }
 
     /// Account `id` is not one of them any more.
-    pub fn remove(&self, id: &str) {
-        self.0.lock().unwrap().retain(|a| a.upgrade().is_some_and(|a| a.id != id));
+    pub fn remove(&self, id: &AccountId) {
+        self.0.lock().unwrap().retain(|a| a.upgrade().is_some_and(|a| a.id != *id));
     }
 
-    fn others(&self, id: &str) -> Vec<Arc<AccountService>> {
-        self.0.lock().unwrap().iter().filter_map(Weak::upgrade).filter(|a| a.id != id).collect()
+    fn others(&self, id: &AccountId) -> Vec<Arc<AccountService>> {
+        self.0.lock().unwrap().iter().filter_map(Weak::upgrade).filter(|a| a.id != *id).collect()
     }
 }
 
 fn apply_info(s: &mut AccountSnapshot, info: &AccountInfo) {
     s.display_name = info.display_name.clone();
     s.email = info.email.clone();
-    s.quota_used = info.quota_used;
-    s.quota_total = info.quota_total;
-    s.quota_remaining = info.quota_remaining;
-    s.quota_state = info.quota_state.clone();
-    s.quota_read_at = info.quota_read_at;
+    s.quota = info.quota.clone();
 }
 
-/// What keeps the account's quota across restarts: at every read, its four figures and the
-/// time into `account.json` (`cache`, under `lock`), while the account is signed in — a read
+/// What keeps the account's quota across restarts: at every read, its figures into `account.json` (`cache`, under `lock`), while the account is signed in — a read
 /// that lands after a sign-out, which deletes the file, writes nothing.
 fn keep_quota(cache: PathBuf, lock: Arc<std::sync::Mutex<()>>) -> crate::account::quota::Keep {
     Arc::new(move |s: &AccountSnapshot| {
@@ -625,16 +615,15 @@ fn keep_quota(cache: PathBuf, lock: Arc<std::sync::Mutex<()>>) -> crate::account
         }
         let _cache = lock.lock().unwrap();
         let mut info = crate::account::cache::load(&cache).unwrap_or_default();
-        info.quota_used = s.quota_used;
-        info.quota_total = s.quota_total;
-        info.quota_remaining = s.quota_remaining;
-        info.quota_state = s.quota_state.clone();
-        info.quota_read_at = s.quota_read_at;
+        info.quota = s.quota.clone();
         if let Err(e) = crate::account::cache::save(&cache, &info) {
             tracing::warn!("cannot write the account cache: {e}");
         }
     })
 }
+
+/// What a sign-in is refused with when Graph names no drive.
+const NO_DRIVE: &str = "Microsoft Graph did not say which drive this is";
 
 /// What a retired account answers a sign-in.
 const RETIRED: &str = "this account is being removed";

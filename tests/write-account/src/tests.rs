@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
-use konedrived::config::Config;
+use konedrived::config::{Config, DriveId};
 use konedrive_graph::drive::{DriveClient, UploadTarget};
 use konedrive_graph::token::StaticToken;
 use reqwest::Method;
@@ -22,7 +22,7 @@ use crate::{checks, proxy};
 const DRIVE: &str = "TEST-DRIVE";
 
 fn options(server: &MockServer, allowed: &[&str]) -> Options {
-    let config = Config { write_test_drive_ids: allowed.iter().map(|id| id.to_string()).collect(), ..Config::default() };
+    let config = Config { write_test_drive_ids: allowed.iter().filter_map(|id| DriveId::new(*id)).collect(), ..Config::default() };
     Options {
         upstream: Url::parse(&format!("{}/", server.uri())).unwrap(),
         token: "RW".into(),
@@ -566,7 +566,7 @@ fn the_allow_list_is_the_daemons() {
     let file = dir.path().join("config.toml");
     std::fs::write(&file, "config_version = 2\nwrite_test_drive_ids = [\"D1\"]\n").unwrap();
     let config = read_config(&file).unwrap();
-    assert!(config.writes_allowed("D1") && !config.writes_allowed("D2"));
+    assert!(config.writes_allowed(&DriveId::new("D1").unwrap()) && !config.writes_allowed(&DriveId::new("D2").unwrap()));
     std::fs::write(&file, "not toml at all [").unwrap();
     assert!(read_config(&file).is_err());
 }

@@ -132,7 +132,7 @@ async fn a_onedrive_folder_remembers_its_drive_and_is_refused_to_another_account
     {
         let elsewhere = tempfile::tempdir().unwrap();
         let other = persist(&elsewhere.path().join("config.toml"));
-        other.store.record_drive(&other.account, "D2").unwrap();
+        other.store.record_drive(&other.account, &crate::config::DriveId::new("D2").unwrap()).unwrap();
         let stranger = testing::service(Some(link(&w).await), Some(account(true)), Some(other));
         let refused = stranger.register_root(w.folder.path()).await;
         assert!(matches!(refused, Err(SyncError::ForeignFolder)), "{refused:?}");

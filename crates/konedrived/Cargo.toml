@@ -21,6 +21,10 @@ fault-injection = ["dep:wiremock", "dep:tempfile"]
 # test-account harness. Off by default: the released package has no such interface, and
 # its `%build` refuses a daemon that names it. `scripts/dev-install.sh` turns it on.
 dev-tools = []
+# Tests only: the test support of `account/` (`account::testing`: a wallet in memory, one
+# account with no accounts manager). The crate's own tests, `konedrivectl`'s and the VM
+# suite turn it on; no build that ships has it.
+testing = []
 
 [dependencies]
 anyhow.workspace = true
@@ -61,6 +65,8 @@ tempfile = { workspace = true, optional = true }
 [dev-dependencies]
 # Tests only: the private session bus.
 konedrive-dbus = { path = "../konedrive-dbus", features = ["testing"] }
+# Tests only: the crate itself with its test support, for the tests under `tests/`.
+konedrived = { path = ".", features = ["testing"] }
 # Tests only: the secret store in memory and the pool's test helpers.
 konedrive-graph = { path = "../konedrive-graph", features = ["testing"] }
 # Tests only: the store's test helpers (`konedrive_tree::off_runtime` and the bench's).

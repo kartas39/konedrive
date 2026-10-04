@@ -5,23 +5,17 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::account::quota::QuotaFigures;
 use crate::config::write_atomic;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccountInfo {
     pub display_name: String,
     pub email: String,
-    /// The account's quota as last read (`crate::account::quota`), whoever read it; `quota_read_at`,
-    /// when (unix seconds). `remaining`, `state` and the time are missing in a file written
-    /// before they were kept, which reads as not read.
-    pub quota_used: u64,
-    pub quota_total: u64,
-    #[serde(default)]
-    pub quota_remaining: u64,
-    #[serde(default)]
-    pub quota_state: String,
-    #[serde(default)]
-    pub quota_read_at: i64,
+    /// The account's quota as last read (`quota_used`, `quota_total`, `quota_remaining`,
+    /// `quota_state`, `quota_read_at`).
+    #[serde(flatten)]
+    pub quota: QuotaFigures,
     /// Unix time in seconds.
     pub fetched_at: u64,
     /// The last token response's `scope` (`docs/design/writes.md` §2): what decides, at the next start,
