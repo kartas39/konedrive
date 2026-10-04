@@ -93,6 +93,9 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
   `outbox/pick.rs:518–520`; `outbox/sums.rs:16–17`; `outbox.rs:209`.
 - **Fix:** one `bind(row)`; the `Reason` enum of `X1`; `snapshot_size` and `snapshot_mtime`
   columns. **Size:** M. **Risk:** medium; goes with `TR3`.
+- **Fixed in part 2026-10-04** in `695fe1a` (#150): the `Reason` enum, and typed accessors for the
+  snapshot and the target name over today's encoding (`outbox/encoded.rs`). The one `bind(row)`
+  and the two columns are `B6`'s.
 
 ## TR5. The public API is the whole `TreeStore`
 

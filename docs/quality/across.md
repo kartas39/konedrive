@@ -28,6 +28,12 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
 - **Size:** M for each enum, L for carrying structured data on the wire. **Risk:** low to medium;
   the C++ tables must follow.
 - **Recorded in part:** D20, F50, A22, W12.
+- **Fixed in part 2026-10-04** in `695fe1a` (#150), the first two "Where" items: `Reason` and
+  `LocalSkip` are enums in a crate of their own, `konedrive-reason` (no dependencies, so that
+  `konedrivectl` does not link the store; `konedrive-tree` re-exports them in `outbox`). Every
+  spelling, group and sentence is as before. Refusals, the notes and the sentences the CLI parses
+  are `B2`'s. Left: fourteen row reasons and `ignored` have no sentence in `konedrivectl` and are
+  printed as stored; the lists of all variants are written by hand (`docs/limitations/D34.md`).
 
 ## X2. Blocking file I/O on async threads
 

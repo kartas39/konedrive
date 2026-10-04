@@ -48,6 +48,8 @@ A correction to an earlier measurement: there is no 350-line `commit` in
 - **Where:** `text/files.rs:103–109, 123`; `text/refusals.rs:407, 467`; `text/uploads.rs:61–73`.
 - **Fix:** the `Refusal` enum of `X1` in `konedrive-dbus`; later, the refused path and the
   pinning folder as structured data. **Size:** S for the enum, L for the wire.
+- **Fixed in part 2026-10-04** in `695fe1a` (#150): `text/uploads.rs` parses a reason into `Reason` or
+  `LocalSkip` and matches it whole. The refusals are `B2`'s.
 
 ## CL5. The label rule is stated in five places; four contradict the code — **defect?**
 

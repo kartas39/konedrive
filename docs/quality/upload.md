@@ -85,7 +85,9 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
 - **Fixed 2026-10-03** in `1bb7df2` (#137), the lost id: the bad item is kept beside the row
   (`BadItem`, three columns of the outbox), survives every settle and the merge, and is deleted
   only while its content tag is still the upload's. The rest of this finding (strings as control
-  state) is `B1`'s. What is left is in `docs/limitations/F200.md`.
+  state) is done in `695fe1a` (#150): `too-big` and `gone-once` are variants of `Reason`, and the
+  snapshot and the target name have typed accessors; the fields themselves are still strings
+  the store's code sets (`docs/limitations/D34.md`). What is left is in `docs/limitations/F200.md`.
 
 ## UP3. `kept_back::known_group` does not know the reasons the worker writes — **defect?**
 
