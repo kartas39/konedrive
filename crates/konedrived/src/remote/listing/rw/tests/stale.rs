@@ -86,7 +86,7 @@ fn handle_of(path: &Path) -> konedrive_fs::handle::FileHandle {
 /// the way back, in which the new tree places it again while `items` still
 /// has it skipped. Reached by running the reconcile's two steps with the
 /// scan between them: in the daemon the watcher holds the tree lock while it
-/// examines, so this window is closed there too (limitations log F190).
+/// examines, so this window is closed there too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_an_item_skipped_and_back_with_a_scan_before_each_swap_is_never_deleted() {
     let w = Arc::new(World::read_write().await);
