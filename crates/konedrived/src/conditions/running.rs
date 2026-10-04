@@ -16,7 +16,7 @@
 //! `pause_on_metered` / `on_battery` changes.
 //!
 //! The hold's two settings ([`HoldSettings`]) are one pair for the whole app (issue #95):
-//! the hub tells every account, as it tells the conditions. Thumbnails stay per account.
+//! the registry tells every account, as it tells the conditions. Thumbnails stay per account.
 
 use std::future::Future;
 use std::pin::Pin;

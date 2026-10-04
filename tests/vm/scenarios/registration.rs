@@ -600,7 +600,7 @@ fn upgraded_steps(
     // first, so that this one's connection is the newest and the fill comes
     // here, where the payload is.
     ctx.restart_helper()?;
-    let supervisor = runtime.spawn(konedrived::sync::hub::supervise(
+    let supervisor = runtime.spawn(konedrived::helper::hub::supervise(
         Arc::clone(service.hub()),
         PathBuf::from(SOCKET_PATH),
         Duration::from_millis(50),

@@ -79,7 +79,7 @@ impl Accounts {
 
     #[zbus(property)]
     async fn helper_state(&self) -> String {
-        self.manager.hub.state().as_str().to_owned()
+        self.manager.hub().state().as_str().to_owned()
     }
 
     #[zbus(property)]

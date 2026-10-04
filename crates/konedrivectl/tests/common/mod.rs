@@ -32,10 +32,10 @@ pub async fn start_daemon_showing(bus: &TestBus, dir: &Path, drive: konedrived::
         drive,
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
-    let hub = konedrived::sync::hub::HelperHub::new();
-    hub.set_socket(dir.join("no-helper.sock"));
+    let registry = konedrived::sync::registry::Registry::new();
+    registry.hub().set_socket(dir.join("no-helper.sock"));
     let paths = konedrived::config::Paths::in_dir(dir);
-    konedrived::daemon::startup::start_on(bus.builder(), paths, options, hub).await.unwrap()
+    konedrived::daemon::startup::start_on(bus.builder(), paths, options, registry).await.unwrap()
 }
 
 /// The `konedrivectl` binary on the bus at `bus_addr`, as a user's shell runs it, with

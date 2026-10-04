@@ -159,10 +159,10 @@ fn service_with(
     made(w, wiring(w, account, tokens).link(link))
 }
 
-/// A signed-in service on `hub`, wired as [`service_with`] wires one: a restart of
-/// the daemon whose hub knows what the machine's sources say.
-fn service_on(w: &World, hub: &Arc<hub::HelperHub>) -> Arc<SyncService> {
-    made(w, wiring(w, account(true), Arc::new(StaticToken::new("T"))).hub(hub))
+/// A signed-in service on `registry`, wired as [`service_with`] wires one: a restart of
+/// the daemon whose registry knows what the machine's sources say.
+fn service_on(w: &World, registry: &Arc<registry::Registry>) -> Arc<SyncService> {
+    made(w, wiring(w, account(true), Arc::new(StaticToken::new("T"))).registry(registry))
 }
 
 /// The world's drive, through `tokens`.

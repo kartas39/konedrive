@@ -125,7 +125,7 @@ impl SyncService {
         };
         // A move out of the folder still in its store goes with it (the count above leaves
         // none): what it left outside is tidied first, while the helper still holds the
-        // folder, and the hub stops routing its ids.
+        // folder, and the registry stops routing its ids.
         if record.source == RootSource::OneDrive {
             self.drop_moved_out(&mut stopped, &record.root).await;
         }

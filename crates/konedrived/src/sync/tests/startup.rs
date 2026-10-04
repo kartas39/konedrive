@@ -93,7 +93,7 @@ async fn losing_the_helper_is_published_and_reconnected_while_a_fill_still_runs(
     let service = testing::service(None, None, None);
     // Long enough that the window in which the helper is gone is
     // comfortably observable, short enough to keep the test quick.
-    tokio::spawn(hub::supervise(Arc::clone(service.hub()), socket_path.clone(), Duration::from_millis(300)));
+    tokio::spawn(crate::helper::hub::supervise(Arc::clone(service.hub()), socket_path.clone(), Duration::from_millis(300)));
     wait_until("the supervisor connected", || service.link().is_some()).await;
     service.register_root(root_dir.path()).await.unwrap();
     assert_eq!(service.root_state(), "ready");
@@ -137,7 +137,7 @@ async fn a_fill_on_open_ends_as_a_download_though_its_folder_is_forgotten_meanwh
     let helper = FakeHelper::start(socket_path.clone());
     let root_dir = tempfile::tempdir().unwrap();
     let service = testing::service(None, None, None);
-    tokio::spawn(hub::supervise(Arc::clone(service.hub()), socket_path.clone(), Duration::from_millis(300)));
+    tokio::spawn(crate::helper::hub::supervise(Arc::clone(service.hub()), socket_path.clone(), Duration::from_millis(300)));
     wait_until("the supervisor connected", || service.link().is_some()).await;
     service.register_root(root_dir.path()).await.unwrap();
 

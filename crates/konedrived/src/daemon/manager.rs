@@ -15,7 +15,8 @@ use crate::config::{is_valid_client_id, AccountConfig, AccountId, AccountPaths, 
 use crate::account::secret::{AccountSecrets, Wallet};
 use crate::account::state::SignInState;
 use crate::desktop::baloo::Baloo;
-use crate::sync::hub::HelperHub;
+use crate::helper::hub::HelperHub;
+use crate::sync::registry::Registry;
 use crate::conditions::running::HoldSettings;
 use crate::sync::{OneDrive, Persist, SyncError, SyncPaths, SyncService, Transfers, Wiring};
 
@@ -126,12 +127,15 @@ impl From<ConfigError> for ManagerError {
 }
 
 /// The accounts, in the order they were added, and what they share: `config.toml`, the
-/// helper hub, and the identity guard's view of every account.
+/// registry of their folders with the helper hub, and the identity guard's view of every
+/// account.
 pub struct AccountManager {
     pub(crate) config: Arc<ConfigStore>,
     paths: Paths,
     options: Options,
-    pub(crate) hub: Arc<HelperHub>,
+    /// The accounts as their folders see each other. It is written only here, by
+    /// [`list`](Self::list) and [`unlist`](Self::unlist), with `accounts`.
+    registry: Arc<Registry>,
     siblings: Arc<Siblings>,
     accounts: Mutex<Vec<Arc<Account>>>,
     /// `Add`, `Remove`, `SetClientId`, `SetPauseOnMetered` and `SetOnBattery`, one at a
@@ -140,14 +144,15 @@ pub struct AccountManager {
 }
 
 impl AccountManager {
-    /// The hub takes the hold's settings from `config` now, before any account joins it.
-    pub fn new(config: Arc<ConfigStore>, paths: Paths, options: Options, hub: Arc<HelperHub>) -> Arc<Self> {
-        hub.set_hold_settings(HoldSettings::of(&config.snapshot()));
+    /// The registry takes the hold's settings from `config` now, before any account is
+    /// listed.
+    pub fn new(config: Arc<ConfigStore>, paths: Paths, options: Options, registry: Arc<Registry>) -> Arc<Self> {
+        registry.set_hold_settings(HoldSettings::of(&config.snapshot()));
         Arc::new(Self {
             config,
             paths,
             options,
-            hub,
+            registry,
             siblings: Arc::new(Siblings::default()),
             accounts: Mutex::new(Vec::new()),
             changing: tokio::sync::Mutex::new(()),
@@ -165,7 +170,28 @@ impl AccountManager {
 
     /// The link to the helper every account shares.
     pub fn hub(&self) -> &Arc<HelperHub> {
-        &self.hub
+        self.registry.hub()
+    }
+
+    /// The accounts as their folders see each other: the same accounts as
+    /// [`accounts`](Self::accounts), in the same order.
+    pub fn registry(&self) -> &Arc<Registry> {
+        &self.registry
+    }
+
+    /// Makes `account` one of the daemon's, after every other: in the manager's list and
+    /// in the registry, which nothing else writes.
+    fn list(&self, account: Arc<Account>) {
+        let mut accounts = self.accounts.lock().unwrap();
+        self.registry.add(&account.sync);
+        accounts.push(account);
+    }
+
+    /// Takes `account` out of both lists.
+    fn unlist(&self, account: &Account) {
+        let mut accounts = self.accounts.lock().unwrap();
+        accounts.retain(|a| a.id != account.id);
+        self.registry.remove(&account.id);
     }
 
     /// Every account, in the order it was added.
@@ -201,6 +227,9 @@ impl AccountManager {
             }
             match self.build(entry) {
                 Ok(account) => {
+                    // Listed before its folder is restored: the folder starts on the hold's
+                    // settings every account runs on.
+                    self.list(Arc::clone(&account));
                     account.account.startup().await;
                     // The folder starts in the mode the account does, before it is restored.
                     follow_mode(&account).await;
@@ -208,7 +237,6 @@ impl AccountManager {
                         account.sync.hold_back(why).await;
                     }
                     account.sync.restore().await;
-                    self.accounts.lock().unwrap().push(account);
                 }
                 Err(e) => {
                     let message = format!("the account {:?} cannot be loaded: {e}", entry.label);
@@ -219,7 +247,8 @@ impl AccountManager {
         }
     }
 
-    /// One account's services, wired as the daemon wires them, and not yet on the bus.
+    /// One account's services, wired as the daemon wires them, not yet listed and not yet
+    /// on the bus.
     fn build(&self, entry: &AccountConfig) -> anyhow::Result<Arc<Account>> {
         let path = account_path(&entry.id).ok_or_else(|| anyhow::anyhow!("{:?} cannot name an object", entry.id))?;
         let paths = self.paths.account(&entry.id).ok_or_else(|| anyhow::anyhow!("{:?} is not an account id", entry.id))?;
@@ -256,7 +285,7 @@ impl AccountManager {
             onedrive,
             baloo: (self.options.baloo)(),
             transfers: Transfers { ceiling: config.transfer_ceiling(), large: config.transfer_large() },
-            ..Wiring::new(Arc::clone(&self.hub), Arc::clone(&account) as Arc<dyn crate::account::FolderAccount>, persist)
+            ..Wiring::new(Arc::clone(&self.registry), Arc::clone(&account) as Arc<dyn crate::account::FolderAccount>, persist)
         });
         // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2).
         let uploads: std::sync::Weak<SyncService> = Arc::downgrade(&sync);
@@ -291,7 +320,8 @@ impl AccountManager {
     }
 
     /// `Accounts.Add`: a signed-out, read-only account with no folder, after every other,
-    /// on the bus from the moment it is listed.
+    /// listed before its objects are put on the bus, and taken off the list again when they
+    /// cannot be.
     pub async fn add(&self, label: &str, connection: &Connection) -> Result<Arc<Account>, ManagerError> {
         let _changing = self.changing.lock().await;
         let entry = self.config.add_account(label)?;
@@ -306,12 +336,15 @@ impl AccountManager {
         };
         account.account.startup().await;
         follow_mode(&account).await;
+        // Listed before it is on the bus: a call on its own objects finds a folder that is
+        // one of the daemon's already.
+        self.list(Arc::clone(&account));
         if let Err(e) = self.export(connection, &account).await {
             // Nothing of the account is to be left: not half of its objects on the bus, and
             // not an entry in `config.toml` that would come up as an account at the next
             // start (which stays all the same if the file cannot be written now: F205).
             self.unexport(connection, &account, true).await;
-            self.hub.leave(&account.sync);
+            self.unlist(&account);
             self.siblings.remove(&account.id);
             if let Err(e) = self.config.remove_account(&entry.id) {
                 tracing::warn!("cannot take the account {:?} out of config.toml again: {e}", entry.label);
@@ -319,7 +352,6 @@ impl AccountManager {
             remove_account_dir(&account.paths.dir);
             return Err(ManagerError::Failed(format!("cannot put the account on the bus: {e}")));
         }
-        self.accounts.lock().unwrap().push(Arc::clone(&account));
         tracing::info!("added the account {:?} ({})", entry.label, entry.id);
         Ok(account)
     }
@@ -365,8 +397,7 @@ impl AccountManager {
         }
         remove_account_dir(&account.paths.dir);
         self.unexport(connection, &account, false).await;
-        self.accounts.lock().unwrap().retain(|a| a.id != account.id);
-        self.hub.leave(&account.sync);
+        self.unlist(&account);
         self.siblings.remove(&account.id);
         tracing::info!("removed the account {} ({path})", account.account.state().get().label);
         Ok(())
@@ -393,7 +424,7 @@ impl AccountManager {
 
     /// The hold's settings every account runs on (`Accounts.PauseOnMetered`, `OnBattery`).
     pub fn hold_settings(&self) -> HoldSettings {
-        self.hub.hold_settings()
+        self.registry.hold_settings()
     }
 
     /// `Accounts.SetPauseOnMetered`: written to `config.toml`, then taken by every account
@@ -422,7 +453,7 @@ impl AccountManager {
             if hold.pause_on_metered { "pauses" } else { "syncs" },
             hold.on_battery.as_str()
         );
-        self.hub.set_hold_settings(hold);
+        self.registry.set_hold_settings(hold);
         Ok(())
     }
 

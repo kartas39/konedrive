@@ -53,21 +53,21 @@ impl Filler for AccountFill {
 
 impl SyncService {
     /// What this account's outbox worker needs for `move-out` rows: the helper over the account's
-    /// link, fills from `source`, the folder's, the hub's router told which item ids are this
+    /// link, fills from `source`, the folder's, the registry's router told which item ids are this
     /// account's wherever they are (`docs/design/writes.md` §8, §8.3), and every account's folder.
     pub(super) fn move_outs(&self, source: Option<Arc<dyn ContentSource>>) -> MoveOuts {
-        let (hub, me) = (Arc::downgrade(&self.wiring.hub), self.me.clone());
-        let every = Arc::downgrade(&self.wiring.hub);
+        let (registry, me) = (Arc::downgrade(&self.wiring.registry), self.id().clone());
+        let every = Arc::downgrade(&self.wiring.registry);
         MoveOuts {
             helper: Arc::new(Linked(Arc::clone(&self.link))),
             filler: Arc::new(AccountFill { source, report: self.report.clone() }),
             route: Some(Arc::new(move |ids| {
-                if let Some(hub) = hub.upgrade() {
-                    hub.set_moved_out(&me, ids);
+                if let Some(registry) = registry.upgrade() {
+                    registry.set_moved_out(&me, ids);
                 }
             })),
             home_trash: home_trash(),
-            roots: Arc::new(move || every.upgrade().map(|hub| hub.accounts().iter().flat_map(|a| a.folders()).collect()).unwrap_or_default()),
+            roots: Arc::new(move || every.upgrade().map(|registry| registry.folders()).unwrap_or_default()),
         }
     }
 
@@ -116,15 +116,15 @@ impl SyncService {
         })
     }
 
-    /// The hub routes none of this account's item ids to it any more: its `move-out` rows are
+    /// The registry routes none of this account's item ids to it any more: its `move-out` rows are
     /// dropped. A worker started later routes its own again.
     pub(super) fn forget_moved_out(&self) {
-        self.wiring.hub.set_moved_out(&self.me, HashSet::new());
+        self.wiring.registry.set_moved_out(self.id(), HashSet::new());
     }
 
     /// A Forget, or a Remove, drops the tree store and every row in it: the
     /// `move-out` rows go first, their items forgetting their local objects, and what they left
-    /// outside the folder is tidied while the helper still holds the folder; the hub stops
+    /// outside the folder is tidied while the helper still holds the folder; the registry stops
     /// routing their ids. Dropped before they are tidied: a row kept over a placeholder already
     /// removed would read as the user's delete.
     pub(super) async fn drop_moved_out(&self, stopped: &mut Stopped<'_>, root: &SyncRoot) {
@@ -138,11 +138,11 @@ impl SyncService {
     }
 
     /// Whether another account of this daemon claims an item id (`docs/design/writes.md` §8.3), for this
-    /// account's reconcile: an object carrying it is never removed ([`HelperHub::claimed_elsewhere`]).
+    /// account's reconcile: an object carrying it is never removed ([`Registry::claimed_elsewhere`]).
     ///
-    /// [`HelperHub::claimed_elsewhere`]: crate::sync::hub::HelperHub::claimed_elsewhere
+    /// [`Registry::claimed_elsewhere`]: crate::sync::registry::Registry::claimed_elsewhere
     pub(super) fn claims(&self) -> crate::remote::materialize::Claimed {
-        let (hub, me) = (Arc::downgrade(&self.wiring.hub), self.me.clone());
-        Arc::new(move |id| hub.upgrade().is_some_and(|hub| hub.claimed_elsewhere(&me, id)))
+        let (registry, me) = (Arc::downgrade(&self.wiring.registry), self.id().clone());
+        Arc::new(move |id| registry.upgrade().is_some_and(|registry| registry.claimed_elsewhere(&me, id)))
     }
 }

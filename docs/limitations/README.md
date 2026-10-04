@@ -238,7 +238,7 @@ application must never read zeros where real content should be.
 - [F220](F220.md) — A OneDrive item dated before 1970 shows 1970-01-01 locally
 - [F221](F221.md) — One refresh at a time, and a cached token handed out beside it
 - [F230](F230.md) — A fill's file calls run in blocking sections, and a section that has begun ends by itself
-- [F231](F231.md) — The write gate and the hub's file calls run on blocking threads; the rest of `config.toml`'s readers do not
+- [F231](F231.md) — The write gate and the registry's file calls run on blocking threads; the rest of `config.toml`'s readers do not
 - [F232](F232.md) — A replacement's file calls run in three blocking sections, and a stop is heard only between them
 - [F233](F233.md) — An upload step's file calls run in blocking sections, and a section that has begun ends by itself
 - [F234](F234.md) — What the helper's missing write probe, its version check and its panic containment leave open
@@ -385,6 +385,7 @@ application must never read zeros where real content should be.
 - [D43](D43.md) — `konedrived` depends on itself to give its tests the account's test support
 - [D44](D44.md) — `konedrive-dbus` depends on itself to test its private bus
 - [D46](D46.md) — No test has the real helper hang while the examination asks it
+- [D47](D47.md) — The registry lists the accounts' folders weakly, and the test support writes it too
 - [D48](D48.md) — The watcher's tests borrow `remote/`'s fixture
 
 ---

@@ -71,7 +71,7 @@ pub(super) struct Record {
     /// Whether *this daemon* excluded the folder from Baloo, so that a Forget takes
     /// exactly that exclusion off again.
     pub baloo: bool,
-    /// The device the folder is on, read once when the record is made, for the hub's
+    /// The device the folder is on, read once when the record is made, for the registry's
     /// router: never a path looked at per request. `None` when the folder could not be
     /// looked at then.
     pub dev: Option<u64>,

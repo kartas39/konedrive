@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use super::folder::{Down, Interception, Record};
-use super::{hub, RootSource, SyncError, SyncService};
+use super::{registry, RootSource, SyncError, SyncService};
 use crate::config::RootConfig;
 use crate::folder::root::{self, SyncRoot};
 
@@ -146,7 +146,7 @@ impl SyncService {
         } else {
             Down::NotYetUp
         };
-        let dev = hub::device_of(&persisted.path).await;
+        let dev = registry::device_of(&persisted.path).await;
         let record = Record {
             root: SyncRoot { path: persisted.path, root_id: found.unwrap_or(persisted.root_id) },
             interception: persisted.interception,

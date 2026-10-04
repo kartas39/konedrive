@@ -12,7 +12,7 @@ use std::sync::Arc;
 use super::folder::{Content, Down, Kept, Folder, Interception, Is, OneDriveFolder, Record, Recovery, Standing, Stopped, Up};
 use super::running_sync::{Sync, Why};
 use super::persisted::{no_root_id, Persisted};
-use super::{hub, RootSource, SyncError, SyncService};
+use super::{registry, RootSource, SyncError, SyncService};
 use crate::account::state::SignInState;
 use crate::folder::root::{self, SyncRoot};
 use crate::helper::{Clearance, HelperError, HelperLink};
@@ -103,7 +103,7 @@ impl SyncService {
         }
         check_absent(stopped.folder())?;
         let link = if intercepted { Some(self.require_link()?) } else { None };
-        let _registering = self.wiring.hub.registering.lock().await;
+        let _registering = self.wiring.registry.registering.lock().await;
         self.check_overlap(path).await?;
         self.register(stopped, path, link).await
     }
@@ -170,12 +170,12 @@ impl SyncService {
 
     /// Design §8.3: a folder that is, is inside, or contains another
     /// account's folder is refused, naming that account. Called with the
-    /// hub's `registering` held, so that two accounts cannot both pass it.
+    /// registry's `registering` held, so that two accounts cannot both pass it.
     /// The helper would refuse an intercepted overlap anyway (`EINVAL`);
     /// checking first names the refusal, and covers a folder registered
     /// without interception, which the helper never sees.
     async fn check_overlap(&self, path: &Path) -> Result<(), SyncError> {
-        match self.wiring.hub.overlapping(self, path).await? {
+        match self.wiring.registry.overlapping(self.id(), path).await? {
             Some(label) => Err(SyncError::Overlaps(label)),
             None => Ok(()),
         }
@@ -275,7 +275,7 @@ impl SyncService {
             Err(NotTaken::Kept { root, error, let_go }) => {
                 let why = kept_text(&format!("registering {}", root.path.display()), &error, &let_go);
                 tracing::error!("{why}");
-                let dev = hub::device_of(&root.path).await;
+                let dev = registry::device_of(&root.path).await;
                 // Nothing was added to Baloo for it.
                 let record = Record { root, interception: Interception::Intercepted, source, baloo: false, dev, kept: Kept::default() };
                 stopped.folder_mut().is = Is::Down(record, Down::Kept { why: why.clone() });
@@ -370,7 +370,7 @@ impl SyncService {
         // was, before the helper heard of it), and a root recorded without its id
         // (an old `config.toml`) gets the id its folder carries.
         self.remember(&Persisted::of(&root, interception, source, baloo));
-        let dev = hub::device_of(&root.path).await;
+        let dev = registry::device_of(&root.path).await;
         // What is kept with the folder stays with it: what a local one was filled from by
         // hand, a OneDrive one's tree store and tree lock.
         let mut kept = stopped.folder().record().map(|record| record.kept.clone()).unwrap_or_default();

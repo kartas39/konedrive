@@ -1,7 +1,7 @@
 //! The automatic hold's sources (`docs/design/writes.md` §11, issue #57): whether the
 //! connection is metered, whether the machine runs on battery, and whether the power profile
 //! is `power-saver`. One watcher for the daemon, on the system bus, as `conditions::network` is:
-//! it follows each source's `PropertiesChanged` and tells every account through the hub
+//! it follows each source's `PropertiesChanged` and tells every account through the registry
 //! ([`Accounts::set_conditions`]), each of which decides by the hold's settings, one pair
 //! for every account (`conditions::running`).
 //!
@@ -24,8 +24,8 @@ use zbus::zvariant::OwnedValue;
 
 use crate::conditions::running::Conditions;
 
-/// Every account of the daemon, as this area's watchers tell them: the hub implements it
-/// (`sync::hub::HelperHub`).
+/// Every account of the daemon, as this area's watchers tell them: the registry of their
+/// folders implements it (`sync::registry::Registry`).
 pub trait Accounts: Send + Sync {
     /// What the hold's sources say now: every account decides by the hold's settings.
     fn set_conditions(&self, conditions: Conditions);
@@ -81,11 +81,11 @@ const PROFILES_OLD: Source = Source {
     property: "ActiveProfile",
 };
 
-/// Tells every account of `hub` what the sources say, now and at each change. For the life
+/// Tells every account of `accounts` what the sources say, now and at each change. For the life
 /// of the daemon; never in a test (it is the system bus).
-pub async fn watch(hub: Arc<impl Accounts>) {
+pub async fn watch(accounts: Arc<impl Accounts>) {
     match zbus::Connection::system().await {
-        Ok(connection) => watch_on(&connection, move |conditions| hub.set_conditions(conditions)).await,
+        Ok(connection) => watch_on(&connection, move |conditions| accounts.set_conditions(conditions)).await,
         Err(e) => tracing::info!("no system bus ({e}); no account holds back on a metered connection or on battery"),
     }
 }

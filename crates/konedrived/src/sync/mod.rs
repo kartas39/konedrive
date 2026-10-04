@@ -2,13 +2,13 @@
 //! content source, the hydration loop, and `SyncService` — the `org.konedrive.Folder`
 //! D-Bus surface's own half of the work (`dbus/folder.rs` is the thin zbus wrapper
 //! around it, the same split `crate::account`/`crate::dbus` uses for
-//! `Account`). There is one `SyncService` per account; the helper link, its
-//! supervisor and the per-inode locks are the daemon's, in `hub.rs`.
+//! `Account`). There is one `SyncService` per account; the list of them and the per-inode
+//! locks are the daemon's, in `registry.rs`, and so are the helper link and its supervisor,
+//! in `helper::hub`.
 
 pub mod bring_up;
 mod folder;
 pub mod free_up;
-pub mod hub;
 pub mod hydrate;
 pub mod mode;
 pub mod move_outs;
@@ -19,6 +19,7 @@ pub mod pins;
 pub mod populate;
 mod publish;
 pub mod queries;
+pub mod registry;
 mod running_sync;
 pub mod settings;
 pub mod start_stop;
@@ -231,14 +232,14 @@ impl From<DehydrateError> for SyncError {
 /// always fills the file itself, synchronously, through the same
 /// `ContentSource`/`source::hydrate` the interception path uses, under the
 /// same per-inode lock `serve_hydrations` takes. `serve_hydrations` itself is started once,
-/// at daemon startup, before any root exists: the hub's router answers each open with the
-/// source the file's folder has at that moment (`hub::filler`).
+/// at daemon startup, before any root exists: the registry's router answers each open with the
+/// source the file's folder has at that moment (`registry::filler`).
 pub struct SyncService {
-    /// What the service was made with: the hub, the account, its entry in `config.toml`,
+    /// What the service was made with: the registry, the account, its entry in `config.toml`,
     /// the drive, and the rest of [`Wiring`]. Never changed.
     wiring: Wiring,
     /// The hub's link cell: replaceable, because the helper can go away and
-    /// come back — [`hub::supervise`] swaps it for `None` the moment the
+    /// come back — `helper::hub::supervise` swaps it for `None` the moment the
     /// connection drops and back to a live link when it reconnects. Shared
     /// with a OneDrive folder's sync, which reads it at every reconcile.
     link: crate::helper::LinkCell,
@@ -251,7 +252,7 @@ pub struct SyncService {
     /// for the whole of the change, with the folder's sync stopped. Taken for reading by
     /// what decides from the folder what to ask of the helper and then acts on it
     /// (`dehydrate`, `populate_from_directory`), by what reads the tree store outside the
-    /// sync (`skipped`, `pending_uploads`, the hub's router), and by a reconcile, through
+    /// sync (`skipped`, `pending_uploads`, the registry's router), and by a reconcile, through
     /// the lease its listing is given, while it changes the folder.
     ///
     /// zbus runs every method call in a task of its own, so without it two
@@ -262,7 +263,7 @@ pub struct SyncService {
     /// The folder as last published ([`publish`]), for the readers that only look and the
     /// synchronous callers. Written by nothing but `publish`.
     view: watch::Sender<View>,
-    /// The hub's lock table: one inode belongs to one account only.
+    /// The registry's lock table: one inode belongs to one account only.
     locks: InodeLocks,
     /// The parts of syncs that were told to stop and are not waited for yet
     /// ([`running_sync`]): [`change`](Self::change) waits for them.
@@ -305,49 +306,59 @@ pub const NO_INTERCEPTION_WARNING: &str =
      opened, so files in this folder read as zeros until they are explicitly hydrated";
 
 impl SyncService {
-    /// One account's folder, made with `wiring` and joined to its hub after every account
-    /// the hub has already.
+    /// One account's folder, made with `wiring`. It is not one of the daemon's accounts
+    /// until whoever made it adds it to the registry ([`registry::Registry::add`]).
     pub fn new(mut wiring: Wiring) -> Arc<Self> {
-        let hub = Arc::clone(&wiring.hub);
-        hub.join(|helper_state| {
-            let state = SyncStateHandle::new(SyncSnapshot { folder: FolderStatus { helper_state, ..FolderStatus::default() }, ..SyncSnapshot::default() });
-            let pool = konedrive_graph::pool::TransferPool::new(konedrive_graph::pool::DEFAULT_CEILING);
-            let shown = state.clone();
-            pool.set_observer(Arc::new(move |throughput| shown.set_throughput(throughput)));
-            pool.set_limits(wiring.transfers.ceiling, wiring.transfers.large);
-            // The drive reports into the account's pool.
-            if let Some(onedrive) = wiring.onedrive.take() {
-                wiring.onedrive = Some(OneDrive { drive: onedrive.drive.with_pool(Arc::clone(&pool)), paths: onedrive.paths });
-            }
-            let settings = wiring.persist.store.account(&wiring.persist.account).map(|a| running::Settings::of(&a)).unwrap_or_default();
-            // The pins' downloads go through this very service, which they must
-            // not keep alive: a weak reference.
-            Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
-                pins: pin::Pins::new(state.clone(), me.clone(), Arc::clone(&pool)),
-                pool,
-                parts: source::Share::new(),
-                link: hub.link_cell(),
-                ignore: settings::configured_ignore(&wiring.persist),
-                running: Arc::new(running::Running::new(settings, Arc::clone(&wiring.clock))),
-                clock: pause::PauseClock::new(Arc::clone(&wiring.clock), {
-                    // The timed pause has run out: shown again, as the store has it now.
-                    let me = me.clone();
-                    move || {
-                        if let Some(service) = me.upgrade() {
-                            service.show_pause();
-                        }
+        let registry = Arc::clone(&wiring.registry);
+        let hub = Arc::clone(registry.hub());
+        let helper_state = hub.state();
+        let state = SyncStateHandle::new(SyncSnapshot { folder: FolderStatus { helper_state, ..FolderStatus::default() }, ..SyncSnapshot::default() });
+        let pool = konedrive_graph::pool::TransferPool::new(konedrive_graph::pool::DEFAULT_CEILING);
+        let shown = state.clone();
+        pool.set_observer(Arc::new(move |throughput| shown.set_throughput(throughput)));
+        pool.set_limits(wiring.transfers.ceiling, wiring.transfers.large);
+        // The drive reports into the account's pool.
+        if let Some(onedrive) = wiring.onedrive.take() {
+            wiring.onedrive = Some(OneDrive { drive: onedrive.drive.with_pool(Arc::clone(&pool)), paths: onedrive.paths });
+        }
+        let settings = wiring.persist.store.account(&wiring.persist.account).map(|a| running::Settings::of(&a)).unwrap_or_default();
+        // The pins' downloads go through this very service, which they must
+        // not keep alive: a weak reference.
+        Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
+            pins: pin::Pins::new(state.clone(), me.clone(), Arc::clone(&pool)),
+            pool,
+            parts: source::Share::new(),
+            link: hub.link_cell(),
+            ignore: settings::configured_ignore(&wiring.persist),
+            running: Arc::new(running::Running::new(settings, Arc::clone(&wiring.clock))),
+            clock: pause::PauseClock::new(Arc::clone(&wiring.clock), {
+                // The timed pause has run out: shown again, as the store has it now.
+                let me = me.clone();
+                move || {
+                    if let Some(service) = me.upgrade() {
+                        service.show_pause();
                     }
-                }),
-                report: Report::new(state.clone()),
-                state,
-                folder: Arc::new(tokio::sync::RwLock::new(Folder::new())),
-                view: watch::Sender::new(View::default()),
-                locks: hub.locks(),
-                ended: running_sync::Ended::default(),
-                me: me.clone(),
-                wiring,
-            })
+                }
+            }),
+            report: Report::new(state.clone()),
+            state,
+            folder: Arc::new(tokio::sync::RwLock::new(Folder::new())),
+            view: watch::Sender::new(View::default()),
+            locks: registry.locks(),
+            ended: running_sync::Ended::default(),
+            me: me.clone(),
+            wiring,
         })
+    }
+
+    /// The account this is the folder of.
+    pub fn id(&self) -> &crate::config::AccountId {
+        &self.wiring.persist.account
+    }
+
+    /// The daemon's accounts, as their folders see each other.
+    pub fn registry(&self) -> &Arc<registry::Registry> {
+        &self.wiring.registry
     }
 
     /// The account's quota, which the uploads' space check reads and adjusts: the one
@@ -357,13 +368,13 @@ impl SyncService {
     }
 
     /// The link to the helper this account shares with the daemon's others.
-    pub fn hub(&self) -> &Arc<hub::HelperHub> {
-        &self.wiring.hub
+    pub fn hub(&self) -> &Arc<crate::helper::hub::HelperHub> {
+        self.wiring.registry.hub()
     }
 
     /// `HelperState` (HS1), the hub's.
     pub fn helper_state(&self) -> String {
-        self.wiring.hub.state().as_str().to_owned()
+        self.hub().state().as_str().to_owned()
     }
 
     /// The drive a folder registered while signed in shows; without one, every folder is
@@ -394,7 +405,7 @@ impl SyncService {
     /// (local rule, on [`Clearance`]): the live link if there
     /// is one, the helper's socket if not.
     fn clearance(&self) -> Clearance {
-        self.wiring.hub.clearance()
+        self.hub().clearance()
     }
 
     pub fn state(&self) -> &SyncStateHandle {
@@ -424,7 +435,7 @@ impl SyncService {
         persist.store.account(&persist.account).and_then(|a| a.drive_id).map(|drive| drive.into_string())
     }
 
-    /// The device the folder is on, as it was when its record was made, for the hub's
+    /// The device the folder is on, as it was when its record was made, for the registry's
     /// router; `None` with no folder, or one that could not be looked at.
     fn root_device(&self) -> Option<u64> {
         self.record().and_then(|record| record.dev)
@@ -528,9 +539,6 @@ impl Drop for SyncService {
         self.view.send_replace(View::default());
     }
 }
-
-/// The longest [`hub::supervise`] ever waits between attempts.
-pub const MAX_HELPER_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[cfg(test)]
 pub(crate) mod tests;

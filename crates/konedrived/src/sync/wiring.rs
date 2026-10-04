@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use konedrive_graph::drive::DriveClient;
 
-use super::hub::HelperHub;
+use super::registry::Registry;
 use crate::account::FolderAccount;
 use crate::conditions::running::{Clock, SystemClock};
 use crate::config::ConfigStore;
@@ -92,8 +92,8 @@ pub type Watchers = Arc<dyn Fn(WatchConfig, Box<dyn Sink>) -> io::Result<Watcher
 /// service lives; what does change with the account (its standing, its mode) is told to
 /// the service by a call.
 pub struct Wiring {
-    /// The link to the helper and the folders of the daemon's other accounts.
-    pub hub: Arc<HelperHub>,
+    /// The folders of the daemon's accounts, and the link to the helper they share.
+    pub registry: Arc<Registry>,
     /// The folder's account: its sign-in, its quota, and what the folder tells it.
     pub account: Arc<dyn FolderAccount>,
     /// The account's entry in `config.toml`.
@@ -116,9 +116,9 @@ impl Wiring {
     /// The wiring of the daemon for what has only one real answer: Graph and the
     /// directory as sources, the real watcher, the system's clock, the default schedule
     /// and transfer limits, and no Baloo. The caller sets what its account has.
-    pub fn new(hub: Arc<HelperHub>, account: Arc<dyn FolderAccount>, persist: Persist) -> Self {
+    pub fn new(registry: Arc<Registry>, account: Arc<dyn FolderAccount>, persist: Persist) -> Self {
         Self {
-            hub,
+            registry,
             account,
             persist,
             onedrive: None,

@@ -120,9 +120,9 @@ pub async fn start_daemon_with(
     dir: &Path,
     options: konedrived::daemon::manager::Options,
 ) -> konedrived::daemon::startup::Daemon {
-    let hub = konedrived::sync::hub::HelperHub::new();
-    hub.set_socket(dir.join("no-helper.sock"));
-    konedrived::daemon::startup::start_on(bus.builder(), Paths::in_dir(dir), options, hub).await.unwrap()
+    let registry = konedrived::sync::registry::Registry::new();
+    registry.hub().set_socket(dir.join("no-helper.sock"));
+    konedrived::daemon::startup::start_on(bus.builder(), Paths::in_dir(dir), options, registry).await.unwrap()
 }
 
 /// Polls `check` until it holds (proxy properties are read from the daemon each time).

@@ -95,7 +95,7 @@ async fn a_metered_connection_holds_the_account_back_until_it_ends() {
     let before = deltas(&w).await;
     wait_for_deltas(&w, before).await;
 
-    service.set_conditions(running::Conditions { metered: true, ..running::Conditions::default() });
+    service.registry().set_conditions(running::Conditions { metered: true, ..running::Conditions::default() });
     assert_eq!(service.state().get().pause.held_back, "metered");
     assert_eq!(service.state().get().pause.paused_until, None, "a hold is not the user's pause");
     assert!(service.pool().try_acquire_sized(Class::Download, Size::Small).is_none(), "no pinned download");
@@ -111,7 +111,7 @@ async fn a_metered_connection_holds_the_account_back_until_it_ends() {
     assert_eq!(asked().await, 0, "nothing is uploaded");
     assert!(service.outbox(0).await.unwrap().iter().all(|row| row.3 == "paused"), "the rows read paused");
 
-    service.set_conditions(running::Conditions::default());
+    service.registry().set_conditions(running::Conditions::default());
     assert_eq!(service.state().get().pause.held_back, "");
     wait_for_deltas(&w, seen).await;
     for _ in 0..250 {
@@ -144,11 +144,11 @@ async fn the_account_runs_only_when_neither_a_pause_nor_a_hold_is_on() {
     };
 
     service.pause_syncing(0).await.unwrap();
-    service.set_conditions(metered);
+    service.registry().set_conditions(metered);
     service.resume_syncing().await.unwrap();
     quiet("resumed, still held").await;
     service.pause_syncing(0).await.unwrap();
-    service.set_conditions(running::Conditions::default());
+    service.registry().set_conditions(running::Conditions::default());
     quiet("the hold ended, still paused").await;
     let seen = deltas(&w).await;
     service.resume_syncing().await.unwrap();
@@ -169,30 +169,30 @@ async fn sync_anyway_lifts_the_hold_until_something_changes_and_a_restart_holds_
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
     let on_battery = running::Conditions { on_battery: true, ..running::Conditions::default() };
-    service.set_hold_settings(hold(OnBattery::Pause));
-    service.set_conditions(on_battery);
+    service.registry().set_hold_settings(hold(OnBattery::Pause));
+    service.registry().set_conditions(on_battery);
     assert_eq!(service.state().get().pause.held_back, "on-battery");
 
     let seen = deltas(&w).await;
     service.sync_anyway().unwrap();
     assert_eq!(service.state().get().pause.held_back, "");
     wait_for_deltas(&w, seen).await;
-    service.set_conditions(running::Conditions { power_saver: true, ..on_battery });
+    service.registry().set_conditions(running::Conditions { power_saver: true, ..on_battery });
     assert_eq!(service.state().get().pause.held_back, "on-battery", "the profile changed: held again");
 
     service.sync_anyway().unwrap();
-    service.set_hold_settings(hold(OnBattery::PowerSaver));
+    service.registry().set_hold_settings(hold(OnBattery::PowerSaver));
     assert_eq!(service.state().get().pause.held_back, "power-saver", "the setting changed: worked out again");
-    service.set_hold_settings(hold(OnBattery::Sync));
+    service.registry().set_hold_settings(hold(OnBattery::Sync));
     assert_eq!(service.state().get().pause.held_back, "", "sync on battery");
 
     service.stop_sync().await;
     service.hub().set_link(None);
     drop(service);
-    let hub = hub::HelperHub::with_link(Some(link(&w).await));
-    hub.set_conditions(on_battery);
-    hub.set_hold_settings(hold(OnBattery::Pause));
-    let restarted = service_on(&w, &hub);
+    let registry = registry::Registry::with_link(Some(link(&w).await));
+    registry.set_conditions(on_battery);
+    registry.set_hold_settings(hold(OnBattery::Pause));
+    let restarted = service_on(&w, &registry);
     restarted.restore().await;
     let seen = deltas(&w).await;
     restarted.resume().await;

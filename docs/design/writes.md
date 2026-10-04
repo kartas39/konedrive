@@ -1001,7 +1001,7 @@ the same work (the table below); thumbnails off stop only the thumbnail requests
   mains power the battery never holds an account back, whatever the profile.
 
 One watcher for the daemon (`conditions/mod.rs`, as `conditions/network.rs` is) reads the three
-sources at the start and follows each one's `PropertiesChanged`, and the hub tells every account,
+sources at the start and follows each one's `PropertiesChanged`, and the registry tells every account,
 and any that joins later, what they say. A source that is missing or cannot be read is no reason
 to hold back, logged once at `info` (limitations log F175).
 

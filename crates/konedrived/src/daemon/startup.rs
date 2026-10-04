@@ -7,7 +7,7 @@ use zbus::{fdo, Connection};
 
 use crate::config::{ConfigStore, Paths};
 use crate::account::secret::Slot;
-use crate::sync::hub::HelperHub;
+use crate::sync::registry::Registry;
 use crate::daemon::manager::{AccountManager, Options};
 
 /// How long the migration waits for the wallet to say whether version 1's refresh token is
@@ -54,18 +54,18 @@ fn lock_config(config_file: &Path) -> anyhow::Result<nix::fcntl::Flock<std::fs::
 ///
 /// The connection answers calls from the moment it is there: see `connect`.
 ///
-/// The caller starts the hub's supervisor ([`crate::sync::hub::supervise`]) and watchers.
+/// The caller starts the hub's supervisor ([`crate::helper::hub::supervise`]) and watchers.
 pub async fn start(builder: zbus::connection::Builder<'_>, paths: Paths, options: Options) -> anyhow::Result<Daemon> {
-    start_on(builder, paths, options, HelperHub::new()).await
+    start_on(builder, paths, options, Registry::new()).await
 }
 
-/// [`start`], on a `hub` the caller has set up already: a test's points at a helper socket
-/// of its own, so that no startup looks at a helper running on the machine.
+/// [`start`], on a `registry` the caller has set up already: a test's hub points at a helper
+/// socket of its own, so that no startup looks at a helper running on the machine.
 pub async fn start_on(
     builder: zbus::connection::Builder<'_>,
     paths: Paths,
     options: Options,
-    hub: Arc<HelperHub>,
+    registry: Arc<Registry>,
 ) -> anyhow::Result<Daemon> {
     let connection = connect(builder).await?;
     if fdo::DBusProxy::new(&connection).await?.name_has_owner(SERVICE_NAME.try_into()?).await? {
@@ -80,7 +80,7 @@ pub async fn start_on(
     let config = Arc::new(ConfigStore::open(&paths, legacy_token).await);
     crate::config::migrate::finish_file_moves(&config, &paths);
     crate::config::migrate::move_hold_settings(&config);
-    let manager = AccountManager::new(config, paths, options, hub);
+    let manager = AccountManager::new(config, paths, options, registry);
     manager.load().await;
     serve(&connection, &manager).await?;
     manager.resume_all().await;
@@ -113,7 +113,7 @@ async fn serve(connection: &Connection, manager: &Arc<AccountManager>) -> zbus::
     }
     // `HelperState` is the hub's: every change of it is `Accounts`'s to announce.
     let signal = bus.helper_state(connection).await?;
-    let mut helper = manager.hub.subscribe();
+    let mut helper = manager.hub().subscribe();
     helper.borrow_and_update();
     tokio::spawn(async move {
         while helper.changed().await.is_ok() {
