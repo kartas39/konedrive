@@ -204,3 +204,52 @@ fn what_carries_no_id_is_new_and_what_onedrive_cannot_hold_is_listed() {
     assert_eq!(sorted.by_id.into_iter().collect::<Vec<_>>(), vec![("A".to_owned(), vec![ix(1)])]);
     assert_eq!(sorted.listed, vec![(ix(2), LocalSkip::Symlink), (ix(3), LocalSkip::OtherDevice), (ix(4), LocalSkip::ReservedName)]);
 }
+
+/// A folder is identified as a file is; a file carrying its id is a copy.
+#[test]
+fn a_folder_is_its_recorded_directory() {
+    let recorded = handle(7);
+    let dir = |rel: &str, object: u64| {
+        let mut e = with_state(entry(rel, object, Some("D")), StateAttr::Absent);
+        e.ty = Type::Dir;
+        e
+    };
+    let known = |recorded| Known::Placed { kind: Kind::Folder, recorded, expected: Some(Path::new("docs")) };
+    let entries = [dir("moved", 7), dir("docs", 8), entry("d.txt", 9, Some("D"))];
+    let who = identify("D", known(Some(&recorded)), &seen(&entries), None);
+    assert_eq!(who, Identity { item: Some(ix(0)), copies: vec![ix(2), ix(1)], certain: true, ..Identity::default() });
+    // No record: the directory at the folder's place. The backup rule is a file's only.
+    let who = identify("D", known(None), &seen(&entries), None);
+    assert_eq!(who, Identity { item: Some(ix(1)), copies: vec![ix(2), ix(0)], ..Identity::default() });
+    let entries = [dir("docs~", 7), dir("docs", 8)];
+    let who = identify("D", known(Some(&recorded)), &seen(&entries[..1]), Some(seen(&entries)[1]));
+    assert_eq!(who, Identity { item: Some(ix(0)), certain: true, ..Identity::default() });
+}
+
+/// A record whose object was not seen: the one object at the item's place is the item,
+/// not certainly; one elsewhere is a copy. With no place to expect it at, only the recorded
+/// object can be the item. A row waiting for an entry's object changes nothing for an id
+/// the base places.
+#[test]
+fn with_the_recorded_object_not_seen_the_object_at_the_place_is_the_item() {
+    let recorded = handle(7);
+    let at_place = [entry("a.txt", 8, Some("A"))];
+    let who = identify("A", placed(Some(&recorded)), &seen(&at_place), None);
+    assert_eq!(who, Identity { item: Some(ix(0)), ..Identity::default() });
+    let elsewhere = [entry("b.txt", 8, Some("A"))];
+    let who = identify("A", placed(Some(&recorded)), &seen(&elsewhere), None);
+    assert_eq!(who, Identity { copies: vec![ix(0)], ..Identity::default() });
+
+    let nowhere = |recorded| Known::Placed { kind: Kind::File, recorded, expected: None };
+    let who = identify("A", nowhere(None), &seen(&at_place), None);
+    assert_eq!(who, Identity { copies: vec![ix(0)], ..Identity::default() });
+    let own = [entry("b.txt", 7, Some("A"))];
+    let who = identify("A", nowhere(Some(&recorded)), &seen(&own), None);
+    assert_eq!(who, Identity { item: Some(ix(0)), certain: true, ..Identity::default() });
+
+    let mut waiting = seen(&elsewhere);
+    waiting[0].pending = true;
+    waiting[0].creating = true;
+    let who = identify("A", placed(Some(&recorded)), &waiting, None);
+    assert_eq!(who, Identity { copies: vec![ix(0)], ..Identity::default() });
+}

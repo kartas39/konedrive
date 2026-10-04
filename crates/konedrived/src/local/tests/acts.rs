@@ -21,7 +21,9 @@
 //! The first look may be incomplete (it asks for another look, or the second act came
 //! after its listing), never wrong: it is checked for safety only, the look after it for
 //! the exact outcome. A model of the folder's objects (which one carries which id, which
-//! one the listing placed) says what the outcome is, by the rule of `docs/limitations/F53.md`.
+//! one the listing placed) says what the outcome is, by the rule of `docs/limitations/F53.md`,
+//! from the acts and from what the store knew before the look; nothing the examination
+//! wrote is read back to decide what it should have written.
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -98,6 +100,8 @@ struct Object {
     names: Vec<String>,
     /// The id mark it carries.
     id: Option<&'static str>,
+    /// Which object it is, whatever its names: the model's own number for it.
+    key: usize,
     /// The object the listing placed for that id.
     own: bool,
     dir: bool,
@@ -107,7 +111,9 @@ struct Object {
 }
 
 fn object(name: &str, id: Option<&'static str>, own: bool, data: Option<&[u8]>) -> Object {
-    Object { names: vec![name.to_owned()], id, own, dir: false, data: data.map(<[u8]>::to_vec), edited: false }
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let key = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Object { names: vec![name.to_owned()], id, key, own, dir: false, data: data.map(<[u8]>::to_vec), edited: false }
 }
 
 struct Scene<'f> {
@@ -284,14 +290,18 @@ struct Outcome {
     removed: Vec<String>,
 }
 
-/// What the store knows of the items when a look begins: the object it records for each
-/// (none after a rebuild, until a look finds the item and records what it found), and
-/// where it expects each: its place in the listing, or where a waiting row last saw it.
+/// What the store knows of the items when a look begins, as the model has it: the object
+/// on record for each (none after a rebuild, until a look finds the item and records what
+/// it found), and where each is expected: its place in the listing, or where a waiting row
+/// last saw it. Nothing here is read from the store.
+#[derive(Clone)]
 struct Known {
-    record: BTreeMap<&'static str, FileHandle>,
+    /// Item id → the object's number in the model.
+    record: BTreeMap<&'static str, usize>,
     expect: BTreeMap<&'static str, Expected>,
 }
 
+#[derive(Clone)]
 enum Expected {
     At(String),
     /// A row says it left; the row is at this place.
@@ -304,30 +314,45 @@ fn handle_of(fx: &Fx, name: &str) -> Option<FileHandle> {
     File::open(path.parent()?).and_then(|dir| FileHandle::at(&dir, path.file_name().unwrap())).ok()
 }
 
-fn known(fx: &Fx) -> Known {
-    let rows = fx.rows();
-    let mut known = Known { record: BTreeMap::new(), expect: BTreeMap::new() };
-    for (id, place, _) in ITEMS {
-        if let Some(handle) = fx.store.call_blocking(move |s| s.local_handle(id)).unwrap() {
-            known.record.insert(id, handle);
-        }
-        let expected = match rows.iter().rev().find(|r| r.item_id.as_deref() == Some(id)) {
-            Some(row) if row.kind.removes() => Expected::Removed(row.rel.display().to_string()),
-            Some(row) => Expected::At(row.rel.display().to_string()),
-            None => Expected::At(place.to_owned()),
-        };
-        known.expect.insert(id, expected);
+/// What the store knows before any look: every placed object on record, or none.
+fn known_at_first(objects: &[Object], handles: bool) -> Known {
+    let record = objects.iter().filter(|o| handles && o.own).map(|o| (o.id.unwrap(), o.key)).collect();
+    Known { record, expect: ITEMS.iter().map(|(id, place, _)| (*id, Expected::At(place.to_string()))).collect() }
+}
+
+/// The objects as a Full scan listed them when the second act came after the folder's own
+/// directory was read and before the directories below it were: the names directly in
+/// the folder as they were `before` that act, the names below as they are `after` it.
+fn listed_around(before: &[Object], after: &[Object]) -> Vec<Object> {
+    let top = |name: &String| !name.contains('/');
+    let mut seen: Vec<Object> = Vec::new();
+    for old in before {
+        let now = after.iter().find(|o| o.key == old.key);
+        let mut o = now.unwrap_or(old).clone();
+        o.names = old.names.iter().filter(|n| top(n)).cloned().collect();
+        o.names.extend(now.into_iter().flat_map(|o| o.names.iter().filter(|n| !top(n)).cloned()));
+        seen.push(o);
     }
-    known
+    for new in after.iter().filter(|o| !before.iter().any(|old| old.key == o.key)) {
+        let mut o = new.clone();
+        o.names.retain(|n| !top(n));
+        seen.push(o);
+    }
+    seen.retain(|o| !o.names.is_empty());
+    seen
 }
 
 /// The outcome by the one rule of identity: an item's object is the one the store records;
 /// with that one not there, or none recorded, the one standing at the item's place; every
 /// other object carrying the id is a copy. A missing item is deleted only on the evidence
 /// of its recorded object, and a folder only when everything in it has one. An empty copy
-/// goes only when the item's object is the recorded one.
-fn outcome(fx: &Fx, objects: &[Object], known: &Known) -> Outcome {
+/// goes only when the item's object is the recorded one. Also what the store knows after
+/// such a look: the object found for an item is on record, and a row says where the item
+/// was last seen. `unread`: directories the look did not get to read (gone by the time it
+/// came to them): nothing expected inside them is judged.
+fn outcome(fx: &Fx, objects: &[Object], known: &Known, unread: &[String]) -> (Outcome, Known) {
     let mut out = Outcome::default();
+    let mut next = known.clone();
     let ignored = |name: &str| fx.ignore.matches(Path::new(name).file_name().unwrap());
     let mut taken: Vec<usize> = Vec::new();
     let mut deleted: Vec<String> = Vec::new();
@@ -337,7 +362,7 @@ fn outcome(fx: &Fx, objects: &[Object], known: &Known) -> Outcome {
             Expected::Removed(at) => (base, Some(at.clone())),
         };
         let carriers: Vec<usize> = (0..objects.len()).filter(|&i| objects[i].id == Some(id) && objects[i].dir == is_dir).collect();
-        let recorded = known.record.get(id).and_then(|handle| carriers.iter().copied().find(|&i| handle_of(fx, &objects[i].names[0]).as_ref() == Some(handle)));
+        let recorded = known.record.get(id).and_then(|key| carriers.iter().copied().find(|&i| objects[i].key == *key));
         let item = recorded.or_else(|| carriers.iter().copied().find(|&i| objects[i].names.iter().any(|n| n == place)));
         let mut copies: Vec<(usize, bool)> = Vec::new();
         match item {
@@ -350,9 +375,12 @@ fn outcome(fx: &Fx, objects: &[Object], known: &Known) -> Outcome {
                 } else if at != base {
                     out.rows.push((Move, at.clone(), Some(id.into())));
                 }
+                next.record.insert(id, o.key);
+                next.expect.insert(id, Expected::At(at.clone()));
                 out.items.push((id, at));
                 copies.extend(carriers.iter().filter(|&&c| c != i).map(|&c| (c, recorded == Some(i))));
             }
+            None if unread.iter().any(|dir| Path::new(place).starts_with(dir)) => {}
             None => {
                 let newcomer = (0..objects.len()).find(|&n| !is_dir && removed.is_none() && objects[n].id.is_none() && !objects[n].dir && objects[n].names.iter().any(|n| n == place));
                 if let Some(n) = newcomer {
@@ -365,6 +393,7 @@ fn outcome(fx: &Fx, objects: &[Object], known: &Known) -> Outcome {
                     out.rows.push((Delete, at, Some(id.into())));
                 } else if known.record.contains_key(id) && (!is_dir || known.record.contains_key("F")) && !deleted.iter().any(|dir| Path::new(place).starts_with(dir)) {
                     out.rows.push((Delete, place.into(), Some(id.into())));
+                    next.expect.insert(id, Expected::Removed(place.to_owned()));
                     if is_dir {
                         deleted.push(place.to_owned());
                     }
@@ -395,7 +424,7 @@ fn outcome(fx: &Fx, objects: &[Object], known: &Known) -> Outcome {
         }
     }
     out.rows.sort_by(|a, b| (&a.1, &a.2, a.0 as u8).cmp(&(&b.1, &b.2, b.0 as u8)));
-    out
+    (out, next)
 }
 
 /// What is wrong on disk: nothing with data went or changed, and no object of the model
@@ -441,9 +470,9 @@ fn run(act: Act, then: Then, handles: bool, look: Look) -> Vec<String> {
     let fx = placed(handles);
     let scene = std::cell::RefCell::new(Scene::new(&fx));
     let mut wrong = Vec::new();
+    let at_first = known_at_first(&scene.borrow().objects, handles);
     scene.borrow_mut().act(act);
-    // What the first act alone calls for: the first look may have seen no more than that.
-    let before = outcome(&fx, &scene.borrow().objects, &known(&fx));
+    let after_first_act = scene.borrow().objects.clone();
     // What is alive is alive where it stands once both acts are made: the helper's answer.
     let second_act = || {
         scene.borrow_mut().then(act, then);
@@ -463,19 +492,25 @@ fn run(act: Act, then: Then, handles: bool, look: Look) -> Vec<String> {
         fx.examine(&batch)
     };
     let mut scene = scene.into_inner();
-    // An empty copy the first look removed because it had listed the item's own object,
-    // which the second act then removed: seen in that run, so the copy went, and said so.
-    let went: Vec<String> = before.removed.iter().filter(|name| !fx.path(name).exists()).cloned().collect();
+    // What the first look calls for, by the model alone: from what the store knew before
+    // it (every placed object on record, or none) and the objects as it listed them (as
+    // they are, or, interrupted, the folder's own directory as it was before the second
+    // act). It may do less than that (it acts only on what still stands), never anything
+    // else.
+    let listed = if look == Look::Interrupted { listed_around(&after_first_act, &scene.objects) } else { scene.objects.clone() };
+    let unread: Vec<String> = listed.iter().filter(|o| o.dir && !scene.objects.iter().any(|now| now.key == o.key)).map(|o| o.names[0].clone()).collect();
+    let (first_calls_for, then_known) = outcome(&fx, &listed, &at_first, &unread);
+    // An empty copy that look removed: it had listed the item's own recorded object (which
+    // the second act may have removed since: seen in that run all the same).
+    let went = first_calls_for.removed.clone();
     scene.objects.retain(|o| !went.contains(&o.names[0]));
     // Whether a look records every item it finds: a batch of names finds only those named.
     let records = handles || look != Look::Named;
-    // The outcome, by what the store knows after the first look: the object that look
-    // found for an item is on record from then on, and a row it wrote says where the
-    // item was last seen.
-    let want = outcome(&fx, &scene.objects, &known(&fx));
-    // The first look: nothing the user did not do, nothing lost.
+    // The outcome: the objects as they are after both acts, and what the model says the
+    // store knows after the first look.
+    let (want, _) = outcome(&fx, &scene.objects, &then_known, &[]);
     for row in scene.rows() {
-        if matches!(row.0, Delete | Move | MoveOut) && !want.rows.contains(&row) && !before.rows.contains(&row) {
+        if matches!(row.0, Delete | Move | MoveOut) && !first_calls_for.rows.contains(&row) {
             wrong.push(format!("the first look made the row {row:?}"));
         }
     }
@@ -499,6 +534,7 @@ fn run(act: Act, then: Then, handles: bool, look: Look) -> Vec<String> {
         wrong.push(format!("Activity has {} line(s) for {} empty copies removed", settled.2, want.removed.len() + went.len()));
     }
     wrong.extend(disk(&scene, &want, true, records));
+    wrong.extend(went.iter().filter(|name| fx.path(name).exists()).map(|name| format!("the empty copy {name} is still there")));
     // And once more: nothing changes.
     again(&second);
     let third = (scene.rows(), scene.skipped(), scene.said());
