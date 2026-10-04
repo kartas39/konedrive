@@ -1,5 +1,6 @@
-//! The store's schema: its version, what an open creates and brings up to
-//! date, and when a store is rebuilt.
+//! The store's schema: its version, what a new store is created with, how
+//! an older one is brought to it ([`migrations`]), and when a store is
+//! rebuilt.
 
 use std::path::Path;
 
@@ -7,18 +8,23 @@ use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
 use crate::model::PLACED;
-use crate::{outbox, reconcile, TreeError, TreeStore, MAX_CHAIN};
+use crate::{outbox, TreeError, TreeStore};
 
-/// Version 2 added `activity` and `conflicts`; version 3 the write phase's
-/// `outbox`, `local_skipped`, `items.local_handle`, `items.local_seq` and
-/// `conflicts.kind` (`docs/design/writes.md` §5). A store of any
-/// other version is rebuilt from a full listing, so a
-/// version 1 or 2 store is rebuilt once, and loses nothing but a listing: a
-/// version 2 folder was read-only and has nothing waiting to upload.
-/// Version 4 is version 3 once the local objects of every row below a row
-/// that is not placed are forgotten (issue #104): a version 3 store is
-/// brought to it in place, never rebuilt ([`migrate_3_to_4`]).
-pub const SCHEMA_VERSION: &str = "4";
+mod migrations;
+
+/// The schema this daemon reads and writes, kept in `meta` as
+/// `schema_version`. A store of an older version is brought to it in place,
+/// one numbered step at a time ([`migrations`]); one of a version no step
+/// starts from — older than the outbox, or a newer daemon's — is rebuilt
+/// from a full listing.
+///
+/// A change of what a table holds, a column, an index, a trigger or a
+/// stored word is a new version and a new step: nothing is added to a store
+/// outside one.
+pub const SCHEMA_VERSION: &str = "6";
+
+/// The `meta` key of the schema's version.
+const VERSION_KEY: &str = "schema_version";
 
 /// The `meta` key of a first listing's resume point.
 pub const LISTING_NEXT: &str = "listing_next";
@@ -27,42 +33,120 @@ pub const LISTING_NEXT: &str = "listing_next";
 /// listing) rather than a delta laid over `items`.
 pub const STAGING_WHOLE: &str = "staging_whole";
 
-/// Created on every open (`IF NOT EXISTS`, issue #39): what a delta removes
-/// from the tree while it is staged, and the indexes that keep a cycle from
-/// reading the whole tree — the outbox's recent commits, what has no local
-/// object on record, what is skipped.
-fn scale() -> String {
+/// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
+/// is created with, and what every migrated store ends as.
+///
+/// - `items`, `staging`: the tree and the tree a cycle builds.
+///   `local_handle` is the file handle of the inode the item was placed or
+///   adopted as, `local_seq` the outbox commit that last wrote the row
+///   (`docs/design/writes.md` §5). `staging_gone`: what a delta removes
+///   while it is staged (issue #39).
+/// - `deferred`, `outbox_gone`, `leaving`, `leaving_items`: what a
+///   read-write cycle keeps between cycles ([`crate::reconcile`]).
+/// - `outbox`, `local_skipped`: the write phase ([`crate::outbox`]).
+///   `AUTOINCREMENT`: a `seq` is never handed out twice, so a row removed
+///   at commit can never be mistaken for a new one by a worker still
+///   holding it. The content being sent is `snapshot_size`,
+///   `snapshot_mtime` (whole seconds) and `snapshot_mtime_nsec`; a
+///   `move-out` row's marker is `moved_out`.
+/// - `upload_sessions`: the upload sessions opened and not yet completed,
+///   cancelled or found gone (issue #47), with the place a new file's
+///   session holds in OneDrive with its empty placeholder until then. A row
+///   points at its session (`session_url`); one no row points at any more
+///   was given up, and is cancelled
+///   ([`TreeStore::upload_sessions_given_up`]).
+/// - `upload_openings`: the place a new file's session is about to take
+///   (issue #84), recorded before the request that opens it, so that a stop
+///   before its URL is persisted still knows the placeholder it may have
+///   left. One per row (`at` its first time, `last` the latest attempt
+///   whose outcome is not known, read as `at` when a store older than it
+///   left none); the URL replaces it. `upload_openings_left`: a record
+///   whose row left, or moved to another place (issue #89), kept until a
+///   `409` there resolves it, or for [`outbox::OPENING_LEFT_KEEP`].
+/// - The indexes keep a cycle and the outbox's lookups from reading a whole
+///   table (issues #38, #39).
+fn schema() -> String {
+    let tree = |table: &str| {
+        format!(
+            "CREATE TABLE {table} (
+                 id TEXT PRIMARY KEY, parent_id TEXT, name TEXT NOT NULL, kind TEXT NOT NULL,
+                 size INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0,
+                 etag TEXT, ctag TEXT, quickxor TEXT, mime TEXT,
+                 placement TEXT NOT NULL, thumb_key TEXT,
+                 local_handle BLOB, local_seq INTEGER NOT NULL DEFAULT 0);
+             CREATE INDEX {table}_parent ON {table}(parent_id);
+             CREATE INDEX {table}_handle ON {table}(local_handle);"
+        )
+    };
     format!(
-        "
-    CREATE TABLE IF NOT EXISTS staging_gone (id TEXT PRIMARY KEY);
-    CREATE INDEX IF NOT EXISTS items_seq ON items(local_seq);
-    CREATE INDEX IF NOT EXISTS items_unplaced ON items(id) WHERE local_handle IS NULL AND placement = '{PLACED}';
-    CREATE INDEX IF NOT EXISTS items_skipped ON items(id) WHERE placement != '{PLACED}';"
+        "{items}
+         {staging}
+         CREATE TABLE staging_gone (id TEXT PRIMARY KEY);
+         CREATE INDEX items_seq ON items(local_seq);
+         CREATE INDEX items_unplaced ON items(id) WHERE local_handle IS NULL AND placement = '{PLACED}';
+         CREATE INDEX items_skipped ON items(id) WHERE placement != '{PLACED}';
+         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
+         CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
+                                path TEXT NOT NULL, detail TEXT NOT NULL);
+         CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL,
+                                 kind TEXT NOT NULL DEFAULT '{rescued}');
+         CREATE TABLE deferred (
+             id TEXT PRIMARY KEY, seq INTEGER NOT NULL, gone INTEGER NOT NULL,
+             parent_id TEXT, name TEXT, kind TEXT, size INTEGER, mtime INTEGER, etag TEXT, ctag TEXT,
+             quickxor TEXT, mime TEXT, placement TEXT);
+         CREATE TABLE outbox_gone (id TEXT PRIMARY KEY, local_seq INTEGER NOT NULL);
+         CREATE TABLE leaving (id TEXT PRIMARY KEY, rel BLOB NOT NULL, handle BLOB);
+         CREATE TABLE leaving_items (id TEXT PRIMARY KEY, leaving TEXT NOT NULL);
+         CREATE TABLE outbox (
+             seq INTEGER PRIMARY KEY AUTOINCREMENT,
+             kind TEXT NOT NULL,
+             item_id TEXT,
+             dev INTEGER, ino INTEGER,
+             rel TEXT NOT NULL,
+             base_etag TEXT, base_ctag TEXT, base_parent TEXT, base_name TEXT,
+             target_parent TEXT, target_name TEXT,
+             state TEXT NOT NULL,
+             reason TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER,
+             snapshot_size INTEGER, snapshot_mtime INTEGER, snapshot_mtime_nsec INTEGER,
+             moved_out TEXT,
+             session_url TEXT, session_expires INTEGER, session_next INTEGER,
+             handle BLOB,
+             confirmed INTEGER NOT NULL DEFAULT 0,
+             size INTEGER,
+             bad_item TEXT, bad_item_ctag TEXT, bad_item_etag TEXT);
+         CREATE INDEX outbox_item ON outbox(item_id);
+         CREATE INDEX outbox_object ON outbox(dev, ino);
+         CREATE INDEX outbox_handle ON outbox(handle);
+         CREATE INDEX outbox_rel ON outbox(rel);
+         CREATE INDEX outbox_due ON outbox(state, next_try, seq);
+         CREATE INDEX outbox_target_parent ON outbox(target_parent);
+         CREATE INDEX outbox_kind ON outbox(kind);
+         CREATE INDEX outbox_frees ON outbox(seq) WHERE {frees};
+         CREATE INDEX outbox_session ON outbox(session_url) WHERE session_url IS NOT NULL;
+         CREATE TABLE local_skipped (rel TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL, size INTEGER);
+         CREATE TABLE upload_sessions (url TEXT PRIMARY KEY, parent TEXT, name TEXT, opened INTEGER NOT NULL);
+         CREATE INDEX upload_sessions_parent ON upload_sessions(parent);
+         CREATE TABLE upload_openings (seq INTEGER PRIMARY KEY, parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER);
+         CREATE INDEX upload_openings_parent ON upload_openings(parent);
+         CREATE TABLE upload_openings_left (parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL, last INTEGER NOT NULL, left_at INTEGER NOT NULL);
+         CREATE INDEX upload_openings_left_parent ON upload_openings_left(parent);",
+        items = tree("items"),
+        staging = tree("staging"),
+        rescued = ConflictKind::Rescued.as_str(),
+        frees = outbox::FREES,
     )
 }
 
-/// Version 3 to 4 (issue #104), in one transaction: every row below a row
-/// that is not placed forgets its local object, in `items` and `staging`,
-/// each by its own tree. A build before #104 kept them when a folder
-/// stopped being placed, and once the folder was placed again they read as
-/// objects gone — deletes in OneDrive.
-fn migrate_3_to_4(conn: &Connection) -> Result<(), TreeError> {
-    let mut batch = String::from("BEGIN IMMEDIATE;");
-    for table in ["items", "staging"] {
-        batch.push_str(&format!(
-            "WITH RECURSIVE below(id, depth) AS (
-                 SELECT c.id, 1 FROM {table} c JOIN {table} p ON c.parent_id = p.id WHERE p.placement != '{PLACED}'
-                 UNION
-                 SELECT c.id, b.depth + 1 FROM {table} c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
-             UPDATE {table} SET local_handle = NULL WHERE local_handle IS NOT NULL AND id IN (SELECT id FROM below);"
-        ));
-    }
-    batch.push_str(&format!("UPDATE meta SET value = '{SCHEMA_VERSION}' WHERE key = 'schema_version'; COMMIT;"));
-    if let Err(e) = conn.execute_batch(&batch) {
-        let _ = conn.execute_batch("ROLLBACK");
-        return Err(e.into());
-    }
-    tracing::info!("the tree store is at version {SCHEMA_VERSION}: what was below a folder not placed forgot its local objects");
+/// Runs `work` and sets the store's version to `version`, in one
+/// transaction: a crash or an error leaves the store as it was.
+fn at_version(conn: &Connection, version: &str, work: impl FnOnce(&Connection) -> Result<(), TreeError>) -> Result<(), TreeError> {
+    let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
+    work(&tx)?;
+    tx.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [VERSION_KEY, version],
+    )?;
+    tx.commit()?;
     Ok(())
 }
 
@@ -137,69 +221,33 @@ impl TreeStore {
         Ok(Self { conn, path: None, whole: false, changes: Default::default() })
     }
 
-    /// Creates the schema in a store with no table at all, in one
-    /// transaction: a crash part-way used to leave
-    /// some tables and no `meta`, which failed every open with an error that
-    /// was not taken for a store to rebuild. A store left that way by an
-    /// older build — tables, and no `meta` — reads as one of unknown
-    /// version, and is rebuilt.
+    /// Brings what `conn` holds to [`SCHEMA_VERSION`]: a store with no
+    /// table at all gets the schema, an older one its migrations, each in a
+    /// transaction of its own. A store with tables and no `meta` (a crash
+    /// of a build that did not create them in one transaction) reads as one
+    /// of unknown version, and is rebuilt.
     fn prepare(conn: Connection) -> Result<Self, TreeError> {
         let tables: i64 = conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table'", [], |row| row.get(0))?;
         if tables == 0 {
-            let mut schema = String::from("BEGIN IMMEDIATE;");
-            for table in ["items", "staging"] {
-                // `local_handle`: the file handle of the inode the item was
-                // placed or adopted as; `local_seq`: the outbox commit that
-                // last wrote the row (`docs/design/writes.md` §5).
-                schema.push_str(&format!(
-                    "CREATE TABLE {table} (
-                        id TEXT PRIMARY KEY, parent_id TEXT, name TEXT NOT NULL, kind TEXT NOT NULL,
-                        size INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0,
-                        etag TEXT, ctag TEXT, quickxor TEXT, mime TEXT,
-                        placement TEXT NOT NULL, thumb_key TEXT,
-                        local_handle BLOB, local_seq INTEGER NOT NULL DEFAULT 0);
-                     CREATE INDEX {table}_parent ON {table}(parent_id);
-                     CREATE INDEX {table}_handle ON {table}(local_handle);"
-                ));
-            }
-            schema.push_str(&format!(
-                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
-                 CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
-                                        path TEXT NOT NULL, detail TEXT NOT NULL);
-                 CREATE TABLE conflicts (rescued TEXT PRIMARY KEY, at INTEGER NOT NULL, original TEXT NOT NULL,
-                                         kind TEXT NOT NULL DEFAULT '{rescued}');
-                 {}
-                 INSERT INTO meta (key, value) VALUES ('schema_version', '{SCHEMA_VERSION}');
-                 COMMIT;",
-                outbox::SCHEMA,
-                rescued = ConflictKind::Rescued.as_str()
-            ));
-            if let Err(e) = conn.execute_batch(&schema) {
-                let _ = conn.execute_batch("ROLLBACK");
-                return Err(e.into());
-            }
+            at_version(&conn, SCHEMA_VERSION, |tx| Ok(tx.execute_batch(&schema())?))?;
         }
         let has_meta: i64 =
             conn.query_row("SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'meta'", [], |row| row.get(0))?;
         if has_meta == 0 {
             return Err(TreeError::Schema(None));
         }
-        let mut version: Option<String> = conn
-            .query_row("SELECT value FROM meta WHERE key = 'schema_version'", [], |row| row.get(0))
-            .optional()?;
-        if version.as_deref() == Some("3") {
-            migrate_3_to_4(&conn)?;
-            version = Some(SCHEMA_VERSION.to_owned());
+        let stored = |conn: &Connection| -> Result<Option<String>, TreeError> {
+            Ok(conn.query_row("SELECT value FROM meta WHERE key = ?1", [VERSION_KEY], |row| row.get(0)).optional()?.flatten())
+        };
+        let mut version = stored(&conn)?;
+        while let Some(step) = migrations::from(version.as_deref()) {
+            at_version(&conn, step.to, step.run)?;
+            tracing::info!("the tree store is at version {}: {}", step.to, step.what);
+            version = stored(&conn)?;
         }
         if version.as_deref() != Some(SCHEMA_VERSION) {
             return Err(TreeError::Schema(version));
         }
-        // The read-write cycle's own tables, added to schema 3 without a
-        // rebuild: a store made before them gains them here.
-        conn.execute_batch(reconcile::TABLES)?;
-        reconcile::upgrade(&conn)?;
-        conn.execute_batch(&scale())?;
-        outbox::upgrade(&conn)?;
         let whole = conn.query_row("SELECT 1 FROM meta WHERE key = ?1", [STAGING_WHOLE], |_| Ok(())).optional()?.is_some();
         // The outbox's point queries run thousands of times in one examination.
         conn.set_prepared_statement_cache_capacity(64);
@@ -208,3 +256,6 @@ impl TreeStore {
         Ok(Self { conn, path: None, whole, changes })
     }
 }
+
+#[cfg(test)]
+mod tests;

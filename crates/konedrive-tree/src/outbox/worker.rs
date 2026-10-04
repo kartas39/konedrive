@@ -6,7 +6,7 @@
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{insert, rewrite, rows_for, rows_where, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, Snapshot, OUTBOX_SEQ, SWAP_PREFIX};
+use super::{insert, remove, rewrite, rows_for, rows_where, set_snapshot, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, Snapshot, OUTBOX_SEQ, SWAP_PREFIX};
 use crate::conflicts::ConflictKind;
 use crate::model::{upsert, Change, Placement, Row, Table};
 use crate::source::Source;
@@ -95,22 +95,15 @@ impl TreeStore {
     /// session is never resumed with other bytes. Returns the session
     /// URL it dropped, to be cancelled.
     pub fn outbox_take_snapshot(&mut self, seq: i64, snapshot: Snapshot) -> Result<Option<String>, TreeError> {
-        let snapshot = snapshot.to_string();
         let tx = self.conn.transaction()?;
-        let dropped: Option<Option<String>> = tx
-            .query_row("SELECT session_url FROM outbox WHERE seq = ?1 AND snapshot IS NOT ?2", params![seq, snapshot], |r| r.get(0))
-            .optional()?;
-        tx.execute(
-            "UPDATE outbox SET
-                 session_url = CASE WHEN snapshot IS ?2 THEN session_url END,
-                 session_expires = CASE WHEN snapshot IS ?2 THEN session_expires END,
-                 session_next = CASE WHEN snapshot IS ?2 THEN session_next END,
-                 snapshot = ?2
-               WHERE seq = ?1",
-            params![seq, snapshot],
-        )?;
+        let Some(row) = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next() else { return Ok(None) };
+        if row.snapshot_is(snapshot) {
+            return Ok(None);
+        }
+        set_snapshot(&tx, seq, Some(snapshot))?;
+        tx.execute("UPDATE outbox SET session_url = NULL, session_expires = NULL, session_next = NULL WHERE seq = ?1", [seq])?;
         tx.commit()?;
-        Ok(dropped.flatten())
+        Ok(row.session_url)
     }
 
     /// The item a new file's upload left in OneDrive with other content
@@ -203,7 +196,7 @@ impl TreeStore {
                 },
             )?;
         }
-        tx.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+        remove(&tx, seq)?;
         add_activity(&tx, activity)?;
         tx.commit()?;
         Ok(local_seq)
@@ -385,7 +378,7 @@ impl TreeStore {
         if let Some(id) = forget {
             forget_local(&tx, id)?;
         }
-        tx.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+        remove(&tx, seq)?;
         add_activity(&tx, activity)?;
         tx.commit()?;
         Ok(())
@@ -409,7 +402,7 @@ impl TreeStore {
         };
         for mut row in later.into_iter().filter(|r| r.seq != seq) {
             if behind.contains(&row.seq) {
-                tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+                remove(&tx, row.seq)?;
             } else if matches!(row.kind, OutboxKind::Update | OutboxKind::Move) {
                 row.kind = dropped.kind;
                 row.base = None;
@@ -420,7 +413,7 @@ impl TreeStore {
                 rewrite(&tx, &row)?;
             }
         }
-        tx.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+        remove(&tx, seq)?;
         add_activity(&tx, activity)?;
         tx.commit()?;
         Ok(())
@@ -493,7 +486,9 @@ impl TreeStore {
         let dropped = "WHERE NOT (COALESCE(target_name, '') LIKE ?1 \
                        OR COALESCE(item_id, '') IN (SELECT id FROM items WHERE name LIKE ?1))";
         let rows = rows_where(&tx, dropped, [&swapping])?;
-        tx.execute(&format!("DELETE FROM outbox {dropped}"), [&swapping])?;
+        for row in &rows {
+            remove(&tx, row.seq)?;
+        }
         tx.commit()?;
         Ok(rows)
     }

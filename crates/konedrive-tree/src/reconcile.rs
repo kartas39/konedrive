@@ -31,17 +31,6 @@ use crate::source::{Source, UNTOUCHED};
 use crate::staging::{apply, swap};
 use crate::{TreeError, TreeStore};
 
-/// Created on every open (`IF NOT EXISTS`), so a schema-3 store made before
-/// the read-write reconcile gains them without a rebuild.
-pub(super) const TABLES: &str = "
-    CREATE TABLE IF NOT EXISTS deferred (
-        id TEXT PRIMARY KEY, seq INTEGER NOT NULL, gone INTEGER NOT NULL,
-        parent_id TEXT, name TEXT, kind TEXT, size INTEGER, mtime INTEGER, etag TEXT, ctag TEXT,
-        quickxor TEXT, mime TEXT, placement TEXT);
-    CREATE TABLE IF NOT EXISTS outbox_gone (id TEXT PRIMARY KEY, local_seq INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS leaving (id TEXT PRIMARY KEY, rel BLOB NOT NULL, handle BLOB);
-    CREATE TABLE IF NOT EXISTS leaving_items (id TEXT PRIMARY KEY, leaving TEXT NOT NULL);";
-
 /// A read-write cycle's delta, staged ([`TreeStore::stage_rw`]): the ids
 /// to reconcile, and the deferred changes consumed.
 pub type RwStaged = (Vec<String>, Vec<String>);
@@ -52,15 +41,6 @@ pub type RwStaged = (Vec<String>, Vec<String>);
 pub struct Committed {
     pub etag: Option<String>,
     pub gone: bool,
-}
-
-/// A store made before `leaving.handle` gains it (issue #104).
-pub(super) fn upgrade(conn: &rusqlite::Connection) -> Result<(), TreeError> {
-    let has = conn.prepare("SELECT 1 FROM pragma_table_info('leaving') WHERE name = 'handle'")?.exists([])?;
-    if !has {
-        conn.execute_batch("ALTER TABLE leaving ADD COLUMN handle BLOB")?;
-    }
-    Ok(())
 }
 
 /// Records that the outbox deleted `ids` in OneDrive at commit `local_seq`

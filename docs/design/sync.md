@@ -187,7 +187,11 @@ store, `$XDG_STATE_HOME/konedrive/tree.sqlite`, is moved there once ([accounts.m
 ### 5.3 A map, and rebuildable
 
 The extended attributes on the files are the truth about each local file; the store is a map of
-the drive. If it is missing, unreadable, or of another schema version (currently 3), it is rebuilt:
+the drive. A store of an older schema version that had an outbox (3 and later) is brought to
+today's (6) in place when it is opened, one numbered step at a time, each in a transaction
+(`konedrive-tree/src/schema/migrations.rs`); every change of the schema is such a step. If the
+store is missing, unreadable, or of a version no step starts from (1, 2, or a newer daemon's), it
+is rebuilt:
 a full listing fills it and the folder is reconciled Full against it, finding what is already there
 by item id. Losing it costs one listing, never data — though the activity log and the conflict list
 go with it (limitations log F24). For a read-write folder it also costs the outbox: the local

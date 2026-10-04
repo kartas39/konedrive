@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use konedrive_fs::handle::FileHandle;
 
-use super::{LocalSkip, Reason};
+use super::{LocalSkip, Reason, Snapshot};
 use crate::Row;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -159,10 +159,9 @@ pub struct OutboxRow {
     pub reason: Option<Reason>,
     pub attempts: u32,
     pub next_try: Option<i64>,
-    /// `<size> <mtime_ns>` of the content being sent, or a `move-out`
-    /// row's marker: read through [`OutboxRow::snapshot`] and its
-    /// neighbours (`encoded`).
-    pub snapshot: Option<String>,
+    /// What the row holds of the content it sends: its size and time, or
+    /// a `move-out` row's marker.
+    pub snapshot: Option<Snapshot>,
     /// A bearer credential until it expires: never logged, never published.
     pub session_url: Option<String>,
     pub session_expires: Option<i64>,

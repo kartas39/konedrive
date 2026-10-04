@@ -11,10 +11,9 @@ use rusqlite::types::Value;
 use super::{path_from, LocalSkip, OutboxKind, OutboxState, Reason};
 use crate::{TreeError, TreeStore};
 
-/// The bytes a row sends, in SQL: its snapshot's size (`<size> <mtime_ns>`),
-/// or the size recorded when it was detected; nothing for what sends no content.
-const BYTES: &str = "CASE WHEN kind IN ('create', 'update')
-                      THEN COALESCE(CAST(substr(snapshot, 1, instr(snapshot, ' ') - 1) AS INTEGER), size, 0) ELSE 0 END";
+/// The bytes a row sends, in SQL: its snapshot's size, or the size recorded
+/// when it was detected; nothing for what sends no content.
+const BYTES: &str = "CASE WHEN kind IN ('create', 'update') THEN COALESCE(snapshot_size, size, 0) ELSE 0 END";
 
 /// Rows of one kind, state and reason, as stored.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -305,7 +305,8 @@ folder, which has no watcher, reads `none`. `LocalScan`'s properties ([desktop.m
 
 ### 5.1 In the tree store
 
-The store's schema is 3. Its tables beside the read phase's:
+The outbox came with schema 3; the store's schema is 6 ([sync.md](sync.md) §5.3). Its tables
+beside the read phase's:
 
 ```sql
 CREATE TABLE outbox (
@@ -318,21 +319,28 @@ CREATE TABLE outbox (
   target_parent TEXT, target_name TEXT,
   state TEXT NOT NULL,                    -- waiting | ready | running | retry | blocked | held
   reason TEXT, attempts INTEGER NOT NULL DEFAULT 0, next_try INTEGER,
-  snapshot TEXT,                          -- '<size> <mtime>' of the content being sent
+  snapshot_size INTEGER,                  -- the content being sent: its size,
+  snapshot_mtime INTEGER, snapshot_mtime_nsec INTEGER,  -- and its time (seconds, nanoseconds)
+  moved_out TEXT,                         -- a move-out row's marker: 'local' | 'trash'
   session_url TEXT, session_expires INTEGER, session_next INTEGER,
   handle BLOB,                            -- the object's file handle
-  confirmed INTEGER NOT NULL DEFAULT 0);  -- a removal the user confirmed
-CREATE TABLE local_skipped (rel TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL);
+  confirmed INTEGER NOT NULL DEFAULT 0,   -- a removal the user confirmed
+  size INTEGER,                           -- the file's size when the change was detected
+  bad_item TEXT, bad_item_ctag TEXT, bad_item_etag TEXT);  -- what a bad upload left (§6)
+CREATE TABLE local_skipped (rel TEXT PRIMARY KEY, reason TEXT NOT NULL, at INTEGER NOT NULL, size INTEGER);
 -- items and staging: + local_handle BLOB, local_seq INTEGER (the outbox commit that last wrote the row)
 -- conflicts: + kind ('rescued' | 'copy')
 -- outbox_gone, deferred: the reconcile's (§9)
 -- upload_sessions (url, parent, name, opened): the sessions open until completed or cancelled (§6.1)
+-- upload_openings (seq, parent, name, at, last), upload_openings_left: the places of sessions
+--   about to be opened; a row removed leaves its record in the second (§6.1)
 -- meta: + outbox_seq, paused_until, handles_root
 ```
 
 The store is `0600`, and an upload URL, a credential for its one file until it expires, is kept
-nowhere else and never logged. A store of an older schema is rebuilt, which is safe because a
-folder of schema 2 was read-only and had nothing pending.
+nowhere else and never logged. A store of schema 3 or later is brought to today's in place,
+with everything that waits in its outbox; one of schema 1 or 2 is rebuilt, which is safe because
+a folder of schema 2 was read-only and had nothing pending.
 
 **The disk is the truth about local changes; the outbox records intent and progress.** Every row
 can be found again by comparing the disk with the base, so losing the outbox or the whole store

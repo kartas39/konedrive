@@ -1,10 +1,13 @@
 use crate::outbox::{Detection, OutboxKind, OutboxOp, OutboxState, Snapshot};
 use crate::TreeStore;
 
-/// A row's snapshot and the forms of its target name, over the strings the
-/// columns hold.
+/// A row's snapshot comes back as it was written, whatever the time (one
+/// before 1970, one past what nanoseconds in 64 bits hold), and so do a
+/// `move-out` row's markers; a session opened for other content goes with
+/// the content. A marker no konedrive writes blocks the row. The forms of
+/// the target name are told apart.
 #[test]
-fn a_rows_snapshot_and_target_name_are_read_as_stored() {
+fn a_rows_snapshot_and_target_name_are_read_as_written() {
     let mut s = TreeStore::in_memory().unwrap();
     let d = Detection {
         kind: OutboxKind::Create,
@@ -22,30 +25,34 @@ fn a_rows_snapshot_and_target_name_are_read_as_stored() {
     };
     s.outbox_apply(&[OutboxOp::Record(d)], 1).unwrap();
     let seq = s.outbox_rows().unwrap()[0].seq;
-    let snapshot = |s: &TreeStore| -> Option<String> { s.conn.query_row("SELECT snapshot FROM outbox", [], |r| r.get(0)).unwrap() };
 
     let content = Snapshot::content(100, 2, 5);
-    s.outbox_take_snapshot(seq, content).unwrap();
-    assert_eq!(snapshot(&s).as_deref(), Some("100 2000000005"));
+    assert_eq!(s.outbox_take_snapshot(seq, content).unwrap(), None);
     let row = s.outbox_row(seq).unwrap().unwrap();
     assert_eq!((row.snapshot(), row.snapshot_size(), row.snapshot_sent()), (Some(content), Some(100), Some((100, 2))));
     assert!(row.snapshot_is(content) && !row.snapshot_is(Snapshot::content(100, 2, 6)));
-    assert_eq!(Snapshot::content(1, -1, 5).to_string(), "1 -999999995", "a time before 1970");
-    assert_eq!(Snapshot::parse("1 -999999995"), Some(Snapshot::content(1, -1, 5)));
+    s.outbox_open_session(seq, "https://up.example/s", Some(50), None, 10).unwrap();
+    assert_eq!(s.outbox_take_snapshot(seq, content).unwrap(), None, "the same content keeps its session");
+    assert_eq!(s.outbox_row(seq).unwrap().unwrap().session_url.as_deref(), Some("https://up.example/s"));
+    for other in [Snapshot::content(1, -1, 5), Snapshot::content(1, i64::MAX, 999_999_999), Snapshot::content(1, i64::MIN, 0)] {
+        let dropped = s.outbox_take_snapshot(seq, other).unwrap();
+        let row = s.outbox_row(seq).unwrap().unwrap();
+        assert_eq!((row.snapshot(), row.session_url.as_deref()), (Some(other), None));
+        assert_eq!(dropped.is_some(), other == Snapshot::content(1, -1, 5), "the session of the content before goes, once");
+    }
 
-    for (marker, stored) in [(Snapshot::ContentLocal, "moved-out:local"), (Snapshot::Trashed, "moved-out:trash")] {
+    for marker in [Snapshot::ContentLocal, Snapshot::Trashed] {
         s.outbox_set_snapshot(seq, Some(marker)).unwrap();
-        assert_eq!(snapshot(&s).as_deref(), Some(stored));
         let row = s.outbox_row(seq).unwrap().unwrap();
         assert_eq!((row.snapshot(), row.snapshot_size(), row.snapshot_sent()), (Some(marker), None, None));
         assert!(marker.is_marker() && row.snapshot_is(marker));
     }
-    // What is none of these is no snapshot; a size before a space is still a size.
-    s.outbox_amend(seq, |row| row.snapshot = Some("12 soon".into())).unwrap();
+    s.bench_sql("UPDATE outbox SET moved_out = 'elsewhere'").unwrap();
     let row = s.outbox_row(seq).unwrap().unwrap();
-    assert_eq!((row.snapshot(), row.snapshot_size(), row.snapshot_sent()), (None, Some(12), None));
+    assert_eq!((row.snapshot(), row.state), (None, OutboxState::Blocked));
+    assert!(row.reason_text().unwrap().contains("elsewhere"));
     s.outbox_set_snapshot(seq, None).unwrap();
-    assert_eq!(snapshot(&s), None);
+    assert_eq!((s.outbox_row(seq).unwrap().unwrap().snapshot(), s.outbox_row(seq).unwrap().unwrap().state), (None, OutboxState::Ready));
 
     let row = s.outbox_row(seq).unwrap().unwrap();
     assert_eq!((row.swap_name(), row.last_place()), (None, None), "a name");
