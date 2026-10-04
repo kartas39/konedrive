@@ -96,8 +96,9 @@ pub(crate) async fn start_signals(
 }
 
 /// Announces `Accounts.HelperState` at every change of `helper`, the hub's own state; the
-/// task that does, which ends when the hub is gone. What `helper` holds now is where
-/// things stand: a change before the task first runs is still announced.
+/// task that does. It ends only with the process: through `Accounts` it holds the account
+/// manager, and so the hub whose state it follows. What `helper` holds now is where things
+/// stand: a change before the task first runs is still announced.
 pub(crate) fn announce_helper_state(accounts: InterfaceRef<Accounts>, mut helper: watch::Receiver<HelperState>) -> JoinHandle<()> {
     helper.borrow_and_update();
     tokio::spawn(async move {

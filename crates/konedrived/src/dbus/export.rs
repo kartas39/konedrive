@@ -90,7 +90,7 @@ impl Bus for OnBus {
         server.at(ACCOUNTS_PATH, Files { manager: Arc::clone(manager) }).await?;
         // `HelperState` is the hub's, and every change of it `Accounts`'s to announce.
         let accounts = server.interface::<_, Accounts>(ACCOUNTS_PATH).await?;
-        // Not kept: it ends with the hub, and nothing takes `Accounts` off the bus before.
+        // Not kept, and it never ends: it is the process's, as `Accounts` on the bus is.
         drop(announce_helper_state(accounts, manager.hub().subscribe()));
         Ok(())
     }

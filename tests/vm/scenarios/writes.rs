@@ -112,7 +112,7 @@ impl<'c> World<'c> {
         ctx.runtime.block_on(service.follow_mode(Mode::ReadWrite));
         ctx.runtime.block_on(service.register_root(&folder)).map_err(|e| format!("cannot register {}: {e}", folder.display()))?;
         let world = World { ctx, base, folder, graph, service };
-        world.wait("the first cycle", || (world.service.status().0 > 0).then_some(()))?;
+        world.wait("the first cycle", || (world.service.state().get().cycle.last_checked > 0).then_some(()))?;
         world.wait("the lock lifted", || {
             std::fs::metadata(&world.folder).is_ok_and(|m| m.mode() & 0o200 != 0).then_some(())
         })?;
@@ -437,7 +437,7 @@ fn vfat_mount(ctx: &Ctx, checks: &mut Checks, synced: bool) -> Result<(), String
             // into the mount. (The Full local scan passed, or the mount would not be listed.)
             std::thread::sleep(Duration::from_millis(1100));
             ctx.runtime.block_on(w.service.refresh()).map_err(|e| e.to_string())?;
-            w.wait("a cycle completed with the mount there", || (w.service.status().0 > mounted).then_some(()))?;
+            w.wait("a cycle completed with the mount there", || (w.service.state().get().cycle.last_checked > mounted).then_some(()))?;
             if w.service.last_error().contains("brought up to date") {
                 return Err("the cycle with the mount there failed".into());
             }
