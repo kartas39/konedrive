@@ -2,7 +2,7 @@
 //! Trash, as a `move-out` row's step leaves it before its item is deleted (`cases`), and
 //! after a dropped row, where the item stays in OneDrive (`dropped`). Both follow the one
 //! rule written here: a downloaded file stays, stripped, as the user's own; a file that
-//! holds nothing whole goes; a directory of the item is unmarked, stripped, and removed if
+//! is not downloaded, or is between the two, goes; a directory of the item is unmarked, stripped, and removed if
 //! left empty.
 
 use std::collections::HashSet;
@@ -85,8 +85,11 @@ impl Walked {
 pub(super) enum Fate {
     /// Downloaded: it stays, stripped, as the user's own file.
     Stays,
-    /// It holds nothing whole — never filled, or a fill or a free-up cut short: it goes.
-    /// OneDrive has its content.
+    /// Not downloaded — never filled, a fill cut short, or a free-up cut short: it goes.
+    /// OneDrive has the content the daemon last knew of. A free-up cut short before its
+    /// punch still holds the whole content, and an edit made in place since then, which
+    /// no examination records (the state reads as unknown content), goes with the file
+    /// (limitations log F237).
     Goes,
     /// No state that can be read: nothing is decided.
     Unsure,

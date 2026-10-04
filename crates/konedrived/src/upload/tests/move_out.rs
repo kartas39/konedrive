@@ -31,6 +31,8 @@ pub(super) struct FakeHelper {
     down: Mutex<bool>,
     /// What was asked: (call, where the object was).
     calls: Mutex<Vec<(&'static str, PathBuf)>>,
+    /// How many times an object was asked for by its handle, whatever the answer.
+    asked: std::sync::atomic::AtomicUsize,
 }
 
 fn where_is(file: &File) -> PathBuf {
@@ -43,7 +45,7 @@ fn handle_of(path: &Path) -> Option<FileHandle> {
 
 impl FakeHelper {
     pub(super) fn beneath(beneath: PathBuf) -> Self {
-        Self { beneath, refuse: Mutex::new(None), down: Mutex::new(false), calls: Mutex::new(Vec::new()) }
+        Self { beneath, refuse: Mutex::new(None), down: Mutex::new(false), calls: Mutex::new(Vec::new()), asked: Default::default() }
     }
 
     /// Where the object with `handle` stands now, if anywhere.
@@ -82,6 +84,7 @@ impl FakeHelper {
 #[async_trait]
 impl Helper for FakeHelper {
     async fn open_by_handle(&self, _dir: &File, handle: &FileHandle) -> Result<OwnedFd, HelperError> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
         self.up()?;
         if let Some(errno) = *self.refuse.lock().unwrap() {
             return Err(HelperError::Refused(errno));
@@ -419,6 +422,16 @@ fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
     }
     assert_eq!(w.deletes(), 0);
     assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::StaleHandle.key()));
+
+    // The re-marking does not take such an answer for "gone": it asks again at every look
+    // of the same worker (paused here, so that only the re-marking asks).
+    let engine = w.h.engine();
+    pause(&engine);
+    let before = w.helper.asked.load(Ordering::SeqCst);
+    w.h.drain(&engine);
+    w.h.drain(&engine);
+    assert_eq!(w.helper.asked.load(Ordering::SeqCst) - before, 2, "asked again at the next look");
+    resume(&engine);
 
     // The examination takes the handles again: Q, missing meanwhile, is placed again, not deleted.
     std::fs::rename(w.path("q.txt"), w.beside("gone-q.txt")).unwrap();
