@@ -11,8 +11,7 @@ use tokio::sync::Notify;
 use crate::folder::walk::walk_files;
 use crate::status::snapshot::SyncStateHandle;
 
-/// `LocalBytes` is measured at most this often after a download or a free-up
-///.
+/// `LocalBytes` is measured at most this often after a download or a free-up.
 pub const SPACE_SPACING: Duration = Duration::from_secs(5);
 
 /// How `LocalBytes` is measured: a function of the folder's path.
@@ -26,8 +25,8 @@ type Measure = Arc<dyn Fn(&Path) -> u64 + Send + Sync>;
 /// The walker is a task of its own that holds the sync state, so it is
 /// stopped with this (`Drop`), and whenever [`stop`](Self::stop) is asked —
 /// a sync that stops, a Forget — rather than left to run for the life of
-/// the runtime: nothing waiting on the state would ever see it end
-///. A kick after a stop starts it again.
+/// the runtime: nothing waiting on the state would ever see it end. A kick
+/// after a stop starts it again.
 pub struct LocalSpace {
     kick: Arc<Notify>,
     state: SyncStateHandle,

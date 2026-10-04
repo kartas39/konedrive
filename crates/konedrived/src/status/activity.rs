@@ -143,7 +143,7 @@ fn there(path: &str) -> bool {
 /// thread; with memory alone nothing blocks.
 ///
 /// An event is kept only while its path is inside the folder registered now
-/// (`SyncSnapshot::root_path`): a download that ends after its folder was
+/// (`SyncSnapshot::folder`'s `root_path`): a download that ends after its folder was
 /// forgotten — `Hydrate` does not hold the lifecycle lock — records nothing,
 /// in memory or in the next folder's store.
 pub struct Activity {

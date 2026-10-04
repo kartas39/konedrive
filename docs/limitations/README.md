@@ -252,6 +252,8 @@ application must never read zeros where real content should be.
 - [F242](F242.md) — Every change of a folder stops its sync, and a helper's reconnect starts it again with a Full reconcile
 - [F243](F243.md) — What is kept of something removed in OneDrive under a name nothing uploads stays on this computer only
 - [F244](F244.md) — The plan of a reconcile is four queries for each item, inside one store job
+- [F247](F247.md) — An activity event of a kind this version does not name is left out of the log
+- [F248](F248.md) — Whether a failed replacement is said again goes by a coarse reason, and the status quotes one failure
 
 ---
 
@@ -368,6 +370,7 @@ application must never read zeros where real content should be.
 - [D36](D36.md) — The store's schema has a number for every change, and what that leaves.
 - [D37](D37.md) — The test support of `sync/` is built into the daemon's crate, and finds a service's parts by a list.
 - [D38](D38.md) — The running parts of a folder's sync are beside its state, not in it.
+- [D40](D40.md) — Two tests of `remote/listing/` wait by the clock where they cannot see the event.
 
 ---
 

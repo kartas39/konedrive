@@ -838,7 +838,7 @@ fn a_file_removed_while_it_waits_for_space_leaves_the_outbox() {
     assert!(engine.space_full(), "still full: only a quota read ends it");
     let sid = session.as_str().rsplit('/').next().unwrap();
     assert_eq!(w.cloud(|c| c.log[from..].to_vec()), vec![("DELETE".to_owned(), format!("upload/{sid}"))], "the session cancelled, nothing sent");
-    assert!(w.h.host.kinds().iter().any(|k| *k == ActivityKind::NotUploaded), "{:?}", w.h.host.kinds());
+    assert!(w.h.host.kinds().contains(&ActivityKind::NotUploaded), "{:?}", w.h.host.kinds());
 }
 
 /// Drains `engine` in the background, pauses it while the first request of
@@ -938,7 +938,7 @@ fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
         assert_eq!(sent, wanted, "expired: {expire}");
         assert_eq!(w.content("big.bin").unwrap(), content);
         assert_committed(&w, "big.bin", "big.bin");
-        assert!(!w.h.host.kinds().iter().any(|k| *k == ActivityKind::UploadFailed), "a pause is no failure: {:?}", w.h.host.kinds());
+        assert!(!w.h.host.kinds().contains(&ActivityKind::UploadFailed), "a pause is no failure: {:?}", w.h.host.kinds());
     }
 }
 

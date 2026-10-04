@@ -121,6 +121,8 @@ locks, and which item of the drive has a place in it. Design: `hydration.md`, `s
   folder. `[tests]`
 - `disk.rs` — every change made to the folder, by descriptor. `[tests]`
 - `locks.rs` — `InodeLocks`: one fill or free-up per inode at a time. `[tests]`
+- `walk.rs` — a walk over the folder's files that opens none of them; the names konedrive keeps
+  for itself.
 
 ### `crates/konedrived/src/conditions/`
 
@@ -136,10 +138,15 @@ Design: `writes.md` §11.
 What the sync reports. Design: `desktop.md`.
 
 - `mod.rs` — the list of the modules.
-- `activity.rs` — the activity log, conflicts and transfers. `[tests]`
+- `activity.rs` — `Activity`: the activity log and the conflicts; the words of an event.
+  `[tests]`
+- `transfers.rs` — `Transfers`: the downloads under way. `[tests]`
+- `space.rs` — `LocalSpace`: the space the folder's files take, measured again when asked.
+  `[tests]`
+- `report.rs` — `Report`: the three of them, as everything that reports holds them.
 - `totals.rs` — the queue totals: how much is left to download and to upload. `[tests]`
-- `snapshot.rs` — `SyncSnapshot` and the published states: the root, the local scan, live
-  changes; `LastError` and its notes. `[tests]`
+- `snapshot.rs` — `SyncSnapshot`, in six groups by who writes them, and the published states:
+  the root, the local scan, live changes; `LastError` and its notes. `[tests]`
 
 ### `crates/konedrived/src/hydration/`
 
@@ -254,7 +261,8 @@ reconcile in read-write mode).
 - `listing/poller.rs` — when a cycle runs. `[tests]`
 - `listing/reconcile.rs` — the reconcile of one cycle, in either mode: `apply_with_handover`,
   `commit_cycle` (what waits), `after_commit`; what a failed cycle still hands over and records.
-- `listing/replacements.rs` — replacing changed files, several at once. `[tests]`
+- `listing/replacements.rs` — `Replacements`: which changed files are being replaced, wait or
+  failed; the workers that replace them, several at once. `[tests]`
 - `listing/rw.rs` — a read-write folder's cycle up to its reconcile: the tree lock, the
   stale-delta guard, what is staged again. `[tests]`
 - `materialize.rs` — `Materializer`: makes the folder match the tree. `[tests]`
@@ -526,7 +534,7 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `staging.rs` — the new tree a cycle builds, and its swap into `items`.
 - `reconcile.rs` — what a read-write folder's cycle keeps from one cycle to the next.
   `[tests]`
-- `activity.rs` — the activity log, as the store keeps it.
+- `activity.rs` — the activity log, as the store keeps it; `ActivityKind`, what an event records.
 - `conflicts.rs` — the local versions kept, on record.
 - `thumbs.rs` — the thumbnails still to make, and what each cached one was made for.
 - `outbox.rs` — the outbox: what the folder holds that OneDrive does not have yet. `[tests]`
