@@ -85,6 +85,12 @@ Every object a client may call is on the bus before the name is claimed, as befo
 6. Every folder that needs no helper is brought up; the hub's supervisor, the `HelperState` watcher
    and the network watcher start.
 
+The daemon's connection is built with the `ObjectManager` of `/org/konedrive/Accounts` already on
+it. This is what makes the connection answer calls before it reads its first message: a
+connection that gets its first object later starts answering a moment after it starts reading,
+and a call read in between is dropped with no reply. The call that started the daemon over D-Bus
+is delivered as soon as the name is claimed, so it must not be lost.
+
 ### 3.3 One helper link for every account
 
 The helper sends each intercepted open to the newest connection of the file owner's uid

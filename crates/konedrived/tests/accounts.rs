@@ -849,3 +849,100 @@ async fn an_add_that_cannot_be_put_on_the_bus_leaves_nothing_behind() {
     let account = AccountProxy::builder(&client).path(path.clone()).unwrap().build().await.unwrap();
     assert_eq!(account.label().await.unwrap(), "Personal");
 }
+
+/// A bus on which the daemon's own objects are put only when the test lets them: the
+/// daemon's start stands still with its connection made and nothing of its own exported.
+struct HeldServe {
+    /// Given the daemon's unique name when its start reaches `serve`.
+    reached: Mutex<Option<tokio::sync::oneshot::Sender<String>>>,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl konedrived::daemon::manager::Bus for HeldServe {
+    async fn serve(&self, connection: &zbus::Connection, manager: &Arc<konedrived::daemon::manager::AccountManager>) -> zbus::Result<()> {
+        let name = connection.unique_name().expect("a connection to a bus has a unique name").to_string();
+        if let Some(reached) = self.reached.lock().unwrap().take() {
+            let _ = reached.send(name);
+        }
+        self.release.notified().await;
+        konedrived::dbus::export::OnBus.serve(connection, manager).await
+    }
+
+    async fn helper_state(&self, connection: &zbus::Connection) -> zbus::Result<Box<dyn konedrived::daemon::manager::HelperStateSignal>> {
+        konedrived::dbus::export::OnBus.helper_state(connection).await
+    }
+
+    async fn export_account(
+        &self,
+        connection: &zbus::Connection,
+        path: &zbus::zvariant::ObjectPath<'_>,
+        account: Arc<konedrived::account::AccountService>,
+    ) -> zbus::Result<tokio::task::JoinHandle<()>> {
+        konedrived::dbus::export::OnBus.export_account(connection, path, account).await
+    }
+
+    async fn export_folder(
+        &self,
+        connection: &zbus::Connection,
+        path: &zbus::zvariant::ObjectPath<'_>,
+        sync: Arc<konedrived::sync::SyncService>,
+    ) -> zbus::Result<Vec<tokio::task::JoinHandle<()>>> {
+        konedrived::dbus::export::OnBus.export_folder(connection, path, sync).await
+    }
+
+    async fn unexport_folder(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.unexport_folder(connection, path, partly).await
+    }
+
+    async fn unexport_account(&self, connection: &zbus::Connection, path: &zbus::zvariant::ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+        konedrived::dbus::export::OnBus.unexport_account(connection, path, partly).await
+    }
+}
+
+/// SY13: the daemon's connection answers calls before the daemon's first export. A call
+/// sent to its unique name while its start stands at `Bus::serve` — the bus name being
+/// claimed last — gets a reply; before the fix it was read from the socket and dropped,
+/// because the object server started only at that export, and its caller waited for ever.
+///
+/// What this does not prove: that the server listens before the socket is read at all. The
+/// test's call comes long after the connection is made, so a server started any time before
+/// `Bus::serve` would pass it too. That stronger order rests on zbus: a connection built
+/// with an interface (`Builder::serve_at`) has its object server subscribed before `build`
+/// starts the socket's reader (zbus 5.19, `connection/builder.rs`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_that_reaches_the_daemon_before_its_objects_is_answered() {
+    let config = tempfile::tempdir().unwrap();
+    let bus = TestBus::start();
+    let (reached, at_serve) = tokio::sync::oneshot::channel();
+    let held = Arc::new(HeldServe { reached: Mutex::new(Some(reached)), release: tokio::sync::Notify::new() });
+    let options = konedrived::daemon::manager::Options {
+        endpoints: Endpoints::microsoft(),
+        wallet: Arc::new(MemoryWallet::default()),
+        sign_in_timeout: Duration::from_secs(5),
+        baloo: konedrived::desktop::baloo::Baloo::disabled,
+        thumbnails: None,
+        onedrive: false,
+        bus: held.clone(),
+    };
+    let client = bus.connect().await;
+
+    let early = async {
+        let daemon = at_serve.await.expect("the daemon's start reaches its first export");
+        let named = zbus::fdo::DBusProxy::new(&client).await.unwrap().name_has_owner(konedrive_dbus::SERVICE_NAME.try_into().unwrap()).await.unwrap();
+        assert!(!named, "the bus name is claimed last");
+        // A call that needs nothing of the daemon's own: answered.
+        client
+            .call_method(Some(daemon.as_str()), ACCOUNTS_PATH, Some("org.freedesktop.DBus.Peer"), "Ping", &())
+            .await
+            .expect("a call sent before the daemon's objects are exported is answered");
+        // A call for what is not there yet: refused in a reply, not dropped.
+        let refused = client.call_method(Some(daemon.as_str()), ACCOUNTS_PATH, Some(ACCOUNTS_INTERFACE_NAME), "List", &()).await;
+        assert!(matches!(refused, Err(zbus::Error::MethodError(..))), "{refused:?}");
+        held.release.notify_one();
+    };
+    let (_daemon, ()) = tokio::join!(start_daemon_with(&bus, config.path(), options), early);
+
+    let manager = AccountsProxy::builder(&client).cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
+    assert!(manager.list().await.unwrap().is_empty(), "the daemon is on the bus under its name, with its objects");
+}

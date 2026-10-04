@@ -5,7 +5,7 @@ use konedrive_dbus::ACCOUNTS_PATH;
 use tokio::task::JoinHandle;
 use zbus::object_server::InterfaceRef;
 use zbus::zvariant::ObjectPath;
-use zbus::{fdo, Connection};
+use zbus::Connection;
 
 use crate::account::AccountService;
 use crate::daemon::manager::{AccountManager, Bus, HelperStateSignal};
@@ -84,8 +84,9 @@ pub struct OnBus;
 #[async_trait]
 impl Bus for OnBus {
     async fn serve(&self, connection: &Connection, manager: &Arc<AccountManager>) -> zbus::Result<()> {
+        // The `ObjectManager` is there already: the connection is built with it
+        // (`crate::daemon::startup::connect`).
         let server = connection.object_server();
-        server.at(ACCOUNTS_PATH, fdo::ObjectManager).await?;
         server.at(ACCOUNTS_PATH, Accounts { manager: Arc::clone(manager) }).await?;
         server.at(ACCOUNTS_PATH, Files { manager: Arc::clone(manager) }).await?;
         Ok(())

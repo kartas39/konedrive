@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use konedrive_dbus::SERVICE_NAME;
+use konedrive_dbus::{ACCOUNTS_PATH, SERVICE_NAME};
 use zbus::{fdo, Connection};
 
 use crate::config::{ConfigStore, Paths};
@@ -52,6 +52,8 @@ fn lock_config(config_file: &Path) -> anyhow::Result<nix::fcntl::Flock<std::fs::
 ///    `org.konedrive.Daemon` claimed;
 /// 5. every folder that needs no helper brought up.
 ///
+/// The connection answers calls from the moment it is there: see `connect`.
+///
 /// The caller starts the hub's supervisor ([`crate::sync::hub::supervise`]) and watchers.
 pub async fn start(builder: zbus::connection::Builder<'_>, paths: Paths, options: Options) -> anyhow::Result<Daemon> {
     start_on(builder, paths, options, HelperHub::new()).await
@@ -65,7 +67,7 @@ pub async fn start_on(
     options: Options,
     hub: Arc<HelperHub>,
 ) -> anyhow::Result<Daemon> {
-    let connection = builder.build().await?;
+    let connection = connect(builder).await?;
     if fdo::DBusProxy::new(&connection).await?.name_has_owner(SERVICE_NAME.try_into()?).await? {
         anyhow::bail!("{SERVICE_NAME} is running already");
     }
@@ -83,6 +85,22 @@ pub async fn start_on(
     serve(&connection, &manager).await?;
     manager.resume_all().await;
     Ok(Daemon { connection, manager, _lock: lock })
+}
+
+/// The daemon's connection, with its object server listening before the first message is
+/// read from the socket.
+///
+/// zbus starts the object server at the first `Connection::object_server()` and waits for
+/// nothing: the server is a task that still has to subscribe to method calls, and a call
+/// read from the socket before it has is dropped, with no reply and no error, so its caller
+/// waits for ever. A connection built with an interface is the one case in which zbus has
+/// the server listening before it starts reading. The `ObjectManager` of
+/// `/org/konedrive/Accounts` is that interface: it is the first object [`serve`] used to
+/// put there, and needs nothing the daemon has yet to load. Until [`serve`] has exported
+/// the daemon's other interfaces and objects, a call for one of those is answered with
+/// D-Bus's own "unknown" error.
+async fn connect(builder: zbus::connection::Builder<'_>) -> zbus::Result<Connection> {
+    builder.serve_at(ACCOUNTS_PATH, fdo::ObjectManager)?.build().await
 }
 
 /// Exports the manager and every account on `connection`, then claims `org.konedrive.Daemon`:

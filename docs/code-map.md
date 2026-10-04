@@ -516,6 +516,7 @@ Design: `desktop.md`.
 - `src/accounts.rs` — the proxies of the accounts' interfaces. `[tests]`
 - `src/version.rs` — the version line, the same in every program. `[tests]`
 - `src/testing.rs` — a private session bus for tests.
+- `tests/test_bus.rs` — tests: the private bus starts no program; a test's connection has the method timeout.
 - `tests/version_script.rs` — tests: `scripts/version.sh`.
 
 ## `dbus/`: the interfaces
