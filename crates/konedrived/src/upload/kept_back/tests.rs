@@ -77,6 +77,30 @@ fn a_full_onedrive_is_one_line_and_names_are_listed_per_file() {
     assert_eq!(store.read_blocking(move |s| files(s, root, false, "no-such", 20)).unwrap(), (vec![], 0));
 }
 
+/// A path the skipped list has a line for is one line, whatever its row says and whether the
+/// worker has blocked it yet: a file with damaged marks is counted once while its row goes
+/// from ready to blocked and back.
+#[test]
+fn a_path_on_the_skipped_list_is_counted_once_whatever_its_row_says() {
+    let root = Path::new("/nowhere/OneDrive");
+    for (state, reason) in [(OutboxState::Blocked, Some("state-unreadable")), (OutboxState::Ready, None), (OutboxState::Retry, Some("local-error"))] {
+        let mut store = TreeStore::in_memory().unwrap();
+        let ops = [
+            create("a.txt", state, reason),
+            create("other.txt", OutboxState::Blocked, Some("state-unreadable: Input/output error (os error 5)")),
+            OutboxOp::Skip { rel: PathBuf::from("a.txt"), reason: "state-unreadable".into(), size: 3 },
+        ];
+        store.outbox_apply(&ops, 1).unwrap();
+        let got = summary(&store.skipped_groups().unwrap(), &store.outbox_groups_unlisted().unwrap(), false);
+        let shown: Vec<(&str, &str, u32)> = got.iter().map(|(g, r, n, _)| (g.as_str(), r.as_str(), *n)).collect();
+        assert_eq!(shown, vec![("per-file", "state-unreadable", 2)], "{state:?}");
+        let store = konedrive_tree::Store::new(store);
+        let (items, total) = store.read_blocking(move |s| files(s, root, false, "state-unreadable", 0)).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(items.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), vec!["/nowhere/OneDrive/a.txt", "/nowhere/OneDrive/other.txt"]);
+    }
+}
+
 /// Issue #87: the four keys a failure is stored under all wait.
 #[test]
 fn failure_keys_wait() {

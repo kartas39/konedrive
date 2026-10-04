@@ -282,6 +282,7 @@ application must never read zeros where real content should be.
 - [F281](F281.md) — A line of the "not uploaded" list inside a place that cannot be read stays until the place is read again
 - [F286](F286.md) — What cannot be read is one line in Not Uploaded with one sentence for every cause, and the line goes only when its place is looked at again
 - [F287](F287.md) — A file whose marks are damaged is listed in Not Uploaded and left as it is; nothing repairs it
+- [F288](F288.md) — An item this daemon may not read that is renamed is looked at every 30 s for as long as it stays unreadable
 - [F290](F290.md) — After a panic under a lock, the next user of the lock goes on with the data as the panic left it
 - [F291](F291.md) — What a pin worker does when it ends by a panic rests on how tokio drops a task
 

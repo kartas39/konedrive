@@ -2,7 +2,9 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::local::entry::Type;
 use crate::local::{MASS_DELETE_FLOOR, MASS_DELETE_ITEMS, MASS_DELETE_PERCENT};
-use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
+use std::path::PathBuf;
+
+use konedrive_tree::outbox::{Detection, LocalSkip, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::{Kind, TreeError};
 
 use super::{depth, Examined, ExamineError, Run};
@@ -12,10 +14,35 @@ impl Run<'_, '_, '_> {
     /// examined ([`examined`](Self::examined)) that no longer qualifies goes.
     /// A line at or inside a place that was not examined stays: what could
     /// not be looked at is not known to be gone.
+    ///
+    /// A line follows a directory this run found moved, as the rows below it
+    /// do (`OutboxOp::Rebase`, applied before anything else): it is judged
+    /// at its new place, and one that says "cannot be read" is asked for
+    /// again there.
     pub(super) fn tidy_skipped(&mut self) -> Result<(), ExamineError> {
+        let moved: Vec<(PathBuf, PathBuf)> = self.outcome.ops.iter().filter_map(|op| match op {
+            OutboxOp::Rebase { from, to } => Some((from.clone(), to.clone())),
+            _ => None,
+        }).collect();
         for s in self.facts.skipped()? {
-            if self.examined(&s.rel) && !self.outcome.skipped.contains_key(&s.rel) {
-                self.outcome.ops.push(OutboxOp::Unskip(s.rel));
+            let mut rel = s.rel;
+            let mut follows = false;
+            for (from, to) in &moved {
+                if let Some(rest) = rel.strip_prefix(from).ok().filter(|rest| !rest.as_os_str().is_empty()) {
+                    rel = to.join(rest);
+                    follows = true;
+                }
+            }
+            if self.outcome.skipped.contains_key(&rel) {
+                continue;
+            }
+            if self.examined(&rel) {
+                self.outcome.ops.push(OutboxOp::Unskip(rel));
+            } else if follows && s.reason == LocalSkip::Unreadable {
+                if let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) {
+                    self.outcome.out.passed.name(parent, name);
+                }
+                self.outcome.out.passed.tree(&rel);
             }
         }
         let listing = self.listing;

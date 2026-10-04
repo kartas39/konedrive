@@ -21,7 +21,8 @@
 //!   it was in, until it is found;
 //! - nothing with data leaves the disk; an empty copy is removed only when the item's own
 //!   recorded object was seen (listed) in the same run, and that is said in Activity;
-//! - a file of an item whose marks are damaged is left alone and listed as not uploaded;
+//! - a file of an item whose marks are damaged is listed as not uploaded, and its content is
+//!   never sent;
 //! - a second and a third look change nothing.
 //!
 //! The first look may be incomplete (it asks for another look, or the second act came
@@ -549,7 +550,7 @@ fn outcome(fx: &Fx, seen: &Seen, known: &Known) -> (Outcome, Known) {
                 let at = if o.names.iter().any(|n| n == place) { place.to_owned() } else { o.names.iter().min().unwrap().clone() };
                 out.list.extend(o.names.iter().filter(|n| **n != at && !ignored(n)).map(|n| (n.clone(), "hard-link".to_owned())));
                 if o.damaged {
-                    // Left alone, and said in the list.
+                    // Said in the list; no `update`, whatever its content.
                     out.list.insert((at.clone(), "state-unreadable".to_owned()));
                 } else if o.edited {
                     out.rows.push((Update, at.clone(), Some(id.into())));

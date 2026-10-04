@@ -240,9 +240,9 @@ fn a_skipped_line_inside_a_directory_that_cannot_be_read_stays_listed() {
     assert_eq!(fx.summary(), vec![(Create, "photos/new.txt".into(), None)]);
 }
 
-/// A file of an item whose state mark is gone, or says nothing konedrive writes, is left
-/// alone and listed, and so is a copy carrying such marks. The line goes when the state can
-/// be read again.
+/// A file of an item whose state mark is gone, or says nothing konedrive writes, is listed,
+/// and so is a copy carrying such marks: its content is never read or sent, a rename of the
+/// item is recorded all the same. The line goes when the state can be read again.
 #[test]
 fn a_file_whose_marks_are_damaged_is_listed_until_they_can_be_read() {
     let fx = Fx::new(&[file("A", "R", "a.txt", b"hello"), file("B", "R", "b.txt", b"world")]);
@@ -257,10 +257,42 @@ fn a_file_whose_marks_are_damaged_is_listed_until_they_can_be_read() {
     assert!(fx.rows().is_empty() && out.stripped.is_empty() && out.unreadable.is_empty(), "{:?}", fx.summary());
     assert_eq!(id_of(&fx.path("copy.txt")), Some("B".into()), "the copy is left as it is");
 
-    for rel in ["a.txt", "b.txt", "copy.txt"] {
+    // Renamed, it is still the item: the rename is recorded, and the line follows the file.
+    fx.rename("a.txt", "c.txt");
+    fx.examine(&names(&[("", "a.txt"), ("", "c.txt")]));
+    assert_eq!(listed(&fx), damaged(&["b.txt", "c.txt", "copy.txt"]));
+    assert_eq!(fx.summary(), vec![(Move, "c.txt".into(), Some("A".into()))]);
+
+    for rel in ["c.txt", "b.txt", "copy.txt"] {
         xattr::set(fx.path(rel), placeholder::XATTR_STATE, b"hydrated").unwrap();
     }
     fx.examine(&Batch::full());
     assert!(listed(&fx).is_empty(), "{:?}", listed(&fx));
-    assert_eq!(fx.summary(), vec![(Create, "copy.txt".into(), None)], "the copy can be read now: uploaded as new");
+    assert_eq!(fx.summary(), vec![(Move, "c.txt".into(), Some("A".into())), (Create, "copy.txt".into(), None)], "the copy can be read now: uploaded as new");
+}
+
+/// The lines of the list follow a directory that is renamed, whatever their reason: the
+/// thing each names moved with it. One that cannot be read is asked for again at its new
+/// place, and goes when it can be read there.
+#[test]
+fn the_lines_below_a_renamed_directory_follow_it() {
+    if root() {
+        return;
+    }
+    let fx = Fx::new(&[folder("D", "R", "photos"), folder("S", "D", "sub")]);
+    std::os::unix::fs::symlink("/etc/hostname", fx.path("photos/link")).unwrap();
+    set_mode(&fx.path("photos/sub"), 0o000);
+    fx.examine(&Batch::full());
+    let line = |rel: &str, reason: &str| (rel.to_owned(), reason.to_owned());
+    assert_eq!(listed(&fx), [line("photos/link", "symlink"), line("photos/sub", "unreadable")]);
+
+    fx.rename("photos", "pics");
+    let out = fx.examine(&names(&[("", "photos"), ("", "pics")]));
+    let moved = listed(&fx);
+    set_mode(&fx.path("pics/sub"), 0o755);
+    assert_eq!(moved, [line("pics/link", "symlink"), line("pics/sub", "unreadable")]);
+    assert_eq!(fx.summary(), vec![(Move, "pics".into(), Some("D".into()))]);
+
+    fx.examine(&out.passed);
+    assert_eq!(listed(&fx), [line("pics/link", "symlink")]);
 }

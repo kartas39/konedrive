@@ -43,7 +43,8 @@
          (a file with an item id and no state the daemon can read); and every
          blocked change with its reason: name-characters, name-spaces,
          name-reserved, name-not-utf8, too-large, forbidden,
-         "refused: <OneDrive's message>". -->
+         "refused: <OneDrive's message>". A path is listed once: a
+         blocked change at a path the first list names is left out. -->
     <method name="NotUploaded">
       <arg name="items" type="a(ss)" direction="out"/>
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>

@@ -25,7 +25,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
 use rusqlite::types::Value;
@@ -228,11 +228,21 @@ fn rows_under(conn: &Connection, dir: &Path) -> Result<Vec<OutboxRow>, TreeError
     Ok(rows)
 }
 
+/// What is recorded by path under `from` is under `to` now: the rows, and
+/// the lines of `local_skipped` of every reason, which name things that
+/// moved with the directory. A line already at the new place gives way.
 fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
     let mut update = conn.prepare_cached("UPDATE outbox SET rel = ?2 WHERE seq = ?1")?;
     for row in rows_under(conn, from)? {
         if let Ok(rest) = row.rel.strip_prefix(from) {
             update.execute(params![row.seq, path_value(&to.join(rest))])?;
+        }
+    }
+    let lines: Vec<PathBuf> = conn.prepare_cached("SELECT rel FROM local_skipped")?.query_map([], |r| Ok(path_from(r.get_ref(0)?)))?.collect::<Result<_, _>>()?;
+    let mut update = conn.prepare_cached("UPDATE OR REPLACE local_skipped SET rel = ?2 WHERE rel = ?1")?;
+    for rel in lines.iter().filter(|rel| is_under(rel, from)) {
+        if let Ok(rest) = rel.strip_prefix(from) {
+            update.execute(params![path_value(rel), path_value(&to.join(rest))])?;
         }
     }
     Ok(())

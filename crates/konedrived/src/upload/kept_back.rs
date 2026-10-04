@@ -80,7 +80,9 @@ pub type SummaryRow = (String, String, u32, u64);
 
 /// `NotUploadedSummary()`: one row per reason, in the groups' order, then by
 /// reason; `full` while OneDrive is full ([`kept_reason`]). From the store's
-/// sums: nothing read from the disk.
+/// sums: nothing read from the disk. `groups` are the rows at no place the
+/// skipped list has a line for (`outbox_groups_unlisted`): a path is counted
+/// once, by its line.
 pub fn summary(skipped: &[SkippedGroup], groups: &[OutboxGroup], full: bool) -> Vec<SummaryRow> {
     let mut by: BTreeMap<(Group, String), (u64, u64)> = BTreeMap::new();
     let mut add = |key: &str, blocked: bool, count: u64, bytes: u64| {
@@ -107,7 +109,7 @@ pub fn summary(skipped: &[SkippedGroup], groups: &[OutboxGroup], full: bool) -> 
 /// with its reason as stored (a `400`'s carries the service's message); and
 /// how many there are. Read with a `LIMIT` per group of rows.
 pub fn files(store: &ReadStore<'_>, root: &Path, full: bool, reason: &str, limit: u32) -> Result<(Vec<(String, String)>, u32), TreeError> {
-    let groups = store.outbox_groups()?;
+    let groups = store.outbox_groups_unlisted()?;
     let kept: Vec<(&OutboxGroup, Reason)> =
         groups.iter().filter_map(|g| kept_group(g, full).map(|why| (g, why))).filter(|(_, why)| why.key() == reason).collect();
     let skipped: Vec<SkippedGroup> = store.skipped_groups()?.into_iter().filter(|s| s.reason.key() == reason).collect();

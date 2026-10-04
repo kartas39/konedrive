@@ -199,11 +199,14 @@ impl SyncService {
     pub async fn not_uploaded(&self) -> Result<Vec<KeptBack>, SyncError> {
         let (skipped, rows) = self.read_outbox(|s| Ok((s.local_skipped()?, s.outbox_blocked()?))).await?;
         let root = self.record().map(|record| record.root.path).unwrap_or_default();
+        // A path is listed once: by its line of the list, which stays from one
+        // examination to the next while a row's state moves.
+        let listed: std::collections::HashSet<std::path::PathBuf> = skipped.iter().map(|s| s.rel.clone()).collect();
         let mut out: Vec<KeptBack> =
             skipped.into_iter().map(|s| KeptBack { path: root.join(&s.rel).display().to_string(), reason: s.reason.to_string() }).collect();
         out.extend(
             rows.into_iter()
-                .filter(|row| row.state == OutboxState::Blocked)
+                .filter(|row| row.state == OutboxState::Blocked && !listed.contains(&row.rel))
                 .map(|row| KeptBack { path: root.join(&row.rel).display().to_string(), reason: row.reason.unwrap_or(Reason::Blocked).to_string() }),
         );
         out.sort();
@@ -217,7 +220,7 @@ impl SyncService {
         if let Some(kept) = self.running().and_then(|running| crate::panic::lock(&running.kept_back).clone()) {
             return Ok(kept);
         }
-        let (skipped, groups) = self.read_outbox(|s| Ok((s.skipped_groups()?, s.outbox_groups()?))).await?;
+        let (skipped, groups) = self.read_outbox(|s| Ok((s.skipped_groups()?, s.outbox_groups_unlisted()?))).await?;
         let full = self.state.get().outbox.quota_full;
         Ok(crate::upload::kept_back::summary(&skipped, &groups, full))
     }

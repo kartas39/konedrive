@@ -276,7 +276,8 @@ pub enum Recorded {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutboxOp {
     Record(Detection),
-    /// Rows under `from` are now under `to`: a directory they are in moved.
+    /// Rows and skipped lines under `from` are now under `to`: a directory
+    /// they are in moved.
     Rebase { from: PathBuf, to: PathBuf },
     Remove(i64),
     /// The inode the item is now (a scan's refresh).
