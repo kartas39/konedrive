@@ -215,6 +215,12 @@ risky one.
   `registration.rs:65, 169, 215`, `dbus/fault.rs:8`, `dbus/signals.rs:36, 40`, `populate.rs:83–112`,
   `hydrate.rs:220–227`, `:236–242`, `dbus/mod.rs:1–13`, `sync/mod.rs:198–220`.
 - **Fix:** `pause.rs`, `outbox.rs`, one `watcher.rs`; repair the comments. **Size:** S to M.
+- **Fixed in part 2026-10-04** in `789dcf0` (#163): `sync/pause.rs` with a `PauseClock`, `sync/outbox.rs`,
+  one `sync/watcher.rs`, `sync/settings.rs`; one spelling of the visibility; the comments of
+  `queries.rs` and `populate.rs`. Fixed with it: a shorter pause set over a longer one was shown
+  as paused up to a minute after it ended. Left for the later parts of `B5`: the comments in
+  `resume.rs`, `registration.rs`, `hydrate.rs`, `sync/mod.rs` and `dbus/`. Only `sync/` takes
+  its time from a function (`docs/limitations/F100.md`).
 
 ## SY13. The daemon's first call can be lost at start — **defect?**
 
