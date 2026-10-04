@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use konedrive_helper::{jobs, marks, roots};
 
 use konedrive_helper::outbox::Outbox;
+use konedrive_helper::pending::PendingOpen;
 
 /// Takes a shared lock, and keeps going when a previous holder panicked.
 ///
@@ -282,7 +283,9 @@ impl Registry {
 }
 
 pub(crate) struct Shared {
-    pub(crate) marks: marks::Marks,
+    /// Shared with every open that still owes an answer (`PendingOpen`),
+    /// which is answered through the group.
+    pub(crate) marks: Arc<marks::Marks>,
     pub(crate) roots: Mutex<roots::Roots>,
     /// Held by a registration or an unregistration from its decision until
     /// the registrations it decided on are saved and in `roots`, so that the
@@ -291,7 +294,7 @@ pub(crate) struct Shared {
     /// never while holding it, and by nothing else: the one place in the
     /// helper where a second lock is taken under a first.
     pub(crate) roots_saving: Mutex<()>,
-    pub(crate) jobs: Mutex<jobs::Jobs>,
+    pub(crate) jobs: Mutex<jobs::Jobs<PendingOpen>>,
     /// Every live connection, by uid.
     pub(crate) daemons: Mutex<Registry>,
     /// Signalled whenever a daemon registers, so an intercepted open that

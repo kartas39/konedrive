@@ -105,7 +105,7 @@ fn a_retired_connection_cannot_be_enrolled_against() {
 /// reconnects daemons all day does not grow it without end.
 #[test]
 fn the_retired_set_is_bounded() {
-    let mut jobs = Jobs::default();
+    let mut jobs = Jobs::<OwnedFd>::default();
     for conn in 0..(RETIRED_REMEMBERED as u64 * 2) {
         let _ = jobs.retire(conn);
     }
@@ -119,7 +119,7 @@ const MAX: u64 = MAX_OUTSTANDING_HYDRATIONS as u64;
 
 /// Fills `conn`'s credit with hydrations of inodes `0..MAX`, then enrolls
 /// `extra` more, and returns the extra ones' request ids.
-fn beyond_the_credit(jobs: &mut Jobs, who: Owner, extra: u64) -> Vec<u64> {
+fn beyond_the_credit(jobs: &mut Jobs<OwnedFd>, who: Owner, extra: u64) -> Vec<u64> {
     for ino in 0..MAX {
         let enrollment = jobs.enroll((42, ino), who, fd(), 0);
         assert!(matches!(enrollment.outcome, Enrolled::New { .. }));

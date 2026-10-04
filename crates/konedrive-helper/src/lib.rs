@@ -13,4 +13,5 @@ pub mod by_handle;
 pub mod jobs;
 pub mod marks;
 pub mod outbox;
+pub mod pending;
 pub mod roots;

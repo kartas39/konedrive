@@ -2,7 +2,7 @@
 
 use std::fs::File;
 use std::io;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::str::FromStr;
 use std::time::SystemTime;
 
@@ -128,12 +128,26 @@ fn remove_xattr(file: &File, name: &str) -> io::Result<()> {
     })
 }
 
-fn read_xattr(file: &File, name: &str) -> io::Result<Option<String>> {
+/// A descriptor somebody else owns, for the `xattr` crate, whose calls are on a trait that
+/// only `File` has: a reader then needs no `File` of its own, and so no duplicate.
+struct Lent<'a>(BorrowedFd<'a>);
+
+impl AsRawFd for Lent<'_> {
+    fn as_raw_fd(&self) -> RawFd {
+        self.0.as_raw_fd()
+    }
+}
+
+impl FileExt for Lent<'_> {}
+
+/// Reads through the descriptor it is given and opens nothing: the helper reads an
+/// intercepted open's attributes through the event's own descriptor.
+fn read_xattr(file: &impl AsFd, name: &str) -> io::Result<Option<String>> {
     // `xattr::FileExt::get_xattr` already turns a missing attribute
     // (ENODATA/ENOATTR) into `Ok(None)` internally (see the `xattr` crate's
     // `extract_noattr`), so there is no ENODATA `Err` case left to match
     // here.
-    match file.get_xattr(name) {
+    match Lent(file.as_fd()).get_xattr(name) {
         Ok(Some(raw)) => Ok(Some(String::from_utf8_lossy(&raw).into_owned())),
         Ok(None) => Ok(None),
         Err(e) => Err(e),
@@ -160,7 +174,7 @@ pub enum StateError {
 
 /// `Ok(None)` means, and only means, that the attribute is absent — the file
 /// carries no `user.konedrive.state` at all.
-pub fn read_state(file: &File) -> Result<Option<State>, StateError> {
+pub fn read_state(file: &impl AsFd) -> Result<Option<State>, StateError> {
     match read_xattr(file, XATTR_STATE)? {
         None => Ok(None),
         Some(value) => match value.parse() {
@@ -174,7 +188,7 @@ pub fn write_state(file: &File, state: State) -> io::Result<()> {
     set_xattr(file, XATTR_STATE, state.as_str().as_bytes())
 }
 
-pub fn read_item_id(file: &File) -> io::Result<Option<String>> {
+pub fn read_item_id(file: &impl AsFd) -> io::Result<Option<String>> {
     read_xattr(file, XATTR_ITEM_ID)
 }
 
@@ -182,7 +196,7 @@ pub fn write_item_id(file: &File, item_id: &str) -> io::Result<()> {
     set_xattr(file, XATTR_ITEM_ID, item_id.as_bytes())
 }
 
-pub fn read_ctag(file: &File) -> io::Result<Option<String>> {
+pub fn read_ctag(file: &impl AsFd) -> io::Result<Option<String>> {
     read_xattr(file, XATTR_CTAG)
 }
 

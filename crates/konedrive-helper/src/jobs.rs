@@ -9,6 +9,12 @@
 //! for good. With the descriptors inside the job there is one lock, and
 //! `enroll` is that single step.
 //!
+//! What a job keeps for each opener is the type `W`: in the helper a
+//! [`PendingOpen`](crate::pending::PendingOpen), which answers its open when
+//! it is consumed, or with `EIO` if it is ever dropped. The table itself only
+//! duplicates a waiter's descriptor for the daemon, so all it asks of `W` is
+//! `AsFd`.
+//!
 //! Every job also records **who** it belongs to: the uid *and* the particular
 //! daemon connection that was asked to do the work. Nothing else in the
 //! helper knew that before, and four separate holes came out of it — any
@@ -30,7 +36,7 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 
 use konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;
 
@@ -123,22 +129,21 @@ pub struct Dispatch {
 /// on the same inode — see `Jobs::enroll` — or, for
 /// [`Enrolled::ConnectionGone`] and [`Enrolled::TooMany`], the opener's own
 /// descriptor and nothing else. The caller must
-/// answer them; they are handed back rather than dropped because dropping an
-/// event fd without writing a response leaves its opener blocked until the
-/// helper exits.
+/// answer them: they are handed back because only the caller knows which
+/// errno each is owed.
 #[must_use]
-pub struct Enrollment {
+pub struct Enrollment<W> {
     pub outcome: Enrolled,
-    pub evicted: Vec<OwnedFd>,
+    pub evicted: Vec<W>,
     /// For [`Enrolled::New`] only: the request to send.
     pub dispatch: Option<Dispatch>,
 }
 
 /// A hydration its daemon has answered.
 #[must_use]
-pub struct Finished {
+pub struct Finished<W> {
     /// Every opener waiting on it, to be answered.
-    pub waiters: Vec<OwnedFd>,
+    pub waiters: Vec<W>,
     /// The helper's count of root unregistrations when the open that
     /// created this job was read (second guard): a job that
     /// began before an unregistration may be for a file whose tree that
@@ -149,13 +154,13 @@ pub struct Finished {
     pub next: Option<Dispatch>,
 }
 
-struct Job {
+struct Job<W> {
     inode: (u64, u64),
     owner: Owner,
     /// The exact descriptors `read_events()` handed out, never duplicates of
     /// them — the kernel matches a permission response by fd *number*
     /// (`docs/kernel-behavior-7.2/interception.md` §5.1).
-    waiters: Vec<OwnedFd>,
+    waiters: Vec<W>,
     /// Whether its request has been handed out — whether it holds one of its
     /// connection's credits. A job that is not sent is in `queued`.
     sent: bool,
@@ -164,11 +169,10 @@ struct Job {
     since: u64,
 }
 
-#[derive(Default)]
-pub struct Jobs {
+pub struct Jobs<W> {
     next_id: u64,
     by_inode: HashMap<(u64, u64), u64>,
-    jobs: HashMap<u64, Job>,
+    jobs: HashMap<u64, Job<W>>,
     /// Connections whose cleanup has already run, newest last.
     retired: HashSet<u64>,
     retired_order: VecDeque<u64>,
@@ -196,7 +200,22 @@ pub struct Jobs {
     suspended: HashMap<u32, usize>,
 }
 
-impl Jobs {
+impl<W> Default for Jobs<W> {
+    fn default() -> Self {
+        Self {
+            next_id: 0,
+            by_inode: HashMap::new(),
+            jobs: HashMap::new(),
+            retired: HashSet::new(),
+            retired_order: VecDeque::new(),
+            outstanding: HashMap::new(),
+            queued: HashMap::new(),
+            suspended: HashMap::new(),
+        }
+    }
+}
+
+impl<W: AsFd> Jobs<W> {
     /// Records one suspended open against the hydration of its inode,
     /// creating the job if this is the first opener. The descriptor is stored
     /// before this returns, so a `finish` that arrives immediately afterwards
@@ -226,7 +245,7 @@ impl Jobs {
     /// `since` is the helper's count of root unregistrations when this open
     /// was read (see [`Finished::since`]); it is recorded only if the open
     /// creates the job.
-    pub fn enroll(&mut self, inode: (u64, u64), owner: Owner, fd: OwnedFd, since: u64) -> Enrollment {
+    pub fn enroll(&mut self, inode: (u64, u64), owner: Owner, fd: W, since: u64) -> Enrollment<W> {
         let mut evicted = Vec::new();
         if self.retired.contains(&owner.conn) {
             return Enrollment {
@@ -270,7 +289,7 @@ impl Jobs {
         self.next_id += 1;
         let req_id = self.next_id;
         if self.outstanding_for(owner.conn) < MAX_OUTSTANDING_HYDRATIONS {
-            let dispatch = Dispatch { req_id, fd: fd.try_clone() };
+            let dispatch = Dispatch { req_id, fd: fd.as_fd().try_clone_to_owned() };
             self.insert_job(req_id, Job { inode, owner, waiters: vec![fd], sent: true, since });
             return Enrollment {
                 outcome: Enrolled::New { req_id },
@@ -316,7 +335,7 @@ impl Jobs {
         }
     }
 
-    fn insert_job(&mut self, req_id: u64, job: Job) {
+    fn insert_job(&mut self, req_id: u64, job: Job<W>) {
         self.hold(job.owner.uid, job.waiters.len());
         if job.sent {
             *self.outstanding.entry(job.owner.conn).or_insert(0) += 1;
@@ -330,7 +349,7 @@ impl Jobs {
     /// Removes a job and everything that indexes it, returning its credit if
     /// it held one. The `by_inode` entry goes only if it still points at this
     /// job; a queued job's place in `queued` is skipped when its turn comes.
-    fn remove_job(&mut self, req_id: u64) -> Option<Job> {
+    fn remove_job(&mut self, req_id: u64) -> Option<Job<W>> {
         let job = self.jobs.remove(&req_id)?;
         if self.by_inode.get(&job.inode) == Some(&req_id) {
             self.by_inode.remove(&job.inode);
@@ -356,7 +375,7 @@ impl Jobs {
     /// queue has room for exactly the credit, which is the circular wait
     /// `MAX_OUTSTANDING_HYDRATIONS` exists to prevent. Its `HydrateDone`, or
     /// its connection ending, returns it.
-    fn evict(&mut self, req_id: u64) -> Vec<OwnedFd> {
+    fn evict(&mut self, req_id: u64) -> Vec<W> {
         let sent = self.jobs.get(&req_id).is_some_and(|job| job.sent);
         if !sent {
             return self.remove_job(req_id).map(|job| job.waiters).unwrap_or_default();
@@ -384,7 +403,7 @@ impl Jobs {
             if let Some(job) = self.jobs.get_mut(&req_id).filter(|job| !job.sent) {
                 job.sent = true;
                 let fd = match job.waiters.first() {
-                    Some(fd) => fd.try_clone(),
+                    Some(fd) => fd.as_fd().try_clone_to_owned(),
                     None => Err(io::Error::other("a queued hydration with no waiter")),
                 };
                 next = Some(Dispatch { req_id, fd });
@@ -408,7 +427,7 @@ impl Jobs {
     ///
     /// The credit it held goes, in the same step, to the connection's oldest
     /// queued hydration, which comes back as [`Finished::next`].
-    pub fn finish(&mut self, req_id: u64, owner: Owner) -> Option<Finished> {
+    pub fn finish(&mut self, req_id: u64, owner: Owner) -> Option<Finished<W>> {
         let job = self.jobs.get(&req_id)?;
         if job.owner != owner || !job.sent {
             return None;
@@ -427,7 +446,7 @@ impl Jobs {
     /// connection's jobs are taken: another user's hydrations are none of its
     /// business, which is what stopped any local user failing every hydration
     /// on the machine with a connect-and-close loop.
-    pub fn retire(&mut self, conn: u64) -> Vec<Vec<OwnedFd>> {
+    pub fn retire(&mut self, conn: u64) -> Vec<Vec<W>> {
         if self.retired.insert(conn) {
             self.retired_order.push_back(conn);
             while self.retired_order.len() > RETIRED_REMEMBERED {
@@ -444,7 +463,7 @@ impl Jobs {
     /// module want [`retire`](Self::retire), which also closes the window.
     /// A job whose waiters were evicted has nobody left to answer and is not
     /// counted.
-    fn take_all_of(&mut self, conn: u64) -> Vec<Vec<OwnedFd>> {
+    fn take_all_of(&mut self, conn: u64) -> Vec<Vec<W>> {
         let doomed: Vec<u64> = self
             .jobs
             .iter()

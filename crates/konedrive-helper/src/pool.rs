@@ -18,17 +18,18 @@
 //! application rather than "this file is empty".
 
 use std::io;
-use std::os::fd::{AsFd, OwnedFd};
 use std::panic::AssertUnwindSafe;
 use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
+
+use konedrive_helper::pending::PendingOpen;
 
 use crate::shared::Shared;
 
 /// One suspended open, on its way to a worker.
 pub struct OpenEvent {
-    /// The exact descriptor `read_events()` handed out — see `take_fd`.
-    pub fd: OwnedFd,
+    /// The open itself, with the exact descriptor `read_events()` handed out.
+    pub open: PendingOpen,
     pub pid: i32,
     /// The helper's count of root unregistrations when the event was read
     /// (`events.rs`, `mark_while_hydrated`).
@@ -63,17 +64,14 @@ impl Pool {
                         // Every sender is gone: the event loop has stopped.
                         break;
                     };
-                    // The descriptor stays here, outside the
-                    // unwind boundary, so a panic below cannot drop it while
-                    // unwinding: this thread still owns the exact fd number
-                    // the kernel handed out, and a response is matched by
-                    // number, so a duplicate or a recycled number would not
-                    // do. The worker then answers EIO and carries on, instead
-                    // of dying and leaving the pool one thread weaker with
-                    // an opener suspended forever.
-                    let mut slot = Some(event.fd);
+                    // A panic below drops the open wherever it had got to, and
+                    // an open dropped with no answer denies `EIO`
+                    // (`PendingOpen`), through the exact fd number the kernel
+                    // handed out. The worker carries on, instead of dying and
+                    // leaving the pool one thread weaker with an opener
+                    // suspended forever.
                     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-                        crate::events::handle_open(&shared, &mut slot, event.pid, event.since);
+                        crate::events::handle_open(&shared, event.open, event.pid, event.since);
                     }));
                     if outcome.is_err() {
                         tracing::error!(
@@ -81,22 +79,14 @@ impl Pool {
                              EIO and carrying on"
                         );
                     }
-                    // Non-empty only when the decision did not get as far as
-                    // answering — a panic, since every ordinary path takes it.
-                    if let Some(fd) = slot {
-                        if let Err(e) = shared.marks.deny(fd.as_fd(), libc::EIO) {
-                            tracing::error!("cannot deny an intercepted open: {e}");
-                        }
-                    }
                 })?;
         }
         Ok(Self { queue })
     }
 
     /// Hands one event to a worker, or gives it straight back when there is no
-    /// room. The event comes back rather than being dropped because dropping
-    /// an event fd without writing a response leaves its opener suspended
-    /// until the helper exits.
+    /// room. The event comes back to be answered by the caller, who knows why
+    /// it was refused; dropped, its open would be denied `EIO`.
     pub fn submit(&self, event: OpenEvent) -> Result<(), OpenEvent> {
         match self.queue.try_send(event) {
             Ok(()) => Ok(()),
