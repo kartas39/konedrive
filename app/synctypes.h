@@ -159,6 +159,8 @@ inline void registerKonedriveSyncTypes()
 {
     qDBusRegisterMetaType<KonedriveSkippedItem>();
     qDBusRegisterMetaType<KonedriveSkippedList>();
+    qDBusRegisterMetaType<KonedriveNotInFolderItem>();
+    qDBusRegisterMetaType<KonedriveNotInFolderList>();
     qDBusRegisterMetaType<KonedriveActivity>();
     qDBusRegisterMetaType<KonedriveActivityList>();
     qDBusRegisterMetaType<KonedriveConflict>();

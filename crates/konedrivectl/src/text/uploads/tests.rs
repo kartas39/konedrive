@@ -104,7 +104,6 @@ fn spelled(reason: &Reason) -> (&'static str, bool) {
         Reason::Refused(_) => ("refused", true),
         Reason::Locked => ("locked", true),
         Reason::NotFound => ("not-found", false),
-        Reason::LeavingNotFound => ("leaving-not-found", true),
         Reason::NotLocal => ("not-downloaded", true),
         Reason::Changed => ("changed-while-sending", false),
         Reason::Parent => ("parent-not-in-onedrive", false),
@@ -156,8 +155,6 @@ fn skip_spelled(skip: &LocalSkip) -> (&'static str, bool) {
         LocalSkip::HardLink => ("hard-link", true),
         LocalSkip::NotDownloaded => ("not-downloaded", true),
         LocalSkip::OtherDevice => ("other-device", true),
-        LocalSkip::UnknownState => ("unknown-state", true),
-        LocalSkip::MountedInside => ("mounted-inside", true),
         LocalSkip::Ignored => ("ignored", false),
         LocalSkip::Other(_) => unreachable!("not a spelling of its own"),
     }
@@ -170,7 +167,7 @@ fn skip_spelled(skip: &LocalSkip) -> (&'static str, bool) {
 /// stored where it has no sentence yet. A reworded key fails here.
 #[test]
 fn every_reason_is_stored_under_its_spelling_and_is_worded() {
-    assert_eq!((Reason::ALL.len(), LocalSkip::ALL.len()), (49, 11));
+    assert_eq!((Reason::ALL.len(), LocalSkip::ALL.len()), (48, 9));
     let mut seen = std::collections::BTreeSet::new();
     for reason in Reason::ALL {
         let (spelling, worded) = spelled(&reason);

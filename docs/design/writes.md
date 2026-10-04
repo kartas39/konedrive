@@ -876,31 +876,37 @@ ignored name stay where their folder stays, and keep no folder by themselves. Wh
 ignored or refused name stays on this computer only (F243). Nothing is rescued out of the folder.
 What is kept is handed to the examination, and said, also when the cycle then fails. The activity
 log has one `removed` entry for what OneDrive removed, saying how many files go up as new and how
-many items stay on this computer only (F116, F187). `resyncChangesUploadDifferences` keeps every download too, changed or not (below). Inside a
-folder that is leaving the older rule still holds: there such an item goes whole (F188).
+many items stay on this computer only (F116, F187). `resyncChangesUploadDifferences` keeps every download too, changed or not (below). A mount inside stays (F194).
 
-**What stops being placed** while OneDrive still has it (a name too long, a reserved name, the
-Personal Vault, shared, OneNote, unsupported) keeps its item id, so what waits to be uploaded from
-inside it still goes up, into the item under its new name or place. Its placement is the base's at
-once, whatever a local change holds, and it is listed in `Skipped()`; its object stays on disk and is
-handed to the examination, so that a change not yet handed to the outbox gets its row. While any
-outbox row has a place inside it, or anything in it would be uploaded, it stays; once nothing does,
-a later cycle removes it whole, as above. The examination never moves such an item in OneDrive to
-where it is here (F188).
+**What can no longer be placed** while OneDrive still has it (a name too long, a reserved name, the
+Personal Vault, shared, OneNote, unsupported; or a folder above it that is one of these) is a change
+the disk may not be able to take yet, and has no state of its own (`take_off`, policy `Unplaced`):
 
-Concretely: the object's place is recorded (`leaving`), and from the next cycle on each cycle
-examines it itself after its reconcile; it is removed only when that examination records and holds
-back nothing and no outbox row has a place inside it. The `move` and `delete` rows whose local path is
-inside it are dropped; a row elsewhere (the user's own move out of it, a delete in the item's new
-place) is carried out. What keeps it — a content row the outbox cannot finish, a file whose state
-cannot be read, a filesystem mounted inside — is listed with its reason, among what needs the user. A
-row whose local path is inside a leaving object uploads content only, into the item where OneDrive
-has it: never a rename or a move, and no local object recorded. An object recorded as leaving is never
-uploaded as new nor stripped, even once its item is placed again elsewhere; one inside it whose item
-OneDrive removed since is removed here and never uploaded again (F188).
+- **Nothing waits in it: it goes in the cycle.** No outbox row has a place at or below it, and the
+  disk shows there exactly what the base has: the store forgets the objects, the whole thing leaves
+  the disk, and the base takes OneDrive's row. It is listed in `Skipped()`.
+- **Something waits: nothing of it is touched.** The base keeps the item placed where the disk has
+  it, with its recorded object, and OneDrive's row waits in `deferred`, staged again by every cycle.
+  Meanwhile it is an item like any other: what is made or changed in it goes up into it, a placed
+  file moved in is moved in OneDrive, and what the user deletes, renames or moves inside it is sent.
+  A parent renamed carries it; placed again elsewhere, its one object is moved; an item OneDrive
+  removes inside it goes as above.
+- **What waits**: an outbox row at or below it; something on disk that differs from the base and
+  that an examination has still to record (made, changed, moved, renamed or deleted here); a file
+  open for writing; and, until the user does something, a file of ours whose state cannot be read, a
+  file from elsewhere that is not downloaded, a file or directory under an ignored name that only
+  this computer has (F255), another filesystem mounted inside. For the first three the place is
+  handed to the watcher. What was found is the third field of the item's line in `Skipped()`
+  (F257). There is no notification. The look is repeated right before each unlink (F188).
+- **The upload worker sends no name and no folder of OneDrive's side back.** When OneDrive answers
+  `412` and has the item where the folder cannot hold it, and the object stands where the base has
+  it, the content goes into the item where it is; a rename or a move the user made is sent as any
+  other. The commit of an answer the folder cannot hold keeps the base's place and takes the
+  version, and the answer waits as the item's deferred change (D39). A `404` is a `404` (§7).
+  Until schema 7 this was a "leaving" object with a table of its own (F256).
 
 **The daemon never deletes or moves anything in OneDrive because it took something off the disk
-itself.** Before the reconcile removes anything — what OneDrive removed, what stops being placed, and
+itself.** Before the reconcile removes anything — what OneDrive removed, what can no longer be placed, and
 in a read-only folder what it deletes — the store forgets the recorded local object of everything it
 removes, in `items` and in `staging`: the item, what the tree has below it, and every object found
 there by its own id and file handle. A row that turns placed again carries no local object, and a

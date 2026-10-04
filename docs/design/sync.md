@@ -334,8 +334,8 @@ listed by `Skipped()`, `konedrivectl sync skipped` and the window's "Not in the 
 
 In a folder that uploads changes, such an item may still be in the folder for a while: its change
 waits until the disk can let it go ([writes.md](writes.md) §9). It is listed and counted from the
-cycle that learnt of it, as OneDrive has it; the line does not yet say that it is still here
-(limitations log F246).
+cycle that learnt of it, as OneDrive has it, and its line says that it is still here and what
+keeps it (limitations log F257).
 
 Only the top of a skipped subtree is listed. `ItemsListed` counts every item in the drive, while
 `ItemsPlaced` and `SkippedCount` count only what the tree reaches from the root through placed
@@ -430,9 +430,9 @@ rescued.
 
 A read-write folder moves nothing it could upload out of the folder: where this section moves a
 file out of the folder for a change, the reconcile renames it to a conflict copy beside the original
-and uploads it ([writes.md](writes.md) §7). For a removal it neither rescues nor keeps: what
-OneDrive removed goes whole, local work included, and what is no longer placed goes once its uploads
-are done ([writes.md](writes.md) §9). Only konedrive's own temporary names (a leftover
+and uploads it ([writes.md](writes.md) §7). For a removal it does not rescue: of what
+OneDrive removed, what only this computer has is kept in place and uploaded as new, and what can no
+longer be placed goes once nothing in it waits ([writes.md](writes.md) §9). Only konedrive's own temporary names (a leftover
 `.konedrive-new-<id>` that holds local work) are still rescued as §10.2 says. A read-only folder
 rescues as this section says.
 

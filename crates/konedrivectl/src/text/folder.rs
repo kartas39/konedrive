@@ -2,7 +2,9 @@
 
 use konedrive_dbus::rows::Event;
 
-use super::files::skip_reason_text;
+use konedrive_dbus::rows::NotInFolder;
+
+use super::files::{skip_reason_text, still_here_text};
 use super::formats::local_time;
 use super::status::held_text;
 
@@ -48,7 +50,7 @@ pub const NOT_ONEDRIVE: &str = "This folder is not connected to OneDrive.";
 
 /// `sync skipped`: each item OneDrive has and the folder does not, with why; `listing` says
 /// that the folder was still being filled when the list was asked for.
-pub fn skipped_text(skipped: &[(String, String)], listing: bool) -> String {
+pub fn skipped_text(skipped: &[NotInFolder], listing: bool) -> String {
     let mut out = String::new();
     if listing {
         out.push_str("The folder is still being filled from OneDrive; this list may be partial.\n");
@@ -56,8 +58,11 @@ pub fn skipped_text(skipped: &[(String, String)], listing: bool) -> String {
     if skipped.is_empty() {
         out.push_str("Nothing is skipped.\n");
     }
-    for (path, reason) in skipped {
+    for NotInFolder { path, reason, waits } in skipped {
         out.push_str(&format!("{path}\n    {}\n", skip_reason_text(reason)));
+        if let Some(still_here) = still_here_text(waits) {
+            out.push_str(&format!("    {still_here}\n"));
+        }
     }
     out
 }

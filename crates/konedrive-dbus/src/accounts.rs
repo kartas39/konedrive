@@ -27,7 +27,7 @@
 
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
-use crate::rows::{Change, Conflict, Event, Freed, FreedSpace, KeptBack, KeptBackFiles, KeptBackReason, Transfer};
+use crate::rows::{Change, Conflict, Event, Freed, FreedSpace, KeptBack, KeptBackFiles, KeptBackReason, NotInFolder, Transfer};
 
 /// `/org/konedrive/Accounts`: the accounts of this user.
 #[zbus::proxy(
@@ -172,7 +172,7 @@ pub trait Folder {
     fn unregister(&self) -> zbus::Result<()>;
     fn populate_from_directory(&self, source_dir: &str) -> zbus::Result<u64>;
     fn refresh(&self) -> zbus::Result<()>;
-    fn skipped(&self) -> zbus::Result<Vec<(String, String)>>;
+    fn skipped(&self) -> zbus::Result<Vec<NotInFolder>>;
     fn free_up_space(&self) -> zbus::Result<FreedSpace>;
     /// Nothing is uploaded, and OneDrive is not asked, for `seconds` — or
     /// until [`resume`](Self::resume) when 0.

@@ -304,11 +304,10 @@ reconcile in read-write mode).
 - `materialize/file.rs` — a file already in place, and what its content needs.
 - `materialize/holding.rs` — the holding directory; rescues.
 - `materialize/removal.rs` — `take_off`: the one way a managed object is taken off the disk
-  (survey, forget, remove, settle), and what is kept of it.
+  (survey, forget, remove, settle), what is kept of it, and what an item that can no longer be
+  placed waits for.
 - `materialize/replace.rs` — replacing one changed file. `[tests]`
 - `materialize/rw.rs` — the reconcile in read-write mode. `[tests]`
-- `materialize/rw/leaving.rs` — what is leaving: an item that stays in OneDrive but is no
-  longer placed here.
 - `materialize/rw/holding.rs` — putting back what was held.
 
 ### `crates/konedrived/src/remote/listing/rw/tests/`

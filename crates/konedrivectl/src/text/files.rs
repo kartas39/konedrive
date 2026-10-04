@@ -1,5 +1,6 @@
 use konedrive_dbus::rows::{Conflict, Freed, FreedSpace};
 use konedrive_dbus::Refusal;
+use konedrive_reason::WaitsFor;
 
 use super::formats::{human_bytes, local_time};
 
@@ -18,6 +19,29 @@ pub fn skip_reason_text(reason: &str) -> &'static str {
         "reserved-name" => "The name begins with .konedrive-, which konedrive keeps for itself.",
         _ => "It is neither a file nor a folder konedrive can show.",
     }
+}
+
+/// What `Skipped()` says keeps an item on this computer that the folder
+/// cannot hold any more (`waits`, as sent); `None` for an item that is not
+/// here. The same sentences, word for word, as `stillHereText` in
+/// `app/synccontroller.cpp`.
+pub fn still_here_text(waits: &str) -> Option<String> {
+    if waits.is_empty() {
+        return None;
+    }
+    let waits = WaitsFor::parse(waits);
+    let path = waits.path().unwrap_or_default();
+    Some(match &waits {
+        WaitsFor::Uploads(1) => "Still on this computer: 1 change in it waits to be uploaded.".to_owned(),
+        WaitsFor::Uploads(n) => format!("Still on this computer: {n} changes in it wait to be uploaded."),
+        WaitsFor::Changes(_) => format!("Still on this computer: {path} was changed here and is not uploaded yet."),
+        WaitsFor::OpenForWriting(_) => format!("Still on this computer: {path} is open in a program."),
+        WaitsFor::UnknownState(_) => format!("Still on this computer: whether {path} holds changes cannot be read. Move it out of the folder or delete it."),
+        WaitsFor::NotDownloaded(_) => format!("Still on this computer: {path} is a file from another folder that is not downloaded. Move it out of the folder or delete it."),
+        WaitsFor::LocalOnly(_) => format!("Still on this computer: {path} is only here (its name is on the ignore list). Move it out of the folder or delete it."),
+        WaitsFor::MountedInside(_) => format!("Still on this computer: another filesystem is mounted at {path}. Unmount it."),
+        WaitsFor::Cycle | WaitsFor::Other(_) => "Still on this computer: it leaves once nothing in it waits to be uploaded.".to_owned(),
+    })
 }
 
 /// `sync conflicts`: each local version kept, where it was and where it is

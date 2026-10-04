@@ -66,14 +66,26 @@
          waiting), and for one whose sync cannot start.
          While paused, OneDrive is not asked. -->
     <method name="Refresh"/>
-    <!-- Everything in OneDrive that is not in the folder, as (full path,
-         reason): name-too-long, personal-vault, shared, onenote,
-         reserved-name, unsupported. What is inside a skipped folder is
-         covered by the folder's own entry. -->
+    <!-- Everything OneDrive has that the folder cannot hold, as (full path
+         in OneDrive, reason, what keeps it here): name-too-long,
+         personal-vault, shared, onenote, reserved-name, unsupported. What
+         is inside a skipped folder is covered by the folder's own entry.
+         The third field is empty for an item that is not on this computer.
+         An item that still is, because something in it waits, has what it
+         waits for there, as <key>:<detail>: cycle (no cycle has looked at
+         it yet), uploads:<how many changes wait in the outbox>, and, with
+         the full path of the first thing found, changes (made, changed,
+         moved or deleted here and not recorded yet), open-for-writing,
+         unknown-state (a file whose state cannot be read), not-downloaded
+         (a file from elsewhere that is not downloaded), local-only (a name
+         on the ignore list) and mounted-inside (another filesystem). It
+         leaves the disk in the first cycle that finds none of these. An
+         item still here that OneDrive has inside a folder that is not
+         placed is an entry of its own, with that folder's reason. -->
     <method name="Skipped">
-      <arg name="items" type="a(ss)" direction="out"/>
+      <arg name="items" type="a(sss)" direction="out"/>
       <!-- For Qt's generator (app/skippeditem.h); ignored by everything else. -->
-      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveSkippedList"/>
+      <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveNotInFolderList"/>
     </method>
     <!-- Frees every downloaded file under the folder that is not in use:
          how many files, how many bytes, how many were skipped as busy. A

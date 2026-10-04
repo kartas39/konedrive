@@ -821,3 +821,34 @@ async fn a_store_of_version_7_with_a_leaving_folder_opens_and_nothing_is_deleted
     assert_eq!(w.graph.with(|c| c.count("PATCH", "items/")), 0);
     assert_eq!(w.deletes(), 0);
 }
+
+/// `docs/f.txt` is changed here while OneDrive moves it into a folder this
+/// folder does not place (as into the Personal Vault): its content goes
+/// into the item where OneDrive has it, it is never moved back, and the
+/// file leaves the disk once the upload is done.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_change_to_an_item_moved_in_onedrive_out_of_what_the_folder_holds_never_moves_it_back() {
+    let w = Arc::new(World::read_write().await);
+    let listing = w.listed().await;
+    w.graph.with(|c| c.add(folder_item("S", ROOT, &long_name())));
+    w.cycle(&listing).await;
+    write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    std::fs::write(w.path("docs/f.txt"), b"one, changed").unwrap();
+    let mut batch = crate::local::Batch::new();
+    batch.written(Path::new("docs"), std::ffi::OsStr::new("f.txt"), None);
+    assert_eq!(w.examine(batch).await.applied.queued.len(), 1);
+    w.graph.with(|c| c.rename("F", "S", "f.txt"));
+    w.upload().await;
+    w.graph.with(|c| {
+        let f = c.item("F").unwrap();
+        assert_eq!((f.parent.as_deref(), f.content.as_slice()), (Some("S"), b"one, changed".as_slice()));
+    });
+    assert_eq!(w.patches_of("F"), 0);
+    assert_eq!(w.base("F").and_then(|row| row.parent_id).as_deref(), Some("D"), "the commit keeps the place the disk has");
+    assert!(w.path("docs/f.txt").exists());
+    w.rounds(&listing, 2).await;
+    assert!(!w.path("docs/f.txt").exists(), "gone once nothing waits");
+    w.scan_and_upload().await;
+    assert_eq!((w.patches_of("F"), w.deletes()), (0, 0));
+}

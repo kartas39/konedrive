@@ -216,14 +216,13 @@ application must never read zeros where real content should be.
 - [F185](F185.md) — Every change in the drive asks for a cycle, the account's own uploads too
 - [F186](F186.md) — The live task's waits are chosen, not measured
 - [F187](F187.md) — What is lost when OneDrive removes an item
-- [F188](F188.md) — A folder that stopped being placed stays on disk while its uploads run
+- [F188](F188.md) — A folder that can no longer be placed stays on disk while anything in it waits
 - [F189](F189.md) — A row placed again carries no local object
 - [F190](F190.md) — The window between a cycle's reconcile and its swap is tested with the delta staged by the fixture
 - [F191](F191.md) — A stopped download is dropped where it is
 - [F192](F192.md) — An item moved here into a folder that OneDrive then removes is removed here, and stays in OneDrive where it was
-- [F193](F193.md) — A stale handle can still record a `delete` for a file moved into a leaving folder
-- [F194](F194.md) — Some leaving or removed folders fail every cycle until their cause is gone
-- [F196](F196.md) — What the user does inside a folder that is leaving does not reach OneDrive
+- [F193](F193.md) — A file saved by rename and then moved before any examination is deleted in OneDrive and uploaded as new
+- [F194](F194.md) — What still fails a whole cycle when something is taken off the disk
 - [F197](F197.md) — A `403` blocks only its row, and the row is tried again whenever a worker begins
 - [F198](F198.md) — The order of the tree lock and the folder's state lock is kept by hand on the cycle's side
 - [F199](F199.md) — A folder without interception is recorded and not up while the daemon starts
@@ -253,11 +252,14 @@ application must never read zeros where real content should be.
 - [F243](F243.md) — What is kept of something removed in OneDrive under a name nothing uploads stays on this computer only
 - [F244](F244.md) — The plan of a reconcile is four queries for each item, inside one store job
 - [F245](F245.md) — The base records a local object only for an item it places: where the store keeps that, and where it does not
-- [F246](F246.md) — An item that cannot stay in the folder and has not left it yet is on the skipped list, with nothing that says it is still here
 - [F247](F247.md) — An activity event of a kind this version does not name is left out of the log
 - [F248](F248.md) — Whether a failed replacement is said again goes by a coarse reason, and the status quotes one failure
 - [F249](F249.md) — The order of an account's locks is a written rule, and two of them are held across slow work
 - [F250](F250.md) — An account's id and its drive are types only where `config.toml` is read and written
+- [F252](F252.md) — The rows on the bus have names on the client's side only, for all but two
+- [F255](F255.md) — A file under an ignored name keeps a folder that can no longer be placed on disk
+- [F256](F256.md) — The step to schema 8: what of a leave under way is carried over, and what is not
+- [F257](F257.md) — What the skipped list says of an item that is still here, and what it does not
 - [F252](F252.md) — The rows on the bus are named where `dbus/` builds them; three come to it as tuples
 - [F260](F260.md) — A helper that does not answer holds the folder's tree lock for one timeout in every examination that asks it
 - [F261](F261.md) — After the folder's filesystem changed, a move out whose object is not found where it went is given up, and what is left outside is not tidied
@@ -388,11 +390,12 @@ application must never read zeros where real content should be.
 - [D35](D35.md) — Refusals and the notes of `LastError` are types over the strings they were.
 - [D36](D36.md) — The store's schema has a number for every change, and what that leaves.
 - [D37](D37.md) — The test support of `sync/` is built into the daemon's crate, and finds a service's parts by a list.
-- [D39](D39.md) — An upload's answer that the folder cannot hold waits only when the item's own row says so.
+- [D39](D39.md) — An item OneDrive moved where the folder cannot hold it: what the upload worker knows, and when.
 - [D40](D40.md) — Two tests of `remote/listing/` stand in for what they cannot see or drive.
 - [D42](D42.md) — What the running sync as an object leaves by hand.
 - [D43](D43.md) — `konedrived` depends on itself to give its tests the account's test support
 - [D44](D44.md) — `konedrive-dbus` depends on itself to test its private bus
+- [D45](D45.md) — The test of a version 7 store through the daemon makes its store by rewriting one.
 - [D46](D46.md) — No test has the real helper hang while the examination asks it
 - [D47](D47.md) — The registry lists the accounts' folders weakly, and the test support writes it too
 - [D48](D48.md) — The watcher's tests borrow `remote/`'s fixture
