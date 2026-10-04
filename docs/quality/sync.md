@@ -73,6 +73,9 @@ risky one.
   thumbnail task run on with nothing to stop them.
 - **Fix:** a `WriteHeld<'_>` token those functions take; one `stop_for_change()` that returns it.
 - **Size:** M. **Risk:** low (the compiler checks it).
+- **Fixed in part 2026-10-04** in `be2e9c9` (#169): the folder's state is behind the lock that guards it
+  and is reached only through `change()` → `Stopped`. The running parts are still fields of
+  `SyncService` (`D38`); part 4 of B5 moves them.
 
 ## SY3. The running sync is not an object; `start_sync` does too much
 
@@ -96,6 +99,8 @@ risky one.
   (`registration.rs:354–492`) does six things in 139 lines.
 - **Fix:** an enum for the standing and one for interception; one `register_with_helper`; split
   `commit`. **Size:** M. **Risk:** medium; the VM suite covers the helper path.
+- **Fixed 2026-10-04** in `be2e9c9` (#169): `Folder { standing, wanted, is: Absent | Down | Up }`, one
+  `with_helper` sequence, one pure `publish`. A bring-up takes only the folder recorded, by its root id.
 
 ## SY5. `held` means two things; `Accounts.Remove` is not atomic — **defect?**
 
