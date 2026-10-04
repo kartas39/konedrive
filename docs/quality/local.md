@@ -22,6 +22,9 @@ inside it. `LO5` after these.
   `classify.rs:380–416`).
 - **Fix:** a read-only `Listing`, a `BaseCache`, a `Decisions` type with named transitions, the
   output; newtypes for the indexes. **Size:** L. **Risk:** medium; well covered.
+- **Fixed 2026-10-05** in `e6d9db9` (#186): `Run` holds `Listing`, `Facts`, `Decisions` and `Outcome` (10 fields);
+  entries are read by `EntryIx`, none is cloned; identity is the pure `identity::identify`. Not done: the
+  steps are still methods of `Run` (`docs/limitations/D53.md`).
 
 ## LO2. The examination writes to the store and the disk while it is still deciding
 
@@ -29,6 +32,8 @@ inside it. `LO5` after these.
   The module doc says everything is applied in one transaction (`examine.rs:32–33`).
 - **Fix:** collect these as effects applied in `finish`, or state which effects are immediate
   and why a re-examination converges. **Size:** M. **Risk:** medium to high.
+- **Fixed 2026-10-05** in `e6d9db9` (#186): the immediate writes go through one type, `Hands`
+  (`examine/hands.rs`), which states for each why a re-examination converges.
 
 ## LO3. One file's I/O error aborts the whole examination — **defect?**
 
