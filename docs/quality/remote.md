@@ -173,6 +173,8 @@ the #104 test gaps filled first. `RE4` waits for these.
   What is left is a cancel while the send waits on a full store queue of 1,024 jobs; the next
   examination that sees the file repairs it (`local/examine/found.rs:34–37`). The rest of this
   finding is about structure and stands.
+- **Fixed 2026-10-04** in `5252892` (#173): one `Replacements` state behind one lock, `Failure { reason, text }`,
+  a typed `ReplacementNote`, `Listing::request_full()`. A cut wait for the workers loses none.
 
 ## RE11. `status/activity.rs` holds four things
 
@@ -182,6 +184,8 @@ the #104 test gaps filled first. `RE4` waits for these.
   caller is on a blocking thread, which nothing enforces.
 - **Fix:** `activity.rs`, `transfers.rs`, `space.rs`, `report.rs`; the file walk to `folder/`.
 - **Size:** S. **Risk:** very low.
+- **Fixed 2026-10-04** in `5252892` (#173): `status/` is `activity.rs`, `transfers.rs`, `space.rs`, `report.rs`;
+  the walk is `folder/walk.rs`; the kind is `konedrive_tree::ActivityKind` (`F247`).
 
 ## RE12. Test hooks and leftovers
 
@@ -191,3 +195,6 @@ the #104 test gaps filled first. `RE4` waits for these.
   `status/snapshot.rs:117, 137, 142, 155, 175, 177`. Meta keys as literals
   (`listing.rs:480, 500, 569, 588`; `rw.rs:156`). `SyncSnapshot` is a flat bag of 35 public
   fields.
+- **Fixed 2026-10-04** in `5252892` (#173): `Poller::live_up` is gone, the cycle carries its `&Writes`,
+  `SyncSnapshot` is six structs. `locked` beside `writes` in `ListingContext` is left to `RE4`.
+
