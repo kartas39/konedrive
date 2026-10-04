@@ -201,8 +201,7 @@ under another name, and an editor's save by rename is a new inode taking over an
 inodes carry one id (a copy that kept the attributes), the one whose file handle the base recorded
 (`items.local_handle`, taken when the item was placed, adopted or committed) is the item.
 
-Nothing is examined before the folder's first listing has completed: until then there is no base
-to compare with.
+Nothing is examined before the folder's first listing has completed: there is no base yet.
 
 ### 4.2 The rules
 
@@ -244,6 +243,7 @@ Each dirty directory is listed, and each entry read by name (`lstat`, `lgetxattr
 
 A folder's removal waits for everything the base has inside it to be accounted for: an item moved
 out of it first is a `move-out` of its own, and an item that cannot be found holds the folder back.
+A run's parts, its one identity rule and its writes to the disk while deciding: `local/examine.rs`.
 
 ### 4.3 The content check
 

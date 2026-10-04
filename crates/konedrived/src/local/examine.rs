@@ -20,7 +20,7 @@
 //!    is recorded, the one standing where I is expected (at I's base place,
 //!    when a row says I was removed: the removal is taken back); any other
 //!    entry carrying the id is a copy, a file from elsewhere
-//!    (`Run::resolve`), whatever became of I's own object.
+//!    ([`identity::identify`]), whatever became of I's own object.
 //!    Where the base has I, its content is checked; elsewhere, it is a
 //!    `move` too;
 //! 7. a base item missing from its place and from the whole batch is a
@@ -38,46 +38,62 @@
 //! daemon is refused to open, strip or read is passed over and examined
 //! again later; its trouble never fails the batch.
 //!
-//! A listed entry is opened through [`Run::open_same`], which gives it up
-//! when the name holds another object by then: what is read, stripped or
-//! restored is the object the run looked at, never whatever stands at its
-//! name later. (The removal of an empty copy checks the same in its own way.)
+//! A run is four parts with one owner each. The [`Listing`] is what was
+//! read of the disk: built first, read-only afterwards. [`Facts`] is the
+//! store as the run reads it, the only part that asks the store before the
+//! end. [`Decisions`] is who is who: which entry is which item, what is
+//! settled, what is spoken for. [`Outcome`] is what the run leaves: the
+//! rows, the skipped list, what it reports. Which object is an item is one
+//! function of facts and entries that touches nothing
+//! ([`identity::identify`]).
 //!
 //! The rows, the recorded objects and the skipped list are applied to the
-//! store in one transaction, at the end (`finish`). Four things are done on
-//! the way, while deciding, because a decision depends on whether they
-//! worked; each is what the next run would do again, so a batch that fails
-//! after one of them converges: a copy's marks are taken off (it is an
-//! ordinary file with no row, found new by the next scan of its directory),
-//! an empty copy is removed and said in Activity (it held nothing), a cut
-//! placeholder gets its size back, and a touched file's stamp is renewed.
+//! store in one transaction, at the end (`finish`), and what is said in
+//! Activity right after it. The disk is written on the way, while deciding,
+//! only through [`Hands`]: a copy's marks are taken off, an empty copy is
+//! removed, a cut placeholder gets its size back, a touched file's stamp is
+//! renewed. A decision depends on whether each worked, and each is what the
+//! next run would do again (`hands.rs` says why for each). Every listed
+//! entry is opened through [`Hands::open`], which gives it up when its name
+//! holds another object by then.
 
-mod classify;
+mod copies;
+mod decisions;
 mod detect;
+mod facts;
 mod finish;
 mod found;
-mod list;
+mod hands;
+mod identity;
+mod listing;
 mod missing;
-mod run;
+mod new;
+mod place;
 
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::ffi::{OsStr, OsString};
-use std::io::{self};
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::OsStr;
+use std::io;
 use std::path::{Path, PathBuf};
 
-use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::XATTR_ROOT;
+use konedrive_fs::RESERVED_PREFIX;
+use std::os::unix::ffi::OsStrExt;
 use xattr::FileExt;
 
+use self::decisions::{Decisions, Settle};
+use self::facts::Facts;
+use self::hands::Hands;
+use self::listing::{EntryIx, Listing, Reader};
 use super::batch::Batch;
 use super::entry::{self, Entry};
 use super::ignore::IgnoreList;
 use super::liveness::Liveness;
 use crate::folder::disk::{daemon_owned, gone, Disk};
 use crate::folder::locks::InodeLocks;
-use konedrive_tree::outbox::{Base, Detection, Inode, LocalSkip, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState};
-use konedrive_tree::{Located, Row, Store, TreeError};
+use konedrive_fs::handle::FileHandle;
+use konedrive_tree::outbox::{Base, Detection, Inode, LocalSkip, OutboxApplied, OutboxOp};
+use konedrive_tree::{ActivityRow, Row, Store, TreeError};
 
 /// How many of the places a run did not examine its one warning names.
 const UNREADABLE_NAMED: usize = 20;
@@ -181,42 +197,27 @@ impl Examiner<'_> {
         let full = Batch::full();
         let handles = super::handles::prepare(self.store, &root, self.now)?;
         let batch = if handles.renewed { &full } else { batch };
-        let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
+        let mut facts = Facts::new(self.store, root_id)?;
         if let Some(progress) = progress {
             progress.started();
         }
+        let root_dev = stat.st_dev as u64;
+        let listing = Listing::read(&Reader { disk: self.disk, ignore: self.ignore, root_dev, progress }, &mut facts, batch)?;
         let mut run = Run {
             ex: self,
-            progress,
-            seen: (0, 0),
-            root_id,
-            root_dev: stat.st_dev as u64,
+            root_dev,
             root_path,
             handles_current: handles.current,
             helper_silent: Cell::new(false),
-            rows,
-            entries: Vec::new(),
-            at: HashMap::new(),
-            whole: BTreeSet::new(),
-            named: BTreeMap::new(),
-            unreadable: HashSet::new(),
-            base: HashMap::new(),
-            recorded: HashMap::new(),
-            expected: HashMap::new(),
-            chosen: HashMap::new(),
-            decided: HashSet::new(),
-            deferred: HashMap::new(),
-            consumed: HashSet::new(),
-            fresh: Vec::new(),
-            skipped: HashMap::new(),
-            detections: Vec::new(),
-            ops: Vec::new(),
-            out: Examined::default(),
+            listing: &listing,
+            facts,
+            decisions: Decisions::default(),
+            outcome: Outcome::default(),
+            hands: Hands { disk: self.disk, locks: self.locks },
         };
-        run.out.renewed = handles.renewed;
-        run.list(batch)?;
-        run.probe_expected()?;
-        run.classify(batch)?;
+        run.outcome.out.renewed = handles.renewed;
+        run.outcome.out.unreadable = listing.unread().to_vec();
+        run.decide(batch)?;
         let out = run.finish()?;
         if !out.unreadable.is_empty() {
             let shown: Vec<String> = out.unreadable.iter().take(UNREADABLE_NAMED).map(|rel| rel.display().to_string()).collect();
@@ -237,16 +238,6 @@ impl Examiner<'_> {
     }
 }
 
-/// Where an item is expected to be.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Expect {
-    At(PathBuf),
-    /// Deleted or moved out already (a row says so), or not placed.
-    Nowhere,
-    /// Not in the base.
-    Unknown,
-}
-
 /// Where an object is, as far as the examination can tell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Place {
@@ -259,39 +250,21 @@ enum Place {
     Unknown,
 }
 
-/// How an item that left its place was decided. Ordered: a folder waits
-/// as long as the least settled item inside it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum Settle {
-    /// Its row is written.
-    Done,
-    /// Held back until it can be placed: examined again (undecided).
-    Wait,
-    /// Held back until the reconcile places it again: no recorded handle,
-    /// so nothing can prove it gone (WR4, unproven).
-    Unproven,
+/// What a run leaves behind: written by [`Run::finish`].
+#[derive(Default)]
+struct Outcome {
+    detections: Vec<Detection>,
+    ops: Vec<OutboxOp>,
+    skipped: HashMap<PathBuf, LocalSkip>,
+    /// What is said in Activity: written right after the rows.
+    activity: Vec<ActivityRow>,
+    out: Examined,
 }
 
-/// What a content check found.
-enum Content {
-    Changed,
-    /// Checked and the base's.
-    Same,
-    /// Could not tell (busy, not ours to read, an upload of it running).
-    Unknown,
-    /// Changed or not, a writer has it open.
-    Waiting,
-}
-
-struct Run<'e, 'a> {
+struct Run<'e, 'a, 'l> {
     ex: &'e Examiner<'a>,
-    /// Told after each directory a Full local scan lists.
-    progress: Option<&'e dyn ScanProgress>,
-    /// Directories and other entries read in whole listings so far.
-    seen: (u64, u64),
-    root_id: String,
-    /// The folder's device: nothing on another one is uploaded, nor looked
-    /// into (a nested Btrfs subvolume, a mount).
+    /// The folder's device: nothing on another one is uploaded (a nested
+    /// Btrfs subvolume, a mount).
     root_dev: u64,
     root_path: Option<PathBuf>,
     /// Whether the recorded handles are this filesystem's: `ESTALE` is gone
@@ -301,164 +274,169 @@ struct Run<'e, 'a> {
     /// more is asked in it, and what would have been asked is not decided
     /// ([`Run::place_of`]).
     helper_silent: Cell<bool>,
-    /// The live rows before this examination, and what they are looked up by.
-    rows: Rows,
-    entries: Vec<Entry>,
-    at: HashMap<PathBuf, usize>,
-    whole: BTreeSet<PathBuf>,
-    named: BTreeMap<PathBuf, BTreeSet<OsString>>,
-    /// Places not examined in this run: unreadable, passed over, or a
-    /// directory with an id not its own that could not be stripped or went
-    /// while the run looked at it. Nothing at them counts as missing, and
-    /// nothing new below them gets a row.
-    unreadable: HashSet<PathBuf>,
-    base: HashMap<String, Option<Row>>,
-    /// Item id → the local object the base records (`items.local_handle`),
-    /// and where the base places the item: asked with the item's row, in one
-    /// job of the store's thread (issue #38).
-    recorded: HashMap<String, (Option<FileHandle>, Option<Located>)>,
-    expected: HashMap<String, Expect>,
-    /// Item id → the entry that is the item.
-    chosen: HashMap<String, usize>,
-    /// Items this batch decided without choosing an entry: removed, or left
-    /// for later (undecided, rechecked).
-    decided: HashSet<String>,
-    /// The decided items that got no row, and why: a folder they are in
-    /// must not be removed before them.
-    deferred: HashMap<String, Settle>,
-    /// Entries taken by an item: its own, its links, a save-by-rename's new file.
-    consumed: HashSet<usize>,
-    /// Entries stripped of an id they had no right to: new objects now.
-    fresh: Vec<usize>,
-    skipped: HashMap<PathBuf, LocalSkip>,
-    detections: Vec<Detection>,
-    ops: Vec<OutboxOp>,
-    out: Examined,
+    listing: &'l Listing,
+    facts: Facts<'e>,
+    decisions: Decisions,
+    outcome: Outcome,
+    hands: Hands<'e>,
 }
 
-/// The live rows as an examination looks them up (issue #38): by item, by
-/// local object, by place, by parent directory, built once per run, so that
-/// no step walks every row for each entry, item or directory.
-struct Rows {
-    /// In `seq` order.
-    all: Vec<OutboxRow>,
-    /// Item id → its rows, oldest first.
-    by_item: HashMap<String, Vec<usize>>,
-    /// Rows without an item id, by the handle of their object...
-    by_handle: HashMap<FileHandle, Vec<usize>>,
-    /// ... and by its inode.
-    by_inode: HashMap<(u64, u64), Vec<usize>>,
-    /// Every row by its place, in path order: what is below a directory is
-    /// one range.
-    by_rel: BTreeMap<PathBuf, Vec<usize>>,
-    /// Running `mkdir` rows without an item id.
-    making: Vec<usize>,
+/// The listed entries sorted for the rules: what is passed over or only listed, what
+/// carries an id (by id), and what carries none.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Sorted {
+    listed: Vec<(EntryIx, LocalSkip)>,
+    by_id: BTreeMap<String, Vec<EntryIx>>,
+    unnamed: Vec<EntryIx>,
 }
 
-impl Rows {
-    fn new(all: Vec<OutboxRow>) -> Self {
-        let mut rows = Rows {
-            all,
-            by_item: HashMap::new(),
-            by_handle: HashMap::new(),
-            by_inode: HashMap::new(),
-            by_rel: BTreeMap::new(),
-            making: Vec::new(),
-        };
-        for (i, row) in rows.all.iter().enumerate() {
-            rows.by_rel.entry(row.rel.clone()).or_default().push(i);
-            match (&row.item_id, &row.inode) {
-                (Some(id), _) => rows.by_item.entry(id.clone()).or_default().push(i),
-                (None, Some(inode)) => {
-                    if let Some(handle) = &inode.handle {
-                        rows.by_handle.entry(handle.clone()).or_default().push(i);
-                    }
-                    rows.by_inode.entry((inode.dev, inode.ino)).or_default().push(i);
-                    if row.kind == OutboxKind::Mkdir && row.state == OutboxState::Running {
-                        rows.making.push(i);
-                    }
-                }
-                (None, None) => {}
+/// Rules 1 and 2 for every entry, and whether it carries an id.
+fn sort(listing: &Listing, ignore: &IgnoreList, root_dev: u64) -> Sorted {
+    let mut sorted = Sorted::default();
+    for (ix, e) in listing.iter() {
+        // 1. The daemon's own names; a user's `.konedrive-*` is listed.
+        if daemon_owned(&e.name) {
+            continue;
+        }
+        if e.name.as_bytes().starts_with(RESERVED_PREFIX.as_bytes()) {
+            sorted.listed.push((ix, LocalSkip::ReservedName));
+            continue;
+        }
+        // 2. Never a OneDrive object — unless its name is ignored anyway
+        // (Emacs's `.#name` lock is a symlink).
+        if let Some(reason) = e.ty.skip_reason() {
+            if !ignore.matches(&e.name) {
+                sorted.listed.push((ix, reason));
+            }
+            continue;
+        }
+        // 2b. On another device than the folder's (a nested Btrfs
+        // subvolume, a mount): never uploaded, nor anything below it —
+        // the helper cannot protect what is placed there (F72).
+        if e.dev != root_dev {
+            sorted.listed.push((ix, LocalSkip::OtherDevice));
+            continue;
+        }
+        match &e.id {
+            Some(id) => sorted.by_id.entry(id.clone()).or_default().push(ix),
+            None => sorted.unnamed.push(ix),
+        }
+    }
+    sorted
+}
+
+impl<'l> Run<'_, '_, 'l> {
+    /// The rules, in their order.
+    fn decide(&mut self, batch: &Batch) -> Result<(), ExamineError> {
+        let listing = self.listing;
+        let sorted = sort(listing, self.ex.ignore, self.root_dev);
+        for (ix, reason) in &sorted.listed {
+            self.skip(&listing[*ix].rel, reason.clone());
+        }
+        // 6. Who is who, before anything is decided by place: a directory's
+        // id says what its entries' parent is. Every id is decided first,
+        // from what was listed; then each decision is carried out.
+        let mut identities = Vec::with_capacity(sorted.by_id.len());
+        for (id, carriers) in &sorted.by_id {
+            identities.push((id.as_str(), self.identity(id, carriers)?));
+        }
+        let mut found: Vec<(&str, EntryIx)> = Vec::new();
+        for (id, (identity, base)) in &identities {
+            self.settle_identity(id, identity, base.as_deref())?;
+            found.extend(identity.item.map(|ix| (*id, ix)));
+        }
+        found.sort_by_key(|(_, ix)| depth(&listing[*ix].rel));
+        for (id, ix) in found {
+            self.found(id, ix, batch)?;
+        }
+        // 7. What is missing from where it was.
+        self.missing()?;
+        // 3–5. What has no id (or no longer has one).
+        let mut unnamed = sorted.unnamed;
+        unnamed.extend_from_slice(self.decisions.new_objects());
+        unnamed.sort_by_key(|&ix| depth(&listing[ix].rel));
+        unnamed.dedup();
+        for ix in unnamed {
+            if !self.decisions.taken(ix) {
+                self.new_object(ix)?;
             }
         }
-        rows
+        self.tidy_skipped()
     }
 
-    fn iter(&self) -> std::slice::Iter<'_, OutboxRow> {
-        self.all.iter()
+    /// Whether this run looked at the place `rel`: the listing read it
+    /// ([`Listing::examined`]), and the run did not give it up while acting.
+    /// The one place that says so: nothing at a place not examined counts as
+    /// missing, nothing new below it gets a row, and no line of the skipped
+    /// list is taken off for it.
+    fn examined(&self, rel: &Path) -> bool {
+        self.listing.examined(rel) && !self.decisions.gave_up(rel)
     }
 
-    /// The live rows of item `id`, oldest first.
-    fn of_item(&self, id: &str) -> impl DoubleEndedIterator<Item = &OutboxRow> + '_ {
-        self.by_item.get(id).into_iter().flatten().map(|&i| &self.all[i])
-    }
-
-    /// The rows without an item id whose object is `e`'s ([`Inode::same_object`]), oldest first.
-    fn of_object(&self, e: &Entry) -> Vec<&OutboxRow> {
-        let mut found: Vec<usize> = Vec::new();
-        if let Some(handle) = &e.handle {
-            found.extend(self.by_handle.get(handle).into_iter().flatten());
-        }
-        found.extend(self.by_inode.get(&(e.dev, e.ino)).into_iter().flatten());
-        found.sort_unstable();
-        found.dedup();
-        let object = e.inode();
-        found.into_iter().map(|i| &self.all[i]).filter(|row| row.inode.as_ref().is_some_and(|i| i.same_object(&object))).collect()
-    }
-
-    /// The rows at `rel` exactly.
-    fn at(&self, rel: &Path) -> impl Iterator<Item = &OutboxRow> + '_ {
-        self.by_rel.get(rel).into_iter().flatten().map(|&i| &self.all[i])
-    }
-
-    /// The rows strictly below `dir`, in `seq` order.
-    fn under(&self, dir: &Path) -> Vec<&OutboxRow> {
-        let mut found: Vec<usize> = self
-            .by_rel
-            .range::<Path, _>((std::ops::Bound::Excluded(dir), std::ops::Bound::Unbounded))
-            .take_while(|(rel, _)| rel.starts_with(dir))
-            .flat_map(|(_, list)| list.iter().copied())
-            .collect();
-        found.sort_unstable();
-        found.into_iter().map(|i| &self.all[i]).collect()
-    }
-
-    /// The rows whose place is directly in `dir`, in `seq` order.
-    fn in_dir(&self, dir: &Path) -> Vec<&OutboxRow> {
-        self.under(dir).into_iter().filter(|row| row.rel.parent() == Some(dir)).collect()
-    }
-}
-
-/// The objects of the entries listed, to tell whether a pending row's object
-/// was seen ([`Inode::same_object`]) without comparing it with every entry.
-struct Objects {
-    handles: HashSet<FileHandle>,
-    /// Every entry's inode, and those of entries with no handle.
-    inodes: HashSet<(u64, u64)>,
-    unhandled: HashSet<(u64, u64)>,
-}
-
-impl Objects {
-    fn of(entries: &[Entry]) -> Self {
-        let mut objects = Objects { handles: HashSet::new(), inodes: HashSet::new(), unhandled: HashSet::new() };
-        for e in entries {
-            objects.inodes.insert((e.dev, e.ino));
-            match &e.handle {
-                Some(handle) => {
-                    objects.handles.insert(handle.clone());
-                }
-                None => {
-                    objects.unhandled.insert((e.dev, e.ino));
-                }
+    /// The one policy for an entry that cannot be opened, stripped or read
+    /// (`LO3`). Gone since it was listed, it is skipped (`None`). Refused to
+    /// this daemon (`EACCES`, `EPERM`: another user's file, an immutable
+    /// one), the trouble is the entry's own: it is passed over
+    /// ([`pass_over`](Self::pass_over), `None`), never the batch's failure.
+    /// Any other error may be anybody's (no descriptors, no memory, the
+    /// disk): the batch fails, as it always did, and is offered again.
+    fn entry_io<T>(&mut self, e: &Entry, tried: io::Result<T>) -> Result<Option<T>, ExamineError> {
+        match tried {
+            Ok(value) => Ok(Some(value)),
+            Err(err) if gone(&err) => Ok(None),
+            Err(err) if denied(&err) => {
+                self.pass_over(e, &err);
+                Ok(None)
             }
+            Err(err) => Err(err.into()),
         }
-        objects
     }
 
-    fn seen(&self, inode: &Inode) -> bool {
-        match &inode.handle {
-            Some(handle) => self.handles.contains(handle) || self.unhandled.contains(&(inode.dev, inode.ino)),
-            None => self.inodes.contains(&(inode.dev, inode.ino)),
+    /// `e` is not examined in this run: given up, so that nothing at its
+    /// place counts as missing, reported, and asked for again
+    /// ([`Examined::passed`]).
+    fn pass_over(&mut self, e: &Entry, why: &io::Error) {
+        if self.decisions.give_up(&e.rel) {
+            // One line for the run says how many (`Examiner::examine_reporting`).
+            tracing::debug!("{} cannot be read ({why}); it is not examined", e.rel.display());
+            self.outcome.out.unreadable.push(e.rel.clone());
+        }
+        self.outcome.out.passed.name(e.dir_rel(), &e.name);
+    }
+
+    /// The item id of the directory at `rel` as this run decided it:
+    /// `None` for a directory new to OneDrive (its `mkdir` is pending).
+    fn dir_id(&self, rel: &Path) -> Option<String> {
+        if rel.as_os_str().is_empty() {
+            return Some(self.facts.root_id.clone());
+        }
+        let ix = self.listing.at(rel)?;
+        let id = self.decisions.id_of(self.listing, ix)?;
+        (self.decisions.item(id) == Some(ix)).then(|| id.to_owned())
+    }
+
+    fn skip(&mut self, rel: &Path, reason: LocalSkip) {
+        self.outcome.skipped.insert(rel.to_path_buf(), reason);
+    }
+
+    fn recheck(&mut self, e: &Entry) {
+        self.outcome.out.recheck.name(e.dir_rel(), &e.name);
+    }
+
+    fn recheck_at(&mut self, rel: &Path) {
+        if let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) {
+            self.outcome.out.recheck.name(parent, name);
+        }
+    }
+
+    /// Item `id` is decided without a row: remembered for a folder it is
+    /// in, and, when `report`, listed as undecided or unproven.
+    fn hold_back(&mut self, id: &str, settle: Settle, report: bool) {
+        self.decisions.settle(id, settle);
+        match (settle, report) {
+            (Settle::Wait, true) => self.outcome.out.undecided.push(id.to_owned()),
+            (Settle::Unproven, true) => self.outcome.out.unproven.push(id.to_owned()),
+            _ => {}
         }
     }
 }

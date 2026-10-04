@@ -3,13 +3,15 @@
 
 use std::path::Path;
 
-use konedrive_tree::outbox::{Base, Detection, Inode, OutboxKind, OutboxState, Reason};
+use konedrive_fs::lease;
+use konedrive_tree::outbox::{Base, Detection, Inode, OutboxKind, OutboxOp, OutboxState, Reason};
 use konedrive_tree::Row;
 
+use super::hands::Opened;
+use super::listing::EntryIx;
+use super::{lossy, ExamineError, Run};
 use crate::local::entry::{Entry, Type};
 use crate::local::RECHECK;
-
-use super::{lossy, Run};
 
 /// Whether a file can be read for an upload now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,10 +32,51 @@ impl Readiness {
     }
 }
 
-impl Run<'_, '_> {
+impl Run<'_, '_, '_> {
     /// A file a writer holds, as this run says it.
     pub(super) fn waiting(&self) -> Readiness {
         Readiness::Waiting { next_try: self.ex.now + RECHECK.as_secs() as i64 }
+    }
+
+    /// Whether a writer holds the new file `e`. `None` for a file that gets
+    /// no row in this run: one this daemon is refused to open is passed
+    /// over; one that went since it was listed, or whose name holds another
+    /// object by now, is not there to upload, and its name is looked at
+    /// again.
+    pub(super) fn probe_writer(&mut self, e: &Entry) -> Result<Option<Readiness>, ExamineError> {
+        let opened = self.hands.open(e);
+        let file = match self.entry_io(e, opened)? {
+            Some(Opened::Same(file)) => file,
+            Some(Opened::Gone) => {
+                self.recheck(e);
+                return Ok(None);
+            }
+            None => return Ok(None),
+        };
+        let busy = lease::open_for_writing(&file).unwrap_or_else(|err| {
+            tracing::warn!("cannot tell whether {} is open for writing ({err})", e.rel.display());
+            false
+        });
+        if busy {
+            self.recheck(e);
+            return Ok(Some(self.waiting()));
+        }
+        Ok(Some(Readiness::Ready))
+    }
+
+    /// Item `id`'s content is now the file `new` at its place: an `update`
+    /// from the new inode, which takes over the item at commit. A pending
+    /// create of that file goes (never one being sent: callers exclude it).
+    pub(super) fn save_by_rename(&mut self, id: &str, base: &Row, new: EntryIx) -> Result<(), ExamineError> {
+        let e = &self.listing[new];
+        let Some(ready) = self.probe_writer(e)? else { return Ok(()) };
+        if let Some(row) = self.facts.rows.pending(e).filter(|row| row.state != OutboxState::Running) {
+            self.outcome.ops.push(OutboxOp::Remove(row.seq));
+        }
+        let mut d = self.of_item(OutboxKind::Update, id, base, e, None);
+        ready.onto(&mut d);
+        self.outcome.detections.push(d);
+        Ok(())
     }
 
     /// Item `id`, found as `e`: against `base`, at the place `e` stands at.
@@ -56,7 +99,7 @@ impl Run<'_, '_> {
     }
 
     /// An object OneDrive has no item for yet, as `e` stands.
-    pub(super) fn new_object(&self, kind: OutboxKind, e: &Entry) -> Detection {
+    pub(super) fn of_new(&self, kind: OutboxKind, e: &Entry) -> Detection {
         self.standing(kind, e)
     }
 

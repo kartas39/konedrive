@@ -1,43 +1,94 @@
+//! An item found as an entry: where it stands, and whether its content changed.
+
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read};
-use std::time::{Duration, SystemTime};
 
-use konedrive_fs::handle::FileHandle;
 use konedrive_fs::lease;
 use konedrive_fs::placeholder::{self, State};
+use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState};
+use konedrive_tree::Row;
+
+use super::facts::Expect;
+use super::hands::{Opened, Restored};
+use super::listing::EntryIx;
+use super::{ExamineError, Run};
 use crate::local::batch::Batch;
 use crate::local::entry::{Entry, StateAttr, Type};
 use crate::local::names;
-use crate::folder::locks::InodeKey;
-use konedrive_tree::outbox::{Inode, OutboxKind, OutboxOp, OutboxState};
-use konedrive_tree::Row;
 
-use super::detect::Readiness;
-use super::{Content, denied, ExamineError, Expect, gone, Run};
+/// What a content check found.
+enum Content {
+    Changed,
+    /// Checked and the base's.
+    Same,
+    /// Could not tell (busy, not ours to read, an upload of it running).
+    Unknown,
+    /// Changed or not, a writer has it open.
+    Waiting,
+}
 
-impl Run<'_, '_> {
-    /// Item `id` found as entry `i`, its object ([`resolve`](Self::resolve)):
-    /// where it is, and its content.
-    pub(super) fn found(&mut self, id: &str, i: usize, batch: &Batch) -> Result<(), ExamineError> {
-        let e = self.entries[i].clone();
-        let Some(base) = self.base_row(id)? else { return Ok(()) };
-        let recorded = self.local_handle(id)?;
+/// What an item's file says of its content before anything is opened: its marks, its
+/// size and its time against the stamp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Verdict {
+    /// Being downloaded or freed: looked at again.
+    InTransit,
+    /// Not downloaded: the cloud's content. `cut`: a `truncate(2)` changed
+    /// its size, which is put back.
+    NotDownloaded { cut: bool },
+    /// An item id and no state konedrive can read: left alone.
+    Damaged,
+    /// Being uploaded as it is now.
+    BeingSent,
+    /// Size and time are the stamp's, and nothing was written: the base's.
+    Same,
+    /// The size, the time or a write says it may have changed: to be read.
+    ReadIt { size_changed: bool },
+}
+
+/// The stamp rule (§3.4) for the file `e` of an item whose base size is `base_size`.
+/// `being_sent`: a row of the item is running with the content as listed. `written`:
+/// the batch saw a write to it.
+pub(super) fn verdict(e: &Entry, base_size: u64, being_sent: bool, written: bool) -> Verdict {
+    match e.state {
+        StateAttr::Known(State::Hydrating | State::Dehydrating) => Verdict::InTransit,
+        StateAttr::Known(State::OnlineOnly) => Verdict::NotDownloaded { cut: e.size != base_size },
+        StateAttr::Absent | StateAttr::Corrupt => Verdict::Damaged,
+        StateAttr::Known(State::Hydrated) if being_sent => Verdict::BeingSent,
+        StateAttr::Known(State::Hydrated) => {
+            let size_changed = e.stamp.is_some_and(|s| s.size != e.size);
+            let time_changed = e.stamp.is_none_or(|s| (s.mtime_sec, s.mtime_nsec) != e.mtime);
+            if !size_changed && !time_changed && !written {
+                Verdict::Same
+            } else {
+                Verdict::ReadIt { size_changed }
+            }
+        }
+    }
+}
+
+impl Run<'_, '_, '_> {
+    /// Item `id` found as entry `ix`, its object: where it is, and its content.
+    pub(super) fn found(&mut self, id: &str, ix: EntryIx, batch: &Batch) -> Result<(), ExamineError> {
+        let e = &self.listing[ix];
+        let Some(base) = self.facts.row(id)? else { return Ok(()) };
+        let recorded = self.facts.recorded(id)?;
         if e.handle.is_some() && e.handle != recorded {
-            self.ops.push(OutboxOp::SetHandle { item_id: id.to_owned(), handle: e.handle.clone() });
+            self.outcome.ops.push(OutboxOp::SetHandle { item_id: id.to_owned(), handle: e.handle.clone() });
         }
         if e.ty == Type::File && e.nlink > 1 && matches!(e.state, StateAttr::Known(State::OnlineOnly | State::Hydrating | State::Dehydrating)) {
-            self.out.mark_files.push(e.rel.clone());
+            self.outcome.out.mark_files.push(e.rel.clone());
         }
         if e.ty == Type::Dir {
-            if let Expect::At(was) = self.expected(id)? {
+            if let Expect::At(was) = self.facts.expected(id)? {
                 if was != e.rel {
-                    self.ops.push(OutboxOp::Rebase { from: was, to: e.rel.clone() });
+                    self.outcome.ops.push(OutboxOp::Rebase { from: was, to: e.rel.clone() });
                 }
             }
         }
-        let content = if e.ty == Type::File { self.content(id, &base, &e, batch)? } else { Content::Same };
-        let mut d = self.of_item(OutboxKind::Move, id, &base, &e, e.ctag.as_deref());
+        let content = if e.ty == Type::File { self.content(id, &base, e, batch)? } else { Content::Same };
+        let mut d = self.of_item(OutboxKind::Move, id, &base, e, e.ctag.as_deref());
         match content {
             Content::Changed => d.kind = OutboxKind::Update,
             Content::Waiting => {
@@ -59,54 +110,53 @@ impl Run<'_, '_> {
         // this batch did not read the folder above (so its id is not known
         // here), by the path the base places it at.
         let at_base = d.target_name.as_deref() == Some(base.name.as_str())
-            && (d.target_parent.as_deref() == base.parent_id.as_deref() || (d.target_parent.is_none() && self.located(id)?.is_some_and(|at| at.placed && at.rel == e.rel)));
+            && (d.target_parent.as_deref() == base.parent_id.as_deref()
+                || (d.target_parent.is_none() && self.facts.located(id)?.is_some_and(|at| at.placed && at.rel == e.rel)));
         // In place, unchanged or unknown, with no row: nothing to record.
-        if d.kind == OutboxKind::Move && at_base && self.rows.of_item(id).next().is_none() {
+        if d.kind == OutboxKind::Move && at_base && self.facts.rows.of_item(id).next().is_none() {
             return Ok(());
         }
-        self.detections.push(d);
+        self.outcome.detections.push(d);
         Ok(())
     }
 
-    /// The content check (§3.4) of item `id`'s file `e` against `base`.
+    /// The content check (§3.4) of item `id`'s file `e` against `base`: by
+    /// its marks and its stamp ([`verdict`]), and only then by reading it.
     fn content(&mut self, id: &str, base: &Row, e: &Entry, batch: &Batch) -> Result<Content, ExamineError> {
-        match e.state {
-            StateAttr::Known(State::Hydrating | State::Dehydrating) => {
+        let being_sent = self.facts.rows.of_item(id).any(|row| row.state == OutboxState::Running && row.snapshot_is(e.snapshot()));
+        let written = e.handle.as_ref().is_some_and(|h| batch.written_handles.contains(h)) || batch.written_rels.contains(&e.rel);
+        match verdict(e, base.size, being_sent, written) {
+            Verdict::InTransit => {
                 self.recheck(e);
                 Ok(Content::Unknown)
             }
-            StateAttr::Known(State::OnlineOnly) => {
-                if e.size != base.size {
+            Verdict::NotDownloaded { cut } => {
+                if cut {
                     self.restore(e, base)?;
                 }
                 Ok(Content::Same)
             }
-            StateAttr::Absent | StateAttr::Corrupt => {
+            Verdict::Damaged => {
                 tracing::warn!("{} carries an item id and no state konedrive can read; it is left alone", e.rel.display());
                 Ok(Content::Unknown)
             }
-            StateAttr::Known(State::Hydrated) => self.hydrated(id, base, e, batch),
+            Verdict::BeingSent => Ok(Content::Unknown),
+            Verdict::Same => Ok(Content::Same),
+            Verdict::ReadIt { size_changed } => self.read(base, e, size_changed),
         }
     }
 
-    fn hydrated(&mut self, id: &str, base: &Row, e: &Entry, batch: &Batch) -> Result<Content, ExamineError> {
-        if self.rows.of_item(id).any(|row| row.state == OutboxState::Running && row.snapshot_is(e.snapshot())) {
-            // Being uploaded as it is now.
-            return Ok(Content::Unknown);
-        }
-        let size_changed = e.stamp.is_some_and(|s| s.size != e.size);
-        let time_changed = e.stamp.is_none_or(|s| (s.mtime_sec, s.mtime_nsec) != e.mtime);
-        let written = e.handle.as_ref().is_some_and(|h| batch.written_handles.contains(h)) || batch.written_rels.contains(&e.rel);
-        if !size_changed && !time_changed && !written {
-            return Ok(Content::Same);
-        }
-        let file = match self.open_same(e)? {
-            Opened::Same(file) => file,
-            Opened::Gone => {
+    /// Reads the downloaded file `e`, which may have changed: probes for a
+    /// writer first, and tells an edit from a `touch` by the hash.
+    fn read(&mut self, base: &Row, e: &Entry, size_changed: bool) -> Result<Content, ExamineError> {
+        let opened = self.hands.open(e);
+        let file = match self.entry_io(e, opened)? {
+            Some(Opened::Same(file)) => file,
+            Some(Opened::Gone) => {
                 self.recheck(e);
                 return Ok(Content::Unknown);
             }
-            Opened::Passed => return Ok(Content::Unknown),
+            None => return Ok(Content::Unknown),
         };
         if !matches!(placeholder::read_state(&file), Ok(Some(State::Hydrated))) {
             self.recheck(e);
@@ -148,108 +198,24 @@ impl Run<'_, '_> {
             return Ok(Content::Unknown);
         }
         // Only the time changed: a `touch` uploads nothing.
-        if let Err(err) = placeholder::write_stamp(&file) {
-            tracing::warn!("cannot refresh the stamp of {}: {err}", e.rel.display());
-        }
+        self.hands.stamp(e, &file);
         Ok(Content::Same)
     }
 
-    /// The object `e` was listed as, opened read-only: the way a listed
-    /// entry is opened (the removal of an empty copy alone makes its own
-    /// checks, `remove_empty`). The name is opened and the descriptor compared with
-    /// what was listed, so everything done through it afterwards — a read, a
-    /// strip, a restore — is done to the object the run decided about. A
-    /// name that holds another object by now is [`Opened::Gone`], like one
-    /// that holds nothing. By the policy of [`entry_io`](Self::entry_io).
-    pub(super) fn open_same(&mut self, e: &Entry) -> Result<Opened, ExamineError> {
-        let disk = self.ex.disk;
-        let open = |dir| if e.ty == Type::Dir { disk.open_subdir(&dir, &e.name) } else { disk.open_file(&dir, &e.name) };
-        let opened = disk.dir(e.dir_rel()).and_then(open).and_then(|file| {
-            let stat = nix::sys::stat::fstat(&file).map_err(io::Error::from)?;
-            Ok((file, stat))
-        });
-        let (file, stat) = match opened {
-            Ok(opened) => opened,
-            Err(err) if gone(&err) => return Ok(Opened::Gone),
-            Err(err) if denied(&err) => {
-                self.pass_over(e, &err);
-                return Ok(Opened::Passed);
-            }
-            Err(err) => return Err(err.into()),
-        };
-        let there = Inode { dev: stat.st_dev, ino: stat.st_ino, handle: FileHandle::of(&file).ok() };
-        Ok(if there.same_object(&e.inode()) { Opened::Same(file) } else { Opened::Gone })
-    }
-
     /// A placeholder whose size a `truncate(2)` changed gets the cloud's
-    /// size and time back. Through the daemon's own descriptor (its opens
-    /// are never intercepted, so nothing is filled), never a name a symlink
-    /// could redirect, and under the per-inode lock a fill holds for its
-    /// whole run, with the state read again under it.
+    /// size and time back ([`Hands::restore`](super::hands::Hands::restore)).
     fn restore(&mut self, e: &Entry, base: &Row) -> Result<(), ExamineError> {
-        let file = match self.open_same(e)? {
-            Opened::Same(file) => file,
-            Opened::Gone => {
-                self.recheck(e);
-                return Ok(());
+        let restored = self.hands.restore(e, base.size, base.mtime);
+        match self.entry_io(e, restored)? {
+            Some(Restored::Done) => {
+                tracing::info!("{} was cut to {} bytes while not downloaded; it has the cloud's size again", e.rel.display(), e.size);
+                self.outcome.out.restored.push(e.rel.clone());
             }
-            Opened::Passed => return Ok(()),
-        };
-        let Some(key) = self.entry_io(e, InodeKey::of(&file))? else { return Ok(()) };
-        let Some(_guard) = self.ex.locks.try_lock(key) else {
-            self.recheck(e);
-            return Ok(());
-        };
-        let Some(writable) = self.entry_io(e, placeholder::reopen_writable(&file))? else { return Ok(()) };
-        drop(file);
-        if !matches!(placeholder::read_state(&writable), Ok(Some(State::OnlineOnly))) {
-            self.recheck(e);
-            return Ok(());
+            Some(Restored::Busy | Restored::Gone) => self.recheck(e),
+            None => {}
         }
-        let restored = writable
-            .set_len(base.size)
-            .and_then(|()| placeholder::set_mtime(&writable, SystemTime::UNIX_EPOCH + Duration::from_secs(base.mtime.max(0) as u64)));
-        if self.entry_io(e, restored)?.is_none() {
-            return Ok(());
-        }
-        tracing::info!("{} was cut to {} bytes while not downloaded; it has the cloud's size again", e.rel.display(), e.size);
-        self.out.restored.push(e.rel.clone());
         Ok(())
     }
-
-    /// Whether a writer holds the new file `e`. `None` for a file that gets
-    /// no row in this run: one this daemon is refused to open is passed
-    /// over; one that went since it was listed, or whose name holds another
-    /// object by now, is not there to upload, and its name is looked at
-    /// again.
-    pub(super) fn probe_writer(&mut self, e: &Entry) -> Result<Option<Readiness>, ExamineError> {
-        let file = match self.open_same(e)? {
-            Opened::Same(file) => file,
-            Opened::Gone => {
-                self.recheck(e);
-                return Ok(None);
-            }
-            Opened::Passed => return Ok(None),
-        };
-        let busy = lease::open_for_writing(&file).unwrap_or_else(|err| {
-            tracing::warn!("cannot tell whether {} is open for writing ({err})", e.rel.display());
-            false
-        });
-        if busy {
-            self.recheck(e);
-            return Ok(Some(self.waiting()));
-        }
-        Ok(Some(Readiness::Ready))
-    }
-}
-
-/// What [`Run::open_same`] found.
-pub(super) enum Opened {
-    Same(File),
-    /// Gone, or another object by now.
-    Gone,
-    /// Refused to this daemon: passed over.
-    Passed,
 }
 
 fn size_and_time(file: &File) -> io::Result<(i64, i64, i64)> {

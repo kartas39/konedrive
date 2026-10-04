@@ -28,6 +28,7 @@ use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 use OutboxKind::{Create, Delete, Mkdir, Move, MoveOut, Update};
 
+mod acts;
 mod copies;
 mod identity;
 mod liveness;
