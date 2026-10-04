@@ -14,7 +14,8 @@ const PIN_SLOTS: usize = 4;
 /// it through, and answers `answer`. One whose future is dropped while it
 /// waits is counted in `dropped`.
 struct Held {
-    answer: Filled,
+    /// `None`: the fill panics.
+    answer: Option<Filled>,
     started: AtomicUsize,
     /// The files started, in order.
     order: Mutex<Vec<PathBuf>>,
@@ -24,6 +25,10 @@ struct Held {
 
 impl Held {
     fn new(answer: Filled) -> Arc<Self> {
+        Self::answering(Some(answer))
+    }
+
+    fn answering(answer: Option<Filled>) -> Arc<Self> {
         Arc::new(Self {
             answer,
             started: AtomicUsize::new(0),
@@ -54,7 +59,7 @@ impl PinFill for Held {
         let dropped = CountsDrop(Arc::clone(&self.dropped));
         self.gate.acquire().await.expect("never closed").forget();
         std::mem::forget(dropped);
-        self.answer
+        self.answer.expect("this fill panics")
     }
 }
 
@@ -91,6 +96,44 @@ async fn a_full_disk_drops_what_waits_and_asks_for_a_sweep() {
     assert_eq!(held.started(), PIN_SLOTS, "nothing that waited was tried");
     assert!(pins.take_resweep());
     assert!(!pins.take_resweep(), "asking settles it");
+}
+
+/// A download that panics is a failed one: its file leaves the queue, the others go on,
+/// and the next cycle is told to sweep.
+#[tokio::test]
+async fn a_download_that_panics_leaves_the_queue_and_asks_for_a_sweep() {
+    let held = Held::answering(None);
+    let pins = pins_for(&held);
+    pins.add(files(6));
+    until("four downloads under way", || held.started() == PIN_SLOTS).await;
+
+    held.gate.add_permits(1);
+    until("the next file started in its place", || held.started() == PIN_SLOTS + 1).await;
+    assert_eq!(pins.queued().len(), 5);
+    assert!(pins.take_resweep());
+    held.gate.add_permits(5);
+    until("the queue empty", || pins.queued().is_empty()).await;
+}
+
+/// A worker that panics leaves nothing behind: its downloads end, the queue is empty, a
+/// sweep is owed, and what is queued next is downloaded by another worker.
+#[tokio::test]
+async fn a_worker_that_panics_is_followed_by_another() {
+    let held = Held::new(Filled::Done);
+    let pins = pins_for(&held);
+    pins.add(files(6));
+    until("four downloads under way", || held.started() == PIN_SLOTS).await;
+
+    pins.worker_panics.store(true, Ordering::SeqCst);
+    pins.wake.notify_one();
+    until("the worker's downloads ended", || held.dropped.load(Ordering::SeqCst) == PIN_SLOTS).await;
+    assert!(pins.queued().is_empty());
+    assert!(pins.take_resweep());
+
+    assert_eq!(pins.add(files(2)), 2, "nothing is taken for pending any more");
+    until("another worker downloads them", || held.started() == PIN_SLOTS + 2).await;
+    held.gate.add_permits(2);
+    until("the queue empty", || pins.queued().is_empty()).await;
 }
 
 /// A Forget cancels the downloads under way and drops the rest.

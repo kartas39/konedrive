@@ -87,7 +87,7 @@ impl InodeLocks {
     /// dropped.
     pub async fn lock(&self, key: InodeKey) -> InodeGuard {
         let mutex = {
-            let mut map = self.inner.lock().unwrap();
+            let mut map = crate::panic::lock(&self.inner);
             let slot = map
                 .entry(key)
                 .or_insert_with(|| Slot { mutex: Arc::new(tokio::sync::Mutex::new(())), cancel: CancellationToken::new(), users: 0 });
@@ -113,7 +113,7 @@ impl InodeLocks {
     /// busy with is one recovery leaves alone anyway.
     pub fn try_lock(&self, key: InodeKey) -> Option<InodeGuard> {
         let mutex = {
-            let mut map = self.inner.lock().unwrap();
+            let mut map = crate::panic::lock(&self.inner);
             let slot = map
                 .entry(key)
                 .or_insert_with(|| Slot { mutex: Arc::new(tokio::sync::Mutex::new(())), cancel: CancellationToken::new(), users: 0 });
@@ -133,7 +133,7 @@ impl InodeLocks {
     /// its item (issue #104): whoever holds or awaits its lock — a fill — is
     /// told to stop ([`InodeGuard::cancelled`]). Whether anyone was.
     pub fn cancel(&self, key: InodeKey) -> bool {
-        match self.inner.lock().unwrap().get_mut(&key) {
+        match crate::panic::lock(&self.inner).get_mut(&key) {
             Some(slot) => {
                 slot.cancel.cancel();
                 // Whoever comes for the lock from now on gets a token of its
@@ -150,7 +150,7 @@ impl InodeLocks {
     /// without bound is the failure mode this number exists to rule out.
     #[cfg(test)]
     fn tracked(&self) -> usize {
-        self.inner.lock().unwrap().len()
+        crate::panic::lock(&self.inner).len()
     }
 
     /// How many callers are holding or waiting for one inode. Tests only,
@@ -160,7 +160,7 @@ impl InodeLocks {
     /// waiter has not started yet.
     #[cfg(test)]
     fn users(&self, key: InodeKey) -> usize {
-        self.inner.lock().unwrap().get(&key).map_or(0, |slot| slot.users)
+        crate::panic::lock(&self.inner).get(&key).map_or(0, |slot| slot.users)
     }
 }
 
@@ -173,7 +173,7 @@ struct Row {
 
 impl Drop for Row {
     fn drop(&mut self) {
-        let mut map = self.table.lock().unwrap();
+        let mut map = crate::panic::lock(&self.table);
         if let std::collections::hash_map::Entry::Occupied(mut slot) = map.entry(self.key) {
             debug_assert!(slot.get().users > 0, "a row cannot have fewer than one user");
             slot.get_mut().users = slot.get().users.saturating_sub(1);

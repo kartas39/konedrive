@@ -111,7 +111,7 @@ pub trait OutboxHost: Send + Sync {
     /// The time, in unix seconds, by the account's clock (`conditions::running::Clock`): a
     /// timed pause is over for the worker when it is for everything else of the account.
     fn now(&self) -> i64 {
-        crate::status::activity::unix_now()
+        crate::clock::unix_now()
     }
     /// Whether the account may change OneDrive now (`docs/design/writes.md` §2): asked
     /// before each row is taken, and between the fragments of an upload. `Err` says why not:
@@ -151,7 +151,7 @@ pub(crate) async fn cancel_session(store: &Store, drive: &DriveClient, url: &Ses
 /// none did.
 pub async fn cancel_given_up(store: &Store, drive: &DriveClient, limit: usize) -> bool {
     // With the look, the records of openings whose row left long ago go (issue #89).
-    let now = crate::status::activity::unix_now();
+    let now = crate::clock::unix_now();
     if let Err(e) = store.call(move |s| s.upload_openings_expire(now)).await {
         tracing::warn!("cannot expire the upload openings: {e}");
     }
@@ -365,7 +365,7 @@ impl OutboxHandle {
     /// Tells the worker to stop, without waiting for it: a request under way is cut off,
     /// and a file call it has begun ends first.
     pub fn cancel(&self) {
-        if let Some((cancel, _)) = self.run.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
+        if let Some((cancel, _)) = crate::panic::lock(&self.run).as_ref() {
             cancel.cancel();
         }
     }
@@ -378,7 +378,7 @@ impl OutboxHandle {
     /// [`OutboxWorker::stop`] cuts it. For good: not started again.
     pub fn close(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
         self.engine.close();
-        let handle = self.run.lock().unwrap_or_else(|p| p.into_inner()).as_mut().and_then(|(_, handle)| handle.take());
+        let handle = crate::panic::lock(&self.run).as_mut().and_then(|(_, handle)| handle.take());
         async move {
             if let Some(handle) = handle {
                 let _ = handle.await;
@@ -463,7 +463,7 @@ impl OutboxWorker {
     /// account becomes read-write, after the Full local scan). Rows a
     /// previous run left `running` are replayed first. Idempotent.
     pub fn start(&self) {
-        let mut task = self.handle.run.lock().unwrap_or_else(|p| p.into_inner());
+        let mut task = crate::panic::lock(&self.handle.run);
         if task.is_some() {
             return;
         }
@@ -482,7 +482,7 @@ impl OutboxWorker {
     /// ended.
     pub async fn stop(&self) {
         self.handle.cancel();
-        let handle = self.handle.run.lock().unwrap_or_else(|p| p.into_inner()).as_mut().and_then(|(_, handle)| handle.take());
+        let handle = crate::panic::lock(&self.handle.run).as_mut().and_then(|(_, handle)| handle.take());
         if let Some(handle) = handle {
             // Put back if this wait is cut, so that the next call waits for it.
             let mut waited = Waited { handle: Some(handle), run: &self.handle.run };
@@ -491,7 +491,7 @@ impl OutboxWorker {
             }
             waited.handle = None;
         }
-        *self.handle.run.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        *crate::panic::lock(&self.handle.run) = None;
         // What the host clears after this stays cleared.
         self.handle.engine.silence(true);
     }
@@ -512,7 +512,7 @@ struct Waited<'a> {
 
 impl Drop for Waited<'_> {
     fn drop(&mut self) {
-        if let (Some(handle), Some((_, slot))) = (self.handle.take(), self.run.lock().unwrap_or_else(|p| p.into_inner()).as_mut()) {
+        if let (Some(handle), Some((_, slot))) = (self.handle.take(), crate::panic::lock(self.run).as_mut()) {
             *slot = Some(handle);
         }
     }

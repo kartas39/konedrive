@@ -75,7 +75,7 @@ impl Share {
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Vec<Member>> {
-        self.files.lock().unwrap_or_else(|p| p.into_inner())
+        crate::panic::lock(&self.files)
     }
 
     /// How many streams each file in parts has now (tests).
@@ -268,7 +268,7 @@ async fn attempt(
 
 impl Attempt<'_> {
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|p| p.into_inner())
+        crate::panic::lock(&self.state)
     }
 
     fn untaken(&self) -> bool {

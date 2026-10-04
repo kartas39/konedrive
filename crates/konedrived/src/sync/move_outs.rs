@@ -110,7 +110,7 @@ impl SyncService {
             }
             let (mo, root, store, locks) = (mo.clone(), root.clone(), store.clone(), locks.clone());
             let task = runtime.spawn(async move { Tidy { mo: &mo, root: &root, store: &store, locks: &locks }.dropped(&rows).await });
-            let mut tidying = tidying.lock().unwrap_or_else(|p| p.into_inner());
+            let mut tidying = crate::panic::lock(&tidying);
             tidying.retain(|task| !task.is_finished());
             tidying.push(task);
         })

@@ -70,7 +70,7 @@ impl SyncService {
         let (Some(mut walked), Some(lock)) = (walked, lock) else { return };
         if self.root_locked(&reg.root).await {
             if let Some(now) = self.lock_after_walk(&reg.root, &mut walked, &stop).await {
-                *lock.lock().unwrap() = now;
+                *crate::panic::lock(&lock) = now;
             }
             stopped.publish();
             return;
@@ -99,10 +99,10 @@ impl SyncService {
             if stop.is_cancelled() {
                 return;
             }
-            *lock.lock().unwrap() = now;
+            *crate::panic::lock(&lock) = now;
             service.publish(&folder, |_| {});
         });
-        tasks.lock().unwrap_or_else(|p| p.into_inner()).push(task);
+        crate::panic::lock(&tasks).push(task);
     }
 
     /// Makes the folder ready for a sync: the lock as the mode wants it, the tree store

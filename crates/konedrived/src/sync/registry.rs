@@ -128,7 +128,7 @@ impl Registry {
         // Under the accounts' lock, as every later change is told: none is missed.
         let state = self.hub.state();
         account.state().update(|s| s.folder.helper_state = state);
-        let told = *self.told.lock().unwrap();
+        let told = *crate::panic::lock(&self.told);
         {
             let _telling = Telling::begin();
             account.hold_by(told.hold, told.conditions);
@@ -140,7 +140,7 @@ impl Registry {
     /// is routed to it, and it claims nothing.
     pub fn remove(&self, id: &AccountId) {
         self.list().retain(|(a, _)| a != id);
-        self.moved_out.lock().unwrap().remove(id);
+        crate::panic::lock(&self.moved_out).remove(id);
     }
 
     /// Every account, in account order.
@@ -165,12 +165,12 @@ impl Registry {
         debug_assert!(!TELLING.get(), "an account asked the registry while it was being told the hold");
         // A panic under the lock leaves the list as it was: every change of it is one call
         // on the vector. The daemon's stop reads it, and must not fail on a poisoned lock.
-        self.accounts.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        crate::panic::lock(&self.accounts)
     }
 
     /// The hold's settings every account runs on now.
     pub fn hold_settings(&self) -> HoldSettings {
-        self.told.lock().unwrap().hold
+        crate::panic::lock(&self.told).hold
     }
 
     /// The hold's settings, one pair for every account (`Accounts.SetPauseOnMetered`,
@@ -199,7 +199,7 @@ impl Registry {
     fn tell(&self, change: impl FnOnce(&mut Told)) -> bool {
         let accounts = self.list();
         let now = {
-            let mut told = self.told.lock().unwrap();
+            let mut told = crate::panic::lock(&self.told);
             let before = *told;
             change(&mut told);
             if *told == before {
@@ -218,7 +218,7 @@ impl Registry {
     /// what its outbox's `move-out` rows name (`docs/design/writes.md` §8). Replaces
     /// what it said before.
     pub(super) fn set_moved_out(&self, me: &AccountId, ids: HashSet<String>) {
-        let mut moved_out = self.moved_out.lock().unwrap();
+        let mut moved_out = crate::panic::lock(&self.moved_out);
         if ids.is_empty() {
             moved_out.remove(me);
         } else {
@@ -235,7 +235,7 @@ impl Registry {
     /// what it would miss, its own move-out keeps (`move_out::kept`).
     /// Blocking: a reconcile asks from its own thread.
     pub(super) fn claimed_elsewhere(&self, me: &AccountId, id: &str) -> bool {
-        if self.moved_out.lock().unwrap().iter().any(|(account, ids)| account != me && ids.contains(id)) {
+        if crate::panic::lock(&self.moved_out).iter().any(|(account, ids)| account != me && ids.contains(id)) {
             return true;
         }
         let drive = id.split_once('!').map(|(drive, _)| drive.to_owned());
@@ -255,11 +255,11 @@ impl Registry {
     /// The account whose moved-out objects include the file behind `fd`, by
     /// the item id it carries. Nothing is read while no account has any.
     async fn by_moved_out(&self, fd: &OwnedFd) -> Option<Arc<SyncService>> {
-        if self.moved_out.lock().unwrap().is_empty() {
+        if crate::panic::lock(&self.moved_out).is_empty() {
             return None;
         }
         let id = item_id_of(fd).await?;
-        let owner = self.moved_out.lock().unwrap().iter().find(|(_, ids)| ids.contains(&id)).map(|(account, _)| account.clone())?;
+        let owner = crate::panic::lock(&self.moved_out).iter().find(|(_, ids)| ids.contains(&id)).map(|(account, _)| account.clone())?;
         self.account(&owner)
     }
 

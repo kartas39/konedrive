@@ -21,7 +21,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 use tokio::sync::Notify;
 
@@ -47,7 +47,7 @@ pub struct SystemClock;
 
 impl Clock for SystemClock {
     fn now(&self) -> i64 {
-        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+        crate::clock::unix_now()
     }
 
     fn sleep_until(&self, at: i64) -> Pin<Box<dyn Future<Output = ()> + Send>> {
@@ -192,13 +192,13 @@ impl Running {
     }
 
     pub fn settings(&self) -> Settings {
-        self.inner.lock().unwrap().settings
+        crate::panic::lock(&self.inner).settings
     }
 
     /// Takes `change` into the settings; a thumbnail setting turned on wakes the filler.
     pub fn change(&self, change: impl FnOnce(&mut Settings)) {
         let (before, after) = {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = crate::panic::lock(&self.inner);
             let before = inner.settings;
             change(&mut inner.settings);
             (before, inner.settings)
@@ -209,12 +209,12 @@ impl Running {
     }
 
     pub fn hold_settings(&self) -> HoldSettings {
-        self.inner.lock().unwrap().hold
+        crate::panic::lock(&self.inner).hold
     }
 
     /// The global hold settings now; a change ends a `SyncAnyway`. Whether anything changed.
     pub fn set_hold_settings(&self, hold: HoldSettings) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = crate::panic::lock(&self.inner);
         if inner.hold == hold {
             return false;
         }
@@ -225,7 +225,7 @@ impl Running {
 
     /// What the sources say now; a change ends a `SyncAnyway`. Whether anything changed.
     pub fn set_conditions(&self, conditions: Conditions) -> bool {
-        let mut inner = self.inner.lock().unwrap();
+        let mut inner = crate::panic::lock(&self.inner);
         if inner.conditions == conditions {
             return false;
         }
@@ -236,12 +236,12 @@ impl Running {
 
     /// `SyncAnyway`: the hold is lifted until a source or the hold's settings change.
     pub fn sync_anyway(&self) {
-        self.inner.lock().unwrap().anyway = true;
+        crate::panic::lock(&self.inner).anyway = true;
     }
 
     /// Why the account holds back by itself now, if it does.
     pub fn held(&self) -> Option<Hold> {
-        let inner = self.inner.lock().unwrap();
+        let inner = crate::panic::lock(&self.inner);
         if inner.anyway {
             return None;
         }

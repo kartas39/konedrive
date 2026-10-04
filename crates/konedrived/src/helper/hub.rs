@@ -87,7 +87,7 @@ impl HelperHub {
 
     /// Where the helper's socket is. Defaults to `konedrive_proto::SOCKET_PATH`.
     pub fn set_socket(&self, path: impl Into<PathBuf>) {
-        *self.socket.lock().unwrap() = path.into();
+        *crate::panic::lock(&self.socket) = path.into();
     }
 
     /// What a punch goes by when nothing ties it to a link of its own
@@ -96,14 +96,14 @@ impl HelperHub {
     pub fn clearance(&self) -> Clearance {
         match self.link() {
             Some(link) => Clearance::Link(link),
-            None => Clearance::NoLink(self.socket.lock().unwrap().clone()),
+            None => Clearance::NoLink(crate::panic::lock(&self.socket).clone()),
         }
     }
 
     /// What `HelperState` asks while there is no link (HS1): `main`
     /// installs systemd ([`super::status::Systemd`]); a test, a fake.
     pub fn set_unit(&self, unit: Arc<dyn HelperUnit>) {
-        *self.unit.lock().unwrap() = unit;
+        *crate::panic::lock(&self.unit) = unit;
         self.changed.notify_one();
     }
 
@@ -122,7 +122,7 @@ impl HelperHub {
     /// has asked systemd. Every account sees the same.
     pub fn set_link(&self, link: Option<HelperLink>) {
         let now = if link.is_some() { HelperState::Connected } else { HelperState::Unknown };
-        let _publishing = self.publishing.lock().unwrap();
+        let _publishing = crate::panic::lock(&self.publishing);
         self.link.set(link);
         self.publish(now);
         drop(_publishing);
@@ -134,16 +134,16 @@ impl HelperHub {
     /// was being asked wins.
     pub async fn check(&self) {
         if self.link().is_some() {
-            let _publishing = self.publishing.lock().unwrap();
+            let _publishing = crate::panic::lock(&self.publishing);
             self.publish(HelperState::Connected);
             return;
         }
-        let unit = Arc::clone(&self.unit.lock().unwrap());
+        let unit = Arc::clone(&crate::panic::lock(&self.unit));
         let found = match unit.states().await {
             Some((load, active)) => super::status::state_of_unit(&load, &active),
             None => HelperState::Unknown,
         };
-        let _publishing = self.publishing.lock().unwrap();
+        let _publishing = crate::panic::lock(&self.publishing);
         if self.link().is_none() {
             self.publish(found);
         }

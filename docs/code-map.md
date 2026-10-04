@@ -74,7 +74,9 @@ The directories are in layer order: a directory uses only the directories before
 - `main.rs` — the program: reads the configuration, starts the daemon on the session bus,
   keeps the helper link up, and stops when a task it needs is gone.
 - `lib.rs` — the list of the directories below.
-- `panic.rs` — what a caught panic said, for the places that catch one and go on.
+- `clock.rs` — the wall clock, read in one place (`unix_now`).
+- `panic.rs` — what a caught panic said, and a lock taken whether or not a holder of it
+  panicked (`lock`, `read`, `write`), for the places that go on after a panic. `[tests]`
 - `tests/bench.rs` — the module `bench`: the outbox and the cloud side at scale, ignored
   tests run by hand in release.
 - `tests/fake_onedrive/mod.rs` — the module `fake_onedrive`: a fake OneDrive on wiremock, for
@@ -560,7 +562,8 @@ Design: `sync.md`; `writes.md` for the writes and the upload sessions.
 
 ### `crates/konedrive-graph/src/`
 
-- `lib.rs` — the list of the modules, and what each offers.
+- `lib.rs` — the list of the modules, and what each offers; `lock`, a lock taken whether or
+  not a holder of it panicked.
 - `oauth.rs` — the authorization URL and the token endpoint; the scopes. `[tests]`
 - `pkce.rs` — PKCE and random `state` values. `[tests]`
 - `loopback.rs` — the one-shot listener for the OAuth redirect. `[tests]`

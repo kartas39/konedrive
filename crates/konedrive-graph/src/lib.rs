@@ -22,3 +22,9 @@ pub mod pool;
 pub mod quickxor;
 pub mod secret;
 pub mod token;
+
+/// `mutex`, locked; also after a holder of it panicked. What is done under a lock of this
+/// crate is one assignment or one reading, so the data is whole either way.
+pub(crate) fn lock<T: ?Sized>(mutex: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}

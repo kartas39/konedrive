@@ -102,7 +102,7 @@ impl Modes {
     pub fn of(root: &File) -> io::Result<Arc<Modes>> {
         let meta = root.metadata()?;
         let key = (meta.dev(), meta.ino());
-        let mut folders = FOLDERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut folders = crate::panic::lock(&FOLDERS);
         folders.retain(|(_, modes)| modes.strong_count() > 0);
         if let Some(modes) = folders.iter().find(|(k, _)| *k == key).and_then(|(_, modes)| modes.upgrade()) {
             return Ok(modes);
@@ -121,7 +121,7 @@ impl Modes {
 
     pub fn hold(&self) -> ModesHeld<'_> {
         // The lock guards no data a panic could leave half-written.
-        ModesHeld(self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+        ModesHeld(crate::panic::lock(&self.0))
     }
 }
 

@@ -270,7 +270,7 @@ impl TransferPool {
     }
 
     fn lock(&self) -> MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+        crate::lock(&self.inner)
     }
 
     /// The limits from now on (`config.toml`'s `[transfers] max` and `large`, already

@@ -158,7 +158,7 @@ impl RunningSync {
     /// What the sync does about local changes.
     pub fn uploading(&self) -> Uploading {
         match self.writes() {
-            Some(Writes::Open { lock, .. }) => Uploading::Open(lock.lock().unwrap().clone()),
+            Some(Writes::Open { lock, .. }) => Uploading::Open(crate::panic::lock(lock).clone()),
             Some(Writes::Locked { note }) => Uploading::Locked(note.clone()),
             None => Uploading::Locked(None),
         }
@@ -181,7 +181,7 @@ impl Drop for RunningSync {
                 Writes::Open { watcher, outbox, .. } => (Some(watcher), Some(outbox)),
                 Writes::Locked { .. } => (None, None),
             };
-            self.ended.0.lock().unwrap_or_else(|p| p.into_inner()).push(Ending {
+            crate::panic::lock(&self.ended.0).push(Ending {
                 poller: Some(parts.poller),
                 outbox,
                 watcher,
@@ -252,7 +252,7 @@ impl Ending {
         }
         loop {
             if self.tidied.is_none() {
-                self.tidied = self.tidying.lock().unwrap_or_else(|p| p.into_inner()).pop();
+                self.tidied = crate::panic::lock(&self.tidying).pop();
             }
             let Some(task) = self.tidied.as_mut() else { break };
             let _ = task.await;
@@ -266,7 +266,7 @@ impl Ended {
     /// the parts not yet waited for stay, for the next call.
     pub async fn join(&self) {
         loop {
-            let Some(ending) = self.0.lock().unwrap_or_else(|p| p.into_inner()).pop() else { return };
+            let Some(ending) = crate::panic::lock(&self.0).pop() else { return };
             let mut waited = Waited { ending: Some(ending), ended: self };
             if let Some(ending) = waited.ending.as_mut() {
                 ending.join().await;
@@ -285,7 +285,7 @@ struct Waited<'a> {
 impl Drop for Waited<'_> {
     fn drop(&mut self) {
         if let Some(ending) = self.ending.take() {
-            self.ended.0.lock().unwrap_or_else(|p| p.into_inner()).push(ending);
+            crate::panic::lock(&self.ended.0).push(ending);
         }
     }
 }

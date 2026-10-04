@@ -204,7 +204,7 @@ impl Listing {
             Mode::ReadWrite(RwCycle { writes, tree, upload_differences, waiting }) => {
                 let writing = Writing {
                     machine: writes.machine_name.clone(),
-                    ignore: writes.ignore.read().unwrap_or_else(|p| p.into_inner()).clone(),
+                    ignore: crate::panic::read(&writes.ignore).clone(),
                     upload_differences,
                     waiting,
                     examine: Arc::clone(&writes.examine),
@@ -225,7 +225,7 @@ impl Listing {
             cancel: cancel.clone(),
             report: self.ctx.report.clone(),
             claimed,
-            drive: self.pending_drive.lock().unwrap().take(),
+            drive: crate::panic::lock(&self.pending_drive).take(),
             mode,
         };
         Ok((reconcile, Held { _turn: Arc::clone(turn), _lease: lease, _tree: tree }))
@@ -481,7 +481,7 @@ pub(crate) fn record(report: &Report, store: &Store, root: &Path, applied: &Appl
     // of the rest: it is gone there, and what stays is the user's own.
     let kept = applied.on_disk.kept.iter().map(|(rel, kept)| activity::event(Kind::Removed, shown(rel), kept_detail(*kept))).collect();
     events.extend(activity::capped(kept, activity::PER_KIND, &folder));
-    let at = activity::unix_now();
+    let at = crate::clock::unix_now();
     let conflicts: Vec<ConflictRow> = applied
         .on_disk
         .rescued

@@ -170,21 +170,21 @@ impl AccountManager {
     /// Makes `account` one of the daemon's, after every other: in the manager's list and
     /// in the registry, which nothing else writes.
     fn list(&self, account: Arc<Account>) {
-        let mut accounts = self.accounts.lock().unwrap();
+        let mut accounts = crate::panic::lock(&self.accounts);
         self.registry.add(&account.sync);
         accounts.push(account);
     }
 
     /// Takes `account` out of both lists.
     fn unlist(&self, account: &Account) {
-        let mut accounts = self.accounts.lock().unwrap();
+        let mut accounts = crate::panic::lock(&self.accounts);
         accounts.retain(|a| a.id != account.id);
         self.registry.remove(&account.id);
     }
 
     /// Every account, in the order it was added.
     pub fn accounts(&self) -> Vec<Arc<Account>> {
-        self.accounts.lock().unwrap().clone()
+        crate::panic::lock(&self.accounts).clone()
     }
 
     /// The account at `path`, if one is.
@@ -285,14 +285,14 @@ impl AccountManager {
     pub(crate) async fn export(&self, connection: &Connection, account: &Account) -> zbus::Result<()> {
         let path = account.path.as_ref();
         let signals = self.options.bus.export(connection, &path, Arc::clone(&account.account), Arc::clone(&account.sync)).await?;
-        account.signals.lock().unwrap().extend(signals);
+        crate::panic::lock(&account.signals).extend(signals);
         Ok(())
     }
 
     /// Takes `account`'s objects off the bus; `partly` when not all of them may be there.
     async fn unexport(&self, connection: &Connection, account: &Account, partly: bool) {
         let path = account.path.as_ref();
-        for signals in account.signals.lock().unwrap().drain(..) {
+        for signals in crate::panic::lock(&account.signals).drain(..) {
             signals.abort();
         }
         if let Err(e) = self.options.bus.unexport(connection, &path, partly).await {
@@ -582,7 +582,7 @@ async fn follow_mode(account: &Account) {
     let mode = changes.borrow().mode;
     account.sync.follow_mode(mode).await;
     let follower = tokio::spawn(crate::sync::mode::follow(changes, Arc::downgrade(&account.sync)));
-    account.signals.lock().unwrap().push(follower);
+    crate::panic::lock(&account.signals).push(follower);
 }
 
 /// `path` with its directory part resolved and its last component kept as it is — the file

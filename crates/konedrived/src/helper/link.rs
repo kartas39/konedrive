@@ -329,7 +329,7 @@ impl HelperLink {
 /// The queue of waiting callers, whatever a panic under it left: its content is replies to
 /// send, and each is still to be sent.
 fn waiting(pending: &PendingReplies) -> std::sync::MutexGuard<'_, VecDeque<oneshot::Sender<Reply>>> {
-    pending.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    crate::panic::lock(pending)
 }
 
 /// The writer thread: writes every call in order, pushing its reply onto the back of
@@ -519,16 +519,16 @@ impl LinkCell {
 
     /// The link, if there is one right now.
     pub fn get(&self) -> Option<HelperLink> {
-        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone()
+        crate::panic::lock(&self.0).clone()
     }
 
     pub fn is_linked(&self) -> bool {
-        self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).is_some()
+        crate::panic::lock(&self.0).is_some()
     }
 
     /// A new link, or its loss.
     pub fn set(&self, link: Option<HelperLink>) {
-        *self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = link;
+        *crate::panic::lock(&self.0) = link;
     }
 }
 

@@ -40,7 +40,7 @@ fn pool_class(class: Class) -> PoolClass {
 
 /// Unix seconds now.
 pub(super) fn now() -> i64 {
-    crate::status::activity::unix_now()
+    crate::clock::unix_now()
 }
 
 /// The worker looks at the outbox at least this often, woken or not.
@@ -181,12 +181,12 @@ impl Engine {
     }
 
     fn shared(&self) -> MutexGuard<'_, Shared> {
-        self.shared.lock().unwrap_or_else(|p| p.into_inner())
+        crate::panic::lock(&self.shared)
     }
 
     /// What is known of the space in OneDrive. Never held together with the loop's state.
     pub(super) fn space(&self) -> MutexGuard<'_, space::Space> {
-        self.space.lock().unwrap_or_else(|p| p.into_inner())
+        crate::panic::lock(&self.space)
     }
 
     /// What the outbox held when the worker last counted.
@@ -207,7 +207,7 @@ impl Engine {
     }
 
     pub(super) fn protection(&self) -> MutexGuard<'_, super::move_out::Protection> {
-        self.protection.lock().unwrap_or_else(|p| p.into_inner())
+        crate::panic::lock(&self.protection)
     }
 
     /// The helper is back without its marks: the `move-out` rows' objects
@@ -219,7 +219,7 @@ impl Engine {
 
     #[cfg(test)]
     pub(super) fn before_record(&self, row_dropped: std::sync::mpsc::Receiver<()>) {
-        let hook = self.record_hook.lock().unwrap().take();
+        let hook = crate::panic::lock(&self.record_hook).take();
         if let Some(hook) = hook {
             hook(row_dropped);
         }
@@ -235,7 +235,7 @@ impl Engine {
     /// A fault point of a step: the step stops here if a test armed it.
     #[cfg(test)]
     pub(super) fn fault(&self, fault: Fault) -> Result<(), Fail> {
-        let mut armed = self.faults.lock().unwrap_or_else(|p| p.into_inner());
+        let mut armed = crate::panic::lock(&self.faults);
         if let Some(i) = armed.iter().position(|f| *f == fault) {
             armed.remove(i);
             tracing::warn!("fault point {fault:?}: the outbox worker stops here");
@@ -246,7 +246,7 @@ impl Engine {
 
     #[cfg(test)]
     pub(crate) fn arm(&self, fault: Fault) {
-        self.faults.lock().unwrap_or_else(|p| p.into_inner()).push(fault);
+        crate::panic::lock(&self.faults).push(fault);
     }
 
     pub(super) fn wake(&self) {
@@ -326,7 +326,7 @@ impl Engine {
     /// one read before the other's change and handed over after it. A worker that was
     /// stopped hands over nothing ([`silence`](Self::silence)).
     pub(super) fn publish(&self) {
-        let mut published = self.published.lock().unwrap_or_else(|p| p.into_inner());
+        let mut published = crate::panic::lock(&self.published);
         if published.silent {
             return;
         }
@@ -341,7 +341,7 @@ impl Engine {
     /// one, the host hears no more of it — not from a task that outlives the stop (a
     /// detached `cycle_done`), which would put back what the host cleared after the stop.
     pub(super) fn silence(&self, silent: bool) {
-        self.published.lock().unwrap_or_else(|p| p.into_inner()).silent = silent;
+        crate::panic::lock(&self.published).silent = silent;
     }
 
     pub(super) fn upload_progress(&self, seq: i64, sent: u64, total: u64) {
