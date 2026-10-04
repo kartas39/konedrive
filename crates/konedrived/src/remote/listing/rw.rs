@@ -48,8 +48,8 @@ pub struct Writes {
     pub tree_lock: Arc<tokio::sync::Mutex<()>>,
     /// For conflict copies (§6): `name-<machine>.ext`.
     pub machine_name: String,
-    /// The account's ignore list: an ignored name is no upload a folder that
-    /// stopped being placed waits for.
+    /// The account's ignore list: what a removal keeps under an ignored
+    /// name stays on this computer only.
     pub ignore: crate::local::ignore::SharedIgnore,
     /// Says when the watcher has examined the folder once (its Full local
     /// scan): the folder's first cycle waits for it (§3.3). `None`, or a
@@ -127,7 +127,7 @@ impl Listing {
                     s.deferred_ids()
                 })
                 .await?;
-                let rw = RwCycle { writes, tree, upload_differences, waiting: Waiting { fetch_seq, consumed, whole_listing: true, brought: Vec::new() } };
+                let rw = RwCycle { writes, tree, upload_differences, waiting: Waiting { fetch_seq, consumed } };
                 Ok((self.reconcile(turn, Mode::ReadWrite(rw), Scope::Full, Commit::Swap { link, listing: false }, cancel).await?, 0))
             }
             Fetched::Changes { changes, link } => {
@@ -135,14 +135,13 @@ impl Listing {
                 let tree = self.tree_lock(writes, cancel).await?;
                 let changes = self.guard_delta(turn, changes, fetch_seq, cancel).await?;
                 let since = self.revisit_from.load(Ordering::SeqCst);
-                let brought: Vec<String> = changes.iter().map(|c| c.id().to_owned()).collect();
                 let staged = self.on_store(turn, move |s| s.stage_rw(&changes, since, full_requested)).await?;
                 let Some(RwStaged { ids, consumed }) = staged else {
                     self.on_store(turn, move |s| s.set_delta_link(&link)).await?;
                     return Ok((Reconciled::default(), count));
                 };
                 let scope = if full_requested || count > self.ctx.full_threshold { Scope::Full } else { Scope::Changed(ids) };
-                let rw = RwCycle { writes, tree, upload_differences: false, waiting: Waiting { fetch_seq, consumed, whole_listing: false, brought } };
+                let rw = RwCycle { writes, tree, upload_differences: false, waiting: Waiting { fetch_seq, consumed } };
                 Ok((self.reconcile(turn, Mode::ReadWrite(rw), scope, Commit::Swap { link, listing: false }, cancel).await?, count))
             }
         }

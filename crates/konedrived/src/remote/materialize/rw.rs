@@ -31,10 +31,12 @@
 //!   changed here stay, with their folders, their attributes off, and go up
 //!   as new; nothing is rescued out of the folder
 //!   (`resyncChangesUploadDifferences` keeps every download too, §3.7);
-//! - **lets what is no longer placed leave once its uploads are done**
-//!   (issue #104): its placement is the base's at once, its object stays
-//!   and is examined, and goes once nothing in it waits for the outbox
-//!   ([`Materializer::leaving_rw`]);
+//! - **lets what can no longer be placed wait where it is** (issue #104):
+//!   an item OneDrive still has and the folder cannot hold goes from the
+//!   disk whole, in the cycle, when nothing in it waits; while anything
+//!   does it stays an item like any other, placed by the base, and its
+//!   change waits with what it waits for ([`Policy::Unplaced`],
+//!   [`Materializer::wait_to_leave`]);
 //! - **forgets before it removes**: the local objects of everything it takes
 //!   off the disk are forgotten in the store first, so that no examination
 //!   can prove one gone and delete it in OneDrive
@@ -61,8 +63,6 @@ use konedrive_tree::{Kind, Located, Placement, Planned, Table, TreeError, TreeSt
 
 /// The holding directory in read-write mode: nothing in it leaves the folder.
 mod holding;
-/// What is no longer placed and stays on disk until its uploads are done (issue #104).
-mod leaving;
 
 /// What a read-write folder's reconcile needs to know besides the tree.
 #[derive(Debug, Default, Clone)]
@@ -92,8 +92,8 @@ pub struct Rw {
     /// left out and was downloaded here is uploaded again as new, and a
     /// downloaded file that differs from OneDrive's version is kept beside it.
     pub upload_differences: bool,
-    /// The account's ignore list: an ignored name is never uploaded, so it
-    /// keeps no folder that stopped being placed waiting on disk.
+    /// The account's ignore list: what a removal keeps under an ignored
+    /// name stays on this computer only.
     pub ignore: IgnoreList,
 }
 
@@ -200,15 +200,6 @@ impl Rw {
         }
     }
 
-    /// [`Self::removed`] for what is leaving, or is inside it.
-    pub(super) fn removed_leaving(&self) -> Policy {
-        if self.upload_differences {
-            Policy::Resync
-        } else {
-            Policy::RemovedLeaving
-        }
-    }
-
     /// Whether the cloud has something to put at item `id`'s name that the
     /// disk does not show: the new tree changes it, or no local object of it
     /// is on record. Otherwise an object of the user's there — a save by
@@ -234,8 +225,8 @@ enum Was {
     /// At its base place, and the new tree places it elsewhere: moved in
     /// OneDrive — or not the base's at all, as the read phase takes it.
     Moved,
-    /// At its base place, or where it stays while it leaves, and the new
-    /// tree does not have it: removed in OneDrive.
+    /// At its base place, and the new tree does not have it: removed in
+    /// OneDrive.
     Removed,
     /// At its base place, and the new tree has it but does not place it: no
     /// longer placeable here (issue #104).
@@ -255,8 +246,7 @@ fn swapped(planned: &Planned) -> bool {
 }
 
 /// Where the misplaced `entry` was, by its item's plan. It reads nothing and
-/// changes nothing: what stays while it leaves is told apart before it
-/// ([`Materializer::is_leaving_object`]).
+/// changes nothing.
 fn where_it_was(entry: &Scanned, planned: &Planned) -> Was {
     if swapped(planned) {
         return Was::Swapped;
@@ -271,9 +261,9 @@ fn where_it_was(entry: &Scanned, planned: &Planned) -> Was {
     };
     let at_base_place = base.row.parent_id == entry.parent_id && entry.rel.file_name() == Some(OsStr::new(&base.row.name)) && (base.row.kind == Kind::Folder) == entry.is_dir;
     if !base.placed() {
-        // Not placed by the base. Where the base has it, it is no longer
-        // placeable; anywhere else it is the user's move out of what is
-        // leaving, carried out as any other (issue #104).
+        // Not placed by the base, and here all the same: what a cycle that
+        // stopped left. Where the base has it, it is no longer placeable;
+        // anywhere else the examination decides first.
         return match (staged, placed) {
             (false, _) => Was::Removed,
             (true, false) if at_base_place => Was::Unplaced,
@@ -308,14 +298,17 @@ impl Materializer {
         // Directories a local change holds, with everything below them. The
         // scan lists a directory's entry before what is in it.
         let mut left_dirs: HashSet<PathBuf> = HashSet::new();
-        // Directories no longer placed, which stay on disk for now with
-        // everything in them, as it is (issue #104).
-        let mut leaving_dirs: HashSet<PathBuf> = HashSet::new();
+        // What is no longer placed (issue #104): each topmost object, taken
+        // off whole or left whole once what OneDrive moved out of it is in
+        // the holding directory; and what the scan lists below one, which
+        // follows it.
+        let mut unplaced: Vec<&Scanned> = Vec::new();
+        let mut unplaced_dirs: HashSet<PathBuf> = HashSet::new();
+        let mut below_unplaced: Vec<&Scanned> = Vec::new();
         // What moved in OneDrive goes to the holding directory, what it
         // removed goes in place: deepest first, in one order, so that nothing
         // is moved out from above what is still to be done below it.
         let mut misplaced: Vec<(&Scanned, bool)> = Vec::new();
-        let mut leaving = self.leaving_objects()?;
         for entries in scanned.chunks(PLAN_BATCH) {
             let rows = self.new_rows_of(entries)?;
             let plan = self.plan_misplaced(entries, &rows)?;
@@ -352,7 +345,18 @@ impl Materializer {
                     misplaced.push((entry, false));
                     continue;
                 }
-                if entry.rel.ancestors().skip(1).any(|a| leaving_dirs.contains(a)) {
+                if entry.rel.ancestors().skip(1).any(|a| unplaced_dirs.contains(a)) {
+                    // What OneDrive moved out of it to where the tree places
+                    // it is moved, as anywhere; the rest stays with it.
+                    let moved_out = is_misplaced(entry, rows.get(id))
+                        && where_it_was(entry, plan.of(id)) == Was::Moved
+                        && !(rw.held.contains(id) || rw.removing.contains(id))
+                        && !self.destination_held(rw, id, plan.of(id), run)?;
+                    if moved_out {
+                        misplaced.push((entry, false));
+                    } else {
+                        below_unplaced.push(entry);
+                    }
                     continue;
                 }
                 if entry.rel.ancestors().skip(1).any(|a| left_dirs.contains(a)) {
@@ -375,22 +379,34 @@ impl Materializer {
                     continue;
                 }
                 let planned = plan.of(id);
-                // What is below it stays with it, as it is: the leaving pass
-                // decides.
-                if self.is_leaving_object(&mut leaving, entry, id, planned)? {
-                    leaving_dirs.insert(entry.rel.clone());
-                    continue;
+                // What can no longer be placed, standing beside its base
+                // place under a copy name of it: stepped aside before a
+                // stop of the daemon. The base takes the name now.
+                let mut was = where_it_was(entry, planned);
+                if was == Was::Elsewhere && planned.new.is_some() && planned.new_place().is_none() {
+                    // Only where one object carries the id: with a copy
+                    // of it about, which is which is the examination's.
+                    let single = id_counts.get(id.as_str()).copied().unwrap_or(0) <= 1;
+                    if let Some(base) = planned.base_place().filter(|_| single) {
+                        if self.stepped_aside_before(rw, id, &base.rel)?.is_some_and(|aside| aside == entry.rel) {
+                            was = Was::Unplaced;
+                        }
+                    }
                 }
-                match (where_it_was(entry, planned), held) {
-                    // Whatever a local change holds, what OneDrive removed goes,
-                    // and what is no longer placed is the base's (issue #104).
+                match (was, held) {
+                    // Whatever a local change holds, what OneDrive removed goes.
                     (Was::Removed, _) => misplaced.push((entry, true)),
+                    // What is no longer placed goes whole or waits whole,
+                    // decided once the moves below are done.
                     (Was::Unplaced, _) => {
-                        self.unplace(&entry.rel, id, entry.is_dir, run)?;
-                        leaving = self.leaving_objects()?;
-                        leaving_dirs.insert(entry.rel.clone());
+                        run.leaving.insert(id.clone());
+                        unplaced.push(entry);
+                        if entry.is_dir {
+                            unplaced_dirs.insert(entry.rel.clone());
+                        }
                     }
                     (_, true) | (Was::Elsewhere, false) => leave(run, &mut left_dirs),
+                    (Was::Moved, false) if self.destination_held(rw, id, planned, run)? => leave(run, &mut left_dirs),
                     (Was::Moved, false) => misplaced.push((entry, false)),
                     (Was::Swapped | Was::Stranger, false) => {
                         if entry.is_dir {
@@ -406,7 +422,12 @@ impl Materializer {
             if removed {
                 let parent = entry.rel.parent().unwrap_or(Path::new(""));
                 let name = entry.rel.file_name().expect("a scanned entry has a name");
-                self.take_off(&self.disk.dir(parent)?, name, &entry.rel, rw.removed(), run)?;
+                if self.take_off(&self.disk.dir(parent)?, name, &entry.rel, rw.removed(), run)?.waits.is_some() {
+                    // A mount inside it: its removal waits.
+                    let id = entry.id.as_deref().expect("filtered above");
+                    run.left.insert(id.to_owned());
+                    run.out.pending.unsettled.insert(id.to_owned());
+                }
             } else {
                 self.to_holding(&entry.rel, entry.id.as_deref().expect("filtered above"), run)?;
             }
@@ -434,6 +455,21 @@ impl Materializer {
                 }
             }
         }
+        // What is no longer placed, once what OneDrive moved out of it is
+        // placed: one still in the holding directory keeps its folder.
+        unplaced.sort_by_key(|entry| std::cmp::Reverse(entry.depth));
+        for entry in unplaced {
+            self.check_cancel()?;
+            let id = entry.id.as_deref().expect("filtered above");
+            if self.take_off_or_wait(id, &entry.rel, entry.is_dir, run)? {
+                // It is left as it is, with what the scan listed below it.
+                let inside = below_unplaced.iter().filter(|below| below.rel.starts_with(&entry.rel)).filter_map(|below| below.id.clone());
+                for left in inside.chain([id.to_owned()]) {
+                    run.left.insert(left.clone());
+                    run.out.pending.unsettled.insert(left);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -453,6 +489,14 @@ impl Materializer {
         // Phase 1, by where things are now, deepest first.
         let mut here: Vec<(&String, &Located)> = scope.iter().filter_map(|id| Some((id, plan.of(id).base_place()?))).collect();
         here.sort_by_key(|h| std::cmp::Reverse(h.1.depth));
+        // What OneDrive still has and the new tree no longer places goes or
+        // waits whole (issue #104): only the topmost such item of a subtree
+        // is looked at, and what is no longer placed below it follows it.
+        let unplaced: Vec<&Located> = here.iter().filter(|(id, _)| plan.of(id).new.is_some() && plan.of(id).new_place().is_none() && !swapped(plan.of(id))).map(|(_, at)| *at).collect();
+        let below_another = |at: &Located| unplaced.iter().any(|above| above.rel != at.rel && at.rel.starts_with(&above.rel));
+        let mut covered: Vec<(&String, &Path)> = Vec::new();
+        let mut tops: Vec<(&String, &Path)> = Vec::new();
+        let mut later: Vec<(&String, PathBuf, bool)> = Vec::new();
         for (id, old) in here {
             self.check_cancel()?;
             if rw.removing.contains(id) {
@@ -460,18 +504,51 @@ impl Materializer {
             }
             let planned = plan.of(id);
             let placed_now = planned.new_place().is_some();
-            let parent = old.rel.parent().unwrap_or(Path::new(""));
-            let Some(name) = old.rel.file_name() else { continue };
-            let found = match self.disk.dir(parent) {
-                Ok(dir) => self.disk.probe(&dir, name)?,
-                Err(_) => Probe::Absent,
+            if swapped(planned) {
+                // Under the outbox's temporary name in OneDrive (F82 (5)):
+                // the base says where it is there, and its object stays.
+                run.out.on_disk.taken.insert(id.clone());
+                continue;
+            }
+            if planned.new.is_some() && !placed_now {
+                if below_another(old) {
+                    covered.push((id, &old.rel));
+                    continue;
+                }
+                tops.push((id, &old.rel));
+            }
+            // An item that can no longer be placed and is not where the base
+            // has it may have stepped aside before a stop of the daemon.
+            let unplaced_now = planned.new.is_some() && !placed_now;
+            let mut stood = old.rel.clone();
+            if unplaced_now {
+                let there = self.disk.dir(stood.parent().unwrap_or(Path::new(""))).ok().zip(stood.file_name()).map(|(dir, name)| self.disk.probe(&dir, name));
+                if !matches!(there, Some(Ok(Probe::Managed { id: ref there, .. })) if there == id) {
+                    if let Some(aside) = self.stepped_aside_before(rw, id, &stood)? {
+                        stood = aside;
+                    }
+                }
+            }
+            let held = rw.held.contains(id) && (stood == old.rel || self.store.call_blocking({ let id = id.clone(); move |s| s.outbox_for_item(&id) })?.iter().any(|row| !row.kind.removes()));
+            let parent = stood.parent().unwrap_or(Path::new(""));
+            let Some(name) = stood.file_name() else { continue };
+            // Whether nothing is there for sure: a folder that cannot be
+            // opened for another reason says nothing of what is in it.
+            let (found, looked) = match self.disk.dir(parent) {
+                Ok(dir) => (self.disk.probe(&dir, name)?, true),
+                Err(e) => (Probe::Absent, matches!(e.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR))),
             };
             let at_place = matches!(&found, Probe::Managed { id: found, .. } if found == id);
-            // A local change holds it — unless OneDrive removed it, or it is
-            // no longer placed, and its object is where the base has it: that
-            // goes, or is the base's, whatever holds it (issue #104).
-            if rw.held.contains(id) && (placed_now || !at_place) {
+            // A local change holds it — unless OneDrive removed it and its
+            // object is where the base has it: that goes, whatever holds it.
+            // What is no longer placed is looked at whole: a change that
+            // holds it is one more thing it waits for (issue #104).
+            if held && (placed_now || !at_place) {
                 run.out.pending.unsettled.insert(id.clone());
+                if planned.new.is_some() && !placed_now {
+                    // No longer placed, and the user's own move holds it.
+                    run.out.pending.waits.push((id.clone(), konedrive_tree::WaitsFor::Uploads(1).to_string()));
+                }
                 continue;
             }
             if !at_place {
@@ -480,8 +557,21 @@ impl Materializer {
                 // removal waits: the examination takes the local change
                 // on, and the outbox meets OneDrive's side (§6).
                 run.missing.insert(id.clone());
-                if !placed_now {
+                // No longer placed, not here, and no object of it on record:
+                // nothing an examination could still find. The base takes
+                // the change.
+                let nothing_left = looked && planned.new.is_some() && !placed_now && self.store.call_blocking({ let id = id.clone(); move |s| s.local_handle(&id) })?.is_none();
+                if nothing_left {
+                    run.out.on_disk.taken.insert(id.clone());
+                } else if !placed_now {
                     run.out.pending.unsettled.insert(id.clone());
+                    if planned.new.is_some() {
+                        // Not where the base has it, to be examined; or its
+                        // folder cannot be opened, and nothing is known.
+                        let at = old.rel.display().to_string();
+                        let waits = if looked { konedrive_tree::WaitsFor::Changes(at) } else { konedrive_tree::WaitsFor::UnknownState(at) };
+                        run.out.pending.waits.push((id.clone(), waits.to_string()));
+                    }
                 }
                 continue;
             }
@@ -489,10 +579,18 @@ impl Materializer {
                 continue;
             }
             match (&planned.new, placed_now) {
+                (Some(_), true) if self.destination_held(rw, id, planned, run)? => self.unsettle_tree(id, run)?,
                 (Some(_), true) => self.to_holding(&old.rel, id, run)?,
-                (Some(_), false) => self.unplace(&old.rel, id, matches!(found, Probe::Managed { is_dir: true, .. }), run)?,
+                // Once phase 2 has placed what OneDrive moved out of it.
+                (Some(_), false) => {
+                    run.leaving.insert(id.clone());
+                    later.push((id, stood.clone(), matches!(found, Probe::Managed { is_dir: true, .. })));
+                }
                 (None, _) => {
-                    self.take_off(&self.disk.dir(parent)?, name, &old.rel, rw.removed(), run)?;
+                    if self.take_off(&self.disk.dir(parent)?, name, &old.rel, rw.removed(), run)?.waits.is_some() {
+                        // A mount inside it: its removal waits.
+                        run.out.pending.unsettled.insert(id.clone());
+                    }
                 }
             }
         }
@@ -529,6 +627,21 @@ impl Materializer {
                 None => self.unsettle_tree(&row.id, run)?,
             }
         }
+
+        // What is no longer placed goes whole or waits whole, deepest
+        // first, and what is no longer placed below it follows it.
+        for (id, rel, is_dir) in later {
+            self.check_cancel()?;
+            self.take_off_or_wait(id, &rel, is_dir, run)?;
+        }
+        for (id, rel) in covered {
+            let top = tops.iter().find(|(_, above)| rel.starts_with(above)).map(|(top, _)| *top);
+            if top.is_some_and(|top| run.out.on_disk.taken.contains(top)) {
+                run.out.on_disk.taken.insert(id.clone());
+            } else {
+                run.out.pending.unsettled.insert(id.clone());
+            }
+        }
         Ok(())
     }
 
@@ -563,6 +676,195 @@ impl Materializer {
             return Ok(false);
         }
         Ok(true)
+    }
+
+    /// The object of item `id`, which can no longer be placed, is taken off
+    /// the disk at `rel`, where this run found it, or waits there
+    /// ([`Self::wait_to_leave`]); whether it waits. Where it stepped aside
+    /// in this run, there. Only its own object: should something else stand
+    /// at the path, nothing is touched and the item waits for the next
+    /// cycle to look.
+    fn take_off_or_wait(&self, id: &str, rel: &Path, is_dir: bool, run: &mut Run) -> Result<bool, ApplyError> {
+        // Where it stands now: where it stepped aside to in this run, or in
+        // its folder, wherever this run put that.
+        let stands = self.stands_now(id, rel, run)?;
+        let rel = stands.as_path();
+        let (parent, name) = (rel.parent().unwrap_or(Path::new("")), rel.file_name().ok_or_else(|| ApplyError::Io(format!("{} has no name", rel.display())))?);
+        let dir = self.disk.dir(parent)?;
+        let waits = match self.disk.probe(&dir, name)? {
+            Probe::Managed { id: there, .. } if there == id => self.take_off(&dir, name, rel, Policy::Unplaced, run)?.waits,
+            _ => Some(konedrive_tree::WaitsFor::Cycle),
+        };
+        match waits {
+            Some(waits) => {
+                self.wait_to_leave(id, rel, is_dir, waits, run)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Whether the place the new tree gives item `id` is held by a local
+    /// change: another item's object there that a row holds, that the base
+    /// does not have there, or that this run left; a file or folder made
+    /// here whose row waits; or another item's object that is itself to
+    /// move and whose own new place is held — a chain of names that hangs
+    /// on a local change, followed to its end. The item is then left where
+    /// it is, with what is below it, and its move waits: taken to the
+    /// holding directory it could only be put back, and under another name
+    /// if its own was taken meanwhile. Asked of the disk and the plan, not
+    /// of what this run did so far, so the answer does not depend on the
+    /// order the items are looked at in.
+    fn destination_held(&self, rw: &Rw, id: &str, planned: &Planned, run: &Run) -> Result<bool, ApplyError> {
+        self.held_from(rw, id, planned, run, &mut HashSet::new())
+    }
+
+    fn held_from(&self, rw: &Rw, id: &str, planned: &Planned, run: &Run, seen: &mut HashSet<String>) -> Result<bool, ApplyError> {
+        // Names that only go round (an exchange) hang on nothing.
+        if !seen.insert(id.to_owned()) {
+            return Ok(false);
+        }
+        let Some(to) = planned.new_place() else { return Ok(false) };
+        let Some(name) = to.rel.file_name() else { return Ok(false) };
+        let Ok(dir) = self.disk.dir(to.rel.parent().unwrap_or(Path::new(""))) else { return Ok(false) };
+        Ok(match self.disk.probe(&dir, name)? {
+            Probe::Managed { id: other, .. } if other != id && !run.leaving.contains(&other) => {
+                if self.holds_the_name(rw, &other, &to.rel, run)? {
+                    return Ok(true);
+                }
+                let theirs = self.store.call_blocking({ let other = other.clone(); move |s| s.plan(&[other]) })?;
+                let theirs = theirs.of(&other);
+                // It stands where the base has it: held if the tree moves it
+                // on to a place that is held.
+                theirs.new_place().is_some_and(|next| next.rel != to.rel) && self.held_from(rw, &other, theirs, run, seen)?
+            }
+            Probe::Unmanaged { .. } => rw.pending_at(&to.rel),
+            _ => false,
+        })
+    }
+
+    /// Where the object of item `id`, which this run found at `rel`, stands
+    /// by now: at the name it stepped aside to, or under the name the base
+    /// has, in the directory that carries its folder's id — which this run
+    /// may have moved since it looked.
+    fn stands_now(&self, id: &str, rel: &Path, run: &Run) -> Result<PathBuf, ApplyError> {
+        if let Some(aside) = run.aside.get(id) {
+            return Ok(aside.clone());
+        }
+        let Some(base) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Items, &id) })? else { return Ok(rel.to_path_buf()) };
+        let Some(folder) = base.parent_id.as_deref() else { return Ok(rel.to_path_buf()) };
+        Ok(self.dir_of(folder, run)?.map_or_else(|| rel.to_path_buf(), |dir| dir.join(&base.name)))
+    }
+
+    /// Where the directory of folder `id` stands now: of the places it can
+    /// be — where it stepped aside to, where the new tree places it, where
+    /// the base has it — the first at which a directory carries its id.
+    pub(super) fn dir_of(&self, id: &str, run: &Run) -> Result<Option<PathBuf>, ApplyError> {
+        if id == self.root_item_id {
+            return Ok(Some(PathBuf::new()));
+        }
+        let asked = id.to_owned();
+        let (new, base) = self.store.call_blocking(move |s| Ok((s.locate(Table::Staging, &asked)?, s.locate(Table::Items, &asked)?)))?;
+        let places = run.aside.get(id).cloned().into_iter().chain([new, base].into_iter().flatten().filter(|at| at.placed).map(|at| at.rel));
+        for place in places {
+            let (Some(name), parent) = (place.file_name(), place.parent().unwrap_or(Path::new(""))) else { continue };
+            let Ok(dir) = self.disk.dir(parent) else { continue };
+            if matches!(self.disk.probe(&dir, name), Ok(Probe::Managed { id: there, is_dir: true }) if there == id) {
+                return Ok(Some(place));
+            }
+        }
+        Ok(None)
+    }
+
+    /// The yielding rule. The object of item `id` at `dir/name` (at `rel`)
+    /// can no longer be placed, and another item takes its name in this
+    /// run: it is renamed in its directory to the first free copy name
+    /// (`name-<machine>.ext`), never over anything, keeping its attributes,
+    /// and the base follows to that name at once
+    /// ([`TreeStore::step_aside`]). The base and the disk agree, so no
+    /// examination takes the new name for a rename made here and nothing is
+    /// sent; the item leaves from there, or waits there, as it would have
+    /// where it stood. Always this side yields, so no item waits for a name
+    /// that waits for it.
+    ///
+    /// [`TreeStore::step_aside`]: konedrive_tree::TreeStore::step_aside
+    ///
+    /// Whether it stepped aside: not an item that is itself a mount point,
+    /// which cannot be renamed. That one keeps its name and waits, saying
+    /// so, and what takes its name waits for it.
+    pub(super) fn step_aside(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, id: &str, run: &mut Run) -> Result<bool, ApplyError> {
+        let original = name.to_str().ok_or_else(|| ApplyError::Io(format!("{} has a name that is not UTF-8", rel.display())))?;
+        for n in 1..=100 {
+            let candidate = copy_name(original, &rw.machine, n);
+            match self.disk.rename(dir, name, dir, OsStr::new(&candidate)) {
+                Ok(()) => {
+                    let aside = rel.with_file_name(&candidate);
+                    let (id, from, to) = (id.to_owned(), rel.to_path_buf(), aside.clone());
+                    run.aside.insert(id.clone(), aside.clone());
+                    self.store.call_blocking(move |s| s.step_aside(&id, &from, &to, &candidate, false))?;
+                    tracing::info!("{} can no longer be placed here and its name is taken by another item: it is {} for now", rel.display(), aside.display());
+                    return Ok(true);
+                }
+                Err(e) if e.raw_os_error() == Some(libc::EEXIST) => continue,
+                Err(e) if e.raw_os_error() == Some(libc::EBUSY) => return Ok(false),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        Err(ApplyError::Io(format!("no free name to step {} aside to", rel.display())))
+    }
+
+    /// The object of item `id`, which can no longer be placed, is not where
+    /// the base has it (`rel`): whether it stands beside that place under a
+    /// copy name of the base's — a step aside whose record a stop of the
+    /// daemon cut off. Then the base takes the name now, and a rename an
+    /// examination recorded for it since goes; where it stands.
+    fn stepped_aside_before(&self, rw: &Rw, id: &str, rel: &Path) -> Result<Option<PathBuf>, ApplyError> {
+        let (Some(name), parent) = (rel.file_name().and_then(OsStr::to_str), rel.parent().unwrap_or(Path::new(""))) else { return Ok(None) };
+        let Ok(dir) = self.disk.dir(parent) else { return Ok(None) };
+        for n in 1..=100 {
+            let candidate = copy_name(name, &rw.machine, n);
+            match self.disk.probe(&dir, OsStr::new(&candidate))? {
+                Probe::Managed { id: there, .. } if there == id => {
+                    let aside = rel.with_file_name(&candidate);
+                    let (id, from, to) = (id.to_owned(), rel.to_path_buf(), aside.clone());
+                    self.store.call_blocking(move |s| s.step_aside(&id, &from, &to, &candidate, true))?;
+                    tracing::info!("{} was stepped aside before a stop of the daemon: it is {} in the base too now", rel.display(), aside.display());
+                    return Ok(Some(aside));
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
+    }
+
+    /// Item `id`, at `rel`, can no longer be placed and cannot go yet
+    /// ([`Policy::Unplaced`]): its change waits, with what it waits for, and
+    /// so does everything the base or the new tree has below it — but for
+    /// what this run took off the disk or took out of it to place
+    /// elsewhere. The base keeps it placed, with its recorded object. Where
+    /// the disk holds what no examination has recorded, the place is handed
+    /// to the watcher.
+    pub(super) fn wait_to_leave(&self, id: &str, rel: &Path, is_dir: bool, waits: konedrive_tree::WaitsFor, run: &mut Run) -> Result<(), ApplyError> {
+        use konedrive_tree::WaitsFor;
+        tracing::debug!("{} can no longer be placed here; it stays until nothing in it waits ({waits})", rel.display());
+        let folder = id.to_owned();
+        let below = self.store.call_blocking(move |s| {
+            let mut ids = s.descendants(Table::Staging, &folder)?;
+            ids.extend(s.descendants(Table::Items, &folder)?);
+            Ok(ids)
+        })?;
+        for id in below {
+            if !run.out.on_disk.taken.contains(&id) && !run.moved_from.contains_key(&id) {
+                run.out.pending.unsettled.insert(id);
+            }
+        }
+        run.out.pending.unsettled.insert(id.to_owned());
+        let said = waits.to_string();
+        if matches!(waits, WaitsFor::Changes(_) | WaitsFor::OpenForWriting(_)) {
+            run.out.on_disk.examine.push((rel.to_path_buf(), is_dir));
+        }
+        run.out.pending.waits.push((id.to_owned(), said));
+        Ok(())
     }
 
     /// `id` and everything the base or the new tree has below it wait.

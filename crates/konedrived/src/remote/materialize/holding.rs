@@ -45,9 +45,14 @@ impl Materializer {
         let dir = self.disk.dir(parent)?;
         self.disk.rename(&dir, name, &holding, OsStr::new(id))?;
         run.moved_from.entry(id.to_owned()).or_insert_with(|| rel.to_path_buf());
-        // What is leaving inside it goes along (issue #104).
-        let (from, to) = (rel.to_path_buf(), PathBuf::from(HOLDING).join(id));
-        self.store.call_blocking(move |s| s.leaving_rebase(&from, &to))?;
+        // Read-write mode: the rows of what waits below a folder travel with
+        // it, each folder's with its own: by the path it has in the holding
+        // directory, which no other folder has, and from there to where it
+        // is placed or put back.
+        if self.rw.is_some() {
+            let rebase = [konedrive_tree::outbox::OutboxOp::Rebase { from: rel.to_path_buf(), to: PathBuf::from(HOLDING).join(id) }];
+            self.store.call_blocking(move |s| s.outbox_apply(&rebase, 0))?;
+        }
         Ok(())
     }
 

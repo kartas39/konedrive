@@ -34,6 +34,8 @@ mod file;
 mod holding;
 /// The one way a managed object is taken off the disk: forgotten first.
 mod removal;
+#[cfg(test)]
+pub(in crate::remote) use removal::testing::before_the_next_removal;
 /// One downloaded file swapped for its new version.
 mod replace;
 use file::cloud_time;
@@ -101,8 +103,8 @@ pub struct OnDisk {
     /// here, holding local work, to be made again there (F116).
     pub recreated: Vec<String>,
     /// Items whose change the base takes in this cycle whatever a local
-    /// change holds — removed in OneDrive and taken off the disk, or, in
-    /// read-write mode, no longer placed here (issue #104). Never deferred.
+    /// change holds — removed in OneDrive, or no longer placed here, and
+    /// taken off the disk. Never deferred.
     pub taken: HashSet<String>,
     /// Read-write mode: what was removed in OneDrive and stays here in
     /// part, relative to the root, with what stays. One entry for the
@@ -192,11 +194,16 @@ pub struct Pending {
     /// Downloaded files whose content changed in the cloud, to be replaced
     /// once the cycle is done.
     pub replacements: Vec<Replacement>,
+    /// Read-write mode: of the unsettled items, those OneDrive still has
+    /// and the folder cannot hold any more, each with what keeps it here
+    /// (a [`konedrive_tree::WaitsFor`], as stored).
+    pub waits: Vec<(String, String)>,
 }
 
 impl Pending {
     fn add(&mut self, other: Pending) {
-        let Pending { unsettled, content_waits, replacements } = other;
+        let Pending { unsettled, content_waits, replacements, waits } = other;
+        self.waits.extend(waits);
         self.unsettled.extend(unsettled);
         self.content_waits.extend(content_waits);
         self.replacements.extend(replacements);
@@ -340,9 +347,13 @@ struct Run {
     placed: Vec<(String, konedrive_fs::handle::FileHandle)>,
     /// What removals left in place so far, as the user's own.
     kept: Kept,
-    /// Read-write mode: items this run found no longer placed (issue #104):
-    /// examined first, and removed by a later cycle at the earliest.
-    unplaced: HashSet<String>,
+    /// Read-write mode: items that can no longer be placed, whose objects
+    /// this run takes off, or leaves, once everything else is placed. One
+    /// that stands at a name another item takes in this run steps aside
+    /// for it ([`Materializer::step_aside`]).
+    leaving: HashSet<String>,
+    /// Where each of those that stepped aside stands now.
+    aside: HashMap<String, PathBuf>,
 }
 
 /// Placed items recorded in one transaction (issue #39; a guess).
@@ -462,7 +473,6 @@ impl Materializer {
         match &self.rw {
             None => self.drain_holding(run)?,
             Some(rw) => {
-                self.leaving_rw(rw, run)?;
                 self.drain_holding_rw(rw, run)?;
             }
         }
@@ -679,9 +689,21 @@ impl Materializer {
                     Some(rw) => self.copy_aside(rw, &dir, name, &rel, run)?,
                 }
             }
+            // What can no longer be placed yields its name: it steps aside
+            // where it is, and leaves from there, or waits there.
+            Probe::Managed { id, .. } if self.rw.is_some() && run.leaving.contains(&id) => {
+                let rw = self.rw.as_ref().expect("read-write mode");
+                if !self.step_aside(rw, &dir, name, &rel, &id, run)? {
+                    run.out.pending.unsettled.insert(row.id.clone());
+                    return Ok(None);
+                }
+            }
             Probe::Managed { id, .. } => {
                 if let Some(rw) = &self.rw {
-                    if self.holds_the_name(rw, &id, &rel, run)? {
+                    // Held by a local change, or an item whose own move
+                    // waits in this run: it keeps the name, and this one
+                    // waits behind it.
+                    if self.holds_the_name(rw, &id, &rel, run)? || run.out.pending.unsettled.contains(&id) {
                         run.out.pending.unsettled.insert(row.id.clone());
                         return Ok(None);
                     }
@@ -716,9 +738,11 @@ impl Materializer {
                         self.mark(&waiting, &rel)?;
                     }
                     self.disk.rename(&holding, OsStr::new(&row.id), &dir, name)?;
-                    {
-                        let (from, to) = (PathBuf::from(HOLDING).join(&row.id), rel.clone());
-                        self.store.call_blocking(move |s| s.leaving_rebase(&from, &to))?;
+                    // The rows below a folder went to the holding directory
+                    // with it, and follow it out.
+                    if is_folder && self.rw.is_some() {
+                        let rebase = [konedrive_tree::outbox::OutboxOp::Rebase { from: PathBuf::from(HOLDING).join(&row.id), to: rel.clone() }];
+                        self.store.call_blocking(move |s| s.outbox_apply(&rebase, 0))?;
                     }
                     self.record_placed(run, &dir, name, &row.id)?;
                     run.out.counts.moved += 1;

@@ -77,13 +77,14 @@ fn an_installed_versions_store_opens_with_what_it_held() {
 
     assert_eq!(s.delta_link().unwrap().as_deref(), Some("link-1"), "not rebuilt");
     assert_eq!(s.get(Table::Items, "A").unwrap().map(|row| (row.name, row.kind, row.placement)), Some(("a.txt".into(), Kind::File, Placement::Placed)));
-    assert_eq!(s.get(Table::Items, "L").unwrap().unwrap().placement, Placement::Skipped(SkipReason::NameTooLong));
+    // What was leaving waits: placed where its object stayed, its row as
+    // OneDrive has it deferred.
+    assert_eq!(s.locate(Table::Items, "I").unwrap().map(|at| (at.rel, at.placed)), Some((PathBuf::from("long/inside.txt"), true)));
+    assert!(matches!(s.deferred("L").unwrap(), Some(Change::Upsert(row)) if row.placement == Placement::Skipped(SkipReason::NameTooLong)));
     assert_eq!(s.local_handle("B").unwrap(), Some(handle(3)));
     assert_eq!(s.outbox_seq().unwrap(), 12);
     assert_eq!(s.committed_since(10).unwrap().get("GONE"), Some(&Committed { etag: None, gone: true }));
-    assert_eq!(s.deferred_ids().unwrap(), ["B", "DG"]);
-    assert_eq!(s.leaving().unwrap(), [("L".to_owned(), PathBuf::from("long"))]);
-    assert!(s.leaving_had("I").unwrap());
+    assert_eq!(s.deferred_ids().unwrap(), ["B", "DG", "L"]);
     assert_eq!(s.recent_activity(5).unwrap().len(), 1);
     assert_eq!(s.conflicts().unwrap()[0].kind, ConflictKind::Copy);
     assert_eq!(s.local_skipped().unwrap()[0].rel, Path::new("link"));
@@ -116,10 +117,123 @@ fn an_installed_versions_store_opens_with_what_it_held() {
     // kept without it, as the trigger kept it.
     assert_eq!(s.upload_opening_windows("R", "left.txt").unwrap(), [(1200, 1200)]);
     assert_eq!(s.upload_opening_windows("R", "opening.txt").unwrap(), [(1100, 1100)]);
-    s.outbox_drop(2, None, None, None).unwrap();
+    s.outbox_drop(2, None, None).unwrap();
     assert_eq!(s.upload_opening_windows("R", "OPENING.txt").unwrap(), [(1100, 1100)]);
     s.upload_openings_expire(i64::MAX).unwrap();
     assert!(s.upload_opening_windows("R", "opening.txt").unwrap().is_empty(), "and it left now: it goes when its time is over");
+}
+
+/// A store of version 7, written by hand in the shape a build of `dev` at
+/// `98b14f5` leaves: a folder that is leaving with rows waiting in it, a
+/// file that is leaving, one placed again elsewhere, one whose folder the
+/// base does not have, and one moved in OneDrive into the Personal Vault.
+const VERSION_7: &str = include_str!("tests/v7.sql");
+
+/// What was leaving the folder in a store of version 7 waits in version 8:
+/// the item is placed again where its object stayed, with that object, and
+/// the row OneDrive has of it is its deferred change, which no commit on
+/// record supersedes. Nothing queued is lost, and nothing is left that the
+/// daemon would rename back, delete, or upload beside its item:
+///
+/// - a content row of the leaving item itself is one against the place the
+///   disk has, so it sends no name;
+/// - a row blocked by a `404` is ready again;
+/// - what was inside a leaving folder is placed with it, with no object on
+///   record: an examination records what it finds in place, and proves
+///   nothing gone; a content row there whose file has another name than
+///   OneDrive has for the item goes, since it would send the old name back;
+/// - one that cannot be carried (placed again elsewhere, or its folder not
+///   in the base) is only dropped: its content row goes, since its object
+///   is a copy now and goes up as new, and a new file's row there asks the
+///   directory for its folder;
+/// - a row the base does not place keeps no local object.
+#[test]
+fn what_was_leaving_waits_after_the_upgrade_and_nothing_queued_is_lost() {
+    let (_dir, path) = store_of(VERSION_7);
+    let mut s = TreeStore::open(&path).unwrap();
+    assert_eq!(s.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
+    assert_eq!(shape(&s.conn), new_shape());
+    assert_eq!(s.delta_link().unwrap().as_deref(), Some("link-7"), "not rebuilt");
+    let place = |s: &TreeStore, id: &str| s.locate(Table::Items, id).unwrap().map(|at| (at.rel.display().to_string(), at.placed));
+    let (long_folder, long_file) = ("l".repeat(300), format!("{}.txt", "f".repeat(300)));
+
+    // The folder, the file, and the file moved into the Personal Vault.
+    assert_eq!(place(&s, "L"), Some(("old".into(), true)));
+    assert_eq!((place(&s, "I"), place(&s, "J")), (Some(("old/inside.txt".into(), true)), Some(("old/sub/deep.txt".into(), true))));
+    assert_eq!((s.local_handle("L").unwrap(), s.local_handle("I").unwrap()), (Some(handle(5)), None));
+    assert_eq!(s.local_handle("J").unwrap(), None, "an object a build before left below it would prove a delete");
+    // A folder that was leaving inside it is carried into it, whatever the
+    // order of their ids, with what waits in it.
+    assert_eq!((place(&s, "B"), s.local_handle("B").unwrap()), (Some(("old/in".into(), true)), Some(handle(12))));
+    assert_eq!(place(&s, "C"), Some(("old/in/c.txt".into(), true)));
+    assert_eq!((place(&s, "F"), s.local_handle("F").unwrap()), (Some(("d/f.txt".into(), true)), Some(handle(6))));
+    assert_eq!((place(&s, "W"), s.local_handle("W").unwrap()), (Some(("d/w.txt".into(), true)), Some(handle(9))));
+    // A removal in OneDrive that already waited for the item is newer than
+    // the base's row: it is what waits, and it is not superseded.
+    assert_eq!((place(&s, "Y"), s.deferred("Y").unwrap()), (Some(("d/y.txt".into(), true)), Some(Change::Delete("Y".into()))));
+    assert_eq!(s.local_handle("Y").unwrap(), Some(handle(14)));
+    let waits = |s: &mut TreeStore| s.live_deferred().unwrap().into_iter().filter_map(|change| match change {
+        Change::Upsert(row) => Some((row.id, row.parent_id.unwrap(), row.name, row.placement)),
+        Change::Delete(id) => {
+            assert_eq!(id, "Y");
+            None
+        }
+        other => panic!("{other:?}"),
+    }).collect::<Vec<_>>();
+    assert_eq!(waits(&mut s), [
+        ("A".into(), "D".into(), "a.txt".into(), Placement::Placed),
+        ("B".into(), "L".into(), "b".repeat(300), Placement::Skipped(SkipReason::NameTooLong)),
+        ("F".into(), "D".into(), long_file.clone(), Placement::Skipped(SkipReason::NameTooLong)),
+        ("L".into(), "R".into(), long_folder.clone(), Placement::Skipped(SkipReason::NameTooLong)),
+        ("W".into(), "V".into(), "w.txt".into(), Placement::Placed),
+    ], "each as OneDrive has it, and none superseded by a commit on record");
+    assert_eq!(
+        s.skipped().unwrap().into_iter().map(|line| (line.rel.display().to_string(), line.reason, line.waits)).collect::<Vec<_>>(),
+        [
+            ("Personal Vault".to_owned(), SkipReason::PersonalVault, None),
+            ("Personal Vault/w.txt".to_owned(), SkipReason::PersonalVault, Some(WaitsFor::Cycle)),
+            (format!("d/{long_file}"), SkipReason::NameTooLong, Some(WaitsFor::Cycle)),
+            ("k".repeat(300), SkipReason::NameTooLong, None),
+            (long_folder, SkipReason::NameTooLong, Some(WaitsFor::Cycle)),
+            ("n".repeat(300), SkipReason::NameTooLong, None),
+        ]
+    );
+    // The next cycle stages what waits over the base, which it differs from.
+    let staged = s.stage_rw(&[], 20, false).unwrap().unwrap();
+    for id in ["B", "F", "L", "W"] {
+        assert!(staged.ids.contains(&id.to_owned()), "{id}");
+        assert!(!s.locate(Table::Staging, id).unwrap().is_some_and(|at| at.placed), "{id} is to leave");
+    }
+
+    // Not carried: placed again elsewhere, and a folder the base has not.
+    assert_eq!((place(&s, "P"), s.local_handle("P").unwrap()), (Some(("d/p.txt".into(), true)), Some(handle(7))));
+    assert_eq!(s.get(Table::Items, "N").unwrap().unwrap().placement, Placement::Skipped(SkipReason::NameTooLong));
+    assert_eq!(s.local_handle("X").unwrap(), None, "below a folder that is not placed");
+    assert_eq!(s.local_handle("A").unwrap(), Some(handle(2)));
+
+    let rows = s.outbox_rows().unwrap();
+    assert_eq!(rows.iter().map(|row| (row.seq, row.kind, row.state, row.reason.clone())).collect::<Vec<_>>(), [
+        (1, OutboxKind::Update, OutboxState::Ready, None),
+        (2, OutboxKind::Create, OutboxState::Ready, None),
+        (3, OutboxKind::Update, OutboxState::Ready, None),
+        (4, OutboxKind::Update, OutboxState::Ready, None),
+        (6, OutboxKind::Create, OutboxState::Ready, None),
+        (7, OutboxKind::Delete, OutboxState::Ready, None),
+        (9, OutboxKind::Update, OutboxState::Ready, None),
+        (10, OutboxKind::Create, OutboxState::Ready, None),
+    ]);
+    assert_eq!((rows[6].item_id.as_deref(), rows[7].target_parent.as_deref()), (Some("C"), Some("B")), "what waited in the inner folder still goes into it");
+    let base = |row: &crate::outbox::OutboxRow| row.base.as_ref().map(|base| (base.parent.clone().unwrap(), base.name.clone().unwrap(), base.etag.clone().unwrap()));
+    assert_eq!(base(&rows[3]), Some(("D".into(), "f.txt".into(), "e-F".into())), "against the place the disk has: no name is sent");
+    assert_eq!((rows[3].target_parent.as_deref(), rows[3].target_name.as_deref()), (Some("D"), Some("f.txt")));
+    assert_eq!(base(&rows[0]), Some(("L".into(), "inside.txt".into(), "e-I".into())));
+    assert_eq!((rows[1].target_parent.as_deref(), rows[4].target_parent.as_deref()), (Some("L"), None), "a new file where the folder is not the base's asks again");
+    assert!(s.get(Table::Items, "Q").unwrap().is_some_and(|row| row.name == "renamed-there.txt"), "and no row is left that names it as it was");
+
+    assert_eq!(
+        s.local_skipped().unwrap().into_iter().map(|skip| (skip.rel.display().to_string(), skip.reason)).collect::<Vec<_>>(),
+        [("link".to_owned(), crate::outbox::LocalSkip::Symlink), ("old/mnt".to_owned(), crate::outbox::LocalSkip::OtherDevice)]
+    );
 }
 
 /// The oldest store that is upgraded and not rebuilt goes through every
@@ -137,7 +251,7 @@ fn the_oldest_store_that_is_upgraded_keeps_what_waits_in_it() {
     assert_eq!(s.delta_link().unwrap().as_deref(), Some("link-1"), "not rebuilt");
 
     assert_eq!((s.local_handle("F").unwrap(), s.local_handle("G").unwrap()), (None, None), "every level below");
-    assert_eq!((s.local_handle("L").unwrap(), s.local_handle("T").unwrap()), (Some(handle(1)), Some(handle(4))));
+    assert_eq!((s.local_handle("L").unwrap(), s.local_handle("T").unwrap()), (None, Some(handle(4))), "nor a row that is not placed itself");
 
     let rows = s.outbox_rows().unwrap();
     assert_eq!(rows.iter().map(|row| row.seq).collect::<Vec<_>>(), [1, 2, 3, 4, 5]);
@@ -151,7 +265,7 @@ fn the_oldest_store_that_is_upgraded_keeps_what_waits_in_it() {
     assert_eq!(s.upload_sessions_given_up(10).unwrap(), [SessionUrl::new("https://up.example/odd")]);
 
     assert_eq!(s.upload_opening_windows("R", "a.txt").unwrap(), [(100, 100)], "a record without `last` reads as its first time");
-    s.outbox_drop(5, None, None, None).unwrap();
+    s.outbox_drop(5, None, None).unwrap();
     assert_eq!(s.upload_opening_windows("R", "A.TXT").unwrap(), [(100, 100)], "kept without its row");
     let d = crate::outbox::Detection {
         kind: OutboxKind::Create,

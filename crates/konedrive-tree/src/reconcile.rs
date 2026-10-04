@@ -9,10 +9,12 @@
 //!   sends that entry again, so every cycle stages what waits here before its
 //!   own delta, until the disk agrees; an outbox commit made after the fetch
 //!   that brought it supersedes it (Graph's answer to the commit is newer).
-//! - **What is leaving.** An item that stopped being placed while OneDrive
-//!   still has it (a name too long, the Personal Vault...) keeps its object
-//!   on disk while what is inside it waits to be uploaded (issue #104):
-//!   where that object is, by item id, until a cycle removes it.
+//! - **What waits to leave.** An item OneDrive still has and the folder
+//!   cannot hold any more (a name too long, the Personal Vault...) is such a
+//!   deferred change too: the base keeps it placed where the disk has it,
+//!   with its recorded object, until a cycle finds nothing waiting in it
+//!   and takes it off the disk whole. What it waits for is kept with the
+//!   change ([`Deferrals::waits`]), for `Skipped()`.
 //! - **Tombstones.** An item the outbox deleted in OneDrive has no base row
 //!   left to carry its `local_seq`, so the delete's commit count is kept by
 //!   id: a delta fetched before the delete must not bring the item back (the
@@ -56,16 +58,9 @@ pub struct Deferrals<'a> {
     pub content: &'a [String],
     /// The outbox commit count the cycle's fetch started at.
     pub fetched_at: i64,
-}
-
-/// Something leaving ([`TreeStore::leaving_with_handles`]): the item, where
-/// its object stays, and that object's file handle (none in a store from
-/// before the handle was kept).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Leaving {
-    pub id: String,
-    pub rel: std::path::PathBuf,
-    pub handle: Option<FileHandle>,
+    /// Of the ids left alone whole, those that wait to leave the folder,
+    /// each with what it waits for ([`konedrive_reason::WaitsFor`], as stored).
+    pub waits: &'a [(String, String)],
 }
 
 /// What the outbox committed for an item after some commit count: Graph's
@@ -90,12 +85,13 @@ pub(super) fn tombstone(tx: &rusqlite::Transaction<'_>, ids: &[&str], local_seq:
 }
 
 /// The change of item `id` waits as deferred, dated commit count `seq`: the
-/// row OneDrive has of it now, or, with none, its removal there.
-pub(super) fn wait(tx: &rusqlite::Transaction<'_>, id: &str, row: Option<&Row>, seq: i64) -> Result<(), TreeError> {
+/// row OneDrive has of it now, or, with none, its removal there. `waits`:
+/// what keeps an item that is to leave the folder, if a cycle said.
+pub(super) fn wait(tx: &rusqlite::Transaction<'_>, id: &str, row: Option<&Row>, seq: i64, waits: Option<&str>) -> Result<(), TreeError> {
     match row {
         Some(row) => tx.execute(
-            "INSERT OR REPLACE INTO deferred (id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement)
-             VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT OR REPLACE INTO deferred (id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, waits)
+             VALUES (?1, ?2, 0, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 id,
                 seq,
@@ -108,22 +104,12 @@ pub(super) fn wait(tx: &rusqlite::Transaction<'_>, id: &str, row: Option<&Row>, 
                 row.ctag,
                 row.quickxor,
                 row.mime,
-                row.placement.encode()
+                row.placement.encode(),
+                waits
             ],
         )?,
         None => tx.execute("INSERT OR REPLACE INTO deferred (id, seq, gone) VALUES (?1, ?2, 1)", params![id, seq])?,
     };
-    Ok(())
-}
-
-/// Item `id`, just committed into the folder `parent`, is remembered with
-/// what is leaving when `parent` is (issue #104): as an item inside it, of the
-/// same leaving object, from this commit on and not only from the next cycle
-/// ([`TreeStore::leaving_refresh_items`]). A folder made there gives its id
-/// to what is made in it at once.
-pub(super) fn joins_leaving(tx: &rusqlite::Transaction<'_>, id: &str, parent: Option<&str>) -> Result<(), TreeError> {
-    let Some(parent) = parent else { return Ok(()) };
-    tx.prepare_cached("INSERT OR IGNORE INTO leaving_items (id, leaving) SELECT ?1, leaving FROM leaving_items WHERE id = ?2")?.execute(params![id, parent])?;
     Ok(())
 }
 
@@ -185,7 +171,9 @@ impl TreeStore {
     /// A folder that is read-only now (a switch back, or a daemon that
     /// starts so): what waits is the base's at once — the read phase's cycle
     /// knows no deferred change, and the delta cursor will not send it again.
-    /// A row placed again by it carries no local object (issue #104).
+    /// A row placed again by it carries no local object (issue #104), and a
+    /// row it makes not placed keeps none (I1): the first cycle takes what
+    /// waited to leave off the disk as the read phase does.
     /// The first cycle, a Full reconcile, makes the folder match. Nothing to
     /// do, and nothing done, for a folder that never was read-write.
     pub fn apply_deferred(&mut self) -> Result<usize, TreeError> {
@@ -258,7 +246,7 @@ impl TreeStore {
     /// Tombstones up to the fetch's start are dropped: a fetch that started after
     /// them already carries the deletes.
     pub fn commit_staging_deferring(&mut self, delta_link: &str, deferrals: &Deferrals<'_>) -> Result<(), TreeError> {
-        let Deferrals { consumed, whole: defer, content, fetched_at: seq } = *deferrals;
+        let Deferrals { consumed, whole: defer, content, fetched_at: seq, waits } = *deferrals;
         let source = self.source(Table::Staging);
         let whole = self.whole;
         {
@@ -275,7 +263,8 @@ impl TreeStore {
                     |r| r.get(0),
                 )?;
                 let seq = seq.max(committed);
-                wait(&tx, id, get_row(&tx, source, id)?.as_ref(), seq)?;
+                let waits = waits.iter().find(|(waiting, _)| waiting == id).map(|(_, what)| what.as_str());
+                wait(&tx, id, get_row(&tx, source, id)?.as_ref(), seq, waits)?;
                 if all && source == Source::Overlay {
                     // Staged over `items`: what it has shows through again.
                     tx.execute("DELETE FROM staging WHERE id = ?1", [id])?;
@@ -369,8 +358,7 @@ impl TreeStore {
         };
         let revisit = self.committed_items_since(since)?;
         let unplaced = self.unplaced(Table::Items)?;
-        let leaving = self.leaving()?;
-        if !full && changes.is_empty() && waiting && revisit.is_empty() && unplaced.is_empty() && leaving.is_empty() {
+        if !full && changes.is_empty() && waiting && revisit.is_empty() && unplaced.is_empty() {
             return Ok(None);
         }
         let consumed: Vec<String> = deferred.iter().map(|c| c.id().to_owned()).collect();
@@ -381,148 +369,6 @@ impl TreeStore {
         ids.extend(revisit);
         ids.extend(self.unplaced(Table::Staging)?);
         Ok(Some(RwStaged { ids: ids.into_iter().collect(), consumed }))
-    }
-
-    /// Item `id` stopped being placed, and its object stays at `rel` for now
-    /// (issue #104).
-    /// The items the base has at and below it are remembered with it: one of
-    /// them found inside it once the base no longer has it was removed in
-    /// OneDrive, and is never uploaded as new (review fixes, round 2).
-    /// Its object's file handle is kept too: it finds the object again when
-    /// its path is gone (a parent renamed here, not examined yet).
-    pub fn leaving_add(&mut self, id: &str, rel: &std::path::Path, handle: Option<&FileHandle>) -> Result<(), TreeError> {
-        use std::os::unix::ffi::OsStrExt;
-        let mut items = self.descendants(Table::Items, id)?;
-        items.push(id.to_owned());
-        let tx = self.conn.transaction()?;
-        tx.execute(
-            "INSERT INTO leaving (id, rel, handle) VALUES (?1, ?2, ?3)
-             ON CONFLICT(id) DO UPDATE SET rel = excluded.rel, handle = COALESCE(excluded.handle, leaving.handle)",
-            params![id, rel.as_os_str().as_bytes(), handle.map(FileHandle::encode)],
-        )?;
-        {
-            let mut had = tx.prepare_cached("INSERT OR REPLACE INTO leaving_items (id, leaving) VALUES (?1, ?2)")?;
-            for item in &items {
-                had.execute(params![item, id])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// What is leaving, each with its object's place and file handle.
-    pub fn leaving_with_handles(&self) -> Result<Vec<Leaving>, TreeError> {
-        use std::os::unix::ffi::OsStrExt;
-        let mut statement = self.conn.prepare_cached("SELECT id, rel, handle FROM leaving ORDER BY id")?;
-        let rows = statement
-            .query_map([], |r| {
-                let rel: Vec<u8> = r.get(1)?;
-                let handle: Option<Vec<u8>> = r.get(2)?;
-                Ok(Leaving { id: r.get(0)?, rel: std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&rel)), handle: handle.as_deref().and_then(FileHandle::decode) })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    /// The items the base has now at and below the leaving item `id` are
-    /// remembered with it too: one moved in and committed there since, once
-    /// OneDrive removes it, goes as what was in it does (issue #104).
-    pub fn leaving_refresh_items(&mut self, id: &str) -> Result<(), TreeError> {
-        let items = self.descendants(Table::Items, id)?;
-        let tx = self.conn.transaction()?;
-        {
-            let mut had = tx.prepare_cached("INSERT OR IGNORE INTO leaving_items (id, leaving) VALUES (?1, ?2)")?;
-            for item in &items {
-                had.execute(params![item, id])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// The leaving object of item `id` is now the inode `handle` — an
-    /// editor's save by rename at its place (issue #104).
-    pub fn leaving_set_handle(&self, id: &str, handle: &FileHandle) -> Result<(), TreeError> {
-        self.conn.execute("UPDATE leaving SET handle = ?2 WHERE id = ?1", params![id, handle.encode()])?;
-        Ok(())
-    }
-
-    /// The inodes `handles` are no longer followed as leaving objects: a
-    /// file with other names that is about to lose the name it leaves
-    /// under, whose other names are the user's own and must never be taken
-    /// for it. Its row stays, followed by its path only.
-    pub fn leaving_forget_handles(&mut self, handles: &[FileHandle]) -> Result<(), TreeError> {
-        let tx = self.conn.transaction()?;
-        {
-            let mut forget = tx.prepare_cached("UPDATE leaving SET handle = NULL WHERE handle = ?1")?;
-            for handle in handles {
-                forget.execute([handle.encode()])?;
-            }
-        }
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// Whether item `id` is placed — by the base or by the new tree — at
-    /// another place than `rel`: then an object carrying its id at `rel` may
-    /// be the user's (the copy placed again, moved there), and only the
-    /// leaving object's handle tells (issue #104).
-    pub fn placed_elsewhere(&self, id: &str, rel: &std::path::Path) -> Result<bool, TreeError> {
-        for table in [Table::Items, Table::Staging] {
-            if self.locate(table, id)?.is_some_and(|l| l.placed && l.rel != rel) {
-                return Ok(true);
-            }
-        }
-        Ok(false)
-    }
-
-    /// The file handle of the leaving object of item `id`, if one was taken.
-    pub fn leaving_handle(&self, id: &str) -> Result<Option<FileHandle>, TreeError> {
-        let stored: Option<Option<Vec<u8>>> = self.conn.query_row("SELECT handle FROM leaving WHERE id = ?1", [id], |r| r.get(0)).optional()?;
-        Ok(stored.flatten().as_deref().and_then(FileHandle::decode))
-    }
-
-    /// Whether item `id` was at or below something leaving when it began to
-    /// leave.
-    pub fn leaving_had(&self, id: &str) -> Result<bool, TreeError> {
-        Ok(self.conn.query_row("SELECT 1 FROM leaving_items WHERE id = ?1", [id], |_| Ok(())).optional()?.is_some())
-    }
-
-    /// What is leaving: each item id with where its object stays.
-    pub fn leaving(&self) -> Result<Vec<(String, std::path::PathBuf)>, TreeError> {
-        use std::os::unix::ffi::OsStrExt;
-        let mut statement = self.conn.prepare_cached("SELECT id, rel FROM leaving ORDER BY id")?;
-        let rows = statement
-            .query_map([], |r| {
-                let rel: Vec<u8> = r.get(1)?;
-                Ok((r.get::<_, String>(0)?, std::path::PathBuf::from(std::ffi::OsStr::from_bytes(&rel))))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-        Ok(rows)
-    }
-
-    /// Item `id` left, or is placed again: nothing of it is leaving now.
-    pub fn leaving_drop(&mut self, id: &str) -> Result<(), TreeError> {
-        let tx = self.conn.transaction()?;
-        tx.execute("DELETE FROM leaving WHERE id = ?1", [id])?;
-        tx.execute("DELETE FROM leaving_items WHERE leaving = ?1", [id])?;
-        tx.commit()?;
-        Ok(())
-    }
-
-    /// The object of item `id`, leaving, is at `rel` now: found there by its
-    /// id, wherever a move took it (issue #104).
-    pub fn leaving_set_rel(&self, id: &str, rel: &std::path::Path) -> Result<(), TreeError> {
-        use std::os::unix::ffi::OsStrExt;
-        self.conn.execute("UPDATE leaving SET rel = ?2 WHERE id = ?1", params![id, rel.as_os_str().as_bytes()])?;
-        Ok(())
-    }
-
-    /// Whatever was moved from `from` to `to` takes what is leaving at or
-    /// below it along (issue #104): a parent renamed in OneDrive and moved by
-    /// the reconcile, or renamed here and seen by the examination.
-    pub fn leaving_rebase(&self, from: &std::path::Path, to: &std::path::Path) -> Result<(), TreeError> {
-        crate::outbox::rebase_leaving(&self.conn, from, to)
     }
 
     /// Stages `changes` on top of what `staging` holds: the fresh versions a

@@ -112,12 +112,6 @@ pub(crate) struct Waiting {
     /// The deferred changes staged again at the start: done with at the swap,
     /// or deferred anew.
     pub consumed: Vec<String>,
-    /// The drive was listed whole (not a delta, however large): every item
-    /// it has is listed again.
-    pub whole_listing: bool,
-    /// The items this cycle's delta brought — not what waited and was
-    /// staged again: what OneDrive lists anew.
-    pub brought: Vec<String>,
 }
 
 /// A read-write commit's rules: what the outbox holds, and what the cycle
@@ -440,19 +434,10 @@ pub(crate) fn commit_cycle(store: &Store, plan: Option<&Plan>, done: &Reconciled
             if !defer.is_empty() || !content.is_empty() {
                 tracing::debug!("{} change(s) wait for the folder to take them", defer.len() + content.len());
             }
-            // Changes a `404` blocked while their item was leaving go, or
-            // are tried again, by what this listing says of the item
-            // (issue #104) — read before the swap, from the new tree.
-            // Only a real full listing lists every item again; a large
-            // delta, or a Full reconcile of one, does not.
-            let (brought, whole_listing) = (waiting.brought.clone(), waiting.whole_listing);
-            match store.call_blocking(move |s| s.outbox_settle_not_found(&brought, whole_listing)) {
-                Ok((0, 0)) => {}
-                Ok((gone, again)) => tracing::info!("of the changes a 404 blocked, {gone} went with their item and {again} are tried again"),
-                Err(e) => tracing::warn!("cannot settle the changes a 404 blocked: {e}"),
-            }
             let (consumed, fetched_at) = (waiting.consumed.clone(), waiting.fetch_seq);
-            store.call_blocking(move |s| s.commit_staging_deferring(&link, &Deferrals { consumed: &consumed, whole: &defer, content: &content, fetched_at }))?;
+            // What waits to leave the folder, with what it waits for.
+            let waits: Vec<(String, String)> = applied.pending.waits.iter().filter(|(id, _)| defer.contains(id)).cloned().collect();
+            store.call_blocking(move |s| s.commit_staging_deferring(&link, &Deferrals { consumed: &consumed, whole: &defer, content: &content, fetched_at, waits: &waits }))?;
         }
     }
     Ok(if listing || done.full { Said::Listed } else { Said::EachChange })

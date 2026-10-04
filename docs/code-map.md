@@ -207,7 +207,7 @@ in the outbox. Design: `writes.md` §3 (the watcher), §4 (the examination).
 - `examine/list.rs` — reading every place the batch names.
 - `examine/classify.rs` — which entry is which item; strangers and backups.
 - `examine/found.rs` — an item found: where it is, and its content.
-- `examine/missing.rs` — an item not found: removed, moved away, or leaving.
+- `examine/missing.rs` — an item not found: removed, moved away, or moved out of the folder.
 - `examine/finish.rs` — the end of a run: the skipped list, the counts, the order of the rows.
 - `ignore.rs` — the ignore list: names that stay local. `[tests]`
 - `names.rs` — the names OneDrive refuses, and the name of a kept copy. `[tests]`
@@ -304,11 +304,10 @@ reconcile in read-write mode).
 - `materialize/file.rs` — a file already in place, and what its content needs.
 - `materialize/holding.rs` — the holding directory; rescues.
 - `materialize/removal.rs` — `take_off`: the one way a managed object is taken off the disk
-  (survey, forget, remove, settle), and what is kept of it.
+  (survey, forget, remove, settle), what is kept of it, and what an item that can no longer be
+  placed waits for.
 - `materialize/replace.rs` — replacing one changed file. `[tests]`
 - `materialize/rw.rs` — the reconcile in read-write mode. `[tests]`
-- `materialize/rw/leaving.rs` — what is leaving: an item that stays in OneDrive but is no
-  longer placed here.
 - `materialize/rw/holding.rs` — putting back what was held.
 
 ### `crates/konedrived/src/remote/listing/rw/tests/`

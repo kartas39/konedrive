@@ -283,7 +283,7 @@ public Q_SLOTS:
     void RegisterWithoutInterception(const QString &path);
     void Unregister();
     void Refresh(const QDBusMessage &message);
-    KonedriveSkippedList Skipped();
+    KonedriveNotInFolderList Skipped();
     /// Answers (u files, t bytes, u busy) by hand, so that it can be held.
     void FreeUpSpace(const QDBusMessage &message);
     void Pause(uint seconds);
@@ -603,7 +603,7 @@ public:
     KonedriveActivityList log;
     KonedriveConflictList conflictList;
     /// Skipped().
-    KonedriveSkippedList skippedList{{QStringLiteral("/home/u/OneDrive/Personal Vault"), QStringLiteral("personal-vault")}};
+    KonedriveNotInFolderList skippedList{{QStringLiteral("/home/u/OneDrive/Personal Vault"), QStringLiteral("personal-vault"), QString(), QString()}};
     uint freedFiles = 0;
     qulonglong freedBytes = 0;
     uint busyFiles = 0;
@@ -669,7 +669,7 @@ inline void FakeFolder::Refresh(const QDBusMessage &message)
     }
 }
 
-inline KonedriveSkippedList FakeFolder::Skipped()
+inline KonedriveNotInFolderList FakeFolder::Skipped()
 {
     m_sync->calls << QStringLiteral("Skipped");
     return m_sync->skippedList;

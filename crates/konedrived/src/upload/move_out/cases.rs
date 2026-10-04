@@ -298,7 +298,7 @@ impl MoveOut<'_> {
         {
             let _tree = e.tree_lock().lock().await;
             let (seq, id, stored) = (self.row.seq, self.id.to_owned(), event.clone());
-            e.store().call(move |s| s.outbox_drop(seq, None, Some(&id), Some(&stored))).await?;
+            e.store().call(move |s| s.outbox_drop(seq, Some(&id), Some(&stored))).await?;
         }
         tracing::info!("{} went from another account's folder: it stays in OneDrive, and comes back here", self.row.rel.display());
         e.host().activity(&event);

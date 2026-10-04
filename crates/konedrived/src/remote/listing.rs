@@ -157,9 +157,9 @@ pub enum CycleError {
     /// A failure of the tree store, in its own words ("the tree store: …"), that ends
     /// the cycle: at a store call of the cycle's own ([`From<TreeError>`](CycleError::from))
     /// or inside the materializer ([`applying`]); both are this, and stop the folder
-    /// (quality finding `RE6`). Not every store failure ends a cycle: those the leaving
-    /// walk and the read-write reconcile only log and pass over do not come here
-    /// (limitations log F212).
+    /// (quality finding `RE6`). Not every store failure ends a cycle: those the
+    /// read-write reconcile only logs and passes over after its commit do not come
+    /// here (limitations log F212).
     #[error("{0}")]
     Store(String),
     #[error("the folder could not be brought up to date: {0}")]

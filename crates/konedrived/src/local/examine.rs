@@ -169,10 +169,6 @@ impl Examiner<'_> {
         let handles = super::handles::prepare(self.store, &root, self.now)?;
         let batch = if handles.renewed { &full } else { batch };
         let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
-        let leaving_items = self.store.call_blocking(|s| s.leaving_with_handles())?;
-        let leaving = leaving_items.iter().map(|left| left.rel.clone()).collect();
-        let leaving_index: HashMap<String, usize> = leaving_items.iter().enumerate().map(|(n, left)| (left.id.clone(), n)).collect();
-        let leaving_ids = leaving_items.into_iter().enumerate().filter_map(|(n, left)| Some((left.id, (n, left.handle?)))).collect();
         if let Some(progress) = progress {
             progress.started();
         }
@@ -186,10 +182,6 @@ impl Examiner<'_> {
             handles_current: handles.current,
             helper_silent: Cell::new(false),
             rows,
-            leaving,
-            leaving_ids,
-            leaving_elsewhere: HashSet::new(),
-            leaving_index,
             entries: Vec::new(),
             at: HashMap::new(),
             whole: BTreeSet::new(),
@@ -298,18 +290,6 @@ struct Run<'e, 'a> {
     helper_silent: Cell<bool>,
     /// The live rows before this examination, and what they are looked up by.
     rows: Rows,
-    /// Where objects of items no longer placed stay until they are removed
-    /// (issue #104): what is at or below them is never uploaded as new,
-    /// never stripped, never moved in OneDrive.
-    leaving: Vec<PathBuf>,
-    /// The item ids of what is leaving, each with its place in `leaving`:
-    /// the object is recognised by its id wherever it is.
-    leaving_ids: HashMap<String, (usize, FileHandle)>,
-    /// Places in `leaving` where another object than the leaving one stands
-    /// now (its handle kept and not that one's): not leaving.
-    leaving_elsewhere: HashSet<usize>,
-    /// Every item id that is leaving, with its place in `leaving`.
-    leaving_index: HashMap<String, usize>,
     entries: Vec<Entry>,
     at: HashMap<PathBuf, usize>,
     whole: BTreeSet<PathBuf>,

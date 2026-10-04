@@ -96,22 +96,6 @@ impl Run<'_, '_> {
         Ok(expect)
     }
 
-    /// Whether entry `i`, carrying item id `id`, is a name of the leaving
-    /// object's own inode — its handle, or, with none kept, the object at
-    /// its recorded place — not merely another object with that id.
-    pub(super) fn is_leaving_inode(&self, id: &str, i: usize) -> bool {
-        let Some(&n) = self.leaving_index.get(id) else { return false };
-        match self.leaving_ids.get(id) {
-            Some((_, handle)) => self.entries[i].handle.as_ref() == Some(handle),
-            None => self.at.get(&self.leaving[n]).is_some_and(|&j| self.entries[j].same_object(&self.entries[i])),
-        }
-    }
-
-    /// Whether `rel` is at or below an object that is leaving (issue #104).
-    pub(super) fn under_leaving(&self, rel: &Path) -> bool {
-        self.leaving.iter().enumerate().any(|(n, at)| !self.leaving_elsewhere.contains(&n) && rel.starts_with(at))
-    }
-
     pub(super) fn push(&mut self, e: Entry) -> usize {
         match self.at.get(&e.rel) {
             Some(&i) => {

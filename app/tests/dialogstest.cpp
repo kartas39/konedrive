@@ -625,7 +625,7 @@ private Q_SLOTS:
         fake.sync->conflicts->set({{QStringLiteral("Count"), QVariant::fromValue<uint>(5000)}});
         fake.sync->skippedList.clear();
         for (int i = 0; i < 5000; ++i) {
-            fake.sync->skippedList << KonedriveSkippedItem{root + QStringLiteral("/Shared/%1").arg(i), QStringLiteral("shared")};
+            fake.sync->skippedList << KonedriveNotInFolderItem{root + QStringLiteral("/Shared/%1").arg(i), QStringLiteral("shared"), QString(), QString()};
             fake.sync->conflictList << KonedriveConflict{i, root + QStringLiteral("/%1.txt").arg(i), root + QStringLiteral("/%1-fedora.txt").arg(i), QStringLiteral("copy")};
         }
         QVERIFY(fake.start());

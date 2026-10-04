@@ -22,11 +22,12 @@ pub(super) struct Step {
     pub(super) run: fn(&Connection) -> Result<(), TreeError>,
 }
 
-const STEPS: [Step; 4] = [
+const STEPS: [Step; 5] = [
     Step { from: "3", to: "4", what: "what was below a folder not placed forgot its local objects", run: forget_below_unplaced },
     Step { from: "4", to: "5", what: "the tables, columns and indexes added to version 4 without a number are part of it", run: unnumbered_additions },
     Step { from: "5", to: "6", what: "a row's snapshot is in columns of its own, and an opening is left behind without a trigger", run: snapshot_columns },
     Step { from: "6", to: "7", what: "the indexes of placed and skipped rows read a placement as the decoder does", run: placement_indexes },
+    Step { from: "7", to: "8", what: "what was leaving the folder waits as a deferred change, and no row that is not placed records a local object", run: leaving_waits },
 ];
 
 /// The step that starts from `version`.
@@ -206,5 +207,203 @@ fn placement_indexes(conn: &Connection) -> Result<(), TreeError> {
          CREATE INDEX items_unplaced ON items(id) WHERE local_handle IS NULL AND substr(placement, 1, 8) != 'skipped:';
          CREATE INDEX items_skipped ON items(id) WHERE substr(placement, 1, 8) = 'skipped:';",
     )?;
+    Ok(())
+}
+
+/// Version 7 to 8 (`docs/design/writes.md` §9, "What can no longer be
+/// placed"). Until version 7 an item OneDrive still had and the folder could
+/// not hold any more was not placed by the base at once, and its object
+/// stayed on disk, followed by a row of `leaving`, until what waited in it
+/// was uploaded. From version 8 such an item stays placed where the disk has
+/// it, and OneDrive's row of it waits in `deferred`.
+///
+/// Each row of `leaving` is carried over: the item's row of `items` (as
+/// OneDrive has it) becomes its deferred change, dated so that no commit on
+/// record supersedes it, and `items` places the item again where its object
+/// is — the folder `leaving.rel` names and the name it has there — with the
+/// object recorded. A content row of that very item is one against that
+/// place again, so it sends no name. What the base has below it is placed
+/// again with it, with no object recorded: an examination records what it
+/// finds in place. A content row in it whose file has another name than
+/// OneDrive has for its item goes: it would send the old name back.
+///
+/// A row that cannot be carried is only dropped: its path is not UTF-8, the
+/// folder it names is not placed by `items`, another item is placed at
+/// that name, or the item is placed elsewhere again. Its object is then
+/// nobody's item (a copy, as the examination takes it): a downloaded file
+/// in it goes up as new and one not downloaded is listed. So that such an
+/// object is not also taken for the item, the content rows at or below it
+/// go (their content goes up as new instead), and a new file's row there
+/// asks the directory for its folder again.
+///
+/// A row blocked as `leaving-not-found` is ready again, and is uploaded as
+/// new if OneDrive still answers `404`. The two skips that only said what
+/// kept a leaving folder go: `mounted-inside` is `other-device`, which is
+/// what it is, and `unknown-state` is dropped. And every row of `items`
+/// the base does not place forgets its local object (invariant I1), which
+/// builds before version 8 only did as they wrote a row.
+///
+/// A folder is carried before what was leaving inside it. Nothing on disk
+/// is read or changed, and no row of the outbox that could still be sent is
+/// lost.
+fn leaving_waits(conn: &Connection) -> Result<(), TreeError> {
+    use rusqlite::OptionalExtension;
+    conn.execute_batch("ALTER TABLE deferred ADD COLUMN waits TEXT;")?;
+    let root: Option<String> = conn.query_row("SELECT value FROM meta WHERE key = 'root_item_id'", [], |r| r.get(0)).optional()?.flatten();
+    let commits: i64 = conn
+        .query_row("SELECT value FROM meta WHERE key = 'outbox_seq'", [], |r| r.get::<_, Option<String>>(0))
+        .optional()?
+        .flatten()
+        .and_then(|count| count.parse().ok())
+        .unwrap_or(0);
+    let mut leaving: Vec<(String, Vec<u8>, Option<Vec<u8>>)> = conn
+        .prepare("SELECT id, CAST(rel AS BLOB), handle FROM leaving ORDER BY id")?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<Result<_, _>>()?;
+    // A folder before what is leaving inside it: the inner one is carried
+    // into a folder the base places again.
+    leaving.sort_by_key(|(_, rel, _)| rel.iter().filter(|byte| **byte == b'/').count());
+    // The item `items` places at `name` in `parent`, if any.
+    let placed_child = |parent: &str, name: &str| -> Result<Option<String>, TreeError> {
+        Ok(conn
+            .query_row("SELECT id FROM items WHERE parent_id = ?1 AND name = ?2 AND substr(placement, 1, 8) != 'skipped:'", [parent, name], |r| r.get(0))
+            .optional()?)
+    };
+    // The folder `items` places at the path `names`, from the root down.
+    let folder_at = |names: &[&str]| -> Result<Option<String>, TreeError> {
+        let Some(mut at) = root.clone() else { return Ok(None) };
+        for name in names {
+            match placed_child(&at, name)? {
+                Some(child) => at = child,
+                None => return Ok(None),
+            }
+        }
+        Ok(Some(at))
+    };
+    // Whether `items` places item `id`: itself and every folder above it.
+    let placed = |id: &str| -> Result<bool, TreeError> {
+        let mut at = id.to_owned();
+        for _ in 0..130 {
+            if Some(&at) == root.as_ref() {
+                return Ok(true);
+            }
+            let row: Option<(Option<String>, String)> = conn.query_row("SELECT parent_id, placement FROM items WHERE id = ?1", [&at], |r| Ok((r.get(0)?, r.get(1)?))).optional()?;
+            match row {
+                Some((Some(parent), placement)) if !placement.starts_with("skipped:") => at = parent,
+                _ => return Ok(false),
+            }
+        }
+        Ok(false)
+    };
+    let mut dropped: Vec<Vec<u8>> = Vec::new();
+    let mut carried_at: Vec<Vec<u8>> = Vec::new();
+    for (id, rel, handle) in leaving {
+        let carry = || -> Result<bool, TreeError> {
+            let Ok(path) = std::str::from_utf8(&rel) else { return Ok(false) };
+            let mut names: Vec<&str> = path.split('/').collect();
+            let Some(name) = names.pop().filter(|name| !name.is_empty()) else { return Ok(false) };
+            let has_row = conn.prepare("SELECT 1 FROM items WHERE id = ?1")?.exists([&id])?;
+            if !has_row || placed(&id)? {
+                return Ok(false);
+            }
+            let Some(parent) = folder_at(&names)? else { return Ok(false) };
+            if !placed(&parent)? || placed_child(&parent, name)?.is_some_and(|other| other != id) {
+                return Ok(false);
+            }
+            let last: i64 = conn.query_row("SELECT local_seq FROM items WHERE id = ?1", [&id], |r| r.get(0))?;
+            // A change of it that waits already is newer than the row of
+            // `items`: it is kept, and only dated so that it stays.
+            conn.execute(
+                "INSERT OR IGNORE INTO deferred (id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, waits)
+                 SELECT id, 0, 0, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, NULL
+                   FROM items WHERE id = ?1",
+                [&id],
+            )?;
+            conn.execute(
+                "UPDATE deferred SET seq = MAX(seq, ?2, COALESCE((SELECT g.local_seq FROM outbox_gone g WHERE g.id = deferred.id), 0)) WHERE id = ?1",
+                params![id, commits.max(last)],
+            )?;
+            // A handle is at least its kind: anything shorter was never one.
+            let object = handle.filter(|stored| stored.len() >= 4);
+            conn.execute("UPDATE items SET parent_id = ?2, name = ?3, placement = 'placed', local_handle = ?4 WHERE id = ?1", params![id, parent, name, object])?;
+            // What the base has below it is placed with it, and records no
+            // object: none was left by version 7, and one left by a build
+            // before it would prove a delete.
+            conn.execute(
+                "WITH RECURSIVE below(id, depth) AS (
+                     SELECT id, 1 FROM items WHERE parent_id = ?1
+                     UNION ALL
+                     SELECT c.id, b.depth + 1 FROM items c JOIN below b ON c.parent_id = b.id WHERE b.depth < 130)
+                 UPDATE items SET local_handle = NULL WHERE local_handle IS NOT NULL AND id IN (SELECT id FROM below)",
+                [&id],
+            )?;
+            // Its own content row was recorded against OneDrive's place.
+            conn.execute(
+                "UPDATE outbox SET base_parent = ?2, base_name = ?3, target_parent = ?2, target_name = ?3 WHERE item_id = ?1 AND kind = 'update'",
+                params![id, parent, name],
+            )?;
+            Ok(true)
+        };
+        if carry()? {
+            carried_at.push(rel);
+        } else {
+            dropped.push(rel);
+        }
+    }
+    if !dropped.is_empty() || !carried_at.is_empty() {
+        let below = |all: &[Vec<u8>], rel: &[u8]| all.iter().any(|left| rel == left.as_slice() || (rel.starts_with(left) && rel.get(left.len()) == Some(&b'/')));
+        let rows: Vec<(i64, String, Vec<u8>, Option<String>)> = conn
+            .prepare("SELECT seq, kind, CAST(rel AS BLOB), base_name FROM outbox")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
+            .collect::<Result<_, _>>()?;
+        for (seq, kind, rel, base_name) in rows {
+            // In what was carried, a content row whose file stands under
+            // another name than OneDrive has for its item (renamed there
+            // while it was leaving) would send the old name back: it goes
+            // too, and the file, which is not where the base has the item,
+            // goes up as new.
+            let renamed_there = kind == "update" && below(&carried_at, &rel) && base_name.as_deref().map(str::as_bytes) != rel.rsplit(|byte| *byte == b'/').next();
+            if !below(&dropped, &rel) && !renamed_there {
+                continue;
+            }
+            match kind.as_str() {
+                "update" => {
+                    tracing::warn!("outbox row {seq} sent the content of a file in a folder that was leaving and cannot be carried over; the file goes up as new instead");
+                    // As a row leaves the outbox in version 7: the record
+                    // of an opening it made is kept without it.
+                    conn.execute(
+                        "INSERT INTO upload_openings_left (parent, name, at, last, left_at)
+                         SELECT parent, name, at, COALESCE(last, at), CAST(strftime('%s', 'now') AS INTEGER) FROM upload_openings WHERE seq = ?1",
+                        [seq],
+                    )?;
+                    conn.execute("DELETE FROM upload_openings WHERE seq = ?1", [seq])?;
+                    conn.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+                }
+                "create" | "mkdir" => {
+                    conn.execute("UPDATE outbox SET target_parent = NULL WHERE seq = ?1", [seq])?;
+                }
+                _ => {}
+            }
+        }
+    }
+    conn.execute_batch(
+        "DROP TABLE leaving;
+         DROP TABLE leaving_items;
+         UPDATE outbox SET state = 'ready', reason = NULL, next_try = NULL WHERE reason = 'leaving-not-found';
+         DELETE FROM local_skipped WHERE reason = 'unknown-state';
+         UPDATE local_skipped SET reason = 'other-device' WHERE reason = 'mounted-inside';",
+    )?;
+    // I1, for every row at once: one walk down from the root.
+    if let Some(root) = &root {
+        conn.execute(
+            "WITH RECURSIVE placed(id, depth) AS (
+                 SELECT ?1, 0
+                 UNION ALL
+                 SELECT c.id, p.depth + 1 FROM items c JOIN placed p ON c.parent_id = p.id
+                  WHERE substr(c.placement, 1, 8) != 'skipped:' AND p.depth < 130)
+             UPDATE items SET local_handle = NULL WHERE local_handle IS NOT NULL AND id NOT IN (SELECT id FROM placed)",
+            [root],
+        )?;
+    }
     Ok(())
 }

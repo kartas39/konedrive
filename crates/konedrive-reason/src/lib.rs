@@ -1,5 +1,6 @@
-//! Why a change is kept back: an outbox row's [`Reason`], and the
-//! [`LocalSkip`] of what an examination never uploads (`local_skipped`).
+//! Why a change is kept back: an outbox row's [`Reason`], the
+//! [`LocalSkip`] of what an examination never uploads (`local_skipped`),
+//! and what an item that cannot stay in the folder still [`WaitsFor`].
 //!
 //! Each is stored, and sent over D-Bus, as a string: its **key**, and for
 //! some a **detail** behind it — `<key>: <detail>` (`refused: <the service's
@@ -87,12 +88,6 @@ pub enum Reason {
     /// The local object is not where the row saw it: the examination
     /// catches up.
     NotFound,
-    /// A change inside a folder no longer synced here whose item OneDrive
-    /// answers `404` for while its listing still has it (issue #104):
-    /// blocked until the listing says it is gone (the row goes) or it is
-    /// changed again. The one reason the store itself reads
-    /// (`TreeStore::outbox_settle_not_found`).
-    LeavingNotFound,
     /// The file is not downloaded (WR1).
     NotLocal,
     /// Its size or time moved while it was being sent (§4.3).
@@ -201,7 +196,7 @@ const TOO_BIG_KEY: &str = "too-big";
 
 impl Reason {
     /// Every variant but [`Reason::Other`], those with a detail without it.
-    pub const ALL: [Reason; 49] = [
+    pub const ALL: [Reason; 48] = [
         Self::OpenForWriting,
         Self::MassDelete,
         Self::NameCharacters,
@@ -214,7 +209,6 @@ impl Reason {
         Self::Refused(None),
         Self::Locked,
         Self::NotFound,
-        Self::LeavingNotFound,
         Self::NotLocal,
         Self::Changed,
         Self::Parent,
@@ -270,7 +264,6 @@ impl Reason {
             Self::Refused(_) => "refused",
             Self::Locked => "locked",
             Self::NotFound => "not-found",
-            Self::LeavingNotFound => "leaving-not-found",
             Self::NotLocal => "not-downloaded",
             Self::Changed => "changed-while-sending",
             Self::Parent => "parent-not-in-onedrive",
@@ -379,8 +372,6 @@ impl Reason {
             Self::NameCharacters | Self::NameSpaces | Self::NameReserved | Self::NameNotUtf8 | Self::TooLarge | Self::Refused(_) => {
                 Group::PerFile
             }
-            // What keeps a folder no longer synced here on disk (issue #104).
-            Self::LeavingNotFound => Group::PerFile,
             // What the worker blocks a row with beside those: the row itself, or the
             // file's state, is not what a step can work with. `Blocked`: no reason at all.
             Self::NoName
@@ -493,13 +484,6 @@ pub enum LocalSkip {
     /// On another device than the folder (a nested Btrfs subvolume, a
     /// mount): never uploaded (F72).
     OtherDevice,
-    /// A file of ours whose konedrive state cannot be read, inside a folder
-    /// that is no longer placed (issue #104): the folder stays on disk until
-    /// it can be read.
-    UnknownState,
-    /// Another filesystem mounted inside a folder that is no longer placed
-    /// (issue #104): the folder stays on disk until it is unmounted.
-    MountedInside,
     /// In the table of groups, written by no code.
     Ignored,
     /// A string no variant spells: kept and written back as it is.
@@ -508,7 +492,7 @@ pub enum LocalSkip {
 
 impl LocalSkip {
     /// Every variant but [`LocalSkip::Other`].
-    pub const ALL: [LocalSkip; 11] = [
+    pub const ALL: [LocalSkip; 9] = [
         Self::Symlink,
         Self::Fifo,
         Self::Socket,
@@ -517,8 +501,6 @@ impl LocalSkip {
         Self::HardLink,
         Self::NotDownloaded,
         Self::OtherDevice,
-        Self::UnknownState,
-        Self::MountedInside,
         Self::Ignored,
     ];
 
@@ -534,8 +516,6 @@ impl LocalSkip {
             Self::HardLink => "hard-link",
             Self::NotDownloaded => "not-downloaded",
             Self::OtherDevice => "other-device",
-            Self::UnknownState => "unknown-state",
-            Self::MountedInside => "mounted-inside",
             Self::Ignored => "ignored",
             Self::Other(stored) => key_of(stored),
         }
@@ -565,9 +545,6 @@ impl LocalSkip {
             Self::Symlink | Self::Fifo | Self::Socket | Self::Device | Self::OtherDevice | Self::ReservedName | Self::HardLink | Self::Ignored => {
                 Group::Never
             }
-            // What keeps a folder no longer synced here on disk (issue #104):
-            // the user unmounts, or fixes or removes the file.
-            Self::UnknownState | Self::MountedInside => Group::PerFile,
             Self::NotDownloaded => Group::Waiting,
             Self::Other(stored) => return known_group(key_of(stored)),
         })
@@ -593,6 +570,115 @@ impl From<&str> for LocalSkip {
 impl From<String> for LocalSkip {
     fn from(stored: String) -> Self {
         Self::parse(&stored)
+    }
+}
+
+/// What keeps an item on this computer that the folder cannot hold any more
+/// (a name too long, the Personal Vault...): it leaves the disk in the first
+/// cycle that finds nothing of these in it. The third field of a line of
+/// `Skipped()`, stored with the item's deferred change.
+///
+/// Stored as `<key>:<detail>`: the number of changes, or the path of the
+/// first thing found, relative to the folder. A line of an item that is not
+/// on this computer has the empty string.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum WaitsFor {
+    /// It is still here, and no cycle has looked at it yet.
+    Cycle,
+    /// So many changes at or below it wait in the outbox.
+    Uploads(u64),
+    /// Something at this path differs from what OneDrive has, and is still
+    /// to be recorded: made, changed, moved, renamed or deleted here.
+    Changes(String),
+    /// A file a program has open for writing.
+    OpenForWriting(String),
+    /// A file of ours whose state cannot be read.
+    UnknownState(String),
+    /// A file that is not downloaded and is not where the base has its item:
+    /// from elsewhere, a copy, or renamed here and not recorded yet.
+    NotDownloaded(String),
+    /// A file or a directory whose name is on the ignore list: it is only on
+    /// this computer, and is never uploaded.
+    LocalOnly(String),
+    /// Another filesystem mounted inside.
+    MountedInside(String),
+    /// An item OneDrive moved out of it, which could not be put where it
+    /// belongs yet (its name there is held by something made here), and
+    /// stays where it was meanwhile.
+    MovedAway(String),
+    /// A string no variant spells.
+    Other(String),
+}
+
+impl WaitsFor {
+    pub fn key(&self) -> &str {
+        match self {
+            Self::Cycle => "cycle",
+            Self::Uploads(_) => "uploads",
+            Self::Changes(_) => "changes",
+            Self::OpenForWriting(_) => "open-for-writing",
+            Self::UnknownState(_) => "unknown-state",
+            Self::NotDownloaded(_) => "not-downloaded",
+            Self::LocalOnly(_) => "local-only",
+            Self::MountedInside(_) => "mounted-inside",
+            Self::MovedAway(_) => "moved-in-onedrive",
+            Self::Other(stored) => stored.split_once(':').map_or(stored.as_str(), |(key, _)| key),
+        }
+    }
+
+    /// The path of what keeps it, relative to the folder; none for the
+    /// variants without one.
+    pub fn path(&self) -> Option<&str> {
+        match self {
+            Self::Changes(path) | Self::OpenForWriting(path) | Self::UnknownState(path) | Self::NotDownloaded(path) | Self::LocalOnly(path) | Self::MountedInside(path) | Self::MovedAway(path) => {
+                Some(path)
+            }
+            _ => None,
+        }
+    }
+
+    /// This, with its path below `root`: what `Skipped()` sends.
+    pub fn under(self, root: &str) -> Self {
+        let full = |path: String| format!("{}/{path}", root.trim_end_matches('/'));
+        match self {
+            Self::Changes(path) => Self::Changes(full(path)),
+            Self::OpenForWriting(path) => Self::OpenForWriting(full(path)),
+            Self::UnknownState(path) => Self::UnknownState(full(path)),
+            Self::NotDownloaded(path) => Self::NotDownloaded(full(path)),
+            Self::LocalOnly(path) => Self::LocalOnly(full(path)),
+            Self::MountedInside(path) => Self::MountedInside(full(path)),
+            Self::MovedAway(path) => Self::MovedAway(full(path)),
+            other => other,
+        }
+    }
+
+    pub fn parse(stored: &str) -> Self {
+        let (key, detail) = stored.split_once(':').unwrap_or((stored, ""));
+        let path = || detail.to_owned();
+        match key {
+            "cycle" if detail.is_empty() => Self::Cycle,
+            "uploads" => detail.parse().map_or_else(|_| Self::Other(stored.to_owned()), Self::Uploads),
+            "changes" => Self::Changes(path()),
+            "open-for-writing" => Self::OpenForWriting(path()),
+            "unknown-state" => Self::UnknownState(path()),
+            "not-downloaded" => Self::NotDownloaded(path()),
+            "local-only" => Self::LocalOnly(path()),
+            "mounted-inside" => Self::MountedInside(path()),
+            "moved-in-onedrive" => Self::MovedAway(path()),
+            _ => Self::Other(stored.to_owned()),
+        }
+    }
+}
+
+impl fmt::Display for WaitsFor {
+    /// The stored spelling.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cycle => f.write_str("cycle"),
+            Self::Uploads(n) => write!(f, "uploads:{n}"),
+            Self::Other(stored) => f.write_str(stored),
+            _ => write!(f, "{}:{}", self.key(), self.path().unwrap_or_default()),
+        }
     }
 }
 

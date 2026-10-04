@@ -63,7 +63,7 @@ async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::Fi
 pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Result<Outcome, Fail> {
     let (Some(id), Some(base)) = (row.item_id.clone(), row.base.clone()) else { return Ok(Outcome::blocked(Reason::NoItem)) };
     let local = local_name(&row)?;
-    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
+    let Some(parent) = super::shared::parent_recorded(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
     let name = wanted_name(&row, &local);
     let found = locate(e, disk, &row).await?;
     let Some(guard) = Guard::of_base(&base) else { return Ok(Outcome::blocked(Reason::NoGuard)) };
@@ -81,7 +81,7 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
             return commit_move(e, &row, found.as_ref(), &remote, &parent).await;
         }
         // Where the base has it already: nothing to send.
-        e.store().call(move |s| s.outbox_drop(row.seq, None, None, None)).await?;
+        e.store().call(move |s| s.outbox_drop(row.seq, None, None)).await?;
         return Ok(Outcome::Done);
     }
     match e.drive().update_item(&id, guard.as_str(), &change).await {
@@ -128,7 +128,10 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
             // Changed there, not moved (or its place cannot be followed here,
             // such as its own temporary name): the move goes again against
             // the fresh eTag; the delta brings the content (§6).
-            let fresh = Base { etag: remote.e_tag.clone(), ctag: base.ctag.clone(), parent: remote_parent, name: Some(remote_name) };
+            // Where the folder cannot hold OneDrive's place, only what the
+            // user changed is sent: a rename here is no move back.
+            let held = super::shared::holds(e, &remote).await?;
+            let fresh = super::shared::base_after_a_change(&base, &parent, &name, &remote, held);
             let seq = row.seq;
             e.store().call(move |s| s.outbox_amend(seq, |next| next.base = Some(fresh))).await?;
             Ok(Outcome::again())
@@ -199,7 +202,7 @@ pub(in crate::upload) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result
         // Never in OneDrive (its create never landed): nothing to delete.
         tracing::info!("{} was never uploaded: its delete leaves the outbox", row.rel.display());
         let seq = row.seq;
-        e.store().call(move |s| s.outbox_drop(seq, None, None, None)).await?;
+        e.store().call(move |s| s.outbox_drop(seq, None, None)).await?;
         return Ok(Outcome::Done);
     };
     let base = row.base.clone().unwrap_or_default();
@@ -240,7 +243,7 @@ async fn restored(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Ou
     {
         let _tree = e.tree_lock().lock().await;
         let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
-        e.store().call(move |s| s.outbox_drop(seq, None, Some(&id), Some(&stored))).await?;
+        e.store().call(move |s| s.outbox_drop(seq, Some(&id), Some(&stored))).await?;
     }
     e.host().activity(&event);
     e.host().full_cycle_wanted();

@@ -82,7 +82,7 @@ impl Materializer {
         let parent = from.as_ref().and_then(|f| f.parent()).map(Path::to_path_buf).unwrap_or_default();
         let sub = self.disk.open_subdir(holding, name)?;
         for child in self.disk.list(&sub)? {
-            if !self.put_at(&sub, &child, &parent.join(&child), run)? {
+            if self.put_at(&sub, &child, &parent.join(&child), run)?.is_none() {
                 self.put_at(&sub, &child, Path::new(&child), run)?;
             }
         }
@@ -97,7 +97,22 @@ impl Materializer {
     /// Never out of the folder: whatever is out of it is a move out, and
     /// deleted in OneDrive.
     fn put_back(&self, holding: &File, name: &OsStr, id: Option<&str>, back: Option<PathBuf>, run: &mut Run) -> Result<(), ApplyError> {
-        let mut places: Vec<PathBuf> = back.into_iter().filter(|b| !is_new_name(b)).collect();
+        // An item of the base goes back into its own folder: the directory
+        // that carries that folder's id, wherever it stands now. Never into
+        // whatever stands at the path it was taken from, which may be
+        // another item's by now.
+        let own = match id {
+            Some(id) => match self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Items, &id) })? {
+                Some(base) => match &base.parent_id {
+                    Some(folder) => self.dir_of(folder, run)?.map(|dir| dir.join(&base.name)),
+                    None => None,
+                },
+                None => None,
+            },
+            None => None,
+        };
+        let back = if own.is_some() { None } else { back };
+        let mut places: Vec<PathBuf> = own.into_iter().chain(back.into_iter().filter(|b| !is_new_name(b))).collect();
         if let Some(id) = id {
             for table in [Table::Items, Table::Staging] {
                 if let Some(at) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(table, &id) })?.filter(|l| l.placed && !l.rel.as_os_str().is_empty()) {
@@ -108,20 +123,27 @@ impl Materializer {
         let fallback = places.first().and_then(|p| p.file_name()).map(|n| n.to_owned()).unwrap_or_else(|| name.to_owned());
         places.push(PathBuf::from(fallback));
         for place in &places {
-            if self.put_at(holding, name, place, run)? {
-                return Ok(());
+            let Some(at) = self.put_at(holding, name, place, run)? else { continue };
+            // Put back under a copy name, because another item has its own
+            // by now: the base follows to that name, with the item's rows,
+            // so that no examination takes it for a rename made here
+            // (as for a step aside). OneDrive's place of it waits.
+            if let (Some(id), Some(aside)) = (id, at.file_name().and_then(OsStr::to_str).filter(|_| at != *place)) {
+                let (id, from, to, aside) = (id.to_owned(), place.clone(), at.clone(), aside.to_owned());
+                self.store.call_blocking(move |s| if s.get(Table::Items, &id)?.is_some() { s.step_aside(&id, &from, &to, &aside, false) } else { Ok(()) })?;
             }
+            return Ok(());
         }
         Err(ApplyError::Io(format!("{} could not be put back into the folder", PathBuf::from(HOLDING).join(name).display())))
     }
 
     /// Renames `name` from the holding directory to `place`, or beside it
-    /// under the first free copy name. Whether it went: `false` when
-    /// `place`'s folder is not there.
-    fn put_at(&self, holding: &File, name: &OsStr, place: &Path, run: &mut Run) -> Result<bool, ApplyError> {
+    /// under the first free copy name; the rows below a folder follow it.
+    /// Where it went: `None` when `place`'s folder is not there.
+    fn put_at(&self, holding: &File, name: &OsStr, place: &Path, run: &mut Run) -> Result<Option<PathBuf>, ApplyError> {
         let parent = place.parent().unwrap_or(Path::new(""));
-        let Some(to) = place.file_name() else { return Ok(false) };
-        let Ok(dir) = self.disk.dir(parent) else { return Ok(false) };
+        let Some(to) = place.file_name() else { return Ok(None) };
+        let Ok(dir) = self.disk.dir(parent) else { return Ok(None) };
         let machine = self.rw.as_ref().map(|rw| rw.machine.clone()).unwrap_or_default();
         let mut candidates = vec![to.to_os_string()];
         if let Some(wanted) = to.to_str() {
@@ -130,17 +152,19 @@ impl Materializer {
         for candidate in candidates {
             match self.disk.rename(holding, name, &dir, &candidate) {
                 Ok(()) => {
-                    // What is leaving inside it went along (issue #104).
-                    let (from, to) = (PathBuf::from(HOLDING).join(name), parent.join(&candidate));
-                    self.store.call_blocking(move |s| s.leaving_rebase(&from, &to))?;
                     let is_dir = matches!(self.disk.probe(&dir, &candidate)?, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true });
-                    run.out.on_disk.examine.push((parent.join(&candidate), is_dir));
-                    return Ok(true);
+                    let at = parent.join(&candidate);
+                    if is_dir {
+                        let rebase = [konedrive_tree::outbox::OutboxOp::Rebase { from: PathBuf::from(HOLDING).join(name), to: at.clone() }];
+                        self.store.call_blocking(move |s| s.outbox_apply(&rebase, 0))?;
+                    }
+                    run.out.on_disk.examine.push((at.clone(), is_dir));
+                    return Ok(Some(at));
                 }
                 Err(e) if e.raw_os_error() == Some(libc::EEXIST) => continue,
                 Err(e) => return Err(e.into()),
             }
         }
-        Ok(false)
+        Ok(None)
     }
 }

@@ -107,7 +107,7 @@ async fn an_item_forgotten_while_its_move_was_staged_is_moved_and_not_placed_twi
             move |s| {
                 s.begin_staging(konedrive_tree::NewTree::Delta)?;
                 s.stage(&moved)?;
-                s.outbox_drop(seq, None, Some("D"), None)
+                s.outbox_drop(seq, Some("D"), None)
             }
         })
         .await
@@ -433,26 +433,23 @@ async fn a_file_with_another_name_loses_its_id_only_once_its_name_is_gone() {
     assert!(fx.base("F").is_none());
 }
 
-/// Issue #112, the stop between the two steps: a file that is leaving has a
-/// second name, a hard link the user made; the daemon unlinks the leaving
-/// name and stops before it takes the item id off. The other name is then
-/// the user's own file whatever comes next: an examination records no move
-/// and no delete of the item for it, and no later cycle takes it for the
-/// leaving object and removes it.
+/// Issue #112, the stop between the two steps: a file that can no longer be
+/// placed has a second name, a hard link the user made; the daemon unlinks
+/// its own name and stops before it takes the item id off. The other name
+/// is then the user's own file whatever comes next: an examination records
+/// no move and no delete of the item for it, and no later cycle removes it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stop_after_the_unlink_leaves_the_other_name_to_the_user() {
     use crate::remote::materialize::removal::testing::stop_after_unlink;
     let fx = listed().await;
     write_version(&fx.path("docs/f.txt"), b"one", "c1");
     let leaving = Change::Upsert(Row { placement: Placement::Skipped(konedrive_tree::SkipReason::NameTooLong), ..row("F", "D", &"x".repeat(300), Kind::File, "c1") });
-    cycle(&fx, std::slice::from_ref(&leaving), false).await.unwrap();
-    assert_eq!(fx.store.call(|s| s.leaving()).await.unwrap(), vec![("F".to_owned(), PathBuf::from("docs/f.txt"))]);
     std::fs::hard_link(fx.path("docs/f.txt"), fx.path("link.txt")).unwrap();
 
     stop_after_unlink(&fx.root.path, true);
     // The pass that stops fails, and the Full pass that follows it in the
     // same reconcile is already "what comes next".
-    let stopped = cycle(&fx, &[], false).await;
+    let stopped = cycle(&fx, std::slice::from_ref(&leaving), false).await;
     stop_after_unlink(&fx.root.path, false);
     assert!(!fx.path("docs/f.txt").exists(), "stopped right after the unlink: {stopped:?}");
     assert_eq!(id_at(&fx.path("link.txt")).as_deref(), Some("F"), "the id was not taken off");

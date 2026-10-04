@@ -25,7 +25,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use konedrive_fs::handle::FileHandle;
 use rusqlite::types::Value;
@@ -37,7 +37,7 @@ use crate::meta::next_outbox_seq;
 use crate::model::Kind;
 use crate::model::{upsert, Change, Placement, Row, Table};
 use crate::query::get_row;
-use crate::reconcile::{joins_leaving, wait};
+use crate::reconcile::wait;
 use crate::source::Source;
 use crate::staging::apply;
 use crate::{ActivityRow, TreeError, TreeStore, ACTIVITY_KEPT};
@@ -235,27 +235,28 @@ fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
             update.execute(params![row.seq, path_value(&to.join(rest))])?;
         }
     }
-    rebase_leaving(conn, from, to)
+    Ok(())
 }
 
-/// What is leaving at or below `from` is at `to` now, with the same path
-/// below it (issue #104).
-pub(super) fn rebase_leaving(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
-    let moved: Vec<(String, PathBuf)> = {
-        let mut statement = conn.prepare_cached("SELECT id, rel FROM leaving")?;
-        let rows = statement
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, PathBuf::from(OsStr::from_bytes(&r.get::<_, Vec<u8>>(1)?)))))?
-            .collect::<Result<Vec<_>, _>>()?;
-        rows
-    };
-    let mut update = conn.prepare_cached("UPDATE leaving SET rel = ?2 WHERE id = ?1")?;
-    for (id, rel) in moved {
-        if let Ok(rest) = rel.strip_prefix(from) {
-            let to = if rest.as_os_str().is_empty() { to.to_path_buf() } else { to.join(rest) };
-            update.execute(params![id, to.as_os_str().as_bytes()])?;
-        }
+/// Where the object of the item `base` stands once `committed` is carried
+/// out: the folder the row takes it to, or, where the row names none, the
+/// base's; and the name the object has on disk.
+pub(super) fn local_place(committed: &OutboxRow, base: &Row) -> (Option<String>, String) {
+    let parent = committed.target_parent.clone().or_else(|| base.parent_id.clone());
+    let name = committed.rel.file_name().and_then(OsStr::to_str).map_or_else(|| base.name.clone(), str::to_owned);
+    (parent, name)
+}
+
+/// Whether the base would place `row`, written into `items`: its own
+/// placement, and the folder it names placed up to the root.
+pub(super) fn would_place(tx: &rusqlite::Transaction<'_>, row: &Row) -> Result<bool, TreeError> {
+    if row.placement != Placement::Placed {
+        return Ok(false);
     }
-    Ok(())
+    match &row.parent_id {
+        Some(parent) => base_places(tx, parent),
+        None => Ok(false),
+    }
 }
 
 impl TreeStore {
@@ -345,78 +346,42 @@ impl TreeStore {
         rows_under(&self.conn, rel)
     }
 
-    /// What is leaving at `rel` is never moved or deleted in OneDrive by the
-    /// daemon (issue #104): the `move` and `delete` rows whose local path is
-    /// `rel` or below it go, but for one the worker is running. A row the
-    /// user's own move out of it made — its path elsewhere — stays, and is
-    /// carried out. What went.
-    pub fn outbox_drop_moves(&mut self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
-        let rows: Vec<OutboxRow> = self
-            .outbox_at_or_under(rel)?
-            .into_iter()
-            .filter(|row| row.state != OutboxState::Running && matches!(row.kind, OutboxKind::Move | OutboxKind::Delete))
-            // An item that was not in it when it began to leave — a placed
-            // file the user moved in — is the user's to move or delete.
-            .filter(|row| row.item_id.as_deref().is_some_and(|id| self.leaving_had(id).unwrap_or(true)))
-            .collect();
+    /// The object of item `id`, which can no longer be placed and waits,
+    /// stepped aside in its directory for another item that takes its name:
+    /// it stands at `to` now, under `name`, where it stood at `from`. In one
+    /// transaction the base follows — the same folder, the new name, the
+    /// version as it was; OneDrive's place of the item is in its deferred
+    /// change alone — and so do the rows: those of the item itself are made
+    /// against the new name, as if recorded there, so that none of them
+    /// sends it, and those below it follow as below any directory renamed.
+    ///
+    /// `repair`: the rename was made by a cycle that stopped before this
+    /// was written, and an examination since took it for a rename made
+    /// here: that row goes, since nobody made it.
+    pub fn step_aside(&mut self, id: &str, from: &Path, to: &Path, name: &str, repair: bool) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        for row in &rows {
-            remove(&tx, row.seq)?;
-        }
-        tx.commit()?;
-        Ok(rows)
-    }
-
-    /// Items `ids` were removed in OneDrive while their objects waited inside
-    /// something leaving (issue #104, decision 2): their rows go, but for
-    /// one the worker is running. What went.
-    pub fn outbox_drop_items(&mut self, ids: &[String]) -> Result<Vec<OutboxRow>, TreeError> {
-        let ids: HashSet<&str> = ids.iter().map(String::as_str).collect();
-        let rows: Vec<OutboxRow> = all_rows(&self.conn)?
-            .into_iter()
-            .filter(|row| row.state != OutboxState::Running && row.item_id.as_deref().is_some_and(|id| ids.contains(id)))
-            .collect();
-        let tx = self.conn.transaction()?;
-        for row in &rows {
-            remove(&tx, row.seq)?;
-        }
-        tx.commit()?;
-        Ok(rows)
-    }
-
-    /// The changes blocked because OneDrive answered `404` for their item
-    /// while it was leaving (`leaving-not-found`, issue #104), settled by
-    /// this cycle's listing, read from the new tree before the swap (where
-    /// the item's removal would wait behind the row itself): one whose item
-    /// the listing removed has nothing left to send and goes, whatever it was
-    /// in; one whose item it lists again — this cycle's delta brought it
-    /// (`ids`), or, `whole`, a whole listing of the drive has it — is tried
-    /// again. What went, and how many are tried again.
-    pub fn outbox_settle_not_found(&mut self, ids: &[String], whole: bool) -> Result<(usize, usize), TreeError> {
-        let blocked: Vec<(i64, String)> = all_rows(&self.conn)?
-            .into_iter()
-            .filter(|r| r.state == OutboxState::Blocked && r.reason == Some(Reason::LeavingNotFound))
-            .filter_map(|r| Some((r.seq, r.item_id?)))
-            .collect();
-        let brought: HashSet<&str> = ids.iter().map(String::as_str).collect();
-        let (mut gone, mut again) = (Vec::new(), Vec::new());
-        for (seq, id) in blocked {
-            if self.get(Table::Staging, &id)?.is_none() {
-                gone.push(seq);
-            } else if whole || brought.contains(id.as_str()) {
-                again.push(seq);
+        let was: Option<String> = tx.query_row("SELECT name FROM items WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        tx.execute("UPDATE items SET name = ?2 WHERE id = ?1", params![id, name])?;
+        for mut row in rows_where(&tx, "WHERE item_id = ?1", [id])? {
+            if repair && row.kind == OutboxKind::Move && row.rel == to && row.state != OutboxState::Running {
+                remove(&tx, row.seq)?;
+                continue;
             }
+            // Its own rows, by its id: wherever they say it stood.
+            row.rel = to.to_path_buf();
+            if row.target_name.is_some() && row.target_name == was {
+                row.target_name = Some(name.to_owned());
+            }
+            if let Some(base) = &mut row.base {
+                if base.name == was {
+                    base.name = Some(name.to_owned());
+                }
+            }
+            rewrite(&tx, &row)?;
         }
-        let tx = self.conn.transaction()?;
-        let (mut went, mut retried) = (0, 0);
-        for seq in gone {
-            went += usize::from(remove(&tx, seq)?);
-        }
-        for seq in again {
-            retried += tx.execute("UPDATE outbox SET state = 'ready', reason = NULL, next_try = NULL WHERE seq = ?1", [seq])?;
-        }
+        rebase(&tx, from, to)?;
         tx.commit()?;
-        Ok((went, retried))
+        Ok(())
     }
 
     /// Rows at `rel` or below it.
@@ -528,9 +493,10 @@ impl TreeStore {
     /// id and base; the row goes; the activity event is written. Returns the
     /// commit's `local_seq`.
     ///
-    /// An answer the folder cannot hold never takes a placed item's place
-    /// away: the base keeps the place and takes the version, and the answer
-    /// waits in `deferred` (see the arm below).
+    /// An answer the folder cannot hold — by its own name or kind, or by the
+    /// folder it names — never takes a placed item's place away: the base
+    /// keeps the place and takes the version, and the answer waits in
+    /// `deferred` (see the arm below).
     pub fn outbox_commit(&mut self, seq: i64, committed: Committed<'_>, activity: Option<&ActivityRow>) -> Result<i64, TreeError> {
         let tx = self.conn.transaction()?;
         let local_seq = next_outbox_seq(&tx)?;
@@ -542,25 +508,38 @@ impl TreeStore {
         };
         match committed {
             Committed::Item { row, handle } => {
-                // The answer names the item as OneDrive has it now. One the
-                // folder cannot hold (a name too long, a reserved one...)
-                // is no place the row sent it to: while the base places the
-                // item, it stays where the disk has it, with the version
-                // just committed, and the answer waits as its deferred
-                // change, for the reconcile to take it off the disk. Dated
-                // this commit, which therefore does not supersede it.
+                // The answer names the item as OneDrive has it now. Where
+                // the folder cannot hold it there (a name too long, a
+                // reserved one, a folder that is not placed here, such as
+                // the Personal Vault), that is no place the row sent it to:
+                // while the base places the item, it stays where the disk
+                // has it, with the version just committed, and the answer
+                // waits as its deferred change, for the reconcile to take
+                // it off the disk once nothing in it waits. Dated this
+                // commit, which therefore does not supersede it.
                 let stays = match get_row(&tx, Source::Items, &row.id)? {
-                    Some(base) if row.placement != Placement::Placed && base_places(&tx, &row.id)? => Some(base),
+                    Some(base) if base_places(&tx, &row.id)? && !would_place(&tx, row)? => Some(base),
                     _ => None,
+                };
+                // The place the base has from now on, which is also what
+                // the rows behind this one were detected against. Kept, it
+                // is the place the disk has after this row: where the row
+                // took the item, in the fields the user changed, and where
+                // the base had it in the others. Never the place OneDrive
+                // gave the item, which lives only in the deferred change:
+                // a row made against it would send a name or a folder of
+                // the disk's side back.
+                let place = match &stays {
+                    Some(base) => local_place(&committed_row, base),
+                    None => (row.parent_id.clone(), row.name.clone()),
                 };
                 match stays {
                     Some(base) => {
-                        upsert(&tx, Table::Items, &Row { parent_id: base.parent_id, name: base.name, placement: base.placement, ..row.clone() })?;
-                        wait(&tx, &row.id, Some(row), local_seq)?;
+                        upsert(&tx, Table::Items, &Row { parent_id: place.0.clone(), name: place.1.clone(), placement: base.placement, ..row.clone() })?;
+                        wait(&tx, &row.id, Some(row), local_seq, None)?;
                     }
                     None => {
                         upsert(&tx, Table::Items, row)?;
-                        joins_leaving(&tx, &row.id, row.parent_id.as_deref())?;
                     }
                 }
                 tx.execute(
@@ -578,12 +557,7 @@ impl TreeStore {
                 }
                 for mut follower in followers.into_iter().filter(|r| r.seq != seq) {
                     follower.item_id = Some(row.id.clone());
-                    follower.base = Some(Base {
-                        etag: row.etag.clone(),
-                        ctag: row.ctag.clone(),
-                        parent: row.parent_id.clone(),
-                        name: Some(row.name.clone()),
-                    });
+                    follower.base = Some(Base { etag: row.etag.clone(), ctag: row.ctag.clone(), parent: place.0.clone(), name: Some(place.1.clone()) });
                     rewrite(&tx, &follower)?;
                 }
             }

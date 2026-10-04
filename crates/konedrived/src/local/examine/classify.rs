@@ -20,43 +20,6 @@ impl Run<'_, '_> {
     pub(super) fn classify(&mut self, batch: &Batch) -> Result<(), ExamineError> {
         let mut by_id: BTreeMap<String, Vec<usize>> = BTreeMap::new();
         let mut unnamed: Vec<usize> = Vec::new();
-        let mut leaving: Vec<usize> = Vec::new();
-        // A leaving object is found by its own file handle wherever it is
-        // now — a parent renamed here or in OneDrive took it along (issue
-        // #104) — never by its item id alone: the copy placed again, a copy
-        // or a hard link carry the id too. With no handle kept (a store from
-        // before it was), by its path only.
-        // A file with other links is followed by its path only: its hard
-        // link carries the same handle, and is the user's name.
-        // At its recorded place, an object with its id is it — an editor's
-        // save by rename makes a new inode, whose handle is taken anew —
-        // unless the item is placed elsewhere: then the copy placed again may
-        // stand there by the user's move, and only the handle tells.
-        for (id, (n, handle)) in self.leaving_ids.clone() {
-            let Some(&i) = self.at.get(&self.leaving[n]) else { continue };
-            let Some(there) = self.entries[i].handle.clone().filter(|h| *h != handle) else { continue };
-            let rel = self.leaving[n].clone();
-            let ours = self.entries[i].id.as_deref() == Some(id.as_str())
-                && !self.store({ let (id, rel) = (id.clone(), rel.clone()); move |s| s.placed_elsewhere(&id, &rel) })?;
-            if ours {
-                self.leaving_ids.insert(id.clone(), (n, there.clone()));
-                self.store(move |s| s.leaving_set_handle(&id, &there))?;
-            } else {
-                self.leaving_elsewhere.insert(n);
-            }
-        }
-        for i in 0..self.entries.len() {
-            let Some(id) = self.entries[i].id.clone() else { continue };
-            let Some((n, handle)) = self.leaving_ids.get(&id).cloned() else { continue };
-            let rel = self.entries[i].rel.clone();
-            let linked = self.entries[i].ty == Type::File && self.entries[i].nlink > 1;
-            if self.leaving[n] == rel || linked || self.entries[i].handle.as_ref() != Some(&handle) {
-                continue;
-            }
-            self.leaving_elsewhere.remove(&n);
-            self.leaving[n] = rel.clone();
-            self.store(move |s| s.leaving_set_rel(&id, &rel))?;
-        }
         for i in 0..self.entries.len() {
             let e = &self.entries[i];
             // 1. The daemon's own names; a user's `.konedrive-*` is listed.
@@ -82,53 +45,14 @@ impl Run<'_, '_> {
             // the helper cannot protect what is placed there (F72).
             if e.dev != self.root_dev {
                 let rel = e.rel.clone();
-                // Inside a folder that is leaving, it keeps the folder on
-                // disk, and says so (issue #104).
-                let reason = if self.under_leaving(&rel) { LocalSkip::MountedInside } else { LocalSkip::OtherDevice };
-                self.skip(&rel, reason);
+                self.skip(&rel, LocalSkip::OtherDevice);
                 continue;
             }
             match &e.id {
-                // An object that is leaving, or inside one: never the item
-                // where it is placed now, never a stranger (issue #104).
-                Some(_) if self.under_leaving(&e.rel) => leaving.push(i),
-                // Another name of a leaving file (a hard link the user made):
-                // never the item's name in OneDrive, listed as one.
-                Some(id) if e.ty == Type::File && e.nlink > 1 && self.is_leaving_inode(id, i) => {
-                    let rel = e.rel.clone();
-                    if !self.ex.ignore.matches(&e.name) {
-                        self.skip(&rel, LocalSkip::HardLink);
-                    }
-                }
                 Some(id) => by_id.entry(id.clone()).or_default().push(i),
                 None => unnamed.push(i),
             }
         }
-        // An object inside a leaving folder whose id the base does not know
-        // is a stranger there as anywhere: its content goes up as new.
-        let mut ours = Vec::new();
-        for i in leaving {
-            let id = self.entries[i].id.clone().expect("only entries with an id");
-            if self.base_row(&id)?.is_some() {
-                // A placed item the user moved in is the user's move, carried
-                // out as any other; what was in it, or is placed nowhere,
-                // only uploads its content (issue #104).
-                let placed = self.located(&id)?.is_some_and(|l| l.placed);
-                if placed && !self.store({ let id = id.clone(); move |s| s.leaving_had(&id) })? {
-                    by_id.entry(id).or_default().push(i);
-                } else {
-                    ours.push(i);
-                }
-            } else if self.store({ let id = id.clone(); move |s| s.leaving_had(&id) })? {
-                // Was inside it when it began to leave, and is gone from the
-                // base since: removed in OneDrive, never uploaded as new
-                // (issue #104, decision 2). The reconcile removes it.
-                self.consumed.insert(i);
-            } else {
-                by_id.entry(id).or_default().push(i);
-            }
-        }
-        let leaving = ours;
         // 6. Who is who, before anything is decided by place: a directory's
         // id says what its entries' parent is.
         let mut found: Vec<(String, usize)> = Vec::new();
@@ -140,15 +64,6 @@ impl Run<'_, '_> {
         found.sort_by_key(|(_, i)| depth(&self.entries[*i].rel));
         for (id, i) in found {
             self.found(&id, i, batch)?;
-        }
-        // What is leaving uploads its content into its item, nothing more.
-        for i in leaving {
-            self.consumed.insert(i);
-            let e = self.entries[i].clone();
-            let Some(id) = e.id.clone() else { continue };
-            if let Some(base) = self.base_row(&id)? {
-                self.found_leaving(&id, &base, &e, batch)?;
-            }
         }
         // 7. What is missing from where it was.
         self.missing()?;

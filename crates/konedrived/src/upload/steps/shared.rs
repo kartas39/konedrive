@@ -52,8 +52,7 @@ fn swap_name(row: &OutboxRow) -> String {
 /// The item id of the directory `dir` (relative to the root), read from the
 /// disk: the root's is the drive's root. Only an id that is the directory's
 /// own counts: the base has it as a folder, and records this very object for
-/// it (or, with no object recorded, places it here; what is leaving counts
-/// by the object or the place `leaving` keeps). A copy that kept its
+/// it (or, with no object recorded, places it here). A copy that kept its
 /// attributes, or a folder from elsewhere, carries an id that names another
 /// folder in OneDrive; nothing is sent into that one because of it. The
 /// examination strips such a directory when it can, but it does not always
@@ -83,26 +82,13 @@ async fn dir_id(e: &Engine, disk: &Arc<Disk>, dir: &Path) -> Result<Option<Strin
             if !s.get(Table::Items, &asked)?.is_some_and(|row| row.kind == Kind::Folder) {
                 return Ok(false);
             }
-            // The object the base records for it, or the one kept while it
-            // is leaving: a folder that leaves and is placed again elsewhere
-            // meanwhile has both, and the leaving one still takes what waits
-            // inside it (issue #104).
-            let (placed, left) = (s.local_handle(&asked)?, s.leaving_handle(&asked)?);
-            if here.is_some() && (placed == here || left == here) {
+            // The object the base records for it.
+            let placed = s.local_handle(&asked)?;
+            if here.is_some() && placed == here {
                 return Ok(true);
             }
             // With no object to compare: where the base places it.
-            if (placed.is_none() || here.is_none()) && s.locate(Table::Items, &asked)?.is_some_and(|l| l.placed && l.rel == at) {
-                return Ok(true);
-            }
-            // What leaves stays where it is. The leaving folder itself, when
-            // no object was kept for it, by its place; a folder that was
-            // inside one has no object of its own there (the base's, if any,
-            // is the copy placed again), and counts below the leaving place.
-            if !s.leaving_had(&asked)? {
-                return Ok(false);
-            }
-            Ok(s.leaving()?.iter().any(|(id, rel)| if *id == asked { left.is_none() && at == *rel } else { at != *rel && at.starts_with(rel) }))
+            Ok((placed.is_none() || here.is_none()) && s.locate(Table::Items, &asked)?.is_some_and(|l| l.placed && l.rel == at))
         })
         .await?;
     if !own {
@@ -119,6 +105,19 @@ pub(in crate::upload) async fn parent_of(e: &Engine, disk: &Arc<Disk>, row: &Out
         return Ok(Some(parent.clone()));
     }
     dir_id(e, disk, row.rel.parent().unwrap_or(Path::new(""))).await
+}
+
+/// [`parent_of`] for a row of an item, with the folder written into the row
+/// when the row named none (its folder was still to be made when it was
+/// recorded): before anything is sent, so that the commit of the answer, and
+/// a replay after a stop, know where the row took the item.
+pub(in crate::upload) async fn parent_recorded(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Option<String>, Fail> {
+    let Some(parent) = parent_of(e, disk, row).await? else { return Ok(None) };
+    if row.target_parent.is_none() && row.item_id.is_some() {
+        let (seq, parent, name) = (row.seq, parent.clone(), row.target_name.clone());
+        e.store().call(move |s| s.outbox_set_target(seq, Some(&parent), name.as_deref())).await?;
+    }
+    Ok(Some(parent))
 }
 
 /// The row's local object: where the row saw it, or where a row behind it
@@ -350,13 +349,20 @@ pub(in crate::upload) async fn name_taken(
     name: &str,
     ours: Ours<'_>,
 ) -> Result<Named, Fail> {
+    let item = match &ours {
+        Ours::Item(id) if row.kind != OutboxKind::Move => Some(*id),
+        _ => None,
+    };
     Ok(match taken(e, row, parent, name, ours).await? {
         Taken::Free => Named::Settled(Outcome::again()),
         Taken::Temporary(swap) => Named::Settled(temporary(e, row, parent, &swap).await?),
         Taken::Adopt(item) => Named::Adopt(item),
         Taken::Held => Named::Settled(held(row)),
+        // A copy made of an item's own object (its content, changed here)
+        // takes the object from the item: the item forgets it, and is
+        // placed again from OneDrive. A move keeps its object.
         Taken::Copy => Named::Settled(match found {
-            Some(found) => copy(e, disk, row, found, parent, None).await?,
+            Some(found) => copy(e, disk, row, found, parent, item).await?,
             None => Outcome::later(Reason::NotFound, RECHECK),
         }),
     })
@@ -438,6 +444,40 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
 /// it was cancelled.
 pub(in crate::upload) async fn cancel_session(e: &Engine, url: &SessionUrl) -> Result<bool, Fail> {
     Ok(crate::upload::cancel_session(e.store(), e.drive(), url).await?)
+}
+
+/// Whether the folder can hold `remote` where OneDrive has it: its own name
+/// and kind can be placed, and the base places the folder it is in.
+pub(in crate::upload) async fn holds(e: &Engine, remote: &DriveItem) -> Result<bool, Fail> {
+    let (Some(parent), name) = place(remote) else { return Ok(false) };
+    // The daemon's own temporary name is a step of a row, not a place.
+    if name.starts_with(RESERVED_PREFIX) {
+        return Ok(true);
+    }
+    if !matches!(classify(remote), Change::Upsert(row) if row.placement == Placement::Placed) {
+        return Ok(false);
+    }
+    Ok(e.store().call(move |s| s.locate(Table::Items, &parent)).await?.is_some_and(|at| at.placed))
+}
+
+/// The base of a row that met a `412`, read again: the item's fresh tag,
+/// and OneDrive's place — but where the folder cannot hold that place
+/// (`held` false), only for what the user changed. The row was recorded
+/// with `base` and sends the item to (`parent`, `name`): a field in which
+/// the two agree is one nobody changed here, and it keeps the row's own
+/// value, so that the next request does not send it. A rename made here is
+/// then a rename, never also a move back out of where OneDrive put the
+/// item, and the other way round.
+pub(in crate::upload) fn base_after_a_change(base: &Base, parent: &str, name: &str, remote: &DriveItem, held: bool) -> Base {
+    let (remote_parent, remote_name) = place(remote);
+    let moved_here = base.parent.as_deref() != Some(parent);
+    let renamed_here = base.name.as_deref() != Some(name);
+    Base {
+        etag: remote.e_tag.clone(),
+        ctag: base.ctag.clone(),
+        parent: if held || moved_here { remote_parent } else { Some(parent.to_owned()) },
+        name: Some(if held || renamed_here { remote_name } else { name.to_owned() }),
+    }
 }
 
 /// Rename × rename (§6): the first to reach OneDrive wins, so the local

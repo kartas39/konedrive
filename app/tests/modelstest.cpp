@@ -76,13 +76,10 @@ private Q_SLOTS:
         QCOMPARE(at(activity, 1, ActivityModel::IconRole).toString(), QStringLiteral("document-duplicate"));
         QCOMPARE(at(activity, 2, ActivityModel::IconRole).toString(), QStringLiteral("edit-delete"));
         QCOMPARE(uploadReasonText(QStringLiteral("other-device")), QStringLiteral("On another filesystem mounted inside the folder: never uploaded."));
-        QCOMPARE(uploadReasonText(QStringLiteral("leaving-not-found")), QStringLiteral("Not found in OneDrive, which still lists it, in a folder no longer synced here: kept until OneDrive's listing says it was removed, or it is changed again."));
-        QCOMPARE(uploadReasonText(QStringLiteral("unknown-state")), QStringLiteral("A file whose KOneDrive state cannot be read, in a folder no longer synced here: the folder stays until it is fixed or removed."));
         QCOMPARE(uploadReasonText(QStringLiteral("moved-out-not-opened: Resource temporarily unavailable")), QStringLiteral("Moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later (Resource temporarily unavailable)."));
         QCOMPARE(uploadReasonText(QStringLiteral("paused")), QStringLiteral("Paused with the account: it goes on when the pause ends."));
         QCOMPARE(uploadReasonText(QStringLiteral("no-guard")), QStringLiteral("KOneDrive's record of this change is incomplete (no-guard): it stays here until the file is changed again."));
         QCOMPARE(uploadReasonText(QStringLiteral("not allowed now: the folder is read-only")), QStringLiteral("Uploads are not allowed now: it goes on when they are (the folder is read-only)."));
-        QCOMPARE(uploadReasonText(QStringLiteral("mounted-inside")), QStringLiteral("Another filesystem is mounted inside a folder no longer synced here: the folder stays until it is unmounted."));
         for (const QString &kind : {QStringLiteral("uploaded"), QStringLiteral("cloud-moved"), QStringLiteral("cloud-deleted"), QStringLiteral("restored"),
                                     QStringLiteral("not-uploaded")}) {
             QVERIFY2(ActivityModel::describe(kind, QString()) != kind, qPrintable(kind));

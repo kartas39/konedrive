@@ -720,7 +720,7 @@ async fn skipped_asked_during_a_forget_waits_for_it() {
     assert!(!reading.is_finished(), "Skipped() read the tree while the Forget was under way");
     w.helper.release(Seen::UnregisterRoot);
     forgetting.await.unwrap().unwrap();
-    assert_eq!(reading.await.unwrap().unwrap(), Vec::<(String, String)>::new());
+    assert_eq!(reading.await.unwrap().unwrap(), Vec::<(String, String, String, String)>::new());
 }
 
 /// Whose file an open is, and whose item an id is, by the tree store of a running sync

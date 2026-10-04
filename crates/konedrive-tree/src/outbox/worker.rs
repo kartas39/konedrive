@@ -8,7 +8,8 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{insert, remove, rewrite, rows_for, rows_where, set_snapshot, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, SessionUrl, Snapshot, SWAP_PREFIX};
 use crate::conflicts::ConflictKind;
-use crate::forget::{forget_subtrees, forget_unplaced};
+use crate::forget::{base_places, forget_subtrees, forget_unplaced};
+use crate::query::get_row;
 use crate::meta::next_outbox_seq;
 use crate::model::{upsert, Change, Placement, Row, Table};
 use crate::source::Source;
@@ -147,13 +148,35 @@ impl TreeStore {
         let tx = self.conn.transaction()?;
         let committed = rows_where(&tx, "WHERE seq = ?1", [seq])?.into_iter().next().ok_or_else(|| gone(seq))?;
         let local_seq = next_outbox_seq(&tx)?;
-        upsert(&tx, Table::Items, &Row { placement: Placement::Placed, ..answer.clone() })?;
-        crate::reconcile::joins_leaving(&tx, &answer.id, answer.parent_id.as_deref())?;
+        // As [`TreeStore::outbox_commit`]: an answer in a folder the base
+        // does not place takes no placed item's place away, and a row the
+        // base does not place records no object (I1).
+        let placed = Row { placement: Placement::Placed, ..answer.clone() };
+        let stays = match get_row(&tx, Source::Items, &answer.id)? {
+            Some(base) if base_places(&tx, &answer.id)? && !super::would_place(&tx, &placed)? => Some(base),
+            _ => None,
+        };
+        // Kept, the place is the folder the object stands in, under the
+        // temporary name the item has for now; OneDrive's own place is in
+        // the deferred change alone, so that the move that follows sends
+        // the final name and no folder.
+        let parent = match stays {
+            Some(base) => {
+                upsert(&tx, Table::Items, &Row { parent_id: Some(final_parent.to_owned()), placement: base.placement, ..answer.clone() })?;
+                crate::reconcile::wait(&tx, &answer.id, Some(answer), local_seq, None)?;
+                Some(final_parent.to_owned())
+            }
+            None => {
+                upsert(&tx, Table::Items, &placed)?;
+                answer.parent_id.clone()
+            }
+        };
         tx.execute(
             "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
             params![answer.id, handle.map(FileHandle::encode), local_seq],
         )?;
-        let base = Base { etag: answer.etag.clone(), ctag: answer.ctag.clone(), parent: answer.parent_id.clone(), name: Some(answer.name.clone()) };
+        forget_unplaced(&tx, [answer.id.as_str()])?;
+        let base = Base { etag: answer.etag.clone(), ctag: answer.ctag.clone(), parent, name: Some(answer.name.clone()) };
         let mut followers = rows_for(&tx, Some(&answer.id), None)?;
         if let Some(inode) = committed.inode.clone() {
             followers.extend(rows_for(&tx, None, Some(&inode))?);
@@ -361,16 +384,12 @@ impl TreeStore {
     }
 
     /// Row `seq` goes without a commit: OneDrive decided otherwise (§6: a
-    /// delete of something changed there). In one transaction: the base takes
-    /// `base` if given; `forget` (an item) and what is inside it lose their
-    /// local object, so that what is missing here is placed again rather
-    /// than deleted in OneDrive; the activity is written.
-    pub fn outbox_drop(&mut self, seq: i64, base: Option<&Row>, forget: Option<&str>, activity: Option<&ActivityRow>) -> Result<(), TreeError> {
+    /// delete of something changed there). In one transaction: `forget` (an
+    /// item) and what is inside it lose their local object, so that what is
+    /// missing here is placed again rather than deleted in OneDrive; the
+    /// activity is written.
+    pub fn outbox_drop(&mut self, seq: i64, forget: Option<&str>, activity: Option<&ActivityRow>) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
-        if let Some(row) = base {
-            upsert(&tx, Table::Items, row)?;
-            forget_unplaced(&tx, [row.id.as_str()])?;
-        }
         if let Some(id) = forget {
             forget_local(&tx, id)?;
         }

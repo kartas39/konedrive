@@ -67,7 +67,7 @@ fn a_placement_nobody_can_read_is_placed_for_the_decoder_and_the_queries() {
 
     let unknown = store.get(Table::Items, "S").unwrap().unwrap();
     assert_eq!((unknown.placement, unknown.kind), (Placement::Skipped(SkipReason::Unsupported), Kind::File));
-    assert_eq!(store.skipped().unwrap(), [(std::path::PathBuf::from("n-S"), SkipReason::Unsupported)]);
+    assert_eq!(store.skipped().unwrap().into_iter().map(|s| (s.rel, s.reason)).collect::<Vec<_>>(), [(std::path::PathBuf::from("n-S"), SkipReason::Unsupported)]);
 
     // `INDEXED BY` fails to prepare when the query does not imply the
     // index's own condition.
@@ -125,7 +125,7 @@ fn a_row_reads_back_as_written_from_every_table() {
     let changed = Row { ctag: Some("c2".into()), size: 9, ..file };
     store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[Change::Upsert(changed.clone()), Change::Delete("S".into())]).unwrap();
-    store.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &[], whole: &["F".into(), "S".into()], content: &[], fetched_at: 1 }).unwrap();
+    store.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &[], whole: &["F".into(), "S".into()], content: &[], fetched_at: 1, waits: &[] }).unwrap();
     assert_eq!(store.deferred("F").unwrap(), Some(Change::Upsert(changed)));
     assert_eq!(store.deferred("S").unwrap(), Some(Change::Delete("S".into())));
 }

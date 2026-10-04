@@ -171,7 +171,7 @@ impl Listing {
                 Some((writes, tree)) => {
                     let fetch_seq = self.on_store(turn, |s| s.outbox_seq()).await?;
                     // The last page ends a whole listing of the drive.
-                    let waiting = Waiting { fetch_seq, consumed: Vec::new(), whole_listing: next.is_none(), brought: Vec::new() };
+                    let waiting = Waiting { fetch_seq, consumed: Vec::new() };
                     Mode::ReadWrite(RwCycle { writes, tree, upload_differences: false, waiting })
                 }
             };

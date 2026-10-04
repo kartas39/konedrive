@@ -64,7 +64,6 @@ fn reason_text(reason: &Reason, stored: &str) -> String {
         Reason::OpenForWriting => "open for writing in another program: it goes up once closed".to_owned(),
         Reason::MassDelete => "part of a large delete: confirm it (`sync deletes confirm`) or undo it (`sync deletes restore`)".to_owned(),
         Reason::NotLocal => "a file from another OneDrive folder that is not downloaded here".to_owned(),
-        Reason::LeavingNotFound => "not found in OneDrive, which still lists it, in a folder no longer synced here: kept until OneDrive's listing says it was removed, or it is changed again".to_owned(),
         Reason::Locked => "locked in OneDrive (open for co-authoring): tried again later".to_owned(),
         Reason::Network => "OneDrive could not be reached: tried again later".to_owned(),
         Reason::LocalIo => "the local file could not be read: tried again later".to_owned(),
@@ -117,8 +116,6 @@ fn skip_text(skip: &LocalSkip, stored: &str) -> String {
         // Spelled as a row's `not-downloaded`, which is read first.
         LocalSkip::NotDownloaded => reason_text(&Reason::NotLocal, stored),
         LocalSkip::OtherDevice => "on another filesystem mounted inside the folder: never uploaded".to_owned(),
-        LocalSkip::MountedInside => "another filesystem is mounted inside a folder no longer synced here: the folder stays until it is unmounted".to_owned(),
-        LocalSkip::UnknownState => "a file whose konedrive state cannot be read, in a folder no longer synced here: the folder stays until it is fixed or removed".to_owned(),
         LocalSkip::HardLink => "a file with other hard links: not uploaded".to_owned(),
         // No sentence: shown as stored.
         LocalSkip::Ignored => stored.to_owned(),

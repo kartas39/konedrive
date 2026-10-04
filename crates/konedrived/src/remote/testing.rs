@@ -324,7 +324,6 @@ impl World {
             }
         };
         let link = link.unwrap_or_else(|| format!("link-{}", self.links.fetch_add(1, Ordering::SeqCst) + 1));
-        let brought: Vec<String> = changes.iter().map(|c| c.id().to_owned()).collect();
         let writes = self.writes;
         let (ids, waiting) = self
             .store
@@ -334,7 +333,7 @@ impl World {
                     s.begin_staging(NewTree::Whole)?;
                     s.stage(&changes)?;
                     let consumed = if writes { s.deferred_ids()? } else { Vec::new() };
-                    return Ok((Vec::new(), Waiting { fetch_seq, consumed, whole_listing: true, brought: Vec::new() }));
+                    return Ok((Vec::new(), Waiting { fetch_seq, consumed }));
                 }
                 if !writes {
                     s.begin_staging(NewTree::Delta)?;
@@ -342,7 +341,7 @@ impl World {
                     return Ok((s.changed_ids()?, Waiting::default()));
                 }
                 let RwStaged { ids, consumed } = s.stage_rw(&changes, 0, true)?.expect("a cycle asked for in full always stages");
-                Ok((ids, Waiting { fetch_seq, consumed, whole_listing: false, brought }))
+                Ok((ids, Waiting { fetch_seq, consumed }))
             })
             .await
             .unwrap();

@@ -34,6 +34,22 @@ pub struct Change {
     pub next_try: i64,
 }
 
+/// An item OneDrive has and the folder cannot hold (`Folder.Skipped`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]
+pub struct NotInFolder {
+    /// The full path, as OneDrive has the item.
+    pub path: String,
+    /// Why the folder cannot hold it, as stored.
+    pub reason: String,
+    /// Empty for an item that is not on this computer; for one that still
+    /// is, what keeps it (`konedrive_reason::WaitsFor`, as stored, its path
+    /// a full one).
+    pub waits: String,
+    /// Empty for an item that is not on this computer; for one that still
+    /// is, its full path here.
+    pub here: String,
+}
+
 /// A file kept back from OneDrive, and why (`UploadQueue.NotUploaded`, and the items of
 /// `UploadQueue.NotUploadedFiles`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Type)]

@@ -31,3 +31,26 @@ pub(super) fn stops_after_unlink(root: &std::fs::File) -> bool {
     let Ok(meta) = root.metadata() else { return false };
     STOP_AFTER_UNLINK.lock().unwrap().as_ref().is_some_and(|stops| stops.contains(&key(&meta)))
 }
+
+/// What a test does in the folder at a root between the look at what can no
+/// longer be placed and its removal, once: what a user does in that moment.
+type Meanwhile = Box<dyn FnOnce() + Send>;
+static BEFORE_REMOVAL: Mutex<Vec<((u64, u64), Meanwhile)>> = Mutex::new(Vec::new());
+
+/// `meanwhile` runs once, right before the next removal of what can no
+/// longer be placed in the folder at `root`.
+pub(in crate::remote) fn before_the_next_removal(root: &Path, meanwhile: impl FnOnce() + Send + 'static) {
+    let root = key(&std::fs::metadata(root).expect("the folder"));
+    BEFORE_REMOVAL.lock().unwrap().push((root, Box::new(meanwhile)));
+}
+
+pub(super) fn before_removal(root: &std::fs::File) {
+    let Ok(meta) = root.metadata() else { return };
+    let waiting = {
+        let mut all = BEFORE_REMOVAL.lock().unwrap();
+        all.iter().position(|(at, _)| *at == key(&meta)).map(|n| all.remove(n).1)
+    };
+    if let Some(meanwhile) = waiting {
+        meanwhile();
+    }
+}

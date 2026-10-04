@@ -149,7 +149,7 @@ fn renew(store: &Store, root: &File, on: &str, now: i64) -> Result<Option<usize>
                     path: folder.as_deref().map_or_else(|| row.rel.clone(), |folder| folder.join(&row.rel)).display().to_string(),
                     detail: "moved out of the folder, and not found where it went after the folder's disk changed: it stays in OneDrive".to_owned(),
                 };
-                store.call_blocking(move |s| s.outbox_drop(row.seq, None, Some(&id), Some(&event)))?;
+                store.call_blocking(move |s| s.outbox_drop(row.seq, Some(&id), Some(&event)))?;
                 dropped += 1;
             }
         }

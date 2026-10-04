@@ -309,7 +309,7 @@ async fn a_change_that_waited_for_a_row_is_applied_once_the_row_is_gone() {
     assert_eq!(w.base("F").unwrap().name, "f.txt");
     assert!(w.deferred("F").is_some());
 
-    w.store.call(move |s| s.outbox_drop(seq, None, None, None)).await.unwrap();
+    w.store.call(move |s| s.outbox_drop(seq, None, None)).await.unwrap();
     w.cycle(&listing).await;
     assert_eq!(id_at(&w.path("docs/renamed.txt")).as_deref(), Some("F"));
     assert!(!w.path("docs/f.txt").exists());
@@ -333,7 +333,8 @@ async fn an_item_that_cannot_stay_and_cannot_go_yet_is_on_the_skipped_list_at_on
     assert_eq!(w.base("F").unwrap().placement, konedrive_tree::Placement::Placed, "the base still places it");
     assert!(w.deferred("F").is_some(), "its change waits");
     let skipped = w.store.call(|s| s.skipped()).await.unwrap();
-    assert_eq!(skipped, vec![(Path::new("docs").join(&long), konedrive_tree::SkipReason::NameTooLong)]);
+    let waits = Some(konedrive_tree::WaitsFor::Changes("docs/f.txt".into()));
+    assert_eq!(skipped, vec![konedrive_tree::Skipped { rel: Path::new("docs").join(&long), reason: konedrive_tree::SkipReason::NameTooLong, waits, here: Some("docs/f.txt".into()) }]);
     assert_eq!(w.state.get().cycle.skipped_count, 1);
 }
 

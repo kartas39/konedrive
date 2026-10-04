@@ -4,6 +4,8 @@ use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension};
 
+use konedrive_reason::WaitsFor;
+
 use crate::model::{placed, row_from, skipped, Chain, Counts, Located, Placement, Row, SkipReason, Table, ROW_COLUMNS};
 use crate::source::{below_sql, chains_sql, chains_then, Source};
 use crate::{TreeError, TreeStore, MAX_CHAIN};
@@ -111,66 +113,186 @@ impl TreeStore {
             return Ok(Counts::default());
         };
         let listed = self.listed_count()?;
-        let (placed, skipped): (i64, i64) = self.conn.query_row(
+        let placed: i64 = self.conn.query_row(
             &format!(
                 "WITH RECURSIVE placed(id, depth) AS (
                      SELECT ?1, 0
                      UNION ALL
                      SELECT c.id, p.depth + 1 FROM items c JOIN placed p ON c.parent_id = p.id
                       WHERE {own} AND p.depth < {MAX_CHAIN})
-                 SELECT (SELECT count(*) - 1 FROM placed),
-                        (SELECT count(*) FROM ({out}) s JOIN placed p ON s.parent_id = p.id)",
+                 SELECT count(*) - 1 FROM placed",
                 own = placed("c.placement"),
-                out = not_in_the_folder(),
             ),
             [&root],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )?;
-        Ok(Counts { listed, placed: placed as u64, skipped: skipped as u64 })
+        // What the list lists, line for line.
+        let skipped = self.skipped()?.len() as u64;
+        Ok(Counts { listed, placed: placed as u64, skipped })
     }
 
     /// The skipped items `Skipped()` lists: those OneDrive has and the folder
     /// cannot hold, whose own folder is in the folder. What is inside a
     /// skipped folder is covered by that folder's line. One that is still
     /// here — the base places it, and OneDrive's row of it waits in
-    /// `deferred` until the disk can let it go — is listed as OneDrive has
-    /// it, from the cycle that learnt of it. One query, from the index of
-    /// skipped items and from what waits, up to the root (issue #39).
-    pub fn skipped(&self) -> Result<Vec<(PathBuf, SkipReason)>, TreeError> {
+    /// `deferred` until nothing in it waits and the disk can let it go — is
+    /// listed as OneDrive has it, from the cycle that learnt of it, with
+    /// what it waits for ([`Skipped::waits`]). So is one that is still here
+    /// while OneDrive has it below a folder that is not placed, on a line of
+    /// its own beside that folder's. One query, from the index of skipped
+    /// items and from what waits, up to the root (issue #39), and a look at
+    /// each of the other changes that wait.
+    pub fn skipped(&self) -> Result<Vec<Skipped>, TreeError> {
         let Some(root) = self.root_item_id()? else {
             return Ok(Vec::new());
         };
-        let sql = chains_then(Source::Items, &not_in_the_folder(), "SELECT c.path, c.start_placement FROM chain c WHERE c.parent_id = ?1 AND c.above");
+        let sql = chains_then(
+            Source::Items,
+            &not_in_the_folder("id, parent_id, name, placement"),
+            &format!(
+                "SELECT c.path, c.start_placement, w.id, w.waits, c.start FROM chain c LEFT JOIN ({waiting}) w ON w.id = c.start
+                  WHERE c.parent_id = ?1 AND c.above",
+                waiting = waiting("d.id, d.waits", &format!("EXISTS (SELECT 1 FROM items i WHERE i.id = d.id AND {})", placed("i.placement")))
+            ),
+        );
         let mut statement = self.conn.prepare_cached(&sql)?;
         let mut out = Vec::new();
-        for row in statement.query_map([&root], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
-            let (path, placement) = row?;
+        /// The item's path, its placement, its id if it is still here, what it waits for, its id.
+        type Line = (String, String, Option<String>, Option<String>, String);
+        let rows: Vec<Line> =
+            statement.query_map([&root], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?.collect::<Result<_, _>>()?;
+        let inside = self.inside_what_waits()?;
+        for (path, placement, here, waits, id) in rows {
+            // What is inside a folder that waits is covered by its line.
+            if inside.contains(&id) {
+                continue;
+            }
             if let Placement::Skipped(reason) = Placement::decode(&placement) {
-                out.push((PathBuf::from(path), reason));
+                // Still here, where the base places it. With nothing said
+                // yet: an outbox commit deferred it, and no cycle has looked
+                // at it since.
+                let at = match &here {
+                    Some(id) => self.locate_below(Some(&root), Table::Items, id)?.map(|at| at.rel),
+                    None => None,
+                };
+                let waits = here.map(|_| waits.map_or(WaitsFor::Cycle, |stored| WaitsFor::parse(&stored)));
+                out.push(Skipped { rel: PathBuf::from(path), reason, waits, here: at });
             }
         }
-        out.sort();
+        drop(statement);
+        out.extend(self.waiting_below_unplaced(&root)?);
+        out.sort_by(|a, b| (&a.rel, &a.reason).cmp(&(&b.rel, &b.reason)));
+        Ok(out)
+    }
+
+    /// Of the items that wait to leave the folder, those the base has
+    /// inside another one that waits: the folder's line covers them, as a
+    /// skipped folder's covers what is in it. The base still has them below
+    /// that folder under its name on disk, so a line of their own would
+    /// name a path that is nowhere.
+    fn inside_what_waits(&self) -> Result<std::collections::HashSet<String>, TreeError> {
+        let waiting: std::collections::HashSet<String> = {
+            let mut statement = self.conn.prepare_cached(&waiting("d.id", &skipped("d.placement")))?;
+            let ids = statement.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+            ids
+        };
+        let mut inside = std::collections::HashSet::new();
+        if waiting.len() < 2 {
+            return Ok(inside);
+        }
+        for id in &waiting {
+            let mut at = self.get(Table::Items, id)?.and_then(|row| row.parent_id);
+            for _ in 0..MAX_CHAIN {
+                let Some(folder) = at.take() else { break };
+                if waiting.contains(&folder) {
+                    inside.insert(id.clone());
+                    break;
+                }
+                at = self.get(Table::Items, &folder)?.and_then(|row| row.parent_id);
+            }
+        }
+        Ok(inside)
+    }
+
+    /// The items that wait to leave the folder because OneDrive has them
+    /// below a folder that is not placed (moved there into the Personal
+    /// Vault, say): the base still places each where the disk has it, and
+    /// its change, which names that folder, waits in `deferred`. Each as a
+    /// line of its own, under the path OneDrive has it at, with the reason
+    /// of the folder that is not placed. The few changes that wait are
+    /// looked at one by one.
+    fn waiting_below_unplaced(&self, root: &str) -> Result<Vec<Skipped>, TreeError> {
+        let moved: Vec<(String, Option<String>, String, Option<String>)> = {
+            let mut statement = self.conn.prepare_cached(&waiting("d.id, d.parent_id, d.name, d.waits", &placed("d.placement")))?;
+            let rows = statement.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<Result<_, _>>()?;
+            rows
+        };
+        let mut out = Vec::new();
+        for (id, parent, name, waits) in moved {
+            let Some(here) = self.locate_below(Some(root), Table::Items, &id)?.filter(|at| at.placed).map(|at| at.rel) else { continue };
+            let mut names = vec![name];
+            let mut reason = None;
+            let mut at = parent;
+            let mut reached = false;
+            for _ in 0..MAX_CHAIN {
+                let Some(folder) = at.take() else { break };
+                if folder == root {
+                    reached = true;
+                    break;
+                }
+                let Some(row) = self.get(Table::Items, &folder)? else { break };
+                if let (None, Placement::Skipped(why)) = (&reason, &row.placement) {
+                    reason = Some(*why);
+                }
+                names.push(row.name);
+                at = row.parent_id;
+            }
+            if let (true, Some(reason)) = (reached, reason) {
+                let rel: PathBuf = names.iter().rev().collect();
+                out.push(Skipped { rel, reason, waits: Some(waits.map_or(WaitsFor::Cycle, |stored| WaitsFor::parse(&stored))), here: Some(here) });
+            }
+        }
         Ok(out)
     }
 }
 
-/// The rows of what OneDrive has and the folder cannot hold, as `id,
-/// parent_id, name, placement`: each as its deferred change has it, where one
-/// waits that says so, and as the base has it otherwise. A deferred change
-/// an outbox commit made after it supersedes does not count: it is dropped
-/// when the next cycle stages what waits ([`TreeStore::live_deferred`]).
-fn not_in_the_folder() -> String {
-    let waits = format!(
-        "d.gone = 0 AND {out}
-           AND d.seq >= COALESCE((SELECT i.local_seq FROM items i WHERE i.id = d.id), 0)
-           AND d.seq >= COALESCE((SELECT g.local_seq FROM outbox_gone g WHERE g.id = d.id), 0)",
-        out = skipped("d.placement"),
-    );
+/// A line of `Skipped()`: an item OneDrive has and the folder cannot hold.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    /// Where OneDrive has it, relative to the root.
+    pub rel: PathBuf,
+    pub reason: SkipReason,
+    /// `None`: it is not on this computer. Otherwise it still is, where the
+    /// base places it, and this is what keeps it.
+    pub waits: Option<WaitsFor>,
+    /// Where it is on this computer, relative to the root, when it still
+    /// is: the place the base has, which may be a name it stepped aside to.
+    pub here: Option<PathBuf>,
+}
+
+/// `columns` of the deferred changes (`d`) whose row is `such`, and that
+/// no outbox commit made after them supersedes: such a one is dropped when
+/// the next cycle stages what waits ([`TreeStore::live_deferred`]).
+fn waiting(columns: &str, such: &str) -> String {
     format!(
-        "SELECT d.id, d.parent_id, d.name, d.placement FROM deferred d WHERE {waits}
+        "SELECT {columns} FROM deferred d
+          WHERE d.gone = 0 AND {such}
+            AND d.seq >= COALESCE((SELECT i.local_seq FROM items i WHERE i.id = d.id), 0)
+            AND d.seq >= COALESCE((SELECT g.local_seq FROM outbox_gone g WHERE g.id = d.id), 0)"
+    )
+}
+
+/// The rows of what OneDrive has and the folder cannot hold, as `columns`
+/// (of `id, parent_id, name, placement`): each as its deferred change has
+/// it, where one waits that says so, and as the base has it otherwise.
+fn not_in_the_folder(columns: &str) -> String {
+    format!(
+        "{waiting}
          UNION ALL
-         SELECT id, parent_id, name, placement FROM items
-          WHERE {out} AND id NOT IN (SELECT d.id FROM deferred d WHERE {waits})",
+         SELECT {columns} FROM items
+          WHERE {out} AND id NOT IN ({waiting_ids})",
+        waiting = waiting(&columns.split(", ").map(|c| format!("d.{c}")).collect::<Vec<_>>().join(", "), &skipped("d.placement")),
+        waiting_ids = waiting("d.id", &skipped("d.placement")),
         out = skipped("placement"),
     )
 }
