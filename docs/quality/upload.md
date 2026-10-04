@@ -148,6 +148,14 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
 - **What:** the weaker one can leave an id with no state after a crash, "the one combination the
   helper refuses" (`local.rs:241–243`).
 - **Fix:** one id-first strip in `konedrive-fs`. **Size:** S.
+- **Fixed 2026-10-04** in `b075bb3` (#159): `konedrive_fs::placeholder::strip` is the one strip (the
+  id, `fsync`, the rest, `fsync`), used by `move_out/cases.rs`, `move_out/tidy.rs` and
+  `local::strip_found`. It touches only what is there: an object with no id gets neither the
+  change of mode nor the first `fsync`.
+- **Left, outside `upload/` (by reading, not reproduced):** `strip_konedrive_xattrs` still strips
+  in listing order at `remote/materialize/rw.rs`, `rw/removal.rs`, `folder/disk.rs` and
+  `local/examine/classify.rs`. A crash there can leave an id with no state inside the folder,
+  which the helper refuses with `EIO`.
 
 ## UP8. The move-out Trash case is written twice
 
@@ -164,6 +172,11 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   an empty `If-Match` (`steps.rs:652, 734`; `content.rs:218, 330, 853`).
 - **Fix:** `steps/shared.rs` and `steps/meta.rs`; `Guard::of`; `OutboxRow::reset_for_resend()`.
 - **Size:** S to M. **Risk:** low.
+- **Fixed 2026-10-04** in `b075bb3` (#159): `steps.rs` keeps `run`; `steps/meta.rs`,
+  `steps/shared.rs` and `steps/sections.rs` hold the rest. `name_taken` is the one match on a
+  taken name, `Guard` the one `If-Match` value, `OutboxRow::reset_for_resend()` the one reset.
+  The five empty `If-Match` are sent as before (`docs/limitations/F235.md`); what OneDrive
+  answers to one was not measured.
 
 ## UP10. `Engine` is one type over four files, with `cfg` open to all
 
