@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use super::names::{base_ahead_of_disk, cloud_changes, download_versioned, place_in_onedrive, senseless, Case, SUB_OUT};
+use super::names::{always, base_ahead_of_disk, cloud_changes, download_versioned, place_in_onedrive, senseless, Case, SUB_OUT};
 use super::*;
 use crate::remote::testing::Options;
 
@@ -139,6 +139,18 @@ async fn run(case: Case) -> Vec<String> {
 /// the version the base has.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_small_combination_in_a_read_only_folder_ends_as_onedrive_has_it() {
+    enumerate(false).await;
+}
+
+/// Every combination that makes sense, where the test above runs the
+/// selection the read-write enumeration runs always.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+#[ignore = "run with --ignored when remote/materialize changes"]
+async fn every_combination_in_a_read_only_folder_the_whole_product() {
+    enumerate(true).await;
+}
+
+async fn enumerate(whole: bool) {
     let mut cases = Vec::new();
     for item in [None, Some(0), Some(1), Some(2), Some(3)] {
         for reason in if item.is_none() { vec!['N'] } else { vec!['N', 'M', 'R'] } {
@@ -146,7 +158,7 @@ async fn every_small_combination_in_a_read_only_folder_ends_as_onedrive_has_it()
                 for (local, version) in [(0, 0), (2, 0), (0, 1), (0, 2)] {
                     for full in [false, true] {
                         let case = Case { item, reason, other, local, version, full };
-                        if !senseless(case) {
+                        if !senseless(case) && (whole || always(case)) {
                             cases.push(case);
                         }
                     }
