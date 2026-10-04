@@ -120,6 +120,8 @@ inside it. `LO5` after these.
   `decided.insert` at `:168` coming before any recursion.
 - **Fix:** `enum Leaves { Deleted, MovedOut { object, to } }`; the termination rule stated next to
   `decided`. **Size:** M. **Risk:** medium.
+- **Fixed 2026-10-05** in `36f0f22` (#190): `Leaves`, `Settle::Elsewhere`, the termination rule once at
+  `Decisions::settle`. What remains is in `docs/limitations/D53.md`.
 
 ## LO8. The same small logic written several times
 
