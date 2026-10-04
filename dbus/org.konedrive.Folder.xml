@@ -78,7 +78,9 @@
          moved or deleted here and not recorded yet), open-for-writing,
          unknown-state (a file whose state cannot be read), not-downloaded
          (a file that is not downloaded and is not where OneDrive has it), local-only (a name
-         on the ignore list) and mounted-inside (another filesystem). It
+         on the ignore list), mounted-inside (another filesystem) and
+         moved-in-onedrive (an item OneDrive moved out of it whose new name
+         is taken here). It
          leaves the disk in the first cycle that finds none of these. An
          item still here that OneDrive has inside a folder that is not
          placed is an entry of its own, with that folder's reason. -->

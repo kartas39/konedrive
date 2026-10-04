@@ -602,6 +602,10 @@ pub enum WaitsFor {
     LocalOnly(String),
     /// Another filesystem mounted inside.
     MountedInside(String),
+    /// An item OneDrive moved out of it, which could not be put where it
+    /// belongs yet (its name there is held by something made here), and
+    /// stays where it was meanwhile.
+    MovedAway(String),
     /// A string no variant spells.
     Other(String),
 }
@@ -617,6 +621,7 @@ impl WaitsFor {
             Self::NotDownloaded(_) => "not-downloaded",
             Self::LocalOnly(_) => "local-only",
             Self::MountedInside(_) => "mounted-inside",
+            Self::MovedAway(_) => "moved-in-onedrive",
             Self::Other(stored) => stored.split_once(':').map_or(stored.as_str(), |(key, _)| key),
         }
     }
@@ -625,7 +630,7 @@ impl WaitsFor {
     /// variants without one.
     pub fn path(&self) -> Option<&str> {
         match self {
-            Self::Changes(path) | Self::OpenForWriting(path) | Self::UnknownState(path) | Self::NotDownloaded(path) | Self::LocalOnly(path) | Self::MountedInside(path) => {
+            Self::Changes(path) | Self::OpenForWriting(path) | Self::UnknownState(path) | Self::NotDownloaded(path) | Self::LocalOnly(path) | Self::MountedInside(path) | Self::MovedAway(path) => {
                 Some(path)
             }
             _ => None,
@@ -642,6 +647,7 @@ impl WaitsFor {
             Self::NotDownloaded(path) => Self::NotDownloaded(full(path)),
             Self::LocalOnly(path) => Self::LocalOnly(full(path)),
             Self::MountedInside(path) => Self::MountedInside(full(path)),
+            Self::MovedAway(path) => Self::MovedAway(full(path)),
             other => other,
         }
     }
@@ -658,6 +664,7 @@ impl WaitsFor {
             "not-downloaded" => Self::NotDownloaded(path()),
             "local-only" => Self::LocalOnly(path()),
             "mounted-inside" => Self::MountedInside(path()),
+            "moved-in-onedrive" => Self::MovedAway(path()),
             _ => Self::Other(stored.to_owned()),
         }
     }

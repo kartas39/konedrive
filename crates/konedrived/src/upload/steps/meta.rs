@@ -63,7 +63,7 @@ async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::Fi
 pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Result<Outcome, Fail> {
     let (Some(id), Some(base)) = (row.item_id.clone(), row.base.clone()) else { return Ok(Outcome::blocked(Reason::NoItem)) };
     let local = local_name(&row)?;
-    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
+    let Some(parent) = super::shared::parent_recorded(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
     let name = wanted_name(&row, &local);
     let found = locate(e, disk, &row).await?;
     let Some(guard) = Guard::of_base(&base) else { return Ok(Outcome::blocked(Reason::NoGuard)) };

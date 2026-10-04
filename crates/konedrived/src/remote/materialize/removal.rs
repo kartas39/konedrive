@@ -553,7 +553,13 @@ impl Materializer {
     fn take_off_unplaced(&self, dir: &File, name: &OsStr, rel: &Path, survey: &Survey, run: &mut Run) -> Result<TakenOff, ApplyError> {
         let stays = |waits| Ok(TakenOff { removal: Removal::Kept, waits: Some(waits) });
         let Some(rw) = &self.rw else { return Err(ApplyError::Io(format!("{} is taken off as no longer placed in a read-only folder", rel.display()))) };
-        if let Some(waits) = self.waits(rw, dir, name, rel, run)? {
+        let mut names = Vec::new();
+        let waits = self.waits(rw, dir, name, rel, run, &mut names)?;
+        // Whether a file that is not downloaded and not where the base has
+        // it is one the user renamed is the examination's to say: each is
+        // handed over by its name, in every cycle that finds it.
+        run.out.on_disk.examine.extend(names.into_iter().map(|at| (at, false)));
+        if let Some(waits) = waits {
             return stays(waits);
         }
         #[cfg(test)]
@@ -565,7 +571,8 @@ impl Materializer {
         // came since (a placed item the user moved in), and its record was
         // not forgotten.
         let ours: HashSet<&str> = survey.ids.iter().map(String::as_str).collect();
-        let is_dir = matches!(self.disk.probe(dir, name), Ok(Probe::Managed { is_dir: true, .. }));
+        // A tree, unless it is surely a file: a tree's examination covers a name.
+        let is_dir = !matches!(self.disk.probe(dir, name), Ok(Probe::Managed { is_dir: false, .. } | Probe::Unmanaged { is_dir: false }));
         match self.remove_unplaced(rw, &ours, dir, name, rel, run) {
             Ok(None) => {
                 run.out.on_disk.taken.extend(survey.ids.iter().cloned());
@@ -597,7 +604,7 @@ impl Materializer {
     /// recorded yet, a file open for writing, a state that cannot be read,
     /// a file from elsewhere that is not downloaded, something under an
     /// ignored name that only this computer has, another filesystem.
-    fn waits(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, run: &Run) -> Result<Option<WaitsFor>, ApplyError> {
+    fn waits(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, run: &Run, names: &mut Vec<std::path::PathBuf>) -> Result<Option<WaitsFor>, ApplyError> {
         let rows = self.store.call_blocking({ let rel = rel.to_path_buf(); move |s| s.outbox_at_or_under(&rel) })?;
         if !rows.is_empty() {
             return Ok(Some(WaitsFor::Uploads(rows.len() as u64)));
@@ -606,9 +613,10 @@ impl Materializer {
         // What an examination and the outbox settle by themselves is said
         // before what only the user can settle: the place is handed to the
         // watcher for the first.
-        let mut stays = None;
+        let mut stays = Stays::default();
         let passing = self.differs(rw, dir, name, rel, &id, is_dir, device(dir)?, run, &mut stays)?;
-        Ok(passing.or(stays))
+        names.append(&mut stays.not_downloaded);
+        Ok(passing.or(stays.first))
     }
 
     /// [`Self::waits`] for the object of item `id` at `dir/name`, which is
@@ -618,7 +626,7 @@ impl Materializer {
     /// first thing found that stays until the user does something about it
     /// goes into `stays`, and the walk goes on.
     #[allow(clippy::too_many_arguments)]
-    fn differs(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, id: &str, is_dir: bool, dev: libc::dev_t, run: &Run, stays: &mut Option<WaitsFor>) -> Result<Option<WaitsFor>, ApplyError> {
+    fn differs(&self, rw: &Rw, dir: &File, name: &OsStr, rel: &Path, id: &str, is_dir: bool, dev: libc::dev_t, run: &Run, stays: &mut Stays) -> Result<Option<WaitsFor>, ApplyError> {
         self.check_cancel()?;
         if !is_dir {
             let file = self.disk.open_file(dir, name)?;
@@ -662,6 +670,7 @@ impl Materializer {
                         let empty = !is_dir && !matches!(self.disk.open_file(&sub, &child).map(|file| read_state(&file)), Ok(Ok(Some(State::Hydrated))));
                         if empty {
                             first(stays, WaitsFor::NotDownloaded(shown(&at)));
+                            stays.not_downloaded.push(at);
                             continue;
                         }
                         return Ok(Some(WaitsFor::Changes(shown(&at))));
@@ -702,7 +711,7 @@ impl Materializer {
                     None => false,
                 };
                 if held {
-                    first(stays, WaitsFor::Cycle);
+                    first(stays, WaitsFor::MovedAway(shown(&rel.join(&name))));
                 }
                 continue;
             }
@@ -782,9 +791,19 @@ impl Materializer {
     }
 }
 
+/// What a look at something that can no longer be placed found that does
+/// not pass by itself.
+#[derive(Default)]
+struct Stays {
+    /// The first of them: what is said.
+    first: Option<WaitsFor>,
+    /// Every file that is not downloaded and is not where the base has it.
+    not_downloaded: Vec<std::path::PathBuf>,
+}
+
 /// `waits` is what stays, unless something found before it is.
-fn first(stays: &mut Option<WaitsFor>, waits: WaitsFor) {
-    stays.get_or_insert(waits);
+fn first(stays: &mut Stays, waits: WaitsFor) {
+    stays.first.get_or_insert(waits);
 }
 
 /// A path relative to the root, as what an item waits for names it.

@@ -81,6 +81,9 @@ QString stillHereText(const QString &waits)
     if (key == QLatin1String("mounted-inside")) {
         return i18n("Still on this computer: another filesystem is mounted at %1. Unmount it.", detail);
     }
+    if (key == QLatin1String("moved-in-onedrive")) {
+        return i18n("Still on this computer: %1 was moved in OneDrive, and the name it has there is taken on this computer. Rename or move what has that name.", detail);
+    }
     return i18n("Still on this computer: it leaves once nothing in it waits to be uploaded.");
 }
 }

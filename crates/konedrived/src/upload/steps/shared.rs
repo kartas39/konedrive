@@ -107,6 +107,19 @@ pub(in crate::upload) async fn parent_of(e: &Engine, disk: &Arc<Disk>, row: &Out
     dir_id(e, disk, row.rel.parent().unwrap_or(Path::new(""))).await
 }
 
+/// [`parent_of`] for a row of an item, with the folder written into the row
+/// when the row named none (its folder was still to be made when it was
+/// recorded): before anything is sent, so that the commit of the answer, and
+/// a replay after a stop, know where the row took the item.
+pub(in crate::upload) async fn parent_recorded(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Option<String>, Fail> {
+    let Some(parent) = parent_of(e, disk, row).await? else { return Ok(None) };
+    if row.target_parent.is_none() && row.item_id.is_some() {
+        let (seq, parent, name) = (row.seq, parent.clone(), row.target_name.clone());
+        e.store().call(move |s| s.outbox_set_target(seq, Some(&parent), name.as_deref())).await?;
+    }
+    Ok(Some(parent))
+}
+
 /// The row's local object: where the row saw it, or where a row behind it
 /// saw it since. `None` when it is in neither place.
 pub(in crate::upload) async fn locate(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Option<Found>, Fail> {

@@ -171,6 +171,7 @@ fn what_was_leaving_waits_after_the_upgrade_and_nothing_queued_is_lost() {
     // A removal in OneDrive that already waited for the item is newer than
     // the base's row: it is what waits, and it is not superseded.
     assert_eq!((place(&s, "Y"), s.deferred("Y").unwrap()), (Some(("d/y.txt".into(), true)), Some(Change::Delete("Y".into()))));
+    assert_eq!(s.local_handle("Y").unwrap(), Some(handle(14)));
     let waits = |s: &mut TreeStore| s.live_deferred().unwrap().into_iter().filter_map(|change| match change {
         Change::Upsert(row) => Some((row.id, row.parent_id.unwrap(), row.name, row.placement)),
         Change::Delete(id) => {

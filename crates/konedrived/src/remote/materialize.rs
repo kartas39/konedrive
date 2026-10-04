@@ -347,6 +347,11 @@ struct Run {
     placed: Vec<(String, konedrive_fs::handle::FileHandle)>,
     /// What removals left in place so far, as the user's own.
     kept: Kept,
+    /// Read-write mode: items that can no longer be placed, whose objects
+    /// this run takes off, or leaves, once everything else is placed. Each
+    /// keeps its name until then: nothing is placed over it, so that what
+    /// is then looked at where it stood is its object and no other.
+    leaving: HashSet<String>,
 }
 
 /// Placed items recorded in one transaction (issue #39; a guess).

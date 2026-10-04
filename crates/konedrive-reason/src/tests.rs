@@ -155,6 +155,7 @@ fn what_an_item_waits_for_is_read_as_it_was_written() {
         WaitsFor::NotDownloaded("c".into()),
         WaitsFor::LocalOnly("d~".into()),
         WaitsFor::MountedInside("e".into()),
+        WaitsFor::MovedAway("f".into()),
     ];
     for waits in all {
         assert_eq!(WaitsFor::parse(&waits.to_string()), waits);

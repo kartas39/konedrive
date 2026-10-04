@@ -63,5 +63,6 @@ fn an_item_that_is_still_here_says_what_keeps_it() {
     assert_eq!(said("uploads:1"), "Still on this computer: 1 change in it waits to be uploaded.");
     assert_eq!(said("changes:/home/u/OneDrive/docs/new.txt"), "Still on this computer: what was done at /home/u/OneDrive/docs/new.txt on this computer has not reached OneDrive yet.");
     assert_eq!(said("mounted-inside:/home/u/OneDrive/docs/sub"), "Still on this computer: another filesystem is mounted at /home/u/OneDrive/docs/sub. Unmount it.");
+    assert!(said("moved-in-onedrive:/home/u/OneDrive/docs/a.txt").contains("/home/u/OneDrive/docs/a.txt was moved in OneDrive"));
     assert_eq!(said("cycle"), said("a-word-of-a-newer-daemon:x"));
 }

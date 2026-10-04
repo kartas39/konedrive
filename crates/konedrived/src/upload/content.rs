@@ -22,7 +22,7 @@ use konedrive_fs::placeholder::{self, State};
 
 use super::engine::{now, Engine, Fail, Outcome};
 use super::local::{self, Found, Opened, Read, Snap};
-use super::steps::{answer_row, blocking, blocking_under, cancel_session, commit_row, copy, follow_cloud, holds, local_name, locate, name_taken, never_uploaded, parent_of, tree, upload_as_new, wanted_name, Guard, Named, Ours};
+use super::steps::{answer_row, blocking, blocking_under, cancel_session, commit_row, copy, follow_cloud, holds, local_name, locate, name_taken, never_uploaded, tree, upload_as_new, wanted_name, Guard, Named, Ours};
 use super::Fault;
 use konedrive_graph::drive::item::parse_graph_time;
 use konedrive_graph::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
@@ -65,7 +65,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Re
         cancel_session(e, &stale).await?;
     }
     e.upload_progress(row.seq, 0, snap.size);
-    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
+    let Some(parent) = super::steps::parent_recorded(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
     let name = wanted_name(&row, &local);
     let job = Job { e, disk, row: &row, found: &found, file: &file, snap, parent: &parent, name: &name, session };
     match row.kind {

@@ -1057,5 +1057,95 @@ async fn the_second_step_of_a_rename_through_a_temporary_name_never_moves_the_it
     });
     assert_eq!(w.base("F").map(|row| (row.parent_id.unwrap(), row.name)), Some(("D".to_owned(), "g.txt".to_owned())));
     assert!(w.store.call(|s| s.outbox_rows()).await.unwrap().is_empty());
+    // Cycles and a scan of the whole folder after it: the file leaves, and
+    // nothing more is sent.
+    let sent = w.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").count());
+    w.rounds(&listing, 1).await;
+    assert!(!w.path("docs/g.txt").exists(), "nothing waited in it: it left");
+    w.scan_and_upload().await;
+    w.rounds(&listing, 2).await;
+    assert_eq!(w.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").count()), sent, "{:?}", w.graph.with(|c| c.log.clone()));
+    assert!(w.waits().await.is_empty());
+    assert_eq!(w.graph.with(|c| c.item("F").map(|f| (f.parent.clone().unwrap(), f.name.clone())).unwrap()), ("S".to_owned(), "g.txt".to_owned()));
+    assert_eq!(w.deletes(), 0);
+}
+
+/// In one listing OneDrive takes an item to where the folder cannot hold it
+/// and puts another item at its name. The one that leaves is taken off, and
+/// nothing else: the newcomer is placed at the name and stays, with its
+/// record; nothing is deleted or renamed in OneDrive, and once both are
+/// settled further cycles and a scan of the whole folder send nothing and
+/// nothing is said to wait. In a Changed reconcile, in a Full one, and with
+/// a folder with a file in it as the newcomer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn another_item_at_the_name_of_one_that_leaves_is_placed_and_never_taken_for_it() {
+    for (full, folder) in [(false, false), (true, false), (false, true), (true, true)] {
+        let case = format!("full={full} folder={folder}");
+        let w = Arc::new(World::read_write().await);
+        let listing = w.listed().await;
+        w.graph.with(|c| {
+            c.rename("T", ROOT, &long_name());
+            if folder {
+                c.add(folder_item("Y", ROOT, "top.txt"));
+                c.add_file("C", "Y", "child.txt", b"child");
+            } else {
+                c.add_file("Y", ROOT, "top.txt", b"another");
+            }
+        });
+        if full {
+            listing.request_full();
+        }
+        w.rounds(&listing, 3).await;
+        assert_eq!(id_at(&w.path("top.txt")).as_deref(), Some("Y"), "{case}: the newcomer has the name");
+        assert_eq!(w.recorded_handle("Y").await, Some(handle_of(&w.path("top.txt"))), "{case}");
+        if folder {
+            assert_eq!(id_at(&w.path("top.txt/child.txt")).as_deref(), Some("C"), "{case}");
+        }
+        assert_eq!(crate::remote::testing::tree_of(&w.root.path).iter().filter(|name| name.starts_with("top")).count(), if folder { 2 } else { 1 }, "{case}: {:?}", crate::remote::testing::tree_of(&w.root.path));
+        assert_eq!(w.recorded_handle("T").await, None, "{case}: the one that left is off the disk");
+        let lines = w.store.call(|s| s.skipped()).await.unwrap();
+        assert!(lines.iter().all(|line| line.waits.is_none()) && lines.len() == 1, "{case}: {lines:?}");
+        assert!(w.store.call(|s| s.deferred_ids()).await.unwrap().is_empty(), "{case}: nothing waits");
+        w.scan_and_upload().await;
+        w.rounds(&listing, 2).await;
+        assert_eq!(w.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").count()), 0, "{case}: {:?}", w.graph.with(|c| c.log.clone()));
+        assert_eq!(id_at(&w.path("top.txt")).as_deref(), Some("Y"), "{case}");
+        assert!(w.graph.with(|c| c.bin.is_empty() && c.item("T").is_some()), "{case}");
+    }
+}
+
+/// The user moves a file into a folder made here, not in OneDrive yet,
+/// while OneDrive renames the file to a name the folder cannot hold. The
+/// move is sent, the folder alone; the base then has the item where its
+/// object stands, in the new folder. Nothing is said to wait where nothing
+/// is, and a scan and further cycles send nothing more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_move_made_here_into_a_new_folder_is_kept_as_the_place_when_onedrive_renamed_the_item() {
+    let w = Arc::new(World::read_write().await);
+    let listing = w.listed().await;
+    std::fs::create_dir(w.path("n")).unwrap();
+    std::fs::rename(w.path("docs/f.txt"), w.path("n/f.txt")).unwrap();
+    let mut batch = crate::local::Batch::new();
+    batch.name(Path::new(""), std::ffi::OsStr::new("n"));
+    batch.tree(Path::new("n"));
+    batch.name(Path::new("docs"), std::ffi::OsStr::new("f.txt"));
+    w.examine(batch).await;
+    let long = long_name();
+    w.graph.with(|c| c.rename("F", "D", &long));
+    w.upload().await;
+    let n = w.graph.with(|c| c.items.values().find(|i| i.name == "n").map(|i| i.id.clone())).expect("the folder was made");
+    w.graph.with(|c| {
+        let f = c.item("F").unwrap();
+        assert_eq!((f.parent.as_deref(), f.name.as_str()), (Some(n.as_str()), long.as_str()), "moved, and not renamed back");
+    });
+    assert_eq!(w.base("F").map(|row| (row.parent_id.unwrap(), row.name)), Some((n.clone(), "f.txt".to_owned())), "where its object stands");
+    w.rounds(&listing, 1).await;
+    let waits = w.waits().await;
+    assert!(waits.is_empty(), "{waits:?}");
+    assert!(!w.path("n/f.txt").exists() && w.path("n").exists(), "nothing waited in it: it left");
+    let sent = w.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").count());
+    w.scan_and_upload().await;
+    w.rounds(&listing, 2).await;
+    assert_eq!(w.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").count()), sent, "{:?}", w.graph.with(|c| c.log.clone()));
     assert_eq!(w.deletes(), 0);
 }
