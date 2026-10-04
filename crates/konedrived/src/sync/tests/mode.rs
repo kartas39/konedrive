@@ -574,6 +574,32 @@ async fn a_failed_registration_the_helper_may_still_hold_is_kept() {
     assert_eq!(service.root_state(), "ready", "{}", service.last_error());
 }
 
+/// F241: an intercepted folder whose root id is recorded nowhere cannot be named to the
+/// helper. It is held, and says why; a Forget takes the daemon's record of it away with no
+/// helper, and touches nothing in the folder.
+#[tokio::test]
+async fn an_intercepted_folder_nobody_can_name_is_forgotten_on_the_daemons_side() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_file = config_dir.path().join("config.toml");
+    let root_dir = tempfile::tempdir().unwrap();
+    std::fs::write(root_dir.path().join("mine.txt"), b"x").unwrap();
+    write_config(&config_file, &format!("path = \"{}\"\n", resolved(root_dir.path())));
+
+    let restarted = testing::service(None, None, Some(persist(&config_file)));
+    restarted.resume().await;
+    assert_eq!(restarted.root_state(), "error");
+    assert!(restarted.last_error().contains("does not record its root id"), "{}", restarted.last_error());
+    let elsewhere = tempfile::tempdir().unwrap();
+    let refused = restarted.register_root_without_interception(elsewhere.path()).await;
+    assert!(matches!(refused, Err(SyncError::AlreadyRegistered)), "{refused:?}");
+
+    restarted.unregister_root().await.unwrap();
+    assert_eq!((restarted.root_state().as_str(), restarted.last_error().as_str()), ("none", ""));
+    assert_eq!(recorded_root(&config_file), "");
+    assert_eq!(std::fs::read(root_dir.path().join("mine.txt")).unwrap(), b"x");
+    restarted.register_root_without_interception(elsewhere.path()).await.unwrap();
+}
+
 /// The deterministic form of a D-Bus-activated first call: the bus name
 /// is claimed before `resume` runs, so a `RegisterWithoutInterception`
 /// can reach a restarted daemon before anything has looked at

@@ -27,6 +27,10 @@ impl SyncService {
     /// before its sync has opened one.
     pub(super) fn outbox_store(&self) -> Result<Store, SyncError> {
         self.require_onedrive()?;
+        // The state first: the store of a folder that went down is still here.
+        if self.view().down.is_some() {
+            return Err(self.sync_not_running());
+        }
         self.store.lock().unwrap().clone().ok_or_else(|| self.sync_not_running())
     }
 
@@ -211,7 +215,7 @@ impl SyncService {
     /// `NotUploadedSummary()`: what is kept back, one row per reason:
     /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
     pub async fn not_uploaded_summary(&self) -> Result<Vec<crate::upload::kept_back::SummaryRow>, SyncError> {
-        self.require_onedrive()?;
+        self.outbox_store()?;
         if let Some(kept) = self.kept_back.lock().unwrap().clone() {
             return Ok(kept);
         }

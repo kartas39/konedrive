@@ -752,8 +752,10 @@ async fn a_read_write_folder_whose_sync_cannot_start_is_locked_again() {
 }
 
 /// The folder itself moved away under a read-write sync (§3.3): the folder reads `error`
-/// and says so, its sync stops, `Refresh()` is refused with the reason, and OneDrive is
-/// asked for nothing more — nothing is deleted there because the folder went.
+/// and says so, its sync stops, what needs the sync is refused `NotUp`, and OneDrive is
+/// asked for nothing more — nothing is deleted there because the folder went. `Refresh()`
+/// tries to bring it up again: refused while it is gone, and once it is back the folder is
+/// up and in step again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_folder_moved_away_stops_its_sync_and_says_so() {
     let w = world().await;
@@ -766,14 +768,28 @@ async fn a_folder_moved_away_stops_its_sync_and_says_so() {
 
     std::fs::rename(w.folder.path(), w.config.path().join("moved")).unwrap();
     wait_until("the folder reads error", || service.root_state() == "error" && service.last_error().contains("moved or deleted")).await;
-    let refused = service.refresh().await.unwrap_err();
+    // Its store is still open, and no call is served from it.
+    let refused = service.pause_syncing(0).await.unwrap_err();
     assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("moved or deleted")), "{refused:?}");
+    let refused = service.outbox(0).await.unwrap_err();
+    assert!(matches!(refused, SyncError::NotUp(_)), "{refused:?}");
+    let refused = service.refresh().await.unwrap_err();
+    assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("cannot bring up")), "{refused:?}");
+    assert_eq!(service.root_state(), "error");
     let asked = requests(&w).await;
     service.refresh_now();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(requests(&w).await, asked, "OneDrive was asked on behalf of a folder that is gone");
     let received = w.server.received_requests().await.unwrap();
     assert!(received.iter().all(|r| r.method.as_str() == "GET"), "something was changed in OneDrive");
+
+    // Put back, it comes up at a `Refresh()`, with no helper's reconnect to wait for.
+    std::fs::rename(w.config.path().join("moved"), w.folder.path()).unwrap();
+    let before = deltas(&w).await;
+    service.refresh().await.unwrap();
+    wait_for_deltas(&w, before).await;
+    assert_ne!(service.root_state(), "error", "{}", service.last_error());
+    service.stop_sync().await;
 }
 
 /// Whether the folder's cycle is queued for the tree lock, behind whoever holds it.

@@ -38,6 +38,17 @@ pub(super) enum Helper {
     Waited,
 }
 
+impl Helper {
+    /// Whether a folder that says this of the helper waits for it, with a `link` or none.
+    pub(super) fn waits(self, link: bool) -> bool {
+        match self {
+            Helper::NotNeeded => false,
+            Helper::Needed => !link,
+            Helper::Waited => true,
+        }
+    }
+}
+
 /// What `folder` comes to. Pure: the same state always publishes the same.
 pub(super) fn publish(folder: &Folder) -> Published {
     let path = folder.record().map(|record| record.root.path.display().to_string()).unwrap_or_default();
@@ -108,11 +119,7 @@ impl SyncService {
     pub(super) fn publish(&self, folder: &Folder, also: impl FnOnce(&mut SyncSnapshot)) {
         let published = publish(folder);
         self.view.send_replace(published.view);
-        let waits = match published.helper {
-            Helper::NotNeeded => false,
-            Helper::Needed => self.link().is_none(),
-            Helper::Waited => true,
-        };
+        let waits = published.helper.waits(self.link().is_some());
         self.state.update_if_changed(|s| {
             s.root_path = published.path;
             s.root_state = published.state;

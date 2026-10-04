@@ -248,7 +248,7 @@ application must never read zeros where real content should be.
 - [F238](F238.md) — A file with other names that is taken off the disk: what a stop between its unlink and the removal of its id leaves
 - [F239](F239.md) — One path for every file's upload session: what a file of one fragment now does that was not measured against OneDrive
 - [F240](F240.md) — What the outbox worker is told without waiting is done only on the daemon's runtime, and its fault points are in the tests' build alone
-- [F241](F241.md) — An intercepted folder whose root id is recorded nowhere can be neither forgotten nor replaced
+- [F241](F241.md) — An intercepted folder whose root id is recorded nowhere is forgotten on the daemon's side alone
 - [F242](F242.md) — Every change of a folder stops its sync, and a helper's reconnect starts it again with a Full reconcile
 - [F243](F243.md) — What is kept of something removed in OneDrive under a name nothing uploads stays on this computer only
 

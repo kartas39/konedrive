@@ -151,13 +151,16 @@ impl SyncService {
         if !record.intercepted() {
             return Ok(());
         }
-        // An intercepted folder cannot be named to the helper without its id.
+        // An intercepted folder cannot be named to the helper without its id: only the
+        // daemon's record of it goes, and nothing in the folder is touched (`F241`).
         if !root::looks_like_a_root_id(&record.root.root_id) {
-            return Err(SyncError::Config(format!(
-                "cannot forget {}: config.toml does not record its root id, and the folder carries \
-                 none that can be read",
+            tracing::warn!(
+                "forgetting {} here only: config.toml does not record its root id and the folder carries none \
+                 that can be read, so the konedrive helper could not be told to let go of it; restarting \
+                 konedrive-helper clears whatever it still holds of it",
                 record.root.path.display()
-            )));
+            );
+            return Ok(());
         }
         let link = self.require_link()?;
         match link.unregister_root(&record.root.root_id).await {

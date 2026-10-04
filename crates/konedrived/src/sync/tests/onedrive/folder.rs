@@ -432,6 +432,78 @@ async fn a_bring_up_asked_while_a_forget_waits_starts_no_sync() {
     assert_eq!(mode(&w.folder.path().join("docs/f.txt")), 0o644);
 }
 
+/// A restarted daemon whose helper is connecting: the bring-up waits for the helper's
+/// answer, and holds the folder's state meanwhile.
+async fn bringing_up(w: &World) -> (Arc<SyncService>, tokio::task::JoinHandle<()>) {
+    {
+        let first = connected(w, true).await;
+        first.register_root(w.folder.path()).await.unwrap();
+        listed(&first).await;
+        first.stop_sync().await;
+        first.hub().set_link(None);
+    }
+    let restarted = connected(w, true).await;
+    restarted.restore().await;
+    w.helper.forget();
+    w.helper.hold(Seen::RegisterRoot);
+    let resuming = {
+        let service = Arc::clone(&restarted);
+        tokio::spawn(async move { service.resume().await })
+    };
+    wait_until("the bring-up reached the helper", || w.helper.seen().contains(&Seen::RegisterRoot)).await;
+    (restarted, resuming)
+}
+
+/// A Forget that arrives while a bring-up is under way waits for it, and then stops the
+/// sync the bring-up started before the folder and its tree store go: no sync is left on a
+/// forgotten folder.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_forget_that_waited_for_a_bring_up_stops_the_sync_it_started() {
+    let w = world().await;
+    let (service, resuming) = bringing_up(&w).await;
+    let forgetting = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move { service.unregister_root().await })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!forgetting.is_finished(), "the Forget did not wait for the bring-up");
+    w.helper.release(Seen::RegisterRoot);
+    resuming.await.unwrap();
+    forgetting.await.unwrap().unwrap();
+
+    assert_eq!(service.root_state(), "none");
+    assert!(!w.config.path().join("tree.sqlite").exists(), "the tree store stays");
+    let before = requests(&w).await;
+    service.refresh_now();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(requests(&w).await, before, "a sync runs on a forgotten folder");
+}
+
+/// A registration that arrives while a bring-up is under way waits for it and is refused:
+/// the folder is the account's already. The refusal leaves the sync the bring-up started
+/// running.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_registration_refused_after_a_bring_up_leaves_its_sync_running() {
+    let w = world().await;
+    let (service, resuming) = bringing_up(&w).await;
+    let registering = {
+        let (service, path) = (Arc::clone(&service), w.folder.path().to_path_buf());
+        tokio::spawn(async move { service.register_root(&path).await })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    w.helper.release(Seen::RegisterRoot);
+    resuming.await.unwrap();
+    let refused = registering.await.unwrap();
+    assert!(matches!(refused, Err(SyncError::AlreadyRegistered)), "{refused:?}");
+
+    assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+    // Only a running sync answers a nudge.
+    let before = deltas(&w).await;
+    service.refresh_now();
+    wait_for_deltas(&w, before).await;
+    service.stop_sync().await;
+}
+
 /// A folder whose sync could not start (F18: its tree store could not
 /// be opened) is not reported as refreshed: `Refresh()` tries to start
 /// it again, says why when it still cannot, and starts it once it can.

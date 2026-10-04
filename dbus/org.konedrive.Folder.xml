@@ -55,9 +55,11 @@
          space again, a full OneDrive ends (UploadQueue.QuotaFull), and the
          files too big before go up once they fit.
          Refused Unsupported for a folder that is not connected to OneDrive,
-         NoHelper while the helper is not connected, and NotUp for a folder
-         that is recorded and not up (State waiting or error), or whose sync
-         cannot start; the message says why.
+         and NoHelper while the helper is not connected. A folder that is
+         down after a failure (a bring-up that failed, the folder moved away,
+         a registration that was kept) is brought up first. Refused NotUp,
+         with why, when that fails, for a folder that only waits (State
+         waiting), and for one whose sync cannot start.
          While paused, OneDrive is not asked. -->
     <method name="Refresh"/>
     <!-- Everything in OneDrive that is not in the folder, as (full path,

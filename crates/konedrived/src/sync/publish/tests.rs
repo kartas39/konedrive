@@ -34,11 +34,7 @@ fn shown(folder: &Folder, link: bool, helper: HelperState) -> (String, &'static 
         root_state: published.state,
         last_error: published.error,
         switch_note: published.switch_note,
-        waits_for_helper: match published.helper {
-            Helper::NotNeeded => false,
-            Helper::Needed => !link,
-            Helper::Waited => true,
-        },
+        waits_for_helper: published.helper.waits(link),
         helper_state: helper,
         ..SyncSnapshot::default()
     };

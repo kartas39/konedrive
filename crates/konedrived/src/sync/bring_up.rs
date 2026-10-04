@@ -84,14 +84,27 @@ impl SyncService {
             return Err(SyncError::AlreadyRegistered);
         }
         let mut stopped = self.change().await;
-        self.restore_in(&mut stopped).await;
+        let registered = self.register_in(&mut stopped, path, true).await;
+        if registered.is_err() {
+            // A refusal leaves the folder as it was, its sync included: a bring-up that
+            // ended while this call waited for the state may have started one.
+            self.start_again(&mut stopped).await;
+        }
+        registered
+    }
+
+    /// A registration inside its change: refused before anything is touched, or made.
+    async fn register_in(&self, stopped: &mut Stopped<'_>, path: &Path, intercepted: bool) -> Result<(), SyncError> {
+        self.restore_in(stopped).await;
         check_standing(stopped.folder())?;
-        self.require_sign_in()?;
+        if intercepted {
+            self.require_sign_in()?;
+        }
         check_absent(stopped.folder())?;
-        let link = self.require_link()?;
+        let link = if intercepted { Some(self.require_link()?) } else { None };
         let _registering = self.wiring.hub.registering.lock().await;
         self.check_overlap(path).await?;
-        self.register(&mut stopped, path, Some(link)).await
+        self.register(stopped, path, link).await
     }
 
     /// The developer's mode (HS2): `RegisterRoot`'s folder
@@ -133,12 +146,11 @@ impl SyncService {
             return Err(SyncError::AlreadyRegistered);
         }
         let mut stopped = self.change().await;
-        self.restore_in(&mut stopped).await;
-        check_standing(stopped.folder())?;
-        check_absent(stopped.folder())?;
-        let _registering = self.wiring.hub.registering.lock().await;
-        self.check_overlap(path).await?;
-        self.register(&mut stopped, path, None).await
+        let registered = self.register_in(&mut stopped, path, false).await;
+        if registered.is_err() {
+            self.start_again(&mut stopped).await;
+        }
+        registered
     }
 
     /// Holds this account's folder back (design §3.1): `config.toml` gives
@@ -527,9 +539,9 @@ impl SyncService {
     }
 
     /// Brings the recorded folder up, or up again. When that fails the folder is down,
-    /// and says why; it is tried again at the helper's next connect, and at the next
-    /// start.
-    async fn bring_up(&self, stopped: &mut Stopped<'_>) {
+    /// and says why; it is tried again at the helper's next connect, at the next
+    /// start, and by `Refresh()`.
+    pub(super) async fn bring_up(&self, stopped: &mut Stopped<'_>) {
         let Some(record) = stopped.folder().record().cloned() else { return };
         let source = match self.source_brought_back(&stopped.folder().is) {
             Ok(source) => source,
