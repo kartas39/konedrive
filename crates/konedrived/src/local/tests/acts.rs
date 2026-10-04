@@ -407,9 +407,6 @@ struct Outcome {
     /// Objects found by asking after them: alive in the folder where the look did not
     /// look. The look after it is told to look there.
     found: Vec<usize>,
-    /// Rows a look may make on the way: the `move` of an item it saw moved before it was
-    /// edited there (the `update` then says both).
-    on_the_way: Vec<(OutboxKind, String, Option<String>)>,
 }
 
 /// What the store knows of the items when a look begins, as the model has it: the object
@@ -541,9 +538,6 @@ fn outcome(fx: &Fx, seen: &Seen, known: &Known) -> (Outcome, Known) {
                 out.list.extend(o.names.iter().filter(|n| **n != at && !ignored(n)).map(|n| (n.clone(), "hard-link".to_owned())));
                 if o.edited {
                     out.rows.push((Update, at.clone(), Some(id.into())));
-                    if at != base {
-                        out.on_the_way.push((Move, at.clone(), Some(id.into())));
-                    }
                 } else if at != base {
                     out.rows.push((Move, at.clone(), Some(id.into())));
                 }
@@ -721,7 +715,7 @@ fn run(act: Act, then: Then, handles: bool, look: Look) -> Vec<String> {
     let listed = scene.listed(look, &first_calls_for.found);
     let (want, _) = outcome(&fx, &Seen { listed: &listed, alive: &scene.objects, unread: &[], named }, &then_known);
     for row in scene.rows() {
-        if matches!(row.0, Delete | Move | MoveOut) && !first_calls_for.rows.contains(&row) && !first_calls_for.on_the_way.contains(&row) {
+        if matches!(row.0, Delete | Move | MoveOut) && !first_calls_for.rows.contains(&row) {
             wrong.push(format!("the first look made the row {row:?}"));
         }
     }
