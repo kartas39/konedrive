@@ -12,6 +12,7 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 
 pub mod fill;
 pub mod parts;
+mod target;
 
 pub use fill::{answer_request, hydrate, hydrate_in_parts, hydrate_with, Answered, FillError, CHECKPOINT_EVERY};
 pub(crate) use fill::{back_to_placeholder, download_into, Downloaded};

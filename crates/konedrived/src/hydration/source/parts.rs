@@ -20,8 +20,10 @@
 //!   A piece finished beyond a gap is not recorded.
 //! - A dropped or short answer continues its piece from where the bytes stopped; three breaks
 //!   of one piece fail the download.
+//! - The file is touched in blocking sections ([`Target`]). The streams' writes run beside
+//!   each other; a checkpoint, and everything else, runs alone, when the writes under way are
+//!   over.
 
-use std::fs::File;
 use std::os::unix::fs::FileExt;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,6 +33,7 @@ use futures_util::stream::{FuturesUnordered, StreamExt};
 use konedrive_fs::placeholder::{remove_progress, write_progress, Progress};
 use tokio::io::AsyncReadExt;
 
+use super::target::Target;
 use super::{checkpoint_every, errno_of, rehash, same_version, ContentSource, Downloaded, Fetched, SourceError, Version};
 use konedrive_graph::pool::{Class, Size, Slot, TransferPool};
 use konedrive_graph::quickxor::QuickXor;
@@ -168,7 +171,7 @@ enum End {
 /// A download in parts, from `resume` if there is one: what to commit, or the errno to answer
 /// with. The rules for versions, checkpoints and hashes are [`super::download`]'s.
 pub(super) async fn download(
-    file: &File,
+    target: &Target,
     item_id: &str,
     original_size: u64,
     source: &dyn ContentSource,
@@ -178,11 +181,11 @@ pub(super) async fn download(
     let joined = split.share.join();
     let mut started_over = false;
     loop {
-        match attempt(file, item_id, original_size, source, resume.take(), split, &joined).await {
+        match attempt(target, item_id, original_size, source, resume.take(), split, &joined).await {
             Ok(downloaded) => return Ok(downloaded),
             Err(End::Fail(errno)) => return Err(errno),
             Err(End::DropCheckpoint) => {
-                remove_progress(file).map_err(|e| errno_of(&e))?;
+                target.alone(remove_progress).await.map_err(|e| errno_of(&e))?;
             }
             Err(End::Changed) => {
                 if started_over {
@@ -191,11 +194,11 @@ pub(super) async fn download(
                 }
                 tracing::info!("{item_id}: the file changed in the cloud mid-download; starting over");
                 started_over = true;
-                remove_progress(file).map_err(|e| errno_of(&e))?;
+                target.alone(remove_progress).await.map_err(|e| errno_of(&e))?;
             }
             Err(End::Mismatch) => {
                 // Its checkpoints count bytes of content that failed the hash.
-                remove_progress(file).map_err(|e| errno_of(&e))?;
+                target.alone(remove_progress).await.map_err(|e| errno_of(&e))?;
                 if started_over {
                     tracing::error!("{item_id}: the content does not match its quickXorHash, twice");
                     return Err(libc::EIO);
@@ -241,7 +244,7 @@ impl State {
 }
 
 struct Attempt<'a> {
-    file: &'a File,
+    target: &'a Target,
     item_id: &'a str,
     source: &'a dyn ContentSource,
     split: &'a Split,
@@ -254,7 +257,7 @@ struct Attempt<'a> {
 }
 
 async fn attempt(
-    file: &File,
+    target: &Target,
     item_id: &str,
     original_size: u64,
     source: &dyn ContentSource,
@@ -287,8 +290,13 @@ async fn attempt(
             .version
             .as_ref()
             .is_some_and(|v| v.ctag == progress.ctag && v.quick_xor.is_some());
-        let mut buffer = vec![0u8; BUFFER];
-        match same.then(|| rehash(file, progress.bytes, &mut buffer)).flatten() {
+        let rebuilt = if same {
+            let bytes = progress.bytes;
+            target.alone(move |file| rehash(file, bytes, &mut vec![0u8; BUFFER])).await
+        } else {
+            None
+        };
+        match rebuilt {
             Some(rebuilt) if progress.bytes <= fetched.size => hash = rebuilt,
             _ => {
                 tracing::info!(
@@ -314,7 +322,7 @@ async fn attempt(
     // With nothing left to download, the first answer only said which version the file is.
     let first = (!pieces.is_empty()).then_some((0usize, fetched));
     let state = State { next: usize::from(first.is_some()), pieces, hash, written: start, last_checkpoint: start };
-    let attempt = Attempt { file, item_id, source, split, joined, start, size, version, state: Mutex::new(state) };
+    let attempt = Attempt { target, item_id, source, split, joined, start, size, version, state: Mutex::new(state) };
     attempt.run(first, breaks).await?;
     attempt.finish(mtime)
 }
@@ -429,7 +437,7 @@ impl Attempt<'_> {
     }
 
     /// Downloads piece `i`, from `answer` if one was fetched for it already.
-    async fn piece(&self, i: usize, mut answer: Option<Fetched>, mut breaks: u32, buffer: &mut [u8]) -> Result<(), End> {
+    async fn piece(&self, i: usize, mut answer: Option<Fetched>, mut breaks: u32, buffer: &mut Vec<u8>) -> Result<(), End> {
         let (start, end) = {
             let state = self.lock();
             (state.pieces[i].start, state.pieces[i].end)
@@ -467,11 +475,17 @@ impl Attempt<'_> {
                         break;
                     }
                 };
-                // Positioned, as a single stream writes (`super::download`).
-                self.file.write_all_at(&buffer[..read], at).map_err(|e| End::Fail(errno_of(&e)))?;
                 hasher.update(&buffer[..read]);
+                // Positioned, as a single stream writes (`super::download`). The buffer goes
+                // into the section and comes back.
+                let chunk = std::mem::take(buffer);
+                *buffer = self
+                    .target
+                    .beside(move |file| file.write_all_at(&chunk[..read], at).map(|()| chunk))
+                    .await
+                    .map_err(|e| End::Fail(errno_of(&e)))?;
                 at += read as u64;
-                self.advanced(i, at)?;
+                self.advanced(i, at).await?;
             }
             if at == end {
                 self.lock().hash.combine(&hasher);
@@ -490,24 +504,36 @@ impl Attempt<'_> {
     /// Piece `i` has its bytes up to `at` on disk: the progress shown moves on, and the
     /// checkpoint with the gap-free start once that has grown by [`checkpoint_every`] — the
     /// bytes first, durably, then the count.
-    fn advanced(&self, i: usize, at: u64) -> Result<(), End> {
-        let written = {
+    ///
+    /// The checkpoint is a section of its own, alone: it starts when the writes under way are
+    /// over and no write starts until it ends. `last_checkpoint` moves before it, so that no
+    /// other stream starts the same one meanwhile; a checkpoint that fails ends the attempt.
+    async fn advanced(&self, i: usize, at: u64) -> Result<(), End> {
+        let (written, checkpoint) = {
             let mut state = self.lock();
             let piece = &mut state.pieces[i];
             let moved = at - piece.at;
             piece.at = at;
             state.written += moved;
+            let mut checkpoint = None;
             if let Some(Version { ctag, quick_xor: Some(_) }) = &self.version {
                 let front = state.front(self.start);
                 if front - state.last_checkpoint >= checkpoint_every() {
-                    self.file.sync_data().map_err(|e| End::Fail(errno_of(&e)))?;
-                    write_progress(self.file, &Progress { ctag: ctag.clone(), bytes: front })
-                        .map_err(|e| End::Fail(errno_of(&e)))?;
                     state.last_checkpoint = front;
+                    checkpoint = Some(Progress { ctag: ctag.clone(), bytes: front });
                 }
             }
-            state.written
+            (state.written, checkpoint)
         };
+        if let Some(progress) = checkpoint {
+            self.target
+                .alone(move |file| {
+                    file.sync_data()?;
+                    write_progress(file, &progress)
+                })
+                .await
+                .map_err(|e| End::Fail(errno_of(&e)))?;
+        }
         self.source.progress(written, self.size);
         Ok(())
     }

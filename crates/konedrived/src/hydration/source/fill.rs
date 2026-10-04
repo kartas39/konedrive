@@ -19,6 +19,7 @@ use crate::helper::{Clearance, HelperLink, NotCleared};
 use konedrive_graph::quickxor::QuickXor;
 
 use super::parts;
+use super::target::Target;
 use super::{ContentSource, SourceError, Split, Version};
 
 /// Maps a local filesystem failure onto the errno the suspended `open()` is
@@ -105,10 +106,17 @@ pub async fn answer_request(
     source: &dyn ContentSource,
     link: Option<&HelperLink>,
 ) -> Answered {
-    let file = File::from(fd);
-    match read_state(&file) {
+    let target = Target::new(File::from(fd));
+    let found = target
+        .alone(|file| {
+            let state = read_state(file);
+            let edited = matches!(state, Ok(Some(State::Hydrated))) && !matches!(stamp_matches(file), Ok(true));
+            (state, edited)
+        })
+        .await;
+    match found.0 {
         Ok(Some(State::Hydrated)) => {
-            let edited = !matches!(stamp_matches(&file), Ok(true));
+            let edited = found.1;
             tracing::info!(
                 "a hydration request found its file already hydrated — filled while the request \
                  waited{} — and answers it without touching the file",
@@ -118,7 +126,7 @@ pub async fn answer_request(
         }
         Ok(Some(_)) => {
             let clearance = link.map(|link| Clearance::Link(link.clone()));
-            match fill_file(file, source, clearance.as_ref(), None).await {
+            match fill_file(target, source, clearance.as_ref(), None).await {
                 Ok(()) => Answered::Filled,
                 Err(e) => Answered::Failed(e),
             }
@@ -201,7 +209,7 @@ pub async fn hydrate_with(
     source: &dyn ContentSource,
     clearance: Option<&Clearance>,
 ) -> Result<(), FillError> {
-    fill_file(File::from(fd), source, clearance, None).await
+    fill_file(Target::new(File::from(fd)), source, clearance, None).await
 }
 
 /// [`hydrate_with`], downloading the file in parallel parts ([`parts`]): a large pinned
@@ -213,63 +221,86 @@ pub async fn hydrate_in_parts(
     clearance: Option<&Clearance>,
     split: &Split,
 ) -> Result<(), FillError> {
-    fill_file(File::from(fd), source, clearance, Some(split)).await
+    fill_file(Target::new(File::from(fd)), source, clearance, Some(split)).await
 }
 
-async fn fill_file(
-    file: File,
-    source: &dyn ContentSource,
-    clearance: Option<&Clearance>,
-    split: Option<&Split>,
-) -> Result<(), FillError> {
+/// What a fill found on its file before it wrote `hydrating` over it.
+struct Begun {
+    item_id: String,
+    /// The placeholder's own size and time — the cloud's — which a roll-back
+    /// puts back over what the fill's writes made of them (A-I1).
+    original_size: u64,
+    original_mtime: Option<SystemTime>,
+    /// The state as it was on the file, for putting back exactly.
+    found: Option<State>,
+    found_raw: Option<Vec<u8>>,
+}
+
+/// The fill's first section: what the file is, whether it may be filled with
+/// what there is to clear its way with, and `state=hydrating`, durable.
+fn begin(file: &File, has_clearance: bool) -> Result<Begun, FillError> {
     let meta = file.metadata().map_err(|e| FillError::Errno(errno_of(&e)))?;
-    // The placeholder's own time — the cloud's — which a roll-back puts back
-    // over what the fill's writes made of it (A-I1).
-    let original = (meta.len(), meta.modified().ok());
-    let original_size = original.0;
-    let Ok(Some(item_id)) = read_item_id(&file) else {
+    let Ok(Some(item_id)) = read_item_id(file) else {
         return Err(FillError::Errno(libc::EIO));
     };
     // The state as it is on the file, for putting back exactly; one that
     // does not parse is not "no state", and is not `online-only` either.
-    let found_raw = xattr::FileExt::get_xattr(&file, XATTR_STATE).map_err(|e| FillError::Errno(errno_of(&e)))?;
+    let found_raw = xattr::FileExt::get_xattr(file, XATTR_STATE).map_err(|e| FillError::Errno(errno_of(&e)))?;
     let found: Option<State> = found_raw.as_deref().and_then(|raw| String::from_utf8_lossy(raw).parse().ok());
     // Only an `online-only` file needs no clearing. With no way to clear,
     // any other is not filled: a failed fill would empty a file that may
     // still be ignored.
-    let clearance = match (found, clearance) {
-        (Some(State::OnlineOnly), _) => None,
-        (_, Some(clearance)) => Some(clearance),
-        // The ordinary way here is a helper that is away (an intercepted
-        // folder with no link): the caller says so where it used to, so
-        // this is not an error to write at every attempt.
-        (_, None) => {
-            tracing::debug!("{item_id}: found {found:?}, and nothing to clear its ignore mark with; not filled");
-            return Err(FillError::NotCleared(NotCleared::NoWay));
-        }
-    };
+    //
+    // The ordinary way here is a helper that is away (an intercepted
+    // folder with no link): the caller says so where it used to, so
+    // this is not an error to write at every attempt.
+    if !matches!(found, Some(State::OnlineOnly)) && !has_clearance {
+        tracing::debug!("{item_id}: found {found:?}, and nothing to clear its ignore mark with; not filled");
+        return Err(FillError::NotCleared(NotCleared::NoWay));
+    }
     // §5.3 step 1: `state=hydrating`, `fsync`. The marker has to be durable
     // before the first byte lands, or a power loss leaves a file that looks
     // `online-only` while holding allocated blocks full of partial content,
     // and §4.4 startup recovery has nothing to find it by.
-    write_state(&file, State::Hydrating).map_err(|e| FillError::Errno(errno_of(&e)))?;
+    write_state(file, State::Hydrating).map_err(|e| FillError::Errno(errno_of(&e)))?;
     file.sync_all().map_err(|e| FillError::Errno(errno_of(&e)))?;
+    Ok(Begun { item_id, original_size: meta.len(), original_mtime: meta.modified().ok(), found, found_raw })
+}
+
+/// The fill, in blocking sections ([`Target`]), cut where the calls waited
+/// for something else before: [`begin`]; the clearing, and [`put_back`] if
+/// it fails; where to continue from ([`resume_point`]); the download, a
+/// section for each read of the stream; [`commit`], or [`roll_back`].
+async fn fill_file(
+    target: Target,
+    source: &dyn ContentSource,
+    clearance: Option<&Clearance>,
+    split: Option<&Split>,
+) -> Result<(), FillError> {
+    let has_clearance = clearance.is_some();
+    let Begun { item_id, original_size, original_mtime, found, found_raw } =
+        target.alone(move |file| begin(file, has_clearance)).await?;
+    let clearance = match found {
+        Some(State::OnlineOnly) => None,
+        _ => clearance,
+    };
     if let Some(clearance) = clearance {
-        if let Err(e) = clearance.clear(&file).await {
+        if let Err(e) = clearance.clear(target.file()).await {
             tracing::error!(
                 "{item_id}: the way was not cleared for filling a file found {found:?} \
                  ({e}); not filling it, since a failed fill would empty a file that may \
                  still be ignored"
             );
-            put_back(&file, found_raw.as_deref());
+            target.alone(move |file| put_back(file, found_raw.as_deref())).await;
             return Err(FillError::NotCleared(e));
         }
     }
 
-    fill(&file, &item_id, original_size, source, split).await.map_err(|errno| {
-        roll_back(&file, original_size, original.1);
-        FillError::Errno(errno)
-    })
+    if let Err(errno) = fill(&target, &item_id, original_size, source, split).await {
+        target.alone(move |file| roll_back(file, original_size, original_mtime)).await;
+        return Err(FillError::Errno(errno));
+    }
+    Ok(())
 }
 
 /// A file whose download was stopped part-way because its item was removed
@@ -457,22 +488,34 @@ pub(crate) struct Downloaded {
     pub version: Option<Version>,
 }
 
+// The fault is `()` outside the tests.
+#[cfg_attr(not(test), allow(clippy::let_unit_value))]
 async fn fill(
-    file: &File,
+    target: &Target,
     item_id: &str,
     original_size: u64,
     source: &dyn ContentSource,
     split: Option<&Split>,
 ) -> Result<(), i32> {
+    let resume = target.alone(move |file| resume_point(file, original_size)).await?;
+    let downloaded = match split {
+        Some(split) => parts::download(target, item_id, original_size, source, resume, split).await?,
+        None => download(target, item_id, original_size, source, resume, true).await?,
+    };
+    let fault = take_post_data_fault();
+    let (committed, fault) = target.alone(move |file| commit(file, &downloaded, fault)).await;
+    put_post_data_fault(fault);
+    committed
+}
+
+/// The checkpoint the download continues from, if there is one it can; one
+/// it cannot is taken off first ([`drop_unusable_checkpoint`]).
+fn resume_point(file: &File, original_size: u64) -> Result<Option<Progress>, i32> {
     let resume = usable_checkpoint(file, original_size);
     if resume.is_none() {
         drop_unusable_checkpoint(file)?;
     }
-    let downloaded = match split {
-        Some(split) => parts::download(file, item_id, original_size, source, resume, split).await?,
-        None => download(file, item_id, original_size, source, resume, true).await?,
-    };
-    commit(file, &downloaded)
+    Ok(resume)
 }
 
 /// Removes a `user.konedrive.progress` that [`usable_checkpoint`] will not
@@ -498,7 +541,10 @@ fn drop_unusable_checkpoint(file: &File) -> Result<(), i32> {
 /// no size guard (there is no placeholder whose size it could contradict).
 #[allow(dead_code)] // replacements are its first caller.
 pub(crate) async fn download_into(file: &File, item_id: &str, source: &dyn ContentSource) -> Result<Downloaded, i32> {
-    download(file, item_id, 0, source, None, false).await
+    // A second descriptor of the same open file: a section outlives a
+    // dropped download, and the caller's descriptor is the caller's to close.
+    let target = Target::new(file.try_clone().map_err(|e| errno_of(&e))?);
+    download(&target, item_id, 0, source, None, false).await
 }
 
 /// A checkpoint an earlier download left, if it can be continued from: well
@@ -556,8 +602,11 @@ pub(super) fn rehash(file: &File, bytes: u64, buffer: &mut [u8]) -> Option<Quick
 /// the kernel only accepts a fixed small set of errnos on `FAN_DENY`,
 /// and `EIO` is the one in that set that fits "content could not be
 /// produced".
+///
+/// Each read of the stream is followed by one blocking section: the bytes
+/// written at their offset and, when one is due, the checkpoint.
 async fn download(
-    file: &File,
+    target: &Target,
     item_id: &str,
     original_size: u64,
     source: &dyn ContentSource,
@@ -583,7 +632,7 @@ async fn download(
             expected = None;
             resume = None;
             if checkpoints {
-                remove_progress(file).map_err(|e| errno_of(&e))?;
+                target.alone(remove_progress).await.map_err(|e| errno_of(&e))?;
             }
         }};
     }
@@ -639,7 +688,20 @@ async fn download(
                         .version
                         .as_ref()
                         .is_some_and(|v| v.ctag == progress.ctag && v.quick_xor.is_some());
-                    match same.then(|| rehash(file, progress.bytes, &mut buffer)).flatten() {
+                    let rebuilt = if same {
+                        let bytes = progress.bytes;
+                        let (rebuilt, back) = target
+                            .alone(move |file| {
+                                let rebuilt = rehash(file, bytes, &mut buffer);
+                                (rebuilt, buffer)
+                            })
+                            .await;
+                        buffer = back;
+                        rebuilt
+                    } else {
+                        None
+                    };
+                    match rebuilt {
                         Some(rebuilt) => hasher = rebuilt,
                         None => {
                             tracing::info!(
@@ -685,19 +747,34 @@ async fn download(
             // Positioned: `pwrite`, never `write`. The event fd is a
             // descriptor the *application* is about to use, and it shares its
             // file offset with the suspended `open()`.
-            file.write_all_at(&buffer[..read], written).map_err(|e| errno_of(&e))?;
             hasher.update(&buffer[..read]);
+            let at = written;
             written += read as u64;
             // The bytes first, durably, then the count that says
             // they are there — never a count ahead of the data it vouches for.
             // Only for a version with a hash: no resume would trust any other.
-            if checkpoints && written - last_checkpoint >= checkpoint_every() {
-                if let Some(Version { ctag, quick_xor: Some(_) }) = &version {
-                    file.sync_data().map_err(|e| errno_of(&e))?;
-                    write_progress(file, &Progress { ctag: ctag.clone(), bytes: written })
-                        .map_err(|e| errno_of(&e))?;
-                    last_checkpoint = written;
+            let checkpoint = match &version {
+                Some(Version { ctag, quick_xor: Some(_) })
+                    if checkpoints && written - last_checkpoint >= checkpoint_every() =>
+                {
+                    Some(Progress { ctag: ctag.clone(), bytes: written })
                 }
+                _ => None,
+            };
+            let checkpointed = checkpoint.is_some();
+            buffer = target
+                .alone(move |file| {
+                    file.write_all_at(&buffer[..read], at)?;
+                    if let Some(progress) = checkpoint {
+                        file.sync_data()?;
+                        write_progress(file, &progress)?;
+                    }
+                    Ok::<_, io::Error>(buffer)
+                })
+                .await
+                .map_err(|e| errno_of(&e))?;
+            if checkpointed {
+                last_checkpoint = written;
             }
         };
         if !broke && written >= fetched.size {
@@ -708,7 +785,7 @@ async fn download(
                         // Its checkpoints count bytes of content that failed
                         // the hash: nothing to continue from.
                         if checkpoints {
-                            remove_progress(file).map_err(|e| errno_of(&e))?;
+                            target.alone(remove_progress).await.map_err(|e| errno_of(&e))?;
                         }
                         return Err(libc::EIO);
                     }
@@ -744,7 +821,13 @@ async fn download(
 /// so a full or failing disk produced a file marked `hydrated` holding
 /// nothing but zeros while the fill reported `EIO` — and the helper answers
 /// that by allowing, and ignore-marking, the very next open.
-fn commit(file: &File, downloaded: &Downloaded) -> Result<(), i32> {
+fn commit(file: &File, downloaded: &Downloaded, mut fault: PostDataFault) -> (Result<(), i32>, PostDataFault) {
+    let committed = commit_in_order(file, downloaded, &mut fault);
+    (committed, fault)
+}
+
+#[cfg_attr(not(test), allow(unused_variables))]
+fn commit_in_order(file: &File, downloaded: &Downloaded, fault: &mut PostDataFault) -> Result<(), i32> {
     file.set_len(downloaded.size).map_err(|e| errno_of(&e))?;
     // An mtime the local filesystem cannot hold does **not** fail
     // the hydration. The property that outranks everything in this component
@@ -778,7 +861,7 @@ fn commit(file: &File, downloaded: &Downloaded) -> Result<(), i32> {
     // when armed, at the last instant before the commit write below and
     // nowhere else — a `#[cfg(test)]` no-op in every other build.
     #[cfg(test)]
-    if let Some(errno) = fire_post_data_fault() {
+    if let Some(errno) = fault.as_mut().and_then(|hook| hook()) {
         return Err(errno);
     }
     write_state(file, State::Hydrated).map_err(|e| errno_of(&e))?;
@@ -804,8 +887,25 @@ fn commit(file: &File, downloaded: &Downloaded) -> Result<(), i32> {
 // thread (and, by default, a single-threaded runtime pinned to it), so
 // nothing here can leak between tests. Compiled out entirely outside
 // `cfg(test)`, so it costs nothing in production.
+//
+// `commit` is a blocking section, on another thread than the test's. The
+// fill takes the hook from the test's thread, hands it to the section, which
+// fires it, and puts it back; so the hook is `Send`.
 #[cfg(test)]
-type PostDataFaultHook = Box<dyn FnMut() -> Option<i32>>;
+type PostDataFaultHook = Box<dyn FnMut() -> Option<i32> + Send>;
+
+/// What travels into [`commit`] with the download: the test's fault, and
+/// nothing in every other build.
+#[cfg(test)]
+type PostDataFault = Option<PostDataFaultHook>;
+#[cfg(not(test))]
+type PostDataFault = ();
+
+#[cfg(not(test))]
+fn take_post_data_fault() -> PostDataFault {}
+
+#[cfg(not(test))]
+fn put_post_data_fault(_fault: PostDataFault) {}
 
 #[cfg(test)]
 thread_local! {
@@ -814,7 +914,7 @@ thread_local! {
 }
 
 #[cfg(test)]
-fn set_post_data_fault(hook: impl FnMut() -> Option<i32> + 'static) {
+fn set_post_data_fault(hook: impl FnMut() -> Option<i32> + Send + 'static) {
     POST_DATA_FAULT.with(|cell| *cell.borrow_mut() = Some(Box::new(hook)));
 }
 
@@ -824,8 +924,22 @@ fn clear_post_data_fault() {
 }
 
 #[cfg(test)]
-fn fire_post_data_fault() -> Option<i32> {
-    POST_DATA_FAULT.with(|cell| cell.borrow_mut().as_mut().and_then(|hook| hook()))
+fn take_post_data_fault() -> PostDataFault {
+    POST_DATA_FAULT.with(|cell| cell.borrow_mut().take())
+}
+
+/// Back where it was taken from, unless the test took it off meanwhile or
+/// set another.
+#[cfg(test)]
+fn put_post_data_fault(fault: PostDataFault) {
+    if fault.is_some() {
+        POST_DATA_FAULT.with(|cell| {
+            let mut cell = cell.borrow_mut();
+            if cell.is_none() {
+                *cell = fault;
+            }
+        });
+    }
 }
 
 #[cfg(test)]
