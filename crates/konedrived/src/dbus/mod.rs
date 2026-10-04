@@ -1,16 +1,17 @@
-//! The interfaces of one account's folder — `org.konedrive.Folder`, `Transfers`,
-//! `UploadQueue`, `Conflicts`, `LocalScan` and `ActivityLog` — on the account's object
-//! `/org/konedrive/Accounts/<id>`, beside its `Account` (definitions: `dbus/*.xml`).
-//! The per-file calls are `org.konedrive.Files`'s, routed by path (`crate::daemon::manager`).
+//! The daemon on D-Bus: thin zbus wrappers, one file for each interface, named like its
+//! definition in `dbus/*.xml`. The work is done below this layer, so that it can be
+//! exercised with no bus at all.
 //!
-//! Follows the same split as `crate::dbus`/`crate::account`: this module is
-//! the thin zbus wrapper, and `SyncService` (in `sync/mod.rs`) does the
-//! actual work, so the latter can be exercised without a bus at all.
+//! - `/org/konedrive/Accounts`: `org.konedrive.Accounts` (the accounts, the settings they
+//!   share, the helper's state) and `org.konedrive.Files` (the per-file calls, routed by
+//!   path), over the `daemon::manager::AccountManager`.
+//! - `/org/konedrive/Accounts/<id>`: one account's `org.konedrive.Account` (and
+//!   `TokenExport` in a development build), over its `account::AccountService`; and the
+//!   interfaces of its folder — `Folder`, `Transfers`, `UploadQueue`, `Conflicts`,
+//!   `LocalScan`, `ActivityLog` — over its `sync::SyncService`.
 //!
-//! `org.konedrive.Account` and `org.konedrive.TokenExport`, one of each per account on the
-//! account's object `/org/konedrive/Accounts/<id>` (definitions: `dbus/*.xml`). The
-//! accounts themselves, and the client id every account signs in with, are
-//! `org.konedrive.Accounts`'s (`crate::dbus::accounts`).
+//! `export` puts them on the bus, `signals` announces what changes by itself
+//! (`properties` is the table of it), and `fault` is how every call is refused.
 
 pub mod account;
 pub mod accounts;
@@ -21,6 +22,7 @@ pub mod fault;
 pub mod files;
 pub mod folder;
 pub mod local_scan;
+mod properties;
 pub mod signals;
 #[cfg(feature = "dev-tools")]
 pub mod token_export;

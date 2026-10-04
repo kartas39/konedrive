@@ -1,4 +1,5 @@
 use super::*;
+use crate::sync::outbox::KeptBack;
 use crate::config::Mode;
 
 /// Write design §3.9: the account turning read-write takes the read-only lock off
@@ -241,8 +242,8 @@ async fn the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up() {
 
     let rows = service.outbox(0).await.unwrap();
     assert_eq!(rows.len(), 1);
-    let (_, kind, path, state, _, _, _, _) = &rows[0];
-    assert_eq!((kind.as_str(), path.as_str(), state.as_str()), ("update", file.to_str().unwrap(), "ready"));
+    let row = &rows[0];
+    assert_eq!((row.kind.as_str(), row.path.as_str(), row.state.as_str()), ("update", file.to_str().unwrap(), "ready"));
     // A placeholder has nothing to lose: its own refusal.
     assert!(matches!(service.dehydrate(&file).await, Err(SyncError::NotHydrated)));
     // Downloaded (by hand: the world serves no content), it is refused
@@ -263,13 +264,13 @@ async fn the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up() {
     assert!(matches!(service.free_up(std::slice::from_ref(&file)).await, Err(SyncError::NotUploaded(_))));
     assert_eq!(std::fs::read(&file).unwrap(), b"abc", "still downloaded");
 
-    let seq = rows[0].0 as i64;
+    let seq = rows[0].seq as i64;
     store.call(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some(&"name-characters".into()), None)).await.unwrap();
-    assert_eq!(service.not_uploaded().await.unwrap(), vec![(file.display().to_string(), "name-characters".to_owned())]);
+    assert_eq!(service.not_uploaded().await.unwrap(), vec![KeptBack { path: file.display().to_string(), reason: "name-characters".to_owned() }]);
 
     store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some(&"mass-delete".into()), None)).await.unwrap();
     assert_eq!(service.confirm_deletes().await.unwrap(), 1);
-    assert_eq!(service.outbox(0).await.unwrap()[0].3, "ready");
+    assert_eq!(service.outbox(0).await.unwrap()[0].state, "ready");
     store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some(&"mass-delete".into()), None)).await.unwrap();
     assert_eq!(service.restore_deletes().await.unwrap(), 1);
     assert!(service.outbox(0).await.unwrap().is_empty());
@@ -697,7 +698,7 @@ async fn a_folder_whose_changes_wait_is_not_forgotten() {
 
     let refused = service.unregister_root().await.unwrap_err();
     assert!(matches!(&refused, SyncError::PendingUploads(why) if why.starts_with("1 change")), "{refused:?}");
-    assert!(matches!(crate::dbus::fault::to_fault(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::PendingUploads, _)));
+    assert!(matches!(crate::dbus::fault::Fault::from(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::PendingUploads, _)));
     assert!(matches!(service.retire().await, Err(SyncError::PendingUploads(_))), "Remove's first step too");
     assert!(service.root().is_some(), "still registered");
     assert_eq!(service.pending_uploads().await, 1, "the change still waits");

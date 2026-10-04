@@ -70,10 +70,9 @@ fn every_refusal_of_the_folder_goes_out_under_its_name() {
             | SyncError::Removing
             | SyncError::Stopping
             | SyncError::Io(_) => ("org.konedrive.Error.Failed", said.clone()),
-            // As it goes out today: an error of zbus's own, the bus's name inside the message.
-            SyncError::InvalidArgs(_) => ("org.freedesktop.zbus.Error", format!("org.freedesktop.DBus.Error.InvalidArgs: {said}")),
+            SyncError::InvalidArgs(_) => ("org.freedesktop.DBus.Error.InvalidArgs", said.clone()),
         };
-        let fault = to_fault(error);
+        let fault = Fault::from(error);
         assert_eq!(fault.name().as_str(), name, "{said}");
         // What the reply carries: the message, or of zbus's own error what it says of itself.
         let carried = match &fault {

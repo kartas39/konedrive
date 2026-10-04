@@ -3,14 +3,14 @@ use zbus::object_server::SignalEmitter;
 use zbus::interface;
 
 use crate::dbus::ActivityLog;
-use crate::dbus::fault::{Result, to_fault};
+use crate::dbus::fault::Result;
 
 #[interface(name = "org.konedrive.ActivityLog")]
 impl ActivityLog {
     /// The newest `limit` events, newest first: (unix time, kind, full path,
     /// detail).
     async fn recent(&self, limit: u32) -> Result<Vec<Event>> {
-        let events = self.service.recent_activity(limit).await.map_err(to_fault)?;
+        let events = self.service.recent_activity(limit).await?;
         Ok(events.into_iter().map(|e| Event { at: e.at, kind: e.kind.as_str().to_owned(), path: e.path, detail: e.detail }).collect())
     }
 

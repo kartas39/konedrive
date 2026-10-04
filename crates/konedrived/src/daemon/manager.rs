@@ -54,35 +54,23 @@ pub struct Options {
 }
 
 /// The bus, as the daemon uses it: the manager's own objects and each account's are put on
-/// it and taken off it by `dbus/`, whose `dbus::export::OnBus` is the one implementation.
+/// it and taken off it by `dbus/`, which the daemon's own layer cannot name; its
+/// `dbus::export::OnBus` is the one implementation outside the tests. What goes over the
+/// bus beyond that — every signal, `HelperState`'s included — is `dbus/`'s own business.
 #[async_trait]
 pub trait Bus: Send + Sync {
     /// Puts `org.konedrive.Accounts` and `org.konedrive.Files` at `/org/konedrive/Accounts`,
     /// over `manager`, beside the `ObjectManager` the connection was built with
-    /// (`daemon::startup`).
+    /// (`daemon::startup`), and starts announcing what `Accounts` announces by itself.
     async fn serve(&self, connection: &Connection, manager: &Arc<AccountManager>) -> zbus::Result<()>;
-    /// What announces a change of `Accounts.HelperState`: the `Accounts` interface
-    /// [`serve`](Self::serve) put on the bus, looked up once, at startup.
-    async fn helper_state(&self, connection: &Connection) -> zbus::Result<Box<dyn HelperStateSignal>>;
-    /// Puts an account's `Account` at `path`; the task that sends its signals.
-    async fn export_account(&self, connection: &Connection, path: &ObjectPath<'_>, account: Arc<AccountService>) -> zbus::Result<JoinHandle<()>>;
-    /// Puts the interfaces of an account's folder at `path`; the tasks that send their
-    /// signals.
-    async fn export_folder(&self, connection: &Connection, path: &ObjectPath<'_>, sync: Arc<SyncService>) -> zbus::Result<Vec<JoinHandle<()>>>;
-    /// Takes the interfaces of an account's folder off the bus, every one whatever the one
-    /// before answered. `partly`: some may not be there (an `Add` that failed while putting
-    /// them), which is then not worth a warning.
-    async fn unexport_folder(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()>;
-    /// Takes an account's `Account` off the bus, as [`unexport_folder`](Self::unexport_folder)
-    /// takes the folder.
-    async fn unexport_account(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()>;
-}
-
-/// Announces changes of `Accounts.HelperState` ([`Bus::helper_state`]).
-#[async_trait]
-pub trait HelperStateSignal: Send + Sync {
-    /// `PropertiesChanged` for `HelperState`.
-    async fn changed(&self) -> zbus::Result<()>;
+    /// Puts an account's `Account` and the interfaces of its folder at `path`; the tasks
+    /// that send their signals. One that fails part of the way leaves no task running; what
+    /// it put on the bus is taken off by [`unexport`](Self::unexport), `partly`.
+    async fn export(&self, connection: &Connection, path: &ObjectPath<'_>, account: Arc<AccountService>, sync: Arc<SyncService>) -> zbus::Result<Vec<JoinHandle<()>>>;
+    /// Takes an account's interfaces off the bus, every one whatever the one before
+    /// answered. `partly`: some may not be there (an `Add` that failed while putting them),
+    /// which is then not worth a warning.
+    async fn unexport(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()>;
 }
 
 /// A path that is in no account's folder ([`AccountManager::route_all`]).
@@ -296,11 +284,7 @@ impl AccountManager {
     /// Puts `account`'s objects on the bus.
     pub(crate) async fn export(&self, connection: &Connection, account: &Account) -> zbus::Result<()> {
         let path = account.path.as_ref();
-        // Kept at once: when the folder cannot be put on the bus, whoever takes the account
-        // off again stops this task with the others.
-        let signals = self.options.bus.export_account(connection, &path, Arc::clone(&account.account)).await?;
-        account.signals.lock().unwrap().push(signals);
-        let signals = self.options.bus.export_folder(connection, &path, Arc::clone(&account.sync)).await?;
+        let signals = self.options.bus.export(connection, &path, Arc::clone(&account.account), Arc::clone(&account.sync)).await?;
         account.signals.lock().unwrap().extend(signals);
         Ok(())
     }
@@ -311,10 +295,7 @@ impl AccountManager {
         for signals in account.signals.lock().unwrap().drain(..) {
             signals.abort();
         }
-        if let Err(e) = self.options.bus.unexport_folder(connection, &path, partly).await {
-            tracing::warn!("cannot take {path} off the bus: {e}");
-        }
-        if let Err(e) = self.options.bus.unexport_account(connection, &path, partly).await {
+        if let Err(e) = self.options.bus.unexport(connection, &path, partly).await {
             tracing::warn!("cannot take {path} off the bus: {e}");
         }
     }

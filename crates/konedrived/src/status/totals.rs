@@ -90,7 +90,8 @@ impl Counter {
 
 /// Counts the totals into `state`: at once, then whenever the state or the downloads under
 /// way change — at most once a [`PUBLISH_EVERY`](konedrive_graph::pool::PUBLISH_EVERY). Never returns
-/// while `state` is held here; the caller aborts it when the account goes.
+/// while `state` is held here: the account's folder, which starts it, aborts it as it goes
+/// (`sync::SyncService`).
 pub async fn run(state: SyncStateHandle, transfers: Transfers) {
     let mut changes = state.subscribe();
     let mut moving = transfers.subscribe();

@@ -188,6 +188,7 @@ pub fn persist(file: &Path) -> Persist {
 #[derive(Default)]
 pub struct Sources {
     instead: Arc<Mutex<Option<Arc<dyn ContentSource>>>>,
+    broken: AtomicBool,
 }
 
 impl Sources {
@@ -195,10 +196,17 @@ impl Sources {
     pub fn replace(&self, source: Option<Arc<dyn ContentSource>>) {
         *self.instead.lock().unwrap() = source;
     }
+
+    /// Whether asking for a OneDrive folder's source panics from now on: a defect in the
+    /// middle of a bring-up.
+    pub fn break_bring_up(&self, broken: bool) {
+        self.broken.store(broken, Ordering::SeqCst);
+    }
 }
 
 impl wiring::Sources for Sources {
     fn onedrive(&self, drive: &DriveClient) -> Arc<dyn ContentSource> {
+        assert!(!self.broken.load(Ordering::SeqCst), "broken on purpose");
         Arc::new(Replaceable { real: Arc::new(GraphSource::new(drive.clone())), instead: Arc::clone(&self.instead) })
     }
 

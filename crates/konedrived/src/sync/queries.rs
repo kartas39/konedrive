@@ -34,7 +34,8 @@ impl SyncService {
             .collect())
     }
 
-    /// `ItemsListed`, `ItemsPlaced`, `SkippedCount`.
+    /// `ItemsListed`, `ItemsPlaced`, `SkippedCount`, for the VM suite's listing of a real
+    /// drive and the tests.
     pub fn items(&self) -> (u64, u64, u64) {
         let s = self.state.get();
         (s.cycle.items_listed, s.cycle.items_placed, s.cycle.skipped_count)
@@ -73,24 +74,6 @@ impl SyncService {
         } else {
             Err(SyncError::NoConflict(rescued.to_owned()))
         }
-    }
-
-    /// `LastChecked`, `LocalBytes`, `Conflicts.Count`.
-    pub fn status(&self) -> (i64, u64, u32) {
-        let s = self.state.get();
-        (s.cycle.last_checked, s.local.local_bytes, s.local.conflict_count)
-    }
-
-    /// `Transfers`: every download under way, as (path, bytes done, total).
-    pub fn transfers(&self) -> Vec<(String, u64, u64)> {
-        self.report.transfers.list().into_iter().map(|t| (t.path, t.done, t.total)).collect()
-    }
-
-    /// `Transfers.LargeFiles` (issue #50): the large files the sync moves now, each once, the
-    /// files being opened left out ([`large_files`](crate::status::transfers::large_files)).
-    pub fn large_files(&self) -> u32 {
-        let downloads = self.report.transfers.subscribe().borrow().clone();
-        crate::status::transfers::large_files(&downloads, &self.state.get().outbox.uploads)
     }
 
     /// `Files.WebUrl`: the address of the page OneDrive's web interface has for

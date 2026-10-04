@@ -161,7 +161,9 @@ impl Registry {
     /// otherwise stand still.
     fn list(&self) -> std::sync::MutexGuard<'_, Vec<(AccountId, Weak<SyncService>)>> {
         debug_assert!(!TELLING.get(), "an account asked the registry while it was being told the hold");
-        self.accounts.lock().unwrap()
+        // A panic under the lock leaves the list as it was: every change of it is one call
+        // on the vector. The daemon's stop reads it, and must not fail on a poisoned lock.
+        self.accounts.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// The hold's settings every account runs on now.
@@ -205,7 +207,7 @@ impl Registry {
         };
         let _telling = Telling::begin();
         for account in accounts.iter().filter_map(|(_, a)| a.upgrade()) {
-            account.hold_by(now.hold, now.conditions);
+            alone(&account, "taking the hold's settings", || account.hold_by(now.hold, now.conditions));
         }
         true
     }
@@ -418,6 +420,15 @@ impl ContentSource for NoSource {
     }
 }
 
+/// Tells one account something, on a task that tells every account: a panic of `tell` is
+/// caught and written to the journal, so that the accounts after it are told too and the
+/// task lives (the supervisor's and the watchers' ends stop the daemon).
+fn alone(account: &SyncService, what: &str, tell: impl FnOnce()) {
+    if let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(tell)) {
+        tracing::error!("{what} panicked in the account {}: {}", account.id(), crate::panic::message(panic));
+    }
+}
+
 /// The fill loop's routing ([`Registry::route`]).
 #[async_trait::async_trait]
 impl Router for Registry {
@@ -433,15 +444,26 @@ impl Served for Registry {
     /// worked out from.
     fn helper_state(&self, now: HelperState) {
         for account in self.accounts() {
-            account.state().update(|s| s.folder.helper_state = now);
+            alone(&account, "taking the helper's state", || account.state().update(|s| s.folder.helper_state = now));
         }
     }
 
     /// Every account's folder brought up on the new link, one after another, in account
     /// order: each re-registers its root, whose walk the helper performs, then recovers it.
+    ///
+    /// An account whose bring-up panics is left down, saying so, and the next account is
+    /// brought up all the same: this runs on the supervisor's own task, whose end stops
+    /// the daemon (`daemon::stop::Tasks`), and a defect that one account's folder meets
+    /// would otherwise take every account down at each connect.
     async fn helper_back(&self) {
+        use futures_util::FutureExt;
         for account in self.accounts() {
-            account.resume().await;
+            let Err(panic) = std::panic::AssertUnwindSafe(account.resume()).catch_unwind().await else { continue };
+            let panic = crate::panic::message(panic);
+            tracing::error!("bringing up the folder of the account {} panicked: {panic}", account.id());
+            if std::panic::AssertUnwindSafe(account.bring_up_panicked(&panic)).catch_unwind().await.is_err() {
+                tracing::error!("the folder of the account {} could not be left down either; it stays as the panic left it", account.id());
+            }
         }
     }
 
@@ -454,7 +476,7 @@ impl Served for Registry {
 
     fn helper_lost(&self) {
         for account in self.accounts() {
-            account.report_helper_lost();
+            alone(&account, "taking the helper's loss", || account.report_helper_lost());
         }
     }
 }
@@ -468,7 +490,7 @@ impl crate::conditions::Accounts for Registry {
 
     fn refresh_now(&self) {
         for account in self.accounts() {
-            account.refresh_now();
+            alone(&account, "asking for a cycle", || account.refresh_now());
         }
     }
 }

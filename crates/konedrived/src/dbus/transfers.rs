@@ -1,138 +1,114 @@
+use konedrive_dbus::rows;
 use zbus::interface;
 
+use crate::dbus::properties::*;
 use crate::dbus::Transfers;
 
+/// Every property is a row of `properties`, which says what it is.
 #[interface(name = "org.konedrive.Transfers")]
 impl Transfers {
     #[zbus(property)]
-    async fn downloads(&self) -> Vec<(String, u64, u64)> {
-        self.service.transfers()
+    async fn downloads(&self) -> Vec<rows::Transfer> {
+        DOWNLOADS.of(&self.service)
     }
 
-    /// Uploads under way, shaped as `Downloads`.
     #[zbus(property)]
-    async fn uploads(&self) -> Vec<(String, u64, u64)> {
-        self.service.state().get().outbox.uploads
+    async fn uploads(&self) -> Vec<rows::Transfer> {
+        UPLOADS.of(&self.service)
     }
 
-    /// Bytes a second downloaded, the average of the last 3 s.
     #[zbus(property)]
     async fn download_speed(&self) -> u64 {
-        self.service.state().get().transfers.throughput.down_speed
+        DOWNLOAD_SPEED.of(&self.service)
     }
 
-    /// Bytes a second uploaded, the average of the last 3 s.
     #[zbus(property)]
     async fn upload_speed(&self) -> u64 {
-        self.service.state().get().transfers.throughput.up_speed
+        UPLOAD_SPEED.of(&self.service)
     }
 
-    /// Files downloading now: the entries of `Downloads`, each file once however many
-    /// streams it runs (issue #50).
     #[zbus(property)]
     async fn active_downloads(&self) -> u32 {
-        u32::try_from(self.service.transfers().len()).unwrap_or(u32::MAX)
+        ACTIVE_DOWNLOADS.of(&self.service)
     }
 
-    /// Files uploading now: the entries of `Uploads`.
     #[zbus(property)]
     async fn active_uploads(&self) -> u32 {
-        u32::try_from(self.service.state().get().outbox.uploads.len()).unwrap_or(u32::MAX)
+        ACTIVE_UPLOADS.of(&self.service)
     }
 
-    /// Every slot of the pool held now, all four classes, the opens' reserve included: may be
-    /// above `PoolSize` (issue #50).
     #[zbus(property)]
     async fn pool_in_use(&self) -> u32 {
-        self.service.state().get().transfers.throughput.in_use
+        POOL_IN_USE.of(&self.service)
     }
 
-    /// The large files (100 MiB and up) the sync moves now, each once however many streams it
-    /// runs; files being opened left out (issue #50).
     #[zbus(property)]
     async fn large_files(&self) -> u32 {
-        self.service.large_files()
+        LARGE_FILES.of(&self.service)
     }
 
-    /// The size of the account's transfer pool now.
     #[zbus(property)]
     async fn pool_size(&self) -> u32 {
-        self.service.state().get().transfers.throughput.size
+        POOL_SIZE.of(&self.service)
     }
 
-    /// Its ceiling (`[transfers] max` in `config.toml`).
     #[zbus(property)]
     async fn pool_ceiling(&self) -> u32 {
-        self.service.state().get().transfers.throughput.ceiling
+        POOL_CEILING.of(&self.service)
     }
 
-    /// The streams of large sync transfers (100 MiB and up) under way now; a file being opened
-    /// is never one.
     #[zbus(property)]
     async fn large_streams(&self) -> u32 {
-        self.service.state().get().transfers.throughput.large
+        LARGE_STREAMS.of(&self.service)
     }
 
-    /// How many streams of large sync transfers may run at once (`[transfers] large` in
-    /// `config.toml`).
     #[zbus(property)]
     async fn large_stream_limit(&self) -> u32 {
-        self.service.state().get().transfers.throughput.large_limit
+        LARGE_STREAM_LIMIT.of(&self.service)
     }
 
-    /// Seconds left of OneDrive's `Retry-After` wait, during which no transfer starts; 0
-    /// when there is none.
     #[zbus(property)]
     async fn retry_after(&self) -> u32 {
-        self.service.state().get().transfers.throughput.retry_after
+        RETRY_AFTER.of(&self.service)
     }
 
-    /// Files left to download: the pinned files waiting and every download under way
-    /// (issue #16, `status::totals`).
     #[zbus(property)]
     async fn download_left_count(&self) -> u32 {
-        self.service.state().get().transfers.queue.down.left_count
+        DOWNLOAD_LEFT_COUNT.of(&self.service)
     }
 
-    /// Their size, less what the downloads under way have received.
     #[zbus(property)]
     async fn download_left_bytes(&self) -> u64 {
-        self.service.state().get().transfers.queue.down.left_bytes
+        DOWNLOAD_LEFT_BYTES.of(&self.service)
     }
 
-    /// Bytes downloaded since nothing was last left to download, or since the daemon started.
     #[zbus(property)]
     async fn download_done_bytes(&self) -> u64 {
-        self.service.state().get().transfers.queue.down.done_bytes
+        DOWNLOAD_DONE_BYTES.of(&self.service)
     }
 
-    /// Seconds the downloads left take at the last 30 s's speed; 0 when unknown.
     #[zbus(property)]
     async fn download_time_left(&self) -> u32 {
-        self.service.state().get().transfers.queue.down.time_left
+        DOWNLOAD_TIME_LEFT.of(&self.service)
     }
 
-    /// Changes left to upload: `PendingCount` less those waiting for space or too big for it.
     #[zbus(property)]
     async fn upload_left_count(&self) -> u32 {
-        self.service.state().get().transfers.queue.up.left_count
+        UPLOAD_LEFT_COUNT.of(&self.service)
     }
 
-    /// `PendingBytes`, less what the uploads under way have sent.
     #[zbus(property)]
     async fn upload_left_bytes(&self) -> u64 {
-        self.service.state().get().transfers.queue.up.left_bytes
+        UPLOAD_LEFT_BYTES.of(&self.service)
     }
 
-    /// Bytes uploaded since nothing was last left to upload, or since the daemon started.
     #[zbus(property)]
     async fn upload_done_bytes(&self) -> u64 {
-        self.service.state().get().transfers.queue.up.done_bytes
+        UPLOAD_DONE_BYTES.of(&self.service)
     }
 
-    /// Seconds the uploads left take at the last 30 s's speed; 0 when unknown, and while paused.
     #[zbus(property)]
     async fn upload_time_left(&self) -> u32 {
-        self.service.state().get().transfers.queue.up.time_left
+        UPLOAD_TIME_LEFT.of(&self.service)
     }
 }

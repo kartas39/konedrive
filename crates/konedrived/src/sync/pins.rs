@@ -129,11 +129,6 @@ impl SyncService {
             None => Ok(unpinned.len() as u32),
         }
     }
-
-    /// `PinnedCount`.
-    pub fn pinned_count(&self) -> u32 {
-        self.state.get().local.pinned_count
-    }
 }
 
 /// A path `Pin`, `Unpin` or `FreeUp` was given, opened beneath the root

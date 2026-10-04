@@ -106,22 +106,9 @@ async fn connect(builder: zbus::connection::Builder<'_>) -> zbus::Result<Connect
 /// Exports the manager and every account on `connection`, then claims `org.konedrive.Daemon`:
 /// every object a client may call is there before the name is.
 async fn serve(connection: &Connection, manager: &Arc<AccountManager>) -> zbus::Result<()> {
-    let bus = manager.bus();
-    bus.serve(connection, manager).await?;
+    manager.bus().serve(connection, manager).await?;
     for account in manager.accounts() {
         manager.export(connection, &account).await?;
     }
-    // `HelperState` is the hub's: every change of it is `Accounts`'s to announce.
-    let signal = bus.helper_state(connection).await?;
-    let mut helper = manager.hub().subscribe();
-    helper.borrow_and_update();
-    tokio::spawn(async move {
-        while helper.changed().await.is_ok() {
-            helper.borrow_and_update();
-            if let Err(e) = signal.changed().await {
-                tracing::warn!("cannot emit PropertiesChanged for HelperState: {e}");
-            }
-        }
-    });
     connection.request_name(SERVICE_NAME).await
 }

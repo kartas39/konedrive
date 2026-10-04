@@ -258,7 +258,7 @@ application must never read zeros where real content should be.
 - [F248](F248.md) — Whether a failed replacement is said again goes by a coarse reason, and the status quotes one failure
 - [F249](F249.md) — The order of an account's locks is a written rule, and two of them are held across slow work
 - [F250](F250.md) — An account's id and its drive are types only where `config.toml` is read and written
-- [F252](F252.md) — The rows on the bus have names on the client's side only, for all but two
+- [F252](F252.md) — The rows on the bus are named where `dbus/` builds them; three come to it as tuples
 - [F260](F260.md) — A helper that does not answer holds the folder's tree lock for one timeout in every examination that asks it
 - [F261](F261.md) — After the folder's filesystem changed, a move out whose object is not found where it went is given up, and what is left outside is not tidied
 - [F265](F265.md) — While a folder is watched only in part, each periodic walk asks the helper again for every unwatched directory and hands their trees over
@@ -267,6 +267,8 @@ application must never read zeros where real content should be.
 - [F268](F268.md) — A roll-back that fails leaves the file `hydrating`, not `online-only`
 - [F269](F269.md) — What must hold before a file is emptied is the caller's word, for all but the lease
 - [F270](F270.md) — The two downloads share their checks, not their loop
+- [F273](F273.md) — The daemon exits when a task it needs is gone, and counts on systemd to start it again
+- [F274](F274.md) — The properties the daemon announces are one table; four properties are outside it, and the check is by name
 
 ---
 
@@ -391,6 +393,7 @@ application must never read zeros where real content should be.
 - [D47](D47.md) — The registry lists the accounts' folders weakly, and the test support writes it too
 - [D48](D48.md) — The watcher's tests borrow `remote/`'s fixture
 - [D49](D49.md) — Test support that is still in the code of `hydration/`
+- [D50](D50.md) — What `dbus/` and `daemon/` still share by hand
 
 ---
 

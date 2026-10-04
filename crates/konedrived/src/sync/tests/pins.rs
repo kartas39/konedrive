@@ -103,14 +103,14 @@ async fn pinning_a_folder_downloads_what_is_in_it() {
     assert_eq!(service.item_state(&b).await, "hydrated");
     assert_eq!(service.item_state(&c).await, "online-only");
     assert_eq!(pin_of(&root.join("docs")), Some(b"1".to_vec()));
-    assert_eq!(service.pinned_count(), 1);
+    assert_eq!(service.state().get().local.pinned_count, 1);
     let downloaded: Vec<String> =
         activity_of(&service).await.into_iter().filter(|(kind, ..)| kind == "downloaded").map(|(_, path, _)| path).collect();
     assert_eq!(downloaded.len(), 2, "{downloaded:?}");
 
     assert_eq!(service.pin(&[a.clone()]).await.unwrap(), 0);
     assert_eq!(pin_of(&a), None, "the folder pins it already");
-    assert_eq!(service.pinned_count(), 1);
+    assert_eq!(service.state().get().local.pinned_count, 1);
 }
 
 /// Free up space on a file a pinned folder keeps is refused, naming the
@@ -133,7 +133,7 @@ async fn freeing_up_what_a_pinned_folder_keeps_is_refused_naming_the_folder() {
     // With the folder in the same call, whose pin that call takes off.
     let freed = service.free_up(&[docs.clone(), a.clone()]).await.unwrap();
     assert_eq!((freed.files, freed.pinned), (2, 0), "{freed:?}");
-    assert_eq!((pin_of(&docs), service.pinned_count()), (None, 0));
+    assert_eq!((pin_of(&docs), service.state().get().local.pinned_count), (None, 0));
 }
 
 /// A file queued while pinned whose pin is gone by its turn is not
@@ -159,7 +159,7 @@ async fn freeing_up_a_pinned_folder_unpins_it_and_frees_all_but_a_pin_below() {
     service.pin(&[b.clone()]).await.unwrap();
     service.pin(&[docs.clone()]).await.unwrap();
     pinned_downloads_done(&service).await;
-    assert_eq!(service.pinned_count(), 2);
+    assert_eq!(service.state().get().local.pinned_count, 2);
 
     let freed = service.free_up(&[docs.clone()]).await.unwrap();
 
@@ -168,7 +168,7 @@ async fn freeing_up_a_pinned_folder_unpins_it_and_frees_all_but_a_pin_below() {
     assert_eq!(service.item_state(&a).await, "online-only");
     assert_eq!(service.item_state(&b).await, "hydrated", "its own pin keeps it");
     assert_eq!((pin_of(&docs), pin_of(&b)), (None, Some(b"1".to_vec())));
-    assert_eq!(service.pinned_count(), 1);
+    assert_eq!(service.state().get().local.pinned_count, 1);
 }
 
 /// `FreeUpSpace` leaves every file a pin keeps, and counts them.

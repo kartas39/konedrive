@@ -429,12 +429,12 @@ async fn g1(service: &Arc<SyncService>, base: &Path, folder: &Path) -> Result<Op
         // three), so an exact reconciliation can undercount `listed` by
         // design, not just transiently.
         //
-        // `last_checked` (`status().0`) is unambiguous: it moves exactly
+        // `last_checked` is unambiguous: it moves exactly
         // once, at the very end of a cycle that actually succeeded — after
         // listing, reconcile and `publish_counts` — and starts at 0 ("never")
         // for a fresh base directory, which this always is. Waiting for it
         // to leave 0 is waiting for the whole cycle, not just the paging.
-        let (last_checked, _, _) = service.status();
+        let last_checked = service.state().get().cycle.last_checked;
         if state != "listing" && last_checked > 0 {
             break;
         }

@@ -686,6 +686,9 @@ fn open(told: &Told<'_>, refusal: &Refusal) -> String {
 fn uploads(told: &Told<'_>, refusal: &Refusal) -> String {
     match refusal {
         Refusal::Unsupported => "this folder is not connected to OneDrive, so nothing is uploaded from it".to_owned(),
+        // A pattern that can match no name (`sync ignore add`): the daemon's message is the
+        // pattern and what is wrong with it.
+        Refusal::InvalidArgs if matches!(told.action, SyncAction::Ignore) => format!("the ignore list was not changed: {}", told.detail),
         Refusal::NoRoot
         | Refusal::NotEmpty
         | Refusal::InUse

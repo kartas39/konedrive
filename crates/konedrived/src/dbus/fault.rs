@@ -6,21 +6,15 @@ use crate::account::{AccountError, ModeError};
 use crate::daemon::manager::ManagerError;
 use crate::sync::SyncError;
 
-/// How a call is refused: under a D-Bus error *name* ([`Refusal`]) rather than a
-/// sentence (asks for named errors on refusals the user can act
-/// on), with the message beside it.
+/// How a call is refused: under a D-Bus error *name* ([`Refusal`]) a client can branch
+/// on, with the sentence beside it as the message. "The file was modified locally" and "the
+/// file is not downloaded" are what a named error is for: the user can do something about
+/// each, and not the same thing.
 ///
-/// All of these used to collapse into `org.freedesktop.DBus.Error.Failed`
-/// with the reason in the message, which leaves a client — the CLI, the
-/// window, a script — nothing to branch on but English prose. "The file was
-/// modified locally" and "the file is not downloaded" are exactly the two
-/// refusals a named error is for: the user can do something about each, and
-/// they are not the same something.
-///
-/// Every interface refuses through this one type: the folder's and `Files` under the
-/// daemon's own names, `SetMode` and `TokenExport` under theirs
-/// (`docs/design/writes.md` §11), and `Accounts` and `Account` under the bus's own
-/// `InvalidArgs` and `Failed` for a label, a client id, a mode or `config.toml`.
+/// Every interface refuses through this one type, each error of the daemon through its own
+/// `From`: the folder's and `Files` under the daemon's own names, `SetMode` and
+/// `TokenExport` under theirs (`docs/design/writes.md` §11), and an argument that is not
+/// one (a label, a client id, a mode, an ignore pattern) under the bus's own `InvalidArgs`.
 #[derive(Debug)]
 pub enum Fault {
     /// Anything zbus itself reports, passed through unchanged; it goes out under
@@ -89,43 +83,44 @@ impl From<zbus::Error> for Fault {
 
 pub(crate) type Result<T> = std::result::Result<T, Fault>;
 
-/// Every refusal keeps its own name; only the ones with nothing a caller
-/// could act on differently fall through to `Failed` (Ruling: fail loudly
-/// rather than report success this component cannot back up).
-pub(crate) fn to_fault(error: SyncError) -> Fault {
-    let message = error.to_string();
-    let refusal = match error {
-        SyncError::Overlaps(_) => Refusal::Overlaps,
-        SyncError::NotEmpty | SyncError::ForeignFolder => Refusal::NotEmpty,
-        SyncError::Unsupported(_) => Refusal::Unsupported,
-        SyncError::InUse => Refusal::InUse,
-        SyncError::NoRoot => Refusal::NoRoot,
-        SyncError::NoHelper => Refusal::NoHelper,
-        SyncError::NotManaged => Refusal::NotManaged,
-        SyncError::NotHydrated => Refusal::NotHydrated,
-        SyncError::ModifiedLocally => Refusal::ModifiedLocally,
-        SyncError::OutsideRoot => Refusal::OutsideRoot,
-        SyncError::AlreadyRegistered => Refusal::AlreadyRegistered,
-        SyncError::NotSignedIn => Refusal::NotSignedIn,
-        SyncError::NoSource => Refusal::NoSource,
-        SyncError::NoConflict(_) => Refusal::NoConflict,
-        SyncError::NotAllowed(_) => Refusal::NotAllowed,
-        SyncError::NotUploaded(_) | SyncError::NotInOneDrive(_) => Refusal::NotUploaded,
-        SyncError::Unreachable(_) => Refusal::Unreachable,
-        SyncError::PendingUploads(_) => Refusal::PendingUploads,
-        // As an error of zbus's own, so under [`Refusal::Internal`], with the bus's name for it
-        // at the start of the message (`docs/limitations/D35.md`).
-        SyncError::InvalidArgs(_) => return Fault::ZBus(zbus::Error::FDO(Box::new(zbus::fdo::Error::InvalidArgs(message)))),
-        SyncError::NotUp(_) => Refusal::NotUp,
-        SyncError::Helper(_)
-        | SyncError::Config(_)
-        | SyncError::Store(_)
-        | SyncError::HeldBack(_)
-        | SyncError::Removing
-        | SyncError::Stopping
-        | SyncError::Io(_) => Refusal::Failed,
-    };
-    Fault::Refused(refusal, message)
+/// How the folder refuses. Every refusal keeps its own name; only the ones with nothing a
+/// caller could act on differently go out as `Failed`: the call fails loudly rather than
+/// report a success the daemon cannot back up.
+impl From<SyncError> for Fault {
+    fn from(error: SyncError) -> Self {
+        let message = error.to_string();
+        let refusal = match error {
+            SyncError::Overlaps(_) => Refusal::Overlaps,
+            SyncError::NotEmpty | SyncError::ForeignFolder => Refusal::NotEmpty,
+            SyncError::Unsupported(_) => Refusal::Unsupported,
+            SyncError::InUse => Refusal::InUse,
+            SyncError::NoRoot => Refusal::NoRoot,
+            SyncError::NoHelper => Refusal::NoHelper,
+            SyncError::NotManaged => Refusal::NotManaged,
+            SyncError::NotHydrated => Refusal::NotHydrated,
+            SyncError::ModifiedLocally => Refusal::ModifiedLocally,
+            SyncError::OutsideRoot => Refusal::OutsideRoot,
+            SyncError::AlreadyRegistered => Refusal::AlreadyRegistered,
+            SyncError::NotSignedIn => Refusal::NotSignedIn,
+            SyncError::NoSource => Refusal::NoSource,
+            SyncError::NoConflict(_) => Refusal::NoConflict,
+            SyncError::NotAllowed(_) => Refusal::NotAllowed,
+            SyncError::NotUploaded(_) | SyncError::NotInOneDrive(_) => Refusal::NotUploaded,
+            SyncError::Unreachable(_) => Refusal::Unreachable,
+            SyncError::PendingUploads(_) => Refusal::PendingUploads,
+            // The bus's own name for it, as the label, the client id and the mode go out.
+            SyncError::InvalidArgs(_) => Refusal::InvalidArgs,
+            SyncError::NotUp(_) => Refusal::NotUp,
+            SyncError::Helper(_)
+            | SyncError::Config(_)
+            | SyncError::Store(_)
+            | SyncError::HeldBack(_)
+            | SyncError::Removing
+            | SyncError::Stopping
+            | SyncError::Io(_) => Refusal::Failed,
+        };
+        Fault::Refused(refusal, message)
+    }
 }
 
 /// The named refusals of `SetMode` and `TokenExport` (`docs/design/writes.md` §11); a mode
@@ -166,7 +161,7 @@ impl From<ManagerError> for Fault {
             ManagerError::InvalidArgs(why) => Fault::Refused(Refusal::InvalidArgs, why),
             ManagerError::Failed(why) => Fault::Refused(Refusal::BusFailed, why),
             ManagerError::NoAccount(path) => Fault::Refused(Refusal::NoAccount, format!("there is no account {path}")),
-            ManagerError::Sync(error) => to_fault(error),
+            ManagerError::Sync(error) => error.into(),
         }
     }
 }

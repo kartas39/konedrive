@@ -412,7 +412,12 @@ fn run_suite(helper_binary: &Path, fs: &'static str, magic: i64) -> Result<Check
     // filesystem's run would find the socket taken, and a second helper with
     // its own marks on the same tree is not a state anything here reasons
     // about.
-    let outcome = run_scenarios(&ctx, &root);
+    // Entered for the whole run: a scenario makes its services outside `block_on`, and a
+    // service starts a task of its own as it is made (the queue totals).
+    let outcome = {
+        let _entered = ctx.runtime.enter();
+        run_scenarios(&ctx, &root)
+    };
     ctx.kill_daemon();
     let log = ctx.helper.lock().unwrap().log.clone();
     ctx.helper.lock().unwrap().stop();

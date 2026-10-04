@@ -72,8 +72,9 @@ The directories are in layer order: a directory uses only the directories before
 `remote/` does not use `upload/`.
 
 - `main.rs` — the program: reads the configuration, starts the daemon on the session bus,
-  keeps the helper link up.
+  keeps the helper link up, and stops when a task it needs is gone.
 - `lib.rs` — the list of the directories below.
+- `panic.rs` — what a caught panic said, for the places that catch one and go on.
 - `tests/bench.rs` — the module `bench`: the outbox and the cloud side at scale, ignored
   tests run by hand in release.
 - `tests/fake_onedrive/mod.rs` — the module `fake_onedrive`: a fake OneDrive on wiremock, for
@@ -375,9 +376,9 @@ The tests of `SyncService`, by topic.
 The daemon as a whole. Design: `accounts.md`.
 
 - `mod.rs` — the list of the modules.
-- `manager.rs` — the account manager; the traits `Bus` and `HelperStateSignal`.
+- `manager.rs` — the account manager; the trait `Bus`: how its objects get on the bus.
 - `startup.rs` — `Daemon`: the configuration's lock, the migration, the start.
-- `stop.rs` — the stop on SIGTERM or SIGINT. `[tests]`
+- `stop.rs` — the stop on SIGTERM or SIGINT; `Tasks`, the tasks whose end stops the daemon. `[tests]`
 
 ### `crates/konedrived/src/dbus/`
 
@@ -395,7 +396,9 @@ The D-Bus interfaces, one file each, named like the XML in `dbus/`. Design: `des
 - `local_scan.rs` — `org.konedrive.LocalScan`.
 - `token_export.rs` — `org.konedrive.TokenExport`, only in a development build.
 - `export.rs` — putting the objects on the bus and taking them off; `OnBus`.
-- `signals.rs` — `PropertiesChanged`, coalesced. `[tests]`
+- `properties.rs` — the table of the properties the daemon announces by itself. `[tests]`
+- `signals.rs` — what the daemon announces by itself: `PropertiesChanged`, `ActivityLog.Added`,
+  `Accounts.HelperState`. `[tests]`
 - `fault.rs` — `Fault`: every refusal under the name of a `Refusal`. `[tests]`
 
 ### `crates/konedrived/tests/`

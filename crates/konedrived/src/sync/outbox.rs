@@ -20,9 +20,33 @@ use crate::status::snapshot::OutboxNote;
 use crate::upload::kept_back::SummaryRow;
 use crate::upload::{self, OutboxHost, OutboxWorker, WorkerConfig, WorkerStatus};
 
-/// One row as `Changes()` lists it: (seq, kind, full path, state, bytes sent,
-/// bytes in all, reason, next try in unix seconds or 0).
-pub type OutboxEntry = (u64, String, String, String, u64, u64, String, i64);
+/// One change waiting to be uploaded, as `Changes()` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub seq: u64,
+    /// What it does, as the outbox spells it.
+    pub kind: String,
+    /// The full path.
+    pub path: String,
+    /// The row's state as stored, or `paused` while the account is.
+    pub state: String,
+    /// Bytes sent, and bytes in all.
+    pub sent: u64,
+    pub total: u64,
+    /// Why it waits, as stored; empty when nothing holds it.
+    pub reason: String,
+    /// Unix seconds of the next try; 0 when none is planned.
+    pub next_try: i64,
+}
+
+/// A file kept back from OneDrive, and why (`NotUploaded()`, `NotUploadedFiles()`).
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct KeptBack {
+    /// The full path.
+    pub path: String,
+    /// The reason as stored.
+    pub reason: String,
+}
 
 impl SyncService {
     /// The tree store of this account's OneDrive folder: refused as `Refresh`
@@ -158,7 +182,7 @@ impl SyncService {
     /// `Changes(limit)`: the rows waiting to be uploaded, oldest first, at most
     /// `limit` (0 for all): (seq, kind, full path, state, bytes sent, bytes
     /// in all, reason, next try).
-    pub async fn outbox(&self, limit: u32) -> Result<Vec<OutboxEntry>, SyncError> {
+    pub async fn outbox(&self, limit: u32) -> Result<Vec<Change>, SyncError> {
         let rows = self.read_outbox(move |s| if limit == 0 { s.outbox_rows() } else { s.outbox_first(limit as usize) }).await?;
         let root = self.record().map(|record| record.root.path).unwrap_or_default();
         let state = self.state.get();
@@ -169,18 +193,18 @@ impl SyncService {
             .map_err(|e| SyncError::Io(format!("the outbox task failed: {e}")))
     }
 
-    /// `NotUploaded()`: what stays on this computer and why, as (full path,
-    /// reason) — what is never uploaded (a symlink, a file from elsewhere
+    /// `NotUploaded()`: what stays on this computer and why, by path — what is never uploaded (a symlink, a file from elsewhere
     /// that is not downloaded, …) and the changes that need the user
     /// (blocked: a name OneDrive refuses, OneDrive full).
-    pub async fn not_uploaded(&self) -> Result<Vec<(String, String)>, SyncError> {
+    pub async fn not_uploaded(&self) -> Result<Vec<KeptBack>, SyncError> {
         let (skipped, rows) = self.read_outbox(|s| Ok((s.local_skipped()?, s.outbox_blocked()?))).await?;
         let root = self.record().map(|record| record.root.path).unwrap_or_default();
-        let mut out: Vec<(String, String)> = skipped.into_iter().map(|s| (root.join(&s.rel).display().to_string(), s.reason.to_string())).collect();
+        let mut out: Vec<KeptBack> =
+            skipped.into_iter().map(|s| KeptBack { path: root.join(&s.rel).display().to_string(), reason: s.reason.to_string() }).collect();
         out.extend(
             rows.into_iter()
                 .filter(|row| row.state == OutboxState::Blocked)
-                .map(|row| (root.join(&row.rel).display().to_string(), row.reason.unwrap_or(Reason::Blocked).to_string())),
+                .map(|row| KeptBack { path: root.join(&row.rel).display().to_string(), reason: row.reason.unwrap_or(Reason::Blocked).to_string() }),
         );
         out.sort();
         Ok(out)
@@ -200,10 +224,11 @@ impl SyncService {
 
     /// `NotUploadedFiles(reason, limit)`: the files kept back for `reason`,
     /// at most `limit` (0 for all), and how many there are.
-    pub async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32), SyncError> {
+    pub async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<KeptBack>, u32), SyncError> {
         let root = self.record().map(|record| record.root.path).unwrap_or_default();
         let full = self.state.get().outbox.quota_full;
-        self.read_outbox(move |s| crate::upload::kept_back::files(s, &root, full, &reason, limit)).await
+        let (files, total) = self.read_outbox(move |s| crate::upload::kept_back::files(s, &root, full, &reason, limit)).await?;
+        Ok((files.into_iter().map(|(path, reason)| KeptBack { path, reason }).collect(), total))
     }
 
     /// `ConfirmDeletes()`: the removals the mass-delete guard held go ahead;
@@ -366,12 +391,12 @@ const PAUSED_STATE: &str = "paused";
 /// in fragments still sending shows its bytes until it stops at the next).
 /// Otherwise, while OneDrive is `full`, a change that sends content and says
 /// nothing else says it waits for space (issue #2).
-pub(crate) fn entries(rows: Vec<konedrive_tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)], paused: bool, full: bool) -> Vec<OutboxEntry> {
+pub(crate) fn entries(rows: Vec<konedrive_tree::outbox::OutboxRow>, root: &std::path::Path, uploads: &[(String, u64, u64)], paused: bool, full: bool) -> Vec<Change> {
     rows
         .into_iter()
         .map(|row| {
             let path = root.join(&row.rel).display().to_string();
-            let (done, total) = match uploads.iter().find(|(p, _, _)| *p == path) {
+            let (sent, total) = match uploads.iter().find(|(p, _, _)| *p == path) {
                 Some((_, sent, total)) => (*sent, *total),
                 None if row.kind.sends_content() => {
                     let size = row
@@ -381,24 +406,16 @@ pub(crate) fn entries(rows: Vec<konedrive_tree::outbox::OutboxRow>, root: &std::
                 }
                 None => (0, 0),
             };
-            if paused && !matches!(row.state, OutboxState::Blocked | OutboxState::Held) {
-                return (row.seq as u64, row.kind.as_str().to_owned(), path, PAUSED_STATE.to_owned(), done, total, String::new(), 0);
+            let kept = matches!(row.state, OutboxState::Blocked | OutboxState::Held);
+            let (seq, kind) = (row.seq as u64, row.kind.as_str().to_owned());
+            if paused && !kept {
+                return Change { seq, kind, path, state: PAUSED_STATE.to_owned(), sent, total, reason: String::new(), next_try: 0 };
             }
-            (
-                row.seq as u64,
-                row.kind.as_str().to_owned(),
-                path,
-                row.state.as_str().to_owned(),
-                done,
-                total,
-                match row.reason {
-                    None if full && row.kind.sends_content() && !matches!(row.state, OutboxState::Blocked | OutboxState::Held) => {
-                        Reason::WaitingForSpace.to_string()
-                    }
-                    reason => reason.map(|r| r.to_string()).unwrap_or_default(),
-                },
-                row.next_try.unwrap_or(0),
-            )
+            let reason = match row.reason {
+                None if full && row.kind.sends_content() && !kept => Reason::WaitingForSpace.to_string(),
+                reason => reason.map(|r| r.to_string()).unwrap_or_default(),
+            };
+            Change { seq, kind, path, state: row.state.as_str().to_owned(), sent, total, reason, next_try: row.next_try.unwrap_or(0) }
         })
         .collect()
 }

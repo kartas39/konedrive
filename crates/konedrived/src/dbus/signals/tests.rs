@@ -1,5 +1,8 @@
 use std::sync::Mutex;
 
+use konedrive_dbus::rows::Transfer;
+use zbus::zvariant::Value;
+
 use super::*;
 use crate::status::transfers::Transfers as Downloads;
 use crate::status::snapshot::SyncStateHandle;
@@ -13,12 +16,17 @@ use crate::status::snapshot::SyncStateHandle;
 async fn a_hundred_changes_in_a_second_are_at_most_five_messages() {
     let state = SyncStateHandle::new(SyncSnapshot::default());
     let transfers = Downloads::default();
-    let sent: Arc<Mutex<Vec<Coalesced>>> = Arc::default();
+    let sent: Arc<Mutex<Vec<Changed>>> = Arc::default();
     let log = Arc::clone(&sent);
-    tokio::spawn(coalesce(state.subscribe(), transfers.subscribe(), Coalesced::default(), move |_, new| {
-        log.lock().unwrap().push(new);
+    tokio::spawn(coalesce(state.subscribe(), transfers.subscribe(), Seen::default(), move |changed| {
+        log.lock().unwrap().push(changed);
         std::future::ready(())
     }));
+    // What a client that applies every message holds.
+    let held = |sent: &[Changed]| -> BTreeMap<&'static str, Value<'static>> {
+        sent.iter().flat_map(|message| message.values().flatten()).map(|(name, value)| (*name, value.try_clone().unwrap())).collect()
+    };
+    let downloads = |list: Vec<Transfer>| Value::from(list);
 
     let entry = transfers.start("/r/f.bin".into(), 1000);
     for step in 1..=100u64 {
@@ -32,10 +40,11 @@ async fn a_hundred_changes_in_a_second_are_at_most_five_messages() {
     assert!((2..=5).contains(&messages), "{messages} messages for 100 changes in one second");
 
     tokio::time::sleep(COALESCE * 2).await;
-    let last = sent.lock().unwrap().last().cloned().unwrap();
-    assert_eq!((last.downloads, last.items_listed), (vec![("/r/f.bin".to_owned(), 1000, 1000)], 100));
+    let last = held(&sent.lock().unwrap());
+    assert_eq!(last["Downloads"], downloads(vec![Transfer { path: "/r/f.bin".into(), done: 1000, total: 1000 }]));
+    assert_eq!(last["ItemsListed"], Value::from(100u64));
 
     drop(entry);
     tokio::time::sleep(COALESCE * 2).await;
-    assert_eq!(sent.lock().unwrap().last().unwrap().downloads, Vec::new(), "an ended download leaves the list");
+    assert_eq!(held(&sent.lock().unwrap())["Downloads"], downloads(Vec::new()), "an ended download leaves the list");
 }

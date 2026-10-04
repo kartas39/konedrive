@@ -3,17 +3,16 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use konedrive_dbus::ACCOUNTS_PATH;
 use tokio::task::JoinHandle;
-use zbus::object_server::InterfaceRef;
 use zbus::zvariant::ObjectPath;
 use zbus::Connection;
 
 use crate::account::AccountService;
-use crate::daemon::manager::{AccountManager, Bus, HelperStateSignal};
+use crate::daemon::manager::{AccountManager, Bus};
 use crate::dbus::accounts::Accounts;
 use crate::dbus::files::Files;
 use crate::sync::SyncService;
 use crate::dbus::{ActivityLog, Conflicts, Folder, LocalScan, Transfers, UploadQueue};
-use crate::dbus::signals::start_signals;
+use crate::dbus::signals::{announce_helper_state, start_signals};
 
 /// Serves one account's folder — `Folder`, `Transfers`, `UploadQueue`, `Conflicts`,
 /// `LocalScan` and `ActivityLog` — at `path` and starts their signals; the tasks
@@ -89,37 +88,28 @@ impl Bus for OnBus {
         let server = connection.object_server();
         server.at(ACCOUNTS_PATH, Accounts { manager: Arc::clone(manager) }).await?;
         server.at(ACCOUNTS_PATH, Files { manager: Arc::clone(manager) }).await?;
+        // `HelperState` is the hub's, and every change of it `Accounts`'s to announce.
+        let accounts = server.interface::<_, Accounts>(ACCOUNTS_PATH).await?;
+        // Not kept, and it never ends: it is the process's, as `Accounts` on the bus is.
+        drop(announce_helper_state(accounts, manager.hub().subscribe()));
         Ok(())
     }
 
-    async fn helper_state(&self, connection: &Connection) -> zbus::Result<Box<dyn HelperStateSignal>> {
-        let iface = connection.object_server().interface::<_, Accounts>(ACCOUNTS_PATH).await?;
-        Ok(Box::new(AccountsOnBus(iface)))
+    async fn export(&self, connection: &Connection, path: &ObjectPath<'_>, account: Arc<AccountService>, sync: Arc<SyncService>) -> zbus::Result<Vec<JoinHandle<()>>> {
+        let account = crate::dbus::account::export(connection, path, account).await?;
+        match export(connection, path, sync).await {
+            Ok(mut signals) => {
+                signals.push(account);
+                Ok(signals)
+            }
+            Err(e) => {
+                account.abort();
+                Err(e)
+            }
+        }
     }
 
-    async fn export_account(&self, connection: &Connection, path: &ObjectPath<'_>, account: Arc<AccountService>) -> zbus::Result<JoinHandle<()>> {
-        crate::dbus::account::export(connection, path, account).await
-    }
-
-    async fn export_folder(&self, connection: &Connection, path: &ObjectPath<'_>, sync: Arc<SyncService>) -> zbus::Result<Vec<JoinHandle<()>>> {
-        export(connection, path, sync).await
-    }
-
-    async fn unexport_folder(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
-        unexport(connection, path, partly).await
-    }
-
-    async fn unexport_account(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
-        crate::dbus::account::unexport(connection, path, partly).await
-    }
-}
-
-/// `Accounts` as it is on the bus, for announcing `HelperState`.
-struct AccountsOnBus(InterfaceRef<Accounts>);
-
-#[async_trait]
-impl HelperStateSignal for AccountsOnBus {
-    async fn changed(&self) -> zbus::Result<()> {
-        self.0.get().await.helper_state_changed(self.0.signal_emitter()).await
+    async fn unexport(&self, connection: &Connection, path: &ObjectPath<'_>, partly: bool) -> zbus::Result<()> {
+        all_taken_off([unexport(connection, path, partly).await, crate::dbus::account::unexport(connection, path, partly).await])
     }
 }

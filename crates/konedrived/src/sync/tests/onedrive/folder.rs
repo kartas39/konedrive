@@ -48,7 +48,7 @@ async fn web_url_of_a_file_not_uploaded_yet_is_refused_without_asking() {
 
     let refused = service.web_url(&new).await.unwrap_err();
     assert!(matches!(refused, SyncError::NotInOneDrive(_)), "{refused:?}");
-    assert!(matches!(crate::dbus::fault::to_fault(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::NotUploaded, _)));
+    assert!(matches!(crate::dbus::fault::Fault::from(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::NotUploaded, _)));
     assert_eq!(requests(&w).await, before);
     service.stop_sync().await;
 }
@@ -70,7 +70,7 @@ async fn web_url_says_when_onedrive_could_not_be_reached() {
 
     let refused = service.web_url(&w.folder.path().join("docs/f.txt")).await.unwrap_err();
     assert!(matches!(refused, SyncError::Unreachable(_)), "{refused:?}");
-    assert!(matches!(crate::dbus::fault::to_fault(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::Unreachable, _)));
+    assert!(matches!(crate::dbus::fault::Fault::from(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::Unreachable, _)));
     let refused = service.web_url(&w.folder.path().join("docs")).await.unwrap_err();
     assert!(matches!(&refused, SyncError::Io(why) if why.contains("no address")), "{refused:?}");
     service.stop_sync().await;
@@ -884,4 +884,44 @@ async fn a_change_queued_behind_another_leaves_no_sync_that_reads_as_running() {
     w.helper.release(Seen::UnregisterRoot);
     forget.await.unwrap().unwrap();
     assert_eq!(service.root_state(), "none");
+}
+
+/// A defect that one account's folder meets as the helper connects stays that account's:
+/// its folder is down and says so, the account after it is brought up all the same, and
+/// the supervisor, whose end would stop the daemon, lives. `Refresh()` brings the folder
+/// up once the defect is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bring_up_that_panics_leaves_its_folder_down_and_the_next_account_comes_up() {
+    let w = world().await;
+    {
+        let first = connected(&w, true).await;
+        first.register_root(w.folder.path()).await.unwrap();
+        listed(&first).await;
+        first.stop_sync().await;
+    }
+    // The daemon starts again with two accounts, before the helper is connected: the
+    // OneDrive folder is held, and the second account's folder waits to be switched.
+    let registry = registry::Registry::new();
+    let broken = service_on(&w, &registry);
+    broken.restore().await;
+    let (other_config, other_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    let other = testing::wiring().registry(&registry).persist(persist(&other_config.path().join("config.toml"))).build();
+    other.register_root_without_interception(other_dir.path()).await.unwrap();
+    assert_eq!(other.root_state(), "no-interception");
+    testing::parts(&broken).sources.break_bring_up(true);
+
+    let socket = w.sockets.path().join("helper.sock");
+    let supervisor = tokio::spawn(crate::helper::hub::supervise(Arc::clone(registry.hub()), socket, Duration::from_secs(3600)));
+    wait_until("the account after it is brought up", || other.root_state() == "ready").await;
+    assert!(!supervisor.is_finished(), "the supervisor lives");
+    assert_eq!(broken.root_state(), "error");
+    let said = broken.last_error();
+    assert!(said.contains("failed inside konedrive (broken on purpose)"), "{said}");
+    assert_eq!(broken.state().get().folder.root_path, w.folder.path().canonicalize().unwrap().display().to_string(), "still that folder");
+
+    testing::parts(&broken).sources.break_bring_up(false);
+    broken.refresh().await.unwrap();
+    wait_until("the folder is up again", || broken.root_state() != "error").await;
+    supervisor.abort();
+    broken.stop_sync().await;
 }
