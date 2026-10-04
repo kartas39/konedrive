@@ -370,6 +370,11 @@ fn past_the_mark_budget_the_folder_is_scanned_on_a_timer() {
 #[test]
 fn a_directory_closed_at_the_walk_is_watched_all_the_way_down_once_opened() {
     use std::os::unix::fs::PermissionsExt;
+    // SAFETY: a plain syscall with no arguments.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skipping: running as root, which chmod 000 cannot refuse");
+        return;
+    }
     let fx = Fx::new();
     std::fs::create_dir_all(fx.path("closed/inner")).unwrap();
     std::fs::set_permissions(fx.path("closed"), std::fs::Permissions::from_mode(0o000)).unwrap();
