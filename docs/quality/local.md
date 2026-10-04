@@ -128,6 +128,7 @@ inside it. `LO5` after these.
 
 - **Where:** `examine.rs:183–186, 299–307`; `classify.rs:32–56`; `run.rs:102–113`.
 - **Fix:** one `Leaving` type. **Size:** S to M. Goes with `RE1`.
+- **Fixed 2026-10-04** in `69d7cd6` (#178): the leaving code of the examination is removed with the mechanism.
 
 ## LO10. `liveness.rs` holds three subjects, one with a gap
 

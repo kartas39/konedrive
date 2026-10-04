@@ -53,6 +53,9 @@ the #104 test gaps filled first. `RE4` waits for these.
   (`konedrive-tree/src/outbox.rs:381–390`), which moves the `leaving` rows at and below the
   directory. The three hand-written sites are renames that apply no `Rebase` op. The rest of this
   finding is about structure and stands.
+- **Fixed 2026-10-04** in `69d7cd6` (#178): the leaving mechanism is gone. What can no longer be placed stays
+  placed and waits as a deferred change; it yields its name by stepping aside to its copy name
+  (`F188`). One `take_off` under policy `Unplaced`. Store schema 8.
 
 ## RE2. `reconcile` and `reconcile_rw` are two copies
 
@@ -154,6 +157,7 @@ the #104 test gaps filled first. `RE4` waits for these.
 - **Fixed in part 2026-10-04** in `df8c5a1` (#162): one `Materializer::take_off(dir, name, policy)`
   removes every managed object; under policy `Removed` local work stays and goes up as new (`F238`,
   `F243`). The leaving code still has its own path until the later parts of B4.
+- **Fixed 2026-10-04** in `69d7cd6` (#178), the rest: the leaving code's own removal path is gone with it.
 
 ## RE10. Replacement bookkeeping: four mutexes, a tuple, string comparison — **defect?** in part
 
