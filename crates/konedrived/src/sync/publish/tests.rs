@@ -52,6 +52,10 @@ const UNRESET: &str = "startup recovery could not reset 1 of 3 managed file(s)";
 const FAILED: &str = "cannot bring up the sync folder /home/u/OneDrive: errno 5";
 const HELD: &str = "this account is held back: its label repeats";
 
+/// What a case is, the folder, whether there is a link, the helper's state, and what is
+/// shown: `Path`, `State`, `LastError`, `Source`.
+type Case = (&'static str, Folder, bool, HelperState, (&'static str, &'static str, String, &'static str));
+
 /// Every state of the folder, and what the bus shows of it.
 #[test]
 fn every_state_is_published_as_its_path_state_error_and_source() {
@@ -66,8 +70,7 @@ fn every_state_is_published_as_its_path_state_error_and_source() {
     );
     let down = |interception, down| folder(Is::Down(record(interception, OneDrive), down));
     let failed = || Down::Failed { why: FAILED.into() };
-    // What it is, the folder, whether there is a link, the helper's state, what is shown.
-    let cases: Vec<(&str, Folder, bool, HelperState, (&str, &str, String, &str))> = vec![
+    let cases: Vec<Case> = vec![
         ("no folder", folder(Is::Absent), true, Connected, ("", "none", String::new(), "")),
         ("held for the helper, nothing known of it", down(Intercepted, Down::WaitsForHelper), false, Unknown, (PATH, "waiting", String::new(), "onedrive")),
         ("held for the helper, which is stopped", down(Intercepted, Down::WaitsForHelper), false, Stopped, (PATH, "error", advice.into(), "onedrive")),
@@ -155,7 +158,7 @@ fn the_view_says_what_the_readers_act_on() {
     let waiting = publish(&Folder { wanted: Mode::ReadWrite, ..folder(held_for_helper) }).view;
     assert_eq!(
         (waiting.record.map(|r| r.root.path), waiting.down, waiting.wanted),
-        (Some(PathBuf::from(PATH)), Some(String::new()), Mode::ReadWrite)
+        (Some(PathBuf::from(PATH)), Some("it waits for the konedrive helper to connect".to_owned()), Mode::ReadWrite)
     );
     let up = publish(&folder(up(Interception::Intercepted, RootSource::OneDrive, Recovery::Clean))).view;
     assert!(up.record.is_some() && up.down.is_none());

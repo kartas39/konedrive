@@ -179,13 +179,9 @@ pub enum SyncError {
 
 impl SyncError {
     /// The refusal of a call that needs a folder that is up, with its sync running: `why`
-    /// it is not, or nothing while it only waits.
+    /// it is not.
     pub(crate) fn not_up(why: &str) -> Self {
-        if why.is_empty() {
-            SyncError::NotUp("the folder is not up yet".into())
-        } else {
-            SyncError::NotUp(format!("the folder is not up: {why}"))
-        }
+        SyncError::NotUp(format!("the folder is not up: {why}"))
     }
 }
 

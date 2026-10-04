@@ -69,7 +69,8 @@ pub(super) fn publish(folder: &Folder) -> Published {
                 Down::Kept { .. } | Down::Failed { .. } if record.needs_helper() => (RootState::Error, Helper::Needed),
                 Down::Kept { .. } | Down::Failed { .. } => (RootState::Error, Helper::NotNeeded),
             };
-            Published { path, state, error: error.clone(), switch_note: None, helper, view: view(Some(error)) }
+            let why = down.waits_for().map_or_else(|| error.clone(), str::to_owned);
+            Published { path, state, error, switch_note: None, helper, view: view(Some(why)) }
         }
         Is::Up(up) => {
             let intercepted = up.record.intercepted();

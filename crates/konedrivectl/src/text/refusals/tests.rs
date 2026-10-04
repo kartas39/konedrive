@@ -47,20 +47,24 @@ fn a_path_in_no_folder_is_told_which_folders_there_are() {
     assert!(text.contains("/home/u/OneDrive, /home/u/Family"), "{text}");
 }
 
-/// `NoRoot` to an outbox command has two causes. Only an account known to have no folder is
-/// told to register one; a folder not brought up yet, and a `Folder.Path` that could not be
-/// read, are told to try again.
+/// An outbox command refused for want of a folder is told to register one; refused because
+/// the folder is not up, or its sync is not running, it is told why, in the daemon's words,
+/// and where to look.
 #[test]
 fn an_outbox_command_is_told_to_register_only_when_there_is_no_folder() {
-    let told = |action, context| refusal_text_in(action, Some("org.konedrive.Error.NoRoot"), "", context);
-    for action in [SyncAction::Outbox, SyncAction::Pause] {
-        let none = told(action, Context { no_folder: true, ..Context::default() });
+    let told = |action, name: &str, detail| {
+        refusal_text_in(action, Some(name), detail, Context { root: "/home/u/OneDrive", prefix: "konedrivectl --account Test", ..Context::default() })
+    };
+    for action in [SyncAction::Outbox, SyncAction::Pause, SyncAction::Refresh] {
+        let none = told(action, "org.konedrive.Error.NoRoot", "no sync root is registered");
         assert!(none.contains("no sync folder is registered") && none.contains("sync register"), "{none}");
-        // The daemon starting: the folder has its path, and its sync has no store yet.
-        let starting = told(action, Context { root: "/home/u/OneDrive", ..Context::default() });
-        assert_eq!(starting, "the folder's sync has not started yet; try again in a moment");
-        // `Folder.Path` could not be read: nothing says there is no folder.
-        assert_eq!(told(action, Context::default()), starting);
+        let waiting = told(action, "org.konedrive.Error.NotUp", "the folder is not up: it waits for the konedrive helper");
+        assert_eq!(
+            waiting,
+            "nothing was done for the sync folder (/home/u/OneDrive): the folder is not up: it waits for the konedrive \
+             helper. `konedrivectl --account Test sync status` shows its state; `konedrivectl --account Test sync forget` \
+             takes the folder away, and leaves its files as they are"
+        );
     }
 }
 

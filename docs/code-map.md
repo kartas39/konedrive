@@ -248,6 +248,7 @@ reconcile in read-write mode).
   `[tests]`
 - `listing/fetch.rs` — a full listing and the changes since the last one, page by page.
   `[tests]`
+- `listing/lease.rs` — the folder's lease a cycle holds while it changes the folder; `sync/` hands it in.
 - `listing/poller.rs` — when a cycle runs. `[tests]`
 - `listing/replacements.rs` — replacing changed files, several at once. `[tests]`
 - `listing/rw.rs` — a read-write folder's cycle. `[tests]`
@@ -289,16 +290,19 @@ Baloo and thumbnails. Design: `desktop.md`.
   temporary `config.toml`, the content sources, the watcher, a clock moved by hand).
 - `testing/helper.rs` — the fake helper: it records, refuses, and holds an answer until released.
 - `hub.rs` — the one link to the helper, shared by every account. `[tests]`
-- `registration.rs` — binding a folder to the account.
-- `forget.rs` — forgetting a folder; retiring an account's folder.
+- `folder.rs` — what the folder is, as a type; `change`, the one way to change it, and the view the readers read.
+- `publish.rs` — what the bus shows of the folder's state, worked out in one place. `[tests]`
+- `persisted.rs` — the folder as `config.toml` records it.
+- `bring_up.rs` — a new registration, the folder taken up and brought up at startup and at the
+  helper's connect, and the switch to interception.
+- `take_down.rs` — forgetting a folder; retiring an account's folder; a folder moved away.
 - `start_stop.rs` — starting, nudging and stopping the sync.
-- `resume.rs` — bringing a folder back at startup, and the switch to interception.
 - `populate.rs` — a folder of placeholders made from a local directory.
 - `hydrate.rs` — filling a placeholder now; `SyncService` as a content source.
 - `free_up.rs` — freeing up files and whole folders.
 - `pins.rs` — putting pins on and taking them off.
 - `queries.rs` — what the bus reads: skipped items, activity, conflicts, transfers, states.
-- `write_mode.rs` — the folder's side of the account's mode.
+- `mode.rs` — the folder's side of the account's mode.
 - `outbox.rs` — the outbox worker started, woken and stopped; the rows dropped; the outbox as
   `org.konedrive.UploadQueue` shows it. `[tests]`
 - `pause.rs` — the pause, the hold, Sync Anyway, and `PauseClock`, which ends a timed pause. `[tests]`

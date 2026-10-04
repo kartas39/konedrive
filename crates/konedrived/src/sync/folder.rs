@@ -138,6 +138,18 @@ impl Down {
     }
 }
 
+impl Down {
+    /// What a folder that only waits waits for, for a refusal that has to say why the
+    /// folder is not up; `None` when it is down for a reason of its own ([`why`](Self::why)).
+    pub fn waits_for(&self) -> Option<&'static str> {
+        match self {
+            Down::NotYetUp => Some("it is being brought up"),
+            Down::WaitsForHelper => Some("it waits for the konedrive helper to connect"),
+            Down::Kept { .. } | Down::UnreadSource { .. } | Down::Failed { .. } => None,
+        }
+    }
+}
+
 /// A folder that is up.
 pub(super) struct Up {
     pub record: Record,
@@ -260,7 +272,8 @@ pub(super) struct View {
     /// The folder this account's calls act on, up or not. `None` with no folder, and for an
     /// account held back, whose folder nothing acts on but a Forget.
     pub record: Option<Record>,
-    /// Why the recorded folder is not up, when it is not; empty while it only waits.
+    /// Why the recorded folder is not up, when it is not: what `LastError` says, or what
+    /// it waits for.
     pub down: Option<String>,
     /// The mode the folder follows.
     pub wanted: Mode,

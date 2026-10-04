@@ -152,8 +152,8 @@ pub async fn sync_status_text(proxy: &FolderProxies<'_>, helper: Option<&str>, p
             out.push_str(&format!("{:<W$}{} (`{prefix} sync anyway` syncs now)\n", "Paused by itself:", held_text(&held)));
         }
     }
-    // A folder not brought up yet has its path and the state `none`: nothing has measured it.
-    if !path.is_empty() && state != "none" {
+    // A folder not brought up yet has its path and the state `waiting`: nothing has measured it.
+    if !path.is_empty() && state != "none" && state != "waiting" {
         out.push_str(&format!("{:<W$}{}\n", "On this computer:", human_bytes(proxy.folder.local_bytes().await?)));
         out.push_str(&format!("{:<W$}{}\n", "Always on this device:", proxy.folder.pinned_count().await?));
     }
@@ -343,8 +343,8 @@ pub fn helper_line(helper: &str) -> String {
 
 /// What happens when something opens a file in a folder in `state`, for the
 /// states where that is known: `ready` (the helper intercepts and fills) and
-/// `no-interception` (nothing does). `error` can mean either — `LastError`
-/// says which — and `none` has no folder to talk about.
+/// `no-interception` (nothing does); `waiting` is a folder that is not up yet. `error` can
+/// mean either — `LastError` says which — and `none` has no folder to talk about.
 fn opens_line(state: &str) -> Option<&'static str> {
     match state {
         "ready" => Some("intercepted: a file is downloaded when something opens it"),
@@ -353,6 +353,7 @@ fn opens_line(state: &str) -> Option<&'static str> {
              `konedrivectl sync hydrate <file>`",
         ),
         "listing" => Some("the folder is being filled with your OneDrive's items"),
+        "waiting" => Some("not yet: the folder is being brought up, or waits for the helper to connect"),
         _ => None,
     }
 }

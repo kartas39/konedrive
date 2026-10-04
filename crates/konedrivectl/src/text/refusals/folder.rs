@@ -19,8 +19,6 @@ pub(super) struct Told<'a> {
     pub detail: &'a str,
     /// The registered folder, possibly empty.
     pub root: &'a str,
-    /// The account is known to have no folder ([`Context::no_folder`](super::Context::no_folder)).
-    pub no_folder: bool,
     /// How every command suggested for this account begins.
     pub prefix: &'a str,
 }
@@ -227,6 +225,15 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
             "{path} is open in another program, so its space cannot be freed right now. Close \
              it there and try again"
         ),
+        // A folder that is recorded and not up, or whose sync is not running: the daemon's
+        // message is the whole of it, with why.
+        Refusal::NotUp if detail.is_empty() || detail.starts_with(ERROR_PREFIX) => {
+            format!("the sync folder{folder} is not up, so nothing was done. `{prefix} sync status` shows what it waits for")
+        }
+        Refusal::NotUp => format!(
+            "nothing was done for the sync folder{folder}: {detail}. `{prefix} sync status` shows its state; \
+             `{prefix} sync forget` takes the folder away, and leaves its files as they are"
+        ),
         Refusal::Failed
         | Refusal::WritesNotAllowed
         | Refusal::ModeNotGranted
@@ -279,6 +286,7 @@ fn forget(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => shared(told, refusal),
     }
@@ -335,6 +343,7 @@ fn remove(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => shared(told, refusal),
     }
@@ -371,6 +380,7 @@ fn populate_from(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => shared(told, refusal),
     }
@@ -414,6 +424,7 @@ fn refresh(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => shared(told, refusal),
     }
@@ -462,6 +473,7 @@ fn hydrate(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => shared(told, refusal),
     }
@@ -509,6 +521,7 @@ fn dehydrate(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => shared(told, refusal),
     }
@@ -555,6 +568,7 @@ fn free_up_space(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => shared(told, refusal),
     }
@@ -607,6 +621,7 @@ fn pins(told: &Told<'_>, refusal: &Refusal) -> String {
             | Refusal::UnknownObject
             | Refusal::UnknownMethod
             | Refusal::UnknownInterface
+            | Refusal::NotUp
             | Refusal::Internal
             | Refusal::Other(_),
             _,
@@ -659,6 +674,7 @@ fn open(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => shared(told, refusal),
     }
@@ -668,10 +684,6 @@ fn open(told: &Told<'_>, refusal: &Refusal) -> String {
 fn uploads(told: &Told<'_>, refusal: &Refusal) -> String {
     match refusal {
         Refusal::Unsupported => "this folder is not connected to OneDrive, so nothing is uploaded from it".to_owned(),
-        // `NoRoot` is the daemon's answer to these both with no folder registered and before
-        // the folder's sync has opened its store. Only when the account is known to have no
-        // folder ([`Told::no_folder`]) does the sentence for every other command say what to do.
-        Refusal::NoRoot if !told.no_folder => "the folder's sync has not started yet; try again in a moment".to_owned(),
         Refusal::NoRoot
         | Refusal::NotEmpty
         | Refusal::InUse
@@ -698,6 +710,7 @@ fn uploads(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => shared(told, refusal),
     }
@@ -733,6 +746,7 @@ fn settings(told: &Told<'_>, refusal: &Refusal) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => shared(told, refusal),
     }

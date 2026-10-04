@@ -291,7 +291,7 @@ impl SyncService {
             // Looked at again inside the change: a Forget may have come first.
             let record = match &stopped.folder().is {
                 Is::Absent => return Err(SyncError::NoRoot),
-                Is::Down(record, down) => (record.clone(), Some(down.why(&record.root))),
+                Is::Down(record, down) => (record.clone(), Some(down.waits_for().map_or_else(|| down.why(&record.root), str::to_owned))),
                 Is::Up(up) => (up.record.clone(), None),
             };
             if matches!(stopped.folder().standing, Standing::HeldBack(_)) {

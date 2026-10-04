@@ -487,6 +487,11 @@ async fn refresh_of_a_folder_waiting_for_its_helper_says_so() {
     assert!(matches!(refused, Err(SyncError::NoHelper)), "{refused:?}");
     tokio::time::sleep(Duration::from_millis(200)).await;
     assert_eq!(requests(&w).await, before, "a sync started ahead of the bring-up");
+    // What needs the folder's sync says the truth: a folder is recorded, and it is not up.
+    let waits = |refused: SyncError| matches!(&refused, SyncError::NotUp(why) if why.contains("waits for the konedrive helper"));
+    assert!(waits(restarted.pause_syncing(0).await.unwrap_err()));
+    assert!(waits(restarted.resume_syncing().await.unwrap_err()));
+    assert!(waits(restarted.outbox(0).await.unwrap_err()));
     restarted.stop_sync().await;
 }
 

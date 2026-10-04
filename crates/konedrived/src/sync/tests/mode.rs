@@ -566,6 +566,12 @@ async fn a_failed_registration_the_helper_may_still_hold_is_kept() {
     let error =
         service.register_root_without_interception(root_dir.path()).await.unwrap_err();
     assert!(matches!(error, SyncError::AlreadyRegistered), "{error:?}");
+    assert!(service.last_error().contains("forget it if you do not want it"), "{}", service.last_error());
+
+    // The next connect brings it up, as the refusal said.
+    helper.refuse(Seen::UnregisterRoot, 0);
+    service.resume().await;
+    assert_eq!(service.root_state(), "ready", "{}", service.last_error());
 }
 
 /// The deterministic form of a D-Bus-activated first call: the bus name

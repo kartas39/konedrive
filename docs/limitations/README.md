@@ -225,8 +225,8 @@ application must never read zeros where real content should be.
 - [F194](F194.md) — Some leaving or removed folders fail every cycle until their cause is gone
 - [F196](F196.md) — What the user does inside a folder that is leaving does not reach OneDrive
 - [F197](F197.md) — A `403` blocks only its row, and the row is tried again whenever a worker begins
-- [F198](F198.md) — The order of the tree lock and the lifecycle lock is kept by hand
-- [F199](F199.md) — A folder without interception has its path, and nothing else, while the daemon starts
+- [F198](F198.md) — The order of the tree lock and the folder's state lock is kept by hand on the cycle's side
+- [F199](F199.md) — A folder without interception is recorded and not up while the daemon starts
 - [F200](F200.md) — A bad upload's item is remembered beside its row, and blocked rows are listed per file whatever their reason
 - [F203](F203.md) — A free-up whose blocking task cannot be joined leaves the file `dehydrating`
 - [F204](F204.md) — A sign-in whose account is reported signed out meanwhile ends in silence
@@ -248,6 +248,8 @@ application must never read zeros where real content should be.
 - [F238](F238.md) — A file with other names that is taken off the disk: what a stop between its unlink and the removal of its id leaves
 - [F239](F239.md) — One path for every file's upload session: what a file of one fragment now does that was not measured against OneDrive
 - [F240](F240.md) — What the outbox worker is told without waiting is done only on the daemon's runtime, and its fault points are in the tests' build alone
+- [F241](F241.md) — An intercepted folder whose root id is recorded nowhere can be neither forgotten nor replaced
+- [F242](F242.md) — Every change of a folder stops its sync, and a helper's reconnect starts it again with a Full reconcile
 - [F243](F243.md) — What is kept of something removed in OneDrive under a name nothing uploads stays on this computer only
 
 ---
@@ -363,6 +365,7 @@ application must never read zeros where real content should be.
 - [D35](D35.md) — Refusals and the notes of `LastError` are types over the strings they were.
 - [D36](D36.md) — The store's schema has a number for every change, and what that leaves.
 - [D37](D37.md) — The test support of `sync/` is built into the daemon's crate, and finds a service's parts by a list.
+- [D38](D38.md) — The running parts of a folder's sync are beside its state, not in it.
 
 ---
 

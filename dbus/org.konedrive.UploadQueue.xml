@@ -11,9 +11,10 @@
          for writing), ready, running, retry (in backoff until next try),
          blocked (needs the user; the reason says why), held (a large delete
          waiting for ConfirmDeletes or RestoreDeletes). Refused Unsupported
-         for a folder that is not connected to OneDrive, and NoRoot before its
-         sync has started; ConfirmDeletes, RestoreDeletes and NotUploaded
-         refuse the same. -->
+         for a folder that is not connected to OneDrive, NoRoot with no folder,
+         and NotUp, with why, for a folder that is not up or whose sync has not
+         started; ConfirmDeletes, RestoreDeletes and NotUploaded refuse the
+         same. -->
     <method name="Changes">
       <arg name="limit" type="u" direction="in"/>
       <arg name="rows" type="a(tsssttsx)" direction="out"/>

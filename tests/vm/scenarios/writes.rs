@@ -109,7 +109,7 @@ impl<'c> World<'c> {
         });
         let paths = SyncPaths { tree_db: base.join("tree.sqlite"), rescue_dir: base.join("rescued"), thumbnails: None };
         let service = testing::wiring().link(Some(ctx.link()?)).account(account).persist(persist).onedrive(graph.client(), paths).build();
-        service.start_in_mode(Mode::ReadWrite);
+        ctx.runtime.block_on(service.follow_mode(Mode::ReadWrite));
         ctx.runtime.block_on(service.register_root(&folder)).map_err(|e| format!("cannot register {}: {e}", folder.display()))?;
         let world = World { ctx, base, folder, graph, service };
         world.wait("the first cycle", || (world.service.status().0 > 0).then_some(()))?;

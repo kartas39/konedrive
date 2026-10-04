@@ -244,6 +244,12 @@ void AccountStatus::update()
     } else if (m_sync->rootPath().isEmpty() || rootState == QLatin1String("none")) {
         state = QStringLiteral("offline");
         text = i18n("No OneDrive folder yet");
+    } else if (rootState == QLatin1String("waiting")) {
+        // A folder that is recorded and not up yet, with nothing known to be wrong: it is
+        // being brought up, or waits for the helper to connect (the start of a session).
+        // Calm: the daemon turns it into "error" once something is known to be wrong.
+        state = QStringLiteral("syncing");
+        text = i18n("Starting…");
     } else if (rootState == QLatin1String("error")) {
         state = QStringLiteral("warning");
         text = m_sync->lastError().isEmpty() ? i18n("Syncing has stopped") : m_sync->lastError();
