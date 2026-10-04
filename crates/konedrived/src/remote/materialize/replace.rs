@@ -47,7 +47,9 @@ pub enum FailureReason {
     /// The new version could not be had from OneDrive: the errno the
     /// download ended with.
     Download(i32),
-    /// A file call of the replacement failed.
+    /// A file call of the replacement failed: the errno it failed with.
+    Errno(i32),
+    /// A file call failed with an error that is not the system's: its kind.
     Io(std::io::ErrorKind),
     /// The folder could not be opened: it no longer carries its root id, or
     /// is not there.
@@ -62,7 +64,8 @@ impl Failure {
     }
 
     fn io(e: &std::io::Error) -> ReplaceOutcome {
-        ReplaceOutcome::Failed(Failure { reason: FailureReason::Io(e.kind()), text: e.to_string() })
+        let reason = e.raw_os_error().map_or(FailureReason::Io(e.kind()), FailureReason::Errno);
+        ReplaceOutcome::Failed(Failure { reason, text: e.to_string() })
     }
 }
 

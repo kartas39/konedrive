@@ -147,7 +147,7 @@ impl Listing {
             // and the swap would revert that commit. Only then: a copy per page
             // would grow with the square of a large listing. An examination
             // writes nothing before the listing is complete (`NoBase`).
-            let tree = match &self.ctx.writes {
+            let tree = match self.writes() {
                 Some(writes) => {
                     let tree = self.tree_lock(writes, cancel).await?;
                     let seq = self.on_store(turn, |s| s.outbox_seq()).await?;

@@ -8,102 +8,83 @@ use super::{TreeError, TreeStore};
 /// How many activity events the store keeps: the oldest go.
 pub const ACTIVITY_KEPT: usize = 200;
 
-/// What an event of the activity log records. Stored, and sent over D-Bus, as
-/// its [name](Self::as_str): the spellings are the contract with the database
-/// and with the clients (the window's table is keyed by them).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ActivityKind {
+/// The kinds, each with its name, written once: the enum, the list of them all
+/// and the names are made from this one list, so a kind cannot be in one and
+/// missing from another.
+macro_rules! activity_kinds {
+    ($($(#[$doc:meta])* $kind:ident => $name:literal,)*) => {
+        /// What an event of the activity log records. Stored, and sent over D-Bus, as
+        /// its [name](Self::as_str): the spellings are the contract with the database
+        /// and with the clients (the window's table is keyed by them).
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum ActivityKind {
+            $($(#[$doc])* $kind,)*
+        }
+
+        impl ActivityKind {
+            /// Every kind there is, for whatever has to agree with them all (the
+            /// window's guard in `konedrivectl`'s tests).
+            pub const ALL: &'static [ActivityKind] = &[$(Self::$kind,)*];
+
+            pub fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$kind => $name,)*
+                }
+            }
+        }
+    };
+}
+
+activity_kinds! {
     /// A file was downloaded: opened, or `Hydrate`. Detail: its size.
-    Downloaded,
+    Downloaded => "downloaded",
     /// A file's space was freed up: `Dehydrate`, or `FreeUpSpace` for the
     /// whole folder at once. Detail: how much.
-    Freed,
+    Freed => "freed",
     /// Added in OneDrive, placed here by an incremental cycle.
-    Added,
+    Added => "added",
     /// Changed in OneDrive: a placeholder took the new version, or a
     /// downloaded file was replaced by it.
-    Updated,
+    Updated => "updated",
     /// Removed from OneDrive, and so from here.
-    Removed,
+    Removed => "removed",
     /// Moved or renamed in OneDrive. Detail: where it was.
-    Moved,
+    Moved => "moved",
     /// A listing, or a Full reconcile: one event for the whole folder.
-    Listed,
+    Listed => "listed",
     /// A local version moved out of the way. The path is where
     /// it was; the detail, where it is now.
-    Conflict,
+    Conflict => "conflict",
     /// A download that failed: a fill on open, or `Hydrate`. Detail: why —
     /// exactly "not enough disk space" when the disk is full.
-    Failed,
+    Failed => "failed",
     /// A file changed in OneDrive that could not be replaced here (spec
     /// §7.3); the old version stays. Detail: why — exactly "not enough disk
     /// space" when the disk cannot hold both versions.
-    UpdateFailed,
+    UpdateFailed => "update-failed",
     /// Content made or changed here went up to OneDrive (a folder made
     /// here too). Detail: its size, or "folder".
-    Uploaded,
+    Uploaded => "uploaded",
     /// Moved or renamed here, and so in OneDrive. Detail: where it was.
-    CloudMoved,
+    CloudMoved => "cloud-moved",
     /// Deleted here, and so in OneDrive, to its recycle bin.
-    CloudDeleted,
+    CloudDeleted => "cloud-deleted",
     /// A change made here that cannot go up until the user acts (a name
     /// OneDrive refuses, OneDrive full, a sign-in without write access):
     /// once per change and reason. Detail: the reason.
-    UploadFailed,
+    UploadFailed => "upload-failed",
     /// OneDrive's version was kept, or put back, where both sides changed
     /// one item (`docs/design/writes.md` §7). Detail: why.
-    Restored,
+    Restored => "restored",
     /// Made here, then removed here before its upload finished: it never
     /// goes up, and its rows leave the outbox. Detail: why.
-    NotUploaded,
+    NotUploaded => "not-uploaded",
 }
 
 impl ActivityKind {
-    /// Every kind there is, for whatever has to agree with them all (the
-    /// window's guard in `konedrivectl`'s tests).
-    pub const ALL: [ActivityKind; 16] = [
-        Self::Downloaded,
-        Self::Freed,
-        Self::Added,
-        Self::Updated,
-        Self::Removed,
-        Self::Moved,
-        Self::Listed,
-        Self::Conflict,
-        Self::Failed,
-        Self::UpdateFailed,
-        Self::Uploaded,
-        Self::CloudMoved,
-        Self::CloudDeleted,
-        Self::UploadFailed,
-        Self::Restored,
-        Self::NotUploaded,
-    ];
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Downloaded => "downloaded",
-            Self::Freed => "freed",
-            Self::Added => "added",
-            Self::Updated => "updated",
-            Self::Removed => "removed",
-            Self::Moved => "moved",
-            Self::Listed => "listed",
-            Self::Conflict => "conflict",
-            Self::Failed => "failed",
-            Self::UpdateFailed => "update-failed",
-            Self::Uploaded => "uploaded",
-            Self::CloudMoved => "cloud-moved",
-            Self::CloudDeleted => "cloud-deleted",
-            Self::UploadFailed => "upload-failed",
-            Self::Restored => "restored",
-            Self::NotUploaded => "not-uploaded",
-        }
-    }
-
     /// The kind stored as `name`; `None` for a name no kind has.
     pub fn parse(name: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|kind| kind.as_str() == name)
+        Self::ALL.iter().copied().find(|kind| kind.as_str() == name)
     }
 }
 

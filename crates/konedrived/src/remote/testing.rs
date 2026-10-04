@@ -346,9 +346,11 @@ impl World {
             })
             .await
             .unwrap();
-        let shared = self.writes(None);
         let mode = match tree {
-            Some(tree) => Mode::ReadWrite(RwCycle { writes: &shared, tree, upload_differences: false, waiting }),
+            Some(tree) => {
+                let writes = listing.writes().expect("a read-write world's listing");
+                Mode::ReadWrite(RwCycle { writes, tree, upload_differences: false, waiting })
+            }
             None => Mode::ReadOnly,
         };
         let (reconcile, held) = listing.begin_reconcile(&turn, mode, &CancellationToken::new()).await.unwrap();

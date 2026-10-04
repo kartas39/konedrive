@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use tokio::task::JoinSet;
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use super::Listing;
@@ -48,8 +48,10 @@ struct State {
     queue: VecDeque<Replacement>,
     /// How many workers run.
     workers: usize,
-    /// The workers' tasks ([`REPLACE_WORKERS`] at most, issue #39).
-    tasks: JoinSet<()>,
+    /// The workers' tasks ([`REPLACE_WORKERS`] at most at work, issue #39),
+    /// kept until a [`join`](Replacements::join) has waited for each. A
+    /// handle dropped does not stop its worker.
+    tasks: Vec<JoinHandle<()>>,
     /// Counts the failures said, so that the note quotes the newest.
     said: u64,
 }
@@ -143,9 +145,9 @@ impl Replacements {
         }
         state.workers += starting;
         // Finished ones are kept only for `join`.
-        while state.tasks.try_join_next().is_some() {}
+        state.tasks.retain(|task| !task.is_finished());
         for _ in 0..starting {
-            state.tasks.spawn(worker());
+            state.tasks.push(tokio::spawn(worker()));
         }
     }
 
@@ -186,14 +188,19 @@ impl Replacements {
         };
         match outcome {
             ReplaceOutcome::Failed(failure) => {
-                // The same failure again keeps its place and its words.
-                if recorded.news {
-                    tracing::warn!("{}: {}", replacement.rel.display(), failure.text);
-                    state.said += 1;
-                    let said = state.said;
-                    state.failed.insert(replacement.id.clone(), Failed { replacement: replacement.clone(), failure: failure.clone(), said });
-                } else {
-                    tracing::debug!("{}: still {}", replacement.rel.display(), failure.text);
+                match state.failed.get_mut(&replacement.id).filter(|_| !recorded.news) {
+                    // The same failure again keeps its place and its words; what is
+                    // issued again is the replacement as it is now.
+                    Some(before) => {
+                        tracing::debug!("{}: still {}", replacement.rel.display(), failure.text);
+                        before.replacement = replacement.clone();
+                    }
+                    None => {
+                        tracing::warn!("{}: {}", replacement.rel.display(), failure.text);
+                        state.said += 1;
+                        let said = state.said;
+                        state.failed.insert(replacement.id.clone(), Failed { replacement: replacement.clone(), failure: failure.clone(), said });
+                    }
                 }
             }
             ReplaceOutcome::Replaced | ReplaceOutcome::Current | ReplaceOutcome::Busy => {
@@ -222,13 +229,32 @@ impl Replacements {
     }
 
     /// Waits for the workers, and for the newer versions they hand over to.
+    /// A wait that is cut short (its future dropped) leaves every worker
+    /// running and on record: the next `join` waits for them.
     pub(super) async fn join(&self) {
         loop {
-            let mut tasks = std::mem::take(&mut self.state().tasks);
-            if tasks.is_empty() {
-                return;
+            let Some(task) = self.state().tasks.pop() else { return };
+            let mut waited = Waited { tasks: self, task: Some(task) };
+            if let Some(task) = waited.task.as_mut() {
+                // A worker that panicked is over too.
+                let _ = task.await;
             }
-            while tasks.join_next().await.is_some() {}
+            waited.task = None;
+        }
+    }
+}
+
+/// The worker a [`join`](Replacements::join) waits for: put back among the
+/// tasks if the wait is dropped before the worker ended.
+struct Waited<'a> {
+    tasks: &'a Replacements,
+    task: Option<JoinHandle<()>>,
+}
+
+impl Drop for Waited<'_> {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            self.tasks.state().tasks.push(task);
         }
     }
 }

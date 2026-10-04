@@ -370,7 +370,7 @@ application must never read zeros where real content should be.
 - [D36](D36.md) — The store's schema has a number for every change, and what that leaves.
 - [D37](D37.md) — The test support of `sync/` is built into the daemon's crate, and finds a service's parts by a list.
 - [D38](D38.md) — The running parts of a folder's sync are beside its state, not in it.
-- [D40](D40.md) — Two tests of `remote/listing/` wait by the clock where they cannot see the event.
+- [D40](D40.md) — Two tests of `remote/listing/` stand in for what they cannot see or drive.
 
 ---
 

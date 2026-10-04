@@ -156,6 +156,27 @@ fn a_failure_with_a_new_reason_or_version_is_recorded_again() {
     assert!(news("c3", failed(FailureReason::NoSpace, "b")), "failing after it went through");
 }
 
+/// A wait for the workers that is cut short stops none of them and loses none:
+/// the next wait returns only when the worker has ended.
+#[tokio::test]
+async fn a_wait_for_the_workers_that_is_cut_short_is_taken_up_by_the_next() {
+    let replacements = Arc::new(Replacements::new(SyncStateHandle::new(Default::default())));
+    let (go_on, ended) = (Arc::new(tokio::sync::Notify::new()), Arc::new(AtomicBool::new(false)));
+    let worker = || {
+        let (replacements, go_on, ended) = (Arc::clone(&replacements), Arc::clone(&go_on), Arc::clone(&ended));
+        async move {
+            go_on.notified().await;
+            while replacements.next().is_some() {}
+            ended.store(true, Ordering::SeqCst);
+        }
+    };
+    replacements.admit(vec![Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 10 }], worker);
+    assert!(tokio::time::timeout(Duration::from_millis(100), replacements.join()).await.is_err(), "the worker is still at work");
+    go_on.notify_one();
+    tokio::time::timeout(PATIENCE, replacements.join()).await.expect("the worker ends");
+    assert!(ended.load(Ordering::SeqCst), "the second wait waited for the worker the first one left");
+}
+
 /// A replacement that ends with nothing to do (here: the folder above the
 /// file moved while it downloaded) makes the next cycle Full, and that
 /// cycle finds the file again and issues its replacement anew.

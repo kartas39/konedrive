@@ -88,6 +88,11 @@ impl Writes {
 }
 
 impl Listing {
+    /// A read-write folder's part in uploading; `None` for a read-only folder.
+    pub(crate) fn writes(&self) -> Option<&Writes> {
+        self.ctx.writes.as_ref()
+    }
+
     /// The tree lock of a read-write folder (`writes`), as the cycle waits for it.
     pub(super) async fn tree_lock(&self, writes: &Writes, cancel: &CancellationToken) -> Result<OwnedMutexGuard<()>, CycleError> {
         let lock = Arc::clone(&writes.tree_lock).lock_owned();

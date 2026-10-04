@@ -324,17 +324,17 @@ impl Listing {
         })
     }
 
-    /// One cycle, and what came of it published.
-    ///
-    /// Cycles of one `Listing` run one at a time (a `refresh` and the
-    /// poller's own, say). One that fails, or whose future is dropped
-    /// part-way, leaves the next one a Full reconcile.
     /// Asks for the next cycle's reconcile to be Full: it looks at the whole
     /// folder, not only at what the delta names. The one way to ask.
     fn request_full(&self) {
         self.full.request();
     }
 
+    /// One cycle, and what came of it published.
+    ///
+    /// Cycles of one `Listing` run one at a time (a `refresh` and the
+    /// poller's own, say). One that fails, or whose future is dropped
+    /// part-way, leaves the next one a Full reconcile.
     pub async fn cycle(self: &Arc<Self>, cancel: &CancellationToken) -> Result<CycleReport, CycleError> {
         let result = self.take_turn(cancel).await;
         let was_stopped = self.ctx.state.get().cycle.sync_trouble.is_some_and(|t| t.blocking);
@@ -385,7 +385,7 @@ impl Listing {
         self.check_account(turn, cancel).await?;
         // Read-write mode: the first cycle waits for the watcher's Full local scan (write
         // design §3.3), and the stale-delta guard starts from the outbox's commits so far.
-        let fetch_seq = match &self.ctx.writes {
+        let fetch_seq = match self.writes() {
             Some(writes) => {
                 writes.scanned(cancel).await?;
                 Some((writes, self.on_store(turn, |s| s.outbox_seq()).await?))
