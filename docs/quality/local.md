@@ -159,6 +159,7 @@ inside it. `LO5` after these.
   `examine.rs:229`.
 - **Fixed in part 2026-10-04** in `0d0d059` (#179): the examiner loop is `Schedule`, tested with `now` as a
   parameter; the watcher's test hooks are gone. The `desktop/` lines are left to B14.
+- **Fixed 2026-10-05** in `ae3564d` (#187), the `desktop/` line: the global `WRITE_HOOKS` and its one test are gone.
 
 ## LO12. Stale comments and double export paths
 
@@ -167,6 +168,7 @@ inside it. `LO5` after these.
   by two paths (`local/mod.rs:35–40`).
 - **Fixed 2026-10-04** in `1eee48d` (#184) for `local/`: stale comments and module paths. The `desktop/` lines
   are left to B14.
+- **Fixed 2026-10-05** in `ae3564d` (#187), the `desktop/` lines: comments in `baloo.rs` and `thumbs.rs`.
 
 ## LO13. A mount without user attributes inside the folder aborts every examination — **defect?**
 
