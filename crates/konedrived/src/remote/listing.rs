@@ -50,6 +50,8 @@ pub use rw::Writes;
 
 /// What OneDrive lists: a whole listing, one placed page by page, a delta's changes.
 mod fetch;
+mod lease;
+pub use lease::Lease;
 /// The task that runs a cycle on a schedule, on a refresh and when the live socket says so.
 mod poller;
 /// Downloaded files that changed in OneDrive, replaced after the cycle.
@@ -87,9 +89,9 @@ pub struct ListingContext {
     pub link: LinkCell,
     pub locks: InodeLocks,
     pub state: SyncStateHandle,
-    /// `SyncService`'s: a reconcile holds it for reading, so a Forget waits
+    /// The folder's lease (`sync/`'s): a reconcile holds it, so a Forget waits
     /// for one that is changing the folder.
-    pub lifecycle: Arc<tokio::sync::RwLock<()>>,
+    pub lease: Lease,
     pub rescue_dir: PathBuf,
     pub full_threshold: usize,
     /// Nudged at the end of every successful cycle, so the thumbnail filler
@@ -599,7 +601,7 @@ impl Listing {
     /// the change to the folder in the same task, so a page placed is a page
     /// committed unless the daemon dies in between.
     async fn reconcile(&self, turn: &Turn, scope: Scope, commit: Commit, cancel: &CancellationToken) -> Result<Reconciled, CycleError> {
-        let lifecycle = cancellable(cancel, Arc::clone(&self.ctx.lifecycle).read_owned()).await?;
+        let lifecycle = cancellable(cancel, self.ctx.lease.hold()).await?;
         // The link as it is now. A helper's reconnect sets it before `resume`
         // takes the lock to re-register the root, so this may be a new link
         // whose helper has no marks yet: at worst a `MarkDir` fails, this

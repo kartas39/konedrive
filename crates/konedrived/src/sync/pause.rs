@@ -156,7 +156,7 @@ impl SyncService {
     pub async fn pause_syncing(&self, seconds: u32) -> Result<(), SyncError> {
         let store = self.outbox_store()?;
         let until = if seconds == 0 { 0 } else { self.clock.now() + i64::from(seconds) };
-        running::set_paused(&store, Some(until)).await.map_err(|e| SyncError::Io(e.to_string()))?;
+        running::set_paused(&store, Some(until)).await.map_err(|e| SyncError::Store(e.to_string()))?;
         tracing::info!("syncing paused{}", if seconds == 0 { " until resumed".to_owned() } else { format!(" for {seconds} s") });
         self.show_pause();
         Ok(())
@@ -165,7 +165,7 @@ impl SyncService {
     /// `Resume()`: the pause ends now; the outbox and the poll go at once.
     pub async fn resume_syncing(&self) -> Result<(), SyncError> {
         let store = self.outbox_store()?;
-        running::set_paused(&store, None).await.map_err(|e| SyncError::Io(e.to_string()))?;
+        running::set_paused(&store, None).await.map_err(|e| SyncError::Store(e.to_string()))?;
         tracing::info!("syncing resumed");
         self.show_pause();
         Ok(())

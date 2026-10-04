@@ -323,7 +323,7 @@ impl HelperHub {
             Ok(found) => Ok(found),
             // As before the section was one: a panic in the check is the caller's.
             Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-            Err(_) => Err(super::SyncError::Io("the daemon is stopping".into())),
+            Err(_) => Err(super::SyncError::Stopping),
         }
     }
 
@@ -418,7 +418,7 @@ fn by_path_blocking(candidates: &[Arc<SyncService>], fd: &OwnedFd, key: InodeKey
     candidates
         .iter()
         .find(|account| {
-            let Some(reg) = account.registration() else { return false };
+            let Some(reg) = account.record() else { return false };
             let Ok(rel) = shown.strip_prefix(&reg.root.path) else { return false };
             if rel.as_os_str().is_empty() {
                 return false;
@@ -438,7 +438,7 @@ fn by_path_blocking(candidates: &[Arc<SyncService>], fd: &OwnedFd, key: InodeKey
 async fn by_item_id(candidates: Vec<Arc<SyncService>>, fd: &OwnedFd) -> Option<Arc<SyncService>> {
     let id = item_id_of(fd).await?;
     for account in candidates {
-        let Ok(lifecycle) = Arc::clone(&account.lifecycle).try_read_owned() else { continue };
+        let Ok(lifecycle) = Arc::clone(&account.folder).try_read_owned() else { continue };
         let Some(store) = account.store.lock().unwrap().clone() else { continue };
         let id = id.clone();
         let known = tokio::task::spawn_blocking(move || {
@@ -547,7 +547,7 @@ pub async fn watch_every(hub: Arc<HelperHub>, every: Duration) {
     }
 }
 
-/// The device a folder is on, read once when its registration is made (`Registration::dev`),
+/// The device a folder is on, read once when its record is made (`Record::dev`),
 /// for [`HelperHub::route`]; `None` when it cannot be looked at. Read on a blocking thread.
 pub(super) async fn device_of(path: &Path) -> Option<u64> {
     let path = path.to_owned();

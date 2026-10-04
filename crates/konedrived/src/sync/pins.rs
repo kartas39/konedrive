@@ -65,7 +65,7 @@ impl SyncService {
     /// any is pinned: one outside the folder, a `.konedrive-*` name, or a
     /// file that is not ours refuses the call.
     pub async fn pin(&self, paths: &[PathBuf]) -> Result<u32, SyncError> {
-        let reg = self.require_registration()?;
+        let reg = self.require_record()?;
         let targets = self.pin_targets(&reg.root, paths).await?;
         let (mut again, mut write) = (Vec::new(), Vec::new());
         for target in targets {
@@ -98,7 +98,7 @@ impl SyncService {
     /// asks every account whose folder a call's paths are in first, so that
     /// a call that spans accounts is refused as a whole or not at all.
     pub async fn check_unpinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        let reg = self.require_registration()?;
+        let reg = self.require_record()?;
         let targets = self.pin_targets(&reg.root, paths).await?;
         match kept_by_folder(&targets) {
             Some(refusal) => Err(refusal),
@@ -110,7 +110,7 @@ impl SyncService {
     /// path is in the folder, and one of ours. `Files` asks every account
     /// first, as for [`check_unpinnable`](Self::check_unpinnable).
     pub async fn check_pinnable(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        let reg = self.require_registration()?;
+        let reg = self.require_record()?;
         self.pin_targets(&reg.root, paths).await.map(drop)
     }
 
@@ -120,7 +120,7 @@ impl SyncService {
     /// refused `NotAllowed`, naming the folder, as `FreeUp` refuses it
     /// ([`kept_by_folder`]); every path is checked before any pin comes off.
     pub async fn unpin(&self, paths: &[PathBuf]) -> Result<u32, SyncError> {
-        let reg = self.require_registration()?;
+        let reg = self.require_record()?;
         let targets = self.pin_targets(&reg.root, paths).await?;
         if let Some(refusal) = kept_by_folder(&targets) {
             return Err(refusal);
@@ -193,7 +193,7 @@ pub(super) fn kept_by_folder(targets: &[PinTarget]) -> Option<SyncError> {
 #[async_trait]
 impl pin::PinFill for SyncService {
     async fn fill_pinned(&self, path: &Path) -> pin::Filled {
-        let Some(reg) = self.registration() else { return pin::Filled::Skipped };
+        let Some(reg) = self.record() else { return pin::Filled::Skipped };
         let (root, target) = (reg.root.path.clone(), path.to_path_buf());
         let still = tokio::task::spawn_blocking(move || pin::pinned_by(&root, &target).is_some())
             .await

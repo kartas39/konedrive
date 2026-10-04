@@ -663,8 +663,8 @@ async fn a_version_1_onedrive_folder_is_held_then_brought_up_at_the_first_connec
     let sync =
         FolderProxy::builder(&client).path(path).unwrap().cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
     assert_eq!(sync.path().await.unwrap(), folder.display().to_string());
-    assert_eq!(sync.state().await.unwrap(), "error", "held until the helper is back");
-    assert!(sync.last_error().await.unwrap().contains("helper is not connected"), "{}", sync.last_error().await.unwrap());
+    assert_eq!(sync.state().await.unwrap(), "waiting", "held until the helper is back, and nothing is known to be wrong");
+    assert_eq!(sync.last_error().await.unwrap(), "");
     assert_eq!(daemon.manager.config().account(&id).unwrap().drive_id, "D1", "the folder's drive is the account's");
 
     let socket = folders.path().join("helper.sock");

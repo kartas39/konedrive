@@ -10,14 +10,14 @@ impl SyncService {
     /// `Skipped()`: every item not in the folder whose own folder is, as a
     /// full path and a reason.
     ///
-    /// The store is read with `lifecycle` held for reading (see `store`), so
+    /// The store is read with the folder's state held for reading (see `store`), so
     /// a Forget waits for a read under way rather than remove the files
     /// under it. The lock goes into the blocking task with the store's clone,
     /// so it is held as long as the clone is, even when this call is dropped
     /// part-way.
     pub async fn skipped(&self) -> Result<Vec<(String, String)>, SyncError> {
-        let lifecycle = Arc::clone(&self.lifecycle).read_owned().await;
-        let Some(reg) = self.registration() else { return Ok(Vec::new()) };
+        let lifecycle = Arc::clone(&self.folder).read_owned().await;
+        let Some(reg) = lifecycle.acted_on().cloned() else { return Ok(Vec::new()) };
         let Some(store) = self.store.lock().unwrap().clone() else { return Ok(Vec::new()) };
         let skipped = tokio::task::spawn_blocking(move || {
             let _lifecycle = lifecycle;
@@ -27,7 +27,7 @@ impl SyncService {
         })
         .await
         .map_err(|e| SyncError::Io(format!("the store task failed: {e}")))?
-        .map_err(|e| SyncError::Io(e.to_string()))?;
+        .map_err(|e| SyncError::Store(e.to_string()))?;
         Ok(skipped
             .into_iter()
             .map(|(rel, reason)| (reg.root.path.join(rel).display().to_string(), reason.as_str().to_owned()))
@@ -46,7 +46,7 @@ impl SyncService {
         tokio::task::spawn_blocking(move || report.activity.recent(limit as usize))
             .await
             .map_err(|e| SyncError::Io(format!("the activity task failed: {e}")))?
-            .map_err(|e| SyncError::Io(e.to_string()))
+            .map_err(|e| SyncError::Store(e.to_string()))
     }
 
     /// `Conflicts.List()`: (time, original, rescued), newest first; one whose
@@ -56,7 +56,7 @@ impl SyncService {
         tokio::task::spawn_blocking(move || report.activity.conflicts())
             .await
             .map_err(|e| SyncError::Io(format!("the conflicts task failed: {e}")))?
-            .map_err(|e| SyncError::Io(e.to_string()))
+            .map_err(|e| SyncError::Store(e.to_string()))
     }
 
     /// `Conflicts.Dismiss(rescued_path)`: the conflict comes off the list, and
@@ -67,7 +67,7 @@ impl SyncService {
         let removed = tokio::task::spawn_blocking(move || report.activity.dismiss(&path))
             .await
             .map_err(|e| SyncError::Io(format!("the conflicts task failed: {e}")))?
-            .map_err(|e| SyncError::Io(e.to_string()))?;
+            .map_err(|e| SyncError::Store(e.to_string()))?;
         if removed {
             Ok(())
         } else {
@@ -104,7 +104,7 @@ impl SyncService {
     /// `NotSignedIn` with no drive or no token, `Unreachable` when OneDrive
     /// does not answer.
     pub async fn web_url(&self, path: &Path) -> Result<String, SyncError> {
-        let reg = self.require_registration()?;
+        let reg = self.require_record()?;
         let (root, target) = (reg.root.clone(), path.to_path_buf());
         let (id, shown) = tokio::task::spawn_blocking(move || -> Result<_, SyncError> {
             let (item, shown) = root.open_item(&target)?;
@@ -122,7 +122,7 @@ impl SyncService {
     /// `Files.WebUrl` of the account's folder itself: the address of the page
     /// of the drive's root. One GET, as [`web_url`](Self::web_url).
     pub async fn root_web_url(&self) -> Result<String, SyncError> {
-        let reg = self.require_registration()?;
+        let reg = self.require_record()?;
         let drive = self.drive().ok_or(SyncError::NotSignedIn)?;
         page_of(drive.root_item().await, &reg.root.path.display().to_string())
     }
@@ -143,7 +143,7 @@ impl SyncService {
     /// the folder parked the D-Bus dispatch task forever.
     pub async fn item_state(&self, path: &Path) -> String {
         const NOT_MANAGED: &str = "not-managed";
-        let Some(reg) = self.registration() else {
+        let Some(reg) = self.record() else {
             return NOT_MANAGED.into();
         };
         let path = path.to_path_buf();

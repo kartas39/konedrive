@@ -386,7 +386,7 @@ async fn a_forget_the_helper_refuses_leaves_the_folder_locked_and_in_step() {
 
     let refused = service.unregister_root().await;
 
-    assert!(matches!(refused, Err(SyncError::Io(_))), "{refused:?}");
+    assert!(matches!(refused, Err(SyncError::Helper(_))), "{refused:?}");
     assert_eq!(mode(&w.folder.path().join("docs/f.txt")), 0o444);
     assert!(w.config.path().join("tree.sqlite").exists());
     assert_eq!(config_of(&w).sync_root_source, "onedrive");
@@ -396,84 +396,40 @@ async fn a_forget_the_helper_refuses_leaves_the_folder_locked_and_in_step() {
     service.stop_sync().await;
 }
 
-/// A listing's reconcile takes the very lock registrations and
-/// Forgets take: while that is held, the listing waits. (A replacement
-/// of a changed file does not take it — it swaps in one file under its
-/// inode lock — so this is about the listing, not every change.)
+/// Two changes at once leave one folder and no sync nobody could stop: a Forget whose
+/// answer the helper has not given yet, and the bring-up of a helper's reconnect asked
+/// meanwhile. The bring-up waits for the Forget, finds no folder, and starts nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_listing_waits_for_the_services_lifecycle_lock() {
-    let w = world().await;
-    // The first listing answers late enough for the lock to be taken first.
-    Mock::given(method("GET")).and(path("/me/drive/root/delta"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "value": [
-                {"id": "R", "root": {}, "folder": {}},
-                {"id": "D", "name": "docs", "folder": {}, "parentReference": {"id": "R"}},
-                {"id": "F", "name": "f.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "D"}}
-            ],
-            "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", w.server.uri())
-        })).set_delay(Duration::from_millis(300)))
-        .with_priority(4)
-        .mount(&w.server).await;
-    let service = connected(&w, true).await;
-    service.register_root(w.folder.path()).await.unwrap();
-
-    let held = service.lifecycle.write().await;
-    wait_for_deltas(&w, 0).await;
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    assert!(!w.folder.path().join("docs").exists(), "the folder was changed under the lock");
-    drop(held);
-    listed(&service).await;
-    service.stop_sync().await;
-}
-
-/// A Forget stops the sync before it waits for the lifecycle lock, so
-/// that no reconcile keeps it waiting; a helper's reconnect that takes
-/// the lock first may start the sync again in between. That one is
-/// stopped too, before the folder is let go.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_sync_started_again_while_a_forget_waits_is_stopped_too() {
+async fn a_bring_up_asked_while_a_forget_waits_starts_no_sync() {
     let w = world().await;
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
 
-    let held = service.lifecycle.write().await;
+    w.helper.forget();
+    w.helper.hold(Seen::UnregisterRoot);
     let forgetting = {
         let service = Arc::clone(&service);
         tokio::spawn(async move { service.unregister_root().await })
     };
-    wait_until("the Forget stopped the sync", || service.syncing.lock().unwrap().is_none()).await;
-    // What a `resume` that has the lock does to a OneDrive folder.
-    service.start_sync().await;
-    drop(held);
+    wait_until("the Forget reached the helper", || w.helper.seen().contains(&Seen::UnregisterRoot)).await;
+    let resuming = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move { service.resume().await })
+    };
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!resuming.is_finished(), "the bring-up did not wait for the Forget");
+    w.helper.release(Seen::UnregisterRoot);
     forgetting.await.unwrap().unwrap();
+    resuming.await.unwrap();
 
+    assert_eq!(service.root_state(), "none");
+    assert!(!w.helper.seen().contains(&Seen::RegisterRoot), "the forgotten folder was registered again");
     let before = requests(&w).await;
     service.refresh_now();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(requests(&w).await, before, "a sync runs on a forgotten folder");
     assert_eq!(mode(&w.folder.path().join("docs/f.txt")), 0o644);
-}
-
-/// `start_sync` waits for the tree store to open before it keeps the
-/// sync it starts. Two of them at once — which only the lifecycle lock
-/// its callers hold keeps from happening — must still leave one sync
-/// running, not a second one that nothing could ever stop.
-#[tokio::test]
-async fn two_starts_at_once_leave_one_sync() {
-    let w = world().await;
-    let service = connected(&w, true).await;
-    service.register_root(w.folder.path()).await.unwrap();
-    listed(&service).await;
-    service.stop_sync().await;
-    let before = deltas(&w).await;
-
-    tokio::join!(service.start_sync(), service.start_sync());
-    tokio::time::sleep(Duration::from_millis(300)).await;
-
-    assert_eq!(deltas(&w).await, before + 1, "two syncs ran their first cycle");
-    service.stop_sync().await;
 }
 
 /// A folder whose sync could not start (F18: its tree store could not
@@ -494,7 +450,7 @@ async fn refresh_starts_a_sync_that_could_not_start_or_says_why() {
 
     let refused = service.refresh().await;
     assert!(
-        matches!(&refused, Err(SyncError::Io(why)) if why.contains("the tree store cannot be opened")),
+        matches!(&refused, Err(SyncError::NotUp(why)) if why.contains("the tree store cannot be opened")),
         "{refused:?}"
     );
     assert_eq!(requests(&w).await, 0, "nothing synced");

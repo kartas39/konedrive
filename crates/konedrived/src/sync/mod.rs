@@ -5,29 +5,31 @@
 //! `Account`). There is one `SyncService` per account; the helper link, its
 //! supervisor and the per-inode locks are the daemon's, in `hub.rs`.
 
-pub mod forget;
+pub mod bring_up;
+mod folder;
 pub mod free_up;
 pub mod hub;
 pub mod hydrate;
+pub mod mode;
 pub mod move_outs;
 pub mod outbox;
 pub mod pause;
+mod persisted;
 pub mod pins;
 pub mod populate;
+mod publish;
 pub mod queries;
-pub mod registration;
-pub mod resume;
 pub mod settings;
 pub mod start_stop;
+pub mod take_down;
 #[cfg(any(test, feature = "fault-injection"))]
 pub mod testing;
 pub mod watcher;
 pub mod wiring;
-pub mod write_mode;
 
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
 use crate::status::activity::Report;
@@ -35,7 +37,6 @@ use crate::helper::{Clearance, HelperLink};
 use crate::folder::root::DehydrateError;
 use crate::folder::root::{RegisterError, SyncRoot};
 use crate::hydration::source::ContentSource;
-use crate::config::Mode;
 use crate::folder::locks::InodeLocks;
 use crate::status::snapshot::{SyncSnapshot, SyncStateHandle, published_error, published_state};
 use crate::conditions::running;
@@ -46,6 +47,7 @@ use crate::remote::listing;
 use crate::upload;
 use crate::upload::kept_back;
 
+use folder::{Folder, Record, View};
 pub use wiring::{OneDrive, Persist, SyncPaths, Transfers, Wiring};
 
 // --- the folder's interfaces' own half of the work ------------------------
@@ -145,8 +147,46 @@ pub enum SyncError {
     /// the tree store holding them would go. The message says how many, and what to do.
     #[error("{0}")]
     PendingUploads(String),
+    /// The helper refused, or did not answer; the message says what it was asked.
+    #[error("{0}")]
+    Helper(String),
+    /// `config.toml` could not be read or written.
+    #[error("{0}")]
+    Config(String),
+    /// The folder's tree store could not be read or written.
+    #[error("{0}")]
+    Store(String),
+    /// A folder is recorded and not up — it waits for the helper, a registration or a
+    /// bring-up failed, `config.toml` does not say what it shows — or its sync has not
+    /// started: the call needs a folder whose sync runs. The whole sentence, with why
+    /// ([`SyncError::not_up`]).
+    #[error("{0}")]
+    NotUp(String),
+    /// The account is held back (`config.toml` gives it what an earlier account has): why.
+    #[error("{0}")]
+    HeldBack(String),
+    /// `Accounts.Remove` is taking the account away.
+    #[error("this account is being removed")]
+    Removing,
+    /// The daemon is stopping, and gave up the work the call needed.
+    #[error("the daemon is stopping")]
+    Stopping,
+    /// A file of the folder could not be read or changed, or a task of the daemon's own
+    /// failed.
     #[error("{0}")]
     Io(String),
+}
+
+impl SyncError {
+    /// The refusal of a call that needs a folder that is up, with its sync running: `why`
+    /// it is not, or nothing while it only waits.
+    pub(crate) fn not_up(why: &str) -> Self {
+        if why.is_empty() {
+            SyncError::NotUp("the folder is not up yet".into())
+        } else {
+            SyncError::NotUp(format!("the folder is not up: {why}"))
+        }
+    }
 }
 
 impl From<RegisterError> for SyncError {
@@ -155,7 +195,7 @@ impl From<RegisterError> for SyncError {
             RegisterError::NotADirectory => SyncError::Unsupported("not a directory".into()),
             RegisterError::NotEmpty => SyncError::NotEmpty,
             RegisterError::Unsupported(why) => SyncError::Unsupported(why),
-            RegisterError::Helper(why) => SyncError::Io(why),
+            RegisterError::Helper(why) => SyncError::Helper(why),
         }
     }
 }
@@ -211,52 +251,42 @@ pub struct SyncService {
     /// with a OneDrive folder's sync, which reads it at every reconcile.
     link: crate::helper::LinkCell,
     state: SyncStateHandle,
-    root: Mutex<Option<Registration>>,
-    /// Taken for writing by everything that changes which root is registered
-    /// or how — `register_root`, `register_root_without_interception`,
-    /// `unregister_root`, `resume` — for the whole of the change, and for
-    /// reading by what decides from the root's mode what to ask of the
-    /// helper and then acts on it: `dehydrate` and `populate_from_directory`.
+    /// What the folder is ([`Folder`]), inside the lock that guards it: the only async
+    /// lock of the service.
+    ///
+    /// Taken for writing only by [`change`](Self::change), by everything that changes
+    /// which folder is registered, how, in which mode, or whether the account takes one —
+    /// for the whole of the change, with the folder's sync stopped. Taken for reading by
+    /// what decides from the folder what to ask of the helper and then acts on it
+    /// (`dehydrate`, `populate_from_directory`), by what reads the tree store outside the
+    /// sync (`skipped`, `pending_uploads`, the hub's router), and by a reconcile, through
+    /// the lease its listing is given, while it changes the folder.
     ///
     /// zbus runs every method call in a task of its own, so without it two
     /// registrations both passed the "no root yet" check before either had
     /// committed, both reached the helper, and the last commit won — leaving
-    /// the helper holding a root the daemon did not: a folder still marked,
-    /// which a later registration without interception of that folder would
-    /// hold with nothing intercepting opens in it.
-    ///
-    /// A OneDrive folder's sync shares this very lock (`ListingContext::
-    /// lifecycle`): a reconcile holds it for reading while it changes the
-    /// folder, so no registration changes under it.
-    lifecycle: Arc<tokio::sync::RwLock<()>>,
+    /// the helper holding a root the daemon did not.
+    folder: Arc<tokio::sync::RwLock<Folder>>,
+    /// The folder as last published ([`publish`]), for the readers that only look and the
+    /// synchronous callers. Written by nothing but `publish`.
+    view: watch::Sender<View>,
     source: Mutex<Option<Arc<dyn ContentSource>>>,
     /// The hub's lock table: one inode belongs to one account only.
     locks: InodeLocks,
     /// The running sync of a OneDrive folder. Shared with the task that
-    /// nudges it when the account signs in ([`nudge_on_sign_in`]). Started
-    /// and stopped only under `lifecycle` held for writing — except the stop
-    /// a Forget makes before it takes that lock (see `unregister_root`).
+    /// nudges it when the account signs in ([`nudge_on_sign_in`]). Started only by a
+    /// holder of a [`Stopped`](folder::Stopped), and stopped by [`change`](Self::change).
     syncing: Arc<Mutex<Option<Syncing>>>,
     /// Its tree store, for `Skipped()`.
     ///
-    /// The store's files are removed (`remove_tree_store`) only with
-    /// `lifecycle` held for writing and the sync stopped, and nothing may be
+    /// The store's files are removed (`remove_tree_store`) only inside a change of the
+    /// folder's state, with the sync stopped, and nothing may be
     /// reading them then. So no clone of the store outlives
     /// [`stop_sync`](SyncService::stop_sync): the sync's own go when it
     /// returns (`Poller::stop` waits for every task that holds one). Any
-    /// other clone is taken, and dropped, with `lifecycle` held for reading
+    /// other clone is taken, and dropped, with the state held for reading
     /// (`skipped`).
     store: Mutex<Option<konedrive_tree::Store>>,
-    /// Why this account's folder is held back (design §3.1: `config.toml`
-    /// gives it what an earlier account has), if it is: it is not brought
-    /// up, and no registration is made.
-    held: Mutex<Option<String>>,
-    /// `Accounts.Remove` is taking this account away: nothing is registered
-    /// or brought up for it. Set by [`retire`](Self::retire) and taken back
-    /// by [`unretire`](Self::unretire), both with `lifecycle` held for
-    /// writing. Apart from `held`, so that a removal that fails gives a
-    /// held-back account its own reason back.
-    retiring: std::sync::atomic::AtomicBool,
     /// The activity log, the conflicts, the downloads under way and the
     /// folder's space, shared with the hydration loop and a
     /// OneDrive folder's sync. Its store is a clone of `store`'s, attached by
@@ -267,11 +297,6 @@ pub struct SyncService {
     /// for. Shared with a OneDrive folder's sync, which queues what it places
     /// under a pin and sweeps after every Full reconcile.
     pins: Arc<pin::Pins>,
-    /// The account's mode as the folder follows it (`docs/design/writes.md` §2, §2.2):
-    /// read-only keeps a OneDrive folder under the lock, read-write lifts it.
-    /// Changed only by [`write_mode`]'s switch, with `lifecycle` held for
-    /// writing and the sync stopped, so a running sync never sees it change.
-    mode: Mutex<Mode>,
     /// This service, for the watcher's status hook, which may have to stop
     /// the sync from the watcher's thread (the folder moved or deleted).
     me: std::sync::Weak<SyncService>,
@@ -287,9 +312,6 @@ pub struct SyncService {
     /// `NotUploadedSummary()` as the outbox worker last summed it (issue #38):
     /// answered from memory while the worker runs.
     kept_back: Mutex<Option<Vec<kept_back::SummaryRow>>>,
-    /// The account was switched to read-write, and the watcher that follows has not started
-    /// yet: its Full local scan says so (`LocalScan.Reason`).
-    switched_to_read_write: std::sync::atomic::AtomicBool,
     /// The account's transfer pool (`konedrive_graph::pool`): every download, upload and change of
     /// an item takes a slot of it. The drive of the wiring reports into it.
     pool: Arc<konedrive_graph::pool::TransferPool>,
@@ -319,115 +341,6 @@ struct Syncing {
     /// watcher's examination records: started and stopped with the watcher,
     /// in the same places. `None` for a read-only folder.
     outbox: Option<upload::OutboxWorker>,
-}
-
-/// A registered root and how — or whether — opens inside it are intercepted.
-#[derive(Clone)]
-struct Registration {
-    root: SyncRoot,
-    /// False only for a root registered through
-    /// `RegisterWithoutInterception`.
-    intercepted: bool,
-    /// Whether its last recovery left interrupted files as found because a
-    /// helper was running that this daemon had no link to, so
-    /// the next link runs it again ([`SyncService::resume`]).
-    recovery_deferred: bool,
-    /// What it shows, decided when it was first registered and
-    /// kept with it for good — unless it is only a guess (`source_guessed`).
-    source: RootSource,
-    /// `source` is the guess made for a folder held with a `source` that `config.toml`
-    /// does not say in either of its two words ([`Persisted::source_as_written`]): good
-    /// for a Forget, never for a bring-up, which reads `config.toml` again
-    /// ([`SyncService::source_brought_back`]). False for every folder that is up.
-    source_guessed: bool,
-    /// Registered and recovered ([`SyncService::commit`]), so that a OneDrive
-    /// folder's sync may run. False for a root only held until its helper is
-    /// back ([`SyncService::hold`]), and for one kept after a registration
-    /// that failed ([`SyncService::abandon`]).
-    brought_up: bool,
-    /// Whether *this daemon* excluded the root from Baloo, so
-    /// [`unregister_root`](SyncService::unregister_root) knows whether to
-    /// take that exclusion back off. Decided by [`SyncService::commit`] for a
-    /// folder that is up. Before that, [`SyncService::hold`] carries what
-    /// `config.toml` records, for the Forget of a folder that stays held; a
-    /// registration kept after it failed (`abandon`, a failed switch) says
-    /// false, since nothing was added to Baloo for it.
-    baloo_excluded: bool,
-    /// Registered without interception only because no helper was connected
-    ///, so it switches to interception when one connects
-    /// ([`SyncService::upgrade`]). False for every intercepted root, and for
-    /// one registered without interception on purpose — with a helper
-    /// connected.
-    upgrade_when_helper: bool,
-    /// The device the folder is on, read once when the registration is made,
-    /// for the hub's router: never a path looked at per request. `None` when
-    /// the folder could not be looked at then.
-    dev: Option<u64>,
-}
-
-/// A root as `config.toml` records it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Persisted {
-    path: PathBuf,
-    /// Empty in a config written before the id was recorded.
-    root_id: String,
-    intercepted: bool,
-    source: RootSource,
-    /// What `config.toml` has for `source` when it is neither of its two words (a hand
-    /// edit: `"OneDrive"`). Such a folder is never brought up
-    /// ([`unread_source`](Persisted::unread_source)); `source` then reads `OneDrive`, for
-    /// a Forget alone, which so takes off everything a OneDrive folder may carry. Written
-    /// back as it was read, never as a guess.
-    source_as_written: Option<String>,
-    /// Whether this daemon is the one that excluded the root from Baloo
-    ///; `false` in a config written before this existed.
-    baloo_excluded: bool,
-    /// [`Registration::upgrade_when_helper`].
-    upgrade_when_helper: bool,
-}
-
-impl Persisted {
-    fn of(
-        root: &SyncRoot,
-        intercepted: bool,
-        source: RootSource,
-        baloo_excluded: bool,
-        upgrade_when_helper: bool,
-    ) -> Self {
-        Self {
-            path: root.path.clone(),
-            root_id: root.root_id.clone(),
-            intercepted,
-            source,
-            source_as_written: None,
-            baloo_excluded,
-            upgrade_when_helper,
-        }
-    }
-
-    fn read(root: crate::config::RootConfig) -> Self {
-        let upgrade_when_helper = root.upgrades_when_helper();
-        let source = RootSource::parse(&root.source);
-        Self {
-            path: root.path,
-            root_id: root.id,
-            intercepted: root.intercepted,
-            // Unreadable: held for a Forget as a OneDrive folder, and never brought up.
-            source: source.unwrap_or(RootSource::OneDrive),
-            source_as_written: source.is_none().then_some(root.source),
-            baloo_excluded: root.baloo_excluded,
-            upgrade_when_helper,
-        }
-    }
-
-    /// Why this folder is not brought up, when `config.toml` does not say what it shows.
-    fn unread_source(&self) -> Option<String> {
-        let written = self.source_as_written.as_ref()?;
-        Some(format!(
-            "config.toml has source = {written:?} for it, which is neither \"onedrive\" nor \"local\"; \
-             correct it and start konedrive again, or forget the folder and add it again"
-        ))
-    }
 }
 
 /// What `LastError` says while a root is registered without interception.
@@ -473,18 +386,14 @@ impl SyncService {
                     }
                 }),
                 kept_back: Mutex::new(None),
-                switched_to_read_write: std::sync::atomic::AtomicBool::new(false),
                 report: Report::new(state.clone()),
                 state,
-                root: Mutex::new(None),
-                lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+                folder: Arc::new(tokio::sync::RwLock::new(Folder::new())),
+                view: watch::Sender::new(View::default()),
                 source: Mutex::new(None),
                 locks: hub.locks(),
                 syncing: Arc::new(Mutex::new(None)),
                 store: Mutex::new(None),
-                held: Mutex::new(None),
-                retiring: std::sync::atomic::AtomicBool::new(false),
-                mode: Mutex::new(Mode::ReadOnly),
                 me: me.clone(),
                 tree_lock: Arc::new(tokio::sync::Mutex::new(())),
                 wiring,
@@ -566,30 +475,30 @@ impl SyncService {
         persist.store.account(&persist.account).map(|a| a.drive_id).filter(|drive| !drive.is_empty())
     }
 
-    /// The device the registered folder is on, as it was when it was
-    /// registered, for the hub's router; `None` with no folder, or one that
-    /// could not be looked at.
+    /// The device the folder is on, as it was when its record was made, for the hub's
+    /// router; `None` with no folder, or one that could not be looked at.
     fn root_device(&self) -> Option<u64> {
-        self.registration().and_then(|reg| reg.dev)
+        self.record().and_then(|record| record.dev)
     }
 
-    /// Whether this account has a folder the router cannot place: one that is
-    /// held back, recorded but not registered yet (a registration under way
-    /// writes its folder down first), or whose device is unknown. An open in
-    /// such a folder could be taken for another account's by device alone.
+    /// Whether this account has a folder the router cannot place: one whose device is
+    /// unknown, or one that `config.toml` records and the daemon does not act on — an
+    /// account held back, or a registration under way, which writes its folder down
+    /// first. An open in such a folder could be taken for another account's by device
+    /// alone.
     fn has_unplaced_folder(&self) -> bool {
-        match self.registration() {
-            Some(reg) => reg.dev.is_none(),
+        match self.record() {
+            Some(record) => record.dev.is_none(),
             None => self.persisted_root().is_some(),
         }
     }
 
-    fn registration(&self) -> Option<Registration> {
-        self.root.lock().unwrap().clone()
-    }
-
-    fn require_registration(&self) -> Result<Registration, SyncError> {
-        self.registration().ok_or(SyncError::NoRoot)
+    /// Every folder this account holds or records: the one it acts on, and
+    /// the one `config.toml` names (held back, or being registered).
+    pub(super) fn folders(&self) -> Vec<std::path::PathBuf> {
+        let mut folders: Vec<std::path::PathBuf> = self.record().map(|record| record.root.path).into_iter().collect();
+        folders.extend(self.persisted_root().map(|p| p.path));
+        folders
     }
 
     fn require_link(&self) -> Result<HelperLink, SyncError> {
@@ -597,7 +506,7 @@ impl SyncService {
     }
 
     pub fn root(&self) -> Option<SyncRoot> {
-        self.registration().map(|r| r.root)
+        self.record().map(|r| r.root)
     }
 
     /// `RootState` as published ([`published_state`]).
@@ -612,25 +521,37 @@ impl SyncService {
 
     /// `RootSource`.
     pub fn root_source(&self) -> String {
-        self.registration().map(|r| r.source.as_str().to_owned()).unwrap_or_default()
+        self.record().map(|r| r.source.as_str().to_owned()).unwrap_or_default()
     }
 
     /// HS2: a folder that shows OneDrive is kept in step only when it is
     /// intercepted and the helper is connected.
-    fn require_helper_for(&self, reg: &Registration) -> Result<(), SyncError> {
-        if reg.intercepted && self.link().is_some() {
+    fn require_helper_for(&self, record: &Record) -> Result<(), SyncError> {
+        if record.intercepted() && self.link().is_some() {
             Ok(())
         } else {
             Err(SyncError::NoHelper)
         }
     }
 
-    fn require_onedrive(&self) -> Result<Registration, SyncError> {
-        let reg = self.require_registration()?;
-        if reg.source != RootSource::OneDrive {
+    fn require_onedrive(&self) -> Result<Record, SyncError> {
+        let record = self.require_record()?;
+        if record.source != RootSource::OneDrive {
             return Err(SyncError::Unsupported("this folder is not connected to OneDrive".into()));
         }
-        Ok(reg)
+        Ok(record)
+    }
+
+    /// Why a call that needs the folder's sync cannot have it, for a OneDrive folder
+    /// with no tree store open: the folder is not up, or its sync has not started.
+    fn sync_not_running(&self) -> SyncError {
+        if let Some(why) = self.view().down {
+            return SyncError::not_up(&why);
+        }
+        match self.state.get().sync_trouble {
+            Some(trouble) => SyncError::NotUp(format!("the folder's sync is not running: {}", trouble.text)),
+            None => SyncError::NotUp("the folder's sync has not started yet".into()),
+        }
     }
 }
 

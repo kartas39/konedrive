@@ -54,6 +54,12 @@ impl HelperState {
         konedrive_dbus::helper_advice(self.as_str())
     }
 
+    /// Whether the helper is known not to run: not installed, stopped or failed. Not so
+    /// while nothing is known (`unknown`: systemd was not asked yet, or says it runs).
+    pub fn known_down(self) -> bool {
+        matches!(self, Self::NotInstalled | Self::Stopped | Self::Failed)
+    }
+
     /// The state systemd's `LoadState` and `ActiveState` of the unit stand
     /// for, when the daemon has no link.
     pub fn of_unit(load: &str, active: &str) -> Self {

@@ -32,6 +32,13 @@ fn every_refusal_of_the_folder_goes_out_under_its_name() {
         SyncError::Unreachable("no network".into()),
         SyncError::InvalidArgs("\"a/b\": a pattern names one name".into()),
         SyncError::PendingUploads("2 change(s) made here have not been uploaded yet".into()),
+        SyncError::Helper("the helper answered errno 5".into()),
+        SyncError::Config("cannot record the sync folder in config.toml".into()),
+        SyncError::Store("the database is locked".into()),
+        SyncError::not_up("it waits for the helper"),
+        SyncError::HeldBack("this account is held back: its label repeats".into()),
+        SyncError::Removing,
+        SyncError::Stopping,
         SyncError::Io("the disk is full".into()),
     ];
     for error in all {
@@ -55,7 +62,14 @@ fn every_refusal_of_the_folder_goes_out_under_its_name() {
             SyncError::NotUploaded(_) | SyncError::NotInOneDrive(_) => ("org.konedrive.Error.NotUploaded", said.clone()),
             SyncError::Unreachable(_) => ("org.konedrive.Error.Unreachable", said.clone()),
             SyncError::PendingUploads(_) => ("org.konedrive.Error.PendingUploads", said.clone()),
-            SyncError::Io(_) => ("org.konedrive.Error.Failed", said.clone()),
+            SyncError::NotUp(_) => ("org.konedrive.Error.NotUp", said.clone()),
+            SyncError::Helper(_)
+            | SyncError::Config(_)
+            | SyncError::Store(_)
+            | SyncError::HeldBack(_)
+            | SyncError::Removing
+            | SyncError::Stopping
+            | SyncError::Io(_) => ("org.konedrive.Error.Failed", said.clone()),
             // As it goes out today: an error of zbus's own, the bus's name inside the message.
             SyncError::InvalidArgs(_) => ("org.freedesktop.zbus.Error", format!("org.freedesktop.DBus.Error.InvalidArgs: {said}")),
         };

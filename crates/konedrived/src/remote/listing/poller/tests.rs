@@ -72,7 +72,7 @@ async fn stopping_does_not_wait_for_the_lifecycle_lock() {
     s.feed(None, json!([root_item(), folder("D", "R", "docs")]), "L1").await;
     let lifecycle = Arc::new(tokio::sync::RwLock::new(()));
     let held = Arc::clone(&lifecycle).write_owned().await;
-    let listing = Listing::new(ListingContext { lifecycle: Arc::clone(&lifecycle), ..s.context() });
+    let listing = Listing::new(ListingContext { lease: crate::remote::listing::Lease::on(&lifecycle), ..s.context() });
     let poller = Poller::start(listing, Schedule::polled(Duration::from_secs(3600), vec![]));
     let docs = s.root.path.join("docs");
     let mut staged = false;

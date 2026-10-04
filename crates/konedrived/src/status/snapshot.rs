@@ -96,6 +96,11 @@ pub enum RootState {
     /// folder registered that way because no helper was connected leaves
     /// this state when one connects (`SyncService::upgrade`).
     NoInterception,
+    /// A folder is recorded and not up yet, and nothing is known to be wrong: it is being
+    /// brought up, or waits for the helper to connect (the start of a session). Published
+    /// as `waiting`, or as `error` once the helper is known to be missing, stopped or
+    /// failed (`published_state`).
+    Waiting,
     /// A root is registered, but something about it needs attention: startup
     /// recovery could not finish, could not even run, or the helper went
     /// away. See `LastError`.
@@ -108,6 +113,7 @@ impl RootState {
             Self::None => "none",
             Self::Ready => "ready",
             Self::NoInterception => "no-interception",
+            Self::Waiting => "waiting",
             Self::Error => "error",
         }
     }
@@ -120,9 +126,9 @@ impl RootState {
 pub struct SyncSnapshot {
     pub root_path: String,
     pub root_state: RootState,
-    /// What the registration ran into. Written through [`set_error`](Self::set_error) and
-    /// [`clear_error`](Self::clear_error), which take [`switch_note`](Self::switch_note)
-    /// with what it stood beside.
+    /// What the registration ran into. `root_path`, `root_state`, this,
+    /// [`switch_note`](Self::switch_note) and [`waits_for_helper`](Self::waits_for_helper)
+    /// are worked out from the folder's state in one place (`sync::publish`).
     pub last_error: String,
     /// Why a folder registered without the helper could not be switched to interception
     /// once the helper connected: said right behind `last_error`, and gone with it.
@@ -214,19 +220,6 @@ pub struct SyncSnapshot {
 }
 
 impl SyncSnapshot {
-    /// Says what the registration ran into, in place of what it said before; the note of
-    /// a failed switch goes with that.
-    pub fn set_error(&mut self, message: impl Into<String>) {
-        self.last_error = message.into();
-        self.switch_note = None;
-    }
-
-    /// Takes back what the registration said, the note of a failed switch included.
-    pub fn clear_error(&mut self) {
-        self.last_error.clear();
-        self.switch_note = None;
-    }
-
     /// Whether the account's background work stops: paused by the user, or held back.
     pub fn stopped(&self) -> bool {
         self.paused_until.is_some() || !self.held_back.is_empty()
@@ -398,6 +391,10 @@ fn registration_error(s: &SyncSnapshot) -> String {
 /// the folder waits for the helper or the sync is blocked (`error`), or an
 /// initial listing runs (`listing`).
 ///
+/// A folder that is recorded and not up yet reads `waiting` while nothing is known to be
+/// wrong, and `error` once the helper it waits for is known to be missing, stopped or
+/// failed.
+///
 /// `listing` stands only for `ready`: a folder
 /// without interception keeps saying `no-interception`, the one word that
 /// warns its files read as zeros. Since HS2 such a folder never lists
@@ -407,6 +404,7 @@ pub fn published_state(s: &SyncSnapshot) -> &'static str {
     match s.root_state {
         RootState::Ready | RootState::NoInterception if blocked => "error",
         RootState::Ready if s.listing => "listing",
+        RootState::Waiting if s.waits_for_helper && s.helper_state.known_down() => "error",
         other => other.as_str(),
     }
 }
@@ -423,7 +421,9 @@ pub fn published_state(s: &SyncSnapshot) -> &'static str {
 /// changes, never frozen when the link dropped: "not running" becomes
 /// "failed" when systemd says so.
 pub fn published_error(s: &SyncSnapshot) -> String {
-    let helper = if s.waits_for_helper { s.helper_state.advice().unwrap_or("") } else { "" };
+    // A folder that only waits, with nothing known to be wrong, says nothing of the helper.
+    let calm = s.root_state == RootState::Waiting && !s.helper_state.known_down();
+    let helper = if s.waits_for_helper && !calm { s.helper_state.advice().unwrap_or("") } else { "" };
     let registration = registration_error(s);
     let outbox = s.outbox_note.as_ref().map(OutboxNote::text).unwrap_or_default();
     [
@@ -460,6 +460,15 @@ impl SyncStateHandle {
 
     pub fn update(&self, change: impl FnOnce(&mut SyncSnapshot)) {
         self.tx.send_modify(change);
+    }
+
+    /// [`update`](Self::update), told only when `change` changed something.
+    pub fn update_if_changed(&self, change: impl FnOnce(&mut SyncSnapshot)) {
+        self.tx.send_if_modified(|s| {
+            let before = s.clone();
+            change(s);
+            *s != before
+        });
     }
 
     /// The transfer pool's throughput, told only when it changed.

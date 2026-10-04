@@ -41,7 +41,7 @@ impl SyncService {
                     running.change(|s| *s = after);
                     Ok::<_, ConfigError>(())
                 })
-                .map_err(|e| SyncError::Io(format!("cannot write config.toml: {e}")))
+                .map_err(|e| SyncError::Config(format!("cannot write config.toml: {e}")))
         })
         .await
         .map_err(|e| SyncError::Io(format!("the settings task failed: {e}")))??;
@@ -80,7 +80,7 @@ impl SyncService {
                     a.ignore = Some(kept);
                     Ok::<_, ConfigError>(())
                 })
-                .map_err(|e| SyncError::Io(format!("cannot write config.toml: {e}")))?;
+                .map_err(|e| SyncError::Config(format!("cannot write config.toml: {e}")))?;
             *list = IgnoreList::new(unique);
             Ok::<(), SyncError>(())
         })

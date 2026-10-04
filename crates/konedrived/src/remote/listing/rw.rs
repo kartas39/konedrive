@@ -234,7 +234,7 @@ impl Listing {
     /// at the swap; then the conflict copies are recorded, the watcher told
     /// what to examine, and rows let wait for a folder made again.
     pub(super) async fn reconcile_rw(&self, turn: &Turn, scope: Scope, commit: Commit, rw: RwCycle, cancel: &CancellationToken) -> Result<Reconciled, CycleError> {
-        let lifecycle = cancellable(cancel, Arc::clone(&self.ctx.lifecycle).read_owned()).await?;
+        let lifecycle = cancellable(cancel, self.ctx.lease.hold()).await?;
         let link = self.ctx.link.lock().unwrap().clone().filter(|_| self.ctx.intercepted);
         if link.is_none() {
             return Err(CycleError::NoHelper);

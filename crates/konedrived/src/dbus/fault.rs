@@ -116,7 +116,14 @@ pub(crate) fn to_fault(error: SyncError) -> Fault {
         // As an error of zbus's own, so under [`Refusal::Internal`], with the bus's name for it
         // at the start of the message (`docs/limitations/D35.md`).
         SyncError::InvalidArgs(_) => return Fault::ZBus(zbus::Error::FDO(Box::new(zbus::fdo::Error::InvalidArgs(message)))),
-        SyncError::Io(_) => Refusal::Failed,
+        SyncError::NotUp(_) => Refusal::NotUp,
+        SyncError::Helper(_)
+        | SyncError::Config(_)
+        | SyncError::Store(_)
+        | SyncError::HeldBack(_)
+        | SyncError::Removing
+        | SyncError::Stopping
+        | SyncError::Io(_) => Refusal::Failed,
     };
     Fault::Refused(refusal, message)
 }

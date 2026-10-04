@@ -32,7 +32,7 @@ impl SyncService {
     /// Refused `NotAllowed` for a file a pin keeps on this device — its own,
     /// or a folder's above it: `FreeUp` takes a pin off.
     pub async fn dehydrate(&self, path: &Path) -> Result<(), SyncError> {
-        let reg = self.require_registration()?;
+        let reg = self.require_record()?;
         let (root, target) = (reg.root.clone(), path.to_path_buf());
         let pinned = tokio::task::spawn_blocking(move || {
             let full = root.path.join(root.relative(&target).ok()?);
@@ -71,8 +71,8 @@ impl SyncService {
     /// A file a pin keeps on this device is left as it is, and counted in
     /// [`FreedUp::pinned`]; the event says how many.
     pub async fn free_up_space(&self) -> Result<FreedUp, SyncError> {
-        let reg = self.require_registration()?;
-        if reg.intercepted {
+        let reg = self.require_record()?;
+        if reg.intercepted() {
             self.require_link()?;
         }
         let root = reg.root.path.clone();
@@ -130,8 +130,8 @@ impl SyncService {
     /// [`check_unpinnable`](Self::check_unpinnable)'s rules, and a folder
     /// with interception has its helper (`NoHelper`).
     pub async fn check_free_up(&self, paths: &[PathBuf]) -> Result<(), SyncError> {
-        let reg = self.require_registration()?;
-        if reg.intercepted {
+        let reg = self.require_record()?;
+        if reg.intercepted() {
             self.require_link()?;
         }
         self.check_unpinnable(paths).await?;
@@ -169,8 +169,8 @@ impl SyncService {
 
     /// [`free_up`](Self::free_up), taking pins off through `write`.
     pub(super) async fn free_up_with(&self, paths: &[PathBuf], write: fn(&File, bool) -> io::Result<()>) -> Result<FreedUp, SyncError> {
-        let reg = self.require_registration()?;
-        if reg.intercepted {
+        let reg = self.require_record()?;
+        if reg.intercepted() {
             self.require_link()?;
         }
         let targets = self.pin_targets(&reg.root, paths).await?;
@@ -243,8 +243,8 @@ impl SyncService {
     /// registration is looked at again under it, and a folder forgotten or
     /// registered anew meanwhile is refused, with nothing punched.
     async fn free_one(&self, path: &Path, wait: Wait) -> Result<(u64, String), SyncError> {
-        let reg = self.require_registration()?;
-        if reg.intercepted {
+        let reg = self.require_record()?;
+        if reg.intercepted() {
             // Refused before a wait that could only end in the same refusal.
             self.require_link()?;
         }
@@ -262,9 +262,9 @@ impl SyncService {
         // A change waiting to be uploaded is only here (`docs/design/writes.md` §11):
         // looked at under the inode lock, and refused when it cannot be told.
         self.refuse_unuploaded(&file, &shown).await?;
-        let _lifecycle = self.lifecycle.read().await;
-        let reg = match self.registration() {
-            Some(now) if now.root.path == reg.root.path && now.root.root_id == reg.root.root_id => now,
+        let folder = self.folder.read().await;
+        let reg = match folder.acted_on() {
+            Some(now) if now.root.path == reg.root.path && now.root.root_id == reg.root.root_id => now.clone(),
             _ => return Err(SyncError::NoRoot),
         };
         // local rule decides at the punch (`Clearance`,
@@ -275,7 +275,7 @@ impl SyncService {
         // its link if it has one — the helper then clears the mark, which it
         // grants on ownership of the file alone — or, with none, whether a
         // helper is running at all.
-        let clearance = if reg.intercepted {
+        let clearance = if reg.intercepted() {
             Clearance::Link(self.require_link()?)
         } else {
             self.clearance()
@@ -297,7 +297,7 @@ impl SyncService {
     /// refuses. Only a downloaded file is asked about: one that is not has
     /// nothing to lose, and its own refusal says so (`NotHydrated`, M5).
     async fn refuse_unuploaded(&self, file: &File, shown: &str) -> Result<(), SyncError> {
-        let Some(reg) = self.registration() else { return Ok(()) };
+        let Some(reg) = self.record() else { return Ok(()) };
         if reg.source != crate::sync::RootSource::OneDrive {
             return Ok(());
         }

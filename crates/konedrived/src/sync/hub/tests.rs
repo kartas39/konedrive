@@ -173,7 +173,7 @@ async fn one_candidate_is_verified_while_another_folder_cannot_be_placed() {
     };
     store.set_root(&id, Some(folder)).unwrap();
     let b = testing::wiring().hub(&hub).persist(super::super::Persist { store, account: id }).build();
-    b.hold_back("a test");
+    b.hold_back("a test").await;
 
     assert!(same(&hub.route(&opened(&dir.path().join("A"), "f", "2")).await, &a), "verified by path");
     assert!(hub.route(&opened(dir.path(), "moved-out-too", "3")).await.is_none(), "not taken on trust");

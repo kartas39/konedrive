@@ -199,11 +199,14 @@ impl AccountManager {
                 self.config.note_error(message);
                 continue;
             }
-            match self.build(entry, held.as_deref()) {
+            match self.build(entry) {
                 Ok(account) => {
                     account.account.startup().await;
                     // The folder starts in the mode the account does, before it is restored.
-                    follow_mode(&account);
+                    follow_mode(&account).await;
+                    if let Some(why) = &held {
+                        account.sync.hold_back(why).await;
+                    }
                     account.sync.restore().await;
                     self.accounts.lock().unwrap().push(account);
                 }
@@ -217,7 +220,7 @@ impl AccountManager {
     }
 
     /// One account's services, wired as the daemon wires them, and not yet on the bus.
-    fn build(&self, entry: &AccountConfig, held: Option<&str>) -> anyhow::Result<Arc<Account>> {
+    fn build(&self, entry: &AccountConfig) -> anyhow::Result<Arc<Account>> {
         let path = account_path(&entry.id).ok_or_else(|| anyhow::anyhow!("{:?} cannot name an object", entry.id))?;
         let paths = self.paths.account(&entry.id).ok_or_else(|| anyhow::anyhow!("{:?} is not an account id", entry.id))?;
         // Everything in it goes with the account, and is nobody else's.
@@ -258,9 +261,6 @@ impl AccountManager {
         // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2).
         let uploads: std::sync::Weak<SyncService> = Arc::downgrade(&sync);
         account.set_uploads(uploads);
-        if let Some(why) = held {
-            sync.hold_back(why);
-        }
         Ok(Arc::new(Account { id: entry.id.clone(), path, account, sync, paths, signals: Mutex::new(Vec::new()) }))
     }
 
@@ -295,7 +295,7 @@ impl AccountManager {
     pub async fn add(&self, label: &str, connection: &Connection) -> Result<Arc<Account>, ManagerError> {
         let _changing = self.changing.lock().await;
         let entry = self.config.add_account(label)?;
-        let account = match self.build(&entry, None) {
+        let account = match self.build(&entry) {
             Ok(account) => account,
             Err(e) => {
                 if let Err(e) = self.config.remove_account(&entry.id) {
@@ -305,7 +305,7 @@ impl AccountManager {
             }
         };
         account.account.startup().await;
-        follow_mode(&account);
+        follow_mode(&account).await;
         if let Err(e) = self.export(connection, &account).await {
             // Nothing of the account is to be left: not half of its objects on the bus, and
             // not an entry in `config.toml` that would come up as an account at the next
@@ -565,10 +565,11 @@ fn remove_account_dir(dir: &Path) {
 /// Makes `account`'s folder follow the mode the account runs in (`docs/design/writes.md` §2): it starts
 /// in the account's mode now, and a task switches it whenever `Account.Mode` changes. The
 /// task goes with the account's other tasks when it is removed.
-fn follow_mode(account: &Account) {
+async fn follow_mode(account: &Account) {
     let changes = account.account.state().subscribe();
-    account.sync.start_in_mode(changes.borrow().mode);
-    let follower = tokio::spawn(crate::sync::write_mode::follow(changes, Arc::downgrade(&account.sync)));
+    let mode = changes.borrow().mode;
+    account.sync.follow_mode(mode).await;
+    let follower = tokio::spawn(crate::sync::mode::follow(changes, Arc::downgrade(&account.sync)));
     account.signals.lock().unwrap().push(follower);
 }
 

@@ -131,19 +131,33 @@ fn the_worker_takes_back_only_its_own_notes() {
     assert_eq!(OutboxNote::after_gate(&closed, None), None);
 }
 
-/// The note of a failed switch stands behind the registration's text, and goes when that
-/// text is said anew or taken back.
+/// The note of a failed switch stands behind the registration's text.
 #[test]
-fn the_switch_note_stands_behind_the_registrations_text_and_goes_with_it() {
+fn the_switch_note_stands_behind_the_registrations_text() {
     let note = SwitchNote { why: "errno 5".into() };
     let mut s = SyncSnapshot { switch_note: Some(note.clone()), ..SyncSnapshot::default() };
     assert_eq!(published_error(&s), note.text());
-    s.set_error("recovery left 1 file");
-    assert_eq!(published_error(&s), "recovery left 1 file", "a new text takes the note");
-    s.switch_note = Some(note.clone());
+    s.last_error = "recovery left 1 file".into();
     assert_eq!(published_error(&s), format!("recovery left 1 file. {}", note.text()));
-    s.clear_error();
-    assert_eq!(published_error(&s), "");
+}
+
+/// A folder recorded and not up yet is calm while nothing is known to be wrong: `waiting`,
+/// and nothing of the helper in `LastError`. Once the helper it waits for is known to be
+/// missing, stopped or failed, it reads `error` and says what to do.
+#[test]
+fn a_folder_not_up_yet_waits_calmly_until_the_helper_is_known_to_be_down() {
+    let said = |helper_state, waits_for_helper| {
+        let s = SyncSnapshot { root_state: RootState::Waiting, waits_for_helper, helper_state, ..SyncSnapshot::default() };
+        (published_state(&s), published_error(&s))
+    };
+    assert_eq!(said(HelperState::Unknown, true), ("waiting", String::new()));
+    assert_eq!(said(HelperState::Connected, true), ("waiting", String::new()), "being brought up");
+    for down in [HelperState::NotInstalled, HelperState::Stopped, HelperState::Failed] {
+        let (state, error) = said(down, true);
+        assert_eq!(state, "error");
+        assert_eq!(error, down.advice().unwrap());
+    }
+    assert_eq!(said(HelperState::Stopped, false), ("waiting", String::new()), "a folder that needs no helper is brought up without one");
 }
 
 /// The write gate says why it is closed over whatever is shown, and takes back only its
