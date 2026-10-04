@@ -878,32 +878,27 @@ What is kept is handed to the examination, and said, also when the cycle then fa
 log has one `removed` entry for what OneDrive removed, saying how many files go up as new and how
 many items stay on this computer only (F116, F187). `resyncChangesUploadDifferences` keeps every download too, changed or not (below). A mount inside makes it wait (F194).
 
-**What can no longer be placed** while OneDrive still has it (a name too long, a reserved name, the
-Personal Vault, shared, OneNote, unsupported; or a folder above it that is one of these) is a change
-the disk may not be able to take yet, and has no state of its own (`take_off`, policy `Unplaced`):
+**What can no longer be placed** while OneDrive still has it (a name too long, the Personal Vault,
+…, or a folder above it that is one) is a change that may have to wait (`take_off`, `Unplaced`):
 
 - **Nothing waits in it: it goes in the cycle.** No outbox row has a place at or below it, and the
-  disk shows there exactly what the base has: the store forgets the objects, the whole thing leaves
-  the disk, and the base takes OneDrive's row. It is listed in `Skipped()`.
+  disk shows there exactly what the base has: the store forgets the objects, it leaves the disk
+  whole, and the base takes OneDrive's row. It is listed in `Skipped()`.
 - **Something waits: nothing of it is touched.** The base keeps the item placed where the disk has
   it, with its recorded object, and OneDrive's row waits in `deferred`, staged again by every cycle.
-  Meanwhile it is an item like any other: what is made or changed in it goes up into it, a placed
-  file moved in is moved in OneDrive, and what the user deletes, renames or moves inside it is sent.
-  A parent renamed carries it; placed again elsewhere, its one object is moved; an item OneDrive
-  removes inside it goes as above.
+  Meanwhile it is an item like any other: what is made, changed, deleted, renamed or moved in it
+  is sent, a parent renamed carries it, and placed again elsewhere its one object is moved.
 - **What waits**: an outbox row at or below it; something on disk that differs from the base and
-  that an examination has still to record (made, changed, moved, renamed or deleted here); a file
-  open for writing; and, until the user does something, a file of ours whose state cannot be read, a
-  file from elsewhere that is not downloaded, a file or directory under an ignored name that only
-  this computer has (F255), another filesystem mounted inside. For what an examination can record
-  the place is handed to the watcher. What was found is the third field of the item's line in `Skipped()`
-  (F257). There is no notification. The look is repeated right before each unlink (F188).
-- **The upload worker sends no name and no folder of OneDrive's side back.** When OneDrive answers
-  `412` and has the item where the folder cannot hold it, and the object stands where the base has
-  it, the content goes into the item where it is; a rename or a move the user made is sent as any
-  other. The commit of an answer the folder cannot hold keeps the base's place and takes the
-  version, and the answer waits as the item's deferred change (D39). A `404` is a `404` (§7).
-  Until schema 7 this was a "leaving" object with a table of its own (F256).
+  that an examination has still to record; a file open for writing; and, until the user does
+  something, a file of ours whose state cannot be read, a file that is not downloaded and is not
+  where the base has it, something under an ignored name that only this computer has (F255),
+  another filesystem mounted inside. What an examination can record is handed to the watcher. What
+  was found is the third field of the item's line in `Skipped()` (F257); there is no notification.
+  The look is repeated right before each unlink, and only what was looked at is removed (F188).
+- **The upload worker sends only what the user changed.** When OneDrive answers `412` and has the
+  item where the folder cannot hold it, content goes into the item where it is, and a rename or a
+  move made here is sent as that alone. A commit the folder cannot hold keeps the base's place,
+  and the answer waits as the item's deferred change (D39). Until schema 7: "leaving" (F256).
 
 **The daemon never deletes or moves anything in OneDrive because it took something off the disk
 itself.** Before the reconcile removes anything — what OneDrive removed, what can no longer be placed, and
