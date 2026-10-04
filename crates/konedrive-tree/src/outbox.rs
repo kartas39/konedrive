@@ -346,6 +346,46 @@ impl TreeStore {
         rows_under(&self.conn, rel)
     }
 
+    /// The object of item `id`, which can no longer be placed and waits,
+    /// stepped aside in its directory for another item that takes its name:
+    /// it stands at `to` now, under `name`, where it stood at `from`. In one
+    /// transaction the base follows — the same folder, the new name, the
+    /// version as it was; OneDrive's place of the item is in its deferred
+    /// change alone — and so do the rows: those of the item itself are made
+    /// against the new name, as if recorded there, so that none of them
+    /// sends it, and those below it follow as below any directory renamed.
+    ///
+    /// `repair`: the rename was made by a cycle that stopped before this
+    /// was written, and an examination since took it for a rename made
+    /// here: that row goes, since nobody made it.
+    pub fn step_aside(&mut self, id: &str, from: &Path, to: &Path, name: &str, repair: bool) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        let was: Option<String> = tx.query_row("SELECT name FROM items WHERE id = ?1", [id], |r| r.get(0)).optional()?;
+        tx.execute("UPDATE items SET name = ?2 WHERE id = ?1", params![id, name])?;
+        for mut row in rows_where(&tx, "WHERE item_id = ?1", [id])? {
+            if repair && row.kind == OutboxKind::Move && row.rel == to && row.state != OutboxState::Running {
+                remove(&tx, row.seq)?;
+                continue;
+            }
+            if row.rel != from && row.rel != to {
+                continue;
+            }
+            row.rel = to.to_path_buf();
+            if row.target_name.is_some() && row.target_name == was {
+                row.target_name = Some(name.to_owned());
+            }
+            if let Some(base) = &mut row.base {
+                if base.name == was {
+                    base.name = Some(name.to_owned());
+                }
+            }
+            rewrite(&tx, &row)?;
+        }
+        rebase(&tx, from, to)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Rows at `rel` or below it.
     pub fn outbox_at_or_under(&self, rel: &Path) -> Result<Vec<OutboxRow>, TreeError> {
         let mut rows = rows_under(&self.conn, rel)?;

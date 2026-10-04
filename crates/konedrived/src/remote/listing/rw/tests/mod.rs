@@ -334,7 +334,7 @@ async fn an_item_that_cannot_stay_and_cannot_go_yet_is_on_the_skipped_list_at_on
     assert!(w.deferred("F").is_some(), "its change waits");
     let skipped = w.store.call(|s| s.skipped()).await.unwrap();
     let waits = Some(konedrive_tree::WaitsFor::Changes("docs/f.txt".into()));
-    assert_eq!(skipped, vec![konedrive_tree::Skipped { rel: Path::new("docs").join(&long), reason: konedrive_tree::SkipReason::NameTooLong, waits }]);
+    assert_eq!(skipped, vec![konedrive_tree::Skipped { rel: Path::new("docs").join(&long), reason: konedrive_tree::SkipReason::NameTooLong, waits, here: Some("docs/f.txt".into()) }]);
     assert_eq!(w.state.get().cycle.skipped_count, 1);
 }
 

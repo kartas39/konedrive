@@ -256,11 +256,11 @@ application must never read zeros where real content should be.
 - [F248](F248.md) — Whether a failed replacement is said again goes by a coarse reason, and the status quotes one failure
 - [F249](F249.md) — The order of an account's locks is a written rule, and two of them are held across slow work
 - [F250](F250.md) — An account's id and its drive are types only where `config.toml` is read and written
-- [F252](F252.md) — The rows on the bus have names on the client's side only, for all but two
+- [F252](F252.md) — The rows on the bus are named where `dbus/` builds them; three come to it as tuples
 - [F255](F255.md) — A file under an ignored name keeps a folder that can no longer be placed on disk
 - [F256](F256.md) — The step to schema 8: what of a leave under way is carried over, and what is not
 - [F257](F257.md) — What the skipped list says of an item that is still here, and what it does not
-- [F252](F252.md) — The rows on the bus are named where `dbus/` builds them; three come to it as tuples
+- [F258](F258.md) — The outbox worker writes every file's upload mark again when it starts
 - [F260](F260.md) — A helper that does not answer holds the folder's tree lock for one timeout in every examination that asks it
 - [F261](F261.md) — After the folder's filesystem changed, a move out whose object is not found where it went is given up, and what is left outside is not tidied
 - [F265](F265.md) — While a folder is watched only in part, each periodic walk asks the helper again for every unwatched directory and hands their trees over

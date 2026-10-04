@@ -603,7 +603,7 @@ public:
     KonedriveActivityList log;
     KonedriveConflictList conflictList;
     /// Skipped().
-    KonedriveNotInFolderList skippedList{{QStringLiteral("/home/u/OneDrive/Personal Vault"), QStringLiteral("personal-vault"), QString()}};
+    KonedriveNotInFolderList skippedList{{QStringLiteral("/home/u/OneDrive/Personal Vault"), QStringLiteral("personal-vault"), QString(), QString()}};
     uint freedFiles = 0;
     qulonglong freedBytes = 0;
     uint busyFiles = 0;

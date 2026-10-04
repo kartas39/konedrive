@@ -886,19 +886,18 @@ many items stay on this computer only (F116, F187). `resyncChangesUploadDifferen
   whole, and the base takes OneDrive's row. It is listed in `Skipped()`.
 - **Something waits: nothing of it is touched.** The base keeps the item placed where the disk has
   it, with its recorded object, and OneDrive's row waits in `deferred`, staged again by every cycle.
-  Meanwhile it is an item like any other: what is made, changed, deleted, renamed or moved in it
-  is sent, a parent renamed carries it, and placed again elsewhere its one object is moved.
+  Meanwhile it is an item like any other: what the user does in it is sent, and placed again
+  elsewhere its one object is moved. It yields its name to an item that takes it: renamed aside
+  to `name-<machine>`, in the base too.
 - **What waits**: an outbox row at or below it; something on disk that differs from the base and
   that an examination has still to record; a file open for writing; and, until the user does
   something, a file of ours whose state cannot be read, a file that is not downloaded and is not
   where the base has it, something under an ignored name that only this computer has (F255),
   another filesystem mounted inside. What an examination can record is handed to the watcher. What
-  was found is the third field of the item's line in `Skipped()` (F257); there is no notification.
-  The look is repeated right before each unlink, and only what was looked at is removed (F188).
-- **The upload worker sends only what the user changed.** When OneDrive answers `412` and has the
-  item where the folder cannot hold it, content goes into the item where it is, and a rename or a
-  move made here is sent as that alone. A commit the folder cannot hold keeps the base's place,
-  and the answer waits as the item's deferred change (D39). Until schema 7: "leaving" (F256).
+  was found is on the item's line in `Skipped()` (F257). The look is repeated right before each
+  unlink, and only what was looked at is removed (F188).
+- **The upload worker sends only what the user changed** (content alone; a rename or a move made
+  here as that alone), and a commit the folder cannot hold keeps the base's place (D39, F256).
 
 **The daemon never deletes or moves anything in OneDrive because it took something off the disk
 itself.** Before the reconcile removes anything — what OneDrive removed, what can no longer be placed, and

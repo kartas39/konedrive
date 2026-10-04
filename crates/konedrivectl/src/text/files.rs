@@ -45,6 +45,12 @@ pub fn still_here_text(waits: &str) -> Option<String> {
     })
 }
 
+/// Where an item `Skipped()` lists still is on this computer. The same
+/// sentence as the window's.
+pub fn where_here_text(here: &str) -> String {
+    format!("It is at {here}.")
+}
+
 /// `sync conflicts`: each local version kept, where it was and where it is
 /// now, and when: moved out of the way, or — in a read-write folder — kept as
 /// a copy beside OneDrive's.

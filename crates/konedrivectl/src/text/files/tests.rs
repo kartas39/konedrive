@@ -50,13 +50,18 @@ fn the_daemons_sentences_are_read_back() {
 #[test]
 fn an_item_that_is_still_here_says_what_keeps_it() {
     use konedrive_dbus::rows::NotInFolder;
-    let line = |path: &str, waits: &str| NotInFolder { path: path.to_owned(), reason: "name-too-long".to_owned(), waits: waits.to_owned() };
+    let line = |path: &str, waits: &str| NotInFolder {
+        path: path.to_owned(),
+        reason: "name-too-long".to_owned(),
+        waits: waits.to_owned(),
+        here: if waits.is_empty() { String::new() } else { "/home/u/OneDrive/docs-fedora".to_owned() },
+    };
     let listed = crate::text::folder::skipped_text(&[line("/home/u/OneDrive/gone", ""), line("/home/u/OneDrive/long", "uploads:2")], false);
     assert_eq!(
         listed,
         "/home/u/OneDrive/gone\n    The name is longer than Linux allows (255 bytes; a Cyrillic letter takes two).\n\
          /home/u/OneDrive/long\n    The name is longer than Linux allows (255 bytes; a Cyrillic letter takes two).\n    \
-         Still on this computer: 2 changes in it wait to be uploaded.\n"
+         Still on this computer: 2 changes in it wait to be uploaded.\n    It is at /home/u/OneDrive/docs-fedora.\n"
     );
     let said = |waits: &str| super::still_here_text(waits).unwrap();
     assert_eq!(super::still_here_text(""), None);

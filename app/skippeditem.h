@@ -14,11 +14,13 @@ using KonedriveSkippedList = QList<KonedriveSkippedItem>;
 Q_DECLARE_METATYPE(KonedriveSkippedItem)
 
 /// One entry of org.konedrive.Folder.Skipped(): (full path in OneDrive, reason, what keeps
-/// it on this computer). `waits` is empty for an item that is not here.
+/// it on this computer, where it is here). `waits` and `here` are empty for an item that is
+/// not here.
 struct KonedriveNotInFolderItem {
     QString path;
     QString reason;
     QString waits;
+    QString here;
 };
 using KonedriveNotInFolderList = QList<KonedriveNotInFolderItem>;
 Q_DECLARE_METATYPE(KonedriveNotInFolderItem)
@@ -26,7 +28,7 @@ Q_DECLARE_METATYPE(KonedriveNotInFolderItem)
 inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveNotInFolderItem &item)
 {
     argument.beginStructure();
-    argument << item.path << item.reason << item.waits;
+    argument << item.path << item.reason << item.waits << item.here;
     argument.endStructure();
     return argument;
 }
@@ -34,7 +36,7 @@ inline QDBusArgument &operator<<(QDBusArgument &argument, const KonedriveNotInFo
 inline const QDBusArgument &operator>>(const QDBusArgument &argument, KonedriveNotInFolderItem &item)
 {
     argument.beginStructure();
-    argument >> item.path >> item.reason >> item.waits;
+    argument >> item.path >> item.reason >> item.waits >> item.here;
     argument.endStructure();
     return argument;
 }

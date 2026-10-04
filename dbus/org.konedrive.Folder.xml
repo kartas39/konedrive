@@ -67,10 +67,13 @@
          While paused, OneDrive is not asked. -->
     <method name="Refresh"/>
     <!-- Everything OneDrive has that the folder cannot hold, as (full path
-         in OneDrive, reason, what keeps it here): name-too-long,
+         in OneDrive, reason, what keeps it here, where it is here): name-too-long,
          personal-vault, shared, onenote, reserved-name, unsupported. What
          is inside a skipped folder is covered by the folder's own entry.
-         The third field is empty for an item that is not on this computer.
+         The third and the fourth field are empty for an item that is not on
+         this computer. The fourth is the full path it has here while it still
+         is: its old place, or a copy name beside it (name-<machine>) that it
+         stepped aside to when another item took its name.
          An item that still is, because something in it waits, has what it
          waits for there, as <key>:<detail>: cycle (no cycle has looked at
          it yet), uploads:<how many changes wait in the outbox>, and, with
@@ -85,7 +88,7 @@
          item still here that OneDrive has inside a folder that is not
          placed is an entry of its own, with that folder's reason. -->
     <method name="Skipped">
-      <arg name="items" type="a(sss)" direction="out"/>
+      <arg name="items" type="a(ssss)" direction="out"/>
       <!-- For Qt's generator (app/skippeditem.h); ignored by everything else. -->
       <annotation name="org.qtproject.QtDBus.QtTypeName.Out0" value="KonedriveNotInFolderList"/>
     </method>

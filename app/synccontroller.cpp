@@ -501,8 +501,11 @@ void SyncController::loadSkipped()
             for (const KonedriveNotInFolderItem &item : reply.value()) {
                 // An item that is still on this computer says so, and what keeps it.
                 const QString stillHere = stillHereText(item.waits);
-                const QString why = stillHere.isEmpty() ? whyText(item.reason) : whyText(item.reason) + QLatin1Char(' ') + stillHere;
-                m_skipped << QVariantMap{{QStringLiteral("path"), item.path}, {QStringLiteral("reason"), item.reason}, {QStringLiteral("why"), why}, {QStringLiteral("waits"), item.waits}};
+                QString why = stillHere.isEmpty() ? whyText(item.reason) : whyText(item.reason) + QLatin1Char(' ') + stillHere;
+                if (!item.here.isEmpty()) {
+                    why += QLatin1Char(' ') + i18n("It is at %1.", item.here);
+                }
+                m_skipped << QVariantMap{{QStringLiteral("path"), item.path}, {QStringLiteral("reason"), item.reason}, {QStringLiteral("why"), why}, {QStringLiteral("waits"), item.waits}, {QStringLiteral("here"), item.here}};
             }
             Q_EMIT skippedChanged();
         },

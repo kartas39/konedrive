@@ -15,7 +15,7 @@ impl SyncService {
     /// under it. The lock goes into the blocking task with the store's clone,
     /// so it is held as long as the clone is, even when this call is dropped
     /// part-way.
-    pub async fn skipped(&self) -> Result<Vec<(String, String, String)>, SyncError> {
+    pub async fn skipped(&self) -> Result<Vec<(String, String, String, String)>, SyncError> {
         let lifecycle = Arc::clone(&self.folder).read_owned().await;
         let Some(reg) = lifecycle.acted_on().map(|record| record.bare()) else { return Ok(Vec::new()) };
         let Some(store) = lifecycle.store() else { return Ok(Vec::new()) };
@@ -34,7 +34,10 @@ impl SyncService {
                 // What still keeps it on this computer, its path a full one;
                 // empty for an item that is not here.
                 let waits = line.waits.map(|waits| waits.under(&reg.root.path.display().to_string()).to_string()).unwrap_or_default();
-                (reg.root.path.join(line.rel).display().to_string(), line.reason.as_str().to_owned(), waits)
+                // Where it is on this computer while it still is: the place
+                // the base has, which may be a name it stepped aside to.
+                let here = line.here.map(|here| reg.root.path.join(here).display().to_string()).unwrap_or_default();
+                (reg.root.path.join(line.rel).display().to_string(), line.reason.as_str().to_owned(), waits, here)
             })
             .collect())
     }

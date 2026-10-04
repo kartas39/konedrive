@@ -171,8 +171,12 @@ impl TreeStore {
                 // Still here, where the base places it. With nothing said
                 // yet: an outbox commit deferred it, and no cycle has looked
                 // at it since.
+                let at = match &here {
+                    Some(id) => self.locate_below(Some(&root), Table::Items, id)?.map(|at| at.rel),
+                    None => None,
+                };
                 let waits = here.map(|_| waits.map_or(WaitsFor::Cycle, |stored| WaitsFor::parse(&stored)));
-                out.push(Skipped { rel: PathBuf::from(path), reason, waits });
+                out.push(Skipped { rel: PathBuf::from(path), reason, waits, here: at });
             }
         }
         drop(statement);
@@ -225,9 +229,7 @@ impl TreeStore {
         };
         let mut out = Vec::new();
         for (id, parent, name, waits) in moved {
-            if !self.locate_below(Some(root), Table::Items, &id)?.is_some_and(|at| at.placed) {
-                continue;
-            }
+            let Some(here) = self.locate_below(Some(root), Table::Items, &id)?.filter(|at| at.placed).map(|at| at.rel) else { continue };
             let mut names = vec![name];
             let mut reason = None;
             let mut at = parent;
@@ -247,7 +249,7 @@ impl TreeStore {
             }
             if let (true, Some(reason)) = (reached, reason) {
                 let rel: PathBuf = names.iter().rev().collect();
-                out.push(Skipped { rel, reason, waits: Some(waits.map_or(WaitsFor::Cycle, |stored| WaitsFor::parse(&stored))) });
+                out.push(Skipped { rel, reason, waits: Some(waits.map_or(WaitsFor::Cycle, |stored| WaitsFor::parse(&stored))), here: Some(here) });
             }
         }
         Ok(out)
@@ -263,6 +265,9 @@ pub struct Skipped {
     /// `None`: it is not on this computer. Otherwise it still is, where the
     /// base places it, and this is what keeps it.
     pub waits: Option<WaitsFor>,
+    /// Where it is on this computer, relative to the root, when it still
+    /// is: the place the base has, which may be a name it stepped aside to.
+    pub here: Option<PathBuf>,
 }
 
 /// `columns` of the deferred changes (`d`) whose row is `such`, and that

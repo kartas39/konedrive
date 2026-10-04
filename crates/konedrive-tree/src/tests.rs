@@ -296,7 +296,7 @@ fn an_item_whose_unplacing_waits_is_on_the_skipped_list() {
     let staged = store.stage_rw(&[], 0, false).unwrap().unwrap();
     let waits = [("F".to_owned(), WaitsFor::Uploads(2).to_string())];
     store.commit_staging_deferring("link-3", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &whole, content: &[], fetched_at: 1, waits: &waits }).unwrap();
-    assert_eq!(store.skipped().unwrap()[0], Skipped { rel: "docs/f-long".into(), reason: SkipReason::NameTooLong, waits: Some(WaitsFor::Uploads(2)) });
+    assert_eq!(store.skipped().unwrap()[0], Skipped { rel: "docs/f-long".into(), reason: SkipReason::NameTooLong, waits: Some(WaitsFor::Uploads(2)), here: Some("docs/f.txt".into()) });
 
     // A folder that waits covers what waits inside it: one line, one count,
     // and no path made of the folder's name here and the file's in OneDrive.

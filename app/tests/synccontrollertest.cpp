@@ -233,18 +233,18 @@ private Q_SLOTS:
     {
         startFake();
         m_fake->skippedList = {
-            {QStringLiteral("/home/u/OneDrive/long"), QStringLiteral("name-too-long"), QStringLiteral("uploads:2")},
-            {QStringLiteral("/home/u/OneDrive/other"), QStringLiteral("name-too-long"), QStringLiteral("local-only:/home/u/OneDrive/docs/a.txt~")},
-            {QStringLiteral("/home/u/OneDrive/newer"), QStringLiteral("name-too-long"), QStringLiteral("a-word-of-a-newer-daemon")},
+            {QStringLiteral("/home/u/OneDrive/long"), QStringLiteral("name-too-long"), QStringLiteral("uploads:2"), QStringLiteral("/home/u/OneDrive/docs-fedora")},
+            {QStringLiteral("/home/u/OneDrive/other"), QStringLiteral("name-too-long"), QStringLiteral("local-only:/home/u/OneDrive/docs/a.txt~"), QStringLiteral("/home/u/OneDrive/docs")},
+            {QStringLiteral("/home/u/OneDrive/newer"), QStringLiteral("name-too-long"), QStringLiteral("a-word-of-a-newer-daemon"), QStringLiteral("/home/u/OneDrive/n")},
         };
         SyncController controller(fake::FirstAccount);
         QTRY_VERIFY(controller.serviceAvailable());
         controller.loadSkipped();
         QTRY_COMPARE(controller.skipped().size(), 3);
         const auto why = [&controller](int row) { return controller.skipped().at(row).toMap().value(QStringLiteral("why")).toString(); };
-        QCOMPARE(why(0), QStringLiteral("The name is longer than Linux allows (255 bytes; a Cyrillic letter takes two). Still on this computer: 2 changes in it wait to be uploaded."));
-        QVERIFY2(why(1).endsWith(QStringLiteral("Still on this computer: /home/u/OneDrive/docs/a.txt~ is only here (its name is on the ignore list). Move it out of the folder or delete it.")), qPrintable(why(1)));
-        QVERIFY2(why(2).endsWith(QStringLiteral("Still on this computer: it leaves once nothing in it waits to be uploaded.")), qPrintable(why(2)));
+        QCOMPARE(why(0), QStringLiteral("The name is longer than Linux allows (255 bytes; a Cyrillic letter takes two). Still on this computer: 2 changes in it wait to be uploaded. It is at /home/u/OneDrive/docs-fedora."));
+        QVERIFY2(why(1).endsWith(QStringLiteral("Still on this computer: /home/u/OneDrive/docs/a.txt~ is only here (its name is on the ignore list). Move it out of the folder or delete it. It is at /home/u/OneDrive/docs.")), qPrintable(why(1)));
+        QVERIFY2(why(2).endsWith(QStringLiteral("Still on this computer: it leaves once nothing in it waits to be uploaded. It is at /home/u/OneDrive/n.")), qPrintable(why(2)));
     }
 
     /// M7: loadSkipped() is an incidental background reload (the Skipped

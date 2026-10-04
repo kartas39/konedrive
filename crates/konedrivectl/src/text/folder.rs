@@ -4,7 +4,7 @@ use konedrive_dbus::rows::Event;
 
 use konedrive_dbus::rows::NotInFolder;
 
-use super::files::{skip_reason_text, still_here_text};
+use super::files::{skip_reason_text, still_here_text, where_here_text};
 use super::formats::local_time;
 use super::status::held_text;
 
@@ -58,10 +58,13 @@ pub fn skipped_text(skipped: &[NotInFolder], listing: bool) -> String {
     if skipped.is_empty() {
         out.push_str("Nothing is skipped.\n");
     }
-    for NotInFolder { path, reason, waits } in skipped {
+    for NotInFolder { path, reason, waits, here } in skipped {
         out.push_str(&format!("{path}\n    {}\n", skip_reason_text(reason)));
         if let Some(still_here) = still_here_text(waits) {
             out.push_str(&format!("    {still_here}\n"));
+        }
+        if !here.is_empty() {
+            out.push_str(&format!("    {}\n", where_here_text(here)));
         }
     }
     out

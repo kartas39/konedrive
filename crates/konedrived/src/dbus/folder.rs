@@ -36,7 +36,7 @@ impl Folder {
         Ok(self.service.refresh().await?)
     }
 
-    async fn skipped(&self) -> Result<Vec<(String, String, String)>> {
+    async fn skipped(&self) -> Result<Vec<(String, String, String, String)>> {
         Ok(self.service.skipped().await?)
     }
 

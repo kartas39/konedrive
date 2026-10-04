@@ -348,10 +348,12 @@ struct Run {
     /// What removals left in place so far, as the user's own.
     kept: Kept,
     /// Read-write mode: items that can no longer be placed, whose objects
-    /// this run takes off, or leaves, once everything else is placed. Each
-    /// keeps its name until then: nothing is placed over it, so that what
-    /// is then looked at where it stood is its object and no other.
+    /// this run takes off, or leaves, once everything else is placed. One
+    /// that stands at a name another item takes in this run steps aside
+    /// for it ([`Materializer::step_aside`]).
     leaving: HashSet<String>,
+    /// Where each of those that stepped aside stands now.
+    aside: HashMap<String, PathBuf>,
 }
 
 /// Placed items recorded in one transaction (issue #39; a guess).
@@ -686,6 +688,12 @@ impl Materializer {
                     None => self.rescue(&dir, name, &rel, run)?,
                     Some(rw) => self.copy_aside(rw, &dir, name, &rel, run)?,
                 }
+            }
+            // What can no longer be placed yields its name: it steps aside
+            // where it is, and leaves from there, or waits there.
+            Probe::Managed { id, .. } if self.rw.is_some() && run.leaving.contains(&id) => {
+                let rw = self.rw.as_ref().expect("read-write mode");
+                self.step_aside(rw, &dir, name, &rel, &id, run)?;
             }
             Probe::Managed { id, .. } => {
                 if let Some(rw) = &self.rw {

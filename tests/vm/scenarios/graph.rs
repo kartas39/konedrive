@@ -449,7 +449,7 @@ async fn g1(service: &Arc<SyncService>, base: &Path, folder: &Path) -> Result<Op
     let (listed, placed, skipped) = service.items();
     println!("        listed {listed}, placed {placed}, skipped {skipped} in {:?}", started.elapsed());
     let skipped_list = service.skipped().await.map_err(|e| e.to_string())?;
-    for (path, reason, _) in &skipped_list {
+    for (path, reason, _, _) in &skipped_list {
         println!("        skipped {reason}: {path}");
     }
     let store = TreeStore::open(&base.join("tree.sqlite")).map_err(|e| e.to_string())?;

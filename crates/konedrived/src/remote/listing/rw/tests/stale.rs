@@ -297,7 +297,7 @@ async fn what_can_no_longer_be_placed_and_holds_nothing_goes_in_that_cycle() {
     w.cycle(&listing).await;
     assert!(!w.path("docs").exists(), "gone in the cycle");
     let skipped = w.store.call(|s| s.skipped()).await.unwrap();
-    assert_eq!(skipped, [konedrive_tree::Skipped { rel: PathBuf::from(&long), reason: konedrive_tree::SkipReason::NameTooLong, waits: None }]);
+    assert_eq!(skipped, [konedrive_tree::Skipped { rel: PathBuf::from(&long), reason: konedrive_tree::SkipReason::NameTooLong, waits: None, here: None }]);
     assert_eq!(w.recorded_handle("D").await, None);
     w.scan_and_upload().await;
     w.nothing_deleted_or_moved("after it left").await;
@@ -1148,4 +1148,203 @@ async fn a_move_made_here_into_a_new_folder_is_kept_as_the_place_when_onedrive_r
     w.rounds(&listing, 2).await;
     assert_eq!(w.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").count()), sent, "{:?}", w.graph.with(|c| c.log.clone()));
     assert_eq!(w.deletes(), 0);
+}
+
+/// Every object of the folder: its path, its id, its inode and its change
+/// time (a rename changes that, also one that ends where it began).
+fn objects(w: &World) -> Vec<(String, String, u64, (i64, i64))> {
+    use std::os::unix::fs::MetadataExt;
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String, u64, (i64, i64))>) {
+        let mut paths: Vec<_> = std::fs::read_dir(dir).unwrap().filter_map(Result::ok).map(|e| e.path()).collect();
+        paths.sort();
+        for path in paths {
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            let id = super::id_at(&path).unwrap_or_default();
+            // An object with no id is the worker's to mark, which the
+            // fixture's worker does anew at each run: only its place counts.
+            let stamp = if id.is_empty() { (0, 0) } else { (meta.ctime(), meta.ctime_nsec()) };
+            out.push((path.strip_prefix(root).unwrap().display().to_string(), id, meta.ino(), stamp));
+            if meta.is_dir() {
+                walk(root, &path, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&w.root.path, &w.root.path, &mut out);
+    out
+}
+
+impl World {
+    fn sent(&self) -> Vec<(String, String)> {
+        self.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").cloned().collect())
+    }
+
+    /// What OneDrive says now is applied, and then four more cycles, each
+    /// followed by the watcher's and the worker's part, a scan of the whole
+    /// folder and one more cycle. The folder settles: in the last cycles no
+    /// object is moved, not even away and back, and no request is sent. And
+    /// from the first to the last, nothing is sent to OneDrive that changes
+    /// anything there. Where each object is at the end, with its id.
+    async fn settles(&self, case: &str, listing: &Arc<Listing>, full: bool) -> Vec<(String, String)> {
+        if full {
+            listing.request_full();
+        }
+        let mut seen = Vec::new();
+        for _ in 0..5 {
+            self.rounds(listing, 1).await;
+            seen.push((objects(self), self.sent().len()));
+        }
+        assert_eq!(seen[2], seen[3], "{case}: something moved, or was sent, in a cycle with nothing new");
+        assert_eq!(seen[3], seen[4], "{case}: something moved, or was sent, in a cycle with nothing new");
+        self.scan_and_upload().await;
+        self.rounds(listing, 1).await;
+        assert_eq!(self.sent(), [], "{case}: sent to OneDrive");
+        assert!(self.graph.with(|c| c.bin.is_empty()), "{case}");
+        let end = objects(self);
+        assert_eq!(end.iter().map(|o| (&o.0, &o.1, o.2)).collect::<Vec<_>>(), seen[4].0.iter().map(|o| (&o.0, &o.1, o.2)).collect::<Vec<_>>(), "{case}: after a scan of the whole folder");
+        end.into_iter().map(|(path, id, _, _)| (path, id)).collect()
+    }
+
+    /// The lines of the skipped list that say an item is still here: where
+    /// it is here, and what it waits for.
+    async fn still_here(&self) -> Vec<(String, WaitsFor)> {
+        let lines = self.store.call(|s| s.skipped()).await.unwrap();
+        lines.into_iter().filter_map(|line| Some((line.here?.display().to_string(), line.waits?))).collect()
+    }
+}
+
+fn places(end: &[(String, String)]) -> Vec<(&str, &str)> {
+    end.iter().map(|(path, id)| (path.as_str(), id.as_str())).collect()
+}
+
+/// A folder gets a name too long in OneDrive, and in the same listing its
+/// child is moved to the root under the folder's old name; or a new folder
+/// takes that name and the child is moved into it. The folder that leaves
+/// steps aside, what takes its name is placed at once, and the folder, with
+/// nothing waiting in it, leaves. Nothing waits on anything.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_that_leaves_yields_its_name_to_its_own_child_or_to_the_childs_new_folder() {
+    for (into_new_folder, full) in [(false, false), (false, true), (true, false), (true, true)] {
+        let case = format!("into_new_folder={into_new_folder} full={full}");
+        let w = Arc::new(World::read_write().await);
+        let listing = w.listed().await;
+        w.graph.with(|c| {
+            c.add(folder_item("X", ROOT, "top"));
+            c.add_file("C", "X", "a.txt", b"child");
+        });
+        w.cycle(&listing).await;
+        let child = handle_of(&w.path("top/a.txt"));
+        w.graph.with(|c| {
+            c.rename("X", ROOT, &long_name());
+            if into_new_folder {
+                c.add(folder_item("Y", ROOT, "top"));
+                c.rename("C", "Y", "a.txt");
+            } else {
+                c.rename("C", ROOT, "top");
+            }
+        });
+        let end = w.settles(&case, &listing, full).await;
+        let expected: Vec<(&str, &str)> = if into_new_folder {
+            vec![("docs", "D"), ("docs/f.txt", "F"), ("top", "Y"), ("top/a.txt", "C"), ("top.txt", "T")]
+        } else {
+            vec![("docs", "D"), ("docs/f.txt", "F"), ("top", "C"), ("top.txt", "T")]
+        };
+        assert_eq!(places(&end), expected, "{case}");
+        assert_eq!(handle_of(&w.path(if into_new_folder { "top/a.txt" } else { "top" })), child, "{case}: the child is moved, not made again");
+        assert_eq!(w.still_here().await, [], "{case}");
+        assert!(w.store.call(|s| s.deferred_ids()).await.unwrap().is_empty(), "{case}: nothing waits");
+    }
+}
+
+/// A folder that cannot leave yet (a blocked new file in it) gets a name too
+/// long, and a new folder with a file takes its name. The one that waits
+/// steps aside under a copy name, on disk and in the base alike, so nothing
+/// is sent for it; the newcomer is placed at once; and the skipped list
+/// says where the folder that waits is now, and what keeps it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_that_waits_steps_aside_for_a_newcomer_at_its_name_and_says_where_it_is() {
+    for full in [false, true] {
+        let case = format!("full={full}");
+        let w = Arc::new(World::read_write().await);
+        let listing = w.listed().await;
+        w.blocked_file_in("docs").await;
+        let docs = handle_of(&w.path("docs"));
+        w.graph.with(|c| {
+            c.rename("D", ROOT, &long_name());
+            c.add(folder_item("Y", ROOT, "docs"));
+            c.add_file("YC", "Y", "new-there.txt", b"there");
+        });
+        let end = w.settles(&case, &listing, full).await;
+        assert_eq!(
+            places(&end),
+            [("docs", "Y"), ("docs/new-there.txt", "YC"), ("docs-fedora", "D"), ("docs-fedora/f.txt", "F"), ("docs-fedora/n:ew.txt", ""), ("top.txt", "T")],
+            "{case}"
+        );
+        assert_eq!(handle_of(&w.path("docs-fedora")), docs, "{case}: the same folder, renamed");
+        assert_eq!(std::fs::read(w.path("docs-fedora/n:ew.txt")).unwrap(), b"new", "{case}");
+        assert_eq!(w.still_here().await, [("docs-fedora".to_owned(), WaitsFor::Uploads(1))], "{case}");
+        assert_eq!(w.base("D").map(|row| row.name).as_deref(), Some("docs-fedora"), "{case}: the base has it where it stands");
+        assert_eq!(w.store.call(|s| s.deferred_ids()).await.unwrap(), ["D"], "{case}: only the folder that waits");
+        // A rename of it made here is the user's, and is sent; the file in
+        // it then goes up, and under a name the folder can hold it stays.
+        std::fs::rename(w.path("docs-fedora"), w.path("mine")).unwrap();
+        std::fs::rename(w.path("mine/n:ew.txt"), w.path("mine/new.txt")).unwrap();
+        w.scan_and_upload().await;
+        w.rounds(&listing, 2).await;
+        w.graph.with(|c| {
+            assert_eq!(c.item("D").unwrap().name, "mine", "{case}");
+            assert!(c.items.values().any(|i| i.name == "new.txt" && i.parent.as_deref() == Some("D")), "{case}: {:?}", c.paths());
+        });
+        assert_eq!((id_at(&w.path("mine")).as_deref(), w.still_here().await), (Some("D"), vec![]), "{case}");
+        assert_eq!(w.deletes(), 0);
+    }
+}
+
+/// A chain of names in one listing: `top.txt` gets a name too long,
+/// `docs/f.txt` is renamed to `top.txt` in the root, and a new file takes
+/// `docs/f.txt`. Each is placed at once, the one that leaves leaves, and
+/// nothing is sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_chain_of_names_through_one_that_leaves_is_placed_at_once_and_sends_nothing() {
+    for full in [false, true] {
+        let case = format!("full={full}");
+        let w = Arc::new(World::read_write().await);
+        let listing = w.listed().await;
+        let f = handle_of(&w.path("docs/f.txt"));
+        w.graph.with(|c| {
+            c.rename("T", ROOT, &long_name());
+            c.rename("F", ROOT, "top.txt");
+            c.add_file("Z", "D", "f.txt", b"another");
+        });
+        let end = w.settles(&case, &listing, full).await;
+        assert_eq!(places(&end), [("docs", "D"), ("docs/f.txt", "Z"), ("top.txt", "F")], "{case}");
+        assert_eq!(handle_of(&w.path("top.txt")), f, "{case}: moved, not made again");
+        assert_eq!(w.still_here().await, [], "{case}");
+        assert!(w.store.call(|s| s.deferred_ids()).await.unwrap().is_empty(), "{case}");
+    }
+}
+
+/// A stop of the daemon right after it renamed a folder that waits aside,
+/// before the base heard of it: the scan at the next start takes the new
+/// name for a rename made here, and the cycle after it knows the name for
+/// its own, takes it into the base and drops that rename. Nothing is sent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_between_the_step_aside_and_its_record_is_repaired_and_sends_nothing() {
+    let w = Arc::new(World::read_write().await);
+    let listing = w.listed().await;
+    w.docs_waiting(&listing).await;
+    std::fs::rename(w.path("docs"), w.path("docs-fedora")).unwrap();
+    {
+        let w = Arc::clone(&w);
+        tokio::task::spawn_blocking(move || scan_now(&w)).await.unwrap();
+    }
+    // The first cycle after a start reconciles the whole folder.
+    listing.request_full();
+    w.rounds(&listing, 2).await;
+    assert_eq!(w.sent(), []);
+    assert_eq!(w.base("D").map(|row| row.name).as_deref(), Some("docs-fedora"));
+    assert_eq!(w.still_here().await, [("docs-fedora".to_owned(), WaitsFor::Uploads(1))]);
+    w.scan_and_upload().await;
+    w.rounds(&listing, 1).await;
+    assert_eq!(w.sent(), []);
 }

@@ -45,6 +45,9 @@ pub struct NotInFolder {
     /// is, what keeps it (`konedrive_reason::WaitsFor`, as stored, its path
     /// a full one).
     pub waits: String,
+    /// Empty for an item that is not on this computer; for one that still
+    /// is, its full path here.
+    pub here: String,
 }
 
 /// A file kept back from OneDrive, and why (`UploadQueue.NotUploaded`, and the items of
