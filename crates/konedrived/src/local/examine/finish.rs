@@ -3,10 +3,10 @@ use std::path::Path;
 
 use crate::local::entry::Type;
 use crate::local::{MASS_DELETE_FLOOR, MASS_DELETE_ITEMS, MASS_DELETE_PERCENT};
-use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxRow, OutboxState};
+use konedrive_tree::outbox::{Detection, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::{Kind, Table, TreeError};
 
-use super::{depth, Examined, ExamineError, MASS_DELETE, Run};
+use super::{depth, Examined, ExamineError, Run};
 
 impl Run<'_, '_> {
     /// `local_skipped` lists what is there now: rows for examined places
@@ -88,11 +88,11 @@ impl Run<'_, '_> {
             tracing::warn!("{n} items would be removed from OneDrive; held until confirmed");
             for d in self.detections.iter_mut().filter(|d| d.kind.removes() && d.item_id.as_ref().is_some_and(|id| !confirmed.contains(id))) {
                 d.state = OutboxState::Held;
-                d.reason = Some(MASS_DELETE.into());
+                d.reason = Some(Reason::MassDelete);
                 d.next_try = None;
             }
             for row in waiting.iter().filter(|r| r.state != OutboxState::Held) {
-                self.ops.push(OutboxOp::Hold { seq: row.seq, reason: MASS_DELETE.into() });
+                self.ops.push(OutboxOp::Hold { seq: row.seq, reason: Reason::MassDelete });
             }
             self.out.held = n;
         }

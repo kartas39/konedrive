@@ -254,13 +254,13 @@ async fn the_outbox_is_listed_decided_on_and_its_files_are_not_freed_up() {
     assert_eq!(std::fs::read(&file).unwrap(), b"abc", "still downloaded");
 
     let seq = rows[0].0 as i64;
-    store.call(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some("name-characters"), None)).await.unwrap();
+    store.call(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some(&"name-characters".into()), None)).await.unwrap();
     assert_eq!(service.not_uploaded().await.unwrap(), vec![(file.display().to_string(), "name-characters".to_owned())]);
 
-    store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).await.unwrap();
+    store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some(&"mass-delete".into()), None)).await.unwrap();
     assert_eq!(service.confirm_deletes().await.unwrap(), 1);
     assert_eq!(service.outbox(0).await.unwrap()[0].3, "ready");
-    store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).await.unwrap();
+    store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some(&"mass-delete".into()), None)).await.unwrap();
     assert_eq!(service.restore_deletes().await.unwrap(), 1);
     assert!(service.outbox(0).await.unwrap().is_empty());
     service.stop_sync().await;

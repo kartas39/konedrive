@@ -361,7 +361,7 @@ fn a_download_that_stops_part_way_deletes_nothing_until_it_is_whole() {
     let rows = w.rows();
     assert_eq!(rows.len(), 1);
     assert_eq!((rows[0].kind, rows[0].state), (OutboxKind::MoveOut, OutboxState::Retry));
-    assert!(rows[0].reason.as_deref().is_some_and(|r| r.starts_with(reason::DOWNLOAD)), "{:?}", rows[0].reason);
+    assert!(rows[0].reason_text().as_deref().is_some_and(|r| r.starts_with(Reason::Download(None).key())), "{:?}", rows[0].reason);
     assert_eq!(rows[0].snapshot, None, "not marked local");
 
     w.fills_from(LocalDir::new(w.source.clone()));
@@ -386,7 +386,7 @@ fn eperm_keeps_the_row_and_estale_deletes() {
     *w.helper.refuse.lock().unwrap() = Some(libc::EPERM);
     w.h.run();
     assert_eq!(w.deletes(), 0);
-    assert!(w.rows().iter().all(|r| r.reason.as_deref() == Some(reason::UNREACHABLE)), "{:?}", w.rows());
+    assert!(w.rows().iter().all(|r| r.reason_text().as_deref() == Some(Reason::Unreachable(None).key())), "{:?}", w.rows());
 
     // A helper that does not answer decides nothing either.
     *w.helper.refuse.lock().unwrap() = None;
@@ -394,7 +394,7 @@ fn eperm_keeps_the_row_and_estale_deletes() {
     w.due_now();
     w.h.run();
     assert_eq!(w.deletes(), 0);
-    assert!(w.rows().iter().all(|r| r.reason.as_deref() == Some(reason::NO_HELPER)), "{:?}", w.rows());
+    assert!(w.rows().iter().all(|r| r.reason_text().as_deref() == Some(Reason::NoHelper.key())), "{:?}", w.rows());
 
     // Q deleted by the user after it left: `ESTALE`, gone — believed when it says so twice. P's
     // marker set and its item id taken off (a crash after our own strip): its `EPERM` is expected.
@@ -406,7 +406,7 @@ fn eperm_keeps_the_row_and_estale_deletes() {
     w.due_now();
     w.h.run();
     assert!(w.in_bin("P") && !w.in_bin("Q"), "one ESTALE is not enough");
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::GONE_ONCE));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::GoneOnce.key()));
     w.due_now();
     w.h.run();
     assert!(w.in_bin("Q"));
@@ -442,7 +442,7 @@ fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
         w.due_now();
     }
     assert_eq!(w.deletes(), 0);
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::STALE_HANDLE));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::StaleHandle.key()));
 
     // The examination takes the handles again: Q, missing meanwhile, is placed again, not deleted.
     std::fs::rename(w.path("q.txt"), w.base().join("gone-q.txt")).unwrap();
@@ -474,7 +474,7 @@ fn estale_is_gone_only_with_nothing_where_the_object_was() {
         w.due_now();
     }
     assert_eq!(w.deletes(), 0);
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::GONE_UNPROVED), "it still stands there");
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::GoneUnproved.key()), "it still stands there");
 
     std::fs::remove_file(&p).unwrap();
     for _ in 0..2 {
@@ -522,7 +522,7 @@ fn a_trashed_folder_strips_nothing_until_its_placeholders_are_gone() {
     std::fs::rename(w.base().join("outside/p.txt"), w.path("back.txt")).unwrap();
     w.helper.at.lock().unwrap().insert(handle, w.path("back.txt"));
     w.h.run();
-    assert_eq!(w.rows()[0].snapshot.as_deref(), Some(CONTENT_LOCAL));
+    assert_eq!(w.rows()[0].snapshot(), Some(CONTENT_LOCAL));
     assert_eq!(w.deletes(), 0);
 }
 
@@ -538,7 +538,7 @@ fn a_crash_between_two_strips_of_a_folder_converges() {
     engine.arm(Fault::MidStrip);
     w.h.drain(&engine);
     assert_eq!(w.deletes(), 0);
-    assert_eq!(w.rows()[0].snapshot.as_deref(), Some(CONTENT_LOCAL));
+    assert_eq!(w.rows()[0].snapshot(), Some(CONTENT_LOCAL));
     let stripped = ["one.txt", "two.txt"].iter().filter(|n| World::konedrive_attrs(&to.join(n)).is_empty()).count();
     assert_eq!(stripped, 1, "one file stripped, one not");
 
@@ -565,7 +565,7 @@ fn a_folder_with_one_file_that_cannot_be_downloaded_stays() {
     assert!(!World::konedrive_attrs(&to.join("one.txt")).is_empty() && !World::konedrive_attrs(&to).is_empty(), "nothing stripped");
     assert!(w.helper.called("unmark_dir").is_empty());
     let row = &w.rows()[0];
-    assert!(row.reason.as_deref().is_some_and(|r| r.starts_with(reason::DOWNLOAD)), "{:?}", row.reason);
+    assert!(row.reason_text().as_deref().is_some_and(|r| r.starts_with(Reason::Download(None).key())), "{:?}", row.reason);
     assert_eq!(row.snapshot, None);
 }
 
@@ -606,7 +606,7 @@ fn a_folder_moved_back_during_its_download_is_left_alone() {
         assert!(World::konedrive_attrs(&w.path(rel)).iter().any(|a| a == XATTR_ITEM_ID), "{rel} keeps its item id");
     }
     let row = &w.rows()[0];
-    assert_eq!((row.reason.as_deref(), row.snapshot.as_deref()), (Some(reason::BACK_INSIDE), None));
+    assert_eq!((row.reason_text().as_deref(), row.snapshot.as_deref()), (Some(Reason::BackInside.key()), None));
 }
 
 /// A directory that only looks like a Trash (a `.Trash-<uid>` that is not at a mount's
@@ -692,7 +692,7 @@ fn a_crash_between_the_strip_and_the_delete_converges() {
     w.h.drain(&engine);
     assert_eq!(w.deletes(), 0);
     assert!(World::konedrive_attrs(&to).is_empty());
-    assert_eq!(w.rows()[0].snapshot.as_deref(), Some(CONTENT_LOCAL));
+    assert_eq!(w.rows()[0].snapshot(), Some(CONTENT_LOCAL));
     assert_eq!(w.rows()[0].state, OutboxState::Running);
 
     w.h.run();
@@ -839,7 +839,7 @@ fn restoring_a_held_move_out_tidies_what_left() {
     w.move_out("q.txt", &q);
     w.examine(&[("", "d"), ("", "q.txt")]);
     for row in w.rows() {
-        w.store.call_blocking(move |s| s.outbox_set_state(row.seq, OutboxState::Held, Some("mass-delete"), None)).unwrap();
+        w.store.call_blocking(move |s| s.outbox_set_state(row.seq, OutboxState::Held, Some(&"mass-delete".into()), None)).unwrap();
     }
     let dropped = w.store.call_blocking(move |s| s.outbox_drop_held()).unwrap();
     assert_eq!(dropped.len(), 2);
@@ -997,7 +997,7 @@ fn a_file_another_account_took_for_its_own_is_kept_here_too() {
     w.examine(&[("", "q.txt")]);
     xattr::remove(&out, XATTR_ITEM_ID).unwrap();
     w.h.run();
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::UNREACHABLE));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::Unreachable(None).key()));
 }
 
 /// A placeholder that left a moved-out folder again before the folder's row ran is made local
@@ -1033,7 +1033,7 @@ fn an_object_back_in_the_folder_is_left_to_the_examination() {
     w.h.run();
     assert_eq!(w.deletes(), 0);
     assert_eq!(state(&w.path("back.txt")), Some(State::OnlineOnly));
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::BACK_INSIDE));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::BackInside.key()));
 }
 
 /// §4.6, §5: what left is marked again before anything else, whatever the rows' states — here a

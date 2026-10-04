@@ -15,6 +15,7 @@ dev-tools = ["konedrived/dev-tools"]
 anyhow.workspace = true
 clap.workspace = true
 konedrive-dbus = { path = "../konedrive-dbus" }
+konedrive-tree = { path = "../konedrive-tree" }
 libc.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 zbus.workspace = true
@@ -24,7 +25,6 @@ konedrived = { path = "../konedrived" }
 konedrive-fs = { path = "../konedrive-fs" }
 konedrive-graph = { path = "../konedrive-graph" }
 konedrive-proto = { path = "../konedrive-proto" }
-konedrive-tree = { path = "../konedrive-tree" }
 nix = { workspace = true, features = ["socket"] }
 serde_json.workspace = true
 tempfile.workspace = true

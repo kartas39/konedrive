@@ -15,7 +15,7 @@ fn create(rel: &str, state: OutboxState, reason: Option<&str>) -> OutboxOp {
         target_name: Path::new(rel).file_name().map(|n| n.to_string_lossy().into_owned()),
         same_content: false,
         state,
-        reason: reason.map(str::to_owned),
+        reason: reason.map(Reason::parse),
         next_try: None,
         size: None,
     })
@@ -29,9 +29,9 @@ fn create(rel: &str, state: OutboxState, reason: Option<&str>) -> OutboxOp {
 #[test]
 fn a_full_onedrive_is_one_line_and_names_are_listed_per_file() {
     let mut store = TreeStore::in_memory().unwrap();
-    let mut ops: Vec<OutboxOp> = (0..5000).map(|i| create(&format!("big/{i:05}.bin"), OutboxState::Ready, Some(space::WAITING))).collect();
-    ops.push(create("huge1.iso", OutboxState::Ready, Some(&space::too_big(300, 20))));
-    ops.push(create("huge2.iso", OutboxState::Ready, Some(&space::too_big(400, 20))));
+    let mut ops: Vec<OutboxOp> = (0..5000).map(|i| create(&format!("big/{i:05}.bin"), OutboxState::Ready, Some(Reason::WaitingForSpace.key()))).collect();
+    ops.push(create("huge1.iso", OutboxState::Ready, Some(&Reason::TooBig(Some((300, 20))).to_string())));
+    ops.push(create("huge2.iso", OutboxState::Ready, Some(&Reason::TooBig(Some((400, 20))).to_string())));
     ops.push(create("a:b.txt", OutboxState::Blocked, Some("name-characters")));
     ops.push(create("c?d.txt", OutboxState::Blocked, Some("name-characters")));
     ops.push(create("CON", OutboxState::Blocked, Some("name-reserved")));
@@ -60,12 +60,12 @@ fn a_full_onedrive_is_one_line_and_names_are_listed_per_file() {
         ]
     );
 
-    let (items, total) = files(&store, root, false, space::WAITING, 20).unwrap();
+    let (items, total) = files(&store, root, false, Reason::WaitingForSpace.key(), 20).unwrap();
     assert_eq!((items.len(), total), (20, 5000));
-    assert_eq!(items[0], ("/nowhere/OneDrive/big/00000.bin".to_owned(), space::WAITING.to_owned()));
+    assert_eq!(items[0], ("/nowhere/OneDrive/big/00000.bin".to_owned(), Reason::WaitingForSpace.key().to_owned()));
     let (items, _) = files(&store, root, false, "too-big", 0).unwrap();
     assert_eq!(items[0], ("/nowhere/OneDrive/huge1.iso".to_owned(), "too-big:300:20".to_owned()));
-    let waiting = |full| summary(&skipped, &rows, full).into_iter().find(|(_, r, _, _)| r == space::WAITING).map(|(_, _, n, _)| n);
+    let waiting = |full| summary(&skipped, &rows, full).into_iter().find(|(_, r, _, _)| r == Reason::WaitingForSpace.key()).map(|(_, _, n, _)| n);
     assert_eq!((waiting(false), waiting(true)), (Some(5000), Some(5001)), "queued.txt waits for space while full");
     let (items, total) = files(&store, root, false, "name-characters", 0).unwrap();
     assert_eq!(total, 2);
@@ -79,20 +79,20 @@ fn a_full_onedrive_is_one_line_and_names_are_listed_per_file() {
 /// the user, and is shown where blocked rows are.
 #[test]
 fn what_keeps_a_leaving_folder_is_blocked() {
-    use crate::local::examine::{MOUNTED_INSIDE, UNKNOWN_STATE};
-    for key in [UNKNOWN_STATE, MOUNTED_INSIDE] {
+    use konedrive_tree::outbox::LocalSkip;
+    for key in [LocalSkip::UnknownState.key(), LocalSkip::MountedInside.key()] {
         assert_eq!(group_of(reason_key(key), false), Group::PerFile, "{key}");
     }
     let mut store = TreeStore::in_memory().unwrap();
-    store.outbox_apply(&[OutboxOp::Skip { rel: PathBuf::from("docs/u.txt"), reason: UNKNOWN_STATE.into(), size: 0 }], 1).unwrap();
+    store.outbox_apply(&[OutboxOp::Skip { rel: PathBuf::from("docs/u.txt"), reason: LocalSkip::UnknownState, size: 0 }], 1).unwrap();
     let got = summary(&store.skipped_groups().unwrap(), &store.outbox_groups().unwrap(), false);
-    assert_eq!(got.iter().map(|(g, r, n, _)| (g.as_str(), r.as_str(), *n)).collect::<Vec<_>>(), vec![("per-file", UNKNOWN_STATE, 1)]);
+    assert_eq!(got.iter().map(|(g, r, n, _)| (g.as_str(), r.as_str(), *n)).collect::<Vec<_>>(), vec![("per-file", LocalSkip::UnknownState.key(), 1)]);
 }
 
 /// Issue #87: the four keys a failure is stored under all wait.
 #[test]
 fn failure_keys_wait() {
-    for key in [reason::NETWORK, reason::LOCAL_IO, reason::STORE, reason::FAILED] {
+    for key in [Reason::Network.key(), Reason::LocalIo.key(), Reason::Store.key(), Reason::Failed.key()] {
         assert_eq!(known_group(key), Some(Group::Waiting), "{key}");
     }
 }
@@ -122,20 +122,20 @@ fn a_blocked_row_is_never_shown_as_going_up_by_itself() {
 #[test]
 fn every_reason_the_worker_writes_is_in_the_table() {
     let written = [
-        // Constants of `upload::reason` the worker writes.
-        reason::PAUSED.to_owned(),
-        reason::SESSION_OPEN.to_owned(),
-        reason::NAME_HELD.to_owned(),
+        // Reasons the worker writes.
+        Reason::Paused.key().to_owned(),
+        Reason::SessionOpen.key().to_owned(),
+        Reason::NameHeld.key().to_owned(),
         // Sentences (`steps.rs`, `engine/drain.rs`, `content.rs`).
         "changed in OneDrive again and again".to_owned(),
         "changing in OneDrive again and again".to_owned(),
         "the upload session ended twice".to_owned(),
         "not allowed now: the folder is read-only".to_owned(),
         // A key with the error behind it (`move_out.rs`).
-        format!("{}: errno 5", reason::DOWNLOAD),
-        format!("{}: errno 5", reason::UNREACHABLE),
-        format!("{}: Resource temporarily unavailable", reason::NOT_OPENED),
-        format!("{}: Function not implemented", reason::NO_LEASE),
+        format!("{}: errno 5", Reason::Download(None).key()),
+        format!("{}: errno 5", Reason::Unreachable(None).key()),
+        format!("{}: Resource temporarily unavailable", Reason::NotOpened(None).key()),
+        format!("{}: Function not implemented", Reason::NoLease(None).key()),
     ];
     let unknown: Vec<&str> = written.iter().map(String::as_str).filter(|why| known_group(reason_key(why)).is_none()).collect();
     assert!(unknown.is_empty(), "not in the table: {unknown:?}");

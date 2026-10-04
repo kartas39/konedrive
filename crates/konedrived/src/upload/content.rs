@@ -21,15 +21,14 @@ use konedrive_fs::placeholder::{self, State};
 use super::engine::{now, Engine, Fail, Outcome};
 use super::local::{self, Found, Read, Snap, SYNC_UPLOADING};
 use super::steps::{answer_row, blocking, cancel_session, commit_row, copy, follow_cloud, held, local_name, locate, never_uploaded, parent_of, taken, temporary, upload_as_new, wanted_name, Ours, Taken};
-use super::{kind, reason, space, Fault};
+use super::{kind, Fault};
 use konedrive_graph::drive::item::parse_graph_time;
 use konedrive_graph::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
 use konedrive_graph::quickxor::QuickXor;
 use crate::folder::disk::Disk;
-use crate::local::examine::OPEN_FOR_WRITING;
 use crate::local::{names, QUIET, RECHECK};
 use crate::folder::locks::InodeKey;
-use konedrive_tree::outbox::{BadItem, Base, OutboxKind, OutboxRow};
+use konedrive_tree::outbox::{BadItem, Base, OutboxKind, OutboxRow, Reason};
 use konedrive_tree::Table;
 
 /// How far OneDrive's clock may be behind this machine's when a placeholder's
@@ -48,24 +47,24 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     }
     match found.state() {
         Ok(None | Some(State::Hydrated)) => {}
-        Ok(Some(_)) => return Ok(Outcome::wait(reason::NOT_LOCAL, RECHECK)),
-        Err(err) => return Ok(Outcome::blocked(format!("{}: {err}", reason::BAD_STATE))),
+        Ok(Some(_)) => return Ok(Outcome::wait(Reason::NotLocal, RECHECK)),
+        Err(err) => return Ok(Outcome::blocked(Reason::BadState(Some(err.to_string())))),
     }
     let file = Arc::new(found.open()?);
     // Before the snapshot: the mark changes no size or time (§9).
     local::set_sync_of(&file, SYNC_UPLOADING);
     if lease::open_for_writing(&file)? {
-        return Ok(Outcome::wait(OPEN_FOR_WRITING, RECHECK));
+        return Ok(Outcome::wait(Reason::OpenForWriting, RECHECK));
     }
     let snap = Snap::of(&file)?;
     if snap.size > names::MAX_FILE_SIZE {
-        return Ok(Outcome::blocked(names::Refused::TooLarge.as_str()));
+        return Ok(Outcome::blocked(names::Refused::TooLarge.reason()));
     }
     // The snapshot and the session belong together: a session opened for
     // other content goes in the same transaction, before any request.
-    let session = row.session_url.clone().filter(|_| row.snapshot.as_deref() == Some(snap.text().as_str()));
-    let (seq, text) = (row.seq, snap.text());
-    if let Some(stale) = e.store().call(move |s| s.outbox_take_snapshot(seq, &text)).await? {
+    let session = row.session_url.clone().filter(|_| row.snapshot_is(snap.snapshot()));
+    let (seq, taken) = (row.seq, snap.snapshot());
+    if let Some(stale) = e.store().call(move |s| s.outbox_take_snapshot(seq, taken)).await? {
         cancel_session(e, &stale).await?;
     }
     e.upload_progress(row.seq, 0, snap.size);
@@ -91,7 +90,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     let (parent, name) = match at_base {
         Some(at) => at,
         None => {
-            let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
+            let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
             (parent, wanted_name(&row, &local))
         }
     };
@@ -142,10 +141,10 @@ enum Stop {
 /// why: the one place such a stop is decided.
 ///
 /// - **Paused** (`docs/design/writes.md` §11): waiting, reason
-///   [`reason::PAUSED`], due again as soon as the pause ends. No failure.
+///   [`Reason::Paused`], due again as soon as the pause ends. No failure.
 /// - **The daemon stopping** (issue #84): ready, resumed at the next start.
 /// - **OneDrive full** (a refusal of another row, `space`): ready in its
-///   place, reason [`space::WAITING`], taken again once a quota read shows
+///   place, reason [`Reason::WaitingForSpace`], taken again once a quota read shows
 ///   space.
 /// - **The write gate** closed: waiting until it opens.
 /// - **The file removed** (issue #36): under none of the row's names, as
@@ -153,7 +152,7 @@ enum Stop {
 ///   row is recorded is found under its new name, and the upload goes on.
 async fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<Stop>, Fail> {
     if e.stopped() {
-        return Ok(Some(Stop::Wait(Outcome::wait(reason::PAUSED, std::time::Duration::ZERO))));
+        return Ok(Some(Stop::Wait(Outcome::wait(Reason::Paused, std::time::Duration::ZERO))));
     }
     // The daemon is stopping (issue #84): the session is persisted, and the
     // next start resumes it.
@@ -161,10 +160,10 @@ async fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Res
         return Ok(Some(Stop::Wait(Outcome::again())));
     }
     if e.space_full() {
-        return Ok(Some(Stop::Wait(Outcome::Space(space::WAITING.into()))));
+        return Ok(Some(Stop::Wait(Outcome::Space(Reason::WaitingForSpace))));
     }
     if let Err(why) = e.cfg.host.may_write() {
-        return Ok(Some(Stop::Wait(Outcome::wait(&format!("{}: {why}", reason::NOT_ALLOWED), std::time::Duration::ZERO))));
+        return Ok(Some(Stop::Wait(Outcome::wait(Reason::NotAllowed(Some(why)), std::time::Duration::ZERO))));
     }
     if locate(e, disk, row).await?.filter(|f| !f.is_dir).is_none() {
         return Ok(Some(Stop::Removed));
@@ -289,7 +288,7 @@ impl Job<'_> {
             }
             Err(WriteError::NotFound) => {
                 self.e.cfg.host.cycle_wanted();
-                Ok(Outcome::backoff(reason::PARENT))
+                Ok(Outcome::backoff(Reason::Parent))
             }
             Err(other) => Err(other.into()),
         }
@@ -317,10 +316,10 @@ impl Job<'_> {
         for (url, by) in held {
             match by {
                 Some(by) if by == seq => {}
-                Some(_) => outcome = Outcome::backoff(reason::SESSION_OPEN),
+                Some(_) => outcome = Outcome::backoff(Reason::SessionOpen),
                 None => {
                     if !cancel_session(self.e, &url).await? {
-                        outcome = Outcome::backoff(reason::SESSION_OPEN);
+                        outcome = Outcome::backoff(Reason::SessionOpen);
                     }
                 }
             }
@@ -383,7 +382,7 @@ impl Job<'_> {
                     "{} is held in OneDrive by the placeholder of an upload session this folder opened, not deleted ({err}): it waits for the session to expire",
                     self.found.rel.display()
                 );
-                Ok(Some(Outcome::backoff(reason::SESSION_OPEN)))
+                Ok(Some(Outcome::backoff(Reason::SessionOpen)))
             }
         }
     }
@@ -397,11 +396,11 @@ impl Job<'_> {
 
     async fn update(&self) -> Result<Outcome, Fail> {
         let row = self.row;
-        let Some(id) = row.item_id.as_deref() else { return Ok(Outcome::blocked(reason::NO_ITEM)) };
+        let Some(id) = row.item_id.as_deref() else { return Ok(Outcome::blocked(Reason::NoItem)) };
         let base = row.base.clone().unwrap_or_default();
         // F55 (4): a row queued against another version than the base's
         // carries that version's cTag, and no eTag.
-        let Some(mut guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(reason::NO_GUARD)) };
+        let Some(mut guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(Reason::NoGuard)) };
         let new_name = (Some(self.name) != base.name.as_deref()).then_some(self.name);
         let new_parent = (Some(self.parent) != base.parent.as_deref()).then_some(self.parent);
         if new_name.is_some() || new_parent.is_some() {
@@ -449,7 +448,7 @@ impl Job<'_> {
         let known = { let id = id.to_owned(); self.e.store().call(move |s| s.get(konedrive_tree::Table::Items, &id)).await?.is_some() };
         if known {
             tracing::warn!("{} is not found in OneDrive, which still lists it: its change waits", self.found.rel.display());
-            return Ok(Outcome::blocked(reason::LEAVING_NOT_FOUND));
+            return Ok(Outcome::blocked(Reason::LeavingNotFound));
         }
         tracing::info!("{} was removed from OneDrive: its change is not uploaded", self.found.rel.display());
         if let Some(url) = &self.row.session_url {
@@ -524,7 +523,7 @@ impl Job<'_> {
         // OneDrive became full since the row was taken: nothing that adds
         // content starts (`space`).
         if self.e.space_full() {
-            return Err(Fail::Now(Outcome::Space(space::WAITING.into())));
+            return Err(Fail::Now(Outcome::Space(Reason::WaitingForSpace)));
         }
         if self.snap.size == 0 {
             self.send_empty(target).await
@@ -541,9 +540,9 @@ impl Job<'_> {
         let (file, snap) = (Arc::clone(self.file), self.snap);
         match blocking(move || local::read(&file, offset, len, snap)).await? {
             Read::Bytes(bytes) => Ok(bytes),
-            Read::Busy => Err(Fail::Now(Outcome::wait(OPEN_FOR_WRITING, RECHECK))),
-            Read::NotLocal => Err(Fail::Now(Outcome::wait(reason::NOT_LOCAL, RECHECK))),
-            Read::Changed => Err(Fail::Now(Outcome::wait(reason::CHANGED, QUIET))),
+            Read::Busy => Err(Fail::Now(Outcome::wait(Reason::OpenForWriting, RECHECK))),
+            Read::NotLocal => Err(Fail::Now(Outcome::wait(Reason::NotLocal, RECHECK))),
+            Read::Changed => Err(Fail::Now(Outcome::wait(Reason::Changed, QUIET))),
         }
     }
 
@@ -718,7 +717,7 @@ impl Job<'_> {
         tracing::info!("the upload session of {} ended: the upload starts over", self.found.rel.display());
         *restarts += 1;
         if *restarts > 1 {
-            return Err(Fail::Now(Outcome::backoff(reason::SESSION_ENDED)));
+            return Err(Fail::Now(Outcome::backoff(Reason::SessionEnded)));
         }
         Ok(None)
     }
@@ -808,11 +807,11 @@ impl Job<'_> {
                     // Before the last fragment: a writer, the snapshot, and the
                     // item in OneDrive once more (§4.8 step 4).
                     if lease::open_for_writing(self.file)? {
-                        return Err(Fail::Now(Outcome::wait(OPEN_FOR_WRITING, RECHECK)));
+                        return Err(Fail::Now(Outcome::wait(Reason::OpenForWriting, RECHECK)));
                     }
                     if Snap::of(self.file)? != self.snap {
                         self.abandon(&url).await?;
-                        return Err(Fail::Now(Outcome::wait(reason::CHANGED, QUIET)));
+                        return Err(Fail::Now(Outcome::wait(Reason::Changed, QUIET)));
                     }
                     if let Some((id, guard)) = last_check {
                         match drive.item(id).await {
@@ -832,7 +831,7 @@ impl Job<'_> {
                 let bytes = match self.read(next, len as usize).await {
                     Ok(bytes) => bytes,
                     Err(Fail::Now(outcome)) => {
-                        if matches!(&outcome, Outcome::Again { reason: Some(r), .. } if r == reason::CHANGED) {
+                        if matches!(&outcome, Outcome::Again { reason: Some(r), .. } if *r == Reason::Changed) {
                             self.abandon(&url).await?;
                         }
                         return Err(Fail::Now(outcome));
@@ -919,7 +918,7 @@ impl Job<'_> {
                     remembered?;
                 }
             }
-            return Ok(Outcome::backoff(reason::HASH));
+            return Ok(Outcome::backoff(Reason::Hash));
         }
         let made = Base {
             etag: item.e_tag.clone(),
@@ -929,7 +928,7 @@ impl Job<'_> {
         };
         let seq = self.row.seq;
         self.e.store().call(move |s| s.outbox_amend(seq, |next| next.base = Some(made))).await?;
-        Ok(Outcome::backoff(reason::HASH))
+        Ok(Outcome::backoff(Reason::Hash))
     }
 
     /// The commit (§3.5): step 1 on the file's own descriptor, under its

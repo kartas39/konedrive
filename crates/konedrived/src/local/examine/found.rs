@@ -9,12 +9,12 @@ use konedrive_fs::placeholder::{self, State};
 use crate::local::batch::Batch;
 use crate::local::entry::{Entry, StateAttr, Type};
 use crate::local::names;
-use crate::local::{snapshot, RECHECK};
+use crate::local::RECHECK;
 use crate::folder::locks::InodeKey;
-use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState};
+use konedrive_tree::outbox::{LocalSkip, OutboxKind, OutboxOp, OutboxState, Reason, Snapshot};
 use konedrive_tree::{Row, Table};
 
-use super::{Content, denied, ExamineError, Expect, gone, OPEN_FOR_WRITING, Run, UNKNOWN_STATE};
+use super::{Content, denied, ExamineError, Expect, gone, Run};
 
 impl Run<'_, '_> {
     /// Item `id` found as entry `i`: where it is, and its content.
@@ -52,7 +52,7 @@ impl Run<'_, '_> {
             Content::Waiting => {
                 d.kind = OutboxKind::Update;
                 d.state = OutboxState::Waiting;
-                d.reason = Some(OPEN_FOR_WRITING.into());
+                d.reason = Some(Reason::OpenForWriting);
                 d.next_try = Some(self.ex.now + RECHECK.as_secs() as i64);
             }
             Content::Same => d.same_content = true,
@@ -62,7 +62,7 @@ impl Run<'_, '_> {
         if e.name != OsStr::new(&base.name) {
             if let Some(refused) = names::refused(&e.name) {
                 d.state = OutboxState::Blocked;
-                d.reason = Some(refused.as_str().into());
+                d.reason = Some(refused.reason());
                 d.next_try = None;
             }
         }
@@ -89,15 +89,15 @@ impl Run<'_, '_> {
         if matches!(e.state, StateAttr::Absent | StateAttr::Corrupt) {
             // Whether it holds anything cannot be told: listed, and its
             // folder stays (issue #104).
-            self.skip(&e.rel, UNKNOWN_STATE);
+            self.skip(&e.rel, LocalSkip::UnknownState);
             return Ok(());
         }
         // A change OneDrive answered `404` for while it still lists the item
         // stays blocked until the listing settles it, or the file changes
         // again (issue #104): looking at it again is no reason to retry.
-        let now = snapshot(e.size, e.mtime.0, e.mtime.1);
+        let now = Snapshot::content(e.size, e.mtime.0, e.mtime.1);
         if self.rows.of_item(id).any(|row| {
-            row.state == OutboxState::Blocked && row.reason.as_deref() == Some(konedrive_tree::outbox::LEAVING_NOT_FOUND) && row.snapshot.as_deref() == Some(now.as_str())
+            row.state == OutboxState::Blocked && row.reason == Some(Reason::LeavingNotFound) && row.snapshot_is(now)
         }) {
             return Ok(());
         }
@@ -107,7 +107,7 @@ impl Run<'_, '_> {
             Content::Changed => {}
             Content::Waiting => {
                 d.state = OutboxState::Waiting;
-                d.reason = Some(OPEN_FOR_WRITING.into());
+                d.reason = Some(Reason::OpenForWriting);
                 d.next_try = Some(self.ex.now + RECHECK.as_secs() as i64);
             }
             Content::Same | Content::Unknown => return Ok(()),
@@ -138,8 +138,8 @@ impl Run<'_, '_> {
     }
 
     fn hydrated(&mut self, id: &str, base: &Row, e: &Entry, batch: &Batch) -> Result<Content, ExamineError> {
-        let now = snapshot(e.size, e.mtime.0, e.mtime.1);
-        if self.rows.of_item(id).any(|row| row.state == OutboxState::Running && row.snapshot.as_deref() == Some(now.as_str())) {
+        let now = Snapshot::content(e.size, e.mtime.0, e.mtime.1);
+        if self.rows.of_item(id).any(|row| row.state == OutboxState::Running && row.snapshot_is(now)) {
             // Being uploaded as it is now.
             return Ok(Content::Unknown);
         }
@@ -276,14 +276,14 @@ impl Run<'_, '_> {
         };
         if busy {
             self.recheck(e);
-            return Ok(Some((OutboxState::Waiting, Some(OPEN_FOR_WRITING.into()), Some(self.ex.now + RECHECK.as_secs() as i64))));
+            return Ok(Some((OutboxState::Waiting, Some(Reason::OpenForWriting), Some(self.ex.now + RECHECK.as_secs() as i64))));
         }
         Ok(Some((OutboxState::Ready, None, None)))
     }
 }
 
 /// A new file's row as [`Run::probe_writer`] decides it: its state, reason and next try.
-pub(super) type Probed = (OutboxState, Option<String>, Option<i64>);
+pub(super) type Probed = (OutboxState, Option<Reason>, Option<i64>);
 
 /// What [`Run::open_same`] found.
 enum Opened {

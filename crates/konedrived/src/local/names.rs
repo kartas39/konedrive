@@ -9,12 +9,14 @@
 
 use std::ffi::OsStr;
 
+use konedrive_tree::outbox::Reason;
+
 /// The largest file OneDrive takes (Microsoft: 250 GB). Taken as GiB: a file
 /// between 250 GB and 250 GiB, if refused, is blocked by the service's answer.
 pub const MAX_FILE_SIZE: u64 = 250 << 30;
 
-/// Why a row is blocked before any request. The codes are what `reason`
-/// holds; the window and the CLI word them.
+/// Why a row is blocked before any request. Its [`Reason`] is what the row
+/// holds; the window and the CLI word it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refused {
     /// One of `" * : < > ? \ |`.
@@ -31,13 +33,14 @@ pub enum Refused {
 }
 
 impl Refused {
-    pub fn as_str(self) -> &'static str {
+    /// The reason a row blocked for it holds.
+    pub fn reason(self) -> Reason {
         match self {
-            Self::Characters => "name-characters",
-            Self::Spaces => "name-spaces",
-            Self::Reserved => "name-reserved",
-            Self::NotUtf8 => "name-not-utf8",
-            Self::TooLarge => "too-large",
+            Self::Characters => Reason::NameCharacters,
+            Self::Spaces => Reason::NameSpaces,
+            Self::Reserved => Reason::NameReserved,
+            Self::NotUtf8 => Reason::NameNotUtf8,
+            Self::TooLarge => Reason::TooLarge,
         }
     }
 }

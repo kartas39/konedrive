@@ -196,7 +196,7 @@ fn rows_wait_for_their_parents_mkdir_and_a_folder_delete_for_what_is_inside() {
     let runnable: Vec<i64> = s.outbox_runnable(0).unwrap().iter().map(|r| r.seq).collect();
     assert_eq!(runnable, vec![mkdir, update_y]);
 
-    s.outbox_set_state(update_y, OutboxState::Retry, Some("503"), Some(100)).unwrap();
+    s.outbox_set_state(update_y, OutboxState::Retry, Some(&"503".into()), Some(100)).unwrap();
     assert_eq!(s.outbox_runnable(99).unwrap().iter().map(|r| r.seq).collect::<Vec<_>>(), vec![mkdir]);
     assert!(s.outbox_runnable(100).unwrap().iter().any(|r| r.seq == update_y), "its time has come");
     // A merge keeps the backoff.
@@ -322,7 +322,7 @@ fn a_rows_bad_item_survives_a_settle_and_a_merge() {
     let by_etag = BadItem::answered("BAD", None, Some("e-BAD"));
     assert!(by_etag.still(Some("c"), Some("e-BAD")) && !by_etag.still(Some("c"), Some("e-moved")));
     s.outbox_set_bad_item(seq, Some(&bad)).unwrap();
-    s.outbox_set_state(seq, OutboxState::Retry, Some("network"), Some(5)).unwrap();
+    s.outbox_set_state(seq, OutboxState::Retry, Some(&"network".into()), Some(5)).unwrap();
     assert_eq!(s.outbox_record(&Detection { rel: "b.txt".into(), target_name: Some("b.txt".into()), state: OutboxState::Waiting, ..d.clone() }).unwrap(), Recorded::Merged(seq));
     s.outbox_amend(seq, |row| row.snapshot = Some("1 2".into())).unwrap();
     assert_eq!(s.outbox_bad_item(seq).unwrap(), Some(bad));
@@ -334,7 +334,7 @@ fn a_rows_bad_item_survives_a_settle_and_a_merge() {
     let old = s.outbox_bad_item(seq).unwrap().unwrap();
     assert_eq!(old, BadItem { id: "OLD!1".into(), ctag: None, etag: None }, "an older row has no tag");
     assert!(old.still(Some("c"), Some("e")), "and is taken for the bad upload, as that version took it");
-    assert_eq!(s.outbox_row(seq).unwrap().unwrap().reason.as_deref(), Some("hash-mismatch"));
+    assert_eq!(s.outbox_row(seq).unwrap().unwrap().reason_text().as_deref(), Some("hash-mismatch"));
     assert_eq!(s.outbox_bad_item(seq + 1).unwrap(), None, "no such row");
 }
 
@@ -345,7 +345,7 @@ fn an_unreadable_row_is_blocked() {
     s.conn.execute("UPDATE outbox SET kind = 'frobnicate' WHERE seq = ?1", [seq]).unwrap();
     let row = s.outbox_row(seq).unwrap().unwrap();
     assert_eq!(row.state, OutboxState::Blocked);
-    assert!(row.reason.unwrap().contains("frobnicate"));
+    assert!(row.reason_text().unwrap().contains("frobnicate"));
     assert!(s.outbox_runnable(i64::MAX).unwrap().is_empty());
 }
 

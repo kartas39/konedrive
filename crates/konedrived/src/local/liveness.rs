@@ -218,7 +218,7 @@ pub fn renew_handles(store: &Store, now: &str) -> Result<usize, konedrive_tree::
     let mut dropped = 0;
     for row in rows {
         let Some(id) = row.item_id.clone() else { continue };
-        let found = row.target_name.as_deref().map(Path::new).filter(|p| p.is_absolute()).and_then(|path| {
+        let found = row.last_place().and_then(|path| {
             let carries = xattr::get(path, konedrive_fs::placeholder::XATTR_ITEM_ID).ok().flatten();
             let meta = std::fs::symlink_metadata(path).ok()?;
             let dir = File::open(path.parent()?).ok()?;

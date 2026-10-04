@@ -383,7 +383,7 @@ async fn what_keeps_a_leaving_folder_is_shown_and_a_move_from_before_does_not() 
     assert_eq!(w.graph.with(|c| c.count("PATCH", "items/")), 0);
     assert!(w.path("docs/u.txt").exists(), "kept for the file whose state cannot be read");
     let skipped = w.store.call(|s| s.local_skipped()).await.unwrap();
-    assert!(skipped.iter().any(|k| k.rel == Path::new("docs/u.txt") && k.reason == crate::local::examine::UNKNOWN_STATE), "{skipped:?}");
+    assert!(skipped.iter().any(|k| k.rel == Path::new("docs/u.txt") && k.reason == konedrive_tree::outbox::LocalSkip::UnknownState), "{skipped:?}");
     std::fs::remove_file(w.path("docs/u.txt")).unwrap();
     w.cycle(&listing).await;
     assert!(!w.path("docs").exists(), "gone once its cause is");
@@ -410,7 +410,7 @@ async fn a_filesystem_mounted_inside_keeps_a_leaving_folder_and_says_so() {
     w.cycle(&listing).await;
     assert!(w.path("docs/sub").exists(), "kept while something is mounted inside");
     let skipped = w.store.call(|s| s.local_skipped()).await.unwrap();
-    assert!(skipped.iter().any(|k| k.rel == Path::new("docs/sub") && k.reason == crate::local::examine::MOUNTED_INSIDE), "{skipped:?}");
+    assert!(skipped.iter().any(|k| k.rel == Path::new("docs/sub") && k.reason == konedrive_tree::outbox::LocalSkip::MountedInside), "{skipped:?}");
     std::fs::remove_dir(w.path("docs/sub")).unwrap();
     w.cycle(&listing).await;
     assert!(!w.path("docs").exists(), "gone once nothing is mounted inside");
@@ -768,7 +768,7 @@ async fn a_404_not_confirmed_by_the_listing_keeps_the_change_blocked() {
     w.upload().await;
     let rows = w.store.call(|s| s.outbox_rows()).await.unwrap();
     let row = rows.iter().find(|r| r.item_id.as_deref() == Some("F")).unwrap_or_else(|| panic!("the change is kept: {rows:?} {:?}", w.graph.with(|c| c.log.clone())));
-    assert_eq!((row.state, row.reason.as_deref()), (konedrive_tree::outbox::OutboxState::Blocked, Some(crate::upload::reason::LEAVING_NOT_FOUND)));
+    assert_eq!((row.state, row.reason_text().as_deref()), (konedrive_tree::outbox::OutboxState::Blocked, Some(konedrive_tree::outbox::Reason::LeavingNotFound.key())));
     assert!(w.path("docs/f.txt").exists());
     w.graph.with(|c| c.trash("F"));
     w.rounds(&listing, 2).await;
@@ -857,7 +857,7 @@ async fn a_change_blocked_by_a_404_is_retried_when_onedrive_lists_its_item_again
     w.upload().await;
     let blocked = |w: &World| {
         let w = w.store.clone();
-        async move { w.call(|s| s.outbox_rows()).await.unwrap().into_iter().any(|r| r.reason.as_deref() == Some(crate::upload::reason::LEAVING_NOT_FOUND)) }
+        async move { w.call(|s| s.outbox_rows()).await.unwrap().into_iter().any(|r| r.reason_text().as_deref() == Some(konedrive_tree::outbox::Reason::LeavingNotFound.key())) }
     };
     assert!(blocked(&w).await, "blocked by the 404");
     w.graph.with(|c| c.touch("F"));
@@ -991,10 +991,10 @@ async fn a_blocked_404_row_goes_once_the_listing_removes_its_item() {
     w.graph.with(|c| c.script("POST", "items/T/createUploadSession", wiremock::ResponseTemplate::new(404).set_body_json(serde_json::json!({"error": {"code": "itemNotFound"}})), 1));
     w.upload().await;
     let reasons = || async { w.store.call(|s| s.outbox_rows()).await.unwrap().into_iter().filter_map(|r| r.reason).collect::<Vec<_>>() };
-    assert!(reasons().await.iter().any(|r| r == crate::upload::reason::LEAVING_NOT_FOUND), "{:?}", reasons().await);
+    assert!(reasons().await.contains(&konedrive_tree::outbox::Reason::LeavingNotFound), "{:?}", reasons().await);
     w.graph.with(|c| c.trash("T"));
     w.rounds(&listing, 2).await;
-    assert!(!reasons().await.iter().any(|r| r == crate::upload::reason::LEAVING_NOT_FOUND), "the blocked row went");
+    assert!(!reasons().await.contains(&konedrive_tree::outbox::Reason::LeavingNotFound), "the blocked row went");
     assert!(!w.path("docs/top.txt").exists(), "removed here as OneDrive removed it");
     assert!(w.graph.with(|c| c.items.values().all(|i| i.name != "top.txt")), "never uploaded as new");
 }
@@ -1019,7 +1019,7 @@ impl World {
     }
 
     async fn not_found_rows(&self) -> usize {
-        self.store.call(|s| s.outbox_rows()).await.unwrap().into_iter().filter(|r| r.reason.as_deref() == Some(crate::upload::reason::LEAVING_NOT_FOUND)).count()
+        self.store.call(|s| s.outbox_rows()).await.unwrap().into_iter().filter(|r| r.reason_text().as_deref() == Some(konedrive_tree::outbox::Reason::LeavingNotFound.key())).count()
     }
 }
 

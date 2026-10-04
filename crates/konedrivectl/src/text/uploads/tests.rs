@@ -1,3 +1,5 @@
+use konedrive_tree::outbox::{Group, LocalSkip, Reason};
+
 use super::{not_uploaded_text, outbox_text, quota_text, space_waiting_text, upload_reason_text};
 
 #[test]
@@ -78,4 +80,141 @@ fn the_reasons_the_worker_writes_have_sentences() {
     );
     assert!(upload_reason_text("no-guard").contains("(no-guard)"));
     assert_eq!(upload_reason_text("download-failed: errno 5"), "download-failed: errno 5", "a key with no sentence stays as stored");
+}
+
+/// How a row's reason is stored and sent, written out, and whether
+/// `konedrivectl` has a sentence for it (the rest it shows as stored). A new
+/// variant does not compile until it is spelled here.
+fn spelled(reason: &Reason) -> (&'static str, bool) {
+    match reason {
+        Reason::OpenForWriting => ("open-for-writing", true),
+        Reason::MassDelete => ("mass-delete", true),
+        Reason::NameCharacters => ("name-characters", true),
+        Reason::NameSpaces => ("name-spaces", true),
+        Reason::NameReserved => ("name-reserved", true),
+        Reason::NameNotUtf8 => ("name-not-utf8", true),
+        Reason::TooLarge => ("too-large", true),
+        Reason::Quota => ("quota-exceeded", true),
+        Reason::Forbidden => ("forbidden", true),
+        Reason::Refused(_) => ("refused", true),
+        Reason::Locked => ("locked", true),
+        Reason::NotFound => ("not-found", false),
+        Reason::LeavingNotFound => ("leaving-not-found", true),
+        Reason::NotLocal => ("not-downloaded", true),
+        Reason::Changed => ("changed-while-sending", false),
+        Reason::Parent => ("parent-not-in-onedrive", false),
+        Reason::Hash => ("hash-mismatch", false),
+        Reason::MoveOut => ("move-out-not-yet", false),
+        Reason::NoHelper => ("waiting-for-the-helper", false),
+        Reason::Unreachable(_) => ("moved-out-unreachable", false),
+        Reason::BackInside => ("back-in-the-folder", false),
+        Reason::PlaceUnknown => ("moved-out-place-unknown", false),
+        Reason::NotOpened(_) => ("moved-out-not-opened", true),
+        Reason::Download(_) => ("download-failed", false),
+        Reason::GoneOnce => ("gone-once", false),
+        Reason::StaleHandle => ("handle-from-another-filesystem", false),
+        Reason::GoneUnproved => ("gone-unproved", false),
+        Reason::NoLease(_) => ("lease-probe-failed", false),
+        Reason::Paused => ("paused", true),
+        Reason::SessionOpen => ("upload-session-open", true),
+        Reason::NameHeld => ("name-held-by-an-upload", true),
+        Reason::ChangedAgain => ("changed in OneDrive again and again", true),
+        Reason::ChangingAgain => ("changing in OneDrive again and again", true),
+        Reason::SessionEnded => ("the upload session ended twice", true),
+        Reason::NotAllowed(_) => ("not allowed now", true),
+        Reason::BadState(_) => ("state-unreadable", true),
+        Reason::NoName => ("no-name", true),
+        Reason::NoItem => ("no-item", true),
+        Reason::NoGuard => ("no-guard", true),
+        Reason::NoHandle => ("no-handle", true),
+        Reason::BadHandle => ("bad-handle", true),
+        Reason::AnotherItem => ("another-item", true),
+        Reason::Blocked => ("blocked", true),
+        Reason::Network => ("network", true),
+        Reason::LocalIo => ("local-error", true),
+        Reason::Store => ("index-error", true),
+        Reason::Failed => ("upload-error", true),
+        Reason::WaitingForSpace => ("waiting-for-space", true),
+        Reason::TooBig(_) => ("too-big", true),
+        Reason::Other(_) => unreachable!("not a spelling of its own"),
+    }
+}
+
+/// The same for what an examination never uploads.
+fn skip_spelled(skip: &LocalSkip) -> (&'static str, bool) {
+    match skip {
+        LocalSkip::Symlink => ("symlink", true),
+        LocalSkip::Fifo => ("fifo", true),
+        LocalSkip::Socket => ("socket", true),
+        LocalSkip::Device => ("device", true),
+        LocalSkip::ReservedName => ("reserved-name", true),
+        LocalSkip::HardLink => ("hard-link", true),
+        LocalSkip::NotDownloaded => ("not-downloaded", true),
+        LocalSkip::OtherDevice => ("other-device", true),
+        LocalSkip::UnknownState => ("unknown-state", true),
+        LocalSkip::MountedInside => ("mounted-inside", true),
+        LocalSkip::Ignored => ("ignored", false),
+        LocalSkip::Other(_) => unreachable!("not a spelling of its own"),
+    }
+}
+
+/// Quality finding `X1`: the spellings stored in the outbox and sent over
+/// D-Bus are the contract with the database and with the window's and
+/// Dolphin's tables. Each one, written out here, is its variant's key and
+/// reads back as the variant; and `konedrivectl` words it, or shows it as
+/// stored where it has no sentence yet. A reworded key fails here.
+#[test]
+fn every_reason_is_stored_under_its_spelling_and_is_worded() {
+    assert_eq!((Reason::ALL.len(), LocalSkip::ALL.len()), (49, 11));
+    let mut seen = std::collections::BTreeSet::new();
+    for reason in Reason::ALL {
+        let (spelling, worded) = spelled(&reason);
+        assert_eq!((reason.key(), reason.to_string().as_str()), (spelling, spelling));
+        assert_eq!(Reason::parse(spelling), reason, "{spelling}");
+        assert_eq!(upload_reason_text(spelling) != spelling, worded, "{spelling}");
+        assert!(seen.insert(spelling), "{spelling} is spelled twice");
+    }
+    for skip in LocalSkip::ALL {
+        let (spelling, worded) = skip_spelled(&skip);
+        assert_eq!((skip.key(), skip.to_string().as_str()), (spelling, spelling));
+        assert_eq!(LocalSkip::parse(spelling), skip, "{spelling}");
+        assert_eq!(upload_reason_text(spelling) != spelling, worded, "{spelling}");
+        // `not-downloaded` is a row's reason too, with the same sentence.
+        assert!(seen.insert(spelling) || skip == LocalSkip::NotDownloaded, "{spelling} is spelled twice");
+    }
+    // The forms with something behind the key, as the daemon writes them.
+    let detailed = [
+        ("refused: The name is not allowed", Reason::Refused(Some("The name is not allowed".into())), "OneDrive refused it: The name is not allowed"),
+        ("too-big:3221225472:1073741824", Reason::TooBig(Some((3221225472, 1073741824))), "too big: needs 3.0 GiB, 1.0 GiB free"),
+        (
+            "moved-out-not-opened: Resource temporarily unavailable",
+            Reason::NotOpened(Some("Resource temporarily unavailable".into())),
+            "moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later (Resource temporarily unavailable)",
+        ),
+        (
+            "not allowed now: the folder is read-only",
+            Reason::NotAllowed(Some("the folder is read-only".into())),
+            "uploads are not allowed now: it goes on when they are (the folder is read-only)",
+        ),
+        (
+            "state-unreadable: Input/output error (os error 5)",
+            Reason::BadState(Some("Input/output error (os error 5)".into())),
+            "the file's konedrive state cannot be read: it stays here until the file is replaced (Input/output error (os error 5))",
+        ),
+        ("download-failed: errno 5", Reason::Download(Some("errno 5".into())), "download-failed: errno 5"),
+        ("moved-out-unreachable: errno 13", Reason::Unreachable(Some("errno 13".into())), "moved-out-unreachable: errno 13"),
+        ("lease-probe-failed: Function not implemented", Reason::NoLease(Some("Function not implemented".into())), "lease-probe-failed: Function not implemented"),
+    ];
+    for (stored, reason, text) in detailed {
+        assert_eq!(Reason::parse(stored), reason, "{stored}");
+        assert_eq!(reason.to_string(), stored);
+        assert_eq!(upload_reason_text(stored), text);
+    }
+    // What neither table knows is shown as it came.
+    for stored in ["something-new", "network: connection reset", "error sending request for url (<url>)", "unreadable state \"frobnicate\""] {
+        assert_eq!(upload_reason_text(stored), stored);
+    }
+    assert_eq!(upload_reason_text("too-big:03:1"), "too big: needs 3 B, 1 B free");
+    let groups: Vec<&str> = Group::ALL.iter().map(|g| g.as_str()).collect();
+    assert_eq!(groups, ["one-action", "per-file", "never", "waiting"]);
 }

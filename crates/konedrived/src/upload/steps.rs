@@ -14,12 +14,12 @@ use konedrive_fs::placeholder::State;
 
 use super::engine::{now, outcome_of, Engine, Fail, Outcome};
 use super::local::{self, Found};
-use super::{kind, reason, Fault, SWAP_PREFIX};
+use super::{kind, Fault, SWAP_PREFIX};
 use konedrive_graph::drive::item::RESERVED_PREFIX;
 use konedrive_graph::drive::{DriveError, DriveItem, ItemChange, WriteError};
 use crate::folder::disk::{Disk, Probe};
 use crate::local::{names, RECHECK};
-use konedrive_tree::outbox::{frees, Base, Committed, OutboxKind, OutboxOp, OutboxRow, OutboxState};
+use konedrive_tree::outbox::{frees, Base, Committed, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::{classify, ActivityRow, Change, Kind, Placement, Row, Table};
 
 pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Outcome {
@@ -47,8 +47,8 @@ pub(super) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> io::Result<T
 /// The name of the row's local object: the last part of where the
 /// examination saw it. A name OneDrive refuses is blocked here.
 pub(super) fn local_name(row: &OutboxRow) -> Result<String, Fail> {
-    let name = row.rel.file_name().ok_or(Fail::Now(Outcome::blocked(reason::NO_NAME)))?;
-    let refused = |r: names::Refused| Fail::Now(Outcome::blocked(r.as_str()));
+    let name = row.rel.file_name().ok_or(Fail::Now(Outcome::blocked(Reason::NoName)))?;
+    let refused = |r: names::Refused| Fail::Now(Outcome::blocked(r.reason()));
     let name = name.to_str().ok_or_else(|| refused(names::Refused::NotUtf8))?;
     if let Some(r) = names::refused(OsStr::new(name)) {
         return Err(refused(r));
@@ -58,13 +58,13 @@ pub(super) fn local_name(row: &OutboxRow) -> Result<String, Fail> {
 
 /// Whether the row is taking its item to a temporary name (F55 (7)).
 pub(super) fn in_swap(row: &OutboxRow) -> bool {
-    row.target_name.as_deref().is_some_and(|n| n.starts_with(SWAP_PREFIX))
+    row.swap_name().is_some()
 }
 
 /// The name the row sends: the temporary one while it has one, else the
 /// local object's.
 pub(super) fn wanted_name(row: &OutboxRow, local: &str) -> String {
-    row.target_name.clone().filter(|_| in_swap(row)).unwrap_or_else(|| local.to_owned())
+    row.swap_name().unwrap_or(local).to_owned()
 }
 
 /// `.konedrive-swap-<item id>`, or `-s<seq>` for what has no id yet.
@@ -216,7 +216,7 @@ pub(super) enum Taken {
     /// can tell, the placeholder of an upload session — another device's,
     /// one abandoned, or one of this folder's (issue #89). Never copied
     /// around, never deleted (a delete ends its session): the row waits
-    /// ([`reason::NAME_HELD`]).
+    /// ([`Reason::NameHeld`]).
     Held,
     /// Something else: keep both (§6).
     Copy,
@@ -290,7 +290,7 @@ pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str,
 /// [`Taken::Held`]: the row waits for the name, with the usual backoff.
 pub(super) fn held(row: &OutboxRow) -> Outcome {
     tracing::info!("{}: its name in OneDrive is held by an unfinished upload (another device, or one abandoned); waiting", row.rel.display());
-    Outcome::backoff(reason::NAME_HELD)
+    Outcome::backoff(Reason::NameHeld)
 }
 
 /// The row goes to `swap` first (saved before it is sent, WR7).
@@ -446,7 +446,7 @@ pub(super) async fn upload_as_new(e: &Engine, row: &OutboxRow, found: &Found, pa
 async fn mkdir(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
     let local = local_name(&row)?;
     let Some(found) = locate(e, disk, &row).await?.filter(|f| f.is_dir) else { return never_uploaded(e, disk, &row).await };
-    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
+    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
     let name = wanted_name(&row, &local);
     // Opened before the request, as a file's content is: the commit marks the
     // directory that was made, wherever it is by then — renamed, or removed.
@@ -467,7 +467,7 @@ async fn mkdir(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
         },
         Err(WriteError::NotFound) => {
             e.cfg.host.cycle_wanted();
-            Ok(Outcome::backoff(reason::PARENT))
+            Ok(Outcome::backoff(Reason::Parent))
         }
         Err(other) => Err(other.into()),
     }
@@ -490,12 +490,12 @@ async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::Fi
 }
 
 async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
-    let (Some(id), Some(base)) = (row.item_id.clone(), row.base.clone()) else { return Ok(Outcome::blocked(reason::NO_ITEM)) };
+    let (Some(id), Some(base)) = (row.item_id.clone(), row.base.clone()) else { return Ok(Outcome::blocked(Reason::NoItem)) };
     let local = local_name(&row)?;
-    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(reason::PARENT, RECHECK)) };
+    let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
     let name = wanted_name(&row, &local);
     let found = locate(e, disk, &row).await?;
-    let Some(guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(reason::NO_GUARD)) };
+    let Some(guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(Reason::NoGuard)) };
     let change = ItemChange {
         name: (Some(name.as_str()) != base.name.as_deref()).then_some(name.as_str()),
         parent_id: (Some(parent.as_str()) != base.parent.as_deref()).then_some(parent.as_str()),
@@ -525,7 +525,7 @@ async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
             Taken::Held => Ok(held(&row)),
             Taken::Copy => match &found {
                 Some(found) => copy(e, disk, &row, found, &parent, None).await,
-                None => Ok(Outcome::later(reason::NOT_FOUND, RECHECK)),
+                None => Ok(Outcome::later(Reason::NotFound, RECHECK)),
             },
         },
         Err(WriteError::Changed) => {
@@ -605,7 +605,7 @@ async fn move_gone(e: &Engine, disk: &Disk, row: &OutboxRow, found: Option<&Foun
             // Still the same placeholder, holding nothing, and nobody has it
             // open (a write lease, as a free-up takes): removed.
             let file = found.open()?;
-            let Some(lease) = WriteLease::take(&file)? else { return Ok(Outcome::later(reason::NOT_LOCAL, RECHECK)) };
+            let Some(lease) = WriteLease::take(&file)? else { return Ok(Outcome::later(Reason::NotLocal, RECHECK)) };
             let again = local::find(disk, &found.rel)?;
             if again.as_ref().is_some_and(|a| a.inode.same_object(&found.inode)) && found.state()? == Some(State::OnlineOnly) {
                 disk.remove(&found.dir, &found.name, false)?;
@@ -618,7 +618,7 @@ async fn move_gone(e: &Engine, disk: &Disk, row: &OutboxRow, found: Option<&Foun
             Ok(Outcome::Done)
         }
         Some(State::Hydrated) | None => upload_as_new(e, row, found, parent, id).await,
-        Some(_) => Ok(Outcome::later(reason::NOT_LOCAL, RECHECK)),
+        Some(_) => Ok(Outcome::later(Reason::NotLocal, RECHECK)),
     }
 }
 
@@ -636,7 +636,7 @@ pub(super) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result<Outcome, F
     if folder {
         return delete_folder(e, &row, &id).await;
     }
-    let Some(guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(reason::NO_GUARD)) };
+    let Some(guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(Reason::NoGuard)) };
     match e.cfg.drive.delete_item(&id, &guard).await {
         Ok(()) => {
             e.fault(Fault::AfterSend)?;
@@ -695,7 +695,7 @@ async fn file_changed(e: &Engine, row: &OutboxRow, id: &str, base: &Base) -> Res
             Err(other) => return Err(other.into()),
         }
     }
-    Ok(Outcome::backoff(reason::CHANGED_AGAIN))
+    Ok(Outcome::backoff(Reason::ChangedAgain))
 }
 
 /// A folder's delete (§4.7): one `DELETE` of the whole folder, unguarded —
@@ -758,7 +758,7 @@ async fn landed_away(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<bool, F
     if row.kind != OutboxKind::Create {
         return Ok(false);
     }
-    let Some((size, mtime)) = row.snapshot.as_deref().and_then(sent) else { return Ok(false) };
+    let Some((size, mtime)) = row.snapshot_sent() else { return Ok(false) };
     let limits = e.cfg.limits;
     let last_sent = size <= limits.small_max || (row.session_url.is_some() && row.session_next.unwrap_or(0).saturating_add(limits.chunk) >= size);
     if !last_sent {
@@ -777,12 +777,4 @@ async fn landed_away(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<bool, F
         Err(WriteError::Changed) => Ok(false),
         Err(err) => Err(err.into()),
     }
-}
-
-/// The size and time (Unix seconds) a row's snapshot, `<size> <mtime_ns>`,
-/// says were sent.
-fn sent(snapshot: &str) -> Option<(u64, i64)> {
-    let (size, ns) = snapshot.split_once(' ')?;
-    let ns: i128 = ns.parse().ok()?;
-    Some((size.parse().ok()?, i64::try_from(ns.div_euclid(1_000_000_000)).ok()?))
 }

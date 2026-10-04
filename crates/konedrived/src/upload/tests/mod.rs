@@ -670,10 +670,10 @@ fn pause_and_blocked_rows() {
         c.script("POST", "full.txt", ResponseTemplate::new(507), 1);
     });
     w.h.drain(&restarted);
-    let state = |rel: &str| w.rows().into_iter().find(|r| r.rel == Path::new(rel)).map(|r| (r.state, r.reason.unwrap_or_default()));
+    let state = |rel: &str| w.rows().into_iter().find(|r| r.rel == Path::new(rel)).map(|r| (r.state, r.reason_text().unwrap_or_default()));
     assert_eq!(state("refused.txt"), Some((OutboxState::Blocked, "refused: bad name".into())));
     // No quota to read: taken for full, and waiting for space in its place.
-    assert_eq!(state("full.txt"), Some((OutboxState::Ready, space::WAITING.into())));
+    assert_eq!(state("full.txt"), Some((OutboxState::Ready, Reason::WaitingForSpace.key().into())));
     assert_eq!(state("open.txt").map(|s| s.0), Some(OutboxState::Waiting));
     assert_eq!(w.attr("refused.txt", XATTR_SYNC).as_deref(), Some("blocked"));
     assert_eq!(w.attr("open.txt", XATTR_SYNC).as_deref(), Some("pending"));
@@ -703,7 +703,7 @@ fn content_requests(w: &World, name: &str) -> usize {
 }
 
 fn reason_of(w: &World, rel: &str) -> Option<String> {
-    w.rows().into_iter().find(|r| r.rel == Path::new(rel)).and_then(|r| r.reason)
+    w.rows().into_iter().find(|r| r.rel == Path::new(rel)).and_then(|r| r.reason_text())
 }
 
 /// Issue #2, no space left: the first refusal reads the quota, the account
@@ -723,7 +723,7 @@ fn a_full_onedrive_sends_no_content_but_moves_and_deletes_go() {
     assert!(engine.space_full());
     assert_eq!(w.cloud(|c| c.quota_reads()), 1, "one read for the refusal");
     assert_eq!(content_requests(&w, "n1.txt") + content_requests(&w, "n2.txt"), 1, "one refusal, then nothing more");
-    assert_eq!(reason_of(&w, "n1.txt").as_deref(), Some(space::WAITING));
+    assert_eq!(reason_of(&w, "n1.txt").as_deref(), Some(Reason::WaitingForSpace.key()));
     assert!(w.rows().iter().all(|r| r.state == OutboxState::Ready), "{:?}", w.summary());
     let counts = engine.status().counts;
     assert_eq!((counts.space_waiting, counts.space_waiting_bytes, counts.blocked), (2, 6, 0));
@@ -763,7 +763,7 @@ fn a_file_too_big_for_the_space_left_waits_alone() {
     assert_committed(&w, "a.txt", "a.txt");
     assert_committed(&w, "b.txt", "b.txt");
     let reason = reason_of(&w, "big.bin").unwrap();
-    assert_eq!(space::parse_too_big(&reason).map(|(needs, _)| needs), Some(big.len() as u64), "{reason}");
+    assert_eq!(Reason::parse(&reason).sizes().map(|(needs, _)| needs), Some(big.len() as u64), "{reason}");
     assert_eq!(engine.status().counts.too_big, 1);
     let sent = content_requests(&w, "big.bin");
 
@@ -801,7 +801,7 @@ fn the_worker_reads_and_adjusts_the_accounts_one_quota() {
     let engine = w.run();
     assert_eq!(w.cloud(|c| c.quota_reads()), 0, "the account's read of a moment ago decided the refusal");
     let reason = reason_of(&w, "big.bin").unwrap();
-    assert_eq!(space::parse_too_big(&reason).map(|(needs, _)| needs), Some(big.len() as u64), "{reason}");
+    assert_eq!(Reason::parse(&reason).sizes().map(|(needs, _)| needs), Some(big.len() as u64), "{reason}");
     assert_eq!(quota(&w.h.quota.state().get()), ((1 << 20) + 3, 10 << 20, 1280 * 1024 - 3, "normal".into()), "a.txt went up");
 
     w.cloud(|c| c.free = Some(5 << 20));
@@ -836,7 +836,7 @@ fn rows_blocked_on_a_full_onedrive_before_wait_for_space_after_a_start() {
     w.write("full.txt", b"f");
     w.examine(&[("", "full.txt")]);
     let seq = w.rows()[0].seq;
-    w.store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some(reason::QUOTA), Some(engine::now() + 1800))).unwrap();
+    w.store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some(&Reason::Quota), Some(engine::now() + 1800))).unwrap();
     w.cloud(|c| c.free = Some(10 << 20));
     let engine = w.h.engine();
     w.h.block_on(engine.space_start());
@@ -921,7 +921,7 @@ fn a_full_onedrive_stops_a_session_after_its_fragment_and_space_resumes_it() {
     drain_stopped_mid_request(&w, &engine, "PUT", "upload/", || w.h.block_on(engine.apply_quota(&exceeded)));
     assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 1, "no fragment after the one in flight");
     let row = w.rows().remove(0);
-    assert_eq!((row.state, row.reason.as_deref()), (OutboxState::Ready, Some(space::WAITING)));
+    assert_eq!((row.state, row.reason_text().as_deref()), (OutboxState::Ready, Some(Reason::WaitingForSpace.key())));
     assert_eq!(row.session_next, Some(320 * 1024), "the session is kept");
 
     w.cloud(|c| c.free = Some(10 << 20));
@@ -947,7 +947,7 @@ fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
         drain_paused_mid_request(&w, &engine, "PUT", "upload/", || {});
         assert_eq!(w.cloud(|c| c.count("PUT", "upload/")), 1, "no fragment after the one in flight");
         let row = w.rows().remove(0);
-        assert_eq!((row.state, row.reason.as_deref()), (OutboxState::Waiting, Some(reason::PAUSED)));
+        assert_eq!((row.state, row.reason_text().as_deref()), (OutboxState::Waiting, Some(Reason::Paused.key())));
         assert!(row.session_url.is_some(), "the session is kept");
         assert_eq!(row.session_next, Some(320 * 1024));
         let status = engine.status();
@@ -1157,7 +1157,7 @@ fn a_row_through_a_temporary_name_keeps_the_users_name_after_a_retry() {
         assert!(w.cloud(|c| c.item("A").unwrap().name.starts_with(SWAP_PREFIX)), "the PATCH to the temporary name landed");
         if !edited {
             // Backed off, then examined: the merge keeps the temporary name.
-            w.store.call_blocking(move |s| s.outbox_set_state(a.seq, OutboxState::Retry, Some("test"), Some(0))).unwrap();
+            w.store.call_blocking(move |s| s.outbox_set_state(a.seq, OutboxState::Retry, Some(&"test".into()), Some(0))).unwrap();
             w.examine(&[("", "a"), ("", "b")]);
             assert_eq!(of("A").target_name, a.target_name, "a replay looks for it there");
         }
@@ -1409,11 +1409,11 @@ fn a_failure_is_one_of_four_keys() {
         Outcome::Again { reason, backoff: true, detail: Some(_), .. } => reason.unwrap(),
         other => panic!("not a backoff with a detail: {other:?}"),
     };
-    assert_eq!(key(Fail::Write(WriteError::Transient("cannot reach Microsoft Graph: error sending request".into()))), reason::NETWORK);
-    assert_eq!(key(Fail::Io(std::io::Error::other("disk"))), reason::LOCAL_IO);
-    assert_eq!(key(Fail::Store(konedrive_tree::TreeError::Schema(None))), reason::STORE);
+    assert_eq!(key(Fail::Write(WriteError::Transient("cannot reach Microsoft Graph: error sending request".into()))), Reason::Network);
+    assert_eq!(key(Fail::Io(std::io::Error::other("disk"))), Reason::LocalIo);
+    assert_eq!(key(Fail::Store(konedrive_tree::TreeError::Schema(None))), Reason::Store);
     for e in [WriteError::Failed("odd".into()), WriteError::Changed, WriteError::NameExists, WriteError::NotFound, WriteError::SessionGone] {
-        assert_eq!(key(Fail::Write(e)), reason::FAILED);
+        assert_eq!(key(Fail::Write(e)), Reason::Failed);
     }
 }
 
@@ -1439,7 +1439,7 @@ fn a_network_failure_waits_as_network() {
     let engine = w.h.engine();
     w.h.drain(&engine);
     assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Retry)]);
-    assert_eq!(reason_of(&w, "a.txt").as_deref(), Some(reason::NETWORK));
+    assert_eq!(reason_of(&w, "a.txt").as_deref(), Some(Reason::Network.key()));
     w.h.block_on(engine.retry_now()).unwrap();
     w.h.drain(&engine);
     assert_committed(&w, "a.txt", "a.txt");

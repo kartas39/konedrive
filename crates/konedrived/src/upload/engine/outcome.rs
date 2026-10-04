@@ -1,9 +1,8 @@
 use std::io;
 use std::time::Duration;
 
-use crate::upload::reason;
 use konedrive_graph::drive::{DriveError, WriteError};
-use konedrive_tree::outbox::OutboxState;
+use konedrive_tree::outbox::{OutboxState, Reason};
 use konedrive_tree::TreeError;
 
 use super::now;
@@ -29,7 +28,7 @@ pub(in crate::upload) enum Outcome {
     /// Back in line.
     /// `detail` is a failure's own text, for the journal only (issue #87):
     /// never the row's reason.
-    Again { state: OutboxState, reason: Option<String>, next_try: Option<i64>, backoff: bool, detail: Option<String> },
+    Again { state: OutboxState, reason: Option<Reason>, next_try: Option<i64>, backoff: bool, detail: Option<String> },
     /// OneDrive asked the whole account to wait (§4.10).
     Throttled(Option<Duration>),
     SignedOut,
@@ -42,7 +41,7 @@ pub(in crate::upload) enum Outcome {
     NoSpace,
     /// Ready, in its place, but not taken until a quota read lets it go:
     /// `waiting-for-space` or `too-big:…` (`space`).
-    Space(String),
+    Space(Reason),
 }
 
 impl Outcome {
@@ -53,28 +52,28 @@ impl Outcome {
     }
 
     /// Waiting (not quiet): looked at again after `after`.
-    pub fn wait(reason: &str, after: Duration) -> Self {
-        Outcome::Again { state: OutboxState::Waiting, reason: Some(reason.into()), next_try: Some(now() + after.as_secs() as i64), backoff: false, detail: None }
+    pub fn wait(reason: Reason, after: Duration) -> Self {
+        Outcome::Again { state: OutboxState::Waiting, reason: Some(reason), next_try: Some(now() + after.as_secs() as i64), backoff: false, detail: None }
     }
 
-    pub fn later(reason: &str, after: Duration) -> Self {
-        Outcome::Again { state: OutboxState::Retry, reason: Some(reason.into()), next_try: Some(now() + after.as_secs() as i64), backoff: false, detail: None }
+    pub fn later(reason: Reason, after: Duration) -> Self {
+        Outcome::Again { state: OutboxState::Retry, reason: Some(reason), next_try: Some(now() + after.as_secs() as i64), backoff: false, detail: None }
     }
 
     /// In backoff: 1 s doubling to an hour with each attempt.
-    pub fn backoff(reason: impl Into<String>) -> Self {
-        Outcome::Again { state: OutboxState::Retry, reason: Some(reason.into()), next_try: None, backoff: true, detail: None }
+    pub fn backoff(reason: Reason) -> Self {
+        Outcome::Again { state: OutboxState::Retry, reason: Some(reason), next_try: None, backoff: true, detail: None }
     }
 
-    /// In backoff for a failure: `key` is one of the reason keys for a
-    /// failure ([`reason::NETWORK`] and the others), `detail` the error's
+    /// In backoff for a failure: `key` is one of the reasons for a
+    /// failure ([`Reason::Network`] and the others), `detail` the error's
     /// own text, which only the journal gets (issue #87).
-    pub fn failed(key: &str, detail: impl ToString) -> Self {
-        Outcome::Again { state: OutboxState::Retry, reason: Some(key.into()), next_try: None, backoff: true, detail: Some(detail.to_string()) }
+    pub fn failed(key: Reason, detail: impl ToString) -> Self {
+        Outcome::Again { state: OutboxState::Retry, reason: Some(key), next_try: None, backoff: true, detail: Some(detail.to_string()) }
     }
 
-    pub fn blocked(reason: impl Into<String>) -> Self {
-        Outcome::Again { state: OutboxState::Blocked, reason: Some(reason.into()), next_try: None, backoff: false, detail: None }
+    pub fn blocked(reason: Reason) -> Self {
+        Outcome::Again { state: OutboxState::Blocked, reason: Some(reason), next_try: None, backoff: false, detail: None }
     }
 }
 
@@ -127,18 +126,18 @@ pub(in crate::upload) fn outcome_of(fail: Fail) -> Outcome {
     match fail {
         Fail::Now(outcome) => outcome,
         Fail::Crashed => Outcome::Crashed,
-        Fail::Store(e) => Outcome::failed(reason::STORE, e),
-        Fail::Io(e) => Outcome::failed(reason::LOCAL_IO, e),
+        Fail::Store(e) => Outcome::failed(Reason::Store, e),
+        Fail::Io(e) => Outcome::failed(Reason::LocalIo, e),
         Fail::Write(e) => match e {
             WriteError::QuotaExceeded => Outcome::NoSpace,
             WriteError::Throttled { retry_after } => Outcome::Throttled(retry_after),
-            WriteError::Locked => Outcome::backoff(reason::LOCKED),
+            WriteError::Locked => Outcome::backoff(Reason::Locked),
             WriteError::Forbidden => Outcome::Forbidden,
             WriteError::SignedOut => Outcome::SignedOut,
-            WriteError::Refused(message) => Outcome::blocked(format!("{}: {message}", reason::REFUSED)),
-            e @ WriteError::Transient(_) => Outcome::failed(reason::NETWORK, e),
+            WriteError::Refused(message) => Outcome::blocked(Reason::Refused(Some(message))),
+            e @ WriteError::Transient(_) => Outcome::failed(Reason::Network, e),
             // `Failed`, and a `412`, `409`, `404` or ended session no step settled.
-            other => Outcome::failed(reason::FAILED, other),
+            other => Outcome::failed(Reason::Failed, other),
         },
     }
 }

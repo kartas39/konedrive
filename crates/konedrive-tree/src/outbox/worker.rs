@@ -6,7 +6,7 @@
 use konedrive_fs::handle::FileHandle;
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{insert, rewrite, rows_for, rows_where, BadItem, Base, OutboxKind, OutboxRow, OutboxState, OUTBOX_SEQ, SWAP_PREFIX};
+use super::{insert, rewrite, rows_for, rows_where, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, Snapshot, OUTBOX_SEQ, SWAP_PREFIX};
 use crate::{apply, upsert, ActivityRow, Change, Placement, Row, Table, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
 
 fn gone(seq: i64) -> TreeError {
@@ -90,7 +90,8 @@ impl TreeStore {
     /// opened for other content goes with it, in the same transaction, so a
     /// session is never resumed with other bytes. Returns the session
     /// URL it dropped, to be cancelled.
-    pub fn outbox_take_snapshot(&mut self, seq: i64, snapshot: &str) -> Result<Option<String>, TreeError> {
+    pub fn outbox_take_snapshot(&mut self, seq: i64, snapshot: Snapshot) -> Result<Option<String>, TreeError> {
+        let snapshot = snapshot.to_string();
         let tx = self.conn.transaction()?;
         let dropped: Option<Option<String>> = tx
             .query_row("SELECT session_url FROM outbox WHERE seq = ?1 AND snapshot IS NOT ?2", params![seq, snapshot], |r| r.get(0))
@@ -492,12 +493,12 @@ impl TreeStore {
 
     /// Blocked rows whose reason is one of `reasons` are ready again: the
     /// quota changed, the account signed in again.
-    pub fn outbox_unblock(&self, reasons: &[&str]) -> Result<usize, TreeError> {
+    pub fn outbox_unblock(&self, reasons: &[Reason]) -> Result<usize, TreeError> {
         let mut n = 0;
         for reason in reasons {
             n += self
                 .conn
-                .execute("UPDATE outbox SET state = 'ready', next_try = NULL WHERE state = 'blocked' AND reason = ?1", [reason])?;
+                .execute("UPDATE outbox SET state = 'ready', next_try = NULL WHERE state = 'blocked' AND reason = ?1", [reason.to_string()])?;
         }
         Ok(n)
     }
@@ -505,10 +506,10 @@ impl TreeStore {
     /// Rows blocked with reason `from` are ready again with reason `to`, in
     /// their places: rows an earlier version blocked on a full OneDrive wait
     /// for space now (issue #2). How many.
-    pub fn outbox_space_convert(&self, from: &str, to: &str) -> Result<usize, TreeError> {
+    pub fn outbox_space_convert(&self, from: &Reason, to: &Reason) -> Result<usize, TreeError> {
         Ok(self.conn.execute(
             "UPDATE outbox SET state = 'ready', reason = ?2, next_try = NULL WHERE state = 'blocked' AND reason = ?1",
-            [from, to],
+            [from.to_string(), to.to_string()],
         )?)
     }
 

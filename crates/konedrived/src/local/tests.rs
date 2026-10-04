@@ -234,7 +234,7 @@ fn new_things_become_rows_and_what_cannot_be_uploaded_is_listed() {
         ]
     );
     let blocked = fx.row_at("a:b.txt");
-    assert_eq!((blocked.state, blocked.reason.as_deref()), (OutboxState::Blocked, Some("name-characters")));
+    assert_eq!((blocked.state, blocked.reason_text().as_deref()), (OutboxState::Blocked, Some("name-characters")));
     assert_eq!(fx.row_at("new").target_parent.as_deref(), Some("R"));
     assert_eq!(fx.row_at("new/sub").target_parent, None, "its parent's id comes when its mkdir lands");
     let (mkdir, create) = (fx.row_at("new/sub").seq, fx.row_at("new/sub/f.txt").seq);
@@ -242,7 +242,7 @@ fn new_things_become_rows_and_what_cannot_be_uploaded_is_listed() {
     assert!(fx.row_at("new").seq < mkdir, "new folders shallowest first");
 
     let skipped: Vec<(String, String)> =
-        fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason)).collect();
+        fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect();
     assert_eq!(
         skipped,
         vec![(".konedrive-mine".into(), "reserved-name".into()), ("link".into(), "symlink".into()), ("pipe".into(), "fifo".into())]
@@ -310,7 +310,7 @@ fn a_file_open_for_writing_waits_for_its_writer() {
     let out = fx.examine(&names(&[("", "a.txt"), ("", "new.txt")]));
     for rel in ["a.txt", "new.txt"] {
         let row = fx.row_at(rel);
-        assert_eq!((row.state, row.reason.as_deref(), row.next_try), (OutboxState::Waiting, Some("open-for-writing"), Some(1030)), "{rel}");
+        assert_eq!((row.state, row.reason_text().as_deref(), row.next_try), (OutboxState::Waiting, Some("open-for-writing"), Some(1030)), "{rel}");
     }
     assert!(!out.recheck.is_empty());
     assert!(fx.store.call_blocking(move |s| s.outbox_runnable(i64::MAX)).unwrap().is_empty());
@@ -371,7 +371,7 @@ fn renames_and_moves_are_moves_of_the_item() {
     fx.rename("a.txt", "what?.txt");
     fx.examine(&names(&[("", "a.txt"), ("", "what?.txt")]));
     let row = fx.row_at("what?.txt");
-    assert_eq!((row.kind, row.state, row.reason.as_deref()), (Move, OutboxState::Blocked, Some("name-characters")));
+    assert_eq!((row.kind, row.state, row.reason_text().as_deref()), (Move, OutboxState::Blocked, Some("name-characters")));
 }
 
 /// Save-by-rename, as editors do it: the item keeps its id, its version
@@ -471,7 +471,7 @@ fn copies_that_kept_their_attributes_are_new_files() {
     }
     assert_eq!(out.mark_files, vec![PathBuf::from("p.bin")]);
     let skipped = fx.store.call_blocking(move |s| s.local_skipped()).unwrap();
-    assert_eq!(skipped.iter().map(|s| (s.rel.display().to_string(), s.reason.as_str())).collect::<Vec<_>>(), vec![("p-link.bin".into(), "hard-link")]);
+    assert_eq!(skipped.iter().map(|s| (s.rel.display().to_string(), s.reason.key())).collect::<Vec<_>>(), vec![("p-link.bin".into(), "hard-link")]);
 }
 
 /// Rule 7: a base item missing from the batch is decided by its object:
@@ -568,7 +568,7 @@ fn the_mass_delete_guard_holds_a_large_delete() {
     assert_eq!(out.held, 62, "the delete of other.txt still waiting adds up with the folder");
     assert_eq!(fx.row_at("other.txt").state, OutboxState::Held);
     let row = fx.row_at("big");
-    assert_eq!((row.kind, row.state, row.reason.as_deref()), (Delete, OutboxState::Held, Some("mass-delete")));
+    assert_eq!((row.kind, row.state, row.reason_text().as_deref()), (Delete, OutboxState::Held, Some("mass-delete")));
     assert!(fx.store.call_blocking(move |s| s.outbox_runnable(i64::MAX)).unwrap().iter().all(|r| r.seq != row.seq));
     fx.store.call_blocking(move |s| s.outbox_release_held()).unwrap();
     assert!(fx.store.call_blocking(move |s| s.outbox_runnable(i64::MAX)).unwrap().iter().any(|r| r.seq == row.seq));
@@ -596,7 +596,7 @@ fn a_file_from_elsewhere_is_uploaded_if_downloaded_and_listed_if_not() {
     assert_eq!(id_of(&fx.path("linked.txt")).as_deref(), Some("LINKED"), "stripping it would strip its other name too");
     assert_eq!(id_of(&fx.path("ghost.bin")).as_deref(), Some("GHOST"));
     let skipped: Vec<(String, String)> =
-        fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason)).collect();
+        fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect();
     assert_eq!(skipped, vec![("ghost.bin".into(), "not-downloaded".into()), ("linked.txt".into(), "hard-link".into())]);
 }
 
@@ -1285,7 +1285,7 @@ fn w5_fixture_folder_replaced_offline_keeping_one_file() {
         // The worker drives these rows against a fake OneDrive holding
         // what the base holds.
         if let Some(state) = freer {
-            fx.store.call_blocking(move |s| s.outbox_set_state(delete.seq, state, Some("test"), Some(i64::MAX))).unwrap();
+            fx.store.call_blocking(move |s| s.outbox_set_state(delete.seq, state, Some(&"test".into()), Some(i64::MAX))).unwrap();
         }
         let h = Harness::new(&fx.root, &fx.store, &fx.locks);
         let never_deleted = |h: &Harness| {

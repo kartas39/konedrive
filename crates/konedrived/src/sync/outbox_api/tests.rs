@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use super::entries;
-use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState, Reason};
 
 fn row(seq: i64, state: OutboxState, reason: &str) -> OutboxRow {
     OutboxRow {
@@ -14,7 +14,7 @@ fn row(seq: i64, state: OutboxState, reason: &str) -> OutboxRow {
         target_parent: Some("R".into()),
         target_name: None,
         state,
-        reason: Some(reason.into()).filter(|r: &String| !r.is_empty()),
+        reason: Some(reason).filter(|r| !r.is_empty()).map(Reason::parse),
         attempts: 0,
         next_try: Some(1_700_000_000),
         snapshot: Some("100 1".into()),

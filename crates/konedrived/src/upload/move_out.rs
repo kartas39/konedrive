@@ -61,7 +61,6 @@ use async_trait::async_trait;
 use konedrive_fs::placeholder::{self, State};
 
 use super::engine::{Engine, Fail, Outcome};
-use super::reason;
 use crate::folder::disk::Disk;
 use crate::helper::linked::Helper;
 use crate::helper::{reopen_for_writing, Clearance, HelperError};
@@ -70,7 +69,7 @@ use crate::local::liveness::{absent_at, handles_current_async};
 use crate::local::RECHECK;
 use crate::hydration::source::{self, ContentSource, FillError};
 use crate::folder::locks::InodeKey;
-use konedrive_tree::outbox::OutboxRow;
+use konedrive_tree::outbox::{place_name, OutboxRow, Reason, Snapshot};
 use konedrive_tree::Table;
 
 pub(crate) use tidy::{drop_rows, Tidy};
@@ -84,10 +83,10 @@ use walk::{item_id_of, open_met, reopen_dir, walk};
 /// follows — the attributes taken off, the item deleted in OneDrive — may run. Written before the
 /// first of those, so that a replay after a crash, which finds the attributes gone (`EPERM`),
 /// knows that it took them off itself. A row that carries it needs no re-marking.
-pub const CONTENT_LOCAL: &str = "moved-out:local";
+pub const CONTENT_LOCAL: Snapshot = Snapshot::ContentLocal;
 /// The same for a placeholder in the Trash, removed without a download: the row may delete once
 /// it is gone. Such a row is still re-marked while its placeholder is there.
-pub const TRASHED: &str = "moved-out:trash";
+pub const TRASHED: Snapshot = Snapshot::Trashed;
 
 /// How long a first `ESTALE` for a row's own object waits before a second one is believed.
 const GONE_AGAIN: Duration = Duration::from_secs(5);
@@ -150,9 +149,9 @@ async fn before_marker(e: &Engine, disk: &Disk, row: &OutboxRow, id: &str, objec
     if let Some(outcome) = superseded(e, row, id).await? {
         return Ok(Some(outcome));
     }
-    let Some(path) = verified_path(object) else { return Ok(Some(Outcome::backoff(reason::PLACE_UNKNOWN))) };
+    let Some(path) = verified_path(object) else { return Ok(Some(Outcome::backoff(Reason::PlaceUnknown))) };
     if root_path(disk).is_some_and(|root| path.starts_with(root)) {
-        return Ok(Some(Outcome::backoff(reason::BACK_INSIDE)));
+        return Ok(Some(Outcome::backoff(Reason::BackInside)));
     }
     Ok(None)
 }
@@ -175,20 +174,20 @@ async fn superseded(e: &Engine, row: &OutboxRow, id: &str) -> Result<Option<Outc
 }
 
 fn marker(row: &OutboxRow) -> bool {
-    matches!(row.snapshot.as_deref(), Some(CONTENT_LOCAL | TRASHED))
+    row.snapshot().is_some_and(Snapshot::is_marker)
 }
 
 /// Where the row's object was last proved to be (kept in its `target_name`): what an `ESTALE` is
 /// checked against.
 fn last_place(row: &OutboxRow) -> Option<&Path> {
-    row.target_name.as_deref().map(Path::new).filter(|p| p.is_absolute())
+    row.last_place()
 }
 
 /// Keeps where `object` is now, proved, as the row's last place. A name that is not UTF-8 is not
 /// kept: its `ESTALE` stays unproved.
 async fn remember_place(e: &Engine, row: &OutboxRow, object: &File) -> Result<(), Fail> {
     let Some(path) = verified_path(object) else { return Ok(()) };
-    let Some(text) = path.to_str().filter(|t| row.target_name.as_deref() != Some(*t)) else { return Ok(()) };
+    let Some(text) = place_name(&path).filter(|t| row.target_name.as_deref() != Some(*t)) else { return Ok(()) };
     let (seq, text) = (row.seq, text.to_owned());
     Ok(e.store().call(move |s| s.outbox_set_target(seq, None, Some(&text))).await?)
 }
@@ -221,10 +220,10 @@ impl Engine {
         }
         match konedrive_fs::lease::open_for_writing(object) {
             Ok(false) => {}
-            Ok(true) => return Ok(Local::No(Outcome::later(crate::local::examine::OPEN_FOR_WRITING, RECHECK))),
+            Ok(true) => return Ok(Local::No(Outcome::later(Reason::OpenForWriting, RECHECK))),
             // Leases off (`fs.leases-enable=0`) or not supported: nothing can tell a writer,
             // so nothing is filled.
-            Err(err) => return Ok(Local::No(Outcome::backoff(format!("{}: {err}", reason::NO_LEASE)))),
+            Err(err) => return Ok(Local::No(Outcome::backoff(Reason::NoLease(Some(err.to_string()))))),
         }
         // Reopened before the lock: the reopen is an open like any other, and is let through at
         // once only as this daemon's own (F91). A fill it could wait for takes the same lock.
@@ -244,32 +243,32 @@ impl Engine {
             // A fill that stopped part-way (a crash) left it: continued, from its checkpoint.
             Some(State::Hydrating) => match mo.helper.clearance() {
                 Some(clearance) => Some(clearance),
-                None => return Ok(Local::No(Outcome::backoff(reason::NO_HELPER))),
+                None => return Ok(Local::No(Outcome::backoff(Reason::NoHelper))),
             },
-            Some(State::Dehydrating) => return Ok(Local::No(Outcome::later(reason::NOT_LOCAL, RECHECK))),
+            Some(State::Dehydrating) => return Ok(Local::No(Outcome::later(Reason::NotLocal, RECHECK))),
             // An item id with no state: nothing konedrive can fill, and nothing to be sure of.
-            None => return Ok(Local::No(Outcome::backoff(reason::NOT_LOCAL))),
+            None => return Ok(Local::No(Outcome::backoff(Reason::NotLocal))),
         };
         let writable = match reopened {
             Ok(writable) => writable,
             // Leased (`EAGAIN`, F91), or not writable by its owner: tried again later.
-            Err(Fail::Io(err)) => return Ok(Local::No(Outcome::backoff(format!("{}: {err}", reason::NOT_OPENED)))),
+            Err(Fail::Io(err)) => return Ok(Local::No(Outcome::backoff(Reason::NotOpened(Some(err.to_string()))))),
             Err(other) => return Err(other),
         };
         match mo.filler.fill(writable, shown, clearance.as_ref()).await {
             Ok(()) if matches!(placeholder::read_state(object), Ok(Some(State::Hydrated))) => Ok(Local::Yes),
-            Ok(()) => Ok(Local::No(Outcome::backoff(reason::NOT_LOCAL))),
+            Ok(()) => Ok(Local::No(Outcome::backoff(Reason::NotLocal))),
             Err(e) => {
                 tracing::info!("{} could not be downloaded before its item leaves OneDrive: errno {}", shown.display(), e.errno());
-                Ok(Local::No(Outcome::backoff(format!("{}: errno {}", reason::DOWNLOAD, e.errno()))))
+                Ok(Local::No(Outcome::backoff(Reason::Download(Some(format!("errno {}", e.errno()))))))
             }
         }
     }
 
     /// Writes a row's marker (or takes it off), before anything is taken off or removed.
-    async fn set_marker(&self, row: &OutboxRow, marker: Option<&str>) -> Result<(), Fail> {
-        let (seq, marker) = (row.seq, marker.map(str::to_owned));
-        Ok(self.store().call(move |s| s.outbox_set_snapshot(seq, marker.as_deref())).await?)
+    async fn set_marker(&self, row: &OutboxRow, marker: Option<Snapshot>) -> Result<(), Fail> {
+        let seq = row.seq;
+        Ok(self.store().call(move |s| s.outbox_set_snapshot(seq, marker)).await?)
     }
 
     /// Re-marks what the pending `move-out` rows name, and hands their ids to the router: before
@@ -300,7 +299,7 @@ impl Engine {
         }
         let Ok(root) = disk.dir(Path::new("")) else { return };
         for row in rows {
-            if self.protection().marked.contains(&row.seq) || row.snapshot.as_deref() == Some(CONTENT_LOCAL) {
+            if self.protection().marked.contains(&row.seq) || row.snapshot_is(CONTENT_LOCAL) {
                 continue;
             }
             let Some(handle) = row.inode.as_ref().and_then(|i| i.handle.clone()) else { continue };
@@ -380,10 +379,10 @@ async fn unmark(mo: &MoveOuts, disk: &Disk, dir: &File) {
 /// A `move-out` row's step.
 pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
     let Some(mo) = e.cfg.moved_out.as_ref() else {
-        return Ok(Outcome::later(reason::MOVE_OUT, Duration::from_secs(3600)));
+        return Ok(Outcome::later(Reason::MoveOut, Duration::from_secs(3600)));
     };
     let (Some(id), Some(handle)) = (row.item_id.clone(), row.inode.as_ref().and_then(|i| i.handle.clone())) else {
-        return Ok(Outcome::blocked(reason::NO_HANDLE));
+        return Ok(Outcome::blocked(Reason::NoHandle));
     };
     let root = disk.dir(Path::new(""))?;
     let object = match mo.helper.open_by_handle(&root, &handle).await {
@@ -391,18 +390,18 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
         // Every decode failure is `ESTALE`: believed only for handles taken on the filesystem the
         // folder is on now.
         Err(HelperError::Refused(libc::ESTALE)) if !handles_current_async(e.store(), &root).await => {
-            return Ok(Outcome::backoff(reason::STALE_HANDLE));
+            return Ok(Outcome::backoff(Reason::StaleHandle));
         }
         // What this row removed or stripped itself.
         Err(HelperError::Refused(libc::ESTALE)) if marker(&row) => return finish(e, &row).await,
         // Gone: the user deleted it, wherever it was (§5) — said twice, some seconds apart...
-        Err(HelperError::Refused(libc::ESTALE)) if row.reason.as_deref() != Some(reason::GONE_ONCE) => {
-            return Ok(Outcome::later(reason::GONE_ONCE, GONE_AGAIN));
+        Err(HelperError::Refused(libc::ESTALE)) if row.reason != Some(Reason::GoneOnce) => {
+            return Ok(Outcome::later(Reason::GoneOnce, GONE_AGAIN));
         }
         // ...and with its evidence: nothing, or another object, where it was last proved to be. An
         // inode that cannot be read says `ESTALE` every time, and stands there.
         Err(HelperError::Refused(libc::ESTALE)) if !last_place(&row).is_some_and(|p| absent_at(p, &handle)) => {
-            return Ok(Outcome::backoff(reason::GONE_UNPROVED));
+            return Ok(Outcome::backoff(Reason::GoneUnproved));
         }
         // Last proved inside another account's folder: that account may have taken it for none
         // of its own. Nothing is deleted in OneDrive.
@@ -419,18 +418,18 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
             return kept(e, &row, &id).await;
         }
         // Never "gone" (F90): kept, and asked again now and then.
-        Err(HelperError::Refused(libc::EPERM)) => return Ok(Outcome::backoff(reason::UNREACHABLE)),
-        Err(HelperError::Refused(libc::EAGAIN)) => return Ok(Outcome::later(reason::NOT_LOCAL, RECHECK)),
-        Err(HelperError::Refused(libc::EINVAL)) => return Ok(Outcome::blocked(reason::BAD_HANDLE)),
-        Err(HelperError::Refused(errno)) => return Ok(Outcome::backoff(format!("{}: errno {errno}", reason::UNREACHABLE))),
+        Err(HelperError::Refused(libc::EPERM)) => return Ok(Outcome::backoff(Reason::Unreachable(None))),
+        Err(HelperError::Refused(libc::EAGAIN)) => return Ok(Outcome::later(Reason::NotLocal, RECHECK)),
+        Err(HelperError::Refused(libc::EINVAL)) => return Ok(Outcome::blocked(Reason::BadHandle)),
+        Err(HelperError::Refused(errno)) => return Ok(Outcome::backoff(Reason::Unreachable(Some(format!("errno {errno}"))))),
         Err(other) => {
             tracing::debug!("{}: {other}", row.rel.display());
-            return Ok(Outcome::backoff(reason::NO_HELPER));
+            return Ok(Outcome::backoff(Reason::NoHelper));
         }
     };
     if item_id_of(&object).as_deref() != Some(id.as_str()) {
         // The helper hands over only an object carrying an item id: another one's is no answer.
-        return Ok(Outcome::blocked(reason::ANOTHER_ITEM));
+        return Ok(Outcome::blocked(Reason::AnotherItem));
     }
     remember_place(e, &row, &object).await?;
     let is_dir = object.metadata()?.is_dir();
@@ -440,9 +439,9 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
             if let Some(outcome) = superseded(e, &row, &id).await? {
                 return Ok(outcome);
             }
-            Ok(Outcome::backoff(reason::BACK_INSIDE))
+            Ok(Outcome::backoff(Reason::BackInside))
         }
-        Place::Unknown => Ok(Outcome::backoff(reason::PLACE_UNKNOWN)),
+        Place::Unknown => Ok(Outcome::backoff(Reason::PlaceUnknown)),
         // A hard-linked placeholder is not only in the Trash: it is downloaded, as anywhere else.
         Place::Trash(entry) if is_dir || object.metadata()?.nlink() == 1 => {
             if is_dir {

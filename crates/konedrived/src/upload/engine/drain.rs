@@ -4,11 +4,11 @@ use std::sync::Arc;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use crate::upload::local;
-use crate::upload::{kind, reason, space, BACKOFF_MAX, THROTTLE_FIRST};
+use crate::upload::{kind, BACKOFF_MAX, THROTTLE_FIRST};
 use konedrive_graph::drive::MAX_RETRY_AFTER;
 use konedrive_graph::pool::{Class as PoolClass, Size, Slot};
 use crate::folder::disk::Disk;
-use konedrive_tree::outbox::OutboxState;
+use konedrive_tree::outbox::{OutboxState, Reason};
 use konedrive_tree::TreeError;
 
 use super::outcome::{Class, Outcome, without_urls};
@@ -150,7 +150,7 @@ impl Engine {
                         if let Some(seq) = tasks.remove(&e.id()) {
                             // Replayed later, in backoff, never at once.
                             tracing::error!("outbox row {seq} failed: {e}; it is tried again later");
-                            self.settle_blocking(seq, Outcome::backoff(reason::FAILED)).await;
+                            self.settle_blocking(seq, Outcome::backoff(Reason::Failed)).await;
                         }
                     }
                     None => {}
@@ -211,18 +211,18 @@ impl Engine {
                     // off like a failure.
                     let attempts = store.call_blocking(move |s| s.outbox_count_attempt(seq))?;
                     if attempts > AGAIN_LIMIT {
-                        (state, reason, next_try) = (OutboxState::Retry, Some(reason::CHANGING_AGAIN.into()), Some(now + backoff_after(attempts)));
+                        (state, reason, next_try) = (OutboxState::Retry, Some(Reason::ChangingAgain), Some(now + backoff_after(attempts)));
                     }
                 }
                 let written = reason.clone();
-                store.call_blocking(move |s| s.outbox_set_state(seq, state, written.as_deref(), next_try))?;
+                store.call_blocking(move |s| s.outbox_set_state(seq, state, written.as_ref(), next_try))?;
                 // Once per row and key, as the event: a long network drop
                 // writes one line, not one per retry.
                 if let Some(detail) = detail.filter(|_| reason != before) {
-                    tracing::warn!("{} is tried again later ({}): {}", rel.display(), reason.as_deref().unwrap_or_default(), without_urls(&detail));
+                    tracing::warn!("{} is tried again later ({}): {}", rel.display(), reason.as_ref().map(Reason::to_string).unwrap_or_default(), without_urls(&detail));
                 }
                 if state == OutboxState::Blocked && reason != before {
-                    self.activity(self.event(kind::UPLOAD_FAILED, &rel, reason.unwrap_or_default()));
+                    self.activity(self.event(kind::UPLOAD_FAILED, &rel, reason.map(|r| r.to_string()).unwrap_or_default()));
                 }
                 Ok(())
             })(),
@@ -254,9 +254,9 @@ impl Engine {
             // Its own row only: a `403` can be about one item, and whether the sign-in
             // allows writes at all is the write gate's to say. The other rows go on.
             Outcome::Forbidden => {
-                let set = store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some(reason::FORBIDDEN), None));
-                if before.as_deref() != Some(reason::FORBIDDEN) {
-                    self.activity(self.event(kind::UPLOAD_FAILED, &rel, reason::FORBIDDEN));
+                let set = store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Blocked, Some(&Reason::Forbidden), None));
+                if before != Some(Reason::Forbidden) {
+                    self.activity(self.event(kind::UPLOAD_FAILED, &rel, Reason::Forbidden.to_string()));
                 }
                 set
             }
@@ -267,7 +267,7 @@ impl Engine {
             // In its place, with no timer: a quota read lets it go. No event
             // per file: the account's `QuotaFull` says it once.
             Outcome::Space(why) => store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Ready, Some(&why), None)),
-            Outcome::NoSpace => store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Ready, Some(space::WAITING), None)),
+            Outcome::NoSpace => store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Ready, Some(&Reason::WaitingForSpace), None)),
         };
         if let Err(e) = result {
             tracing::warn!("cannot settle outbox row {seq}: {e}");

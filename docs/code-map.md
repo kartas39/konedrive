@@ -475,6 +475,8 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `outbox.rs` — the outbox: what the folder holds that OneDrive does not have yet. `[tests]`
 - `outbox/schema.rs` — the write phase's tables and indexes.
 - `outbox/row.rs` — a row, a detection, and what an examination and a commit hand the store.
+- `outbox/reason.rs` — why a change is kept back: a row's reason, a local skip, their spellings and groups. `[tests]`
+- `outbox/encoded.rs` — what a row's `snapshot` and `target_name` hold, read and written.
 - `outbox/record.rs` — a detection recorded.
 - `outbox/pick.rs` — which rows run next. `[tests]`
 - `outbox/dependencies.rs` — every row's blockers at once; test code.

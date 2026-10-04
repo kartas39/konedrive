@@ -4,6 +4,7 @@ use std::path::PathBuf;
 
 use konedrive_fs::handle::FileHandle;
 
+use super::{LocalSkip, Reason};
 use crate::Row;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -150,12 +151,17 @@ pub struct OutboxRow {
     /// The parent's item id: `None` while the parent is a `mkdir` still to
     /// land (the row waits for it, and finds the id by `rel` then).
     pub target_parent: Option<String>,
+    /// The name the item takes; a temporary one on its way there
+    /// ([`OutboxRow::swap_name`]); for a `move-out` row, where its object
+    /// was last proved to be ([`OutboxRow::last_place`]).
     pub target_name: Option<String>,
     pub state: OutboxState,
-    pub reason: Option<String>,
+    pub reason: Option<Reason>,
     pub attempts: u32,
     pub next_try: Option<i64>,
-    /// `<size> <mtime_ns>` of the content being sent.
+    /// `<size> <mtime_ns>` of the content being sent, or a `move-out`
+    /// row's marker: read through [`OutboxRow::snapshot`] and its
+    /// neighbours (`encoded`).
     pub snapshot: Option<String>,
     /// A bearer credential until it expires: never logged, never published.
     pub session_url: Option<String>,
@@ -174,6 +180,11 @@ impl OutboxRow {
     /// The (parent, name) the row takes the item to, as the base's pair is compared.
     pub(super) fn target(&self) -> (Option<&str>, Option<&str>) {
         (self.target_parent.as_deref(), self.target_name.as_deref())
+    }
+
+    /// The row's reason as it is stored.
+    pub fn reason_text(&self) -> Option<String> {
+        self.reason.as_ref().map(Reason::to_string)
     }
 }
 
@@ -195,7 +206,7 @@ pub struct Detection {
     /// of it, or a move.
     pub same_content: bool,
     pub state: OutboxState,
-    pub reason: Option<String>,
+    pub reason: Option<Reason>,
     pub next_try: Option<i64>,
     /// The file's size as the examination saw it.
     pub size: Option<u64>,
@@ -236,11 +247,11 @@ pub enum OutboxOp {
     SetHandle { item_id: String, handle: Option<FileHandle> },
     /// Something never uploaded, listed under "Not uploaded" (§3.4 rule 2),
     /// with its size when it is a file.
-    Skip { rel: PathBuf, reason: String, size: u64 },
+    Skip { rel: PathBuf, reason: LocalSkip, size: u64 },
     Unskip(PathBuf),
     /// The mass-delete guard holds a removal already waiting (unless it
     /// runs already).
-    Hold { seq: i64, reason: String },
+    Hold { seq: i64, reason: Reason },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -263,7 +274,7 @@ pub enum Committed<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalSkipped {
     pub rel: PathBuf,
-    pub reason: String,
+    pub reason: LocalSkip,
     /// When it was first listed, unix seconds.
     pub at: i64,
 }

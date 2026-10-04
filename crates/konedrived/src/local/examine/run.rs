@@ -7,7 +7,7 @@ use std::path::{Component, Path, PathBuf};
 use konedrive_fs::handle::FileHandle;
 use crate::local::entry::{self, Entry};
 use crate::local::liveness::Whereabouts;
-use konedrive_tree::outbox::{OutboxRow, OutboxState};
+use konedrive_tree::outbox::{LocalSkip, OutboxRow, OutboxState};
 use konedrive_tree::{Kind, Located, Placement, Row, Table, TreeError};
 
 use super::{denied, ExamineError, Expect, gone, Place, Run, Settle};
@@ -264,8 +264,8 @@ impl Run<'_, '_> {
         }
     }
 
-    pub(super) fn skip(&mut self, rel: &Path, reason: &str) {
-        self.skipped.insert(rel.to_path_buf(), reason.to_owned());
+    pub(super) fn skip(&mut self, rel: &Path, reason: LocalSkip) {
+        self.skipped.insert(rel.to_path_buf(), reason);
     }
 
     pub(super) fn recheck(&mut self, e: &Entry) {

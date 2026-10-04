@@ -8,12 +8,11 @@ use konedrive_fs::placeholder;
 use crate::local::batch::Batch;
 use crate::local::entry::{Entry, StateAttr, Type};
 use crate::local::names;
-use crate::local::snapshot;
 use konedrive_graph::drive::item::RESERVED_PREFIX;
-use konedrive_tree::outbox::{Base, Detection, OutboxKind, OutboxOp, OutboxState};
+use konedrive_tree::outbox::{Base, Detection, LocalSkip, OutboxKind, OutboxOp, OutboxState, Snapshot};
 use konedrive_tree::{Kind, Row, Table};
 
-use super::{daemon_owned, depth, ExamineError, Expect, lossy, MOUNTED_INSIDE, object, OTHER_DEVICE, Place, Run, Settle};
+use super::{daemon_owned, depth, ExamineError, Expect, lossy, object, Place, Run, Settle};
 
 impl Run<'_, '_> {
     pub(super) fn classify(&mut self, batch: &Batch) -> Result<(), ExamineError> {
@@ -64,7 +63,7 @@ impl Run<'_, '_> {
             }
             if e.name.as_bytes().starts_with(RESERVED_PREFIX.as_bytes()) {
                 let rel = e.rel.clone();
-                self.skip(&rel, "reserved-name");
+                self.skip(&rel, LocalSkip::ReservedName);
                 continue;
             }
             // 2. Never a OneDrive object — unless its name is ignored anyway
@@ -83,7 +82,7 @@ impl Run<'_, '_> {
                 let rel = e.rel.clone();
                 // Inside a folder that is leaving, it keeps the folder on
                 // disk, and says so (issue #104).
-                let reason = if self.under_leaving(&rel) { MOUNTED_INSIDE } else { OTHER_DEVICE };
+                let reason = if self.under_leaving(&rel) { LocalSkip::MountedInside } else { LocalSkip::OtherDevice };
                 self.skip(&rel, reason);
                 continue;
             }
@@ -96,7 +95,7 @@ impl Run<'_, '_> {
                 Some(id) if e.ty == Type::File && e.nlink > 1 && self.is_leaving_inode(id, i) => {
                     let rel = e.rel.clone();
                     if !self.ex.ignore.matches(&e.name) {
-                        self.skip(&rel, "hard-link");
+                        self.skip(&rel, LocalSkip::HardLink);
                     }
                 }
                 Some(id) => by_id.entry(id.clone()).or_default().push(i),
@@ -295,7 +294,7 @@ impl Run<'_, '_> {
             self.consumed.insert(i);
             let e = self.entries[i].clone();
             if !self.ex.ignore.matches(&e.name) {
-                self.skip(&e.rel, "hard-link");
+                self.skip(&e.rel, LocalSkip::HardLink);
             }
         }
         // Other objects with its id: copies that kept its attributes.
@@ -317,7 +316,7 @@ impl Run<'_, '_> {
     /// too.
     fn stranger(&mut self, i: usize) -> Result<(), ExamineError> {
         let e = self.entries[i].clone();
-        let listed = |run: &mut Self, reason: &str| {
+        let listed = |run: &mut Self, reason: LocalSkip| {
             if !run.ex.ignore.matches(&e.name) {
                 run.skip(&e.rel, reason);
             }
@@ -328,12 +327,12 @@ impl Run<'_, '_> {
         let stripped = match e.ty {
             Type::Dir => strip(dir.and_then(|dir| self.ex.disk.open_subdir(&dir, &e.name))),
             Type::File if e.hydrated() && e.nlink > 1 => {
-                listed(self, "hard-link");
+                listed(self, LocalSkip::HardLink);
                 return Ok(());
             }
             Type::File if e.hydrated() => strip(dir.and_then(|dir| self.ex.disk.open_file(&dir, &e.name))),
             _ => {
-                listed(self, "not-downloaded");
+                listed(self, LocalSkip::NotDownloaded);
                 return Ok(());
             }
         };
@@ -504,8 +503,8 @@ impl Run<'_, '_> {
             if is_dir && row.rel != e.rel {
                 self.ops.push(OutboxOp::Rebase { from: row.rel.clone(), to: e.rel.clone() });
             }
-            let now = snapshot(e.size, e.mtime.0, e.mtime.1);
-            if !is_dir && row.state == OutboxState::Running && row.snapshot.as_deref() == Some(now.as_str()) {
+            let now = Snapshot::content(e.size, e.mtime.0, e.mtime.1);
+            if !is_dir && row.state == OutboxState::Running && row.snapshot_is(now) {
                 // Being uploaded as it is now: only where it is matters.
                 d.kind = OutboxKind::Move;
             }
@@ -513,7 +512,7 @@ impl Run<'_, '_> {
         let refused = names::refused(&e.name).or((!is_dir && e.size > names::MAX_FILE_SIZE).then_some(names::Refused::TooLarge));
         if let Some(refused) = refused {
             d.state = OutboxState::Blocked;
-            d.reason = Some(refused.as_str().into());
+            d.reason = Some(refused.reason());
         } else if !is_dir {
             // One that cannot be opened is passed over: no row.
             let Some(probed) = self.probe_writer(&e)? else { return Ok(()) };

@@ -63,13 +63,6 @@ pub const MASS_DELETE_PERCENT: u64 = 20;
 /// folder of four is not a mass delete (provisional; the design is silent).
 pub const MASS_DELETE_FLOOR: u64 = 10;
 
-/// An outbox row's snapshot (§3.5): `<size> <mtime_ns>` of the content being
-/// sent. The worker writes it; the examination compares it to tell a file
-/// still being uploaded from one changed again since.
-pub fn snapshot(size: u64, mtime_sec: i64, mtime_nsec: i64) -> String {
-    format!("{size} {}", i128::from(mtime_sec) * 1_000_000_000 + i128::from(mtime_nsec))
-}
-
 /// Records the inode item `id` was just placed as (`items.local_handle`),
 /// by name, opening nothing. A filesystem that gives no handles leaves it
 /// unrecorded: such an item is never deleted in OneDrive for being missing

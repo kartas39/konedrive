@@ -24,7 +24,7 @@ use xattr::FileExt as _;
 use crate::folder::disk::{open_subdir, Disk};
 use crate::local::names::copy_name;
 
-use konedrive_tree::outbox::Inode;
+use konedrive_tree::outbox::{Inode, Snapshot};
 
 /// `user.konedrive.sync` values (`docs/design/writes.md` §11).
 pub const SYNC_PENDING: &str = "pending";
@@ -46,9 +46,9 @@ impl Snap {
         Ok(Self { size: meta.len(), sec: meta.mtime(), nsec: meta.mtime_nsec() })
     }
 
-    /// As the row keeps it ([`crate::local::snapshot`]).
-    pub fn text(self) -> String {
-        crate::local::snapshot(self.size, self.sec, self.nsec)
+    /// As the row keeps it.
+    pub fn snapshot(self) -> Snapshot {
+        Snapshot::content(self.size, self.sec, self.nsec)
     }
 
     pub fn stamp(self) -> Stamp {
