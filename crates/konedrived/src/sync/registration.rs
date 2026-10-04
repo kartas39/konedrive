@@ -134,7 +134,7 @@ impl SyncService {
     /// checking first names the refusal, and covers a folder registered
     /// without interception, which the helper never sees.
     async fn check_overlap(&self, path: &Path) -> Result<(), SyncError> {
-        match self.hub.overlapping(self, path).await {
+        match self.hub.overlapping(self, path).await? {
             Some(label) => Err(SyncError::Overlaps(label)),
             None => Ok(()),
         }

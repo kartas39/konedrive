@@ -313,15 +313,17 @@ impl HelperHub {
     /// reached another way. A folder counts whether it is registered, held,
     /// or only recorded in `config.toml`.
     ///
-    /// The paths are looked at on a blocking thread, in one section.
-    pub(super) async fn overlapping(self: &Arc<Self>, me: &SyncService, path: &Path) -> Option<String> {
+    /// The paths are looked at on a blocking thread, in one section. A section the runtime
+    /// gave up at its own end is an `Err`: the check was not made, and the registration is
+    /// refused.
+    pub(super) async fn overlapping(self: &Arc<Self>, me: &SyncService, path: &Path) -> Result<Option<String>, super::SyncError> {
         // Only compared, never read: the caller holds `me` across the call.
         let (hub, me, path) = (Arc::clone(self), std::ptr::from_ref(me) as usize, path.to_owned());
         match tokio::task::spawn_blocking(move || hub.overlapping_blocking(me, &path)).await {
-            Ok(found) => found,
+            Ok(found) => Ok(found),
             // As before the section was one: a panic in the check is the caller's.
             Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-            Err(_) => None,
+            Err(_) => Err(super::SyncError::Io("the daemon is stopping".into())),
         }
     }
 
