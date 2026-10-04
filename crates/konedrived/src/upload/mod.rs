@@ -101,6 +101,7 @@ pub mod kind {
 }
 
 /// What the worker needs from the account it serves.
+#[async_trait::async_trait]
 pub trait OutboxHost: Send + Sync {
     /// An activity event, already in the tree store: for the live signal.
     fn activity(&self, _event: &ActivityRow) {}
@@ -121,8 +122,9 @@ pub trait OutboxHost: Send + Sync {
     }
     /// Whether the account may change OneDrive now (`docs/design/writes.md` §2): asked
     /// before each row is taken, and between the fragments of an upload. `Err` says why not:
-    /// nothing more is sent then, and the rows wait.
-    fn may_write(&self) -> Result<(), String> {
+    /// nothing more is sent then, and the rows wait. The answer may take reading a file
+    /// (`config.toml`): the host does that off the runtime's threads.
+    async fn may_write(&self) -> Result<(), String> {
         Ok(())
     }
     /// An item's local object was forgotten and OneDrive's version must be

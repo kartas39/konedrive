@@ -264,8 +264,9 @@ impl SyncService {
                     root.path.display()
                 );
                 tracing::error!("{message}");
+                let dev = hub::device_of(&root.path).await;
                 *self.root.lock().unwrap() = Some(Registration {
-                    dev: hub::device_of(&root.path),
+                    dev,
                     root,
                     intercepted: true,
                     recovery_deferred: false,
@@ -330,8 +331,9 @@ impl SyncService {
             return;
         };
         let shown = persisted.path.display().to_string();
+        let dev = hub::device_of(&persisted.path).await;
         *self.root.lock().unwrap() = Some(Registration {
-            dev: hub::device_of(&persisted.path),
+            dev,
             root: SyncRoot { path: persisted.path, root_id },
             intercepted: true,
             recovery_deferred: false,

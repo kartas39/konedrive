@@ -37,7 +37,7 @@ impl SyncService {
         self.check_no_root_yet()?;
         self.require_link()?;
         let _registering = self.hub.registering.lock().await;
-        self.check_overlap(path)?;
+        self.check_overlap(path).await?;
         self.bind(path, true, true).await
     }
 
@@ -86,7 +86,7 @@ impl SyncService {
         self.check_held()?;
         self.check_no_root_yet()?;
         let _registering = self.hub.registering.lock().await;
-        self.check_overlap(path)?;
+        self.check_overlap(path).await?;
         self.bind(path, false, true).await
     }
 
@@ -133,8 +133,8 @@ impl SyncService {
     /// The helper would refuse an intercepted overlap anyway (`EINVAL`);
     /// checking first names the refusal, and covers a folder registered
     /// without interception, which the helper never sees.
-    fn check_overlap(&self, path: &Path) -> Result<(), SyncError> {
-        match self.hub.overlapping(self, path) {
+    async fn check_overlap(&self, path: &Path) -> Result<(), SyncError> {
+        match self.hub.overlapping(self, path).await {
             Some(label) => Err(SyncError::Overlaps(label)),
             None => Ok(()),
         }
@@ -476,7 +476,7 @@ impl SyncService {
         self.remember(&Persisted::of(&root, intercepted, source, baloo_excluded, upgrade_when_helper));
         let path = root.path.display().to_string();
         let recovery_deferred = report.deferred > 0;
-        let dev = hub::device_of(&root.path);
+        let dev = hub::device_of(&root.path).await;
         *self.root.lock().unwrap() = Some(Registration {
             root,
             intercepted,
@@ -566,7 +566,7 @@ impl SyncService {
                 );
                 tracing::error!("{message}");
                 let path = root.path.display().to_string();
-                let dev = hub::device_of(&root.path);
+                let dev = hub::device_of(&root.path).await;
                 *self.root.lock().unwrap() = Some(Registration {
                     root,
                     intercepted: true,

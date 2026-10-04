@@ -361,7 +361,7 @@ impl Engine {
         ActivityRow { at: now(), kind: kind.into(), path: self.cfg.root.path.join(rel).display().to_string(), detail: detail.into() }
     }
 
-    fn may_start(&self) -> bool {
+    async fn may_start(&self) -> bool {
         if self.closing() {
             return false;
         }
@@ -375,14 +375,14 @@ impl Engine {
                 && !shared.needs_sign_in
                 && shared.throttled_until.is_none_or(|at| at <= now)
         };
-        ready && self.gate_open()
+        ready && self.gate_open().await
     }
 
     /// The write gate, asked again before every row (`docs/design/writes.md` §2.3): the
     /// host says whether the account may change OneDrive now. Closed, nothing more is taken,
     /// the rows wait, and the worker's `last_error` says why.
-    fn gate_open(&self) -> bool {
-        match self.cfg.host.may_write() {
+    async fn gate_open(&self) -> bool {
+        match self.cfg.host.may_write().await {
             Ok(()) => {
                 let mut shared = self.shared();
                 if shared.last_error.starts_with(GATE_CLOSED) {
@@ -613,7 +613,7 @@ impl Engine {
         }
         // While nothing can start, only the end of a pause or throttle
         // matters; rows already due wait for a wake.
-        if self.may_start() {
+        if self.may_start().await {
             if let Ok(Some(next)) = self.store().call(move |s| s.outbox_next_due(now)).await {
                 at = at.min(next);
             }

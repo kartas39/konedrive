@@ -336,6 +336,9 @@ impl SyncService {
     /// clears it wakes the worker, `Writes::reopened`). Closed, the folder's `LastError`
     /// says why until it opens, and the account's mode is worked out again, which turns it
     /// read-only and says why in the account's `LastError`.
+    ///
+    /// Blocking: it reads `config.toml`, here and in the mode check. The worker's host calls
+    /// it from a blocking thread, as one section.
     pub(super) fn write_gate(&self) -> Result<(), String> {
         let refusal = self.gate_refusal();
         let note = refusal.as_ref().map(|why| format!("{GATE_NOTE}{why}")).unwrap_or_default();

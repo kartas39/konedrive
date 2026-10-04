@@ -500,6 +500,7 @@ impl Host {
     }
 }
 
+#[async_trait::async_trait]
 impl OutboxHost for Host {
     /// `ActivityLog.Added`: the worker has written the event into the store with
     /// its commit.
@@ -562,11 +563,15 @@ impl OutboxHost for Host {
         }
     }
 
-    /// The write gate, asked again before each row.
-    fn may_write(&self) -> Result<(), String> {
-        match self.sync.upgrade() {
-            Some(service) => service.write_gate(),
-            None => Err("the folder's sync is gone".into()),
+    /// The write gate, asked again before each row: on a blocking thread, as one section,
+    /// because it reads `config.toml` again (`ConfigStore::write_standing`).
+    async fn may_write(&self) -> Result<(), String> {
+        const GONE: &str = "the folder's sync is gone";
+        let Some(service) = self.sync.upgrade() else { return Err(GONE.into()) };
+        match tokio::task::spawn_blocking(move || service.write_gate()).await {
+            Ok(answer) => answer,
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(_) => Err(GONE.into()),
         }
     }
 }

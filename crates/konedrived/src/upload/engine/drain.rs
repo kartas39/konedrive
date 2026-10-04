@@ -33,7 +33,7 @@ impl Engine {
         self.space_start().await;
         // The quota, read again when it is due (while full, while a file is
         // too big, once after a start that found waiting rows).
-        if self.may_start() {
+        if self.may_start().await {
             // Only when the worker may send: until then the rows stay blocked, and listed.
             self.release_forbidden().await;
             self.space_check(now()).await;
@@ -54,7 +54,7 @@ impl Engine {
             // move out, the helper back (`docs/design/writes.md` §8).
             self.protect(&disk).await;
             self.mark_rows_blocking(&disk).await;
-            if self.may_start() {
+            if self.may_start().await {
                 match self.candidates().await {
                     Ok(rows) => {
                         for (row, class) in rows {
@@ -71,7 +71,7 @@ impl Engine {
                                 continue;
                             }
                             // Asked again right before each row is taken.
-                            if !self.gate_open() {
+                            if !self.gate_open().await {
                                 break;
                             }
                             let slot = match spare.iter().position(|slot| (slot.class(), slot.size()) == wants) {

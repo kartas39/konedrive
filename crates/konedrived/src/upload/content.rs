@@ -162,7 +162,7 @@ async fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Res
     if e.space_full() {
         return Ok(Some(Stop::Wait(Outcome::Space(Reason::WaitingForSpace))));
     }
-    if let Err(why) = e.cfg.host.may_write() {
+    if let Err(why) = e.cfg.host.may_write().await {
         return Ok(Some(Stop::Wait(Outcome::wait(Reason::NotAllowed(Some(why)), std::time::Duration::ZERO))));
     }
     if locate(e, disk, row).await?.filter(|f| !f.is_dir).is_none() {
