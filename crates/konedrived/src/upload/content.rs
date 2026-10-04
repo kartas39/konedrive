@@ -19,8 +19,8 @@ use konedrive_fs::lease;
 use konedrive_fs::placeholder::{self, State};
 
 use super::engine::{now, Engine, Fail, Outcome};
-use super::local::{self, Found, Read, Snap, SYNC_UPLOADING};
-use super::steps::{answer_row, blocking, cancel_session, commit_row, copy, follow_cloud, held, local_name, locate, never_uploaded, parent_of, taken, temporary, upload_as_new, wanted_name, Ours, Taken};
+use super::local::{self, Found, Opened, Read, Snap};
+use super::steps::{answer_row, blocking, blocking_under, cancel_session, commit_row, copy, follow_cloud, held, local_name, locate, never_uploaded, parent_of, taken, temporary, tree, upload_as_new, wanted_name, Ours, Taken};
 use super::{kind, Fault};
 use konedrive_graph::drive::item::parse_graph_time;
 use konedrive_graph::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
@@ -35,7 +35,7 @@ use konedrive_tree::Table;
 /// creation time is compared with the recorded opening (issue #84).
 pub(super) const CLOCK_SLACK: i64 = 5 * 60;
 
-pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
+pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Result<Outcome, Fail> {
     let local = local_name(&row)?;
     let Some(found) = locate(e, disk, &row).await?.filter(|f| !f.is_dir) else {
         return removed(e, disk, &row).await;
@@ -45,18 +45,13 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
     if let Some(why) = e.space_holds(&row) {
         return Ok(Outcome::Space(why));
     }
-    match found.state() {
-        Ok(None | Some(State::Hydrated)) => {}
-        Ok(Some(_)) => return Ok(Outcome::wait(Reason::NotLocal, RECHECK)),
-        Err(err) => return Ok(Outcome::blocked(Reason::BadState(Some(err.to_string())))),
-    }
-    let file = Arc::new(found.open()?);
-    // Before the snapshot: the mark changes no size or time (§9).
-    local::set_sync_of(&file, SYNC_UPLOADING);
-    if lease::open_for_writing(&file)? {
-        return Ok(Outcome::wait(Reason::OpenForWriting, RECHECK));
-    }
-    let snap = Snap::of(&file)?;
+    let object = found.clone();
+    let (file, snap) = match blocking(move || local::open_for_upload(&object)).await? {
+        Opened::Content(file, snap) => (Arc::new(file), snap),
+        Opened::NotLocal => return Ok(Outcome::wait(Reason::NotLocal, RECHECK)),
+        Opened::BadState(err) => return Ok(Outcome::blocked(Reason::BadState(Some(err)))),
+        Opened::Writing => return Ok(Outcome::wait(Reason::OpenForWriting, RECHECK)),
+    };
     if snap.size > names::MAX_FILE_SIZE {
         return Ok(Outcome::blocked(names::Refused::TooLarge.reason()));
     }
@@ -113,7 +108,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<
 ///
 /// `row` as the store holds it now: the session it names is the one to
 /// cancel.
-async fn removed(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Outcome, Fail> {
+async fn removed(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Outcome, Fail> {
     if row.kind == OutboxKind::Create {
         return never_uploaded(e, disk, row).await;
     }
@@ -150,7 +145,7 @@ enum Stop {
 /// - **The file removed** (issue #36): under none of the row's names, as
 ///   [`locate`] looks for it — the same test as a run's start. A move whose
 ///   row is recorded is found under its new name, and the upload goes on.
-async fn stop_between_fragments(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<Stop>, Fail> {
+async fn stop_between_fragments(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Option<Stop>, Fail> {
     if e.stopped() {
         return Ok(Some(Stop::Wait(Outcome::wait(Reason::Paused, std::time::Duration::ZERO))));
     }
@@ -180,7 +175,7 @@ struct Sent {
 
 struct Job<'a> {
     e: &'a Arc<Engine>,
-    disk: &'a Disk,
+    disk: &'a Arc<Disk>,
     row: &'a OutboxRow,
     found: &'a Found,
     file: &'a Arc<File>,
@@ -497,8 +492,8 @@ impl Job<'_> {
             // Not placed here: OneDrive's place is the row's, and nothing on
             // disk follows it (issue #104).
             let moved_there = !self.content_only && (remote_parent != base.parent || Some(remote_name.as_str()) != base.name.as_deref());
-            let _tree = self.e.cfg.tree_lock.lock().await;
-            let followed = if moved_there { follow_cloud(self.e, self.disk, self.found, &remote).await? } else { None };
+            let tree = tree(self.e).await;
+            let followed = if moved_there { follow_cloud(self.e, self.disk, &tree, self.found, &remote).await? } else { None };
             let fresh = Base { etag: remote.e_tag.clone(), ctag: base.ctag.clone(), parent: remote_parent.clone(), name: Some(remote_name.clone()) };
             let seq = row.seq;
             self.e.store().call(move |s| {
@@ -536,14 +531,24 @@ impl Job<'_> {
 
     /// `len` bytes at `offset`, under the inode lock and a read lease.
     async fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, Fail> {
-        let _inode = self.e.cfg.locks.lock(InodeKey::of(self.file)?).await;
+        let inode = self.e.cfg.locks.lock(InodeKey::of(self.file)?).await;
         let (file, snap) = (Arc::clone(self.file), self.snap);
-        match blocking(move || local::read(&file, offset, len, snap)).await? {
+        match blocking_under(inode.hold(), move || local::read(&file, offset, len, snap)).await? {
             Read::Bytes(bytes) => Ok(bytes),
             Read::Busy => Err(Fail::Now(Outcome::wait(Reason::OpenForWriting, RECHECK))),
             Read::NotLocal => Err(Fail::Now(Outcome::wait(Reason::NotLocal, RECHECK))),
             Read::Changed => Err(Fail::Now(Outcome::wait(Reason::Changed, QUIET))),
         }
+    }
+
+    /// [`local::drop_cache`] for the file that went up whole.
+    async fn drop_cache(&self) {
+        let file = Arc::clone(self.file);
+        let _ = blocking(move || {
+            local::drop_cache(&file);
+            Ok(())
+        })
+        .await;
     }
 
     /// Feeds the first `upto` bytes to `hasher`, a fragment at a time.
@@ -612,7 +617,7 @@ impl Job<'_> {
                 match drive.upload_chunk(&url, from as u64, size, bytes[from..].to_vec()).await {
                     Ok(ChunkOutcome::Done(item)) => {
                         self.e.upload_progress(self.row.seq, size, size);
-                        local::drop_cache(self.file);
+                        self.drop_cache().await;
                         self.e.fault(Fault::AfterSend)?;
                         return Ok(Sent { hash: Some(hash), answer: Ok(*item) });
                     }
@@ -855,7 +860,7 @@ impl Job<'_> {
                     }
                     Ok(ChunkOutcome::Done(item)) => {
                         e.upload_progress(seq, size, size);
-                        local::drop_cache(self.file);
+                        self.drop_cache().await;
                         e.fault(Fault::AfterSend)?;
                         return Ok(Sent { hash: Some(hasher.finish_base64()), answer: Ok(*item) });
                     }
@@ -944,11 +949,11 @@ impl Job<'_> {
     /// delete would be lost (limitations log F54).
     async fn commit(&self, item: DriveItem) -> Result<Outcome, Fail> {
         let answer = answer_row(&item, Some(self.parent))?;
-        let _tree = self.e.cfg.tree_lock.lock().await;
+        let tree = tree(self.e).await;
         {
-            let _inode = self.e.cfg.locks.lock(InodeKey::of(self.file)?).await;
+            let inode = self.e.cfg.locks.lock(InodeKey::of(self.file)?).await;
             let (file, snap, ctag) = (Arc::clone(self.file), self.snap, item.c_tag.clone());
-            blocking(move || match placeholder::read_state(&file) {
+            blocking_under((Arc::clone(&tree), inode.hold()), move || match placeholder::read_state(&file) {
                 Ok(None | Some(State::Hydrated)) => local::commit_attributes(&file, snap, ctag.as_deref()),
                 // Freed up meanwhile: a placeholder of the version just sent.
                 Ok(Some(State::OnlineOnly)) => ctag.map_or(Ok(()), |c| placeholder::write_ctag(&file, &c)),
@@ -957,7 +962,7 @@ impl Job<'_> {
             .await?;
             self.e.fault(Fault::CommitStep1Partial)?;
             let (file, id) = (Arc::clone(self.file), item.id.clone());
-            blocking(move || local::commit_id(&file, &id)).await?;
+            blocking_under((Arc::clone(&tree), inode.hold()), move || local::commit_id(&file, &id)).await?;
         }
         self.e.fault(Fault::AfterCommitStep1)?;
         self.e.space_used(self.snap.size);

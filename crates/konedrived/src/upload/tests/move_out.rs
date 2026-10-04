@@ -1102,3 +1102,56 @@ fn a_trash_is_known_by_its_place() {
     assert!(trash_of(Path::new("/home/u/Trash/files/y"), Some(home), 1000, &mounts).is_none());
     assert!(trash_of(Path::new("/home/u/.local/share/Trash/files"), Some(home), 1000, &mounts).is_none(), "the Trash itself");
 }
+
+/// A fill that runs one blocking section as the real fill runs its own (`hydration::source`),
+/// under the lock it was started under. The section waits until the fill is dropped, then
+/// goes on for a while before it ends.
+struct SectionFill {
+    begun: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+    ended: Arc<std::sync::atomic::AtomicBool>,
+}
+
+#[async_trait]
+impl Filler for SectionFill {
+    async fn fill(&self, _file: File, _shown: &Path, _clearance: Option<&Clearance>) -> Result<(), crate::hydration::source::FillError> {
+        let hold = crate::folder::locks::hold_in_force();
+        let begun = self.begun.lock().unwrap().take().expect("one fill");
+        let ended = Arc::clone(&self.ended);
+        // Dropped with this future: the section learns that its fill is gone.
+        let (_alive, dropped) = std::sync::mpsc::channel::<()>();
+        let section = tokio::task::spawn_blocking(move || {
+            let _hold = hold;
+            begun.send(()).unwrap();
+            let _ = dropped.recv();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            ended.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        section.await.unwrap();
+        Ok(())
+    }
+}
+
+/// A stop asked while a move-out row's fill has a section under way returns only once the
+/// section has ended: what comes after the stop (the rows dropped, the tidying) finds nothing
+/// of the worker at work, and the file's lock free.
+#[test]
+fn a_stop_waits_for_the_section_of_a_move_outs_fill() {
+    let w = World::new(&[("P", None, "p.txt", b"the content")]);
+    let to = w.base().join("outside/p.txt");
+    w.move_out("p.txt", &to);
+    w.examine(&[("", "p.txt")]);
+    let (begun, has_begun) = std::sync::mpsc::channel();
+    let ended = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    w.fills_with(Arc::new(SectionFill { begun: Mutex::new(Some(begun)), ended: Arc::clone(&ended) }));
+    let config = w.h.config();
+    let locks = config.locks.clone();
+    let worker = OutboxWorker::new(config);
+    w.h.runtime.block_on(async {
+        worker.start();
+        tokio::task::spawn_blocking(move || has_begun.recv().unwrap()).await.unwrap();
+        worker.stop().await;
+    });
+    assert!(ended.load(std::sync::atomic::Ordering::SeqCst), "the stop returned while the fill's section was running");
+    let key = crate::folder::locks::InodeKey::of(&File::open(&to).unwrap()).unwrap();
+    assert!(locks.try_lock(key).is_some(), "the file's lock is free after the stop");
+}

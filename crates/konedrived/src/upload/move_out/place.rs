@@ -6,7 +6,6 @@ use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
 use nix::fcntl::{openat2, AtFlags, OFlag, OpenHow, ResolveFlag};
-use crate::upload::engine::Engine;
 use crate::folder::disk::Disk;
 use crate::local::liveness::same_place;
 
@@ -46,7 +45,7 @@ pub(super) fn root_path(disk: &Disk) -> Option<PathBuf> {
     std::fs::read_link(proc_path(&disk.dir(Path::new("")).ok()?)).ok()
 }
 
-pub(super) fn place_of(e: &Engine, disk: &Disk, fd: &File, handle: &FileHandle) -> Place {
+pub(super) fn place_of(mo: &MoveOuts, disk: &Disk, fd: &File, handle: &FileHandle) -> Place {
     let Some(path) = verified_path(fd) else { return Place::Elsewhere(None) };
     if let Some(rel) = root_path(disk).and_then(|root| path.strip_prefix(root).ok().map(Path::to_path_buf)) {
         let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else { return Place::Unknown };
@@ -55,7 +54,7 @@ pub(super) fn place_of(e: &Engine, disk: &Disk, fd: &File, handle: &FileHandle) 
             _ => Place::Unknown,
         };
     }
-    let home = e.moved_out().home_trash.as_deref();
+    let home = mo.home_trash.as_deref();
     match trash_of(&path, home, nix::unistd::geteuid().as_raw(), &is_mount_point).filter(real_trash) {
         Some(entry) => Place::Trash(entry),
         None => Place::Elsewhere(Some(path)),

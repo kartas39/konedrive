@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use konedrive_fs::handle::FileHandle;
-use konedrive_fs::lease::WriteLease;
 use konedrive_fs::placeholder::State;
 
 use super::engine::{now, outcome_of, Engine, Fail, Outcome};
@@ -35,13 +34,91 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Ou
     match result.unwrap_or_else(outcome_of) {
         // Refused for lack of space: the quota decides whether the account
         // is full or only this file too big (`space`).
-        Outcome::NoSpace => e.space_refused(super::local::size_at(disk, &rel).unwrap_or(0)).await,
+        Outcome::NoSpace => {
+            let disk = Arc::clone(disk);
+            let size = blocking(move || Ok(local::size_at(&disk, &rel))).await.ok().flatten();
+            e.space_refused(size.unwrap_or(0)).await
+        }
         outcome => outcome,
     }
 }
 
+tokio::task_local! {
+    /// The sections of the worker whose row runs on this task ([`Sections::of`]).
+    static SECTIONS: Sections;
+}
+
+/// The blocking sections a worker's rows have under way. A row's task is
+/// dropped where it waits when the worker stops, and a section it waits for
+/// goes on without it; the worker's stop waits for those ([`Sections::ended`]),
+/// so that nothing of the worker touches the folder or the store once `stop`
+/// has returned, as when the file calls ran on the row's own task.
+#[derive(Clone, Default)]
+pub(crate) struct Sections(Arc<tokio::sync::RwLock<()>>);
+
+impl Sections {
+    /// Runs `row`, a row's step, with its sections counted here.
+    pub(super) async fn of<T>(&self, row: impl std::future::Future<Output = T>) -> T {
+        SECTIONS.scope(self.clone(), row).await
+    }
+
+    /// Done once no section is running. For after the rows' tasks ended: no
+    /// new section starts then.
+    pub(super) async fn ended(&self) {
+        let _ = self.0.write().await;
+    }
+}
+
+/// A share in the sections of the worker whose row runs on this task, for
+/// work that starts blocking sections of its own (a fill): the worker's stop
+/// waits until it is let go of (`folder::locks::holding_with`).
+pub(super) async fn share() -> Option<crate::folder::locks::Carried> {
+    let sections = SECTIONS.try_with(|sections| Arc::clone(&sections.0)).ok()?;
+    Some(Arc::new(sections.read_owned().await))
+}
+
+/// `f` on a blocking thread: a *section*, the file calls of a step that
+/// follow each other with no wait between them. None of them runs on a
+/// runtime thread. A section that has begun runs to its end, whatever
+/// becomes of the row's task, and the worker's stop waits for it
+/// ([`Sections`]; limitations log F233). A failure to run it is an
+/// `io::Error`, like its own.
+pub(super) async fn off<T: Send + 'static>(f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
+    let running = match SECTIONS.try_with(|sections| Arc::clone(&sections.0)) {
+        Ok(sections) => Some(sections.read_owned().await),
+        Err(_) => None,
+    };
+    tokio::task::spawn_blocking(move || {
+        // Let go of last: after the locks the section holds.
+        let _running = running;
+        f()
+    })
+    .await
+    .map_err(io::Error::other)?
+}
+
+/// [`off`] for a step: its failure is the step's.
 pub(super) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> io::Result<T> + Send + 'static) -> Result<T, Fail> {
-    tokio::task::spawn_blocking(f).await.map_err(|e| Fail::Io(io::Error::other(e)))?.map_err(Fail::Io)
+    off(f).await.map_err(Fail::Io)
+}
+
+/// [`blocking`] under a lock: `hold`, a share in its guard, is let go of
+/// when the section is over, not when the row's task is. Whoever takes the
+/// lock next never finds a section still at work on the file.
+pub(super) async fn blocking_under<H: Send + 'static, T: Send + 'static>(hold: H, f: impl FnOnce() -> io::Result<T> + Send + 'static) -> Result<T, Fail> {
+    blocking(move || {
+        let _hold = hold;
+        f()
+    })
+    .await
+}
+
+/// The tree lock as a step holds it: shared with the sections that change
+/// the folder under it ([`blocking_under`]).
+pub(super) type Tree = Arc<tokio::sync::OwnedMutexGuard<()>>;
+
+pub(super) async fn tree(e: &Engine) -> Tree {
+    Arc::new(Arc::clone(&e.cfg.tree_lock).lock_owned().await)
 }
 
 /// The name of the row's local object: the last part of where the
@@ -82,18 +159,23 @@ pub(super) fn swap_name(row: &OutboxRow) -> String {
 /// examination strips such a directory when it can, but it does not always
 /// see it (a batch that names only what is below it), and cannot always strip
 /// it (`LO3`): this is the one place every row passes before it is sent.
-pub(super) async fn dir_id(e: &Engine, disk: &Disk, dir: &Path) -> Result<Option<String>, Fail> {
+pub(super) async fn dir_id(e: &Engine, disk: &Arc<Disk>, dir: &Path) -> Result<Option<String>, Fail> {
     if dir.as_os_str().is_empty() {
         return Ok(e.store().call(|s| s.root_item_id()).await?);
     }
-    let Some(name) = dir.file_name() else { return Ok(None) };
-    let parent = match disk.dir(dir.parent().unwrap_or(Path::new(""))) {
-        Ok(parent) => parent,
-        Err(err) if matches!(err.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => return Ok(None),
-        Err(err) => return Err(err.into()),
-    };
-    let Probe::Managed { id, is_dir: true } = disk.probe(&parent, name)? else { return Ok(None) };
-    let here = FileHandle::at(&parent, name).ok();
+    let Some(name) = dir.file_name().map(OsStr::to_owned) else { return Ok(None) };
+    let (on, at) = (Arc::clone(disk), dir.to_owned());
+    let probed = blocking(move || {
+        let parent = match on.dir(at.parent().unwrap_or(Path::new(""))) {
+            Ok(parent) => parent,
+            Err(err) if matches!(err.raw_os_error(), Some(libc::ENOENT | libc::ENOTDIR)) => return Ok(None),
+            Err(err) => return Err(err),
+        };
+        let Probe::Managed { id, is_dir: true } = on.probe(&parent, &name)? else { return Ok(None) };
+        Ok(Some((id, FileHandle::at(&parent, &name).ok())))
+    })
+    .await?;
+    let Some((id, here)) = probed else { return Ok(None) };
     let (asked, at) = (id.clone(), dir.to_owned());
     let own = e
         .store()
@@ -132,7 +214,7 @@ pub(super) async fn dir_id(e: &Engine, disk: &Disk, dir: &Path) -> Result<Option
 /// The folder in OneDrive the row's item goes into: the one the examination
 /// named, or — where that folder was still to be made — the one its
 /// directory is now.
-pub(super) async fn parent_of(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<String>, Fail> {
+pub(super) async fn parent_of(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Option<String>, Fail> {
     if let Some(parent) = &row.target_parent {
         return Ok(Some(parent.clone()));
     }
@@ -141,7 +223,7 @@ pub(super) async fn parent_of(e: &Engine, disk: &Disk, row: &OutboxRow) -> Resul
 
 /// The row's local object: where the row saw it, or where a row behind it
 /// saw it since. `None` when it is in neither place.
-pub(super) async fn locate(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Option<Found>, Fail> {
+pub(super) async fn locate(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Option<Found>, Fail> {
     let (item_id, inode) = (row.item_id.clone(), row.inode.clone());
     let others = e.store().call(move |s| match (&item_id, &inode) {
         (Some(id), _) => s.outbox_for_item(id),
@@ -149,15 +231,19 @@ pub(super) async fn locate(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<O
         _ => Ok(Vec::new()),
     })
     .await?;
-    let places = std::iter::once(row.rel.clone()).chain(others.into_iter().filter(|r| r.seq != row.seq).map(|r| r.rel));
-    for rel in places {
-        if let Some(found) = local::find(disk, &rel)? {
-            if row.inode.as_ref().is_none_or(|inode| inode.same_object(&found.inode)) {
-                return Ok(Some(found));
+    let places: Vec<PathBuf> = std::iter::once(row.rel.clone()).chain(others.into_iter().filter(|r| r.seq != row.seq).map(|r| r.rel)).collect();
+    let (disk, inode) = (Arc::clone(disk), row.inode.clone());
+    blocking(move || {
+        for rel in places {
+            if let Some(found) = local::find(&disk, &rel)? {
+                if inode.as_ref().is_none_or(|inode| inode.same_object(&found.inode)) {
+                    return Ok(Some(found));
+                }
             }
         }
-    }
-    Ok(None)
+        Ok(None)
+    })
+    .await
 }
 
 /// The base row Graph's answer makes.
@@ -306,21 +392,22 @@ pub(super) async fn temporary(e: &Engine, row: &OutboxRow, parent: &str, swap: &
 /// becomes the copy's create (or mkdir) — or, for a move, the move to the
 /// copy's name. `forget` is the item the copy was made from: its name is
 /// placed again from the cloud, never deleted there.
-pub(super) async fn copy(e: &Engine, disk: &Disk, row: &OutboxRow, found: &Found, parent: &str, forget: Option<&str>) -> Result<Outcome, Fail> {
+pub(super) async fn copy(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow, found: &Found, parent: &str, forget: Option<&str>) -> Result<Outcome, Fail> {
     let (event, copy_rel) = {
-        let _tree = e.cfg.tree_lock.lock().await;
-        let copy_name = local::rename_to_copy(disk, found, &e.cfg.machine_name)?;
-        let copy_rel = found.rel.with_file_name(&copy_name);
+        let tree = tree(e).await;
         let moving = row.kind == OutboxKind::Move;
-        if !moving {
-            if let Some(copied) = local::find(disk, &copy_rel)? {
-                if copied.is_dir {
-                    local::strip(&copied.open_dir()?)?;
-                } else {
-                    local::strip(&copied.open()?)?;
+        let (on, object, machine) = (Arc::clone(disk), found.clone(), e.cfg.machine_name.clone());
+        let copy_name = blocking_under(Arc::clone(&tree), move || {
+            let copy_name = local::rename_to_copy(&on, &object, &machine)?;
+            if !moving {
+                if let Some(copied) = local::find(&on, &object.rel.with_file_name(&copy_name))? {
+                    local::strip_found(&copied)?;
                 }
             }
-        }
+            Ok(copy_name)
+        })
+        .await?;
+        let copy_rel = found.rel.with_file_name(&copy_name);
         let original = e.cfg.root.path.join(&found.rel).display().to_string();
         let copy_path = e.cfg.root.path.join(&copy_rel).display().to_string();
         let event = e.event(kind::CONFLICT, &found.rel, copy_path.clone());
@@ -377,8 +464,8 @@ pub(super) async fn cancel_session(e: &Engine, url: &str) -> Result<bool, Fail> 
 /// name no listing places — the daemon's own `.konedrive-*` (a temporary
 /// step of this very row, I1), a name OneDrive keeps but Linux cannot, or
 /// one OneDrive refuses. The local place then stands. The caller holds the
-/// tree lock.
-pub(super) async fn follow_cloud(e: &Engine, disk: &Disk, found: &Found, remote: &DriveItem) -> Result<Option<PathBuf>, Fail> {
+/// tree lock, `tree`.
+pub(super) async fn follow_cloud(e: &Engine, disk: &Arc<Disk>, tree: &Tree, found: &Found, remote: &DriveItem) -> Result<Option<PathBuf>, Fail> {
     let (Some(parent), name) = place(remote) else { return Ok(None) };
     let placeable = matches!(classify(remote), Change::Upsert(row) if row.placement == Placement::Placed);
     if !placeable || name.starts_with(RESERVED_PREFIX) || names::refused(OsStr::new(&name)).is_some() {
@@ -391,7 +478,9 @@ pub(super) async fn follow_cloud(e: &Engine, disk: &Disk, found: &Found, remote:
     if to_rel == found.rel {
         return Ok(Some(to_rel));
     }
-    match disk.dir(&dir_rel).and_then(|to| disk.rename(&found.dir, &found.name, &to, OsStr::new(&name))) {
+    let (on, object) = (Arc::clone(disk), found.clone());
+    let renamed = blocking_under(Arc::clone(tree), move || Ok(on.dir(&dir_rel).and_then(|to| on.rename(&object.dir, &object.name, &to, OsStr::new(&name))))).await?;
+    match renamed {
         Ok(()) => {
             if found.is_dir {
                 let rebase = [OutboxOp::Rebase { from: found.rel.clone(), to: to_rel.clone() }];
@@ -411,13 +500,10 @@ pub(super) async fn follow_cloud(e: &Engine, disk: &Disk, found: &Found, remote:
 /// local wins): the base forgets the item, the file loses konedrive's
 /// attributes and becomes a `create` at its local place; the id changes.
 pub(super) async fn upload_as_new(e: &Engine, row: &OutboxRow, found: &Found, parent: &str, id: &str) -> Result<Outcome, Fail> {
-    let _tree = e.cfg.tree_lock.lock().await;
+    let tree = tree(e).await;
     let is_dir = found.is_dir;
-    if is_dir {
-        local::strip(&found.open_dir()?)?;
-    } else {
-        local::strip(&found.open()?)?;
-    }
+    let object = found.clone();
+    blocking_under(Arc::clone(&tree), move || local::strip_found(&object)).await?;
     let (inode, rel, parent, name) = (found.inode.clone(), found.rel.clone(), parent.to_owned(), found.name.to_str().map(str::to_owned));
     let amend = move |next: &mut OutboxRow| {
         next.kind = if is_dir { OutboxKind::Mkdir } else { OutboxKind::Create };
@@ -443,14 +529,15 @@ pub(super) async fn upload_as_new(e: &Engine, row: &OutboxRow, found: &Found, pa
     Ok(Outcome::again())
 }
 
-async fn mkdir(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
+async fn mkdir(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Result<Outcome, Fail> {
     let local = local_name(&row)?;
     let Some(found) = locate(e, disk, &row).await?.filter(|f| f.is_dir) else { return never_uploaded(e, disk, &row).await };
     let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
     let name = wanted_name(&row, &local);
     // Opened before the request, as a file's content is: the commit marks the
     // directory that was made, wherever it is by then — renamed, or removed.
-    let dir = found.open_dir()?;
+    let object = found.clone();
+    let dir = blocking(move || object.open_dir()).await?;
     match e.cfg.drive.create_folder(&parent, &name).await {
         Ok(item) => {
             e.fault(Fault::AfterSend)?;
@@ -480,16 +567,16 @@ async fn mkdir(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
 /// reconcile placed it back as new).
 async fn commit_dir(e: &Engine, row: &OutboxRow, found: &Found, dir: std::fs::File, item: &DriveItem, parent: &str) -> Result<Outcome, Fail> {
     let answer = answer_row(item, Some(parent))?;
-    let _tree = e.cfg.tree_lock.lock().await;
+    let tree = tree(e).await;
     let id = item.id.clone();
-    blocking(move || local::commit_dir(&dir, &id)).await?;
+    blocking_under(Arc::clone(&tree), move || local::commit_dir(&dir, &id)).await?;
     e.fault(Fault::AfterCommitStep1)?;
     let event = e.event(kind::UPLOADED, &found.rel, "folder");
     commit_row(e, row, &answer, found.inode.handle.as_ref(), parent, event).await?;
     Ok(Outcome::Done)
 }
 
-async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, Fail> {
+async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Result<Outcome, Fail> {
     let (Some(id), Some(base)) = (row.item_id.clone(), row.base.clone()) else { return Ok(Outcome::blocked(Reason::NoItem)) };
     let local = local_name(&row)?;
     let Some(parent) = parent_of(e, disk, &row).await? else { return Ok(Outcome::later(Reason::Parent, RECHECK)) };
@@ -542,11 +629,16 @@ async fn moved(e: &Arc<Engine>, disk: &Disk, row: OutboxRow) -> Result<Outcome, 
             if remote_parent.as_deref() != base.parent.as_deref() || Some(remote_name.as_str()) != base.name.as_deref() {
                 // Moved there as well: the first to reach OneDrive wins (§6).
                 if let Some(found) = &found {
-                    let _tree = e.cfg.tree_lock.lock().await;
-                    if let Some(to_rel) = follow_cloud(e, disk, found, &remote).await? {
+                    let tree = tree(e).await;
+                    if let Some(to_rel) = follow_cloud(e, disk, &tree, found, &remote).await? {
                         let answer = answer_row(&remote, None)?;
                         let handle = found.inode.handle.clone();
-                        local::mark(disk, &to_rel, None);
+                        let (on, at) = (Arc::clone(disk), to_rel.clone());
+                        blocking_under(Arc::clone(&tree), move || {
+                            local::mark(&on, &at, None);
+                            Ok(())
+                        })
+                        .await?;
                         let event = e.event("moved", &to_rel, format!("renamed in OneDrive first; was {} here", found.rel.display()));
                         let (seq, stored) = (row.seq, event.clone());
                         e.store().call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: handle.as_ref() }, Some(&stored))).await?;
@@ -577,11 +669,15 @@ async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &
         }.map(|l| l.rel.display().to_string()).unwrap_or_default(),
         None => String::new(),
     };
-    let _tree = e.cfg.tree_lock.lock().await;
+    let tree = tree(e).await;
     let handle = found.and_then(|f| f.inode.handle.clone()).or_else(|| row.inode.as_ref().and_then(|i| i.handle.clone()));
     let rel = found.map(|f| f.rel.as_path()).unwrap_or(&row.rel);
-    if let Some(found) = found {
-        local::clear_mark(found);
+    if let Some(object) = found.cloned() {
+        blocking_under(Arc::clone(&tree), move || {
+            local::clear_mark(&object);
+            Ok(())
+        })
+        .await?;
     }
     let event = e.event(kind::CLOUD_MOVED, rel, was);
     commit_row(e, row, &answer, handle.as_ref(), parent, event).await?;
@@ -592,25 +688,23 @@ async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &
 /// Content decides: a downloaded file, or a folder, is uploaded again as
 /// new at its new place; a placeholder, which holds nothing here, follows
 /// the delete.
-async fn move_gone(e: &Engine, disk: &Disk, row: &OutboxRow, found: Option<&Found>, id: &str, parent: &str) -> Result<Outcome, Fail> {
+async fn move_gone(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow, found: Option<&Found>, id: &str, parent: &str) -> Result<Outcome, Fail> {
     let Some(found) = found else {
         return gone(e, row, id, "deleted in OneDrive").await;
     };
     if found.is_dir {
         return upload_as_new(e, row, found, parent, id).await;
     }
-    match found.state()? {
+    let object = found.clone();
+    match blocking(move || object.state()).await? {
         Some(State::OnlineOnly) => {
-            let _tree = e.cfg.tree_lock.lock().await;
+            let tree = tree(e).await;
             // Still the same placeholder, holding nothing, and nobody has it
             // open (a write lease, as a free-up takes): removed.
-            let file = found.open()?;
-            let Some(lease) = WriteLease::take(&file)? else { return Ok(Outcome::later(Reason::NotLocal, RECHECK)) };
-            let again = local::find(disk, &found.rel)?;
-            if again.as_ref().is_some_and(|a| a.inode.same_object(&found.inode)) && found.state()? == Some(State::OnlineOnly) {
-                disk.remove(&found.dir, &found.name, false)?;
+            let (on, object) = (Arc::clone(disk), found.clone());
+            if !blocking_under(Arc::clone(&tree), move || local::remove_placeholder(&on, &object)).await? {
+                return Ok(Outcome::later(Reason::NotLocal, RECHECK));
             }
-            drop(lease);
             let event = e.event(kind::CLOUD_DELETED, &found.rel, "deleted in OneDrive; the placeholder here went too");
             let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
             e.store().call(move |s| s.outbox_commit(seq, Committed::Gone { item_id: &id }, Some(&stored))).await?;
@@ -723,7 +817,7 @@ async fn delete_folder(e: &Engine, row: &OutboxRow, id: &str) -> Result<Outcome,
 /// session it opened is cancelled, and it leaves the outbox with the rows
 /// behind it of the same object that never got an item id — nothing of it
 /// reached OneDrive. Except where it may have: see [`landed_away`].
-pub(super) async fn never_uploaded(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<Outcome, Fail> {
+pub(super) async fn never_uploaded(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Outcome, Fail> {
     let behind: Vec<i64> = match &row.inode {
         Some(inode) => {
             let inode = inode.clone();
@@ -754,7 +848,7 @@ pub(super) async fn never_uploaded(e: &Engine, disk: &Disk, row: &OutboxRow) -> 
 /// in the parent; the item there is this row's the way a replay's `409`
 /// decides it ([`taken`]), by the size and time sent, the file being gone.
 /// If it is, it goes to OneDrive's recycle bin. Whether it did.
-async fn landed_away(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<bool, Fail> {
+async fn landed_away(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<bool, Fail> {
     if row.kind != OutboxKind::Create {
         return Ok(false);
     }
@@ -778,3 +872,6 @@ async fn landed_away(e: &Engine, disk: &Disk, row: &OutboxRow) -> Result<bool, F
         Err(err) => Err(err.into()),
     }
 }
+
+#[cfg(test)]
+mod tests;

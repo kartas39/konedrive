@@ -119,6 +119,9 @@ pub(crate) struct Engine {
     /// What the pending `move-out` rows name, re-marked on this helper
     /// connection.
     protection: Mutex<super::move_out::Protection>,
+    /// The blocking sections the rows in flight have under way: a stop waits
+    /// for them.
+    pub(super) sections: super::steps::Sections,
     /// One quota read at a time: refusals of rows running together share it.
     pub(super) quota_lock: tokio::sync::Mutex<()>,
     /// The counts are wanted again though the outbox did not change (OneDrive
@@ -182,6 +185,7 @@ impl Engine {
             wake: Notify::new(),
             faults: Mutex::new(Vec::new()),
             protection: Mutex::new(super::move_out::Protection::default()),
+            sections: super::steps::Sections::default(),
             quota_lock: tokio::sync::Mutex::new(()),
             recount: Notify::new(),
             closing: CancellationToken::new(),

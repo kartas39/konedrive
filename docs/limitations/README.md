@@ -240,6 +240,7 @@ application must never read zeros where real content should be.
 - [F230](F230.md) — A fill's file calls run in blocking sections, and a section that has begun ends by itself
 - [F231](F231.md) — The write gate and the hub's file calls run on blocking threads; the rest of `config.toml`'s readers do not
 - [F232](F232.md) — A replacement's file calls run in three blocking sections, and a stop is heard only between them
+- [F233](F233.md) — An upload step's file calls run in blocking sections, and a section that has begun ends by itself
 - [F234](F234.md) — What the helper's missing write probe, its version check and its panic containment leave open
 
 ---
