@@ -34,7 +34,7 @@ fn parse_why_text_branches(cpp: &str) -> Vec<(String, String)> {
     pairs
 }
 
-/// `konedrivectl::skip_reason_text` and the window's `whyText`
+/// `skip_reason_text` (`konedrivectl::text::files`) and the window's `whyText`
 /// (`app/synccontroller.cpp`) are meant to say exactly the same thing for
 /// each reason (see `crates/konedrivectl/src/text/files.rs`'s doc comment on
 /// `skip_reason_text`), so a person reading `konedrivectl sync skipped` and
@@ -63,12 +63,17 @@ fn skip_reason_text_matches_every_branch_of_the_windows_whytext() {
     );
     for (reason, sentence) in &branches {
         assert_eq!(
-            konedrivectl::skip_reason_text(reason),
+            konedrivectl::text::files::skip_reason_text(reason),
             sentence,
             "app/synccontroller.cpp's whyText(\"{reason}\") and \
-             konedrivectl::skip_reason_text(\"{reason}\") must say exactly the same thing"
+             konedrivectl's skip_reason_text(\"{reason}\") must say exactly the same thing"
         );
     }
+    assert_eq!(
+        konedrivectl::text::files::skip_reason_text("something-nobody-invented-yet"),
+        konedrivectl::text::files::skip_reason_text("unsupported"),
+        "a reason this build does not know reads as the last branch"
+    );
 }
 
 // --- The activity's words are one contract with the window --------------

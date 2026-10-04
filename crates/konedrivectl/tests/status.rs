@@ -2,7 +2,7 @@ mod common;
 
 use std::time::Duration;
 
-use konedrive_dbus::accounts::{AccountProxy, AccountsProxy};
+use konedrive_dbus::accounts::AccountsProxy;
 use konedrive_dbus::testing::TestBus;
 
 const CLIENT_ID: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
@@ -14,11 +14,13 @@ async fn status_reports_state_and_client_id() {
     let _daemon = common::start_daemon(&bus, dir.path()).await;
     let client = bus.connect().await;
     let manager = AccountsProxy::new(&client).await.unwrap();
-    let proxy = AccountProxy::new(&client, manager.add("Personal").await.unwrap()).await.unwrap();
+    manager.add("Personal").await.unwrap();
 
-    let text = konedrivectl::status_text(&proxy, Some(&manager.client_id().await.unwrap())).await.unwrap();
+    let out = common::run(bus.address(), &["status"]);
+    assert!(out.status.success(), "{out:?}");
+    let text = common::out_text(&out);
     assert!(text.lines().any(|l| l == "Label:      Personal"), "{text}");
-    assert!(text.contains("signed-out"), "{text}");
+    assert!(text.lines().any(|l| l == "State:      signed-out"), "{text}");
     assert!(text.contains(konedrived::config::DEFAULT_CLIENT_ID), "the built-in client ID: {text}");
     assert!(!text.contains("Account:"), "{text}");
 

@@ -158,7 +158,7 @@ pub struct Context<'a> {
     /// (`user.konedrive.drive`, design §8.3), which the daemon refuses under
     /// `NotEmpty` too.
     pub foreign: bool,
-    /// How a suggested command names the account ([`command_prefix`](crate::command_prefix)); empty
+    /// How a suggested command names the account ([`command_prefix`](crate::choice::command_prefix)); empty
     /// for plain `konedrivectl`.
     pub prefix: &'a str,
 }
@@ -235,7 +235,7 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
         _ => {}
     }
     let text = folder::text(&told, refusal);
-    match (refusal, konedrive_dbus::helper_advice(context.helper)) {
+    match (refusal, konedrive_dbus::HelperState::parse(context.helper).and_then(konedrive_dbus::HelperState::advice)) {
         // A folder that shows OneDrive downloads from OneDrive; it has no
         // source yet only while it waits to be brought up.
         (Some(Refusal::NoSource), _) if context.source == "onedrive" => {

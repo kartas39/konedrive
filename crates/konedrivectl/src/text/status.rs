@@ -1,6 +1,9 @@
-use konedrive_dbus::accounts::{AccountProxy, FolderProxies};
+//! `status` and `sync status`: what was read of an account and of its folder, and how it is
+//! printed.
 
-use super::formats::{checked_text, grouped, human_bytes, local_time, seconds_text, unix_now};
+use konedrive_dbus::HelperState;
+
+use super::formats::{checked_text, grouped, human_bytes, local_time, seconds_text};
 use super::transfers::waiting_download_text;
 use super::uploads::{space_waiting_text, waiting_text};
 
@@ -10,178 +13,216 @@ pub fn client_id_line(client_id: &str) -> String {
     format!("{:<12}{shown}\n", "Client ID:")
 }
 
+/// `status`'s `Problem:` line: trouble that belongs to no account (`Accounts.LastError`);
+/// nothing when there is none.
+pub fn problem_line(trouble: &str) -> String {
+    if trouble.is_empty() {
+        String::new()
+    } else {
+        format!("{:<12}{trouble}\n", "Problem:")
+    }
+}
+
+/// `status`'s `Accounts:` line when there is no account yet.
+pub fn no_account_line() -> String {
+    format!("{:<12}none yet: `konedrivectl login` adds one called {} and signs it in\n", "Accounts:", crate::FIRST_LABEL)
+}
+
+/// One account's block under its label, in `status` and `sync status` when they show several.
+pub fn account_block(label: &str, block: &str) -> String {
+    format!("\n{label}\n{}", super::formats::indented(block))
+}
+
+/// One account as `Account`'s properties say it: what `status` shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AccountStatus {
+    pub label: String,
+    /// `signed-out`, `signing-in` or `signed-in`.
+    pub state: String,
+    pub mode: String,
+    pub display_name: String,
+    pub email: String,
+    pub quota_used: u64,
+    pub quota_total: u64,
+    pub last_error: String,
+}
+
 /// `status` for one account. `client_id` is `Some` when this account is all `status` shows:
 /// its label and the client ID are printed with it. When `status` shows several, the client
 /// ID is printed once above them and each block is headed by its label: `None`.
-pub async fn status_text(proxy: &AccountProxy<'_>, client_id: Option<&str>) -> zbus::Result<String> {
-    let state = proxy.state().await?;
+pub fn status_text(status: &AccountStatus, client_id: Option<&str>) -> String {
+    let state = &status.state;
     let mut out = String::new();
     if let Some(client_id) = client_id {
-        out.push_str(&format!("{:<12}{}\n", "Label:", proxy.label().await?));
+        out.push_str(&format!("{:<12}{}\n", "Label:", status.label));
         out.push_str(&format!("{:<12}{state}\n", "State:"));
         out.push_str(&client_id_line(client_id));
     } else {
         out.push_str(&format!("{:<12}{state}\n", "State:"));
     }
-    out.push_str(&format!("{:<12}{}\n", "Mode:", proxy.mode().await?));
+    out.push_str(&format!("{:<12}{}\n", "Mode:", status.mode));
     if state == "signed-in" {
-        out.push_str(&format!(
-            "{:<12}{} <{}>\n",
-            "Account:",
-            proxy.display_name().await?,
-            proxy.email().await?
-        ));
+        out.push_str(&format!("{:<12}{} <{}>\n", "Account:", status.display_name, status.email));
         out.push_str(&format!(
             "{:<12}{} of {} used\n",
             "Storage:",
-            human_bytes(proxy.quota_used().await?),
-            human_bytes(proxy.quota_total().await?)
+            human_bytes(status.quota_used),
+            human_bytes(status.quota_total)
         ));
     }
-    let last_error = proxy.last_error().await?;
+    if !status.last_error.is_empty() {
+        out.push_str(&format!("{:<12}{}\n", "Last error:", status.last_error));
+    }
+    out
+}
+
+/// `account mode` with no mode given: the mode, and `Account.LastError` when it says
+/// something. `tag` is what a success line starts with.
+pub fn mode_shown_text(tag: &str, mode: &str, last_error: &str) -> String {
+    let mut out = format!("{tag}{mode}\n");
     if !last_error.is_empty() {
         out.push_str(&format!("{:<12}{last_error}\n", "Last error:"));
     }
-    Ok(out)
+    out
 }
 
-/// The account status's layout, with a wider label column: `Always on this
-/// device:` is the longest label.
+/// One account's folder as its interfaces' properties say it: what `sync status` shows.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct FolderStatus {
+    /// `Folder.Path`: empty with no folder.
+    pub path: String,
+    /// `Folder.State`.
+    pub state: String,
+    pub last_error: String,
+    /// `Folder.Source`: `onedrive`, `local`, or empty.
+    pub source: String,
+    pub items_listed: u64,
+    pub items_placed: u64,
+    pub skipped: u64,
+    /// Unix seconds of the last check with OneDrive; 0 for never.
+    pub last_checked: i64,
+    /// `Folder.LiveChanges`.
+    pub live_changes: String,
+    /// `Account.Mode` of the folder's account.
+    pub mode: String,
+    /// Files left to download, and their size.
+    pub download_left: u32,
+    pub download_left_bytes: u64,
+    pub scan: LocalScan,
+    /// Changes waiting to be uploaded, and the size of what they send.
+    pub pending: u32,
+    pub pending_bytes: u64,
+    /// Changes that need the user.
+    pub blocked: u32,
+    /// OneDrive is full; then the changes that wait for space, and their size.
+    pub quota_full: bool,
+    pub quota_waiting: u32,
+    pub quota_waiting_bytes: u64,
+    /// Files refused as too big for the space left.
+    pub too_big: u32,
+    /// Removals held for confirmation.
+    pub held_deletes: u32,
+    pub paused: bool,
+    /// Unix seconds when the pause ends by itself; 0 until resumed.
+    pub paused_until: i64,
+    /// `Folder.HeldBack`: why the account holds back by itself, or empty.
+    pub held_back: String,
+    /// What the folder's files take on this disk.
+    pub local_bytes: u64,
+    /// Files and folders with a pin of their own.
+    pub pinned: u32,
+    pub conflicts: u32,
+}
+
+/// `sync status` for one account's folder, as it was read at `now` (unix seconds).
 ///
-/// `Folder.State` is `none` on an ordinary machine that has never registered a
-/// folder — this prints as an unremarkable "(none)", not an error. `error`
-/// means a root is registered but something needs attention (startup
-/// recovery could not finish, or could not even run, including a recovery
-/// that finished with files it could not fix); `LastError` then carries the
-/// detail and is always printed alongside it, so `error` can never be
-/// mistaken for `ready` by someone scanning quickly.
+/// `Folder.State` is `none` on an ordinary machine that has never registered a folder: that
+/// prints as an unremarkable "(none)", not an error. `error` means a folder is registered
+/// and something needs attention; `LastError` then carries the detail and is always printed
+/// with it.
 ///
-/// A registered folder also gets an `Opens:` line, in this CLI's own words,
-/// saying whether anything fills a file when it is opened. That matters
-/// most for `no-interception`, the developer's mode: without the helper, a
-/// file that is not downloaded reads as zeros, and that has to be on screen
-/// every time, not left to the user's memory or to whatever `LastError`
-/// happens to say.
+/// A registered folder gets an `Opens:` line, saying whether anything fills a file when it is
+/// opened. That matters most for `no-interception`: without the helper, a file that is not
+/// downloaded reads as zeros, and that is on screen every time.
 ///
-/// `Helper:` says how the privileged helper stands (`Accounts.HelperState`,
-/// HS4, passed in as `helper`) and, when it is not connected, how to install,
-/// start or look at it — whether or not a folder is registered. One helper
-/// serves every account, so when `sync status` shows several, it prints that
-/// line once above them and each block is printed with `helper = None`.
+/// `helper` is `Accounts.HelperState` when this folder is all `sync status` shows: the
+/// `Helper:` line says how the helper stands and, when it is not connected, what to do. One
+/// helper serves every account, so when `sync status` shows several, it prints that line
+/// once above them and each block is printed with `None`.
 ///
-/// `Last checked:` is added for a folder that shows OneDrive — "20 s
-/// ago", or "never" — and `On this computer:` for any registered folder
-/// that is up (not one the daemon has only just started with, whose state is
-/// still `none`): what its files take on this disk — and `Always on this
-/// device:`, how many files and folders are pinned (`konedrivectl sync pin`).
-/// `Conflicts:` says how many local versions were moved out of the way,
-/// when there are any: they are not a problem, so `LastError` does not carry
-/// them.
-pub async fn sync_status_text(proxy: &FolderProxies<'_>, helper: Option<&str>, prefix: &str) -> zbus::Result<String> {
+/// The lines about OneDrive are printed for a folder that shows OneDrive; `On this
+/// computer:` and `Always on this device:` for a folder that is up; `Conflicts:` when there
+/// are any. `prefix` is how a suggested command starts.
+pub fn sync_status_text(status: &FolderStatus, helper: Option<&str>, prefix: &str, now: i64) -> String {
     const W: usize = SYNC_STATUS_WIDTH;
-    let path = proxy.folder.path().await?;
-    let state = proxy.folder.state().await?;
-    let shown = if path.is_empty() { "(none)" } else { path.as_str() };
-    let mut out = format!("{:<W$}{shown}\n", "Folder:");
-    out.push_str(&format!("{:<W$}{state}\n", "State:"));
-    if let Some(opens) = opens_line(&state) {
-        out.push_str(&format!("{:<W$}{opens}\n", "Opens:"));
+    let mut out = String::new();
+    let mut line = |label: &str, value: &str| out.push_str(&format!("{label:<W$}{value}\n"));
+    let state = status.state.as_str();
+    line("Folder:", if status.path.is_empty() { "(none)" } else { &status.path });
+    line("State:", state);
+    if let Some(opens) = opens_line(state) {
+        line("Opens:", opens);
     }
     if let Some(helper) = helper {
-        out.push_str(&helper_line(helper));
+        line("Helper:", &helper_text(helper));
     }
-    let last_error = proxy.folder.last_error().await?;
-    if !last_error.is_empty() {
-        out.push_str(&format!("{:<W$}{last_error}\n", "Last error:"));
+    if !status.last_error.is_empty() {
+        line("Last error:", &status.last_error);
     }
-    if proxy.folder.source().await? == "onedrive" {
-        let (listed, placed, skipped) =
-            (proxy.folder.items_listed().await?, proxy.folder.items_placed().await?, proxy.folder.skipped_count().await?);
-        out.push_str(&format!("{:<W$}{listed} in OneDrive, {placed} in the folder\n", "Items:"));
-        if skipped > 0 {
-            out.push_str(&format!("{:<W$}{skipped} (see `{prefix} sync skipped`)\n", "Skipped:"));
+    if status.source == "onedrive" {
+        line("Items:", &format!("{} in OneDrive, {} in the folder", status.items_listed, status.items_placed));
+        if status.skipped > 0 {
+            line("Skipped:", &format!("{} (see `{prefix} sync skipped`)", status.skipped));
         }
-        let checked = checked_text(proxy.folder.last_checked().await?, unix_now());
-        out.push_str(&format!("{:<W$}{checked}\n", "Last checked:"));
-        if let Some(live) = live_text(&proxy.folder.live_changes().await?) {
-            out.push_str(&format!("{:<W$}{live}\n", "Changes from OneDrive:"));
+        line("Last checked:", &checked_text(status.last_checked, now));
+        if let Some(live) = live_text(&status.live_changes) {
+            line("Changes from OneDrive:", live);
         }
-        let mode = account_mode(proxy).await;
-        out.push_str(&format!("{:<W$}{}\n", "Mode:", mode_text(&mode)));
-        let (down, down_bytes) = (proxy.transfers.download_left_count().await?, proxy.transfers.download_left_bytes().await?);
-        out.push_str(&format!("{:<W$}{}\n", "Waiting to download:", waiting_download_text(down, down_bytes)));
-        let scan = LocalScan {
-            state: proxy.scan.state().await?,
-            reason: proxy.scan.reason().await?,
-            started: proxy.scan.started().await?,
-            directories: proxy.scan.directories().await?,
-            files: proxy.scan.files().await?,
-            expected: proxy.scan.expected().await?,
-            finished: proxy.scan.finished().await?,
-            took: proxy.scan.took().await?,
-        };
-        out.push_str(&format!("{:<W$}{}\n", "Local scan:", local_scan_text(&scan, unix_now())));
-        let (pending, bytes, blocked) = (proxy.queue.pending_count().await?, proxy.queue.pending_bytes().await?, proxy.queue.blocked_count().await?);
-        if mode == "read-write" || pending > 0 || blocked > 0 {
-            out.push_str(&format!("{:<W$}{}\n", "Waiting to upload:", waiting_text(pending, bytes)));
+        line("Mode:", &mode_text(&status.mode));
+        line("Waiting to download:", &waiting_download_text(status.download_left, status.download_left_bytes));
+        line("Local scan:", &local_scan_text(&status.scan, now));
+        if status.mode == "read-write" || status.pending > 0 || status.blocked > 0 {
+            line("Waiting to upload:", &waiting_text(status.pending, status.pending_bytes));
         }
-        if blocked > 0 {
-            out.push_str(&format!("{:<W$}{blocked} (see `{prefix} sync not-uploaded`)\n", "Blocked:"));
+        if status.blocked > 0 {
+            line("Blocked:", &format!("{} (see `{prefix} sync not-uploaded`)", status.blocked));
         }
-        if proxy.queue.quota_full().await? {
-            let (count, bytes) = (proxy.queue.quota_waiting_count().await?, proxy.queue.quota_waiting_bytes().await?);
-            out.push_str(&format!("{:<W$}{}\n", "Waiting for space:", space_waiting_text(count, bytes)));
+        if status.quota_full {
+            line("Waiting for space:", &space_waiting_text(status.quota_waiting, status.quota_waiting_bytes));
         }
-        let too_big = proxy.queue.too_big_count().await?;
-        if too_big > 0 {
-            out.push_str(&format!("{:<W$}{too_big} (see `{prefix} sync outbox`)\n", "Too big for the space:"));
+        if status.too_big > 0 {
+            line("Too big for the space:", &format!("{} (see `{prefix} sync outbox`)", status.too_big));
         }
-        let held = proxy.queue.held_count().await?;
-        if held > 0 {
-            out.push_str(&format!(
-                "{:<W$}{held} deletions (`{prefix} sync deletes confirm` or `{prefix} sync deletes restore`)\n",
-                "Held for confirmation:"
-            ));
+        if status.held_deletes > 0 {
+            line(
+                "Held for confirmation:",
+                &format!(
+                    "{} deletions (`{prefix} sync deletes confirm` or `{prefix} sync deletes restore`)",
+                    status.held_deletes
+                ),
+            );
         }
-        if proxy.folder.paused().await? {
-            let until = proxy.folder.paused_until().await?;
-            out.push_str(&format!("{:<W$}{}\n", "Paused until:", paused_text(until, prefix)));
+        if status.paused {
+            line("Paused until:", &paused_text(status.paused_until, prefix));
         }
-        let held = proxy.folder.held_back().await?;
-        if !held.is_empty() {
-            out.push_str(&format!("{:<W$}{} (`{prefix} sync anyway` syncs now)\n", "Paused by itself:", held_text(&held)));
+        if !status.held_back.is_empty() {
+            line("Paused by itself:", &format!("{} (`{prefix} sync anyway` syncs now)", held_text(&status.held_back)));
         }
     }
     // A folder not brought up yet has its path and the state `waiting`: nothing has measured it.
-    if !path.is_empty() && state != "none" && state != "waiting" {
-        out.push_str(&format!("{:<W$}{}\n", "On this computer:", human_bytes(proxy.folder.local_bytes().await?)));
-        out.push_str(&format!("{:<W$}{}\n", "Always on this device:", proxy.folder.pinned_count().await?));
+    if !status.path.is_empty() && state != "none" && state != "waiting" {
+        line("On this computer:", &human_bytes(status.local_bytes));
+        line("Always on this device:", &status.pinned.to_string());
     }
-    let conflicts = proxy.conflicts.count().await?;
-    if conflicts > 0 {
-        out.push_str(&format!("{:<W$}{conflicts} (see `{prefix} sync conflicts`)\n", "Conflicts:"));
+    if status.conflicts > 0 {
+        line("Conflicts:", &format!("{} (see `{prefix} sync conflicts`)", status.conflicts));
     }
-    Ok(out)
+    out
 }
 
 /// The width of `sync status`'s label column: `Always on this device:` is the
 /// longest label.
 const SYNC_STATUS_WIDTH: usize = 24;
-
-/// `Account.Mode` of the account whose folder is `proxy` (the same object);
-/// empty when it cannot be read.
-async fn account_mode(proxy: &FolderProxies<'_>) -> String {
-    let inner = proxy.folder.inner();
-    let account = async {
-        konedrive_dbus::accounts::AccountProxy::builder(inner.connection())
-            .path(inner.path().to_owned())?
-            .build()
-            .await?
-            .mode()
-            .await
-    };
-    account.await.unwrap_or_default()
-}
 
 /// `sync status`'s `Mode:` line.
 pub fn mode_text(mode: &str) -> String {
@@ -237,34 +278,6 @@ pub fn scan_reason_text(reason: &str) -> String {
     }
 }
 
-/// `sync thumbnails`' answer.
-pub fn thumbnails_text(on: bool) -> &'static str {
-    if on {
-        "Thumbnails: on — OneDrive's previews of images and videos are downloaded."
-    } else {
-        "Thumbnails: off — Dolphin downloads a cloud-only file in full to show its preview while its previews are on."
-    }
-}
-
-/// `settings on-metered`'s answer.
-pub fn on_metered_text(pause: bool) -> &'static str {
-    if pause {
-        "On a metered connection: pause."
-    } else {
-        "On a metered connection: sync as usual."
-    }
-}
-
-/// `settings on-battery`'s answer, for `sync`, `power-saver` or `pause`.
-pub fn on_battery_text(choice: &str) -> String {
-    match choice {
-        "sync" => "On battery: sync as usual.".to_owned(),
-        "power-saver" => "On battery: pause in power-saver mode.".to_owned(),
-        "pause" => "On battery: pause.".to_owned(),
-        other => format!("On battery: {other}."),
-    }
-}
-
 /// `sync status`'s `Paused until:` line.
 pub fn paused_text(until: i64, prefix: &str) -> String {
     if until == 0 {
@@ -294,48 +307,6 @@ pub fn held_text(reason: &str) -> &str {
     }
 }
 
-/// The running daemon's build, as `konedrivectl --version` found it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DaemonBuild {
-    /// No daemon on the session bus (or no session bus): nothing was started to ask.
-    NotRunning(String),
-    /// A daemon that did not say: a build older than the `Version` property, most likely.
-    Unknown(String),
-    Running { version: String, commit: String },
-}
-
-/// How to restart the daemon, so that it runs the build installed.
-pub const RESTART_HINT: &str = "systemctl --user restart konedrived";
-
-/// What `konedrivectl --version` prints: its own line, the daemon's, and, when the daemon runs
-/// another build than this one (another version or another commit), a line that says to restart
-/// it.
-pub fn version_text(version: &str, commit: &str, daemon: &DaemonBuild) -> String {
-    use konedrive_dbus::version::line;
-    let mut out = line("konedrivectl", version, commit) + "\n";
-    let other = match daemon {
-        DaemonBuild::NotRunning(why) => {
-            out.push_str(&format!("konedrived: not running ({why})\n"));
-            false
-        }
-        DaemonBuild::Unknown(why) => {
-            out.push_str(&format!("konedrived: running, version unknown ({why})\n"));
-            true
-        }
-        DaemonBuild::Running { version: daemon_version, commit: daemon_commit } => {
-            out.push_str(&line("konedrived", daemon_version, daemon_commit));
-            out.push('\n');
-            daemon_version != version || daemon_commit != commit
-        }
-    };
-    if other {
-        out.push_str(&format!(
-            "The daemon runs another build than this one: restart it ({RESTART_HINT}) to use this one.\n"
-        ));
-    }
-    out
-}
-
 /// `sync status`'s `Helper:` line ([`helper_text`]).
 pub fn helper_line(helper: &str) -> String {
     format!("{:<W$}{}\n", "Helper:", helper_text(helper), W = SYNC_STATUS_WIDTH)
@@ -361,24 +332,10 @@ fn opens_line(state: &str) -> Option<&'static str> {
 /// The `Helper:` line's text (HS4): `HelperState`, and what to do about it
 /// when the helper is not connected — the same words `LastError` uses.
 pub fn helper_text(state: &str) -> String {
-    match konedrive_dbus::helper_advice(state) {
+    match HelperState::parse(state).and_then(HelperState::advice) {
         Some(advice) => format!("{state} — {advice}"),
         None => state.to_owned(),
     }
-}
-
-/// `sync activity`: one line per event, newest first — time, kind, full
-/// path, and the detail in parentheses when there is one.
-pub fn activity_text(events: &[(i64, String, String, String)]) -> String {
-    if events.is_empty() {
-        return "Nothing has happened yet.\n".to_owned();
-    }
-    let mut out = String::new();
-    for (at, kind, path, detail) in events {
-        let detail = if detail.is_empty() { String::new() } else { format!("  ({detail})") };
-        out.push_str(&format!("{}  {kind:<10}  {path}{detail}\n", local_time(*at)));
-    }
-    out
 }
 
 #[cfg(test)]

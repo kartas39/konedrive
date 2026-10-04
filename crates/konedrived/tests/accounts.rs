@@ -375,8 +375,8 @@ async fn each_account_fills_from_its_own_source() {
     helper.send_request(9, &open(&stray));
     assert_eq!(helper.answer(9).await, libc::EIO);
 
-    let shown = |events: Vec<(i64, String, String, String)>| -> Vec<(String, String)> {
-        events.into_iter().map(|(_, kind, path, _)| (kind, path)).collect()
+    let shown = |events: Vec<konedrive_dbus::rows::Event>| -> Vec<(String, String)> {
+        events.into_iter().map(|event| (event.kind, event.path)).collect()
     };
     let path = |p: PathBuf| std::fs::canonicalize(p).unwrap().display().to_string();
     eventually("B's download on open is recorded", || async {
@@ -448,9 +448,9 @@ async fn a_files1_call_over_two_accounts_is_refused_whole_or_done_whole() {
         .await;
     }
 
-    let (freed, bytes, busy, kept) = d.files.free_up(&both).await.unwrap();
-    assert_eq!((freed, busy, kept), (2, 0, 0), "their own pins came off first");
-    assert!(bytes >= 8192, "{bytes}");
+    let freed = d.files.free_up(&both).await.unwrap();
+    assert_eq!((freed.files, freed.busy, freed.pinned), (2, 0, 0), "their own pins came off first");
+    assert!(freed.bytes >= 8192, "{freed:?}");
     assert_eq!(d.files.item_state(both[1]).await.unwrap(), "online-only");
 }
 

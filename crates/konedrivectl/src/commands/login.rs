@@ -2,10 +2,13 @@ use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context};
 use konedrive_dbus::accounts::AccountProxy;
-use konedrivectl::{AccountAction, AccountInfo, FIRST_LABEL};
+use konedrivectl::choice::{choose, AccountInfo};
+use konedrivectl::text::refusals::{explain_account_error, AccountAction};
+use konedrivectl::FIRST_LABEL;
 
 use super::browser::{open_browser, spawn_browser};
 use crate::daemon::{wanted, Daemon};
+use crate::wait;
 
 /// `login` (design §5.2): the chosen account's sign-in. With no account at all and none
 /// named, it first adds one called `Personal`, so the documented setup — `set-client-id`,
@@ -17,7 +20,7 @@ pub(crate) async fn login(daemon: &Daemon, option: Option<&str>) -> anyhow::Resu
     // A name that fits no account, or several accounts and none named, before the client ID.
     let named = match (accounts.is_empty(), wanted(option)) {
         (true, None) => None,
-        (_, wanted) => Some(konedrivectl::choose(&accounts, wanted)?.clone()),
+        (_, wanted) => Some(choose(&accounts, wanted)?.clone()),
     };
     // Before anything is added: every account signs in with it.
     if daemon.manager.client_id().await?.is_empty() {
@@ -31,7 +34,7 @@ pub(crate) async fn login(daemon: &Daemon, option: Option<&str>) -> anyhow::Resu
         None => {
             let result = daemon.manager.add(FIRST_LABEL).await;
             let action = AccountAction::Add(FIRST_LABEL);
-            let path = result.map_err(|e| anyhow!(konedrivectl::explain_account_error(action, &e)))?;
+            let path = result.map_err(|e| anyhow!(explain_account_error(action, &e)))?;
             let id = daemon.account(&path).await?.id().await?;
             println!("Added an account called {FIRST_LABEL} (`konedrivectl account rename {FIRST_LABEL} <label>` renames it).");
             AccountInfo { path, id, label: FIRST_LABEL.to_owned(), email: String::new() }
@@ -39,7 +42,7 @@ pub(crate) async fn login(daemon: &Daemon, option: Option<&str>) -> anyhow::Resu
     };
     let proxy = daemon.account(&chosen.path).await?;
     let result = proxy.begin_sign_in().await;
-    let url = result.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::SignIn(&chosen.label), &e)))?;
+    let url = result.map_err(|e| anyhow!(explain_account_error(AccountAction::SignIn(&chosen.label), &e)))?;
     if open_browser() {
         println!(
             "Opening the Microsoft sign-in page for {} in your browser. If it does not open, visit:\n\n  {url}\n",
@@ -59,7 +62,7 @@ pub(crate) async fn login(daemon: &Daemon, option: Option<&str>) -> anyhow::Resu
         .await?;
 
     tokio::select! {
-        result = tokio::time::timeout(Duration::from_secs(6 * 60), konedrivectl::wait_for_sign_in(&wait_proxy)) => {
+        result = tokio::time::timeout(Duration::from_secs(6 * 60), wait::wait_for_sign_in(&wait_proxy)) => {
             result.context("timed out")??;
         }
         _ = tokio::signal::ctrl_c() => {

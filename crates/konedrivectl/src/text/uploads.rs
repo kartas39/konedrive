@@ -1,3 +1,4 @@
+use konedrive_dbus::rows::{Change, KeptBack, KeptBackFiles, KeptBackReason};
 use konedrive_reason::{Group, LocalSkip, Reason};
 
 use super::formats::{human_bytes, local_time};
@@ -130,18 +131,14 @@ fn too_big_text(needs: u64, free: u64) -> String {
     format!("too big: needs {}, {} free", human_bytes(needs), human_bytes(free))
 }
 
-/// One row of `UploadQueue.Changes()`: (seq, kind, full path, state, bytes sent, bytes
-/// in all, reason, next try).
-pub type OutboxRow = (u64, String, String, String, u64, u64, String, i64);
-
 /// `sync outbox`: one line per change waiting to go up — its state, kind and
 /// path, how far an upload has got, and why it waits.
-pub fn outbox_text(rows: &[OutboxRow], more: bool, prefix: &str) -> String {
+pub fn outbox_text(rows: &[Change], more: bool, prefix: &str) -> String {
     if rows.is_empty() {
         return "Nothing is waiting to upload.\n".to_owned();
     }
     let mut out = String::new();
-    for (_, kind, path, state, done, total, reason, next_try) in rows {
+    for Change { kind, path, state, sent: done, total, reason, next_try, .. } in rows {
         out.push_str(&format!("{state:<8} {kind:<8} {path}"));
         if state == "running" && *total > 0 {
             let percent = done.saturating_mul(100) / total;
@@ -176,20 +173,20 @@ fn kept_back_group_text(group: &str) -> &str {
     }
 }
 
-/// One reason's files as `sync not-uploaded` lists them: (reason, (path,
-/// reason as stored) of the files asked for, how many there are in all).
-pub type ReasonFiles = (String, Vec<(String, String)>, u32);
+/// One reason's files as `sync not-uploaded` lists them: the reason as the summary names it,
+/// and its files as they were asked for.
+pub type ReasonFiles = (String, KeptBackFiles);
 
 /// `sync not-uploaded`: what stays on this computer, and why — each group,
 /// its reasons with their counts, then `files` for the reasons whose files
 /// were asked for.
-pub fn not_uploaded_text(summary: &[(String, String, u32, u64)], files: &[ReasonFiles], prefix: &str) -> String {
+pub fn not_uploaded_text(summary: &[KeptBackReason], files: &[ReasonFiles], prefix: &str) -> String {
     if summary.is_empty() {
         return "Everything here is uploaded or waits to be.\n".to_owned();
     }
     let mut out = String::new();
     let mut group_shown: Option<&str> = None;
-    for (group, reason, count, bytes) in summary {
+    for KeptBackReason { group, reason, count, bytes } in summary {
         if group_shown != Some(group.as_str()) {
             out.push_str(&format!("{}:\n", kept_back_group_text(group)));
             group_shown = Some(group);
@@ -197,9 +194,9 @@ pub fn not_uploaded_text(summary: &[(String, String, u32, u64)], files: &[Reason
         let size = if *bytes > 0 { format!(", {}", human_bytes(*bytes)) } else { String::new() };
         out.push_str(&format!("  {count}{size}: {}\n", upload_reason_text(reason)));
     }
-    for (reason, items, total) in files {
+    for (reason, KeptBackFiles { items, total }) in files {
         out.push_str(&format!("\n{}:\n", upload_reason_text(reason)));
-        for (path, why) in items {
+        for KeptBack { path, reason: why } in items {
             out.push_str(&format!("  {path}"));
             if why != reason {
                 out.push_str(&format!("  ({})", upload_reason_text(why)));

@@ -1,4 +1,4 @@
-use konedrive_dbus::accounts::FolderProxies;
+use konedrive_dbus::rows::Transfer;
 
 use super::formats::{grouped, human_bytes};
 
@@ -37,34 +37,6 @@ pub struct TransferSummary {
     pub large_stream_limit: u32,
     /// Seconds left of OneDrive's `Retry-After`; 0 when there is none.
     pub retry_after: u32,
-}
-
-/// Reads a [`TransferSummary`] from `Transfers`.
-pub async fn transfer_summary(proxy: &FolderProxies<'_>) -> zbus::Result<TransferSummary> {
-    Ok(TransferSummary {
-        active_downloads: proxy.transfers.active_downloads().await?,
-        download_speed: proxy.transfers.download_speed().await?,
-        downloads: QueueTotals {
-            left_count: proxy.transfers.download_left_count().await?,
-            left_bytes: proxy.transfers.download_left_bytes().await?,
-            done_bytes: proxy.transfers.download_done_bytes().await?,
-            time_left: proxy.transfers.download_time_left().await?,
-        },
-        active_uploads: proxy.transfers.active_uploads().await?,
-        upload_speed: proxy.transfers.upload_speed().await?,
-        uploads: QueueTotals {
-            left_count: proxy.transfers.upload_left_count().await?,
-            left_bytes: proxy.transfers.upload_left_bytes().await?,
-            done_bytes: proxy.transfers.upload_done_bytes().await?,
-            time_left: proxy.transfers.upload_time_left().await?,
-        },
-        pool_in_use: proxy.transfers.pool_in_use().await?,
-        pool_size: proxy.transfers.pool_size().await?,
-        large_files: proxy.transfers.large_files().await?,
-        large_streams: proxy.transfers.large_streams().await?,
-        large_stream_limit: proxy.transfers.large_stream_limit().await?,
-        retry_after: proxy.transfers.retry_after().await?,
-    })
 }
 
 /// The pool's line, as the window shows it too (issue #50): the slots in use of the pool's
@@ -147,14 +119,14 @@ pub fn waiting_download_text(count: u32, bytes: u64) -> String {
 /// `sync transfers`: how many files go each way now, what is left and done, how fast, and
 /// the pool; then one line per download and upload under way — its direction, path, how
 /// far, and the whole size.
-pub fn transfers_text(summary: &TransferSummary, downloads: &[(String, u64, u64)], uploads: &[(String, u64, u64)]) -> String {
+pub fn transfers_text(summary: &TransferSummary, downloads: &[Transfer], uploads: &[Transfer]) -> String {
     let mut out = format!("{}\n{}\n{}\n", downloading_line(summary), uploading_line(summary), pool_text(summary));
     if downloads.is_empty() && uploads.is_empty() {
         out.push_str("Nothing is downloading or uploading.\n");
         return out;
     }
     let lines = downloads.iter().map(|t| ("down", t)).chain(uploads.iter().map(|t| ("up", t)));
-    for (direction, (path, done, total)) in lines {
+    for (direction, Transfer { path, done, total }) in lines {
         let percent = if *total == 0 { 0 } else { done.saturating_mul(100) / total };
         out.push_str(&format!("{direction:<4} {path}  {percent}%  {}\n", human_bytes(*total)));
     }

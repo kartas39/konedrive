@@ -1,14 +1,17 @@
 mod cli;
 mod commands;
 mod daemon;
+mod read;
+mod wait;
 
 use std::process::ExitCode;
 
 use anyhow::anyhow;
 use clap::Parser;
-use konedrivectl::AccountAction;
+use konedrivectl::choice::NoChoice;
+use konedrivectl::text::refusals::{explain_account_error, AccountAction};
 
-use cli::{AccountCmd, Cli, Cmd, SyncCmd};
+use cli::{AccountCmd, Cli, Cmd, FolderCmd, SyncCmd};
 use commands::account::account;
 #[cfg(feature = "dev-tools")]
 use commands::dev::dev;
@@ -40,7 +43,7 @@ async fn main() -> ExitCode {
             eprintln!("Error: {error:?}");
             if error.downcast_ref::<Usage>().is_some() {
                 ExitCode::from(2)
-            } else if let Some(no_choice) = error.downcast_ref::<konedrivectl::NoChoice>() {
+            } else if let Some(no_choice) = error.downcast_ref::<NoChoice>() {
                 ExitCode::from(no_choice.exit_status())
             } else {
                 ExitCode::FAILURE
@@ -62,17 +65,8 @@ fn takes_no_account(command: &Cmd) -> Option<&'static str> {
         Cmd::Account { command: AccountCmd::Rename { .. } | AccountCmd::Remove { .. } } => {
             Some("`account rename` and `account remove` take the account as their first argument")
         }
-        Cmd::Sync {
-            command:
-                SyncCmd::Hydrate { .. }
-                | SyncCmd::Dehydrate { .. }
-                | SyncCmd::State { .. }
-                | SyncCmd::Pin { .. }
-                | SyncCmd::Unpin { .. }
-                | SyncCmd::Free { .. }
-                | SyncCmd::Open { .. },
-        } => Some("the path decides the account"),
-        Cmd::Sync { command: SyncCmd::Anyway { all: true } } => Some("`sync anyway --all` acts on every account"),
+        Cmd::Sync { command: SyncCmd::Path(_) } => Some("the path decides the account"),
+        Cmd::Sync { command: SyncCmd::Folder(FolderCmd::Anyway { all: true }) } => Some("`sync anyway --all` acts on every account"),
         _ => None,
     }
 }
@@ -99,7 +93,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let chosen = daemon.chosen(option).await?.account;
             let proxy = daemon.account(&chosen.path).await?;
             let result = proxy.sign_out().await;
-            result.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::SignOut(&chosen.label), &e)))?;
+            result.map_err(|e| anyhow!(explain_account_error(AccountAction::SignOut(&chosen.label), &e)))?;
             println!("Signed out of {}.", chosen.label);
             Ok(())
         }

@@ -1,3 +1,4 @@
+use konedrive_dbus::rows::Conflict;
 use zbus::interface;
 
 use crate::dbus::Conflicts;
@@ -8,9 +9,9 @@ impl Conflicts {
     /// (unix time, original full path, full path of the kept version, how it
     /// was kept: `rescued` or `copy`), newest first; one whose kept file is
     /// gone is dropped.
-    async fn list(&self) -> Result<Vec<(i64, String, String, String)>> {
+    async fn list(&self) -> Result<Vec<Conflict>> {
         let rows = self.service.conflicts().await.map_err(to_fault)?;
-        Ok(rows.into_iter().map(|c| (c.at, c.original, c.rescued, c.kind.as_str().to_owned())).collect())
+        Ok(rows.into_iter().map(|c| Conflict { at: c.at, original: c.original, kept: c.rescued, how: c.kind.as_str().to_owned() }).collect())
     }
 
     async fn dismiss(&self, rescued_path: &str) -> Result<()> {

@@ -1066,6 +1066,8 @@ dependencies = [
 name = "konedrive-dbus"
 version = "0.1.1"
 dependencies = [
+ "konedrive-dbus",
+ "serde",
  "tempfile",
  "tokio",
  "zbus",

@@ -41,7 +41,7 @@ path = "watch_probe/main.rs"
 async-trait = "0.1"
 # Scenario 15's account manager is served on a private bus of its own
 # (`konedrive_dbus::testing::TestBus`, a `dbus-daemon` in the guest).
-konedrive-dbus = { path = "../../crates/konedrive-dbus" }
+konedrive-dbus = { path = "../../crates/konedrive-dbus", features = ["testing"] }
 konedrive-fs = { path = "../../crates/konedrive-fs" }
 konedrive-graph = { path = "../../crates/konedrive-graph" }
 konedrive-helper = { path = "../../crates/konedrive-helper" }

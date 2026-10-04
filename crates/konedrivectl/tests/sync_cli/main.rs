@@ -1,5 +1,5 @@
-//! Exercises `konedrivectl`'s sync side — `sync_status_text`, and the binary's
-//! `sync` and `dev` commands — against the daemon over a private test bus,
+//! Exercises `konedrivectl`'s sync side — the binary's `sync` and `dev`
+//! commands — against the daemon over a private test bus,
 //! with one account, `Personal`: the case where no command needs `--account`.
 //! The daemon is started as `konedrived` starts it (`tests/common`); the
 //! harness reaches into the account's services only for what nothing on the
@@ -224,59 +224,28 @@ async fn harness_onedrive() -> (Harness, wiremock::MockServer) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn status_text_reports_no_folder_then_the_registered_one() {
+async fn binary_status_reports_no_folder_then_the_registered_one() {
     let f = harness().await;
+    let addr = f._bus.address();
 
-    let text = konedrivectl::sync_status_text(&f.proxy, None, "konedrivectl").await.unwrap();
-    assert!(text.contains("Folder:"), "{text}");
-    assert!(text.contains("(none)"), "{text}");
+    let text = out_text(&run(addr, &["sync", "status"]));
+    assert!(text.lines().any(|l| l == "Folder:                 (none)"), "{text}");
 
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
     f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-    // `f.proxy` is a caching proxy (the same one `sync_status_text` is handed
-    // in `main.rs`, built fresh per CLI invocation there); its properties
-    // update from the `PropertiesChanged` signal `dbus::signals::start_signals` emits,
-    // which lands on a task independent of the `RegisterRoot` reply this
-    // test just awaited, so it is not yet guaranteed to have landed. Poll
-    // rather than assert immediately — the same reason `status.rs` polls for
-    // `client_id` after `SetClientId`, and `wait_for_sign_in`'s doc comment
-    // spells out for `Account`.
-    for _ in 0..500 {
-        if f.proxy.folder.state().await.unwrap() == "ready" {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
 
-    let text = konedrivectl::sync_status_text(&f.proxy, None, "konedrivectl").await.unwrap();
+    let text = out_text(&run(addr, &["sync", "status"]));
     assert!(text.contains(root.to_str().unwrap()), "{text}");
-    assert!(text.contains("ready"), "{text}");
+    assert!(text.lines().any(|l| l == "State:                  ready"), "{text}");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_refusal_surfaces_as_an_error_not_a_success() {
-    let f = harness().await;
-    let root = f.dir.path().join("NotEmpty");
-    std::fs::create_dir(&root).unwrap();
-    std::fs::write(root.join("x"), b"x").unwrap();
-
-    let error = f.proxy.folder.register(root.to_str().unwrap()).await.unwrap_err();
-    assert!(format!("{error}").contains("empty"), "{error}");
-}
-
-/// Marks `root_dir` as an already-registered root — exempts a
-/// folder that already carries `user.konedrive.root` from the "must be
-/// empty" check, which is what lets a file be planted in it *before*
-/// `register_root` runs, since recovery runs as part of that call — and
-/// leaves one file in it `dehydrating`. Registered through
-/// [`harness_refusing_clear_ignore`], whose helper refuses the `ClearIgnore`
-/// recovery must have before it may punch that file, recovery fails for it:
-/// `RecoveryReport::failed > 0`. C1 and C2 both need that same
-/// "the call still returns `Ok`, but the root needs attention" outcome, so
-/// it is factored out here rather than duplicated. (It used to hold the file
-/// open instead, so that recovery's lease was refused; a file in use is
-/// `busy` now, not a failure —)
+/// Marks `root_dir` as an already-registered root and leaves one file in it `dehydrating`. A
+/// folder that carries `user.konedrive.root` is exempt from the "must be empty" check, so the
+/// file can be planted before the registration, whose recovery then finds it. Registered
+/// through [`harness_refusing_clear_ignore`], whose helper refuses the `ClearIgnore` recovery
+/// must have before it may punch that file, recovery fails for it: the registration still
+/// answers `Ok`, and the folder needs attention.
 fn stuck_root(root_dir: &std::path::Path) -> PathBuf {
     xattr::set(root_dir, "user.konedrive.root", b"1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d").unwrap();
     let path = root_dir.join("stuck.bin");
@@ -286,28 +255,23 @@ fn stuck_root(root_dir: &std::path::Path) -> PathBuf {
     path
 }
 
-/// C2: nothing before this test drove `Folder.State = error` with a non-empty
-/// `LastError` through `sync_status_text` — the fake helper used everywhere
-/// else in this file acks every request, so ordinary recovery never fails.
-/// `stuck_root`, with a helper that refuses `ClearIgnore`, forces it.
+/// A folder whose recovery left a file behind reads `error` in `sync status`, with the
+/// detail: the fake helper of the other tests acknowledges everything, so recovery never
+/// fails there; `stuck_root`, with a helper that refuses `ClearIgnore`, makes it fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn status_text_shows_a_recovery_failure_as_error_not_a_success() {
+async fn binary_status_shows_a_recovery_failure_as_error_not_a_success() {
     let f = harness_refusing_clear_ignore().await;
     let root = f.dir.path().join("Stuck");
     std::fs::create_dir(&root).unwrap();
     let _stuck_path = stuck_root(&root);
 
-    // `SyncService::bind`'s own doc comment: a per-file recovery failure
-    // does not fail the call, so this must still return `Ok(())`.
+    // A file recovery could not fix does not fail the registration.
     f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
 
-    let text = konedrivectl::sync_status_text(&f.proxy, None, "konedrivectl").await.unwrap();
-    assert!(text.contains("error"), "the state must read error: {text}");
-    assert!(text.contains("Last error:"), "the detail must be shown: {text}");
-    assert!(
-        text.contains('1'),
-        "the failure count belongs in the detail, not just the state: {text}"
-    );
+    let text = out_text(&run(f._bus.address(), &["sync", "status"]));
+    assert!(text.lines().any(|l| l == "State:                  error"), "the state must read error: {text}");
+    let detail = text.lines().find(|l| l.starts_with("Last error:")).unwrap_or_else(|| panic!("the detail must be shown: {text}"));
+    assert!(detail.contains('1'), "the failure count belongs in the detail, not just the state: {text}");
 }
 
 /// Runs a `sync` command the daemon must refuse and returns what the person

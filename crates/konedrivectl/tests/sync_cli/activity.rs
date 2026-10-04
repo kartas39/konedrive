@@ -169,7 +169,7 @@ async fn binary_free_up_space_says_what_it_freed_and_what_was_in_use() {
     assert!(out.status.success(), "{out:?}");
     assert_eq!(
         out_text(&out).trim(),
-        format!("Freed 1 file ({}). 1 file was in use and kept.", konedrivectl::human_bytes(freed))
+        format!("Freed 1 file ({}). 1 file was in use and kept.", konedrivectl::text::formats::human_bytes(freed))
     );
 }
 
@@ -320,18 +320,6 @@ async fn binary_status_says_when_it_last_checked_and_what_the_folder_takes() {
     assert!(checked.ends_with(" s ago"), "{text}");
     let space = text.lines().find(|l| l.starts_with("On this computer:")).unwrap_or_else(|| panic!("{text}"));
     assert!(space.ends_with(" B") || space.ends_with("iB"), "{text}");
-}
-
-/// A folder that shows OneDrive but was never checked says so, rather than
-/// a time.
-#[test]
-fn a_folder_never_checked_reads_never() {
-    assert_eq!(konedrivectl::checked_text(0, 1_000), "never");
-    assert_eq!(konedrivectl::checked_text(980, 1_000), "20 s ago");
-    assert_eq!(konedrivectl::checked_text(1_000 - 5 * 60, 1_000), "5 min ago");
-    assert_eq!(konedrivectl::checked_text(100_000 - 3 * 3600, 100_000), "3 h ago");
-    assert_eq!(konedrivectl::checked_text(1_000_000 - 2 * 86_400, 1_000_000), "2 d ago");
-    assert_eq!(konedrivectl::checked_text(1_010, 1_000), "just now", "a clock that went back");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

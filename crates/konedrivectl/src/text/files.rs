@@ -1,12 +1,13 @@
+use konedrive_dbus::rows::{Conflict, Freed, FreedSpace};
 use konedrive_dbus::Refusal;
 
 use super::formats::{human_bytes, local_time};
 
 /// What each `Skipped()` reason means to the person whose file it is. The
 /// same sentences, word for word, as `whyText` in `app/synccontroller.cpp`
-/// (each wrapped there in `i18n(...)`); `skip_reason_text_matches_the_windows_wording`
-/// below pins each one, and `the_window_uses_the_same_sentences` (in
-/// `tests/sync_cli/wording.rs`) checks the C++ source directly, so the two cannot
+/// (each wrapped there in `i18n(...)`);
+/// `skip_reason_text_matches_every_branch_of_the_windows_whytext` (in
+/// `tests/sync_cli/wording.rs`) compares them with the C++ source, so the two cannot
 /// drift apart unnoticed.
 pub fn skip_reason_text(reason: &str) -> &'static str {
     match reason {
@@ -19,20 +20,17 @@ pub fn skip_reason_text(reason: &str) -> &'static str {
     }
 }
 
-/// One row of `Conflicts.List()`: (unix time, original full path, full path
-/// of the kept version, how it was kept: `rescued` or `copy`).
-pub type ConflictRow = (i64, String, String, String);
-
 /// `sync conflicts`: each local version kept, where it was and where it is
 /// now, and when: moved out of the way, or — in a read-write folder — kept as
 /// a copy beside OneDrive's.
-pub fn conflicts_text(conflicts: &[ConflictRow]) -> String {
+pub fn conflicts_text(conflicts: &[Conflict]) -> String {
     if conflicts.is_empty() {
         return "No conflicts.\n".to_owned();
     }
     let mut out = String::new();
-    for (at, original, rescued, kind) in conflicts {
-        if kind == "copy" {
+    for conflict in conflicts {
+        let Conflict { at, original, kept: rescued, .. } = conflict;
+        if conflict.is_copy() {
             out.push_str(&format!(
                 "{original}\n    changed here and in OneDrive: yours is kept beside it as {rescued}, {}\n",
                 local_time(*at)
@@ -48,12 +46,12 @@ pub fn conflicts_text(conflicts: &[ConflictRow]) -> String {
 /// with the original's place in `folder` taken off its end (`rescued/<id>/<time>`, or a
 /// directory beside a folder on another filesystem), or the file's own directory when that
 /// cannot be told. Each once, in the order first met.
-pub fn rescue_dirs(folder: &str, conflicts: &[ConflictRow]) -> Vec<String> {
+pub fn rescue_dirs(folder: &str, conflicts: &[Conflict]) -> Vec<String> {
     use std::path::Path;
     let mut dirs: Vec<String> = Vec::new();
     // A copy is in the folder, beside its original, and stays with it.
-    for (_, original, rescued, _) in conflicts.iter().filter(|c| c.3 != "copy") {
-        let rescued = Path::new(rescued);
+    for Conflict { original, kept, .. } in conflicts.iter().filter(|c| !c.is_copy()) {
+        let rescued = Path::new(kept);
         let within = if folder.is_empty() { None } else { Path::new(original).strip_prefix(folder).ok() };
         let dir = match within {
             Some(within) if within.components().next().is_some() && rescued.ends_with(within) => {
@@ -74,7 +72,8 @@ pub fn rescue_dirs(folder: &str, conflicts: &[ConflictRow]) -> Vec<String> {
 }
 
 /// `sync free-up-space`: "Freed N files (X). M files were in use and kept."
-pub fn free_up_text(files: u32, bytes: u64, busy: u32) -> String {
+pub fn free_up_text(freed: &FreedSpace) -> String {
+    let FreedSpace { files, bytes, busy } = *freed;
     if files == 0 && busy == 0 {
         return "Nothing was downloaded, so there was nothing to free up.".to_owned();
     }
@@ -85,6 +84,12 @@ pub fn free_up_text(files: u32, bytes: u64, busy: u32) -> String {
     }
     out
 }
+
+/// `sync hydrate`, done.
+pub const DOWNLOADED: &str = "Downloaded.";
+
+/// `sync dehydrate`, done.
+pub const FREED_UP: &str = "Freed up.";
 
 /// `sync pin`: that the paths are kept on this device, and how many of their
 /// files are downloading now.
@@ -139,7 +144,8 @@ pub fn unpin_text(unpinned: u32) -> String {
 /// `sync free`: what was freed, what was kept because it was in use or
 /// changed here (FreeUp's `busy` counts both), and the downloaded files a pin
 /// of their own — or of a folder below the one freed — kept.
-pub fn free_text(files: u32, bytes: u64, busy: u32, pinned: u32) -> String {
+pub fn free_text(freed: &Freed) -> String {
+    let Freed { files, bytes, busy, pinned } = *freed;
     if files == 0 && busy == 0 && pinned == 0 {
         return "Nothing here was downloaded, so there was nothing to free up.".to_owned();
     }

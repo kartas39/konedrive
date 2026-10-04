@@ -27,6 +27,8 @@
 
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
+use crate::rows::{Change, Conflict, Event, Freed, FreedSpace, KeptBack, KeptBackFiles, KeptBackReason, Transfer};
+
 /// `/org/konedrive/Accounts`: the accounts of this user.
 #[zbus::proxy(
     interface = "org.konedrive.Accounts",
@@ -62,9 +64,8 @@ pub trait Accounts {
     /// What every account does on battery: `sync`, `power-saver` or `pause`.
     #[zbus(property)]
     fn on_battery(&self) -> zbus::Result<String>;
-    /// The privileged helper as the daemon sees it: `connected`,
-    /// `not-installed`, `stopped`, `failed` or `unknown`
-    /// ([`helper_advice`](crate::helper_advice)).
+    /// The privileged helper as the daemon sees it, as [`HelperState`](crate::HelperState)
+    /// spells it.
     #[zbus(property)]
     fn helper_state(&self) -> zbus::Result<String>;
     /// Trouble that belongs to no account; empty when there is none.
@@ -98,11 +99,9 @@ pub trait Files {
     /// removed, files stay downloaded; how many pins were removed. Refused
     /// `NotAllowed` for a path a folder above it pins.
     fn unpin(&self, paths: &[&str]) -> zbus::Result<u32>;
-    /// "Free up space" for each path, its own pin taken off first: (files
-    /// freed, bytes freed, files kept because they were in use or changed
-    /// here, downloaded files kept by a pin below). Refused `NotAllowed` for
+    /// "Free up space" for each path, its own pin taken off first. Refused `NotAllowed` for
     /// a path a folder above it pins.
-    fn free_up(&self, paths: &[&str]) -> zbus::Result<(u32, u64, u32, u32)>;
+    fn free_up(&self, paths: &[&str]) -> zbus::Result<Freed>;
     /// The address of the page OneDrive's web interface has for the file or
     /// folder at `path`, or for the drive's root when `path` is an account's
     /// folder itself. Asks OneDrive each time and changes nothing. Refused
@@ -174,8 +173,7 @@ pub trait Folder {
     fn populate_from_directory(&self, source_dir: &str) -> zbus::Result<u64>;
     fn refresh(&self) -> zbus::Result<()>;
     fn skipped(&self) -> zbus::Result<Vec<(String, String)>>;
-    /// (files freed, bytes freed, files kept because they were in use).
-    fn free_up_space(&self) -> zbus::Result<(u32, u64, u32)>;
+    fn free_up_space(&self) -> zbus::Result<FreedSpace>;
     /// Nothing is uploaded, and OneDrive is not asked, for `seconds` — or
     /// until [`resume`](Self::resume) when 0.
     fn pause(&self, seconds: u32) -> zbus::Result<()>;
@@ -239,12 +237,12 @@ pub trait Folder {
     gen_blocking = false
 )]
 pub trait Transfers {
-    /// Downloads under way: (full path, bytes done, bytes total).
+    /// Downloads under way.
     #[zbus(property)]
-    fn downloads(&self) -> zbus::Result<Vec<(String, u64, u64)>>;
-    /// Uploads under way: (full path, bytes sent, bytes total).
+    fn downloads(&self) -> zbus::Result<Vec<Transfer>>;
+    /// Uploads under way.
     #[zbus(property)]
-    fn uploads(&self) -> zbus::Result<Vec<(String, u64, u64)>>;
+    fn uploads(&self) -> zbus::Result<Vec<Transfer>>;
     /// Bytes a second downloaded and uploaded, the average of the last 3 s.
     #[zbus(property)]
     fn download_speed(&self) -> zbus::Result<u64>;
@@ -303,23 +301,20 @@ pub trait Transfers {
     gen_blocking = false
 )]
 pub trait UploadQueue {
-    /// The changes waiting to be uploaded, oldest first, at most `limit` (0
-    /// for all): (seq, kind, full path, state, bytes sent, bytes in all,
-    /// reason, next try).
-    #[allow(clippy::type_complexity)]
-    fn changes(&self, limit: u32) -> zbus::Result<Vec<(u64, String, String, String, u64, u64, String, i64)>>;
+    /// The changes waiting to be uploaded, oldest first, at most `limit` (0 for all).
+    fn changes(&self, limit: u32) -> zbus::Result<Vec<Change>>;
     /// The held removals go ahead; how many.
     fn confirm_deletes(&self) -> zbus::Result<u32>;
     /// The held removals are dropped and their items placed again; how many.
     fn restore_deletes(&self) -> zbus::Result<u32>;
-    /// What stays on this computer and why: (full path, reason).
-    fn not_uploaded(&self) -> zbus::Result<Vec<(String, String)>>;
-    /// What is kept back, one row per reason: (group, reason, count, bytes).
-    /// Groups: one-action, per-file, never, waiting, in that order.
-    fn not_uploaded_summary(&self) -> zbus::Result<Vec<(String, String, u32, u64)>>;
+    /// What stays on this computer and why.
+    fn not_uploaded(&self) -> zbus::Result<Vec<KeptBack>>;
+    /// What is kept back, one row per reason, by group: one-action, per-file, never,
+    /// waiting, in that order.
+    fn not_uploaded_summary(&self) -> zbus::Result<Vec<KeptBackReason>>;
     /// The files kept back for `reason` (as the summary names it), at most
     /// `limit` (0 for all), each with its reason as stored; and how many there are.
-    fn not_uploaded_files(&self, reason: &str, limit: u32) -> zbus::Result<(Vec<(String, String)>, u32)>;
+    fn not_uploaded_files(&self, reason: &str, limit: u32) -> zbus::Result<KeptBackFiles>;
 
     /// Changes waiting to be uploaded, and the size of what they send.
     #[zbus(property)]
@@ -353,8 +348,7 @@ pub trait UploadQueue {
     gen_blocking = false
 )]
 pub trait Conflicts {
-    /// (unix time, original full path, full path of the kept version, how it was kept).
-    fn list(&self) -> zbus::Result<Vec<(i64, String, String, String)>>;
+    fn list(&self) -> zbus::Result<Vec<Conflict>>;
     fn dismiss(&self, rescued_path: &str) -> zbus::Result<()>;
 
     #[zbus(property)]
@@ -402,8 +396,8 @@ pub trait LocalScan {
     gen_blocking = false
 )]
 pub trait ActivityLog {
-    /// (unix time, kind, full path, detail), newest first.
-    fn recent(&self, limit: u32) -> zbus::Result<Vec<(i64, String, String, String)>>;
+    /// The last `limit` events, newest first.
+    fn recent(&self, limit: u32) -> zbus::Result<Vec<Event>>;
 
     #[zbus(signal)]
     fn added(&self, time: i64, kind: String, path: String, detail: String) -> zbus::Result<()>;

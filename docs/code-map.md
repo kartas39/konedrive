@@ -108,7 +108,7 @@ The daemon's end of the helper socket, and the helper's state. Design: `hydratio
 - `mod.rs` — the link: a blocking thread that owns the socket; `LinkCell`. `[tests]`
 - `linked.rs` — `Helper` and `Linked`: what the daemon asks of the helper beyond the fills, as
   a trait.
-- `status.rs` — the helper as the daemon sees it: `Accounts.HelperState`. `[tests]`
+- `status.rs` — the helper as the daemon sees it: how systemd says its unit stands. `[tests]`
 
 ### `crates/konedrived/src/folder/`
 
@@ -422,14 +422,18 @@ Design: `desktop.md`.
 
 ### `crates/konedrivectl/src/`
 
-The program is `main.rs`, `cli.rs`, `commands/` and `daemon.rs`; the library is `lib.rs`,
-`text/` and `choice.rs`.
+The program is `main.rs`, `cli.rs`, `commands/`, `daemon.rs`, `read.rs` and `wait.rs`: it talks
+to the daemon and prints. The library is `lib.rs`, `choice.rs`, `secret_file.rs` and `text/`:
+what is decided and what is said, with nothing read from the daemon.
 
 - `main.rs` — the program: parses the command line and runs the command.
-- `cli.rs` — the commands as `clap` describes them.
-- `daemon.rs` — the daemon on the bus, and the account a command chose.
-- `lib.rs` — the testable part; re-exports `text/` and `choice.rs`. `[tests]`
+- `cli.rs` — the commands as `clap` describes them; `sync` is `status`, `FolderCmd` and `PathCmd`.
+- `daemon.rs` — the daemon on the bus, the account a command chose, and every account's folder.
+- `read.rs` — what is read of the daemon into the types `text/` prints.
+- `wait.rs` — the waits for a sign-in to end.
+- `lib.rs` — the library: its modules by name, the environment variables, whether a browser opens. `[tests]`
 - `choice.rs` — the choice of an account. `[tests]`
+- `secret_file.rs` — a secret written to a file, atomically and privately. `[tests]`
 
 ### `crates/konedrivectl/src/commands/`
 
@@ -439,16 +443,23 @@ The program is `main.rs`, `cli.rs`, `commands/` and `daemon.rs`; the library is 
 - `browser.rs` — opening the sign-in page.
 - `status.rs` — `status`.
 - `settings.rs` — `settings`.
-- `sync.rs` — `sync`: everything about a folder and its files.
+- `sync/mod.rs` — `sync`: `status`, `anyway --all`, and which of the two groups a command is in.
+- `sync/folder.rs` — the `sync` commands on the chosen account's folder.
+- `sync/path.rs` — the `sync` commands that take a path.
+- `sync/explain.rs` — what they share: a path made absolute, a refusal explained, the check
+  that a folder does not need attention.
 - `dev.rs` — `dev`, only in a development build.
 - `version.rs` — `--version`: this build's, and the running daemon's.
 
 ### `crates/konedrivectl/src/text/`
 
-What is printed, by topic.
+What is printed, by topic. Pure: each function is given what was read and returns the text.
 
 - `mod.rs` — the list of the topics.
-- `status.rs` — `status` and `sync status`. `[tests]`
+- `status.rs` — `status` and `sync status`: what was read, and its lines. `[tests]`
+- `folder.rs` — what the commands on a folder say when they are done; `sync activity`.
+- `settings.rs` — `settings`.
+- `version.rs` — `--version`.
 - `uploads.rs` — the upload queue and what is not uploaded. `[tests]`
 - `transfers.rs` — transfers and the queue totals. `[tests]`
 - `files.rs` — skipped items, conflicts, pins, free-up. `[tests]`
@@ -464,7 +475,7 @@ Integration tests: the compiled binary against a daemon on a private bus.
 
 - `common/mod.rs` — what they share: the daemon, started as `konedrived` starts it.
 - `accounts_cli.rs` — several accounts.
-- `login.rs` — the wait for a sign-in.
+- `login.rs` — `login` when the sign-in is cancelled elsewhere.
 - `status.rs` — `status`.
 - `mode_cli.rs` — `account mode`, and the token export's `--read-write`.
 - `version_cli.rs` — `--version`.
@@ -593,13 +604,15 @@ Design: `desktop.md`.
 
 ### `crates/konedrive-dbus/`
 
-- `Cargo.toml` — the crate.
+- `Cargo.toml` — the crate; the feature `testing` (`testing.rs`).
 - `build.rs` — the version and the commit a build shows.
-- `src/lib.rs` — the D-Bus names and the client proxies. `[tests]`
+- `src/lib.rs` — the D-Bus names. `[tests]`
 - `src/accounts.rs` — the proxies of the accounts' interfaces. `[tests]`
+- `src/rows.rs` — the rows the daemon answers with, by name. `[tests]`
 - `src/refusal.rs` — `Refusal`: every name a call is refused under. `[tests]`
+- `src/helper.rs` — `HelperState`: `Accounts.HelperState`, and what to say in each state. `[tests]`
 - `src/version.rs` — the version line, the same in every program. `[tests]`
-- `src/testing.rs` — a private session bus for tests.
+- `src/testing.rs` — a private session bus for tests; only with the feature `testing`.
 - `tests/test_bus.rs` — tests: the private bus starts no program; a test's connection has the method timeout.
 - `tests/version_script.rs` — tests: `scripts/version.sh`.
 
