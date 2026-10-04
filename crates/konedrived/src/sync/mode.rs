@@ -14,6 +14,12 @@
 use std::os::unix::fs::PermissionsExt;
 use std::sync::{Arc, Weak};
 
+use crate::local::watcher::WatchHandle;
+use crate::upload::OutboxHandle;
+use super::running_sync::Lock;
+use tokio_util::sync::CancellationToken;
+use super::folder::View;
+
 use tokio::sync::watch;
 
 use crate::folder::disk::Disk;
@@ -86,6 +92,10 @@ impl SyncService {
     /// a forced switch's.
     async fn turn(&self, stopped: &mut Stopped<'_>, mode: Mode, dropping: bool) {
         stopped.folder_mut().wanted = mode;
+        // A switch tries a watcher again.
+        if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
+            onedrive.watcher_ended = None;
+        }
         // What reads the mode from now on (the write gate) reads the new one.
         stopped.publish();
         if dropping {
@@ -113,27 +123,33 @@ impl SyncService {
         }
     }
 
-    /// Takes the lock off a read-write folder whose root still has it: a switch to read-write,
-    /// one whose walk did not finish (the root is unlocked last, `Disk::unlock_tree`), or one
-    /// made while the folder was not brought up. Called as its sync starts, once `walked` says
-    /// its watcher has marked every directory, so that none is made in the folder before it is
-    /// watched; a walk cut short leaves the lock on, and says so (the watcher). A root that is
-    /// unlocked already (a daemon start) waits for nothing (the watcher).
-    pub(super) async fn ensure_unlocked(&self, root: &SyncRoot, mut walked: watch::Receiver<WalkState>) {
-        if root_writable(root).await != Some(false) {
-            return;
-        }
+    /// What became of the lock of a read-write folder once its watcher's walk is over
+    /// (`walked` no longer says `Walking`): off — taken off here if the root still had it (a
+    /// switch to read-write, one whose walk did not finish, or one made while the folder was
+    /// not brought up; the root is unlocked last, `Disk::unlock_tree`) — or staying, with the
+    /// sentence, when the walk was cut short: no directory is made in the folder before it is
+    /// watched (the watcher). `None` when the walk was cut because the sync was told to
+    /// stop (`stop`): nothing is wrong with the watcher, and nothing is said.
+    pub(super) async fn lock_after_walk(&self, root: &SyncRoot, walked: &mut watch::Receiver<WalkState>, stop: &CancellationToken) -> Option<Lock> {
         let state = walked.wait_for(|state| *state != WalkState::Walking).await.map_or(WalkState::Cut, |state| *state);
         if state == WalkState::Done {
-            self.unlock(root).await;
+            if root_writable(root).await == Some(false) {
+                self.unlock(root).await;
+            }
+            Some(Lock::Off)
+        } else if stop.is_cancelled() {
+            None
         } else {
-            tracing::warn!("{} stays locked: its watcher did not finish walking it", root.path.display());
-            self.state.update(|s| {
-                s.local.watch_note = "the folder stays read-only and nothing is uploaded: local changes could not be watched \
-                                (see the log)"
-                    .into()
-            });
+            tracing::warn!("{} is not writable: its watcher did not finish walking it", root.path.display());
+            Some(Lock::Stays("the folder stays read-only and nothing is uploaded: local changes could not be watched (see the log)".into()))
         }
+    }
+
+    /// Whether the root of the folder still has the read-only lock: then the lock comes off
+    /// inside the change that starts the sync, which waits for the watcher's walk. A root
+    /// that is unlocked already (a daemon start) keeps no change waiting for the walk.
+    pub(super) async fn root_locked(&self, root: &SyncRoot) -> bool {
+        root_writable(root).await == Some(false)
     }
 
     /// Puts the lock back on a read-only folder whose root does not have it: a
@@ -163,51 +179,63 @@ impl SyncService {
     }
 
     /// What a read-write folder's cycle shares with its watcher and its outbox worker
-    /// (`docs/design/writes.md` §9): the tree lock, the watcher's first scan to wait for, where to
-    /// hand what the reconcile kept or copied for examination, and the word that a cycle
-    /// went through.
-    pub(super) fn cycle_writes(&self, scanned: Option<watch::Receiver<bool>>) -> crate::remote::listing::Writes {
-        let me = self.me.clone();
-        // Off the reconcile's blocking task: it captured this runtime
-        // before entering it, as the materializer's fills do.
-        let runtime = tokio::runtime::Handle::current();
-        let dropped_removed: Arc<dyn Fn(Vec<konedrive_tree::outbox::OutboxRow>) + Send + Sync> = Arc::new(move |rows| {
-            let Some(service) = me.upgrade() else { return };
-            // `HeldCount`/`PendingCount` count the drop at once, not at the
-            // worker's own next wake (the outbox on the bus).
-            service.wake_outbox();
-            let Some(record) = service.record() else { return };
-            let store = service.store.lock().unwrap().clone();
-            let Some(store) = store else { return };
-            runtime.spawn(async move { service.tidy_dropped(&record.root, &store, &rows).await });
-        });
+    /// (`docs/design/writes.md` §9): the tree lock, the watcher's first scan to wait for, the
+    /// watcher itself, handed what the reconcile kept or copied for examination, and the
+    /// worker, told that a cycle went through. Each is the part of the same sync, reached
+    /// directly; `tidy` is what tidies after a row the cycle dropped
+    /// ([`tidy_after_cycle`](Self::tidy_after_cycle)).
+    pub(super) fn cycle_writes(
+        &self,
+        scanned: Option<watch::Receiver<bool>>,
+        tree_lock: &Arc<tokio::sync::Mutex<()>>,
+        watcher: WatchHandle,
+        outbox: OutboxHandle,
+        tidy: Arc<dyn Fn(Vec<konedrive_tree::outbox::OutboxRow>) + Send + Sync>,
+    ) -> crate::remote::listing::Writes {
+        let (cycled, reopened, counted) = (outbox.clone(), outbox.clone(), outbox);
         crate::remote::listing::Writes {
-            tree_lock: Arc::clone(&self.tree_lock),
+            tree_lock: Arc::clone(tree_lock),
             machine_name: self.machine_name(),
             ignore: Arc::clone(&self.ignore),
             scanned,
-            examine: self.examine_hook(),
-            cycled: self.cycled_hook(),
-            reopened: self.outbox_waker(),
-            dropped_removed,
+            examine: Arc::new(move |batch| watcher.examine(batch)),
+            // The worker, which waits for the folder's first delta cycle, may go.
+            cycled: Arc::new(move || cycled.cycle_done()),
+            reopened: Arc::new(move || reopened.wake()),
+            dropped_removed: Arc::new(move |rows| {
+                // `HeldCount`/`PendingCount` count the drop at once, not at the
+                // worker's own next wake (the outbox on the bus).
+                counted.wake();
+                tidy(rows);
+            }),
         }
     }
+}
 
-    /// Whether this folder's account may change OneDrive now — asked by
-    /// the outbox worker before each row and between an upload's fragments
-    /// ([`OutboxHost::may_write`](crate::upload::OutboxHost::may_write)). It may while the folder and
-    /// the account are read-write, `config.toml` — read again now — says read-write and lets the
-    /// account's drive through, the drive its token was last seen to reach is that one, its
-    /// token can write, and the folder's sync is not stopped by blocking trouble (`CycleError::blocking`:
-    /// another account's drive, a sign-out, a failure of the tree store; the cycle that
-    /// clears it wakes the worker, `Writes::reopened`). Closed, the folder's `LastError`
-    /// says why until it opens, and the account's mode is worked out again, which turns it
-    /// read-only and says why in the account's `LastError`.
-    ///
+/// The write gate of a folder: whether its account may change OneDrive now — asked by
+/// the outbox worker before each row and between an upload's fragments
+/// ([`OutboxHost::may_write`](crate::upload::OutboxHost::may_write)). It may while the folder and
+/// the account are read-write, `config.toml` — read again now — says read-write and lets the
+/// account's drive through, the drive its token was last seen to reach is that one, its
+/// token can write, and the folder's sync is not stopped by blocking trouble (`CycleError::blocking`:
+/// another account's drive, a sign-out, a failure of the tree store; the cycle that
+/// clears it wakes the worker, `Writes::reopened`). Closed, the folder's `LastError`
+/// says why until it opens, and the account's mode is worked out again, which turns it
+/// read-only and says why in the account's `LastError`.
+///
+/// It holds what it reads, and no way back to the service.
+pub(super) struct Gate {
+    view: watch::Receiver<View>,
+    account: Arc<dyn crate::account::FolderAccount>,
+    persist: super::Persist,
+    state: crate::status::snapshot::SyncStateHandle,
+}
+
+impl Gate {
     /// Blocking: it reads `config.toml`, here and in the mode check. The worker asks its
     /// host from a blocking thread, as one section (`Engine::may_write`).
-    pub(super) fn write_gate(&self) -> Result<(), String> {
-        let refusal = self.gate_refusal();
+    pub(super) fn check(&self) -> Result<(), String> {
+        let refusal = self.refusal();
         let note = OutboxNote::after_gate(&self.state.get().outbox.note, refusal.as_deref());
         let changed = note.is_some();
         if let Some(note) = note {
@@ -217,20 +245,20 @@ impl SyncService {
             None => Ok(()),
             Some(why) => {
                 if changed {
-                    self.wiring.account.recheck_mode();
+                    self.account.recheck_mode();
                 }
                 Err(why)
             }
         }
     }
 
-    /// Why the write gate is closed now, if it is ([`write_gate`](Self::write_gate)).
-    fn gate_refusal(&self) -> Option<String> {
-        if self.mode() != Mode::ReadWrite {
+    /// Why the gate is closed now, if it is.
+    fn refusal(&self) -> Option<String> {
+        if self.view.borrow().wanted != Mode::ReadWrite {
             return Some("the folder is read-only".into());
         }
-        let persist = &self.wiring.persist;
-        let snapshot = self.wiring.account.snapshot();
+        let persist = &self.persist;
+        let snapshot = self.account.snapshot();
         if snapshot.mode != Mode::ReadWrite {
             return Some("the account is read-only".into());
         }
@@ -259,6 +287,18 @@ impl SyncService {
     }
 }
 
+impl SyncService {
+    /// The folder's write gate ([`Gate`]).
+    pub(super) fn gate(&self) -> Gate {
+        Gate {
+            view: self.view.subscribe(),
+            account: Arc::clone(&self.wiring.account),
+            persist: self.wiring.persist.clone(),
+            state: self.state.clone(),
+        }
+    }
+}
+
 /// Whether the folder's root has its owner's write bit: `None` when it cannot be looked at.
 async fn root_writable(root: &SyncRoot) -> Option<bool> {
     let path = root.path.clone();
@@ -283,17 +323,17 @@ impl PendingUploads for SyncService {
     /// completed listing to examine it against, it cannot, and is not counted.
     async fn pending_uploads(&self) -> u64 {
         self.flush_watcher().await;
-        // Read with the folder's state held for reading, as every clone of the store
-        // outside the sync is.
-        let _folder = self.folder.read().await;
-        let Some(store) = self.store.lock().unwrap().clone() else { return 0 };
+        // Read with the folder's state held for reading: the store is the running sync's,
+        // and no Forget removes it under the read.
+        let folder = self.folder.read().await;
+        let Some(store) = folder.store() else { return 0 };
         store.call(|s| s.outbox_len()).await.map_or(0, |n| n as u64)
     }
 
     /// A forced switch to read-only drops the outbox's rows (`docs/design/writes.md`
     /// §2); the files stay, as ordinary local changes, protected by the read phase's stamp
-    /// check and rescue. Called once `config.toml` says read-only. The worker stops first, so
-    /// nothing more is sent.
+    /// check and rescue. Called once `config.toml` says read-only. The worker is told to
+    /// stop with every other part, before anything is waited for, so nothing more is sent.
     ///
     /// The folder's sync stops for the drop and starts again after it: the rows go inside
     /// a change of the folder's state, with no task running, as at any switch, so nothing
@@ -309,12 +349,11 @@ impl PendingUploads for SyncService {
     /// its sync again without them, as a read-only start does: what a read-write cycle
     /// deferred is the base's, and the first cycle is a Full reconcile.
     async fn drop_pending_uploads(&self) {
-        self.stop_outbox().await;
         let mut stopped = self.change().await;
         if stopped.folder().wanted == Mode::ReadWrite {
             self.turn(&mut stopped, Mode::ReadOnly, true).await;
         } else {
-            self.drop_outbox(&stopped).await;
+            self.drop_outbox(&mut stopped).await;
         }
         self.start_again(&mut stopped).await;
     }

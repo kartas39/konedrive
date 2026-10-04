@@ -47,6 +47,29 @@ use crate::hydration::source::{ContentSource, Fetched, LocalDir, SourceError};
 use crate::local::watcher::{Sink, WatchConfig, Watcher};
 use crate::remote::listing::Schedule;
 
+impl SyncService {
+    /// Stops the folder's sync and waits for every part of it, through the door every
+    /// change of the folder uses ([`SyncService::change`]); whether one ran. The sync
+    /// stays stopped until something starts it: `Refresh()`, the helper back, a switch
+    /// of mode. A test ends with it, so that nothing of the sync is at work when its
+    /// temporary directories go.
+    pub async fn stop_sync(&self) -> bool {
+        let mut stopped = self.change().await;
+        let ran = stopped.ran();
+        if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
+            onedrive.sync = super::running_sync::Sync::Stopped(super::running_sync::Why::NotStarted);
+        }
+        ran
+    }
+}
+
+/// The tree store of the folder that is up, for a test that seeds a row only the
+/// worker or the mass-delete guard would write (a blocked row, a held one): what the
+/// readers of the bus read. `None` before the folder's first sync start.
+pub fn tree_store(service: &SyncService) -> Option<konedrive_tree::Store> {
+    service.tree_store()
+}
+
 /// A clock that stands still until the test moves it. Whoever sleeps by it wakes when it
 /// has been moved far enough, however the sleep and the move fall in time.
 pub struct ManualClock {

@@ -4,7 +4,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::folder::{Down, Is, Record, Standing, Stopped};
+use super::folder::{Down, Is, Kept, Record, Standing, Stopped};
 use super::{RootSource, SyncError, SyncService};
 use crate::folder::disk;
 use crate::folder::root::{self, SyncRoot};
@@ -105,14 +105,14 @@ impl SyncService {
         // Before the change: a reconcile, or a switch waiting for it, must not keep
         // the Forget from stopping the sync first.
         self.flush_watcher().await;
-        refuse_waiting(self.changes_in_store().await?)?;
+        refuse_waiting(self.changes_waiting(self.tree_store()).await?)?;
         let mut stopped = self.change().await;
-        if let Err(refused) = self.changes_in_store().await.and_then(refuse_waiting) {
+        if let Err(refused) = self.changes_waiting(stopped.folder().store()).await.and_then(refuse_waiting) {
             self.start_again(&mut stopped).await;
             return Err(refused);
         }
         self.restore_in(&mut stopped).await;
-        let Some(record) = stopped.folder().record().cloned() else {
+        let Some(mut record) = stopped.folder().record().cloned() else {
             if retire {
                 retire_in(&mut stopped);
                 return Ok(None);
@@ -123,13 +123,17 @@ impl SyncService {
         // none): what it left outside is tidied first, while the helper still holds the
         // folder, and the hub stops routing its ids.
         if record.source == RootSource::OneDrive {
-            self.drop_moved_out(&record.root).await;
+            self.drop_moved_out(&mut stopped, &record.root).await;
         }
         if let Err(refused) = self.let_go_at_the_helper(&record).await {
             self.start_again(&mut stopped).await;
             return Err(refused);
         }
+        // The folder is gone from the state, and with it everything kept with it: its
+        // source and its tree store, closed here — the copy of the record this call holds
+        // too — before the store's files are removed.
         stopped.folder_mut().is = Is::Absent;
+        record.kept = Kept::default();
         if retire {
             retire_in(&mut stopped);
         }
@@ -184,7 +188,6 @@ impl SyncService {
     /// it and its sync is cleared in one update, so that nothing is ever published about a
     /// folder that is no longer registered.
     async fn forgotten(&self, stopped: &Stopped<'_>) {
-        *self.source.lock().unwrap() = None;
         self.persist_or_log(None);
         stopped.publish_with(|s| {
             s.cycle.listing = false;
@@ -234,10 +237,10 @@ impl SyncService {
         }
     }
 
-    /// Removes the tree store: a forgotten folder's, or one left from a
-    /// folder forgotten earlier when a new one is registered.
+    /// Removes the tree store's files: a forgotten folder's, or one left from a
+    /// folder forgotten earlier when a new one is registered. Inside a change, once
+    /// the folder is absent: no sync holds the store, and the change has let go of its own.
     pub(super) async fn remove_tree_store(&self) {
-        *self.store.lock().unwrap() = None;
         // Its pause went with it (the outbox on the bus).
         self.forget_pause();
         let Some(tree_db) = self.sync_paths().map(|paths| paths.tree_db.clone()) else { return };
@@ -255,6 +258,20 @@ impl SyncService {
         if let Is::Up(up) = &folder.is {
             folder.is = Is::Down(up.record.clone(), Down::Failed { why });
         }
+    }
+}
+
+impl SyncService {
+    /// The folder's watcher ended with nobody stopping it (its reader or its examiner
+    /// failed): the folder's sync is started again locked, as one whose watcher could not
+    /// start, and says `why`. Nothing is uploaded until the folder is brought up again or
+    /// its mode is switched, which try a watcher again.
+    pub(super) async fn watcher_ended(&self, why: String) {
+        let mut stopped = self.change().await;
+        if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
+            onedrive.watcher_ended.get_or_insert(why);
+        }
+        self.start_again(&mut stopped).await;
     }
 }
 

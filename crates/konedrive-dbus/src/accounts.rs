@@ -225,6 +225,10 @@ pub trait Folder {
     /// Why the account holds back by itself: `metered`, `on-battery`, `power-saver`, or empty.
     #[zbus(property)]
     fn held_back(&self) -> zbus::Result<String>;
+    /// Whether what is changed in the folder is uploaded now: false for a folder that runs
+    /// read-only although its account is read-write (`LastError` says why).
+    #[zbus(property)]
+    fn writable(&self) -> zbus::Result<bool>;
     /// How changes made in OneDrive arrive: `connected`, `connecting` or `off`.
     #[zbus(property)]
     fn live_changes(&self) -> zbus::Result<String>;

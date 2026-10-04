@@ -345,45 +345,29 @@ pub enum Fault {
 ///
 /// [`start`]: OutboxWorker::start
 pub struct OutboxWorker {
-    engine: Arc<Engine>,
-    /// The run's token and task; the task is taken by [`close`](Self::close)
-    /// to be waited for there.
-    task: Mutex<Option<(CancellationToken, Option<tokio::task::JoinHandle<()>>)>>,
+    handle: OutboxHandle,
 }
 
-impl OutboxWorker {
-    pub fn new(config: WorkerConfig) -> Self {
-        Self { engine: Arc::new(Engine::new(config)), task: Mutex::new(None) }
-    }
+/// The run's token and task; the task is taken by [`OutboxHandle::close`] to be waited
+/// for there, or left for [`OutboxWorker::stop`].
+type Run = Arc<Mutex<Option<(CancellationToken, Option<tokio::task::JoinHandle<()>>)>>>;
 
-    /// Starts the worker on the current runtime (the mode switch calls it when the
-    /// account becomes read-write, after the Full local scan). Rows a
-    /// previous run left `running` are replayed first. Idempotent.
-    pub fn start(&self) {
-        let mut task = self.task.lock().unwrap_or_else(|p| p.into_inner());
-        if task.is_some() {
-            return;
-        }
-        let cancel = CancellationToken::new();
-        let engine = Arc::clone(&self.engine);
-        let token = cancel.clone();
-        engine.silence(false);
-        let handle = tokio::spawn(async move { engine.run(token).await });
-        *task = Some((cancel, Some(handle)));
-    }
+/// What may be asked of a worker by whoever does not own it: to look at the outbox, to
+/// wait for a cycle, to wind down. Only its owner can wait for it to stop
+/// ([`OutboxWorker::stop`]). Asking a stopped worker does nothing.
+#[derive(Clone)]
+pub struct OutboxHandle {
+    engine: Arc<Engine>,
+    run: Run,
+}
 
-    /// Stops the worker and waits for it. A request under way is cut off;
-    /// its row stays `running` and is replayed at the next start (§5).
-    pub async fn stop(&self) {
-        let task = self.task.lock().unwrap_or_else(|p| p.into_inner()).take();
-        if let Some((cancel, handle)) = task {
+impl OutboxHandle {
+    /// Tells the worker to stop, without waiting for it: a request under way is cut off,
+    /// and a file call it has begun ends first.
+    pub fn cancel(&self) {
+        if let Some((cancel, _)) = self.run.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
             cancel.cancel();
-            if let Some(handle) = handle {
-                let _ = handle.await;
-            }
         }
-        // What the host clears after this stays cleared.
-        self.engine.silence(true);
     }
 
     /// The daemon is stopping (issue #84): no row is taken any more, and
@@ -391,10 +375,10 @@ impl OutboxWorker {
     /// persisted, an upload in fragments stops after the fragment in flight.
     /// The future ends once the worker has; the caller bounds the wait
     /// (`crate::daemon::stop`), and whatever is still in flight then is cut as
-    /// [`stop`](Self::stop) cuts it. For good: not started again.
+    /// [`OutboxWorker::stop`] cuts it. For good: not started again.
     pub fn close(&self) -> impl std::future::Future<Output = ()> + Send + 'static {
         self.engine.close();
-        let handle = self.task.lock().unwrap_or_else(|p| p.into_inner()).as_mut().and_then(|(_, handle)| handle.take());
+        let handle = self.run.lock().unwrap_or_else(|p| p.into_inner()).as_mut().and_then(|(_, handle)| handle.take());
         async move {
             if let Some(handle) = handle {
                 let _ = handle.await;
@@ -446,10 +430,90 @@ impl OutboxWorker {
     pub fn helper_back(&self) {
         self.engine.helper_back();
     }
+}
+
+impl std::ops::Deref for OutboxWorker {
+    type Target = OutboxHandle;
+
+    /// Whatever may be asked without owning the worker may be asked of the worker.
+    fn deref(&self) -> &OutboxHandle {
+        &self.handle
+    }
+}
+
+impl Drop for OutboxWorker {
+    /// A worker dropped without [`stop`](OutboxWorker::stop) still ends: it is told to
+    /// stop, and nobody waits for it.
+    fn drop(&mut self) {
+        self.handle.cancel();
+    }
+}
+
+impl OutboxWorker {
+    pub fn new(config: WorkerConfig) -> Self {
+        Self { handle: OutboxHandle { engine: Arc::new(Engine::new(config)), run: Arc::new(Mutex::new(None)) } }
+    }
+
+    /// What others may ask of this worker without owning it.
+    pub fn handle(&self) -> OutboxHandle {
+        self.handle.clone()
+    }
+
+    /// Starts the worker on the current runtime (the mode switch calls it when the
+    /// account becomes read-write, after the Full local scan). Rows a
+    /// previous run left `running` are replayed first. Idempotent.
+    pub fn start(&self) {
+        let mut task = self.handle.run.lock().unwrap_or_else(|p| p.into_inner());
+        if task.is_some() {
+            return;
+        }
+        let cancel = CancellationToken::new();
+        let engine = Arc::clone(&self.handle.engine);
+        let token = cancel.clone();
+        engine.silence(false);
+        let handle = tokio::spawn(async move { engine.run(token).await });
+        *task = Some((cancel, Some(handle)));
+    }
+
+    /// Stops the worker and waits for it. A request under way is cut off;
+    /// its row stays `running` and is replayed at the next start (§5).
+    ///
+    /// Cut while it waits, it may be called again: the task is waited for until it has
+    /// ended.
+    pub async fn stop(&self) {
+        self.handle.cancel();
+        let handle = self.handle.run.lock().unwrap_or_else(|p| p.into_inner()).as_mut().and_then(|(_, handle)| handle.take());
+        if let Some(handle) = handle {
+            // Put back if this wait is cut, so that the next call waits for it.
+            let mut waited = Waited { handle: Some(handle), run: &self.handle.run };
+            if let Some(handle) = waited.handle.as_mut() {
+                let _ = handle.await;
+            }
+            waited.handle = None;
+        }
+        *self.handle.run.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        // What the host clears after this stays cleared.
+        self.handle.engine.silence(true);
+    }
 
     /// Arms a fault point.
     #[cfg(test)]
     pub fn arm(&self, fault: Fault) {
-        self.engine.arm(fault);
+        self.handle.engine.arm(fault);
+    }
+}
+
+/// The worker's task while [`OutboxWorker::stop`] waits for it: given back to the run when
+/// that wait is cut.
+struct Waited<'a> {
+    handle: Option<tokio::task::JoinHandle<()>>,
+    run: &'a Run,
+}
+
+impl Drop for Waited<'_> {
+    fn drop(&mut self) {
+        if let (Some(handle), Some((_, slot))) = (self.handle.take(), self.run.lock().unwrap_or_else(|p| p.into_inner()).as_mut()) {
+            *slot = Some(handle);
+        }
     }
 }

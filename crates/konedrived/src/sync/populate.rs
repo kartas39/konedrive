@@ -71,7 +71,15 @@ impl SyncService {
             })?;
         // The source refuses, when the bytes are read, any file
         // that leads into the folder by then — a symlink swapped since.
-        *self.source.lock().unwrap() = Some(self.wiring.sources.directory(LocalDir::new(source).refusing_files_of(root)));
+        let source = self.wiring.sources.directory(LocalDir::new(source).refusing_files_of(root));
+        // Kept with the folder's record, through the one door: the folder may have been
+        // forgotten meanwhile, and then the source goes with this call.
+        drop(folder);
+        let mut stopped = self.change().await;
+        if let Some(record) = stopped.folder_mut().record_mut().filter(|record| record.root.path == reg.root.path && record.root.root_id == reg.root.root_id && record.source == RootSource::Local) {
+            record.kept.source = Some(source);
+        }
+        self.start_again(&mut stopped).await;
         Ok(created)
     }
 }

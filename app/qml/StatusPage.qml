@@ -23,7 +23,11 @@ FormCard.FormCardPage {
     readonly property bool hasFolder: available && sync !== null && status !== null && sync.rootPath.length > 0
     /// A folder that shows OneDrive: the one kind that uploads, and can pause.
     readonly property bool oneDrive: hasFolder && sync.rootSource === "onedrive"
-    readonly property bool uploading: account !== null && account.mode === "read-write"
+    /// The account uploads (its mode is read-write).
+    readonly property bool uploadingOn: account !== null && account.mode === "read-write"
+    /// And the folder does: a folder that cannot be watched runs read-only for now
+    /// (Folder.Writable).
+    readonly property bool uploading: uploadingOn && sync !== null && sync.writable
     // A no-interception folder is one Free Up Space warning; a folder that
     // shows OneDrive but whose helper is not connected (including a legacy
     // folder still waiting to switch, which publishes RootState "error", not
@@ -308,9 +312,10 @@ FormCard.FormCardPage {
         FormCard.FormTextDelegate {
             objectName: "modeLine"
             visible: page.oneDrive
-            text: page.uploading ? i18n("Changes upload") : i18n("Read-only")
+            text: page.uploading ? i18n("Changes upload") : page.uploadingOn ? i18n("Read-only for now") : i18n("Read-only")
             description: page.uploading ? i18n("What you add, change, move or delete in the folder is uploaded to OneDrive.")
-                                        : i18n("Files in this folder cannot be changed here, and nothing is uploaded. Uploading can be turned on on the Account page.")
+                         : page.uploadingOn ? i18n("Uploading is on for this account, but this folder is read-only at the moment, and nothing is uploaded. If it stays so, the problem is shown on this page.")
+                                            : i18n("Files in this folder cannot be changed here, and nothing is uploaded. Uploading can be turned on on the Account page.")
             leading: Kirigami.Icon {
                 source: page.uploading ? "cloud-upload" : "object-locked"
                 implicitWidth: Kirigami.Units.iconSizes.medium

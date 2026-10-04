@@ -24,38 +24,6 @@ async fn hydrate_is_recorded_as_downloaded_and_a_failed_one_as_failed() {
     );
 }
 
-/// For a fill on open: the helper's request, filled through
-/// `serve_hydrations_reporting`, is a `downloaded` event under the name
-/// the file has — sent after the opener is answered.
-#[tokio::test]
-async fn a_fill_on_open_is_recorded_as_downloaded() {
-    let dir = tempfile::tempdir().unwrap();
-    let folder = dir.path().canonicalize().unwrap();
-    let source_dir = tempfile::tempdir().unwrap();
-    std::fs::write(source_dir.path().join("ITEM"), vec![3u8; 4096]).unwrap();
-    let fd = placeholder(&folder, "opened.bin", "ITEM", 4096);
-    // Events are kept only for the folder registered now.
-    let report = Report::new(SyncStateHandle::new(SyncSnapshot {
-        folder: crate::status::snapshot::FolderStatus { root_path: folder.display().to_string(), ..Default::default() },
-        ..SyncSnapshot::default()
-    }));
-    let mut added = report.activity.subscribe();
-
-    let socket_path = folder.join("helper.sock");
-    let mut seen = fake_helper(socket_path.clone());
-    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    let (tx, rx) = mpsc::channel::<HydrateRequest>(4);
-    let source: Arc<dyn ContentSource> = Arc::new(LocalDir::new(source_dir.path()));
-    tokio::spawn(serve_hydrations_reporting(link, rx, source, InodeLocks::new(), report.clone()));
-    tx.send(HydrateRequest { req_id: 9, fd }).await.unwrap();
-    let answered = tokio::time::timeout(Duration::from_secs(10), seen.recv()).await.unwrap().unwrap();
-    assert_eq!(answered, (9, 0));
-
-    let event = tokio::time::timeout(Duration::from_secs(10), added.recv()).await.unwrap().unwrap();
-    let opened = folder.join("opened.bin").display().to_string();
-    assert_eq!((event.kind.as_str(), event.path.as_str(), event.detail.as_str()), ("downloaded", opened.as_str(), "4.0 KiB"));
-}
-
 /// A source that answers "not found" once it is let go.
 struct Gated(std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>);
 
@@ -218,41 +186,6 @@ async fn dropping_the_service_ends_its_walker() {
     drop(service);
     let ended = tokio::time::timeout(Duration::from_secs(60), async { while state.changed().await.is_ok() {} }).await;
     assert!(ended.is_ok(), "something still holds the state: the walker");
-}
-
-/// Item 6: a fill gives its slot back before it records what it did. The
-/// log is held still here, so every recording waits: with four slots
-/// held by fills that are only recording, a fifth request was never
-/// filled at all.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_fill_lets_go_of_its_slot_before_it_records() {
-    let dir = tempfile::tempdir().unwrap();
-    let folder = dir.path().canonicalize().unwrap();
-    let source_dir = tempfile::tempdir().unwrap();
-    let report = Report::new(SyncStateHandle::new(SyncSnapshot {
-        folder: crate::status::snapshot::FolderStatus { root_path: folder.display().to_string(), ..Default::default() },
-        ..SyncSnapshot::default()
-    }));
-    let socket_path = folder.join("helper.sock");
-    let mut seen = fake_helper(socket_path.clone());
-    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    let (tx, rx) = mpsc::channel::<HydrateRequest>(8);
-    let source: Arc<dyn ContentSource> = Arc::new(LocalDir::new(source_dir.path()));
-    tokio::spawn(serve_hydrations_reporting(link, rx, source, InodeLocks::new(), report.clone()));
-
-    let held = report.activity.hold();
-    for n in 0..5u64 {
-        std::fs::write(source_dir.path().join(format!("ITEM{n}")), vec![1u8; 1024]).unwrap();
-        let fd = placeholder(&folder, &format!("f{n}.bin"), &format!("ITEM{n}"), 1024);
-        tx.send(HydrateRequest { req_id: n, fd }).await.unwrap();
-    }
-    for _ in 0..5 {
-        let answered = tokio::time::timeout(Duration::from_secs(10), seen.recv())
-            .await
-            .expect("a request waited for a slot held by a fill that was only recording");
-        assert_eq!(answered.unwrap().1, 0);
-    }
-    drop(held);
 }
 
 /// Item 8: a file a download or another free-up holds the per-inode lock

@@ -126,3 +126,35 @@ async fn losing_the_helper_is_published_and_reconnected_while_a_fill_still_runs(
     .await;
     wait_until("the folder came back", || service.root_state() == "ready").await;
 }
+
+/// A download that is running when its folder is forgotten ends as a download: the fill
+/// holds the source its folder had when the open was routed, whatever becomes of the
+/// folder meanwhile. The file stays, filled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_fill_on_open_ends_as_a_download_though_its_folder_is_forgotten_meanwhile() {
+    let sockets = tempfile::tempdir().unwrap();
+    let socket_path = sockets.path().join("helper.sock");
+    let helper = FakeHelper::start(socket_path.clone());
+    let root_dir = tempfile::tempdir().unwrap();
+    let service = testing::service(None, None, None);
+    tokio::spawn(hub::supervise(Arc::clone(service.hub()), socket_path.clone(), Duration::from_millis(300)));
+    wait_until("the supervisor connected", || service.link().is_some()).await;
+    service.register_root(root_dir.path()).await.unwrap();
+
+    let remote = tempfile::tempdir().unwrap();
+    std::fs::write(remote.path().join("ITEM"), [7u8; 64]).unwrap();
+    let slow = Arc::new(LocalDir::new(remote.path()).delay(Duration::from_millis(600)));
+    let nothing = tempfile::tempdir().unwrap();
+    service.populate_from_directory(nothing.path()).await.unwrap();
+    install_source(&service, Arc::clone(&slow) as Arc<dyn ContentSource>);
+    let opened = placeholder(root_dir.path(), "slow.bin", "ITEM", 64);
+    helper.send_request(1, &opened);
+    wait_until("the fill began", || slow.fetches() > 0).await;
+
+    service.unregister_root().await.unwrap();
+    assert_eq!(service.root_state(), "none");
+
+    let file = root_dir.path().join("slow.bin");
+    wait_until("the fill ended as a download", || state_of_path(&file) == Some(State::Hydrated)).await;
+    assert_eq!(std::fs::read(&file).unwrap(), [7u8; 64]);
+}

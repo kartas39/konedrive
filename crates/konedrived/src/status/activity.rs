@@ -260,12 +260,6 @@ impl Activity {
         }
     }
 
-    /// Holds the log still, as a write under way does: tests only.
-    #[cfg(test)]
-    pub(crate) fn hold(&self) -> impl Sized + '_ {
-        self.backing()
-    }
-
     /// [`record_blocking`](Self::record_blocking) on a blocking thread.
     pub async fn record(self: &Arc<Self>, events: Vec<Event>) {
         let this = Arc::clone(self);

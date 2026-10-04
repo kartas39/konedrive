@@ -10,7 +10,7 @@ impl SyncService {
     /// `Skipped()`: every item not in the folder whose own folder is, as a
     /// full path and a reason.
     ///
-    /// The store is read with the folder's state held for reading (see `store`), so
+    /// The store is the running sync's, read with the folder's state held for reading, so
     /// a Forget waits for a read under way rather than remove the files
     /// under it. The lock goes into the blocking task with the store's clone,
     /// so it is held as long as the clone is, even when this call is dropped
@@ -18,7 +18,7 @@ impl SyncService {
     pub async fn skipped(&self) -> Result<Vec<(String, String)>, SyncError> {
         let lifecycle = Arc::clone(&self.folder).read_owned().await;
         let Some(reg) = lifecycle.acted_on().cloned() else { return Ok(Vec::new()) };
-        let Some(store) = self.store.lock().unwrap().clone() else { return Ok(Vec::new()) };
+        let Some(store) = lifecycle.store() else { return Ok(Vec::new()) };
         let skipped = tokio::task::spawn_blocking(move || {
             let _lifecycle = lifecycle;
             // One query, on the read-only connection (issue #39): the cycle's

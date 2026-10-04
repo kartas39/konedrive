@@ -172,6 +172,13 @@
          stops, but is not the user's pause: Paused stays false, and it is
          worked out again from the machine's state after a restart. -->
     <property name="HeldBack" type="s" access="read"/>
+    <!-- Whether what is added, changed, moved or deleted in the folder is
+         uploaded now: the folder shows OneDrive, its account's Mode is
+         "read-write", the folder is watched for changes and the read-only
+         lock is off it. False for a folder that runs read-only although its
+         account is read-write (it cannot be watched; LastError says why),
+         and while the folder's sync is starting or not running. -->
+    <property name="Writable" type="b" access="read"/>
     <!-- How changes made in OneDrive reach this computer: "connected" (at
          once, through Graph's notification socket; the poll runs every 5
          minutes as a safety net), "connecting" (trying, or waiting before the

@@ -87,6 +87,13 @@ impl Folder {
         self.service.state().get().pause.held_back
     }
 
+    /// Whether what is changed in the folder is uploaded now: false for a folder that runs
+    /// read-only although its account is read-write.
+    #[zbus(property)]
+    async fn writable(&self) -> bool {
+        self.service.writable()
+    }
+
     /// How changes made in OneDrive reach this computer: `connected` (at once, through the
     /// notification socket), `connecting` (trying; the poll runs meanwhile), or `off`
     /// (stopped, or not a OneDrive folder).

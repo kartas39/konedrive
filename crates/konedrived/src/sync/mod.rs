@@ -19,6 +19,7 @@ pub mod pins;
 pub mod populate;
 mod publish;
 pub mod queries;
+mod running_sync;
 pub mod settings;
 pub mod start_stop;
 pub mod take_down;
@@ -27,16 +28,14 @@ pub mod testing;
 pub mod watcher;
 pub mod wiring;
 
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use tokio::sync::watch;
-use tokio_util::sync::CancellationToken;
 
 use crate::status::report::Report;
 use crate::helper::{Clearance, HelperLink};
 use crate::folder::root::DehydrateError;
 use crate::folder::root::{RegisterError, SyncRoot};
-use crate::hydration::source::ContentSource;
 use crate::folder::locks::InodeLocks;
 use crate::status::snapshot::{FolderStatus, SyncSnapshot, SyncStateHandle, published_error, published_state};
 use crate::conditions::running;
@@ -44,8 +43,6 @@ use crate::hydration::pin;
 use crate::hydration::source;
 use crate::local;
 use crate::remote::listing;
-use crate::upload;
-use crate::upload::kept_back;
 
 use folder::{Folder, Record, View};
 pub use wiring::{OneDrive, Persist, SyncPaths, Transfers, Wiring};
@@ -233,10 +230,9 @@ impl From<DehydrateError> for SyncError {
 /// finished marking — both worse than what this does instead: hydrate_now
 /// always fills the file itself, synchronously, through the same
 /// `ContentSource`/`source::hydrate` the interception path uses, under the
-/// same per-inode lock `serve_hydrations` takes. `SyncService` doubles as
-/// that `ContentSource` (see the `ContentSource` impl below) precisely so
-/// `serve_hydrations` can be started once at daemon startup, before any
-/// root exists, and pick up whatever gets registered later.
+/// same per-inode lock `serve_hydrations` takes. `serve_hydrations` itself is started once,
+/// at daemon startup, before any root exists: the hub's router answers each open with the
+/// source the file's folder has at that moment (`hub::filler`).
 pub struct SyncService {
     /// What the service was made with: the hub, the account, its entry in `config.toml`,
     /// the drive, and the rest of [`Wiring`]. Never changed.
@@ -266,28 +262,16 @@ pub struct SyncService {
     /// The folder as last published ([`publish`]), for the readers that only look and the
     /// synchronous callers. Written by nothing but `publish`.
     view: watch::Sender<View>,
-    source: Mutex<Option<Arc<dyn ContentSource>>>,
     /// The hub's lock table: one inode belongs to one account only.
     locks: InodeLocks,
-    /// The running sync of a OneDrive folder. Shared with the task that
-    /// nudges it when the account signs in ([`nudge_on_sign_in`]). Started only by a
-    /// holder of a [`Stopped`](folder::Stopped), and stopped by [`change`](Self::change).
-    syncing: Arc<Mutex<Option<Syncing>>>,
-    /// Its tree store, for `Skipped()`.
-    ///
-    /// The store's files are removed (`remove_tree_store`) only inside a change of the
-    /// folder's state, with the sync stopped, and nothing may be
-    /// reading them then. So no clone of the store outlives
-    /// [`stop_sync`](SyncService::stop_sync): the sync's own go when it
-    /// returns (`Poller::stop` waits for every task that holds one). Any
-    /// other clone is taken, and dropped, with the state held for reading
-    /// (`skipped`).
-    store: Mutex<Option<konedrive_tree::Store>>,
+    /// The parts of syncs that were told to stop and are not waited for yet
+    /// ([`running_sync`]): [`change`](Self::change) waits for them.
+    ended: running_sync::Ended,
     /// The activity log, the conflicts, the downloads under way and the
     /// folder's space, shared with the hydration loop and a
-    /// OneDrive folder's sync. Its store is a clone of `store`'s, attached by
-    /// [`start_sync`](Self::start_sync) and detached by
-    /// [`stop_sync`](Self::stop_sync), after which no write holds it.
+    /// OneDrive folder's sync. Its store is a clone of the running sync's, attached as
+    /// the sync starts and detached by [`change`](Self::change), after which no write
+    /// holds it.
     report: Report,
     /// "Always keep on this device": the pins and the downloads they ask
     /// for. Shared with a OneDrive folder's sync, which queues what it places
@@ -296,18 +280,11 @@ pub struct SyncService {
     /// This service, for the watcher's status hook, which may have to stop
     /// the sync from the watcher's thread (the folder moved or deleted).
     me: std::sync::Weak<SyncService>,
-    /// The per-root tree lock (`docs/design/writes.md` §9): the outbox worker holds it
-    /// across each commit that touches `items`, and a cycle must hold it from
-    /// staging to swap, or the swap reverts the commit.
-    tree_lock: Arc<tokio::sync::Mutex<()>>,
     /// The account's ignore list (`docs/design/writes.md` §4.4), from `config.toml`: the
     /// watcher's examination reads it, `SetIgnorePatterns` changes it.
     ignore: local::ignore::SharedIgnore,
     /// The pause as it is shown, and the timer that ends a timed one (`pause`).
     clock: pause::PauseClock,
-    /// `NotUploadedSummary()` as the outbox worker last summed it (issue #38):
-    /// answered from memory while the worker runs.
-    kept_back: Mutex<Option<Vec<kept_back::SummaryRow>>>,
     /// The account's transfer pool (`konedrive_graph::pool`): every download, upload and change of
     /// an item takes a slot of it. The drive of the wiring reports into it.
     pool: Arc<konedrive_graph::pool::TransferPool>,
@@ -317,26 +294,6 @@ pub struct SyncService {
     /// What background work runs now (`running`): the one place every reader of the pause
     /// asks, with the account's settings from `config.toml`.
     running: Arc<running::Running>,
-}
-
-/// A OneDrive folder's sync while it runs.
-struct Syncing {
-    poller: listing::Poller,
-    /// [`nudge_on_sign_in`], stopped with the poller.
-    sign_in_watch: Option<tokio::task::JoinHandle<()>>,
-    /// The thumbnail filler and the token that stops it: started
-    /// and stopped with the poller, so a Forget leaves no clone of the tree
-    /// store with it either. `None` when [`SyncPaths::thumbnails`] is.
-    thumbnails: Option<(tokio::task::JoinHandle<()>, CancellationToken)>,
-    /// A read-write folder's watcher: started in the same critical
-    /// section that publishes this `Syncing`, and stopped by whoever takes it,
-    /// so it lives exactly as long as the sync. `None` for a
-    /// read-only folder.
-    watcher: Option<local::watcher::Watcher>,
-    /// A read-write folder's outbox worker, which sends the rows the
-    /// watcher's examination records: started and stopped with the watcher,
-    /// in the same places. `None` for a read-only folder.
-    outbox: Option<upload::OutboxWorker>,
 }
 
 /// What `LastError` says while a root is registered without interception.
@@ -381,17 +338,13 @@ impl SyncService {
                         }
                     }
                 }),
-                kept_back: Mutex::new(None),
                 report: Report::new(state.clone()),
                 state,
                 folder: Arc::new(tokio::sync::RwLock::new(Folder::new())),
                 view: watch::Sender::new(View::default()),
-                source: Mutex::new(None),
                 locks: hub.locks(),
-                syncing: Arc::new(Mutex::new(None)),
-                store: Mutex::new(None),
+                ended: running_sync::Ended::default(),
                 me: me.clone(),
-                tree_lock: Arc::new(tokio::sync::Mutex::new(())),
                 wiring,
             })
         })
@@ -515,6 +468,19 @@ impl SyncService {
         published_error(&self.state.get())
     }
 
+    /// Where the folder's files are filled from now, as last published: the drive for a
+    /// OneDrive folder that is up, the directory a local folder was populated from.
+    pub(crate) fn content_source(&self) -> Option<Arc<dyn crate::hydration::source::ContentSource>> {
+        self.view.borrow().source.clone()
+    }
+
+    /// `Writable`: whether what is changed in the folder is uploaded now. False for a
+    /// folder whose account is read-write and which runs locked all the same — its
+    /// watcher could not start, or did not finish walking it; `LastError` says which.
+    pub fn writable(&self) -> bool {
+        self.state.get().folder.writable
+    }
+
     /// `RootSource`.
     pub fn root_source(&self) -> String {
         self.record().map(|r| r.source.as_str().to_owned()).unwrap_or_default()
@@ -539,15 +505,27 @@ impl SyncService {
     }
 
     /// Why a call that needs the folder's sync cannot have it, for a OneDrive folder
-    /// with no tree store open: the folder is not up, or its sync has not started.
+    /// whose sync does not run: the folder is not up, or its sync could not start, or has
+    /// not started.
     fn sync_not_running(&self) -> SyncError {
-        if let Some(why) = self.view().down {
+        let view = self.view();
+        if let Some(why) = view.down {
             return SyncError::not_up(&why);
         }
-        match self.state.get().cycle.sync_trouble {
-            Some(trouble) => SyncError::NotUp(format!("the folder's sync is not running: {}", trouble.text)),
-            None => SyncError::NotUp("the folder's sync has not started yet".into()),
+        match view.sync {
+            folder::SyncView::Stopped(Some(why)) => SyncError::NotUp(format!("the folder's sync is not running: {why}")),
+            _ => SyncError::NotUp("the folder's sync has not started yet".into()),
         }
+    }
+}
+
+impl Drop for SyncService {
+    /// The view lets go of the running sync's handles: a part of that sync reads the view
+    /// (the write gate), so left there they would keep each other, and the tree store,
+    /// alive after the service. The sync itself goes with the folder's state, which tells
+    /// its parts to stop.
+    fn drop(&mut self) {
+        self.view.send_replace(View::default());
     }
 }
 

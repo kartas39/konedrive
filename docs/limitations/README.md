@@ -374,9 +374,9 @@ application must never read zeros where real content should be.
 - [D35](D35.md) — Refusals and the notes of `LastError` are types over the strings they were.
 - [D36](D36.md) — The store's schema has a number for every change, and what that leaves.
 - [D37](D37.md) — The test support of `sync/` is built into the daemon's crate, and finds a service's parts by a list.
-- [D38](D38.md) — The running parts of a folder's sync are beside its state, not in it.
 - [D39](D39.md) — An upload's answer that the folder cannot hold waits only when the item's own row says so.
 - [D40](D40.md) — Two tests of `remote/listing/` stand in for what they cannot see or drive.
+- [D42](D42.md) — What the running sync as an object leaves by hand.
 - [D43](D43.md) — `konedrived` depends on itself to give its tests the account's test support
 - [D44](D44.md) — `konedrive-dbus` depends on itself to test its private bus
 

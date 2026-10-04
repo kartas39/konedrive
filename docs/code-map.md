@@ -311,24 +311,26 @@ Baloo and thumbnails. Design: `desktop.md`.
 - `testing/helper.rs` — the fake helper: it records, refuses, and holds an answer until released.
 - `hub.rs` — the one link to the helper, shared by every account. `[tests]`
 - `folder.rs` — what the folder is, as a type; `change`, the one way to change it, and the view the readers read.
+- `running_sync.rs` — the running sync of a OneDrive folder as one object in that state: its parts,
+  the handles a reader may hold, and how it stops (dropped, then waited for by the next change).
 - `publish.rs` — what the bus shows of the folder's state, worked out in one place. `[tests]`
 - `persisted.rs` — the folder as `config.toml` records it.
 - `bring_up.rs` — a new registration, the folder taken up and brought up at startup and at the
   helper's connect, and the switch to interception.
 - `take_down.rs` — forgetting a folder; retiring an account's folder; a folder moved away.
-- `start_stop.rs` — starting, nudging and stopping the sync.
+- `start_stop.rs` — starting the sync (prepare, build, run) and asking it for a cycle.
 - `populate.rs` — a folder of placeholders made from a local directory.
-- `hydrate.rs` — filling a placeholder now; `SyncService` as a content source.
+- `hydrate.rs` — filling a placeholder now.
 - `free_up.rs` — freeing up files and whole folders.
 - `pins.rs` — putting pins on and taking them off.
 - `queries.rs` — what the bus reads: skipped items, activity, conflicts, transfers, states.
-- `mode.rs` — the folder's side of the account's mode.
-- `outbox.rs` — the outbox worker started, woken and stopped; the rows dropped; the outbox as
+- `mode.rs` — the folder's side of the account's mode, and its write gate.
+- `outbox.rs` — the outbox worker built and woken; the rows dropped; the outbox as
   `org.konedrive.UploadQueue` shows it. `[tests]`
 - `pause.rs` — the pause, the hold, Sync Anyway, and `PauseClock`, which ends a timed pause. `[tests]`
 - `move_outs.rs` — the fills of moved-out objects.
 - `settings.rs` — the account's settings in `config.toml`: thumbnails, the ignore list, the machine name.
-- `watcher.rs` — the watcher of a read-write folder: started, stopped, flushed, and what it tells.
+- `watcher.rs` — the watcher of a read-write folder: started, flushed, and what it tells.
 
 ### `crates/konedrived/src/sync/tests/`
 
@@ -336,7 +338,7 @@ The tests of `SyncService`, by topic.
 
 - `mod.rs` — what they share: the fake helper, the services, the placeholders.
 - `registration.rs` — registering a folder.
-- `hydrate.rs` — fills, and one fill per inode.
+- `hydrate.rs` — fills through the service, and one fill per inode.
 - `pins.rs` — "Always keep on this device".
 - `mode.rs` — with and without interception.
 - `startup.rs` — startup and the helper's supervisor.

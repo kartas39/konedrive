@@ -1,6 +1,5 @@
 use super::*;
 use crate::sync::testing;
-use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 /// An account on `hub` whose folder `dir` is registered without interception, with no
 /// helper anywhere.
@@ -45,8 +44,8 @@ async fn the_one_folder_on_the_files_filesystem_is_the_answer() {
 
 /// Steps 2 and 3: two folders on one filesystem are told apart by the name the kernel
 /// has for the file, verified by its inode — a file renamed while its open waits
-/// included — and, for a file unlinked meanwhile, by its item id in a tree store. A
-/// file in neither folder, whose id no store knows, is no one's.
+/// included. A file unlinked meanwhile, or in neither folder, whose id no tree store
+/// knows, is no one's.
 #[tokio::test]
 async fn two_folders_on_one_filesystem_are_told_apart_by_path_then_by_item_id() {
     let dir = tempfile::tempdir().unwrap();
@@ -60,30 +59,11 @@ async fn two_folders_on_one_filesystem_are_told_apart_by_path_then_by_item_id() 
     std::fs::rename(in_b.join("f"), in_b.join("g")).unwrap();
     assert!(same(&hub.route(&renamed).await, &b), "renamed while its open waited");
 
-    // Both have a tree store; only B's knows the id.
-    let store = |id: &str| {
-        let row = Row {
-            id: id.into(),
-            parent_id: Some("ROOT".into()),
-            name: "h".into(),
-            kind: Kind::File,
-            size: 0,
-            mtime: 0,
-            etag: None,
-            ctag: None,
-            quickxor: None,
-            mime: None,
-            placement: Placement::Placed,
-        };
-        let store = Store::new(TreeStore::in_memory().unwrap());
-        konedrive_tree::off_runtime(|| store.call_blocking(move |s| s.commit_page(&[Change::Upsert(row)], "next"))).unwrap();
-        store
-    };
-    *a.store.lock().unwrap() = Some(store("ITEM-A"));
-    *b.store.lock().unwrap() = Some(store("ITEM-B"));
+    // Unlinked meanwhile, with no tree store that knows its id: no one's. (A store that
+    // knows it: `an_account_whose_tree_knows_an_item_is_routed_its_opens_and_claims_it`.)
     let unlinked = opened(&in_b, "h", "ITEM-B");
     std::fs::remove_file(in_b.join("h")).unwrap();
-    assert!(same(&hub.route(&unlinked).await, &b), "found by its item id");
+    assert!(hub.route(&unlinked).await.is_none(), "no store knows the id");
 
     let nowhere = opened(dir.path(), "stray", "ITEM-X");
     assert!(hub.route(&nowhere).await.is_none(), "routing never guesses");
@@ -108,7 +88,8 @@ async fn a_moved_out_object_is_routed_by_its_item_id() {
 }
 
 /// An item id is another account's while that account's outbox waits to
-/// fetch it, its tree store knows it, or the id names its drive; never an account's own.
+/// fetch it; never an account's own. (Its tree store knowing it, or the id naming its
+/// drive: `an_account_whose_tree_knows_an_item_is_routed_its_opens_and_claims_it`.)
 #[tokio::test]
 async fn another_accounts_item_ids_are_claimed() {
     let dir = tempfile::tempdir().unwrap();
@@ -121,32 +102,8 @@ async fn another_accounts_item_ids_are_claimed() {
     assert!(hub.claimed_elsewhere(&of_b, "ITEM-A"), "A's move out waits for it");
     assert!(!hub.claimed_elsewhere(&of_a, "ITEM-A"), "never one's own");
 
-    let row = Row {
-        id: "ITEM-S".into(),
-        parent_id: Some("ROOT".into()),
-        name: "s".into(),
-        kind: Kind::File,
-        size: 0,
-        mtime: 0,
-        etag: None,
-        ctag: None,
-        quickxor: None,
-        mime: None,
-        placement: Placement::Placed,
-    };
-    let store = Store::new(TreeStore::in_memory().unwrap());
-    store
-        .call(move |s| {
-            s.commit_page(&[Change::Upsert(row)], "next")?;
-            s.set_drive_id("abc123")
-        }).await
-        .unwrap();
-    *a.store.lock().unwrap() = Some(store);
-    let claimed = |of: &Weak<SyncService>, id: &str| konedrive_tree::off_runtime(|| hub.claimed_elsewhere(of, id));
-    assert!(claimed(&of_b, "ITEM-S"), "A's tree knows it");
-    assert!(claimed(&of_b, "ABC123!42"), "the id names A's drive");
-    assert!(!claimed(&of_b, "DEF456!42"));
-    assert!(!claimed(&of_a, "ITEM-S"));
+    hub.set_moved_out(&of_a, HashSet::new());
+    assert!(!hub.claimed_elsewhere(&of_b, "ITEM-A"), "the row went");
 }
 
 /// Review M3: one candidate by device is the answer only while every other account's

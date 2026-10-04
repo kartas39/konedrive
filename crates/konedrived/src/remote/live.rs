@@ -98,7 +98,8 @@ impl LiveContext {
 /// The running live task of one account.
 pub struct Live {
     wake: Arc<Notify>,
-    task: tokio::task::JoinHandle<()>,
+    /// `None` once it has been waited for.
+    task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl Live {
@@ -106,7 +107,12 @@ impl Live {
     pub fn start(ctx: LiveContext, timing: Timing, cancel: CancellationToken) -> Self {
         let wake = Arc::new(Notify::new());
         let task = tokio::spawn(run(ctx, timing, Arc::clone(&wake), cancel));
-        Self { wake, task }
+        Self { wake, task: Some(task) }
+    }
+
+    /// What wakes the task ([`wake`](Self::wake)), for whoever does not own it.
+    pub fn waker(&self) -> Arc<Notify> {
+        Arc::clone(&self.wake)
     }
 
     /// The pause, the hold or the network may have changed: the task looks again at once.
@@ -115,8 +121,11 @@ impl Live {
     }
 
     /// Waits for the task, once its token is cancelled.
-    pub async fn join(self) {
-        let _ = self.task.await;
+    pub async fn join(&mut self) {
+        if let Some(task) = self.task.as_mut() {
+            let _ = task.await;
+            self.task = None;
+        }
     }
 }
 

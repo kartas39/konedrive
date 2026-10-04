@@ -88,6 +88,7 @@ pub(crate) async fn folder_status(daemon: &Daemon, path: &OwnedObjectPath) -> zb
         last_checked: served(folder.last_checked()).await?,
         live_changes: said(folder.live_changes()).await?,
         mode: served(account.mode()).await?,
+        writable: served(folder.writable()).await?,
         download_left: both(transfers.download_left_count(), transfers.download_left_bytes()).await?,
         scan,
         pending: both(queue.pending_count(), queue.pending_bytes()).await?,

@@ -229,6 +229,7 @@ class FakeFolder : public FakeFolderInterface
     Q_PROPERTY(bool Paused READ paused)
     Q_PROPERTY(qlonglong PausedUntil READ pausedUntil)
     Q_PROPERTY(QString HeldBack READ heldBack)
+    Q_PROPERTY(bool Writable READ writable)
     Q_PROPERTY(QString LiveChanges READ liveChanges)
     Q_PROPERTY(bool Thumbnails READ thumbnails)
 
@@ -252,6 +253,7 @@ public:
                                   {QStringLiteral("Paused"), false},
                                   {QStringLiteral("PausedUntil"), QVariant::fromValue<qlonglong>(0)},
                                   {QStringLiteral("HeldBack"), QString()},
+                                  {QStringLiteral("Writable"), true},
                                   {QStringLiteral("LiveChanges"), QStringLiteral("off")},
                                   {QStringLiteral("Thumbnails"), true},
                               })
@@ -272,6 +274,7 @@ public:
     bool paused() const { return value("Paused").toBool(); }
     qlonglong pausedUntil() const { return value("PausedUntil").toLongLong(); }
     QString heldBack() const { return value("HeldBack").toString(); }
+    bool writable() const { return value("Writable").toBool(); }
     QString liveChanges() const { return value("LiveChanges").toString(); }
     bool thumbnails() const { return value("Thumbnails").toBool(); }
 

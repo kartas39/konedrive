@@ -120,6 +120,7 @@ Neither the refresh token nor the access token is ever exposed through `Account`
 | `IgnorePatterns` (`as`) | the ignore list; read-only |
 | `Paused` (`b`), `PausedUntil` (`x`) | whether the account is paused, and when the pause ends by itself (0: until `Resume`) |
 | `HeldBack` (`s`) | why the account holds its background work back by itself: `metered`, `on-battery`, `power-saver`, or empty ([writes.md](writes.md) §11); never the user's pause, which `Paused` shows |
+| `Writable` (`b`) | whether what is added, changed, moved or deleted in the folder is uploaded now: the folder shows OneDrive, its account's `Mode` is `read-write`, the folder is watched and the read-only lock is off it. False for a folder that runs read-only although its account is read-write (`LastError` says why), and while its sync is starting or not running |
 | `LiveChanges` (`s`) | how changes made in OneDrive reach this computer ([sync.md](sync.md) §4.2): `connected` (at once, through Graph's notification socket; the poll runs every 5 minutes), `connecting` (trying, or waiting before the next try; the poll runs every minute), `off` (paused, held back, or not a OneDrive folder) |
 | `Thumbnails` (`b`) | the account's own sync setting; `true` when absent from `config.toml` |
 

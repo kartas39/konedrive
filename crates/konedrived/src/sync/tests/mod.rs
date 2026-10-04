@@ -1,27 +1,20 @@
-use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, OwnedFd};
 use std::os::unix::fs::{OpenOptionsExt, MetadataExt};
-use std::os::unix::net::UnixStream;
 use std::time::Duration;
 use std::fs::File;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
-use nix::sys::socket::{accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr};
-use tokio::sync::mpsc;
+use nix::sys::socket::{bind, socket, AddressFamily, SockFlag, SockType, UnixAddr};
 use konedrive_fs::placeholder::{read_state, State};
 
-use crate::hydration::source::{ContentSource, Fetched, LocalDir, SourceError, Answered, FillError};
-use crate::status::report::Report;
-use crate::helper::{HelperLink, HydrateRequest};
+use crate::hydration::source::{ContentSource, Fetched, LocalDir, SourceError};
+use crate::helper::HelperLink;
 use crate::account::state::{SignInState, StateHandle};
 use crate::folder::locks::tests::key_of;
 use crate::sync::free_up::FreedUp;
-use crate::folder::locks::{InodeKey, InodeLocks};
-use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
-use crate::hydration::server::{fill_event, serve_hydrations, serve_hydrations_reporting};
+use crate::folder::locks::InodeKey;
 use crate::hydration::pin::state_of_path;
 use crate::hydration::pin;
 use crate::hydration::source;
@@ -81,50 +74,6 @@ impl Config {
 fn write_config(file: &Path, root: &str) {
     let text = format!("config_version = 2\n\n[[accounts]]\nid = \"0123456789ab\"\nlabel = \"Personal\"\n\n[accounts.root]\n{root}");
     std::fs::write(file, text).unwrap();
-}
-
-/// A stand-in helper: accepts one connection, greets, acknowledges the
-/// handshake `Hello`, then acknowledges everything and reports every
-/// `HydrateDone` it sees. The listener is bound on the caller's thread,
-/// before this returns, so `connect` cannot race `bind`.
-///
-/// It reports through a `tokio` channel rather than a `std` one because
-/// the tests below wait for it *inside* the runtime: a blocking
-/// `recv_timeout` on a current-thread runtime would park the one thread
-/// that has to run `serve_hydrations`.
-pub(crate) fn fake_helper(path: std::path::PathBuf) -> mpsc::UnboundedReceiver<(u64, i32)> {
-    let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None)
-        .unwrap();
-    let addr = UnixAddr::new(&path).unwrap();
-    bind(fd.as_raw_fd(), &addr).unwrap();
-    sock_listen(&fd, Backlog::new(16).unwrap()).unwrap();
-    let (tx, rx) = mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        let listener: OwnedFd = fd;
-        let accepted = accept(listener.as_raw_fd()).unwrap();
-        // SAFETY: `accept` just returned a freshly opened descriptor that
-        // this process now solely owns.
-        let stream = unsafe { UnixStream::from_raw_fd(accepted) };
-        let mut channel = Channel::new(stream).unwrap();
-        channel
-            .send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None)
-            .unwrap();
-        let (hello, _) = channel.recv::<ToHelper>().unwrap();
-        assert!(
-            matches!(hello, ToHelper::Hello { version } if version == PROTOCOL_VERSION),
-            "{hello:?}"
-        );
-        channel.send(&ToDaemon::Ack { errno: 0 }, None).unwrap();
-        while let Ok((message, _fd)) = channel.recv::<ToHelper>() {
-            if let ToHelper::HydrateDone { req_id, errno } = message {
-                let _ = tx.send((req_id, errno));
-            }
-            if channel.send(&ToDaemon::Ack { errno: 0 }, None).is_err() {
-                break;
-            }
-        }
-    });
-    rx
 }
 
 pub(crate) fn placeholder(dir: &std::path::Path, name: &str, item_id: &str, size: u64) -> OwnedFd {
