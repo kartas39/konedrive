@@ -3,16 +3,17 @@
 //! within, into and out of the folder, a new directory marked through the
 //! helper and then scanned, the daemon's own events dropped by pid (a fill
 //! included, §3.2), an overflow, the root going away, the degraded mode,
-//! and one batch followed all the way to an outbox row.
+//! and one batch followed all the way to an outbox row. What is examined when
+//! (the retries, the rechecks, the periodic scan) is tested with the time
+//! given by hand, in `schedule/tests.rs` and `reader/timers/tests.rs`.
 //!
 //! Unless a test says otherwise the watcher drops nothing by pid, so the test
 //! process itself can stand in for the user.
 
 use std::ffi::OsStr;
 use std::fs::File;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{mpsc, Arc, Mutex};
@@ -20,18 +21,14 @@ use std::time::{Duration, Instant, SystemTime};
 
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{self, XATTR_ROOT};
-use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
-use tokio_util::sync::CancellationToken;
 
 use super::*;
-use crate::folder::disk::Disk;
-use crate::helper::HelperLink;
-use crate::local::{IgnoreList, NoLiveness};
-use crate::remote::materialize::{Materializer, Scope};
 use crate::hydration::source::LocalDir;
-use crate::folder::locks::InodeLocks;
+use crate::local::scan::ScanReport;
+use crate::local::{IgnoreList, NoLiveness};
+use crate::remote::testing::{FakeHelper, Options, Says, Step, World};
 use konedrive_tree::outbox::OutboxKind;
-use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
+use konedrive_tree::{Change, Kind, Placement, Row};
 
 const WAIT: Duration = Duration::from_secs(10);
 
@@ -73,7 +70,13 @@ impl Fx {
     }
 
     fn config(&self) -> WatchConfig {
-        let mut config = WatchConfig::new(self.root.clone(), Arc::new(Mutex::new(None)), self.runtime.handle().clone());
+        self.config_for(&self.root)
+    }
+
+    /// The watcher of `root`, with no helper, the tests' clocks, and nothing
+    /// dropped by pid.
+    fn config_for(&self, root: &SyncRoot) -> WatchConfig {
+        let mut config = WatchConfig::new(root.clone(), Arc::new(Mutex::new(None)), self.runtime.handle().clone());
         config.own_pid = None;
         config.timing = timing();
         config
@@ -116,6 +119,16 @@ fn next(rx: &mpsc::Receiver<Batch>) -> Batch {
     rx.recv_timeout(WAIT).expect("a batch")
 }
 
+/// The next Full local scan, whatever is handed over before it.
+fn next_full(rx: &mpsc::Receiver<Batch>) -> Batch {
+    loop {
+        let batch = next(rx);
+        if batch.is_full() {
+            return batch;
+        }
+    }
+}
+
 /// `name` in `dir`, as a `FAN_CLOSE_WRITE` makes it dirty.
 fn written(batch: &mut Batch, dir: &str, name: &str, handle: FileHandle) {
     batch.written(Path::new(dir), OsStr::new(name), Some(handle));
@@ -148,46 +161,13 @@ fn changes_come_as_one_batch_with_each_directory_where_it_is_now() {
     watcher.stop();
 }
 
-/// A tiny helper: refuses the first `refuse` `MarkDir`s (`EPERM`),
-/// acknowledges everything else, and tells which directories it marked, by
-/// inode.
-fn fake_helper(path: &Path, refuse: usize) -> mpsc::Receiver<u64> {
-    use nix::sys::socket::{accept, bind, listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr};
-    let listener = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None).unwrap();
-    bind(listener.as_raw_fd(), &UnixAddr::new(path).unwrap()).unwrap();
-    listen(&listener, Backlog::new(4).unwrap()).unwrap();
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let fd = accept(listener.as_raw_fd()).unwrap();
-        // SAFETY: `accept` returned a descriptor nothing else owns.
-        let mut channel = Channel::new(unsafe { UnixStream::from_raw_fd(fd) }).unwrap();
-        channel.send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None).unwrap();
-        let mut refused = 0;
-        while let Ok((message, fd)) = channel.recv::<ToHelper>() {
-            let mut errno = 0;
-            if let (ToHelper::MarkDir, Some(fd)) = (&message, fd) {
-                if refused < refuse {
-                    refused += 1;
-                    errno = libc::EPERM;
-                } else {
-                    let _ = tx.send(File::from(fd).metadata().unwrap().ino());
-                }
-            }
-            channel.send(&ToDaemon::Ack { errno }, None).unwrap();
-        }
-    });
-    rx
-}
-
 impl Fx {
-    /// `config` with a link to a [`fake_helper`] refusing its first `refuse`
-    /// `MarkDir`s.
-    fn with_helper(&self, mut config: WatchConfig, refuse: usize) -> (WatchConfig, mpsc::Receiver<u64>) {
-        let socket = self.dir.path().join("helper.sock");
-        let marked = fake_helper(&socket, refuse);
-        let link = self.runtime.block_on(HelperLink::connect(&socket)).unwrap().0;
-        config.link = Arc::new(Mutex::new(Some(link)));
-        (config, marked)
+    /// `config` with a link to a helper of its own, which marks whatever it
+    /// is asked to until the test tells it otherwise.
+    fn with_helper(&self, mut config: WatchConfig) -> (WatchConfig, FakeHelper) {
+        let helper = self.runtime.block_on(FakeHelper::start());
+        config.link = Arc::new(Mutex::new(Some(helper.link.clone())));
+        (config, helper)
     }
 
     fn ino(&self, rel: &str) -> u64 {
@@ -195,40 +175,54 @@ impl Fx {
     }
 }
 
-/// Waits until the helper has marked every one of `inodes`.
-fn marked_all(marked: &mpsc::Receiver<u64>, mut inodes: Vec<u64>) {
+/// The directories the helper was asked to mark so far, by inode, in order.
+fn asked(helper: &FakeHelper) -> Vec<u64> {
+    helper.marks().iter().map(|mark| mark.ino).collect()
+}
+
+/// Waits until the helper has been asked to mark every one of `inodes`.
+fn marked_all(helper: &FakeHelper, inodes: Vec<u64>) {
     let deadline = Instant::now() + WAIT;
-    while !inodes.is_empty() && Instant::now() < deadline {
-        if let Ok(ino) = marked.recv_timeout(Duration::from_millis(100)) {
-            inodes.retain(|i| *i != ino);
+    loop {
+        let asked = asked(helper);
+        let missing: Vec<u64> = inodes.iter().copied().filter(|ino| !asked.contains(ino)).collect();
+        if missing.is_empty() {
+            return;
         }
+        assert!(Instant::now() < deadline, "never marked for interception: {missing:?}");
+        std::thread::sleep(Duration::from_millis(20));
     }
-    assert!(inodes.is_empty(), "never marked for interception: {inodes:?}");
+}
+
+/// Makes the directory `name` in the folder and returns once the reader is
+/// held in its `MarkDir`: it reads nothing until the returned sender is told
+/// to let the helper answer.
+fn reader_held_at(fx: &Fx, helper: &FakeHelper, name: &str) -> mpsc::Sender<()> {
+    let (reached, release) = helper.stall_on(&format!("/{name}"));
+    std::fs::create_dir(fx.path(name)).unwrap();
+    reached.recv_timeout(WAIT).expect("the reader asks the helper to mark the new directory");
+    release
 }
 
 #[test]
 fn a_new_directory_is_marked_for_interception_then_watched_and_its_tree_is_dirty() {
     let fx = Fx::new();
     std::fs::create_dir(fx.path("old")).unwrap();
-    let (config, marked) = fx.with_helper(fx.config(), 0);
+    let (config, helper) = fx.with_helper(fx.config());
     let (watcher, rx) = fx.start(config);
     // The helper's own walk may have passed the root before `old` was made.
-    assert_eq!(marked.try_iter().collect::<Vec<_>>(), vec![fx.ino("old")], "the bring-up asks for every directory");
+    assert_eq!(asked(&helper), vec![fx.ino("old")], "the bring-up asks for every directory");
 
-    // Made while the watcher looks away: `sub` exists before `new` is
-    // marked, and is found by the scan.
-    watcher.pause(true);
-    fx.shell("mkdir -p new/sub && echo x > new/sub/f");
-    watcher.pause(false);
+    // `sub` and its file are made before `new` is marked, so they raise no
+    // event: they are found by the scan of `new`'s tree.
+    let release = reader_held_at(&fx, &helper, "new");
+    fx.shell("mkdir new/sub && echo x > new/sub/f");
+    release.send(()).unwrap();
     let mut expected = Batch::new();
     named(&mut expected, "", "new", fx.handle("new"));
     expected.tree(Path::new("new"));
     assert_eq!(next(&rx), expected);
-    let mut asked: Vec<u64> = marked.try_iter().collect();
-    asked.sort();
-    let mut inodes = vec![fx.ino("new"), fx.ino("new/sub")];
-    inodes.sort();
-    assert_eq!(asked, inodes, "both new directories were marked for interception");
+    assert_eq!(asked(&helper), vec![fx.ino("old"), fx.ino("new"), fx.ino("new/sub")], "each new directory was marked for interception before it was listed");
 
     // `sub` now raises events of its own.
     std::fs::write(fx.path("new/sub/g"), b"g").unwrap();
@@ -302,20 +296,21 @@ fn the_daemons_own_changes_and_a_fill_raise_nothing_to_examine() {
 #[test]
 fn an_overflow_is_a_full_scan_and_a_walk_that_marks_what_was_missed() {
     let fx = Fx::new();
-    let (config, marked) = fx.with_helper(fx.config(), 0);
+    let (config, helper) = fx.with_helper(fx.config());
     let (watcher, rx) = fx.start(config);
     let queue: usize = std::fs::read_to_string("/proc/sys/fs/fanotify/max_queued_events").unwrap().trim().parse().unwrap();
-    watcher.pause(true);
+    // The reader reads nothing while the helper holds its answer: the queue fills.
+    let release = reader_held_at(&fx, &helper, "gate");
     for n in 0..queue + 10 {
         File::create(fx.path(&format!("f{n}"))).unwrap();
     }
     // Its event is lost with the overflow.
     std::fs::create_dir(fx.path("late")).unwrap();
-    watcher.pause(false);
+    release.send(()).unwrap();
     let batch = next(&rx);
     assert!(batch.is_full(), "an overflow cannot be localised");
     assert_eq!(watcher.status().overflows, 1);
-    marked_all(&marked, vec![fx.ino("late")]);
+    marked_all(&helper, vec![fx.ino("late")]);
 
     std::fs::write(fx.path("late/x"), b"x").unwrap();
     let mut expected = Batch::new();
@@ -347,8 +342,8 @@ fn past_the_mark_budget_the_folder_is_scanned_on_a_timer() {
         std::fs::create_dir(fx.path(name)).unwrap();
     }
     let (tx, notes) = mpsc::channel();
-    let (mut config, marked) = fx.with_helper(fx.config(), 0);
-    config.mark_limit = Some(2);
+    let (mut config, helper) = fx.with_helper(fx.config());
+    config.mark_budget = Some(2);
     config.on_status = Some(Arc::new(move |s: &WatchStatus| {
         let _ = tx.send(s.clone());
     }));
@@ -357,15 +352,16 @@ fn past_the_mark_budget_the_folder_is_scanned_on_a_timer() {
     assert!(status.note().unwrap().contains("max_user_marks"), "{status:?}");
     let status = watcher.status();
     assert_eq!((status.directories, status.unwatched), (4, 2), "{status:?}");
-    // Nothing happens in the folder; the scan comes anyway.
-    assert!(next(&rx).is_full());
+    // Nothing happens in the folder; the scan comes anyway. The reader's walk on the same beat
+    // hands over the directories it could not mark, before the scan or after it.
+    next_full(&rx);
 
     // Two of these three are made in directories nobody watches: no event,
     // but the periodic walk has them marked for interception all the same.
     for name in ["a", "b", "c"] {
         std::fs::create_dir(fx.path(&format!("{name}/n"))).unwrap();
     }
-    marked_all(&marked, vec![fx.ino("a/n"), fx.ino("b/n"), fx.ino("c/n")]);
+    marked_all(&helper, vec![fx.ino("a/n"), fx.ino("b/n"), fx.ino("c/n")]);
     watcher.stop();
 }
 
@@ -377,7 +373,7 @@ fn a_directory_closed_at_the_walk_is_watched_all_the_way_down_once_opened() {
     let fx = Fx::new();
     std::fs::create_dir_all(fx.path("closed/inner")).unwrap();
     std::fs::set_permissions(fx.path("closed"), std::fs::Permissions::from_mode(0o000)).unwrap();
-    let (config, marked) = fx.with_helper(fx.config(), 0);
+    let (config, helper) = fx.with_helper(fx.config());
     let (watcher, rx) = fx.start(config);
     assert_eq!(watcher.status().unwatched, 1, "`closed`, kept in the map without its mark");
 
@@ -386,7 +382,7 @@ fn a_directory_closed_at_the_walk_is_watched_all_the_way_down_once_opened() {
     expected.name(Path::new("closed"), OsStr::new("."));
     expected.tree(Path::new("closed"));
     assert_eq!(next(&rx), expected, "the whole tree, since nothing in it raised events");
-    marked_all(&marked, vec![fx.ino("closed"), fx.ino("closed/inner")]);
+    marked_all(&helper, vec![fx.ino("closed"), fx.ino("closed/inner")]);
     std::fs::write(fx.path("closed/inner/f"), b"f").unwrap();
     let mut expected = Batch::new();
     written(&mut expected, "closed/inner", "f", fx.handle("closed/inner/f"));
@@ -400,22 +396,23 @@ fn a_directory_closed_at_the_walk_is_watched_all_the_way_down_once_opened() {
 fn a_directory_the_helper_did_not_mark_is_asked_again() {
     let fx = Fx::new();
     let (tx, notes) = mpsc::channel();
-    let (mut config, marked) = fx.with_helper(fx.config(), 1);
+    let (mut config, helper) = fx.with_helper(fx.config());
     config.on_status = Some(Arc::new(move |s: &WatchStatus| {
         let _ = tx.send(s.clone());
     }));
     let (watcher, rx) = fx.start(config);
+    helper.refuse_marks(libc::EPERM);
     std::fs::create_dir(fx.path("new")).unwrap();
     next(&rx);
     let status = notes.recv_timeout(WAIT).unwrap();
     assert_eq!(status.uncovered, 1);
     assert!(status.note().unwrap().contains("not yet protected"), "{status:?}");
-    assert!(marked.try_recv().is_err(), "refused, not marked");
 
+    helper.refuse_marks(0);
     watcher.helper_back();
-    marked_all(&marked, vec![fx.ino("new")]);
     let status = notes.recv_timeout(WAIT).unwrap();
     assert_eq!((status.uncovered, status.note()), (0, None));
+    assert_eq!(asked(&helper), vec![fx.ino("new"); 2], "refused once, then asked again and marked");
     assert!(next(&rx).is_full(), "and a Full local scan for what changed while it was away");
     watcher.stop();
 }
@@ -504,43 +501,6 @@ fn a_batch_that_keeps_failing_is_said_until_one_passes() {
     watcher.stop();
 }
 
-/// A sink that passes one entry over in every batch, and says each batch.
-struct PassingOver(mpsc::Sender<Batch>);
-
-impl Sink for PassingOver {
-    fn handle(&mut self, batch: &Batch) -> Handled {
-        let _ = self.0.send(batch.clone());
-        let mut passed = Batch::new();
-        passed.name(Path::new(""), OsStr::new("stuck.txt"));
-        Handled::Done { recheck: Batch::new(), passed: Box::new(passed) }
-    }
-}
-
-/// LO3: an entry that keeps being passed over has one recheck pending, however
-/// many runs passed it over, and its wait doubles: 0.2 s, 0.4 s, 0.8 s here,
-/// where a recheck for each run every 0.3 s would be a dozen batches.
-#[test]
-fn a_passed_over_entry_has_one_recheck_that_backs_off() {
-    let fx = Fx::new();
-    let (tx, rx) = mpsc::channel();
-    let mut config = fx.config();
-    // The longest wait, which the tests' clocks put at 0.3 s.
-    config.timing.degraded_scan = Duration::from_secs(3600);
-    let watcher = Watcher::start(config, Box::new(PassingOver(tx))).unwrap();
-    assert!(next(&rx).is_full());
-    // Two more runs beside the pending recheck: they join it.
-    for name in ["one.txt", "two.txt"] {
-        std::fs::write(fx.path(name), b"x").unwrap();
-        assert!(watcher.flush(WAIT));
-    }
-    std::thread::sleep(Duration::from_millis(1700));
-    watcher.stop();
-    let mut stuck = Batch::new();
-    stuck.name(Path::new(""), OsStr::new("stuck.txt"));
-    let rechecks = rx.try_iter().filter(|batch| *batch == stuck).count();
-    assert!((1..=3).contains(&rechecks), "{rechecks} rechecks of the passed-over entry in 1.7 s");
-}
-
 /// A sink that says it was handed a batch, and panics on it.
 struct Panicking(mpsc::Sender<()>);
 
@@ -591,57 +551,58 @@ fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
     }
 }
 
-#[test]
-fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete() {
-    let fx = Fx::new();
-    let store = Store::new(TreeStore::in_memory().unwrap());
-    store
-        .call_blocking(move |s| {
-            s.begin_staging(konedrive_tree::NewTree::Whole)?;
-            s.stage(&[Change::Root(row("R", None, "", Kind::Folder)), Change::Upsert(row("D", Some("R"), "docs", Kind::Folder))])
-        })
-        .unwrap();
-    Materializer {
-        disk: Disk::open(&fx.root, false).unwrap(),
-        store: store.clone(),
-        link: None,
-        runtime: fx.runtime.handle().clone(),
-        locks: InodeLocks::new(),
-        root_item_id: "R".into(),
-        rescue_into: fx.outside.join("rescued"),
-        cancel: CancellationToken::new(),
-        rw: None,
-        claimed: None,
-    }
-    .apply(Scope::Full)
-    .unwrap();
-    // The outbox worker's wake.
-    let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let sink = ExamineSink {
-        root: fx.root.clone(),
-        store: store.clone(),
-        locks: InodeLocks::new(),
+/// A read-write folder whose first listing (the root and `docs`) is placed in
+/// it by the real reconcile and not committed yet: there is no base to
+/// examine against until the returned step is committed.
+fn listed_not_committed(fx: &Fx) -> (World, Step) {
+    fx.runtime.block_on(async {
+        let world = World::new(Options { writes: true, ..Options::default() }).await;
+        let listing = [Change::Root(row("R", None, "", Kind::Folder)), Change::Upsert(row("D", Some("R"), "docs", Kind::Folder))];
+        let mut step = world.step(Says::Whole(&listing)).await;
+        step.apply().await.unwrap();
+        (world, step)
+    })
+}
+
+/// The daemon's sink over `world`'s folder and store, with nobody to ask
+/// where an object went.
+fn sink(fx: &Fx, world: &World) -> ExamineSink {
+    ExamineSink {
+        root: world.root.clone(),
+        store: world.store.clone(),
+        locks: world.locks.clone(),
         ignore: IgnoreList::default().shared(),
         liveness: Box::new(NoLiveness),
         link: Arc::new(Mutex::new(None)),
         runtime: fx.runtime.handle().clone(),
-        on_rows: Some({
-            let woken = Arc::clone(&woken);
-            Arc::new(move || {
-                woken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            })
-        }),
+        on_rows: None,
         on_handles: None,
         tree_lock: None,
         scan: None,
+    }
+}
+
+#[test]
+fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete() {
+    let fx = Fx::new();
+    let (world, step) = listed_not_committed(&fx);
+    let store = world.store.clone();
+    // The outbox worker's wake.
+    let woken = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let on_rows: Arc<dyn Fn() + Send + Sync> = {
+        let woken = Arc::clone(&woken);
+        Arc::new(move || {
+            woken.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })
     };
-    let watcher = Watcher::start(fx.config(), Box::new(sink)).unwrap();
-    std::fs::write(fx.path("docs/new.txt"), b"new").unwrap();
-    std::fs::write(fx.path("docs/.new.txt.swp"), b"noise").unwrap();
+    let sink = ExamineSink { on_rows: Some(on_rows), ..sink(&fx, &world) };
+    let watcher = Watcher::start(fx.config_for(&world.root), Box::new(sink)).unwrap();
+    std::fs::write(world.path("docs/new.txt"), b"new").unwrap();
+    std::fs::write(world.path("docs/.new.txt.swp"), b"noise").unwrap();
     std::thread::sleep(Duration::from_millis(800));
     assert!(store.call_blocking(move |s| s.outbox_rows()).unwrap().is_empty(), "no base to compare with until the listing completes");
 
-    store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
+    fx.runtime.block_on(step.commit()).unwrap();
     let deadline = Instant::now() + WAIT;
     let rows = loop {
         let rows = store.call_blocking(move |s| s.outbox_rows()).unwrap();
@@ -663,55 +624,21 @@ fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete()
 #[test]
 fn the_sink_reports_a_full_scan_and_not_a_single_place() {
     use crate::config::Mode;
-    use crate::local::ScanReason;
-    use crate::local::scan::ScanReport;
-    use crate::status::snapshot::{ScanState, SyncSnapshot, SyncStateHandle};
+    use crate::status::snapshot::ScanState;
     let fx = Fx::new();
-    let store = Store::new(TreeStore::in_memory().unwrap());
-    store
-        .call_blocking(move |s| {
-            s.begin_staging(konedrive_tree::NewTree::Whole)?;
-            s.stage(&[Change::Root(row("R", None, "", Kind::Folder)), Change::Upsert(row("D", Some("R"), "docs", Kind::Folder))])
-        })
-        .unwrap();
-    Materializer {
-        disk: Disk::open(&fx.root, false).unwrap(),
-        store: store.clone(),
-        link: None,
-        runtime: fx.runtime.handle().clone(),
-        locks: InodeLocks::new(),
-        root_item_id: "R".into(),
-        rescue_into: fx.outside.join("rescued"),
-        cancel: CancellationToken::new(),
-        rw: None,
-        claimed: None,
-    }
-    .apply(Scope::Full)
-    .unwrap();
-    std::fs::write(fx.path("docs/new.txt"), b"new").unwrap();
-    let state = SyncStateHandle::new(SyncSnapshot::default());
+    let (world, step) = listed_not_committed(&fx);
+    std::fs::write(world.path("docs/new.txt"), b"new").unwrap();
+    let state = world.state.clone();
     state.update(|s| {
         s.cycle.items_placed = 2;
         s.local.scan.follow(Mode::ReadWrite);
     });
-    let mut sink = ExamineSink {
-        root: fx.root.clone(),
-        store: store.clone(),
-        locks: InodeLocks::new(),
-        ignore: IgnoreList::default().shared(),
-        liveness: Box::new(NoLiveness),
-        link: Arc::new(Mutex::new(None)),
-        runtime: fx.runtime.handle().clone(),
-        on_rows: None,
-        on_handles: None,
-        tree_lock: None,
-        scan: Some(ScanReport { state: state.clone(), every: Duration::ZERO }),
-    };
+    let mut sink = ExamineSink { scan: Some(ScanReport { state: state.clone(), every: Duration::ZERO }), ..sink(&fx, &world) };
     let idle = state.get().local.scan;
     assert!(matches!(sink.handle(&Batch::scan(ScanReason::ReadWrite)), Handled::NotYet));
     assert_eq!(state.get().local.scan, idle, "no base yet: no scan ran");
 
-    store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
+    fx.runtime.block_on(step.commit()).unwrap();
     assert!(matches!(sink.handle(&Batch::scan(ScanReason::ReadWrite)), Handled::Done { .. }));
     let scan = state.get().local.scan;
     assert_eq!((scan.state, scan.reason.as_str(), scan.expected), (ScanState::Idle, "read-write", 2));

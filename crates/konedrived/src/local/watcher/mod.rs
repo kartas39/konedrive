@@ -25,15 +25,16 @@
 //!   [`CEILING`] after the first, or at once on [`Watcher::flush`]. An
 //!   overflow is a Full local scan and a walk of the map. The bring-up hands
 //!   over a Full local scan.
-//! - **The examiner**: a second thread that hands what was handed over to a
-//!   [`Sink`] (the daemon's is [`ExamineSink`], the examination), merged,
-//!   feeds back what it asks to see again after [`RECHECK`], retries a batch
-//!   it could not take yet (no completed listing, an error; one that keeps
-//!   failing is said in [`WatchStatus::failing`]), and runs a Full
-//!   local scan every [`DEGRADED_SCAN`] while part of the folder cannot be
-//!   watched (the mark budget, the group cap, a filesystem id with no group).
-//!   The reader walks the folder on the same beat then, so a directory made
-//!   where no event is raised still gets its `MarkDir`.
+//! - **The examiner** (`examiner`): a second thread that hands what was
+//!   handed over to a [`Sink`] (the daemon's is [`ExamineSink`], the
+//!   examination), merged. What is examined when is its `schedule`'s: what
+//!   the sink asks to see again comes back after [`RECHECK`], a batch it
+//!   could not take yet (no completed listing, an error) is offered again
+//!   (one that keeps failing is said in [`WatchStatus::failing`]), and a Full
+//!   local scan runs every [`DEGRADED_SCAN`] while part of the folder cannot
+//!   be watched (the mark budget, the group cap, a filesystem id with no
+//!   group). The reader walks the folder on the same beat then, so a
+//!   directory made where no event is raised still gets its `MarkDir`.
 //! - **A thread that ends unasked** (a panic) says so in
 //!   [`WatchStatus::stopped`]; when it is the examiner, the reader is stopped
 //!   with it.
@@ -47,9 +48,11 @@
 //! included.
 
 mod dirt;
+mod examiner;
 mod fan;
 mod map;
 mod reader;
+mod schedule;
 pub(crate) mod service;
 #[cfg(test)]
 mod tests;
@@ -60,7 +63,7 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub use reader::UNKNOWN_WALK;
 pub use service::ExamineSink;
@@ -234,10 +237,10 @@ pub struct WatchConfig {
     /// Why the bring-up's Full local scan runs: the sync started, or the account was
     /// switched to read-write.
     pub first_scan: ScanReason,
-    /// A mark budget below the kernel's, to reach the degraded mode without
-    /// root (tests only).
-    #[cfg(test)]
-    pub mark_limit: Option<usize>,
+    /// A cap on this watcher's notification marks, below the kernel's
+    /// (`fs.fanotify.max_user_marks`): past it the folder is watched only in
+    /// part, as past the kernel's. `None`, the daemon's, is no cap of its own.
+    pub mark_budget: Option<usize>,
 }
 
 impl WatchConfig {
@@ -250,8 +253,7 @@ impl WatchConfig {
             timing: Timing::default(),
             on_status: None,
             first_scan: ScanReason::Start,
-            #[cfg(test)]
-            mark_limit: None,
+            mark_budget: None,
         }
     }
 }
@@ -272,11 +274,6 @@ pub(crate) struct Shared {
     /// Flushes asked for and not yet handed to the examiner.
     flushes: Mutex<Vec<mpsc::Sender<bool>>>,
     helper_back: AtomicBool,
-    #[cfg(test)]
-    paused: AtomicBool,
-    /// The reader has seen `paused` and reads nothing until it is cleared.
-    #[cfg(test)]
-    idle: AtomicBool,
 }
 
 impl Shared {
@@ -297,10 +294,6 @@ impl Shared {
             reader_done: AtomicBool::new(false),
             flushes: Mutex::new(Vec::new()),
             helper_back: AtomicBool::new(false),
-            #[cfg(test)]
-            paused: AtomicBool::new(false),
-            #[cfg(test)]
-            idle: AtomicBool::new(false),
         })
     }
 
@@ -331,14 +324,6 @@ impl Shared {
 
     fn take_helper_back(&self) -> bool {
         self.helper_back.swap(false, Ordering::SeqCst)
-    }
-
-    /// Whether the reader is to stay off the queue; says it does, too.
-    #[cfg(test)]
-    fn paused(&self) -> bool {
-        let paused = self.paused.load(Ordering::SeqCst);
-        self.idle.store(paused, Ordering::SeqCst);
-        paused
     }
 
     fn status(&self) -> WatchStatus {
@@ -480,16 +465,15 @@ impl Watcher {
             root,
             config.own_pid,
             config.timing.clone(),
+            config.mark_budget,
             config.link,
             config.runtime,
             Arc::clone(&shared),
-            #[cfg(test)]
-            config.mark_limit,
         )?;
         let (tx, rx) = mpsc::channel();
         let examiner_shared = Arc::clone(&shared);
         let timing = config.timing;
-        let examining = std::thread::Builder::new().name("konedrive-examine".into()).spawn(move || examine(rx, sink, timing, examiner_shared))?;
+        let examining = std::thread::Builder::new().name("konedrive-examine".into()).spawn(move || examiner::run(rx, sink, timing, examiner_shared))?;
         let reader_tx = tx.clone();
         let reading = match std::thread::Builder::new().name("konedrive-watch".into()).spawn(move || reader.run(reader_tx)) {
             Ok(thread) => thread,
@@ -546,18 +530,6 @@ impl Watcher {
             let _ = thread.join();
         }
     }
-
-    /// Holds the reader off the queue, so that events pile up (tests: a real
-    /// overflow without root). Returns once the reader has stopped reading.
-    #[cfg(test)]
-    fn pause(&self, paused: bool) {
-        self.shared.paused.store(paused, Ordering::SeqCst);
-        self.shared.wake();
-        let deadline = Instant::now() + Duration::from_secs(10);
-        while paused && !self.shared.idle.load(Ordering::SeqCst) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
-    }
 }
 
 impl Drop for Watcher {
@@ -566,169 +538,5 @@ impl Drop for Watcher {
     fn drop(&mut self) {
         self.shared.stop();
         let _ = self.tx.send(ToExaminer::Wake);
-    }
-}
-
-/// However the examiner thread ends, the reader ends with it, since it would
-/// hand over to nobody; and an end nobody asked for (a panic in the
-/// examination) is said, as the reader's is ([`WatchStatus::stopped`]).
-struct ExaminerEnding(Arc<Shared>);
-
-impl Drop for ExaminerEnding {
-    fn drop(&mut self) {
-        let shared = &self.0;
-        // This runs while a panic unwinds. The status is read and written
-        // through a poisoned lock too; and a panic of the status hook is kept
-        // in here, since one that left this drop would abort the daemon.
-        let said = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if !shared.stopping() && !shared.status().root_gone {
-                tracing::error!("the examiner of local changes stopped unexpectedly");
-                shared.update(|s| {
-                    s.stopped = true;
-                    s.failing = None;
-                });
-            }
-        }));
-        if said.is_err() {
-            tracing::error!("the watcher's status hook panicked while the examiner was ending");
-        }
-        shared.stop();
-    }
-}
-
-/// The examiner thread: hands batches to `sink`, one examination at a time,
-/// merging whatever queued meanwhile.
-fn examine(rx: mpsc::Receiver<ToExaminer>, mut sink: Box<dyn Sink>, timing: Timing, shared: Arc<Shared>) {
-    let _ending = ExaminerEnding(Arc::clone(&shared));
-    let mut pending = Batch::new();
-    let mut acks: Vec<mpsc::Sender<bool>> = Vec::new();
-    let mut retry_at: Option<Instant> = None;
-    let mut failures: u32 = 0;
-    let mut rechecks: Vec<(Instant, Batch)> = Vec::new();
-    // The entries passed over: one pending recheck, however many runs passed
-    // them over, and a wait that doubles while a recheck passes any over again.
-    let mut passed = Batch::new();
-    let mut passed_at: Option<Instant> = None;
-    let mut passes: u32 = 0;
-    // The batch to examine holds the passed-over entries' recheck.
-    let mut rechecking = false;
-    let mut next_scan: Option<Instant> = None;
-    let absorb = |message: ToExaminer, pending: &mut Batch, acks: &mut Vec<mpsc::Sender<bool>>| match message {
-        ToExaminer::Batch(batch) => pending.merge(batch),
-        ToExaminer::Full(reason) => pending.merge(Batch::scan(reason)),
-        ToExaminer::Flush(ack) => acks.push(ack),
-        ToExaminer::Wake => {}
-    };
-    loop {
-        if shared.stopping() {
-            return;
-        }
-        // Everything that queued, as one batch.
-        loop {
-            match rx.try_recv() {
-                Ok(message) => absorb(message, &mut pending, &mut acks),
-                Err(mpsc::TryRecvError::Empty) => break,
-                Err(mpsc::TryRecvError::Disconnected) => return,
-            }
-        }
-        let now = Instant::now();
-        if shared.degraded() {
-            let at = *next_scan.get_or_insert(now + timing.degraded_scan);
-            if at <= now {
-                pending.merge(Batch::scan(ScanReason::Periodic));
-                next_scan = Some(now + timing.degraded_scan);
-            }
-        }
-        let mut waiting = Vec::new();
-        for (at, batch) in rechecks.drain(..) {
-            if at <= now {
-                pending.merge(batch);
-            } else {
-                waiting.push((at, batch));
-            }
-        }
-        rechecks = waiting;
-        if passed_at.is_some_and(|at| at <= now) {
-            pending.merge(std::mem::take(&mut passed));
-            passed_at = None;
-            rechecking = true;
-        }
-        let flushing = !acks.is_empty();
-        if !pending.is_empty() && (flushing || retry_at.is_none_or(|at| at <= now)) {
-            let batch = std::mem::take(&mut pending);
-            let examined = match sink.handle(&batch) {
-                Handled::Done { recheck, passed: again } => {
-                    retry_at = None;
-                    failures = 0;
-                    shared.update(|s| {
-                        s.examined += 1;
-                        s.failing = None;
-                    });
-                    if !recheck.is_empty() {
-                        rechecks.push((Instant::now() + timing.recheck, recheck));
-                    }
-                    if again.is_empty() {
-                        if rechecking {
-                            passes = 0;
-                        }
-                    } else {
-                        // A run beside a pending recheck joins it, and leaves its time alone.
-                        if passed_at.is_none() {
-                            passes = passes.saturating_add(1);
-                            let wait = timing.retry.saturating_mul(1 << passes.min(16).saturating_sub(1)).min(timing.degraded_scan);
-                            passed_at = Some(Instant::now() + wait);
-                        }
-                        passed.merge(*again);
-                    }
-                    rechecking = false;
-                    true
-                }
-                Handled::NotYet => {
-                    // Not a failure: what failed before is no longer what holds the batch.
-                    failures = 0;
-                    shared.update(|s| s.failing = None);
-                    tracing::debug!("the folder has no completed listing yet; its local changes wait");
-                    pending.merge(batch);
-                    retry_at = Some(Instant::now() + timing.retry);
-                    false
-                }
-                Handled::Failed(why) => {
-                    failures = failures.saturating_add(1);
-                    let wait = timing.retry.saturating_mul(1 << failures.min(16).saturating_sub(1)).min(timing.degraded_scan);
-                    tracing::warn!("local changes could not be examined: {why}; trying again in {} s", wait.as_secs());
-                    if failures >= FAILING_AFTER {
-                        shared.update(|s| s.failing = Some(why));
-                    }
-                    pending.merge(batch);
-                    retry_at = Some(Instant::now() + wait);
-                    false
-                }
-                Handled::RootGone => {
-                    tracing::warn!("the OneDrive folder was moved or deleted; nothing more is examined");
-                    shared.root_gone();
-                    for ack in acks.drain(..) {
-                        let _ = ack.send(false);
-                    }
-                    return;
-                }
-            };
-            for ack in acks.drain(..) {
-                let _ = ack.send(examined);
-            }
-            continue;
-        }
-        for ack in acks.drain(..) {
-            let _ = ack.send(true);
-        }
-        let wake = [(!pending.is_empty()).then_some(retry_at).flatten(), rechecks.iter().map(|(at, _)| *at).min(), passed_at, next_scan]
-            .into_iter()
-            .flatten()
-            .min();
-        let timeout = wake.map_or(Duration::from_secs(3600), |at| at.saturating_duration_since(Instant::now()));
-        match rx.recv_timeout(timeout) {
-            Ok(message) => absorb(message, &mut pending, &mut acks),
-            Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return,
-        }
     }
 }
