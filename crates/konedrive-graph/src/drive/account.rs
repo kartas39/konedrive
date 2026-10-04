@@ -64,7 +64,7 @@ impl DriveClient {
 
     async fn account_json<T: DeserializeOwned>(&self, route: &str, token: &str) -> Result<T, DriveError> {
         let url = self.base.join(route).map_err(|e| DriveError::Failed(e.to_string().into()))?;
-        let response = self.send(Auth::Bearer(token), Throttle::Return, || self.api.get(url.clone())).await?;
+        let response = self.send(Auth::Bearer(token), Throttle::Pass, || self.api.get(url.clone())).await?;
         let status = Status::of(&response);
         if status.is_success() {
             return response

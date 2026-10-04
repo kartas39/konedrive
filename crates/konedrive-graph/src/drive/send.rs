@@ -1,12 +1,13 @@
 //! The one way a request leaves [`DriveClient`]: who it is authorised as ([`Auth`]), and
 //! what happens when the answer is `429` or `503` ([`Throttle`]).
 //!
-//! Three policies are in use. Reads wait here and ask again ([`Throttle::Wait`]). Writes
-//! get the answer back ([`Throttle::Return`]) and come back as
+//! Reads wait here and ask again ([`Throttle::Wait`]). Writes get the answer back
+//! ([`Throttle::Return`]) and come back as
 //! [`WriteError::Throttled`](super::WriteError::Throttled): the worker pauses the whole
 //! account. A fragment of an upload session is sent with [`Throttle::Return`] too, and
 //! [`DriveClient::upload_chunk`] does the rest: it waits, asks the session where it stands,
-//! and sends the fragment again only if the session still expects it.
+//! and sends the fragment again only if the session still expects it. The account page's
+//! two calls get the answer back and tell nobody ([`Throttle::Pass`]).
 
 use std::time::{Duration, SystemTime};
 
@@ -64,6 +65,9 @@ pub(super) enum Throttle {
     Wait,
     /// The answer goes back to the caller as it is, the pool told of it first.
     Return,
+    /// The answer goes back to the caller as it is, and the pool is not told: the call is
+    /// none of the account's transfers.
+    Pass,
 }
 
 impl DriveClient {

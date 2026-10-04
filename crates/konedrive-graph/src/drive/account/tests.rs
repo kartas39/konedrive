@@ -72,7 +72,9 @@ async fn neither_renews_the_token_nor_waits_out_throttling() {
     let graph = graph(&server);
     let rejected = graph.profile("T").await.unwrap_err();
     assert_eq!(rejected.to_string(), "Microsoft Graph rejected the access token");
+    let width = graph.pool().size();
     let throttled = graph.drive("T").await.unwrap_err();
     assert_eq!(throttled.to_string(), "me/drive returned 429 Too Many Requests");
     assert_eq!(throttled.status(), Some(Status::new(429)));
+    assert_eq!(graph.pool().size(), width, "the transfer pool is not told");
 }

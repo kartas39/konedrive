@@ -200,12 +200,12 @@ pub(crate) fn classify(status: Status, code: &str) -> Kind {
 
 #[derive(Deserialize)]
 struct ErrorBody {
-    error: GraphError,
+    error: ErrorObject,
 }
 
 /// Graph's own account of an error: `error.code` and `error.message` of the body.
 #[derive(Default, Deserialize)]
-pub(crate) struct GraphError {
+pub(crate) struct ErrorObject {
     #[serde(default)]
     pub code: String,
     #[serde(default)]
@@ -214,7 +214,7 @@ pub(crate) struct GraphError {
 
 /// What the body of an unsuccessful answer says; empty when it cannot be read or is not
 /// Graph's error object.
-pub(crate) async fn graph_error(response: reqwest::Response) -> GraphError {
+pub(crate) async fn graph_error(response: reqwest::Response) -> ErrorObject {
     response
         .bytes()
         .await
