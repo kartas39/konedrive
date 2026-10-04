@@ -244,23 +244,14 @@ pub struct Upload {
     pub total: u64,
 }
 
-/// The worker's own state, handed to the host on every change ([`OutboxHost::status`]).
+/// The worker's own state, handed to the host on every change ([`OutboxHost::status`]):
+/// only what the host shows.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkerStatus {
-    /// Started and not stopped.
-    pub started: bool,
-    pub paused: bool,
-    /// When a timed pause ends, unix seconds; 0 while paused until resumed.
-    pub paused_until: i64,
-    /// OneDrive asked to wait until then (unix seconds).
+    /// OneDrive asked to wait until then (unix seconds): the folder's note says so.
     pub throttled_until: Option<i64>,
-    /// Signed out: nothing is sent by this worker any more; the sign-in that follows
-    /// starts a new one.
-    pub needs_sign_in: bool,
-    /// The last thing that stopped the worker or a row, for `LastError`.
-    pub last_error: String,
-    /// Rows being sent now.
-    pub running: usize,
+    /// Why the folder could not be opened at the last drain: the folder's note says so.
+    pub folder_closed: Option<String>,
     /// Content going up now, as `Uploads` shows it.
     pub uploads: Vec<Upload>,
     /// What the outbox held when the worker last looked: `PendingCount`,
@@ -384,7 +375,7 @@ impl OutboxWorker {
         let cancel = CancellationToken::new();
         let engine = Arc::clone(&self.engine);
         let token = cancel.clone();
-        engine.set_started(true);
+        engine.silence(false);
         let handle = tokio::spawn(async move { engine.run(token).await });
         *task = Some((cancel, Some(handle)));
     }
@@ -399,7 +390,8 @@ impl OutboxWorker {
                 let _ = handle.await;
             }
         }
-        self.engine.set_started(false);
+        // What the host clears after this stays cleared.
+        self.engine.silence(true);
     }
 
     /// The daemon is stopping (issue #84): no row is taken any more, and

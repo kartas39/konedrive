@@ -78,6 +78,57 @@ fn every_note_says_what_last_error_said() {
         OutboxNote::Unreadable.text(),
         "the changes waiting to be uploaded cannot be read, so the folder is not kept in step with OneDrive"
     );
+    assert_eq!(OutboxNote::FolderClosed("Permission denied (os error 13)".into()).text(), "the folder cannot be opened (Permission denied (os error 13)); uploads wait");
+    // The time is the wall clock's here, whatever the zone: its shape is checked.
+    let throttled = OutboxNote::Throttled(1_700_000_000).text();
+    let time = throttled.strip_prefix("OneDrive asked to slow down; uploads continue at ").expect(&throttled);
+    let (hour, minute) = time.split_once(':').expect(time);
+    assert!(hour.len() == 2 && minute.len() == 2 && hour.parse::<u8>().unwrap() < 24 && minute.parse::<u8>().unwrap() < 60, "{time}");
+}
+
+/// The throttle's note names the minute the wait is over in: a time within a minute is
+/// rounded up, so the note never names a minute that is past while the wait lasts.
+#[test]
+fn the_throttles_time_is_rounded_up_to_the_minute() {
+    let minute = 1_700_000_040; // a multiple of 60
+    assert_eq!(minute % 60, 0);
+    let said = |at| OutboxNote::Throttled(at).text();
+    assert_eq!(said(minute + 1), said(minute + 60), "a second into the minute reads as the next minute");
+    assert_eq!(said(minute + 59), said(minute + 60));
+    assert_ne!(said(minute), said(minute + 1), "the full minute reads as itself");
+}
+
+/// The worker's notes are said only where nothing else is, the folder's over the
+/// throttle's, and the worker takes back only its own; a throttle shorter than five
+/// seconds is not said, and one that is said stays until its end.
+#[test]
+fn the_worker_takes_back_only_its_own_notes() {
+    const NOW: i64 = 1_000;
+    let throttled = |until| Some(OutboxNote::Throttled(until));
+    let closed = Some(OutboxNote::FolderClosed("EACCES".into()));
+    let gate = Some(OutboxNote::GateClosed("why".into()));
+    let after = |shown: &Option<OutboxNote>, folder: Option<&str>, until: Option<i64>, now: i64| OutboxNote::after_worker(shown, folder, until, now);
+    assert_eq!(after(&None, None, Some(NOW + 100), NOW), Some(throttled(NOW + 100)));
+    assert_eq!(after(&throttled(NOW + 100), None, Some(NOW + 100), NOW + 99), None, "said, it stays to its end");
+    assert_eq!(after(&throttled(NOW + 100), None, Some(NOW + 160), NOW), Some(throttled(NOW + 160)));
+    assert_eq!(after(&throttled(NOW + 100), None, None, NOW + 100), Some(None), "its own note goes as the wait ends");
+    assert_eq!(after(&None, None, Some(NOW + 4), NOW), None, "a wait under five seconds is not said");
+    assert_eq!(after(&None, None, Some(NOW + 5), NOW), Some(throttled(NOW + 5)));
+    assert_eq!(after(&throttled(NOW + 100), None, Some(NOW + 3), NOW), Some(None), "a short wait that took a long one's place is not said either");
+    assert_eq!(after(&gate, None, Some(NOW + 100), NOW), None, "the gate's stays");
+    assert_eq!(after(&gate, Some("EACCES"), None, NOW), None);
+    assert_eq!(after(&gate, None, None, NOW), None);
+    assert_eq!(after(&Some(OutboxNote::HeldBack(3)), None, None, NOW), None, "the poller's stays");
+    assert_eq!(after(&None, None, None, NOW), None);
+    // The folder that cannot be opened is said over the throttle, and goes when it opens.
+    assert_eq!(after(&throttled(NOW + 100), Some("EACCES"), Some(NOW + 100), NOW), Some(closed.clone()));
+    assert_eq!(after(&closed, Some("EACCES"), None, NOW), None, "nothing changes");
+    assert_eq!(after(&closed, None, Some(NOW + 100), NOW), Some(throttled(NOW + 100)), "opened, the throttle that still lasts is said");
+    assert_eq!(after(&closed, None, None, NOW), Some(None));
+    // The gate closing says so over the worker's notes, and takes neither back.
+    assert_eq!(OutboxNote::after_gate(&throttled(100), Some("why")), Some(gate.clone()));
+    assert_eq!(OutboxNote::after_gate(&throttled(100), None), None, "the gate does not take the throttle's note");
+    assert_eq!(OutboxNote::after_gate(&closed, None), None);
 }
 
 /// The note of a failed switch stands behind the registration's text, and goes when that

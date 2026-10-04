@@ -193,9 +193,12 @@ The outbox worker: sends the recorded changes to OneDrive; what is kept back. De
 `writes.md` §5, §6, §8 (moves out), §10.
 
 - `mod.rs` — the worker and its host. `[tests]`
-- `engine.rs` — the worker's loop: which rows run now, and how many at once.
-- `engine/drain.rs` — running rows until none can run now.
-- `engine/outcome.rs` — what a step's outcome does to its row.
+- `engine.rs` — the worker: what it works with, whether it may send, its status, its life.
+- `engine/drain.rs` — one drain: which row is taken next, and what the worker waits for.
+- `engine/outcome.rs` — how a row's run can end, and the outcome of an answer no step settled.
+- `engine/settle.rs` — what each outcome does to its row and to the worker.
+- `engine/state.rs` — the worker's own state in parts: the throttle, its trouble, the cycle it waits for, the rows in flight. `[tests]`
+- `engine/marks.rs` — the `user.konedrive.sync` attribute of the rows' files.
 - `steps.rs` — one row, one step: which step a row's kind takes. `[tests]`
 - `steps/meta.rs` — the rows that send no content: `mkdir`, `move` and `delete`.
 - `steps/shared.rs` — what the steps share: the row's object, a name that is taken, the guard, the conflict copy.
@@ -223,6 +226,7 @@ The tests of the worker, by topic.
 - `move_out.rs` — moves out of the folder, on the host.
 - `removed.rs` — a file or folder removed before its upload finished.
 - `sessions.rs` — upload sessions and their placeholders.
+- `worker.rs` — the worker's loop: when it waits, and which row goes next.
 
 ### `crates/konedrived/src/remote/`
 

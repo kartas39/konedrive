@@ -174,7 +174,7 @@ pub(in crate::upload) async fn commit_row(e: &Engine, row: &OutboxRow, answer: &
     } else {
         e.store().call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: handle.as_ref() }, Some(&stored))).await?;
     }
-    e.cfg.host.activity(&event);
+    e.host().activity(&event);
     Ok(())
 }
 
@@ -261,7 +261,7 @@ pub(super) enum Taken {
 /// tells a live session from an abandoned one, or whose it is (issue #89). An
 /// empty file the feed listed is a real file, and decided as any other.
 pub(super) async fn taken(e: &Engine, row: &OutboxRow, parent: &str, name: &str, ours: Ours<'_>) -> Result<Taken, Fail> {
-    let holder = match e.cfg.drive.child(parent, name).await {
+    let holder = match e.drive().child(parent, name).await {
         Ok(holder) => holder,
         Err(DriveError::NotFound) => return Ok(Taken::Free),
         Err(err) => return Err(err.into()),
@@ -379,15 +379,15 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
         #[cfg(test)]
         let (_row_alive, row_dropped) = std::sync::mpsc::channel::<()>();
         let (event, copy_rel) = blocking_under(Arc::clone(&tree), move || {
-            let copy_name = local::rename_to_copy(&on, &object, &engine.cfg.machine_name)?;
+            let copy_name = local::rename_to_copy(&on, &object, engine.machine_name())?;
             let copy_rel = object.rel.with_file_name(&copy_name);
             if !moving {
                 if let Some(copied) = local::find(&on, &copy_rel)? {
                     local::strip_found(&copied)?;
                 }
             }
-            let original = engine.cfg.root.path.join(&object.rel).display().to_string();
-            let copy_path = engine.cfg.root.path.join(&copy_rel).display().to_string();
+            let original = engine.root().path.join(&object.rel).display().to_string();
+            let copy_path = engine.root().path.join(&copy_rel).display().to_string();
             let event = engine.event(kind::CONFLICT, &object.rel, copy_path.clone());
             let (inode, is_dir, rel, name) = (object.inode.clone(), object.is_dir, copy_rel.clone(), copy_name);
             let amend = move |next: &mut OutboxRow| {
@@ -420,8 +420,8 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
         cancel_session(e, url).await?;
     }
     tracing::info!("{} was changed in OneDrive too: the local version is kept as {}", found.rel.display(), copy_rel.display());
-    e.cfg.host.activity(&event);
-    e.cfg.host.cycle_wanted();
+    e.host().activity(&event);
+    e.host().cycle_wanted();
     Ok(Outcome::again())
 }
 
@@ -432,7 +432,7 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
 /// cancels it ([`Engine::cancel_given_up`]), once no row points at it. Whether
 /// it was cancelled.
 pub(in crate::upload) async fn cancel_session(e: &Engine, url: &str) -> Result<bool, Fail> {
-    Ok(crate::upload::cancel_session(e.store(), &e.cfg.drive, url).await?)
+    Ok(crate::upload::cancel_session(e.store(), e.drive(), url).await?)
 }
 
 /// Rename × rename (§6): the first to reach OneDrive wins, so the local
@@ -510,8 +510,8 @@ pub(in crate::upload) async fn upload_as_new(e: &Arc<Engine>, row: &OutboxRow, f
         Ok(recorded.map(|()| event))
     })
     .await??;
-    e.cfg.host.activity(&event);
-    e.cfg.host.cycle_wanted();
+    e.host().activity(&event);
+    e.host().cycle_wanted();
     Ok(Outcome::again())
 }
 
@@ -543,7 +543,7 @@ pub(in crate::upload) async fn never_uploaded(e: &Engine, disk: &Arc<Disk>, row:
     let event = e.event(kind::NOT_UPLOADED, &row.rel, detail);
     let (seq, stored) = (row.seq, event.clone());
     e.store().call(move |s| s.outbox_drop_unsent(seq, &behind, Some(&stored))).await?;
-    e.cfg.host.activity(&event);
+    e.host().activity(&event);
     Ok(Outcome::Done)
 }
 
@@ -559,7 +559,7 @@ async fn landed_away(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<bo
         return Ok(false);
     }
     let Some((size, mtime)) = row.snapshot_sent() else { return Ok(false) };
-    let limits = e.cfg.limits;
+    let limits = e.limits();
     let last_sent = size <= limits.small_max || (row.session_url.is_some() && row.session_next.unwrap_or(0).saturating_add(limits.chunk) >= size);
     if !last_sent {
         return Ok(false);
@@ -570,7 +570,7 @@ async fn landed_away(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<bo
     let Some(parent) = parent_of(e, disk, row).await? else { return Ok(false) };
     let name = wanted_name(row, &local);
     let Taken::Adopt(item) = taken(e, row, &parent, &name, Ours::Sent { size, mtime }).await? else { return Ok(false) };
-    match e.cfg.drive.delete_item(&item.id, Guard::of_item(&item).as_str()).await {
+    match e.drive().delete_item(&item.id, Guard::of_item(&item).as_str()).await {
         Ok(()) | Err(WriteError::NotFound) => Ok(true),
         // Changed there since: someone's now, not this row's.
         Err(WriteError::Changed) => Ok(false),

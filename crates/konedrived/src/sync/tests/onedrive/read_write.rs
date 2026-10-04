@@ -548,6 +548,61 @@ async fn a_drive_taken_off_the_list_while_the_worker_runs_sends_nothing_more() {
     service.stop_sync().await;
 }
 
+/// §4.10: while OneDrive asks the uploads to wait, the folder's `LastError` says so, with
+/// the time they go on; when the wait is over the change goes up and the note is gone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_throttle_is_said_in_last_error_until_it_ends() {
+    use crate::config::Mode;
+    use crate::status::snapshot::published_error;
+    use wiremock::matchers::path_regex;
+    let w = world().await;
+    let mut hasher = konedrive_graph::quickxor::QuickXor::new();
+    hasher.update(b"new\n");
+    Mock::given(method("POST"))
+        .and(path_regex("createUploadSession$"))
+        .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "5"))
+        .up_to_n_times(1)
+        .mount(&w.server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path_regex("createUploadSession$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "uploadUrl": format!("{}/upload/s1", w.server.uri()),
+            "expirationDateTime": "2099-01-01T00:00:00Z"
+        })))
+        .mount(&w.server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path("/upload/s1"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": "N1", "name": "new.txt", "size": 4, "eTag": "e-N1", "cTag": "c-N1",
+            "parentReference": {"id": "D"},
+            "file": {"hashes": {"quickXorHash": hasher.finish_base64()}}
+        })))
+        .mount(&w.server)
+        .await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    let_write(&service);
+    service.follow_mode(Mode::ReadWrite).await;
+    let made = std::process::Command::new("sh").args(["-c", "echo new > docs/new.txt"]).current_dir(w.folder.path()).status().unwrap();
+    assert!(made.success());
+    let said = || published_error(&service.state().get());
+    wait_until("the folder says OneDrive asked to slow down", || {
+        said().starts_with("OneDrive asked to slow down; uploads continue at ")
+    })
+    .await;
+    let file = w.folder.path().join("docs/new.txt");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let done = || xattr::get(&file, konedrive_fs::placeholder::XATTR_ITEM_ID).ok().flatten().is_some() && said().is_empty();
+    while !done() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(done(), "the change goes up after the wait, and the note goes: {:?}", said());
+    service.stop_sync().await;
+}
+
 /// A switch to read-only nobody forced keeps the changes waiting to
 /// upload, the folder is locked, and its sync holds its cycles while they wait: no
 /// read-only reconcile puts back what they describe. `expired`: the sign-in expired

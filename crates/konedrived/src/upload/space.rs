@@ -123,21 +123,35 @@ fn size_of(row: &OutboxRow, disk: Option<&Disk>) -> u64 {
 }
 
 impl Engine {
+    /// The start's look at the space (`space::Space::start`), once, before
+    /// the first drain: off the constructor, which may run on the runtime.
+    pub(crate) async fn space_start(&self) {
+        if self.space().started {
+            return;
+        }
+        // What a quota read found meanwhile stays.
+        let start = Space::start(self.store()).await;
+        let mut space = self.space();
+        space.full |= start.full;
+        space.wanted |= start.wanted;
+        space.started = true;
+    }
+
     /// No content row is taken, and none sends more.
     pub(super) fn space_full(&self) -> bool {
-        self.shared().space.full
+        self.space().full
     }
 
     /// `bytes` went up: the account's quota says as much (`crate::account::quota`).
     pub(super) fn space_used(&self, bytes: u64) {
-        self.cfg.quota.uploaded(bytes);
+        self.quota().uploaded(bytes);
     }
 
     /// What a pick needs to know of the space: whether OneDrive is full, and
     /// the waiting rows already looked at since the last quota read.
     pub(super) fn space_seen(&self) -> (bool, HashSet<i64>) {
-        let shared = self.shared();
-        (shared.space.full, shared.space.looked.clone())
+        let space = self.space();
+        (space.full, space.looked.clone())
     }
 
     /// The reason a content row taken while it waits for space waits on
@@ -151,7 +165,7 @@ impl Engine {
             _ => (self.space_full() && row.kind.sends_content()).then_some(Reason::WaitingForSpace),
         };
         if why.is_some() {
-            self.shared().space.looked.insert(row.seq);
+            self.space().looked.insert(row.seq);
         }
         why
     }
@@ -161,10 +175,10 @@ impl Engine {
     /// made (`false` then: it was applied already).
     async fn read_quota(&self, reuse: bool) -> Option<(DriveQuota, bool)> {
         let _one = self.quota_lock.lock().await;
-        if let Some(quota) = self.cfg.quota.read_within(REUSE).filter(|q| reuse && known(q)) {
+        if let Some(quota) = self.quota().read_within(REUSE).filter(|q| reuse && known(q)) {
             return Some((quota, false));
         }
-        match self.cfg.drive.quota().await {
+        match self.drive().quota().await {
             Ok(quota) if known(&quota) => Some((quota, true)),
             Ok(_) => {
                 tracing::warn!("OneDrive gave no quota");
@@ -196,18 +210,18 @@ impl Engine {
             }
             None => {
                 self.turn_full();
-                self.shared().space.next_check = now() + QUOTA_RECHECK.as_secs() as i64;
+                self.space().next_check = now() + QUOTA_RECHECK.as_secs() as i64;
                 Outcome::Space(Reason::WaitingForSpace)
             }
         }
     }
 
     fn turn_full(&self) {
-        let mut shared = self.shared();
-        if !shared.space.full {
+        let mut space = self.space();
+        if !space.full {
             tracing::warn!("OneDrive is full: nothing more is uploaded until there is space again");
-            shared.space.full = true;
-            drop(shared);
+            space.full = true;
+            drop(space);
             self.recount_soon();
         }
     }
@@ -218,7 +232,7 @@ impl Engine {
         if !known(quota) {
             return;
         }
-        self.cfg.quota.read(quota);
+        self.quota().read(quota);
         self.decide_quota(quota).await;
     }
 
@@ -234,8 +248,7 @@ impl Engine {
         let now = now();
         let full = no_space(quota);
         {
-            let mut shared = self.shared();
-            let space = &mut shared.space;
+            let mut space = self.space();
             if space.full && !full {
                 tracing::info!("OneDrive has space again: uploads go on");
             } else if full && !space.full {
@@ -262,7 +275,7 @@ impl Engine {
     /// the rest are *too big* for it.
     async fn release_fitting(&self, free: u64) -> Result<(), TreeError> {
         let rows = self.store().call(move |s| s.outbox_waiting_for_space()).await?;
-        let disk = Disk::open(&self.cfg.root, false).ok();
+        let disk = Disk::open(self.root(), false).ok();
         for row in rows.iter().filter(|r| r.state == OutboxState::Ready && waits(r.reason.as_ref())) {
             let size = size_of(row, disk.as_ref());
             let reason = (size > free).then_some(Reason::TooBig(Some((size, free))));
@@ -277,9 +290,9 @@ impl Engine {
     /// When the quota is read again by itself, if it is: while full, while
     /// a file is too big, or once after a start that found waiting rows.
     pub(super) fn space_check_at(&self) -> Option<i64> {
-        let shared = self.shared();
-        let wanted = shared.space.full || shared.counts.too_big > 0 || shared.space.wanted;
-        wanted.then_some(shared.space.next_check)
+        let too_big = self.counts().too_big > 0;
+        let space = self.space();
+        (space.full || too_big || space.wanted).then_some(space.next_check)
     }
 
     /// The automatic read (one request), when it is due at `now`: the drain
@@ -290,7 +303,7 @@ impl Engine {
         }
         match self.read_quota(false).await {
             Some((quota, _)) => self.apply_quota(&quota).await,
-            None => self.shared().space.next_check = now + QUOTA_RECHECK.as_secs() as i64,
+            None => self.space().next_check = now + QUOTA_RECHECK.as_secs() as i64,
         }
     }
 }

@@ -6,7 +6,7 @@
 
 use std::sync::Arc;
 
-use super::engine::{outcome_of, Engine, Outcome};
+use super::engine::{outcome_of, Engine, NoSpace, Outcome};
 use super::local;
 use crate::folder::disk::Disk;
 use konedrive_tree::outbox::{OutboxKind, OutboxRow};
@@ -30,15 +30,15 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Ou
         // The object is downloaded before its item goes (WR5).
         OutboxKind::MoveOut => super::move_out::run(e, disk, row).await,
     };
-    match result.unwrap_or_else(outcome_of) {
+    match result.or_else(outcome_of) {
+        Ok(outcome) => outcome,
         // Refused for lack of space: the quota decides whether the account
         // is full or only this file too big (`space`).
-        Outcome::NoSpace => {
+        Err(NoSpace) => {
             let disk = Arc::clone(disk);
             let size = blocking(move || Ok(local::size_at(&disk, &rel))).await.ok().flatten();
             e.space_refused(size.unwrap_or(0)).await
         }
-        outcome => outcome,
     }
 }
 

@@ -124,7 +124,7 @@ pub(super) async fn elsewhere_folder(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Ou
 pub(super) async fn trashed_file(e: &Arc<Engine>, disk: &Arc<Disk>, row: &OutboxRow, id: &str, object: Arc<File>, entry: &TrashEntry) -> Result<Outcome, Fail> {
     let Some(path) = proved_path(&object).await? else { return Ok(Outcome::backoff(Reason::PlaceUnknown)) };
     let key = InodeKey::of(&object)?;
-    let Some(inode) = e.cfg.locks.try_lock(key) else { return Ok(Outcome::later(Reason::NotLocal, RECHECK)) };
+    let Some(inode) = e.locks().try_lock(key) else { return Ok(Outcome::later(Reason::NotLocal, RECHECK)) };
     if let Some(outcome) = before_marker(e, disk, row, id, &object).await? {
         return Ok(outcome);
     }
@@ -181,7 +181,7 @@ pub(super) async fn trashed_folder(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Outb
                 return Ok(outcome);
             }
         }
-        let Some(guard) = e.cfg.locks.try_lock(InodeKey::of(&file)?) else { return Ok(Outcome::later(Reason::NotLocal, RECHECK)) };
+        let Some(guard) = e.locks().try_lock(InodeKey::of(&file)?) else { return Ok(Outcome::later(Reason::NotLocal, RECHECK)) };
         let stays = match state_of(&file).await? {
             Ok(Some(State::Hydrated)) => true,
             Ok(Some(State::OnlineOnly | State::Hydrating)) => false,
@@ -404,12 +404,12 @@ pub(super) async fn stands_in_another_folder(mo: &MoveOuts, disk: &Arc<Disk>, ro
 pub(super) async fn kept(e: &Arc<Engine>, row: &OutboxRow, id: &str) -> Result<Outcome, Fail> {
     let event = e.event(crate::upload::kind::RESTORED, &row.rel, "it was last in another account's folder, and stays in OneDrive");
     {
-        let _tree = e.cfg.tree_lock.lock().await;
+        let _tree = e.tree_lock().lock().await;
         let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
         e.store().call(move |s| s.outbox_drop(seq, None, Some(&id), Some(&stored))).await?;
     }
     tracing::info!("{} went from another account's folder: it stays in OneDrive, and comes back here", row.rel.display());
-    e.cfg.host.activity(&event);
-    e.cfg.host.full_cycle_wanted();
+    e.host().activity(&event);
+    e.host().full_cycle_wanted();
     Ok(Outcome::Done)
 }

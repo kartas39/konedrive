@@ -165,8 +165,9 @@ pub struct SyncSnapshot {
     /// that finds them current. Empty otherwise.
     pub handles_note: String,
     /// What keeps the outbox's changes from going: the write gate
-    /// closed under a read-write folder, or a read-only one whose sync holds its cycles while
-    /// changes wait. `None` otherwise.
+    /// closed under a read-write folder, OneDrive's throttle of its uploads, a folder the
+    /// outbox worker cannot open, or a read-only
+    /// folder whose sync holds its cycles while changes wait. `None` otherwise.
     pub outbox_note: Option<OutboxNote>,
     /// `PendingCount`, `PendingBytes`, `BlockedCount`: the outbox as its
     /// worker last saw it.
@@ -303,8 +304,9 @@ impl SwitchNote {
 }
 
 /// What keeps the outbox's changes from going, and who says so: the write gate's note is
-/// the gate's alone to take back (`SyncService::write_gate`), the other two are the
-/// poller's (`remote::listing::poller`).
+/// the gate's alone to take back (`SyncService::write_gate`), the throttle's and the
+/// unopenable folder's are the outbox worker's (its host, `sync/outbox.rs`), the other two are the poller's
+/// (`remote::listing::poller`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutboxNote {
     /// The write gate is closed under a read-write folder: why.
@@ -313,7 +315,14 @@ pub enum OutboxNote {
     HeldBack(usize),
     /// A read-only folder whose waiting changes cannot be read.
     Unreadable,
+    /// OneDrive asked the account's uploads to wait: until when (Unix seconds).
+    Throttled(i64),
+    /// The outbox worker cannot open the folder, which is still there: the error.
+    FolderClosed(String),
 }
+
+/// A throttle shorter than this many seconds is not said ([`OutboxNote::after_worker`]).
+pub const THROTTLE_SAID: i64 = 5;
 
 impl OutboxNote {
     /// What the write gate makes of the note `shown`, the gate being closed for `refusal`
@@ -325,9 +334,29 @@ impl OutboxNote {
         (*shown != note && (refusal.is_some() || own)).then_some(note)
     }
 
+    /// What the outbox worker's state makes of the note `shown` at `now`: its folder
+    /// cannot be opened (`folder`, the error), OneDrive asked its uploads to wait until
+    /// `until`, or neither. The note to show instead, or `None` when nothing changes.
+    ///
+    /// - The worker's notes are said only where nothing else is, and the worker takes back
+    ///   only its own: the gate's and the poller's stay.
+    /// - The folder's note stands over the throttle's.
+    /// - A throttle is said only when it begins [`THROTTLE_SAID`] seconds or more before its
+    ///   end: a shorter wait is over before anyone could read of it. Once said, it stays
+    ///   until the wait is over.
+    pub fn after_worker(shown: &Option<Self>, folder: Option<&str>, until: Option<i64>, now: i64) -> Option<Option<Self>> {
+        let own = matches!(shown, None | Some(Self::Throttled(_) | Self::FolderClosed(_)));
+        let throttle = until.map(Self::Throttled).filter(|note| shown.as_ref() == Some(note) || until.is_some_and(|at| at - now >= THROTTLE_SAID));
+        let note = folder.map(|error| Self::FolderClosed(error.to_owned())).or(throttle);
+        (own && *shown != note).then_some(note)
+    }
+
     /// The note as `LastError` says it.
     pub fn text(&self) -> String {
         match self {
+            // The minute the wait is over in, never one already past when it ends.
+            Self::Throttled(until) => format!("OneDrive asked to slow down; uploads continue at {}", clock(until.div_euclid(60) * 60 + if until.rem_euclid(60) > 0 { 60 } else { 0 })),
+            Self::FolderClosed(error) => format!("the folder cannot be opened ({error}); uploads wait"),
             Self::GateClosed(why) => format!("nothing is uploaded: {why}"),
             Self::HeldBack(n) => format!(
                 "{n} change(s) made here wait to be uploaded, so the folder is not kept in step with \
@@ -339,6 +368,18 @@ impl OutboxNote {
             }
         }
     }
+}
+
+/// `at` (Unix seconds) as the clock on the wall shows it here, `HH:MM`.
+fn clock(at: i64) -> String {
+    let seconds = at as libc::time_t;
+    // SAFETY: `tm` is plain data that `localtime_r` fills in; both pointers are valid for
+    // the call and nothing keeps them after it.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    if unsafe { libc::localtime_r(&seconds, &mut tm) }.is_null() {
+        return "a later time".to_owned();
+    }
+    format!("{:02}:{:02}", tm.tm_hour, tm.tm_min)
 }
 
 /// What the registration says in `LastError`: its error, and behind it the note of a

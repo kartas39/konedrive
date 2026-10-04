@@ -22,7 +22,6 @@ fn a_row_blocked_by_403_goes_again_with_the_worker_a_sign_in_builds() {
     w.write("b.txt", b"b");
     w.examine(&[("", "b.txt")]);
     w.h.drain(&engine);
-    assert!(!engine.status().needs_sign_in);
     assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Blocked)]);
     assert_committed(&w, "b.txt", "b.txt");
 

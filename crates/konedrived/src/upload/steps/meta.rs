@@ -24,7 +24,7 @@ pub(super) async fn mkdir(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
     // directory that was made, wherever it is by then — renamed, or removed.
     let object = found.clone();
     let dir = blocking(move || object.open_dir()).await?;
-    match e.cfg.drive.create_folder(&parent, &name).await {
+    match e.drive().create_folder(&parent, &name).await {
         Ok(item) => {
             e.fault(Fault::AfterSend)?;
             commit_dir(e, &row, &found, dir, &item, &parent).await
@@ -36,7 +36,7 @@ pub(super) async fn mkdir(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
             Named::Settled(outcome) => Ok(outcome),
         },
         Err(WriteError::NotFound) => {
-            e.cfg.host.cycle_wanted();
+            e.host().cycle_wanted();
             Ok(Outcome::backoff(Reason::Parent))
         }
         Err(other) => Err(other.into()),
@@ -76,14 +76,14 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
             // Already under its temporary name (an answer lost, then the
             // merge): the temporary step is committed, so that its final
             // move follows.
-            let remote = e.cfg.drive.item(&id).await?;
+            let remote = e.drive().item(&id).await?;
             return commit_move(e, &row, found.as_ref(), &remote, &parent).await;
         }
         // Where the base has it already: nothing to send.
         e.store().call(move |s| s.outbox_drop(row.seq, None, None, None)).await?;
         return Ok(Outcome::Done);
     }
-    match e.cfg.drive.update_item(&id, guard.as_str(), &change).await {
+    match e.drive().update_item(&id, guard.as_str(), &change).await {
         Ok(item) => {
             e.fault(Fault::AfterSend)?;
             commit_move(e, &row, found.as_ref(), &item, &parent).await
@@ -93,7 +93,7 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
             Named::Settled(outcome) => Ok(outcome),
         },
         Err(WriteError::Changed) => {
-            let remote = match e.cfg.drive.item(&id).await {
+            let remote = match e.drive().item(&id).await {
                 Ok(remote) => remote,
                 Err(DriveError::NotFound) => return move_gone(e, disk, &row, found.as_ref(), &id, &parent).await,
                 Err(err) => return Err(err.into()),
@@ -119,7 +119,7 @@ pub(super) async fn moved(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> 
                         let event = e.event("moved", &to_rel, format!("renamed in OneDrive first; was {} here", found.rel.display()));
                         let (seq, stored) = (row.seq, event.clone());
                         e.store().call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: handle.as_ref() }, Some(&stored))).await?;
-                        e.cfg.host.activity(&event);
+                        e.host().activity(&event);
                         return Ok(Outcome::Done);
                     }
                 }
@@ -185,7 +185,7 @@ async fn move_gone(e: &Arc<Engine>, disk: &Arc<Disk>, row: &OutboxRow, found: Op
             let event = e.event(kind::CLOUD_DELETED, &found.rel, "deleted in OneDrive; the placeholder here went too");
             let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
             e.store().call(move |s| s.outbox_commit(seq, Committed::Gone { item_id: &id }, Some(&stored))).await?;
-            e.cfg.host.activity(&event);
+            e.host().activity(&event);
             Ok(Outcome::Done)
         }
         Some(State::Hydrated) | None => upload_as_new(e, row, found, parent, id).await,
@@ -208,7 +208,7 @@ pub(in crate::upload) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result
         return delete_folder(e, &row, &id).await;
     }
     let Some(guard) = Guard::of_base(&base) else { return Ok(Outcome::blocked(Reason::NoGuard)) };
-    match e.cfg.drive.delete_item(&id, guard.as_str()).await {
+    match e.drive().delete_item(&id, guard.as_str()).await {
         Ok(()) => {
             e.fault(Fault::AfterSend)?;
             gone(e, &row, &id, "to OneDrive's recycle bin").await
@@ -223,10 +223,10 @@ pub(in crate::upload) async fn delete(e: &Arc<Engine>, row: OutboxRow) -> Result
 /// Commit step 2 of a delete, under the tree lock.
 async fn gone(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcome, Fail> {
     let event = e.event(kind::CLOUD_DELETED, &row.rel, why);
-    let _tree = e.cfg.tree_lock.lock().await;
+    let _tree = e.tree_lock().lock().await;
     let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
     e.store().call(move |s| s.outbox_commit(seq, Committed::Gone { item_id: &id }, Some(&stored))).await?;
-    e.cfg.host.activity(&event);
+    e.host().activity(&event);
     Ok(Outcome::Done)
 }
 
@@ -237,12 +237,12 @@ async fn gone(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcom
 async fn restored(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Outcome, Fail> {
     let event = e.event(kind::RESTORED, &row.rel, why);
     {
-        let _tree = e.cfg.tree_lock.lock().await;
+        let _tree = e.tree_lock().lock().await;
         let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
         e.store().call(move |s| s.outbox_drop(seq, None, Some(&id), Some(&stored))).await?;
     }
-    e.cfg.host.activity(&event);
-    e.cfg.host.full_cycle_wanted();
+    e.host().activity(&event);
+    e.host().full_cycle_wanted();
     Ok(Outcome::Done)
 }
 
@@ -251,7 +251,7 @@ async fn restored(e: &Engine, row: &OutboxRow, id: &str, why: &str) -> Result<Ou
 /// content changed, and OneDrive's version comes back (§6).
 async fn file_changed(e: &Engine, row: &OutboxRow, id: &str, base: &Base) -> Result<Outcome, Fail> {
     for _ in 0..3 {
-        let remote = match e.cfg.drive.item(id).await {
+        let remote = match e.drive().item(id).await {
             Ok(remote) => remote,
             Err(DriveError::NotFound) => return gone(e, row, id, "to OneDrive's recycle bin").await,
             Err(err) => return Err(err.into()),
@@ -259,7 +259,7 @@ async fn file_changed(e: &Engine, row: &OutboxRow, id: &str, base: &Base) -> Res
         if remote.c_tag.is_none() || remote.c_tag != base.ctag {
             return restored(e, row, id, "changed in OneDrive after it was deleted here").await;
         }
-        match e.cfg.drive.delete_item(id, Guard::of_item(&remote).as_str()).await {
+        match e.drive().delete_item(id, Guard::of_item(&remote).as_str()).await {
             Ok(()) | Err(WriteError::NotFound) => return gone(e, row, id, "to OneDrive's recycle bin").await,
             Err(WriteError::Changed) => continue,
             Err(other) => return Err(other.into()),
@@ -274,7 +274,7 @@ async fn file_changed(e: &Engine, row: &OutboxRow, id: &str, base: &Base) -> Res
 /// safety net ([decisions.md](../../../../docs/design/decisions.md), "A
 /// folder delete is the whole folder, as on Windows").
 async fn delete_folder(e: &Engine, row: &OutboxRow, id: &str) -> Result<Outcome, Fail> {
-    match e.cfg.drive.delete_folder(id).await {
+    match e.drive().delete_folder(id).await {
         Ok(()) => {
             e.fault(Fault::AfterSend)?;
             gone(e, row, id, "to OneDrive's recycle bin").await

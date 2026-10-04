@@ -245,7 +245,7 @@ enum Local {
 
 impl Engine {
     fn moved_out(&self) -> &MoveOuts {
-        self.cfg.moved_out.as_ref().expect("move-out rows run only with MoveOuts")
+        self.move_outs().expect("move-out rows run only with MoveOuts")
     }
 
     /// Makes the file behind `object` (read-only, as `OpenByHandle` gives it) local where it is:
@@ -279,7 +279,7 @@ impl Engine {
             })
             .await
         };
-        let inode = self.cfg.locks.lock(InodeKey::of(object)?).await;
+        let inode = self.locks().lock(InodeKey::of(object)?).await;
         let state = state_of(object).await?.map_err(|e| Fail::Io(io::Error::other(e.to_string())))?;
         let clearance = match state {
             Some(State::Hydrated) => return Ok(Local::Yes),
@@ -325,7 +325,7 @@ impl Engine {
     /// ([`Protection::helper_back`]); an answer that may change (`EAGAIN`, a helper that does not
     /// answer) leaves it for the next look.
     pub(super) async fn protect(&self, disk: &Arc<Disk>) {
-        let Some(mo) = self.cfg.moved_out.as_ref() else { return };
+        let Some(mo) = self.move_outs() else { return };
         let Ok(rows) = self.store().call(|s| s.outbox_move_outs()).await else { return };
         let mut ids = HashSet::new();
         for row in &rows {
@@ -429,7 +429,7 @@ async fn unmark(mo: &MoveOuts, disk: &Arc<Disk>, dir: &Arc<File>) {
 
 /// A `move-out` row's step.
 pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Result<Outcome, Fail> {
-    let Some(mo) = e.cfg.moved_out.as_ref() else {
+    let Some(mo) = e.move_outs() else {
         return Ok(Outcome::later(Reason::MoveOut, Duration::from_secs(3600)));
     };
     let (Some(id), Some(handle)) = (row.item_id.clone(), row.inode.as_ref().and_then(|i| i.handle.clone())) else {
@@ -506,7 +506,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Re
             }
         }
         Place::Trash(_) | Place::Elsewhere(_) => {
-            let shown = proved_path(&object).await?.unwrap_or_else(|| e.cfg.root.path.join(&row.rel));
+            let shown = proved_path(&object).await?.unwrap_or_else(|| e.root().path.join(&row.rel));
             if is_dir {
                 elsewhere_folder(e, disk, &row, &id, object, &shown).await
             } else {

@@ -243,6 +243,7 @@ application must never read zeros where real content should be.
 - [F233](F233.md) — An upload step's file calls run in blocking sections, and a section that has begun ends by itself
 - [F234](F234.md) — What the helper's missing write probe, its version check and its panic containment leave open
 - [F235](F235.md) — A delete that follows a read of the item goes out with an empty `If-Match` when the answer carried neither tag
+- [F236](F236.md) — What the upload worker's waits leave: the throttle's rules are reasoned, its note is not said again after a closed gate, and two looks wait for a wake
 
 ---
 

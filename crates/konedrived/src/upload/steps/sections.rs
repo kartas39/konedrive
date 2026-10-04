@@ -88,5 +88,5 @@ pub(in crate::upload) async fn blocking_under<H: Send + 'static, T: Send + 'stat
 pub(in crate::upload) type Tree = Arc<tokio::sync::OwnedMutexGuard<()>>;
 
 pub(in crate::upload) async fn tree(e: &Engine) -> Tree {
-    Arc::new(Arc::clone(&e.cfg.tree_lock).lock_owned().await)
+    Arc::new(Arc::clone(e.tree_lock()).lock_owned().await)
 }

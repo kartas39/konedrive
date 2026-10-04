@@ -2,26 +2,29 @@
 //! outcomes do to the rows and to the worker (throttling, sign-in, pause).
 
 mod drain;
+mod marks;
 mod outcome;
+mod settle;
+mod state;
 
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
-use tokio::sync::{watch, Notify};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use super::local::{self, SYNC_BLOCKED, SYNC_PENDING, SYNC_UPLOADING};
-use super::{space, Fault, OutboxCounts, Upload, WorkerConfig, WorkerStatus, BACKOFF_FIRST, BACKOFF_MAX, THROTTLE_FIRST};
+use super::{space, Fault, Limits, OutboxCounts, OutboxHost, WorkerConfig, WorkerStatus, BACKOFF_FIRST, BACKOFF_MAX};
+use crate::folder::locks::InodeLocks;
+use crate::folder::root::SyncRoot;
+use konedrive_graph::drive::DriveClient;
 use konedrive_graph::pool::Class as PoolClass;
-use crate::folder::disk::Disk;
-use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState, Pick, Picked, Reason};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, Pick, Picked, Reason};
 use konedrive_tree::{ActivityRow, Store, TreeError, TreeStore};
 
-use outcome::GATE_CLOSED;
+use state::Shared;
 pub(crate) use outcome::Class;
-pub(super) use outcome::{outcome_of, Fail, Outcome};
+pub(super) use outcome::{outcome_of, Fail, NoSpace, Outcome};
 #[cfg(test)]
 pub(super) use outcome::without_urls;
 
@@ -52,21 +55,6 @@ const CANCELS_PER_LOOK: usize = 32;
 /// sooner than this (issue #47; provisional).
 const CANCEL_AGAIN: i64 = 60;
 
-struct InFlight {
-    class: Class,
-    rel: PathBuf,
-    /// The row's reason when it was taken: an `upload-failed` event is
-    /// written once per row and reason.
-    reason: Option<Reason>,
-    upload: Option<(u64, u64)>,
-}
-
-struct Mark {
-    rel: PathBuf,
-    value: &'static str,
-    item: Option<String>,
-}
-
 /// The counts are summed again at most this often while the outbox changes
 /// (issue #38).
 const TALLY_EVERY: Duration = Duration::from_secs(1);
@@ -75,48 +63,19 @@ const TALLY_EVERY: Duration = Duration::from_secs(1);
 /// (a guess: more than the transfer pool runs at once).
 const PICK_WANT: usize = 32;
 
-pub(super) struct Shared {
-    started: bool,
-    throttled_until: Option<i64>,
-    throttle_step: Duration,
-    /// The token source said the account is signed out: nothing more is taken. Never
-    /// cleared: the sign-out stops the folder's sync, and this worker with it.
-    needs_sign_in: bool,
-    /// The rows a `403` blocked were let go once, when this worker could first send
-    /// ([`Engine::release_forbidden`]).
-    forbidden_released: bool,
-    last_error: String,
-    in_flight: HashMap<i64, InFlight>,
-    crashed: bool,
-    /// The `user.konedrive.sync` value last written for each row, where,
-    /// and the row's item.
-    marks: HashMap<i64, Mark>,
-    /// The marks were written for every row once: from then on, only for
-    /// the rows that changed.
-    marks_read: bool,
-    /// What the last pick found in front of the rows that could not run.
-    pub(super) waits: Picked,
-    /// What the outbox held when the worker last looked.
-    pub(super) counts: OutboxCounts,
-    /// A delta cycle has gone through since the worker was told to wait for
-    /// one (`docs/design/writes.md` §3 and §4.9: the cycle before the outbox).
-    cycled: bool,
-    /// The network came back: rows in backoff go once the cycle is done.
-    network_back: bool,
-    /// What is known of the space in OneDrive (issue #2).
-    pub(super) space: space::Space,
-    /// No session given up is cancelled before this (Unix seconds): a
-    /// cancel failed (issue #47).
-    cancel_after: i64,
-}
-
 #[cfg(test)]
 pub(super) type RecordHook = Box<dyn FnOnce(std::sync::mpsc::Receiver<()>) + Send>;
 
 pub(crate) struct Engine {
-    pub(super) cfg: WorkerConfig,
+    /// What the worker works with; the other files ask through the accessors below.
+    cfg: WorkerConfig,
+    /// The loop's own state ([`state`]): the files of `engine/` only.
     shared: Mutex<Shared>,
-    status: watch::Sender<WorkerStatus>,
+    /// What is known of the space in OneDrive (issue #2): `space`'s.
+    space: Mutex<space::Space>,
+    /// The status last handed to the host; its lock makes publishing one at a time
+    /// ([`publish`](Self::publish)).
+    published: Mutex<Published>,
     wake: Notify,
     faults: Mutex<Vec<Fault>>,
     /// What the pending `move-out` rows name, re-marked on this helper
@@ -142,17 +101,11 @@ pub(crate) struct Engine {
     closing: CancellationToken,
 }
 
-/// The `user.konedrive.sync` value for a row's file (§9).
-fn wanted_mark(row: &OutboxRow) -> Option<&'static str> {
-    if !matches!(row.kind, OutboxKind::Create | OutboxKind::Update | OutboxKind::Move) {
-        return None;
-    }
-    Some(match row.state {
-        OutboxState::Blocked => SYNC_BLOCKED,
-        OutboxState::Held => return None,
-        OutboxState::Running if row.kind.sends_content() => SYNC_UPLOADING,
-        _ => SYNC_PENDING,
-    })
+#[derive(Default)]
+struct Published {
+    last: WorkerStatus,
+    /// The worker was stopped: nothing more is handed over.
+    silent: bool,
 }
 
 fn backoff_after(attempts: u32) -> i64 {
@@ -162,29 +115,11 @@ fn backoff_after(attempts: u32) -> i64 {
 
 impl Engine {
     pub(crate) fn new(cfg: WorkerConfig) -> Self {
-        let (status, _) = watch::channel(WorkerStatus::default());
-        let space = space::Space::default();
         Self {
             cfg,
-            shared: Mutex::new(Shared {
-                started: false,
-                throttled_until: None,
-                throttle_step: THROTTLE_FIRST,
-                needs_sign_in: false,
-                forbidden_released: false,
-                last_error: String::new(),
-                in_flight: HashMap::new(),
-                crashed: false,
-                cycled: true,
-                network_back: false,
-                marks: HashMap::new(),
-                marks_read: false,
-                waits: Picked::default(),
-                counts: OutboxCounts::default(),
-                space,
-                cancel_after: 0,
-            }),
-            status,
+            shared: Mutex::new(Shared::new()),
+            space: Mutex::new(space::Space::default()),
+            published: Mutex::new(Published::default()),
             wake: Notify::new(),
             faults: Mutex::new(Vec::new()),
             protection: Mutex::new(super::move_out::Protection::default()),
@@ -195,6 +130,64 @@ impl Engine {
             recount: Notify::new(),
             closing: CancellationToken::new(),
         }
+    }
+
+    pub(super) fn store(&self) -> &Store {
+        &self.cfg.store
+    }
+
+    pub(super) fn drive(&self) -> &DriveClient {
+        &self.cfg.drive
+    }
+
+    pub(super) fn root(&self) -> &SyncRoot {
+        &self.cfg.root
+    }
+
+    pub(super) fn host(&self) -> &Arc<dyn OutboxHost> {
+        &self.cfg.host
+    }
+
+    /// The folder's per-inode locks.
+    pub(super) fn locks(&self) -> &InodeLocks {
+        &self.cfg.locks
+    }
+
+    /// The per-root tree mutex (§3.7).
+    pub(super) fn tree_lock(&self) -> &Arc<tokio::sync::Mutex<()>> {
+        &self.cfg.tree_lock
+    }
+
+    pub(super) fn limits(&self) -> Limits {
+        self.cfg.limits
+    }
+
+    pub(super) fn machine_name(&self) -> &str {
+        &self.cfg.machine_name
+    }
+
+    /// The account's one quota.
+    pub(super) fn quota(&self) -> &crate::account::quota::Quota {
+        &self.cfg.quota
+    }
+
+    /// The helper and the fills `move-out` rows need, where the worker has them.
+    pub(super) fn move_outs(&self) -> Option<&super::move_out::MoveOuts> {
+        self.cfg.moved_out.as_ref()
+    }
+
+    fn shared(&self) -> MutexGuard<'_, Shared> {
+        self.shared.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// What is known of the space in OneDrive. Never held together with the loop's state.
+    pub(super) fn space(&self) -> MutexGuard<'_, space::Space> {
+        self.space.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// What the outbox held when the worker last counted.
+    pub(super) fn counts(&self) -> OutboxCounts {
+        self.shared().counts
     }
 
     /// The daemon is stopping: nothing new is taken, and what is in flight
@@ -209,10 +202,6 @@ impl Engine {
         self.closing.is_cancelled()
     }
 
-    pub(super) fn shared(&self) -> MutexGuard<'_, Shared> {
-        self.shared.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
     pub(super) fn protection(&self) -> MutexGuard<'_, super::move_out::Protection> {
         self.protection.lock().unwrap_or_else(|p| p.into_inner())
     }
@@ -222,10 +211,6 @@ impl Engine {
     pub(super) fn helper_back(&self) {
         self.protection().helper_back();
         self.wake();
-    }
-
-    pub(super) fn store(&self) -> &Store {
-        &self.cfg.store
     }
 
     #[cfg(test)]
@@ -251,11 +236,6 @@ impl Engine {
         self.faults.lock().unwrap_or_else(|p| p.into_inner()).push(fault);
     }
 
-    pub(super) fn set_started(&self, started: bool) {
-        self.shared().started = started;
-        self.publish();
-    }
-
     pub(super) fn wake(&self) {
         self.wake.notify_one();
     }
@@ -276,23 +256,14 @@ impl Engine {
     /// folder's first cycle, and the one after the network came back, run
     /// before the outbox (`docs/design/writes.md` §3, §9).
     pub(super) fn wait_for_cycle(&self, network_back: bool) {
-        {
-            let mut shared = self.shared();
-            shared.cycled = false;
-            shared.network_back |= network_back;
-        }
+        self.shared().cycle.wait(network_back);
         self.publish();
     }
 
     /// A delta cycle went through: the base caught up. Rows in backoff go
     /// now after the first cycle and after the network came back.
     pub(crate) async fn cycle_done(&self) {
-        let due = {
-            let mut shared = self.shared();
-            let first = !shared.cycled;
-            shared.cycled = true;
-            first || std::mem::take(&mut shared.network_back)
-        };
+        let due = self.shared().cycle.went_through();
         if due {
             if let Err(e) = self.store().call(move |s| s.outbox_retry_now()).await {
                 tracing::warn!("cannot make the outbox's waiting rows due: {e}");
@@ -323,50 +294,45 @@ impl Engine {
         Ok(())
     }
 
+    /// Whether no row is in flight.
+    fn idle(&self) -> bool {
+        self.shared().flights.is_empty()
+    }
+
+    /// The worker's status as it is now.
     pub(super) fn status(&self) -> WorkerStatus {
-        let paused = self.paused();
         let now = now();
+        let quota_full = self.space().full;
         let shared = self.shared();
-        let mut uploads: Vec<(i64, Upload)> = shared
-            .in_flight
-            .iter()
-            .filter_map(|(&seq, f)| f.upload.map(|(sent, total)| (seq, Upload { rel: f.rel.clone(), sent, total })))
-            .collect();
-        uploads.sort_by_key(|(seq, _)| *seq);
-        WorkerStatus {
-            started: shared.started,
-            paused: paused.is_some(),
-            paused_until: paused.unwrap_or(0),
-            throttled_until: shared.throttled_until.filter(|&at| at > now),
-            needs_sign_in: shared.needs_sign_in,
-            last_error: shared.last_error.clone(),
-            running: shared.in_flight.len(),
-            uploads: uploads.into_iter().map(|(_, u)| u).collect(),
-            counts: shared.counts,
-            quota_full: shared.space.full,
+        WorkerStatus { throttled_until: shared.throttle.until(now), folder_closed: shared.trouble.folder_closed(), uploads: shared.flights.uploads(), counts: shared.counts, quota_full }
+    }
+
+    /// Hands the status to the host when it changed. One publisher at a time, and the
+    /// status is read inside its turn: of two that publish together (a row's progress, a
+    /// row settled, the counts), the host's last word is the later state, never an earlier
+    /// one read before the other's change and handed over after it. A worker that was
+    /// stopped hands over nothing ([`silence`](Self::silence)).
+    pub(super) fn publish(&self) {
+        let mut published = self.published.lock().unwrap_or_else(|p| p.into_inner());
+        if published.silent {
+            return;
+        }
+        let status = self.status();
+        if published.last != status {
+            self.cfg.host.status(&status);
+            published.last = status;
         }
     }
 
-    /// Publishes the status, and hands it to the host when it changed.
-    pub(super) fn publish(&self) {
-        let status = self.status();
-        let changed = self.status.send_if_modified(|current| {
-            if *current == status {
-                false
-            } else {
-                *current = status.clone();
-                true
-            }
-        });
-        if changed {
-            self.cfg.host.status(&status);
-        }
+    /// The worker was stopped (`silent`), or is started: once this returns for a stopped
+    /// one, the host hears no more of it — not from a task that outlives the stop (a
+    /// detached `cycle_done`), which would put back what the host cleared after the stop.
+    pub(super) fn silence(&self, silent: bool) {
+        self.published.lock().unwrap_or_else(|p| p.into_inner()).silent = silent;
     }
 
     pub(super) fn upload_progress(&self, seq: i64, sent: u64, total: u64) {
-        if let Some(flight) = self.shared().in_flight.get_mut(&seq) {
-            flight.upload = Some((sent, total));
-        }
+        self.shared().flights.progress(seq, sent, total);
         self.publish();
     }
 
@@ -383,21 +349,23 @@ impl Engine {
         ActivityRow { at: now(), kind: kind.into(), path: self.cfg.root.path.join(rel).display().to_string(), detail: detail.into() }
     }
 
-    async fn may_start(&self) -> bool {
-        if self.closing() {
-            return false;
+    /// Whether the worker itself keeps from sending now: it is closing, the account's
+    /// work is stopped (the user's pause among the reasons), it is signed out or met a
+    /// fault point, the folder could not be opened, the cycle it waits for has not gone
+    /// through, or OneDrive asked to wait.
+    fn held(&self) -> bool {
+        if self.closing() || self.stopped() {
+            return true;
         }
-        let paused = self.stopped();
         let now = now();
-        let ready = {
-            let shared = self.shared();
-            !paused
-                && !shared.crashed
-                && shared.cycled
-                && !shared.needs_sign_in
-                && shared.throttled_until.is_none_or(|at| at <= now)
-        };
-        ready && self.gate_open().await
+        let shared = self.shared();
+        shared.trouble.holds() || !shared.cycle.done() || shared.throttle.holds(now)
+    }
+
+    /// Whether a row may be taken now: the worker is not [`held`](Self::held) and the
+    /// write gate, asked now, is open ([`ask_gate`](Self::ask_gate)).
+    async fn may_send(&self) -> bool {
+        !self.held() && self.ask_gate().await
     }
 
     /// The host's write gate ([`OutboxHost::may_write`](super::OutboxHost::may_write)), asked
@@ -419,35 +387,21 @@ impl Engine {
         }
     }
 
-    /// The write gate, asked again before every row (`docs/design/writes.md` §2.3): the
-    /// host says whether the account may change OneDrive now. Closed, nothing more is taken,
-    /// the rows wait, and the worker's `last_error` says why.
-    async fn gate_open(&self) -> bool {
-        match self.may_write().await {
-            Ok(()) => {
-                let mut shared = self.shared();
-                if shared.last_error.starts_with(GATE_CLOSED) {
-                    shared.last_error.clear();
-                }
-                true
-            }
-            Err(why) => {
-                let message = format!("{GATE_CLOSED}{why}");
-                let mut shared = self.shared();
-                if shared.last_error != message {
-                    tracing::warn!("{message}");
-                    shared.last_error = message;
-                }
-                false
-            }
+    /// Asks the write gate (`docs/design/writes.md` §2.3) and keeps its answer: whether the
+    /// host lets the account change OneDrive now. Closed, nothing more is taken, the rows
+    /// wait, the host says why (its own note), and the journal gets each new reason once.
+    async fn ask_gate(&self) -> bool {
+        let closed = self.may_write().await.err();
+        if self.shared().trouble.gate(closed.clone()) {
+            tracing::warn!("nothing is uploaded: {}", closed.as_deref().unwrap_or_default());
         }
+        closed.is_none()
     }
 
     /// Whether a row of `class` may start beside those running: metadata and move-outs
     /// one at a time; content as the pool allows.
     fn slot_free(&self, class: Class) -> bool {
-        let shared = self.shared();
-        let busy = shared.in_flight.values().filter(|f| f.class == class).count();
+        let busy = self.shared().flights.of(class);
         match class {
             Class::Meta | Class::Out => busy < 1,
             Class::Content => true,
@@ -468,13 +422,13 @@ impl Engine {
     /// row, not held here already, and as the space allows; move-outs only
     /// with what they need. Read a portion at a time ([`TreeStore::outbox_pick`]),
     /// off the async runtime. What stands in front of the rest is kept
-    /// (`Shared::waits`), and a time it names wakes the worker.
+    /// (`Shared::waits`, [`next_due`](Self::next_due)), and a time it names wakes the worker.
     ///
     /// [`TreeStore::outbox_pick`]: konedrive_tree::TreeStore::outbox_pick
     pub(crate) async fn candidates(&self) -> Result<Vec<(OutboxRow, Class)>, TreeError> {
         let now = now();
-        let flying: HashSet<i64> = self.shared().in_flight.keys().copied().collect();
-        let move_outs = self.cfg.moved_out.is_some();
+        let flying: HashSet<i64> = self.shared().flights.seqs();
+        let move_outs = self.move_outs().is_some();
         let (full, looked) = self.space_seen();
         let picked = self
             .store()
@@ -492,90 +446,6 @@ impl Engine {
         }).collect();
         self.shared().waits = Picked { rows: Vec::new(), ..picked };
         Ok(rows)
-    }
-
-    /// Sets `user.konedrive.sync` on the files of rows whose state changed,
-    /// and takes it off those whose row went: the rows written or removed
-    /// since the last look ([`OutboxChanges`]), every row the first time.
-    /// The attributes are written with no lock held. The counts follow.
-    ///
-    /// [`OutboxChanges`]: konedrive_tree::outbox::OutboxChanges
-    fn mark_rows(&self, disk: &Disk) {
-        let store = self.store();
-        let first = !self.shared().marks_read;
-        let dirty = store.changes().take_dirty();
-        let (read, asked): (Result<Vec<OutboxRow>, TreeError>, Option<HashSet<i64>>) = match dirty.filter(|_| !first) {
-            Some(seqs) if seqs.is_empty() => (Ok(Vec::new()), Some(seqs)),
-            Some(seqs) => {
-                let list: Vec<i64> = seqs.iter().copied().collect();
-                (store.call_blocking(move |s| s.outbox_rows_of(&list)), Some(seqs))
-            }
-            None => (store.call_blocking(move |s| s.outbox_rows()), None),
-        };
-        let mut rows = match read {
-            Ok(rows) => rows,
-            Err(e) => {
-                tracing::warn!("cannot read the outbox for its marks: {e}");
-                // Every row, next time.
-                self.shared().marks_read = false;
-                return;
-            }
-        };
-        let present: HashSet<i64> = rows.iter().map(|r| r.seq).collect();
-        let gone: Vec<Mark> = {
-            let mut shared = self.shared();
-            shared.marks_read = true;
-            let gone: Vec<i64> = match &asked {
-                Some(seqs) => seqs.iter().filter(|seq| !present.contains(seq)).copied().collect(),
-                None => shared.marks.keys().filter(|seq| !present.contains(seq)).copied().collect(),
-            };
-            gone.into_iter().filter_map(|seq| shared.marks.remove(&seq)).collect()
-        };
-        let mut cleared = HashSet::new();
-        for mark in gone {
-            local::mark(disk, &mark.rel, None);
-            cleared.insert(mark.rel);
-            // A move taken back (the file went back to its base place): the
-            // mark is on the file there.
-            if let Some(id) = mark.item {
-                if let Ok(Some(at)) = store.call_blocking(move |s| s.locate(konedrive_tree::Table::Items, &id)) {
-                    if !at.rel.as_os_str().is_empty() {
-                        local::mark(disk, &at.rel, None);
-                        cleared.insert(at.rel);
-                    }
-                }
-            }
-        }
-        // A row behind the one that went writes its mark again.
-        if !cleared.is_empty() {
-            let again: Vec<i64> = {
-                let mut shared = self.shared();
-                let again: Vec<i64> = shared.marks.iter().filter(|(_, m)| cleared.contains(&m.rel)).map(|(&seq, _)| seq).collect();
-                for seq in &again {
-                    shared.marks.remove(seq);
-                }
-                again.into_iter().filter(|seq| !present.contains(seq)).collect()
-            };
-            if !again.is_empty() {
-                rows.extend(store.call_blocking(move |s| s.outbox_rows_of(&again)).unwrap_or_default());
-            }
-        }
-        let wanted: Vec<(PathBuf, &'static str)> = {
-            let mut shared = self.shared();
-            rows.iter()
-                .filter_map(|row| {
-                    let value = wanted_mark(row)?;
-                    if shared.marks.get(&row.seq).is_some_and(|m| m.rel == row.rel && m.value == value) {
-                        return None;
-                    }
-                    shared.marks.insert(row.seq, Mark { rel: row.rel.clone(), value, item: row.item_id.clone() });
-                    Some((row.rel.clone(), value))
-                })
-                .collect()
-        };
-        for (rel, value) in wanted {
-            local::mark(disk, &rel, Some(value));
-        }
     }
 
     /// `PendingCount` and the rest, and the Not Uploaded summary, summed by
@@ -616,45 +486,26 @@ impl Engine {
         }
     }
 
-    /// [`mark_rows`](Self::mark_rows) off the async runtime.
-    async fn mark_rows_blocking(self: &Arc<Self>, disk: &Arc<Disk>) {
-        let (engine, disk) = (Arc::clone(self), Arc::clone(disk));
-        if let Err(e) = tokio::task::spawn_blocking(move || engine.mark_rows(&disk)).await {
-            tracing::warn!("the outbox's marks task failed: {e}");
-        }
-    }
-
-    /// The start's look at the space (`space::Space::start`), once, before
-    /// the first drain: off the constructor, which may run on the runtime.
-    pub(crate) async fn space_start(&self) {
-        if self.shared().space.started {
-            return;
-        }
-        // What a quota read found meanwhile stays.
-        let start = space::Space::start(self.store()).await;
-        let mut shared = self.shared();
-        shared.space.full |= start.full;
-        shared.space.wanted |= start.wanted;
-        shared.space.started = true;
-    }
-
-    /// When something may become runnable without a wake: a backoff, a
-    /// throttle or a timed pause running out.
+    /// How long until something may become runnable without a wake: a throttle or a timed
+    /// pause running out; and, while the worker may send, a backoff running out, a time the
+    /// pick named, the quota's next read. Five minutes at most, a second at least.
+    ///
+    /// While the worker may not send, only what ends that counts: the rows that are due and
+    /// a quota read that is due wait with it, and do not bring it back every second.
     async fn next_due(&self) -> Duration {
         let now = now();
         let mut at = now + IDLE_CHECK;
-        if let Some(until) = self.shared().throttled_until.filter(|&u| u > now) {
+        if let Some(until) = self.shared().throttle.until(now) {
             at = at.min(until);
         }
         if let Some(until) = self.paused().filter(|&u| u > 0) {
             at = at.min(until);
         }
-        if let Some(check) = self.space_check_at() {
-            at = at.min(check);
-        }
-        // While nothing can start, only the end of a pause or throttle
-        // matters; rows already due wait for a wake.
-        if self.may_start().await {
+        if self.may_send().await {
+            // Read only with no row in flight (`take_rows`): until then it does not count.
+            if let Some(check) = self.space_check_at().filter(|_| self.idle()) {
+                at = at.min(check);
+            }
             if let Ok(Some(next)) = self.store().call(move |s| s.outbox_next_due(now)).await {
                 at = at.min(next);
             }
