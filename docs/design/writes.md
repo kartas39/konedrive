@@ -372,8 +372,8 @@ retry: such an object does not come back (a file saved by replacing it is a new 
 its own row; one moved where no row looked is found by the move's examination and queued again, its
 upload starting over). The upload session it opened is cancelled, and it leaves the outbox with the
 rows behind it of the same object that never got an item id; the activity log records it once as
-`not-uploaded`. Only a file whose last request may have gone out — the last fragment, or the one
-request of a file up to 10 MiB — looks its name up in the parent first: an item there that is its
+`not-uploaded`. Only a file whose last request may have gone out — the last fragment, which is
+the only one of a file up to 10 MiB — looks its name up in the parent first: an item there that is its
 own, by size and time since the file cannot be hashed any more, goes to the recycle bin (F149).
 An `update` whose file is under none of its names ends the same way, alone and with no event of
 its own (issue #36): its session is cancelled and the row leaves; the version OneDrive has stays
@@ -550,8 +550,9 @@ name meets as `409 nameAlreadyExists`. So a session is never simply dropped:
 
 - **The daemon's stop** (issue #84). On SIGTERM (systemd's stop, a package upgrade) or SIGINT the
   outbox workers take no more rows; the rows in flight finish the request they sent — an opened
-  session is persisted, an upload in fragments stops after the fragment in flight with its session
-  kept, a one-request upload completes — and the daemon exits once they have, or after 10 s at
+  session is persisted, an upload stops after the fragment in flight (a file of one fragment, whose
+  fragment is in flight, completes) with its session kept — and the daemon exits once they have,
+  or after 10 s at
   most (`stop::STOP_BOUND`). What is still in flight then is cut, and the recorded place covers
   it. A second signal exits at once.
 
@@ -631,21 +632,36 @@ page and in `konedrivectl sync status` instead of a row per file; on the Not Upl
 "Needs you — one action", with Refresh; the tray needs attention while full or while a file is too
 big, and notifies once when full starts.
 
-### 6.3 A large file
+### 6.3 A file's session
+
+One path for every file with content (`upload/content.rs`, `send_session`): a file up to 10 MiB is
+a session of one fragment, and every step below holds for it as for a larger one.
 
 1. The file is quiet; its size and time are the **snapshot**, stored in the row.
 2. The session is created, and its URL, expiry and `session_next = 0` persisted before the first
    byte, the session listed (§6.1). A crash before that leaves an orphan session, which expires on
    its own; a new file's recorded place tells its placeholder as this folder's (§6.1, F172).
 3. Each fragment is read into one buffer, fed to the hash, sent, and on `202` its progress
-   persisted. Memory does not grow with the file. Before each fragment the file is looked for under
+   persisted. Memory does not grow with the file. An answer that takes nothing of the fragment
+   (the session still expects it) fails the row for now, its session kept; a session that answers
+   `404` has completed with its answer lost — the item holds this content and is adopted — or is
+   gone, and the upload starts over with a new session, once in a run (the second time the row
+   backs off: `the upload session ended twice`). Before each fragment, the first too, the upload
+   may stop (§11), and the file is looked for under
    its row's names: removed (or moved where no row looks), the upload stops there and ends as §5.2
    says — a file put in by mistake and removed is not sent to the end (issue #36). A move whose row
    is recorded is found under its new name, and the upload goes on.
 4. Before the last fragment the worker probes for a writer, compares the file with the snapshot and
    reads the item's eTag again. `If-Match` is checked when a session is created, not when it
    completes; this narrows the window in which an edit made in OneDrive meanwhile is superseded to
-   one fragment. Such an edit stays in the item's version history (limitations log F80).
+   one fragment. Such an edit stays in the item's version history (limitations log F80). The item
+   is not read again when the session's opening was the request just before — a file of one
+   fragment in the run that opened its session: that answer was the check. A session of one
+   fragment resumed by a later run does read it. The window left is wider than one request: a
+   last fragment refused for now (`429`, `503`) or lost is sent again to the same session, up to
+   5 times with waits of up to 300 s each, with no new read of the item; and between the opening
+   and a file's only fragment the gate is asked, the file is looked for and up to 10 MiB are read
+   (limitations log F239).
 5. The last fragment's answer carries the item; its hash must be the one computed while sending. A
    mismatch is never committed: the content goes up again from zero.
 6. After a crash or a dropped connection the session's status says where to go on from, but only
@@ -999,8 +1015,8 @@ every account. What it does to work already under way:
 
 | Work in progress | On pause |
 |---|---|
-| an upload in fragments (a session) | stops after the fragment being sent; the session and its offset stay in the row, which waits with the reason `paused` |
-| a one-request upload (up to 10 MiB) | finishes: it is short |
+| an upload (a session) | stops after the fragment being sent — before its first one, if its session is only being opened; the session and its offset stay in the row, which waits with the reason `paused` |
+| the only fragment of a file up to 10 MiB, being sent | finishes: it is short |
 | a metadata request (mkdir, move, delete) | finishes |
 | a fill on open, `Hydrate` | goes on: a pause never blocks opening a file |
 
@@ -1010,9 +1026,10 @@ failed or retrying — while blocked and held rows keep their state; a pause wri
 `upload-failed`. Resume, or the end of a timed pause, makes the rows due at once: a kept session
 goes on from its offset, and one that expired meanwhile starts over, logged. A restart while
 paused keeps the sessions and resumes none of them. The stop between fragments is one check
-(`upload/content.rs`, `stop_between_fragments`) with four reasons: a pause, a full OneDrive
-(§6.4), the write gate — each keeps the session — and the file removed (§5.2, §6.3), which cancels
-the session and ends the row. A one-request upload is one request, and is not interrupted.
+(`upload/content.rs`, `stop_between_fragments`), asked before every fragment of every file, with
+five reasons: a pause, the daemon stopping, a full OneDrive (§6.4), the write gate — each keeps
+the session — and the file removed (§5.2, §6.3), which cancels the session and ends the row. A
+request that is in flight is never interrupted.
 
 ## 12. Testing
 

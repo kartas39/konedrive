@@ -205,15 +205,14 @@ impl OutboxHost for NoHost {}
 /// run at once is the account's transfer pool's (`konedrive_graph::pool`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Limits {
-    /// Up to this size a file goes up in one request.
-    pub small_max: u64,
-    /// The fragment of a larger one: a multiple of 320 KiB.
+    /// The fragment a file goes up in, a multiple of 320 KiB: a file up to
+    /// this size is one fragment.
     pub chunk: u64,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Self { small_max: konedrive_graph::drive::SMALL_UPLOAD_MAX, chunk: konedrive_graph::drive::CHUNK_SIZE }
+        Self { chunk: konedrive_graph::drive::CHUNK_SIZE }
     }
 }
 

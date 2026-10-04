@@ -551,8 +551,8 @@ pub(in crate::upload) async fn never_uploaded(e: &Engine, disk: &Arc<Disk>, row:
 }
 
 /// A file's upload whose last request may have gone out with its answer
-/// lost — the last fragment of a session, or the one request of a file up
-/// to [`Limits::small_max`](crate::upload::Limits::small_max) — may have made the
+/// lost — the last fragment of a session, which is the only one of a file
+/// up to [`Limits::chunk`](crate::upload::Limits::chunk) — may have made the
 /// item although the row never committed. Only such a row looks the name up
 /// in the parent; the item there is this row's the way a replay's `409`
 /// decides it ([`taken`]), by the size and time sent, the file being gone.
@@ -563,7 +563,7 @@ async fn landed_away(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<bo
     }
     let Some((size, mtime)) = row.snapshot_sent() else { return Ok(false) };
     let limits = e.limits();
-    let last_sent = size <= limits.small_max || (row.session_url.is_some() && row.session_next.unwrap_or(0).saturating_add(limits.chunk) >= size);
+    let last_sent = size <= limits.chunk || (row.session_url.is_some() && row.session_next.unwrap_or(0).saturating_add(limits.chunk) >= size);
     if !last_sent {
         return Ok(false);
     }

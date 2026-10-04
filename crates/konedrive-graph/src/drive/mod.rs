@@ -27,7 +27,7 @@ pub use account::{Drive, Profile};
 pub use error::{Detail, DriveError, Status};
 pub use item::DriveItem;
 pub use send::RetryPolicy;
-pub use upload::{ChunkOutcome, SessionProgress, UploadSession, UploadTarget, CHUNK_SIZE, FRAGMENT_UNIT, SMALL_UPLOAD_MAX};
+pub use upload::{ChunkOutcome, SessionProgress, UploadSession, UploadTarget, CHUNK_SIZE, FRAGMENT_UNIT};
 pub use write::{ItemChange, WriteError, MAX_RETRY_AFTER};
 
 use error::{classify, graph_error, Kind};
