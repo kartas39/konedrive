@@ -540,16 +540,18 @@ pub(super) async fn upload_as_new(e: &Arc<Engine>, row: &OutboxRow, found: &Foun
         next.session_expires = None;
         next.session_next = None;
     };
-    let event = e.event(kind::RESTORED, &found.rel, "deleted in OneDrive while it was changed here: uploaded again");
-    let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
+    let (seq, id) = (row.seq, id.to_owned());
     let (engine, object) = (Arc::clone(e), found.clone());
     #[cfg(test)]
     let (_row_alive, row_dropped) = std::sync::mpsc::channel::<()>();
-    blocking_under(Arc::clone(&tree), move || {
+    let event = blocking_under(Arc::clone(&tree), move || {
         local::strip_found(&object)?;
+        let event = engine.event(kind::RESTORED, &object.rel, "deleted in OneDrive while it was changed here: uploaded again");
         #[cfg(test)]
         engine.before_record(row_dropped);
-        Ok(engine.store().call_blocking(move |s| s.outbox_orphan(&id, seq, amend, Some(&stored))))
+        let stored = event.clone();
+        let recorded = engine.store().call_blocking(move |s| s.outbox_orphan(&id, seq, amend, Some(&stored)));
+        Ok(recorded.map(|()| event))
     })
     .await??;
     e.cfg.host.activity(&event);

@@ -1388,9 +1388,9 @@ fn renames_moves_and_removals_reach_onedrive_as_the_disk_is() {
     }
 }
 
-/// A file or folder removed before its upload finished (issue #27).
 mod stops;
 
+/// A file or folder removed before its upload finished (issue #27).
 mod removed;
 
 mod sessions;

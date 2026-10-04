@@ -66,10 +66,15 @@ thread_local! {
 /// Runs `f` as a section that has a share in the lock it changes the folder
 /// under (`steps::blocking_under`).
 pub(super) fn under_lock<T>(f: impl FnOnce() -> T) -> T {
-    let before = UNDER_LOCK.replace(true);
-    let done = f();
-    UNDER_LOCK.set(before);
-    done
+    /// Puts the mark back, also when `f` panics: the thread goes back to its pool.
+    struct Restore(bool);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            UNDER_LOCK.set(self.0);
+        }
+    }
+    let _restore = Restore(UNDER_LOCK.replace(true));
+    f()
 }
 
 /// What changes the folder under the tree lock or a file under its inode
