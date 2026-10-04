@@ -693,7 +693,10 @@ impl Materializer {
             // where it is, and leaves from there, or waits there.
             Probe::Managed { id, .. } if self.rw.is_some() && run.leaving.contains(&id) => {
                 let rw = self.rw.as_ref().expect("read-write mode");
-                self.step_aside(rw, &dir, name, &rel, &id, run)?;
+                if !self.step_aside(rw, &dir, name, &rel, &id, run)? {
+                    run.out.pending.unsettled.insert(row.id.clone());
+                    return Ok(None);
+                }
             }
             Probe::Managed { id, .. } => {
                 if let Some(rw) = &self.rw {
@@ -732,6 +735,11 @@ impl Materializer {
                         self.mark(&waiting, &rel)?;
                     }
                     self.disk.rename(&holding, OsStr::new(&row.id), &dir, name)?;
+                    // The rows of what waits below a folder follow it.
+                    if let (true, Some(_), Some(from)) = (is_folder, &self.rw, run.moved_from.get(&row.id).cloned()) {
+                        let rebase = [konedrive_tree::outbox::OutboxOp::Rebase { from, to: rel.clone() }];
+                        self.store.call_blocking(move |s| s.outbox_apply(&rebase, 0))?;
+                    }
                     self.record_placed(run, &dir, name, &row.id)?;
                     run.out.counts.moved += 1;
                     let from = run.moved_from.get(&row.id).cloned();

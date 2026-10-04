@@ -349,13 +349,20 @@ pub(in crate::upload) async fn name_taken(
     name: &str,
     ours: Ours<'_>,
 ) -> Result<Named, Fail> {
+    let item = match &ours {
+        Ours::Item(id) if row.kind != OutboxKind::Move => Some(*id),
+        _ => None,
+    };
     Ok(match taken(e, row, parent, name, ours).await? {
         Taken::Free => Named::Settled(Outcome::again()),
         Taken::Temporary(swap) => Named::Settled(temporary(e, row, parent, &swap).await?),
         Taken::Adopt(item) => Named::Adopt(item),
         Taken::Held => Named::Settled(held(row)),
+        // A copy made of an item's own object (its content, changed here)
+        // takes the object from the item: the item forgets it, and is
+        // placed again from OneDrive. A move keeps its object.
         Taken::Copy => Named::Settled(match found {
-            Some(found) => copy(e, disk, row, found, parent, None).await?,
+            Some(found) => copy(e, disk, row, found, parent, item).await?,
             None => Outcome::later(Reason::NotFound, RECHECK),
         }),
     })

@@ -97,7 +97,22 @@ impl Materializer {
     /// Never out of the folder: whatever is out of it is a move out, and
     /// deleted in OneDrive.
     fn put_back(&self, holding: &File, name: &OsStr, id: Option<&str>, back: Option<PathBuf>, run: &mut Run) -> Result<(), ApplyError> {
-        let mut places: Vec<PathBuf> = back.into_iter().filter(|b| !is_new_name(b)).collect();
+        // An item of the base goes back into its own folder: the directory
+        // that carries that folder's id, wherever it stands now. Never into
+        // whatever stands at the path it was taken from, which may be
+        // another item's by now.
+        let own = match id {
+            Some(id) => match self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Items, &id) })? {
+                Some(base) => match &base.parent_id {
+                    Some(folder) => self.dir_of(folder, run)?.map(|dir| dir.join(&base.name)),
+                    None => None,
+                },
+                None => None,
+            },
+            None => None,
+        };
+        let back = if own.is_some() { None } else { back };
+        let mut places: Vec<PathBuf> = own.into_iter().chain(back.into_iter().filter(|b| !is_new_name(b))).collect();
         if let Some(id) = id {
             for table in [Table::Items, Table::Staging] {
                 if let Some(at) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(table, &id) })?.filter(|l| l.placed && !l.rel.as_os_str().is_empty()) {

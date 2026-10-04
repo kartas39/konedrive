@@ -367,9 +367,7 @@ impl TreeStore {
                 remove(&tx, row.seq)?;
                 continue;
             }
-            if row.rel != from && row.rel != to {
-                continue;
-            }
+            // Its own rows, by its id: wherever they say it stood.
             row.rel = to.to_path_buf();
             if row.target_name.is_some() && row.target_name == was {
                 row.target_name = Some(name.to_owned());

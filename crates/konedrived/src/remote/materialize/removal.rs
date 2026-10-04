@@ -676,6 +676,16 @@ impl Materializer {
                         return Ok(Some(WaitsFor::Changes(shown(&at))));
                     }
                     base.remove(&child);
+                    // A child OneDrive moved out, left here because its new
+                    // name is held by a local change: the folder stays for
+                    // it.
+                    if run.out.pending.unsettled.contains(&id) || run.left.contains(&id) {
+                        let moved = self.store.call_blocking({ let id = id.clone(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|to| to.placed);
+                        if moved {
+                            first(stays, WaitsFor::MovedAway(shown(&at)));
+                            continue;
+                        }
+                    }
                     if let Some(waits) = self.differs(rw, &sub, &child, &at, &id, is_dir, dev, run, stays)? {
                         return Ok(Some(waits));
                     }
