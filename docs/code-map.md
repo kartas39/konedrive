@@ -483,8 +483,9 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `lib.rs` — the tree store: the list of the modules, `TreeStore`, `TreeError`. `[tests]`
 - `model.rs` — a row, a delta entry, the stored words, and the one place a row is read and
   written. `[tests]`
-- `schema.rs` — the schema: its version, what an open creates and upgrades, when a store is
-  rebuilt.
+- `schema.rs` — the schema: its version, what a new store is created with, when a store is
+  rebuilt. `[tests]`
+- `schema/migrations.rs` — the numbered steps that bring an older store to today's schema.
 - `query.rs` — reading the tree: a row, what is below it, where it is, the counts.
 - `forget.rs` — forgetting the local objects of a subtree.
 - `shared.rs` — the store shared by the tasks of one folder.
@@ -496,9 +497,10 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `conflicts.rs` — the local versions kept, on record.
 - `thumbs.rs` — the thumbnails still to make.
 - `outbox.rs` — the outbox: what the folder holds that OneDrive does not have yet. `[tests]`
-- `outbox/schema.rs` — the write phase's tables and indexes.
+- `outbox/stored.rs` — a row in the database: read, written and removed in one place.
 - `outbox/row.rs` — a row, a detection, and what an examination and a commit hand the store.
-- `outbox/encoded.rs` — what a row's `snapshot` and `target_name` hold, read and written. `[tests]`
+- `outbox/encoded.rs` — a row's snapshot, as the row has it and as its columns keep it, and the
+  forms of its `target_name`. `[tests]`
 - `outbox/record.rs` — a detection recorded.
 - `outbox/pick.rs` — which rows run next. `[tests]`
 - `outbox/dependencies.rs` — every row's blockers at once; test code.

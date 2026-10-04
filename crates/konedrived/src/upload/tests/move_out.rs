@@ -606,7 +606,7 @@ fn a_folder_moved_back_during_its_download_is_left_alone() {
         assert!(World::konedrive_attrs(&w.path(rel)).iter().any(|a| a == XATTR_ITEM_ID), "{rel} keeps its item id");
     }
     let row = &w.rows()[0];
-    assert_eq!((row.reason_text().as_deref(), row.snapshot.as_deref()), (Some(Reason::BackInside.key()), None));
+    assert_eq!((row.reason_text().as_deref(), row.snapshot), (Some(Reason::BackInside.key()), None));
 }
 
 /// A directory that only looks like a Trash (a `.Trash-<uid>` that is not at a mount's

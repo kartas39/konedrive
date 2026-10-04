@@ -392,88 +392,6 @@ fn a_permission_error_does_not_rebuild_a_good_store() {
     assert!(store.get(Table::Items, "A").unwrap().is_some(), "the good store must survive a transient open failure");
 }
 
-#[test]
-fn an_unknown_schema_version_is_rebuilt_empty() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tree.sqlite");
-    {
-        let mut store = TreeStore::open(&path).unwrap();
-        store.begin_staging(false).unwrap();
-        store.stage(&[root(), file("A", "R", "a")]).unwrap();
-        store.commit_staging("link-1").unwrap();
-        store.set_meta("schema_version", Some("99")).unwrap();
-    }
-    let store = TreeStore::open(&path).unwrap();
-    assert!(store.get(Table::Items, "A").unwrap().is_none());
-    assert_eq!(store.delta_link().unwrap(), None, "a rebuilt store starts with a full listing");
-    assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
-}
-
-/// a schema whose creation a crash cut short —
-/// some tables, no `meta` — is rebuilt, not an error at every open.
-#[test]
-fn a_store_with_tables_and_no_meta_is_rebuilt() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tree.sqlite");
-    rusqlite::Connection::open(&path).unwrap().execute_batch("CREATE TABLE items (id TEXT PRIMARY KEY);").unwrap();
-    let store = TreeStore::open(&path).unwrap();
-    assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
-}
-
-/// Version 2 added `activity` and `conflicts`, so a store
-/// written by the daemon before them is rebuilt once — from a full
-/// listing, since it comes back with no delta link — and
-/// then kept. With the version left at 1 the old store opens as it is
-/// and has nowhere to put an event.
-#[test]
-fn a_store_from_before_the_activity_log_is_rebuilt_once_with_it() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tree.sqlite");
-    {
-        let conn = Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE items (id TEXT PRIMARY KEY, parent_id TEXT, name TEXT NOT NULL, kind TEXT NOT NULL,
-                     size INTEGER NOT NULL DEFAULT 0, mtime INTEGER NOT NULL DEFAULT 0, etag TEXT, ctag TEXT,
-                     quickxor TEXT, mime TEXT, placement TEXT NOT NULL, thumb_key TEXT);
-                 CREATE TABLE staging AS SELECT * FROM items;
-                 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
-                 INSERT INTO meta VALUES ('schema_version', '1'), ('delta_link', 'link-1');",
-        )
-        .unwrap();
-    }
-    let mut store = TreeStore::open(&path).unwrap();
-    assert_eq!(store.delta_link().unwrap(), None, "the old store is rebuilt, so the next cycle lists in full");
-    let event = ActivityRow { at: 1, kind: "listed".into(), path: "/f".into(), detail: "1 item".into() };
-    store.add_activity(std::slice::from_ref(&event)).unwrap();
-    store.set_meta("delta_link", Some("link-2")).unwrap();
-    drop(store);
-    let store = TreeStore::open(&path).unwrap();
-    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-2"), "rebuilt once, then kept");
-    assert_eq!(store.recent_activity(10).unwrap(), vec![event]);
-}
-
-/// Version 3 added the outbox: a version 2 store — a read-only
-/// folder's, with nothing waiting to upload — is rebuilt once, from a
-/// full listing, and comes back with the new tables.
-#[test]
-fn a_version_2_store_is_rebuilt_once_with_the_outbox() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tree.sqlite");
-    {
-        let mut store = TreeStore::open(&path).unwrap();
-        store.begin_staging(false).unwrap();
-        store.stage(&[root(), file("A", "R", "a")]).unwrap();
-        store.commit_staging("link-1").unwrap();
-        store.conn.execute_batch("DROP TABLE outbox; DROP TABLE local_skipped;").unwrap();
-        store.set_meta("schema_version", Some("2")).unwrap();
-    }
-    let store = TreeStore::open(&path).unwrap();
-    assert_eq!(store.delta_link().unwrap(), None, "rebuilt: the next cycle lists in full");
-    assert!(store.get(Table::Items, "A").unwrap().is_none());
-    assert!(store.outbox_rows().unwrap().is_empty(), "the outbox is there, empty");
-    assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
-}
-
 /// The inode an item was placed as survives the swap that ends a cycle,
 /// a full listing's included (it stages from nothing), and a first
 /// listing's page commit.
@@ -500,35 +418,6 @@ fn the_local_handle_travels_with_its_row() {
     store.set_local_handle("B", Some(&handle)).unwrap();
     store.commit_page(&[root(), file("B", "R", "b")], "next-2").unwrap();
     assert_eq!(store.local_handle("B").unwrap(), Some(handle));
-}
-
-/// Review fix 2 of issue #104: a version 3 store, as a build before
-/// #104 left it — a folder not placed whose children keep their local
-/// objects — is brought to version 4 in place on open: the children
-/// forget them, the rest of the store stays.
-#[test]
-fn a_version_3_store_forgets_the_objects_below_a_folder_not_placed() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tree.sqlite");
-    let handle = |n: u8| konedrive_fs::handle::FileHandle { kind: 1, bytes: vec![n; 4] };
-    {
-        let mut store = TreeStore::open(&path).unwrap();
-        let Change::Upsert(placed) = folder("D", "R", "long") else { unreachable!() };
-        let skipped = Row { placement: Placement::Skipped(SkipReason::NameTooLong), ..placed };
-        store.begin_staging(false).unwrap();
-        store.stage(&[root(), Change::Upsert(skipped), folder("F", "D", "f"), file("G", "F", "g"), file("T", "R", "t")]).unwrap();
-        store.commit_staging("link-1").unwrap();
-        for (id, n) in [("D", 1), ("F", 2), ("G", 3), ("T", 4)] {
-            store.set_local_handle(id, Some(&handle(n))).unwrap();
-        }
-        store.set_meta("schema_version", Some("3")).unwrap();
-    }
-    let store = TreeStore::open(&path).unwrap();
-    assert_eq!(store.meta("schema_version").unwrap().as_deref(), Some(SCHEMA_VERSION));
-    assert_eq!(store.local_handle("F").unwrap(), None);
-    assert_eq!(store.local_handle("G").unwrap(), None, "every level below");
-    assert_eq!(store.local_handle("T").unwrap(), Some(handle(4)), "a placed item keeps its object");
-    assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"), "not rebuilt");
 }
 
 /// Review fixes, round 2, of issue #104: forgetting below a row that
@@ -583,13 +472,4 @@ fn a_conflict_is_listed_until_it_is_removed() {
     assert!(!store.remove_conflict("/elsewhere").unwrap());
     assert!(store.remove_conflict("/rescued/now/a.txt").unwrap());
     assert!(store.conflicts().unwrap().is_empty());
-}
-
-#[test]
-fn a_file_that_is_not_a_database_is_rebuilt() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("tree.sqlite");
-    std::fs::write(&path, b"this is not sqlite at all, not even a little").unwrap();
-    let store = TreeStore::open(&path).unwrap();
-    assert_eq!(store.delta_link().unwrap(), None);
 }

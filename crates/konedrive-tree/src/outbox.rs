@@ -28,7 +28,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
-use rusqlite::types::{Value, ValueRef};
+use rusqlite::types::Value;
 use rusqlite::{params, Connection, OptionalExtension};
 
 use crate::model::{upsert, Change, Table};
@@ -48,7 +48,8 @@ mod handles;
 mod pick;
 mod record;
 mod row;
-mod schema;
+/// A row in the database.
+mod stored;
 /// What the outbox holds, summed.
 mod sums;
 /// The outbox worker's own transactions.
@@ -62,41 +63,26 @@ use handles::set_local_handle;
 pub use konedrive_reason::{key_of, known_group, Group, LocalSkip, Reason};
 use record::record;
 pub use row::{BadItem, Base, Committed, Detection, Inode, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded};
-pub use schema::OPENING_LEFT_KEEP;
-pub(super) use schema::{upgrade, SCHEMA};
-use schema::FREES;
+use stored::{all_rows, insert, path_from, path_value, remove, rewrite, rows_where, set_snapshot};
 pub use sums::{OutboxGroup, SkippedGroup};
 
 /// A name the outbox worker gives an item in OneDrive while the name its
 /// row takes is still another item's (§4.4, F55 (7)).
 pub const SWAP_PREFIX: &str = ".konedrive-swap-";
 
+/// How long a record of an opening whose row left is kept (issue #89): a
+/// guess, longer than an abandoned placeholder was seen to live (a day).
+pub const OPENING_LEFT_KEEP: i64 = 7 * 24 * 3600;
+
+/// The rows the partial index `outbox_frees` holds: those with a base place
+/// they leave. [`frees`] decides among them.
+pub(crate) const FREES: &str = "base_parent IS NOT NULL AND base_name IS NOT NULL AND (base_parent IS NOT target_parent OR base_name IS NOT target_name)";
+
 /// The `meta` key counting outbox commits: `items.local_seq` of the row a
 /// commit writes (the stale-delta guard, §3.7).
 pub const OUTBOX_SEQ: &str = "outbox_seq";
 /// The `meta` key of a pause's end, unix seconds; `0` until resumed (§9).
 pub const PAUSED_UNTIL: &str = "paused_until";
-
-const OUTBOX_COLUMNS: &str = "seq, kind, item_id, dev, ino, rel, base_etag, base_ctag, base_parent, base_name, \
-     target_parent, target_name, state, reason, attempts, next_try, snapshot, session_url, session_expires, session_next, handle, confirmed, size";
-
-/// A path as the store keeps it: text when it is UTF-8, its bytes otherwise
-/// (Linux names need not be UTF-8; such a name is blocked, and still has to
-/// be listed where it is). One path always gets the same form, so equality
-/// in SQL holds.
-fn path_value(path: &Path) -> Value {
-    match path.to_str() {
-        Some(text) => Value::Text(text.to_owned()),
-        None => Value::Blob(path.as_os_str().as_bytes().to_vec()),
-    }
-}
-
-fn path_from(value: ValueRef<'_>) -> PathBuf {
-    match value {
-        ValueRef::Text(bytes) | ValueRef::Blob(bytes) => PathBuf::from(OsStr::from_bytes(bytes)),
-        _ => PathBuf::new(),
-    }
-}
 
 /// The sets of rows that wait on one another (strongly connected, more than
 /// one row): Tarjan's algorithm, without recursion.
@@ -197,94 +183,6 @@ pub fn is_under(path: &Path, dir: &Path) -> bool {
     path != dir && path.starts_with(dir)
 }
 
-/// Where each column of [`OUTBOX_COLUMNS`] is in a row [`outbox_row`] reads.
-mod at {
-    use super::OUTBOX_COLUMNS;
-    use crate::model::column;
-
-    pub(super) const SEQ: usize = column(OUTBOX_COLUMNS, "seq");
-    pub(super) const KIND: usize = column(OUTBOX_COLUMNS, "kind");
-    pub(super) const ITEM_ID: usize = column(OUTBOX_COLUMNS, "item_id");
-    pub(super) const DEV: usize = column(OUTBOX_COLUMNS, "dev");
-    pub(super) const INO: usize = column(OUTBOX_COLUMNS, "ino");
-    pub(super) const REL: usize = column(OUTBOX_COLUMNS, "rel");
-    pub(super) const BASE_ETAG: usize = column(OUTBOX_COLUMNS, "base_etag");
-    pub(super) const BASE_CTAG: usize = column(OUTBOX_COLUMNS, "base_ctag");
-    pub(super) const BASE_PARENT: usize = column(OUTBOX_COLUMNS, "base_parent");
-    pub(super) const BASE_NAME: usize = column(OUTBOX_COLUMNS, "base_name");
-    pub(super) const TARGET_PARENT: usize = column(OUTBOX_COLUMNS, "target_parent");
-    pub(super) const TARGET_NAME: usize = column(OUTBOX_COLUMNS, "target_name");
-    pub(super) const STATE: usize = column(OUTBOX_COLUMNS, "state");
-    pub(super) const REASON: usize = column(OUTBOX_COLUMNS, "reason");
-    pub(super) const ATTEMPTS: usize = column(OUTBOX_COLUMNS, "attempts");
-    pub(super) const NEXT_TRY: usize = column(OUTBOX_COLUMNS, "next_try");
-    pub(super) const SNAPSHOT: usize = column(OUTBOX_COLUMNS, "snapshot");
-    pub(super) const SESSION_URL: usize = column(OUTBOX_COLUMNS, "session_url");
-    pub(super) const SESSION_EXPIRES: usize = column(OUTBOX_COLUMNS, "session_expires");
-    pub(super) const SESSION_NEXT: usize = column(OUTBOX_COLUMNS, "session_next");
-    pub(super) const HANDLE: usize = column(OUTBOX_COLUMNS, "handle");
-    pub(super) const CONFIRMED: usize = column(OUTBOX_COLUMNS, "confirmed");
-    pub(super) const SIZE: usize = column(OUTBOX_COLUMNS, "size");
-}
-
-/// A row of the outbox, read from a query that selects [`OUTBOX_COLUMNS`].
-fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
-    let kind: String = row.get(at::KIND)?;
-    let state: String = row.get(at::STATE)?;
-    let dev: Option<i64> = row.get(at::DEV)?;
-    let ino: Option<i64> = row.get(at::INO)?;
-    let handle: Option<Vec<u8>> = row.get(at::HANDLE)?;
-    let handle = handle.as_deref().and_then(FileHandle::decode);
-    let inode = match (dev, ino) {
-        (Some(dev), Some(ino)) => Some(Inode { dev: dev as u64, ino: ino as u64, handle }),
-        _ => handle.map(|handle| Inode { dev: 0, ino: 0, handle: Some(handle) }),
-    };
-    let base = Base { etag: row.get(at::BASE_ETAG)?, ctag: row.get(at::BASE_CTAG)?, parent: row.get(at::BASE_PARENT)?, name: row.get(at::BASE_NAME)? };
-    let has_base = base != Base::default();
-    // A value no konedrive writes fails closed: the row is blocked, never
-    // run as a guess.
-    let (known_kind, known_state) = (OutboxKind::parse(&kind), OutboxState::parse(&state));
-    let unreadable = match (known_kind, known_state) {
-        (None, _) => Some(format!("unreadable kind {kind:?}")),
-        (_, None) => Some(format!("unreadable state {state:?}")),
-        _ => None,
-    };
-    Ok(OutboxRow {
-        seq: row.get(at::SEQ)?,
-        kind: known_kind.unwrap_or(OutboxKind::Update),
-        item_id: row.get(at::ITEM_ID)?,
-        inode,
-        rel: path_from(row.get_ref(at::REL)?),
-        base: has_base.then_some(base),
-        target_parent: row.get(at::TARGET_PARENT)?,
-        target_name: row.get(at::TARGET_NAME)?,
-        state: if unreadable.is_some() { OutboxState::Blocked } else { known_state.unwrap_or(OutboxState::Blocked) },
-        reason: match unreadable {
-            Some(why) => Some(Reason::Other(why)),
-            None => row.get::<_, Option<String>>(at::REASON)?.map(Reason::from),
-        },
-        attempts: row.get::<_, i64>(at::ATTEMPTS)? as u32,
-        next_try: row.get(at::NEXT_TRY)?,
-        snapshot: row.get(at::SNAPSHOT)?,
-        session_url: row.get(at::SESSION_URL)?,
-        session_expires: row.get(at::SESSION_EXPIRES)?,
-        session_next: row.get::<_, Option<i64>>(at::SESSION_NEXT)?.map(|n| n as u64),
-        confirmed: row.get::<_, i64>(at::CONFIRMED)? != 0,
-        size: row.get::<_, Option<i64>>(at::SIZE)?.map(|n| n.max(0) as u64),
-    })
-}
-
-fn rows_where(conn: &Connection, filter: &str, params: impl rusqlite::Params) -> Result<Vec<OutboxRow>, TreeError> {
-    let order = if filter.contains("ORDER BY") { "" } else { " ORDER BY seq" };
-    let mut statement = conn.prepare_cached(&format!("SELECT {OUTBOX_COLUMNS} FROM outbox {filter}{order}"))?;
-    let rows = statement.query_map(params, outbox_row)?.collect::<Result<Vec<_>, _>>()?;
-    Ok(rows)
-}
-
-fn all_rows(conn: &Connection) -> Result<Vec<OutboxRow>, TreeError> {
-    rows_where(conn, "", [])
-}
-
 /// Whether `items` (the base) has no row for `id` any more. A query that
 /// fails counts as not gone: the row is kept rather than dropped on an
 /// ambiguous answer.
@@ -329,86 +227,6 @@ fn rows_under(conn: &Connection, dir: &Path) -> Result<Vec<OutboxRow>, TreeError
     rows.retain(|row| is_under(&row.rel, dir));
     rows.sort_by_key(|row| row.seq);
     Ok(rows)
-}
-
-fn insert(conn: &Connection, row: &OutboxRow) -> Result<i64, TreeError> {
-    let base = row.base.clone().unwrap_or_default();
-    let (dev, ino, handle) = match &row.inode {
-        Some(inode) => (Some(inode.dev as i64), Some(inode.ino as i64), inode.handle.as_ref().map(FileHandle::encode)),
-        None => (None, None, None),
-    };
-    conn.execute(
-        "INSERT INTO outbox (kind, item_id, dev, ino, rel, base_etag, base_ctag, base_parent, base_name,
-                             target_parent, target_name, state, reason, attempts, next_try, snapshot,
-                             session_url, session_expires, session_next, handle, confirmed, size)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
-        params![
-            row.kind.as_str(),
-            row.item_id,
-            dev,
-            ino,
-            path_value(&row.rel),
-            base.etag,
-            base.ctag,
-            base.parent,
-            base.name,
-            row.target_parent,
-            row.target_name,
-            row.state.as_str(),
-            row.reason_text(),
-            row.attempts as i64,
-            row.next_try,
-            row.snapshot,
-            row.session_url,
-            row.session_expires,
-            row.session_next.map(|n| n as i64),
-            handle,
-            row.confirmed as i64,
-            row.size.map(|n| n as i64),
-        ],
-    )?;
-    Ok(conn.last_insert_rowid())
-}
-
-fn rewrite(conn: &Connection, row: &OutboxRow) -> Result<(), TreeError> {
-    let base = row.base.clone().unwrap_or_default();
-    let (dev, ino, handle) = match &row.inode {
-        Some(inode) => (Some(inode.dev as i64), Some(inode.ino as i64), inode.handle.as_ref().map(FileHandle::encode)),
-        None => (None, None, None),
-    };
-    conn.execute(
-        "UPDATE outbox SET kind = ?2, item_id = ?3, dev = ?4, ino = ?5, rel = ?6, base_etag = ?7, base_ctag = ?8,
-                base_parent = ?9, base_name = ?10, target_parent = ?11, target_name = ?12, state = ?13, reason = ?14,
-                attempts = ?15, next_try = ?16, snapshot = ?17, session_url = ?18, session_expires = ?19,
-                session_next = ?20, handle = ?21, confirmed = ?22, size = ?23
-          WHERE seq = ?1",
-        params![
-            row.seq,
-            row.kind.as_str(),
-            row.item_id,
-            dev,
-            ino,
-            path_value(&row.rel),
-            base.etag,
-            base.ctag,
-            base.parent,
-            base.name,
-            row.target_parent,
-            row.target_name,
-            row.state.as_str(),
-            row.reason_text(),
-            row.attempts as i64,
-            row.next_try,
-            row.snapshot,
-            row.session_url,
-            row.session_expires,
-            row.session_next.map(|n| n as i64),
-            handle,
-            row.confirmed as i64,
-            row.size.map(|n| n as i64),
-        ],
-    )?;
-    Ok(())
 }
 
 fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
@@ -456,7 +274,7 @@ impl TreeStore {
                 },
                 OutboxOp::Rebase { from, to } => rebase(&tx, from, to)?,
                 OutboxOp::Remove(seq) => {
-                    if tx.execute("DELETE FROM outbox WHERE seq = ?1", [seq])? > 0 {
+                    if remove(&tx, *seq)? {
                         out.removed.push(*seq);
                     }
                 }
@@ -542,7 +360,7 @@ impl TreeStore {
             .collect();
         let tx = self.conn.transaction()?;
         for row in &rows {
-            tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+            remove(&tx, row.seq)?;
         }
         tx.commit()?;
         Ok(rows)
@@ -559,7 +377,7 @@ impl TreeStore {
             .collect();
         let tx = self.conn.transaction()?;
         for row in &rows {
-            tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+            remove(&tx, row.seq)?;
         }
         tx.commit()?;
         Ok(rows)
@@ -580,15 +398,24 @@ impl TreeStore {
             .filter_map(|r| Some((r.seq, r.item_id?)))
             .collect();
         let brought: HashSet<&str> = ids.iter().map(String::as_str).collect();
-        let (mut gone, mut again) = (0, 0);
+        let (mut gone, mut again) = (Vec::new(), Vec::new());
         for (seq, id) in blocked {
             if self.get(Table::Staging, &id)?.is_none() {
-                gone += self.conn.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+                gone.push(seq);
             } else if whole || brought.contains(id.as_str()) {
-                again += self.conn.execute("UPDATE outbox SET state = 'ready', reason = NULL, next_try = NULL WHERE seq = ?1", [seq])?;
+                again.push(seq);
             }
         }
-        Ok((gone, again))
+        let tx = self.conn.transaction()?;
+        let (mut went, mut retried) = (0, 0);
+        for seq in gone {
+            went += usize::from(remove(&tx, seq)?);
+        }
+        for seq in again {
+            retried += tx.execute("UPDATE outbox SET state = 'ready', reason = NULL, next_try = NULL WHERE seq = ?1", [seq])?;
+        }
+        tx.commit()?;
+        Ok((went, retried))
     }
 
     /// Rows at `rel` or below it.
@@ -609,7 +436,7 @@ impl TreeStore {
             self.outbox_at_or_under(rel)?.into_iter().filter(|row| row.state != OutboxState::Running && !row.kind.removes()).collect();
         let tx = self.conn.transaction()?;
         for row in &rows {
-            tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+            remove(&tx, row.seq)?;
         }
         tx.commit()?;
         Ok(rows)
@@ -631,8 +458,7 @@ impl TreeStore {
     }
 
     pub fn outbox_set_snapshot(&self, seq: i64, snapshot: Option<Snapshot>) -> Result<(), TreeError> {
-        self.conn.execute("UPDATE outbox SET snapshot = ?2 WHERE seq = ?1", params![seq, snapshot.map(|s| s.to_string())])?;
-        Ok(())
+        set_snapshot(&self.conn, seq, snapshot)
     }
 
     /// An upload session's progress, persisted before the first byte and
@@ -677,7 +503,9 @@ impl TreeStore {
                 )?;
             }
         }
-        tx.execute("DELETE FROM outbox WHERE state = 'held'", [])?;
+        for row in &held {
+            remove(&tx, row.seq)?;
+        }
         tx.commit()?;
         Ok(held)
     }
@@ -698,7 +526,7 @@ impl TreeStore {
             .filter(|row| row.item_id.as_deref().is_some_and(|id| item_gone(&tx, id)))
             .collect();
         for row in &gone {
-            tx.execute("DELETE FROM outbox WHERE seq = ?1", [row.seq])?;
+            remove(&tx, row.seq)?;
         }
         tx.commit()?;
         Ok(gone)
@@ -764,7 +592,7 @@ impl TreeStore {
                 crate::reconcile::tombstone(&tx, &[item_id], local_seq)?;
             }
         }
-        tx.execute("DELETE FROM outbox WHERE seq = ?1", [seq])?;
+        remove(&tx, seq)?;
         if let Some(event) = activity {
             tx.execute(
                 "INSERT INTO activity (at, kind, path, detail) VALUES (?1, ?2, ?3, ?4)",

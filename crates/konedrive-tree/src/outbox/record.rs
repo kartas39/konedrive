@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-use super::{insert, rewrite, rows_for, Base, Detection, OutboxKind, OutboxRow, OutboxState, Recorded};
+use super::{insert, remove, rewrite, rows_for, Base, Detection, OutboxKind, OutboxRow, OutboxState, Recorded};
 use crate::TreeError;
 
 fn new_row(d: &Detection, kind: OutboxKind, base: Option<Base>) -> OutboxRow {
@@ -105,7 +105,7 @@ fn merge(existing: &OutboxRow, d: &Detection) -> Option<OutboxRow> {
         _ => false,
     };
     if kind == existing.kind && same_object && row.target() == existing.target() {
-        row.snapshot = existing.snapshot.clone();
+        row.snapshot = existing.snapshot;
         row.session_url = existing.session_url.clone();
         row.session_expires = existing.session_expires;
         row.session_next = existing.session_next;
@@ -143,7 +143,7 @@ pub(super) fn record(conn: &Connection, d: &Detection) -> Result<Recorded, TreeE
                 Recorded::Merged(row.seq)
             }
             None => {
-                conn.execute("DELETE FROM outbox WHERE seq = ?1", [existing.seq])?;
+                remove(conn, existing.seq)?;
                 Recorded::Removed(existing.seq)
             }
         });

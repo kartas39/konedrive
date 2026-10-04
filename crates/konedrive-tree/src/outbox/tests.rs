@@ -52,32 +52,6 @@ fn detect(kind: OutboxKind, item: Option<&Row>, object: Option<Inode>, rel: &str
     }
 }
 
-/// A store of the version before issue #89 — `upload_openings` without
-/// `last`, the trigger that deleted a record with its row — brought up to
-/// date: a record whose row leaves is kept without it, and its missing
-/// `last` reads as its first time.
-#[test]
-fn an_older_stores_openings_are_upgraded() {
-    let mut s = store(&[]);
-    s.conn
-        .execute_batch(
-            "DROP TRIGGER upload_openings_left_behind; DROP TABLE upload_openings_left; DROP TABLE upload_openings;
-                 CREATE TABLE upload_openings (seq INTEGER PRIMARY KEY, parent TEXT NOT NULL, name TEXT NOT NULL, at INTEGER NOT NULL);
-                 CREATE TRIGGER upload_openings_leave AFTER DELETE ON outbox BEGIN DELETE FROM upload_openings WHERE seq = OLD.seq; END;",
-        )
-        .unwrap();
-    let Recorded::Inserted(seq) = s.outbox_record(&detect(OutboxKind::Create, None, Some(inode(1)), "a.txt", Some("R"))).unwrap() else { panic!() };
-    s.conn.execute("INSERT INTO upload_openings (seq, parent, name, at) VALUES (?1, 'R', 'a.txt', 100)", [seq]).unwrap();
-    upgrade(&s.conn).unwrap();
-    assert_eq!(s.upload_opening_windows("R", "a.txt").unwrap(), [(100, 100)]);
-    let old_trigger: bool = s.conn.prepare("SELECT 1 FROM sqlite_master WHERE name = 'upload_openings_leave'").unwrap().exists([]).unwrap();
-    assert!(!old_trigger);
-    s.outbox_drop(seq, None, None, None).unwrap();
-    let left: i64 = s.conn.query_row("SELECT COUNT(*) FROM upload_openings_left", [], |r| r.get(0)).unwrap();
-    assert_eq!(left, 1, "kept without its row");
-    assert_eq!(s.upload_opening_windows("R", "A.TXT").unwrap(), [(100, 100)]);
-}
-
 fn kinds(store: &TreeStore) -> Vec<(OutboxKind, String)> {
     store.outbox_rows().unwrap().into_iter().map(|r| (r.kind, r.rel.display().to_string())).collect()
 }
@@ -305,11 +279,9 @@ fn dropping_held_rows_survives_a_cycles_swap() {
     assert_eq!((s.local_handle("D").unwrap(), s.local_handle("A").unwrap()), (None, None));
 }
 
-/// A kind or state no konedrive writes fails closed: blocked, never run.
 /// The item a bad upload left in OneDrive (quality finding `UP2`) is kept
 /// through every change of the row's state and reason and through an
 /// examination's merge, and goes only when it is cleared, or with the row.
-/// A row an earlier version wrote, with the id in its reason, is read as one.
 #[test]
 fn a_rows_bad_item_survives_a_settle_and_a_merge() {
     let mut s = store(&[]);
@@ -324,17 +296,11 @@ fn a_rows_bad_item_survives_a_settle_and_a_merge() {
     s.outbox_set_bad_item(seq, Some(&bad)).unwrap();
     s.outbox_set_state(seq, OutboxState::Retry, Some(&"network".into()), Some(5)).unwrap();
     assert_eq!(s.outbox_record(&Detection { rel: "b.txt".into(), target_name: Some("b.txt".into()), state: OutboxState::Waiting, ..d.clone() }).unwrap(), Recorded::Merged(seq));
-    s.outbox_amend(seq, |row| row.snapshot = Some("1 2".into())).unwrap();
+    s.outbox_amend(seq, |row| row.snapshot = Some(Snapshot::content(1, 0, 2))).unwrap();
     assert_eq!(s.outbox_bad_item(seq).unwrap(), Some(bad));
     s.outbox_set_bad_item(seq, None).unwrap();
     assert_eq!(s.outbox_bad_item(seq).unwrap(), None);
 
-    s.conn.execute("UPDATE outbox SET reason = 'hash-mismatch:OLD!1' WHERE seq = ?1", [seq]).unwrap();
-    upgrade(&s.conn).unwrap();
-    let old = s.outbox_bad_item(seq).unwrap().unwrap();
-    assert_eq!(old, BadItem { id: "OLD!1".into(), ctag: None, etag: None }, "an older row has no tag");
-    assert!(old.still(Some("c"), Some("e")), "and is taken for the bad upload, as that version took it");
-    assert_eq!(s.outbox_row(seq).unwrap().unwrap().reason_text().as_deref(), Some("hash-mismatch"));
     assert_eq!(s.outbox_bad_item(seq + 1).unwrap(), None, "no such row");
 }
 
