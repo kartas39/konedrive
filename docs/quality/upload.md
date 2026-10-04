@@ -177,6 +177,9 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   `move_out.rs:286–291`; the `open_by_handle` errno ladder four times.
 - **Fix:** a `MoveOut` context struct like `content::Job`; a shared `tidy_dirs`; a `Reach` enum.
 - **Size:** M. **Risk:** medium to high: the delete-in-OneDrive path.
+- **Fixed 2026-10-04** in `4deeac6` (#168): a `MoveOut` context with one errno ladder (`step`,
+  `vanished`, `refused`), one `Reach`, and the Trash rule written once in `move_out/tidy.rs`. A file in
+  the Trash that reads `dehydrating` now goes like a placeholder (`F237`).
 
 ## UP9. `steps.rs` is two modules; the 409 and guard ladders are copied
 
@@ -211,6 +214,8 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
 - `Engine::fault` (`engine.rs:213–221`) is always compiled and locks a mutex at 17 call sites;
   `detach` (`mod.rs:266–276`) builds a runtime "on a plain thread (tests)"; `fake.rs` (865 lines)
   is a general OneDrive fake used by `remote/` and `local/` tests, living in `upload/`.
+- **Fixed 2026-10-04** in `4deeac6` (#168): the fault points are `cfg(test)`, `detach` only spawns on the
+  caller's runtime (`F240`), and the fake OneDrive is `crate::fake_onedrive` under `src/tests/`.
 
 ## UP12. A panic on a convention; errors swallowed or mislabelled
 
@@ -218,6 +223,8 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   `move_out.rs:283, 289, 301`, `space.rs:117`, `engine.rs:546`, `move_out/tidy.rs:135`.
   `answer_row` wraps a bad Graph answer as `Fail::Io` (`steps.rs:133`), stored as `local-error`.
   Stale comments: `space.rs:203`, `content.rs:49`, `mod.rs:61–68`.
+- **Fixed 2026-10-04** in `4deeac6` (#168): the step is built from the `MoveOuts` it needs, so there is
+  no `expect`; swallowed errors are logged at `debug`; `answer_row`'s failure is `upload-error`.
 
 ## UP13. A crash between a conflict copy's rename and its record leaves the copy never uploaded — **defect?**
 
