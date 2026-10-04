@@ -64,6 +64,13 @@ pub trait ContentSource: Send + Sync {
     /// wanted — or `None` for the rest of the file: one piece of a download
     /// in parts (issue #28) asks for its own range only. A source may still
     /// serve more than that; the download reads no further than `end`.
+    ///
+    /// A `from` at the end of the item or past it is answered, not refused: an empty stream
+    /// with the item's size and version. A download that continues from a checkpoint learns
+    /// the item's size by now only from this answer, and drops a checkpoint the item has
+    /// become too short for (`guards::resume`); a source that failed such a fetch would
+    /// have it broken off three times with the checkpoint kept. `DriveClient::download`
+    /// answers a `416` this way, and a file read past its end is empty.
     async fn fetch(&self, item_id: &str, from: u64, end: Option<u64>) -> Result<Fetched, SourceError>;
 
     /// How far a download in parts has come as a whole: `done` bytes of the

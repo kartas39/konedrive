@@ -187,8 +187,11 @@ fn punch_clean_file_watched(
     match demote(file, Keep::Nothing, shape, Held::Lease(&lease)).map_err(io_error)? {
         Demoted::Done { .. } => {}
         // Under the per-inode lock only something outside the daemon can have
-        // changed the state since `mark_dehydrating`; the file is then not
-        // this free-up's to empty.
+        // changed the state since `mark_dehydrating`. A file that reads
+        // `hydrated`, `online-only` or nothing by now is not this free-up's
+        // to empty, and is refused. One that reads `hydrating` is emptied all
+        // the same (`demote` under a lease takes both interrupted states):
+        // its mark was cleared a moment ago and its content is not trusted.
         Demoted::Left(now) => {
             let now = now.map_or("no state", State::as_str);
             return Err(DehydrateError::Io(format!("the file's state changed to {now} while it was freed up; it was left as it is")));

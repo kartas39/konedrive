@@ -96,6 +96,7 @@ impl Breaks {
             tracing::warn!("{item_id}: giving up after {BREAKS} breaks: {why}");
             return Err(End::Fail(libc::EIO));
         }
+        tracing::warn!("{item_id}: {why}; trying again");
         tokio::time::sleep(self.back_off * self.count).await;
         Ok(())
     }

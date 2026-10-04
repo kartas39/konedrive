@@ -86,6 +86,35 @@ async fn a_short_answer_is_resumed_with_a_range() {
     assert_eq!(std::fs::read(dir.path().join("f.bin")).unwrap(), content);
 }
 
+/// A checkpoint that counts more bytes than the file has in OneDrive by now (it shrank
+/// there, and the placeholder still has the old size): the range asked for starts past the
+/// end, OneDrive answers `416`, and the download drops the checkpoint and starts from the
+/// beginning — it does not break three times and keep the checkpoint for the next try.
+#[tokio::test]
+async fn a_checkpoint_past_the_end_of_the_file_in_onedrive_is_dropped() {
+    use konedrive_fs::placeholder::{read_progress, write_progress, Progress};
+    let server = MockServer::start().await;
+    let content = data(50_000);
+    mock_item(&server, &content, Some("/dl/1")).await;
+    Mock::given(method("GET")).and(path("/dl/1")).and(header("range", "bytes=200000-"))
+        .respond_with(ResponseTemplate::new(416))
+        .with_priority(1)
+        .mount(&server).await;
+    Mock::given(method("GET")).and(path("/dl/1"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(content.clone()))
+        .with_priority(2)
+        .mount(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let file = placeholder(dir.path(), "f.bin", "I", 300_000);
+    write_progress(&file, &Progress { ctag: "c1".into(), bytes: 200_000 }).unwrap();
+
+    assert_eq!(fill(&file, &source(&server)).await, 0);
+
+    assert_eq!(std::fs::read(dir.path().join("f.bin")).unwrap(), content);
+    assert_eq!(read_state(&file).unwrap(), Some(State::Hydrated));
+    assert_eq!(read_progress(&file).unwrap(), None);
+}
+
 #[tokio::test]
 async fn an_expired_download_link_succeeds_with_retry_in_fetch() {
     let server = MockServer::start().await;
