@@ -22,7 +22,7 @@ use crate::folder::disk::{Disk, Probe, Scanned, HOLDING, NEW_PREFIX};
 use crate::status::activity::Kind as EventKind;
 use crate::helper::HelperLink;
 use crate::folder::locks::InodeLocks;
-use konedrive_tree::{Kind, Placement, Row, Store, Table, TreeError};
+use konedrive_tree::{Kind, Located, Placement, Plan, Planned, Row, Store, Table, TreeError};
 
 /// Read-write mode's rules (`docs/design/writes.md` §9).
 mod rw;
@@ -348,6 +348,10 @@ struct Run {
 /// Placed items recorded in one transaction (issue #39; a guess).
 pub const PLACED_BATCH: usize = 500;
 
+/// Items whose plan is read in one store call (a guess): the store's thread
+/// serves others between two calls.
+const PLAN_BATCH: usize = 500;
+
 impl Run {
     /// Notes what a Changed scope did to `rel`; a Full scope notes nothing
     /// (see [`Applied::changes`]).
@@ -477,6 +481,48 @@ impl Materializer {
         Ok(())
     }
 
+    /// The plan of `ids`: what the base and the new tree have of each, read
+    /// [`PLAN_BATCH`] items to a store call.
+    fn plan(&self, ids: &[String]) -> Result<Plan, ApplyError> {
+        let mut plan = Plan::default();
+        for batch in ids.chunks(PLAN_BATCH) {
+            let batch = batch.to_vec();
+            plan.absorb(self.store.call_blocking(move |s| s.plan(&batch))?);
+        }
+        Ok(plan)
+    }
+
+    /// The plan of what the Full scan found in `entries`.
+    fn plan_scanned(&self, entries: &[Scanned]) -> Result<Plan, ApplyError> {
+        let ids: Vec<String> = entries.iter().filter_map(|entry| entry.id.clone()).collect();
+        self.plan(&ids)
+    }
+
+    /// The plan of the Changed scope, read once: the delta's items, and
+    /// everything the new tree has below one that comes into view.
+    fn plan_changed(&self, ids: &[String]) -> Result<Plan, ApplyError> {
+        let mut plan = self.plan(ids)?;
+        let shown: Vec<String> = ids.iter().filter(|id| plan.of(id).comes_into_view()).cloned().collect();
+        if !shown.is_empty() {
+            let below = self.store.call_blocking(move |s| {
+                let mut below = Vec::new();
+                for id in &shown {
+                    below.extend(s.descendants(Table::Staging, id)?);
+                }
+                Ok(below)
+            })?;
+            plan.absorb(self.plan(&below)?);
+        }
+        Ok(plan)
+    }
+
+    /// The Changed scope: every item of its plan but the root. The root's
+    /// own entry changes with every change below it; it is the folder
+    /// itself, never something to move.
+    fn scope_of(&self, plan: &Plan) -> HashSet<String> {
+        plan.ids().filter(|id| **id != self.root_item_id).cloned().collect()
+    }
+
     fn full(&self, run: &mut Run) -> Result<(), ApplyError> {
         self.check_cancel()?;
         let scanned = self.disk.scan(&self.root_item_id)?;
@@ -487,18 +533,21 @@ impl Materializer {
             }
         }
         let mut misplaced: Vec<&Scanned> = Vec::new();
-        for entry in &scanned {
-            let Some(id) = &entry.id else { continue };
-            if is_leftover_replacement(entry, id, &id_counts) {
-                self.check_cancel()?;
-                self.discard_leftover_replacement(entry, run)?;
-                continue;
-            }
-            if self.is_misplaced(entry, id)? {
-                misplaced.push(entry);
+        for entries in scanned.chunks(PLAN_BATCH) {
+            let plan = self.plan_scanned(entries)?;
+            for entry in entries {
+                let Some(id) = &entry.id else { continue };
+                if is_leftover_replacement(entry, id, &id_counts) {
+                    self.check_cancel()?;
+                    self.discard_leftover_replacement(entry, run)?;
+                    continue;
+                }
+                if is_misplaced(entry, plan.of(id)) {
+                    misplaced.push(entry);
+                }
             }
         }
-        misplaced.sort_by(|a, b| b.depth.cmp(&a.depth));
+        misplaced.sort_by_key(|entry| std::cmp::Reverse(entry.depth));
         for entry in misplaced {
             self.check_cancel()?;
             self.to_holding(&entry.rel, entry.id.as_deref().expect("filtered above"), run)?;
@@ -522,45 +571,20 @@ impl Materializer {
         Ok(())
     }
 
-    fn is_misplaced(&self, entry: &Scanned, id: &str) -> Result<bool, ApplyError> {
-        let Some(row) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })? else {
-            return Ok(true);
-        };
-        Ok(row.placement != Placement::Placed
-            || row.parent_id != entry.parent_id
-            || entry.rel.file_name() != Some(OsStr::new(&row.name))
-            || (row.kind == Kind::Folder) != entry.is_dir)
-    }
-
     fn changed(&self, ids: Vec<String>, run: &mut Run) -> Result<(), ApplyError> {
         // What an earlier run left in the holding directory is not this
         // delta's to drain; a Full reconcile sorts it out by item id.
         if self.holding_if_any()?.is_some() {
             return Err(ApplyError::NeedFull(format!("{HOLDING} is left from an earlier run")));
         }
-        let mut scope: HashSet<String> = ids.iter().cloned().collect();
-        // The root's own entry changes with every change below it; it is the
-        // folder itself, never something to move.
-        scope.remove(&self.root_item_id);
-        for id in &ids {
-            let new = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?;
-            let old = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Items, &id) })?;
-            let comes_into_view = new.as_ref().is_some_and(|l| l.placed) && !old.as_ref().is_some_and(|l| l.placed);
-            if comes_into_view {
-                scope.extend(self.store.call_blocking({ let id = id.to_owned(); move |s| s.descendants(Table::Staging, &id) })?);
-            }
-        }
+        let plan = self.plan_changed(&ids)?;
+        let scope = self.scope_of(&plan);
         run.scope = Some(scope.clone());
 
         // Phase 1, by where things are now, deepest first.
-        let mut here = Vec::new();
-        for id in &scope {
-            if let Some(old) = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Items, &id) })?.filter(|l| l.placed) {
-                here.push((id.clone(), old));
-            }
-        }
-        here.sort_by(|a, b| b.1.depth.cmp(&a.1.depth));
-        for (id, old) in &here {
+        let mut here: Vec<(&String, &Located)> = scope.iter().filter_map(|id| Some((id, plan.of(id).base_place()?))).collect();
+        here.sort_by_key(|h| std::cmp::Reverse(h.1.depth));
+        for (id, old) in here {
             self.check_cancel()?;
             let parent = old.rel.parent().unwrap_or(Path::new(""));
             let name = old.rel.file_name().ok_or_else(|| ApplyError::NeedFull(format!("{id} has no name")))?;
@@ -569,30 +593,17 @@ impl Materializer {
                 Probe::Managed { id: found, .. } if &found == id => {}
                 other => return Err(ApplyError::NeedFull(format!("{} should be {id} and is {other:?}", old.rel.display()))),
             }
-            let old_row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Items, &id) })?;
-            let new_row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?;
-            let stays = matches!((&old_row, &new_row), (Some(o), Some(n))
-                if n.placement == Placement::Placed && n.parent_id == o.parent_id && n.name == o.name);
-            if !stays {
+            if !plan.of(id).stays() {
                 self.to_holding(&old.rel, id, run)?;
             }
         }
 
         // Phase 2, by where things belong, shallowest first.
-        let mut there = Vec::new();
-        for id in &scope {
-            let row = self.store.call_blocking({ let id = id.to_owned(); move |s| s.get(Table::Staging, &id) })?;
-            let new = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?;
-            if let (Some(row), Some(new)) = (row, new) {
-                if new.placed {
-                    there.push((row, new));
-                }
-            }
-        }
-        there.sort_by(|a, b| a.1.depth.cmp(&b.1.depth));
+        let mut there = placed_by_the_new_tree(&plan, &scope);
+        there.sort_by_key(|t| t.1.depth);
         // Folders placed — and so checked — by this phase.
         let mut placed: HashSet<String> = HashSet::new();
-        for (row, new) in &there {
+        for (row, new) in there {
             self.check_cancel()?;
             let parent = new.rel.parent().unwrap_or(Path::new(""));
             self.check_parent(row, parent, &placed)?;
@@ -812,6 +823,28 @@ impl Materializer {
         }
         Ok(())
     }
+}
+
+/// Whether a scanned entry is not where the new tree has its item: the
+/// tree does not have the item, does not place it, or has it in another
+/// folder, under another name, or as the other kind.
+fn is_misplaced(entry: &Scanned, planned: &Planned) -> bool {
+    let Some(new) = &planned.new else { return true };
+    new.row.placement != Placement::Placed
+        || new.row.parent_id != entry.parent_id
+        || entry.rel.file_name() != Some(OsStr::new(&new.row.name))
+        || (new.row.kind == Kind::Folder) != entry.is_dir
+}
+
+/// The items of `scope` the new tree places, each with its row and place.
+fn placed_by_the_new_tree<'a>(plan: &'a Plan, scope: &HashSet<String>) -> Vec<(&'a Row, &'a Located)> {
+    scope
+        .iter()
+        .filter_map(|id| {
+            let new = plan.of(id).new.as_ref()?;
+            Some((&new.row, new.place()?))
+        })
+        .collect()
 }
 
 /// Whether a scanned entry is the temporary link `swap_in` leaves when its
