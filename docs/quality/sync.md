@@ -86,6 +86,9 @@ risky one.
 - **Fix:** a `RunningSync` owning `Syncing`, `store`, `source`, with `start`, `stop`,
   `outbox(|o| …)`, `watcher(|w| …)`; `start_sync` split into prepare, build, publish.
 - **Size:** L. **Risk:** the highest in the area. After `SY2`.
+- **Fixed 2026-10-04** in `a0d0f1e` (#172): `RunningSync` owns the parts and lives in the folder's state;
+  the parts are linked by handles; a change waits for what it stopped. Three links still go through
+  the service by a weak reference (`D42`).
 
 ## SY4. A registration's state is four bools; the register sequence is written twice
 
