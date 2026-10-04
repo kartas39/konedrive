@@ -35,7 +35,7 @@ mod holding;
 /// One downloaded file swapped for its new version.
 mod replace;
 use file::cloud_time;
-pub use replace::{replace, replace_leased, Leased, ReplaceOutcome};
+pub use replace::{replace, replace_leased, replace_until, Leased, ReplaceOutcome};
 
 /// Whether another account of this daemon claims an item id (`docs/design/writes.md` §8.3): an object
 /// carrying it is never removed by this folder's reconcile.

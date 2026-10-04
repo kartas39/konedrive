@@ -231,6 +231,73 @@ async fn a_replacement_stopped_with_the_poller_asks_for_nothing() {
     assert!(!report.full, "a replacement the stop cut short is no reason for a Full reconcile");
 }
 
+/// A stop asked while a replacement's swap is under way waits for it: the
+/// poller's stop returns when the swap has ended, and the swap is said — in
+/// the activity log and as the item's recorded inode. The folder is locked,
+/// and the swap is held at its directory's write window, which the test has.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_waits_for_a_swap_under_way_and_the_swap_is_said() {
+    use konedrive_fs::handle::FileHandle;
+    let s = setup().await;
+    let listing = listed(&s).await;
+    let f_txt = s.root.path.join("docs/f.txt");
+    hydrate_by_hand(&f_txt, b"old conten");
+    let old = crate::folder::locks::InodeKey::of(&File::open(&f_txt).unwrap()).unwrap();
+
+    // The download's answer waits until this thread has the write windows to itself.
+    let new = b"new content".to_vec();
+    let (fetching, is_fetching) = std::sync::mpsc::channel::<()>();
+    let (go_on, may_go_on) = std::sync::mpsc::channel::<()>();
+    let (fetching, may_go_on, body) = (std::sync::Mutex::new(fetching), std::sync::Mutex::new(may_go_on), new.clone());
+    Mock::given(method("GET")).and(path("/dl/F/c2"))
+        .respond_with(move |_: &Request| {
+            let _ = fetching.lock().unwrap().send(());
+            let _ = may_go_on.lock().unwrap().recv();
+            ResponseTemplate::new(200).set_body_bytes(body.clone())
+        })
+        .with_priority(1)
+        .mount(&s.server).await;
+    s.serve_new_version(&new, s.new_version(&new)).await;
+    s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
+    let poller = Poller::start(Arc::clone(&listing), Schedule::polled(Duration::from_secs(3600), vec![]));
+    is_fetching.recv_timeout(PATIENCE).expect("the replacement downloads");
+    let windows = crate::folder::disk::dir_modes();
+    go_on.send(()).unwrap();
+
+    // The file's lock taken: nothing stands between that and the swap's section.
+    for _ in 0..500 {
+        if listing.ctx.locks.try_lock(old).is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(listing.ctx.locks.try_lock(old).is_none(), "the swap is under way");
+    assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten", "held before its rename");
+
+    let released = Arc::new(AtomicBool::new(false));
+    let was_released = Arc::clone(&released);
+    let stop = tokio::spawn(async move {
+        poller.stop().await;
+        was_released.load(Ordering::SeqCst)
+    });
+    for _ in 0..500 {
+        if listing.cancel_replacements.is_cancelled() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(listing.cancel_replacements.is_cancelled(), "the stop is asked");
+    released.store(true, Ordering::SeqCst);
+    drop(windows);
+
+    assert!(stop.await.unwrap(), "the stop returned only once the swap could end");
+    assert_eq!(std::fs::read(&f_txt).unwrap(), new);
+    assert_eq!(s.activity().pop().unwrap(), ("updated".into(), s.full("docs/f.txt"), "11 B".into()));
+    let swapped_in = FileHandle::of(&File::open(&f_txt).unwrap()).unwrap();
+    let recorded = s.store.call(|store| store.local_handle("F")).await.unwrap();
+    assert_eq!(recorded, Some(swapped_in), "the item's recorded object is the inode swapped in");
+}
+
 /// A replacement that ends while a cycle reconciles asks for a Full
 /// reconcile after it — the cycle that was running must not swallow the
 /// request when it succeeds. Made deterministic by holding both

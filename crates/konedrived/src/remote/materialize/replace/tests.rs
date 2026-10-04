@@ -255,3 +255,121 @@ async fn a_leased_replacement_stopped_right_after_its_swap_has_recorded_the_new_
     let recorded = f.store.call(|s| s.local_handle("F")).await.unwrap();
     assert_eq!(recorded, Some(new), "the item's recorded object is the inode swapped in");
 }
+
+/// A stop asked while the swap is under way is not heard: the replacement ends when the swap
+/// has, says `Replaced`, and has let go of both locks by then. Read-write mode: the swap is
+/// held where it waits for the store, after its rename.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_during_a_leased_swap_waits_for_it_and_hears_its_outcome() {
+    let f = fixture_async();
+    let (disk, path) = (Disk::open(&f.root, false).unwrap(), f.path("docs/f.txt"));
+    f.listed_async(false).await;
+    hydrate_by_hand(&path, b"old version", "c-F");
+    let old = crate::folder::locks::InodeKey::of(&File::open(&path).unwrap()).unwrap();
+
+    let (release, held) = std::sync::mpsc::channel::<()>();
+    let (holding, held_now) = tokio::sync::oneshot::channel::<()>();
+    let store = f.store.clone();
+    let holder = tokio::spawn(async move {
+        store
+            .call(move |_| {
+                let _ = holding.send(());
+                let _ = held.recv();
+                Ok(())
+            })
+            .await
+    });
+    held_now.await.unwrap();
+
+    let (store, tree_lock, locks) = (f.store.clone(), std::sync::Arc::new(tokio::sync::Mutex::new(())), InodeLocks::new());
+    let (worker_tree_lock, worker_locks) = (std::sync::Arc::clone(&tree_lock), locks.clone());
+    let stop = CancellationToken::new();
+    let worker_stop = stop.clone();
+    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
+    let worker = tokio::spawn(async move {
+        let source = Memory::new("c2", b"the new version");
+        let leased = Leased { tree_lock: &worker_tree_lock, store: &store };
+        replace_until(&disk, &worker_locks, &source, &replacement, Some(&leased), &worker_stop).await
+    });
+    for _ in 0..500 {
+        if std::fs::read(&path).unwrap() == b"the new version" {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(std::fs::read(&path).unwrap(), b"the new version", "the swap is under way, past its rename");
+
+    stop.cancel();
+    release.send(()).unwrap();
+    holder.await.unwrap().unwrap();
+    let outcome = worker.await.unwrap();
+    assert!(matches!(outcome, Some(ReplaceOutcome::Replaced)), "{outcome:?}");
+    assert!(tree_lock.try_lock().is_ok(), "the swap was over when the replacement ended");
+    assert!(locks.try_lock(old).is_some());
+}
+
+/// The same in read-only mode, where the folder is locked: the swap is held at the write
+/// window of its directory, before its rename. When the replacement ends the new version is
+/// in place and the directory is locked again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stop_during_a_swap_in_a_locked_folder_waits_for_it_and_hears_its_outcome() {
+    use std::os::unix::fs::PermissionsExt;
+    let f = fixture_async();
+    let (disk, path) = (Disk::open(&f.root, true).unwrap(), f.path("docs/f.txt"));
+    f.listed_async(true).await;
+    hydrate_by_hand(&path, b"old version", "c-F");
+    let old = crate::folder::locks::InodeKey::of(&File::open(&path).unwrap()).unwrap();
+
+    // The download waits until this thread has the directories' write windows to itself.
+    let (fetching, is_fetching) = std::sync::mpsc::channel::<()>();
+    let (go_on, may_go_on) = std::sync::mpsc::channel::<()>();
+    let mut source = Memory::new("c2", b"the new version");
+    source.on_fetch = std::sync::Mutex::new(Some(Box::new(move || {
+        let _ = fetching.send(());
+        let _ = may_go_on.recv();
+    })));
+    let (locks, stop) = (InodeLocks::new(), CancellationToken::new());
+    let (worker_locks, worker_stop) = (locks.clone(), stop.clone());
+    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
+    let worker = tokio::spawn(async move { replace_until(&disk, &worker_locks, &source, &replacement, None, &worker_stop).await });
+    is_fetching.recv().unwrap();
+    let windows = crate::folder::disk::dir_modes();
+    go_on.send(()).unwrap();
+
+    // The file's lock taken: nothing stands between that and the swap's section.
+    for _ in 0..500 {
+        if locks.try_lock(old).is_none() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(locks.try_lock(old).is_none(), "the swap is under way");
+    assert_eq!(std::fs::read(&path).unwrap(), b"old version", "held before its rename");
+
+    stop.cancel();
+    drop(windows);
+    let outcome = worker.await.unwrap();
+    assert!(matches!(outcome, Some(ReplaceOutcome::Replaced)), "{outcome:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"the new version");
+    let mode = std::fs::metadata(path.parent().unwrap()).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, konedrive_fs::placeholder::LOCKED_DIR_MODE, "its write window is closed again");
+    assert!(locks.try_lock(old).is_some());
+}
+
+/// A stop asked while the new version downloads ends the replacement there: no outcome, and
+/// the old version in place.
+#[tokio::test]
+async fn a_stop_during_the_download_ends_the_replacement_with_no_outcome() {
+    let f = fixture_async();
+    let (disk, path) = (Disk::open(&f.root, true).unwrap(), f.path("docs/f.txt"));
+    f.listed_async(true).await;
+    hydrate_by_hand(&path, b"old version", "c-F");
+    let stop = CancellationToken::new();
+    let mut source = Memory::new("c2", b"the new version");
+    let asked = stop.clone();
+    source.on_fetch = std::sync::Mutex::new(Some(Box::new(move || asked.cancel())));
+    let replacement = Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 15 };
+    let outcome = replace_until(&disk, &InodeLocks::new(), &source, &replacement, None, &stop).await;
+    assert!(outcome.is_none(), "{outcome:?}");
+    assert_eq!(std::fs::read(&path).unwrap(), b"old version");
+}
