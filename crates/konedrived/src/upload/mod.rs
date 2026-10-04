@@ -89,19 +89,6 @@ pub const BACKOFF_MAX: Duration = Duration::from_secs(3600);
 /// provisional).
 pub const THROTTLE_FIRST: Duration = Duration::from_secs(10);
 
-/// The activity kinds the worker writes (§9; the outbox on the bus adds them to the D-Bus
-/// surface's list).
-pub mod kind {
-    pub const UPLOADED: &str = "uploaded";
-    pub const CLOUD_MOVED: &str = "cloud-moved";
-    pub const CLOUD_DELETED: &str = "cloud-deleted";
-    pub const UPLOAD_FAILED: &str = "upload-failed";
-    pub const RESTORED: &str = "restored";
-    pub const CONFLICT: &str = "conflict";
-    /// A file or folder removed here before its upload finished.
-    pub const NOT_UPLOADED: &str = "not-uploaded";
-}
-
 /// What the worker needs from the account it serves.
 pub trait OutboxHost: Send + Sync {
     /// An activity event, already in the tree store: for the live signal.

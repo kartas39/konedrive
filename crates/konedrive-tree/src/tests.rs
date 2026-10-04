@@ -452,7 +452,7 @@ fn forgetting_below_a_row_placed_again_is_cheap_at_scale() {
 #[test]
 fn the_activity_log_keeps_the_newest_two_hundred() {
     let mut store = TreeStore::in_memory().unwrap();
-    let event = |n: i64| ActivityRow { at: n, kind: "downloaded".into(), path: format!("/f{n}"), detail: String::new() };
+    let event = |n: i64| ActivityRow { at: n, kind: ActivityKind::Downloaded, path: format!("/f{n}"), detail: String::new() };
     store.add_activity(&(1..=150).map(event).collect::<Vec<_>>()).unwrap();
     store.add_activity(&(151..=205).map(event).collect::<Vec<_>>()).unwrap();
     let rows: i64 = store.conn.query_row("SELECT count(*) FROM activity", [], |row| row.get(0)).unwrap();
@@ -461,6 +461,17 @@ fn the_activity_log_keeps_the_newest_two_hundred() {
     assert_eq!(kept.len(), ACTIVITY_KEPT);
     assert_eq!((kept[0].at, kept[ACTIVITY_KEPT - 1].at), (205, 6), "newest first, the five oldest gone");
     assert_eq!(store.recent_activity(3).unwrap().iter().map(|e| e.at).collect::<Vec<_>>(), vec![205, 204, 203]);
+}
+
+/// A store another version wrote opens and reads: an event whose kind this
+/// version does not name is left out of the log, and the rest are read.
+#[test]
+fn an_event_of_a_kind_this_version_does_not_name_is_left_out() {
+    let mut store = TreeStore::in_memory().unwrap();
+    store.conn.execute("INSERT INTO activity (at, kind, path, detail) VALUES (1, 'a-kind-of-another-version', '/f', '')", []).unwrap();
+    store.add_activity(&[ActivityRow { at: 2, kind: ActivityKind::Uploaded, path: "/g".into(), detail: String::new() }]).unwrap();
+    let read = store.recent_activity(10).unwrap();
+    assert_eq!(read.iter().map(|e| (e.at, e.kind)).collect::<Vec<_>>(), vec![(2, ActivityKind::Uploaded)]);
 }
 
 #[test]

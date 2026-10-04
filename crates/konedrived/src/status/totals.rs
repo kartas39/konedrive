@@ -22,7 +22,7 @@
 
 use std::collections::BTreeMap;
 
-use super::activity::{Transfer, Transfers};
+use super::transfers::{Transfer, Transfers};
 use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
 
 /// One direction's totals, as `Transfers` publishes them.

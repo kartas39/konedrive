@@ -146,7 +146,7 @@ pub struct SyncSnapshot {
     /// succeeded, 0 for never.
     pub last_checked: i64,
     /// `LocalBytes`: what the folder's files take on disk, as last measured
-    /// (`activity::LocalSpace`).
+    /// (`status::space::LocalSpace`).
     pub local_bytes: u64,
     /// `Conflicts.Count`: conflicts whose rescued file is still there.
     pub conflict_count: u32,

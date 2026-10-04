@@ -14,7 +14,7 @@ use tokio::sync::mpsc;
 use konedrive_fs::placeholder::{read_state, State};
 
 use crate::hydration::source::{ContentSource, Fetched, LocalDir, SourceError, Answered, FillError};
-use crate::status::activity::Report;
+use crate::status::report::Report;
 use crate::helper::{HelperLink, HydrateRequest};
 use crate::account::state::{SignInState, StateHandle};
 use crate::folder::locks::tests::key_of;
@@ -161,7 +161,7 @@ async fn service_with_helper() -> (Arc<SyncService>, tempfile::TempDir, FakeHelp
 async fn activity_of(service: &SyncService) -> Vec<(String, String, String)> {
     let mut events = service.recent_activity(200).await.unwrap();
     events.reverse();
-    events.into_iter().map(|e| (e.kind, e.path, e.detail)).collect()
+    events.into_iter().map(|e| (e.kind.as_str().to_owned(), e.path, e.detail)).collect()
 }
 
 /// A source whose one stream is the reading end of a pipe the test

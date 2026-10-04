@@ -112,7 +112,7 @@ pub struct Seen {
 
 /// Every regular file and folder from `start` down — `start` included — with
 /// whether it is pinned. `inherited` is whether something above `start` pins
-/// it. Walked as `activity::walk_files` walks: `.konedrive-*` skipped,
+/// it. Walked as `folder::walk::walk_files` walks: `.konedrive-*` skipped,
 /// symbolic links never followed, no other filesystem entered, nothing
 /// deeper than `konedrive_fs::MAX_DEPTH`; only directories are opened.
 pub fn walk(start: &Path, inherited: bool, visit: &mut dyn FnMut(&Path, &Metadata, Seen)) {
@@ -131,7 +131,7 @@ pub fn walk(start: &Path, inherited: bool, visit: &mut dyn FnMut(&Path, &Metadat
     while let Some((dir, depth, pinned)) = dirs.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
         for entry in entries.flatten() {
-            if crate::status::activity::reserved(&entry.file_name()) {
+            if crate::folder::walk::reserved(&entry.file_name()) {
                 continue;
             }
             // `DirEntry::metadata` does not follow a symbolic link.

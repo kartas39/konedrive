@@ -198,7 +198,7 @@ async fn a_download_in_parts_is_one_file_and_its_streams() {
     let data = content(4 * 1024 * KIB, 5);
     let file = placeholder(dir.path(), "f.bin", data.len() as u64);
     let source: Arc<dyn ContentSource> = Arc::new(Ranged { delay: Duration::from_millis(2), ..Ranged::new("c1", data.clone()) });
-    let transfers = crate::status::activity::Transfers::default();
+    let transfers = crate::status::transfers::Transfers::default();
     let tracked = Arc::new(crate::hydration::tracked::Tracked::new(source, transfers.clone(), "/r/f.bin"));
     let (pool, _first) = pool_of_four();
     let share = Share::new();

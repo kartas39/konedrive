@@ -10,7 +10,7 @@ use zbus::object_server::{InterfaceRef, SignalEmitter};
 use zbus::zvariant::ObjectPath;
 use zbus::Connection;
 
-use crate::status::activity::Transfer;
+use crate::status::transfers::Transfer;
 use crate::status::snapshot::{published_error, published_state, SyncSnapshot};
 use crate::sync::SyncService;
 use crate::dbus::{ActivityLog, Folder, UploadQueue};
@@ -74,7 +74,7 @@ pub(crate) async fn start_signals(
         loop {
             match added.recv().await {
                 Ok(e) => {
-                    if let Err(err) = ActivityLog::added(&activity_emitter, e.at, &e.kind, &e.path, &e.detail).await {
+                    if let Err(err) = ActivityLog::added(&activity_emitter, e.at, e.kind.as_str(), &e.path, &e.detail).await {
                         tracing::warn!("cannot emit ActivityLog.Added: {err}");
                     }
                 }
@@ -139,7 +139,7 @@ impl Coalesced {
             uploads: s.uploads.clone(),
             active_downloads: u32::try_from(transfers.len()).unwrap_or(u32::MAX),
             active_uploads: u32::try_from(s.uploads.len()).unwrap_or(u32::MAX),
-            large_files: crate::status::activity::large_files(transfers, &s.uploads),
+            large_files: crate::status::transfers::large_files(transfers, &s.uploads),
             space_waiting_count: s.space_waiting_count,
             space_waiting_bytes: s.space_waiting_bytes,
             too_big_count: s.too_big_count,

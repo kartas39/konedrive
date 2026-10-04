@@ -1,6 +1,7 @@
 //! What a row's outcome does to the row and to the worker: one function for each
 //! [`Outcome`].
 
+use konedrive_tree::ActivityKind;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -10,7 +11,6 @@ use konedrive_tree::TreeError;
 
 use super::outcome::{without_urls, Outcome};
 use super::{backoff_after, now, Engine, AGAIN_LIMIT};
-use crate::upload::kind;
 
 /// A row that came back from its run.
 struct Landed {
@@ -103,7 +103,7 @@ impl Engine {
     fn settle_blocked(&self, row: &Landed, reason: Reason) -> Result<(), TreeError> {
         self.set(row, OutboxState::Blocked, Some(&reason), None)?;
         if row.before.as_ref() != Some(&reason) {
-            self.activity(self.event(kind::UPLOAD_FAILED, &row.rel, reason.to_string()));
+            self.activity(self.event(ActivityKind::UploadFailed, &row.rel, reason.to_string()));
         }
         Ok(())
     }

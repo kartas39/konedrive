@@ -87,10 +87,10 @@ impl SyncService {
     }
 
     /// `Transfers.LargeFiles` (issue #50): the large files the sync moves now, each once, the
-    /// files being opened left out ([`activity::large_files`]).
+    /// files being opened left out ([`large_files`](crate::status::transfers::large_files)).
     pub fn large_files(&self) -> u32 {
         let downloads = self.report.transfers.subscribe().borrow().clone();
-        activity::large_files(&downloads, &self.state.get().uploads)
+        crate::status::transfers::large_files(&downloads, &self.state.get().uploads)
     }
 
     /// `Files.WebUrl`: the address of the page OneDrive's web interface has for

@@ -57,7 +57,7 @@ use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
 use crate::remote::listing::reconcile::{Commit, Held, Mode, Prepared, Reconcile, Reconciled, RwCycle, Waiting};
 use crate::remote::listing::{CycleError, CycleReport, Lease, Listing, ListingContext, Neighbours, Turn, Writes, FULL_THRESHOLD};
 use crate::remote::materialize::{Applied, Claimed, Scope};
-use crate::status::activity::Report;
+use crate::status::report::Report;
 use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
 use crate::upload::{Engine, Limits, NoHost, WorkerConfig};
 
@@ -470,7 +470,7 @@ impl World {
     pub(crate) fn activity(&self) -> Vec<(String, String, String)> {
         let mut events = konedrive_tree::off_runtime(|| self.report.activity.recent(1000)).unwrap();
         events.reverse();
-        events.into_iter().map(|e| (e.kind, e.path, e.detail)).collect()
+        events.into_iter().map(|e| (e.kind.as_str().to_owned(), e.path, e.detail)).collect()
     }
 
     pub(crate) fn base(&self, id: &str) -> Option<Row> {

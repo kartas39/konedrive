@@ -1,5 +1,6 @@
 //! The tests' worker around the fake OneDrive, driven by hand.
 
+use konedrive_tree::ActivityKind;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -48,8 +49,8 @@ impl OutboxHost for Recorder {
 }
 
 impl Recorder {
-    pub fn kinds(&self) -> Vec<String> {
-        self.events.lock().unwrap().iter().map(|e| e.kind.clone()).collect()
+    pub fn kinds(&self) -> Vec<ActivityKind> {
+        self.events.lock().unwrap().iter().map(|e| e.kind).collect()
     }
 }
 

@@ -12,7 +12,7 @@ use crate::local::entry::{proc_path, Entry, StateAttr, Type};
 use crate::local::names;
 use konedrive_fs::RESERVED_PREFIX;
 use konedrive_tree::outbox::{Base, Detection, LocalSkip, OutboxKind, OutboxOp, OutboxState, Snapshot};
-use konedrive_tree::{ActivityRow, Kind, Row, Table};
+use konedrive_tree::{ActivityKind, ActivityRow, Kind, Row, Table};
 
 use super::{daemon_owned, depth, ExamineError, Expect, lossy, Run};
 
@@ -405,7 +405,7 @@ impl Run<'_, '_> {
                 let path = self.root_path.as_deref().map_or_else(|| e.rel.clone(), |root| root.join(&e.rel));
                 let event = ActivityRow {
                     at: self.ex.now,
-                    kind: crate::status::activity::Kind::Removed.as_str().to_owned(),
+                    kind: ActivityKind::Removed,
                     path: path.display().to_string(),
                     detail: format!("removed an empty copy of {}: it held no content", lossy(&e.name)),
                 };

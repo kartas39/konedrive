@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 
-use crate::status::activity::Report;
+use crate::status::report::Report;
 use crate::helper::{Clearance, HelperLink};
 use crate::folder::root::DehydrateError;
 use crate::folder::root::{RegisterError, SyncRoot};

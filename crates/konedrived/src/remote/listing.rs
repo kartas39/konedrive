@@ -32,7 +32,8 @@ use tokio::sync::{Notify, OwnedMutexGuard};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::status::activity::{self, Report};
+use crate::status::activity;
+use crate::status::report::Report;
 use super::materialize::{Applied, ApplyError, Claimed, Replacement, Scope};
 use crate::hydration::pin::Pins;
 use crate::folder::root::SyncRoot;

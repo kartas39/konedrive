@@ -1,6 +1,7 @@
 //! The cases of a `move-out` row's step ([`MoveOut::step`](super::row::MoveOut::step) says
 //! which): what happens to the object where it is now, and whether its item leaves OneDrive.
 
+use konedrive_tree::ActivityKind;
 use std::collections::HashSet;
 use std::fs::File;
 use std::os::unix::fs::MetadataExt;
@@ -293,7 +294,7 @@ impl MoveOut<'_> {
     /// this folder (F124).
     pub(super) async fn kept(&self) -> Result<Outcome, Fail> {
         let e = self.e;
-        let event = e.event(crate::upload::kind::RESTORED, &self.row.rel, "it was last in another account's folder, and stays in OneDrive");
+        let event = e.event(ActivityKind::Restored, &self.row.rel, "it was last in another account's folder, and stays in OneDrive");
         {
             let _tree = e.tree_lock().lock().await;
             let (seq, id, stored) = (self.row.seq, self.id.to_owned(), event.clone());

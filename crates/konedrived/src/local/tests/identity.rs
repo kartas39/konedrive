@@ -70,7 +70,7 @@ fn an_empty_copy_that_is_not_downloaded_is_removed_only_when_it_is_surely_a_copy
     let skipped: Vec<(String, String)> =
         fx.store.call_blocking(move |s| s.local_skipped()).unwrap().into_iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect();
     assert_eq!(skipped, vec![("other-account.bin".into(), "not-downloaded".into()), ("q2.bin".into(), "not-downloaded".into())]);
-    let said: Vec<(String, String)> = fx.store.call_blocking(move |s| s.recent_activity(10)).unwrap().into_iter().map(|a| (a.kind, a.detail)).collect();
+    let said: Vec<(String, String)> = fx.store.call_blocking(move |s| s.recent_activity(10)).unwrap().into_iter().map(|a| (a.kind.as_str().to_owned(), a.detail)).collect();
     assert_eq!(said, vec![("removed".into(), "removed an empty copy of p2.bin: it held no content".into())]);
 }
 

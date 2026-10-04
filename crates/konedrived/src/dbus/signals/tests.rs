@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 
 use super::*;
-use crate::status::activity::Transfers as Downloads;
+use crate::status::transfers::Transfers as Downloads;
 use crate::status::snapshot::SyncStateHandle;
 
 /// A download moves its `Downloads` entry on with every

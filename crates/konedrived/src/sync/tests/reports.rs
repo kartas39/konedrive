@@ -87,7 +87,7 @@ async fn a_download_shows_in_transfers_until_it_ends_however_it_ends() {
         tokio::spawn(async move { service.hydrate_now(&target).await })
     };
     writer.write_all(&[9u8; 16 * 1024]).await.unwrap();
-    let halfway = |all: &std::collections::BTreeMap<u64, activity::Transfer>| {
+    let halfway = |all: &std::collections::BTreeMap<u64, crate::status::transfers::Transfer>| {
         all.values().any(|t| t.path == shown && (t.done, t.total) == (16 * 1024, 64 * 1024))
     };
     tokio::time::timeout(Duration::from_secs(10), transfers.wait_for(halfway)).await.unwrap().unwrap();
@@ -105,7 +105,7 @@ async fn a_download_shows_in_transfers_until_it_ends_however_it_ends() {
         let service = Arc::clone(&service);
         tokio::spawn(async move { service.hydrate_now(&failing_target).await })
     };
-    let listed = |all: &std::collections::BTreeMap<u64, activity::Transfer>| all.values().any(|t| t.path == failing_shown);
+    let listed = |all: &std::collections::BTreeMap<u64, crate::status::transfers::Transfer>| all.values().any(|t| t.path == failing_shown);
     tokio::time::timeout(Duration::from_secs(10), transfers.wait_for(listed)).await.unwrap().unwrap();
     open.send(()).unwrap();
     assert!(failing.await.unwrap().is_err());

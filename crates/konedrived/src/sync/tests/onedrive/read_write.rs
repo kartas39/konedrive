@@ -148,7 +148,7 @@ async fn a_file_made_in_a_read_write_folder_is_uploaded() {
     let event = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let event = announced.recv().await.unwrap();
-            if event.kind == "uploaded" {
+            if event.kind == konedrive_tree::ActivityKind::Uploaded {
                 return event;
             }
         }
