@@ -283,23 +283,74 @@ fn a_forced_drop_keeps_a_rename_half_done() {
     assert_eq!(kept, vec!["A".to_owned(), "S".to_owned()]);
 }
 
-/// the outbox on the bus: restoring held deletes forgets the items' local objects
-/// for good, even with a cycle between staging and swap: its swap cannot
-/// give them back.
+/// The outbox on the bus: restoring held deletes, and dropping a row for
+/// what OneDrive decided, forget the item's local objects for good — the
+/// item, what the base has below it, and what a delta staged meanwhile moves
+/// or adds below it (`TR2`) — so that the cycle's swap gives none back.
 #[test]
-fn dropping_held_rows_survives_a_cycles_swap() {
+fn dropping_a_row_forgets_its_item_and_what_either_tree_has_below_it() {
     use OutboxKind::*;
-    let d = base_row("D", "R", "d", Kind::Folder);
-    let a = base_row("A", "D", "a", Kind::File);
-    let mut s = store(&[d.clone(), a.clone()]);
-    for id in ["D", "A"] {
-        s.set_local_handle(id, inode(1).handle.as_ref()).unwrap();
+    for restore in [true, false] {
+        let d = base_row("D", "R", "d", Kind::Folder);
+        let a = base_row("A", "D", "a", Kind::File);
+        let t = base_row("T", "R", "t", Kind::File);
+        let mut s = store(&[d.clone(), a.clone(), t.clone()]);
+        for (id, n) in [("D", 1), ("A", 2), ("T", 3)] {
+            s.set_local_handle(id, inode(n).handle.as_ref()).unwrap();
+        }
+        let state = if restore { OutboxState::Held } else { OutboxState::Ready };
+        let Recorded::Inserted(seq) = s.outbox_record(&Detection { state, ..detect(Delete, Some(&d), None, "d", None) }).unwrap() else { panic!() };
+        // A delta staged meanwhile moves `T` into `D` and adds `N` there.
+        s.begin_staging(crate::NewTree::Delta).unwrap();
+        s.stage(&[Change::Upsert(Row { parent_id: Some("D".into()), ..t.clone() }), Change::Upsert(base_row("N", "D", "n", Kind::File))]).unwrap();
+        s.set_local_handle("N", inode(4).handle.as_ref()).unwrap();
+        if restore {
+            assert_eq!(s.outbox_drop_held().unwrap().len(), 1);
+        } else {
+            s.outbox_drop(seq, None, Some("D"), None).unwrap();
+        }
+        s.commit_staging("link-2").unwrap();
+        for id in ["D", "A", "T", "N"] {
+            assert_eq!(s.local_handle(id).unwrap(), None, "{id}, restore={restore}");
+        }
     }
-    s.outbox_record(&Detection { state: OutboxState::Held, ..detect(Delete, Some(&d), None, "d", None) }).unwrap();
-    s.begin_staging(crate::NewTree::Delta).unwrap();
-    assert_eq!(s.outbox_drop_held().unwrap().len(), 1);
-    s.commit_staging("link-2").unwrap();
-    assert_eq!((s.local_handle("D").unwrap(), s.local_handle("A").unwrap()), (None, None));
+}
+
+/// An upload's answer names its item as the folder cannot hold it (renamed
+/// in OneDrive to a name too long while the content went up): the base keeps
+/// the item where the disk has it, with the version just committed and its
+/// object, and the answer waits as the item's deferred change, which this
+/// commit does not supersede. An item the base did not place has no place to
+/// keep: the answer is its row, with no object (I1).
+#[test]
+fn an_answer_the_folder_cannot_hold_waits_and_the_item_keeps_its_place() {
+    use OutboxKind::*;
+    let x = base_row("X", "R", "x", Kind::File);
+    let answer = Row { name: "long".into(), ctag: Some("c2".into()), etag: Some("e2".into()), size: 9, placement: Placement::Skipped(crate::SkipReason::NameTooLong), ..x.clone() };
+    let mut s = store(std::slice::from_ref(&x));
+    let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&x), Some(inode(7)), "x", Some("R"))).unwrap() else { panic!() };
+    let handle = inode(7).handle.unwrap();
+    let at = s.outbox_commit(seq, Committed::Item { row: &answer, handle: Some(&handle) }, None).unwrap();
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), Row { ctag: Some("c2".into()), etag: Some("e2".into()), size: 9, ..x.clone() }, "the version, at the base's place");
+    assert_eq!(s.local_handle("X").unwrap(), Some(handle.clone()));
+    assert_eq!(s.committed_since(at - 1).unwrap().get("X").map(|c| c.etag.clone()), Some(Some("e2".into())), "a commit as any other");
+    assert_eq!(s.live_deferred().unwrap(), vec![Change::Upsert(answer.clone())], "the answer waits, and the commit leaves it");
+    assert!(s.outbox_rows().unwrap().is_empty());
+
+    // The next cycle stages what waits, and takes it: nothing is placed here.
+    let staged = s.stage_rw(&[], at, false).unwrap().unwrap();
+    assert!(staged.ids.contains(&"X".to_owned()));
+    s.commit_staging_deferring("link-2", &crate::reconcile::Deferrals { consumed: &staged.consumed, whole: &[], content: &[], fetched_at: at }).unwrap();
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), answer);
+    assert_eq!(s.local_handle("X").unwrap(), None);
+
+    // Not placed by the base already (it is leaving): the answer is its row.
+    let Recorded::Inserted(seq) = s.outbox_record(&detect(Update, Some(&answer), Some(inode(7)), "x", Some("R"))).unwrap() else { panic!() };
+    let again = Row { ctag: Some("c3".into()), ..answer.clone() };
+    s.outbox_commit(seq, Committed::Item { row: &again, handle: Some(&handle) }, None).unwrap();
+    assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), again);
+    assert_eq!(s.local_handle("X").unwrap(), None, "no object for a row the base does not place");
+    assert!(s.deferred_ids().unwrap().is_empty());
 }
 
 /// The item a bad upload left in OneDrive (quality finding `UP2`) is kept

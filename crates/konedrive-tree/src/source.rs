@@ -72,18 +72,19 @@ pub(crate) fn chains_sql(source: Source, start: &str) -> String {
 }
 
 /// [`chains_sql`] with a query of its own over `chain(start, parent_id,
-/// path, above, own)`: a row whose `parent_id` is the root (`?1`) has its
-/// whole path.
+/// path, above, own, start_placement)`: a row whose `parent_id` is the root
+/// (`?1`) has its whole path. `start` may select rows of another table (a
+/// change that waits): the folders above each are the tree's.
 pub(crate) fn chains_then(source: Source, start: &str, then: &str) -> String {
     format!(
-        "WITH RECURSIVE chain(start, parent_id, path, above, own, depth) AS (
-             SELECT id, parent_id, name, 1, {own}, 0 FROM ({start}) WHERE id != ?1
+        "WITH RECURSIVE chain(start, parent_id, path, above, own, start_placement, depth) AS (
+             SELECT id, parent_id, name, 1, {own}, placement, 0 FROM ({start}) WHERE id != ?1
              UNION ALL
              {step})
          {then}",
         own = placed("placement"),
         step = source.step(
-            &format!("c.start, p.parent_id, p.name || '/' || c.path, c.above AND {}, c.own, c.depth + 1", placed("p.placement")),
+            &format!("c.start, p.parent_id, p.name || '/' || c.path, c.above AND {}, c.own, c.start_placement, c.depth + 1", placed("p.placement")),
             "chain",
             "p.id = c.parent_id",
             &format!("c.depth < {MAX_CHAIN} AND c.parent_id != ?1")

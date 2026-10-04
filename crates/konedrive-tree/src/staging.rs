@@ -2,8 +2,8 @@
 
 use rusqlite::OptionalExtension;
 
-use crate::forget::forget_subtrees;
-use crate::model::{placed, skipped, upsert, Change, NewTree, Placement, Row, Table, COLUMNS, ROW_COLUMNS};
+use crate::forget::{forget_all_unplaced, forget_subtrees, forget_unplaced};
+use crate::model::{placed, upsert, Change, NewTree, Placement, Row, Table, COLUMNS, ROW_COLUMNS};
 use crate::query::descendants_in;
 use crate::meta::{self, DELTA_LINK, LISTING_NEXT, ROOT_ITEM_ID, STAGING_WHOLE};
 use crate::source::Source;
@@ -42,6 +42,8 @@ impl TreeStore {
     /// inode and the last outbox commit travel along: a row staged without
     /// them keeps what `items` has — but for the inode of a row `items` does
     /// not place, which is no object of a row placed again (issue #104).
+    /// A row the new tree does not place keeps no inode at all, nor does
+    /// anything below it (I1, [`crate::forget`]).
     pub fn commit_staging(&mut self, delta_link: &str) -> Result<(), TreeError> {
         let tx = self.conn.transaction()?;
         swap(&tx, self.whole, delta_link)?;
@@ -118,10 +120,9 @@ pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str
         // (issue #104).
         tx.execute(
             &format!(
-                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND ({was} OR {now}))
+                "UPDATE staging SET local_handle = (SELECT i.local_handle FROM items i WHERE i.id = staging.id AND {was})
               WHERE local_handle IS NULL",
                 was = placed("i.placement"),
-                now = skipped("staging.placement"),
             ),
             [],
         )?;
@@ -131,12 +132,14 @@ pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str
         )?;
         tx.execute("DELETE FROM items", [])?;
         tx.execute(&format!("INSERT INTO items ({COLUMNS}) SELECT {COLUMNS} FROM staging"), [])?;
+        tx.execute("DELETE FROM staging", [])?;
+        forget_all_unplaced(tx)?;
     } else {
         tx.execute(
             &format!(
                 "INSERT INTO items ({COLUMNS})
                  SELECT s.id, s.parent_id, s.name, s.kind, s.size, s.mtime, s.etag, s.ctag, s.quickxor, s.mime, s.placement,
-                        COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, CASE WHEN {was} OR {now} THEN i.local_handle END),
+                        COALESCE(s.thumb_key, i.thumb_key), COALESCE(s.local_handle, CASE WHEN {was} THEN i.local_handle END),
                         MAX(s.local_seq, COALESCE(i.local_seq, 0))
                    FROM staging s LEFT JOIN items i ON i.id = s.id WHERE true
                  ON CONFLICT(id) DO UPDATE SET
@@ -145,13 +148,15 @@ pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str
                    quickxor = excluded.quickxor, mime = excluded.mime, placement = excluded.placement,
                    thumb_key = excluded.thumb_key, local_handle = excluded.local_handle, local_seq = excluded.local_seq",
                 was = placed("i.placement"),
-                now = skipped("s.placement"),
             ),
             [],
         )?;
         tx.execute("DELETE FROM items WHERE id IN (SELECT id FROM staging_gone)", [])?;
+        // What the delta wrote, and the base does not place now.
+        let written: Vec<String> = tx.prepare_cached("SELECT id FROM staging")?.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        tx.execute("DELETE FROM staging", [])?;
+        forget_unplaced(tx, written.iter().map(String::as_str))?;
     }
-    tx.execute("DELETE FROM staging", [])?;
     tx.execute("DELETE FROM staging_gone", [])?;
     meta::set(tx, STAGING_WHOLE, None)?;
     meta::set(tx, DELTA_LINK, Some(delta_link))?;
@@ -163,8 +168,18 @@ pub(super) fn swap(tx: &rusqlite::Transaction<'_>, whole: bool, delta_link: &str
 /// Delta entries applied to the tree `source`, in order (see
 /// [`TreeStore::stage`]). Over `items` (a delta staged), a row written is
 /// first copied from `items`, local columns and all, and then changed; a row
-/// removed is noted in `staging_gone` when `items` has it.
+/// removed is noted in `staging_gone` when `items` has it. Written into
+/// `items` itself, a row the base does not place then keeps no local
+/// object, nor does anything below it (I1, [`crate::forget`]).
 pub(crate) fn apply(tx: &rusqlite::Transaction<'_>, source: Source, changes: &[Change]) -> Result<(), TreeError> {
+    apply_each(tx, source, changes)?;
+    if source == Source::Items {
+        forget_unplaced(tx, changes.iter().filter(|c| !matches!(c, Change::Delete(_))).map(Change::id))?;
+    }
+    Ok(())
+}
+
+fn apply_each(tx: &rusqlite::Transaction<'_>, source: Source, changes: &[Change]) -> Result<(), TreeError> {
     for change in changes {
         match change {
             Change::Root(row) => {
@@ -255,7 +270,9 @@ fn placement_in_items(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<Option
 /// (`was`). Such a row, and every row below it, carries no local object
 /// (issue #104): what was on disk when it stopped being placed was taken
 /// off, and its placement records the objects it is placed as. Forgotten
-/// as it is staged, so that the placement that follows records them anew.
+/// as it is staged, so that the placement that follows records them anew —
+/// and so that what a cycle that failed before its swap recorded for them,
+/// on rows the base did not place yet, is not taken for theirs.
 fn turns_placed(was: Option<Placement>, row: &Row) -> bool {
     row.placement == Placement::Placed && was.is_some_and(|was| was != Placement::Placed)
 }

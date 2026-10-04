@@ -442,6 +442,10 @@ swap, §9):
    combination the helper refuses with `EIO`; a state without an id is simply an ordinary file.
 2. **In the store**, one transaction: the base row from Graph's answer (with `local_handle`),
    `local_seq = ++outbox_seq`, the row deleted, and the activity event.
+   An answer the folder cannot hold (the item was renamed in OneDrive to a name over 255 bytes while
+   its content went up) never takes a placed item's place away: the base keeps the place the disk
+   has, with the version just committed, and the answer waits as the item's deferred change (§9),
+   which this commit does not supersede; the next cycle takes the item off the disk (D39).
 
 The descriptor is the one the content was read from, and a folder's is opened before its `mkdir`:
 the item is the object that was sent, wherever it went during the request — renamed, deleted, or
@@ -896,6 +900,14 @@ removes, in `items` and in `staging`: the item, what the tree has below it, and 
 there by its own id and file handle. A row that turns placed again carries no local object, and a
 deferred change landed or applied never brings one back (F189). An examination that then misses such
 an item finds it unproven, never deleted (§3.4, WR4).
+
+The store keeps the same rule on its own side: **the base records a local object only for an item it
+places**. Whatever writes a row into `items` that the base then does not place — the row itself, or
+a folder above it — clears its recorded object and those of everything below it in the same
+transaction: a cycle's swap, a page of a first listing, a deferred change applied or landed, an outbox
+commit. A row removed takes its record with it. One walk forgets a subtree, by the base and by the
+new tree, wherever it is asked for: before a removal, when a row is dropped for what OneDrive decided,
+when held deletes are restored (F245).
 
 **Replacements** of a downloaded file run under a write lease on the old file, taken before the
 file is checked and granted only while nobody has it open: a writer is not left writing into an

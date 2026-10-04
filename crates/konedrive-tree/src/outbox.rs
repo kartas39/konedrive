@@ -31,13 +31,16 @@ use konedrive_fs::handle::FileHandle;
 use rusqlite::types::Value;
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::forget::{base_places, forget_subtrees, forget_unplaced};
 use crate::meta::next_outbox_seq;
-use crate::model::{upsert, Change, Table};
 #[cfg(test)]
-use crate::model::{Kind, Row};
+use crate::model::Kind;
+use crate::model::{upsert, Change, Placement, Row, Table};
+use crate::query::get_row;
+use crate::reconcile::wait;
 use crate::source::Source;
 use crate::staging::apply;
-use crate::{ActivityRow, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
+use crate::{ActivityRow, TreeError, TreeStore, ACTIVITY_KEPT};
 
 mod changes;
 /// What a row's `snapshot` and `target_name` hold.
@@ -485,22 +488,11 @@ impl TreeStore {
     pub fn outbox_drop_held(&mut self) -> Result<Vec<OutboxRow>, TreeError> {
         let tx = self.conn.transaction()?;
         let held = rows_where(&tx, "WHERE state = 'held'", [])?;
-        for id in held.iter().filter_map(|row| row.item_id.as_deref()) {
-            // In both tables, so that a cycle between staging and swap cannot
-            // give the items their local objects back (the outbox on the bus).
-            for table in ["items", "staging"] {
-                tx.execute(
-                    &format!(
-                        "WITH RECURSIVE below(id, depth) AS (
-                             SELECT ?1, 0
-                             UNION ALL
-                             SELECT c.id, b.depth + 1 FROM items c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
-                         UPDATE {table} SET local_handle = NULL WHERE id IN (SELECT id FROM below)"
-                    ),
-                    [id],
-                )?;
-            }
-        }
+        // In both tables, and by both trees, so that a cycle between staging
+        // and swap cannot give the items their local objects back (the
+        // outbox on the bus).
+        let items: Vec<String> = held.iter().filter_map(|row| row.item_id.clone()).collect();
+        forget_subtrees(&tx, &items, true, &[])?;
         for row in &held {
             remove(&tx, row.seq)?;
         }
@@ -535,6 +527,10 @@ impl TreeStore {
     /// `local_seq = ++outbox_seq`; follow-ups behind a create learn its item
     /// id and base; the row goes; the activity event is written. Returns the
     /// commit's `local_seq`.
+    ///
+    /// An answer the folder cannot hold never takes a placed item's place
+    /// away: the base keeps the place and takes the version, and the answer
+    /// waits in `deferred` (see the arm below).
     pub fn outbox_commit(&mut self, seq: i64, committed: Committed<'_>, activity: Option<&ActivityRow>) -> Result<i64, TreeError> {
         let tx = self.conn.transaction()?;
         let local_seq = next_outbox_seq(&tx)?;
@@ -546,11 +542,32 @@ impl TreeStore {
         };
         match committed {
             Committed::Item { row, handle } => {
-                upsert(&tx, Table::Items, row)?;
+                // The answer names the item as OneDrive has it now. One the
+                // folder cannot hold (a name too long, a reserved one...)
+                // is no place the row sent it to: while the base places the
+                // item, it stays where the disk has it, with the version
+                // just committed, and the answer waits as its deferred
+                // change, for the reconcile to take it off the disk. Dated
+                // this commit, which therefore does not supersede it.
+                let stays = match get_row(&tx, Source::Items, &row.id)? {
+                    Some(base) if row.placement != Placement::Placed && base_places(&tx, &row.id)? => Some(base),
+                    _ => None,
+                };
+                match stays {
+                    Some(base) => {
+                        upsert(&tx, Table::Items, &Row { parent_id: base.parent_id, name: base.name, placement: base.placement, ..row.clone() })?;
+                        wait(&tx, &row.id, Some(row), local_seq)?;
+                    }
+                    None => {
+                        upsert(&tx, Table::Items, row)?;
+                    }
+                }
                 tx.execute(
                     "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
                     params![row.id, handle.map(FileHandle::encode), local_seq],
                 )?;
+                // A row the base does not place records no object (I1).
+                forget_unplaced(&tx, [row.id.as_str()])?;
                 // The follow-up behind it was detected against what this
                 // commit made: that is its base now — and, behind a create,
                 // its item id.

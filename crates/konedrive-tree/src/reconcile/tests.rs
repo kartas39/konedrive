@@ -206,12 +206,75 @@ fn a_row_placed_again_carries_no_local_object() {
         assert_eq!(s.get(Table::Items, "X").unwrap().unwrap().placement, Placement::Placed, "land={land}");
         assert_eq!(s.local_handle("X").unwrap(), None, "land={land}");
     }
-    // A row that stays placed keeps its object.
+}
+
+/// I1: a row the base does not place keeps no local object, and nothing
+/// below it does — whatever wrote it into `items`: a delta's swap, a full
+/// listing's, a page of a first listing, what waited and is applied. A row
+/// OneDrive moves below a folder that is not placed is one of them. What
+/// stays placed keeps its object.
+#[test]
+fn a_row_the_base_does_not_place_keeps_no_local_object() {
+    let unplaced = |row: Row| Row { placement: Placement::Skipped(super::super::SkipReason::NameTooLong), ..row };
+    let base = || {
+        let mut s = TreeStore::in_memory().unwrap();
+        s.begin_staging(crate::NewTree::Whole).unwrap();
+        s.stage(&[
+            Change::Root(root()),
+            Change::Upsert(folder("D", "R", "d")),
+            Change::Upsert(file("F", "D", "f", "c1")),
+            Change::Upsert(file("X", "R", "x", "c1")),
+            Change::Upsert(file("K", "R", "k", "c1")),
+            Change::Upsert(unplaced(folder("V", "R", "v"))),
+        ])
+        .unwrap();
+        s.commit_staging("L1").unwrap();
+        for (id, n) in [("D", 1), ("F", 2), ("X", 3), ("K", 4)] {
+            s.set_local_handle(id, Some(&handle(n))).unwrap();
+        }
+        s
+    };
+    // What OneDrive says next: the folder and the file cannot be held any
+    // more, and `K` goes into a folder that is not placed.
+    let says = || [Change::Upsert(unplaced(folder("D", "R", "d"))), Change::Upsert(unplaced(file("X", "R", "x", "c1"))), Change::Upsert(file("K", "V", "k", "c1"))];
+    let forgotten = |s: &TreeStore, how: &str| {
+        for id in ["D", "F", "X", "K"] {
+            assert_eq!(s.local_handle(id).unwrap(), None, "{id}, {how}");
+        }
+    };
+
     let mut s = base();
     s.begin_staging(crate::NewTree::Delta).unwrap();
-    s.stage(&[Change::Upsert(Row { name: "longer".into(), ..skipped() })]).unwrap();
+    s.stage(&says()).unwrap();
     s.commit_staging("L2").unwrap();
-    assert_eq!(s.local_handle("X").unwrap(), Some(handle(9)), "not placed again: as it was");
+    forgotten(&s, "a delta");
+
+    let mut s = base();
+    s.begin_staging(crate::NewTree::Whole).unwrap();
+    s.stage(&[Change::Root(root()), Change::Upsert(unplaced(folder("V", "R", "v"))), Change::Upsert(file("F", "D", "f", "c1"))]).unwrap();
+    s.stage(&says()).unwrap();
+    s.commit_staging("L2").unwrap();
+    forgotten(&s, "a full listing");
+
+    let mut s = base();
+    s.commit_page(&says(), "next").unwrap();
+    forgotten(&s, "a page");
+
+    let mut s = base();
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.stage(&says()).unwrap();
+    let whole: Vec<String> = ["D", "X", "K"].map(str::to_owned).to_vec();
+    s.commit_staging_deferring("L2", &Deferrals { consumed: &[], whole: &whole, content: &[], fetched_at: 1 }).unwrap();
+    assert_eq!(s.local_handle("F").unwrap(), Some(handle(2)), "what waits is still placed, with its object");
+    s.apply_deferred().unwrap();
+    forgotten(&s, "what waited, applied");
+
+    // Renamed, and placed as before: its object is its own.
+    let mut s = base();
+    s.begin_staging(crate::NewTree::Delta).unwrap();
+    s.stage(&[Change::Upsert(folder("D", "R", "renamed"))]).unwrap();
+    s.commit_staging("L2").unwrap();
+    assert_eq!((s.local_handle("D").unwrap(), s.local_handle("F").unwrap()), (Some(handle(1)), Some(handle(2))));
 }
 
 /// A read-write cycle's swap is all or nothing: when it fails after the

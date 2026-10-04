@@ -8,11 +8,12 @@ use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{insert, remove, rewrite, rows_for, rows_where, set_snapshot, BadItem, Base, OutboxKind, OutboxRow, OutboxState, Reason, SessionUrl, Snapshot, SWAP_PREFIX};
 use crate::conflicts::ConflictKind;
+use crate::forget::{forget_subtrees, forget_unplaced};
 use crate::meta::next_outbox_seq;
 use crate::model::{upsert, Change, Placement, Row, Table};
 use crate::source::Source;
 use crate::staging::apply;
-use crate::{ActivityRow, TreeError, TreeStore, ACTIVITY_KEPT, MAX_CHAIN};
+use crate::{ActivityRow, TreeError, TreeStore, ACTIVITY_KEPT};
 
 /// A conflict copy, as [`TreeStore::outbox_copied`] records it.
 #[derive(Debug, Clone, Copy)]
@@ -42,25 +43,13 @@ fn add_activity(tx: &rusqlite::Transaction<'_>, event: Option<&ActivityRow>) -> 
     Ok(())
 }
 
-/// Forgets the local object of `id` and of everything the base has inside
-/// it: until the reconcile places them again, no examination can prove them
-/// deleted, so none of them becomes a delete in OneDrive (WR4).
+/// Forgets the local object of `id` and of everything the base or the new
+/// tree has inside it: until the reconcile places them again, no examination
+/// can prove them deleted, so none of them becomes a delete in OneDrive (WR4).
+/// In both tables, so that a cycle between staging and swap cannot give them
+/// back (the outbox on the bus).
 fn forget_local(tx: &rusqlite::Transaction<'_>, id: &str) -> Result<(), TreeError> {
-    // In both tables, so that a cycle between staging and swap cannot give
-    // them back (the outbox on the bus).
-    for table in ["items", "staging"] {
-        tx.execute(
-            &format!(
-                "WITH RECURSIVE below(id, depth) AS (
-                     SELECT ?1, 0
-                     UNION ALL
-                     SELECT c.id, b.depth + 1 FROM items c JOIN below b ON c.parent_id = b.id WHERE b.depth < {MAX_CHAIN})
-                 UPDATE {table} SET local_handle = NULL WHERE id IN (SELECT id FROM below)"
-            ),
-            [id],
-        )?;
-    }
-    Ok(())
+    forget_subtrees(tx, &[id.to_owned()], true, &[])
 }
 
 fn amend_in(conn: &Connection, seq: i64, amend: impl FnOnce(&mut OutboxRow)) -> Result<bool, TreeError> {
@@ -379,6 +368,7 @@ impl TreeStore {
         let tx = self.conn.transaction()?;
         if let Some(row) = base {
             upsert(&tx, Table::Items, row)?;
+            forget_unplaced(&tx, [row.id.as_str()])?;
         }
         if let Some(id) = forget {
             forget_local(&tx, id)?;
