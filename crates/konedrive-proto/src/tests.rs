@@ -212,6 +212,38 @@ fn a_root_id_is_a_version_4_uuid_in_its_canonical_text() {
     }
 }
 
+/// A datagram longer than the receive buffer is refused as what it is. The
+/// kernel keeps the head and throws the rest away; the head of this one is a
+/// whole message, so a receiver that did not look at `MSG_TRUNC` would act
+/// on it.
+#[test]
+fn a_datagram_longer_than_the_buffer_is_refused_not_cut() {
+    let _serial = serial();
+    let (client, mut server) = pair();
+    let mut encoded = serde_json::to_vec(&ToHelper::MarkDir).unwrap();
+    encoded.resize(MAX_MESSAGE_BYTES + 1, b' ');
+    nix::sys::socket::send(client.get_ref().as_raw_fd(), &encoded, MsgFlags::empty()).unwrap();
+
+    let error = server.recv::<ToHelper>().unwrap_err();
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData, "{error:?}");
+    assert!(error.to_string().contains("message truncated"), "{error}");
+}
+
+/// A descriptor that arrives is not inherited by a program this process
+/// starts.
+#[test]
+fn a_received_descriptor_is_close_on_exec() {
+    let _serial = serial();
+    let (mut client, mut server) = pair();
+    let file = tempfile::tempfile().unwrap();
+    client.send(&ToHelper::MarkFile, Some(std::os::fd::AsFd::as_fd(&file))).unwrap();
+    let (_, fd) = server.recv::<ToHelper>().unwrap();
+    let fd = fd.expect("descriptor");
+    // SAFETY: `F_GETFD` on an open descriptor reads its flags.
+    let flags = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_GETFD) };
+    assert_ne!(flags & libc::FD_CLOEXEC, 0, "flags {flags:#x}");
+}
+
 /// The control buffer is aligned for the records read out of it, and holds
 /// exactly the room of `MAX_CONTROL_FDS` descriptors.
 #[test]

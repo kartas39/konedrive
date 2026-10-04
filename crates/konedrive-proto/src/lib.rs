@@ -275,9 +275,10 @@ impl Channel {
     /// Takes one datagram off the socket, as it came: nothing in it is
     /// looked at.
     ///
-    /// An error for a closed peer and for more than one descriptor attached;
+    /// An error for a closed peer, for a datagram longer than
+    /// [`MAX_MESSAGE_BYTES`], and for more than one descriptor attached;
     /// every descriptor the kernel installed for a refused datagram is
-    /// closed.
+    /// closed. Descriptors arrive close-on-exec (`MSG_CMSG_CLOEXEC`).
     fn receive(&mut self) -> io::Result<Datagram> {
         let mut buffer = vec![0u8; MAX_MESSAGE_BYTES];
         let mut control = ControlBuffer::new();
@@ -299,7 +300,9 @@ impl Channel {
             // SAFETY: `msg` points at `iov` and `control`, both of which are
             // live local buffers for the duration of this call; the fd is a
             // valid, open socket owned by `self.socket`.
-            let rc = unsafe { libc::recvmsg(self.socket.as_raw_fd(), &mut msg, 0) };
+            let rc = unsafe {
+                libc::recvmsg(self.socket.as_raw_fd(), &mut msg, libc::MSG_CMSG_CLOEXEC)
+            };
             if rc >= 0 {
                 break rc as usize;
             }
@@ -328,6 +331,15 @@ impl Channel {
                 "peer attached more than one descriptor",
             ));
         }
+        if msg.msg_flags & libc::MSG_TRUNC != 0 {
+            // What is in the buffer is the head of a longer datagram; the
+            // kernel has thrown the rest away. Said as what it is, not left
+            // to whatever a parser makes of half a message.
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("message truncated: peer sent more than {MAX_MESSAGE_BYTES} bytes"),
+            ));
+        }
         if received == 0 {
             return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "peer closed"));
         }
@@ -337,8 +349,8 @@ impl Channel {
     }
 }
 
-/// The room [`Channel::recv`] has for one datagram. Every message of the
-/// protocol is far shorter.
+/// The longest datagram [`Channel::recv`] takes. Every message of the
+/// protocol is far shorter; a longer one is refused, not cut.
 pub const MAX_MESSAGE_BYTES: usize = 64 * 1024;
 
 /// One datagram as it came off the socket: its bytes, and the descriptor

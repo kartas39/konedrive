@@ -596,8 +596,9 @@ alike. `failed > 0` publishes `Folder.State = error`; the other counters put a n
 ### 10.1 Transport and messages
 
 `/run/konedrive/helper.sock`, a `SOCK_SEQPACKET` socket. The helper learns the peer's uid from
-`SO_PEERCRED`, never from a message. Messages are small, versioned, binary
-(`crates/konedrive-proto`); descriptors travel with `SCM_RIGHTS`.
+`SO_PEERCRED`, never from a message. Messages are small and versioned, each one JSON in a
+datagram of its own, at most 64 KiB (`crates/konedrive-proto`); descriptors travel with
+`SCM_RIGHTS`, at most one with a message, and arrive close-on-exec.
 
 | Direction | Message |
 |---|---|
