@@ -140,7 +140,8 @@ const VERSION_7: &str = include_str!("tests/v7.sql");
 /// - a row blocked by a `404` is ready again;
 /// - what was inside a leaving folder is placed with it, with no object on
 ///   record: an examination records what it finds in place, and proves
-///   nothing gone;
+///   nothing gone; a content row there whose file has another name than
+///   OneDrive has for the item goes, since it would send the old name back;
 /// - one that cannot be carried (placed again elsewhere, or its folder not
 ///   in the base) is only dropped: its content row goes, since its object
 ///   is a copy now and goes up as new, and a new file's row there asks the
@@ -210,6 +211,7 @@ fn what_was_leaving_waits_after_the_upgrade_and_nothing_queued_is_lost() {
     assert_eq!((rows[3].target_parent.as_deref(), rows[3].target_name.as_deref()), (Some("D"), Some("f.txt")));
     assert_eq!(base(&rows[0]), Some(("L".into(), "inside.txt".into(), "e-I".into())));
     assert_eq!((rows[1].target_parent.as_deref(), rows[4].target_parent.as_deref()), (Some("L"), None), "a new file where the folder is not the base's asks again");
+    assert!(s.get(Table::Items, "Q").unwrap().is_some_and(|row| row.name == "renamed-there.txt"), "and no row is left that names it as it was");
 
     assert_eq!(
         s.local_skipped().unwrap().into_iter().map(|skip| (skip.rel.display().to_string(), skip.reason)).collect::<Vec<_>>(),

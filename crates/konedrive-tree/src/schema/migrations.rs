@@ -224,7 +224,8 @@ fn placement_indexes(conn: &Connection) -> Result<(), TreeError> {
 /// object recorded. A content row of that very item is one against that
 /// place again, so it sends no name. What the base has below it is placed
 /// again with it, with no object recorded: an examination records what it
-/// finds in place.
+/// finds in place. A content row in it whose file has another name than
+/// OneDrive has for its item goes: it would send the old name back.
 ///
 /// A row that cannot be carried is only dropped: its path is not UTF-8, the
 /// folder it names is not placed by `items`, another item is placed at
@@ -289,8 +290,9 @@ fn leaving_waits(conn: &Connection) -> Result<(), TreeError> {
         Ok(false)
     };
     let mut dropped: Vec<Vec<u8>> = Vec::new();
+    let mut carried_at: Vec<Vec<u8>> = Vec::new();
     for (id, rel, handle) in leaving {
-        let carried = (|| -> Result<bool, TreeError> {
+        let mut carry = || -> Result<bool, TreeError> {
             let Ok(path) = std::str::from_utf8(&rel) else { return Ok(false) };
             let mut names: Vec<&str> = path.split('/').collect();
             let Some(name) = names.pop().filter(|name| !name.is_empty()) else { return Ok(false) };
@@ -302,8 +304,7 @@ fn leaving_waits(conn: &Connection) -> Result<(), TreeError> {
             if !placed(&parent)? || placed_child(&parent, name)?.is_some_and(|other| other != id) {
                 return Ok(false);
             }
-            let (last, was_parent, was_name): (i64, Option<String>, String) =
-                conn.query_row("SELECT local_seq, parent_id, name FROM items WHERE id = ?1", [&id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            let last: i64 = conn.query_row("SELECT local_seq FROM items WHERE id = ?1", [&id], |r| r.get(0))?;
             conn.execute(
                 "INSERT OR REPLACE INTO deferred (id, seq, gone, parent_id, name, kind, size, mtime, etag, ctag, quickxor, mime, placement, waits)
                  SELECT id, MAX(?2, COALESCE((SELECT g.local_seq FROM outbox_gone g WHERE g.id = items.id), 0)), 0,
@@ -316,23 +317,32 @@ fn leaving_waits(conn: &Connection) -> Result<(), TreeError> {
             conn.execute("UPDATE items SET parent_id = ?2, name = ?3, placement = 'placed', local_handle = ?4 WHERE id = ?1", params![id, parent, name, object])?;
             // Its own content row was recorded against OneDrive's place.
             conn.execute(
-                "UPDATE outbox SET base_parent = ?2, base_name = ?3, target_parent = ?2, target_name = ?3
-                  WHERE item_id = ?1 AND kind = 'update' AND base_parent IS ?4 AND base_name IS ?5",
-                params![id, parent, name, was_parent, was_name],
+                "UPDATE outbox SET base_parent = ?2, base_name = ?3, target_parent = ?2, target_name = ?3 WHERE item_id = ?1 AND kind = 'update'",
+                params![id, parent, name],
             )?;
+            carried_at.push(rel.clone());
             Ok(true)
-        })()?;
-        if !carried {
+        };
+        if !carry()? {
             dropped.push(rel);
         }
     }
-    if !dropped.is_empty() {
-        let below = |rel: &[u8]| dropped.iter().any(|left| rel == left.as_slice() || (rel.starts_with(left) && rel.get(left.len()) == Some(&b'/')));
-        let rows: Vec<(i64, String, Vec<u8>)> = conn
-            .prepare("SELECT seq, kind, CAST(rel AS BLOB) FROM outbox")?
-            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+    if !dropped.is_empty() || !carried_at.is_empty() {
+        let below = |all: &[Vec<u8>], rel: &[u8]| all.iter().any(|left| rel == left.as_slice() || (rel.starts_with(left) && rel.get(left.len()) == Some(&b'/')));
+        let rows: Vec<(i64, String, Vec<u8>, Option<String>)> = conn
+            .prepare("SELECT seq, kind, CAST(rel AS BLOB), base_name FROM outbox")?
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
             .collect::<Result<_, _>>()?;
-        for (seq, kind, _) in rows.into_iter().filter(|(_, _, rel)| below(rel)) {
+        for (seq, kind, rel, base_name) in rows {
+            // In what was carried, a content row whose file stands under
+            // another name than OneDrive has for its item (renamed there
+            // while it was leaving) would send the old name back: it goes
+            // too, and the file, which is not where the base has the item,
+            // goes up as new.
+            let renamed_there = kind == "update" && below(&carried_at, &rel) && base_name.as_deref().map(str::as_bytes) != rel.rsplit(|byte| *byte == b'/').next();
+            if !below(&dropped, &rel) && !renamed_there {
+                continue;
+            }
             match kind.as_str() {
                 "update" => {
                     tracing::warn!("outbox row {seq} sent the content of a file in a folder that was leaving and cannot be carried over; the file goes up as new instead");
