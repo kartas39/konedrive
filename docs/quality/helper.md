@@ -83,6 +83,9 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   Five `expect`s in production.
 - **Fix:** a `PendingOpen` type whose `Drop` denies `EIO`, with consuming `allow` and `deny`.
 - **Size:** M. **Risk:** touches every answer path.
+- **Fixed 2026-10-04** in `b0ee394` (#147): a suspended open is a `PendingOpen` (`pending.rs`) that owns
+  the event fd, is answered by a consuming `allow` or `deny`, and denies `EIO` when dropped
+  unanswered; the five `expect`s are gone.
 
 ## HE4. Every stat and xattr read duplicates the event fd
 
@@ -90,6 +93,8 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   taking `&File`.
 - **What:** two to four `dup` and `close` pairs per intercepted open; the cause of F7.
 - **Fix:** the readers take `impl AsFd`. **Size:** S. **Risk:** low.
+- **Fixed 2026-10-04** in `b0ee394` (#147): the readers take `&impl AsFd`, and the helper decides an open
+  on the event fd itself; `docs/limitations/F7.md` is closed.
 
 ## HE5. `events.rs` mixes three responsibilities
 
