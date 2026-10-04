@@ -35,7 +35,7 @@ pub fn no_drive() -> DriveOf {
 
 /// What the daemon's accounts are made with. `main` gives Microsoft, the Secret Service, the
 /// real `balooctl6`, the freedesktop thumbnail cache and each account's own drive; a test
-/// gives wiremock, a [`crate::account::testing::MemoryWallet`], [`Baloo::disabled`], no
+/// gives wiremock, a wallet in memory (`account::testing::MemoryWallet`), [`Baloo::disabled`], no
 /// thumbnails, and the drive its folders show, or none.
 pub struct Options {
     pub endpoints: Endpoints,

@@ -205,6 +205,11 @@ id = "R7"
             _ => panic!("{}: held {held:?}, expected {expected:?}", account.label),
         }
     }
+    assert_eq!(
+        holds[6].as_deref(),
+        Some("its id \"my-account\" is not 12 lowercase hexadecimal characters"),
+        "the sentence Accounts.LastError says, with the id as plain quoted text"
+    );
     assert_eq!(std::fs::read_to_string(&paths.config_file).unwrap(), text);
     assert_eq!(store.last_error(), "");
 }
@@ -258,6 +263,11 @@ async fn the_write_gate_refuses_every_drive_by_default() {
     assert!(!writes_allowed(&store, &real), "a drive not listed stays read-only");
     assert!(!writes_allowed(&store, &fresh), "an empty entry lets no account without a drive through");
     assert_eq!(store.write_standing(&id("000000000000")), None, "no such account");
+    // The empty entry names no drive: it is not kept, and is gone at the next write.
+    store.set_label(&fresh, "Newer").unwrap();
+    let written = std::fs::read_to_string(store.file()).unwrap();
+    assert!(written.contains("write_test_drive_ids = [\"TEST\"]\n"), "{written}");
+    assert!(writes_allowed(&store, &test), "the listed drive stays");
 
     std::fs::write(store.file(), &empty).unwrap();
     assert!(!writes_allowed(&store, &test), "the drive taken off the list by hand");

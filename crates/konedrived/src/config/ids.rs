@@ -11,7 +11,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 /// file paths. One read from a hand-edited file, or taken from a caller, may be anything:
 /// [`is_valid`](Self::is_valid) says whether it is an id, and an account whose id is not
 /// one is held (`Config::holds`) and has no files (`Paths::account`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct AccountId(String);
 
@@ -50,7 +50,7 @@ pub fn is_account_id(text: &str) -> bool {
 
 /// The id of a drive in OneDrive, as Graph gives it: an account's identity. Never empty: an
 /// account that has no drive yet has none (`Option<DriveId>`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct DriveId(String);
 
@@ -82,6 +82,14 @@ pub(super) fn drives<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<D
 
 macro_rules! text_id {
     ($id:ty) => {
+        /// As the text it is, quoted: what `{:?}` printed while the id was a `String`, which
+        /// `Accounts.LastError` and the log say.
+        impl fmt::Debug for $id {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                fmt::Debug::fmt(&self.0, f)
+            }
+        }
+
         impl fmt::Display for $id {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(&self.0)

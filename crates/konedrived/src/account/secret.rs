@@ -36,6 +36,7 @@ pub trait Wallet: Send + Sync {
 }
 
 /// The label version 1 gave its item, and an account's before its email is known.
+#[cfg_attr(not(any(test, feature = "testing")), allow(dead_code))]
 pub(super) const V1_LABEL: &str = "KOneDrive refresh token";
 
 /// One account's refresh token (design §7.4): its own item, and — while the account's

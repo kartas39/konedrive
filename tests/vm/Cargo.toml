@@ -45,7 +45,7 @@ konedrive-dbus = { path = "../../crates/konedrive-dbus", features = ["testing"] 
 konedrive-fs = { path = "../../crates/konedrive-fs" }
 konedrive-graph = { path = "../../crates/konedrive-graph" }
 konedrive-helper = { path = "../../crates/konedrive-helper" }
-konedrived = { path = "../../crates/konedrived", features = ["fault-injection"] }
+konedrived = { path = "../../crates/konedrived", features = ["fault-injection", "testing"] }
 konedrive-proto = { path = "../../crates/konedrive-proto" }
 konedrive-tree = { path = "../../crates/konedrive-tree", features = ["testing"] }
 libc = "0.2"

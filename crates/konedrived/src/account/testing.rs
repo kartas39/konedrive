@@ -1,6 +1,6 @@
 //! Test support for the account, also for the tests of the daemon, of `konedrivectl` and the
-//! VM suite: a wallet in memory, and one account with no accounts manager around it. Nothing
-//! the daemon itself runs.
+//! VM suite: a wallet in memory, and one account with no accounts manager around it. Built
+//! only under the crate's own tests and the `testing` feature; no build that ships has it.
 
 use std::collections::HashMap;
 use std::path::Path;

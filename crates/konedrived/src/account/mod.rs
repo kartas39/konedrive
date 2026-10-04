@@ -41,6 +41,7 @@ pub mod quota;
 pub mod secret;
 mod sign_in;
 pub mod state;
+#[cfg(any(test, feature = "testing"))]
 pub mod testing;
 
 use std::path::PathBuf;

@@ -499,6 +499,25 @@ async fn removing_an_account_forgets_its_folder_and_keeps_its_rescued_files() {
     assert!(folder.exists(), "the folder's files are kept");
 }
 
+/// A hand-edited id that is not an account id: the account is not loaded, the others are,
+/// and `Accounts.LastError` says which and why, with the id as the file has it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_account_whose_id_is_not_one_is_not_loaded_and_last_error_says_so() {
+    let (config, dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+    std::fs::write(
+        config.path().join("config.toml"),
+        "config_version = 2\n\n[[accounts]]\nid = \"0123456789ab\"\nlabel = \"Personal\"\n\n\
+         [[accounts]]\nid = \"bad\"\nlabel = \"Work\"\n",
+    )
+    .unwrap();
+    let d = Daemon::start_in(config, dir).await;
+    assert_eq!(d.manager.list().await.unwrap().len(), 1);
+    assert_eq!(
+        d.manager.last_error().await.unwrap(),
+        "the account \"Work\" is not loaded: its id \"bad\" is not 12 lowercase hexadecimal characters"
+    );
+}
+
 /// Review I1: an account held back (§3.1) never brings its folder up, but a folder it
 /// registered with interception in an earlier session is still the helper's. `Remove`
 /// forgets it through the helper — refused `NoHelper` without one, changing nothing — before

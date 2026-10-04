@@ -106,7 +106,7 @@ One account: its sign-in, mode, state, quota, cached profile, stored secret. Des
 - `cache.rs` — the cached profile and quota (`account.json`), shown offline. `[tests]`
 - `secret.rs` — the refresh token's storage in the Secret Service, an item for each account. `[tests]`
 - `testing.rs` — test support, also for `konedrivectl`'s tests and the VM suite: a wallet in
-  memory, and one account with no accounts manager.
+  memory, and one account with no accounts manager. Built only under the `testing` feature.
 
 ### `crates/konedrived/src/helper/`
 

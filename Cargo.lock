@@ -1212,6 +1212,7 @@ dependencies = [
  "konedrive-graph",
  "konedrive-proto",
  "konedrive-tree",
+ "konedrived",
  "libc",
  "md-5",
  "nix",

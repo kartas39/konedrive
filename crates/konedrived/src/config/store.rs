@@ -22,7 +22,7 @@ pub enum ConfigError {
     #[error("{0}")]
     Write(String),
     /// No account has this id (`NoAccount`).
-    #[error("there is no account {:?}", .0.as_str())]
+    #[error("there is no account {0:?}")]
     NoAccount(AccountId),
     /// A label [`check_label`] refuses, with the reason (`InvalidArgs`).
     #[error("{0}")]
