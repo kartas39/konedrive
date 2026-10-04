@@ -71,6 +71,8 @@ them, what is unconfirmed, and the order of work. Line numbers are of `dev` at `
 - `errno_of`: `konedrive-helper/src/registration.rs:128` and `by_handle.rs:167`.
 - **Fix:** one of each, in the lowest layer that uses it (`folder/disk.rs`, `konedrive-fs`).
   **Size:** S each. **Risk:** low.
+- **Fixed in part 2026-10-05** in `542213a` (#188): one `konedrive_fs::proc_path`, one `folder::disk::beneath`,
+  one `folder::walk::reserved` outside `local/`. Left: the `local/` copies and `unix_now` (`docs/limitations/D56.md`).
 
 ## X4. Poisoned locks handled three ways
 
