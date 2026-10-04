@@ -1,4 +1,4 @@
-use konedrive_tree::outbox::{Group, LocalSkip, Reason};
+use konedrive_reason::{Group, LocalSkip, Reason};
 
 use super::{not_uploaded_text, outbox_text, quota_text, space_waiting_text, upload_reason_text};
 

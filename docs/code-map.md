@@ -25,6 +25,7 @@ A change that adds, moves or removes a file changes its line here.
 | `crates/konedrive-tree` | The tree store (SQLite): items, staging, the outbox |
 | `crates/konedrive-fs` | Placeholders on the local filesystem: extended attributes, sparse files, leases, handles |
 | `crates/konedrive-proto` | The messages between the helper and the daemon |
+| `crates/konedrive-reason` | Why a change is kept back: the reasons of outbox rows and local skips, their spellings and groups |
 | `crates/konedrive-dbus` | D-Bus names and client proxies of the daemon, for `konedrivectl` and tests |
 | `dbus/` | The D-Bus interfaces as XML: the contract between the daemon and its clients |
 | `app/` | The window and the tray icon (Qt 6, Kirigami) |
@@ -34,8 +35,9 @@ A change that adds, moves or removes a file changes its line here.
 | `tests/stress`, `tests/kio` | Tools run by hand: the upload stress run, the KIO probe |
 | `scripts/`, `packaging/`, `.github/` | Building, installing, the RPM packages, the release workflow |
 
-Which crate uses which, lowest first: `konedrive-proto` and `konedrive-fs`; `konedrive-graph`;
-`konedrive-tree` (uses `konedrive-graph` for a drive item); `konedrive-dbus`; then
+Which crate uses which, lowest first: `konedrive-proto`, `konedrive-fs` and `konedrive-reason`
+(which uses nothing); `konedrive-graph`; `konedrive-tree` (uses `konedrive-graph` for a drive
+item, and re-exports `konedrive-reason` in `outbox`); `konedrive-dbus`; then
 `konedrive-helper`, `konedrived` and `konedrivectl`.
 
 ## How each suite is run
@@ -475,8 +477,7 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `outbox.rs` — the outbox: what the folder holds that OneDrive does not have yet. `[tests]`
 - `outbox/schema.rs` — the write phase's tables and indexes.
 - `outbox/row.rs` — a row, a detection, and what an examination and a commit hand the store.
-- `outbox/reason.rs` — why a change is kept back: a row's reason, a local skip, their spellings and groups. `[tests]`
-- `outbox/encoded.rs` — what a row's `snapshot` and `target_name` hold, read and written.
+- `outbox/encoded.rs` — what a row's `snapshot` and `target_name` hold, read and written. `[tests]`
 - `outbox/record.rs` — a detection recorded.
 - `outbox/pick.rs` — which rows run next. `[tests]`
 - `outbox/dependencies.rs` — every row's blockers at once; test code.
@@ -510,6 +511,15 @@ Design: `hydration.md` (the helper–daemon protocol).
 
 - `Cargo.toml` — the crate.
 - `src/lib.rs` — the messages between the helper and the daemon, and their framing. `[tests]`
+
+## `crates/konedrive-reason`: why a change is kept back
+
+Design: `writes.md` §5 (the outbox), `desktop.md` (`NotUploadedSummary()`).
+
+### `crates/konedrive-reason/`
+
+- `Cargo.toml` — the crate; it has no dependencies.
+- `src/lib.rs` — a row's reason, a local skip, their stored spellings, details and groups. `[tests]`
 
 ## `crates/konedrive-dbus`: names and proxies
 

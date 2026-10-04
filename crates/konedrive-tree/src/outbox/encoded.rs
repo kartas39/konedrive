@@ -108,3 +108,6 @@ impl OutboxRow {
 pub fn place_name(place: &Path) -> Option<&str> {
     place.to_str()
 }
+
+#[cfg(test)]
+mod tests;

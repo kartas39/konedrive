@@ -1,4 +1,4 @@
-use konedrive_tree::outbox::{Group, LocalSkip, Reason};
+use konedrive_reason::{Group, LocalSkip, Reason};
 
 use super::formats::{human_bytes, local_time};
 

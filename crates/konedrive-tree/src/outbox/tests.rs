@@ -364,3 +364,65 @@ fn a_path_that_is_not_utf8_is_kept_as_it_is() {
     s.outbox_apply(&[OutboxOp::Unskip(rel)], 9).unwrap();
     assert!(s.local_skipped().unwrap().is_empty());
 }
+
+/// A reason no variant spells, in the database, is read, kept through a
+/// change of the row's state, counted and listed, as stored.
+#[test]
+fn a_row_with_a_reason_the_enum_does_not_know_is_kept() {
+    let mut s = TreeStore::in_memory().unwrap();
+    let d = Detection {
+        kind: OutboxKind::Create,
+        item_id: None,
+        inode: None,
+        rel: "a.txt".into(),
+        base: None,
+        target_parent: None,
+        target_name: Some("a.txt".into()),
+        same_content: false,
+        state: OutboxState::Retry,
+        reason: None,
+        next_try: None,
+        size: None,
+    };
+    s.outbox_apply(&[OutboxOp::Record(d), OutboxOp::Skip { rel: "odd".into(), reason: LocalSkip::Symlink, size: 0 }], 1).unwrap();
+    s.conn.execute("UPDATE outbox SET reason = 'error sending request for url'", []).unwrap();
+    s.conn.execute("UPDATE local_skipped SET reason = 'from-the-future'", []).unwrap();
+    let row = s.outbox_rows().unwrap().remove(0);
+    assert_eq!(row.reason, Some(Reason::Other("error sending request for url".into())));
+    s.outbox_set_state(row.seq, OutboxState::Retry, row.reason.as_ref(), Some(7)).unwrap();
+    let stored: String = s.conn.query_row("SELECT reason FROM outbox", [], |r| r.get(0)).unwrap();
+    assert_eq!(stored, "error sending request for url");
+    assert_eq!(s.outbox_groups().unwrap()[0].reason(), row.reason);
+    assert_eq!(s.local_skipped().unwrap()[0].reason, LocalSkip::Other("from-the-future".into()));
+    let groups = s.skipped_groups().unwrap();
+    assert_eq!(s.skipped_places_of(&[&groups[0].reason], 0).unwrap(), vec![("odd".into(), LocalSkip::Other("from-the-future".into()))]);
+}
+
+/// The rows that wait for space are found by the two spellings.
+#[test]
+fn the_rows_waiting_for_space_are_found_by_their_reasons() {
+    let mut s = TreeStore::in_memory().unwrap();
+    let create = |rel: &str, reason: Option<Reason>| {
+        OutboxOp::Record(Detection {
+            kind: OutboxKind::Create,
+            item_id: None,
+            inode: None,
+            rel: rel.into(),
+            base: None,
+            target_parent: None,
+            target_name: Some(rel.into()),
+            same_content: false,
+            state: OutboxState::Ready,
+            reason,
+            next_try: None,
+            size: None,
+        })
+    };
+    let ops = [create("a", Some(Reason::WaitingForSpace)), create("b", Some(Reason::TooBig(Some((9, 1))))), create("c", Some(Reason::Quota)), create("d", None)];
+    s.outbox_apply(&ops, 1).unwrap();
+    let waiting: Vec<String> = s.outbox_waiting_for_space().unwrap().into_iter().map(|r| r.rel.display().to_string()).collect();
+    assert_eq!(waiting, ["a", "b"]);
+    let stored: Vec<String> =
+        s.conn.prepare("SELECT reason FROM outbox WHERE reason IS NOT NULL ORDER BY seq").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+    assert_eq!(stored, ["waiting-for-space", "too-big:9:1", "quota-exceeded"]);
+}

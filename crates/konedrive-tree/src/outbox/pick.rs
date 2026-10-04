@@ -25,7 +25,7 @@
 use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection};
 
-use super::reason::TOO_BIG_PREFIX;
+use konedrive_reason::TOO_BIG_PREFIX;
 use super::{circles, frees, path_value, rows_where, takes, OutboxKind, OutboxRow, OutboxState, Reason, FREES};
 use crate::{Kind, TreeError, TreeStore, MAX_CHAIN};
 

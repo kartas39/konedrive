@@ -14,6 +14,10 @@
 //!
 //! Every key has its [`Group`]: what the user can do about it
 //! (`NotUploadedSummary()`).
+//!
+//! A crate of its own, with no dependencies: the store (`konedrive-tree`,
+//! which re-exports it in `outbox`) and the daemon hold these, and
+//! `konedrivectl` words them without linking the store.
 
 use std::fmt;
 
@@ -87,7 +91,7 @@ pub enum Reason {
     /// answers `404` for while its listing still has it (issue #104):
     /// blocked until the listing says it is gone (the row goes) or it is
     /// changed again. The one reason the store itself reads
-    /// ([`TreeStore::outbox_settle_not_found`](crate::TreeStore::outbox_settle_not_found)).
+    /// (`TreeStore::outbox_settle_not_found`).
     LeavingNotFound,
     /// The file is not downloaded (WR1).
     NotLocal,
@@ -191,7 +195,7 @@ pub enum Reason {
 }
 
 /// How every *too big* reason begins, the sizes behind it.
-pub(super) const TOO_BIG_PREFIX: &str = "too-big:";
+pub const TOO_BIG_PREFIX: &str = "too-big:";
 /// The key every *too big* reason is summed under.
 const TOO_BIG_KEY: &str = "too-big";
 

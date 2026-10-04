@@ -471,7 +471,7 @@ fn copies_that_kept_their_attributes_are_new_files() {
     }
     assert_eq!(out.mark_files, vec![PathBuf::from("p.bin")]);
     let skipped = fx.store.call_blocking(move |s| s.local_skipped()).unwrap();
-    assert_eq!(skipped.iter().map(|s| (s.rel.display().to_string(), s.reason.key())).collect::<Vec<_>>(), vec![("p-link.bin".into(), "hard-link")]);
+    assert_eq!(skipped.iter().map(|s| (s.rel.display().to_string(), s.reason.to_string())).collect::<Vec<_>>(), vec![("p-link.bin".into(), "hard-link".to_owned())]);
 }
 
 /// Rule 7: a base item missing from the batch is decided by its object:

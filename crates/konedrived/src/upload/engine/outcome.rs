@@ -134,7 +134,7 @@ pub(in crate::upload) fn outcome_of(fail: Fail) -> Outcome {
             WriteError::Locked => Outcome::backoff(Reason::Locked),
             WriteError::Forbidden => Outcome::Forbidden,
             WriteError::SignedOut => Outcome::SignedOut,
-            WriteError::Refused(message) => Outcome::blocked(Reason::Refused(Some(message))),
+            WriteError::Refused(message) => Outcome::blocked(Reason::Refused(Some(message.to_string()))),
             e @ WriteError::Transient(_) => Outcome::failed(Reason::Network, e),
             // `Failed`, and a `412`, `409`, `404` or ended session no step settled.
             other => Outcome::failed(Reason::Failed, other),

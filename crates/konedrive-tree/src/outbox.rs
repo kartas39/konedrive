@@ -43,8 +43,6 @@ mod dependencies;
 mod handles;
 /// Which rows run next.
 mod pick;
-/// Why a change is kept back.
-mod reason;
 mod record;
 mod row;
 mod schema;
@@ -58,7 +56,7 @@ pub(super) use changes::watch;
 pub use pick::{due, Pick, Picked, PORTION};
 pub use encoded::{place_name, Snapshot};
 use handles::set_local_handle;
-pub use reason::{key_of, known_group, Group, LocalSkip, Reason};
+pub use konedrive_reason::{key_of, known_group, Group, LocalSkip, Reason};
 use record::record;
 pub use row::{BadItem, Base, Committed, Detection, Inode, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded};
 pub use schema::OPENING_LEFT_KEEP;

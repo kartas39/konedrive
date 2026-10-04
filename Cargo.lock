@@ -1132,11 +1132,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "konedrive-reason"
+version = "0.1.1"
+
+[[package]]
 name = "konedrive-tree"
 version = "0.1.1"
 dependencies = [
  "konedrive-fs",
  "konedrive-graph",
+ "konedrive-reason",
  "libc",
  "rusqlite",
  "serde_json",
@@ -1178,6 +1183,7 @@ dependencies = [
  "konedrive-fs",
  "konedrive-graph",
  "konedrive-proto",
+ "konedrive-reason",
  "konedrive-tree",
  "konedrived",
  "libc",
