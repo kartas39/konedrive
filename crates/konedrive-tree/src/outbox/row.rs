@@ -186,6 +186,20 @@ impl OutboxRow {
     pub fn reason_text(&self) -> Option<String> {
         self.reason.as_ref().map(Reason::to_string)
     }
+
+    /// The row starts over as another request than the one it was sending
+    /// (a conflict copy's, a file uploaded again as new): no reason, no
+    /// attempt counted, due at once, and nothing kept of the content that
+    /// was going up — its snapshot and its upload session.
+    pub fn reset_for_resend(&mut self) {
+        self.reason = None;
+        self.attempts = 0;
+        self.next_try = None;
+        self.snapshot = None;
+        self.session_url = None;
+        self.session_expires = None;
+        self.session_next = None;
+    }
 }
 
 /// What an examination found about one item, or one local object not

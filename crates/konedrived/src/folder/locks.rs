@@ -227,7 +227,7 @@ impl InodeGuard {
     }
 
     /// A share in the lock, for a blocking section started under it that is
-    /// not a fill's (the upload's commit and reads, `upload::steps::blocking_under`).
+    /// not a fill's (the upload's commit and reads, `upload::steps::sections::blocking_under`).
     pub(crate) fn hold(&self) -> InodeHold {
         InodeHold { held: Arc::clone(&self.held), with: None }
     }
@@ -248,7 +248,7 @@ pub(crate) async fn holding<T>(guard: &InodeGuard, work: impl std::future::Futur
 
 /// [`holding`], each share in the lock carrying `with` as well: the upload
 /// worker's count of the sections its rows have under way, so that its stop
-/// waits for a section of a fill a row started (`upload::steps::Sections`).
+/// waits for a section of a fill a row started (`upload::steps::sections::Sections`).
 pub(crate) async fn holding_with<T>(guard: &InodeGuard, with: Option<Carried>, work: impl std::future::Future<Output = T>) -> T {
     HELD.scope(InodeHold { with, ..guard.hold() }, work).await
 }

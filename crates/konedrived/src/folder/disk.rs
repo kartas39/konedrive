@@ -106,7 +106,7 @@ fn proc_path(file: &File) -> PathBuf {
 /// every cycle still fails there). What is on another device is never an
 /// item's object: the examination skips it before any id is used, and the
 /// worker takes a directory's id only when the base records that object
-/// (`upload::steps::dir_id`).
+/// (`upload::steps::shared::dir_id`).
 pub fn attr_by_name(path: &Path, name: &str) -> io::Result<Option<Vec<u8>>> {
     match xattr::get(path, name) {
         Err(e) if e.raw_os_error() == Some(libc::EOPNOTSUPP) => Ok(None),

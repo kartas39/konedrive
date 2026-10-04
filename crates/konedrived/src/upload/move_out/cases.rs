@@ -21,7 +21,7 @@ use konedrive_tree::{Kind, Placement, Table};
 use super::place::{in_another_folder, parent_has, Place, proc_path, reopen_parent, verified_path};
 use super::tidy::{remove, remove_at, remove_empty_dir, remove_info};
 use super::trash::TrashEntry;
-use super::walk::{dir_below, Met, open_met, reopen_dir, strip, walk};
+use super::walk::{dir_below, Met, open_met, reopen_dir, walk};
 use super::{absent, before_marker, CONTENT_LOCAL, last_place, Local, marker, MoveOuts, place, proved_path, state_of, superseded, TRASHED};
 
 /// A file moved anywhere but the Trash: downloaded, stripped, then its item deleted (WR5).
@@ -33,7 +33,7 @@ pub(super) async fn elsewhere_file(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Outb
         return Ok(outcome);
     }
     e.set_marker(row, Some(CONTENT_LOCAL)).await?;
-    blocking(move || strip(&object)).await?;
+    blocking(move || placeholder::strip(&object)).await?;
     e.fault(Fault::AfterStrip)?;
     tracing::info!("{} left the folder: downloaded to {}, and removed from OneDrive", row.rel.display(), shown.display());
     finish(e, row).await
@@ -89,14 +89,14 @@ pub(super) async fn elsewhere_folder(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Ou
     e.set_marker(row, Some(CONTENT_LOCAL)).await?;
     for (n, m) in ours.into_iter().enumerate() {
         let top = Arc::clone(&top);
-        blocking(move || strip(&open_met(&top, &m)?)).await?;
+        blocking(move || placeholder::strip(&open_met(&top, &m)?)).await?;
         if n == 0 {
             e.fault(Fault::MidStrip)?;
         }
     }
     blocking(move || {
         for file in &extra {
-            strip(file)?;
+            placeholder::strip(file)?;
         }
         Ok(())
     })
@@ -111,7 +111,7 @@ pub(super) async fn elsewhere_folder(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Ou
         if !keep_marked.contains(m.map_or(Path::new(""), |m| m.rel.as_path())) {
             e.unmark(disk, &dir).await;
         }
-        blocking(move || strip(&dir)).await?;
+        blocking(move || placeholder::strip(&dir)).await?;
     }
     e.fault(Fault::AfterStrip)?;
     tracing::info!("{} left the folder: downloaded to {}, and removed from OneDrive", row.rel.display(), shown.display());
@@ -132,7 +132,7 @@ pub(super) async fn trashed_file(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Outbox
         Ok(Some(State::Hydrated)) => {
             e.set_marker(row, Some(CONTENT_LOCAL)).await?;
             let stripped = Arc::clone(&object);
-            blocking_under(inode.hold(), move || strip(&stripped)).await?;
+            blocking_under(inode.hold(), move || placeholder::strip(&stripped)).await?;
         }
         // Holds nothing whole: the cloud keeps it, in its recycle bin.
         Ok(Some(State::OnlineOnly | State::Hydrating)) => {
@@ -226,10 +226,10 @@ pub(super) async fn trashed_folder(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Outb
         let top = Arc::clone(&top);
         blocking(move || {
             for file in &extra {
-                strip(file)?;
+                placeholder::strip(file)?;
             }
             for (m, _) in files.iter().filter(|(_, stays)| *stays) {
-                strip(&open_met(&top, m)?)?;
+                placeholder::strip(&open_met(&top, m)?)?;
             }
             Ok(())
         })
@@ -243,7 +243,7 @@ pub(super) async fn trashed_folder(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Outb
         let name = m.rel.file_name().map(OsStr::to_os_string);
         blocking(move || {
             let parent = dir_below(&below, &in_dir)?;
-            strip(&dir)?;
+            placeholder::strip(&dir)?;
             if let Some(name) = name {
                 remove_empty_dir(&dir, &parent, &name);
             }
@@ -254,7 +254,7 @@ pub(super) async fn trashed_folder(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Outb
     e.unmark(disk, &top).await;
     let entry = entry.clone();
     blocking(move || {
-        strip(&top)?;
+        placeholder::strip(&top)?;
         // The whole entry went: its `.trashinfo` goes too.
         if path == entry.top && std::fs::read_dir(proc_path(&top))?.next().is_none() {
             if let (Some(parent), Some(name)) = (path.parent().and_then(|p| reopen_parent(p).ok()), path.file_name()) {
@@ -372,7 +372,7 @@ pub(super) async fn gone(e: &Arc<Engine>, disk: &Arc<Disk>, row: &OutboxRow, id:
         e.set_marker(row, Some(CONTENT_LOCAL)).await?;
         blocking(move || {
             for file in &extra {
-                strip(file)?;
+                placeholder::strip(file)?;
             }
             Ok(())
         })

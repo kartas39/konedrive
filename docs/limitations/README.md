@@ -242,6 +242,7 @@ application must never read zeros where real content should be.
 - [F232](F232.md) — A replacement's file calls run in three blocking sections, and a stop is heard only between them
 - [F233](F233.md) — An upload step's file calls run in blocking sections, and a section that has begun ends by itself
 - [F234](F234.md) — What the helper's missing write probe, its version check and its panic containment leave open
+- [F235](F235.md) — A delete that follows a read of the item goes out with an empty `If-Match` when the answer carried neither tag
 
 ---
 

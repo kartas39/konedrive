@@ -196,7 +196,10 @@ The outbox worker: sends the recorded changes to OneDrive; what is kept back. De
 - `engine.rs` — the worker's loop: which rows run now, and how many at once.
 - `engine/drain.rs` — running rows until none can run now.
 - `engine/outcome.rs` — what a step's outcome does to its row.
-- `steps.rs` — one row, one step: `mkdir`, `move` and `delete`.
+- `steps.rs` — one row, one step: which step a row's kind takes. `[tests]`
+- `steps/meta.rs` — the rows that send no content: `mkdir`, `move` and `delete`.
+- `steps/shared.rs` — what the steps share: the row's object, a name that is taken, the guard, the conflict copy.
+- `steps/sections.rs` — the blocking sections a step's file calls run in, and the worker's count of them.
 - `content.rs` — a file's content going up: a `create` or an `update`.
 - `local.rs` — the worker's hands on the folder: finding a row's local object.
 - `space.rs` — a full OneDrive: what waits for space. `[tests]`

@@ -341,20 +341,15 @@ pub(super) fn commit_dir(dir: &File, id: &str) -> io::Result<()> {
     }
 }
 
-/// Takes konedrive's attributes off: the object is the user's own file (a
-/// copy, or content uploaded again as new).
-pub(super) fn strip(file: &File) -> io::Result<()> {
-    placeholder::strip_konedrive_xattrs(file)?;
-    file.sync_all()
-}
-
-/// [`strip`] for what was found by name, opened for it.
+/// Takes konedrive's attributes off what was found by name, opened for it:
+/// the object is the user's own (a copy, or content uploaded again as new).
+/// The item id goes first ([`placeholder::strip`]).
 pub(super) fn strip_found(found: &Found) -> io::Result<()> {
     assert_under_lock();
     if found.is_dir {
-        strip(&found.open_dir()?)
+        placeholder::strip(&found.open_dir()?)
     } else {
-        strip(&found.open()?)
+        placeholder::strip(&found.open()?)
     }
 }
 
