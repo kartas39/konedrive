@@ -212,7 +212,7 @@ impl One {
     async fn make(self, row: Row, rel: PathBuf, mut slot: konedrive_graph::pool::Slot) -> bool {
         let key = thumb_key(&row, &rel);
         let mut fetched = self.drive.thumbnail(&row.id, GRAPH_SIZE).await;
-        if matches!(fetched, Ok(Thumbnail::Refused(reqwest::StatusCode::NOT_ACCEPTABLE))) {
+        if matches!(fetched, Ok(Thumbnail::Refused(konedrive_graph::drive::Status::NOT_ACCEPTABLE))) {
             fetched = self.drive.thumbnail(&row.id, FALLBACK_SIZE).await;
         }
         if fetched.is_ok() {

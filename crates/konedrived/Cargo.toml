@@ -55,6 +55,8 @@ zbus.workspace = true
 wiremock = { workspace = true, optional = true }
 
 [dev-dependencies]
+# Tests only: the secret store in memory and the pool's test helpers.
+konedrive-graph = { path = "../konedrive-graph", features = ["testing"] }
 # Tests only: the store's test helpers (`konedrive_tree::off_runtime` and the bench's).
 konedrive-tree = { path = "../konedrive-tree", features = ["testing"] }
 tempfile.workspace = true

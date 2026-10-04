@@ -20,7 +20,8 @@ use konedrived::account::{
 };
 use konedrived::account::cache::AccountInfo;
 use konedrived::config::{ConfigError, ConfigStore, Mode, Paths};
-use konedrived::account::secret::{MemoryStore, MemoryWallet, Slot};
+use konedrive_graph::secret::MemoryStore;
+use konedrived::account::secret::{MemoryWallet, Slot};
 use serde_json::json;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

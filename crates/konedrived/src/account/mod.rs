@@ -16,7 +16,7 @@ use tokio::sync::{oneshot, Mutex};
 use crate::account::cache::AccountInfo;
 use crate::account::quota::Quota;
 use crate::config::{is_valid_client_id, AccountPaths, Config, ConfigError, ConfigStore, Mode, Paths, MIGRATED_LABEL};
-use konedrive_graph::graph::{GraphClient, GraphError};
+use konedrive_graph::drive::{DriveClient, Status};
 use konedrive_graph::loopback::{Callback, LoopbackError, LoopbackListener};
 use konedrive_graph::oauth::{grants_writes, is_read_only, scopes_for, Endpoints, OAuthClient, TokenResponse};
 use konedrive_graph::pkce::{random_token, Pkce};
@@ -172,6 +172,8 @@ pub struct AccountService {
     uploads: std::sync::Mutex<Option<Weak<dyn PendingUploads>>>,
     endpoints: Endpoints,
     http: reqwest::Client,
+    /// Graph, for [`Self::graph`]. Its own transfer pool, which nothing else uses.
+    graph: DriveClient,
     secrets: Arc<dyn SecretStore>,
     tokens: Arc<TokenManager>,
     sign_in_timeout: Duration,
@@ -226,6 +228,7 @@ impl AccountService {
             ..AccountSnapshot::default()
         });
         let tokens = Arc::new(TokenManager::new(secrets.clone(), state.clone()));
+        let graph = DriveClient::new(endpoints.graph.clone(), Arc::clone(&tokens) as Arc<dyn konedrive_graph::token::TokenSource>)?;
         let cache_lock = Arc::new(std::sync::Mutex::new(()));
         let quota = Quota::new(state.clone(), Some(keep_quota(paths.account_cache.clone(), Arc::clone(&cache_lock))));
         let service = Arc::new(Self {
@@ -238,6 +241,7 @@ impl AccountService {
             uploads: std::sync::Mutex::new(None),
             endpoints,
             http,
+            graph,
             secrets,
             tokens,
             sign_in_timeout,
@@ -333,8 +337,10 @@ impl AccountService {
         konedrive_graph::drive::DriveClient::new(self.endpoints.graph.clone(), Arc::clone(&self.tokens) as Arc<dyn konedrive_graph::token::TokenSource>)
     }
 
-    fn graph(&self) -> GraphClient {
-        GraphClient::new(self.http.clone(), self.endpoints.graph.clone())
+    /// The client the account's own questions go through (who is signed in, which drive it
+    /// is): each is asked with the token its caller holds.
+    fn graph(&self) -> &DriveClient {
+        &self.graph
     }
 
     /// A client asking for `mode`'s scope, for the authorization, the code exchange or a

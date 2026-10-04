@@ -1,6 +1,7 @@
 //! The refresh token's store, as the token manager sees it. The daemon keeps it in the wallet;
 //! tests keep it in memory.
 
+#[cfg(any(test, feature = "testing"))]
 use std::sync::Mutex;
 
 use async_trait::async_trait;
@@ -32,12 +33,14 @@ pub trait SecretStore: Send + Sync {
 }
 
 /// In-memory store of one token, for tests.
+#[cfg(any(test, feature = "testing"))]
 #[derive(Default)]
 pub struct MemoryStore {
     token: Mutex<Option<String>>,
     locked: Mutex<bool>,
 }
 
+#[cfg(any(test, feature = "testing"))]
 impl MemoryStore {
     pub fn with_token(token: &str) -> Self {
         let store = Self::default();
@@ -55,6 +58,7 @@ impl MemoryStore {
     }
 }
 
+#[cfg(any(test, feature = "testing"))]
 #[async_trait]
 impl SecretStore for MemoryStore {
     async fn exists(&self) -> Result<bool, SecretError> {

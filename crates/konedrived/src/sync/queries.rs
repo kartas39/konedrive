@@ -175,7 +175,7 @@ fn page_of(answer: Result<konedrive_graph::drive::DriveItem, konedrive_graph::dr
             .filter(|url| !url.is_empty())
             .ok_or_else(|| SyncError::Io(format!("OneDrive gave no address for the page of {shown}"))),
         Err(DriveError::SignedOut) => Err(SyncError::NotSignedIn),
-        Err(DriveError::Transient(why)) => Err(SyncError::Unreachable(why)),
+        Err(DriveError::Transient(why)) => Err(SyncError::Unreachable(why.message)),
         Err(DriveError::NotFound) => Err(SyncError::Io(format!("{shown} is not in OneDrive any more"))),
         Err(other) => Err(SyncError::Io(format!("asking OneDrive for the page of {shown}: {other}"))),
     }

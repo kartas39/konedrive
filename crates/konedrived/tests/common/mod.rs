@@ -8,7 +8,7 @@ use std::time::Duration;
 use konedrived::account::AccountService;
 use konedrived::config::Paths;
 use konedrive_graph::oauth::Endpoints;
-use konedrived::account::secret::MemoryStore;
+use konedrive_graph::secret::MemoryStore;
 use konedrived::account::state::{AccountSnapshot, StateHandle};
 use serde_json::json;
 use url::Url;

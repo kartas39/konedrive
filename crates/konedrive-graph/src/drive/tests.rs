@@ -7,7 +7,7 @@ use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 use super::*;
-use crate::token::StaticToken;
+use crate::token::{AuthError, StaticToken};
 
 fn client(server: &MockServer) -> DriveClient {
     let base = Url::parse(&format!("{}/", server.uri())).unwrap();
@@ -342,4 +342,21 @@ async fn the_quota_is_graphs_remaining_and_state() {
         .mount(&server).await;
     let quota = client(&server).quota().await.unwrap();
     assert_eq!(quota, DriveQuota { total: 100, used: 90, remaining: Some(4), state: "critical".into() });
+}
+
+/// What a read is refused with says which answer it was: the status, and Graph's code.
+#[tokio::test]
+async fn a_refused_read_carries_the_status_and_graphs_code() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET")).and(path("/me/drive/items/X"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({"error": {"code": "invalidRequest", "message": "no"}})))
+        .mount(&server).await;
+    Mock::given(method("GET")).and(path("/me/drive/items/Y")).respond_with(ResponseTemplate::new(502)).mount(&server).await;
+    let refused = client(&server).item("X").await.unwrap_err();
+    assert!(matches!(refused, DriveError::Failed(_)), "{refused:?}");
+    assert_eq!(refused.to_string(), "Graph returned 400 Bad Request");
+    assert_eq!((refused.status(), refused.code()), (Some(Status::new(400)), Some("invalidRequest")));
+    let failing = client(&server).item("Y").await.unwrap_err();
+    assert!(matches!(failing, DriveError::Transient(_)), "{failing:?}");
+    assert_eq!((failing.status(), failing.code()), (Some(Status::new(502)), None));
 }

@@ -37,7 +37,7 @@ async fn a_new_file_is_one_session_and_its_put_goes_without_the_token() {
         .mount(&up).await;
     let target = UploadTarget::New { parent_id: "P!1", name: "a b#.txt" };
     let drive = client(&graph);
-    let session = drive.create_upload_session(target, 5, MAY_1).await.unwrap();
+    let session = drive.create_upload_session(target, MAY_1).await.unwrap();
     let ChunkOutcome::Done(item) = drive.upload_chunk(&session.url, 0, 5, b"hello".to_vec()).await.unwrap() else {
         panic!("one fragment is the whole file")
     };
@@ -60,7 +60,7 @@ async fn a_changed_file_opens_its_session_by_id_guarded_by_the_etag() {
         })))
         .mount(&graph).await;
     let target = UploadTarget::Existing { id: "I", if_match: "e1" };
-    let session = client(&graph).create_upload_session(target, 20_000_000, MAY_1).await.unwrap();
+    let session = client(&graph).create_upload_session(target, MAY_1).await.unwrap();
     assert_eq!(session.expires, Some(MAY_1 + 86_400));
     assert!(session.url.ends_with("/up/s2"));
     assert!(!format!("{session:?}").contains("/up/"), "an upload URL is a credential: never in a log");
