@@ -206,6 +206,8 @@ risky one.
   work placed in `daemon/`.
 - **Fix:** narrow `Bus` to `export` and `unexport`; move the pump into `dbus/signals.rs`.
 - **Size:** M. **Risk:** low. Low priority.
+- **Fixed 2026-10-04** in `09736ef` (#182): the `HelperState` pump is out of `daemon/startup.rs`; one property
+  table says what is announced, tied to the introspected properties by a test (`F274`).
 
 ## SY10. Repetition in the D-Bus layer
 
@@ -217,12 +219,15 @@ risky one.
   exist only while the folder is exported.
 - **Fix:** `From<SyncError>`; one property table; start the totals task with the service.
 - **Size:** M. **Risk:** low.
+- **Fixed 2026-10-04** in `09736ef` (#182): refusals map by `From`; a refused ignore pattern is `InvalidArgs`.
 
 ## SY11. Tasks nobody watches
 
 - **Where:** `main.rs:70–81` spawns the supervisor and three watchers and drops the handles.
 - **What:** a panic in `supervise` ends helper supervision for good while the daemon says ready.
 - **Fix:** select on the handles in `main` and exit non-zero. **Size:** S.
+- **Fixed 2026-10-04** in `09736ef` (#182): `main` keeps its tasks and stops in order when one that must live
+  ends (`F273`); one account's panic stays that account's.
 
 ## SY12. Files cut by accident
 
