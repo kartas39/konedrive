@@ -21,7 +21,7 @@ fn store(rows: &[Row]) -> TreeStore {
     let mut store = TreeStore::in_memory().unwrap();
     let mut changes = vec![Change::Root(Row { parent_id: None, name: String::new(), ..base_row("R", "", "", Kind::Folder) })];
     changes.extend(rows.iter().cloned().map(Change::Upsert));
-    store.begin_staging(false).unwrap();
+    store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(&changes).unwrap();
     store.commit_staging("link").unwrap();
     store
@@ -120,7 +120,7 @@ fn a_running_row_gets_one_follow_up() {
     assert_eq!(s.outbox_record(&detect(Create, None, Some(inode(7)), "n.txt", Some("R"))).unwrap(), Recorded::Merged(first + 1));
     let rows = s.outbox_rows().unwrap();
     assert_eq!(rows.iter().map(|r| (r.kind, r.state)).collect::<Vec<_>>(), vec![(Create, OutboxState::Running), (Update, OutboxState::Ready)]);
-    assert_eq!(s.outbox_blockers(rows[1].seq).unwrap(), vec![first], "the follow-up waits for the running row");
+    assert_eq!(s.checked_blockers(rows[1].seq).unwrap(), vec![first], "the follow-up waits for the running row");
 
     let committed = base_row("N", "R", "n.txt", Kind::File);
     let local_seq = s.outbox_commit(first, Committed::Item { row: &committed, handle: inode(7).handle.as_ref() }, None).unwrap();
@@ -130,7 +130,7 @@ fn a_running_row_gets_one_follow_up() {
     assert_eq!(rows[0].item_id.as_deref(), Some("N"), "the follow-up is now an update of the new item");
     assert_eq!(rows[0].base.as_ref().and_then(|b| b.etag.as_deref()), Some("e-N"));
     assert_eq!(s.item_by_handle(inode(7).handle.as_ref().unwrap()).unwrap().map(|r| r.id), Some("N".into()));
-    assert!(s.outbox_blockers(rows[0].seq).unwrap().is_empty());
+    assert!(s.checked_blockers(rows[0].seq).unwrap().is_empty());
 
     // Behind a running update, the follow-up's base becomes what that
     // commit made: its If-Match is the new eTag.
@@ -164,9 +164,9 @@ fn rows_wait_for_their_parents_mkdir_and_a_folder_delete_for_what_is_inside() {
     let move_x = seq(s.outbox_record(&detect(Move, Some(&x), Some(inode(22)), "new/x.txt", None)).unwrap());
     let update_y = seq(s.outbox_record(&detect(Update, Some(&y), Some(inode(23)), "y.txt", Some("R"))).unwrap());
 
-    assert_eq!(s.outbox_blockers(create).unwrap(), vec![mkdir]);
-    assert_eq!(s.outbox_blockers(move_x).unwrap(), vec![mkdir]);
-    assert_eq!(s.outbox_blockers(delete_d).unwrap(), vec![move_x], "structural: a later row inside the folder");
+    assert_eq!(s.checked_blockers(create).unwrap(), vec![mkdir]);
+    assert_eq!(s.checked_blockers(move_x).unwrap(), vec![mkdir]);
+    assert_eq!(s.checked_blockers(delete_d).unwrap(), vec![move_x], "structural: a later row inside the folder");
     let runnable: Vec<i64> = s.outbox_runnable(0).unwrap().iter().map(|r| r.seq).collect();
     assert_eq!(runnable, vec![mkdir, update_y]);
 
@@ -193,7 +193,7 @@ fn a_swap_waits_on_nothing_and_a_later_freer_is_still_waited_for() {
     assert_eq!(s.outbox_runnable(0).unwrap().len(), 2);
     let Recorded::Inserted(create) = s.outbox_record(&detect(Create, None, Some(inode(3)), "c", Some("R"))).unwrap() else { panic!() };
     let Recorded::Inserted(delete) = s.outbox_record(&detect(Delete, Some(&c), None, "c", None)).unwrap() else { panic!() };
-    assert_eq!(s.outbox_blockers(create).unwrap(), vec![delete]);
+    assert_eq!(s.checked_blockers(create).unwrap(), vec![delete]);
 }
 
 /// A directory that moves takes the rows inside it along.
@@ -273,7 +273,7 @@ fn dropping_held_rows_survives_a_cycles_swap() {
         s.set_local_handle(id, inode(1).handle.as_ref()).unwrap();
     }
     s.outbox_record(&Detection { state: OutboxState::Held, ..detect(Delete, Some(&d), None, "d", None) }).unwrap();
-    s.begin_staging(true).unwrap();
+    s.begin_staging(crate::NewTree::Delta).unwrap();
     assert_eq!(s.outbox_drop_held().unwrap().len(), 1);
     s.commit_staging("link-2").unwrap();
     assert_eq!((s.local_handle("D").unwrap(), s.local_handle("A").unwrap()), (None, None));
@@ -391,4 +391,43 @@ fn the_rows_waiting_for_space_are_found_by_their_reasons() {
     let stored: Vec<String> =
         s.conn.prepare("SELECT reason FROM outbox WHERE reason IS NOT NULL ORDER BY seq").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
     assert_eq!(stored, ["waiting-for-space", "too-big:9:1", "quota-exceeded"]);
+}
+
+/// A row leaves the outbox through `stored::remove` alone, which keeps the
+/// record of the opening it made (issue #89): a `DELETE FROM outbox`
+/// written anywhere else in the crate would leave that record pointing at
+/// nothing. Read from the sources, tests aside.
+#[test]
+fn no_statement_but_removes_deletes_an_outbox_row() {
+    fn sources(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                if path.file_name().is_some_and(|name| name != "tests") {
+                    sources(&path, out);
+                }
+            } else if path.extension().is_some_and(|e| e == "rs") && path.file_name().is_some_and(|name| name != "tests.rs") {
+                out.push(path);
+            }
+        }
+    }
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&src, &mut files);
+    assert!(files.len() > 20, "the sources were found: {}", files.len());
+    let mut deleting = Vec::new();
+    for file in files {
+        // Whitespace folded, so that a statement broken over lines is seen.
+        let text = std::fs::read_to_string(&file).unwrap().split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase();
+        for (at, _) in text.match_indices("into outbox").chain(text.match_indices("from outbox")) {
+            let before = &text[..at];
+            let after = text[at + "from outbox".len()..].chars().next();
+            let whole_name = !after.is_some_and(|c| c.is_alphanumeric() || c == '_');
+            let removes = before.ends_with("delete ") || before.ends_with("replace ");
+            if whole_name && removes {
+                deleting.push(file.strip_prefix(&src).unwrap().to_owned());
+            }
+        }
+    }
+    assert_eq!(deleting, [Path::new("outbox/stored.rs")], "the one delete is `remove`'s");
 }

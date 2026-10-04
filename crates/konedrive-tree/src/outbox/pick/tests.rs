@@ -26,7 +26,7 @@ fn store(items: &[Row]) -> TreeStore {
     let mut s = TreeStore::in_memory().unwrap();
     let mut changes = vec![Change::Root(item("R", None, "", Kind::Folder))];
     changes.extend(items.iter().cloned().map(Change::Upsert));
-    s.begin_staging(false).unwrap();
+    s.begin_staging(crate::NewTree::Whole).unwrap();
     s.stage(&changes).unwrap();
     s.commit_staging("link").unwrap();
     s
@@ -105,7 +105,7 @@ fn a_folder_removal_waits_for_what_is_inside_it_even_later() {
     let e = item("E", Some("R"), "e", Kind::Folder);
     let mut s = store(&[d.clone(), x.clone(), e.clone()]);
     s.bench_insert(&[of_item(OutboxKind::Delete, &d, "d", None, 1), of_item(OutboxKind::Move, &x, "e/x", Some("E"), 2)]).unwrap();
-    assert_eq!(s.outbox_blockers(1).unwrap(), vec![2]);
+    assert_eq!(s.checked_blockers(1).unwrap(), vec![2]);
     let picked = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), move_outs: true, want: 1, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap();
     assert_eq!(seqs(&picked), vec![2]);
 }
@@ -124,7 +124,7 @@ fn a_swap_among_many_rows_waits_on_nothing() {
     rows.push(of_item(OutboxKind::Move, &b, "a", Some("R"), 2));
     s.bench_insert(&rows).unwrap();
     assert_eq!(name_edges(&s.conn).unwrap(), HashMap::new(), "the circle's edges are dropped");
-    assert!(s.outbox_blockers(501).unwrap().is_empty() && s.outbox_blockers(502).unwrap().is_empty());
+    assert!(s.checked_blockers(501).unwrap().is_empty() && s.checked_blockers(502).unwrap().is_empty());
     let picked = s.outbox_pick(&Pick { now: 0, flying: &HashSet::new(), move_outs: true, want: 1000, allows: &|_: &TreeStore, _: &OutboxRow| Ok(true) }).unwrap();
     assert_eq!(picked.rows.len(), 502);
     // A later freer that is no circle is still waited for.
@@ -132,7 +132,7 @@ fn a_swap_among_many_rows_waits_on_nothing() {
     let mut s = store(std::slice::from_ref(&c));
     s.bench_insert(&[OutboxRow { target_parent: Some("R".into()), ..row(OutboxKind::Create, "c", 7) }, of_item(OutboxKind::Delete, &c, "c", None, 8)])
         .unwrap();
-    assert_eq!(s.outbox_blockers(1).unwrap(), vec![2]);
+    assert_eq!(s.checked_blockers(1).unwrap(), vec![2]);
 }
 
 /// Nothing can run: the pick says a row runs, a time comes, or the user is

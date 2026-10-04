@@ -157,3 +157,15 @@ impl TreeStore {
         Ok(deps)
     }
 }
+
+#[cfg(test)]
+impl TreeStore {
+    /// The rows `seq` waits for, as the point queries of [`pick`] find them
+    /// ([`TreeStore::outbox_blockers`]), held to the whole graph: what the
+    /// crate's tests ask.
+    pub(crate) fn checked_blockers(&self, seq: i64) -> Result<Vec<i64>, TreeError> {
+        let found = self.outbox_blockers(seq)?;
+        assert_eq!(found, self.outbox_dependencies()?.remove(&seq).unwrap_or_default(), "the point queries and the whole graph differ for row {seq}");
+        Ok(found)
+    }
+}

@@ -138,6 +138,30 @@ impl BadItem {
     }
 }
 
+/// An upload session's URL: a bearer credential until it expires, so never
+/// logged and never published. Its `Debug` says only that there is one;
+/// whoever sends it to OneDrive, or stores it, asks for the text by name
+/// ([`as_str`](Self::as_str)).
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct SessionUrl(String);
+
+impl SessionUrl {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self(url.into())
+    }
+
+    /// The URL itself: for the request, and for the store.
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for SessionUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SessionUrl(..)")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutboxRow {
     pub seq: i64,
@@ -162,8 +186,7 @@ pub struct OutboxRow {
     /// What the row holds of the content it sends: its size and time, or
     /// a `move-out` row's marker.
     pub snapshot: Option<Snapshot>,
-    /// A bearer credential until it expires: never logged, never published.
-    pub session_url: Option<String>,
+    pub session_url: Option<SessionUrl>,
     pub session_expires: Option<i64>,
     pub session_next: Option<u64>,
     /// A removal the user confirmed through the mass-delete guard: never

@@ -18,7 +18,7 @@ use crate::upload::local::{self, Found};
 use crate::upload::{kind, SWAP_PREFIX};
 use konedrive_fs::RESERVED_PREFIX;
 use konedrive_graph::drive::{DriveError, DriveItem, WriteError};
-use konedrive_tree::outbox::{frees, Base, Committed, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
+use konedrive_tree::outbox::{frees, Base, Committed, ConflictCopy, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason, SessionUrl};
 use konedrive_tree::{ActivityRow, Change, Kind, Placement, Row, Table};
 
 /// The name of the row's local object: the last part of where the
@@ -406,7 +406,10 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
             #[cfg(test)]
             engine.before_record(row_dropped);
             let stored = event.clone();
-            let recorded = engine.store().call_blocking(move |s| s.outbox_copied(seq, amend, forget.as_deref(), now(), &original, &copy_path, Some(&stored)));
+            let recorded = engine.store().call_blocking(move |s| {
+                let copied = ConflictCopy { forget: forget.as_deref(), at: now(), original: &original, copy: &copy_path };
+                s.outbox_copied(seq, amend, &copied, Some(&stored))
+            });
             Ok(recorded.map(|()| (event, copy_rel)))
         })
         .await??;
@@ -431,7 +434,7 @@ pub(in crate::upload) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &Out
 /// list of sessions; a cancel that fails keeps it there, and a later run
 /// cancels it ([`Engine::cancel_given_up`]), once no row points at it. Whether
 /// it was cancelled.
-pub(in crate::upload) async fn cancel_session(e: &Engine, url: &str) -> Result<bool, Fail> {
+pub(in crate::upload) async fn cancel_session(e: &Engine, url: &SessionUrl) -> Result<bool, Fail> {
     Ok(crate::upload::cancel_session(e.store(), e.drive(), url).await?)
 }
 

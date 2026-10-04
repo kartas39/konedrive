@@ -7,8 +7,8 @@ use std::path::Path;
 use rusqlite::{Connection, OptionalExtension};
 
 use crate::conflicts::ConflictKind;
-use crate::model::PLACED;
-use crate::{outbox, TreeError, TreeStore};
+use crate::model::{placed, skipped};
+use crate::{meta, outbox, TreeError, TreeStore};
 
 mod migrations;
 
@@ -21,17 +21,7 @@ mod migrations;
 /// A change of what a table holds, a column, an index, a trigger or a
 /// stored word is a new version and a new step: nothing is added to a store
 /// outside one.
-pub const SCHEMA_VERSION: &str = "6";
-
-/// The `meta` key of the schema's version.
-const VERSION_KEY: &str = "schema_version";
-
-/// The `meta` key of a first listing's resume point.
-pub const LISTING_NEXT: &str = "listing_next";
-
-/// The `meta` key set while `staging` holds a whole new tree (a full
-/// listing) rather than a delta laid over `items`.
-pub const STAGING_WHOLE: &str = "staging_whole";
+pub const SCHEMA_VERSION: &str = "7";
 
 /// Every table and index of a store at [`SCHEMA_VERSION`]: what a new store
 /// is created with, and what every migrated store ends as.
@@ -63,6 +53,8 @@ pub const STAGING_WHOLE: &str = "staging_whole";
 ///   left none); the URL replaces it. `upload_openings_left`: a record
 ///   whose row left, or moved to another place (issue #89), kept until a
 ///   `409` there resolves it, or for [`outbox::OPENING_LEFT_KEEP`].
+/// - `items_unplaced` and `items_skipped` ask whether a row is placed as
+///   every query and the decoder do ([`placed`]), so that a query uses them.
 /// - The indexes keep a cycle and the outbox's lookups from reading a whole
 ///   table (issues #38, #39).
 fn schema() -> String {
@@ -83,8 +75,8 @@ fn schema() -> String {
          {staging}
          CREATE TABLE staging_gone (id TEXT PRIMARY KEY);
          CREATE INDEX items_seq ON items(local_seq);
-         CREATE INDEX items_unplaced ON items(id) WHERE local_handle IS NULL AND placement = '{PLACED}';
-         CREATE INDEX items_skipped ON items(id) WHERE placement != '{PLACED}';
+         CREATE INDEX items_unplaced ON items(id) WHERE local_handle IS NULL AND {placed};
+         CREATE INDEX items_skipped ON items(id) WHERE {skipped};
          CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
          CREATE TABLE activity (id INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL,
                                 path TEXT NOT NULL, detail TEXT NOT NULL);
@@ -134,6 +126,8 @@ fn schema() -> String {
         staging = tree("staging"),
         rescued = ConflictKind::Rescued.as_str(),
         frees = outbox::FREES,
+        placed = placed("placement"),
+        skipped = skipped("placement"),
     )
 }
 
@@ -142,10 +136,7 @@ fn schema() -> String {
 fn at_version(conn: &Connection, version: &str, work: impl FnOnce(&Connection) -> Result<(), TreeError>) -> Result<(), TreeError> {
     let tx = rusqlite::Transaction::new_unchecked(conn, rusqlite::TransactionBehavior::Immediate)?;
     work(&tx)?;
-    tx.execute(
-        "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-        [VERSION_KEY, version],
-    )?;
+    meta::set(&tx, meta::SCHEMA_VERSION, Some(version))?;
     tx.commit()?;
     Ok(())
 }
@@ -192,6 +183,8 @@ impl TreeStore {
         }
     }
 
+    /// A store in memory: the tests' store.
+    #[cfg(any(test, feature = "testing"))]
     pub fn in_memory() -> Result<Self, TreeError> {
         Self::prepare(Connection::open_in_memory()?)
     }
@@ -213,7 +206,7 @@ impl TreeStore {
     /// #38): in WAL mode it reads the last committed state and never waits
     /// for the writer. Nothing is created or changed; its reads are the
     /// outbox's lists and sums for the bus.
-    pub fn open_read_only(path: &Path) -> Result<Self, TreeError> {
+    pub(crate) fn open_read_only(path: &Path) -> Result<Self, TreeError> {
         use rusqlite::OpenFlags;
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
@@ -236,9 +229,7 @@ impl TreeStore {
         if has_meta == 0 {
             return Err(TreeError::Schema(None));
         }
-        let stored = |conn: &Connection| -> Result<Option<String>, TreeError> {
-            Ok(conn.query_row("SELECT value FROM meta WHERE key = ?1", [VERSION_KEY], |row| row.get(0)).optional()?.flatten())
-        };
+        let stored = |conn: &Connection| meta::get(conn, meta::SCHEMA_VERSION);
         let mut version = stored(&conn)?;
         while let Some(step) = migrations::from(version.as_deref()) {
             at_version(&conn, step.to, step.run)?;
@@ -248,7 +239,7 @@ impl TreeStore {
         if version.as_deref() != Some(SCHEMA_VERSION) {
             return Err(TreeError::Schema(version));
         }
-        let whole = conn.query_row("SELECT 1 FROM meta WHERE key = ?1", [STAGING_WHOLE], |_| Ok(())).optional()?.is_some();
+        let whole = conn.query_row("SELECT 1 FROM meta WHERE key = ?1", [meta::STAGING_WHOLE], |_| Ok(())).optional()?.is_some();
         // The outbox's point queries run thousands of times in one examination.
         conn.set_prepared_statement_cache_capacity(64);
         let changes = std::sync::Arc::new(outbox::OutboxChanges::default());

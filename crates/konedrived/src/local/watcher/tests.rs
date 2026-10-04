@@ -628,7 +628,7 @@ fn a_file_made_in_the_folder_becomes_a_create_row_once_the_listing_is_complete()
     let store = Store::new(TreeStore::in_memory().unwrap());
     store
         .call_blocking(move |s| {
-            s.begin_staging(false)?;
+            s.begin_staging(konedrive_tree::NewTree::Whole)?;
             s.stage(&[Change::Root(row("R", None, "", Kind::Folder)), Change::Upsert(row("D", Some("R"), "docs", Kind::Folder))])
         })
         .unwrap();
@@ -701,7 +701,7 @@ fn the_sink_reports_a_full_scan_and_not_a_single_place() {
     let store = Store::new(TreeStore::in_memory().unwrap());
     store
         .call_blocking(move |s| {
-            s.begin_staging(false)?;
+            s.begin_staging(konedrive_tree::NewTree::Whole)?;
             s.stage(&[Change::Root(row("R", None, "", Kind::Folder)), Change::Upsert(row("D", Some("R"), "docs", Kind::Folder))])
         })
         .unwrap();

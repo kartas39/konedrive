@@ -121,7 +121,7 @@ fn root() -> Change {
 
 fn committed(changes: &[Change]) -> TreeStore {
     let mut store = TreeStore::in_memory().unwrap();
-    store.begin_staging(false).unwrap();
+    store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(changes).unwrap();
     store.commit_staging("link-1").unwrap();
     store
@@ -130,7 +130,7 @@ fn committed(changes: &[Change]) -> TreeStore {
 #[test]
 fn staged_rows_are_invisible_until_committed() {
     let mut store = TreeStore::in_memory().unwrap();
-    store.begin_staging(false).unwrap();
+    store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(&[root(), file("A", "R", "a")]).unwrap();
     assert!(store.get(Table::Items, "A").unwrap().is_none());
     assert!(store.get(Table::Staging, "A").unwrap().is_some());
@@ -193,7 +193,7 @@ fn a_listing_begun_is_at_the_start_until_its_first_page() {
 fn the_swap_ends_a_listing_placed_page_by_page() {
     let mut store = TreeStore::in_memory().unwrap();
     store.commit_page(&[root(), file("A", "R", "a")], "next-2").unwrap();
-    store.begin_staging(true).unwrap();
+    store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[file("B", "R", "b")]).unwrap();
     store.commit_staging("link-1").unwrap();
     assert_eq!(store.listing_next().unwrap(), None);
@@ -206,7 +206,7 @@ fn the_swap_ends_a_listing_placed_page_by_page() {
 fn a_table_is_empty_until_a_row_is_in_it() {
     let mut store = TreeStore::in_memory().unwrap();
     assert!(store.is_empty(Table::Items).unwrap());
-    store.begin_staging(false).unwrap();
+    store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(&[root()]).unwrap();
     assert!(store.is_empty(Table::Items).unwrap(), "a staged row is not in items");
     assert!(!store.is_empty(Table::Staging).unwrap());
@@ -233,7 +233,7 @@ fn a_path_is_the_chain_of_names_and_placed_only_if_every_link_is() {
 #[test]
 fn deleting_a_folder_takes_what_is_still_inside_it() {
     let mut store = committed(&[root(), folder("D", "R", "d"), folder("E", "D", "e"), file("F", "E", "f"), file("K", "D", "keep")]);
-    store.begin_staging(true).unwrap();
+    store.begin_staging(crate::NewTree::Delta).unwrap();
     // K moves out, then D goes — in the other order too, in the next test.
     store.stage(&[file("K", "R", "keep"), Change::Delete("D".into())]).unwrap();
     for gone in ["D", "E", "F"] {
@@ -245,7 +245,7 @@ fn deleting_a_folder_takes_what_is_still_inside_it() {
 #[test]
 fn an_item_moved_out_after_its_old_folder_was_deleted_survives() {
     let mut store = committed(&[root(), folder("D", "R", "d"), file("K", "D", "keep")]);
-    store.begin_staging(true).unwrap();
+    store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[Change::Delete("D".into())]).unwrap();
     store.stage(&[file("K", "R", "keep")]).unwrap();
     assert_eq!(store.locate(Table::Staging, "K").unwrap().unwrap().rel, PathBuf::from("keep"));
@@ -275,7 +275,7 @@ fn counts_and_the_skipped_list_see_only_what_is_reachable() {
 #[test]
 fn the_changed_ids_are_what_staging_differs_from_items_by() {
     let mut store = committed(&[root(), folder("D", "R", "docs"), file("F", "D", "f"), file("G", "D", "g"), file("K", "D", "keep")]);
-    store.begin_staging(true).unwrap();
+    store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[file("N", "D", "new"), file("F", "D", "renamed"), Change::Delete("G".into())]).unwrap();
     let mut ids = store.changed_ids().unwrap();
     ids.sort();
@@ -298,10 +298,10 @@ fn a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree
     let delta: Vec<Change> = (0..10).map(|i| file(&format!("F7-{i}"), "D7", &format!("renamed{i}"))).collect();
     {
         let mut store = TreeStore::open(&path).unwrap();
-        store.begin_staging(false).unwrap();
+        store.begin_staging(crate::NewTree::Whole).unwrap();
         store.stage(&tree).unwrap();
         store.commit_staging("link-1").unwrap();
-        store.begin_staging(true).unwrap();
+        store.begin_staging(crate::NewTree::Delta).unwrap();
         store.stage(&delta).unwrap();
         assert_eq!(store.staged_rows(), 10, "only the delta's rows are staged");
         assert_eq!(store.changed_ids().unwrap().len(), 10);
@@ -312,7 +312,7 @@ fn a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree
     let mut store = TreeStore::open(&path).unwrap();
     assert_eq!(store.delta_link().unwrap().as_deref(), Some("link-1"));
     assert_eq!(store.get(Table::Items, "F7-3").unwrap().unwrap().name, "f3", "the old tree");
-    store.begin_staging(true).unwrap();
+    store.begin_staging(crate::NewTree::Delta).unwrap();
     assert_eq!(store.staged_rows(), 0, "the next cycle stages afresh");
     store.stage(&delta).unwrap();
     let before = store.conn.total_changes();
@@ -329,7 +329,7 @@ fn a_delta_of_ten_writes_ten_rows_and_a_crash_before_the_swap_keeps_the_old_tree
 #[test]
 fn a_delta_laid_over_items_removes_and_changes_what_it_says() {
     let mut store = committed(&[root(), folder("D", "R", "d"), file("F", "D", "f"), file("K", "R", "k")]);
-    store.begin_staging(true).unwrap();
+    store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[Change::Delete("D".into()), file("K", "R", "k")]).unwrap();
     assert!(store.get(Table::Staging, "F").unwrap().is_none());
     assert!(store.descendants(Table::Staging, "R").unwrap() == vec!["K".to_owned()]);
@@ -356,7 +356,7 @@ fn a_store_survives_reopening_and_is_private() {
     let path = dir.path().join("state/tree.sqlite");
     {
         let mut store = TreeStore::open(&path).unwrap();
-        store.begin_staging(false).unwrap();
+        store.begin_staging(crate::NewTree::Whole).unwrap();
         store.stage(&[root(), file("A", "R", "a")]).unwrap();
         store.commit_staging("link-1").unwrap();
     }
@@ -381,7 +381,7 @@ fn a_permission_error_does_not_rebuild_a_good_store() {
     let path = dir.path().join("tree.sqlite");
     {
         let mut store = TreeStore::open(&path).unwrap();
-        store.begin_staging(false).unwrap();
+        store.begin_staging(crate::NewTree::Whole).unwrap();
         store.stage(&[root(), file("A", "R", "a")]).unwrap();
         store.commit_staging("link-1").unwrap();
     }
@@ -400,11 +400,11 @@ fn the_local_handle_travels_with_its_row() {
     let handle = konedrive_fs::handle::FileHandle { kind: 1, bytes: vec![1, 2, 3] };
     let mut store = committed(&[root(), file("A", "R", "a")]);
     store.set_local_handle("A", Some(&handle)).unwrap();
-    store.begin_staging(false).unwrap();
+    store.begin_staging(crate::NewTree::Whole).unwrap();
     store.stage(&[root(), file("A", "R", "renamed")]).unwrap();
     store.commit_staging("link-2").unwrap();
     assert_eq!(store.local_handle("A").unwrap(), Some(handle.clone()), "a full listing");
-    store.begin_staging(true).unwrap();
+    store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[file("A", "R", "again")]).unwrap();
     store.commit_staging("link-3").unwrap();
     assert_eq!(store.local_handle("A").unwrap(), Some(handle.clone()), "a delta");
@@ -413,7 +413,7 @@ fn the_local_handle_travels_with_its_row() {
     // A page placed: the handle was recorded in `staging` before the
     // item was in `items`.
     let mut store = TreeStore::in_memory().unwrap();
-    store.begin_staging(true).unwrap();
+    store.begin_staging(crate::NewTree::Delta).unwrap();
     store.stage(&[root(), file("B", "R", "b")]).unwrap();
     store.set_local_handle("B", Some(&handle)).unwrap();
     store.commit_page(&[root(), file("B", "R", "b")], "next-2").unwrap();
@@ -434,7 +434,7 @@ fn forgetting_below_a_row_placed_again_is_cheap_at_scale() {
         }
     }
     let mut store = committed(&changes);
-    store.begin_staging(true).unwrap();
+    store.begin_staging(crate::NewTree::Delta).unwrap();
     let tx = store.conn.transaction().unwrap();
     let time = |root: &str| {
         let started = std::time::Instant::now();

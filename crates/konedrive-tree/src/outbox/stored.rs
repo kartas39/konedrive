@@ -10,7 +10,7 @@ use rusqlite::types::{Value, ValueRef};
 use rusqlite::{params, Connection};
 
 use super::encoded::StoredSnapshot;
-use super::{Base, Inode, OutboxKind, OutboxRow, OutboxState, Reason};
+use super::{Base, Inode, OutboxKind, OutboxRow, OutboxState, Reason, SessionUrl};
 use crate::model::column;
 use crate::TreeError;
 
@@ -117,7 +117,7 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
         attempts: row.get::<_, i64>(at::ATTEMPTS)? as u32,
         next_try: row.get(at::NEXT_TRY)?,
         snapshot: snapshot.unwrap_or(None),
-        session_url: row.get(at::SESSION_URL)?,
+        session_url: row.get::<_, Option<String>>(at::SESSION_URL)?.map(SessionUrl::new),
         session_expires: row.get(at::SESSION_EXPIRES)?,
         session_next: row.get::<_, Option<i64>>(at::SESSION_NEXT)?.map(|n| n as u64),
         confirmed: row.get::<_, i64>(at::CONFIRMED)? != 0,
@@ -167,7 +167,7 @@ fn bind(row: &OutboxRow) -> Vec<(&'static str, Value)> {
         ("snapshot_mtime", snapshot.mtime.into()),
         ("snapshot_mtime_nsec", snapshot.mtime_nsec.into()),
         ("moved_out", snapshot.moved_out.into()),
-        ("session_url", row.session_url.clone().into()),
+        ("session_url", row.session_url.as_ref().map(|url| url.as_str().to_owned()).into()),
         ("session_expires", row.session_expires.into()),
         ("session_next", row.session_next.map(|n| n as i64).into()),
         ("handle", handle.into()),

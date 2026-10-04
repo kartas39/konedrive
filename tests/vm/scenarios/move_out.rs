@@ -168,7 +168,7 @@ impl Base {
         }
         store
             .call_blocking(move |s| {
-                s.begin_staging(false)?;
+                s.begin_staging(konedrive_tree::NewTree::Whole)?;
                 s.stage(&changes)?;
                 s.commit_staging("link-move-out")
             })

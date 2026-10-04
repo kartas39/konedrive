@@ -128,7 +128,7 @@ fn store_at(dir: &Path, changes: &[Change]) -> Store {
     let mut all = vec![Change::Root(item("R", None, "", Kind::Folder))];
     all.extend_from_slice(changes);
     let mut store = TreeStore::open(&dir.join("tree.sqlite")).unwrap();
-    store.begin_staging(false).unwrap();
+    store.begin_staging(konedrive_tree::NewTree::Whole).unwrap();
     store.stage(&all).unwrap();
     store.commit_staging("link-1").unwrap();
     Store::new(store)
@@ -156,7 +156,7 @@ impl Folder {
         let store = Store::new(TreeStore::open(&dir.path().join("tree.sqlite")).unwrap());
         store
             .call_blocking(move |s| {
-                s.begin_staging(false)?;
+                s.begin_staging(konedrive_tree::NewTree::Whole)?;
                 s.stage(&all)
             })
             .unwrap();
@@ -526,7 +526,7 @@ fn materializer_reads(store: &Store, ids: &[String]) {
 fn read_only_cycle(store: &Store, changes: Vec<Change>) {
     store
         .call_blocking(move |s| {
-            s.begin_staging(true)?;
+            s.begin_staging(konedrive_tree::NewTree::Delta)?;
             s.stage(&changes)
         })
         .unwrap();
@@ -539,14 +539,14 @@ fn read_only_cycle(store: &Store, changes: Vec<Change>) {
 /// A read-write folder's delta cycle, its store work only (`remote::listing::rw`).
 fn read_write_cycle(store: &Store, changes: Vec<Change>) {
     let staged = store.call_blocking(move |s| s.stage_rw(&changes, 0, false)).unwrap();
-    let Some((ids, consumed)) = staged else { return };
+    let Some(konedrive_tree::reconcile::RwStaged { ids, consumed }) = staged else { return };
     store
         .call_blocking(|s| crate::remote::materialize::Rw::read(s, "bench".into(), false, crate::local::IgnoreList::default()))
         .unwrap();
     materializer_reads(store, &ids);
     let changed = store.call_blocking(|s| s.changed_ids()).unwrap();
     assert!(changed.len() <= ids.len());
-    store.call_blocking(move |s| s.commit_staging_deferring("link-2", &consumed, &[], &[], 0)).unwrap();
+    store.call_blocking(move |s| s.commit_staging_deferring("link-2", &konedrive_tree::reconcile::Deferrals { consumed: &consumed, whole: &[], content: &[], fetched_at: 0 })).unwrap();
     store.call_blocking(|s| s.outbox_drop_removed()).unwrap();
     store.call_blocking(|s| s.counts()).unwrap();
 }
@@ -612,14 +612,14 @@ fn a_thumbnail_batch() {
         })
         .unwrap();
     // A drain half-way: its next batch goes on from where the last stopped.
-    let ((batch, next), took) = timed("one thumbnail batch of 200, 10 000 of 20 000 made, going on", || {
+    let (konedrive_tree::ThumbnailBatch { wanted: batch, next }, took) = timed("one thumbnail batch of 200, 10 000 of 20 000 made, going on", || {
         store.call_blocking(|s| s.thumbnail_candidates("F49-999", 200)).unwrap()
     });
     assert_eq!(batch.len(), 200);
     assert!(next.is_some());
-    assert!(batch.iter().all(|(row, _)| row.id.as_str() >= "F50"), "those made are not made again");
+    assert!(batch.iter().all(|wanted| wanted.row.id.as_str() >= "F50"), "those made are not made again");
     // A new drain starts from the beginning: one call looks at so many.
-    let ((batch, next), from_start) =
+    let (konedrive_tree::ThumbnailBatch { wanted: batch, next }, from_start) =
         timed("one thumbnail batch, 10 000 of 20 000 made, from the start", || store.call_blocking(|s| s.thumbnail_candidates("", 200)).unwrap());
     assert!(batch.is_empty() && next.is_some(), "those made are passed over, a call at a time");
     within("a thumbnail batch", took.max(from_start), Duration::from_millis(100));

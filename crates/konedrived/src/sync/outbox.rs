@@ -32,7 +32,7 @@ impl SyncService {
     /// never behind a writer (issue #38).
     async fn read_outbox<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&mut konedrive_tree::TreeStore) -> Result<T, konedrive_tree::TreeError> + Send + 'static,
+        f: impl FnOnce(&konedrive_tree::ReadStore<'_>) -> Result<T, konedrive_tree::TreeError> + Send + 'static,
     ) -> Result<T, SyncError> {
         self.outbox_store()?.read(f).await.map_err(|e| SyncError::Io(e.to_string()))
     }
@@ -324,7 +324,7 @@ impl SyncService {
         if !tree_db.exists() {
             return Ok(0);
         }
-        let counted = tokio::task::spawn_blocking(move || konedrive_tree::TreeStore::open_read_only(&tree_db).and_then(|s| s.outbox_len()))
+        let counted = tokio::task::spawn_blocking(move || konedrive_tree::ReadStore::at(&tree_db, |s| s.outbox_len()))
             .await
             .map_err(|e| e.to_string())
             .and_then(|rows| rows.map_err(|e| e.to_string()));

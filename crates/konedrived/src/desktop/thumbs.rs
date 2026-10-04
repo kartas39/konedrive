@@ -26,7 +26,7 @@ use tokio_util::sync::CancellationToken;
 use crate::folder::root::SyncRoot;
 use crate::conditions::running::Running;
 use konedrive_graph::drive::{DriveClient, Thumbnail};
-use konedrive_tree::{Row, Store};
+use konedrive_tree::{Store, Thumbnail as Wanted, ThumbnailBatch};
 
 /// The cache directories KIO consults, and the longest edge of each
 /// (`docs/kio-behavior.md` §A). `xx-large` is deliberately absent — see
@@ -59,12 +59,6 @@ pub fn file_uri(path: &Path) -> String {
         }
     }
     out
-}
-
-/// What a thumbnail is made for: the version, the path (its cache name) and
-/// the mtime (which KIO checks). Any of them changing needs a new one.
-pub fn thumb_key(row: &Row, rel: &Path) -> String {
-    format!("{}|{}|{}", row.ctag.as_deref().unwrap_or(""), rel.display(), row.mtime)
 }
 
 pub struct ThumbnailFiller {
@@ -114,7 +108,7 @@ impl ThumbnailFiller {
     /// with the id the next batch goes on from, `None` once every candidate
     /// has been looked at.
     async fn run_from(&self, cancel: &CancellationToken, limit: usize, after: String) -> (RunOutcome, Option<String>) {
-        let (candidates, next) = match self.store.call(move |s| s.thumbnail_candidates(&after, limit)).await {
+        let ThumbnailBatch { wanted: candidates, next } = match self.store.call(move |s| s.thumbnail_candidates(&after, limit)).await {
             Ok(found) => found,
             Err(e) => {
                 tracing::warn!("cannot list the thumbnails to make: {e}");
@@ -124,7 +118,7 @@ impl ThumbnailFiller {
         let taken = candidates.len();
         let mut running = tokio::task::JoinSet::new();
         let mut written = 0;
-        for (row, rel) in candidates {
+        for wanted in candidates {
             // Turned off or paused meanwhile: no more requests; what was not asked waits
             // for the next drain.
             if !self.running.thumbnails_go(&self.store) {
@@ -147,7 +141,7 @@ impl ThumbnailFiller {
             running.spawn(async move {
                 tokio::select! {
                     () = cancel.cancelled() => false,
-                    written = one.make(row, rel, slot) => written,
+                    written = one.make(wanted, slot) => written,
                 }
             });
         }
@@ -209,8 +203,8 @@ struct One {
 
 impl One {
     /// Asks Graph for the thumbnail of `row` and caches it; whether one was written.
-    async fn make(self, row: Row, rel: PathBuf, mut slot: konedrive_graph::pool::Slot) -> bool {
-        let key = thumb_key(&row, &rel);
+    async fn make(self, wanted: Wanted, mut slot: konedrive_graph::pool::Slot) -> bool {
+        let (row, rel) = (&wanted.row, &wanted.rel);
         let mut fetched = self.drive.thumbnail(&row.id, GRAPH_SIZE).await;
         if matches!(fetched, Ok(Thumbnail::Refused(konedrive_graph::drive::Status::NOT_ACCEPTABLE))) {
             fetched = self.drive.thumbnail(&row.id, FALLBACK_SIZE).await;
@@ -228,7 +222,7 @@ impl One {
         // (`DriveClient::thumbnail`'s `Err`), tried again at the next drain.
         let settle = match fetched {
             Ok(Thumbnail::Image(bytes)) => {
-                let (cache, file, mtime) = (self.cache.clone(), self.folder.join(&rel), row.mtime);
+                let (cache, file, mtime) = (self.cache.clone(), self.folder.join(rel), row.mtime);
                 match tokio::task::spawn_blocking(move || write_thumbnail(&cache, &file, mtime, &bytes)).await {
                     Ok(Ok(())) => {
                         written = true;
@@ -261,9 +255,9 @@ impl One {
             }
         };
         if settle {
-            let id = row.id.clone();
-            if let Err(e) = self.store.call(move |s| s.set_thumb_key(&id, &key)).await {
-                tracing::warn!("cannot record the thumbnail of {}: {e}", rel.display());
+            let made = wanted.clone();
+            if let Err(e) = self.store.call(move |s| s.thumbnail_made(&made)).await {
+                tracing::warn!("cannot record the thumbnail of {}: {e}", wanted.rel.display());
             }
         }
         written

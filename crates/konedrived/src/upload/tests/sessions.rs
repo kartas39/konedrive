@@ -15,7 +15,7 @@ fn conflicts(w: &World) -> usize {
 }
 
 fn given_up(w: &World) -> Vec<String> {
-    w.store.call_blocking(|s| s.upload_sessions_given_up(10)).unwrap()
+    w.store.call_blocking(|s| s.upload_sessions_given_up(10)).unwrap().iter().map(|url| url.as_str().to_owned()).collect()
 }
 
 /// `a.txt` queued, and its one fragment refused `429` as often as the
@@ -29,7 +29,7 @@ fn refused_for_now(w: &World, content: &[u8]) -> String {
     let row = w.rows().remove(0);
     assert_eq!(row.state, OutboxState::Ready, "throttled: {:?}", row.reason);
     assert_eq!(w.cloud(|c| c.placeholders()), vec!["a.txt"]);
-    row.session_url.expect("the session is kept for the next run")
+    row.session_url.expect("the session is kept for the next run").as_str().to_owned()
 }
 
 /// The bug as it happened: a small file's one `PUT` answered `429`. Refused
@@ -438,7 +438,7 @@ fn a_move_or_mkdir_onto_our_own_sessions_name_waits() {
         let mine = rows.iter().find(|r| r.rel.to_str() == Some("A.TXT")).unwrap();
         assert_eq!(mine.reason_text().as_deref(), Some(Reason::NameHeld.key()), "{what}");
         let other = rows.iter().find(|r| r.rel.to_str() == Some("a.txt")).unwrap();
-        assert_eq!(other.session_url.as_deref(), Some(session.as_str()), "{what}: its session untouched");
+        assert_eq!(other.session_url.as_ref().map(|url| url.as_str()), Some(session.as_str()), "{what}: its session untouched");
         assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions())), (vec!["a.txt".to_owned()], 1), "{what}");
         assert_eq!(w.cloud(|c| (c.count("DELETE", "upload/"), c.count("DELETE", "items/"))), (0, 0), "{what}");
         assert_eq!(conflicts(&w), 0, "{what}");

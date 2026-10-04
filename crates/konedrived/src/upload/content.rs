@@ -28,7 +28,7 @@ use konedrive_graph::quickxor::QuickXor;
 use crate::folder::disk::Disk;
 use crate::local::{names, QUIET, RECHECK};
 use crate::folder::locks::InodeKey;
-use konedrive_tree::outbox::{BadItem, Base, OutboxKind, OutboxRow, Reason};
+use konedrive_tree::outbox::{BadItem, Base, OutboxKind, OutboxRow, Reason, SessionUrl};
 use konedrive_tree::Table;
 
 /// How far OneDrive's clock may be behind this machine's when a placeholder's
@@ -184,7 +184,7 @@ struct Job<'a> {
     name: &'a str,
     /// A session opened for exactly this content (the same snapshot), to
     /// resume.
-    session: Option<String>,
+    session: Option<SessionUrl>,
     /// The row's local path is a leaving object's, or below it: its content
     /// only, into the item where OneDrive has it — no rename, no move, no
     /// local object recorded (issue #104).
@@ -606,7 +606,7 @@ impl Job<'_> {
             let mut rounds = 0;
             loop {
                 let from = next.min(size) as usize;
-                match drive.upload_chunk(&url, from as u64, size, bytes[from..].to_vec()).await {
+                match drive.upload_chunk(url.as_str(), from as u64, size, bytes[from..].to_vec()).await {
                     Ok(ChunkOutcome::Done(item)) => {
                         self.e.upload_progress(self.row.seq, size, size);
                         self.drop_cache().await;
@@ -642,9 +642,9 @@ impl Job<'_> {
     /// snapshot), and where the server stands in it; `Ok(None)` when there
     /// is none, or it expired. `Err`: it ended with this content in
     /// OneDrive, which is adopted (§5).
-    async fn resume(&self, target: &UploadTarget<'_>, hash: Option<&str>) -> Result<Result<Option<(String, u64)>, Sent>, Fail> {
+    async fn resume(&self, target: &UploadTarget<'_>, hash: Option<&str>) -> Result<Result<Option<(SessionUrl, u64)>, Sent>, Fail> {
         let Some(url) = self.session.clone() else { return Ok(Ok(None)) };
-        match self.e.drive().upload_status(&url).await {
+        match self.e.drive().upload_status(url.as_str()).await {
             Ok(progress) => Ok(Ok(Some((url, progress.next)))),
             Err(WriteError::SessionGone) => {
                 if let Some(adopted) = self.ended(target, hash).await? {
@@ -666,7 +666,7 @@ impl Job<'_> {
     /// a stop before the URL is persisted leaves a placeholder this folder
     /// still knows of ([`Job::own_placeholder`]). `Err` inside: OneDrive's
     /// refusal to open it.
-    async fn open(&self, target: UploadTarget<'_>) -> Result<Result<String, WriteError>, Fail> {
+    async fn open(&self, target: UploadTarget<'_>) -> Result<Result<SessionUrl, WriteError>, Fail> {
         let place = match target {
             UploadTarget::New { parent_id, name } => Some((parent_id.to_owned(), name.to_owned())),
             UploadTarget::Existing { .. } => None,
@@ -696,12 +696,13 @@ impl Job<'_> {
         // place: its placeholder holds a new file's name until it expires or
         // is deleted (limitations log F172).
         self.e.fault(Fault::SessionNotPersisted)?;
-        let (seq, url, expires) = (self.row.seq, opened.url.clone(), opened.expires);
+        let url = SessionUrl::new(opened.url);
+        let (seq, kept, expires) = (self.row.seq, url.clone(), opened.expires);
         self.e
             .store()
-            .call(move |s| s.outbox_open_session(seq, &url, expires, place.as_ref().map(|(p, n)| (p.as_str(), n.as_str())), now()))
+            .call(move |s| s.outbox_open_session(seq, &kept, expires, place.as_ref().map(|(p, n)| (p.as_str(), n.as_str())), now()))
             .await?;
-        Ok(Ok(opened.url))
+        Ok(Ok(url))
     }
 
     /// The session under an upload ended (`404`): the item holding this
@@ -729,7 +730,7 @@ impl Job<'_> {
     /// the content changed while it went up, or OneDrive refused it. The row
     /// points at it no more; a cancel that fails leaves it listed, and a
     /// later run cancels it.
-    async fn abandon(&self, url: &str) -> Result<(), Fail> {
+    async fn abandon(&self, url: &SessionUrl) -> Result<(), Fail> {
         cancel_session(self.e, url).await?;
         let seq = self.row.seq;
         Ok(self.e.store().call(move |s| s.outbox_set_session(seq, None, None, None)).await?)
@@ -836,7 +837,7 @@ impl Job<'_> {
                     Err(other) => return Err(other),
                 };
                 hasher.update(&bytes);
-                match drive.upload_chunk(&url, next, size, bytes).await {
+                match drive.upload_chunk(url.as_str(), next, size, bytes).await {
                     Ok(ChunkOutcome::More(progress)) => {
                         if progress.next != next + len {
                             // The server stands elsewhere: the hash follows it.

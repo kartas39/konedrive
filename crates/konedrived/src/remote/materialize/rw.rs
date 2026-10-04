@@ -56,6 +56,7 @@ use crate::folder::disk::{Probe, Scanned, HOLDING, NEW_PREFIX};
 use crate::local::IgnoreList;
 use crate::local::names::copy_name;
 use konedrive_tree::outbox::{OutboxOp, SWAP_PREFIX};
+use konedrive_tree::reconcile::Leaving;
 use konedrive_tree::{Kind, Placement, Table, TreeError, TreeStore};
 
 /// The holding directory in read-write mode: nothing in it leaves the folder.
@@ -403,7 +404,7 @@ impl Materializer {
         // Only the object itself: at its recorded place, or carrying its
         // recorded file handle — never another object with its id (the copy
         // placed again, a copy, a hard link).
-        let leaving = self.store.call_blocking(|s| s.leaving_with_handles())?.into_iter().find(|(left, _, _)| left == id);
+        let leaving = self.store.call_blocking(|s| s.leaving_with_handles())?.into_iter().find(|left| left.id == id);
         // Where a handle is kept, the recorded place counts only for the
         // object carrying it; elsewhere, only an object with one link (a hard
         // link carries the same handle, and is the user's name).
@@ -413,7 +414,7 @@ impl Materializer {
         // here by the user's move: then only its handle tells.
         let elsewhere = self.store.call_blocking({ let (id, rel) = (id.to_owned(), entry.rel.clone()); move |s| s.placed_elsewhere(&id, &rel) })?;
         let mut renewed = None;
-        let itself = leaving.as_ref().is_some_and(|(_, at, handle)| match handle {
+        let itself = leaving.as_ref().is_some_and(|Leaving { rel: at, handle, .. }| match handle {
             None => *at == entry.rel,
             Some(h) => {
                 let (parent, name) = (entry.rel.parent().unwrap_or(Path::new("")), entry.rel.file_name());
@@ -436,7 +437,7 @@ impl Materializer {
         if let (true, Some(handle)) = (itself, renewed) {
             self.store.call_blocking({ let id = id.to_owned(); move |s| s.leaving_set_handle(&id, &handle) })?;
         }
-        let leaving = leaving.map(|(_, at, _)| at).filter(|_| itself);
+        let leaving = leaving.map(|left| left.rel).filter(|_| itself);
         let placed_here = self.store.call_blocking({ let id = id.to_owned(); move |s| s.locate(Table::Staging, &id) })?.is_some_and(|l| l.placed && l.rel == entry.rel);
         if let (Some(at), Some(_), false) = (&leaving, &staged, placed_here) {
             if *at != entry.rel {

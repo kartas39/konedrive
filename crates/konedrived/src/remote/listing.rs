@@ -483,7 +483,7 @@ impl Listing {
                 let count = changes.len();
                 if count > 0 || full_requested {
                     self.on_store(turn, move |s| {
-                        s.begin_staging(true)?;
+                        s.begin_staging(konedrive_tree::NewTree::Delta)?;
                         s.stage(&changes)
                     })
                     .await?;
@@ -499,7 +499,7 @@ impl Listing {
                 };
                 let reconciled = match scope {
                     None => {
-                        self.on_store(turn, move |s| s.set_meta("delta_link", Some(&link))).await?;
+                        self.on_store(turn, move |s| s.set_delta_link(&link)).await?;
                         Reconciled::default()
                     }
                     Some(scope) => self.reconcile(turn, scope, Commit::Swap { link, listing: false }, cancel).await?,
@@ -519,7 +519,7 @@ impl Listing {
         // `LastChecked`: this cycle succeeded. Kept in the store,
         // so a restart still knows when the folder was last in step.
         let now = activity::unix_now();
-        self.on_store(turn, move |s| s.set_meta("last_checked", Some(&now.to_string()))).await?;
+        self.on_store(turn, move |s| s.set_last_checked(now)).await?;
         self.ctx.state.update(|s| s.last_checked = now);
         // A conflict whose rescued file is gone drops off by itself (spec
         // §16.1), whether or not anyone asks for the list: a batch of them
@@ -588,7 +588,7 @@ impl Listing {
     /// keeps beside the root (A-M5); once known, it is recorded in both.
     async fn check_account(&self, turn: &Turn, cancel: &CancellationToken) -> Result<(), CycleError> {
         let id = cancellable(cancel, self.ctx.drive.drive_id()).await?.map_err(drive_error)?;
-        let stored = self.on_store(turn, |s| s.meta("drive_id")).await?;
+        let stored = self.on_store(turn, |s| s.drive_id()).await?;
         let kept = self.ctx.drive_record.as_ref().and_then(|r| r.recorded.clone());
         if let Some(recorded) = stored.clone().or(kept.clone()).filter(|recorded| *recorded != id) {
             // The account learns which drive its token reaches now.
@@ -607,7 +607,7 @@ impl Listing {
         }
         if stored.is_none() {
             let recorded = id.clone();
-            self.on_store(turn, move |s| s.set_meta("drive_id", Some(&recorded))).await?;
+            self.on_store(turn, move |s| s.set_drive_id(&recorded)).await?;
         }
         if let Some(record) = self.ctx.drive_record.as_ref().filter(|_| kept.is_none()) {
             if !self.drive_recorded.swap(true, Ordering::SeqCst) {

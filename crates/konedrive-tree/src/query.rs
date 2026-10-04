@@ -2,51 +2,13 @@
 
 use std::path::PathBuf;
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension};
 
-use crate::model::{row_from, Chain, Counts, Located, Placement, Row, SkipReason, Table, PLACED, ROW_COLUMNS};
-use crate::schema::LISTING_NEXT;
+use crate::model::{placed, row_from, skipped, Chain, Counts, Located, Placement, Row, SkipReason, Table, ROW_COLUMNS};
 use crate::source::{below_sql, chains_sql, chains_then, Source};
 use crate::{TreeError, TreeStore, MAX_CHAIN};
 
 impl TreeStore {
-    pub fn meta(&self, key: &str) -> Result<Option<String>, TreeError> {
-        let value: Option<Option<String>> = self
-            .conn
-            .query_row("SELECT value FROM meta WHERE key = ?1", [key], |row| row.get(0))
-            .optional()?;
-        Ok(value.flatten())
-    }
-
-    pub fn set_meta(&self, key: &str, value: Option<&str>) -> Result<(), TreeError> {
-        match value {
-            Some(value) => self.conn.execute(
-                "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                params![key, value],
-            )?,
-            None => self.conn.execute("DELETE FROM meta WHERE key = ?1", [key])?,
-        };
-        Ok(())
-    }
-
-    pub fn delta_link(&self) -> Result<Option<String>, TreeError> {
-        self.meta("delta_link")
-    }
-
-    /// Where a first listing placed page by page goes on from:
-    /// the link to the page after the last one placed, or `""` — the start —
-    /// before its first page is committed. `None` when no such listing is
-    /// under way.
-    pub fn listing_next(&self) -> Result<Option<String>, TreeError> {
-        self.meta(LISTING_NEXT)
-    }
-
-    /// A first listing placed page by page begins: under way, at
-    /// the start, before anything of it is placed.
-    pub fn begin_placing(&self) -> Result<(), TreeError> {
-        self.set_meta(LISTING_NEXT, Some(""))
-    }
-
     /// Where `table`'s rows are.
     pub(crate) fn source(&self, table: Table) -> Source {
         match (table, self.whole) {
@@ -61,10 +23,6 @@ impl TreeStore {
         let sql = format!("SELECT 1 FROM {} LIMIT 1", self.source(table).rows());
         let any: Option<i64> = self.conn.query_row(&sql, [], |row| row.get(0)).optional()?;
         Ok(any.is_none())
-    }
-
-    pub fn root_item_id(&self) -> Result<Option<String>, TreeError> {
-        self.meta("root_item_id")
     }
 
     pub fn get(&self, table: Table, id: &str) -> Result<Option<Row>, TreeError> {
@@ -110,7 +68,7 @@ impl TreeStore {
         let below = &chain[1..];
         Ok(Some(Located {
             rel: below.iter().map(|(_, _, name, _)| name.as_str()).collect(),
-            placed: below.iter().all(|(_, _, _, placement)| placement == PLACED),
+            placed: below.iter().all(|(_, _, _, placement)| Placement::decode(placement) == Placement::Placed),
             depth: below.len(),
         }))
     }
@@ -153,9 +111,11 @@ impl TreeStore {
                      SELECT ?1, 0
                      UNION ALL
                      SELECT c.id, p.depth + 1 FROM items c JOIN placed p ON c.parent_id = p.id
-                      WHERE c.placement = '{PLACED}' AND p.depth < {MAX_CHAIN})
+                      WHERE {own} AND p.depth < {MAX_CHAIN})
                  SELECT (SELECT count(*) - 1 FROM placed),
-                        (SELECT count(*) FROM items s JOIN placed p ON s.parent_id = p.id WHERE s.placement != '{PLACED}')"
+                        (SELECT count(*) FROM items s JOIN placed p ON s.parent_id = p.id WHERE {not})",
+                own = placed("c.placement"),
+                not = skipped("s.placement"),
             ),
             [&root],
             |row| Ok((row.get(0)?, row.get(1)?)),
@@ -173,7 +133,7 @@ impl TreeStore {
         };
         let sql = chains_then(
             Source::Items,
-            &format!("SELECT id, parent_id, name, placement FROM items WHERE placement != '{PLACED}'"),
+            &format!("SELECT id, parent_id, name, placement FROM items WHERE {}", skipped("placement")),
             "SELECT c.path, i.placement FROM chain c JOIN items i ON i.id = c.start WHERE c.parent_id = ?1 AND c.above",
         );
         let mut statement = self.conn.prepare_cached(&sql)?;

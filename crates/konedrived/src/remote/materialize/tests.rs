@@ -104,7 +104,7 @@ impl Fixture {
 
     /// A full listing of `changes`, reconciled and committed.
     pub(super) fn listed(&self, changes: &[Change], locked: bool) -> Applied {
-        { let changes = changes.to_vec(); self.store.call_blocking(move |s| { s.begin_staging(false)?; s.stage(&changes) }).unwrap(); }
+        { let changes = changes.to_vec(); self.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Whole)?; s.stage(&changes) }).unwrap(); }
         let applied = self.materializer(locked, None).apply(Scope::Full).unwrap();
         self.store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
         applied
@@ -112,7 +112,7 @@ impl Fixture {
 
     /// A delta on top of what is committed, reconciled in the Changed scope.
     pub(super) fn delta(&self, changes: &[Change], locked: bool) -> Result<Applied, ApplyError> {
-        { let changes = changes.to_vec(); self.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&changes) }).unwrap(); }
+        { let changes = changes.to_vec(); self.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&changes) }).unwrap(); }
         let ids = changes.iter().map(|c| c.id().to_owned()).collect();
         self.materializer(locked, None).apply(Scope::Changed(ids))
     }
@@ -121,7 +121,7 @@ impl Fixture {
     /// itself runs on a blocking thread, since it may wait on the
     /// runtime it is itself running on (`Materializer::mark`).
     pub(super) async fn listed_async(&self, locked: bool) -> Applied {
-        self.store.call(move |s| { s.begin_staging(false)?; s.stage(&tree()) }).await.unwrap();
+        self.store.call(move |s| { s.begin_staging(konedrive_tree::NewTree::Whole)?; s.stage(&tree()) }).await.unwrap();
         let m = self.materializer(locked, None);
         let applied = tokio::task::spawn_blocking(move || m.apply(Scope::Full)).await.unwrap().unwrap();
         self.store.call(move |s| s.commit_staging("link-1")).await.unwrap();
@@ -164,7 +164,7 @@ fn a_read_only_removal_forgets_first_and_stops_a_download() {
     let rt = fx.runtime.as_ref().unwrap();
     let guard = rt.block_on(locks.lock(crate::folder::locks::InodeKey::of(&file).unwrap()));
     let skipped = up(Row { placement: Placement::Skipped(konedrive_tree::SkipReason::NameTooLong), ..row("E", "D", &"x".repeat(300), Kind::Folder, 0) });
-    { let changes = vec![skipped.clone()]; fx.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&changes) }).unwrap(); }
+    { let changes = vec![skipped.clone()]; fx.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&changes) }).unwrap(); }
     Materializer { locks: locks.clone(), ..fx.materializer(false, None) }.apply(Scope::Changed(vec!["E".into()])).unwrap();
     assert_eq!((handle("E"), handle("G")), (None, None), "forgotten before the swap");
     fx.store.call_blocking(move |s| s.commit_staging("link-2")).unwrap();
@@ -207,7 +207,7 @@ fn a_stopped_download_set_aside_for_another_account_is_a_placeholder_again() {
     });
     holding.recv().unwrap();
     let claimed: Claimed = std::sync::Arc::new(|id: &str| id == "Y");
-    { fx.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[Change::Delete("D".into())]) }).unwrap(); }
+    { fx.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[Change::Delete("D".into())]) }).unwrap(); }
     let applied = Materializer { locks: locks.clone(), claimed: Some(claimed), ..fx.materializer(false, None) }.apply(Scope::Changed(vec!["D".into()])).unwrap();
     rt.block_on(fill).unwrap();
     let aside = applied.rescued.iter().find(|r| r.original.ends_with("theirs.bin")).expect("set aside").rescued.clone();
@@ -399,7 +399,7 @@ fn a_file_being_filled_is_left_for_the_next_cycle() {
     let path = f.path("docs/f.txt");
     let m = f.materializer(false, None);
     let _held = m.locks.try_lock(crate::folder::locks::InodeKey::of(&File::open(&path).unwrap()).unwrap()).unwrap();
-    f.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[changed("F", "D", "f.txt", 8192, "c2")]) }).unwrap();
+    f.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[changed("F", "D", "f.txt", 8192, "c2")]) }).unwrap();
     let applied = m.apply(Scope::Changed(vec!["F".into()])).unwrap();
     assert_eq!((applied.updated, applied.deferred), (0, 1));
     assert_eq!(std::fs::metadata(&path).unwrap().len(), 4096);
@@ -494,7 +494,7 @@ fn a_full_reconcile_moves_the_inner_of_two_misplaced_items_first() {
     let f = fixture();
     f.listed(&tree(), false);
     let before = ino(&f.path("docs/deep/g.txt"));
-    f.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[folder("E", "R", "deep"), file("G", "E", "g2.txt")]) }).unwrap();
+    f.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[folder("E", "R", "deep"), file("G", "E", "g2.txt")]) }).unwrap();
     f.materializer(false, None).apply(Scope::Full).unwrap();
     assert_eq!(ino(&f.path("deep/g2.txt")), before);
     assert!(!f.path("docs/deep").exists());
@@ -643,7 +643,7 @@ fn a_full_reconcile_repairs_whatever_it_finds() {
     std::fs::rename(f.path("docs/f.txt"), f.path("f-in-the-wrong-place")).unwrap();
     std::fs::write(f.path("docs/new.txt"), b"mine").unwrap();
     std::fs::rename(f.path("docs/deep"), f.path("docs/.konedrive-new-E")).unwrap();
-    f.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[file("N", "D", "new.txt")]) }).unwrap();
+    f.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[file("N", "D", "new.txt")]) }).unwrap();
     let applied = f.materializer(false, None).apply(Scope::Full).unwrap();
     assert_eq!(id_at(&f.path("docs/f.txt")).as_deref(), Some("F"));
     assert_eq!(id_at(&f.path("docs/deep")).as_deref(), Some("E"));
@@ -678,7 +678,7 @@ fn a_replacement_link_left_by_a_crashed_swap_is_discarded_and_the_real_file_stil
     drop(leftover);
     assert!(f.path("docs/.konedrive-new-F").exists());
 
-    f.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[file("F", "D", "renamed.txt")]) }).unwrap();
+    f.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[file("F", "D", "renamed.txt")]) }).unwrap();
     let applied = f.materializer(false, None).apply(Scope::Full).unwrap();
     assert!(!f.path("docs/.konedrive-new-F").exists(), "the leftover is gone");
     assert_eq!(id_at(&f.path("docs/renamed.txt")).as_deref(), Some("F"));
@@ -689,7 +689,7 @@ fn a_replacement_link_left_by_a_crashed_swap_is_discarded_and_the_real_file_stil
 #[test]
 fn a_cancelled_reconcile_stops() {
     let f = fixture();
-    f.store.call_blocking(move |s| { s.begin_staging(false)?; s.stage(&tree()) }).unwrap();
+    f.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Whole)?; s.stage(&tree()) }).unwrap();
     let m = f.materializer(false, None);
     m.cancel.cancel();
     assert!(matches!(m.apply(Scope::Full), Err(ApplyError::Cancelled)));
@@ -703,7 +703,7 @@ fn a_new_folder_is_marked_while_it_is_still_empty() {
     let socket = sockets.path().join("helper.sock");
     let marks = marking_helper(socket.clone());
     let link = f.handle().block_on(HelperLink::connect(&socket)).unwrap().0;
-    f.store.call_blocking(move |s| { s.begin_staging(false)?; s.stage(&tree()) }).unwrap();
+    f.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Whole)?; s.stage(&tree()) }).unwrap();
     f.materializer(true, Some(link)).apply(Scope::Full).unwrap();
     let seen: Vec<Marked> = marks.try_iter().collect();
     assert_eq!(seen.len(), 2, "docs and docs/deep were marked");
@@ -723,7 +723,7 @@ fn a_folder_whose_marking_failed_is_marked_when_it_is_placed_later() {
     let refusing = sockets.path().join("refusing.sock");
     let _refused = helper_answering(refusing.clone(), libc::EIO);
     let link = f.handle().block_on(HelperLink::connect(&refusing)).unwrap().0;
-    f.store.call_blocking(move |s| { s.begin_staging(false)?; s.stage(&[root_row(), folder("D", "R", "docs"), file("F", "D", "f.txt")]) }).unwrap();
+    f.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Whole)?; s.stage(&[root_row(), folder("D", "R", "docs"), file("F", "D", "f.txt")]) }).unwrap();
     let err = f.materializer(true, Some(link)).apply(Scope::Full).unwrap_err();
     assert!(matches!(err, ApplyError::Mark(..)), "{err:?}");
     let unmarked = ino(&f.path(".konedrive-new-D"));
@@ -751,7 +751,7 @@ fn a_holding_directory_whose_marking_failed_is_marked_before_it_is_used() {
     let refusing = sockets.path().join("refusing.sock");
     let _refused = helper_answering(refusing.clone(), libc::EIO);
     let link = f.handle().block_on(HelperLink::connect(&refusing)).unwrap().0;
-    f.store.call_blocking(move |s| { s.begin_staging(true)?; s.stage(&[file("F", "D", "renamed.txt")]) }).unwrap();
+    f.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[file("F", "D", "renamed.txt")]) }).unwrap();
     let err = f.materializer(true, Some(link)).apply(Scope::Changed(vec!["F".into()])).unwrap_err();
     assert!(matches!(err, ApplyError::Mark(..)), "{err:?}");
     let holding = ino(&f.path(".konedrive-holding"));

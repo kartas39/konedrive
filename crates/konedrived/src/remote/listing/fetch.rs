@@ -24,7 +24,7 @@ impl Listing {
     }
 
     async fn list_all_pages(&self, turn: &Turn, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
-        self.on_store(turn, |s| s.begin_staging(false)).await?;
+        self.on_store(turn, |s| s.begin_staging(konedrive_tree::NewTree::Whole)).await?;
         let mut from = DeltaFrom::Start;
         let mut listed = 0u64;
         loop {
@@ -105,7 +105,7 @@ impl Listing {
         // Read-write mode: the outbox's commit count when `staging` was last made from `items`.
         let (seq, counts) = self
             .on_store(turn, |s| {
-                s.begin_staging(true)?;
+                s.begin_staging(konedrive_tree::NewTree::Delta)?;
                 Ok((s.outbox_seq()?, s.counts()?))
             })
             .await?;
@@ -132,7 +132,7 @@ impl Listing {
                 Ok(page) => page,
                 Err(e) if resuming && refused(&e) => {
                     tracing::info!("OneDrive would not go on with the listing ({e}); listing the drive again from the start");
-                    self.on_store(turn, |s| s.set_meta(konedrive_tree::LISTING_NEXT, None)).await?;
+                    self.on_store(turn, |s| s.forget_listing_next()).await?;
                     self.ctx.state.update(|s| s.items_listed = 0);
                     return self.list_all_pages(turn, cancel).await;
                 }
@@ -153,7 +153,7 @@ impl Listing {
                     let tree = self.tree_lock(cancel).await?;
                     let seq = self.on_store(turn, |s| s.outbox_seq()).await?;
                     if staged_at.is_some_and(|at| at != seq) {
-                        self.on_store(turn, |s| s.begin_staging(true)).await?;
+                        self.on_store(turn, |s| s.begin_staging(konedrive_tree::NewTree::Delta)).await?;
                     }
                     staged_at = Some(seq);
                     Some(tree)

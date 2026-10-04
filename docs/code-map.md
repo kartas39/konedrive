@@ -492,7 +492,9 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
 - `schema.rs` — the schema: its version, what a new store is created with, when a store is
   rebuilt. `[tests]`
 - `schema/migrations.rs` — the numbered steps that bring an older store to today's schema.
+- `meta.rs` — what the store keeps one of: every key of `meta`, and its typed accessors.
 - `query.rs` — reading the tree: a row, what is below it, where it is, the counts.
+- `read.rs` — `ReadStore`: the store as its read-only connection gives it.
 - `forget.rs` — forgetting the local objects of a subtree.
 - `shared.rs` — the store shared by the tasks of one folder.
 - `source.rs` — where the rows of a tree are, and the queries that walk it.
@@ -501,7 +503,7 @@ Design: `sync.md` (the tree store), `writes.md` §5 (the outbox).
   `[tests]`
 - `activity.rs` — the activity log, as the store keeps it.
 - `conflicts.rs` — the local versions kept, on record.
-- `thumbs.rs` — the thumbnails still to make.
+- `thumbs.rs` — the thumbnails still to make, and what each cached one was made for.
 - `outbox.rs` — the outbox: what the folder holds that OneDrive does not have yet. `[tests]`
 - `outbox/stored.rs` — a row in the database: read, written and removed in one place.
 - `outbox/row.rs` — a row, a detection, and what an examination and a commit hand the store.

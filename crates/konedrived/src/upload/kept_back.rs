@@ -17,7 +17,7 @@ use std::sync::Mutex;
 
 pub use konedrive_tree::outbox::Group;
 use konedrive_tree::outbox::{key_of, known_group, OutboxGroup, OutboxKind, OutboxState, Reason, SkippedGroup};
-use konedrive_tree::{TreeError, TreeStore};
+use konedrive_tree::{ReadStore, TreeError};
 
 /// The key a reason as stored, a row's or a skip's, is summed under
 /// ([`key_of`]).
@@ -106,7 +106,7 @@ pub fn summary(skipped: &[SkippedGroup], groups: &[OutboxGroup], full: bool) -> 
 /// key as the summary gives it), by path, at most `limit` (0 for all), each
 /// with its reason as stored (a `400`'s carries the service's message); and
 /// how many there are. Read with a `LIMIT` per group of rows.
-pub fn files(store: &TreeStore, root: &Path, full: bool, reason: &str, limit: u32) -> Result<(Vec<(String, String)>, u32), TreeError> {
+pub fn files(store: &ReadStore<'_>, root: &Path, full: bool, reason: &str, limit: u32) -> Result<(Vec<(String, String)>, u32), TreeError> {
     let groups = store.outbox_groups()?;
     let kept: Vec<(&OutboxGroup, Reason)> =
         groups.iter().filter_map(|g| kept_group(g, full).map(|why| (g, why))).filter(|(_, why)| why.key() == reason).collect();
