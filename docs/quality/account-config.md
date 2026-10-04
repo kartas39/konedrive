@@ -65,6 +65,8 @@ Scores: `account/mod.rs`, `account/sign_in.rs`, `account/mode.rs`, `account/secr
   prompt, intended. fsync'd file writes on the async path inside the token cache hold
   (`mode.rs:146–166`).
 - **Fix:** write the order down. Changing it is not recommended. **Size:** S.
+- **Fixed 2026-10-04** in `1f7e3d7` (#176): the lock order is written at the top of `account/mod.rs`; a
+  reading of every path found no inversion. No test holds the order.
 
 ## AC8. Test-only and dead code; the quota copied by hand
 
@@ -74,6 +76,8 @@ Scores: `account/mod.rs`, `account/sign_in.rs`, `account/mode.rs`, `account/secr
   (`mod.rs:408`) is an alias. A doc comment on the wrong item (`config/mod.rs:952`).
 - The quota's five fields are copied in four places (`account/mod.rs:583–591, 596–612`;
   `state.rs:91–95`; `quota.rs:79–101`). **Fix:** one `QuotaFigures` struct.
+- **Fixed 2026-10-04** in `1f7e3d7` (#176): the version-1 load/save code, `set_client_id` and the
+  `recheck_mode` alias are gone; `account::testing` is behind a feature (`D43`); one `QuotaFigures`.
 
 ## CF1. `config/mod.rs` is at the size limit and its API is primitive
 
@@ -91,3 +95,6 @@ Scores: `account/mod.rs`, `account/sign_in.rs`, `account/mode.rs`, `account/secr
   the write gate in one blocking section. The file is still read and parsed at every asking;
   the other readers on runtime threads are in `docs/limitations/F231.md`. The split of the file,
   the newtypes and `WriteStanding` are `B12`'s.
+- **Fixed 2026-10-04** in `1f7e3d7` (#176): `config/` is `paths.rs`, `ids.rs`, `model.rs`, `store.rs`,
+  `atomic.rs`; `AccountId` and `DriveId` are types; `write_standing` answers one `WriteStanding`.
+
