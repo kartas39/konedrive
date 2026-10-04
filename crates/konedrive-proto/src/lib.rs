@@ -10,8 +10,8 @@ use std::os::unix::net::UnixStream;
 use nix::sys::socket::{sockopt, ControlMessage, MsgFlags, SockType};
 use serde::{Deserialize, Serialize};
 
-/// Both ends refuse any other (the helper's `Hello` check, the daemon's
-/// `Welcome` check). 2: `OpenByHandle`, and an `Ack` that may carry a
+/// Both ends refuse any other: the daemon hangs up on a `Welcome` with
+/// another version, and the helper closes on a `Hello` with one. 2: `OpenByHandle`, and an `Ack` that may carry a
 /// descriptor.
 pub const PROTOCOL_VERSION: u32 = 2;
 pub const SOCKET_PATH: &str = "/run/konedrive/helper.sock";

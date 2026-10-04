@@ -68,7 +68,8 @@ use crate::child::{
     child_burst, child_connections, child_hold, child_hostile, child_pipeline, child_read,
 };
 use crate::clients::{
-    connections_per_uid_are_capped, errno_sweep, hostile_uid, peercred_pid_matches_event_pid,
+    another_version_is_closed, connections_per_uid_are_capped, errno_sweep, hostile_uid,
+    peercred_pid_matches_event_pid,
 };
 use crate::coverage::{
     hardlink_and_second_mount, moved_out_still_covered, new_directory_covered, zero_byte_file,
@@ -688,6 +689,7 @@ fn scenarios() -> Vec<(&'static str, Scenario)> {
             writes::copy_that_cannot_be_stripped_is_passed_over,
         ),
         ("one uid cannot hold the helper's connections without bound", connections_per_uid_are_capped),
+        ("a Hello with another protocol version closes the connection", another_version_is_closed),
         ("SO_PEERCRED's pid is the pid the event reports", peercred_pid_matches_event_pid),
         (
             "the event fd is writable through a read-only mount of the same tree",

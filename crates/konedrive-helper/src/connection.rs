@@ -223,6 +223,15 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
         // keeps a daemon that is slow to read — rather than wedged — from
         // being disconnected by its own backpressure.
         outbox.heard_from_peer();
+        // A peer that says it speaks another version is not served: the
+        // connection ends here, with no `Ack`, and its cleanup runs as for
+        // any other end. The daemon never gets this far with another
+        // version: it has hung up on the `Welcome` (`konedrived/src/helper`).
+        if let Some(theirs) = another_version(&message) {
+            anyhow::bail!(
+                "the peer speaks protocol version {theirs}, not {PROTOCOL_VERSION}; closing"
+            );
+        }
         let mut reply = None;
         let errno = apply(shared, owner, &outbox, message, fd, &mut reply);
         // Into the room reserved for `Ack`s. This used to end
@@ -235,6 +244,17 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
         if outbox.send_ack_with(errno, reply).is_err() {
             anyhow::bail!("the connection ended while acknowledging a request");
         }
+    }
+}
+
+/// The version a `Hello` names, when it is not the helper's.
+///
+/// `Hello` itself stays optional: a peer that sends none is served (the
+/// limitations log, F232).
+fn another_version(message: &ToHelper) -> Option<u32> {
+    match message {
+        ToHelper::Hello { version } if *version != PROTOCOL_VERSION => Some(*version),
+        _ => None,
     }
 }
 
@@ -282,8 +302,8 @@ fn apply(
     let malformed = message.validate().is_err();
 
     match (message, object) {
-        (ToHelper::Hello { version }, _) if version == PROTOCOL_VERSION => 0,
-        (ToHelper::Hello { .. }, _) => libc::EPROTO,
+        // Its version is ours: `serve_one` has closed on any other.
+        (ToHelper::Hello { .. }, _) => 0,
         (ToHelper::RegisterRoot { root_id }, Some(_)) if malformed => {
             refuse_malformed_id(shared, uid, &root_id)
         }
@@ -341,3 +361,6 @@ fn act(result: io::Result<()>) -> i32 {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
