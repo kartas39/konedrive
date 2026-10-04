@@ -81,7 +81,7 @@ async fn a_disabled_baloo_runs_no_program_at_all() {
     assert!(!log.exists(), "no program ran");
 }
 
-/// B-I1b: the exclusions come from `baloofilerc` itself — the user's own
+/// The exclusions come from `baloofilerc` itself — the user's own
 /// line exactly as found on their machine, where `balooctl6 config list
 /// excludeFolders` printed an empty list — in every form KConfig writes.
 #[test]

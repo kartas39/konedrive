@@ -11,7 +11,7 @@
 //! Every answer that settles whether an item has a usable thumbnail is
 //! recorded (its `thumb_key`), so the item is asked for again only once it
 //! changes; only a passing trouble — no answer, `401`, `408`, `429`, 5xx — is
-//! tried again at the next drain (issue #80). A `406` at `c512x512` is asked
+//! tried again at the next drain. A `406` at `c512x512` is asked
 //! once more at Graph's named size `large` before it counts as a refusal.
 
 use std::os::unix::ffi::OsStrExt;
@@ -88,7 +88,7 @@ enum FillError {
     /// bytes back.
     Undecodable(String),
     /// A local problem: disk, permissions, a vanished cache directory.
-    /// Recorded like the rest (issue #39): a batch of them ends the drain,
+    /// Recorded like the rest: a batch of them ends the drain,
     /// and the item is asked for again once it changes.
     Io(String),
 }
@@ -126,8 +126,8 @@ impl ThumbnailFiller {
             }
             // The wait for a slot, and the request — which can wait out Graph's
             // `Retry-After`, up to 300 s, four times — give way to a stop: a
-            // Forget, or a switch to interception under the lifecycle lock,
-            // waits for this task.
+            // Forget, or a switch to interception, holds `SyncService`'s
+            // `folder` lock for writing while it waits for this task.
             let slot = loop {
                 tokio::select! {
                     () = cancel.cancelled() => break None,
@@ -151,8 +151,8 @@ impl ThumbnailFiller {
         (RunOutcome { taken, written }, next)
     }
 
-    /// Batches of up to `limit`, each going on where the last stopped
-    /// (issue #39), until every candidate has been looked at once — a
+    /// Batches of up to `limit`, each going on where the last stopped,
+    /// until every candidate has been looked at once — a
     /// candidate that failed this time waits for the next drain — or
     /// cancellation.
     async fn drain(&self, cancel: &CancellationToken, limit: usize) -> RunOutcome {
@@ -218,7 +218,7 @@ impl One {
         // settles the question of whether it has a usable thumbnail
         // (a real write, a 404, a refusal, an oversized body, bytes that
         // will not decode) and for a local I/O problem, which would fail
-        // the same way at once (issue #39); false for a passing trouble
+        // the same way at once; false for a passing trouble
         // (`DriveClient::thumbnail`'s `Err`), tried again at the next drain.
         let settle = match fetched {
             Ok(Thumbnail::Image(bytes)) => {
@@ -264,52 +264,11 @@ impl One {
     }
 }
 
-/// A test-only rendezvous (deterministic test): lets a test
-/// prove `write_thumbnail` runs off the async task without timing anything
-/// on the passing path. Keyed by the exact `file` a call is made for, so
-/// unrelated tests (different temp directories, so always a different path)
-/// never see each other's hook.
-#[cfg(test)]
-type WriteHook = (PathBuf, std::sync::mpsc::Receiver<()>, tokio::sync::oneshot::Sender<()>);
-#[cfg(test)]
-static WRITE_HOOKS: std::sync::Mutex<Vec<WriteHook>> = std::sync::Mutex::new(Vec::new());
-
-#[cfg(test)]
-fn register_write_hook(file: PathBuf, go: std::sync::mpsc::Receiver<()>, ready: tokio::sync::oneshot::Sender<()>) {
-    WRITE_HOOKS.lock().unwrap().push((file, go, ready));
-}
-
-/// Called at the very top of the blocking work: if a test registered a hook
-/// for this exact `file`, says "ready" (a task on the same runtime is
-/// `.await`ing that, and only then sends "go") and waits up to 2 s for it.
-/// If `write_thumbnail` runs inline on a single-threaded runtime, that task
-/// can never be polled while this call blocks, so the wait times out and
-/// this panics — the test fails fast at 2 s rather than hanging. On the
-/// passing path (a separate `spawn_blocking` thread), the runtime's one
-/// async thread is free to run that task immediately, so this returns in
-/// well under a millisecond.
-#[cfg(test)]
-fn wait_for_test_hook(file: &Path) {
-    let hook = {
-        let mut hooks = WRITE_HOOKS.lock().unwrap();
-        hooks.iter().position(|(f, _, _)| f == file).map(|i| hooks.remove(i))
-    };
-    if let Some((_, go, ready)) = hook {
-        let _ = ready.send(());
-        go.recv_timeout(Duration::from_secs(2)).expect(
-            "nothing else on this runtime got to run while write_thumbnail was blocking it: it must not run inline on the async task",
-        );
-    }
-}
-
 /// Decodes `jpeg` (any format `image` recognises, under the decode limits),
 /// scales it to each of `SIZES` and writes it into the freedesktop cache
 /// atomically (a temp file, then a rename) — all synchronous, so callers run
 /// it with `spawn_blocking` rather than on the async task.
 fn write_thumbnail(cache: &Path, file: &Path, mtime: i64, jpeg: &[u8]) -> Result<(), FillError> {
-    #[cfg(test)]
-    wait_for_test_hook(file);
-
     let uri = file_uri(file);
     let name = format!("{:x}.png", md5::Md5::digest(uri.as_bytes()));
 
