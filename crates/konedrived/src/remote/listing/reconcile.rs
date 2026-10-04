@@ -311,7 +311,10 @@ impl Reconcile {
             // filesystem: a rescue is one rename, never a copy.
             rescue_into: rescue_base(&self.root.path, &self.rescue_dir).join(rescue_stamp(SystemTime::now())),
             cancel: self.cancel.clone(),
-            rw: prepared.plan.as_ref().map(|plan| plan.rw.clone()),
+            mode: match &prepared.plan {
+                None => crate::remote::mode::Mode::ReadOnly,
+                Some(plan) => crate::remote::mode::Mode::ReadWrite(plan.rw.clone()),
+            },
             claimed: self.claimed.clone(),
         };
         match materializer.apply_with_handover(scope) {

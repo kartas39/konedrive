@@ -15,7 +15,7 @@ impl Materializer {
     /// or a crash left: what OneDrive removed goes as
     /// [`Self::take_off`] says; the rest goes back into the folder
     /// ([`Self::put_back`]). Nothing leaves the folder.
-    pub(in crate::remote::materialize) fn drain_holding_rw(&self, rw: &Rw, run: &mut Run) -> Result<(), ApplyError> {
+    pub(in crate::remote::materialize) fn drain_putting_back(&self, rw: &Rw, run: &mut Run) -> Result<(), ApplyError> {
         let Some(holding) = self.holding_if_any()? else {
             return Ok(());
         };
@@ -144,7 +144,7 @@ impl Materializer {
         let parent = place.parent().unwrap_or(Path::new(""));
         let Some(to) = place.file_name() else { return Ok(None) };
         let Ok(dir) = self.disk.dir(parent) else { return Ok(None) };
-        let machine = self.rw.as_ref().map(|rw| rw.machine.clone()).unwrap_or_default();
+        let machine = self.mode.read_write().map(|rw| rw.machine.clone()).unwrap_or_default();
         let mut candidates = vec![to.to_os_string()];
         if let Some(wanted) = to.to_str() {
             candidates.extend((1..=100).map(|n| copy_name(wanted, &machine, n).into()));
@@ -155,8 +155,7 @@ impl Materializer {
                     let is_dir = matches!(self.disk.probe(&dir, &candidate)?, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true });
                     let at = parent.join(&candidate);
                     if is_dir {
-                        let rebase = [konedrive_tree::outbox::OutboxOp::Rebase { from: PathBuf::from(HOLDING).join(name), to: at.clone() }];
-                        self.store.call_blocking(move |s| s.outbox_apply(&rebase, 0))?;
+                        self.rows_follow(PathBuf::from(HOLDING).join(name), at.clone())?;
                     }
                     run.out.on_disk.examine.push((at.clone(), is_dir));
                     return Ok(Some(at));

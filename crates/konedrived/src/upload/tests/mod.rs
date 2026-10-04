@@ -97,7 +97,7 @@ impl World {
                 root_item_id: "R".into(),
                 rescue_into: dir.path().join("rescued"),
                 cancel: CancellationToken::new(),
-                rw: None,
+                mode: crate::remote::mode::Mode::ReadOnly,
                 claimed: None,
             };
             materializer.apply(Scope::Full).unwrap();

@@ -515,7 +515,7 @@ async fn a_new_folder_a_stop_left_under_its_temporary_name_is_finished_when_oned
 /// from there.
 #[test]
 fn where_a_misplaced_object_was_is_read_off_its_plan() {
-    use super::{where_it_was, Was};
+    use super::sort::{where_it_was, Was};
     use crate::folder::disk::Scanned;
     use konedrive_tree::outbox::SWAP_PREFIX;
     use konedrive_tree::{Located, Planned, Side, SkipReason};

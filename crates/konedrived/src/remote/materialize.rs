@@ -22,11 +22,18 @@ use crate::folder::disk::{Disk, Probe, Scanned, HOLDING, NEW_PREFIX};
 use crate::status::activity::Kind as EventKind;
 use crate::helper::HelperLink;
 use crate::folder::locks::InodeLocks;
-use konedrive_tree::{Kind, Located, Placement, Plan, Row, Store, Table, TreeError};
+use crate::remote::mode::Mode;
+use konedrive_tree::{Kind, Located, Placement, Plan, Row, Store, Table};
 
+/// What the mode answers: where a read-only and a read-write folder differ.
+mod answers;
+/// What a pass did, left for later, and how it failed.
+mod applied;
+pub use applied::{Applied, ApplyError, Changed, Copied, Counts, Failed, Kept, OnDisk, Pending, Replacement, Rescued};
 /// Read-write mode's rules (`docs/design/writes.md` §9).
 mod rw;
 pub use rw::Rw;
+use rw::{Scan, Unplaced};
 
 /// A file found where the tree wants it: left, updated, queued for replacement or rescued.
 mod file;
@@ -52,242 +59,6 @@ pub enum Scope {
     Changed(Vec<String>),
 }
 
-/// A file downloaded here whose content changed in the cloud: fetches
-/// the new version beside it and swaps it in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Replacement {
-    pub id: String,
-    pub rel: PathBuf,
-    pub ctag: String,
-    /// The new version's size, to check the disk can hold it beside the old.
-    pub size: u64,
-}
-
-/// What a pass did to the folder, in numbers.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Counts {
-    pub created: u64,
-    pub moved: u64,
-    pub deleted: u64,
-    pub updated: u64,
-    /// Files being filled or freed right now; the next cycle looks again.
-    pub deferred: u64,
-}
-
-impl Counts {
-    fn add(&mut self, other: Counts) {
-        let Counts { created, moved, deleted, updated, deferred } = other;
-        self.created += created;
-        self.moved += moved;
-        self.deleted += deleted;
-        self.updated += updated;
-        self.deferred += deferred;
-    }
-}
-
-/// What a pass did on disk that stands whatever comes next: when the pass
-/// fails and a Full one follows, and from one page of a first listing to
-/// the next. The only merge of two passes is [`OnDisk::absorb`].
-#[derive(Debug, Default)]
-pub struct OnDisk {
-    /// Local versions moved out of the way, each a conflict.
-    pub rescued: Vec<Rescued>,
-    /// Read-write mode: local versions kept beside the cloud's (§6).
-    pub copies: Vec<Copied>,
-    /// Read-write mode: places for the examination to look at, relative to
-    /// the root (`true`: with everything below) — files and folders this
-    /// reconcile kept, copied or took its attributes off, which no event the
-    /// watcher keeps says (the daemon's own changes are dropped by pid).
-    pub examine: Vec<(PathBuf, bool)>,
-    /// Read-write mode: folders gone from OneDrive whose directory stays
-    /// here, holding local work, to be made again there (F116).
-    pub recreated: Vec<String>,
-    /// Items whose change the base takes in this cycle whatever a local
-    /// change holds — removed in OneDrive, or no longer placed here, and
-    /// taken off the disk. Never deferred.
-    pub taken: HashSet<String>,
-    /// Read-write mode: what was removed in OneDrive and stays here in
-    /// part, relative to the root, with what stays. One entry for the
-    /// outermost thing removed ([`OnDisk::note_kept`]).
-    pub kept: Vec<(PathBuf, Kept)>,
-}
-
-/// What stays on this computer of something removed in OneDrive.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Kept {
-    /// Files changed or made here, which the examination records as new.
-    pub uploaded: u64,
-    /// Files and folders that stay on this computer only: their name is
-    /// ignored or refused by OneDrive, or a folder above them has such a
-    /// name, so nothing uploads them.
-    pub local: u64,
-    /// How many of them were the daemon's until this pass took konedrive's
-    /// attributes off them: a later pass finds them as the user's own.
-    pub stripped: u64,
-}
-
-impl Kept {
-    pub(super) fn since(self, before: Kept) -> Kept {
-        Kept { uploaded: self.uploaded - before.uploaded, local: self.local - before.local, stripped: self.stripped - before.stripped }
-    }
-
-    pub fn is_empty(self) -> bool {
-        self.uploaded + self.local == 0
-    }
-}
-
-impl OnDisk {
-    /// Adds what a `later` pass did to what this one did, this one's first.
-    // Every field named: one added to `OnDisk` does not compile here until
-    // it is handled.
-    pub fn absorb(&mut self, later: OnDisk) {
-        let OnDisk { rescued, copies, examine, recreated, taken, kept } = later;
-        for (rel, kept) in kept {
-            self.note_kept(&rel, kept);
-        }
-        self.rescued.extend(rescued);
-        self.copies.extend(copies);
-        self.examine.extend(examine);
-        self.recreated.extend(recreated);
-        self.taken.extend(taken);
-    }
-}
-
-impl OnDisk {
-    /// `kept` stays of what was removed at `rel`. Said once, for the
-    /// outermost thing removed: an entry at or below `rel` is replaced, and
-    /// nothing is added below an entry there is.
-    pub(super) fn note_kept(&mut self, rel: &Path, kept: Kept) {
-        if self.kept.iter().any(|(above, _)| rel != above && rel.starts_with(above)) {
-            return;
-        }
-        // What an earlier pass took the attributes off is counted as that
-        // still, though this pass found it the user's own.
-        let stripped = self.kept.iter().filter(|(below, _)| below.starts_with(rel)).map(|(_, k)| k.stripped).sum::<u64>();
-        self.kept.retain(|(below, _)| !below.starts_with(rel));
-        self.kept.push((rel.to_path_buf(), Kept { stripped: kept.stripped + stripped, ..kept }));
-    }
-}
-
-/// A reconcile that failed, and what it did on disk before it did
-/// ([`OnDisk`]): that stands, and is still to be said and handed on.
-#[derive(Debug)]
-pub struct Failed {
-    pub error: ApplyError,
-    pub done: OnDisk,
-}
-
-/// What a pass left for later. A pass that fails hands none of it over: the
-/// pass after it decides that again.
-#[derive(Debug, Default)]
-pub struct Pending {
-    /// Read-write mode: items this reconcile left as they are on disk — a
-    /// local change holds them, or their new version is still to land — so
-    /// the base keeps the version the disk holds, and the delta's change
-    /// waits (`docs/design/writes.md` §9).
-    pub unsettled: HashSet<String>,
-    /// Read-write mode: items placed where the tree has them whose content
-    /// the disk has not taken yet — a replacement to land, a placeholder or
-    /// a file being filled: the base takes the new place, and keeps the
-    /// content the file holds.
-    pub content_waits: HashSet<String>,
-    /// Downloaded files whose content changed in the cloud, to be replaced
-    /// once the cycle is done.
-    pub replacements: Vec<Replacement>,
-    /// Read-write mode: of the unsettled items, those OneDrive still has
-    /// and the folder cannot hold any more, each with what keeps it here
-    /// (a [`konedrive_tree::WaitsFor`], as stored).
-    pub waits: Vec<(String, String)>,
-}
-
-impl Pending {
-    fn add(&mut self, other: Pending) {
-        let Pending { unsettled, content_waits, replacements, waits } = other;
-        self.waits.extend(waits);
-        self.unsettled.extend(unsettled);
-        self.content_waits.extend(content_waits);
-        self.replacements.extend(replacements);
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct Applied {
-    pub counts: Counts,
-    pub on_disk: OnDisk,
-    pub pending: Pending,
-    /// What a Changed scope did, item by item, for the activity log (spec
-    /// §16.1). A Full scope leaves it empty: it is one `listed` event, not
-    /// one per item.
-    pub changes: Vec<Changed>,
-    /// Files made, and files or folders moved, inside a folder a pin keeps
-    /// on this device, relative to the root: what the sync queues for
-    /// download once the reconcile is done.
-    pub pinned: Vec<PathBuf>,
-}
-
-impl Applied {
-    /// Adds what one page of a first listing did to what the pages before
-    /// it did. `changes` stays empty: a first listing is one `listed`
-    /// event, as a Full reconcile is.
-    pub fn add_page(&mut self, page: Applied) {
-        let Applied { counts, on_disk, pending, changes: _, pinned } = page;
-        self.counts.add(counts);
-        self.on_disk.absorb(on_disk);
-        self.pending.add(pending);
-        self.pinned.extend(pinned);
-    }
-}
-
-/// A local version kept beside the cloud's under a new name (write design
-/// §6): what read-write mode does where the read phase rescued.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Copied {
-    /// Its name before, relative to the root: now the cloud's version.
-    pub original: PathBuf,
-    /// Where it is now, relative to the root.
-    pub copy: PathBuf,
-}
-
-/// A local version a reconcile moved out of the way (§16.3: "the
-/// daemon records what the materializer rescued").
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Rescued {
-    /// Where it was, relative to the root.
-    pub original: PathBuf,
-    /// Where it is now, as a full path.
-    pub rescued: PathBuf,
-}
-
-/// One thing an incremental reconcile did to the folder.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Changed {
-    /// `Added`, `Updated`, `Removed` or `Moved`.
-    pub kind: EventKind,
-    /// Relative to the root: where the item is now, or was, if removed.
-    pub rel: PathBuf,
-    /// Where a moved item was, relative to the root.
-    pub from: Option<PathBuf>,
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ApplyError {
-    #[error("the folder does not match the stored tree ({0})")]
-    NeedFull(String),
-    #[error("cancelled")]
-    Cancelled,
-    #[error("the helper did not mark {0}: {1}")]
-    Mark(PathBuf, String),
-    #[error("{0}")]
-    Io(String),
-    #[error(transparent)]
-    Tree(#[from] TreeError),
-}
-
-impl From<std::io::Error> for ApplyError {
-    fn from(e: std::io::Error) -> Self {
-        ApplyError::Io(e.to_string())
-    }
-}
 
 pub struct Materializer {
     pub disk: Disk,
@@ -302,9 +73,9 @@ pub struct Materializer {
     /// `rescued/<timestamp>` for this cycle.
     pub rescue_into: PathBuf,
     pub cancel: CancellationToken,
-    /// Read-write mode's rules (`docs/design/writes.md` §9), for a read-write
-    /// folder; `None` keeps the read phase's.
-    pub rw: Option<Rw>,
+    /// The mode, with a read-write folder's rules (`docs/design/writes.md`
+    /// §9). Asked only through the questions of `answers`.
+    pub mode: Mode<Rw>,
     /// Asked before an object with an id this folder does not know is
     /// removed: another account's is set aside instead, alive, for that
     /// account's move out to download where it is. `None`
@@ -373,6 +144,40 @@ impl Run {
     }
 }
 
+/// An object of ours the Full scan found, with what phase 1 sorts it by.
+pub(in crate::remote::materialize) struct Seen<'a> {
+    pub entry: &'a Scanned,
+    pub id: &'a String,
+    /// The new tree's row of its item.
+    pub new: Option<&'a Row>,
+    /// The plan of the misplaced entries of its batch.
+    pub plan: &'a Plan,
+    /// How many objects the scan found carrying each id.
+    pub counts: &'a HashMap<&'a str, usize>,
+}
+
+/// What phase 1 does with an object of ours.
+pub(in crate::remote::materialize) enum Sorted {
+    /// It is left as it is.
+    Stays,
+    /// It goes to the holding directory: phase 2 places it from there, or
+    /// the drain takes what is left.
+    ToHolding,
+    /// Removed in OneDrive: taken off the disk where it stands.
+    Removed,
+    /// OneDrive still has it and the folder cannot hold it any more, and it
+    /// is the topmost such item of its subtree: once everything else is
+    /// placed it goes whole or waits whole, from where it `stands` (with
+    /// whether that is a directory). `None`: this pass does not look at it
+    /// — a local change holds it, or it is not where the base has it — and
+    /// what follows it goes its way all the same.
+    Leaves { stands: Option<(PathBuf, bool)> },
+    /// It is below an item that leaves, and follows it.
+    Follows,
+    /// The Full scope: a replacement's leftover link, discarded.
+    Leftover,
+}
+
 impl Materializer {
     /// One pass over `scope`.
     pub fn apply(&self, scope: Scope) -> Result<Applied, ApplyError> {
@@ -420,17 +225,6 @@ impl Materializer {
         result.map(|()| run.out)
     }
 
-    /// Whether deleting or replacing `file` would lose something only this
-    /// machine has ([`holds_local_work`]); in read-write mode an emptied
-    /// download counts too.
-    pub(super) fn local_work(&self, file: &File) -> bool {
-        if self.rw.is_some() {
-            holds_local_work_rw(file)
-        } else {
-            holds_local_work(file)
-        }
-    }
-
     fn apply_run(&self, scope: Scope, run: &mut Run) -> Result<(), ApplyError> {
         let result = self.apply_run_placing(scope, run);
         // What was placed is recorded, whatever became of the run.
@@ -465,18 +259,11 @@ impl Materializer {
     }
 
     fn apply_run_placing(&self, scope: Scope, run: &mut Run) -> Result<(), ApplyError> {
-        match (scope, &self.rw) {
-            (Scope::Full, None) => self.full(run)?,
-            (Scope::Changed(ids), None) => self.changed(ids, run)?,
-            (Scope::Full, Some(rw)) => self.full_rw(rw, run)?,
-            (Scope::Changed(ids), Some(rw)) => self.changed_rw(rw, ids, run)?,
+        match scope {
+            Scope::Full => self.full(run)?,
+            Scope::Changed(ids) => self.changed(ids, run)?,
         }
-        match &self.rw {
-            None => self.drain_holding(run)?,
-            Some(rw) => {
-                self.drain_holding_rw(rw, run)?;
-            }
-        }
+        self.drain_holding(run)?;
         for rel in run.made.iter().rev() {
             if let Ok(dir) = self.disk.dir(rel) {
                 self.disk.lock_dir(&dir)?;
@@ -544,34 +331,55 @@ impl Materializer {
         plan.ids().filter(|id| **id != self.root_item_id).cloned().collect()
     }
 
+    /// The Full scope (§3.7), in three phases. Phase 1: the scan, and what
+    /// it found sorted ([`Self::sort_scanned`]); then, deepest first, in one
+    /// order, so that nothing is moved out from above what is still to be
+    /// done below it, what moved goes to the holding directory and what
+    /// OneDrive removed goes where it stands. Phase 2: the new tree top
+    /// down. Phase 3: what can no longer be placed goes or waits
+    /// ([`Self::after_placement`]).
     fn full(&self, run: &mut Run) -> Result<(), ApplyError> {
         self.check_cancel()?;
         let scanned = self.disk.scan(&self.root_item_id)?;
-        let mut id_counts: HashMap<&str, usize> = HashMap::new();
+        let mut counts: HashMap<&str, usize> = HashMap::new();
         for entry in &scanned {
             if let Some(id) = &entry.id {
-                *id_counts.entry(id.as_str()).or_insert(0) += 1;
+                *counts.entry(id.as_str()).or_insert(0) += 1;
             }
         }
-        let mut misplaced: Vec<&Scanned> = Vec::new();
+        let mut scan = Scan::default();
+        let mut unplaced = Unplaced::default();
+        let mut misplaced: Vec<(&Scanned, bool)> = Vec::new();
         for entries in scanned.chunks(PLAN_BATCH) {
             let rows = self.new_rows_of(entries)?;
+            let plan = self.plan_of_misplaced(entries, &rows)?;
             for entry in entries {
                 let Some(id) = &entry.id else { continue };
-                if is_leftover_replacement(entry, id, &id_counts) {
-                    self.check_cancel()?;
-                    self.discard_leftover_replacement(entry, run)?;
-                    continue;
-                }
-                if is_misplaced(entry, rows.get(id)) {
-                    misplaced.push(entry);
+                let seen = Seen { entry, id, new: rows.get(id), plan: &plan, counts: &counts };
+                match self.sort_scanned(&seen, &mut scan, run)? {
+                    Sorted::Stays => {}
+                    Sorted::Leftover => {
+                        self.check_cancel()?;
+                        self.discard_leftover_replacement(entry, run)?;
+                    }
+                    Sorted::ToHolding => misplaced.push((entry, false)),
+                    Sorted::Removed => misplaced.push((entry, true)),
+                    Sorted::Leaves { stands } => unplaced.top(id, &entry.rel, stands),
+                    Sorted::Follows => unplaced.follows(id, &entry.rel),
                 }
             }
         }
-        misplaced.sort_by_key(|entry| std::cmp::Reverse(entry.depth));
-        for entry in misplaced {
+        misplaced.sort_by_key(|m| std::cmp::Reverse(m.0.depth));
+        for (entry, removed) in misplaced {
             self.check_cancel()?;
-            self.to_holding(&entry.rel, entry.id.as_deref().expect("filtered above"), run)?;
+            let id = entry.id.as_deref().expect("sorted by its id");
+            if !removed {
+                self.to_holding(&entry.rel, id, run)?;
+            } else if self.remove_in_place(&entry.rel, run)? {
+                // A mount inside it: its removal waits.
+                run.left.insert(id.to_owned());
+                run.out.pending.unsettled.insert(id.to_owned());
+            }
         }
         let root = self.disk.dir(Path::new(""))?;
         self.disk.lock_dir(&root)?;
@@ -580,18 +388,30 @@ impl Materializer {
             self.check_cancel()?;
             let children = self.store.call_blocking(move |s| s.children(Table::Staging, &id))?;
             for row in children {
-                if row.placement != Placement::Placed {
+                if row.placement != Placement::Placed || self.passes_over(&row.id) {
                     continue;
                 }
-                let Some(placed) = self.place(&row, &rel, run, true)? else { continue };
+                if self.left_alone(&row.id, run) {
+                    self.unsettle_tree(&row.id, run)?;
+                    continue;
+                }
+                let Some(placed) = self.place(&row, &rel, run, true)? else {
+                    self.unsettle_tree(&row.id, run)?;
+                    continue;
+                };
                 if row.kind == Kind::Folder {
                     queue.push_back((row.id.clone(), placed));
                 }
             }
         }
-        Ok(())
+        self.after_placement(unplaced, run)
     }
 
+    /// The Changed scope (§3.7), in the same three phases. Phase 1, by
+    /// where things are now, deepest first: each item of the plan is sorted
+    /// ([`Self::sort_changed`]) and moved to the holding directory or taken
+    /// off where it stands. Phase 2, by where things belong, shallowest
+    /// first. Phase 3 as in the Full scope.
     fn changed(&self, ids: Vec<String>, run: &mut Run) -> Result<(), ApplyError> {
         // What an earlier run left in the holding directory is not this
         // delta's to drain; a Full reconcile sorts it out by item id.
@@ -602,37 +422,56 @@ impl Materializer {
         let scope = self.scope_of(&plan);
         run.scope = Some(scope.clone());
 
-        // Phase 1, by where things are now, deepest first.
         let mut here: Vec<(&String, &Located)> = scope.iter().filter_map(|id| Some((id, plan.of(id).base_place()?))).collect();
         here.sort_by_key(|h| std::cmp::Reverse(h.1.depth));
+        let no_longer_placed = self.no_longer_placed(&plan, &here);
+        let mut unplaced = Unplaced::default();
         for (id, old) in here {
             self.check_cancel()?;
-            let parent = old.rel.parent().unwrap_or(Path::new(""));
-            let name = old.rel.file_name().ok_or_else(|| ApplyError::NeedFull(format!("{id} has no name")))?;
-            let dir = self.disk.dir(parent).map_err(|e| ApplyError::NeedFull(format!("{}: {e}", parent.display())))?;
-            match self.disk.probe(&dir, name)? {
-                Probe::Managed { id: found, .. } if &found == id => {}
-                other => return Err(ApplyError::NeedFull(format!("{} should be {id} and is {other:?}", old.rel.display()))),
-            }
-            if !plan.of(id).stays() {
-                self.to_holding(&old.rel, id, run)?;
+            match self.sort_changed(id, old, plan.of(id), &no_longer_placed, run)? {
+                Sorted::Stays | Sorted::Leftover => {}
+                Sorted::ToHolding => self.to_holding(&old.rel, id, run)?,
+                Sorted::Removed => {
+                    if self.remove_in_place(&old.rel, run)? {
+                        // A mount inside it: its removal waits.
+                        run.out.pending.unsettled.insert(id.clone());
+                    }
+                }
+                Sorted::Leaves { stands } => unplaced.top(id, &old.rel, stands),
+                Sorted::Follows => unplaced.follows(id, &old.rel),
             }
         }
 
-        // Phase 2, by where things belong, shallowest first.
         let mut there = placed_by_the_new_tree(&plan, &scope);
         there.sort_by_key(|t| t.1.depth);
         // Folders placed — and so checked — by this phase.
         let mut placed: HashSet<String> = HashSet::new();
         for (row, new) in there {
             self.check_cancel()?;
+            if self.passes_over(&row.id) {
+                continue;
+            }
+            if self.left_alone(&row.id, run) {
+                self.unsettle_tree(&row.id, run)?;
+                continue;
+            }
             let parent = new.rel.parent().unwrap_or(Path::new(""));
-            self.check_parent(row, parent, &placed)?;
-            if self.place(row, parent, run, false)?.is_some() && row.kind == Kind::Folder {
-                placed.insert(row.id.clone());
+            if let Err(e) = self.check_parent(row, parent, &placed) {
+                if self.asks_for_the_scan(&row.id) {
+                    return Err(e);
+                }
+                self.unsettle_tree(&row.id, run)?;
+                continue;
+            }
+            match self.place(row, parent, run, false)? {
+                Some(_) if row.kind == Kind::Folder => {
+                    placed.insert(row.id.clone());
+                }
+                Some(_) => {}
+                None => self.unsettle_tree(&row.id, run)?,
             }
         }
-        Ok(())
+        self.after_placement(unplaced, run)
     }
 
     /// The Changed scope opens an item's folder by its path. Unless that is
@@ -657,7 +496,8 @@ impl Materializer {
     }
 
     /// Makes `row` exist as `parent_rel/<name>` and returns that path;
-    /// `None` when read-write mode leaves it as it is (see [`Rw`]).
+    /// `None` when it is left as it is and its change waits, which only a
+    /// read-write folder does (see [`Rw`]).
     fn place(&self, row: &Row, parent_rel: &Path, run: &mut Run, full: bool) -> Result<Option<PathBuf>, ApplyError> {
         let rel = parent_rel.join(&row.name);
         let dir = self.disk.dir(parent_rel)?;
@@ -665,12 +505,8 @@ impl Materializer {
         let is_folder = row.kind == Kind::Folder;
         match self.disk.probe(&dir, name)? {
             Probe::Managed { id, is_dir } if id == row.id && is_dir == is_folder => {
-                if let Some(rw) = &self.rw {
-                    // Found where it belongs: its object, if none is recorded
-                    // (a rebuilt base, a forgotten one), is this one.
-                    if rw.unplaced.contains(&row.id) {
-                        self.record_placed(run, &dir, name, &row.id)?;
-                    }
+                if self.has_no_record(&row.id) {
+                    self.record_placed(run, &dir, name, &row.id)?;
                 }
                 if !is_folder {
                     self.check_file(&dir, name, row, &rel, run)?;
@@ -685,47 +521,33 @@ impl Materializer {
             Probe::Managed { id, .. } if id == row.id => {
                 // Its own id with the wrong kind: nothing a Graph id does.
                 // Not trusted, not thrown away.
-                match &self.rw {
-                    None => self.rescue(&dir, name, &rel, run)?,
-                    Some(rw) => self.copy_aside(rw, &dir, name, &rel, run)?,
-                }
+                self.out_of_the_way(&dir, name, &rel, run)?;
             }
             // What can no longer be placed yields its name: it steps aside
             // where it is, and leaves from there, or waits there.
-            Probe::Managed { id, .. } if self.rw.is_some() && run.leaving.contains(&id) => {
-                let rw = self.rw.as_ref().expect("read-write mode");
-                if !self.step_aside(rw, &dir, name, &rel, &id, run)? {
+            Probe::Managed { id, .. } if run.leaving.contains(&id) => {
+                if !self.step_aside(&dir, name, &rel, &id, run)? {
                     run.out.pending.unsettled.insert(row.id.clone());
                     return Ok(None);
                 }
             }
             Probe::Managed { id, .. } => {
-                if let Some(rw) = &self.rw {
-                    // Held by a local change, or an item whose own move
-                    // waits in this run: it keeps the name, and this one
-                    // waits behind it.
-                    if self.holds_the_name(rw, &id, &rel, run)? || run.out.pending.unsettled.contains(&id) {
-                        run.out.pending.unsettled.insert(row.id.clone());
-                        return Ok(None);
-                    }
+                if self.keeps_its_name(&id, &rel, run)? {
+                    run.out.pending.unsettled.insert(row.id.clone());
+                    return Ok(None);
                 }
                 if run.scope.as_ref().is_some_and(|scope| !scope.contains(&id)) {
                     return Err(ApplyError::NeedFull(format!("{id} is in the way at {}", rel.display())));
                 }
                 self.to_holding(&rel, &id, run)?;
             }
-            Probe::Unmanaged { is_dir } => match &self.rw {
-                None => self.rescue(&dir, name, &rel, run)?,
-                // A create or mkdir waiting here: the outbox worker settles
-                // it with the cloud's item (§6, create/create).
-                Some(rw) if rw.pending_at(&rel) || !rw.brings(&row.id) || (is_folder && is_dir) => {
-                    // A local folder where OneDrive has a new one: the two
-                    // merge, by the `mkdir`'s `409` (§6), never a copy.
+            Probe::Unmanaged { is_dir } => {
+                if self.is_the_users(row, &rel, is_folder && is_dir) {
                     run.out.pending.unsettled.insert(row.id.clone());
                     return Ok(None);
                 }
-                Some(rw) => self.copy_aside(rw, &dir, name, &rel, run)?,
-            },
+                self.out_of_the_way(&dir, name, &rel, run)?;
+            }
             Probe::Absent => {}
         }
         if let Some(holding) = self.holding_if_any()? {
@@ -741,9 +563,8 @@ impl Materializer {
                     self.disk.rename(&holding, OsStr::new(&row.id), &dir, name)?;
                     // The rows below a folder went to the holding directory
                     // with it, and follow it out.
-                    if is_folder && self.rw.is_some() {
-                        let rebase = [konedrive_tree::outbox::OutboxOp::Rebase { from: PathBuf::from(HOLDING).join(&row.id), to: rel.clone() }];
-                        self.store.call_blocking(move |s| s.outbox_apply(&rebase, 0))?;
+                    if is_folder {
+                        self.rows_follow(PathBuf::from(HOLDING).join(&row.id), rel.clone())?;
                     }
                     self.record_placed(run, &dir, name, &row.id)?;
                     run.out.counts.moved += 1;
@@ -757,11 +578,9 @@ impl Materializer {
                 }
             }
         }
-        if let Some(rw) = &self.rw {
-            if !self.place_again(rw, row, &rel, run)? {
-                run.out.pending.unsettled.insert(row.id.clone());
-                return Ok(None);
-            }
+        if !self.places_missing(row, &rel, run)? {
+            run.out.pending.unsettled.insert(row.id.clone());
+            return Ok(None);
         }
         self.create(&dir, row, &rel, run)?;
         run.note(EventKind::Added, &rel, None);
