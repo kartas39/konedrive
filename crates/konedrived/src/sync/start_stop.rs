@@ -177,6 +177,8 @@ impl SyncService {
         watcher_ended: Option<String>,
     ) -> (RunningSync, Option<watch::Receiver<crate::local::watcher::WalkState>>) {
         let Prepared { drive, paths, store, source, tree_lock } = prepared;
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let stop = CancellationToken::new();
         let kept_back = Arc::new(Mutex::new(None));
         let tidying = Arc::new(Mutex::new(Vec::new()));
@@ -194,7 +196,7 @@ impl SyncService {
         } else if wanted == Mode::ReadWrite {
             let outbox = self.outbox_worker(&reg.root, &store, &drive, &tree_lock, &source, Arc::clone(&kept_back), Arc::clone(&poll));
             let (scanned, scan) = watch::channel(false);
-            match self.spawn_watcher(&reg.root, &store, &tree_lock, outbox.handle(), Some(scanned), reason) {
+            match self.spawn_watcher(&reg.root, &store, &tree_lock, outbox.handle(), Some(scanned), reason, id) {
                 Ok(watcher) => {
                     first_scan = Some(scan);
                     Some((watcher, outbox))
@@ -268,7 +270,7 @@ impl SyncService {
             }
             None => Writes::Locked { note },
         };
-        let running = Handles { poll: poller.handle(), writes: handles, kept_back, stop, tidying };
+        let running = Handles { id, poll: poller.handle(), writes: handles, kept_back, stop, tidying };
         (RunningSync::new(running, Parts { poller, sign_in, thumbnails, writes }, self.ended.clone()), walked)
     }
 

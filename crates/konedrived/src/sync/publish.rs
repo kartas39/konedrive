@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use super::folder::{Down, Folder, Interception, Is, Recovery, Standing, SyncView, View};
+use super::folder::{Down, Folder, Interception, Is, Record, Recovery, Standing, SyncView, View};
 use super::running_sync::{Lock, RunningSync, Sync, Uploading, Why};
 use super::{RootSource, SyncService, NO_INTERCEPTION_WARNING};
 use crate::config::Mode;
@@ -87,7 +87,7 @@ pub(super) fn publish(folder: &Folder) -> Published {
         Some(Sync::Stopped(_)) => SyncView::Stopped(None),
     };
     let view = |down: Option<String>| View {
-        record: folder.acted_on().cloned(),
+        record: folder.acted_on().map(Record::bare),
         down,
         wanted: folder.wanted,
         source: folder.source(),

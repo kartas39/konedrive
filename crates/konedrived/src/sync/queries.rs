@@ -17,7 +17,7 @@ impl SyncService {
     /// part-way.
     pub async fn skipped(&self) -> Result<Vec<(String, String)>, SyncError> {
         let lifecycle = Arc::clone(&self.folder).read_owned().await;
-        let Some(reg) = lifecycle.acted_on().cloned() else { return Ok(Vec::new()) };
+        let Some(reg) = lifecycle.acted_on().map(|record| record.bare()) else { return Ok(Vec::new()) };
         let Some(store) = lifecycle.store() else { return Ok(Vec::new()) };
         let skipped = tokio::task::spawn_blocking(move || {
             let _lifecycle = lifecycle;

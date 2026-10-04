@@ -82,6 +82,8 @@ pub(super) enum Uploading {
 /// What a reader may reach of a running sync: what wakes its parts or tells them to stop. Nothing here can wait for a part; only the [`RunningSync`] owns them.
 #[derive(Clone)]
 pub(super) struct Handles {
+    /// The number of this sync, among those of the daemon: which sync a part belonged to.
+    pub id: u64,
     pub poll: PollHandle,
     /// The watcher and the outbox worker of a read-write folder.
     pub writes: Option<(WatchHandle, OutboxHandle)>,

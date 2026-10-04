@@ -24,6 +24,8 @@ thread_local! {
 struct Owner {
     jobs: tokio::sync::mpsc::Sender<Job>,
     id: u64,
+    /// True once the thread has dropped its connection ([`Store::close`]).
+    closed: tokio::sync::watch::Receiver<bool>,
 }
 
 impl Owner {
@@ -33,6 +35,7 @@ impl Owner {
     fn spawn(mut store: TreeStore, name: &str, changes: Option<std::sync::Arc<outbox::OutboxChanges>>) -> Self {
         let id = NEXT_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (jobs, mut queue) = tokio::sync::mpsc::channel::<Job>(QUEUE);
+        let (closing, closed) = tokio::sync::watch::channel(false);
         std::thread::Builder::new()
             .name(name.into())
             .spawn(move || {
@@ -50,9 +53,12 @@ impl Owner {
                         }
                     }
                 }
+                // The connection is closed before anyone is told so.
+                drop(store);
+                let _ = closing.send(true);
             })
             .expect("the tree store's thread starts");
-        Owner { jobs, id }
+        Owner { jobs, id, closed }
     }
 
     /// A call from inside one of this owner's jobs would wait for itself:
@@ -133,6 +139,25 @@ impl Store {
             reader: Default::default(),
             path,
             pause: std::sync::Arc::new(std::sync::atomic::AtomicI64::new(pause)),
+        }
+    }
+
+    /// Lets go of this handle and waits until the store's connections are closed: that is,
+    /// until every other clone has been dropped too and the owner threads have ended. For
+    /// whoever removes the store's files, which must not go while a connection is open:
+    /// SQLite's last close removes the journal beside the database by name, and would
+    /// take a newer store's with it. The caller bounds the wait.
+    pub fn close(self) -> impl std::future::Future<Output = ()> + Send + 'static {
+        let mut waits = vec![self.owner.closed.clone()];
+        if let Some(Some(reader)) = self.reader.get() {
+            waits.push(reader.closed.clone());
+        }
+        drop(self);
+        async move {
+            for mut closed in waits {
+                // An owner thread that ended without saying so has closed too.
+                let _ = closed.wait_for(|closed| *closed).await;
+            }
         }
     }
 

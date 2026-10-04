@@ -21,7 +21,7 @@ impl SyncService {
         // The mode decides what is asked of the helper below, so it must not
         // change until this is done: the folder's state is held for reading.
         let folder = self.folder.read().await;
-        let reg = folder.acted_on().cloned().ok_or(SyncError::NoRoot)?;
+        let reg = folder.acted_on().map(|record| record.bare()).ok_or(SyncError::NoRoot)?;
         if reg.source == RootSource::OneDrive {
             return Err(SyncError::Unsupported(
                 "this folder shows your OneDrive; filling it from a directory is for a folder \

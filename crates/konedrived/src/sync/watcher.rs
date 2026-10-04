@@ -46,11 +46,12 @@ impl SyncService {
         outbox: OutboxHandle,
         scanned: Option<watch::Sender<bool>>,
         reason: ScanReason,
+        sync: u64,
     ) -> Result<Watcher, String> {
         let store = store.clone();
         let runtime = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?;
         let mut config = WatchConfig::new(root.clone(), Arc::clone(&self.link), runtime.clone());
-        config.on_status = Some(self.watch_hook(runtime.clone()));
+        config.on_status = Some(self.watch_hook(runtime.clone(), sync));
         config.first_scan = reason;
         let handles = self.state.clone();
         let sink = ExamineSink {
@@ -112,8 +113,9 @@ impl SyncService {
     /// moved or deleted, the folder is down ([`root_gone`](Self::root_gone)): it shows an
     /// error, said as a registration's trouble is (it outlasts the watcher), and its sync
     /// stops (§3.3): nothing is deleted in the cloud because it went.
-    fn watch_hook(&self, runtime: tokio::runtime::Handle) -> StatusHook {
+    fn watch_hook(&self, runtime: tokio::runtime::Handle, sync: u64) -> StatusHook {
         let me = self.me.clone();
+        let said = std::sync::atomic::AtomicBool::new(false);
         Arc::new(move |status: &WatchStatus| {
             let Some(service) = me.upgrade() else { return };
             let note = status.note().unwrap_or_default();
@@ -122,11 +124,9 @@ impl SyncService {
                 runtime.spawn(async move { service.root_gone(note).await });
             } else if status.stopped {
                 // It ended by itself: the folder is not writable any more, and says why.
-                // Once: the sync that is started again has no watcher.
-                if service.running().is_some_and(|running| running.watcher().is_some()) {
-                    runtime.spawn(async move { service.watcher_ended(note).await });
-                } else {
-                    service.state.update(|s| s.local.watch_note = note);
+                // Said once, and only of the sync this watcher belongs to (`sync`).
+                if !said.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    runtime.spawn(async move { service.watcher_ended(note, sync).await });
                 }
             } else {
                 service.state.update(|s| s.local.watch_note = note);

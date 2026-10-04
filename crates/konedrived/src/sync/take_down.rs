@@ -4,11 +4,15 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use super::folder::{Down, Is, Kept, Record, Standing, Stopped};
+use super::folder::{Down, Is, Record, Standing, Stopped};
 use super::{RootSource, SyncError, SyncService};
 use crate::folder::disk;
 use crate::folder::root::{self, SyncRoot};
 use crate::helper::HelperError;
+
+/// How long a Forget waits for the tree store's connections to close before it removes
+/// the store's files.
+const STORE_CLOSES_WITHIN: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// A Forget's refusal while `waiting` changes wait to be uploaded.
 fn refuse_waiting(waiting: u64) -> Result<(), SyncError> {
@@ -130,15 +134,23 @@ impl SyncService {
             return Err(refused);
         }
         // The folder is gone from the state, and with it everything kept with it: its
-        // source and its tree store, closed here — the copy of the record this call holds
-        // too — before the store's files are removed.
+        // source and its tree store. The copy of the record this call holds gives its
+        // store up too, and no reader holds one: what the view hands out carries none
+        // (`Record::bare`).
         stopped.folder_mut().is = Is::Absent;
-        record.kept = Kept::default();
+        // Whether the store's connections are closed is waited for below, once the view
+        // and the activity log have let go of theirs too.
+        let closing = std::mem::take(&mut record.kept).store.map(konedrive_tree::Store::close);
         if retire {
             retire_in(&mut stopped);
         }
         self.forgotten(&stopped).await;
         if record.source == RootSource::OneDrive {
+            if let Some(closing) = closing {
+                if tokio::time::timeout(STORE_CLOSES_WITHIN, closing).await.is_err() {
+                    tracing::warn!("the tree store of {} is still open somewhere; its files are removed all the same", record.root.path.display());
+                }
+            }
             self.let_go_of_onedrive(&record.root).await;
             // Only when *this daemon* is the one that excluded the folder from Baloo —
             // never a folder that arrived already excluded, and this survives a restart
@@ -266,10 +278,18 @@ impl SyncService {
     /// failed): the folder's sync is started again locked, as one whose watcher could not
     /// start, and says `why`. Nothing is uploaded until the folder is brought up again or
     /// its mode is switched, which try a watcher again.
-    pub(super) async fn watcher_ended(&self, why: String) {
+    ///
+    /// `sync`: the sync the watcher belonged to. When another sync runs by now — a change
+    /// came in between and started one, with a watcher of its own — nothing is done.
+    pub(super) async fn watcher_ended(&self, why: String, sync: u64) {
+        if self.view().sync.id() != Some(sync) {
+            return;
+        }
         let mut stopped = self.change().await;
-        if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
-            onedrive.watcher_ended.get_or_insert(why);
+        if stopped.took() == Some(sync) {
+            if let Some(onedrive) = stopped.folder_mut().onedrive_mut() {
+                onedrive.watcher_ended.get_or_insert(why);
+            }
         }
         self.start_again(&mut stopped).await;
     }

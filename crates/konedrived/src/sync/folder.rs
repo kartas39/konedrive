@@ -109,6 +109,14 @@ impl std::fmt::Debug for Kept {
 }
 
 impl Record {
+    /// The record as a reader gets it: without what is kept with the folder. A reader may
+    /// hold it for as long as a download lasts, which a Forget does not wait for, and must
+    /// not keep the folder's tree store open past the Forget with it. What a reader needs
+    /// of the kept parts is in the [`View`], beside the record.
+    pub fn bare(&self) -> Record {
+        Record { kept: Kept::default(), ..self.clone() }
+    }
+
     /// Whether opens inside the folder are intercepted: false only for a folder registered
     /// through `RegisterWithoutInterception`.
     pub fn intercepted(&self) -> bool {
@@ -367,7 +375,8 @@ impl Folder {
 /// or tell them to stop ([`Handles`]), never what waits for them.
 #[derive(Clone, Default)]
 pub(super) struct View {
-    /// The folder this account's calls act on, up or not. `None` with no folder, and for an
+    /// The folder this account's calls act on, up or not, without what is kept with it
+    /// ([`Record::bare`]). `None` with no folder, and for an
     /// account held back, whose folder nothing acts on but a Forget.
     pub record: Option<Record>,
     /// Why the recorded folder is not up, when it is not: what `LastError` says, or what
@@ -396,6 +405,16 @@ pub(super) enum SyncView {
     Running(Handles),
 }
 
+impl SyncView {
+    /// The number of the sync in the view, told to stop or not.
+    pub fn id(&self) -> Option<u64> {
+        match self {
+            SyncView::Running(handles) => Some(handles.id),
+            _ => None,
+        }
+    }
+}
+
 impl View {
     /// The sync running now, as far as a reader may reach it. One that has been told to
     /// stop is not running, whatever this view was made from.
@@ -417,6 +436,8 @@ pub(super) struct Stopped<'a> {
     service: &'a SyncService,
     folder: RwLockWriteGuard<'a, Folder>,
     ran: bool,
+    /// Which sync the change took out of the state, if one ran ([`Handles::id`]).
+    took: Option<u64>,
 }
 
 impl<'a> Stopped<'a> {
@@ -435,6 +456,11 @@ impl<'a> Stopped<'a> {
         self.ran
     }
 
+
+    /// The sync this change took out of the state, by its number.
+    pub fn took(&self) -> Option<u64> {
+        self.took
+    }
 
     /// Publishes the state as it is now.
     pub fn publish(&self) {
@@ -486,11 +512,15 @@ impl SyncService {
         }
         let folder = self.folder.write().await;
         // Dropped from here on, the change publishes what it leaves.
-        let mut stopped = Stopped { service: self, folder, ran: false };
+        let mut stopped = Stopped { service: self, folder, ran: false, took: None };
         if let Some(onedrive) = stopped.folder.onedrive_mut() {
             match std::mem::replace(&mut onedrive.sync, Sync::Stopped(Why::Interrupted)) {
                 // Dropped here: told again, and its parts handed over to be waited for.
-                Sync::Running(_) | Sync::Stopped(Why::Interrupted) => stopped.ran = true,
+                Sync::Running(sync) => {
+                    stopped.ran = true;
+                    stopped.took = Some(sync.handles().id);
+                }
+                Sync::Stopped(Why::Interrupted) => stopped.ran = true,
                 Sync::Stopped(why) => onedrive.sync = Sync::Stopped(why),
             }
         }

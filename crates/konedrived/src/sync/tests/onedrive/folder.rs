@@ -814,8 +814,33 @@ async fn a_forgotten_read_write_folder_leaves_no_tree_store_open() {
             .any(|target| target.to_string_lossy().starts_with(&tree))
     };
     assert!(open(), "open while the folder is up");
+
+    // A download is under way when the folder is forgotten: the Forget does not wait for
+    // it, and the download holds nothing of the store. So the store is closed when the
+    // Forget returns, before its files are removed.
+    let content = tempfile::tempdir().unwrap();
+    std::fs::write(content.path().join("F"), b"abc").unwrap();
+    let slow = Arc::new(crate::hydration::source::LocalDir::new(content.path()).delay(Duration::from_millis(1500)));
+    super::super::install_source(&service, Arc::clone(&slow) as Arc<dyn crate::hydration::source::ContentSource>);
+    let file = w.folder.path().join("docs/f.txt");
+    let (filling, target) = (Arc::clone(&service), file.clone());
+    let fill = tokio::spawn(async move { filling.hydrate_now(&target).await });
+    wait_until("the fill began", || slow.fetches() > 0).await;
     service.unregister_root().await.unwrap();
-    wait_until("the tree store is closed", || !open()).await;
+    assert!(!open(), "closed when the Forget returns, with the fill still running");
+    assert!(!fill.is_finished(), "the Forget did not wait for the fill");
+
+    // The folder registered again has a new store at the same path, and the old fill
+    // ending takes nothing of it away.
+    service.register_root(w.folder.path()).await.unwrap();
+    wait_until("the new store is open", || open()).await;
+    let journal = std::path::PathBuf::from(format!("{tree}-wal"));
+    wait_until("the new store has its journal", || journal.exists()).await;
+    let _ = fill.await.unwrap();
+    assert!(journal.exists(), "the old download's end removed the new store's journal");
+    service.pause_syncing(0).await.unwrap();
+    service.resume_syncing().await.unwrap();
+    service.stop_sync().await;
 }
 
 /// Two changes of the folder, the second queued behind the first: a bring-up that waits
