@@ -17,11 +17,26 @@ use crate::account::state::SignInState;
 use crate::desktop::baloo::Baloo;
 use crate::sync::hub::HelperHub;
 use crate::conditions::running::HoldSettings;
-use crate::sync::{Persist, SyncError, SyncPaths, SyncService};
+use crate::sync::{OneDrive, Persist, SyncError, SyncPaths, SyncService, Transfers, Wiring};
+
+/// The drive an account's folder shows, asked once as the account is made
+/// ([`Options::drive`]).
+pub type DriveOf = Arc<dyn Fn(&AccountService) -> anyhow::Result<Option<konedrive_graph::drive::DriveClient>> + Send + Sync>;
+
+/// The account's own drive, in Graph, through its tokens: what `main` gives.
+pub fn own_drive() -> DriveOf {
+    Arc::new(|account| account.drive().map(Some))
+}
+
+/// No drive: every folder is a local one, filled with `PopulateFromDirectory`.
+pub fn no_drive() -> DriveOf {
+    Arc::new(|_| Ok(None))
+}
 
 /// What the daemon's accounts are made with. `main` gives Microsoft, the Secret Service, the
-/// real `balooctl6` and the freedesktop thumbnail cache; a test gives wiremock, a
-/// [`crate::account::secret::MemoryWallet`], [`Baloo::disabled`] and no thumbnails.
+/// real `balooctl6`, the freedesktop thumbnail cache and each account's own drive; a test
+/// gives wiremock, a [`crate::account::secret::MemoryWallet`], [`Baloo::disabled`], no
+/// thumbnails, and the drive its folders show, or none.
 pub struct Options {
     pub endpoints: Endpoints,
     pub wallet: Arc<dyn Wallet>,
@@ -30,10 +45,8 @@ pub struct Options {
     pub baloo: fn() -> Baloo,
     /// The freedesktop thumbnail cache, shared by every account; `None` fills none.
     pub thumbnails: Option<PathBuf>,
-    /// Whether a folder registered while signed in shows the account's OneDrive: always in
-    /// the daemon. A test of local folders turns it off, and every folder is then filled
-    /// with `PopulateFromDirectory`, as a service with no drive always was.
-    pub onedrive: bool,
+    /// The drive a folder registered while signed in shows ([`own_drive`], [`no_drive`]).
+    pub drive: DriveOf,
     /// How the objects get on the bus: `dbus::export::OnBus`, which `main` and every test
     /// give alike.
     pub bus: Arc<dyn Bus>,
@@ -222,42 +235,29 @@ impl AccountManager {
         )?;
         self.siblings.add(&account);
         let persist = Persist { store: Arc::clone(&self.config), account: entry.id.clone() };
-        let sync = SyncService::on_hub(&self.hub, Some(account.state().clone()), Some(persist));
-        // One quota for the account, whoever reads it (issue #78).
-        sync.set_quota(account.quota().clone());
         let config = self.config.snapshot();
-        sync.set_transfer_limits(config.transfer_ceiling(), config.transfer_large());
-        // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2).
-        let uploads: std::sync::Weak<SyncService> = Arc::downgrade(&sync);
-        account.set_uploads(uploads);
-        // The folder's outbox worker, finding the write gate closed, has the mode worked out
-        // again.
-        let checked = Arc::downgrade(&account);
-        sync.set_mode_check(Arc::new(move || {
-            if let Some(account) = checked.upgrade() {
-                account.recheck_mode();
-            }
-        }));
-        // A cycle that finds the token reaching another drive than the folder's tells the
-        // account, which records it and works its mode out again.
-        let seen = Arc::downgrade(&account);
-        sync.set_drive_seen(Arc::new(move |drive| {
-            if let Some(account) = seen.upgrade() {
-                account.drive_seen(drive);
-            }
-        }));
-        // Before anything is restored or registered: a folder registered while signed in
-        // shows OneDrive only with a drive to show, and a restored one starts syncing as it
-        // is brought up.
-        if self.options.onedrive {
-            sync.set_drive(account.drive()?);
-            sync.set_sync_paths(SyncPaths {
+        // The folder asks its account for the sign-in, the one quota (issue #78), the mode
+        // worked out again when its outbox worker finds the write gate closed, and tells it
+        // of a drive that is not the folder's. A folder registered while signed in shows
+        // OneDrive only with a drive to show, and a restored one starts syncing as it is
+        // brought up.
+        let onedrive = (self.options.drive)(&account)?.map(|drive| OneDrive {
+            drive,
+            paths: SyncPaths {
                 tree_db: paths.tree_db.clone(),
                 rescue_dir: paths.rescue_dir.clone(),
                 thumbnails: self.options.thumbnails.clone(),
-            });
-        }
-        sync.set_baloo((self.options.baloo)());
+            },
+        });
+        let sync = SyncService::new(Wiring {
+            onedrive,
+            baloo: (self.options.baloo)(),
+            transfers: Transfers { ceiling: config.transfer_ceiling(), large: config.transfer_large() },
+            ..Wiring::new(Arc::clone(&self.hub), Arc::clone(&account) as Arc<dyn crate::account::FolderAccount>, persist)
+        });
+        // A switch to read-only asks the folder what waits to be uploaded (`docs/design/writes.md` §2).
+        let uploads: std::sync::Weak<SyncService> = Arc::downgrade(&sync);
+        account.set_uploads(uploads);
         if let Some(why) = held {
             sync.hold_back(why);
         }

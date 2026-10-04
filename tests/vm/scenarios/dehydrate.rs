@@ -7,7 +7,7 @@ use konedrive_fs::placeholder::{
 };
 use konedrived::helper::HelperLink;
 use konedrived::folder::root::DehydrateError;
-use konedrived::sync::{SyncError, SyncService};
+use konedrived::sync::{testing, SyncError, SyncService};
 
 use crate::harness::{Checks, Ctx, Holder, dir_mark_present, ignore_mark_present};
 use crate::punch_rule::{drop_caches, present};
@@ -174,13 +174,13 @@ pub(crate) fn unregistered_ignore_mark(ctx: &Ctx, checks: &mut Checks) -> Result
     let _ = std::fs::remove_dir_all(&folder);
     std::fs::create_dir(&folder).map_err(|e| format!("cannot create {folder:?}: {e}"))?;
     let link = ctx.link()?;
-    let service = SyncService::new(Some(link.clone()), None, None);
+    let service = testing::service(Some(link.clone()), None, None);
     let result = unregistered_ignore_mark_steps(ctx, checks, &service, &link, &folder);
 
     // Whatever happened, the helper must not keep this folder: a later
     // scenario would otherwise share the filesystem with a registration
     // nobody here reasons about.
-    service.set_link(Some(link));
+    service.hub().set_link(Some(link));
     if service.root().is_some() {
         let _ = ctx.runtime.block_on(service.unregister_root());
     }
@@ -251,7 +251,7 @@ fn unregistered_ignore_mark_steps(
             trace.join("; ")
         ));
     }
-    service.set_link(None);
+    service.hub().set_link(None);
     ctx.runtime
         .block_on(service.register_root_without_interception(folder))
         .map_err(|e| format!("cannot register the folder without interception: {e}"))?;
@@ -270,7 +270,7 @@ fn unregistered_ignore_mark_steps(
             trace.join("; ")
         ));
     }
-    service.set_link(Some(link.clone()));
+    service.hub().set_link(Some(link.clone()));
     ctx.runtime
         .block_on(service.dehydrate(&path))
         .map_err(|e| format!("{}; the dehydration failed: {e}", trace.join("; ")))?;

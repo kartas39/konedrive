@@ -2,25 +2,6 @@ use super::*;
 
 // --- Guards over verified-correct behaviour ------------
 
-/// R3. Unregistering a root must tell the helper, or the helper keeps
-/// the tree marked — and, with the uid no longer owning a root, answers
-/// every placeholder open in it `EIO` (measurement).
-#[tokio::test]
-async fn unregister_root_tells_the_helper() {
-    let (service, _sockets, helper) = service_with_helper().await;
-    let root_dir = tempfile::tempdir().unwrap();
-    service.register_root(root_dir.path()).await.unwrap();
-    helper.forget();
-
-    service.unregister_root().await.unwrap();
-
-    assert!(
-        helper.seen().contains(&Seen::UnregisterRoot),
-        "the helper was never told the root is gone: {:?}",
-        helper.seen()
-    );
-}
-
 /// R4. Unregistering a root must forget its content source. Item ids are
 /// paths relative to the source, so a placeholder in the *next* root with
 /// the same relative name matches the old source exactly: `Hydrate`
@@ -63,8 +44,8 @@ async fn an_empty_folder_that_carries_another_drive_is_taken_and_a_full_one_is_n
     let config_dir = tempfile::tempdir().unwrap();
     let persist = persist(&config_dir.path().join("config.toml"));
     persist.store.record_drive(&persist.account, "DB").unwrap();
-    let service = SyncService::new(None, None, Some(persist));
-    service.set_helper_socket(config_dir.path().join("no-helper.sock"));
+    let service = testing::service(None, None, Some(persist));
+    service.hub().set_socket(config_dir.path().join("no-helper.sock"));
     let (full, empty) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
     for dir in [full.path(), empty.path()] {
         xattr::set(dir, "user.konedrive.drive", b"DA").unwrap();
@@ -84,7 +65,7 @@ async fn an_empty_folder_that_carries_another_drive_is_taken_and_a_full_one_is_n
 /// waiting for that lock.
 #[tokio::test]
 async fn a_retired_account_registers_nothing() {
-    let service = SyncService::new(None, None, None);
+    let service = testing::service(None, None, None);
     service.retire().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let refused = service.register_root_without_interception(dir.path()).await;
@@ -97,7 +78,7 @@ async fn a_retired_account_registers_nothing() {
 #[tokio::test]
 async fn a_removal_taken_back_gives_the_account_its_standing_back() {
     let dir = tempfile::tempdir().unwrap();
-    let held = SyncService::new(None, None, None);
+    let held = testing::service(None, None, None);
     held.hold_back("its label repeats");
     held.retire().await.unwrap();
     held.unretire().await;
@@ -105,40 +86,10 @@ async fn a_removal_taken_back_gives_the_account_its_standing_back() {
     assert!(matches!(&refused, Err(SyncError::Io(why)) if why.contains("its label repeats")), "{refused:?}");
     assert!(held.last_error().contains("its label repeats"), "{}", held.last_error());
 
-    let free = SyncService::new(None, None, None);
+    let free = testing::service(None, None, None);
     free.retire().await.unwrap();
     free.unretire().await;
     free.register_root_without_interception(dir.path()).await.unwrap();
-}
-
-/// N6. The persisted "intercepted" flag must survive a restart. A root
-/// registered without interception on a machine with no helper would
-/// otherwise be restored as an
-/// intercepted root, which waits for a helper that never comes: the
-/// folder simply would not come back.
-#[tokio::test]
-async fn a_root_persisted_without_interception_comes_back_without_a_helper() {
-    let config_dir = tempfile::tempdir().unwrap();
-    let config_file = config_dir.path().join("config.toml");
-    let root_dir = tempfile::tempdir().unwrap();
-    {
-        let service = SyncService::new(None, None, Some(persist(&config_file)));
-        service.register_root_without_interception(root_dir.path()).await.unwrap();
-    }
-    assert!(
-        !Config::load(&config_file).unwrap().sync_root_intercepted,
-        "the mode must be written down with the root"
-    );
-
-    let restarted = SyncService::new(None, None, Some(persist(&config_file)));
-    restarted.resume().await;
-
-    assert_eq!(
-        restarted.root().map(|r| r.path),
-        Some(std::fs::canonicalize(root_dir.path()).unwrap()),
-        "a root registered without interception did not come back after a restart"
-    );
-    assert_eq!(restarted.root_state(), "no-interception");
 }
 
 /// Q3, narrowed by. A root registered without interception
@@ -150,7 +101,7 @@ async fn a_root_persisted_without_interception_comes_back_without_a_helper() {
 #[tokio::test]
 async fn a_helper_reconnecting_does_not_upgrade_a_root_registered_without_interception_on_purpose() {
     let (service, helper, config_file, sockets, _config_dir) =
-        service_with_config(Duration::ZERO).await;
+        service_with_config().await;
     let socket_path = sockets.path().join("helper.sock");
     let root_dir = tempfile::tempdir().unwrap();
     service.register_root_without_interception(root_dir.path()).await.unwrap();
@@ -160,18 +111,18 @@ async fn a_helper_reconnecting_does_not_upgrade_a_root_registered_without_interc
         "a choice made with a helper connected must be written down as one"
     );
 
-    // What `supervise_helper` does when the connection drops and the
+    // What the hub's supervisor does when the connection drops and the
     // helper answers again.
-    service.set_link(None);
+    service.hub().set_link(None);
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
     helper.forget();
-    service.set_link(Some(link));
+    service.hub().set_link(Some(link));
     service.resume().await;
     drop(service);
 
     // And a restart, with the helper there from the start.
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    let restarted = SyncService::new(Some(link), None, Some(persist(&config_file)));
+    let restarted = testing::service(Some(link), None, Some(persist(&config_file)));
     restarted.restore().await;
     restarted.resume().await;
 

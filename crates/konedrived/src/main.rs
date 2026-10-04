@@ -40,7 +40,7 @@ async fn main() -> anyhow::Result<()> {
         // place that installs the real `balooctl6`.
         baloo: Baloo::default,
         thumbnails: Some(paths.thumbnails.clone()),
-        onedrive: true,
+        drive: konedrived::daemon::manager::own_drive(),
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     // `config.toml` migrated, every account brought up as far as it can be

@@ -153,14 +153,23 @@ async fn run(
         // replaced either, until the pause ends or `Resume()` nudges.
         // The same for anything else that stops the account's background work.
         if let Some(stop) = listing.ctx.running.stop(&listing.ctx.store) {
-            let left = match stop {
-                crate::conditions::running::Stop::Paused(until) if until > 0 => {
-                    Duration::from_secs((until - crate::status::activity::unix_now()).max(1) as u64)
+            // A timed pause ends by the account's clock, as it is kept: whoever asks whether
+            // it is over agrees. Looked at again after the poll's interval at the latest,
+            // and no sooner than in a second.
+            let clock = listing.ctx.running.clock();
+            let timed = match stop {
+                crate::conditions::running::Stop::Paused(until) if until > 0 => Some(until.max(clock.now().saturating_add(1))),
+                _ => None,
+            };
+            let ended = async {
+                match timed {
+                    Some(at) => clock.sleep_until(at).await,
+                    None => std::future::pending().await,
                 }
-                _ => schedule.interval,
             };
             tokio::select! {
-                () = tokio::time::sleep(left.min(schedule.interval)) => {}
+                () = ended => {}
+                () = tokio::time::sleep(schedule.interval) => {}
                 () = refresh.notified() => {}
                 () = cancel.cancelled() => return,
             }

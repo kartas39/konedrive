@@ -243,7 +243,7 @@ impl Engine {
     /// `Some(until)` while the user paused the account (0: until resumed): what the status
     /// shows, and when a timed pause ends.
     fn paused(&self) -> Option<i64> {
-        crate::conditions::running::user_pause(self.store())
+        crate::conditions::running::user_pause(self.store(), self.cfg.host.now())
     }
 
     /// Whether nothing may be sent now: asked of the account's one place (`conditions::running`)
@@ -499,7 +499,8 @@ impl Engine {
             at = at.min(until);
         }
         if let Some(until) = self.paused().filter(|&u| u > 0) {
-            at = at.min(until);
+            // The pause ends by the account's clock: as far from now as it is from that.
+            at = at.min(now + (until - self.cfg.host.now()).max(0));
         }
         if self.may_send().await {
             // Read only with no row in flight (`take_rows`): until then it does not count.

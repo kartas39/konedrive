@@ -8,7 +8,7 @@ use konedrive_fs::placeholder::{
     create_placeholder, write_state, State,
 };
 use konedrive_proto::SOCKET_PATH;
-use konedrived::sync::{SyncError, SyncService};
+use konedrived::sync::{testing, SyncError, SyncService};
 use konedrived::folder::locks::InodeKey;
 
 use crate::harness::{
@@ -319,7 +319,7 @@ pub(crate) fn rename_during_registration_walk(ctx: &Ctx, checks: &mut Checks) ->
     let folder = scenario_folder(ctx, "rename-walk")?;
     let aside = scenario_folder(ctx, "rename-walk-aside")?;
     let link = ctx.link()?;
-    let service = SyncService::new(Some(link.clone()), None, None);
+    let service = testing::service(Some(link.clone()), None, None);
     let pid = ctx.helper_pid();
     let mut trace: Vec<String> = Vec::new();
     let result = (|| -> Result<(), String> {
@@ -398,7 +398,7 @@ pub(crate) fn rename_during_registration_walk(ctx: &Ctx, checks: &mut Checks) ->
         }
         Ok(())
     })();
-    service.set_link(Some(link.clone()));
+    service.hub().set_link(Some(link.clone()));
     if service.root().is_some() {
         let _ = ctx.runtime.block_on(service.unregister_root());
     }
@@ -430,8 +430,8 @@ pub(crate) fn punch_without_interception_rule(ctx: &Ctx, checks: &mut Checks) ->
     let aside = scenario_folder(ctx, "local-rule-aside")?;
     let empty_source = scenario_folder(ctx, "local-rule-source")?;
     let link = ctx.link()?;
-    let service = SyncService::new(Some(link.clone()), None, None);
-    let unlinked = SyncService::new(None, None, None);
+    let service = testing::service(Some(link.clone()), None, None);
+    let unlinked = testing::service(None, None, None);
     let result = local_rule_steps(ctx, checks, &service, &unlinked, &folder, &aside, &empty_source);
 
     for held in [&unlinked, &service] {
@@ -640,7 +640,7 @@ pub(crate) fn clear_ignore_by_ownership(ctx: &Ctx, checks: &mut Checks) -> Resul
 pub(crate) fn recovery_overtaken_by_old_fill(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     let folder = scenario_folder(ctx, "recovery-race")?;
     let link = ctx.link()?;
-    let service = SyncService::new(Some(link.clone()), None, None);
+    let service = testing::service(Some(link.clone()), None, None);
     let mut trace: Vec<String> = Vec::new();
     let result = (|| -> Result<(), String> {
         ctx.runtime

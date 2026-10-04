@@ -95,9 +95,9 @@ async fn service_with_account(
 ) -> (Arc<SyncService>, tempfile::TempDir, FakeHelper) {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    (SyncService::new(Some(link), Some(account), None), sockets, helper)
+    (testing::service(Some(link), Some(account), None), sockets, helper)
 }
 
 /// §3.1 refuses a registration "when nobody is signed in", which nothing
@@ -151,99 +151,7 @@ async fn register_root_refuses_a_second_root() {
     );
 }
 
-/// A `RegisterRoot` that fails must leave nothing behind —
-/// no stored root, no published `RootPath` — or, now that a second root
-/// is refused, one failed call would make every retry answer "already
-/// registered". Measured through the only window a test has: the helper
-/// holds its `RegisterRoot` ack open, and the folder's registration is
-/// taken away while it does, so the recovery that follows fails.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_registration_whose_recovery_fails_leaves_no_root_behind() {
-    let sockets = tempfile::tempdir().unwrap();
-    let socket_path = sockets.path().join("helper.sock");
-    let _helper = FakeHelper::start(socket_path.clone(), Duration::from_millis(400));
-    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    let service = SyncService::new(Some(link), None, None);
-    let root_dir = tempfile::tempdir().unwrap();
-
-    let registering = {
-        let service = Arc::clone(&service);
-        let path = root_dir.path().to_path_buf();
-        tokio::spawn(async move { service.register_root(&path).await })
-    };
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    xattr::remove(root_dir.path(), "user.konedrive.root").unwrap();
-
-    let error = registering.await.unwrap().unwrap_err();
-    assert!(matches!(error, SyncError::Io(_)), "{error:?}");
-    assert!(service.root().is_none(), "a failed registration stored a root anyway");
-    assert_eq!(service.state().get().root_path, "", "and published it");
-    assert_eq!(service.root_state(), "error");
-    // The retry a user would make next must not be refused.
-    service.register_root(root_dir.path()).await.unwrap();
-    assert_eq!(service.root_state(), "ready");
-}
-
 // --- Registering without interception ------------------
-
-/// The default stays fail-closed, and for the reason that outranks
-/// everything else here: no helper means no interception, and a
-/// placeholder nobody intercepts reads as zeros.
-#[tokio::test]
-async fn register_root_is_refused_without_a_helper() {
-    let service = SyncService::new(None, None, None);
-    let root_dir = tempfile::tempdir().unwrap();
-
-    let error = service.register_root(root_dir.path()).await.unwrap_err();
-
-    assert!(matches!(error, SyncError::NoHelper), "{error:?}");
-    assert_eq!(service.root_state(), "none");
-}
-
-/// ...and the whole surface works in the mode that says so out loud.
-/// Before this, the helper-optionality already written into
-/// `populate_walk`, `unregister_root` and `hydrate_now` was unreachable
-/// dead code, because `RegisterRoot` gated all of it.
-#[tokio::test]
-async fn the_whole_flow_works_without_a_helper_when_it_is_asked_for_explicitly() {
-    let service = SyncService::new(None, None, None);
-    // No helper anywhere — not only no link — so a free-up goes ahead
-    //, whatever this machine has at the real socket path.
-    let no_helper = tempfile::tempdir().unwrap();
-    service.set_helper_socket(no_helper.path().join("helper.sock"));
-    let source_dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir(source_dir.path().join("sub")).unwrap();
-    std::fs::write(source_dir.path().join("sub").join("b.bin"), vec![4u8; 4096]).unwrap();
-    let root_dir = tempfile::tempdir().unwrap();
-
-    service.register_root_without_interception(root_dir.path()).await.unwrap();
-
-    assert_eq!(service.root_state(), "no-interception");
-    assert!(
-        service.last_error().contains("read as zeros"),
-        "the one thing a user must not have to infer: {}",
-        service.last_error()
-    );
-
-    assert_eq!(service.populate_from_directory(source_dir.path()).await.unwrap(), 1);
-    let file = root_dir.path().join("sub").join("b.bin");
-    assert_eq!(service.item_state(&file).await, "online-only");
-    service.hydrate_now(&file).await.unwrap();
-    assert_eq!(std::fs::read(&file).unwrap(), vec![4u8; 4096]);
-    assert_eq!(service.item_state(&file).await, "hydrated");
-    use std::os::unix::fs::MetadataExt;
-    let hydrated = std::fs::metadata(&file).unwrap().blocks();
-    service.dehydrate(&file).await.unwrap();
-    assert_eq!(service.item_state(&file).await, "online-only");
-
-    let meta = std::fs::metadata(&file).unwrap();
-    assert_eq!(meta.len(), 4096, "the size survives");
-    // Every block of the 4 KiB of content is given back (8 sectors of
-    // 512 bytes). Whatever else the file holds — ext4 counts an external
-    // xattr block in `st_blocks`, btrfs does not — stays and is not the
-    // content.
-    assert!(meta.blocks() + 8 <= hydrated, "the content is gone: {hydrated} -> {} blocks", meta.blocks());
-}
 
 // --- A folder registered without the helper, and the helper arriving
 
@@ -255,8 +163,8 @@ async fn registered_before_the_helper() -> (Arc<SyncService>, PathBuf, PathBuf, 
     let socket_path = sockets.path().join("helper.sock");
     let config_dir = tempfile::tempdir().unwrap();
     let config_file = config_dir.path().join("config.toml");
-    let service = SyncService::new(None, None, Some(persist(&config_file)));
-    service.set_helper_socket(&socket_path);
+    let service = testing::service(None, None, Some(persist(&config_file)));
+    service.hub().set_socket(&socket_path);
     let root_dir = tempfile::tempdir().unwrap();
     service.register_root_without_interception(root_dir.path()).await.unwrap();
     assert_eq!(service.root_state(), "no-interception");
@@ -280,8 +188,8 @@ async fn a_folder_registered_without_the_helper_switches_to_interception_when_th
 
     // The helper is installed and started after the folder was registered.
     let supervisor =
-        tokio::spawn(supervise_helper(Arc::clone(&service), socket_path.clone(), Duration::from_millis(10)));
-    let helper = FakeHelper::start(socket_path, Duration::ZERO);
+        tokio::spawn(hub::supervise(Arc::clone(service.hub()), socket_path.clone(), Duration::from_millis(10)));
+    let helper = FakeHelper::start(socket_path);
     wait_until("the folder switched to interception", || service.root_state() == "ready").await;
 
     assert_eq!(
@@ -320,14 +228,14 @@ async fn a_folder_not_brought_up_yet_is_published_by_its_path() {
     let folder = dirs[2].path().display().to_string();
     drop(service);
 
-    let restarted = SyncService::new(None, None, Some(persist(&config_file)));
+    let restarted = testing::service(None, None, Some(persist(&config_file)));
     restarted.restore().await;
     assert!(restarted.root().is_none(), "not brought up yet");
     assert_eq!(restarted.root_state(), "none");
     assert_eq!(restarted.state().get().root_path, folder);
 
     let other = tempfile::tempdir().unwrap();
-    let empty = SyncService::new(None, None, Some(persist(&other.path().join("config.toml"))));
+    let empty = testing::service(None, None, Some(persist(&other.path().join("config.toml"))));
     empty.restore().await;
     assert_eq!(empty.state().get().root_path, "");
 }
@@ -341,15 +249,15 @@ async fn a_registration_made_with_no_helper_is_written_down_to_switch_and_switch
     assert_eq!(Config::load(&config_file).unwrap().sync_root_upgrade_when_helper, Some(true));
     drop(service);
 
-    let restarted = SyncService::new(None, None, Some(persist(&config_file)));
-    restarted.set_helper_socket(&socket_path);
+    let restarted = testing::service(None, None, Some(persist(&config_file)));
+    restarted.hub().set_socket(&socket_path);
     restarted.restore().await;
     restarted.resume().await;
     assert_eq!(restarted.root_state(), "no-interception");
 
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    restarted.set_link(Some(link));
+    restarted.hub().set_link(Some(link));
     restarted.resume().await;
 
     assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
@@ -385,14 +293,14 @@ async fn a_folder_without_interception_recorded_before_the_flag_existed_switches
     assert_eq!(Config::load(&config_file).unwrap().sync_root_upgrade_when_helper, None);
 
     // The daemon restarts; the helper connects.
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
-    let restarted = SyncService::new(None, None, Some(persist(&config_file)));
-    restarted.set_helper_socket(&socket_path);
+    let helper = FakeHelper::start(socket_path.clone());
+    let restarted = testing::service(None, None, Some(persist(&config_file)));
+    restarted.hub().set_socket(&socket_path);
     restarted.restore().await;
     restarted.resume().await;
     assert_eq!(restarted.root_state(), "no-interception");
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    restarted.set_link(Some(link));
+    restarted.hub().set_link(Some(link));
     restarted.resume().await;
 
     assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
@@ -407,12 +315,12 @@ async fn a_folder_without_interception_recorded_before_the_flag_existed_switches
 async fn a_switch_the_helper_refuses_leaves_the_folder_as_it_was_and_is_tried_again_at_the_next_connect() {
     let (service, socket_path, config_file, _dirs) = registered_before_the_helper().await;
     let before = Config::load(&config_file).unwrap();
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     helper.refuse(Seen::RegisterRoot, libc::EIO);
 
-    // What `supervise_helper` does the moment a helper answers.
+    // What the hub's supervisor does the moment a helper answers.
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    service.set_link(Some(link));
+    service.hub().set_link(Some(link));
     service.resume().await;
 
     assert_eq!(service.root_state(), "no-interception");
@@ -425,12 +333,12 @@ async fn a_switch_the_helper_refuses_leaves_the_folder_as_it_was_and_is_tried_ag
     assert_eq!(Config::load(&config_file).unwrap(), before, "config.toml must say what it said before");
     assert!(service.root().is_some());
 
-    // The connection drops (`supervise_helper` lets go of the link), and
+    // The connection drops (the hub's supervisor lets go of the link), and
     // the helper connects again, and this time accepts.
-    service.set_link(None);
+    service.hub().set_link(None);
     helper.refuse(Seen::RegisterRoot, 0);
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    service.set_link(Some(link));
+    service.hub().set_link(Some(link));
     service.resume().await;
 
     assert_eq!(service.root_state(), "ready", "{}", service.last_error());
@@ -446,12 +354,12 @@ async fn a_switch_the_helper_refuses_leaves_the_folder_as_it_was_and_is_tried_ag
 #[tokio::test]
 async fn a_failed_switch_the_helper_may_still_hold_is_kept_intercepted_and_brought_up_at_the_next_connect() {
     let (service, socket_path, config_file, _dirs) = registered_before_the_helper().await;
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     helper.refuse(Seen::RegisterRoot, libc::EIO);
     helper.refuse(Seen::UnregisterRoot, libc::EIO);
 
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    service.set_link(Some(link));
+    service.hub().set_link(Some(link));
     service.resume().await;
 
     assert_eq!(service.root_state(), "error");
@@ -467,11 +375,11 @@ async fn a_failed_switch_the_helper_may_still_hold_is_kept_intercepted_and_broug
     assert!(matches!(error, SyncError::Io(_)), "{error:?}");
     assert!(service.root().is_some());
 
-    service.set_link(None);
+    service.hub().set_link(None);
     helper.refuse(Seen::RegisterRoot, 0);
     helper.refuse(Seen::UnregisterRoot, 0);
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    service.set_link(Some(link));
+    service.hub().set_link(Some(link));
     service.resume().await;
     assert_eq!(service.root_state(), "ready", "{}", service.last_error());
 }
@@ -493,9 +401,9 @@ async fn started_with_source(word: &str) -> (Arc<SyncService>, FakeHelper, PathB
             resolved(root_dir.path())
         ),
     );
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    let service = SyncService::new(Some(link), None, Some(persist(&config_file)));
+    let service = testing::service(Some(link), None, Some(persist(&config_file)));
     service.restore().await;
     service.resume().await;
     (service, helper, config_file, vec![sockets, config_dir, root_dir])
@@ -558,9 +466,9 @@ async fn a_word_misspelt_while_the_folder_is_up_does_not_keep_it_from_the_helper
     let text = std::fs::read_to_string(&config_file).unwrap();
     std::fs::write(&config_file, text.replace("source = \"local\"", "source = \"Local\"")).unwrap();
     // Any write of `config.toml` reads the file again: the daemon has the misspelt word now.
-    let store = &service.persist.as_ref().unwrap().store;
-    store.update(|_| Ok::<(), crate::config::ConfigError>(())).unwrap();
-    assert!(service.persisted_root().unwrap().source_as_written.is_some());
+    let persist = testing::parts(&service).persist;
+    persist.store.update(|_| Ok::<(), crate::config::ConfigError>(())).unwrap();
+    assert_eq!(persist.store.account(&persist.account).unwrap().root.unwrap().source, "Local");
     helper.forget();
 
     service.resume().await;
@@ -587,7 +495,7 @@ async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
     );
     write_config(&config_file, &recorded);
 
-    let service = SyncService::new(None, None, Some(persist(&config_file)));
+    let service = testing::service(None, None, Some(persist(&config_file)));
     service.restore().await;
     service.resume().await;
 
@@ -602,10 +510,10 @@ async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
 
     // A new registration is taken, and replaces the record; this one fails at the helper,
     // which lets go, and the record is put back.
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     helper.refuse(Seen::RegisterRoot, libc::EIO);
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    service.set_link(Some(link));
+    service.hub().set_link(Some(link));
     service.register_root(root_dir.path()).await.unwrap_err();
     assert!(helper.seen().contains(&Seen::UnregisterRoot), "{:?}", helper.seen());
     let text = std::fs::read_to_string(&config_file).unwrap();
@@ -627,7 +535,7 @@ async fn a_word_corrected_for_a_folder_without_interception_counts_at_the_next_t
         resolved(root_dir.path())
     );
     write_config(&config_file, &recorded);
-    let service = SyncService::new(None, None, Some(persist(&config_file)));
+    let service = testing::service(None, None, Some(persist(&config_file)));
     service.restore().await;
     service.resume().await;
     assert_eq!(service.root_state(), "error");

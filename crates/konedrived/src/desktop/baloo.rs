@@ -21,10 +21,10 @@
 //! cost, in the log: no Baloo file-name search inside the folder, so KRunner
 //! and Dolphin's own search do not find files there.
 //!
-//! [`SyncService`](super::SyncService) starts with [`Baloo::disabled`]
+//! A folder's wiring (`sync::Wiring::new`) starts with [`Baloo::disabled`]
 //! (no program, no settings file), which runs and reads nothing at all — a
-//! test that forgets to call `set_baloo` must never reach the real
-//! `~/.config/baloofilerc`. Only `main` installs [`Baloo::default`]
+//! test that says nothing of Baloo must never reach the real
+//! `~/.config/baloofilerc`. Only `main` gives [`Baloo::default`]
 //! (`balooctl6`, and the user's own `baloofilerc`).
 
 use std::ffi::OsString;
@@ -69,9 +69,8 @@ pub fn settings_file(xdg_config_home: Option<OsString>, home: Option<OsString>) 
 }
 
 impl Baloo {
-    /// Runs nothing and reads nothing. What every
-    /// [`SyncService`](super::SyncService) starts with, until `set_baloo` —
-    /// production's `main`, or a test's fake — replaces it.
+    /// Runs nothing and reads nothing. What a folder's wiring has until
+    /// production's `main`, or a test's fake, says another.
     pub fn disabled() -> Self {
         Self { program: None, settings: None, timeout: DEFAULT_TIMEOUT }
     }

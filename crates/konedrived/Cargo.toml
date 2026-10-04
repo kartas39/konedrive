@@ -12,8 +12,10 @@ publish = false
 # by default; never enable it in a build that ships. `tests/vm/Cargo.toml`
 # turns it on for the suite's own build of this crate. It also builds the fake
 # OneDrive (`upload::fake`, on wiremock), which the suite's write scenarios
-# run the daemon against inside the VM.
-fault-injection = ["dep:wiremock"]
+# run the daemon against inside the VM, and the test support of `sync/`
+# (`sync::testing`), which makes a service with a `config.toml` in a temporary
+# directory.
+fault-injection = ["dep:wiremock", "dep:tempfile"]
 # Development builds only (issue #79): each account's `org.konedrive.TokenExport`, which
 # hands out access tokens for the VM tests against real Graph, the stress tests and the
 # test-account harness. Off by default: the released package has no such interface, and
@@ -51,8 +53,10 @@ tracing-subscriber.workspace = true
 url.workspace = true
 xattr.workspace = true
 zbus.workspace = true
-# Only with `fault-injection`: the fake OneDrive of the VM suite.
+# Only with `fault-injection`: the fake OneDrive of the VM suite, and the temporary
+# `config.toml` of `sync::testing`.
 wiremock = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Tests only: the secret store in memory and the pool's test helpers.

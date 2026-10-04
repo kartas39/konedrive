@@ -53,8 +53,8 @@ impl SyncService {
     /// link, fills through the account's source, the hub's router told which item ids are this
     /// account's wherever they are (`docs/design/writes.md` §8, §8.3), and every account's folder.
     pub(super) fn move_outs(&self) -> MoveOuts {
-        let (hub, me) = (Arc::downgrade(&self.hub), self.me.clone());
-        let every = Arc::downgrade(&self.hub);
+        let (hub, me) = (Arc::downgrade(&self.wiring.hub), self.me.clone());
+        let every = Arc::downgrade(&self.wiring.hub);
         MoveOuts {
             helper: Arc::new(Linked(Arc::clone(&self.link))),
             filler: Arc::new(AccountFill { sync: self.me.clone() }),
@@ -100,7 +100,7 @@ impl SyncService {
     /// The hub routes none of this account's item ids to it any more: its `move-out` rows are
     /// dropped. A worker started later routes its own again.
     pub(super) fn forget_moved_out(&self) {
-        self.hub.set_moved_out(&self.me, HashSet::new());
+        self.wiring.hub.set_moved_out(&self.me, HashSet::new());
     }
 
     /// A Forget, or a Remove, drops the tree store and every row in it: the
@@ -124,7 +124,7 @@ impl SyncService {
     ///
     /// [`HelperHub::claimed_elsewhere`]: crate::sync::hub::HelperHub::claimed_elsewhere
     pub(super) fn claims(&self) -> crate::remote::materialize::Claimed {
-        let (hub, me) = (Arc::downgrade(&self.hub), self.me.clone());
+        let (hub, me) = (Arc::downgrade(&self.wiring.hub), self.me.clone());
         Arc::new(move |id| hub.upgrade().is_some_and(|hub| hub.claimed_elsewhere(&me, id)))
     }
 }

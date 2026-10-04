@@ -10,7 +10,7 @@ use konedrive_fs::placeholder::{
 use konedrive_proto::SOCKET_PATH;
 use konedrived::config::{ConfigStore, Paths};
 use konedrived::helper::{HelperError, HelperLink};
-use konedrived::sync::{supervise_helper, Persist, SyncError, SyncService};
+use konedrived::sync::{testing, Persist, SyncError, SyncService};
 
 use crate::harness::{Checks, Ctx, Reader, count_in_log, dir_mark_present, ignore_mark_present};
 use crate::{FILESYSTEMS, ROOTS_FILE, statfs_type};
@@ -104,12 +104,12 @@ fn read_for_trace(ctx: &Ctx, path: &Path, payload: &[u8]) -> Result<(String, boo
 pub(crate) fn forget_without_link_refused(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     let folder = scenario_folder(ctx, "forget-offline")?;
     let link = ctx.link()?;
-    let service = SyncService::new(Some(link.clone()), None, None);
+    let service = testing::service(Some(link.clone()), None, None);
     let result = forget_without_link_steps(ctx, checks, &service, &folder);
 
     // Whatever happened, the helper must not keep this folder: forgotten
     // through the link, under whichever registration the daemon ended with.
-    service.set_link(Some(link.clone()));
+    service.hub().set_link(Some(link.clone()));
     if service.root().is_some() {
         let _ = ctx.runtime.block_on(service.unregister_root());
     }
@@ -168,9 +168,9 @@ fn forget_without_link_steps(
         hydrated_through_open(ctx, folder, "kept.bin", "ITEM_FORGET_OFFLINE")?;
     trace.push("hydrated, ignore mark present".into());
 
-    // The state `supervise_helper` leaves the service in while the helper is
+    // The state the hub's supervisor leaves the service in while the helper is
     // away, and `main.rs` starts it in.
-    service.set_link(None);
+    service.hub().set_link(None);
     let forgot = ctx.runtime.block_on(service.unregister_root());
     let named = std::fs::read_to_string(ROOTS_FILE).unwrap_or_default().contains(&root_id);
     trace.push(format!(
@@ -235,7 +235,7 @@ pub(crate) fn pending_root_not_downgraded(ctx: &Ctx, checks: &mut Checks) -> Res
     // The folder is forgotten through the helper, under whatever the
     // restarted daemon ended up holding it as.
     if let Some(restarted) = restarted {
-        restarted.set_link(Some(link.clone()));
+        restarted.hub().set_link(Some(link.clone()));
         if restarted.root().is_some() {
             let _ = ctx.runtime.block_on(restarted.unregister_root());
         }
@@ -261,7 +261,7 @@ fn pending_root_steps(
         // The daemon before the restart: registers the folder, and then
         // simply stops — no Forget, as with a logout or a crash.
         let persist = ctx.runtime.block_on(one_account(config_dir))?;
-        let before = SyncService::new(Some(link.clone()), None, Some(persist));
+        let before = testing::service(Some(link.clone()), None, Some(persist));
         ctx.runtime
             .block_on(before.register_root(folder))
             .map_err(|e| format!("cannot register {folder:?} with interception: {e}"))?;
@@ -271,7 +271,7 @@ fn pending_root_steps(
 
     // The restart: `config.toml` read again, and no link yet.
     let persist = ctx.runtime.block_on(one_account(config_dir))?;
-    let restarted = restarted.insert(SyncService::new(None, None, Some(persist)));
+    let restarted = restarted.insert(testing::service(None, None, Some(persist)));
     let early = ctx.runtime.block_on(restarted.register_root_without_interception(folder));
     trace.push(format!(
         "restarted with no link; RegisterRootWithoutInterception before resume → {}",
@@ -320,7 +320,7 @@ fn pending_root_steps(
 /// that it was not asked at all: its refusal names the root id.
 pub(crate) fn no_interception_forget_is_local(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     let folder = scenario_folder(ctx, "unintercepted-forget")?;
-    let service = SyncService::new(Some(ctx.link()?), None, None);
+    let service = testing::service(Some(ctx.link()?), None, None);
     let log = ctx.helper.lock().unwrap().log.clone();
     let result = (|| -> Result<(), String> {
         ctx.runtime
@@ -365,7 +365,7 @@ pub(crate) fn no_interception_forget_is_local(ctx: &Ctx, checks: &mut Checks) ->
 pub(crate) fn no_interception_populate_marks_nothing(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     let folder = scenario_folder(ctx, "unintercepted-populate")?;
     let source = scenario_folder(ctx, "unintercepted-populate-source")?;
-    let service = SyncService::new(Some(ctx.link()?), None, None);
+    let service = testing::service(Some(ctx.link()?), None, None);
     let result = (|| -> Result<(), String> {
         std::fs::create_dir(source.join("sub")).map_err(|e| e.to_string())?;
         std::fs::write(source.join("sub/inner.bin"), vec![5u8; 8192]).map_err(|e| e.to_string())?;
@@ -478,7 +478,7 @@ pub(crate) fn no_interception_with_helper_connected(ctx: &Ctx, checks: &mut Chec
     let scratch = ScratchFs::create(ctx.fs, "unowned")?;
     let folder = scratch.mount.join("root");
     let source = scratch.mount.join("source");
-    let service = SyncService::new(Some(ctx.link()?), None, None);
+    let service = testing::service(Some(ctx.link()?), None, None);
     let result = (|| -> Result<(), String> {
         std::fs::create_dir(&folder).map_err(|e| e.to_string())?;
         std::fs::create_dir_all(source.join("sub")).map_err(|e| e.to_string())?;
@@ -542,7 +542,7 @@ pub(crate) fn upgraded_when_the_helper_starts(ctx: &Ctx, checks: &mut Checks) ->
         .enable_all()
         .build()
         .map_err(|e| format!("cannot build a runtime: {e}"))?;
-    let service = SyncService::new(None, None, None);
+    let service = testing::service(None, None, None);
     let result = upgraded_steps(ctx, checks, &runtime, &service, &folder, &source);
 
     // Forgotten through the helper, under whatever the daemon ended up
@@ -551,7 +551,7 @@ pub(crate) fn upgraded_when_the_helper_starts(ctx: &Ctx, checks: &mut Checks) ->
     if service.root().is_some() && service.link().is_some() {
         let _ = runtime.block_on(service.unregister_root());
     }
-    service.set_link(None);
+    service.hub().set_link(None);
     runtime.shutdown_timeout(Duration::from_secs(5));
     drop(service);
     if !ctx.helper_alive() || !ctx.daemon_connected() {
@@ -600,8 +600,8 @@ fn upgraded_steps(
     // first, so that this one's connection is the newest and the fill comes
     // here, where the payload is.
     ctx.restart_helper()?;
-    let supervisor = runtime.spawn(supervise_helper(
-        Arc::clone(service),
+    let supervisor = runtime.spawn(konedrived::sync::hub::supervise(
+        Arc::clone(service.hub()),
         PathBuf::from(SOCKET_PATH),
         Duration::from_millis(50),
     ));

@@ -237,7 +237,7 @@ impl HelperHub {
     }
 
     /// Makes `new` one of the hub's accounts, after every other; `new` gets the
-    /// `HelperState` of now. [`SyncService::on_hub`]'s.
+    /// `HelperState` of now. [`SyncService::new`]'s.
     pub(super) fn join(&self, new: impl FnOnce(HelperState) -> Arc<SyncService>) -> Arc<SyncService> {
         let _publishing = self.publishing.lock().unwrap();
         let account = new(self.state());

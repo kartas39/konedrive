@@ -135,9 +135,19 @@ async fn harness_signed_out() -> Harness {
 /// folder only to a signed-in account. The daemon's folders are local, so it
 /// shows OneDrive only where a test gives it a drive ([`harness_onedrive`]).
 async fn build_harness(with_helper: bool, signed_in: bool, refuse_clear_ignore: bool) -> Harness {
+    build_harness_showing(with_helper, signed_in, refuse_clear_ignore, konedrived::daemon::manager::no_drive()).await
+}
+
+/// [`build_harness`], whose account's folder shows what `drive` gives.
+async fn build_harness_showing(
+    with_helper: bool,
+    signed_in: bool,
+    refuse_clear_ignore: bool,
+    drive: konedrived::daemon::manager::DriveOf,
+) -> Harness {
     let bus = TestBus::start();
     let config_dir = tempfile::tempdir().unwrap();
-    let daemon = common::start_daemon(&bus, config_dir.path()).await;
+    let daemon = common::start_daemon_showing(&bus, config_dir.path(), drive).await;
 
     let helper_dir = tempfile::tempdir().unwrap();
     let hub = daemon.manager.hub();
@@ -172,6 +182,17 @@ async fn build_harness(with_helper: bool, signed_in: bool, refuse_clear_ignore: 
     }
 }
 
+/// A signed-in harness, with the fake helper connected, whose account's folder shows the
+/// drive of the mocked Graph at `graph`.
+async fn harness_showing(graph: &wiremock::MockServer) -> Harness {
+    let drive = konedrive_graph::drive::DriveClient::new(
+        url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
+        std::sync::Arc::new(konedrive_graph::token::StaticToken::new("T")),
+    )
+    .unwrap();
+    build_harness_showing(true, true, false, Arc::new(move |_| Ok(Some(drive.clone())))).await
+}
+
 /// A signed-in harness with a drive on a mocked Graph whose listing holds
 /// one folder, one file inside it, and the Personal Vault (skipped) — the
 /// shape `sync skipped`, `sync status`'s `Items:`/`Skipped:` lines, and
@@ -198,18 +219,7 @@ async fn harness_onedrive() -> (Harness, wiremock::MockServer) {
         })))
         .mount(&graph)
         .await;
-    let f = build_harness(true, true, false).await;
-    let drive = konedrive_graph::drive::DriveClient::new(
-        url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
-        std::sync::Arc::new(konedrive_graph::token::StaticToken::new("T")),
-    )
-    .unwrap();
-    f.service.set_drive(drive);
-    f.service.set_sync_paths(konedrived::sync::SyncPaths {
-        tree_db: f.dir.path().join("tree.sqlite"),
-        rescue_dir: f.dir.path().join("rescued"),
-        thumbnails: Some(f.dir.path().join("thumbnails")),
-    });
+    let f = harness_showing(&graph).await;
     (f, graph)
 }
 
@@ -261,10 +271,8 @@ async fn a_refusal_surfaces_as_an_error_not_a_success() {
 /// `register_root` runs, since recovery runs as part of that call — and
 /// leaves one file in it `dehydrating`. Registered through
 /// [`harness_refusing_clear_ignore`], whose helper refuses the `ClearIgnore`
-/// recovery must have before it may punch that file, recovery fails for it —
-/// the exact shape
-/// `konedrived::sync::tests::a_failed_recovery_surfaces_through_root_state_and_last_error`
-/// uses to force `RecoveryReport::failed > 0`; C1 and C2 both need that same
+/// recovery must have before it may punch that file, recovery fails for it:
+/// `RecoveryReport::failed > 0`. C1 and C2 both need that same
 /// "the call still returns `Ok`, but the root needs attention" outcome, so
 /// it is factored out here rather than duplicated. (It used to hold the file
 /// open instead, so that recovery's lease was refused; a file in use is

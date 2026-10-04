@@ -582,13 +582,12 @@ fn an_examiner_that_dies_says_the_watcher_stopped() {
 async fn a_read_write_folder_gets_a_watcher_and_a_folder_moved_away_says_so() {
     use crate::config::Mode;
     use crate::status::snapshot::{published_error, published_state};
-    use crate::sync::SyncService;
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().canonicalize().unwrap().join("OneDrive");
     std::fs::create_dir(&path).unwrap();
     let root = SyncRoot { path: path.clone(), root_id: "9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a".into() };
     xattr::set(&path, XATTR_ROOT, root.root_id.as_bytes()).unwrap();
-    let service = SyncService::new(None, None, None);
+    let service = crate::sync::testing::service(None, None, None);
     let store = Store::new(TreeStore::in_memory().unwrap());
     assert!(service.start_watcher(&root, &store, None).is_none(), "a read-only folder is not watched");
     service.start_in_mode(Mode::ReadWrite);

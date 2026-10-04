@@ -36,7 +36,7 @@ impl SyncService {
         self.require_sign_in()?;
         self.check_no_root_yet()?;
         self.require_link()?;
-        let _registering = self.hub.registering.lock().await;
+        let _registering = self.wiring.hub.registering.lock().await;
         self.check_overlap(path).await?;
         self.bind(path, true, true).await
     }
@@ -85,7 +85,7 @@ impl SyncService {
         self.restore_locked().await;
         self.check_held()?;
         self.check_no_root_yet()?;
-        let _registering = self.hub.registering.lock().await;
+        let _registering = self.wiring.hub.registering.lock().await;
         self.check_overlap(path).await?;
         self.bind(path, false, true).await
     }
@@ -134,7 +134,7 @@ impl SyncService {
     /// checking first names the refusal, and covers a folder registered
     /// without interception, which the helper never sees.
     async fn check_overlap(&self, path: &Path) -> Result<(), SyncError> {
-        match self.hub.overlapping(self, path).await? {
+        match self.wiring.hub.overlapping(self, path).await? {
             Some(label) => Err(SyncError::Overlaps(label)),
             None => Ok(()),
         }
@@ -143,11 +143,8 @@ impl SyncService {
     /// The account's label, as `config.toml` has it — for a refusal that
     /// names it.
     pub(super) fn label(&self) -> String {
-        self.persist
-            .as_ref()
-            .and_then(|persist| persist.store.account(&persist.account))
-            .map(|account| account.label)
-            .unwrap_or_else(|| "another account".into())
+        let persist = &self.wiring.persist;
+        persist.store.account(&persist.account).map(|account| account.label).unwrap_or_else(|| "another account".into())
     }
 
     /// Every folder this account holds or records: the registered one, and
@@ -160,12 +157,10 @@ impl SyncService {
 
     /// §3.1: a root is bound to the signed-in drive, so there has to be one.
     fn require_sign_in(&self) -> Result<(), SyncError> {
-        match &self.account {
-            Some(account) if account.get().state != SignInState::SignedIn => {
-                Err(SyncError::NotSignedIn)
-            }
-            _ => Ok(()),
+        if self.wiring.account.snapshot().state != SignInState::SignedIn {
+            return Err(SyncError::NotSignedIn);
         }
+        Ok(())
     }
 
     /// §3.1's refusal on overlap, which holds whichever way a root is
@@ -187,9 +182,8 @@ impl SyncService {
     /// OneDrive folder nobody intercepts would read as zeros wherever a file
     /// is not downloaded, and is never made any more.
     fn fresh_source(&self, intercepted: bool) -> RootSource {
-        let signed_in = self.account.as_ref().is_some_and(|a| a.get().state == SignInState::SignedIn);
-        let configured = self.drive.lock().unwrap().is_some() && self.sync_paths.lock().unwrap().is_some();
-        if signed_in && configured && intercepted {
+        let signed_in = self.wiring.account.snapshot().state == SignInState::SignedIn;
+        if signed_in && self.wiring.onedrive.is_some() && intercepted {
             RootSource::OneDrive
         } else {
             RootSource::Local
@@ -447,11 +441,10 @@ impl SyncService {
         } else if !fresh && self.persisted_root().is_some_and(|p| p.baloo_excluded) {
             true
         } else {
-            let baloo = Arc::clone(&self.baloo.lock().unwrap());
-            if baloo.is_excluded(&root.path).await {
+            if self.wiring.baloo.is_excluded(&root.path).await {
                 false
             } else {
-                baloo.exclude(&root.path).await
+                self.wiring.baloo.exclude(&root.path).await
             }
         };
 
@@ -595,9 +588,7 @@ impl SyncService {
     /// overwritten. The account's drive stays: it is the account's, not the
     /// folder's (design §8.1).
     pub(super) fn save_root(&self, root: Option<&Persisted>) -> Result<(), String> {
-        let Some(persist) = &self.persist else {
-            return Ok(());
-        };
+        let persist = &self.wiring.persist;
         let root = root.map(|root| RootConfig {
             path: root.path.clone(),
             id: root.root_id.clone(),
@@ -624,13 +615,13 @@ impl SyncService {
     /// [`persist_or_log`](Self::persist_or_log), only when `config.toml`
     /// does not already say exactly this.
     fn remember(&self, root: &Persisted) {
-        if self.persist.is_some() && self.persisted_root().as_ref() != Some(root) {
+        if self.persisted_root().as_ref() != Some(root) {
             self.persist_or_log(Some(root));
         }
     }
 
     pub(super) fn persisted_root(&self) -> Option<Persisted> {
-        let persist = self.persist.as_ref()?;
+        let persist = &self.wiring.persist;
         Some(Persisted::read(persist.store.account(&persist.account)?.root?))
     }
 
@@ -638,7 +629,7 @@ impl SyncService {
     /// again: a hand edit made while the daemon runs counts. `None` when the file cannot
     /// be read now (caught half-saved, say); `Some(None)` when it records no folder.
     fn persisted_root_now(&self) -> Option<Option<Persisted>> {
-        let persist = self.persist.as_ref()?;
+        let persist = &self.wiring.persist;
         let config = persist.store.current()?;
         Some(config.account(&persist.account).and_then(|account| account.root.clone()).map(Persisted::read))
     }

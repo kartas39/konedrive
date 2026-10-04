@@ -13,28 +13,21 @@
 //! runs at a time ([`PauseClock::show`]).
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use super::{SyncError, SyncService};
-use crate::conditions::running::{self, Conditions, HoldSettings};
+use crate::conditions::running::{self, Clock, Conditions, HoldSettings};
 
-/// The time, in unix seconds.
-pub(super) type Now = Arc<dyn Fn() -> i64 + Send + Sync>;
-
-/// How often at most a timed pause is looked at by the clock: a sleep counts only the time
-/// the machine is awake, so a suspend would stretch a longer one.
-const LOOK: Duration = Duration::from_secs(60);
-
-/// How long the timer waits before it says again that a pause has run out, when whoever was
-/// told still shows it.
-const AGAIN: Duration = Duration::from_secs(1);
+/// How often at most a timed pause is looked at by the clock, in seconds: a sleep counts
+/// only the time the machine is awake, so a suspend would stretch a longer one.
+const LOOK: i64 = 60;
 
 /// The clock of one account's pause. It keeps the pause as it was last shown and, for a
-/// timed one, the one timer that says when it has run out. Its time comes from the
-/// function it is given.
+/// timed one, the one timer that says when it has run out. Its time and its waits are the
+/// account's [`Clock`]'s: the one the keeper of the pause (`conditions::running`), the
+/// poll and the outbox worker read too, so a pause that is over here is over for them.
 ///
 /// What is shown is worked out under the clock's lock ([`show`](Self::show),
 /// [`forget`](Self::forget)), so the last one to show is the last one to have looked: a
@@ -44,7 +37,7 @@ pub(super) struct PauseClock {
 }
 
 struct Shared {
-    now: Now,
+    clock: Arc<dyn Clock>,
     /// Called by the timer, with no lock held, when the timed pause it kept time for has
     /// run out. It is expected to [`show`](PauseClock::show) the pause again.
     over: Box<dyn Fn() + Send + Sync>,
@@ -61,13 +54,13 @@ struct Inner {
 }
 
 impl PauseClock {
-    pub(super) fn new(now: Now, over: impl Fn() + Send + Sync + 'static) -> Self {
-        Self { shared: Arc::new(Shared { now, over: Box::new(over), changed: Notify::new(), inner: Mutex::default() }) }
+    pub(super) fn new(clock: Arc<dyn Clock>, over: impl Fn() + Send + Sync + 'static) -> Self {
+        Self { shared: Arc::new(Shared { clock, over: Box::new(over), changed: Notify::new(), inner: Mutex::default() }) }
     }
 
     /// The time now.
     pub(super) fn now(&self) -> i64 {
-        (self.shared.now)()
+        self.shared.clock.now()
     }
 
     /// Shows the pause: `publish` looks at it, says it wherever it is shown, and answers
@@ -114,6 +107,11 @@ impl Drop for PauseClock {
 /// The timer: sleeps until the timed pause shown has run out, looking at the clock at
 /// least every [`LOOK`], then says so. It ends when no timed pause is shown; another pause
 /// shown while it sleeps wakes it, and is the one it keeps time for from then on.
+///
+/// Whoever is told looks at the same clock, so it finds the pause over too and shows that.
+/// A pause still shown, and still over, after it was said to have run out has nobody left
+/// to show it (the service is going): the timer ends, and the next pause shown starts
+/// another.
 async fn keep_time(shared: Arc<Shared>) {
     loop {
         let until = {
@@ -127,23 +125,25 @@ async fn keep_time(shared: Arc<Shared>) {
                 }
             }
         };
-        let left = until - (shared.now)();
-        if left > 0 {
-            shared.sleep(Duration::from_secs(left as u64).min(LOOK)).await;
+        let now = shared.clock.now();
+        if until > now {
+            shared.sleep_until(until.min(now.saturating_add(LOOK))).await;
             continue;
         }
         (shared.over)();
-        if shared.inner.lock().unwrap().shown == Some(until) {
-            shared.sleep(AGAIN).await;
+        let mut inner = shared.inner.lock().unwrap();
+        if inner.shown == Some(until) && until <= shared.clock.now() {
+            inner.timer = None;
+            return;
         }
     }
 }
 
 impl Shared {
-    /// Sleeps for `time`, or until another pause is shown.
-    async fn sleep(&self, time: Duration) {
+    /// Sleeps until the clock reads `at`, or until another pause is shown.
+    async fn sleep_until(&self, at: i64) {
         tokio::select! {
-            () = tokio::time::sleep(time) => {}
+            () = self.clock.sleep_until(at) => {}
             () = self.changed.notified() => {}
         }
     }
@@ -192,7 +192,7 @@ impl SyncService {
         self.clock.show(|| {
             let before = self.state.get();
             let (paused, stopped) = match &store {
-                Some(store) => (running::user_pause(store), self.running.stopped(store)),
+                Some(store) => (self.running.user_pause(store), self.running.stopped(store)),
                 None => (None, !held.is_empty()),
             };
             self.state.update(|s| {

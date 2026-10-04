@@ -9,8 +9,8 @@ use crate::config::ConfigError;
 use crate::local::ignore::{IgnoreList, SharedIgnore};
 
 /// The ignore list `config.toml` gives the account, or the defaults.
-pub(super) fn configured_ignore(persist: Option<&Persist>) -> SharedIgnore {
-    let account = persist.and_then(|p| p.store.account(&p.account));
+pub(super) fn configured_ignore(persist: &Persist) -> SharedIgnore {
+    let account = persist.store.account(&persist.account);
     IgnoreList::configured(account.as_ref().and_then(|a| a.ignore.as_deref())).shared()
 }
 
@@ -27,12 +27,8 @@ impl SyncService {
         self.require_onedrive()?;
         // `config.toml` and the settings in memory change together, under the file's own
         // lock: two calls at once leave both the same. Only what changed is written.
-        let (running, persist) = (Arc::clone(&self.running), self.persist.clone());
+        let (running, persist) = (Arc::clone(&self.running), self.wiring.persist.clone());
         tokio::task::spawn_blocking(move || {
-            let Some(persist) = persist else {
-                running.change(change);
-                return Ok(());
-            };
             persist
                 .store
                 .update_account(&persist.account, |a| {
@@ -74,18 +70,17 @@ impl SyncService {
         }
         // `config.toml` and the list the watcher reads change together, under the
         // list's own lock: two calls at once leave both the same (the outbox on the bus).
-        let (shared, persist) = (Arc::clone(&self.ignore), self.persist.as_ref().map(|p| (Arc::clone(&p.store), p.account.clone())));
+        let (shared, persist) = (Arc::clone(&self.ignore), self.wiring.persist.clone());
         tokio::task::spawn_blocking(move || {
             let mut list = shared.write().unwrap_or_else(|p| p.into_inner());
-            if let Some((store, account)) = persist {
-                let kept = unique.clone();
-                store
-                    .update_account(&account, |a| {
-                        a.ignore = Some(kept);
-                        Ok::<_, ConfigError>(())
-                    })
-                    .map_err(|e| SyncError::Io(format!("cannot write config.toml: {e}")))?;
-            }
+            let kept = unique.clone();
+            persist
+                .store
+                .update_account(&persist.account, |a| {
+                    a.ignore = Some(kept);
+                    Ok::<_, ConfigError>(())
+                })
+                .map_err(|e| SyncError::Io(format!("cannot write config.toml: {e}")))?;
             *list = IgnoreList::new(unique);
             Ok::<(), SyncError>(())
         })
@@ -98,7 +93,8 @@ impl SyncService {
     /// `MachineName`: what a conflict copy is named after (`docs/design/writes.md` §7):
     /// `machine_name` in `config.toml`, or the host's name.
     pub fn machine_name(&self) -> String {
-        let configured = self.persist.as_ref().and_then(|p| p.store.account(&p.account)).map(|a| a.machine_name).unwrap_or_default();
+        let persist = &self.wiring.persist;
+        let configured = persist.store.account(&persist.account).map(|a| a.machine_name).unwrap_or_default();
         if configured.is_empty() {
             crate::local::names::default_machine_name()
         } else {

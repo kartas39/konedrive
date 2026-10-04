@@ -72,7 +72,7 @@ async fn world() -> World {
     let baloo = tempfile::tempdir().unwrap();
     write_fake_balooctl6(baloo.path());
     let sockets = tempfile::tempdir().unwrap();
-    let helper = FakeHelper::start(sockets.path().join("helper.sock"), Duration::ZERO);
+    let helper = FakeHelper::start(sockets.path().join("helper.sock"));
     World { server, config: tempfile::tempdir().unwrap(), folder: tempfile::tempdir().unwrap(), baloo, helper, sockets }
 }
 
@@ -92,7 +92,8 @@ async fn connected(w: &World, signed_in: bool) -> Arc<SyncService> {
 /// to reach that drive, and the account runs read-write.
 fn let_write(service: &SyncService) {
     use crate::config::{ConfigError, Mode};
-    let persist = service.persist.as_ref().unwrap();
+    let parts = testing::parts(service);
+    let persist = &parts.persist;
     persist
         .store
         .update(|c| {
@@ -103,7 +104,7 @@ fn let_write(service: &SyncService) {
             Ok::<_, ConfigError>(())
         })
         .unwrap();
-    service.account.as_ref().unwrap().update(|s| {
+    parts.account.state().update(|s| {
         s.mode = Mode::ReadWrite;
         s.granted_scopes = "Files.ReadWrite offline_access".into();
         s.live_drive = "D1".into();
@@ -155,39 +156,53 @@ fn service_with(
     link: Option<HelperLink>,
     tokens: Arc<dyn TokenSource>,
 ) -> Arc<SyncService> {
-    let service = SyncService::new(link, Some(account), Some(persist(&w.config.path().join("config.toml"))));
-    wire(w, service, tokens)
+    made(w, wiring(w, account, tokens).link(link))
 }
 
 /// A signed-in service on `hub`, wired as [`service_with`] wires one: a restart of
 /// the daemon whose hub knows what the machine's sources say.
 fn service_on(w: &World, hub: &Arc<hub::HelperHub>) -> Arc<SyncService> {
-    let service = SyncService::on_hub(hub, Some(account(true)), Some(persist(&w.config.path().join("config.toml"))));
-    wire(w, service, Arc::new(StaticToken::new("T")))
+    made(w, wiring(w, account(true), Arc::new(StaticToken::new("T"))).hub(hub))
 }
 
-/// [`service_with`]'s wiring.
-fn wire(w: &World, service: Arc<SyncService>, tokens: Arc<dyn TokenSource>) -> Arc<SyncService> {
-    let drive = DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), tokens)
+/// The world's drive, through `tokens`.
+fn drive(w: &World, tokens: Arc<dyn TokenSource>) -> DriveClient {
+    DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), tokens)
         .unwrap()
-        .with_retry(RetryPolicy { attempts: 2, default_wait: Duration::from_millis(5), max_wait: Duration::from_millis(10) });
-    service.set_drive(drive);
-    service.set_sync_paths(SyncPaths {
+        .with_retry(RetryPolicy { attempts: 2, default_wait: Duration::from_millis(5), max_wait: Duration::from_millis(10) })
+}
+
+/// Where the world's services keep their OneDrive folder's own files.
+fn sync_paths(w: &World) -> SyncPaths {
+    SyncPaths {
         tree_db: w.config.path().join("tree.sqlite"),
         rescue_dir: w.config.path().join("rescued"),
         thumbnails: Some(w.config.path().join("thumbnails")),
-    });
-    service.set_schedule(Schedule::polled(Duration::from_secs(3600), vec![Duration::from_millis(50)]));
-    // No helper in these tests, and none running: a punch goes by "no helper at all".
-    service.set_helper_socket(w.config.path().join("no-helper.sock"));
-    // The fake `balooctl6` and a `baloofilerc` of the test's own
-    //: never the real ones, so these tests never touch
-    // ~/.config/baloofilerc.
-    service.set_baloo(crate::desktop::baloo::Baloo {
-        program: Some(w.baloo.path().join("balooctl6")),
-        settings: Some(w.baloo.path().join("baloofilerc")),
-        ..crate::desktop::baloo::Baloo::disabled()
-    });
+    }
+}
+
+/// [`service_with`]'s wiring, for a test to change before the service is [`made`]: the
+/// world's `config.toml`, its drive and paths, an hour between cycles, and the fake
+/// `balooctl6` with a `baloofilerc` of the test's own — never the real ones, so these
+/// tests never touch ~/.config/baloofilerc.
+fn wiring(w: &World, account: StateHandle, tokens: Arc<dyn TokenSource>) -> testing::Builder {
+    testing::wiring()
+        .account(account)
+        .persist(persist(&w.config.path().join("config.toml")))
+        .onedrive(drive(w, tokens), sync_paths(w))
+        .schedule(Schedule::polled(Duration::from_secs(3600), vec![Duration::from_millis(50)]))
+        .baloo(crate::desktop::baloo::Baloo {
+            program: Some(w.baloo.path().join("balooctl6")),
+            settings: Some(w.baloo.path().join("baloofilerc")),
+            ..crate::desktop::baloo::Baloo::disabled()
+        })
+}
+
+/// The service of `wiring`. With no link, no helper runs either: a punch goes by "no
+/// helper at all".
+fn made(w: &World, wiring: testing::Builder) -> Arc<SyncService> {
+    let service = wiring.build();
+    service.hub().set_socket(w.config.path().join("no-helper.sock"));
     service
 }
 

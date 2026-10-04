@@ -273,7 +273,7 @@ impl ContentSource for ClearedFirst {
 async fn a_file_left_dehydrating_is_refilled_only_after_its_ignore_mark_is_cleared() {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
     let remote = tempfile::tempdir().unwrap();
     std::fs::write(remote.path().join("ITEM"), vec![8u8; 4096]).unwrap();
@@ -285,7 +285,7 @@ async fn a_file_left_dehydrating_is_refilled_only_after_its_ignore_mark_is_clear
     let fetches = Arc::new(std::sync::Mutex::new(Vec::new()));
     let source = Arc::new(ClearedFirst {
         dir: remote.path().to_path_buf(),
-        seen: Arc::clone(&helper.seen),
+        seen: helper.log(),
         fetches: Arc::clone(&fetches),
     });
 
@@ -308,7 +308,7 @@ async fn a_file_left_dehydrating_is_refilled_only_after_its_ignore_mark_is_clear
 async fn a_refill_whose_ignore_mark_cannot_be_cleared_touches_nothing() {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     helper.refuse(Seen::ClearIgnore, libc::EIO);
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
     let remote = tempfile::tempdir().unwrap();

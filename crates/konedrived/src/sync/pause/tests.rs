@@ -2,26 +2,41 @@ use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
-use super::{Now, PauseClock, LOOK};
+use super::{PauseClock, LOOK};
+use crate::conditions::running::Clock;
 
 /// The time the scene starts at, in unix seconds.
 const START: i64 = 1_700_000_000;
 
 /// A clock with what the service gives it: a kept pause (the tree store's part), a place
 /// the pause is shown (the bus's part), and a wall clock that follows tokio's paused time,
-/// which a test can push ahead as a suspend does.
+/// which a test can push ahead as a suspend does. The keeper of the pause reads that same
+/// clock, as the service's does.
 struct Scene {
     clock: Option<Arc<PauseClock>>,
     parts: Arc<Parts>,
 }
 
+/// A wall clock that follows tokio's paused time, `ahead` of it by what a test says; its
+/// sleeps are tokio's, which do not count a suspend.
+struct Wall {
+    started: tokio::time::Instant,
+    ahead: AtomicI64,
+}
+
+impl Clock for Wall {
+    fn now(&self) -> i64 {
+        START + self.started.elapsed().as_secs() as i64 + self.ahead.load(Ordering::SeqCst)
+    }
+
+    fn sleep_until(&self, at: i64) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(tokio::time::sleep(Duration::from_secs((at - self.now()).max(0) as u64)))
+    }
+}
+
 struct Parts {
-    now: Now,
-    /// How far the wall clock is ahead of the time the sleeps count.
-    ahead: Arc<AtomicI64>,
+    wall: Arc<Wall>,
     kept: Mutex<Option<i64>>,
-    /// How many seconds late the keeper of the pause takes a timed one for over.
-    keeper_late: AtomicI64,
     /// Every time the pause was shown: when, and what.
     shown: Mutex<Vec<(i64, Option<i64>)>>,
     /// How many times the clock said that a timed pause has run out.
@@ -36,9 +51,9 @@ impl Parts {
     /// is shown.
     fn show(&self, clock: &PauseClock) {
         clock.show(|| {
-            let now = (self.now)();
+            let now = self.wall.now();
             let mut kept = self.kept.lock().unwrap();
-            if kept.is_some_and(|until| until > 0 && until + self.keeper_late.load(Ordering::SeqCst) <= now) {
+            if kept.is_some_and(|until| until > 0 && until <= now) {
                 *kept = None;
             }
             self.shown.lock().unwrap().push((now - START, *kept));
@@ -47,29 +62,23 @@ impl Parts {
     }
 
     fn keep(&self, seconds: i64) {
-        *self.kept.lock().unwrap() = Some(if seconds == 0 { 0 } else { (self.now)() + seconds });
+        *self.kept.lock().unwrap() = Some(if seconds == 0 { 0 } else { self.wall.now() + seconds });
     }
 }
 
 impl Scene {
     fn new() -> Self {
-        let (started, ahead) = (tokio::time::Instant::now(), Arc::new(AtomicI64::new(0)));
-        let now: Now = {
-            let ahead = Arc::clone(&ahead);
-            Arc::new(move || START + started.elapsed().as_secs() as i64 + ahead.load(Ordering::SeqCst))
-        };
+        let wall = Arc::new(Wall { started: tokio::time::Instant::now(), ahead: AtomicI64::new(0) });
         let parts = Arc::new(Parts {
-            now: Arc::clone(&now),
-            ahead,
+            wall: Arc::clone(&wall),
             kept: Mutex::new(None),
-            keeper_late: AtomicI64::new(0),
             shown: Mutex::new(Vec::new()),
             run_out: AtomicUsize::new(0),
             lands: Mutex::new(None),
         });
         let clock = Arc::new_cyclic(|me: &Weak<PauseClock>| {
             let (me, parts) = (me.clone(), Arc::clone(&parts));
-            PauseClock::new(now, move || {
+            PauseClock::new(wall, move || {
                 parts.run_out.fetch_add(1, Ordering::SeqCst);
                 if let Some(seconds) = parts.lands.lock().unwrap().take() {
                     parts.keep(seconds);
@@ -164,8 +173,8 @@ async fn a_suspend_does_not_stretch_a_timed_pause() {
     let scene = Scene::new();
     scene.pause(3600);
     pass(90).await;
-    scene.parts.ahead.store(4000, Ordering::SeqCst);
-    pass(LOOK.as_secs()).await;
+    scene.parts.wall.ahead.store(4000, Ordering::SeqCst);
+    pass(LOOK as u64).await;
     assert_eq!((scene.shown(), scene.run_out()), (None, 1));
 }
 
@@ -204,18 +213,4 @@ async fn a_forgotten_pause_is_not_ended_later_and_the_next_one_is() {
     scene.clock = None;
     pass(1200).await;
     assert_eq!(scene.run_out(), 1, "the timer went with the clock");
-}
-
-/// The keeper of the pause still has it when the clock says it has run out (its own clock
-/// is behind): the pause stays shown, and the clock says so again a second later, until
-/// the keeper agrees.
-#[tokio::test(start_paused = true)]
-async fn a_pause_its_keeper_still_has_is_asked_about_again() {
-    let scene = Scene::new();
-    scene.parts.keeper_late.store(3, Ordering::SeqCst);
-    scene.pause(60);
-    pass(62).await;
-    assert_eq!(scene.shown(), Some(60), "still shown while the keeper has it");
-    pass(2).await;
-    assert_eq!((scene.shown(), scene.last_shown_at(), scene.run_out()), (None, 63, 4), "once a second, until it is over there too");
 }

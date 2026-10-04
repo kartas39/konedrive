@@ -7,7 +7,7 @@ use konedrive_fs::placeholder::{
     create_placeholder, write_state, State,
 };
 use konedrived::hydration::source::ContentSource;
-use konedrived::sync::SyncService;
+use konedrived::sync::{testing, SyncService};
 use konedrived::folder::locks::InodeKey;
 
 use crate::harness::{
@@ -151,11 +151,11 @@ pub(crate) fn stale_request_after_direct_fill(ctx: &Ctx, checks: &mut Checks) ->
 pub(crate) fn inflight_across_forget(ctx: &Ctx, checks: &mut Checks) -> Result<(), String> {
     let folder = scenario_folder(ctx, "inflight-forget")?;
     let link = ctx.link()?;
-    let service = SyncService::new(Some(link.clone()), None, None);
+    let service = testing::service(Some(link.clone()), None, None);
     let result = inflight_across_forget_steps(ctx, checks, &service, &folder);
 
     ctx.set_source_delay(Duration::from_millis(0));
-    service.set_link(Some(link.clone()));
+    service.hub().set_link(Some(link.clone()));
     if service.root().is_some() {
         let _ = ctx.runtime.block_on(service.unregister_root());
     }
@@ -261,10 +261,10 @@ pub(crate) fn carried_in_ignore_mark(ctx: &Ctx, checks: &mut Checks) -> Result<(
     let folder = scenario_folder(ctx, "carried-in")?;
     let aside = scenario_folder(ctx, "carried-in-aside")?;
     let link = ctx.link()?;
-    let service = SyncService::new(Some(link.clone()), None, None);
+    let service = testing::service(Some(link.clone()), None, None);
     let result = carried_in_steps(ctx, checks, &service, &folder, &aside);
 
-    service.set_link(Some(link.clone()));
+    service.hub().set_link(Some(link.clone()));
     if service.root().is_some() {
         let _ = ctx.runtime.block_on(service.unregister_root());
     }

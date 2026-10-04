@@ -18,13 +18,42 @@
 //! The hold's two settings ([`HoldSettings`]) are one pair for the whole app (issue #95):
 //! the hub tells every account, as it tells the conditions. Thumbnails stay per account.
 
-use std::sync::Mutex;
-use std::time::SystemTime;
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use tokio::sync::Notify;
 
 use crate::config::{AccountConfig, Config, OnBattery};
 use konedrive_tree::{Store, TreeError};
+
+/// The clock an account's pause is kept by: the time, and a wait. Everything that asks
+/// whether a timed pause is over, or waits for it to be, has the account's one clock, so
+/// they agree. The daemon's is [`SystemClock`]; a test gives one it moves by hand.
+pub trait Clock: Send + Sync {
+    /// The time, in unix seconds.
+    fn now(&self) -> i64;
+    /// Returns once the clock reads `at` (unix seconds) or later, as far as the clock can
+    /// tell: the system's sleeps for the time left until then, which leaves out the time
+    /// the machine was suspended and knows nothing of a clock that was set. So whoever
+    /// waits looks at [`now`](Self::now) again after it.
+    fn sleep_until(&self, at: i64) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+}
+
+/// The machine's wall clock, and the runtime's sleep.
+#[derive(Debug, Default)]
+pub struct SystemClock;
+
+impl Clock for SystemClock {
+    fn now(&self) -> i64 {
+        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    }
+
+    fn sleep_until(&self, at: i64) -> Pin<Box<dyn Future<Output = ()> + Send>> {
+        Box::pin(tokio::time::sleep(Duration::from_secs(at.saturating_sub(self.now()).max(0) as u64)))
+    }
+}
 
 /// An account's own settings that decide what runs, as its section of `config.toml` gives
 /// them (`Folder.Thumbnails`).
@@ -123,8 +152,9 @@ pub enum Stop {
 
 /// One account's decision of what runs. Shared by the account's sync and every task it
 /// starts.
-#[derive(Debug, Default)]
 pub struct Running {
+    /// The account's clock: a timed pause is over by it.
+    clock: Arc<dyn Clock>,
     inner: Mutex<Inner>,
     /// Woken when thumbnails are turned on: the filler asks for what is missing.
     thumbnails_on: Notify,
@@ -139,9 +169,26 @@ struct Inner {
     anyway: bool,
 }
 
+impl Default for Running {
+    /// The default settings, by the system's clock.
+    fn default() -> Self {
+        Self::new(Settings::default(), Arc::new(SystemClock))
+    }
+}
+
 impl Running {
-    pub fn new(settings: Settings) -> Self {
-        Self { inner: Mutex::new(Inner { settings, ..Inner::default() }), thumbnails_on: Notify::new() }
+    pub fn new(settings: Settings, clock: Arc<dyn Clock>) -> Self {
+        Self { clock, inner: Mutex::new(Inner { settings, ..Inner::default() }), thumbnails_on: Notify::new() }
+    }
+
+    /// The account's clock.
+    pub fn clock(&self) -> &Arc<dyn Clock> {
+        &self.clock
+    }
+
+    /// The user's pause kept in `store`, by the account's clock ([`user_pause`]).
+    pub fn user_pause(&self, store: &Store) -> Option<i64> {
+        user_pause(store, self.clock.now())
     }
 
     pub fn settings(&self) -> Settings {
@@ -204,7 +251,7 @@ impl Running {
     /// Why the account's background work stops now, if it does: the user's pause, kept in
     /// `store`, before the hold.
     pub fn stop(&self, store: &Store) -> Option<Stop> {
-        user_pause(store).map(Stop::Paused).or_else(|| self.held().map(Stop::Held))
+        self.user_pause(store).map(Stop::Paused).or_else(|| self.held().map(Stop::Held))
     }
 
     /// Whether the account's background work stops now.
@@ -225,21 +272,18 @@ impl Running {
 
 /// The user's pause of the account whose tree store is `store` (`docs/design/writes.md` §11):
 /// `Some(until)` while paused, unix seconds, 0 meaning until resumed; `Paused` and
-/// `PausedUntil` show it. A timed pause that has run out is taken off here. Kept in the
-/// store's `meta`, so it survives a restart.
-/// Answered from the store's memory of it ([`Store::pause`]), never by a job:
-/// callable from anywhere.
-pub fn user_pause(store: &Store) -> Option<i64> {
+/// `PausedUntil` show it. A timed pause that has run out at `now` (unix seconds, by the
+/// account's [`Clock`]) is taken off here. Kept in the store's `meta`, so it survives a
+/// restart. The store keeps the time the pause ends and compares it with no clock of its
+/// own. Answered from the store's memory of it ([`Store::pause`]), never by a job: callable
+/// from anywhere.
+pub fn user_pause(store: &Store, now: i64) -> Option<i64> {
     let until = store.pause()?;
-    if until != 0 && until <= unix_now() {
+    if until != 0 && until <= now {
         store.pause_ended(until);
         return None;
     }
     Some(until)
-}
-
-fn unix_now() -> i64 {
-    SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 /// Pauses the account whose tree store is `store` until `until` (unix

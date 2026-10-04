@@ -20,7 +20,7 @@ use konedrive_fs::placeholder::{read_state, State};
 use konedrived::config::{ConfigError, Mode};
 use konedrived::account::state::{AccountSnapshot, SignInState, StateHandle};
 use konedrived::upload::fake::{FakeGraph, FakeItem, ROOT};
-use konedrived::sync::{SyncPaths, SyncService};
+use konedrived::sync::{testing, SyncPaths, SyncService};
 
 use crate::harness::{dir_mark_present, Checks, Ctx};
 
@@ -107,9 +107,8 @@ impl<'c> World<'c> {
             live_drive: FAKE_DRIVE.into(),
             ..AccountSnapshot::default()
         });
-        let service = SyncService::new(Some(ctx.link()?), Some(account), Some(persist));
-        service.set_drive(graph.client());
-        service.set_sync_paths(SyncPaths { tree_db: base.join("tree.sqlite"), rescue_dir: base.join("rescued"), thumbnails: None });
+        let paths = SyncPaths { tree_db: base.join("tree.sqlite"), rescue_dir: base.join("rescued"), thumbnails: None };
+        let service = testing::wiring().link(Some(ctx.link()?)).account(account).persist(persist).onedrive(graph.client(), paths).build();
         service.start_in_mode(Mode::ReadWrite);
         ctx.runtime.block_on(service.register_root(&folder)).map_err(|e| format!("cannot register {}: {e}", folder.display()))?;
         let world = World { ctx, base, folder, graph, service };

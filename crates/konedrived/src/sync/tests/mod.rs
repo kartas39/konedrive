@@ -2,9 +2,7 @@ use std::os::fd::{AsFd, AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::fs::{OpenOptionsExt, MetadataExt};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
-use std::collections::HashMap;
 use std::fs::File;
-use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -18,7 +16,6 @@ use konedrive_fs::placeholder::{read_state, State};
 use crate::hydration::source::{ContentSource, Fetched, LocalDir, SourceError, Answered, FillError};
 use crate::status::activity::Report;
 use crate::helper::{HelperLink, HydrateRequest};
-use crate::config::ConfigStore;
 use crate::account::state::{SignInState, StateHandle};
 use crate::folder::locks::tests::key_of;
 use crate::sync::free_up::FreedUp;
@@ -30,6 +27,7 @@ use crate::hydration::pin;
 use crate::hydration::source;
 use crate::status::activity;
 use super::*;
+pub(crate) use super::testing::{persist, FakeHelper, Seen};
 
 mod guards;
 mod hydrate;
@@ -39,27 +37,6 @@ mod pins;
 mod registration;
 mod reports;
 mod startup;
-
-/// Where a service persists its folder: the one account of the
-/// `config.toml` at `file` (added when there is none), in a store opened
-/// from the file — as each start opens it. A file that cannot be read
-/// makes a store that refuses every write, as the daemon's does.
-pub(super) fn persist(file: &Path) -> Persist {
-    assert_eq!(file.file_name().and_then(|n| n.to_str()), Some("config.toml"));
-    let paths = crate::config::Paths::in_dir(file.parent().unwrap());
-    // `open` awaits nothing but the wallet check, which here is ready.
-    let opening = std::pin::pin!(ConfigStore::open(&paths, async { false }));
-    let std::task::Poll::Ready(store) =
-        opening.poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
-    else {
-        unreachable!("ConfigStore::open waited")
-    };
-    let account = match store.snapshot().accounts.first() {
-        Some(account) => account.id.clone(),
-        None => store.add_account("Personal").map(|a| a.id).unwrap_or_else(|_| "0123456789ab".into()),
-    };
-    Persist { store: Arc::new(store), account }
-}
 
 /// What `config.toml` records of the account's folder, in the words of
 /// version 1's file that these tests were first written in. No folder
@@ -172,158 +149,12 @@ pub(crate) fn placeholder(dir: &std::path::Path, name: &str, item_id: &str, size
 
 // --- SyncService -------------------------------------------------------
 
-/// What a fake helper was asked to do, in the order it was asked.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub(crate) enum Seen {
-    RegisterRoot,
-    UnregisterRoot,
-    /// A `MarkDir`, and how many entries the directory held **at the
-    /// moment the mark arrived** — read through the very descriptor the
-    /// daemon attached. Invariant M1 says a new directory is marked
-    /// before anything is created inside it, and this is the only way to
-    /// measure that from outside: a mark that arrives after the
-    /// directory has been filled reports a non-zero count.
-    MarkDir { entries: usize },
-    MarkFile,
-    ClearIgnore,
-    HydrateDone,
-}
-
-impl Seen {
-    /// The request's kind alone: `MarkDir` with its count left out.
-    fn kind(&self) -> Seen {
-        match self {
-            Seen::MarkDir { .. } => Seen::MarkDir { entries: 0 },
-            other => other.clone(),
-        }
-    }
-}
-
-/// A fake helper that records what it was asked to do and can be cut off
-/// on demand: greets, acknowledges `Hello`, and acknowledges everything
-/// after that. It accepts connection after connection, so a daemon that
-/// reconnects finds it still there.
-pub(crate) struct FakeHelper {
-    pub(crate) seen: Arc<std::sync::Mutex<Vec<Seen>>>,
-    /// Requests answered with an errno instead of 0, by kind — the
-    /// `Seen` a request is recorded as. Anything absent is acknowledged.
-    refusals: Arc<std::sync::Mutex<HashMap<Seen, i32>>>,
-    /// A duplicate of the live connection's socket, so a test can cut it
-    /// the way a helper that died would.
-    live: Arc<std::sync::Mutex<Option<UnixStream>>>,
-}
-
-impl FakeHelper {
-    /// Starts one on `path`. `register_root_delay` holds the ack for
-    /// `RegisterRoot` open, which is the only window a test has to
-    /// interfere between a registration and the recovery that follows.
-    pub(crate) fn start(path: std::path::PathBuf, register_root_delay: Duration) -> Self {
-        let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None)
-            .unwrap();
-        let addr = UnixAddr::new(&path).unwrap();
-        bind(fd.as_raw_fd(), &addr).unwrap();
-        sock_listen(&fd, Backlog::new(16).unwrap()).unwrap();
-        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let refusals: Arc<std::sync::Mutex<HashMap<Seen, i32>>> =
-            Arc::new(std::sync::Mutex::new(HashMap::new()));
-        let live: Arc<std::sync::Mutex<Option<UnixStream>>> =
-            Arc::new(std::sync::Mutex::new(None));
-        let recorded = Arc::clone(&seen);
-        let refusing = Arc::clone(&refusals);
-        let current = Arc::clone(&live);
-        std::thread::spawn(move || {
-            let listener: OwnedFd = fd;
-            while let Ok(accepted) = accept(listener.as_raw_fd()) {
-                // SAFETY: `accept` just returned a freshly opened
-                // descriptor that this process now solely owns.
-                let stream = unsafe { UnixStream::from_raw_fd(accepted) };
-                *current.lock().unwrap() = stream.try_clone().ok();
-                let Ok(mut channel) = Channel::new(stream) else { continue };
-                if channel
-                    .send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None)
-                    .is_err()
-                {
-                    continue;
-                }
-                while let Ok((message, fd)) = channel.recv::<ToHelper>() {
-                    let note = match &message {
-                        ToHelper::Hello { .. } | ToHelper::UnmarkDir | ToHelper::OpenByHandle { .. } => None,
-                        ToHelper::RegisterRoot { .. } => Some(Seen::RegisterRoot),
-                        ToHelper::UnregisterRoot { .. } => Some(Seen::UnregisterRoot),
-                        ToHelper::MarkDir => {
-                            Some(Seen::MarkDir { entries: entries_of(fd.as_ref()) })
-                        }
-                        ToHelper::MarkFile => Some(Seen::MarkFile),
-                        ToHelper::ClearIgnore => Some(Seen::ClearIgnore),
-                        ToHelper::HydrateDone { .. } => Some(Seen::HydrateDone),
-                    };
-                    // Kinds are compared without `MarkDir`'s entry count.
-                    let errno = note
-                        .as_ref()
-                        .map(Seen::kind)
-                        .and_then(|kind| refusing.lock().unwrap().get(&kind).copied())
-                        .unwrap_or(0);
-                    if let Some(note) = note {
-                        recorded.lock().unwrap().push(note);
-                    }
-                    if matches!(message, ToHelper::RegisterRoot { .. }) {
-                        std::thread::sleep(register_root_delay);
-                    }
-                    if channel.send(&ToDaemon::Ack { errno }, None).is_err() {
-                        break;
-                    }
-                }
-            }
-        });
-        Self { seen, refusals, live }
-    }
-
-    pub(crate) fn seen(&self) -> Vec<Seen> {
-        self.seen.lock().unwrap().clone()
-    }
-
-    /// From now on, answers every request of `kind` with `errno`.
-    pub(crate) fn refuse(&self, kind: Seen, errno: i32) {
-        self.refusals.lock().unwrap().insert(kind.kind(), errno);
-    }
-
-    fn forget(&self) {
-        self.seen.lock().unwrap().clear();
-    }
-
-    /// Sends the daemon a hydration request for `fd` on the live
-    /// connection, as the helper does for an intercepted open. A second
-    /// `Channel` on the same socket is safe: every send is one datagram.
-    fn send_request(&self, req_id: u64, fd: &OwnedFd) {
-        let live = self.live.lock().unwrap();
-        let stream = live.as_ref().expect("a live connection").try_clone().unwrap();
-        let mut channel = Channel::new(stream).unwrap();
-        channel.send(&ToDaemon::HydrateRequest { req_id }, Some(fd.as_fd())).unwrap();
-    }
-
-    /// Cuts the live connection, the way a helper that crashed would.
-    fn hang_up(&self) {
-        if let Some(stream) = self.live.lock().unwrap().take() {
-            let _ = stream.shutdown(std::net::Shutdown::Both);
-        }
-    }
-}
-
-/// How many entries a directory holds, through a descriptor rather than
-/// a name.
-fn entries_of(fd: Option<&OwnedFd>) -> usize {
-    let Some(fd) = fd else { return usize::MAX };
-    std::fs::read_dir(format!("/proc/self/fd/{}", fd.as_raw_fd()))
-        .map(|entries| entries.count())
-        .unwrap_or(usize::MAX)
-}
-
 async fn service_with_helper() -> (Arc<SyncService>, tempfile::TempDir, FakeHelper) {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    (SyncService::new(Some(link), None, None), sockets, helper)
+    (testing::service(Some(link), None, None), sockets, helper)
 }
 
 /// The newest events first, as (kind, path, detail), oldest first.
@@ -390,8 +221,10 @@ impl ContentSource for CountingSource {
     }
 }
 
+/// From now on the folder's files are filled from `source`, not from what it was
+/// populated from.
 fn install_source(service: &SyncService, source: Arc<dyn ContentSource>) {
-    *service.source.lock().unwrap() = Some(source);
+    testing::parts(service).sources.replace(Some(source));
 }
 
 async fn wait_for_state(service: &SyncService, path: &std::path::Path, want: &str) {
@@ -428,16 +261,14 @@ pub(crate) async fn wait_until(what: &str, mut ready: impl FnMut() -> bool) {
 
 /// A fake helper, a service connected to it that persists into a config
 /// file of its own, and everything that has to outlive the test body.
-async fn service_with_config(
-    register_root_delay: Duration,
-) -> (Arc<SyncService>, FakeHelper, PathBuf, tempfile::TempDir, tempfile::TempDir) {
+async fn service_with_config() -> (Arc<SyncService>, FakeHelper, PathBuf, tempfile::TempDir, tempfile::TempDir) {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), register_root_delay);
+    let helper = FakeHelper::start(socket_path.clone());
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
     let config_dir = tempfile::tempdir().unwrap();
     let config_file = config_dir.path().join("config.toml");
-    let service = SyncService::new(Some(link), None, Some(persist(&config_file)));
+    let service = testing::service(Some(link), None, Some(persist(&config_file)));
     (service, helper, config_file, sockets, config_dir)
 }
 

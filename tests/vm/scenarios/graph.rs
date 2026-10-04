@@ -41,7 +41,7 @@ use konedrived::account::state::{AccountSnapshot, SignInState, StateHandle};
 use konedrived::hydration::graph_source::GraphSource;
 use konedrived::helper::Clearance;
 use konedrived::hydration::source::{ContentSource, Fetched, SourceError};
-use konedrived::sync::{SyncPaths, SyncService};
+use konedrived::sync::{testing, SyncPaths, SyncService};
 use konedrive_graph::token::StaticToken;
 use konedrive_tree::{Kind, Placement, Row, Table, TreeStore};
 use tokio::io::{AsyncRead, ReadBuf};
@@ -343,13 +343,12 @@ async fn scenarios(token: &str, base: &Path, folder: &Path, guard: Option<&str>,
         Ok(persist) => persist,
         Err(why) => return report("the account's config.toml", Err(why)),
     };
-    let service = SyncService::new(None, Some(account), Some(persist));
     let drive = DriveClient::new(url::Url::parse(GRAPH).unwrap(), Arc::new(StaticToken::new(token))).unwrap();
-    service.set_drive(drive.clone());
     // No thumbnail filler (`thumbnails: None`): it would fetch a thumbnail
     // of every image in the whole drive.
-    service.set_sync_paths(SyncPaths { tree_db: base.join("tree.sqlite"), rescue_dir: base.join("rescued"), thumbnails: None });
-    tokio::spawn(konedrived::sync::supervise_helper(Arc::clone(&service), konedrive_proto::SOCKET_PATH.into(), Duration::from_secs(1)));
+    let paths = SyncPaths { tree_db: base.join("tree.sqlite"), rescue_dir: base.join("rescued"), thumbnails: None };
+    let service = testing::wiring().account(account).persist(persist).onedrive(drive.clone(), paths).build();
+    tokio::spawn(konedrived::sync::hub::supervise(Arc::clone(service.hub()), konedrive_proto::SOCKET_PATH.into(), Duration::from_secs(1)));
     let deadline = Instant::now() + Duration::from_secs(30);
     while service.link().is_none() && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -382,7 +381,7 @@ async fn scenarios(token: &str, base: &Path, folder: &Path, guard: Option<&str>,
     // permanent-break`), never both at once and never on by default.
     if guard == Some("no-hash") {
         let hashless: Arc<dyn ContentSource> = Arc::new(NoHash(Arc::new(GraphSource::new(drive.clone()))));
-        service.replace_content_source(hashless);
+        testing::parts(&service).sources.replace(Some(hashless));
         return report("G2 opening downloads and verifies (guard: no quick_xor from the source)", g2(folder, &rows, scope.max_bytes));
     }
 
@@ -584,9 +583,9 @@ fn g3(
     // window above can hand back anything from 8 MiB up to 256 MiB.
     let break_at = (row.size / 2).max(1);
     let watched = Watched::new(Arc::clone(graph), Some(break_at), sticky);
-    service.replace_content_source(watched.clone());
+    testing::parts(service).sources.replace(Some(watched.clone()));
     let bytes = read_in_child(&folder.join(rel))?;
-    service.replace_content_source(Arc::clone(graph));
+    testing::parts(service).sources.replace(Some(Arc::clone(graph)));
     if bytes.len() as u64 != row.size || Some(quickxor(&bytes)) != row.quickxor {
         return Err(format!("{}: not the whole, verified file", rel.display()));
     }
@@ -643,9 +642,9 @@ async fn g4(
         return Err(format!("after recovery: {:?} with checkpoint {kept:?}", read_state(&file).ok().flatten()));
     }
     let watched = Watched::new(Arc::clone(graph), None, false);
-    service.replace_content_source(watched.clone());
+    testing::parts(service).sources.replace(Some(watched.clone()));
     let bytes = read_in_child(&path)?;
-    service.replace_content_source(Arc::clone(graph));
+    testing::parts(service).sources.replace(Some(Arc::clone(graph)));
     if bytes.len() as u64 != row.size || Some(quickxor(&bytes)) != row.quickxor {
         return Err("the resumed file is not whole and verified".into());
     }
