@@ -43,8 +43,9 @@ pub struct Options {
 /// it and taken off it by `dbus/`, whose `dbus::export::OnBus` is the one implementation.
 #[async_trait]
 pub trait Bus: Send + Sync {
-    /// Puts the `ObjectManager`, `org.konedrive.Accounts` and `org.konedrive.Files` at
-    /// `/org/konedrive/Accounts`, over `manager`.
+    /// Puts `org.konedrive.Accounts` and `org.konedrive.Files` at `/org/konedrive/Accounts`,
+    /// over `manager`, beside the `ObjectManager` the connection was built with
+    /// (`daemon::startup`).
     async fn serve(&self, connection: &Connection, manager: &Arc<AccountManager>) -> zbus::Result<()>;
     /// What announces a change of `Accounts.HelperState`: the `Accounts` interface
     /// [`serve`](Self::serve) put on the bus, looked up once, at startup.
