@@ -86,9 +86,9 @@ async fn main() -> anyhow::Result<()> {
     // A signal stops the daemon; so does the end of a task it cannot work without, and then
     // it leaves with a failure, for systemd to start it again (`Restart=on-failure`): a
     // daemon that stays up with no supervisor says ready and fills nothing.
-    let code = tokio::select! {
-        _ = signals.next() => 0,
-        died = tasks.died() => {
+    let code = match stop::stopped(signals.next(), &mut tasks).await {
+        None => 0,
+        Some(died) => {
             tracing::error!("{died}; stopping, to be started again");
             1
         }

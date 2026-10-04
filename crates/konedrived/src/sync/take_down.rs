@@ -274,6 +274,25 @@ impl SyncService {
 }
 
 impl SyncService {
+    /// A bring-up of the folder panicked, saying `panic`: a defect of the daemon. The
+    /// folder's sync is stopped and the folder is down, saying so, until `Refresh()`, the
+    /// helper's next connect or the next start brings it up again. Its registration at
+    /// the helper is left as it is.
+    pub(super) async fn bring_up_panicked(&self, panic: &str) {
+        let mut stopped = self.change().await;
+        let folder = stopped.folder_mut();
+        let record = match &folder.is {
+            Is::Up(up) => up.record.clone(),
+            Is::Down(record, _) => record.clone(),
+            Is::Absent => return,
+        };
+        let why = format!(
+            "bringing up the sync folder {} failed inside konedrive ({panic}); nothing is synced until it is brought up again",
+            record.root.path.display()
+        );
+        folder.is = Is::Down(record, Down::Failed { why });
+    }
+
     /// The folder's watcher ended with nobody stopping it (its reader or its examiner
     /// failed): the folder's sync is started again locked, as one whose watcher could not
     /// start, and says `why`. Nothing is uploaded until the folder is brought up again or

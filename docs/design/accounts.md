@@ -87,8 +87,9 @@ Every object a client may call is on the bus before the name is claimed, as befo
 6. Every folder that needs no helper is brought up; the hub's supervisor, the `HelperState` watcher
    and the watchers of the network and of power and metering start. `main` keeps the four: when
    the supervisor or the `HelperState` watcher ends, or any of them panics, the daemon stops as on
-   a signal and exits with a failure, and systemd starts it again (`Restart=on-failure`;
-   limitations log F273).
+   a signal and exits with a failure, and systemd starts it again after five seconds
+   (`Restart=on-failure`; limitations log F273). A panic in one account's bring-up is caught: that
+   folder is down and says so, and the others come up.
 
 The daemon's connection is built with the `ObjectManager` of `/org/konedrive/Accounts` already on
 it. This is what makes the connection answer calls before it reads its first message: a

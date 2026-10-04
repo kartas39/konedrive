@@ -15,6 +15,9 @@ pub mod sync;
 pub mod daemon;
 pub mod dbus;
 
+/// Not a layer: what a caught panic said, for whoever catches one.
+pub mod panic;
+
 /// A fake OneDrive on wiremock: the tests of every area that talks to OneDrive, and the VM
 /// suite's write scenarios (`fault-injection`).
 #[cfg(any(test, feature = "fault-injection"))]

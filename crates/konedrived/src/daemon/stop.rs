@@ -106,7 +106,7 @@ impl Tasks {
             match handle.await {
                 Ok(()) if need == Need::WhileItCan => None,
                 Ok(()) => Some(Died { name, panic: None }),
-                Err(e) if e.is_panic() => Some(Died { name, panic: Some(panic_message(e.into_panic())) }),
+                Err(e) if e.is_panic() => Some(Died { name, panic: Some(crate::panic::message(e.into_panic())) }),
                 // Cancelled: the runtime is going down, and the daemon with it.
                 Err(_) => None,
             }
@@ -125,10 +125,12 @@ impl Tasks {
     }
 }
 
-fn panic_message(panic: Box<dyn std::any::Any + Send>) -> String {
-    match panic.downcast::<String>() {
-        Ok(message) => *message,
-        Err(panic) => panic.downcast::<&'static str>().map(|message| (*message).to_owned()).unwrap_or_else(|_| "no message".into()),
+/// Waits for what stops the daemon: `signal`, which gives `None`, or the end of a task of
+/// `tasks` the daemon cannot work without, which is a failure.
+pub async fn stopped(signal: impl Future<Output = ()>, tasks: &mut Tasks) -> Option<Died> {
+    tokio::select! {
+        _ = signal => None,
+        died = tasks.died() => Some(died),
     }
 }
 

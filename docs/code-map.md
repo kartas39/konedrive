@@ -74,6 +74,7 @@ The directories are in layer order: a directory uses only the directories before
 - `main.rs` — the program: reads the configuration, starts the daemon on the session bus,
   keeps the helper link up, and stops when a task it needs is gone.
 - `lib.rs` — the list of the directories below.
+- `panic.rs` — what a caught panic said, for the places that catch one and go on.
 - `tests/bench.rs` — the module `bench`: the outbox and the cloud side at scale, ignored
   tests run by hand in release.
 - `tests/fake_onedrive/mod.rs` — the module `fake_onedrive`: a fake OneDrive on wiremock, for

@@ -43,3 +43,14 @@ async fn a_task_that_is_gone_is_named_and_one_that_may_end_is_not() {
     assert_eq!(died, Died { name: "the network's watcher", panic: Some("no route".into()) });
     assert_eq!(died.to_string(), "the network's watcher panicked: no route");
 }
+
+/// What stops the daemon: a signal, with no failure, or a task it needs that is gone.
+#[tokio::test(start_paused = true)]
+async fn the_daemon_stops_on_a_signal_or_when_a_task_it_needs_is_gone() {
+    let mut tasks = Tasks::default();
+    tasks.spawn("the supervisor", Need::Always, std::future::pending());
+    assert_eq!(stopped(async {}, &mut tasks).await, None);
+
+    tasks.spawn("the state's watch", Need::Always, async {});
+    assert_eq!(stopped(std::future::pending(), &mut tasks).await, Some(Died { name: "the state's watch", panic: None }));
+}

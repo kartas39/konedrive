@@ -508,9 +508,9 @@ async fn a_daemon_with_no_helper_refuses_to_register_but_offers_the_explicit_mod
 }
 
 /// Every property emits `PropertiesChanged`, and only the ones that actually
-/// changed do. The mechanism had no test at all: the signal task, the
-/// baseline it compares against, and each of the three properties could be
-/// deleted with the suite still green.
+/// changed do. On the wire: what one change of the state touches travels in one
+/// message for each interface, every property with its value and none only invalidated;
+/// `Source` follows in a message of its own.
 ///
 /// The second step is the one that pins the baseline: a daemon that never
 /// advanced `previous` would emit nothing at all for the return to `none`,
@@ -534,11 +534,13 @@ async fn properties_changed_reports_exactly_what_changed() {
     let mut changes = properties.receive_properties_changed().await.unwrap();
 
     f.folder.register(first.to_str().unwrap()).await.unwrap();
-    assert_eq!(
-        changed_within(&mut changes, Duration::from_millis(600)).await,
-        vec!["Path", "Source", "State"],
-        "registering a root changes where it is, what it shows, and what state it is in"
-    );
+    let messages = values_within(&mut changes, FOLDER_INTERFACE_NAME, Duration::from_millis(600)).await;
+    assert_eq!(names_of(&messages), vec!["Path", "Source", "State"], "registering a root changes where it is, what it shows, and what state it is in");
+    let (together, invalidated) = &messages[0];
+    assert_eq!(together.get("Path").map(String::as_str), Some(f.folder.path().await.unwrap().as_str()), "{messages:?}");
+    assert_eq!(together.get("State").map(String::as_str), Some("ready"), "`Path` and `State` in one message, with their values: {messages:?}");
+    assert!(invalidated.is_empty() && !together.contains_key("Source"), "{messages:?}");
+    assert!(messages[1..].iter().any(|(changed, _)| changed.get("Source").map(String::as_str) == Some("local")), "`Source` follows: {messages:?}");
 
     f.folder.unregister().await.unwrap();
     assert_eq!(
@@ -554,6 +556,14 @@ async fn properties_changed_reports_exactly_what_changed() {
         vec!["LastError", "Path", "Source", "State"],
         "and this mode also publishes why it is dangerous"
     );
+
+    // A pause whose end moves: `PausedUntil` alone, since `Paused` stays as it is.
+    f.sync.state().update(|s| s.pause.paused_until = Some(100));
+    assert_eq!(changed_within(&mut changes, Duration::from_millis(600)).await, vec!["Paused", "PausedUntil"]);
+    f.sync.state().update(|s| s.pause.paused_until = Some(200));
+    let messages = values_within(&mut changes, FOLDER_INTERFACE_NAME, Duration::from_millis(600)).await;
+    assert_eq!(messages.len(), 1, "{messages:?}");
+    assert_eq!(messages[0].0, [("PausedUntil".to_owned(), "I64(200)".to_owned())].into_iter().collect(), "{messages:?}");
 }
 
 /// What a test says systemd says of the helper's unit — never the real
@@ -665,8 +675,7 @@ async fn a_change_in_the_sync_alone_is_signalled_as_what_it_publishes() {
 /// bus*, not about properties: three counters changing at once must arrive
 /// as one `PropertiesChanged` carrying all three, not three separate
 /// messages that each happen to land inside the same window. `changed_within`
-/// above (built for `Path`/`State`/`LastError`, each still its own
-/// `_changed()` call and so its own message) cannot tell those apart — it
+/// above cannot tell those apart — it
 /// merges every message in the window into one set of names — so this uses
 /// [`messages_within`] instead, which keeps each message separate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -830,8 +839,8 @@ async fn the_local_scan_is_on_the_bus() {
 }
 
 /// The names of the `Folder` properties that reported a change within
-/// `window`, sorted and de-duplicated. One `PropertiesChanged` arrives per
-/// property, so a window is what a caller has to work with.
+/// `window`, sorted and de-duplicated: what one call changes may arrive in more than one
+/// `PropertiesChanged`, so a window is what a caller has to work with.
 async fn changed_within(
     changes: &mut zbus::fdo::PropertiesChangedStream,
     window: Duration,
@@ -855,6 +864,41 @@ async fn changed_on(
         names.extend(args.changed_properties.keys().map(|k| k.to_string()));
         names.extend(args.invalidated_properties.iter().map(|k| k.to_string()));
     }
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// One `PropertiesChanged` of an interface: each changed property with its value, as the
+/// bus words it, and the names only invalidated.
+type Message = (std::collections::BTreeMap<String, String>, Vec<String>);
+
+/// Every `PropertiesChanged` of `interface` within `window`, in the order they came.
+async fn values_within(changes: &mut zbus::fdo::PropertiesChangedStream, interface: &str, window: Duration) -> Vec<Message> {
+    let deadline = tokio::time::Instant::now() + window;
+    let mut messages = Vec::new();
+    while let Ok(Some(signal)) = tokio::time::timeout_at(deadline, changes.next()).await {
+        let args = signal.args().unwrap();
+        if args.interface_name != interface {
+            continue;
+        }
+        let changed = args.changed_properties.iter().map(|(name, value)| (name.to_string(), said(value))).collect();
+        messages.push((changed, args.invalidated_properties.iter().map(|name| name.to_string()).collect()));
+    }
+    messages
+}
+
+/// A property's value in words: a string as it is, anything else as zvariant shows it.
+fn said(value: &zbus::zvariant::Value<'_>) -> String {
+    match value {
+        zbus::zvariant::Value::Str(text) => text.to_string(),
+        other => format!("{other:?}"),
+    }
+}
+
+/// The names `messages` carry, sorted and de-duplicated.
+fn names_of(messages: &[Message]) -> Vec<String> {
+    let mut names: Vec<String> = messages.iter().flat_map(|(changed, invalidated)| changed.keys().chain(invalidated).cloned()).collect();
     names.sort();
     names.dedup();
     names

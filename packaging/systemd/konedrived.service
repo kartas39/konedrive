@@ -6,6 +6,11 @@ Type=dbus
 BusName=org.konedrive.Daemon
 ExecStart=%h/.local/bin/konedrived
 Restart=on-failure
+# The daemon leaves with a failure when a task it cannot work without is gone
+# (limitations log F273). Each start brings every folder up again, so a
+# failure that comes back at every start is tried every few seconds, not in a
+# tight loop.
+RestartSec=5
 # Startup recovery (spec §4.4) walks every registered root holding one file
 # descriptor at a time plus one per directory level, so the daemon's real need
 # is the tree's depth plus its four concurrent hydrations, the helper socket
