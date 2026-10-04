@@ -13,8 +13,14 @@
 //!   [`Step::apply`] and [`Step::commit`], for what happens between the
 //!   folder and the swap.
 //!
-//! Nothing here repeats what the daemon does: the reconcile, the commit and
-//! what follows them are the daemon's own functions.
+//! The reconcile, the commit and what follows them are the daemon's own
+//! functions. What comes before them in the second way is not: `World::step`
+//! stages the rows itself (`begin_staging` and `stage`, or `stage_rw`) and
+//! picks the scope, so every test through `listed_as`, `changed`,
+//! `changed_full` and `step` skips the cycle's fetch, its stale-delta guard,
+//! `stage_over`, the outbox commits looked at again and the cycle's choice
+//! between a Changed and a Full reconcile (limitations log F190). Those are
+//! covered only by the tests that run [`World::cycle`].
 
 use std::fs::File;
 use std::io::Write;
@@ -48,7 +54,7 @@ use crate::helper::HelperLink;
 use crate::hydration::graph_source::GraphSource;
 use crate::hydration::pin::Pins;
 use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
-use crate::remote::listing::reconcile::{commit_cycle, Commit, Held, Mode, Plan, Reconcile, Reconciled, RwCycle, Waiting};
+use crate::remote::listing::reconcile::{Commit, Held, Mode, Prepared, Reconcile, Reconciled, RwCycle, Waiting};
 use crate::remote::listing::{CycleError, CycleReport, Lease, Listing, ListingContext, Neighbours, Turn, Writes, FULL_THRESHOLD};
 use crate::remote::materialize::{Applied, Claimed, Scope};
 use crate::status::activity::Report;
@@ -346,7 +352,7 @@ impl World {
         };
         let (reconcile, held) = listing.begin_reconcile(&turn, mode, &CancellationToken::new()).await.unwrap();
         let scope = if full { Scope::Full } else { Scope::Changed(ids) };
-        Step { reconcile: Some(reconcile), store: self.store.clone(), _held: held, scope: Some(scope), link, passed: None }
+        Step { reconcile: Some(reconcile), _held: held, scope: Some(scope), link, passed: None }
     }
 
     /// What the fake OneDrive's delta feed says since the stored link, and
@@ -582,11 +588,10 @@ pub(crate) enum Says<'a> {
 /// meets.
 pub(crate) struct Step {
     reconcile: Option<Reconcile>,
-    store: Store,
     _held: Held,
     scope: Option<Scope>,
     link: String,
-    passed: Option<(Option<Plan>, Reconciled)>,
+    passed: Option<(Prepared, Reconciled)>,
 }
 
 impl Step {
@@ -601,9 +606,10 @@ impl Step {
     pub(crate) async fn apply(&mut self) -> Result<(), CycleError> {
         let (reconcile, scope) = (self.reconcile.take().unwrap(), self.scope.take().unwrap());
         let (reconcile, passed) = tokio::task::spawn_blocking(move || {
-            let passed = reconcile.plan().and_then(|plan| {
-                let done = reconcile.apply_with_handover(plan.as_ref(), scope)?;
-                Ok((plan, done))
+            let passed = reconcile.prepare().and_then(|prepared| {
+                let prepared = prepared.expect("the drive's root is listed");
+                let done = reconcile.apply_with_handover(&prepared, scope)?;
+                Ok((prepared, done))
             });
             (reconcile, passed)
         })
@@ -617,20 +623,9 @@ impl Step {
     /// The commit of what [`apply`](Self::apply) did, and what follows it.
     pub(crate) async fn commit(mut self) -> Result<Reconciled, CycleError> {
         let reconcile = self.reconcile.take().unwrap();
-        let (plan, done) = self.passed.take().expect("applied first");
-        let (store, commit) = (self.store.clone(), Commit::Swap { link: self.link.clone(), listing: false });
-        tokio::task::spawn_blocking(move || match commit_cycle(&store, plan.as_ref(), &done, commit) {
-            Ok(said) => {
-                reconcile.after_commit(&done.applied, said);
-                Ok(done)
-            }
-            Err(e) => {
-                reconcile.failed(done.applied.on_disk);
-                Err(e)
-            }
-        })
-        .await
-        .unwrap()
+        let (prepared, done) = self.passed.take().expect("applied first");
+        let commit = Commit::Swap { link: self.link.clone(), listing: false };
+        tokio::task::spawn_blocking(move || reconcile.commit(&prepared, done, commit)).await.unwrap()
     }
 }
 

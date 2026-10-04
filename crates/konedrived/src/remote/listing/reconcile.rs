@@ -1,7 +1,7 @@
 //! The reconcile of one cycle, for both modes: the folder made to match
 //! `staging`, the commit, and what follows it.
 //!
-//! [`Listing::reconcile`] waits for the lifecycle lock and runs
+//! [`Listing::reconcile`] waits for the folder's lease and runs
 //! [`Reconcile::run`] on a blocking thread. `run` is three steps:
 //!
 //! 1. [`Reconcile::apply_with_handover`]: the materializer over the scope,
@@ -124,11 +124,18 @@ pub(crate) struct Plan {
     waiting: Waiting,
 }
 
+/// What a reconcile reads before it touches the folder ([`Reconcile::prepare`]).
+pub(crate) struct Prepared {
+    root_item_id: String,
+    /// `None` in read-only mode.
+    plan: Option<Plan>,
+}
+
 /// The locks a reconcile holds until the folder is no longer being changed:
-/// the cycle's turn, the lifecycle lock, and a read-write folder's tree lock.
+/// the cycle's turn, the folder's lease, and a read-write folder's tree lock.
 pub(crate) struct Held {
     _turn: Turn,
-    _lifecycle: super::lease::Held,
+    _lease: super::lease::Held,
     _tree: Option<OwnedMutexGuard<()>>,
 }
 
@@ -167,8 +174,8 @@ pub(crate) struct Reconcile {
 impl Listing {
     /// Makes the folder match `staging` and commits it: swaps
     /// `staging` in with its link, or puts a first listing's page into
-    /// `items` with the link to the next one. Under the lifecycle
-    /// lock, on a blocking thread. A Changed scope that
+    /// `items` with the link to the next one. Under the folder's
+    /// lease, on a blocking thread. A Changed scope that
     /// finds the folder not matching the stored tree hands over to a Full
     /// reconcile in the same run. Everything before this wrote only
     /// `staging` and `meta`, and needed no lock but, in read-write mode,
@@ -190,10 +197,10 @@ impl Listing {
     }
 
     /// A reconcile in `mode`, with the locks it holds while it runs. Waits
-    /// for the lifecycle lock; a folder with no helper is not reconciled
+    /// for the folder's lease; a folder with no helper is not reconciled
     /// (HS2).
     pub(crate) async fn begin_reconcile(&self, turn: &Turn, mode: Mode, cancel: &CancellationToken) -> Result<(Reconcile, Held), CycleError> {
-        let lifecycle = cancellable(cancel, self.ctx.lease.hold()).await?;
+        let lease = cancellable(cancel, self.ctx.lease.hold()).await?;
         // The link as it is now. A helper's reconnect sets it before `resume`
         // takes the lock to re-register the root, so this may be a new link
         // whose helper has no marks yet: at worst a `MarkDir` fails, this
@@ -233,7 +240,7 @@ impl Listing {
             drive: self.pending_drive.lock().unwrap().take(),
             writing,
         };
-        Ok((reconcile, Held { _turn: Arc::clone(turn), _lifecycle: lifecycle, _tree: tree }))
+        Ok((reconcile, Held { _turn: Arc::clone(turn), _lease: lease, _tree: tree }))
     }
 }
 
@@ -241,20 +248,25 @@ impl Reconcile {
     /// The whole reconcile: the folder, the commit, and what follows it.
     pub(crate) fn run(mut self, scope: Scope, commit: Commit) -> Result<Reconciled, CycleError> {
         self.record_drive();
-        if self.root_item_id()?.is_none() {
-            return before_the_root(&self.store, commit);
-        }
-        let plan = self.plan()?;
-        let done = self.apply_with_handover(plan.as_ref(), scope)?;
-        let said = match commit_cycle(&self.store, plan.as_ref(), &done, commit) {
-            Ok(said) => said,
+        let Some(prepared) = self.prepare()? else { return before_the_root(&self.store, commit) };
+        let done = self.apply_with_handover(&prepared, scope)?;
+        self.commit(&prepared, done, commit)
+    }
+
+    /// Steps 2 and 3: the commit of what step 1 did, and what follows it. A
+    /// commit that fails leaves what was done on disk recorded and handed
+    /// over all the same ([`Self::failed`]).
+    pub(crate) fn commit(&self, prepared: &Prepared, done: Reconciled, commit: Commit) -> Result<Reconciled, CycleError> {
+        match commit_cycle(&self.store, prepared.plan.as_ref(), &done, commit) {
+            Ok(said) => {
+                self.after_commit(&done.applied, said);
+                Ok(done)
+            }
             Err(e) => {
                 self.failed(done.applied.on_disk);
-                return Err(e);
+                Err(e)
             }
-        };
-        self.after_commit(&done.applied, said);
-        Ok(done)
+        }
     }
 
     /// The account's drive written into `config.toml` (A-M5) and onto the
@@ -269,38 +281,40 @@ impl Reconcile {
         }
     }
 
-    /// What a read-write reconcile and its commit go by, read once
-    /// `staging` holds the new tree: the outbox's rows and what the new tree
-    /// changes. `None` in read-only mode.
-    pub(crate) fn plan(&self) -> Result<Option<Plan>, CycleError> {
-        let Some(writing) = &self.writing else { return Ok(None) };
-        let (machine, differences, ignore) = (writing.machine.clone(), writing.upload_differences, writing.ignore.clone());
-        let rw = self.store.call_blocking(move |s| Rw::read(s, machine, differences, ignore))?;
-        Ok(Some(Plan { rw, waiting: writing.waiting.clone() }))
-    }
-
-    fn root_item_id(&self) -> Result<Option<String>, CycleError> {
-        self.store.call_blocking(move |s| s.root_item_id()).map_err(|e| applying(e.into()))
+    /// What the reconcile goes by, read once `staging` holds the new tree:
+    /// the drive's root and, in read-write mode, the outbox's rows and what
+    /// the new tree changes. `None` while the drive's root has not come:
+    /// nothing can be placed yet.
+    pub(crate) fn prepare(&self) -> Result<Option<Prepared>, CycleError> {
+        let Some(root_item_id) = self.store.call_blocking(move |s| s.root_item_id()).map_err(|e| applying(e.into()))? else { return Ok(None) };
+        let plan = match &self.writing {
+            None => None,
+            Some(writing) => {
+                let (machine, differences, ignore) = (writing.machine.clone(), writing.upload_differences, writing.ignore.clone());
+                let rw = self.store.call_blocking(move |s| Rw::read(s, machine, differences, ignore))?;
+                Some(Plan { rw, waiting: writing.waiting.clone() })
+            }
+        };
+        Ok(Some(Prepared { root_item_id, plan }))
     }
 
     /// Step 1: the folder made to match `staging`. A Changed pass that
     /// finds the folder not matching the stored tree is followed by a Full
     /// one; what the first rescued is rescued all the same. A pass that
     /// fails has its work on disk recorded and handed over ([`Self::failed`]).
-    pub(crate) fn apply_with_handover(&self, plan: Option<&Plan>, scope: Scope) -> Result<Reconciled, CycleError> {
-        let root_item_id = self.root_item_id()?.ok_or_else(|| CycleError::Apply("the drive's listing has no root".into()))?;
+    pub(crate) fn apply_with_handover(&self, prepared: &Prepared, scope: Scope) -> Result<Reconciled, CycleError> {
         let materializer = Materializer {
             disk: Disk::open(&self.root, self.locked).map_err(|e| applying(e.into()))?,
             store: self.store.clone(),
             link: self.link.clone(),
             runtime: self.runtime.clone(),
             locks: self.locks.clone(),
-            root_item_id,
+            root_item_id: prepared.root_item_id.clone(),
             // One directory for the whole cycle, on the folder's own
             // filesystem: a rescue is one rename, never a copy.
             rescue_into: rescue_base(&self.root.path, &self.rescue_dir).join(rescue_stamp(SystemTime::now())),
             cancel: self.cancel.clone(),
-            rw: plan.map(|plan| plan.rw.clone()),
+            rw: prepared.plan.as_ref().map(|plan| plan.rw.clone()),
             claimed: self.claimed.clone(),
         };
         match materializer.apply_with_handover(scope) {
