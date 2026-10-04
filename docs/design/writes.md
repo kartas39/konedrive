@@ -413,7 +413,8 @@ rows and what they wait for make.
 A row that waits is followed to the head of its wait chain — its blocker, that row's blocker, and
 so on, each row visited once per pick. The head is either **ready**, and runs, which is what
 unblocks the chain; **running**, and its end wakes the worker, which picks again; **waiting for a
-time** (`retry`, `waiting`), and the worker sleeps until the earliest such time; or **waiting for
+time** (`retry`, `waiting`), and the worker sleeps until the earliest such time, also while other
+rows are in flight; or **waiting for
 the user** (held deletes, a refused name, a full OneDrive, a move-out waiting for the helper), shown
 on the Not Uploaded page. Portions are read until enough runnable rows are found or the queue ends,
 so a portion in which every row waits — a thousand files behind the `mkdir` of their folder, which
@@ -574,7 +575,7 @@ limitations log F172).
 | `400` | `blocked`, with the service's message |
 | `401` | the token refreshed once |
 | `403` | the row is `blocked` (`forbidden`), and listed in Not Uploaded, whose words say to sign in again (the Sign In Again action there starts a sign-in only while the account is signed out; signed in, it is refused as busy, and the user signs out first); the other rows go on (whether the sign-in allows writes at all is the write gate's to say, §2.3). A worker that begins — after a sign-in, which always starts a new one, and after a restart or a mode switch — makes the rows `ready` once, at the first look at which it may send (limitations log F197) |
-| `429`, `503` | a fragment to an upload session is sent again to the same session first (§6.1); then, or for any other request, the whole account's worker waits until `Retry-After` (in seconds or as an HTTP date, at most an hour; without one, 10 s doubling) |
+| `429`, `503` | a fragment to an upload session is sent again to the same session first (§6.1); then, or for any other request, the whole account's worker waits until `Retry-After` (in seconds or as an HTTP date, at most an hour; without one, 10 s doubling with each throttle). While a wait is under way a time OneDrive names takes the place of one the worker chose, of two named times the later end stands, and an answer without `Retry-After` adds nothing. For a wait of 5 s or more the folder's `LastError` says "OneDrive asked to slow down; uploads continue at HH:MM" until it is over |
 | another `5xx`, the network | the row retries after 1 s, doubling to an hour |
 
 No row is ever dropped for failing; `upload-failed` is recorded once per row and reason (a row

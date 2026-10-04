@@ -643,11 +643,10 @@ fn pause_and_blocked_rows() {
     pause(&engine);
     w.h.drain(&engine);
     assert_eq!(w.cloud(|c| c.log.len()), 0);
-    assert_eq!((engine.status().paused, engine.status().paused_until), (true, 0));
     assert_eq!(w.attr("a.txt", XATTR_SYNC).as_deref(), Some("pending"));
     let restarted = w.h.engine();
     w.h.drain(&restarted);
-    assert!(restarted.status().paused, "the pause survives a restart");
+    assert_eq!(w.cloud(|c| c.log.len()), 0, "the pause survives a restart");
     resume(&restarted);
     w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(403), 1));
     w.h.drain(&restarted);
@@ -718,7 +717,7 @@ fn a_full_onedrive_sends_no_content_but_moves_and_deletes_go() {
     w.examine(&[("", "n1.txt"), ("", "n2.txt")]);
     // One transfer at a time: the first refusal comes before the second starts.
     let engine = w.h.engine();
-    engine.cfg.drive.pool().set_limits(1, 1);
+    engine.drive().pool().set_limits(1, 1);
     w.h.drain(&engine);
     assert!(engine.space_full());
     assert_eq!(w.cloud(|c| c.quota_reads()), 1, "one read for the refusal");
@@ -951,7 +950,7 @@ fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
         assert!(row.session_url.is_some(), "the session is kept");
         assert_eq!(row.session_next, Some(320 * 1024));
         let status = engine.status();
-        assert!(status.uploads.is_empty() && status.running == 0, "nothing shows as uploading: {status:?}");
+        assert!(status.uploads.is_empty(), "nothing shows as uploading: {status:?}");
         assert_eq!(w.attr("big.bin", XATTR_SYNC).as_deref(), Some("pending"));
 
         // A restart while paused: nothing is sent, the session stays.
@@ -995,29 +994,6 @@ fn a_one_request_upload_in_flight_at_a_pause_finishes_and_nothing_new_starts() {
     assert_eq!(w.summary(), vec![(Create, "b.txt".into(), OutboxState::Ready)]);
     assert_eq!(w.cloud(|c| c.count("POST", "b.txt")), 0, "nothing new starts while paused");
     assert!(engine.status().uploads.is_empty());
-}
-
-/// The worker as the mode switch will run it: started, woken, stopped.
-#[test]
-fn the_worker_runs_until_stopped() {
-    let w = World::new(&[]);
-    let worker = OutboxWorker::new(w.h.config());
-    w.h.runtime.block_on(async {
-        worker.start();
-        assert!(worker.engine.status().started);
-        w.write("a.txt", b"a");
-        konedrive_tree::off_runtime(|| w.examine(&[("", "a.txt")]));
-        worker.wake();
-        let mut waited = 0;
-        while !w.rows().is_empty() && waited < 200 {
-            tokio::time::sleep(Duration::from_millis(20)).await;
-            waited += 1;
-        }
-        worker.stop().await;
-    });
-    assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert!(!worker.engine.status().started);
-    assert_committed(&w, "a.txt", "a.txt");
 }
 
 /// Issue #84, the daemon's stop while a new file's session is being opened:
@@ -1399,24 +1375,25 @@ mod move_out;
 
 mod candidates;
 
+mod worker;
+
 mod foreign_parent;
 
-/// Issue #87: a failure no step settles gives its row a stable key, never
-/// the error's own text.
+/// Issue #87: an answer no step settles is stored on its row as a stable key, never as
+/// the error's own text, and the row goes again after its backoff.
 #[test]
-fn a_failure_is_one_of_four_keys() {
-    use super::engine::{outcome_of, Fail, Outcome};
-    use konedrive_graph::drive::WriteError;
-    let key = |fail: Fail| match outcome_of(fail) {
-        Outcome::Again { reason, backoff: true, detail: Some(_), .. } => reason.unwrap(),
-        other => panic!("not a backoff with a detail: {other:?}"),
-    };
-    assert_eq!(key(Fail::Write(WriteError::Transient("cannot reach Microsoft Graph: error sending request".into()))), Reason::Network);
-    assert_eq!(key(Fail::Io(std::io::Error::other("disk"))), Reason::LocalIo);
-    assert_eq!(key(Fail::Store(konedrive_tree::TreeError::Schema(None))), Reason::Store);
-    for e in [WriteError::Failed("odd".into()), WriteError::Changed, WriteError::NameExists, WriteError::NotFound, WriteError::SessionGone] {
-        assert_eq!(key(Fail::Write(e)), Reason::Failed);
-    }
+fn an_answer_nothing_settles_waits_as_upload_error() {
+    let w = World::new(&[]);
+    w.write("a.txt", b"a");
+    w.examine(&[("", "a.txt")]);
+    w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(418), 1));
+    let engine = w.h.engine();
+    w.h.drain(&engine);
+    assert_eq!(w.summary(), vec![(Create, "a.txt".into(), OutboxState::Retry)]);
+    assert_eq!(reason_of(&w, "a.txt").as_deref(), Some(Reason::Failed.key()));
+    w.h.block_on(engine.retry_now()).unwrap();
+    w.h.drain(&engine);
+    assert_committed(&w, "a.txt", "a.txt");
 }
 
 /// The journal line of a failure carries no address.

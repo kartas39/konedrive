@@ -226,7 +226,7 @@ impl Job<'_> {
     async fn clear_bad_item(&self) -> Result<Option<Outcome>, Fail> {
         let seq = self.row.seq;
         let Some(bad) = self.e.store().call(move |s| s.outbox_bad_item(seq)).await? else { return Ok(None) };
-        let item = match self.e.cfg.drive.item(&bad.id).await {
+        let item = match self.e.drive().item(&bad.id).await {
             Ok(item) => item,
             Err(DriveError::NotFound) => return self.forget_bad_item().await.map(|()| None),
             Err(err) => return Err(err.into()),
@@ -243,7 +243,7 @@ impl Job<'_> {
             left();
             return self.forget_bad_item().await.map(|()| None);
         }
-        match self.e.cfg.drive.delete_item(&bad.id, Guard::of_item(&item).as_str()).await {
+        match self.e.drive().delete_item(&bad.id, Guard::of_item(&item).as_str()).await {
             Ok(()) | Err(WriteError::NotFound) => {}
             Err(WriteError::Changed) => left(),
             Err(err) => return Err(err.into()),
@@ -278,7 +278,7 @@ impl Job<'_> {
                 }
             }
             Err(WriteError::NotFound) => {
-                self.e.cfg.host.cycle_wanted();
+                self.e.host().cycle_wanted();
                 Ok(Outcome::backoff(Reason::Parent))
             }
             Err(other) => Err(other.into()),
@@ -343,7 +343,7 @@ impl Job<'_> {
         if windows.is_empty() {
             return Ok(None);
         }
-        let holder = match self.e.cfg.drive.child(self.parent, self.name).await {
+        let holder = match self.e.drive().child(self.parent, self.name).await {
             Ok(holder) => holder,
             Err(DriveError::NotFound) => {
                 self.resolved().await?;
@@ -360,7 +360,7 @@ impl Job<'_> {
             self.resolved().await?;
             return Ok(None);
         }
-        match self.e.cfg.drive.delete_item(&holder.id, Guard::of_item(&holder).as_str()).await {
+        match self.e.drive().delete_item(&holder.id, Guard::of_item(&holder).as_str()).await {
             Ok(()) | Err(WriteError::NotFound) => {
                 self.resolved().await?;
                 tracing::info!("{} was held in OneDrive by the placeholder of an upload session this folder opened: deleted", self.found.rel.display());
@@ -396,7 +396,7 @@ impl Job<'_> {
         if new_name.is_some() || new_parent.is_some() {
             // Moved as well: the move first, then the content (§3.5).
             let change = ItemChange { name: new_name, parent_id: new_parent, modified: None };
-            match self.e.cfg.drive.update_item(id, guard.as_str(), &change).await {
+            match self.e.drive().update_item(id, guard.as_str(), &change).await {
                 Ok(item) => guard = guard.renewed(item.e_tag),
                 Err(WriteError::NameExists) => match name_taken(self.e, self.disk, row, Some(self.found), self.parent, self.name, Ours::Item(id)).await? {
                     Named::Adopt(item) => guard = guard.renewed(item.e_tag),
@@ -451,7 +451,7 @@ impl Job<'_> {
     /// was made against? Then the move landed before (§5), and the content
     /// goes against the fresh eTag.
     async fn landed(&self, id: &str, base: &Base) -> Result<Option<String>, Fail> {
-        let remote = match self.e.cfg.drive.item(id).await {
+        let remote = match self.e.drive().item(id).await {
             Ok(remote) => remote,
             Err(DriveError::NotFound) => return Ok(None),
             Err(err) => return Err(err.into()),
@@ -467,7 +467,7 @@ impl Job<'_> {
     async fn changed(&self, hash: Option<String>) -> Result<Outcome, Fail> {
         let row = self.row;
         let id = row.item_id.as_deref().unwrap_or_default();
-        let remote = match self.e.cfg.drive.item(id).await {
+        let remote = match self.e.drive().item(id).await {
             Ok(remote) => remote,
             Err(DriveError::NotFound) => return self.gone_or_new(id).await,
             Err(err) => return Err(err.into()),
@@ -514,7 +514,7 @@ impl Job<'_> {
         }
         if self.snap.size == 0 {
             self.send_empty(target).await
-        } else if self.snap.size <= self.e.cfg.limits.small_max {
+        } else if self.snap.size <= self.e.limits().small_max {
             self.send_small(target).await
         } else {
             self.send_large(target, last_check).await
@@ -523,7 +523,7 @@ impl Job<'_> {
 
     /// `len` bytes at `offset`, under the inode lock and a read lease.
     async fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, Fail> {
-        let inode = self.e.cfg.locks.lock(InodeKey::of(self.file)?).await;
+        let inode = self.e.locks().lock(InodeKey::of(self.file)?).await;
         let (file, snap) = (Arc::clone(self.file), self.snap);
         match blocking_under(inode.hold(), move || local::read(&file, offset, len, snap)).await? {
             Read::Bytes(bytes) => Ok(bytes),
@@ -547,7 +547,7 @@ impl Job<'_> {
     async fn hash_prefix(&self, hasher: &mut QuickXor, upto: u64) -> Result<(), Fail> {
         let mut at = 0;
         while at < upto {
-            let len = (upto - at).min(self.e.cfg.limits.chunk.max(1));
+            let len = (upto - at).min(self.e.limits().chunk.max(1));
             hasher.update(&self.read(at, len as usize).await?);
             at += len;
         }
@@ -568,7 +568,7 @@ impl Job<'_> {
     async fn send_empty(&self, target: UploadTarget<'_>) -> Result<Sent, Fail> {
         // Still empty, still the snapshot, and no writer: as for any read.
         self.read(0, 0).await?;
-        let answer = self.e.cfg.drive.upload_empty(target, self.snap.sec).await;
+        let answer = self.e.drive().upload_empty(target, self.snap.sec).await;
         if answer.is_ok() {
             self.e.upload_progress(self.row.seq, 0, 0);
             self.e.fault(Fault::AfterSend)?;
@@ -588,7 +588,7 @@ impl Job<'_> {
         let mut hasher = QuickXor::new();
         hasher.update(&bytes);
         let hash = hasher.finish_base64();
-        let drive = &self.e.cfg.drive;
+        let drive = self.e.drive();
         let mut session = match self.resume(&target, Some(&hash)).await? {
             Ok(session) => session,
             Err(adopted) => return Ok(adopted),
@@ -644,7 +644,7 @@ impl Job<'_> {
     /// OneDrive, which is adopted (§5).
     async fn resume(&self, target: &UploadTarget<'_>, hash: Option<&str>) -> Result<Result<Option<(String, u64)>, Sent>, Fail> {
         let Some(url) = self.session.clone() else { return Ok(Ok(None)) };
-        match self.e.cfg.drive.upload_status(&url).await {
+        match self.e.drive().upload_status(&url).await {
             Ok(progress) => Ok(Ok(Some((url, progress.next)))),
             Err(WriteError::SessionGone) => {
                 if let Some(adopted) = self.ended(target, hash).await? {
@@ -676,7 +676,7 @@ impl Job<'_> {
         if let Some((parent, name)) = place.clone() {
             carried = self.e.store().call(move |s| s.outbox_record_opening(seq, &parent, &name, now())).await?;
         }
-        let opened = match self.e.cfg.drive.create_upload_session(target, self.snap.sec).await {
+        let opened = match self.e.drive().create_upload_session(target, self.snap.sec).await {
             Ok(opened) => opened,
             Err(err) => {
                 // Any answer but `Transient` (a timeout, a lost connection, a
@@ -738,8 +738,8 @@ impl Job<'_> {
     /// The item the target names, as OneDrive has it now.
     async fn fetch(&self, target: &UploadTarget<'_>) -> Result<Option<DriveItem>, Fail> {
         let fetched = match *target {
-            UploadTarget::New { parent_id, name } => self.e.cfg.drive.child(parent_id, name).await,
-            UploadTarget::Existing { id, .. } => self.e.cfg.drive.item(id).await,
+            UploadTarget::New { parent_id, name } => self.e.drive().child(parent_id, name).await,
+            UploadTarget::Existing { id, .. } => self.e.drive().item(id).await,
         };
         match fetched {
             Ok(item) => Ok(Some(item)),
@@ -766,7 +766,7 @@ impl Job<'_> {
     /// when the file is still the snapshot the row holds.
     async fn send_large(&self, target: UploadTarget<'_>, last_check: Option<(&str, &str)>) -> Result<Sent, Fail> {
         let (e, seq, size) = (self.e, self.row.seq, self.snap.size);
-        let drive = &e.cfg.drive;
+        let drive = e.drive();
         // Only a session opened for this very content is resumed.
         let mut resumed = match self.resume(&target, None).await? {
             Ok(resumed) => resumed,
@@ -799,7 +799,7 @@ impl Job<'_> {
                     }
                     None => {}
                 }
-                let len = (size - next).min(e.cfg.limits.chunk);
+                let len = (size - next).min(e.limits().chunk);
                 if next + len >= size {
                     // Before the last fragment: a writer, the snapshot, and the
                     // item in OneDrive once more (§4.8 step 4).
@@ -828,7 +828,7 @@ impl Job<'_> {
                 let bytes = match self.read(next, len as usize).await {
                     Ok(bytes) => bytes,
                     Err(Fail::Now(outcome)) => {
-                        if matches!(&outcome, Outcome::Again { reason: Some(r), .. } if *r == Reason::Changed) {
+                        if outcome.reason() == Some(&Reason::Changed) {
                             self.abandon(&url).await?;
                         }
                         return Err(Fail::Now(outcome));
@@ -899,7 +899,7 @@ impl Job<'_> {
             }
             // The answer's own tag: nothing came between. Neither tag in the
             // answer: an empty guard, and what OneDrive makes of it (F200, F235).
-            match self.e.cfg.drive.delete_item(&item.id, Guard::of_item(&item).as_str()).await {
+            match self.e.drive().delete_item(&item.id, Guard::of_item(&item).as_str()).await {
                 Ok(()) | Err(WriteError::NotFound) => {
                     if remembered.is_ok() {
                         self.forget_bad_item().await?;
@@ -942,7 +942,7 @@ impl Job<'_> {
         let answer = answer_row(&item, Some(self.parent))?;
         let tree = tree(self.e).await;
         {
-            let inode = self.e.cfg.locks.lock(InodeKey::of(self.file)?).await;
+            let inode = self.e.locks().lock(InodeKey::of(self.file)?).await;
             let (file, snap, ctag) = (Arc::clone(self.file), self.snap, item.c_tag.clone());
             blocking_under((Arc::clone(&tree), inode.hold()), move || match placeholder::read_state(&file) {
                 Ok(None | Some(State::Hydrated)) => local::commit_attributes(&file, snap, ctag.as_deref()),

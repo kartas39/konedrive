@@ -2,7 +2,7 @@ use std::io;
 use std::time::Duration;
 
 use konedrive_graph::drive::{DriveError, WriteError};
-use konedrive_tree::outbox::{OutboxState, Reason};
+use konedrive_tree::outbox::Reason;
 use konedrive_tree::TreeError;
 
 use super::now;
@@ -19,26 +19,31 @@ pub(crate) enum Class {
     Out,
 }
 
-/// How one run of a row ended.
+/// How one run of a row ended: each variant is one thing the worker does with the row
+/// ([`Engine::settle`](super::Engine)), and holds only what that takes.
 #[derive(Debug)]
 pub(in crate::upload) enum Outcome {
     /// Committed, dropped, or turned into another row by its own
     /// transaction: nothing more to write.
     Done,
-    /// Back in line.
-    /// `detail` is a failure's own text, for the journal only (issue #87):
-    /// never the row's reason.
-    Again { state: OutboxState, reason: Option<Reason>, next_try: Option<i64>, backoff: bool, detail: Option<String> },
+    /// Ready again at once: the row was rewritten (a fresh guard, a temporary name, a
+    /// copy) and runs as it now is. More than a few times in a row, it backs off.
+    Again,
+    /// Waiting (not quiet) with `reason`, looked at again at `at` (Unix seconds).
+    Wait { reason: Reason, at: i64 },
+    /// Tried again at `at` (Unix seconds), with `reason`: no attempt is counted.
+    Later { reason: Reason, at: i64 },
+    /// In backoff with `reason`: 1 s doubling to an hour with each attempt. `detail` is a
+    /// failure's own text, for the journal only (issue #87): never the row's reason.
+    Backoff { reason: Reason, detail: Option<String> },
+    /// It needs the user: blocked with `reason`, and said once as an event. A `403` is one
+    /// ([`Reason::Forbidden`]): it blocks its own row, and the others go on.
+    Blocked(Reason),
     /// OneDrive asked the whole account to wait (§4.10).
     Throttled(Option<Duration>),
     SignedOut,
-    /// `403`: OneDrive does not allow this change. The row is blocked; the others go on.
-    Forbidden,
     /// A fault point fired: the row stays `running`, as after a crash.
     Crashed,
-    /// OneDrive refused the content for lack of space: the step reads the
-    /// quota and turns this into [`Outcome::Space`] (`space`).
-    NoSpace,
     /// Ready, in its place, but not taken until a quota read lets it go:
     /// `waiting-for-space` or `too-big:…` (`space`).
     Space(Reason),
@@ -48,34 +53,49 @@ impl Outcome {
     /// Ready again at once: the row was rewritten (a fresh guard, a
     /// temporary name, a copy) and runs as it now is.
     pub fn again() -> Self {
-        Outcome::Again { state: OutboxState::Ready, reason: None, next_try: None, backoff: false, detail: None }
+        Outcome::Again
     }
 
     /// Waiting (not quiet): looked at again after `after`.
     pub fn wait(reason: Reason, after: Duration) -> Self {
-        Outcome::Again { state: OutboxState::Waiting, reason: Some(reason), next_try: Some(now() + after.as_secs() as i64), backoff: false, detail: None }
+        Outcome::Wait { reason, at: now() + after.as_secs() as i64 }
     }
 
     pub fn later(reason: Reason, after: Duration) -> Self {
-        Outcome::Again { state: OutboxState::Retry, reason: Some(reason), next_try: Some(now() + after.as_secs() as i64), backoff: false, detail: None }
+        Outcome::Later { reason, at: now() + after.as_secs() as i64 }
     }
 
     /// In backoff: 1 s doubling to an hour with each attempt.
     pub fn backoff(reason: Reason) -> Self {
-        Outcome::Again { state: OutboxState::Retry, reason: Some(reason), next_try: None, backoff: true, detail: None }
+        Outcome::Backoff { reason, detail: None }
     }
 
     /// In backoff for a failure: `key` is one of the reasons for a
     /// failure ([`Reason::Network`] and the others), `detail` the error's
     /// own text, which only the journal gets (issue #87).
     pub fn failed(key: Reason, detail: impl ToString) -> Self {
-        Outcome::Again { state: OutboxState::Retry, reason: Some(key), next_try: None, backoff: true, detail: Some(detail.to_string()) }
+        Outcome::Backoff { reason: key, detail: Some(detail.to_string()) }
     }
 
     pub fn blocked(reason: Reason) -> Self {
-        Outcome::Again { state: OutboxState::Blocked, reason: Some(reason), next_try: None, backoff: false, detail: None }
+        Outcome::Blocked(reason)
+    }
+
+    /// The reason the row is left with, where the outcome names one.
+    pub fn reason(&self) -> Option<&Reason> {
+        match self {
+            Outcome::Wait { reason, .. } | Outcome::Later { reason, .. } | Outcome::Backoff { reason, .. } => Some(reason),
+            Outcome::Blocked(reason) | Outcome::Space(reason) => Some(reason),
+            Outcome::Done | Outcome::Again | Outcome::Throttled(_) | Outcome::SignedOut | Outcome::Crashed => None,
+        }
     }
 }
+
+/// OneDrive refused the content for lack of space: no outcome yet. The step reads the
+/// quota, which says whether the account is full or only this file too big, and that is
+/// the outcome ([`Outcome::Space`], `space`).
+#[derive(Debug)]
+pub(in crate::upload) struct NoSpace;
 
 /// Why a step stopped before it could decide on an [`Outcome`] itself.
 #[derive(Debug)]
@@ -87,9 +107,6 @@ pub(in crate::upload) enum Fail {
     Now(Outcome),
     Crashed,
 }
-
-/// How the worker's `last_error` begins while the write gate is closed.
-pub(super) const GATE_CLOSED: &str = "nothing is uploaded: ";
 
 impl From<WriteError> for Fail {
     fn from(e: WriteError) -> Self {
@@ -121,25 +138,28 @@ impl From<nix::errno::Errno> for Fail {
     }
 }
 
-/// What §3.6's table does with an answer no step settled itself.
-pub(in crate::upload) fn outcome_of(fail: Fail) -> Outcome {
-    match fail {
+/// What §3.6's table does with an answer no step settled itself; a refusal for lack of
+/// space is the quota's to settle ([`NoSpace`]).
+pub(in crate::upload) fn outcome_of(fail: Fail) -> Result<Outcome, NoSpace> {
+    Ok(match fail {
         Fail::Now(outcome) => outcome,
         Fail::Crashed => Outcome::Crashed,
         Fail::Store(e) => Outcome::failed(Reason::Store, e),
         Fail::Io(e) => Outcome::failed(Reason::LocalIo, e),
         Fail::Write(e) => match e {
-            WriteError::QuotaExceeded => Outcome::NoSpace,
+            WriteError::QuotaExceeded => return Err(NoSpace),
             WriteError::Throttled { retry_after } => Outcome::Throttled(retry_after),
             WriteError::Locked => Outcome::backoff(Reason::Locked),
-            WriteError::Forbidden => Outcome::Forbidden,
+            // Its own row only: a `403` can be about one item, and whether the sign-in
+            // allows writes at all is the write gate's to say.
+            WriteError::Forbidden => Outcome::blocked(Reason::Forbidden),
             WriteError::SignedOut => Outcome::SignedOut,
             WriteError::Refused(message) => Outcome::blocked(Reason::Refused(Some(message.to_string()))),
             e @ WriteError::Transient(_) => Outcome::failed(Reason::Network, e),
             // `Failed`, and a `412`, `409`, `404` or ended session no step settled.
             other => Outcome::failed(Reason::Failed, other),
         },
-    }
+    })
 }
 
 /// `text` with every `http://…` and `https://…` cut out, up to the next

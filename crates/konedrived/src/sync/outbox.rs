@@ -12,6 +12,7 @@ use konedrive_tree::{ActivityRow, Store};
 use super::{SyncError, SyncService};
 use crate::config::Mode;
 use crate::folder::root::SyncRoot;
+use crate::status::snapshot::OutboxNote;
 use crate::upload::{self, OutboxHost, OutboxWorker, WorkerConfig, WorkerStatus};
 
 /// One row as `Changes()` lists it: (seq, kind, full path, state, bytes sent,
@@ -167,6 +168,10 @@ impl SyncService {
             s.space_waiting_bytes = 0;
             s.too_big_count = 0;
             s.too_big_bytes = 0;
+            // What the worker said of itself went with the worker.
+            if let Some(note) = OutboxNote::after_worker(&s.outbox_note, None, None, 0) {
+                s.outbox_note = note;
+            }
         });
     }
 
@@ -415,7 +420,9 @@ impl OutboxHost for Host {
         }
     }
 
-    /// `PendingCount`, `PendingBytes`, `BlockedCount` and `Uploads`.
+    /// `PendingCount`, `PendingBytes`, `BlockedCount` and `Uploads`; and the folder's note
+    /// while OneDrive asked the uploads to wait or the worker cannot open the folder
+    /// (`OutboxNote::after_worker`, in `LastError`).
     fn status(&self, status: &WorkerStatus) {
         let Some(service) = self.sync.upgrade() else { return };
         let root = service.registration().map(|reg| reg.root.path).unwrap_or_default();
@@ -432,6 +439,10 @@ impl OutboxHost for Host {
             s.space_waiting_bytes = status.counts.space_waiting_bytes;
             s.too_big_count = status.counts.too_big;
             s.too_big_bytes = status.counts.too_big_bytes;
+            let now = crate::status::activity::unix_now();
+            if let Some(note) = OutboxNote::after_worker(&s.outbox_note, status.folder_closed.as_deref(), status.throttled_until, now) {
+                s.outbox_note = note;
+            }
         });
     }
 
