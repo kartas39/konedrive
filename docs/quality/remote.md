@@ -90,6 +90,10 @@ the #104 test gaps filled first. `RE4` waits for these.
   lock held across the swap (`:206–210`).
 - **Fix:** the pre-check and the swap as two `spawn_blocking` sections around the async download.
 - **Size:** M. **Risk:** medium (F14 is nearby). Part of `X2`. Not found in the limitations log.
+- **Fixed 2026-10-04** in `cc0ee68` (#152): three blocking sections (the look before the download, the
+  sealing after it, the swap under both locks); a stop ends a replacement only at its waits, so
+  `Poller::stop` still returns when no replacement code runs. `record_replaced_async`'s file
+  calls are still on the runtime thread (`docs/limitations/F232.md`).
 
 ## RE6. One store failure is blocking or not by the line — **defect?**
 
