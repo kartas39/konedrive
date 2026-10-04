@@ -220,11 +220,24 @@ impl Run<'_, '_> {
     /// answer is "outside" only when the path is sure and not beneath the
     /// root; "inside" only when the object's own handle stands at that place
     /// beneath the root. Anything else decides nothing.
+    ///
+    /// An ask that times out is the last one of the run: every wait is spent
+    /// with the tree lock held, and a helper that did not answer one question
+    /// in its whole timeout is not asked the next. What is not asked is not
+    /// decided, and is looked at again like anything undecided.
     pub(super) fn place_of(&self, handle: &FileHandle) -> Place {
+        if self.helper_silent.get() {
+            return Place::Unknown;
+        }
         let path = match self.ex.liveness.whereabouts(handle) {
             Ok(Whereabouts::Gone) if self.handles_current => return Place::Gone,
             Ok(Whereabouts::Gone) => return Place::Unknown,
             Ok(Whereabouts::At(path)) => path,
+            Err(err) if err.kind() == io::ErrorKind::TimedOut => {
+                tracing::warn!("the helper did not say where an object is: nothing more is asked in this examination, and what is missing waits");
+                self.helper_silent.set(true);
+                return Place::Unknown;
+            }
             Err(err) => {
                 tracing::debug!("an object's whereabouts cannot be asked yet: {err}");
                 return Place::Unknown;

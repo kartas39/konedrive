@@ -46,6 +46,7 @@ mod list;
 mod missing;
 mod run;
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{self};
@@ -165,18 +166,8 @@ impl Examiner<'_> {
         // not one the renewed handles make.
         let progress = progress.filter(|_| batch.is_full());
         let full = Batch::full();
-        let (batch, renewed) = match super::liveness::handles(self.store, &root) {
-            super::liveness::Handles::Changed(now) => {
-                let dropped = super::liveness::renew_handles(self.store, &now)?;
-                tracing::warn!(
-                    "the folder's filesystem is not the one its file handles were taken on: they are taken again, and \
-                     {dropped} move(s) out of the folder whose object is not where it was are left to OneDrive"
-                );
-                (&full, true)
-            }
-            _ => (batch, false),
-        };
-        let handles_current = super::liveness::handles_current(self.store, &root);
+        let handles = super::handles::prepare(self.store, &root)?;
+        let batch = if handles.renewed { &full } else { batch };
         let rows = Rows::new(self.store.call_blocking(move |s| s.outbox_rows())?);
         let leaving_items = self.store.call_blocking(|s| s.leaving_with_handles())?;
         let leaving = leaving_items.iter().map(|left| left.rel.clone()).collect();
@@ -192,7 +183,8 @@ impl Examiner<'_> {
             root_id,
             root_dev: stat.st_dev as u64,
             root_path,
-            handles_current,
+            handles_current: handles.current,
+            helper_silent: Cell::new(false),
             rows,
             leaving,
             leaving_ids,
@@ -216,7 +208,7 @@ impl Examiner<'_> {
             ops: Vec::new(),
             out: Examined::default(),
         };
-        run.out.renewed = renewed;
+        run.out.renewed = handles.renewed;
         run.list(batch)?;
         run.probe_expected()?;
         run.classify(batch)?;
@@ -300,6 +292,10 @@ struct Run<'e, 'a> {
     /// Whether the recorded handles are this filesystem's: `ESTALE` is gone
     /// only then (the move-out step).
     handles_current: bool,
+    /// An ask about an object's whereabouts timed out in this run: nothing
+    /// more is asked in it, and what would have been asked is not decided
+    /// ([`Run::place_of`]).
+    helper_silent: Cell<bool>,
     /// The live rows before this examination, and what they are looked up by.
     rows: Rows,
     /// Where objects of items no longer placed stay until they are removed

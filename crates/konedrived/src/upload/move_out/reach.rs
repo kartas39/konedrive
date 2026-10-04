@@ -8,7 +8,7 @@ use konedrive_tree::Store;
 
 use crate::helper::linked::Helper;
 use crate::helper::HelperError;
-use crate::local::liveness::handles_current_async;
+use crate::local::handles;
 
 /// The helper's answer to `OpenByHandle` for an object that left the folder. The errnos are
 /// read here and nowhere else in the move out: a row's step, what left a moved-out folder
@@ -43,7 +43,7 @@ pub(super) async fn reach(helper: &dyn Helper, store: &Store, root: &File, handl
         Ok(object) => Reach::Open(Arc::new(File::from(object))),
         // Every decode failure is `ESTALE`: believed only for handles taken on the
         // filesystem the folder is on now.
-        Err(HelperError::Refused(libc::ESTALE)) if handles_current_async(store, root).await => Reach::Gone,
+        Err(HelperError::Refused(libc::ESTALE)) if handles::current_async(store, root).await => Reach::Gone,
         Err(HelperError::Refused(libc::ESTALE)) => Reach::Stale,
         Err(HelperError::Refused(libc::EPERM)) => Reach::Refused,
         Err(HelperError::Refused(libc::EAGAIN)) => Reach::Busy,

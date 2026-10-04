@@ -191,7 +191,9 @@ in the outbox. Design: `writes.md` §3 (the watcher), §4 (the examination).
 - `examine/finish.rs` — the end of a run: the skipped list, the counts, the order of the rows.
 - `ignore.rs` — the ignore list: names that stay local. `[tests]`
 - `names.rs` — the names OneDrive refuses, and the name of a kept copy. `[tests]`
-- `liveness.rs` — whether a missing object is still there, and where.
+- `liveness.rs` — whether a missing object is still there, and where; the proof that it is absent from a place.
+- `handles.rs` — which filesystem the recorded file handles belong to, and taking them again when it changed.
+- `testing.rs` — tests: the stand-in for the helper's answer about an object (`FakeLiveness`).
 - `scan.rs` — how the Full local scan goes, for `org.konedrive.LocalScan`. `[tests]`
 
 ### `crates/konedrived/src/local/watcher/`

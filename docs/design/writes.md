@@ -717,6 +717,11 @@ opens it by its file handle (`OpenByHandle`), and either it is gone (`ESTALE`), 
 and `/proc/self/fd` says where, proved by opening that path again and finding the same inode. A
 move out is a delete for OneDrive, done only after the content is on this computer (§8.4).
 
+A helper silent for its whole timeout (30 s) is asked once in an examination, which waits with the
+tree lock held: what it would have asked after is undecided, and asked after again 30 s later
+(F260). On a changed filesystem (`local::handles::prepare`) each `move-out` row takes the handle
+of what stands at its last place, opened with no symbolic link in the path, or goes (F261).
+
 ### 8.2 `OpenByHandle`
 
 The one message the helper gained for uploads. The daemon sends a file handle and the folder's root

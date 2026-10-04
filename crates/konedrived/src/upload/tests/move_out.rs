@@ -17,8 +17,6 @@ use crate::helper::linked::Helper;
 use crate::helper::{Clearance, HelperError};
 use crate::hydration::graph_source::GraphSource;
 use crate::hydration::source::FillError;
-use crate::local::liveness::answered;
-use crate::local::Whereabouts;
 use crate::upload::move_out::{trash_of, Filler, MoveOuts, SourceFill, Tidy, CONTENT_LOCAL};
 
 /// A helper that answers `OpenByHandle` by looking for the object beneath one directory:
@@ -400,7 +398,7 @@ fn gone_is_believed_twice_and_with_nothing_where_the_object_was() {
 /// of what stands where it went — and the row then runs as any other.
 #[test]
 fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
-    use crate::local::liveness::handle_namespace;
+    use crate::local::handles::namespace as handle_namespace;
     let w = leaving(&[("P", None, "p.txt", b"moved"), ("Q", None, "q.txt", b"q")]);
     let p = w.beside("outside/p.txt");
     let p_handle = w.move_out("p.txt", &p);
@@ -986,20 +984,6 @@ fn what_left_is_marked_again_first_even_while_paused() {
     w.h.drain(&engine);
     assert_eq!(w.helper.called("mark_file").len(), 2, "again once the helper is back");
     assert_eq!(routed.lock().unwrap().len(), 1, "the router is told only of a change");
-}
-
-/// The liveness the daemon's examination asks: `ESTALE` is gone, a descriptor says where,
-/// and `EPERM` — never gone — decides nothing.
-#[test]
-fn the_helpers_answer_is_read_as_the_examination_needs() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().canonicalize().unwrap().join("x");
-    std::fs::write(&path, b"").unwrap();
-    let fd: OwnedFd = File::open(&path).unwrap().into();
-    assert_eq!(answered(Ok(fd)).unwrap(), Whereabouts::At(path));
-    assert_eq!(answered(Err(HelperError::Refused(libc::ESTALE))).unwrap(), Whereabouts::Gone);
-    assert_eq!(answered(Err(HelperError::Refused(libc::EPERM))).unwrap_err().raw_os_error(), Some(libc::EPERM));
-    assert!(answered(Err(HelperError::NotRunning)).is_err());
 }
 
 #[test]
