@@ -42,6 +42,11 @@ pub async fn start_daemon_showing(bus: &TestBus, dir: &Path, drive: konedrived::
 /// `env` added — and never the `KONEDRIVE_ACCOUNT` of the shell running the tests. It never
 /// opens a browser (`KONEDRIVE_NO_BROWSER`, issue #21).
 pub fn run_env(bus_addr: &str, args: &[&str], env: &[(&str, &str)]) -> std::process::Output {
+    command(bus_addr, args, env).output().expect("failed to run the konedrivectl binary")
+}
+
+/// [`run_env`]'s command, not started yet.
+pub fn command(bus_addr: &str, args: &[&str], env: &[(&str, &str)]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_konedrivectl"));
     command
         .args(args)
@@ -51,7 +56,7 @@ pub fn run_env(bus_addr: &str, args: &[&str], env: &[(&str, &str)]) -> std::proc
     for (name, value) in env {
         command.env(name, value);
     }
-    command.output().expect("failed to run the konedrivectl binary")
+    command
 }
 
 pub fn run(bus_addr: &str, args: &[&str]) -> std::process::Output {

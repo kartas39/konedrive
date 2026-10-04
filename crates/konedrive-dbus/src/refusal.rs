@@ -166,11 +166,25 @@ impl Refusal {
         Self::ALL.iter().find(|refusal| refusal.known_name() == Some(name)).cloned().unwrap_or_else(|| Self::Other(name.to_owned()))
     }
 
-    /// The refusal a failed call carries, if it carries a name ([`error_name`]): an error
-    /// that is no reply of the daemon's (the connection, a timeout zbus made itself) has
-    /// none.
+    /// The refusal a failed call or a failed read of a property carries, if it carries a
+    /// name ([`error_name`], or the name of the bus's own error a property read comes back
+    /// as): an error that is no reply of the daemon's (the connection, a timeout zbus made
+    /// itself) has none.
     pub fn from_error(error: &zbus::Error) -> Option<Self> {
-        error_name(error).map(Self::parse)
+        use zbus::DBusError;
+        match error {
+            zbus::Error::FDO(inner) => match inner.as_ref() {
+                zbus::fdo::Error::ZBus(error) => Self::from_error(error),
+                named => Some(Self::parse(named.name().as_str())),
+            },
+            other => error_name(other).map(Self::parse),
+        }
+    }
+
+    /// Whether `error` says that the object called is not there ([`Refusal::is_gone`]): an
+    /// account removed while a command ran.
+    pub fn says_gone(error: &zbus::Error) -> bool {
+        Self::from_error(error).is_some_and(|refusal| refusal.is_gone())
     }
 
     /// Whether this is the bus's answer for an object, interface or method that is not

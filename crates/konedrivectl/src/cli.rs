@@ -157,8 +157,22 @@ pub(crate) enum DevCmd {
     },
 }
 
+/// `sync`: `status`, the commands on the chosen account's folder, and the commands that take
+/// a path, which decides the account.
 #[derive(Subcommand)]
 pub(crate) enum SyncCmd {
+    /// Show the account's folder and its state; every account's when there are several and
+    /// none is chosen
+    Status,
+    #[command(flatten)]
+    Folder(FolderCmd),
+    #[command(flatten)]
+    Path(PathCmd),
+}
+
+/// The `sync` commands that act on the chosen account's folder.
+#[derive(Subcommand)]
+pub(crate) enum FolderCmd {
     /// Bind an empty folder to the account
     Register { path: String },
     /// The developer's mode: bind a local folder with NOTHING intercepting opens inside it
@@ -175,15 +189,6 @@ pub(crate) enum SyncCmd {
     Forget,
     /// Fill the account's folder with placeholders mirroring a local directory
     PopulateFrom { source_dir: String },
-    /// Download one file now. The path decides the account
-    Hydrate { path: String },
-    /// Free up space for one file. The path decides the account
-    Dehydrate { path: String },
-    /// Print one file's state. The path decides the account
-    State { path: String },
-    /// Show the account's folder and its state; every account's when there are several and
-    /// none is chosen
-    Status,
     /// List what is in OneDrive but not in the folder, and why
     Skipped,
     /// Ask OneDrive for changes now
@@ -256,6 +261,17 @@ pub(crate) enum SyncCmd {
     },
     /// Free up the space of every downloaded file in the account's folder that is not in use
     FreeUpSpace,
+}
+
+/// The `sync` commands that take a path: `Files` finds the account by it.
+#[derive(Subcommand)]
+pub(crate) enum PathCmd {
+    /// Download one file now. The path decides the account
+    Hydrate { path: String },
+    /// Free up space for one file. The path decides the account
+    Dehydrate { path: String },
+    /// Print one file's state. The path decides the account
+    State { path: String },
     /// Always keep files or folders on this device: everything in them is
     /// downloaded now, and whatever comes into a folder later. The paths decide the
     /// accounts

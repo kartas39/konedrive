@@ -2,7 +2,9 @@ use std::path::Path;
 
 use anyhow::{bail, Context};
 use konedrive_dbus::accounts::{AccountProxy, AccountsProxy, FolderProxies};
-use konedrivectl::{AccountInfo, Source, ACCOUNT_VARIABLE};
+use konedrive_dbus::Refusal;
+use konedrivectl::choice::{self, AccountInfo, Source};
+use konedrivectl::ACCOUNT_VARIABLE;
 use zbus::zvariant::OwnedObjectPath;
 
 /// The daemon: the accounts manager, and each account's objects.
@@ -41,7 +43,7 @@ impl Daemon {
             };
             match read.await {
                 Ok(info) => accounts.push(info),
-                Err(e) if konedrivectl::is_gone(&e) => {}
+                Err(e) if Refusal::says_gone(&e) => {}
                 Err(e) => return Err(e.into()),
             }
         }
@@ -65,26 +67,25 @@ impl Daemon {
     pub(crate) async fn chosen(&self, option: Option<&str>) -> anyhow::Result<Chosen> {
         let accounts = self.accounts().await?;
         self.check_loaded(&accounts).await?;
-        let account = konedrivectl::choose(&accounts, wanted(option))?.clone();
+        let account = choice::choose(&accounts, wanted(option))?.clone();
         Ok(Chosen { account, several: accounts.len() > 1 })
     }
 
     /// The accounts `status` and `sync status` show: the chosen one when one is named, every
-    /// account otherwise; whether that is one account shown on its own; and whether there
-    /// are several.
-    pub(crate) async fn shown(&self, option: Option<&str>) -> anyhow::Result<(Vec<AccountInfo>, bool, bool)> {
+    /// account otherwise.
+    pub(crate) async fn shown(&self, option: Option<&str>) -> anyhow::Result<Shown> {
         if wanted(option).is_some() {
             let chosen = self.chosen(option).await?;
-            return Ok((vec![chosen.account], true, chosen.several));
+            return Ok(Shown { accounts: vec![chosen.account], alone: true, several: chosen.several });
         }
         let accounts = self.accounts().await?;
         let (alone, several) = (accounts.len() == 1, accounts.len() > 1);
-        Ok((accounts, alone, several))
+        Ok(Shown { accounts, alone, several })
     }
 
     /// Every registered folder, with its account's label and proxies: what a path command's
-    /// refusal is explained against; and how many accounts there are.
-    pub(crate) async fn folders(&self) -> anyhow::Result<(Vec<Folder>, usize)> {
+    /// refusal is explained against.
+    pub(crate) async fn folders(&self) -> anyhow::Result<Folders> {
         let (mut folders, mut accounts) = (Vec::new(), 0);
         for path in self.manager.list().await? {
             let read = async {
@@ -100,11 +101,27 @@ impl Daemon {
                         folders.push(folder);
                     }
                 }
-                Err(e) if konedrivectl::is_gone(&e) => {}
+                Err(e) if Refusal::says_gone(&e) => {}
                 Err(e) => return Err(e.into()),
             }
         }
-        Ok((folders, accounts))
+        Ok(Folders { folders, accounts })
+    }
+}
+
+/// The accounts `status` and `sync status` show.
+pub(crate) struct Shown {
+    pub(crate) accounts: Vec<AccountInfo>,
+    /// One account, shown on its own: the chosen one, or the only one there is.
+    pub(crate) alone: bool,
+    /// Whether there are several accounts.
+    pub(crate) several: bool,
+}
+
+impl Shown {
+    /// How a command suggested about `account` starts.
+    pub(crate) fn prefix(&self, account: &AccountInfo) -> String {
+        choice::command_prefix(Some(&account.label), self.several, variable_set())
     }
 }
 
@@ -115,9 +132,9 @@ pub(crate) struct Chosen {
 }
 
 impl Chosen {
-    /// How a command suggested about this account starts (`konedrivectl::command_prefix`).
+    /// How a command suggested about this account starts (`choice::command_prefix`).
     pub(crate) fn prefix(&self) -> String {
-        konedrivectl::command_prefix(Some(&self.account.label), self.several, variable_set())
+        choice::command_prefix(Some(&self.account.label), self.several, variable_set())
     }
 
     /// What a success line starts with: the account's label when there are several.
@@ -154,8 +171,29 @@ pub(crate) struct Folder {
     pub(crate) sync: FolderProxies<'static>,
 }
 
-/// The folder that holds `path`, by the rule `Files` routes by: the one that is a
-/// component prefix of it (the CLI has already resolved its directory part).
-pub(crate) fn holder<'f>(folders: &'f [Folder], path: &str) -> Option<&'f Folder> {
-    folders.iter().find(|f| Path::new(path).starts_with(&f.root))
+/// Every account's registered folder.
+#[derive(Default)]
+pub(crate) struct Folders {
+    pub(crate) folders: Vec<Folder>,
+    /// How many accounts there are, with a folder or without.
+    pub(crate) accounts: usize,
+}
+
+impl Folders {
+    /// The folder that holds `path`, by the rule `Files` routes by: the one that is a
+    /// component prefix of it (the CLI has already resolved its directory part).
+    pub(crate) fn holder(&self, path: &str) -> Option<&Folder> {
+        self.folders.iter().find(|f| Path::new(path).starts_with(&f.root))
+    }
+
+    /// Every folder's path.
+    pub(crate) fn roots(&self) -> Vec<String> {
+        self.folders.iter().map(|f| f.root.clone()).collect()
+    }
+
+    /// How a command suggested about `holder` starts: it names the account of the folder
+    /// that holds the path; about a path in none, `<account>` stands in.
+    pub(crate) fn prefix(&self, holder: Option<&Folder>) -> String {
+        choice::command_prefix(holder.map(|f| f.label.as_str()), self.accounts > 1, variable_set())
+    }
 }

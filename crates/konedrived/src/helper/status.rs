@@ -20,55 +20,16 @@ pub const HELPER_UNIT: &str = "konedrive-helper.service";
 /// How often systemd is asked again while there is no link (HS1).
 pub const RECHECK: Duration = Duration::from_secs(30);
 
-/// `Accounts.HelperState`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum HelperState {
-    /// The daemon holds a link to the helper: files download when opened.
-    Connected,
-    /// systemd knows no `konedrive-helper.service`.
-    NotInstalled,
-    /// Installed, and not running.
-    Stopped,
-    /// The service failed, or its unit could not be loaded.
-    Failed,
-    /// No link, and systemd could not be asked — or says the helper runs,
-    /// and the daemon is not connected to it yet.
-    #[default]
-    Unknown,
-}
+pub use konedrive_dbus::HelperState;
 
-impl HelperState {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Connected => "connected",
-            Self::NotInstalled => "not-installed",
-            Self::Stopped => "stopped",
-            Self::Failed => "failed",
-            Self::Unknown => "unknown",
-        }
-    }
-
-    /// What `LastError` says while a folder waits for the helper (HS3): what
-    /// the state means and how to start the helper. `None` when connected.
-    pub fn advice(self) -> Option<&'static str> {
-        konedrive_dbus::helper_advice(self.as_str())
-    }
-
-    /// Whether the helper is known not to run: not installed, stopped or failed. Not so
-    /// while nothing is known (`unknown`: systemd was not asked yet, or says it runs).
-    pub fn known_down(self) -> bool {
-        matches!(self, Self::NotInstalled | Self::Stopped | Self::Failed)
-    }
-
-    /// The state systemd's `LoadState` and `ActiveState` of the unit stand
-    /// for, when the daemon has no link.
-    pub fn of_unit(load: &str, active: &str) -> Self {
-        match (load, active) {
-            ("not-found", _) => Self::NotInstalled,
-            (_, "failed") | ("error" | "bad-setting", _) => Self::Failed,
-            (_, "inactive" | "deactivating") => Self::Stopped,
-            _ => Self::Unknown,
-        }
+/// The state systemd's `LoadState` and `ActiveState` of the unit stand for, when the daemon
+/// has no link.
+pub fn state_of_unit(load: &str, active: &str) -> HelperState {
+    match (load, active) {
+        ("not-found", _) => HelperState::NotInstalled,
+        (_, "failed") | ("error" | "bad-setting", _) => HelperState::Failed,
+        (_, "inactive" | "deactivating") => HelperState::Stopped,
+        _ => HelperState::Unknown,
     }
 }
 

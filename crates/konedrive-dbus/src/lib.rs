@@ -12,16 +12,20 @@
 //!
 //! No name carries a version: the daemon and every client of it ship together.
 //!
-//! Their proxies are in [`accounts`]. Nothing is served at
+//! Their proxies are in [`accounts`], and the rows they answer with in [`rows`]. Nothing is served at
 //! `/org/konedrive/Daemon`, the single-account object of earlier versions.
 
 pub mod accounts;
+mod helper;
 mod refusal;
+pub mod rows;
+#[cfg(feature = "testing")]
 pub mod testing;
 pub mod version;
 
 use zbus::zvariant::OwnedObjectPath;
 
+pub use helper::HelperState;
 pub use refusal::Refusal;
 
 pub const SERVICE_NAME: &str = "org.konedrive.Daemon";
@@ -68,25 +72,6 @@ pub fn account_path(id: &str) -> Option<OwnedObjectPath> {
 /// [`Refusal::ModifiedLocally`] and [`Refusal::NotHydrated`].
 pub const ERROR_PREFIX: &str = "org.konedrive.Error";
 
-/// What to tell a person about the helper in each `Accounts.HelperState`
-/// that is not `connected`: what it means and how to start it. One wording
-/// for the daemon's `LastError` and the CLI's `Helper:` line alike. `None` for
-/// `connected`, and for anything this build does not know.
-pub fn helper_advice(state: &str) -> Option<&'static str> {
-    match state {
-        "not-installed" => Some(
-            "the konedrive helper is not installed: files are not kept in step and do not \
-             download when opened. Install it: sudo scripts/install-helper.sh (see README)",
-        ),
-        "stopped" => Some(
-            "the konedrive helper is not running: start it with `sudo systemctl start konedrive-helper`",
-        ),
-        "failed" => Some("the konedrive helper failed: see `systemctl status konedrive-helper`"),
-        "unknown" => Some("the konedrive helper is not connected"),
-        _ => None,
-    }
-}
-
 /// The D-Bus error name a failed call carries, if it carries one.
 ///
 /// `zbus::Error::MethodError` keeps the name and the message apart; matching
@@ -95,6 +80,17 @@ pub fn error_name(error: &zbus::Error) -> Option<&str> {
     match error {
         zbus::Error::MethodError(name, _, _) => Some(name.as_str()),
         _ => None,
+    }
+}
+
+/// Whether a failed read of a property failed because the daemon has no such property: a
+/// daemon of an older build, not restarted since a newer client was installed. A client
+/// treats the value as absent.
+pub fn is_unknown_property(error: &zbus::Error) -> bool {
+    const NAME: &str = "org.freedesktop.DBus.Error.UnknownProperty";
+    match error {
+        zbus::Error::FDO(inner) => matches!(inner.as_ref(), zbus::fdo::Error::UnknownProperty(_)),
+        other => error_name(other) == Some(NAME),
     }
 }
 

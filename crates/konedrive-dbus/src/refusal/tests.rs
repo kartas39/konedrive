@@ -77,8 +77,9 @@ fn a_name_this_build_does_not_know_is_kept() {
     }
 }
 
-/// Only a reply that carries a name is a refusal; the three names for what is not there
-/// say an account is gone.
+/// Only a reply that carries a name is a refusal — a failed call's, or the bus's own error a
+/// failed read of a property comes back as; the three names for what is not there say an
+/// account is gone.
 #[test]
 fn a_failed_call_is_read_by_its_name() {
     let named = |name: &'static str| {
@@ -93,6 +94,13 @@ fn a_failed_call_is_read_by_its_name() {
         Some(Refusal::Other("org.konedrive.Error.Later".to_owned()))
     );
     assert_eq!(Refusal::from_error(&zbus::Error::InvalidReply), None);
+    let property = |error: zbus::fdo::Error| zbus::Error::FDO(Box::new(error));
+    let removed = property(zbus::fdo::Error::UnknownObject("no such account".to_owned()));
+    assert_eq!(Refusal::from_error(&removed), Some(Refusal::UnknownObject));
+    assert!(Refusal::says_gone(&removed));
+    assert!(Refusal::says_gone(&named("org.freedesktop.DBus.Error.UnknownMethod")));
+    assert!(!Refusal::says_gone(&named("org.konedrive.Error.NoRoot")));
+    assert_eq!(Refusal::from_error(&property(zbus::fdo::Error::ZBus(zbus::Error::InvalidReply))), None);
     let gone: Vec<&Refusal> = Refusal::ALL.iter().filter(|refusal| refusal.is_gone()).collect();
     assert_eq!(gone, [&Refusal::UnknownObject, &Refusal::UnknownMethod, &Refusal::UnknownInterface]);
 }

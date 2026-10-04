@@ -1,6 +1,6 @@
 use zbus::zvariant::OwnedObjectPath;
 
-use crate::text::shell_word;
+use crate::text::formats::shell_word;
 use crate::{ACCOUNT_VARIABLE, FIRST_LABEL};
 
 /// One account, as a command chooses it.

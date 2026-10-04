@@ -5,9 +5,17 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# Test-only: `testing::TestBus`, a private session bus. The tests of the daemon, of
+# `konedrivectl` and of the VM suite turn it on; never enable it in a build that ships.
+testing = []
+
 [dependencies]
+serde.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
+# This crate's own tests of the private bus (`tests/test_bus.rs`).
+konedrive-dbus = { path = ".", features = ["testing"] }
 tempfile.workspace = true
 tokio.workspace = true

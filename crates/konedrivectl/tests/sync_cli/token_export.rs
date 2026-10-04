@@ -2,11 +2,9 @@ use super::*;
 
 // --- `dev export-access-token`, a development build's (`dev-tools`) -------
 
-/// I1: an existing file at `--out` is replaced by a new inode, not
-/// truncated in place. An fd opened before the export — the shape the
-/// used to reproduce the bug — proves it: it must keep reading the
-/// *old* content, byte for byte, forever, because `rename(2)` never touches
-/// the inode a still-open fd already holds.
+/// An existing file at `--out` is replaced by a new inode, not truncated in place. An fd
+/// opened before the export proves it: it keeps reading the old content, because `rename(2)`
+/// never touches the inode a still-open fd holds.
 #[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_exports_the_access_token_and_nothing_else_readable_only_by_the_user() {
@@ -38,9 +36,8 @@ async fn binary_exports_the_access_token_and_nothing_else_readable_only_by_the_u
     assert_eq!(still_reads, "old", "an fd opened before the export must keep reading the old inode");
 }
 
-/// I1: `--out` naming a symlink — the 's exact reproduction — must
-/// have the link itself replaced by `rename(2)`, never the file it points
-/// to opened and truncated.
+/// `--out` naming a symlink: the link itself is replaced by `rename(2)`; the file it points
+/// to is never opened and truncated.
 #[cfg(feature = "dev-tools")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn binary_export_access_token_replaces_a_symlink_without_touching_its_target() {

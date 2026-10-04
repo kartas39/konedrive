@@ -326,12 +326,12 @@ async fn a_download_is_announced_kept_and_freed_up_again() {
     assert_eq!((args.kind().as_str(), args.path().as_str(), args.detail().as_str()), ("downloaded", shown, "8.0 KiB"));
     let recent = f.activity.recent(10).await.unwrap();
     assert_eq!(recent.len(), 1, "{recent:?}");
-    assert_eq!((recent[0].1.as_str(), recent[0].2.as_str()), ("downloaded", shown));
-    assert_eq!(recent[0].0, *args.time());
+    assert_eq!((recent[0].kind.as_str(), recent[0].path.as_str()), ("downloaded", shown));
+    assert_eq!(recent[0].at, *args.time());
 
-    let (files, bytes, busy) = f.folder.free_up_space().await.unwrap();
-    assert_eq!((files, busy), (1, 0));
-    assert!(bytes >= 8192, "{bytes}");
+    let freed = f.folder.free_up_space().await.unwrap();
+    assert_eq!((freed.files, freed.busy), (1, 0));
+    assert!(freed.bytes >= 8192, "{freed:?}");
     assert_eq!(f.files.item_state(shown).await.unwrap(), "online-only");
 }
 

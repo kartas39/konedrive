@@ -21,11 +21,14 @@ tokio = { workspace = true, features = ["signal"] }
 zbus.workspace = true
 
 [dev-dependencies]
+# Tests only: the private session bus.
+konedrive-dbus = { path = "../konedrive-dbus", features = ["testing"] }
 konedrived = { path = "../konedrived" }
 konedrive-fs = { path = "../konedrive-fs" }
 konedrive-graph = { path = "../konedrive-graph" }
 konedrive-proto = { path = "../konedrive-proto" }
-konedrive-tree = { path = "../konedrive-tree" }
+# Tests only: the store in memory (`TreeStore::in_memory`).
+konedrive-tree = { path = "../konedrive-tree", features = ["testing"] }
 nix = { workspace = true, features = ["socket"] }
 serde_json.workspace = true
 tempfile.workspace = true

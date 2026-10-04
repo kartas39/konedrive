@@ -197,7 +197,7 @@ for `konedrive-helper.service`: not found is `not-installed`; inactive is `stopp
 unit that cannot be loaded, is `failed`; no system bus, no systemd, or a unit systemd says is
 running while the daemon has no link yet, is `unknown`. It is asked again when the link drops or
 returns and every 30 s while there is none. The sentence for each state — how to install, start or
-diagnose the helper — is written once, in `konedrive_dbus::helper_advice`, for the daemon's
+diagnose the helper — is written once, in `konedrive_dbus::HelperState::advice`, for the daemon's
 `LastError`, the CLI and the window alike; each account whose folder waits for the helper begins
 its `Folder.LastError` with it.
 

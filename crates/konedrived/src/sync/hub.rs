@@ -219,7 +219,7 @@ impl HelperHub {
         }
         let unit = Arc::clone(&self.unit.lock().unwrap());
         let found = match unit.states().await {
-            Some((load, active)) => HelperState::of_unit(&load, &active),
+            Some((load, active)) => crate::helper::status::state_of_unit(&load, &active),
             None => HelperState::Unknown,
         };
         let _publishing = self.publishing.lock().unwrap();

@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail};
-use konedrivectl::AccountAction;
+use konedrivectl::text::refusals::{explain_account_error, AccountAction};
+use konedrivectl::text::settings::{on_battery_text, on_metered_text};
 
 use crate::cli::SettingsCmd;
 use crate::daemon::Daemon;
@@ -17,7 +18,7 @@ pub(crate) async fn set_client_id(daemon: &Daemon, id: &str) -> anyhow::Result<(
                 busy.push(account.label);
             }
         }
-        bail!("{}", konedrivectl::explain_account_error(AccountAction::SetClientId(id, &busy), &error));
+        bail!("{}", explain_account_error(AccountAction::SetClientId(id, &busy), &error));
     }
     println!("Client ID saved.");
     Ok(())
@@ -27,16 +28,16 @@ pub(crate) async fn set_client_id(daemon: &Daemon, id: &str) -> anyhow::Result<(
 pub(crate) async fn settings(daemon: &Daemon, command: SettingsCmd) -> anyhow::Result<()> {
     let manager = &daemon.manager;
     match command {
-        SettingsCmd::OnMetered { choice: None } => println!("{}", konedrivectl::on_metered_text(manager.pause_on_metered().await?)),
+        SettingsCmd::OnMetered { choice: None } => println!("{}", on_metered_text(manager.pause_on_metered().await?)),
         SettingsCmd::OnMetered { choice: Some(choice) } => {
             let pause = choice == "pause";
-            manager.set_pause_on_metered(pause).await.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::Settings, &e)))?;
-            println!("{}", konedrivectl::on_metered_text(pause));
+            manager.set_pause_on_metered(pause).await.map_err(|e| anyhow!(explain_account_error(AccountAction::Settings, &e)))?;
+            println!("{}", on_metered_text(pause));
         }
-        SettingsCmd::OnBattery { choice: None } => println!("{}", konedrivectl::on_battery_text(&manager.on_battery().await?)),
+        SettingsCmd::OnBattery { choice: None } => println!("{}", on_battery_text(&manager.on_battery().await?)),
         SettingsCmd::OnBattery { choice: Some(choice) } => {
-            manager.set_on_battery(&choice).await.map_err(|e| anyhow!(konedrivectl::explain_account_error(AccountAction::Settings, &e)))?;
-            println!("{}", konedrivectl::on_battery_text(&choice));
+            manager.set_on_battery(&choice).await.map_err(|e| anyhow!(explain_account_error(AccountAction::Settings, &e)))?;
+            println!("{}", on_battery_text(&choice));
         }
     }
     Ok(())

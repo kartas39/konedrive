@@ -1,13 +1,21 @@
+use konedrive_dbus::rows::{Change, KeptBack, KeptBackFiles, KeptBackReason};
 use konedrive_reason::{Group, LocalSkip, Reason};
 
 use super::{not_uploaded_text, outbox_text, quota_text, space_waiting_text, upload_reason_text};
 
 #[test]
 fn outbox_lines_say_what_waits_and_why() {
-    let rows = vec![
-        (1, "create".to_owned(), "/f/a.txt".to_owned(), "running".to_owned(), 512, 2048, String::new(), 0),
-        (2, "create".to_owned(), "/f/a:b".to_owned(), "blocked".to_owned(), 0, 1, "name-characters".to_owned(), 0),
-    ];
+    let change = |seq, path: &str, state: &str, sent, total, reason: &str| Change {
+        seq,
+        kind: "create".to_owned(),
+        path: path.to_owned(),
+        state: state.to_owned(),
+        sent,
+        total,
+        reason: reason.to_owned(),
+        next_try: 0,
+    };
+    let rows = vec![change(1, "/f/a.txt", "running", 512, 2048, ""), change(2, "/f/a:b", "blocked", 0, 1, "name-characters")];
     let text = outbox_text(&rows, true, "konedrivectl");
     assert!(text.contains("running  create   /f/a.txt  25% of 2.0 KiB"), "{text}");
     assert!(text.contains("blocked  create   /f/a:b  (a name OneDrive refuses"), "{text}");
@@ -20,13 +28,10 @@ fn outbox_lines_say_what_waits_and_why() {
 /// files of a per-file reason follow, capped, with how to see them all.
 #[test]
 fn not_uploaded_lists_reasons_then_the_files_of_per_file_ones() {
-    let summary = vec![
-        ("one-action".to_owned(), "quota-exceeded".to_owned(), 5000, 3 << 30),
-        ("per-file".to_owned(), "refused".to_owned(), 25, 0),
-        ("never".to_owned(), "symlink".to_owned(), 1, 0),
-    ];
-    let items: Vec<(String, String)> = (0..20).map(|i| (format!("/f/{i}"), "refused: bad name".to_owned())).collect();
-    let text = not_uploaded_text(&summary, &[("refused".to_owned(), items, 25)], "konedrivectl");
+    let row = |group: &str, reason: &str, count, bytes| KeptBackReason { group: group.to_owned(), reason: reason.to_owned(), count, bytes };
+    let summary = vec![row("one-action", "quota-exceeded", 5000, 3 << 30), row("per-file", "refused", 25, 0), row("never", "symlink", 1, 0)];
+    let items: Vec<KeptBack> = (0..20).map(|i| KeptBack { path: format!("/f/{i}"), reason: "refused: bad name".to_owned() }).collect();
+    let text = not_uploaded_text(&summary, &[("refused".to_owned(), KeptBackFiles { items, total: 25 })], "konedrivectl");
     assert!(text.starts_with("Needs you: one action fixes them all:\n  5000, 3.0 GiB: OneDrive is full"), "{text}");
     assert!(text.contains("Never uploaded:\n  1: a symbolic link"), "{text}");
     assert!(text.contains("\nrefused by OneDrive:\n  /f/0  (OneDrive refused it: bad name)\n"), "{text}");

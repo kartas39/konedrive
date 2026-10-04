@@ -89,7 +89,7 @@ pub enum AccountAction<'a> {
     /// `Account.SignOut`, with the account's label.
     SignOut(&'a str),
     /// `Account.SetMode`: the account's label, the mode asked for, and how a command
-    /// suggested about the account starts ([`command_prefix`](crate::command_prefix)).
+    /// suggested about the account starts ([`command_prefix`](crate::choice::command_prefix)).
     SetMode(&'a str, &'a str, &'a str),
     /// `Accounts.SetPauseOnMetered` or `SetOnBattery`: a setting every account shares.
     Settings,

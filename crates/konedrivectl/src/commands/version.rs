@@ -5,11 +5,11 @@ use konedrive_dbus::accounts::AccountsProxy;
 pub(crate) async fn print_version() {
     use konedrive_dbus::version::{COMMIT, VERSION};
     let daemon = daemon_build().await;
-    print!("{}", konedrivectl::version_text(VERSION, COMMIT, &daemon));
+    print!("{}", konedrivectl::text::version::version_text(VERSION, COMMIT, &daemon));
 }
 
-async fn daemon_build() -> konedrivectl::DaemonBuild {
-    use konedrivectl::DaemonBuild;
+async fn daemon_build() -> konedrivectl::text::version::DaemonBuild {
+    use konedrivectl::text::version::DaemonBuild;
     let connection = match zbus::Connection::session().await {
         Ok(connection) => connection,
         Err(error) => return DaemonBuild::NotRunning(format!("no session bus: {error}")),

@@ -1,5 +1,5 @@
 use super::{choose, command_prefix, AccountInfo, NoChoice, Source};
-use crate::{refusal_text_in, Context, SyncAction};
+use crate::text::refusals::{refusal_text_in, Context, SyncAction};
 
 fn account(id: &str, label: &str, email: &str) -> AccountInfo {
     AccountInfo {
