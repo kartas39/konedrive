@@ -10,7 +10,7 @@ use konedrive_graph::oauth::Endpoints;
 use konedrived::account::testing::MemoryWallet;
 use konedrived::account::state::SignInState;
 use konedrived::desktop::baloo::Baloo;
-use konedrived::sync::hub;
+use konedrived::helper::hub;
 
 use crate::harness::{Checks, Ctx, Reader, dir_mark_present};
 use crate::ROOTS_FILE;

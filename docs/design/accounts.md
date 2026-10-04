@@ -46,8 +46,9 @@ tray's tooltip and of every list of accounts. They cannot be reordered.
 ```text
 konedrived
  ├─ ConfigStore ────── config.toml: one owner, one lock, every write through it
- ├─ HelperHub ──────── the one link to konedrive-helper, its supervisor, HelperState,
- │                      the per-inode locks, the fill-on-open loop and its router
+ ├─ Registry ───────── the accounts as their folders see each other: the per-inode locks,
+ │    │                 the fill-on-open loop and its router, the overlap check, the hold
+ │    └─ HelperHub ──── the one link to konedrive-helper, its supervisor, HelperState
  ├─ AccountManager ─── /org/konedrive/Accounts: Accounts, Files, ObjectManager
  │    └─ Account <id> ── /org/konedrive/Accounts/<id>: Account, Folder, Transfers, UploadQueue,
     │                                              Conflicts, LocalScan, ActivityLog, TokenExport
@@ -64,7 +65,8 @@ konedrived
 | `Account` | `daemon/manager.rs` | One account: its `AccountService`, its `SyncService`, its paths, and the tasks that turn their state into `PropertiesChanged` |
 | `AccountService` | `account/`, `konedrive-graph/src/oauth.rs` | Per account: sign-in, tokens, the account's own wallet item (§4.3), its drive, and the identity check at sign-in (§6.2) |
 | `SyncService` | `sync/` | Per account: everything [sync.md](sync.md), [hydration.md](hydration.md) and [pinning.md](pinning.md) describe for one folder, on the hub's link |
-| `HelperHub` | `sync/hub.rs` | The link to the helper and what goes with it, for every account (§3.3); which account an intercepted open belongs to (§3.4); the overlap check across accounts (§6.3) |
+| `HelperHub` | `helper/hub.rs` | The link to the helper, its supervisor and `HelperState`, for every account (§3.3). It knows no account: it tells the registry as the link comes and goes |
+| `Registry` | `sync/registry.rs` | The list of the accounts' folders, written only by `AccountManager` with its own list; which account an intercepted open belongs to (§3.4); the overlap check across accounts (§6.3); what every account is told alike (the hold's settings and the machine's conditions) |
 
 ### 3.2 Startup
 
@@ -117,7 +119,7 @@ folder in turn before any fill is served — is limitations log F43.
 ### 3.4 Which account an intercepted open belongs to
 
 A fill request from the helper carries a request id and the event's descriptor, and nothing about
-accounts. The hub decides, in this order, and stops at the first answer:
+accounts. The registry of the accounts' folders (`sync/registry.rs`) decides, in this order, and stops at the first answer:
 
 1. **By device.** `fstat` the descriptor. The accounts whose folder is on that filesystem — as it
    was when the folder was registered, never looked up per request — are the candidates. None

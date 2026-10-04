@@ -188,7 +188,7 @@ async fn a_folder_registered_without_the_helper_switches_to_interception_when_th
 
     // The helper is installed and started after the folder was registered.
     let supervisor =
-        tokio::spawn(hub::supervise(Arc::clone(service.hub()), socket_path.clone(), Duration::from_millis(10)));
+        tokio::spawn(crate::helper::hub::supervise(Arc::clone(service.hub()), socket_path.clone(), Duration::from_millis(10)));
     let helper = FakeHelper::start(socket_path);
     wait_until("the folder switched to interception", || service.root_state() == "ready").await;
 

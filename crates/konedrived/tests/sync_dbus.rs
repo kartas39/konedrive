@@ -583,7 +583,7 @@ async fn helper_state_follows_the_link_and_then_what_systemd_says() {
     let f = setup().await;
     let unit = Arc::new(FakeUnit(std::sync::Mutex::new(("loaded".into(), "inactive".into()))));
     f.sync.hub().set_unit(Arc::clone(&unit) as Arc<dyn konedrived::helper::status::HelperUnit>);
-    let watching = tokio::spawn(konedrived::sync::hub::watch_every(Arc::clone(f.sync.hub()), Duration::from_millis(100)));
+    let watching = tokio::spawn(konedrived::helper::hub::watch_every(Arc::clone(f.sync.hub()), Duration::from_millis(100)));
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
     f.folder.register(root.to_str().unwrap()).await.unwrap();
@@ -912,7 +912,7 @@ async fn the_folder_answers_from_the_moment_the_daemon_is_on_the_bus() {
         Duration::from_secs(5),
     )
     .await;
-    tokio::spawn(konedrived::sync::hub::supervise(
+    tokio::spawn(konedrived::helper::hub::supervise(
         Arc::clone(daemon.manager.hub()),
         socket_path,
         Duration::from_millis(50),

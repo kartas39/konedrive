@@ -113,6 +113,8 @@ One account: its sign-in, mode, state, quota, cached profile, stored secret. Des
 The daemon's end of the helper socket, and the helper's state. Design: `hydration.md`.
 
 - `mod.rs` — the link: a blocking thread that owns the socket; `LinkCell`. `[tests]`
+- `hub.rs` — `HelperHub`: the one link every account shares, its supervisor and `HelperState`;
+  `Served`, whom it tells as the link comes and goes.
 - `linked.rs` — `Helper` and `Linked`: what the daemon asks of the helper beyond the fills, as
   a trait.
 - `status.rs` — the helper as the daemon sees it: how systemd says its unit stands. `[tests]`
@@ -309,7 +311,7 @@ Baloo and thumbnails. Design: `desktop.md`.
 
 ### `crates/konedrived/src/sync/`
 
-`SyncService`, one per account's folder, a file per responsibility, and the hub. Every
+`SyncService`, one per account's folder, a file per responsibility, and the registry. Every
 `impl SyncService` is here. Design: `hydration.md`, `sync.md`, `accounts.md`.
 
 - `mod.rs` — `SyncService` and what it holds. `[tests]`
@@ -317,7 +319,8 @@ Baloo and thumbnails. Design: `desktop.md`.
 - `testing.rs` — test support, also for the VM suite: a `Wiring` of fakes (the account, a
   temporary `config.toml`, the content sources, the watcher, a clock moved by hand).
 - `testing/helper.rs` — the fake helper: it records, refuses, and holds an answer until released.
-- `hub.rs` — the one link to the helper, shared by every account. `[tests]`
+- `registry.rs` — `Registry`: the folders of every account, listed by the account manager; whose
+  folder an open is in, the overlap check, the claims, what every account is told alike. `[tests]`
 - `folder.rs` — what the folder is, as a type; `change`, the one way to change it, and the view the readers read.
 - `running_sync.rs` — the running sync of a OneDrive folder as one object in that state: its parts,
   the handles a reader may hold, and how it stops (dropped, then waited for by the next change).

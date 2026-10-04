@@ -155,7 +155,7 @@ impl Daemon {
         let socket = self.dir.path().join("helper.sock");
         let helper = FakeHelper::start(&socket);
         let hub = Arc::clone(self.daemon.manager.hub());
-        tokio::spawn(konedrived::sync::hub::supervise(Arc::clone(&hub), socket, Duration::from_millis(50)));
+        tokio::spawn(konedrived::helper::hub::supervise(Arc::clone(&hub), socket, Duration::from_millis(50)));
         eventually("the supervisor connected", || {
             let hub = Arc::clone(&hub);
             async move { hub.link().is_some() }
@@ -240,9 +240,13 @@ async fn accounts_are_added_listed_announced_and_removed() {
         let interfaces: Vec<String> = managed[path].keys().map(|name| name.to_string()).collect();
         assert!(interfaces.contains(&ACCOUNT_INTERFACE_NAME.to_owned()), "{interfaces:?}");
     }
+    // SY8: the accounts as their folders see each other are the listed ones, in that order.
+    let folders = || d.daemon.manager.registry().accounts().iter().map(|sync| format!("{ACCOUNTS_PATH}/{}", sync.id())).collect::<Vec<_>>();
+    assert_eq!(folders(), [family.as_str(), personal.as_str()]);
 
     d.manager.remove(&family.as_ref()).await.unwrap();
     assert_eq!(d.manager.list().await.unwrap(), vec![personal.clone()]);
+    assert_eq!(folders(), [personal.as_str()]);
     let gone = tokio::time::timeout(Duration::from_secs(5), removed.next()).await.unwrap().unwrap();
     assert_eq!(gone.args().unwrap().object_path.as_str(), family.as_str());
     let managed = objects.get_managed_objects().await.unwrap();
@@ -689,7 +693,7 @@ async fn a_version_1_onedrive_folder_is_held_then_brought_up_at_the_first_connec
 
     let socket = folders.path().join("helper.sock");
     let helper = FakeHelper::start(&socket);
-    tokio::spawn(konedrived::sync::hub::supervise(Arc::clone(daemon.manager.hub()), socket, Duration::from_millis(50)));
+    tokio::spawn(konedrived::helper::hub::supervise(Arc::clone(daemon.manager.hub()), socket, Duration::from_millis(50)));
     eventually("registered with the helper again", || {
         let seen = helper.seen();
         async move { seen.contains(&"RegisterRoot") }
@@ -850,12 +854,13 @@ async fn an_add_that_cannot_be_put_on_the_bus_leaves_nothing_behind() {
         drive: konedrived::daemon::manager::no_drive(),
         bus: exports.clone(),
     };
-    let _daemon = start_daemon_with(&bus, config.path(), options).await;
+    let daemon = start_daemon_with(&bus, config.path(), options).await;
     let client = bus.connect().await;
     let manager = AccountsProxy::builder(&client).cache_properties(zbus::proxy::CacheProperties::No).build().await.unwrap();
 
     assert!(manager.add("Personal").await.is_err(), "the account's folder cannot be put on the bus");
     assert!(manager.list().await.unwrap().is_empty());
+    assert!(daemon.manager.registry().accounts().is_empty(), "nor is its folder one of the daemon's");
     let written = std::fs::read_to_string(Paths::in_dir(config.path()).config_file).unwrap_or_default();
     assert!(!written.contains("Personal"), "config.toml keeps no account: {written}");
     let accounts = Paths::in_dir(config.path()).state_dir.join("accounts");

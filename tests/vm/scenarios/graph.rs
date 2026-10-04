@@ -348,7 +348,7 @@ async fn scenarios(token: &str, base: &Path, folder: &Path, guard: Option<&str>,
     // of every image in the whole drive.
     let paths = SyncPaths { tree_db: base.join("tree.sqlite"), rescue_dir: base.join("rescued"), thumbnails: None };
     let service = testing::wiring().account(account).persist(persist).onedrive(drive.clone(), paths).build();
-    tokio::spawn(konedrived::sync::hub::supervise(Arc::clone(service.hub()), konedrive_proto::SOCKET_PATH.into(), Duration::from_secs(1)));
+    tokio::spawn(konedrived::helper::hub::supervise(Arc::clone(service.hub()), konedrive_proto::SOCKET_PATH.into(), Duration::from_secs(1)));
     let deadline = Instant::now() + Duration::from_secs(30);
     while service.link().is_none() && Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(100)).await;

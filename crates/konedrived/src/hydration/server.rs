@@ -90,7 +90,7 @@ pub async fn serve_hydrations(
 /// [`serve_hydrations`], reporting each fill into `report`: a
 /// `Transfers` entry while it downloads, then a `downloaded` or `failed`
 /// event, and a new measurement of the folder's space. The daemon runs the
-/// same loop with every fill routed to its account (`sync::hub::supervise`);
+/// same loop with every fill routed to its account (`helper::hub::supervise`);
 /// what a fill answers the opener is the same either way, and it is
 /// answered before anything is recorded.
 pub async fn serve_hydrations_reporting(
@@ -108,8 +108,8 @@ pub async fn serve_hydrations_reporting(
 /// it takes a slot of.
 pub(crate) type Filler = (Arc<dyn ContentSource>, Report, Arc<konedrive_graph::pool::TransferPool>);
 
-/// Says which account an open file belongs to. The hub implements it
-/// (`sync::hub::HelperHub`).
+/// Says which account an open file belongs to. The registry of the daemon's folders
+/// implements it (`sync::registry::Registry`).
 #[async_trait]
 pub(crate) trait Router: Send + Sync {
     /// What fills the file `fd` is open on; `None` when it is in no account's folder.

@@ -221,23 +221,19 @@ impl SyncService {
         });
     }
 
-    /// The global hold settings this account runs on now, as the hub told it.
+    /// The global hold settings this account runs on now, as the registry told it.
     pub fn hold_settings(&self) -> HoldSettings {
         self.running.hold_settings()
     }
 
-    /// What the machine's sources say now (`conditions`, through the hub): the hold is
-    /// worked out again, and what it held back goes at once when it ends.
-    pub fn set_conditions(&self, conditions: Conditions) {
-        if self.running.set_conditions(conditions) {
-            self.show_pause();
-        }
-    }
-
-    /// The global hold settings now (the hub's, `Accounts.SetPauseOnMetered` and
-    /// `SetOnBattery`): the hold is worked out again, and a change ends a `SyncAnyway`.
-    pub fn set_hold_settings(&self, hold: HoldSettings) {
-        if self.running.set_hold_settings(hold) {
+    /// What every account is told alike (`registry`): the hold's settings (`Accounts.
+    /// SetPauseOnMetered`, `SetOnBattery`) and what the machine's sources say
+    /// (`conditions`). The hold is worked out again; what it held back goes at once when it
+    /// ends, and a change ends a `SyncAnyway`.
+    pub(super) fn hold_by(&self, hold: HoldSettings, conditions: Conditions) {
+        let settings = self.running.set_hold_settings(hold);
+        let sources = self.running.set_conditions(conditions);
+        if settings || sources {
             self.show_pause();
         }
     }

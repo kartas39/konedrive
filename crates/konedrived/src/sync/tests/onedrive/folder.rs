@@ -735,9 +735,8 @@ async fn an_account_whose_tree_knows_an_item_is_routed_its_opens_and_claims_it()
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
-    let hub = Arc::clone(service.hub());
     let other_dir = tempfile::tempdir().unwrap();
-    let other = testing::wiring().hub(&hub).build();
+    let other = testing::wiring().registry(service.registry()).build();
     other.register_root_without_interception(other_dir.path()).await.unwrap();
 
     // A file of the other folder, carrying an id the OneDrive folder's tree knows, unlinked.
@@ -745,11 +744,12 @@ async fn an_account_whose_tree_knows_an_item_is_routed_its_opens_and_claims_it()
     xattr::set(other_dir.path().join("h"), konedrive_fs::placeholder::XATTR_ITEM_ID, b"F").unwrap();
     let unlinked: OwnedFd = std::fs::File::open(other_dir.path().join("h")).unwrap().into();
     std::fs::remove_file(other_dir.path().join("h")).unwrap();
-    let routed = hub.route(&unlinked).await;
+    let registry = Arc::clone(service.registry());
+    let routed = registry.route(&unlinked).await;
     assert!(routed.is_some_and(|account| Arc::ptr_eq(&account, &service)), "found by its item id");
 
-    let (ours, theirs) = (Arc::downgrade(&service), Arc::downgrade(&other));
-    let claimed = |of: &std::sync::Weak<SyncService>, id: &str| konedrive_tree::off_runtime(|| hub.claimed_elsewhere(of, id));
+    let (ours, theirs) = (service.id().clone(), other.id().clone());
+    let claimed = |of: &crate::config::AccountId, id: &str| konedrive_tree::off_runtime(|| registry.claimed_elsewhere(of, id));
     assert!(claimed(&theirs, "F"), "the OneDrive folder's tree knows it");
     assert!(claimed(&theirs, "d1!42"), "the id names its drive");
     assert!(!claimed(&theirs, "DEF456!42"));

@@ -32,7 +32,7 @@ use tokio::sync::watch;
 
 pub use helper::{FakeHelper, Seen};
 
-use super::hub::HelperHub;
+use super::registry::Registry;
 use super::wiring::{self, OneDrive, Persist, SyncPaths, Wiring};
 use super::SyncService;
 use crate::account::quota::Quota;
@@ -275,13 +275,13 @@ pub fn parts(service: &SyncService) -> Parts {
     found.map(|(_, parts)| parts.clone()).expect("the service was made by sync::testing")
 }
 
-/// A [`Wiring`] of fakes, part by part; what is not said is: a hub of the service's own
-/// with no link, a signed-in read-only account, a `config.toml` in a temporary directory
+/// A [`Wiring`] of fakes, part by part; what is not said is: a registry of the service's
+/// own, whose hub has no link, a signed-in read-only account, a `config.toml` in a temporary directory
 /// of its own, no drive (every folder is local), no Baloo, the default schedule, the real
 /// sources and watcher behind their switches, and the system's clock.
 #[derive(Default)]
 pub struct Builder {
-    hub: Option<Arc<HelperHub>>,
+    registry: Option<Arc<Registry>>,
     link: Option<HelperLink>,
     account: Option<StateHandle>,
     persist: Option<Persist>,
@@ -297,13 +297,13 @@ pub fn wiring() -> Builder {
 }
 
 impl Builder {
-    /// The service joins `hub`, after the accounts it has.
-    pub fn hub(mut self, hub: &Arc<HelperHub>) -> Self {
-        self.hub = Some(Arc::clone(hub));
+    /// The service is added to `registry`, after the accounts it has.
+    pub fn registry(mut self, registry: &Arc<Registry>) -> Self {
+        self.registry = Some(Arc::clone(registry));
         self
     }
 
-    /// The service gets a hub of its own that holds `link` already.
+    /// The service gets a registry of its own, whose hub holds `link` already.
     pub fn link(mut self, link: Option<HelperLink>) -> Self {
         self.link = link;
         self
@@ -343,9 +343,10 @@ impl Builder {
         self
     }
 
-    /// The service, made with all of it. [`parts`] finds what it was made with.
+    /// The service, made with all of it and added to its registry, as the account manager
+    /// adds the daemon's. [`parts`] finds what it was made with.
     pub fn build(self) -> Arc<SyncService> {
-        let hub = self.hub.unwrap_or_else(|| HelperHub::with_link(self.link));
+        let registry = self.registry.unwrap_or_else(|| Registry::with_link(self.link));
         let account = match self.account {
             Some(state) => Account::over(state),
             None => Account::signed_in(),
@@ -363,7 +364,7 @@ impl Builder {
             onedrive: self.onedrive,
             sources: Arc::clone(&sources) as Arc<dyn wiring::Sources>,
             watchers: Arc::new(move |config, sink| starting.start(config, sink)),
-            ..Wiring::new(hub, Arc::clone(&account) as Arc<dyn FolderAccount>, persist.clone())
+            ..Wiring::new(Arc::clone(&registry), Arc::clone(&account) as Arc<dyn FolderAccount>, persist.clone())
         };
         if let Some(baloo) = self.baloo {
             wiring.baloo = baloo;
@@ -375,6 +376,7 @@ impl Builder {
             wiring.clock = Arc::clone(clock) as Arc<dyn Clock>;
         }
         let service = SyncService::new(wiring);
+        registry.add(&service);
         let parts = Parts { account, persist, sources, watchers, clock: self.clock, _config: config };
         let mut made = MADE.lock().unwrap();
         made.retain(|(service, _)| service.strong_count() > 0);
@@ -383,7 +385,7 @@ impl Builder {
     }
 }
 
-/// A service with a hub of its own holding `link`, over `account`'s state (or a signed-in
+/// A service with a registry of its own, whose hub holds `link`, over `account`'s state (or a signed-in
 /// account) and recording its folder in `persist` (or in a `config.toml` of its own).
 pub fn service(link: Option<HelperLink>, account: Option<StateHandle>, persist: Option<Persist>) -> Arc<SyncService> {
     let mut builder = wiring().link(link);

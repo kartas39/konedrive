@@ -88,7 +88,7 @@ impl SyncService {
             }),
             limits: upload::Limits::default(),
             // Moves out of the folder: the helper over this account's link, fills
-            // through the folder's source, and the hub's router.
+            // through the folder's source, and the registry's router.
             moved_out: Some(self.move_outs(Some(Arc::clone(source)))),
             quota: self.quota(),
         })
