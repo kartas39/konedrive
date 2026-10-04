@@ -23,7 +23,7 @@ enum Act {
 /// A copy of `from` with every attribute, as a snapshot or a backup restores it: a file
 /// that is not downloaded is copied as it is, with no content, since reading it (as `cp`
 /// does) would download it first.
-fn copy_as_it_is(from: &Path, to: &Path) {
+pub(super) fn copy_as_it_is(from: &Path, to: &Path) {
     if xattr::get(from, placeholder::XATTR_STATE).unwrap().as_deref() != Some(b"online-only") {
         return copy_keeping_attributes(from, to);
     }
@@ -34,7 +34,7 @@ fn copy_as_it_is(from: &Path, to: &Path) {
 }
 
 /// The same for a directory: itself and what is in it.
-fn copy_tree(from: &Path, to: &Path) {
+pub(super) fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir(to).unwrap();
     for name in xattr::list(from).unwrap() {
         xattr::set(to, &name, &xattr::get(from, &name).unwrap().unwrap()).unwrap();
