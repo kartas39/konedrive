@@ -90,9 +90,10 @@ scripts/check-structure.sh
 
 7. **Locks.** A lock of `std::sync` is taken through `crate::panic::lock`, `read` or `write`,
    which go on after a holder of the lock panicked; never with `.lock().unwrap()` or a
-   recovery written out. What is done under such a lock must therefore not be able to leave its data half-changed.
-   `konedrive-graph` and `konedrive-tree` have a function of their own for it. Test code is
-   exempt.
+   recovery written out. What is done under such a lock must therefore not be able to leave
+   its data half-changed. `konedrive-graph` and `konedrive-tree` have a function of their own
+   for it. Not asked of test code, test doubles, the helper, the files that hold those
+   functions and, for now, `local/`: `docs/limitations/D58.md`.
 
 Between crates the compiler keeps the order: `konedrive-graph` and `konedrive-tree` know
 nothing of the daemon.

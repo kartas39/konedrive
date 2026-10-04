@@ -19,11 +19,13 @@ use std::ffi::OsString;
 use std::fs::Metadata;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
+use std::panic::AssertUnwindSafe;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Weak};
 
 use async_trait::async_trait;
+use futures_util::FutureExt;
 use konedrive_fs::placeholder::{State, XATTR_PIN, XATTR_STATE};
 use tokio::sync::Notify;
 use tokio::task::JoinSet;
@@ -407,6 +409,9 @@ pub struct Pins {
     /// A pinned download failed, or waited for a full disk: the sync sweeps
     /// again after its next cycle that succeeds ([`take_resweep`](Self::take_resweep)).
     resweep: AtomicBool,
+    /// A fault point: the worker panics at its next turn.
+    #[cfg(test)]
+    worker_panics: AtomicBool,
 }
 
 impl Pins {
@@ -429,6 +434,8 @@ impl Pins {
             filler,
             cancel: Mutex::new(CancellationToken::new()),
             resweep: AtomicBool::new(false),
+            #[cfg(test)]
+            worker_panics: AtomicBool::new(false),
         }
     }
 
@@ -612,6 +619,10 @@ impl Pins {
         let mut asked: [Option<Pin<Box<Acquire>>>; 2] = [None, None];
         loop {
             while running.try_join_next().is_some() {}
+            #[cfg(test)]
+            if self.worker_panics.swap(false, Ordering::SeqCst) {
+                panic!("fault point: the pin worker panics");
+            }
             // Only while a file waits is a slot asked for, so that the pool sees work
             // queued exactly when there is some.
             let waiting = {
@@ -665,7 +676,15 @@ impl Pins {
             running.spawn(async move {
                 // Cancelled by a Forget: the fill's future is dropped, as a
                 // `Hydrate` whose caller went away is.
-                let filled = cancel.run_until_cancelled(fill.fill_pinned(&path)).await.unwrap_or(Filled::Skipped);
+                // A fill that panics is a failed one: its file leaves the queue and a sweep
+                // is owed, as after any failure.
+                let filled = match AssertUnwindSafe(cancel.run_until_cancelled(fill.fill_pinned(&path))).catch_unwind().await {
+                    Ok(filled) => filled.unwrap_or(Filled::Skipped),
+                    Err(panic) => {
+                        tracing::error!("the download of {} panicked: {}", path.display(), crate::panic::message(panic));
+                        Filled::Failed
+                    }
+                };
                 drop(fill);
                 // Only a transfer that was made lets the pool grow.
                 if filled == Filled::Done {

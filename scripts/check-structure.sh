@@ -102,17 +102,21 @@ function locks_checked(file) {
     return index(file, "crates/konedrive-helper/") != 1 && index(file, DAEMON "local/") != 1
 }
 
-# A lock, a read or a write taken with nothing passed, and then the poison
-# unwrapped or recovered from by hand: on one line, or on the next.
-function poison(file, number, line, chained,    text) {
+# A lock, a read or a write taken with nothing passed (or as `Mutex::lock(…)`),
+# and then its result unwrapped, dropped or recovered from by hand: on one
+# line, or on the next one that is not empty or a comment.
+function poison(file, number, line, chained,    text, taken) {
     text = line
     sub(/\/\/.*$/, "", text)
-    if (text ~ /\.(lock|read|write)\(\)[ \t]*\.(unwrap|expect|unwrap_or_else)\(/ || (chained && text ~ /^[ \t]*\.(unwrap|expect|unwrap_or_else)\(/)) {
+    if (chained && text ~ /^[ \t]*$/)
+        return 1
+    taken = "(unwrap[a-z_]*|expect|ok|map_err|is_ok|is_err)\\("
+    if (text ~ ("(\\.(lock|read|write)\\(\\)|(Mutex|RwLock)::(lock|read|write)\\([^()]*\\))[ \t]*\\." taken) || (chained && text ~ ("^[ \t]*\\." taken))) {
         found++
         found_file[found] = file
         found_text[found] = file ":" number ": a lock taken without panic::lock, read or write (rule 7)"
     }
-    return text ~ /\.(lock|read|write)\(\)[ \t]*$/
+    return text ~ /(\.(lock|read|write)\(\)|(Mutex|RwLock)::(lock|read|write)\([^()]*\))[ \t]*$/
 }
 
 function read_rust(file,    line, number, pending, own, top, name, by_path, locks, chained) {

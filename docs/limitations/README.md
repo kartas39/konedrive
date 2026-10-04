@@ -281,7 +281,7 @@ application must never read zeros where real content should be.
 - [F279](F279.md) — What an examination says in Activity is written after its rows, in a call of its own
 - [F281](F281.md) — A line of the "not uploaded" list inside a place that cannot be read stays until the place is read again
 - [F290](F290.md) — After a panic under a lock, the next user of the lock goes on with the data as the panic left it
-- [F291](F291.md) — What a pin worker does when it ends by a panic is not tested, and rests on how tokio drops a task
+- [F291](F291.md) — What a pin worker does when it ends by a panic rests on how tokio drops a task
 
 ---
 
