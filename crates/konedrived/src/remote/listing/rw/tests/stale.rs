@@ -11,7 +11,8 @@ use std::sync::Arc;
 use konedrive_fs::placeholder::{self, State};
 
 use crate::remote::listing::{Listing, ListingContext};
-use super::{now, world, write_version, Scanning, World};
+use super::Scanning;
+use crate::remote::testing::{now, write_version, Says, World};
 use crate::folder::disk::Disk;
 use crate::fake_onedrive::ROOT;
 use crate::local::{Examined, Examiner, IgnoreList};
@@ -35,17 +36,13 @@ fn scan_now(w: &World) -> Option<Examined> {
 }
 
 impl World {
-    /// A read-write listing whose every cycle runs a Full local scan after
-    /// the folder was reconciled and before `staging` is swapped in.
-    fn listing_scanning_before_swap(self: &Arc<Self>) -> Arc<Listing> {
-        let mut writes = self.writes(None);
-        let me = Arc::downgrade(self);
-        writes.before_swap = Some(Arc::new(move || {
-            if let Some(w) = me.upgrade() {
-                scan_now(&w);
-            }
-        }));
-        Listing::new(ListingContext { writes: Some(writes), ..self.context_parts() })
+    /// What OneDrive says now, reconciled with a Full local scan between the
+    /// folder and the swap: the reconcile's two steps, one after the other.
+    async fn reconcile_scanning_before_swap(&self) {
+        let mut step = self.step(Says::Fetched).await;
+        step.apply().await.unwrap();
+        konedrive_tree::off_runtime(|| scan_now(self));
+        step.commit().await.unwrap();
     }
 
     /// Nothing removed or moved in OneDrive by the daemon, and no row in the
@@ -84,29 +81,28 @@ fn handle_of(path: &Path) -> konedrive_fs::handle::FileHandle {
 /// before its swap: the window in which the reconcile has taken the file off
 /// the disk while `items` still places it, with the inode it had — and, on
 /// the way back, in which the new tree places it again while `items` still
-/// has it skipped. Reached with the `before_swap` hook: in the daemon the
-/// watcher holds the tree lock while it examines, so this window is closed
-/// there too (limitations log F190).
+/// has it skipped. Reached by running the reconcile's two steps with the
+/// scan between them: in the daemon the watcher holds the tree lock while it
+/// examines, so this window is closed there too (limitations log F190).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_an_item_skipped_and_back_with_a_scan_before_each_swap_is_never_deleted() {
-    let w = Arc::new(world().await);
-    let listing = w.listing_scanning_before_swap();
-    w.cycle(&listing).await;
+    let w = Arc::new(World::read_write().await);
+    w.listed().await;
     assert_eq!(id_at(&w.path("docs/f.txt")).as_deref(), Some("F"));
 
     w.graph.with(|c| c.rename("F", "D", &long_name()));
-    w.cycle(&listing).await;
+    w.reconcile_scanning_before_swap().await;
     w.examine_handed().await;
     w.scan_and_upload().await;
     w.nothing_deleted_or_moved("skipped").await;
-    w.cycle(&listing).await;
+    w.reconcile_scanning_before_swap().await;
     w.scan_and_upload().await;
     w.nothing_deleted_or_moved("skipped, a cycle later").await;
     assert!(!w.path("docs/f.txt").exists(), "a skipped item is not on disk");
 
     w.graph.with(|c| c.rename("F", "D", "f.txt"));
-    w.cycle(&listing).await;
-    w.cycle(&listing).await;
+    w.reconcile_scanning_before_swap().await;
+    w.reconcile_scanning_before_swap().await;
     w.scan_and_upload().await;
     w.nothing_deleted_or_moved("back").await;
     assert_eq!(id_at(&w.path("docs/f.txt")).as_deref(), Some("F"), "placed again");
@@ -118,7 +114,7 @@ async fn a_an_item_skipped_and_back_with_a_scan_before_each_swap_is_never_delete
 /// scanning between cycles.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn b_an_item_skipped_and_back_with_a_scan_after_each_swap_is_never_deleted() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.graph.with(|c| c.rename("F", "D", &long_name()));
     w.cycle(&listing).await;
@@ -142,7 +138,7 @@ async fn b_an_item_skipped_and_back_with_a_scan_after_each_swap_is_never_deleted
 /// letting the cycles place it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn c_an_item_back_on_disk_under_a_new_inode_is_never_deleted() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     let old = handle_of(&w.path("docs/f.txt"));
@@ -168,7 +164,7 @@ async fn c_an_item_back_on_disk_under_a_new_inode_is_never_deleted() {
 /// file open across the cycle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn d_a_folder_removed_in_onedrive_with_an_open_file_an_ignored_name_and_a_symlink_goes_whole() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     std::fs::write(w.path("docs/scratch.tmp"), b"").unwrap();
@@ -192,7 +188,7 @@ async fn d_a_folder_removed_in_onedrive_with_an_open_file_an_ignored_name_and_a_
 /// inode lock as the daemon's fills are (`sync::unless_removed`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn e_a_folder_removed_in_onedrive_with_a_file_being_downloaded_goes_whole() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.graph.with(|c| c.delay("GET", "dl/F", std::time::Duration::from_secs(30), 1));
     let file = std::fs::OpenOptions::new().read(true).write(true).open(w.path("docs/f.txt")).unwrap();
@@ -225,7 +221,7 @@ async fn e_a_folder_removed_in_onedrive_with_a_file_being_downloaded_goes_whole(
 /// the folder removed. It is listed in `Skipped()` with its reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_new_file_in_a_folder_that_stops_being_placed_reaches_onedrive_first() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -256,7 +252,7 @@ async fn a_new_file_in_a_folder_that_stops_being_placed_reaches_onedrive_first()
 /// item, and the folder goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_blocked_row_keeps_a_folder_that_stopped_being_placed() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     std::fs::write(w.path("docs/n:ew.txt"), b"new").unwrap();
     let mut batch = crate::local::Batch::new();
@@ -288,7 +284,7 @@ async fn a_blocked_row_keeps_a_folder_that_stopped_being_placed() {
 /// item.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_leaving_folder_placed_again_elsewhere_uploads_into_its_item_and_goes() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.graph.with(|c| {
         c.add(crate::fake_onedrive::FakeItem {
@@ -341,7 +337,7 @@ async fn a_leaving_folder_placed_again_elsewhere_uploads_into_its_item_and_goes(
 /// this account before the folder goes.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_moved_in_from_another_account_reaches_onedrive_before_its_folder_goes() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     std::fs::write(w.path("docs/theirs.txt"), b"theirs").unwrap();
     let file = std::fs::File::open(w.path("docs/theirs.txt")).unwrap();
@@ -364,7 +360,7 @@ async fn a_file_moved_in_from_another_account_reaches_onedrive_before_its_folder
 /// with its reason, until it is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_keeps_a_leaving_folder_is_shown_and_a_move_from_before_does_not() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     std::fs::rename(w.path("docs/f.txt"), w.path("docs/g.txt")).unwrap();
     let mut batch = crate::local::Batch::new();
@@ -398,7 +394,7 @@ async fn what_keeps_a_leaving_folder_is_shown_and_a_move_from_before_does_not() 
 async fn a_filesystem_mounted_inside_keeps_a_leaving_folder_and_says_so() {
     let base = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/tmp-btrfs");
     std::fs::create_dir_all(&base).unwrap();
-    let w = Arc::new(super::world_in(Some(&base)).await);
+    let w = Arc::new(super::World::read_write_in(Some(&base)).await);
     let listing = w.listed().await;
     let made = std::process::Command::new("btrfs").arg("subvolume").arg("create").arg(w.path("docs/sub")).output();
     if !made.is_ok_and(|o| o.status.success()) {
@@ -433,7 +429,7 @@ fn id_at(path: &Path) -> Option<String> {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_change_to_an_item_no_longer_placed_never_renames_it_in_onedrive() {
     for recorded_first in [false, true] {
-        let w = Arc::new(world().await);
+        let w = Arc::new(World::read_write().await);
         let listing = w.listed().await;
         write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -469,7 +465,7 @@ async fn a_change_to_an_item_no_longer_placed_never_renames_it_in_onedrive() {
 /// old handles back by hand after `docs` left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_store_left_with_stale_objects_below_a_skipped_folder_deletes_nothing_once_it_is_back() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     let (docs, f) = (handle_of(&w.path("docs")), handle_of(&w.path("docs/f.txt")));
     w.graph.with(|c| c.rename("D", ROOT, &long_name()));
@@ -513,7 +509,7 @@ impl World {
 /// `DELETE` reaches OneDrive: only rows inside the old object are dropped.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_delete_in_the_new_place_of_a_folder_still_leaving_reaches_onedrive() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.graph.with(|c| c.add(crate::fake_onedrive::FakeItem {
         id: "P".into(),
@@ -550,7 +546,7 @@ async fn a_delete_in_the_new_place_of_a_folder_still_leaving_reaches_onedrive() 
 /// OneDrive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_moved_out_before_its_folder_stops_being_placed_keeps_its_move() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     std::fs::rename(w.path("docs/f.txt"), w.path("f2.txt")).unwrap();
     let mut batch = crate::local::Batch::new();
@@ -577,7 +573,7 @@ async fn a_file_moved_out_before_its_folder_stops_being_placed_keeps_its_move() 
 /// no `create`, no upload — and it leaves the disk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_removed_in_onedrive_inside_a_leaving_folder_is_never_uploaded_again() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -643,7 +639,7 @@ impl World {
 /// name in OneDrive stands), and it goes once nothing in it waits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_leaving_folder_whose_parent_is_renamed_in_onedrive_is_never_moved_back() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.graph.with(|c| {
         c.add(folder_item("P", ROOT, "papers"));
@@ -678,7 +674,7 @@ async fn a_leaving_folder_whose_parent_is_renamed_in_onedrive_is_never_moved_bac
 /// moved back, and goes from the disk.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_folder_moved_in_onedrive_into_a_skipped_folder_is_never_moved_back() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.graph.with(|c| {
         c.add(folder_item("S", ROOT, &long_name()));
@@ -698,7 +694,7 @@ async fn a_folder_moved_in_onedrive_into_a_skipped_folder_is_never_moved_back() 
 /// OneDrive — with no `DELETE`, and it is not placed again where it was.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_placed_file_moved_into_a_leaving_folder_keeps_its_move() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.blocked_file_in("docs").await;
     w.graph.with(|c| c.rename("D", ROOT, &long_name()));
@@ -724,7 +720,7 @@ async fn a_placed_file_moved_into_a_leaving_folder_keeps_its_move() {
 /// leaves out is kept and goes up again as new, as anywhere.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_resync_upload_differences_keeps_local_changes_inside_a_leaving_folder() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     std::thread::sleep(std::time::Duration::from_millis(10));
@@ -753,7 +749,7 @@ async fn a_resync_upload_differences_keeps_local_changes_inside_a_leaving_folder
 /// gone, the row goes and so does the file.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_404_not_confirmed_by_the_listing_keeps_the_change_blocked() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     w.blocked_file_in("docs").await;
@@ -784,7 +780,7 @@ async fn a_404_not_confirmed_by_the_listing_keeps_the_change_blocked() {
 /// once nothing in it waits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_leaving_folder_whose_parent_is_renamed_here_is_found_by_its_handle() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.graph.with(|c| {
         c.add(folder_item("P", ROOT, "papers"));
@@ -817,7 +813,7 @@ async fn a_leaving_folder_whose_parent_is_renamed_here_is_found_by_its_handle() 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_error_other_than_gone_keeps_the_leaving_row() {
     use std::os::unix::fs::PermissionsExt;
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.graph.with(|c| {
         c.add(folder_item("P", ROOT, "papers"));
@@ -842,7 +838,7 @@ async fn an_error_other_than_gone_keeps_the_leaving_row() {
 /// listing brings its item again, it is retried and goes up into the item.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_change_blocked_by_a_404_is_retried_when_onedrive_lists_its_item_again() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     w.blocked_file_in("docs").await;
@@ -893,7 +889,7 @@ impl World {
 /// created, and `papers/docs2/f.txt` stays.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn renaming_the_copy_placed_again_is_the_users_rename_only() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.docs_leaving_and_placed_again_in_papers(&listing).await;
     let patches = w.patches_of("D");
@@ -913,7 +909,7 @@ async fn renaming_the_copy_placed_again_is_the_users_rename_only() {
 /// object stays where it is, and nothing is sent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_full_reconcile_moves_the_copy_placed_again_not_the_leaving_object() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.docs_leaving_and_placed_again_in_papers(&listing).await;
     let writes = |w: &World| w.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").count());
@@ -942,7 +938,7 @@ async fn a_full_reconcile_moves_the_copy_placed_again_not_the_leaving_object() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_unreadable_directory_on_the_way_keeps_the_leaving_row() {
     use std::os::unix::fs::PermissionsExt;
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.graph.with(|c| {
         c.add(folder_item("P", ROOT, "papers"));
@@ -970,7 +966,7 @@ async fn an_unreadable_directory_on_the_way_keeps_the_leaving_row() {
 /// held by it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_blocked_404_row_goes_once_the_listing_removes_its_item() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.blocked_file_in("docs").await;
     w.graph.with(|c| c.rename("D", ROOT, &long_name()));
@@ -1028,7 +1024,7 @@ impl World {
 /// once OneDrive's listing says its item is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_blocked_404_row_without_its_file_goes_once_the_listing_removes_its_item() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.f_blocked_by_a_404_in_leaving_docs(&listing).await;
     std::fs::remove_file(w.path("docs/f.txt")).unwrap();
@@ -1041,10 +1037,10 @@ async fn a_blocked_404_row_without_its_file_goes_once_the_listing_removes_its_it
 /// listing of the drive: a `leaving-not-found` row stays blocked.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_large_delta_is_no_whole_listing_for_blocked_rows() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.f_blocked_by_a_404_in_leaving_docs(&listing).await;
-    let large = Listing::new(ListingContext { writes: Some(w.writes(None)), full_threshold: 1, ..w.context_parts() });
+    let large = Listing::new(ListingContext { writes: Some(w.writes(None)), full_threshold: 1, ..w.context() });
     w.graph.with(|c| {
         c.add_file("X1", ROOT, "x1.txt", b"1");
         c.add_file("X2", ROOT, "x2.txt", b"2");
@@ -1061,7 +1057,7 @@ async fn a_large_delta_is_no_whole_listing_for_blocked_rows() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn moving_the_copy_placed_again_to_where_the_leaving_object_was_is_the_users_move() {
     use std::os::unix::fs::MetadataExt;
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     w.docs_leaving_and_placed_again_in_papers(&listing).await;
     std::fs::remove_dir_all(w.path("docs")).unwrap();
@@ -1088,7 +1084,7 @@ async fn moving_the_copy_placed_again_to_where_the_leaving_object_was_is_the_use
 /// leaves the leaving object where it is recorded, and the link stays.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hard_link_to_a_leaving_file_is_not_taken_for_it() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     w.graph.with(|c| c.rename("F", "D", &long_name()));
@@ -1133,7 +1129,7 @@ fn copy_konedrive_xattrs(from: &Path, to: &Path) {
 /// change goes up as content, and the file goes after.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_save_by_rename_over_a_leaving_file_uploads_content_only() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     let long = long_name();
@@ -1168,7 +1164,7 @@ async fn a_save_by_rename_over_a_leaving_file_uploads_content_only() {
 /// as new — never the item, renamed in OneDrive to the link's name.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hard_link_left_by_a_leaving_file_is_the_users_own_file() {
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     let long = long_name();
@@ -1193,7 +1189,7 @@ async fn a_hard_link_left_by_a_leaving_file_is_the_users_own_file() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_hard_link_to_the_copy_placed_again_leaves_the_copy_the_item() {
     use std::io::Write;
-    let w = Arc::new(world().await);
+    let w = Arc::new(World::read_write().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     w.graph.with(|c| c.rename("F", "D", &long_name()));

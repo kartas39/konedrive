@@ -190,8 +190,6 @@ impl SyncService {
             cycled: self.cycled_hook(),
             reopened: self.outbox_waker(),
             dropped_removed,
-            #[cfg(test)]
-            before_swap: None,
         }
     }
 
