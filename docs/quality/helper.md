@@ -156,6 +156,16 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
 - Bare `i32` with 0 for success, `Result<(), i32>`, `Result<(), String>`, `anyhow`. `apply`'s
   catch-all `EPERM` (`connection.rs:325`); `MarkDir` and `MarkFile` do not check the object's
   type (`:287–295`). **Fix:** an `Errno` newtype.
+- **Fixed 2026-10-04** in `103b10c` (#158), the types: a refusal is an `Errno` (`errno.rs`) and an
+  outcome a `Result<_, Errno>`; the integer with its 0 exists only at `Errno::from_wire` and
+  `Errno::to_wire`; the writer's reason is the enum `Undelivered`. `anyhow` stays where it ends a
+  thread or the process. The answers are not changed, so two things stay open:
+  - `apply`'s catch-all `EPERM` answers four different things: a missing descriptor, an object
+    the peer may not act on, an object that cannot be `stat`ed, and a `ClearIgnore` on something
+    that is not the peer's regular file.
+  - `MarkDir`, `UnmarkDir` and `MarkFile` do not check the object's type: a directory mark can be
+    placed on a file and the reverse, though only on the peer's own objects on its own root's
+    device.
 
 ## FS1. `konedrive-fs/src/placeholder.rs` — **defect?** in part
 
@@ -187,3 +197,6 @@ Scores: `events.rs`, `shared.rs`, `connection.rs`, `registration.rs`, `roots.rs`
   `connection.rs:107, 248`, `jobs.rs:4`, `shared.rs:75`, `main.rs:152`, `outbox.rs:62`); stale
   references (`marks.rs:59, 560`, `events.rs:861`). Test-only in production: `jobs.rs:249`,
   `outbox.rs:353`. Unreachable: `konedrive-fs/src/lease.rs:66–69`.
+- **Fixed 2026-10-04** in `103b10c` (#158): 27 fragments are sentences again, the stale names are
+  corrected, `Jobs::queued_for`, `Outbox::send_ack` and the `marks` re-export of the errno set
+  are compiled for tests only, and the unreachable branch of `lease::open_for_writing` is gone.
