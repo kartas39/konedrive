@@ -67,6 +67,11 @@ hour-sized.
 - **Where:** `fill.rs:222–236, 665, 673, 724–763`; `parts.rs:471, 495–507` (an fsync under
   `Mutex<State>`); `hydration/server.rs:199, 294`. Up to 64 fills (`server.rs:19`).
 - **Size:** M. Part of `X2`. Not found in the limitations log.
+- **Fixed 2026-10-04** in `a9779f8` (#149): each run of a fill's file calls is one blocking section
+  (`hydration/source/target.rs`), single stream and in parts, and the checkpoint of a fill in
+  parts is not under the state's mutex. The two `fstat`s and the `readlink` in `server.rs` stay
+  on the runtime thread. A section that has begun runs to its end; what that changes when a fill
+  is dropped is in `docs/limitations/F230.md`.
 
 ## HY5. `server.rs::serve`: one closure, an undeliverable errno, stale docs — **defect?**
 
