@@ -197,12 +197,15 @@ impl Materializer {
                 return Ok(TakenOff { removal: Removal::Kept, waits: Some(WaitsFor::MountedInside(shown(&mount))) });
             }
         }
+        // Read before anything is forgotten: an error here leaves nothing
+        // half done.
+        let items = if self.rw.is_some() { self.items_at(dir, name)? } else { HashSet::new() };
+        let is_dir = matches!(self.disk.probe(dir, name)?, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true });
         let stopped = self.forget(&survey, policy, run)?;
         let before = run.kept;
         let removed = match &self.rw {
             Some(rw) => {
                 let keep = if policy == Policy::Resync { Keep::Downloaded } else { Keep::Changed };
-                let items = self.items_at(dir, name)?;
                 self.remove_whole(&Whole { rw, keep, items }, dir, name, rel, false, run)
             }
             None => self.remove_rescuing(dir, name, rel, &stopped, run).map(|()| Removal::Gone),
@@ -221,7 +224,7 @@ impl Materializer {
                 // What is left was forgotten: an examination records it
                 // again where it stands.
                 if self.rw.is_some() {
-                    run.out.on_disk.examine.push((rel.to_path_buf(), true));
+                    run.out.on_disk.examine.push((rel.to_path_buf(), is_dir));
                 }
                 return Err(e);
             }
@@ -570,6 +573,9 @@ impl Materializer {
             }
             Ok(Some(waits)) => {
                 self.settle_stopped(dir, name, &stopped);
+                // Whatever stopped it, what is left was forgotten: an
+                // examination records it again where it stands.
+                run.out.on_disk.examine.push((rel.to_path_buf(), is_dir));
                 stays(waits)
             }
             Err(e) => {
@@ -684,7 +690,20 @@ impl Materializer {
         // this run took away itself, or with no object on record, is no
         // change anybody made here.
         for (name, row) in base {
-            if run.moved_from.contains_key(&row.id) || run.out.on_disk.taken.contains(&row.id) {
+            if run.out.on_disk.taken.contains(&row.id) {
+                continue;
+            }
+            if run.moved_from.contains_key(&row.id) {
+                // Moved to the holding directory for its new place. One
+                // that could not be placed is put back here: its folder
+                // stays for it.
+                let held = match self.holding_if_any()? {
+                    Some(holding) => !matches!(self.disk.probe(&holding, OsStr::new(&row.id))?, Probe::Absent),
+                    None => false,
+                };
+                if held {
+                    first(stays, WaitsFor::Cycle);
+                }
                 continue;
             }
             if self.store.call_blocking(move |s| s.local_handle(&row.id))?.is_some() {

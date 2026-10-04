@@ -113,22 +113,21 @@ impl TreeStore {
             return Ok(Counts::default());
         };
         let listed = self.listed_count()?;
-        let (placed, skipped): (i64, i64) = self.conn.query_row(
+        let placed: i64 = self.conn.query_row(
             &format!(
                 "WITH RECURSIVE placed(id, depth) AS (
                      SELECT ?1, 0
                      UNION ALL
                      SELECT c.id, p.depth + 1 FROM items c JOIN placed p ON c.parent_id = p.id
                       WHERE {own} AND p.depth < {MAX_CHAIN})
-                 SELECT (SELECT count(*) - 1 FROM placed),
-                        (SELECT count(*) FROM ({out}) s JOIN placed p ON s.parent_id = p.id)",
+                 SELECT count(*) - 1 FROM placed",
                 own = placed("c.placement"),
-                out = not_in_the_folder("id, parent_id, name, placement"),
             ),
             [&root],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )?;
-        let skipped = (skipped as u64 + self.waiting_below_unplaced(&root)?.len() as u64).saturating_sub(self.inside_what_waits()?.len() as u64);
+        // What the list lists, line for line.
+        let skipped = self.skipped()?.len() as u64;
         Ok(Counts { listed, placed: placed as u64, skipped })
     }
 

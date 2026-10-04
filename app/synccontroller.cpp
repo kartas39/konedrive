@@ -73,7 +73,7 @@ QString stillHereText(const QString &waits)
         return i18n("Still on this computer: whether %1 holds changes cannot be read. Move it out of the folder or delete it.", detail);
     }
     if (key == QLatin1String("not-downloaded")) {
-        return i18n("Still on this computer: %1 is not downloaded and is not where OneDrive has it. Move it out of the folder or delete it.", detail);
+        return i18n("Still on this computer: %1 is not downloaded and is not where OneDrive has it. Move it out of the folder.", detail);
     }
     if (key == QLatin1String("local-only")) {
         return i18n("Still on this computer: %1 is only here (its name is on the ignore list). Move it out of the folder or delete it.", detail);

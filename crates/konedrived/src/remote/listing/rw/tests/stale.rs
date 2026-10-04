@@ -905,9 +905,25 @@ async fn a_rename_made_here_of_an_item_that_waits_is_sent_as_a_rename_and_never_
         batch.name(Path::new("docs"), std::ffi::OsStr::new("g.txt"));
         assert_eq!(w.examine(batch).await.applied.queued.len(), 1);
         w.graph.with(|c| if moved_away { c.rename("F", "S", "f.txt") } else { c.rename("F", "D", &long_name()) });
+        w.upload().await;
+        let in_onedrive = |w: &World| w.graph.with(|c| c.item("F").map(|f| (f.parent.clone().unwrap(), f.name.clone())).unwrap());
+        assert_eq!(in_onedrive(&w), ((if moved_away { "S" } else { "D" }).to_owned(), "g.txt".to_owned()), "moved_away={moved_away}");
+        // The base has the item where its object stands, under the name the
+        // user gave it: nothing waits under a path where nothing is.
+        assert_eq!(w.base("F").map(|row| (row.parent_id.unwrap(), row.name)), Some(("D".to_owned(), "g.txt".to_owned())), "moved_away={moved_away}");
+        assert_eq!(w.recorded_handle("F").await, Some(handle_of(&w.path("docs/g.txt"))));
+        w.rounds(&listing, 1).await;
+        let sent = w.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").count());
+        if moved_away {
+            assert!(!w.path("docs/g.txt").exists(), "nothing waits in it: it left");
+            let waits: Vec<_> = w.store.call(|s| s.skipped()).await.unwrap().into_iter().filter(|line| line.waits.is_some()).collect();
+            assert!(waits.is_empty(), "{waits:?}");
+        }
+        // A scan of the whole folder and more cycles find nothing to send.
+        w.scan_and_upload().await;
         w.rounds(&listing, 2).await;
-        let (parent, name) = w.graph.with(|c| c.item("F").map(|f| (f.parent.clone().unwrap(), f.name.clone())).unwrap());
-        assert_eq!((parent.as_str(), name.as_str()), (if moved_away { "S" } else { "D" }, "g.txt"), "moved_away={moved_away}");
+        assert_eq!(w.graph.with(|c| c.log.iter().filter(|(m, _)| m != "GET").count()), sent, "moved_away={moved_away}: {:?}", w.graph.with(|c| c.log.clone()));
+        assert_eq!(in_onedrive(&w).1, "g.txt");
         assert_eq!(w.deletes(), 0);
         if !moved_away {
             assert_eq!(id_at(&w.path("docs/g.txt")).as_deref(), Some("F"), "a name the folder can hold: it stays");
@@ -1009,4 +1025,37 @@ async fn in_a_full_reconcile_what_onedrive_moved_out_is_moved_before_the_folder_
         w.scan_and_upload().await;
         assert_eq!((w.deletes(), w.graph.with(|c| c.count("PATCH", "items/"))), (0, 0), "waiting={waiting}");
     }
+}
+
+/// The two steps of a rename through a temporary name, while OneDrive has
+/// the item in a folder that is not placed: the step to the temporary name
+/// meets a `412` and is sent as a name alone, its commit keeps the item in
+/// the folder its object stands in, and the move that follows sends the
+/// final name and no folder. The item is never moved back out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_second_step_of_a_rename_through_a_temporary_name_never_moves_the_item_back() {
+    let w = Arc::new(World::read_write().await);
+    let listing = w.listed().await;
+    w.graph.with(|c| c.add(folder_item("S", ROOT, &long_name())));
+    w.cycle(&listing).await;
+    std::fs::rename(w.path("docs/f.txt"), w.path("docs/g.txt")).unwrap();
+    let mut batch = crate::local::Batch::new();
+    batch.name(Path::new("docs"), std::ffi::OsStr::new("f.txt"));
+    batch.name(Path::new("docs"), std::ffi::OsStr::new("g.txt"));
+    let seq = w.examine(batch).await.applied.queued[0];
+    // As the worker leaves the row when the name it takes is still
+    // another's: it goes through a temporary name first.
+    let swap = format!("{}F", konedrive_tree::outbox::SWAP_PREFIX);
+    w.store.call({ let swap = swap.clone(); move |s| s.outbox_set_target(seq, Some("D"), Some(&swap)) }).await.unwrap();
+    w.graph.with(|c| c.rename("F", "S", "f.txt"));
+    w.upload().await;
+    let names: Vec<String> = w.graph.with(|c| c.log.iter().filter(|(m, p)| m == "PATCH" && p.ends_with("items/F")).map(|(_, p)| p.clone()).collect());
+    assert!(names.len() >= 2, "the temporary step and the final one: {names:?}");
+    w.graph.with(|c| {
+        let f = c.item("F").unwrap();
+        assert_eq!((f.parent.as_deref(), f.name.as_str()), (Some("S"), "g.txt"), "renamed where OneDrive has it");
+    });
+    assert_eq!(w.base("F").map(|row| (row.parent_id.unwrap(), row.name)), Some(("D".to_owned(), "g.txt".to_owned())));
+    assert!(w.store.call(|s| s.outbox_rows()).await.unwrap().is_empty());
+    assert_eq!(w.deletes(), 0);
 }

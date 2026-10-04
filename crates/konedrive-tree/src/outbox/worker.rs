@@ -156,21 +156,27 @@ impl TreeStore {
             Some(base) if base_places(&tx, &answer.id)? && !super::would_place(&tx, &placed)? => Some(base),
             _ => None,
         };
-        match stays {
+        // Kept, the place is the folder the object stands in, under the
+        // temporary name the item has for now; OneDrive's own place is in
+        // the deferred change alone, so that the move that follows sends
+        // the final name and no folder.
+        let parent = match stays {
             Some(base) => {
-                upsert(&tx, Table::Items, &Row { parent_id: base.parent_id, name: base.name, placement: base.placement, ..answer.clone() })?;
+                upsert(&tx, Table::Items, &Row { parent_id: Some(final_parent.to_owned()), placement: base.placement, ..answer.clone() })?;
                 crate::reconcile::wait(&tx, &answer.id, Some(answer), local_seq, None)?;
+                Some(final_parent.to_owned())
             }
             None => {
                 upsert(&tx, Table::Items, &placed)?;
+                answer.parent_id.clone()
             }
-        }
+        };
         tx.execute(
             "UPDATE items SET local_handle = ?2, local_seq = ?3 WHERE id = ?1",
             params![answer.id, handle.map(FileHandle::encode), local_seq],
         )?;
         forget_unplaced(&tx, [answer.id.as_str()])?;
-        let base = Base { etag: answer.etag.clone(), ctag: answer.ctag.clone(), parent: answer.parent_id.clone(), name: Some(answer.name.clone()) };
+        let base = Base { etag: answer.etag.clone(), ctag: answer.ctag.clone(), parent, name: Some(answer.name.clone()) };
         let mut followers = rows_for(&tx, Some(&answer.id), None)?;
         if let Some(inode) = committed.inode.clone() {
             followers.extend(rows_for(&tx, None, Some(&inode))?);

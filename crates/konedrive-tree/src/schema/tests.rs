@@ -168,8 +168,15 @@ fn what_was_leaving_waits_after_the_upgrade_and_nothing_queued_is_lost() {
     assert_eq!(place(&s, "C"), Some(("old/in/c.txt".into(), true)));
     assert_eq!((place(&s, "F"), s.local_handle("F").unwrap()), (Some(("d/f.txt".into(), true)), Some(handle(6))));
     assert_eq!((place(&s, "W"), s.local_handle("W").unwrap()), (Some(("d/w.txt".into(), true)), Some(handle(9))));
-    let waits = |s: &mut TreeStore| s.live_deferred().unwrap().into_iter().map(|change| match change {
-        Change::Upsert(row) => (row.id, row.parent_id.unwrap(), row.name, row.placement),
+    // A removal in OneDrive that already waited for the item is newer than
+    // the base's row: it is what waits, and it is not superseded.
+    assert_eq!((place(&s, "Y"), s.deferred("Y").unwrap()), (Some(("d/y.txt".into(), true)), Some(Change::Delete("Y".into()))));
+    let waits = |s: &mut TreeStore| s.live_deferred().unwrap().into_iter().filter_map(|change| match change {
+        Change::Upsert(row) => Some((row.id, row.parent_id.unwrap(), row.name, row.placement)),
+        Change::Delete(id) => {
+            assert_eq!(id, "Y");
+            None
+        }
         other => panic!("{other:?}"),
     }).collect::<Vec<_>>();
     assert_eq!(waits(&mut s), [

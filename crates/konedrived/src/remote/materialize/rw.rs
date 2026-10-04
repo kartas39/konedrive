@@ -413,22 +413,6 @@ impl Materializer {
                 self.to_holding(&entry.rel, entry.id.as_deref().expect("filtered above"), run)?;
             }
         }
-        unplaced.sort_by_key(|entry| std::cmp::Reverse(entry.depth));
-        for entry in unplaced {
-            self.check_cancel()?;
-            let id = entry.id.as_deref().expect("filtered above");
-            let parent = entry.rel.parent().unwrap_or(Path::new(""));
-            let name = entry.rel.file_name().expect("a scanned entry has a name");
-            if let Some(waits) = self.take_off(&self.disk.dir(parent)?, name, &entry.rel, Policy::Unplaced, run)?.waits {
-                self.wait_to_leave(id, &entry.rel, entry.is_dir, waits, run)?;
-                // It is left as it is, with what the scan listed below it.
-                let inside = below_unplaced.iter().filter(|below| below.rel.starts_with(&entry.rel)).filter_map(|below| below.id.clone());
-                for left in inside.chain([id.to_owned()]) {
-                    run.left.insert(left.clone());
-                    run.out.pending.unsettled.insert(left);
-                }
-            }
-        }
         let root = self.disk.dir(Path::new(""))?;
         self.disk.lock_dir(&root)?;
         let mut queue = std::collections::VecDeque::from([(self.root_item_id.clone(), PathBuf::new())]);
@@ -449,6 +433,24 @@ impl Materializer {
                 };
                 if row.kind == Kind::Folder {
                     queue.push_back((row.id.clone(), placed));
+                }
+            }
+        }
+        // What is no longer placed, once what OneDrive moved out of it is
+        // placed: one still in the holding directory keeps its folder.
+        unplaced.sort_by_key(|entry| std::cmp::Reverse(entry.depth));
+        for entry in unplaced {
+            self.check_cancel()?;
+            let id = entry.id.as_deref().expect("filtered above");
+            let parent = entry.rel.parent().unwrap_or(Path::new(""));
+            let name = entry.rel.file_name().expect("a scanned entry has a name");
+            if let Some(waits) = self.take_off(&self.disk.dir(parent)?, name, &entry.rel, Policy::Unplaced, run)?.waits {
+                self.wait_to_leave(id, &entry.rel, entry.is_dir, waits, run)?;
+                // It is left as it is, with what the scan listed below it.
+                let inside = below_unplaced.iter().filter(|below| below.rel.starts_with(&entry.rel)).filter_map(|below| below.id.clone());
+                for left in inside.chain([id.to_owned()]) {
+                    run.left.insert(left.clone());
+                    run.out.pending.unsettled.insert(left);
                 }
             }
         }
@@ -478,6 +480,7 @@ impl Materializer {
         let below_another = |at: &Located| unplaced.iter().any(|above| above.rel != at.rel && at.rel.starts_with(&above.rel));
         let mut covered: Vec<(&String, &Path)> = Vec::new();
         let mut tops: Vec<(&String, &Path)> = Vec::new();
+        let mut later: Vec<(&String, &Path, bool)> = Vec::new();
         for (id, old) in here {
             self.check_cancel()?;
             if rw.removing.contains(id) {
@@ -534,7 +537,11 @@ impl Materializer {
                 } else if !placed_now {
                     run.out.pending.unsettled.insert(id.clone());
                     if planned.new.is_some() {
-                        run.out.pending.waits.push((id.clone(), konedrive_tree::WaitsFor::Changes(old.rel.display().to_string()).to_string()));
+                        // Not where the base has it, to be examined; or its
+                        // folder cannot be opened, and nothing is known.
+                        let at = old.rel.display().to_string();
+                        let waits = if looked { konedrive_tree::WaitsFor::Changes(at) } else { konedrive_tree::WaitsFor::UnknownState(at) };
+                        run.out.pending.waits.push((id.clone(), waits.to_string()));
                     }
                 }
                 continue;
@@ -544,29 +551,14 @@ impl Materializer {
             }
             match (&planned.new, placed_now) {
                 (Some(_), true) => self.to_holding(&old.rel, id, run)?,
-                (Some(_), false) => {
-                    let is_dir = matches!(found, Probe::Managed { is_dir: true, .. });
-                    if let Some(waits) = self.take_off(&self.disk.dir(parent)?, name, &old.rel, Policy::Unplaced, run)?.waits {
-                        self.wait_to_leave(id, &old.rel, is_dir, waits, run)?;
-                    }
-                }
+                // Once phase 2 has placed what OneDrive moved out of it.
+                (Some(_), false) => later.push((id, &old.rel, matches!(found, Probe::Managed { is_dir: true, .. }))),
                 (None, _) => {
                     if self.take_off(&self.disk.dir(parent)?, name, &old.rel, rw.removed(), run)?.waits.is_some() {
                         // A mount inside it: its removal waits.
                         run.out.pending.unsettled.insert(id.clone());
                     }
                 }
-            }
-        }
-
-        // What is no longer placed below such an item went with it, or
-        // waits with it.
-        for (id, rel) in covered {
-            let top = tops.iter().find(|(_, above)| rel.starts_with(above)).map(|(top, _)| *top);
-            if top.is_some_and(|top| run.out.on_disk.taken.contains(top)) {
-                run.out.on_disk.taken.insert(id.clone());
-            } else {
-                run.out.pending.unsettled.insert(id.clone());
             }
         }
 
@@ -600,6 +592,24 @@ impl Materializer {
                 }
                 Some(_) => {}
                 None => self.unsettle_tree(&row.id, run)?,
+            }
+        }
+
+        // What is no longer placed goes whole or waits whole, deepest
+        // first, and what is no longer placed below it follows it.
+        for (id, rel, is_dir) in later {
+            self.check_cancel()?;
+            let (parent, name) = (rel.parent().unwrap_or(Path::new("")), rel.file_name().expect("a placed item has a name"));
+            if let Some(waits) = self.take_off(&self.disk.dir(parent)?, name, rel, Policy::Unplaced, run)?.waits {
+                self.wait_to_leave(id, rel, is_dir, waits, run)?;
+            }
+        }
+        for (id, rel) in covered {
+            let top = tops.iter().find(|(_, above)| rel.starts_with(above)).map(|(top, _)| *top);
+            if top.is_some_and(|top| run.out.on_disk.taken.contains(top)) {
+                run.out.on_disk.taken.insert(id.clone());
+            } else {
+                run.out.pending.unsettled.insert(id.clone());
             }
         }
         Ok(())
@@ -660,10 +670,21 @@ impl Materializer {
             }
         }
         run.out.pending.unsettled.insert(id.to_owned());
-        if matches!(waits, WaitsFor::Changes(_) | WaitsFor::OpenForWriting(_) | WaitsFor::NotDownloaded(_)) {
+        let said = waits.to_string();
+        let hand_over = match waits {
+            WaitsFor::Changes(_) | WaitsFor::OpenForWriting(_) => true,
+            // Whether it is a rename the user made is the examination's to
+            // say, once: a file that stays is not examined at every poll.
+            WaitsFor::NotDownloaded(_) => {
+                let (id, said) = (id.to_owned(), said.clone());
+                self.store.call_blocking(move |s| s.waits_of(&id))?.as_deref() != Some(said.as_str())
+            }
+            _ => false,
+        };
+        if hand_over {
             run.out.on_disk.examine.push((rel.to_path_buf(), is_dir));
         }
-        run.out.pending.waits.push((id.to_owned(), waits.to_string()));
+        run.out.pending.waits.push((id.to_owned(), said));
         Ok(())
     }
 

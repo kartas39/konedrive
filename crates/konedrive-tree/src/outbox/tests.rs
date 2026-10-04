@@ -364,13 +364,35 @@ fn an_answer_in_a_folder_the_base_does_not_place_waits_and_the_row_behind_keeps_
     assert_eq!(s.get(Table::Items, "X").unwrap().unwrap(), moved, "a folder the base places is a place");
     assert!(s.live_deferred().unwrap().is_empty(), "and the commit supersedes what waited");
 
-    // A temporary step is a commit like any other in this.
-    let Recorded::Inserted(swap) = s.outbox_record(&detect(Move, Some(&moved), Some(inode(7)), "d/y", Some("D"))).unwrap() else { panic!() };
-    let swapped = Row { parent_id: Some("V".into()), name: format!("{SWAP_PREFIX}X"), ..x.clone() };
-    s.outbox_commit_temporary(swap, &swapped, Some(&handle), "D", "y", None).unwrap();
+    // A rename the user made, sent as a name alone while OneDrive has the
+    // item in the Vault: the kept place is where the object stands now —
+    // the new name in the base's folder — and so is the base of the row
+    // behind it. OneDrive's place is in the deferred change alone.
+    let Recorded::Inserted(rename) = s.outbox_record(&detect(Move, Some(&moved), Some(inode(7)), "d/y", Some("D"))).unwrap() else { panic!() };
+    s.outbox_claim(rename, OutboxState::Ready).unwrap();
+    let Recorded::Inserted(behind) = s.outbox_record(&detect(Update, Some(&moved), Some(inode(7)), "d/y", Some("D"))).unwrap() else { panic!() };
+    let renamed = Row { parent_id: Some("V".into()), name: "y".into(), etag: Some("e3".into()), ..x.clone() };
+    s.outbox_commit(rename, Committed::Item { row: &renamed, handle: Some(&handle) }, None).unwrap();
     let kept = s.get(Table::Items, "X").unwrap().unwrap();
-    assert_eq!((kept.parent_id.as_deref(), kept.name.as_str(), s.local_handle("X").unwrap()), (Some("D"), "x", Some(handle)), "the place is kept");
-    assert_eq!(s.live_deferred().unwrap().len(), 1);
+    assert_eq!((kept.parent_id.as_deref(), kept.name.as_str(), s.local_handle("X").unwrap()), (Some("D"), "y", Some(handle.clone())));
+    assert_eq!(s.outbox_row(behind).unwrap().unwrap().base.map(|base| (base.parent, base.name)), Some((Some("D".into()), Some("y".into()))));
+    assert_eq!(s.live_deferred().unwrap(), vec![Change::Upsert(renamed)]);
+    s.outbox_drop(behind, None, None).unwrap();
+
+    // A temporary step is a commit like any other in this: the item is
+    // under its temporary name in the folder the object stands in, and the
+    // move that follows is made against that — it sends a name, no folder.
+    let y = s.get(Table::Items, "X").unwrap().unwrap();
+    let Recorded::Inserted(swap) = s.outbox_record(&detect(Move, Some(&y), Some(inode(7)), "d/z", Some("D"))).unwrap() else { panic!() };
+    let swapped = Row { parent_id: Some("V".into()), name: format!("{SWAP_PREFIX}X"), ..x.clone() };
+    s.outbox_commit_temporary(swap, &swapped, Some(&handle), "D", "z", None).unwrap();
+    let kept = s.get(Table::Items, "X").unwrap().unwrap();
+    assert_eq!((kept.parent_id.as_deref(), kept.name.as_str(), s.local_handle("X").unwrap()), (Some("D"), swapped.name.as_str(), Some(handle)));
+    let rows = s.outbox_rows().unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].base.clone().map(|base| (base.parent, base.name)), Some((Some("D".into()), Some(swapped.name.clone()))));
+    assert_eq!((rows[0].target_parent.as_deref(), rows[0].target_name.as_deref()), (Some("D"), Some("z")));
+    assert_eq!(s.live_deferred().unwrap(), vec![Change::Upsert(swapped)]);
 }
 
 /// The item a bad upload left in OneDrive (quality finding `UP2`) is kept

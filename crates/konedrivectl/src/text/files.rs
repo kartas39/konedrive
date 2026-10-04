@@ -37,7 +37,7 @@ pub fn still_here_text(waits: &str) -> Option<String> {
         WaitsFor::Changes(_) => format!("Still on this computer: what was done at {path} on this computer has not reached OneDrive yet."),
         WaitsFor::OpenForWriting(_) => format!("Still on this computer: {path} is open in a program."),
         WaitsFor::UnknownState(_) => format!("Still on this computer: whether {path} holds changes cannot be read. Move it out of the folder or delete it."),
-        WaitsFor::NotDownloaded(_) => format!("Still on this computer: {path} is not downloaded and is not where OneDrive has it. Move it out of the folder or delete it."),
+        WaitsFor::NotDownloaded(_) => format!("Still on this computer: {path} is not downloaded and is not where OneDrive has it. Move it out of the folder."),
         WaitsFor::LocalOnly(_) => format!("Still on this computer: {path} is only here (its name is on the ignore list). Move it out of the folder or delete it."),
         WaitsFor::MountedInside(_) => format!("Still on this computer: another filesystem is mounted at {path}. Unmount it."),
         WaitsFor::Cycle | WaitsFor::Other(_) => "Still on this computer: it leaves once nothing in it waits to be uploaded.".to_owned(),

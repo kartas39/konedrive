@@ -193,6 +193,12 @@ impl TreeStore {
         Ok(ids)
     }
 
+    /// What the deferred change of `id` says keeps the item here, as the
+    /// last cycle stored it.
+    pub fn waits_of(&self, id: &str) -> Result<Option<String>, TreeError> {
+        Ok(self.conn.query_row("SELECT waits FROM deferred WHERE id = ?1", [id], |r| r.get::<_, Option<String>>(0)).optional()?.flatten())
+    }
+
     /// The deferred change of `id`, if any.
     pub fn deferred(&self, id: &str) -> Result<Option<Change>, TreeError> {
         Ok(self

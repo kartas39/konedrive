@@ -23,6 +23,7 @@
 //! item's local object (`items.local_handle`).
 
 use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -235,6 +236,15 @@ fn rebase(conn: &Connection, from: &Path, to: &Path) -> Result<(), TreeError> {
         }
     }
     Ok(())
+}
+
+/// Where the object of the item `base` stands once `committed` is carried
+/// out: the folder the row takes it to, or, where the row names none, the
+/// base's; and the name the object has on disk.
+pub(super) fn local_place(committed: &OutboxRow, base: &Row) -> (Option<String>, String) {
+    let parent = committed.target_parent.clone().or_else(|| base.parent_id.clone());
+    let name = committed.rel.file_name().and_then(OsStr::to_str).map_or_else(|| base.name.clone(), str::to_owned);
+    (parent, name)
 }
 
 /// Whether the base would place `row`, written into `items`: its own
@@ -473,17 +483,21 @@ impl TreeStore {
                     Some(base) if base_places(&tx, &row.id)? && !would_place(&tx, row)? => Some(base),
                     _ => None,
                 };
-                // What the rows behind this one were detected against: the
-                // place the base has, never one OneDrive gave the item and
-                // the folder cannot hold — such a row sends no name and no
-                // parent of OneDrive's side back.
+                // The place the base has from now on, which is also what
+                // the rows behind this one were detected against. Kept, it
+                // is the place the disk has after this row: where the row
+                // took the item, in the fields the user changed, and where
+                // the base had it in the others. Never the place OneDrive
+                // gave the item, which lives only in the deferred change:
+                // a row made against it would send a name or a folder of
+                // the disk's side back.
                 let place = match &stays {
-                    Some(base) => (base.parent_id.clone(), base.name.clone()),
+                    Some(base) => local_place(&committed_row, base),
                     None => (row.parent_id.clone(), row.name.clone()),
                 };
                 match stays {
                     Some(base) => {
-                        upsert(&tx, Table::Items, &Row { parent_id: base.parent_id, name: base.name, placement: base.placement, ..row.clone() })?;
+                        upsert(&tx, Table::Items, &Row { parent_id: place.0.clone(), name: place.1.clone(), placement: base.placement, ..row.clone() })?;
                         wait(&tx, &row.id, Some(row), local_seq, None)?;
                     }
                     None => {
