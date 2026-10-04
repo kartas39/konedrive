@@ -4,7 +4,7 @@
 //! `fileSystemInfo`. The caller opens the session
 //! ([`DriveClient::create_upload_session`]), persists it before its first
 //! byte, and sends the file as fragments of at most [`CHUNK_SIZE`] — one
-//! fragment up to [`SMALL_UPLOAD_MAX`] — resuming from
+//! fragment up to that size — resuming from
 //! [`DriveClient::upload_status`] after an interruption. An empty file, which
 //! a session cannot carry, is a `PUT` followed by a `PATCH` for its time
 //! ([`DriveClient::upload_empty`]).
@@ -41,12 +41,8 @@ use super::{DriveClient, DriveItem};
 pub const FRAGMENT_UNIT: u64 = 320 * 1024;
 
 /// The fragment the caller sends: 32 × 320 KiB = 10 MiB, the top of the 5–10
-/// MiB Microsoft recommends.
+/// MiB Microsoft recommends. A file up to this size goes up in one request.
 pub const CHUNK_SIZE: u64 = 32 * FRAGMENT_UNIT;
-
-/// Up to this size a file goes up in one request; above it, in fragments.
-/// Microsoft's own boundary for resumable transfers.
-pub const SMALL_UPLOAD_MAX: u64 = CHUNK_SIZE;
 
 /// Microsoft's bound on one request's body: under 60 MiB.
 const MAX_FRAGMENT: u64 = 60 * 1024 * 1024;

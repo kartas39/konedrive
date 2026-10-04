@@ -19,6 +19,10 @@ pub(crate) struct Recorder {
     pub fulls: AtomicUsize,
     /// Why the write gate is closed; open while `None`.
     pub gate: Mutex<Option<String>>,
+    /// What a test does whenever the write gate is asked — a row asks it
+    /// before each fragment it sends, so this is how a test acts between two
+    /// fragments.
+    pub asked: Mutex<Vec<Box<dyn FnMut() + Send>>>,
 }
 
 #[cfg(test)]
@@ -36,6 +40,9 @@ impl OutboxHost for Recorder {
     }
 
     fn may_write(&self) -> Result<(), String> {
+        for then in self.asked.lock().unwrap().iter_mut() {
+            then();
+        }
         self.gate.lock().unwrap().clone().map_or(Ok(()), Err)
     }
 }
@@ -80,7 +87,7 @@ impl Harness {
             root: root.clone(),
             store: store.clone(),
             locks: locks.clone(),
-            limits: Limits { small_max: 320 * 1024, chunk: 320 * 1024 },
+            limits: Limits { chunk: 320 * 1024 },
             moved_out: Mutex::new(None),
             quota: crate::account::quota::Quota::detached(),
         }

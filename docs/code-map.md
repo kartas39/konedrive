@@ -203,7 +203,7 @@ The outbox worker: sends the recorded changes to OneDrive; what is kept back. De
 - `steps/meta.rs` — the rows that send no content: `mkdir`, `move` and `delete`.
 - `steps/shared.rs` — what the steps share: the row's object, a name that is taken, the guard, the conflict copy.
 - `steps/sections.rs` — the blocking sections a step's file calls run in, and the worker's count of them.
-- `content.rs` — a file's content going up: a `create` or an `update`.
+- `content.rs` — a file's content going up, a `create` or an `update`: the one upload session every file with content goes through, step by step.
 - `local.rs` — the worker's hands on the folder: finding a row's local object.
 - `space.rs` — a full OneDrive: what waits for space. `[tests]`
 - `kept_back.rs` — what is kept back from OneDrive, grouped by what the user can do about it.
@@ -223,9 +223,12 @@ The outbox worker: sends the recorded changes to OneDrive; what is kept back. De
 The tests of the worker, by topic.
 
 - `mod.rs` — the worker's steps, its order, its crash points; what the topics share.
+- `candidates.rs` — a `403` on one row, and a new file OneDrive holds with other content.
+- `foreign_parent.rs` — a directory that carries another folder's id: nothing is sent into that folder.
 - `move_out.rs` — moves out of the folder, on the host.
 - `removed.rs` — a file or folder removed before its upload finished.
-- `sessions.rs` — upload sessions and their placeholders.
+- `sessions.rs` — upload sessions: a crash, a refusal, a changed file or an ended session at each step; and their placeholders.
+- `stops.rs` — a worker stopped while a section changes the folder and records it.
 - `worker.rs` — the worker's loop: when it waits, and which row goes next.
 
 ### `crates/konedrived/src/remote/`

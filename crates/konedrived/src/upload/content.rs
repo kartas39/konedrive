@@ -4,12 +4,13 @@
 //! inode lock (a free-up waits) and a read lease (a writer's open waits the
 //! milliseconds of one read), and compared with the snapshot after every
 //! read. Every non-empty file goes through an upload session persisted
-//! before its first byte (issue #47): up to [`Limits::small_max`] the whole
-//! file is its one fragment; above, it goes in fragments, the session
-//! persisted after each. A session is resumed while the file is still the
-//! snapshot it was opened for, and cancelled when given up.
+//! before its first byte (issue #47), in fragments of [`Limits::chunk`], the
+//! session persisted after each: a file up to that size is the session's one
+//! fragment, and goes the same way ([`Job::send_session`]). A session is
+//! resumed while the file is still the snapshot it was opened for, and
+//! cancelled when given up.
 //!
-//! [`Limits::small_max`]: super::Limits::small_max
+//! [`Limits::chunk`]: super::Limits::chunk
 
 use std::fs::File;
 use std::io;
@@ -121,7 +122,7 @@ async fn removed(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -> Result<Outcom
     Ok(Outcome::Done)
 }
 
-/// Why an upload in fragments stops after the fragment just sent.
+/// Why an upload stops before its next fragment.
 enum Stop {
     /// The row waits with this outcome: the session and its offset stay in
     /// the row, and the next run resumes them — or opens a new session,
@@ -132,8 +133,9 @@ enum Stop {
     Removed,
 }
 
-/// Whether an upload in fragments stops after the fragment just sent, and
-/// why: the one place such a stop is decided.
+/// Whether an upload stops before its next fragment — the first one too,
+/// once its session is open and persisted — and why: the one place such a
+/// stop is decided.
 ///
 /// - **Paused** (`docs/design/writes.md` §11): waiting, reason
 ///   [`Reason::Paused`], due again as soon as the pause ends. No failure.
@@ -166,11 +168,75 @@ async fn stop_between_fragments(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow) -
     Ok(None)
 }
 
-/// What a send came back with: the content's hash when it was computed on
-/// the way, and OneDrive's answer.
-struct Sent {
-    hash: Option<String>,
-    answer: Result<DriveItem, WriteError>,
+/// What an upload came to, for [`Job::create`] and [`Job::update`] to decide.
+enum Sent {
+    /// OneDrive holds an item for it — the last fragment's answer, or the
+    /// item a session that ended left there with this content (§5) — and
+    /// the hash of what was read here for it.
+    Landed(Box<DriveItem>, String),
+    /// OneDrive refused it for good: the name is taken (`409`), the item
+    /// changed (`412`) or is gone (`404`). No session of it is left open.
+    Refused(WriteError),
+    /// The row's outcome is decided here: it waits, or its file is gone.
+    Settled(Outcome),
+}
+
+impl Sent {
+    /// OneDrive's refusal: one the row's kind decides on, or a failure.
+    fn refused(err: WriteError) -> Result<Self, Fail> {
+        match err {
+            WriteError::NameExists | WriteError::Changed | WriteError::NotFound => Ok(Sent::Refused(err)),
+            other => Err(other.into()),
+        }
+    }
+}
+
+/// Where an upload session stands between two of its requests
+/// ([`Job::send_session`]). Every step ends in the next one, or in
+/// [`Step::Over`].
+enum Step {
+    /// The row holds a session opened for this very content: it is asked
+    /// where it stands.
+    Resume(SessionUrl),
+    /// No session: one is opened, and persisted before its first byte.
+    Open,
+    /// The session takes the fragment at `next`. `opened`: its opening was
+    /// the request before this one, so the guard it carried was checked
+    /// just now.
+    Fragment { url: SessionUrl, next: u64, opened: bool },
+    /// The session answered `404`: it completed without its answer reaching
+    /// us, or it expired.
+    Ended,
+    /// Nothing more is sent.
+    Over(Sent),
+}
+
+impl Step {
+    fn settled(outcome: Outcome) -> Self {
+        Step::Over(Sent::Settled(outcome))
+    }
+}
+
+/// What one run of a session keeps between its steps.
+#[derive(Default)]
+struct Run {
+    /// The hash of the file's first `hashed` bytes.
+    hasher: QuickXor,
+    hashed: u64,
+    /// Fragments accepted and persisted.
+    fragments: u32,
+    /// Sessions found ended.
+    ended: u32,
+}
+
+/// A read's bytes, or what the row waits for when it gave none.
+fn bytes_of(read: Read) -> Result<Vec<u8>, Outcome> {
+    match read {
+        Read::Bytes(bytes) => Ok(bytes),
+        Read::Busy => Err(Outcome::wait(Reason::OpenForWriting, RECHECK)),
+        Read::NotLocal => Err(Outcome::wait(Reason::NotLocal, RECHECK)),
+        Read::Changed => Err(Outcome::wait(Reason::Changed, QUIET)),
+    }
 }
 
 struct Job<'a> {
@@ -231,7 +297,7 @@ impl Job<'_> {
             Err(DriveError::NotFound) => return self.forget_bad_item().await.map(|()| None),
             Err(err) => return Err(err.into()),
         };
-        if item.quick_xor_hash() == Some(self.hash(None).await?.as_str()) {
+        if item.quick_xor_hash() == Some(self.hash().await?.as_str()) {
             let id = bad.id.clone();
             let known_here = self.e.store().call(move |s| Ok(!s.outbox_for_item(&id)?.is_empty() || s.local_handle(&id)?.is_some())).await?;
             if !known_here {
@@ -262,14 +328,14 @@ impl Job<'_> {
         if let Some(outcome) = self.clear_bad_item().await? {
             return Ok(outcome);
         }
-        let sent = self.send(UploadTarget::New { parent_id: self.parent, name: self.name }, None).await?;
-        match sent.answer {
-            Ok(item) => self.finish(item, sent.hash).await,
-            Err(WriteError::NameExists) => {
+        match self.send(UploadTarget::New { parent_id: self.parent, name: self.name }).await? {
+            Sent::Landed(item, hash) => self.finish(*item, hash).await,
+            Sent::Settled(outcome) => Ok(outcome),
+            Sent::Refused(WriteError::NameExists) => {
                 if let Some(outcome) = self.own_placeholder().await? {
                     return Ok(outcome);
                 }
-                let hash = self.hash(sent.hash).await?;
+                let hash = self.hash().await?;
                 match name_taken(self.e, self.disk, self.row, Some(self.found), self.parent, self.name, Ours::File(&hash)).await? {
                     // The same content is there: its own earlier request, or
                     // create/create with equal files (§6). Nothing is sent.
@@ -277,11 +343,11 @@ impl Job<'_> {
                     Named::Settled(outcome) => Ok(outcome),
                 }
             }
-            Err(WriteError::NotFound) => {
+            Sent::Refused(WriteError::NotFound) => {
                 self.e.host().cycle_wanted();
                 Ok(Outcome::backoff(Reason::Parent))
             }
-            Err(other) => Err(other.into()),
+            Sent::Refused(other) => Err(other.into()),
         }
     }
 
@@ -406,19 +472,19 @@ impl Job<'_> {
                     // The move went through before (a replay: the temporary
                     // name of a swap, I1): the content follows it.
                     Some(fresh) => guard = guard.renewed(Some(fresh)),
-                    None => return self.changed(None).await,
+                    None => return self.changed().await,
                 },
                 Err(WriteError::NotFound) => return self.gone_or_new(id).await,
                 Err(other) => return Err(other.into()),
             }
         }
-        let sent = self.send(UploadTarget::Existing { id, if_match: guard.as_str() }, Some((id, guard.as_str()))).await?;
-        match sent.answer {
-            Ok(item) => self.finish(item, sent.hash).await,
-            Err(WriteError::Changed) => self.changed(sent.hash).await,
+        match self.send(UploadTarget::Existing { id, if_match: guard.as_str() }).await? {
+            Sent::Landed(item, hash) => self.finish(*item, hash).await,
+            Sent::Settled(outcome) => Ok(outcome),
+            Sent::Refused(WriteError::Changed) => self.changed().await,
             // Deleted in OneDrive while changed here: local wins (§6).
-            Err(WriteError::NotFound) => self.gone_or_new(id).await,
-            Err(other) => Err(other.into()),
+            Sent::Refused(WriteError::NotFound) => self.gone_or_new(id).await,
+            Sent::Refused(other) => Err(other.into()),
         }
     }
 
@@ -464,7 +530,7 @@ impl Job<'_> {
     /// this file's → adopted (its own earlier request, §5). Its content is
     /// the version this change was made against → again with the fresh eTag;
     /// a rename made there first stands. Otherwise both changed: a copy.
-    async fn changed(&self, hash: Option<String>) -> Result<Outcome, Fail> {
+    async fn changed(&self) -> Result<Outcome, Fail> {
         let row = self.row;
         let id = row.item_id.as_deref().unwrap_or_default();
         let remote = match self.e.drive().item(id).await {
@@ -472,7 +538,7 @@ impl Job<'_> {
             Err(DriveError::NotFound) => return self.gone_or_new(id).await,
             Err(err) => return Err(err.into()),
         };
-        let hash = self.hash(hash).await?;
+        let hash = self.hash().await?;
         let base = row.base.clone().unwrap_or_default();
         let remote_parent = remote.parent_reference.as_ref().and_then(|p| p.id.clone());
         let remote_name = remote.name.clone().unwrap_or_default();
@@ -506,31 +572,25 @@ impl Job<'_> {
         copy(self.e, self.disk, row, self.found, self.parent, Some(id)).await
     }
 
-    async fn send(&self, target: UploadTarget<'_>, last_check: Option<(&str, &str)>) -> Result<Sent, Fail> {
+    async fn send(&self, target: UploadTarget<'_>) -> Result<Sent, Fail> {
         // OneDrive became full since the row was taken: nothing that adds
         // content starts (`space`).
         if self.e.space_full() {
-            return Err(Fail::Now(Outcome::Space(Reason::WaitingForSpace)));
+            return Ok(Sent::Settled(Outcome::Space(Reason::WaitingForSpace)));
         }
         if self.snap.size == 0 {
             self.send_empty(target).await
-        } else if self.snap.size <= self.e.limits().small_max {
-            self.send_small(target).await
         } else {
-            self.send_large(target, last_check).await
+            self.send_session(target).await
         }
     }
 
-    /// `len` bytes at `offset`, under the inode lock and a read lease.
-    async fn read(&self, offset: u64, len: usize) -> Result<Vec<u8>, Fail> {
+    /// What `len` bytes at `offset` are, read under the inode lock and a
+    /// read lease, or why they cannot be read now.
+    async fn read(&self, offset: u64, len: usize) -> Result<Read, Fail> {
         let inode = self.e.locks().lock(InodeKey::of(self.file)?).await;
         let (file, snap) = (Arc::clone(self.file), self.snap);
-        match blocking_under(inode.hold(), move || local::read(&file, offset, len, snap)).await? {
-            Read::Bytes(bytes) => Ok(bytes),
-            Read::Busy => Err(Fail::Now(Outcome::wait(Reason::OpenForWriting, RECHECK))),
-            Read::NotLocal => Err(Fail::Now(Outcome::wait(Reason::NotLocal, RECHECK))),
-            Read::Changed => Err(Fail::Now(Outcome::wait(Reason::Changed, QUIET))),
-        }
+        blocking_under(inode.hold(), move || local::read(&file, offset, len, snap)).await
     }
 
     /// [`local::drop_cache`] for the file that went up whole.
@@ -543,118 +603,68 @@ impl Job<'_> {
         .await;
     }
 
-    /// Feeds the first `upto` bytes to `hasher`, a fragment at a time.
-    async fn hash_prefix(&self, hasher: &mut QuickXor, upto: u64) -> Result<(), Fail> {
-        let mut at = 0;
+    /// Feeds the bytes from `from` up to `upto` to `hasher`, a fragment at
+    /// a time. Bytes that cannot be read now end the row's run: it waits.
+    async fn hash_range(&self, hasher: &mut QuickXor, from: u64, upto: u64) -> Result<(), Fail> {
+        let mut at = from;
         while at < upto {
             let len = (upto - at).min(self.e.limits().chunk.max(1));
-            hasher.update(&self.read(at, len as usize).await?);
+            hasher.update(&bytes_of(self.read(at, len as usize).await?).map_err(Fail::Now)?);
             at += len;
         }
         Ok(())
     }
 
-    /// The content's quickXorHash: known, or read for it.
-    async fn hash(&self, known: Option<String>) -> Result<String, Fail> {
-        if let Some(hash) = known {
-            return Ok(hash);
-        }
+    /// The content's quickXorHash, read for it.
+    async fn hash(&self) -> Result<String, Fail> {
         let mut hasher = QuickXor::new();
-        self.hash_prefix(&mut hasher, self.snap.size).await?;
+        self.hash_range(&mut hasher, 0, self.snap.size).await?;
         Ok(hasher.finish_base64())
     }
 
     /// An empty file: one `PUT`, no session (a session cannot carry it).
     async fn send_empty(&self, target: UploadTarget<'_>) -> Result<Sent, Fail> {
         // Still empty, still the snapshot, and no writer: as for any read.
-        self.read(0, 0).await?;
-        let answer = self.e.drive().upload_empty(target, self.snap.sec).await;
-        if answer.is_ok() {
-            self.e.upload_progress(self.row.seq, 0, 0);
-            self.e.fault(Fault::AfterSend)?;
+        if let Err(wait) = bytes_of(self.read(0, 0).await?) {
+            return Ok(Sent::Settled(wait));
         }
-        Ok(Sent { hash: Some(QuickXor::new().finish_base64()), answer })
+        match self.e.drive().upload_empty(target, self.snap.sec).await {
+            Ok(item) => {
+                self.e.upload_progress(self.row.seq, 0, 0);
+                self.e.fault(Fault::AfterSend)?;
+                Ok(Sent::Landed(Box::new(item), QuickXor::new().finish_base64()))
+            }
+            Err(err) => Sent::refused(err),
+        }
     }
 
-    /// A file up to [`Limits::small_max`](super::Limits::small_max): read
-    /// whole, and sent as the one fragment of a session persisted before it
-    /// goes (issue #47) — resumed if a run before opened it for this very
-    /// content. A fragment OneDrive refuses for now goes again to the same
-    /// session (`DriveClient::upload_chunk`); refused still, the row fails
-    /// for now and keeps its session for its next run.
-    async fn send_small(&self, target: UploadTarget<'_>) -> Result<Sent, Fail> {
-        let size = self.snap.size;
-        let bytes = self.read(0, size as usize).await?;
-        let mut hasher = QuickXor::new();
-        hasher.update(&bytes);
-        let hash = hasher.finish_base64();
-        let drive = self.e.drive();
-        let mut session = match self.resume(&target, Some(&hash)).await? {
-            Ok(session) => session,
-            Err(adopted) => return Ok(adopted),
-        };
-        let mut restarts = 0;
+    /// A file with content (§4.8): the fragments of one upload session, a
+    /// file of one fragment's size and a larger one alike. The session a run
+    /// before persisted for this very content is resumed from where the
+    /// server stands; otherwise one is opened, and persisted before its
+    /// first byte (issue #47). The row holds the session after every step,
+    /// so a stop or a crash between any two of them is replayed from the
+    /// session's own status.
+    async fn send_session(&self, target: UploadTarget<'_>) -> Result<Sent, Fail> {
+        let mut run = Run::default();
+        let mut step = self.session.clone().map_or(Step::Open, Step::Resume);
         loop {
-            let (url, mut next) = match session.take() {
-                Some(session) => session,
-                None => match self.open(target).await? {
-                    Ok(url) => (url, 0),
-                    Err(err) => return Ok(Sent { hash: Some(hash), answer: Err(err) }),
-                },
+            step = match step {
+                Step::Resume(url) => self.resume(url).await?,
+                Step::Open => self.open(target).await?,
+                Step::Fragment { url, next, opened } => self.fragment(&target, url, next, opened, &mut run).await?,
+                Step::Ended => self.ended(&target, &mut run).await?,
+                Step::Over(sent) => return Ok(sent),
             };
-            // The whole file, or what the session still expects of it.
-            let mut rounds = 0;
-            loop {
-                let from = next.min(size) as usize;
-                match drive.upload_chunk(url.as_str(), from as u64, size, bytes[from..].to_vec()).await {
-                    Ok(ChunkOutcome::Done(item)) => {
-                        self.e.upload_progress(self.row.seq, size, size);
-                        self.drop_cache().await;
-                        self.e.fault(Fault::AfterSend)?;
-                        return Ok(Sent { hash: Some(hash), answer: Ok(*item) });
-                    }
-                    Ok(ChunkOutcome::More(progress)) => {
-                        rounds += 1;
-                        if rounds > 2 {
-                            // The session stays, to be resumed.
-                            return Err(WriteError::Transient(format!("the upload session still expects bytes from {} of {size}", progress.next).into()).into());
-                        }
-                        next = progress.next;
-                    }
-                    Err(WriteError::SessionGone) => {
-                        if let Some(adopted) = self.restart(&target, Some(&hash), &mut restarts).await? {
-                            return Ok(adopted);
-                        }
-                        break;
-                    }
-                    Err(err @ (WriteError::NameExists | WriteError::Changed | WriteError::NotFound)) => {
-                        self.abandon(&url).await?;
-                        return Ok(Sent { hash: Some(hash), answer: Err(err) });
-                    }
-                    // The session stays, to be resumed.
-                    Err(other) => return Err(other.into()),
-                }
-            }
         }
     }
 
-    /// The session a run before persisted for this very content (the same
-    /// snapshot), and where the server stands in it; `Ok(None)` when there
-    /// is none, or it expired. `Err`: it ended with this content in
-    /// OneDrive, which is adopted (§5).
-    async fn resume(&self, target: &UploadTarget<'_>, hash: Option<&str>) -> Result<Result<Option<(SessionUrl, u64)>, Sent>, Fail> {
-        let Some(url) = self.session.clone() else { return Ok(Ok(None)) };
+    /// Where the session a run before persisted stands. Only one opened for
+    /// this very content (the same snapshot) comes here.
+    async fn resume(&self, url: SessionUrl) -> Result<Step, Fail> {
         match self.e.drive().upload_status(url.as_str()).await {
-            Ok(progress) => Ok(Ok(Some((url, progress.next)))),
-            Err(WriteError::SessionGone) => {
-                if let Some(adopted) = self.ended(target, hash).await? {
-                    return Ok(Err(adopted));
-                }
-                // Expired while it waited (a pause, a restart, the network): the
-                // bytes sent before are lost.
-                tracing::info!("the upload session of {} has expired: the upload starts over", self.found.rel.display());
-                Ok(Ok(None))
-            }
+            Ok(progress) => Ok(Step::Fragment { url, next: progress.next, opened: false }),
+            Err(WriteError::SessionGone) => Ok(Step::Ended),
             // The session stays, to be resumed.
             Err(other) => Err(other.into()),
         }
@@ -664,9 +674,8 @@ impl Job<'_> {
     /// place a new file's session holds, before any byte is sent (issue
     /// #47). A new file's place is recorded before the request (issue #84):
     /// a stop before the URL is persisted leaves a placeholder this folder
-    /// still knows of ([`Job::own_placeholder`]). `Err` inside: OneDrive's
-    /// refusal to open it.
-    async fn open(&self, target: UploadTarget<'_>) -> Result<Result<SessionUrl, WriteError>, Fail> {
+    /// still knows of ([`Job::own_placeholder`]).
+    async fn open(&self, target: UploadTarget<'_>) -> Result<Step, Fail> {
         let place = match target {
             UploadTarget::New { parent_id, name } => Some((parent_id.to_owned(), name.to_owned())),
             UploadTarget::Existing { .. } => None,
@@ -689,7 +698,7 @@ impl Job<'_> {
                 if place.is_some() && !matches!(err, WriteError::Transient(_)) {
                     self.e.store().call(move |s| s.outbox_opening_answered(seq, carried)).await?;
                 }
-                return Ok(Err(err));
+                return Ok(Step::Over(Sent::refused(err)?));
             }
         };
         // A crash here leaves a session nothing knows of but its recorded
@@ -697,27 +706,156 @@ impl Job<'_> {
         // is deleted (limitations log F172).
         self.e.fault(Fault::SessionNotPersisted)?;
         let url = SessionUrl::new(opened.url);
-        let (seq, kept, expires) = (self.row.seq, url.clone(), opened.expires);
+        let (kept, expires) = (url.clone(), opened.expires);
         self.e
             .store()
             .call(move |s| s.outbox_open_session(seq, &kept, expires, place.as_ref().map(|(p, n)| (p.as_str(), n.as_str())), now()))
             .await?;
-        Ok(Ok(url))
+        Ok(Step::Fragment { url, next: 0, opened: true })
     }
 
-    /// The session under an upload ended (`404`): the item holding this
-    /// content is adopted (§5); otherwise the upload starts over — once per
-    /// run.
-    async fn restart(&self, target: &UploadTarget<'_>, hash: Option<&str>, restarts: &mut u32) -> Result<Option<Sent>, Fail> {
-        if let Some(adopted) = self.ended(target, hash).await? {
-            return Ok(Some(adopted));
+    /// One fragment of the session at `url`, from `next`: read, fed to the
+    /// hash, sent, and the session's new offset persisted (§4.8 step 3).
+    ///
+    /// - Before every fragment, the first too, the upload may stop
+    ///   ([`stop_between_fragments`]).
+    /// - Before the last one (§4.8 step 4): a writer, the snapshot, and —
+    ///   for a changed file — the item in OneDrive once more, since the
+    ///   session's guard was checked when it was opened, not when it
+    ///   completes. Not when the opening was the request just before: its
+    ///   answer was that check.
+    /// - A fragment OneDrive refuses for now goes again to the same session
+    ///   (`DriveClient::upload_chunk`); refused still, the row fails for now
+    ///   and keeps its session for its next run.
+    /// - A file that is no longer the snapshot gives the session up, and so
+    ///   do a refusal for good and a session that expects bytes past the
+    ///   file's end.
+    async fn fragment(&self, target: &UploadTarget<'_>, url: SessionUrl, next: u64, opened: bool, run: &mut Run) -> Result<Step, Fail> {
+        let (e, seq, size) = (self.e, self.row.seq, self.snap.size);
+        if let Some(outcome) = self.stopped(next).await? {
+            return Ok(Step::settled(outcome));
+        }
+        if next >= size {
+            // Nothing of this file is left to send, and it did not complete.
+            self.abandon(&url).await?;
+            return Err(WriteError::Failed(format!("the upload session expects bytes from {next} of {size}").into()).into());
+        }
+        let len = (size - next).min(e.limits().chunk);
+        if next + len >= size {
+            if lease::open_for_writing(self.file)? {
+                return Ok(Step::settled(Outcome::wait(Reason::OpenForWriting, RECHECK)));
+            }
+            if Snap::of(self.file)? != self.snap {
+                self.abandon(&url).await?;
+                return Ok(Step::settled(Outcome::wait(Reason::Changed, QUIET)));
+            }
+            if !opened {
+                if let Some(refusal) = self.guard_broken(target).await? {
+                    self.abandon(&url).await?;
+                    return Ok(Step::Over(Sent::Refused(refusal)));
+                }
+            }
+        }
+        // The hash follows the server: it starts over wherever the session
+        // does not stand at the end of what was read for it.
+        if run.hashed != next {
+            run.hasher = QuickXor::new();
+            self.hash_range(&mut run.hasher, 0, next).await?;
+        }
+        let read = self.read(next, len as usize).await?;
+        if matches!(read, Read::Changed) {
+            self.abandon(&url).await?;
+        }
+        let bytes = match bytes_of(read) {
+            Ok(bytes) => bytes,
+            Err(wait) => return Ok(Step::settled(wait)),
+        };
+        run.hasher.update(&bytes);
+        run.hashed = next + len;
+        match e.drive().upload_chunk(url.as_str(), next, size, bytes).await {
+            // An answer that takes nothing: the session stays, to be resumed.
+            Ok(ChunkOutcome::More(progress)) if progress.next <= next => {
+                Err(WriteError::Transient(format!("the upload session still expects bytes from {} of {size}", progress.next).into()).into())
+            }
+            Ok(ChunkOutcome::More(progress)) => {
+                let (kept, expires, next) = (url.clone(), progress.expires, progress.next);
+                e.store().call(move |s| s.outbox_set_session(seq, Some(&kept), expires, Some(next))).await?;
+                e.upload_progress(seq, next, size);
+                run.fragments += 1;
+                e.fault(Fault::MidSession(run.fragments))?;
+                Ok(Step::Fragment { url, next, opened: false })
+            }
+            Ok(ChunkOutcome::Done(item)) => {
+                e.upload_progress(seq, size, size);
+                self.drop_cache().await;
+                e.fault(Fault::AfterSend)?;
+                Ok(Step::Over(Sent::Landed(item, run.hasher.finish_base64())))
+            }
+            Err(WriteError::SessionGone) => Ok(Step::Ended),
+            Err(err @ (WriteError::NameExists | WriteError::Changed | WriteError::NotFound)) => {
+                self.abandon(&url).await?;
+                Ok(Step::Over(Sent::Refused(err)))
+            }
+            // The session stays, to be resumed.
+            Err(other) => Err(other.into()),
+        }
+    }
+
+    /// Whether the upload stops before the fragment at `next`
+    /// ([`stop_between_fragments`]), and the row's outcome then: it waits
+    /// with its session kept, or its file is gone and it ends ([`removed`]).
+    async fn stopped(&self, next: u64) -> Result<Option<Outcome>, Fail> {
+        let (seq, size) = (self.row.seq, self.snap.size);
+        match stop_between_fragments(self.e, self.disk, self.row).await? {
+            None => Ok(None),
+            Some(Stop::Wait(outcome)) => {
+                tracing::info!("the upload of {} stops at {next} of {size} bytes; its session is kept", self.found.rel.display());
+                Ok(Some(outcome))
+            }
+            Some(Stop::Removed) => {
+                tracing::info!("the upload of {} stops at {next} of {size} bytes: the file was removed", self.found.rel.display());
+                // The row as it is now: with the session just used.
+                match self.e.store().call(move |s| s.outbox_row(seq)).await? {
+                    Some(now) => removed(self.e, self.disk, &now).await.map(Some),
+                    None => Ok(Some(Outcome::Done)),
+                }
+            }
+        }
+    }
+
+    /// The item a changed file goes into, read again before the session's
+    /// last fragment (§4.8 step 4): the refusal its opening would get now —
+    /// another version than the guard names, or no item.
+    async fn guard_broken(&self, target: &UploadTarget<'_>) -> Result<Option<WriteError>, Fail> {
+        let UploadTarget::Existing { id, if_match } = *target else { return Ok(None) };
+        match self.e.drive().item(id).await {
+            Ok(item) if item.e_tag.as_deref() != Some(if_match) && item.c_tag.as_deref() != Some(if_match) => Ok(Some(WriteError::Changed)),
+            Ok(_) => Ok(None),
+            Err(DriveError::NotFound) => Ok(Some(WriteError::NotFound)),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// The session ended (`404`): it completed without its answer reaching
+    /// us, or it expired — while it waited (a pause, a restart, the
+    /// network), or under the upload. The item holding this content is
+    /// adopted (§5); otherwise the bytes sent before are lost, and the
+    /// upload starts over with a new session — once in a run: a second
+    /// session that ends leaves the row in backoff.
+    async fn ended(&self, target: &UploadTarget<'_>, run: &mut Run) -> Result<Step, Fail> {
+        let hash = self.hash().await?;
+        if let Some(item) = self.fetch(target).await? {
+            if item.quick_xor_hash() == Some(hash.as_str()) {
+                return Ok(Step::Over(Sent::Landed(Box::new(item), hash)));
+            }
+        }
+        self.forget_session().await?;
+        run.ended += 1;
+        if run.ended > 1 {
+            return Ok(Step::settled(Outcome::backoff(Reason::SessionEnded)));
         }
         tracing::info!("the upload session of {} ended: the upload starts over", self.found.rel.display());
-        *restarts += 1;
-        if *restarts > 1 {
-            return Err(Fail::Now(Outcome::backoff(Reason::SessionEnded)));
-        }
-        Ok(None)
+        Ok(Step::Open)
     }
 
     /// The row's session completed, or is gone: nothing to cancel.
@@ -749,139 +887,14 @@ impl Job<'_> {
         }
     }
 
-    /// An ended session (`404`): it completed without the answer reaching
-    /// us, or it expired. The item holding this content is adopted (§5);
-    /// `None` means start again.
-    async fn ended(&self, target: &UploadTarget<'_>, known: Option<&str>) -> Result<Option<Sent>, Fail> {
-        let hash = self.hash(known.map(str::to_owned)).await?;
-        if let Some(item) = self.fetch(target).await? {
-            if item.quick_xor_hash() == Some(hash.as_str()) {
-                return Ok(Some(Sent { hash: Some(hash), answer: Ok(item) }));
-            }
-        }
-        self.forget_session().await?;
-        Ok(None)
-    }
-
-    /// §4.8: a session in fragments, resumed from where the server stands
-    /// when the file is still the snapshot the row holds.
-    async fn send_large(&self, target: UploadTarget<'_>, last_check: Option<(&str, &str)>) -> Result<Sent, Fail> {
-        let (e, seq, size) = (self.e, self.row.seq, self.snap.size);
-        let drive = e.drive();
-        // Only a session opened for this very content is resumed.
-        let mut resumed = match self.resume(&target, None).await? {
-            Ok(resumed) => resumed,
-            Err(adopted) => return Ok(adopted),
-        };
-        let mut restarts = 0;
-        loop {
-            let (url, mut next) = match resumed.take() {
-                Some(session) => session,
-                None => match self.open(target).await? {
-                    Ok(url) => (url, 0),
-                    Err(err) => return Ok(Sent { hash: None, answer: Err(err) }),
-                },
-            };
-            let mut hasher = QuickXor::new();
-            self.hash_prefix(&mut hasher, next).await?;
-            let mut fragments = 0;
-            loop {
-                match stop_between_fragments(e, self.disk, self.row).await? {
-                    Some(Stop::Wait(stop)) => {
-                        tracing::info!("the upload of {} stops at {next} of {size} bytes; its session is kept", self.found.rel.display());
-                        return Err(Fail::Now(stop));
-                    }
-                    Some(Stop::Removed) => {
-                        tracing::info!("the upload of {} stops at {next} of {size} bytes: the file was removed", self.found.rel.display());
-                        // The row as it is now: with the session just used.
-                        let now = e.store().call(move |s| s.outbox_row(seq)).await?;
-                        let Some(now) = now else { return Err(Fail::Now(Outcome::Done)) };
-                        return Err(Fail::Now(removed(e, self.disk, &now).await?));
-                    }
-                    None => {}
-                }
-                let len = (size - next).min(e.limits().chunk);
-                if next + len >= size {
-                    // Before the last fragment: a writer, the snapshot, and the
-                    // item in OneDrive once more (§4.8 step 4).
-                    if lease::open_for_writing(self.file)? {
-                        return Err(Fail::Now(Outcome::wait(Reason::OpenForWriting, RECHECK)));
-                    }
-                    if Snap::of(self.file)? != self.snap {
-                        self.abandon(&url).await?;
-                        return Err(Fail::Now(Outcome::wait(Reason::Changed, QUIET)));
-                    }
-                    if let Some((id, guard)) = last_check {
-                        match drive.item(id).await {
-                            Ok(item) if item.e_tag.as_deref() != Some(guard) && item.c_tag.as_deref() != Some(guard) => {
-                                self.abandon(&url).await?;
-                                return Ok(Sent { hash: None, answer: Err(WriteError::Changed) });
-                            }
-                            Ok(_) => {}
-                            Err(DriveError::NotFound) => {
-                                self.abandon(&url).await?;
-                                return Ok(Sent { hash: None, answer: Err(WriteError::NotFound) });
-                            }
-                            Err(err) => return Err(err.into()),
-                        }
-                    }
-                }
-                let bytes = match self.read(next, len as usize).await {
-                    Ok(bytes) => bytes,
-                    Err(Fail::Now(outcome)) => {
-                        if outcome.reason() == Some(&Reason::Changed) {
-                            self.abandon(&url).await?;
-                        }
-                        return Err(Fail::Now(outcome));
-                    }
-                    Err(other) => return Err(other),
-                };
-                hasher.update(&bytes);
-                match drive.upload_chunk(url.as_str(), next, size, bytes).await {
-                    Ok(ChunkOutcome::More(progress)) => {
-                        if progress.next != next + len {
-                            // The server stands elsewhere: the hash follows it.
-                            hasher = QuickXor::new();
-                            self.hash_prefix(&mut hasher, progress.next).await?;
-                        }
-                        next = progress.next;
-                        let (kept, expires) = (url.clone(), progress.expires);
-                        e.store().call(move |s| s.outbox_set_session(seq, Some(&kept), expires, Some(next))).await?;
-                        e.upload_progress(seq, next, size);
-                        fragments += 1;
-                        e.fault(Fault::MidSession(fragments))?;
-                    }
-                    Ok(ChunkOutcome::Done(item)) => {
-                        e.upload_progress(seq, size, size);
-                        self.drop_cache().await;
-                        e.fault(Fault::AfterSend)?;
-                        return Ok(Sent { hash: Some(hasher.finish_base64()), answer: Ok(*item) });
-                    }
-                    Err(WriteError::SessionGone) => {
-                        if let Some(adopted) = self.restart(&target, None, &mut restarts).await? {
-                            return Ok(adopted);
-                        }
-                        break;
-                    }
-                    Err(err @ (WriteError::NameExists | WriteError::Changed | WriteError::NotFound)) => {
-                        self.abandon(&url).await?;
-                        return Ok(Sent { hash: None, answer: Err(err) });
-                    }
-                    // The session stays, to be resumed.
-                    Err(other) => return Err(other.into()),
-                }
-            }
-        }
-    }
-
     /// The answer's content is compared with what was sent: other content
     /// means the server holds something else (§4.8 step 5). It is never
     /// committed as this file's: it is sent again from zero, against
     /// the version it made — a new file's is deleted first, so that the
     /// name is free again.
-    async fn finish(&self, item: DriveItem, hash: Option<String>) -> Result<Outcome, Fail> {
+    async fn finish(&self, item: DriveItem, hash: String) -> Result<Outcome, Fail> {
         self.forget_session().await?;
-        let differs = matches!((hash.as_deref(), item.quick_xor_hash()), (Some(ours), Some(theirs)) if ours != theirs);
+        let differs = item.quick_xor_hash().is_some_and(|theirs| theirs != hash);
         if !differs {
             return self.commit(item).await;
         }

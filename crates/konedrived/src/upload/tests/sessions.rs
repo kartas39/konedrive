@@ -32,90 +32,262 @@ fn refused_for_now(w: &World, content: &[u8]) -> String {
     row.session_url.expect("the session is kept for the next run").as_str().to_owned()
 }
 
-/// The bug as it happened: a small file's one `PUT` answered `429`. Refused
-/// once, it goes again to the same session at once; refused as often as the
-/// client allows, the row fails for now and its next run resumes the same
-/// session. Either way the file lands under its own name: one session, no
-/// conflict, no placeholder left.
-#[test]
-fn a_small_file_refused_429_goes_up_under_its_own_name() {
-    for refusals in [1, 2] {
-        let w = World::new(&[]);
-        w.write("a.txt", b"hello");
-        w.examine(&[("", "a.txt")]);
-        w.cloud(|c| c.throttle_429("PUT", "upload/", 0, 0, refusals));
-        w.run();
-        if refusals == 2 {
-            assert!(w.rows()[0].session_url.is_some(), "kept for the next run");
-            w.run();
+/// How many requests of `method` whose path holds `fragment` came after the
+/// first `from`.
+fn since(w: &World, from: usize, method: &str, fragment: &str) -> usize {
+    w.cloud(|c| c.log[from..].iter().filter(|(m, p)| m == method && p.contains(fragment)).count())
+}
+
+/// Does `then` once, the first time the write gate is asked while `when`
+/// holds. A row asks the gate before each fragment it sends, so `when` says
+/// between which two fragments `then` happens.
+fn between(w: &World, when: impl Fn(&fake::Cloud) -> bool + Send + 'static, then: impl FnOnce(&mut fake::Cloud) + Send + 'static) {
+    let cloud = Arc::clone(&w.h.graph.cloud);
+    let mut then = Some(then);
+    w.h.host.asked.lock().unwrap().push(Box::new(move || {
+        let mut cloud = cloud.lock().unwrap();
+        if then.is_some() && when(&cloud) {
+            then.take().expect("checked")(&mut cloud);
         }
-        assert!(w.rows().is_empty(), "{refusals}: {:?}", w.summary());
-        assert_eq!(w.cloud(|c| c.paths()), vec!["a.txt"], "{refusals}");
-        assert_eq!(w.content("a.txt").unwrap(), b"hello");
-        assert_eq!(w.cloud(|c| c.count("POST", "createUploadSession")), 1, "{refusals}: one session");
-        assert_eq!(w.cloud(|c| (c.placeholders().len(), c.open_sessions())), (0, 0), "{refusals}");
-        assert_eq!(conflicts(&w), 0, "{refusals}");
-        assert!(given_up(&w).is_empty());
-        assert_committed(&w, "a.txt", "a.txt");
+    }));
+}
+
+/// `sent` fragments have reached OneDrive.
+fn fragments(sent: usize) -> impl Fn(&fake::Cloud) -> bool + Send + 'static {
+    move |c| c.count("PUT", "upload/") == sent
+}
+
+/// `a.bin` of four fragments queued: a new file, or new content for the
+/// item `A`.
+fn four_fragments(update: bool) -> World {
+    let w = if update { World::new(&[file("A", "R", "a.bin", b"old")]) } else { World::new(&[]) };
+    if update {
+        w.hydrate("a.bin", b"old");
+        w.edit("a.bin", &large());
+    } else {
+        w.write("a.bin", &large());
+    }
+    w.examine(&[("", "a.bin")]);
+    w
+}
+
+/// A crash at each point of a session (§10), for a new file and for a
+/// changed one, and what the next start does:
+///
+/// - the session opened, not persisted: a new session — a new file's replay
+///   first meets the lost session's placeholder (`409`) and deletes it;
+/// - after two fragments: the session is asked where it stands, and only the
+///   other two are sent;
+/// - the last fragment sent, its answer lost: the session answers `404`, the
+///   item holds this content and is adopted — nothing is sent.
+///
+/// Each ends with the one item, committed: no copy, no placeholder, nothing
+/// deleted.
+#[test]
+fn a_crash_at_each_point_of_a_session_is_replayed_to_the_same_item() {
+    for update in [false, true] {
+        for (fault, posts, puts) in [(Fault::SessionNotPersisted, if update { 1 } else { 2 }, 4), (Fault::MidSession(2), 0, 2), (Fault::AfterSend, 0, 0)] {
+            let at = format!("update {update}, {fault:?}");
+            let w = four_fragments(update);
+            let engine = w.h.engine();
+            engine.arm(fault);
+            w.h.drain(&engine);
+            let row = w.rows().remove(0);
+            assert_eq!(row.state, OutboxState::Running, "{at}: stopped as by a crash");
+            match fault {
+                Fault::SessionNotPersisted => assert_eq!(row.session_url, None, "{at}"),
+                Fault::MidSession(_) => assert_eq!(row.session_next, Some(2 * 320 * 1024), "{at}"),
+                _ => assert!(row.session_url.is_some(), "{at}"),
+            }
+
+            let from = w.cloud(|c| c.log.len());
+            w.run();
+            assert!(w.rows().is_empty(), "{at}: {:?}", w.summary());
+            assert_eq!((since(&w, from, "POST", "createUploadSession"), since(&w, from, "PUT", "upload/")), (posts, puts), "{at}");
+            assert_eq!(w.cloud(|c| c.paths()), vec!["a.bin"], "{at}");
+            assert_eq!(w.content("a.bin").unwrap(), large(), "{at}");
+            assert_committed(&w, "a.bin", "a.bin");
+            if update {
+                assert_eq!(w.id_at("a.bin").as_deref(), Some("A"), "{at}: the item keeps its id");
+            }
+            assert_eq!(conflicts(&w), 0, "{at}");
+            assert!(w.cloud(|c| c.placeholders().is_empty() && c.bin.is_empty()), "{at}: no placeholder left, nothing deleted");
+        }
     }
 }
 
-/// The same for a fragment in the middle of a large file: sent again to the
-/// same session, and the upload goes on.
+/// The bug as it happened (issue #47): a fragment answered `429`. Refused
+/// once, it goes again to the same session at once — a file's only fragment
+/// and a middle one alike; refused as often as the client sends it, the row
+/// fails for now, keeps its session, and its next run resumes it. Either way
+/// the file lands under its own name: one session, no conflict, no
+/// placeholder left.
 #[test]
-fn a_large_files_fragment_refused_429_goes_again_to_the_same_session() {
-    let w = World::new(&[]);
-    let content = large();
-    w.write("big.bin", &content);
-    w.examine(&[("", "big.bin")]);
-    w.cloud(|c| c.throttle_429("PUT", "upload/", 1, 0, 1));
+fn a_fragment_refused_for_now_goes_again_to_the_same_session() {
+    for (content, before, refusals, puts) in [(b"hello".to_vec(), 0, 1, 2), (b"hello".to_vec(), 0, 2, 3), (large(), 1, 1, 5)] {
+        let at = format!("{} bytes, {refusals} refusals", content.len());
+        let w = World::new(&[]);
+        w.write("a.bin", &content);
+        w.examine(&[("", "a.bin")]);
+        w.cloud(|c| c.throttle_429("PUT", "upload/", before, 0, refusals));
+        w.run();
+        if refusals == 2 {
+            assert!(w.rows()[0].session_url.is_some(), "{at}: kept for the next run");
+            assert_eq!(w.cloud(|c| c.placeholders()), vec!["a.bin"], "{at}");
+            w.run();
+        }
+        assert!(w.rows().is_empty(), "{at}: {:?}", w.summary());
+        assert_eq!(w.cloud(|c| c.paths()), vec!["a.bin"], "{at}");
+        assert_eq!(w.content("a.bin").unwrap(), content, "{at}");
+        assert_eq!(w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/"))), (1, puts), "{at}: one session");
+        assert_eq!(w.cloud(|c| (c.placeholders().len(), c.open_sessions())), (0, 0), "{at}");
+        assert_eq!(conflicts(&w), 0, "{at}");
+        assert!(given_up(&w).is_empty(), "{at}");
+        assert_committed(&w, "a.bin", "a.bin");
+    }
+}
+
+/// A file saved again while it goes up is never committed as what was being
+/// sent — whether the save comes before its only fragment, while a middle
+/// one goes, or before the last. The session is given up and cancelled (the
+/// name is free again), the row waits (`changed`), and its next run sends
+/// the new content from zero.
+#[test]
+fn a_file_changed_while_it_goes_up_gives_its_session_up_and_goes_again() {
+    for (content, sent) in [(b"hello".to_vec(), 0), (large(), 1), (large(), 3)] {
+        let at = format!("{} bytes, after {sent} fragments", content.len());
+        let w = World::new(&[]);
+        w.write("a.bin", &content);
+        w.examine(&[("", "a.bin")]);
+        let path = w.path("a.bin");
+        between(&w, move |c| c.count("POST", "createUploadSession") == 1 && c.count("PUT", "upload/") == sent, move |_| std::fs::write(&path, b"saved again").unwrap());
+        w.run();
+        let row = w.rows().remove(0);
+        assert_eq!((row.state, row.reason_text().as_deref()), (OutboxState::Waiting, Some(Reason::Changed.key())), "{at}");
+        assert_eq!(row.session_url, None, "{at}");
+        assert_eq!(w.cloud(|c| (c.count("PUT", "upload/"), c.count("DELETE", "upload/"))), (sent, 1), "{at}: nothing more sent, the session cancelled");
+        assert_eq!(w.cloud(|c| (c.paths().len(), c.placeholders().len(), c.open_sessions())), (0, 0, 0), "{at}");
+        assert!(given_up(&w).is_empty(), "{at}");
+
+        due(&w);
+        w.run();
+        assert!(w.rows().is_empty(), "{at}: {:?}", w.summary());
+        assert_eq!(w.content("a.bin").unwrap(), b"saved again", "{at}");
+        assert_eq!(w.cloud(|c| c.count("POST", "createUploadSession")), 2, "{at}: a new session");
+        assert_eq!(conflicts(&w), 0, "{at}");
+        assert_committed(&w, "a.bin", "a.bin");
+    }
+}
+
+/// A session that ends under its upload (`404` to a fragment) with nothing
+/// of this content in OneDrive: the upload starts over with a new session,
+/// once. When that one ends too, the row backs off (`the upload session
+/// ended twice`) and no third is opened in that run; its next run goes
+/// through. (A session that expired while its row waited:
+/// `a_pause_stops_a_session_after_its_fragment_and_resume_goes_on`.)
+#[test]
+fn a_session_that_ends_under_its_upload_starts_over_once_in_a_run() {
+    let w = four_fragments(false);
+    between(&w, fragments(1), |c| c.expire_sessions());
+    between(&w, fragments(3), |c| c.expire_sessions());
+    w.run();
+    let row = w.rows().remove(0);
+    assert_eq!((row.state, row.reason_text().as_deref()), (OutboxState::Retry, Some(Reason::SessionEnded.key())), "{:?}", w.summary());
+    assert_eq!(row.session_url, None);
+    assert_eq!(w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/"))), (2, 4), "one fragment taken and one refused, twice");
+    assert!(given_up(&w).is_empty(), "an ended session is not one to cancel");
+
+    due(&w);
     w.run();
     assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.cloud(|c| c.paths()), vec!["big.bin"]);
-    assert_eq!(w.content("big.bin").unwrap(), content);
-    assert_eq!(w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("PUT", "upload/"))), (1, 5), "four fragments, the second twice");
-    assert_eq!(w.cloud(|c| (c.placeholders().len(), c.open_sessions())), (0, 0));
+    assert_eq!(w.content("a.bin").unwrap(), large());
+    assert_eq!(conflicts(&w), 0);
+    assert_committed(&w, "a.bin", "a.bin");
+}
+
+/// What OneDrive refuses for good in the middle of a session — after its
+/// opening was accepted — gives the session up, cancelled, and is decided as
+/// the same refusal at the opening is (§6):
+///
+/// - a new file whose name another file took meanwhile (`409` to the last
+///   fragment): a conflict copy, theirs untouched;
+/// - a changed file whose item was changed in OneDrive meanwhile (read again
+///   before the last fragment, §4.8 step 4): the last fragment is never
+///   sent, and both versions are kept;
+/// - a changed file whose item was deleted in OneDrive meanwhile: it goes up
+///   again as new;
+/// - a `412` to a fragment with the item as it was: again from zero, against
+///   the item read again.
+#[test]
+fn a_refusal_in_the_middle_of_a_session_gives_it_up_and_is_decided_as_at_the_opening() {
+    let ended = |w: &World, at: &str| {
+        assert!(w.rows().is_empty(), "{at}: {:?}", w.summary());
+        assert_eq!(w.cloud(|c| (c.placeholders().len(), c.open_sessions())), (0, 0), "{at}");
+        assert!(given_up(w).is_empty(), "{at}");
+    };
+
+    let w = four_fragments(false);
+    between(&w, fragments(1), |c| c.add_file("X", fake::ROOT, "a.bin", b"theirs"));
+    w.run();
+    ended(&w, "409");
+    assert_eq!(w.cloud(|c| c.paths()), vec!["a-fedora.bin", "a.bin"]);
+    assert_eq!((w.id_at("a.bin").as_deref(), w.content("a.bin").unwrap()), (Some("X"), b"theirs".to_vec()));
+    assert_eq!(w.content("a-fedora.bin").unwrap(), large());
+    assert_eq!(conflicts(&w), 1);
+
+    let w = four_fragments(true);
+    between(&w, fragments(1), |c| c.edit("A", b"theirs"));
+    w.run();
+    ended(&w, "changed there");
+    assert_eq!(w.cloud(|c| c.paths()), vec!["a-fedora.bin", "a.bin"]);
+    assert_eq!((w.id_at("a.bin").as_deref(), w.content("a.bin").unwrap()), (Some("A"), b"theirs".to_vec()), "their version is not overwritten");
+    assert_eq!(w.content("a-fedora.bin").unwrap(), large());
+    assert_eq!(w.cloud(|c| (c.count("PUT", "upload/"), c.count("DELETE", "upload/"))), (3 + 4, 1), "the last fragment never sent; then the copy");
+    assert_eq!(conflicts(&w), 1);
+
+    let w = four_fragments(true);
+    between(&w, fragments(1), |c| c.trash("A"));
+    w.run();
+    ended(&w, "deleted there");
+    assert_eq!(w.cloud(|c| c.paths()), vec!["a.bin"]);
+    assert_ne!(w.id_at("a.bin").as_deref(), Some("A"), "a new item");
+    assert_eq!(w.content("a.bin").unwrap(), large());
+    assert!(w.h.host.kinds().contains(&kind::RESTORED.to_owned()));
+    assert_eq!(conflicts(&w), 0);
+
+    let w = four_fragments(true);
+    w.cloud(|c| c.script("PUT", "upload/", ResponseTemplate::new(412), 1));
+    w.run();
+    ended(&w, "412");
+    assert_eq!((w.id_at("a.bin").as_deref(), w.content("a.bin").unwrap()), (Some("A"), large()));
+    assert_eq!(w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("DELETE", "upload/"))), (2, 1));
     assert_eq!(conflicts(&w), 0);
 }
 
-/// A restart with a small file's session persisted: resumed while the file
-/// is the content it was opened for, cancelled when the file changed — and
-/// no placeholder left either way.
+/// A changed file's session that waited — its fragment refused for now — is
+/// completed only against the version it was opened for: the item is read
+/// again before the last fragment also when that is the session's only one
+/// (§4.8 step 4), since the guard was checked when the session was opened,
+/// not when it completes. Changed in OneDrive meanwhile, both versions are
+/// kept, as for any `412`; theirs is never overwritten.
 #[test]
-fn a_restart_resumes_or_cancels_a_small_files_session() {
-    for changed in [false, true] {
-        let w = World::new(&[]);
-        let session = refused_for_now(&w, b"hello");
-        // As a crash leaves it.
-        let seq = w.rows()[0].seq;
-        w.store.call_blocking(move |s| s.outbox_set_state(seq, OutboxState::Running, None, None)).unwrap();
-        if changed {
-            w.write("a.txt", b"hello again");
-        }
-        w.run();
-        assert!(w.rows().is_empty(), "changed {changed}: {:?}", w.summary());
-        let sid = session.rsplit('/').next().unwrap().to_owned();
-        let (opened, cancelled) = w.cloud(|c| (c.count("POST", "createUploadSession"), c.count("DELETE", &format!("upload/{sid}"))));
-        assert_eq!((opened, cancelled), if changed { (2, 1) } else { (1, 0) }, "changed {changed}");
-        assert_eq!(w.content("a.txt").unwrap(), if changed { &b"hello again"[..] } else { &b"hello"[..] });
-        assert_eq!(w.cloud(|c| (c.paths(), c.placeholders().len(), c.open_sessions())), (vec!["a.txt".to_owned()], 0, 0), "changed {changed}");
-        assert_eq!(conflicts(&w), 0, "changed {changed}");
-        assert!(given_up(&w).is_empty());
-    }
-}
-
-/// A session given up because its file was removed is cancelled: the name is
-/// free again in OneDrive.
-#[test]
-fn a_removed_files_session_is_cancelled() {
-    let w = World::new(&[]);
-    refused_for_now(&w, b"hello");
-    std::fs::remove_file(w.path("a.txt")).unwrap();
+fn a_session_resumed_after_the_item_changed_in_onedrive_never_overwrites_it() {
+    let w = World::new(&[file("A", "R", "a.txt", b"old")]);
+    w.hydrate("a.txt", b"old");
+    w.edit("a.txt", b"mine");
     w.examine(&[("", "a.txt")]);
+    w.cloud(|c| c.throttle_429("PUT", "upload/", 0, 0, 2));
+    w.run();
+    assert!(w.rows()[0].session_url.is_some(), "kept for the next run: {:?}", w.summary());
+
+    w.cloud(|c| c.edit("A", b"theirs"));
     w.run();
     assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.cloud(|c| (c.paths(), c.placeholders(), c.open_sessions())), (Vec::<String>::new(), Vec::new(), 0));
-    assert!(given_up(&w).is_empty());
+    assert_eq!(w.cloud(|c| c.paths()), vec!["a-fedora.txt", "a.txt"]);
+    assert_eq!((w.id_at("a.txt").as_deref(), w.content("a.txt").unwrap()), (Some("A"), b"theirs".to_vec()));
+    assert_eq!(w.content("a-fedora.txt").unwrap(), b"mine");
+    assert_eq!(w.cloud(|c| (c.count("PUT", "upload/"), c.open_sessions())), (2 + 1, 0), "the fragment refused twice, then only the copy's");
+    assert_eq!(conflicts(&w), 1);
 }
 
 /// A `409` from the placeholder of the row's own earlier session — given up
@@ -158,23 +330,6 @@ fn a_failed_cancel_is_tried_again_after_the_row_left() {
     assert_eq!(w.cloud(|c| (c.placeholders().len(), c.open_sessions())), (0, 0));
     let sid = session.rsplit('/').next().unwrap().to_owned();
     assert_eq!(w.cloud(|c| c.count("DELETE", &format!("upload/{sid}"))), 2);
-}
-
-/// A `409` from another file — no session of ours holds the name — is still
-/// a conflict: the local file is kept as a copy beside it.
-#[test]
-fn a_409_from_another_file_still_makes_a_copy() {
-    let w = World::new(&[]);
-    w.write("a.txt", b"mine");
-    w.examine(&[("", "a.txt")]);
-    w.cloud(|c| c.add_file("X", "R", "a.txt", b"theirs"));
-    w.run();
-    assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.cloud(|c| c.paths()), vec!["a-fedora.txt", "a.txt"]);
-    assert_eq!(w.content("a.txt").unwrap(), b"theirs");
-    assert_eq!(w.content("a-fedora.txt").unwrap(), b"mine");
-    assert_eq!(conflicts(&w), 1);
-    assert_eq!(w.cloud(|c| (c.placeholders().len(), c.open_sessions())), (0, 0));
 }
 
 /// `a.txt` queued, and the daemon stopped between opening its session and
@@ -333,23 +488,6 @@ fn a_name_held_by_an_unknown_placeholder_waits_and_is_never_a_copy() {
             }
         }
     }
-}
-
-/// An empty file the delta feed listed is a real file, never waited for: a
-/// new file at its name (it was renamed there in OneDrive, the feed not
-/// brought yet) is a conflict copy, as today.
-#[test]
-fn an_empty_file_the_feed_listed_is_still_a_conflict() {
-    let w = World::new(&[file("X", "R", "x.txt", b"")]);
-    w.write("a.txt", b"mine");
-    w.examine(&[("", "a.txt")]);
-    w.cloud(|c| c.rename("X", fake::ROOT, "a.txt"));
-    w.run();
-    assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.cloud(|c| c.paths()), vec!["a-fedora.txt", "a.txt"]);
-    assert_eq!(w.id_at("a.txt").as_deref(), Some("X"));
-    assert_eq!(w.content("a-fedora.txt").unwrap(), b"mine");
-    assert_eq!(conflicts(&w), 1);
 }
 
 /// An empty local file over an unknown placeholder: the same content (both

@@ -185,7 +185,7 @@ application must never read zeros where real content should be.
 - [F152](F152.md) — Queue totals: what "left", "done" and "time left" count, and where they are approximate
 - [F155](F155.md) — A large pinned download in parts keeps only its gap-free start
 - [F156](F156.md) — Only pinned large files go in parts, and extra streams give way one piece at a time
-- [F157](F157.md) — An upload in fragments stops when its file is under none of its names — a move not recorded yet included
+- [F157](F157.md) — An upload stops when its file is under none of its names — a move not recorded yet included
 - [F158](F158.md) — The outbox's budgets at scale are guesses, measured once on one machine
 - [F159](F159.md) — The worker picks rows a hundred at a time, and stops looking at 32
 - [F160](F160.md) — The counts and the Not Uploaded summary lag the outbox by up to a second
@@ -244,6 +244,7 @@ application must never read zeros where real content should be.
 - [F234](F234.md) — What the helper's missing write probe, its version check and its panic containment leave open
 - [F235](F235.md) — A delete that follows a read of the item goes out with an empty `If-Match` when the answer carried neither tag
 - [F236](F236.md) — What the upload worker's waits leave: the throttle's rules are reasoned, its note is not said again after a closed gate, and two looks wait for a wake
+- [F239](F239.md) — One path for every file's upload session: what a file of one fragment now does that was not measured against OneDrive
 
 ---
 
@@ -267,7 +268,7 @@ application must never read zeros where real content should be.
 | The daemon's stop: the longest wait for the requests in flight (`STOP_BOUND`) | 10 s | **guess** (issue #84, F177) |
 | A placeholder taken for a recorded opening's: created between the first recording and the latest attempt with an unknown outcome, each widened by (`CLOCK_SLACK`) | 5 min | **guess** (issues #84, #89, F172) |
 | A record of an opening whose row left, kept without a row (`OPENING_LEFT_KEEP`) | 7 days | **guess** (issue #89, F172) |
-| Upload fragment, and the most sent in one request (`CHUNK_SIZE`, `SMALL_UPLOAD_MAX`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
+| Upload fragment, and the most sent in one request (`CHUNK_SIZE`) | 10 MiB (32 × 320 KiB) | Microsoft's advice (5–10 MiB fragments, resumable above 10 MiB); not measured |
 | One upload request's bound (`UPLOAD_REQUEST_TIMEOUT`) | 10 min: a 10 MiB fragment needs about 140 kbit/s | **guess** |
 | Longest `Retry-After` a write takes (`MAX_RETRY_AFTER`) | 1 h | the write design's sanity bound (write design §6.2) |
 | Transfers at once — fills on open, `Hydrate`, pinned downloads, replacements, thumbnails, uploads, metadata rows | **adaptive**, one pool per account (`crates/konedrive-graph/src/pool.rs`, issue #3): the numbers below | see below |

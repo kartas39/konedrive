@@ -303,48 +303,17 @@ fn an_edit_of_an_outdated_download_is_guarded_by_its_ctag() {
     assert_committed(&w, "a-fedora.txt", "a-fedora.txt");
 }
 
-/// §4.8: a file above the one-request size goes in fragments, persisted as
-/// it goes; stopped mid-session, the next start resumes where the server
-/// stands and sends only the rest.
-#[test]
-fn a_large_file_resumes_mid_session_after_a_crash() {
-    let w = World::new(&[]);
-    let content: Vec<u8> = (0..(1024 * 1024 + 77)).map(|i| (i % 251) as u8).collect();
-    w.write("big.bin", &content);
-    w.examine(&[("", "big.bin")]);
-    let engine = w.h.engine();
-    engine.arm(Fault::MidSession(2));
-    w.h.drain(&engine);
-    let row = &w.rows()[0];
-    assert_eq!(row.state, OutboxState::Running, "stopped as by a crash");
-    assert!(row.session_url.is_some());
-    assert_eq!(row.session_next, Some(2 * 320 * 1024));
-    let sent_before = w.cloud(|c| c.count("PUT", "upload/"));
-    assert_eq!(sent_before, 2);
-
-    w.run();
-    assert!(w.rows().is_empty(), "{:?}", w.summary());
-    assert_eq!(w.cloud(|c| c.count("PUT", "upload/")) - sent_before, 2, "only the rest: 1 MiB + 77 is four fragments");
-    assert_eq!(w.cloud(|c| c.count("POST", "createUploadSession")), 1, "the same session");
-    assert_eq!(w.content("big.bin").unwrap(), content);
-    assert_committed(&w, "big.bin", "big.bin");
-}
-
 /// §5, one crash row at a time: each step replayed on a new worker reaches
 /// the same end — one item in OneDrive, adopted by hash, by place or by
-/// kind, never a copy, and the outbox empty.
+/// kind, never a copy, and the outbox empty. The points of an upload
+/// session are in `sessions.rs`
+/// (`a_crash_at_each_point_of_a_session_is_replayed_to_the_same_item`).
 #[test]
 fn every_crash_point_is_replayed_to_the_same_end() {
-    let big: Vec<u8> = (0..(700 * 1024)).map(|i| (i % 253) as u8).collect();
     let cases: Vec<(&str, Fault)> = vec![
-        ("create", Fault::AfterSend),
-        ("create", Fault::SessionNotPersisted),
         ("create", Fault::CommitStep1Partial),
         ("create", Fault::AfterCommitStep1),
-        ("update", Fault::AfterSend),
         ("update", Fault::AfterCommitStep1),
-        ("large", Fault::SessionNotPersisted),
-        ("large", Fault::AfterSend),
         ("mkdir", Fault::AfterSend),
         ("move", Fault::AfterSend),
         ("delete", Fault::AfterSend),
@@ -363,11 +332,6 @@ fn every_crash_point_is_replayed_to_the_same_end() {
                 w.edit("a.txt", b"edited");
                 w.examine(&[("", "a.txt")]);
                 ("a.txt", vec!["a.txt", "b.txt"])
-            }
-            "large" => {
-                w.write("big.bin", &big);
-                w.examine(&[("", "big.bin")]);
-                ("big.bin", vec!["a.txt", "b.txt", "big.bin"])
             }
             "mkdir" => {
                 std::fs::create_dir(w.path("dir")).unwrap();
@@ -390,11 +354,6 @@ fn every_crash_point_is_replayed_to_the_same_end() {
         engine.arm(fault);
         w.h.drain(&engine);
         assert_eq!(w.rows()[0].state, OutboxState::Running, "{what} {fault:?}: stopped at the step");
-        if fault == Fault::SessionNotPersisted {
-            // The session's URL is lost, its place recorded (issue #84): its
-            // placeholder holds the name, and is found to be this folder's.
-            assert_eq!(w.cloud(|c| c.placeholders()), vec![rel], "{what}");
-        }
 
         w.run();
         assert!(w.rows().is_empty(), "{what} {fault:?}: {:?}", w.summary());
@@ -977,10 +936,10 @@ fn a_pause_stops_a_session_after_its_fragment_and_resume_goes_on() {
     }
 }
 
-/// #19: a one-request upload in flight when the pause comes finishes; a row
-/// that comes meanwhile does not start.
+/// #19: a file's only fragment in flight when the pause comes finishes, and
+/// the file is committed; a row that comes meanwhile does not start.
 #[test]
-fn a_one_request_upload_in_flight_at_a_pause_finishes_and_nothing_new_starts() {
+fn a_fragment_in_flight_at_a_pause_finishes_and_nothing_new_starts() {
     let w = World::new(&[]);
     w.write("a.txt", b"a");
     w.examine(&[("", "a.txt")]);
@@ -1270,11 +1229,12 @@ impl InFlight {
 }
 
 /// A new file renamed, then moved out of the folder and back while its
-/// create goes up (`shutil.move` across filesystems: a copy at the same name,
-/// the original unlinked), then deleted before the next examination. The
-/// item is committed as the object that was sent, so its absence is proved
-/// and it is deleted in OneDrive — not left there for the reconcile to place
-/// again as a placeholder.
+/// last fragment goes up (`shutil.move` across filesystems: a copy at the
+/// same name, the original unlinked), then deleted before the next
+/// examination. The item is committed as the object that was sent, so its
+/// absence is proved and it is deleted in OneDrive — not left there for the
+/// reconcile to place again as a placeholder. (Replaced before a fragment,
+/// the upload ends there instead: `removed.rs`.)
 #[test]
 fn a_file_replaced_while_its_create_goes_up_and_then_deleted_is_deleted_in_onedrive() {
     let w = World::new(&[folder("D", "R", "d")]);
@@ -1284,7 +1244,7 @@ fn a_file_replaced_while_its_create_goes_up_and_then_deleted_is_deleted_in_onedr
     w.examine(&[("d", "n.bin"), ("d", "renamed-n.bin")]);
     assert_eq!(w.summary(), vec![(Create, "d/renamed-n.bin".into(), OutboxState::Ready)]);
 
-    let upload = InFlight::start(&w, "POST", "renamed-n.bin");
+    let upload = InFlight::start(&w, "PUT", "upload/");
     let outside = w._dir.path().join("renamed-n.bin");
     std::fs::copy(w.path("d/renamed-n.bin"), &outside).unwrap();
     std::fs::remove_file(w.path("d/renamed-n.bin")).unwrap();

@@ -80,15 +80,6 @@ impl Outcome {
     pub fn blocked(reason: Reason) -> Self {
         Outcome::Blocked(reason)
     }
-
-    /// The reason the row is left with, where the outcome names one.
-    pub fn reason(&self) -> Option<&Reason> {
-        match self {
-            Outcome::Wait { reason, .. } | Outcome::Later { reason, .. } | Outcome::Backoff { reason, .. } => Some(reason),
-            Outcome::Blocked(reason) | Outcome::Space(reason) => Some(reason),
-            Outcome::Done | Outcome::Again | Outcome::Throttled(_) | Outcome::SignedOut | Outcome::Crashed => None,
-        }
-    }
 }
 
 /// OneDrive refused the content for lack of space: no outcome yet. The step reads the
