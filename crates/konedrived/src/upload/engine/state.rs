@@ -81,6 +81,7 @@ pub(super) struct Trouble {
     /// cleared: the sign-out stops the folder's sync, and this worker with it.
     signed_out: bool,
     /// A fault point fired: nothing more is taken until the worker is built again.
+    #[cfg(test)]
     crashed: bool,
     /// Why the folder could not be opened at the last drain: nothing is taken until a
     /// drain opens it.
@@ -94,6 +95,7 @@ impl Trouble {
         self.signed_out = true;
     }
 
+    #[cfg(test)]
     pub fn crash(&mut self) {
         self.crashed = true;
     }
@@ -107,10 +109,14 @@ impl Trouble {
         self.folder.clone()
     }
 
-    /// Whether the worker takes nothing: for as long as it lives (signed out, a fault
-    /// point), or until a drain opens the folder.
+    /// Whether the worker takes nothing: for as long as it lives (signed out; in a test,
+    /// a fault point), or until a drain opens the folder.
     pub fn holds(&self) -> bool {
-        self.signed_out || self.crashed || self.folder.is_some()
+        #[cfg(test)]
+        if self.crashed {
+            return true;
+        }
+        self.signed_out || self.folder.is_some()
     }
 
     /// The write gate's answer: open (`None`), or why it is closed. Whether this is a new

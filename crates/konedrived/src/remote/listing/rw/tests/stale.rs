@@ -13,7 +13,7 @@ use konedrive_fs::placeholder::{self, State};
 use crate::remote::listing::{Listing, ListingContext};
 use super::{now, world, write_version, Scanning, World};
 use crate::folder::disk::Disk;
-use crate::upload::fake::ROOT;
+use crate::fake_onedrive::ROOT;
 use crate::local::{Examined, Examiner, IgnoreList};
 
 /// A name OneDrive has and this folder cannot (over 255 bytes): the item is
@@ -291,7 +291,7 @@ async fn a_leaving_folder_placed_again_elsewhere_uploads_into_its_item_and_goes(
     let w = Arc::new(world().await);
     let listing = w.listed().await;
     w.graph.with(|c| {
-        c.add(crate::upload::fake::FakeItem {
+        c.add(crate::fake_onedrive::FakeItem {
             id: "P".into(),
             parent: Some(ROOT.into()),
             name: "papers".into(),
@@ -515,7 +515,7 @@ impl World {
 async fn a_delete_in_the_new_place_of_a_folder_still_leaving_reaches_onedrive() {
     let w = Arc::new(world().await);
     let listing = w.listed().await;
-    w.graph.with(|c| c.add(crate::upload::fake::FakeItem {
+    w.graph.with(|c| c.add(crate::fake_onedrive::FakeItem {
         id: "P".into(),
         parent: Some(ROOT.into()),
         name: "papers".into(),
@@ -597,8 +597,8 @@ async fn a_file_removed_in_onedrive_inside_a_leaving_folder_is_never_uploaded_ag
     assert!(w.graph.with(|c| c.items.values().all(|i| i.name != "f.txt")));
 }
 
-fn folder_item(id: &str, parent: &str, name: &str) -> crate::upload::fake::FakeItem {
-    crate::upload::fake::FakeItem {
+fn folder_item(id: &str, parent: &str, name: &str) -> crate::fake_onedrive::FakeItem {
+    crate::fake_onedrive::FakeItem {
         id: id.into(),
         parent: Some(parent.into()),
         name: name.into(),

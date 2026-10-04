@@ -3,7 +3,6 @@
 //! conflict copy, and the end of a row whose object is gone.
 
 use std::ffi::OsStr;
-use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -146,7 +145,9 @@ pub(in crate::upload) async fn locate(e: &Engine, disk: &Arc<Disk>, row: &Outbox
     .await
 }
 
-/// The base row Graph's answer makes.
+/// The base row Graph's answer makes. An answer that names the item as deleted, or as the
+/// root, is OneDrive's failure, not the disk's: the row is tried again as after any other
+/// answer that cannot be used (`upload-error`).
 pub(in crate::upload) fn answer_row(item: &DriveItem, parent: Option<&str>) -> Result<Row, Fail> {
     match classify(item) {
         Change::Upsert(mut row) => {
@@ -155,7 +156,7 @@ pub(in crate::upload) fn answer_row(item: &DriveItem, parent: Option<&str>) -> R
             }
             Ok(row)
         }
-        _ => Err(Fail::Io(io::Error::other(format!("OneDrive answered with {} as deleted, or as the root", item.id)))),
+        _ => Err(Fail::Write(WriteError::Failed(format!("OneDrive answered with {} as deleted, or as the root", item.id).into()))),
     }
 }
 

@@ -76,6 +76,10 @@ The directories are in layer order: a directory uses only the directories before
 - `lib.rs` — the list of the directories below.
 - `tests/bench.rs` — the module `bench`: the outbox and the cloud side at scale, ignored
   tests run by hand in release.
+- `tests/fake_onedrive/mod.rs` — the module `fake_onedrive`: a fake OneDrive on wiremock, for
+  the tests of every area that talks to OneDrive and for the VM suite's write scenarios
+  (built for tests and with `fault-injection` only).
+- `tests/fake_onedrive/sockets.rs` — the fake's notification socket.
 
 ### `crates/konedrived/src/config/`
 
@@ -208,24 +212,26 @@ The outbox worker: sends the recorded changes to OneDrive; what is kept back. De
 - `space.rs` — a full OneDrive: what waits for space. `[tests]`
 - `kept_back.rs` — what is kept back from OneDrive, grouped by what the user can do about it.
   `[tests]`
-- `move_out.rs` — a move out of the folder: a `move-out` row's step.
+- `move_out.rs` — a move out of the folder: what the worker needs for it, and where a `move-out` row's step begins.
+- `move_out/row.rs` — one `move-out` row's step: what its cases work with (`MoveOut`), and which case the helper's answer and the object's place make it.
+- `move_out/reach.rs` — the helper's answer for an object asked for by its handle (`Reach`): the one place its errnos are read.
+- `move_out/cases.rs` — the cases: a file or a folder, to the Trash or elsewhere; gone; kept for another account.
 - `move_out/place.rs` — where a moved-out object is now, proved.
 - `move_out/trash.rs` — the Trash and its entries.
 - `move_out/walk.rs` — walking a moved-out folder.
-- `move_out/cases.rs` — the four cases: a file or a folder, to the Trash or elsewhere.
-- `move_out/tidy.rs` — removing what a move-out left behind.
-- `fake.rs` — a fake OneDrive, for the worker's tests and the VM suite's write scenarios.
-- `fake/harness.rs` — the tests' worker around the fake.
-- `fake/sockets.rs` — the fake's notification socket.
+- `move_out/tidy.rs` — what becomes of an object outside that nothing is downloaded into: the one rule of the Trash case and of dropped rows (`Fate`, `tidy_dirs`).
+- `move_out/dropped.rs` — `move-out` rows dropped before they ran: what they left outside is tidied.
+- `move_out/protect.rs` — the re-marking of what left, and the routing of its fills.
 
 ### `crates/konedrived/src/upload/tests/`
 
 The tests of the worker, by topic.
 
-- `mod.rs` — the worker's steps, its order, its crash points; what the topics share.
+- `mod.rs` — the worker's steps, its order, its crash points; what the topics share: the one fixture (`World`).
+- `harness.rs` — the tests' worker around the fake OneDrive, driven by hand; also used by `local/` and the bench.
 - `candidates.rs` — a `403` on one row, and a new file OneDrive holds with other content.
 - `foreign_parent.rs` — a directory that carries another folder's id: nothing is sent into that folder.
-- `move_out.rs` — moves out of the folder, on the host.
+- `move_out.rs` — moves out of the folder, on the host: each case once, with a fake helper that finds what left beside the folder.
 - `removed.rs` — a file or folder removed before its upload finished.
 - `sessions.rs` — upload sessions: a crash, a refusal, a changed file or an ended session at each step; and their placeholders.
 - `stops.rs` — a worker stopped while a section changes the folder and records it.

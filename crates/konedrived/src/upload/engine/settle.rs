@@ -51,6 +51,7 @@ impl Engine {
             Outcome::Blocked(reason) => self.settle_blocked(&row, reason),
             Outcome::Throttled(asked) => self.settle_throttled(&row, asked),
             Outcome::SignedOut => self.settle_signed_out(&row),
+            #[cfg(test)]
             Outcome::Crashed => {
                 self.shared().trouble.crash();
                 Ok(())

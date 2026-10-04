@@ -42,7 +42,7 @@ pub(super) async fn run(e: &Arc<Engine>, disk: &Arc<Disk>, row: OutboxRow) -> Re
         return removed(e, disk, &row).await;
     };
     // Taken while it waits for space only to see whether its file is gone
-    // (`space`, `Engine::space_allows`): it is not, so it waits on.
+    // (`space::allows`): it is not, so it waits on.
     if let Some(why) = e.space_holds(&row) {
         return Ok(Outcome::Space(why));
     }

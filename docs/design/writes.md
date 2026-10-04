@@ -742,8 +742,11 @@ a marked directory raises an event it would otherwise wait on itself. Details: [
 - **In the Trash** (the user's own, or a `.Trash-<uid>` or sticky `.Trash/<uid>` at the top of a
   mount, with the entry's `.trashinfo`), nothing is downloaded: a placeholder is removed with its
   `.trashinfo`, a downloaded file stays as the user's, and the item goes to OneDrive's recycle bin.
-  A folder sent to the Trash loses its placeholders and keeps what was downloaded. This is what
-  Dolphin's Delete key does, and what Windows does.
+  A file whose fill or free-up was cut short is not downloaded either, and goes as a placeholder
+  does (what that can lose: limitations log F237). A folder sent to the Trash loses its placeholders and keeps what was downloaded; a
+  directory of the item left empty is removed. This is what Dolphin's Delete key does, and what
+  Windows does. Rows dropped before they ran leave what is outside the folder by the same rule,
+  without the delete (limitations log F123, F237).
 - **Doubt keeps the row**, and the item in OneDrive: `EPERM`, no helper, a download that stopped, a
   place that cannot be proved, the object back in the folder, anything a moved-out folder held that
   is alive but unreachable. `ESTALE` is the user's delete only with the evidence of §4.2, rule 7,

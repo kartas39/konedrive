@@ -1,3 +1,5 @@
+//! The tests' worker around the fake OneDrive, driven by hand.
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -7,10 +9,9 @@ use crate::folder::root::SyncRoot;
 use crate::folder::locks::InodeLocks;
 use konedrive_tree::{ActivityRow, Store};
 
-use super::FakeGraph;
+use crate::fake_onedrive::FakeGraph;
 
 /// Records what the worker tells its host.
-#[cfg(test)]
 #[derive(Default)]
 pub(crate) struct Recorder {
     pub events: Mutex<Vec<ActivityRow>>,
@@ -25,7 +26,6 @@ pub(crate) struct Recorder {
     pub asked: Mutex<Vec<Box<dyn FnMut() + Send>>>,
 }
 
-#[cfg(test)]
 impl OutboxHost for Recorder {
     fn activity(&self, event: &ActivityRow) {
         self.events.lock().unwrap().push(event.clone());
@@ -47,14 +47,12 @@ impl OutboxHost for Recorder {
     }
 }
 
-#[cfg(test)]
 impl Recorder {
     pub fn kinds(&self) -> Vec<String> {
         self.events.lock().unwrap().iter().map(|e| e.kind.clone()).collect()
     }
 }
 
-#[cfg(test)]
 /// A worker for one folder against a fake OneDrive, driven by hand: each
 /// [`engine`](Harness::engine) is a fresh start on the same store.
 pub(crate) struct Harness {
@@ -73,7 +71,6 @@ pub(crate) struct Harness {
     pub quota: crate::account::quota::Quota,
 }
 
-#[cfg(test)]
 impl Harness {
     /// The fake OneDrive starts as the base is.
     pub fn new(root: &SyncRoot, store: &Store, locks: &InodeLocks) -> Self {

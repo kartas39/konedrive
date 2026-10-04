@@ -41,7 +41,7 @@ async fn the_thumbnail_setting_is_kept_in_config_toml_and_taken_at_once() {
 async fn a_change_in_onedrive_arrives_through_the_socket_and_a_pause_closes_it() {
     use crate::remote::live::Timing;
     use crate::status::snapshot::LiveChanges;
-    use crate::upload::fake::{FakeGraph, ROOT};
+    use crate::fake_onedrive::{FakeGraph, ROOT};
     let w = world().await;
     // The fake OneDrive for its socket only; the world's own server serves the rest.
     let graph = FakeGraph::start().await;

@@ -43,6 +43,7 @@ pub(in crate::upload) enum Outcome {
     Throttled(Option<Duration>),
     SignedOut,
     /// A fault point fired: the row stays `running`, as after a crash.
+    #[cfg(test)]
     Crashed,
     /// Ready, in its place, but not taken until a quota read lets it go:
     /// `waiting-for-space` or `too-big:…` (`space`).
@@ -96,6 +97,8 @@ pub(in crate::upload) enum Fail {
     Io(io::Error),
     /// Stop now with this outcome.
     Now(Outcome),
+    /// A fault point fired (`Engine::fault`).
+    #[cfg(test)]
     Crashed,
 }
 
@@ -134,6 +137,7 @@ impl From<nix::errno::Errno> for Fail {
 pub(in crate::upload) fn outcome_of(fail: Fail) -> Result<Outcome, NoSpace> {
     Ok(match fail {
         Fail::Now(outcome) => outcome,
+        #[cfg(test)]
         Fail::Crashed => Outcome::Crashed,
         Fail::Store(e) => Outcome::failed(Reason::Store, e),
         Fail::Io(e) => Outcome::failed(Reason::LocalIo, e),

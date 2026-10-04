@@ -1,82 +1,68 @@
-//! Moves out of the folder (`docs/design/writes.md` §8, §10, §12), on the host: a folder placed by the
-//! real materializer, rows made by the real examination, a fake OneDrive (wiremock), and a fake
-//! helper that opens a handle by a table of where each object went — as the real one answers:
-//! `ESTALE` for what is gone, `EPERM` for an object without the item id. What needs the real
-//! helper (the marks themselves) is in the VM suite (`tests/vm/scenarios/move_out.rs`).
+//! Moves out of the folder (`docs/design/writes.md` §8, §10, §12), on the host: each case of
+//! the move out once, through the worker, against the fake OneDrive — a folder placed by the
+//! real materializer, rows made by the real examination, the content downloaded from the fake
+//! OneDrive and verified by the real fill — and a fake helper that finds an object by its
+//! handle wherever it stands beside the folder, as the real one answers: `ESTALE` for what is
+//! gone, `EPERM` for an object without the item id. What needs the real helper (the marks
+//! themselves) is in the VM suite (`tests/vm/scenarios/move_out.rs`).
 
-use std::collections::HashMap;
-use std::ffi::OsStr;
-use std::fs::File;
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 
 use async_trait::async_trait;
-use konedrive_fs::handle::FileHandle;
-use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_ROOT};
-use tokio_util::sync::CancellationToken;
 
-use crate::upload::fake::{qx, Harness};
-use crate::upload::move_out::{trash_of, Filler, MoveOuts, SourceFill, Tidy, CONTENT_LOCAL};
+use super::*;
 use crate::helper::linked::Helper;
-use crate::upload::*;
-use crate::folder::disk::Disk;
 use crate::helper::{Clearance, HelperError};
+use crate::hydration::graph_source::GraphSource;
+use crate::hydration::source::FillError;
 use crate::local::liveness::answered;
-use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList, Whereabouts};
-use crate::remote::materialize::{Materializer, Scope};
-use crate::hydration::source::LocalDir;
-use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState};
-use konedrive_tree::{Change, Kind, Placement, Row, Table, TreeStore};
+use crate::local::Whereabouts;
+use crate::upload::move_out::{trash_of, Filler, MoveOuts, SourceFill, Tidy, CONTENT_LOCAL};
 
-const TIME: i64 = 1_700_000_000;
-
-fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind, content: &[u8]) -> Row {
-    Row {
-        id: id.into(),
-        parent_id: parent.map(str::to_owned),
-        name: name.into(),
-        kind,
-        size: if kind == Kind::File { content.len() as u64 } else { 0 },
-        mtime: TIME,
-        etag: Some(format!("e-{id}")),
-        ctag: Some(format!("c-{id}")),
-        quickxor: (kind == Kind::File).then(|| qx(content)),
-        mime: None,
-        placement: Placement::Placed,
-    }
-}
-
-/// A helper that answers `OpenByHandle` from a table of where each object went.
-#[derive(Default)]
-struct FakeHelper {
-    at: Mutex<HashMap<FileHandle, PathBuf>>,
-    /// Every answer is this refusal, while set.
+/// A helper that answers `OpenByHandle` by looking for the object beneath one directory:
+/// the folder, and everything that left it, are there.
+pub(super) struct FakeHelper {
+    beneath: PathBuf,
+    /// Every `OpenByHandle` is answered with this refusal, while set.
     refuse: Mutex<Option<i32>>,
     /// `NotRunning`, while set.
     down: Mutex<bool>,
     /// What was asked: (call, where the object was).
     calls: Mutex<Vec<(&'static str, PathBuf)>>,
-    socket: PathBuf,
+    /// How many times an object was asked for by its handle, whatever the answer.
+    asked: std::sync::atomic::AtomicUsize,
 }
 
 fn where_is(file: &File) -> PathBuf {
     std::fs::read_link(format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(file))).unwrap_or_default()
 }
 
+fn handle_of(path: &Path) -> Option<FileHandle> {
+    FileHandle::at(&File::open(path.parent()?).ok()?, path.file_name()?).ok()
+}
+
 impl FakeHelper {
-    /// The object at `path` is there now, and so is everything below it: the helper finds each by
-    /// its handle, as the real one does.
-    fn follow(&self, path: &Path) {
-        let mut at = self.at.lock().unwrap();
-        let mut stack = vec![path.to_path_buf()];
-        while let Some(p) = stack.pop() {
-            at.insert(World::handle(&p), p.clone());
-            if std::fs::symlink_metadata(&p).is_ok_and(|m| m.is_dir()) {
-                stack.extend(std::fs::read_dir(&p).unwrap().map(|e| e.unwrap().path()));
+    pub(super) fn beneath(beneath: PathBuf) -> Self {
+        Self { beneath, refuse: Mutex::new(None), down: Mutex::new(false), calls: Mutex::new(Vec::new()), asked: Default::default() }
+    }
+
+    /// Where the object with `handle` stands now, if anywhere.
+    fn find(&self, handle: &FileHandle) -> Option<PathBuf> {
+        let mut dirs = vec![self.beneath.clone()];
+        while let Some(dir) = dirs.pop() {
+            for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if handle_of(&path).as_ref() == Some(handle) {
+                    return Some(path);
+                }
+                if entry.file_type().is_ok_and(|t| t.is_dir()) {
+                    dirs.push(path);
+                }
             }
         }
+        None
     }
 
     fn log(&self, call: &'static str, file: &File) {
@@ -98,12 +84,13 @@ impl FakeHelper {
 #[async_trait]
 impl Helper for FakeHelper {
     async fn open_by_handle(&self, _dir: &File, handle: &FileHandle) -> Result<OwnedFd, HelperError> {
+        self.asked.fetch_add(1, Ordering::SeqCst);
         self.up()?;
         if let Some(errno) = *self.refuse.lock().unwrap() {
             return Err(HelperError::Refused(errno));
         }
         let stale = || HelperError::Refused(libc::ESTALE);
-        let path = self.at.lock().unwrap().get(handle).cloned().ok_or_else(stale)?;
+        let path = self.find(handle).ok_or_else(stale)?;
         let meta = std::fs::symlink_metadata(&path).map_err(|_| stale())?;
         let file = if meta.is_dir() {
             File::open(&path)
@@ -141,94 +128,77 @@ impl Helper for FakeHelper {
 
     fn clearance(&self) -> Option<Clearance> {
         // No helper runs on the host: the way is clear.
-        Some(Clearance::NoLink(self.socket.clone()))
+        Some(Clearance::NoLink(self.beneath.join("no-helper.sock")))
     }
 }
 
-/// A folder placed from a listing, a fake OneDrive holding the same, and a worker with a fake
-/// helper; the contents OneDrive holds are in `source/<item id>`.
-struct World {
-    dir: tempfile::TempDir,
-    root: SyncRoot,
-    store: Store,
-    liveness: FakeLiveness,
-    helper: Arc<FakeHelper>,
-    source: PathBuf,
-    h: Harness,
+/// A [`World`] of `items` — (id, parent or the root, name, with `/` for a folder, content) —
+/// whose worker has what move-outs need: the fake helper, and fills from the fake OneDrive,
+/// which holds each file's content.
+fn leaving(items: &[(&str, Option<&str>, &str, &[u8])]) -> World {
+    let changes: Vec<Change> = items
+        .iter()
+        .map(|(id, parent, name, content)| match name.strip_suffix('/') {
+            Some(name) => folder(id, parent.unwrap_or("R"), name),
+            None => file(id, parent.unwrap_or("R"), name, content),
+        })
+        .collect();
+    let w = World::new(&changes);
+    w.cloud(|c| {
+        for (id, _, _, content) in items.iter().filter(|(_, _, name, _)| !name.ends_with('/')) {
+            c.items.get_mut(*id).unwrap().content = content.to_vec();
+        }
+    });
+    w.fills_with(Arc::new(SourceFill(Arc::new(GraphSource::new(w.h.graph.client())))));
+    w
 }
 
 impl World {
-    fn new(items: &[(&str, Option<&str>, &str, &[u8])]) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        let base = dir.path().canonicalize().unwrap();
-        let path = base.join("OneDrive");
-        let source = base.join("source");
-        std::fs::create_dir(&path).unwrap();
-        std::fs::create_dir(&source).unwrap();
-        std::fs::create_dir(base.join("outside")).unwrap();
-        let root_id = "5b0e2c7a-1d3f-4e8a-9b6c-0f1e2d3c4b5a".to_owned();
-        xattr::set(&path, XATTR_ROOT, root_id.as_bytes()).unwrap();
-        let root = SyncRoot { path, root_id };
-        let store = Store::new(TreeStore::in_memory().unwrap());
-        let mut all = vec![Change::Root(row("R", None, "", Kind::Folder, b""))];
-        for (id, parent, name, content) in items {
-            let kind = if name.ends_with('/') { Kind::Folder } else { Kind::File };
-            let name = name.trim_end_matches('/');
-            all.push(Change::Upsert(row(id, Some(parent.unwrap_or("R")), name, kind, content)));
-            if kind == Kind::File {
-                std::fs::write(source.join(id), content).unwrap();
-            }
-        }
-        store
-            .call_blocking(move |s| {
-                s.begin_staging(konedrive_tree::NewTree::Whole)?;
-                s.stage(&all)
-            })
-            .unwrap();
-        {
-            let runtime = tokio::runtime::Runtime::new().unwrap();
-            let materializer = Materializer {
-                disk: Disk::open(&root, false).unwrap(),
-                store: store.clone(),
-                link: None,
-                runtime: runtime.handle().clone(),
-                locks: InodeLocks::new(),
-                root_item_id: "R".into(),
-                rescue_into: base.join("rescued"),
-                cancel: CancellationToken::new(),
-                rw: None,
-                claimed: None,
-            };
-            materializer.apply(Scope::Full).unwrap();
-        }
-        store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
-        let locks = InodeLocks::new();
-        let h = Harness::new(&root, &store, &locks);
-        let helper = Arc::new(FakeHelper { socket: base.join("no-helper.sock"), ..FakeHelper::default() });
-        let w = World { dir, root, store, liveness: FakeLiveness::new(), helper, source, h };
-        w.fills_from(LocalDir::new(w.source.clone()));
-        w
-    }
-
-    /// The fills of moved-out placeholders come from `source`.
-    fn fills_from(&self, source: LocalDir) {
-        self.fills_with(Arc::new(SourceFill(Arc::new(source))));
-    }
-
     fn fills_with(&self, filler: Arc<dyn Filler>) {
+        let roots = self.h.moved_out.lock().unwrap().as_ref().map(|mo| Arc::clone(&mo.roots));
         let root = self.root.path.clone();
         *self.h.moved_out.lock().unwrap() = Some(MoveOuts {
             helper: self.helper.clone(),
             filler,
             route: None,
             home_trash: Some(self.trash()),
-            roots: Arc::new(move || vec![root.clone()]),
+            roots: roots.unwrap_or_else(|| Arc::new(move || vec![root.clone()])),
         });
+    }
+
+    /// A fill of the real kind, from the fake OneDrive.
+    fn onedrive_fill(&self) -> SourceFill {
+        SourceFill(Arc::new(GraphSource::new(self.h.graph.client())))
+    }
+
+    /// OneDrive answers the download of `id` with these bytes, which are not the item's: the
+    /// fill's check of the hash refuses them.
+    fn serves(&self, id: &str, content: &[u8]) {
+        self.cloud(|c| c.items.get_mut(id).unwrap().content = content.to_vec());
+    }
+
+    /// How many downloads OneDrive was asked for.
+    fn downloads(&self) -> usize {
+        self.cloud(|c| c.count("GET", "dl/"))
+    }
+
+    /// Beside the folder: where things go that leave it.
+    fn beside(&self, rel: &str) -> PathBuf {
+        self.dir.path().canonicalize().unwrap().join(rel)
     }
 
     /// The user's own Trash, as `$XDG_DATA_HOME/Trash` would be.
     fn trash(&self) -> PathBuf {
-        self.base().join("Trash")
+        self.beside("Trash")
+    }
+
+    /// `rel` moved out of the folder, to `to`: the examination's liveness is told where it went.
+    fn move_out(&self, rel: &str, to: &Path) -> FileHandle {
+        let handle = self.handle(rel);
+        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
+        std::fs::rename(self.path(rel), to).unwrap();
+        self.liveness.alive_tree(to);
+        handle
     }
 
     /// `rel` sent to the Trash as a desktop sends it: its `.trashinfo` first. Where it went.
@@ -241,58 +211,12 @@ impl World {
         to
     }
 
-    fn base(&self) -> PathBuf {
-        self.dir.path().canonicalize().unwrap()
-    }
-
-    fn path(&self, rel: &str) -> PathBuf {
-        self.root.path.join(rel)
-    }
-
-    fn handle(path: &Path) -> FileHandle {
-        FileHandle::at(&File::open(path.parent().unwrap()).unwrap(), path.file_name().unwrap()).unwrap()
-    }
-
-    /// `rel` moved out of the folder, to `to`; the helper and the liveness know where it went.
-    fn move_out(&self, rel: &str, to: &Path) -> FileHandle {
-        let handle = Self::handle(&self.path(rel));
-        std::fs::create_dir_all(to.parent().unwrap()).unwrap();
-        std::fs::rename(self.path(rel), to).unwrap();
-        self.liveness.alive_tree(to);
-        self.helper.follow(to);
-        handle
-    }
-
-    fn examine(&self, pairs: &[(&str, &str)]) -> Examined {
-        let mut batch = Batch::new();
-        for (dir, name) in pairs {
-            batch.name(Path::new(dir), OsStr::new(name));
-        }
-        let disk = Disk::open(&self.root, false).unwrap();
-        let ignore = IgnoreList::default();
-        let now = crate::status::activity::unix_now();
-        let locks = InodeLocks::new();
-        Examiner { disk: &disk, store: &self.store, liveness: &self.liveness, ignore: &ignore, locks: &locks, now }.examine(&batch).unwrap()
-    }
-
-    fn rows(&self) -> Vec<OutboxRow> {
-        self.store.call_blocking(move |s| s.outbox_rows()).unwrap()
-    }
-
     fn deletes(&self) -> usize {
-        self.h.graph.with(|c| c.count("DELETE", "items/"))
+        self.cloud(|c| c.count("DELETE", "items/"))
     }
 
     fn in_bin(&self, id: &str) -> bool {
-        self.h.graph.with(|c| c.bin.contains_key(id) && !c.items.contains_key(id))
-    }
-
-    fn konedrive_attrs(path: &Path) -> Vec<String> {
-        xattr::list(path)
-            .unwrap()
-            .filter_map(|n| n.to_str().map(str::to_owned))
-            .filter(|n| n.starts_with("user.konedrive."))
-            .collect()
+        self.cloud(|c| c.bin.contains_key(id) && !c.items.contains_key(id))
     }
 
     /// Rows in backoff are due now, as after a restart that waited long enough.
@@ -300,16 +224,20 @@ impl World {
         self.store.call_blocking(move |s| s.outbox_retry_now()).unwrap();
     }
 
+    /// The reason each row waits with, by its item.
+    fn reasons(&self) -> Vec<(String, Option<String>)> {
+        self.rows().into_iter().map(|r| (r.item_id.clone().unwrap_or_default(), r.reason_text())).collect()
+    }
+
     /// What `dropped` left outside the folder tidied, as a drop with no worker tidies it.
     fn tidy(&self, dropped: &[OutboxRow]) {
         let mo = self.h.moved_out.lock().unwrap().clone().unwrap();
-        let locks = InodeLocks::new();
-        self.h.runtime.block_on(Tidy { mo: &mo, root: &self.root, store: &self.store, locks: &locks }.dropped(dropped));
+        self.h.runtime.block_on(Tidy { mo: &mo, root: &self.root, store: &self.store, locks: &self.locks }.dropped(dropped));
     }
 
     /// Another account's registered folder, `name` beside this one, with every folder there is.
     fn another_folder(&self, name: &str) -> PathBuf {
-        let other = self.base().join(name);
+        let other = self.beside(name);
         std::fs::create_dir_all(&other).unwrap();
         let roots = vec![self.root.path.clone(), other.clone()];
         self.h.moved_out.lock().unwrap().as_mut().unwrap().roots = Arc::new(move || roots.clone());
@@ -317,100 +245,151 @@ impl World {
     }
 }
 
+fn konedrive_attrs(path: &Path) -> Vec<String> {
+    xattr::list(path).unwrap().filter_map(|n| n.to_str().map(str::to_owned)).filter(|n| n.starts_with("user.konedrive.")).collect()
+}
+
 fn state(path: &Path) -> Option<State> {
     placeholder::read_state(&File::open(path).unwrap()).unwrap()
+}
+
+/// Without what move-outs need (no helper link yet), a `move-out` row is not taken: nothing is
+/// downloaded, stripped or deleted, and the row is there for the worker that has it.
+#[test]
+fn a_move_out_waits_while_the_worker_has_no_helper_for_it() {
+    let w = World::new(&[file("P", "R", "p.txt", b"p")]);
+    let to = w.beside("outside/p.txt");
+    w.move_out("p.txt", &to);
+    w.examine(&[("", "p.txt")]);
+    w.run();
+    assert_eq!(w.summary(), vec![(OutboxKind::MoveOut, "p.txt".into(), OutboxState::Ready)]);
+    assert_eq!((w.deletes(), state(&to)), (0, Some(State::OnlineOnly)));
+    assert!(!konedrive_attrs(&to).is_empty());
 }
 
 /// §4.6, WR5: a placeholder moved anywhere but the Trash is marked again, downloaded where it
 /// went, stripped of konedrive's attributes, and only then deleted in OneDrive.
 #[test]
 fn a_placeholder_moved_out_is_downloaded_where_it_went_then_deleted() {
-    let w = World::new(&[("P", None, "p.txt", b"the content")]);
-    let to = w.base().join("outside/p.txt");
+    let w = leaving(&[("P", None, "p.txt", b"the content")]);
+    let to = w.beside("outside/p.txt");
     w.move_out("p.txt", &to);
     w.examine(&[("", "p.txt")]);
     let rows = w.rows();
     assert_eq!(rows.iter().map(|r| r.kind).collect::<Vec<_>>(), vec![OutboxKind::MoveOut]);
     assert_eq!(state(&to), Some(State::OnlineOnly));
 
-    w.h.run();
+    w.run();
     assert_eq!(std::fs::read(&to).unwrap(), b"the content", "downloaded where it went");
-    assert!(World::konedrive_attrs(&to).is_empty(), "an ordinary file now: {:?}", World::konedrive_attrs(&to));
+    assert!(konedrive_attrs(&to).is_empty(), "an ordinary file now: {:?}", konedrive_attrs(&to));
     let marked = w.helper.called("mark_file");
     assert!(!marked.is_empty() && marked.iter().all(|p| p == &to), "marked again before the download: {marked:?}");
     assert!(w.in_bin("P"), "the item went to OneDrive's recycle bin");
     assert!(w.rows().is_empty());
-    assert!(w.store.call_blocking(move |s| s.get(Table::Items, "P")).unwrap().is_none());
+    assert!(w.base("P").is_none());
 }
 
-/// §5: a download that stops part-way deletes nothing; the row stays, and the next run — a
-/// restart — finishes the download and only then deletes.
+/// §5, WR5: the item is deleted only once the file outside holds OneDrive's content, checked
+/// against its hash. A download that brings other bytes deletes nothing and leaves the file not
+/// downloaded; the row stays, and the next run — a restart — downloads it and only then deletes.
 #[test]
-fn a_download_that_stops_part_way_deletes_nothing_until_it_is_whole() {
-    let w = World::new(&[("P", None, "p.bin", &[7u8; 4096])]);
-    // Every fetch breaks after 1000 bytes: the fill gives up (a fill resumes a stream that
-    // breaks once by itself).
-    w.fills_from(LocalDir::new(w.source.clone()).fail_at(1000));
-    let to = w.base().join("outside/p.bin");
+fn a_download_that_is_not_the_items_content_deletes_nothing() {
+    let w = leaving(&[("P", None, "p.bin", &[7u8; 4096])]);
+    w.serves("P", &[8u8; 4096]);
+    let to = w.beside("outside/p.bin");
     w.move_out("p.bin", &to);
     w.examine(&[("", "p.bin")]);
 
-    w.h.run();
-    assert_eq!(w.deletes(), 0, "nothing is deleted while the content is not whole");
-    assert_eq!(state(&to), Some(State::OnlineOnly), "the failed fill was rolled back");
+    w.run();
+    assert_eq!(w.deletes(), 0, "nothing is deleted while the content is not the item's");
+    assert_ne!(state(&to), Some(State::Hydrated), "not taken for downloaded");
     let rows = w.rows();
     assert_eq!(rows.len(), 1);
     assert_eq!((rows[0].kind, rows[0].state), (OutboxKind::MoveOut, OutboxState::Retry));
     assert!(rows[0].reason_text().as_deref().is_some_and(|r| r.starts_with(Reason::Download(None).key())), "{:?}", rows[0].reason);
     assert_eq!(rows[0].snapshot, None, "not marked local");
+    assert!(!konedrive_attrs(&to).is_empty(), "nothing stripped");
 
-    w.fills_from(LocalDir::new(w.source.clone()));
+    w.serves("P", &[7u8; 4096]);
     w.due_now();
-    w.h.run();
+    w.run();
     assert_eq!(std::fs::read(&to).unwrap(), vec![7u8; 4096]);
     assert!(w.in_bin("P"));
     assert!(w.rows().is_empty());
 }
 
-/// F90: `EPERM` is never "gone" — the row stays and nothing is deleted — unless the row's own
-/// marker says it took the attributes off itself. `ESTALE` is gone: the user deleted it.
+/// F90: an object the helper does not hand over is never taken for gone, whatever the answer:
+/// the row stays, with the reason, and nothing is deleted in OneDrive. Neither is one stripped
+/// by someone else where it went (`EPERM`, with no marker of this row's to explain it).
 #[test]
-fn eperm_keeps_the_row_and_estale_deletes() {
-    let w = World::new(&[("P", None, "p.txt", b"p"), ("Q", None, "q.txt", b"q")]);
-    w.move_out("p.txt", &w.base().join("outside/p.txt"));
-    let q = w.base().join("outside/q.txt");
-    w.move_out("q.txt", &q);
-    w.examine(&[("", "p.txt"), ("", "q.txt")]);
-    assert_eq!(w.rows().len(), 2);
-
-    *w.helper.refuse.lock().unwrap() = Some(libc::EPERM);
-    w.h.run();
-    assert_eq!(w.deletes(), 0);
-    assert!(w.rows().iter().all(|r| r.reason_text().as_deref() == Some(Reason::Unreachable(None).key())), "{:?}", w.rows());
+fn an_object_that_cannot_be_reached_is_never_taken_for_gone() {
+    let w = leaving(&[("P", None, "p.txt", b"p")]);
+    let to = w.beside("outside/p.txt");
+    w.move_out("p.txt", &to);
+    w.examine(&[("", "p.txt")]);
+    let answers = [
+        (libc::EPERM, Reason::Unreachable(None).key().to_owned(), OutboxState::Retry),
+        (libc::EAGAIN, Reason::NotLocal.key().to_owned(), OutboxState::Retry),
+        (libc::EIO, Reason::Unreachable(Some(format!("errno {}", libc::EIO))).key().to_owned(), OutboxState::Retry),
+        (libc::EINVAL, Reason::BadHandle.key().to_owned(), OutboxState::Blocked),
+    ];
+    for (errno, reason, state) in answers {
+        *w.helper.refuse.lock().unwrap() = Some(errno);
+        w.due_now();
+        w.store.call_blocking(move |s| s.outbox_unblock(&[Reason::BadHandle])).unwrap();
+        w.run();
+        let row = w.rows().remove(0);
+        assert_eq!((row.reason.as_ref().map(|r| r.key().to_owned()), row.state), (Some(reason), state), "errno {errno}");
+    }
+    w.store.call_blocking(move |s| s.outbox_unblock(&[Reason::BadHandle])).unwrap();
 
     // A helper that does not answer decides nothing either.
     *w.helper.refuse.lock().unwrap() = None;
     *w.helper.down.lock().unwrap() = true;
     w.due_now();
-    w.h.run();
-    assert_eq!(w.deletes(), 0);
-    assert!(w.rows().iter().all(|r| r.reason_text().as_deref() == Some(Reason::NoHelper.key())), "{:?}", w.rows());
+    w.run();
+    assert_eq!(reason_of(&w, "p.txt").as_deref(), Some(Reason::NoHelper.key()));
 
-    // Q deleted by the user after it left: `ESTALE`, gone — believed when it says so twice. P's
-    // marker set and its item id taken off (a crash after our own strip): its `EPERM` is expected.
+    // Its item id taken off by someone else: the helper's own `EPERM`.
     *w.helper.down.lock().unwrap() = false;
-    std::fs::remove_file(&q).unwrap();
-    let p = w.rows().into_iter().find(|r| r.item_id.as_deref() == Some("P")).unwrap();
-    w.store.call_blocking(move |s| s.outbox_set_snapshot(p.seq, Some(CONTENT_LOCAL))).unwrap();
-    xattr::remove(w.base().join("outside/p.txt"), XATTR_ITEM_ID).unwrap();
+    xattr::remove(&to, XATTR_ITEM_ID).unwrap();
     w.due_now();
-    w.h.run();
-    assert!(w.in_bin("P") && !w.in_bin("Q"), "one ESTALE is not enough");
-    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::GoneOnce.key()));
+    w.run();
+    assert_eq!(reason_of(&w, "p.txt").as_deref(), Some(Reason::Unreachable(None).key()));
+    assert_eq!((w.deletes(), w.downloads()), (0, 0));
+    assert!(to.exists() && w.base("P").is_some());
+}
+
+/// §5: an object deleted by the user after it left is gone, and its item is deleted — a file,
+/// and a folder with what it held — but only when the helper says so twice, and with nothing
+/// where the object was last proved to be: an inode that cannot be read answers `ESTALE` every
+/// time, and stands there.
+#[test]
+fn gone_is_believed_twice_and_with_nothing_where_the_object_was() {
+    let w = leaving(&[("P", None, "p.txt", b"p"), ("D", None, "d/", b""), ("D1", Some("D"), "one.txt", b"one")]);
+    let (p, d) = (w.beside("outside/p.txt"), w.beside("outside/d"));
+    w.move_out("p.txt", &p);
+    w.move_out("d", &d);
+    w.examine(&[("", "p.txt"), ("", "d")]);
+    *w.helper.refuse.lock().unwrap() = Some(libc::ESTALE);
+    w.run();
+    assert!(w.reasons().iter().all(|(_, r)| r.as_deref() == Some(Reason::GoneOnce.key())), "one ESTALE is not enough: {:?}", w.reasons());
     w.due_now();
-    w.h.run();
-    assert!(w.in_bin("Q"));
-    assert!(w.rows().is_empty());
+    w.run();
+    assert_eq!(w.deletes(), 0);
+    assert!(w.reasons().iter().all(|(_, r)| r.as_deref() == Some(Reason::GoneUnproved.key())), "they still stand there: {:?}", w.reasons());
+
+    *w.helper.refuse.lock().unwrap() = None;
+    std::fs::remove_file(&p).unwrap();
+    std::fs::remove_dir_all(&d).unwrap();
+    w.due_now();
+    w.run();
+    assert_eq!(w.deletes(), 0, "one ESTALE is not enough");
+    w.due_now();
+    w.run();
+    assert!(w.in_bin("P") && w.in_bin("D") && w.in_bin("D1"));
+    assert_eq!(w.deletes(), 2, "one DELETE for the file, one for the folder");
+    assert!(w.rows().is_empty(), "{:?}", w.summary());
 }
 
 /// Every failure to decode a handle is `ESTALE`, so a handle taken on
@@ -422,8 +401,8 @@ fn eperm_keeps_the_row_and_estale_deletes() {
 #[test]
 fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
     use crate::local::liveness::handle_namespace;
-    let w = World::new(&[("P", None, "p.txt", b"moved"), ("Q", None, "q.txt", b"q")]);
-    let p = w.base().join("outside/p.txt");
+    let w = leaving(&[("P", None, "p.txt", b"moved"), ("Q", None, "q.txt", b"q")]);
+    let p = w.beside("outside/p.txt");
     let p_handle = w.move_out("p.txt", &p);
     w.examine(&[("", "p.txt")]);
     let row = w.rows()[0].clone();
@@ -438,14 +417,24 @@ fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
     let stale = FileHandle { kind: p_handle.kind, bytes: vec![0; p_handle.bytes.len()] };
     w.store.call_blocking(move |s| s.outbox_amend(row.seq, |r| r.inode.as_mut().unwrap().handle = Some(stale.clone()))).unwrap();
     for _ in 0..2 {
-        w.h.run();
+        w.run();
         w.due_now();
     }
     assert_eq!(w.deletes(), 0);
     assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::StaleHandle.key()));
 
+    // The re-marking does not take such an answer for "gone": it asks again at every look
+    // of the same worker (paused here, so that only the re-marking asks).
+    let engine = w.h.engine();
+    pause(&engine);
+    let before = w.helper.asked.load(Ordering::SeqCst);
+    w.h.drain(&engine);
+    w.h.drain(&engine);
+    assert_eq!(w.helper.asked.load(Ordering::SeqCst) - before, 2, "asked again at the next look");
+    resume(&engine);
+
     // The examination takes the handles again: Q, missing meanwhile, is placed again, not deleted.
-    std::fs::rename(w.path("q.txt"), w.base().join("gone-q.txt")).unwrap();
+    std::fs::rename(w.path("q.txt"), w.beside("gone-q.txt")).unwrap();
     let examined = w.examine(&[("", "q.txt")]);
     assert!(examined.renewed);
     assert_eq!(examined.unproven, vec!["Q".to_owned()]);
@@ -454,84 +443,41 @@ fn a_changed_filesystem_takes_the_handles_again_and_deletes_nothing() {
     assert_eq!(w.rows()[0].inode.as_ref().unwrap().handle.as_ref(), Some(&p_handle), "found again where it went");
 
     w.due_now();
-    w.h.run();
+    w.run();
     assert_eq!(std::fs::read(&p).unwrap(), b"moved");
     assert!(w.in_bin("P") && !w.in_bin("Q"));
 }
 
-/// `ESTALE` twice is not "gone" while the object may still stand where it was last
-/// proved to be — an inode that cannot be read answers `ESTALE` every time. Only nothing (or
-/// another object) there makes it a delete.
-#[test]
-fn estale_is_gone_only_with_nothing_where_the_object_was() {
-    let w = World::new(&[("P", None, "p.txt", b"p")]);
-    let p = w.base().join("outside/p.txt");
-    w.move_out("p.txt", &p);
-    w.examine(&[("", "p.txt")]);
-    *w.helper.refuse.lock().unwrap() = Some(libc::ESTALE);
-    for _ in 0..2 {
-        w.h.run();
-        w.due_now();
-    }
-    assert_eq!(w.deletes(), 0);
-    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::GoneUnproved.key()), "it still stands there");
-
-    std::fs::remove_file(&p).unwrap();
-    for _ in 0..2 {
-        w.h.run();
-        w.due_now();
-    }
-    assert!(w.in_bin("P"));
-    assert!(w.rows().is_empty());
-}
-
-/// In a folder sent to the Trash, the placeholders go before anything is stripped,
-/// so a removal that fails leaves nothing stripped behind a marker that may be taken off; and a
-/// marker is never taken off an object back in the folder, whatever it stripped already.
+/// In a folder sent to the Trash, the placeholders go before anything is stripped, so a removal
+/// that fails leaves nothing stripped, and nothing is deleted in OneDrive until it went through.
 #[test]
 fn a_trashed_folder_strips_nothing_until_its_placeholders_are_gone() {
     use std::os::unix::fs::PermissionsExt;
-    let w = World::new(&[("K", None, "kept/", b""), ("K1", Some("K"), "a-down.txt", b"downloaded"), ("K2", Some("K"), "b-cloud.txt", b"cloud")]);
-    {
-        let file = File::options().write(true).open(w.path("kept/a-down.txt")).unwrap();
-        std::io::Write::write_all(&mut &file, b"downloaded").unwrap();
-        placeholder::write_state(&file, State::Hydrated).unwrap();
-    }
+    let w = leaving(&[("K", None, "kept/", b""), ("K1", Some("K"), "a-down.txt", b"downloaded"), ("K2", Some("K"), "b-cloud.txt", b"cloud")]);
+    w.hydrate("kept/a-down.txt", b"downloaded");
     let kept = w.to_trash("kept");
     w.examine(&[("", "kept")]);
-    w.fills_from(LocalDir::new(w.base().join("no-source")));
     std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o555)).unwrap();
-    w.h.run();
+    w.run();
     std::fs::set_permissions(&kept, std::fs::Permissions::from_mode(0o755)).unwrap();
     assert_eq!(w.deletes(), 0);
     assert!(kept.join("b-cloud.txt").exists());
-    assert!(!World::konedrive_attrs(&kept.join("a-down.txt")).is_empty(), "nothing stripped before the placeholders went");
+    assert!(!konedrive_attrs(&kept.join("a-down.txt")).is_empty(), "nothing stripped before the placeholders went");
 
     w.due_now();
-    w.h.run();
+    w.run();
     assert!(!kept.join("b-cloud.txt").exists());
-    assert!(World::konedrive_attrs(&kept.join("a-down.txt")).is_empty());
+    assert!(konedrive_attrs(&kept.join("a-down.txt")).is_empty());
     assert!(w.in_bin("K"));
-
-    // A marker stays on a row whose object is back in the folder.
-    let w = World::new(&[("P", None, "p.txt", b"p")]);
-    let handle = w.move_out("p.txt", &w.base().join("outside/p.txt"));
-    w.examine(&[("", "p.txt")]);
-    let seq = w.rows()[0].seq;
-    w.store.call_blocking(move |s| s.outbox_set_snapshot(seq, Some(CONTENT_LOCAL))).unwrap();
-    std::fs::rename(w.base().join("outside/p.txt"), w.path("back.txt")).unwrap();
-    w.helper.at.lock().unwrap().insert(handle, w.path("back.txt"));
-    w.h.run();
-    assert_eq!(w.rows()[0].snapshot(), Some(CONTENT_LOCAL));
-    assert_eq!(w.deletes(), 0);
+    assert_eq!(w.downloads(), 0);
 }
 
 /// A crash between two strips of a folder converges: what was stripped already answers
 /// `EPERM`, which the row's marker explains, and the folder goes once the rest is stripped.
 #[test]
 fn a_crash_between_two_strips_of_a_folder_converges() {
-    let w = World::new(&[("D", None, "d/", b""), ("P1", Some("D"), "one.txt", b"first"), ("P2", Some("D"), "two.txt", b"second")]);
-    let to = w.base().join("outside/d");
+    let w = leaving(&[("D", None, "d/", b""), ("P1", Some("D"), "one.txt", b"first"), ("P2", Some("D"), "two.txt", b"second")]);
+    let to = w.beside("outside/d");
     w.move_out("d", &to);
     w.examine(&[("", "d")]);
     let engine = w.h.engine();
@@ -539,11 +485,11 @@ fn a_crash_between_two_strips_of_a_folder_converges() {
     w.h.drain(&engine);
     assert_eq!(w.deletes(), 0);
     assert_eq!(w.rows()[0].snapshot(), Some(CONTENT_LOCAL));
-    let stripped = ["one.txt", "two.txt"].iter().filter(|n| World::konedrive_attrs(&to.join(n)).is_empty()).count();
+    let stripped = ["one.txt", "two.txt"].iter().filter(|n| konedrive_attrs(&to.join(n)).is_empty()).count();
     assert_eq!(stripped, 1, "one file stripped, one not");
 
-    w.h.run();
-    assert!(["one.txt", "two.txt"].iter().all(|n| World::konedrive_attrs(&to.join(n)).is_empty()));
+    w.run();
+    assert!(["one.txt", "two.txt"].iter().all(|n| konedrive_attrs(&to.join(n)).is_empty()));
     assert_eq!(std::fs::read(to.join("two.txt")).unwrap(), b"second");
     assert!(w.in_bin("D") && w.in_bin("P1") && w.in_bin("P2"));
     assert!(w.rows().is_empty());
@@ -553,16 +499,16 @@ fn a_crash_between_two_strips_of_a_folder_converges() {
 /// deleted, and the row waits.
 #[test]
 fn a_folder_with_one_file_that_cannot_be_downloaded_stays() {
-    let w = World::new(&[("D", None, "d/", b""), ("P1", Some("D"), "one.txt", b"first"), ("P2", Some("D"), "two.txt", b"second")]);
-    std::fs::remove_file(w.source.join("P2")).unwrap();
-    let to = w.base().join("outside/d");
+    let w = leaving(&[("D", None, "d/", b""), ("P1", Some("D"), "one.txt", b"first"), ("P2", Some("D"), "two.txt", b"second")]);
+    w.serves("P2", b"other!");
+    let to = w.beside("outside/d");
     w.move_out("d", &to);
     w.examine(&[("", "d")]);
-    w.h.run();
+    w.run();
     assert_eq!(w.deletes(), 0);
     assert_eq!(state(&to.join("one.txt")), Some(State::Hydrated), "what could be downloaded was");
-    assert_eq!(state(&to.join("two.txt")), Some(State::OnlineOnly));
-    assert!(!World::konedrive_attrs(&to.join("one.txt")).is_empty() && !World::konedrive_attrs(&to).is_empty(), "nothing stripped");
+    assert_ne!(state(&to.join("two.txt")), Some(State::Hydrated));
+    assert!(!konedrive_attrs(&to.join("one.txt")).is_empty() && !konedrive_attrs(&to).is_empty(), "nothing stripped");
     assert!(w.helper.called("unmark_dir").is_empty());
     let row = &w.rows()[0];
     assert!(row.reason_text().as_deref().is_some_and(|r| r.starts_with(Reason::Download(None).key())), "{:?}", row.reason);
@@ -576,34 +522,27 @@ fn a_folder_moved_back_during_its_download_is_left_alone() {
     struct MovesBack {
         from: PathBuf,
         to: PathBuf,
-        helper: Arc<FakeHelper>,
         inner: SourceFill,
     }
     #[async_trait]
     impl Filler for MovesBack {
-        async fn fill(&self, file: File, shown: &Path, clearance: Option<&Clearance>) -> Result<(), crate::hydration::source::FillError> {
+        async fn fill(&self, file: File, shown: &Path, clearance: Option<&Clearance>) -> Result<(), FillError> {
             if self.from.exists() {
                 std::fs::rename(&self.from, &self.to).unwrap();
-                self.helper.follow(&self.to);
             }
             self.inner.fill(file, shown, clearance).await
         }
     }
-    let w = World::new(&[("D", None, "d/", b""), ("P1", Some("D"), "one.txt", b"first"), ("P2", Some("D"), "two.txt", b"second")]);
-    let out = w.base().join("outside/d");
+    let w = leaving(&[("D", None, "d/", b""), ("P1", Some("D"), "one.txt", b"first"), ("P2", Some("D"), "two.txt", b"second")]);
+    let out = w.beside("outside/d");
     w.move_out("d", &out);
     w.examine(&[("", "d")]);
-    w.fills_with(Arc::new(MovesBack {
-        from: out.clone(),
-        to: w.path("d"),
-        helper: Arc::clone(&w.helper),
-        inner: SourceFill(Arc::new(LocalDir::new(w.source.clone()))),
-    }));
-    w.h.run();
+    w.fills_with(Arc::new(MovesBack { from: out.clone(), to: w.path("d"), inner: w.onedrive_fill() }));
+    w.run();
     assert_eq!(w.deletes(), 0);
     assert!(w.helper.called("unmark_dir").is_empty(), "no directory in the folder is unmarked");
     for rel in ["d", "d/one.txt", "d/two.txt"] {
-        assert!(World::konedrive_attrs(&w.path(rel)).iter().any(|a| a == XATTR_ITEM_ID), "{rel} keeps its item id");
+        assert!(konedrive_attrs(&w.path(rel)).iter().any(|a| a == XATTR_ITEM_ID), "{rel} keeps its item id");
     }
     let row = &w.rows()[0];
     assert_eq!((row.reason_text().as_deref(), row.snapshot), (Some(Reason::BackInside.key()), None));
@@ -614,88 +553,97 @@ fn a_folder_moved_back_during_its_download_is_left_alone() {
 /// in the real Trash that has another link: only its Trash name would go.
 #[test]
 fn a_lookalike_trash_and_a_linked_placeholder_are_downloaded_first() {
-    let w = World::new(&[("L", None, "l.txt", b"looks like a trash"), ("H", None, "h.txt", b"linked")]);
-    let fake = w.base().join(format!("outside/.Trash-{}", nix::unistd::geteuid().as_raw()));
+    let w = leaving(&[("L", None, "l.txt", b"looks like a trash"), ("H", None, "h.txt", b"linked")]);
+    let fake = w.beside(&format!("outside/.Trash-{}", nix::unistd::geteuid().as_raw()));
     std::fs::create_dir_all(fake.join("info")).unwrap();
     std::fs::write(fake.join("info/l.txt.trashinfo"), "[Trash Info]\n").unwrap();
     let l = fake.join("files/l.txt");
     w.move_out("l.txt", &l);
     let h = w.to_trash("h.txt");
-    std::fs::hard_link(&h, w.base().join("outside/h-link.txt")).unwrap();
+    std::fs::hard_link(&h, w.beside("outside/h-link.txt")).unwrap();
     w.examine(&[("", "l.txt"), ("", "h.txt")]);
     assert_eq!(w.rows().len(), 2);
 
-    w.h.run();
+    w.run();
     assert_eq!(std::fs::read(&l).unwrap(), b"looks like a trash");
-    assert!(World::konedrive_attrs(&l).is_empty());
+    assert!(konedrive_attrs(&l).is_empty());
     assert_eq!(std::fs::read(&h).unwrap(), b"linked", "downloaded, not removed");
     assert!(w.in_bin("L") && w.in_bin("H"));
 }
 
-/// While a row is in flight (a long download here), a wake still re-marks what left:
+/// A fill that waits until the test lets it go.
+struct HeldFill {
+    begun: Arc<std::sync::atomic::AtomicBool>,
+    go: Arc<tokio::sync::Notify>,
+    inner: SourceFill,
+}
+
+#[async_trait]
+impl Filler for HeldFill {
+    async fn fill(&self, file: File, shown: &Path, clearance: Option<&Clearance>) -> Result<(), FillError> {
+        self.begun.store(true, Ordering::SeqCst);
+        self.go.notified().await;
+        self.inner.fill(file, shown, clearance).await
+    }
+}
+
+/// Waits, a few seconds at most, until `done` says so; whether it did.
+fn eventually(done: impl Fn() -> bool) -> bool {
+    let started = std::time::Instant::now();
+    while !done() && started.elapsed() < Duration::from_secs(10) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    done()
+}
+
+/// While a row is in flight (a download held open here), a wake still re-marks what left:
 /// the helper back is not held up behind the download.
 #[test]
 fn what_left_is_marked_again_while_other_rows_run() {
-    struct Slow {
-        busy: Arc<std::sync::atomic::AtomicBool>,
-        inner: SourceFill,
-    }
-    #[async_trait]
-    impl Filler for Slow {
-        async fn fill(&self, file: File, shown: &Path, clearance: Option<&Clearance>) -> Result<(), crate::hydration::source::FillError> {
-            self.busy.store(true, std::sync::atomic::Ordering::SeqCst);
-            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            let filled = self.inner.fill(file, shown, clearance).await;
-            self.busy.store(false, std::sync::atomic::Ordering::SeqCst);
-            filled
-        }
-    }
-    let w = World::new(&[("P", None, "p.txt", b"slow"), ("Q", None, "q.txt", b"waits")]);
-    let q = w.base().join("outside/q.txt");
-    w.move_out("p.txt", &w.base().join("outside/p.txt"));
+    let w = leaving(&[("P", None, "p.txt", b"slow"), ("Q", None, "q.txt", b"waits")]);
+    let q = w.beside("outside/q.txt");
+    w.move_out("p.txt", &w.beside("outside/p.txt"));
     w.move_out("q.txt", &q);
     w.examine(&[("", "p.txt"), ("", "q.txt")]);
-    let busy = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    w.fills_with(Arc::new(Slow { busy: Arc::clone(&busy), inner: SourceFill(Arc::new(LocalDir::new(w.source.clone()))) }));
+    let (begun, go) = (Arc::new(std::sync::atomic::AtomicBool::new(false)), Arc::new(tokio::sync::Notify::new()));
+    w.fills_with(Arc::new(HeldFill { begun: Arc::clone(&begun), go: Arc::clone(&go), inner: w.onedrive_fill() }));
     let engine = w.h.engine();
     let running = {
         let engine = Arc::clone(&engine);
         w.h.runtime.spawn(async move { engine.drain(&CancellationToken::new()).await })
     };
     let q_marks = || w.helper.called("mark_file").iter().filter(|p| **p == q).count();
-    let started = std::time::Instant::now();
-    while !busy.load(std::sync::atomic::Ordering::SeqCst) && started.elapsed() < std::time::Duration::from_secs(5) {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert!(busy.load(std::sync::atomic::Ordering::SeqCst), "a download is in flight");
+    assert!(eventually(|| begun.load(Ordering::SeqCst)), "a download is in flight");
     assert_eq!(q_marks(), 1);
     engine.helper_back();
-    let started = std::time::Instant::now();
-    while q_marks() < 2 && started.elapsed() < std::time::Duration::from_secs(2) {
-        std::thread::sleep(std::time::Duration::from_millis(10));
-    }
-    assert_eq!(q_marks(), 2, "marked again at once");
-    assert!(busy.load(std::sync::atomic::Ordering::SeqCst), "while the other row was still in flight");
+    assert!(eventually(|| q_marks() == 2), "marked again while the other row is still in flight");
+    assert_eq!(w.deletes(), 0, "the download is still held");
+    // Each fill that waits is let go: P's, then Q's.
+    assert!(eventually(|| {
+        go.notify_one();
+        running.is_finished()
+    }));
     w.h.runtime.block_on(running).unwrap();
+    assert!(w.in_bin("P") && w.in_bin("Q"));
 }
 
 /// §5: a crash after the attributes came off and before the delete converges — the replay meets
 /// `EPERM` (no item id any more), the marker says why, and the item is deleted.
 #[test]
 fn a_crash_between_the_strip_and_the_delete_converges() {
-    let w = World::new(&[("P", None, "p.txt", b"content")]);
-    let to = w.base().join("outside/p.txt");
+    let w = leaving(&[("P", None, "p.txt", b"content")]);
+    let to = w.beside("outside/p.txt");
     w.move_out("p.txt", &to);
     w.examine(&[("", "p.txt")]);
     let engine = w.h.engine();
     engine.arm(Fault::AfterStrip);
     w.h.drain(&engine);
     assert_eq!(w.deletes(), 0);
-    assert!(World::konedrive_attrs(&to).is_empty());
+    assert!(konedrive_attrs(&to).is_empty());
     assert_eq!(w.rows()[0].snapshot(), Some(CONTENT_LOCAL));
     assert_eq!(w.rows()[0].state, OutboxState::Running);
 
-    w.h.run();
+    w.run();
     assert_eq!(std::fs::read(&to).unwrap(), b"content");
     assert!(w.in_bin("P"));
     assert!(w.rows().is_empty());
@@ -703,182 +651,162 @@ fn a_crash_between_the_strip_and_the_delete_converges() {
 
 /// §4.6: a folder moved out has every placeholder of its item downloaded where it went, the
 /// attributes taken off every file and directory, every directory unmarked, and only then the
-/// folder deleted in OneDrive.
+/// folder deleted in OneDrive, with one `DELETE`. Its directories stay, the user's own.
 #[test]
 fn a_folder_moved_out_is_downloaded_whole_then_deleted() {
-    let w = World::new(&[
+    let w = leaving(&[
         ("D", None, "d/", b""),
         ("P1", Some("D"), "one.txt", b"first"),
         ("S", Some("D"), "sub/", b""),
         ("P2", Some("S"), "two.txt", b"second"),
+        ("E", Some("D"), "empty/", b""),
     ]);
-    let to = w.base().join("outside/d");
+    let to = w.beside("outside/d");
     w.move_out("d", &to);
     w.examine(&[("", "d")]);
     assert_eq!(w.rows().iter().map(|r| (r.kind, r.item_id.clone())).collect::<Vec<_>>(), vec![(OutboxKind::MoveOut, Some("D".into()))]);
 
-    w.h.run();
+    w.run();
     assert_eq!(std::fs::read(to.join("one.txt")).unwrap(), b"first");
     assert_eq!(std::fs::read(to.join("sub/two.txt")).unwrap(), b"second");
-    for path in [to.clone(), to.join("one.txt"), to.join("sub"), to.join("sub/two.txt")] {
-        assert!(World::konedrive_attrs(&path).is_empty(), "{}", path.display());
+    for path in [to.clone(), to.join("one.txt"), to.join("sub"), to.join("sub/two.txt"), to.join("empty")] {
+        assert!(konedrive_attrs(&path).is_empty(), "{}", path.display());
     }
     let mut unmarked = w.helper.called("unmark_dir");
     unmarked.sort();
-    assert_eq!(unmarked, vec![to.clone(), to.join("sub")]);
+    assert_eq!(unmarked, vec![to.clone(), to.join("empty"), to.join("sub")]);
     assert!(w.in_bin("D") && w.in_bin("P1") && w.in_bin("P2"));
+    assert_eq!(w.deletes(), 1, "one DELETE, for the folder");
     assert!(w.rows().is_empty());
 }
 
-/// §4.6, the Trash: nothing is downloaded. A placeholder is removed with its `.trashinfo`; a
-/// downloaded file stays as the user's own; both items go to OneDrive's recycle bin.
+/// §4.6, the Trash: nothing is downloaded. A placeholder is removed with its `.trashinfo`, and
+/// so is a file whose free-up was cut short, which holds nothing whole either; a downloaded
+/// file stays as the user's own; every item goes to OneDrive's recycle bin.
 #[test]
 fn the_trash_takes_placeholders_without_a_download() {
-    let w = World::new(&[("T", None, "t.txt", b"placeholder"), ("H", None, "h.txt", b"downloaded")]);
-    {
-        // H was downloaded before it was trashed.
-        let file = File::options().write(true).open(w.path("h.txt")).unwrap();
-        std::io::Write::write_all(&mut &file, b"downloaded").unwrap();
-        placeholder::write_state(&file, State::Hydrated).unwrap();
-    }
+    let w = leaving(&[("T", None, "t.txt", b"placeholder"), ("H", None, "h.txt", b"downloaded"), ("F", None, "f.txt", b"half freed")]);
+    // H was downloaded before it was trashed; F's free-up was cut short.
+    w.hydrate("h.txt", b"downloaded");
+    w.hydrate("f.txt", b"half freed");
+    placeholder::write_state(&File::options().write(true).open(w.path("f.txt")).unwrap(), State::Dehydrating).unwrap();
     let trash = w.trash();
-    let t = w.to_trash("t.txt");
-    let h = w.to_trash("h.txt");
-    w.examine(&[("", "t.txt"), ("", "h.txt")]);
-    assert_eq!(w.rows().len(), 2);
-    w.fills_from(LocalDir::new(w.base().join("no-source")));
+    let (t, h, f) = (w.to_trash("t.txt"), w.to_trash("h.txt"), w.to_trash("f.txt"));
+    w.examine(&[("", "t.txt"), ("", "h.txt"), ("", "f.txt")]);
+    assert_eq!(w.rows().len(), 3);
 
-    w.h.run();
+    w.run();
     assert!(!t.exists() && !trash.join("info/t.txt.trashinfo").exists(), "the placeholder left the Trash with its info");
+    assert!(!f.exists() && !trash.join("info/f.txt.trashinfo").exists(), "so did the file that held nothing whole");
     assert_eq!(std::fs::read(&h).unwrap(), b"downloaded");
-    assert!(World::konedrive_attrs(&h).is_empty());
+    assert!(konedrive_attrs(&h).is_empty());
     assert!(trash.join("info/h.txt.trashinfo").exists());
-    assert!(w.in_bin("T") && w.in_bin("H"));
+    assert!(w.in_bin("T") && w.in_bin("H") && w.in_bin("F"));
+    assert_eq!(w.downloads(), 0);
     assert!(w.rows().is_empty());
 }
 
 /// §4.6, the Trash, for folders: nothing is downloaded into it. A folder of placeholders leaves
 /// the Trash whole, with its `.trashinfo`; a folder holding a downloaded file keeps that file, as
-/// the user's own, and loses its placeholders.
+/// the user's own, and loses its placeholders; a folder of placeholders put inside an entry of
+/// the Trash goes, and the entry stays. OneDrive gets one `DELETE` for each folder and none for
+/// what is inside (`docs/design/decisions.md`, "A folder delete is the whole folder, as on Windows").
 #[test]
 fn a_folder_in_the_trash_keeps_only_what_was_downloaded() {
-    let w = World::new(&[
+    let w = leaving(&[
         ("E", None, "empty/", b""),
         ("E1", Some("E"), "one.txt", b"cloud only"),
+        ("E2", Some("E"), "sub/", b""),
+        ("E3", Some("E2"), "deep.txt", b"cloud only"),
         ("K", None, "kept/", b""),
         ("K1", Some("K"), "down.txt", b"downloaded"),
         ("K2", Some("K"), "cloud.txt", b"cloud only"),
+        ("N", None, "nested/", b""),
+        ("N1", Some("N"), "n.txt", b"cloud only"),
     ]);
-    {
-        let file = File::options().write(true).open(w.path("kept/down.txt")).unwrap();
-        std::io::Write::write_all(&mut &file, b"downloaded").unwrap();
-        placeholder::write_state(&file, State::Hydrated).unwrap();
-    }
+    w.hydrate("kept/down.txt", b"downloaded");
     let trash = w.trash();
     for name in ["empty", "kept"] {
         w.to_trash(name);
     }
-    w.examine(&[("", "empty"), ("", "kept")]);
-    assert_eq!(w.rows().len(), 2);
-    w.fills_from(LocalDir::new(w.base().join("no-source")));
+    // An entry of the user's own, and the third folder moved into it.
+    std::fs::create_dir_all(trash.join("files/older")).unwrap();
+    std::fs::write(trash.join("info/older.trashinfo"), "[Trash Info]\n").unwrap();
+    w.move_out("nested", &trash.join("files/older/nested"));
+    w.examine(&[("", "empty"), ("", "kept"), ("", "nested")]);
+    assert_eq!(w.rows().len(), 3);
 
-    w.h.run();
+    w.run();
     assert!(!trash.join("files/empty").exists() && !trash.join("info/empty.trashinfo").exists());
     let kept = trash.join("files/kept");
     assert_eq!(std::fs::read(kept.join("down.txt")).unwrap(), b"downloaded");
     assert!(!kept.join("cloud.txt").exists(), "the placeholder left the Trash");
-    assert!(World::konedrive_attrs(&kept).is_empty() && World::konedrive_attrs(&kept.join("down.txt")).is_empty());
+    assert!(konedrive_attrs(&kept).is_empty() && konedrive_attrs(&kept.join("down.txt")).is_empty());
     assert!(trash.join("info/kept.trashinfo").exists());
-    assert!(["E", "E1", "K", "K1", "K2"].iter().all(|id| w.in_bin(id)));
+    assert!(!trash.join("files/older/nested").exists(), "left empty, it went");
+    assert!(trash.join("files/older").exists() && trash.join("info/older.trashinfo").exists(), "the user's own entry stays");
+    assert!(["E", "E1", "E3", "K", "K1", "K2", "N", "N1"].iter().all(|id| w.in_bin(id)));
+    assert_eq!((w.deletes(), w.downloads()), (3, 0), "one DELETE for each folder, and nothing downloaded");
     assert!(w.rows().is_empty());
 }
 
-/// A folder deleted here — outright, or by a move to the Trash — sends OneDrive one `DELETE` of
-/// the whole folder and none for what is inside, whatever its size: as Windows deletes a folder
-/// (`docs/design/decisions.md`, "A folder delete is the whole folder, as on Windows").
+/// A folder deleted here outright sends OneDrive one `DELETE` of the whole folder and none for
+/// what is inside, whatever its size: as Windows deletes a folder.
 #[test]
 fn a_folder_delete_sends_one_delete_and_none_for_what_is_inside() {
     let ids: Vec<String> = (0..20).map(|n| format!("P{n}")).collect();
     let names: Vec<String> = (0..20).map(|n| format!("{n}.txt")).collect();
     let mut items: Vec<(&str, Option<&str>, &str, &[u8])> = vec![("D", None, "d/", b"")];
     items.extend((0..20).map(|n| (ids[n].as_str(), Some("D"), names[n].as_str(), b"x" as &[u8])));
-    let w = World::new(&items);
+    let w = leaving(&items);
     std::fs::remove_dir_all(w.path("d")).unwrap();
     w.examine(&[("", "d")]);
     assert_eq!(w.rows().len(), 1);
     // 21 items out of 21 trips the mass-delete guard; confirming it is a
-    // separate mechanism (write design §4.5) this change leaves untouched.
+    // separate mechanism (write design §4.5).
     w.store.call_blocking(move |s| s.outbox_release_held()).unwrap();
-    w.h.run();
+    w.run();
     assert!(w.rows().is_empty(), "{:?}", w.rows());
     assert_eq!(w.deletes(), 1, "one DELETE only, for the folder");
     assert!(w.in_bin("D"));
-
-    let w = World::new(&[("E", None, "e/", b""), ("E1", Some("E"), "a.txt", b"a"), ("E2", Some("E"), "b.txt", b"b"), ("E3", Some("E"), "c.txt", b"c")]);
-    w.to_trash("e");
-    w.examine(&[("", "e")]);
-    w.h.run();
-    assert!(w.rows().is_empty(), "{:?}", w.rows());
-    assert_eq!(w.deletes(), 1, "one DELETE only, for the Trash move-out too");
-    assert!(w.in_bin("E"));
 }
 
-/// the examination: restoring a held move out (`RestoreDeletes`) places the item in the folder again,
-/// and tidies what had left: placeholders outside go, a downloaded file stays stripped, the
-/// directory is stripped and unmarked. Nothing is deleted in OneDrive.
-#[test]
-fn restoring_a_held_move_out_tidies_what_left() {
-    let w = World::new(&[("D", None, "d/", b""), ("P1", Some("D"), "cloud.txt", b"cloud"), ("P2", Some("D"), "down.txt", b"down"), ("Q", None, "q.txt", b"q")]);
-    {
-        let file = File::options().write(true).open(w.path("d/down.txt")).unwrap();
-        std::io::Write::write_all(&mut &file, b"down").unwrap();
-        placeholder::write_state(&file, State::Hydrated).unwrap();
-    }
-    let (d, q) = (w.base().join("outside/d"), w.base().join("outside/q.txt"));
-    w.move_out("d", &d);
-    w.move_out("q.txt", &q);
-    w.examine(&[("", "d"), ("", "q.txt")]);
-    for row in w.rows() {
-        w.store.call_blocking(move |s| s.outbox_set_state(row.seq, OutboxState::Held, Some(&"mass-delete".into()), None)).unwrap();
-    }
-    let dropped = w.store.call_blocking(move |s| s.outbox_drop_held()).unwrap();
-    assert_eq!(dropped.len(), 2);
-
-    w.tidy(&dropped);
-    assert!(!q.exists() && !d.join("cloud.txt").exists(), "the placeholders outside went");
-    assert_eq!(std::fs::read(d.join("down.txt")).unwrap(), b"down");
-    assert!(World::konedrive_attrs(&d).is_empty() && World::konedrive_attrs(&d.join("down.txt")).is_empty());
-    assert_eq!(w.helper.called("unmark_dir"), vec![d.clone()]);
-    assert_eq!(w.deletes(), 0);
-}
-
-/// `move-out` rows dropped with no worker to finish them (a switch to read-only,
-/// a Forget, a Remove) leave nothing outside that would read as zeros: the placeholder goes, a
-/// downloaded file stays stripped, and the item forgets its local object, so that it is placed
-/// again rather than taken for a delete. Nothing is deleted in OneDrive.
+/// `move-out` rows dropped with no worker to finish them (`RestoreDeletes`, a switch to
+/// read-only, a Forget, a Remove) leave nothing outside that would read as zeros: a placeholder
+/// goes, alone or in a folder; a downloaded file stays, stripped; the folder is stripped and
+/// unmarked; and each item forgets its local object, so that it is placed again rather than
+/// taken for a delete. Nothing is deleted in OneDrive.
 #[test]
 fn dropped_move_outs_leave_no_placeholder_outside() {
-    let w = World::new(&[("P", None, "p.txt", b"cloud"), ("Q", None, "q.txt", b"down")]);
-    {
-        let file = File::options().write(true).open(w.path("q.txt")).unwrap();
-        std::io::Write::write_all(&mut &file, b"down").unwrap();
-        placeholder::write_state(&file, State::Hydrated).unwrap();
-    }
-    let (p, q) = (w.base().join("outside/p.txt"), w.base().join("outside/q.txt"));
+    let w = leaving(&[
+        ("D", None, "d/", b""),
+        ("P1", Some("D"), "cloud.txt", b"cloud"),
+        ("P2", Some("D"), "down.txt", b"down"),
+        ("P", None, "p.txt", b"cloud"),
+        ("Q", None, "q.txt", b"down"),
+    ]);
+    w.hydrate("d/down.txt", b"down");
+    w.hydrate("q.txt", b"down");
+    let (d, p, q) = (w.beside("outside/d"), w.beside("outside/p.txt"), w.beside("outside/q.txt"));
+    w.move_out("d", &d);
     w.move_out("p.txt", &p);
     w.move_out("q.txt", &q);
-    w.examine(&[("", "p.txt"), ("", "q.txt")]);
-    assert_eq!(w.rows().len(), 2);
+    w.examine(&[("", "d"), ("", "p.txt"), ("", "q.txt")]);
+    assert_eq!(w.rows().len(), 3);
     assert!(w.store.call_blocking(move |s| s.local_handle("P")).unwrap().is_some());
 
-    let dropped = w.store.call_blocking(move_out::drop_rows).unwrap();
+    let dropped = w.store.call_blocking(crate::upload::move_out::drop_rows).unwrap();
     w.tidy(&dropped);
-    assert!(!p.exists(), "the placeholder outside went");
+    assert!(!p.exists() && !d.join("cloud.txt").exists(), "the placeholders outside went");
     assert_eq!(std::fs::read(&q).unwrap(), b"down");
-    assert!(World::konedrive_attrs(&q).is_empty());
+    assert_eq!(std::fs::read(d.join("down.txt")).unwrap(), b"down");
+    assert!(konedrive_attrs(&q).is_empty() && konedrive_attrs(&d).is_empty() && konedrive_attrs(&d.join("down.txt")).is_empty());
+    assert_eq!(w.helper.called("unmark_dir"), vec![d.clone()]);
     assert!(w.rows().is_empty());
-    assert!(w.store.call_blocking(move |s| s.local_handle("P")).unwrap().is_none(), "placed again, not taken for a delete");
-    assert_eq!(w.deletes(), 0);
+    for id in ["P", "D", "P1"] {
+        assert!(w.store.call_blocking(move |s| s.local_handle(id)).unwrap().is_none(), "{id} is placed again, not taken for a delete");
+    }
+    assert_eq!((w.deletes(), w.downloads()), (0, 0));
 }
 
 /// `docs/design/writes.md` §8.3: a placeholder moved into another account's folder, which
@@ -888,7 +816,7 @@ fn dropped_move_outs_leave_no_placeholder_outside() {
 /// content, and not only in OneDrive's recycle bin.
 #[test]
 fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
-    let w = World::new(&[("P", None, "p.txt", b"the content")]);
+    let w = leaving(&[("P", None, "p.txt", b"the content")]);
     // Account B's folder, placed from its own listing while it was read-write.
     let b = w.another_folder("B");
     xattr::set(&b, XATTR_ROOT, b"b-root").unwrap();
@@ -905,7 +833,7 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
             runtime: w.h.runtime.handle().clone(),
             locks: InodeLocks::new(),
             root_item_id: "RB".into(),
-            rescue_into: w.base().join("rescued-b/now"),
+            rescue_into: w.beside("rescued-b/now"),
             cancel: CancellationToken::new(),
             rw: None,
             claimed: Some(Arc::clone(&claimed)),
@@ -937,10 +865,9 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
     assert_eq!(w.deletes(), 0);
 
     // A's move out runs: the helper finds the object by its handle, wherever it is.
-    w.helper.follow(&aside);
-    w.h.run();
+    w.run();
     assert_eq!(std::fs::read(&aside).unwrap(), b"the content", "on disk, with its content");
-    assert!(World::konedrive_attrs(&aside).is_empty());
+    assert!(konedrive_attrs(&aside).is_empty());
     assert!(w.in_bin("P"));
     assert!(w.rows().is_empty());
 }
@@ -951,14 +878,14 @@ fn a_placeholder_moved_into_a_read_only_account_ends_up_on_disk() {
 /// here.
 #[test]
 fn a_move_out_gone_inside_another_accounts_folder_deletes_nothing() {
-    let w = World::new(&[("P", None, "p.txt", b"p")]);
+    let w = leaving(&[("P", None, "p.txt", b"p")]);
     let in_b = w.another_folder("B").join("p.txt");
     w.move_out("p.txt", &in_b);
     w.examine(&[("", "p.txt")]);
     assert_eq!(w.rows()[0].target_name.as_deref(), in_b.to_str());
     std::fs::remove_file(&in_b).unwrap();
     for _ in 0..2 {
-        w.h.run();
+        w.run();
         w.due_now();
     }
     assert_eq!(w.deletes(), 0, "nothing is deleted in OneDrive");
@@ -971,69 +898,60 @@ fn a_move_out_gone_inside_another_accounts_folder_deletes_nothing() {
 /// strips it and uploads it as its own before this account's move out ran. The move out meets
 /// `EPERM` — never "gone" — but the object stands where it was last proved to be, with the same
 /// handle: the row goes without a delete, and the item comes back here. Duplicated, nothing lost,
-/// and no row waits for ever.
+/// and no row waits for ever. (Stripped anywhere else, the row waits:
+/// `an_object_that_cannot_be_reached_is_never_taken_for_gone`.)
 #[test]
 fn a_file_another_account_took_for_its_own_is_kept_here_too() {
-    let w = World::new(&[("P", None, "p.txt", b"down")]);
-    {
-        let file = File::options().write(true).open(w.path("p.txt")).unwrap();
-        std::io::Write::write_all(&mut &file, b"down").unwrap();
-        placeholder::write_state(&file, State::Hydrated).unwrap();
-    }
+    let w = leaving(&[("P", None, "p.txt", b"down")]);
+    w.hydrate("p.txt", b"down");
     let in_b = w.another_folder("B").join("p.txt");
     w.move_out("p.txt", &in_b);
     w.examine(&[("", "p.txt")]);
     placeholder::strip_konedrive_xattrs(&File::open(&in_b).unwrap()).unwrap();
-    w.h.run();
+    w.run();
     assert_eq!(w.deletes(), 0, "nothing is deleted in OneDrive");
     assert!(w.rows().is_empty(), "no row waits for ever: {:?}", w.rows());
     assert!(w.store.call_blocking(move |s| s.local_handle("P")).unwrap().is_none());
     assert_eq!(std::fs::read(&in_b).unwrap(), b"down");
-
-    // Stripped anywhere else, the object is not proved to be anyone's: the row waits.
-    let w = World::new(&[("Q", None, "q.txt", b"q")]);
-    let out = w.base().join("outside/q.txt");
-    w.move_out("q.txt", &out);
-    w.examine(&[("", "q.txt")]);
-    xattr::remove(&out, XATTR_ITEM_ID).unwrap();
-    w.h.run();
-    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::Unreachable(None).key()));
 }
 
 /// A placeholder that left a moved-out folder again before the folder's row ran is made local
 /// where it went too, before the folder — and it with it — leaves OneDrive.
 #[test]
 fn what_left_a_moved_out_folder_since_is_downloaded_where_it_went() {
-    let w = World::new(&[("D", None, "d/", b""), ("P", Some("D"), "p.txt", b"inside"), ("Q", Some("D"), "q.txt", b"went on")]);
-    let q = w.path("d/q.txt");
-    let q_handle = World::handle(&q);
-    let to = w.base().join("outside/d");
+    let w = leaving(&[("D", None, "d/", b""), ("P", Some("D"), "p.txt", b"inside"), ("Q", Some("D"), "q.txt", b"went on")]);
+    let to = w.beside("outside/d");
     w.move_out("d", &to);
     w.examine(&[("", "d")]);
-    let q_now = w.base().join("outside/q.txt");
+    let q_now = w.beside("outside/q.txt");
     std::fs::rename(to.join("q.txt"), &q_now).unwrap();
-    w.helper.at.lock().unwrap().insert(q_handle, q_now.clone());
 
-    w.h.run();
+    w.run();
     assert_eq!(std::fs::read(to.join("p.txt")).unwrap(), b"inside");
     assert_eq!(std::fs::read(&q_now).unwrap(), b"went on");
-    assert!(World::konedrive_attrs(&q_now).is_empty());
+    assert!(konedrive_attrs(&q_now).is_empty());
     assert!(w.in_bin("D") && w.in_bin("Q"));
 }
 
 /// §4.6: an object back inside the folder before its row ran is the examination's: nothing is
-/// downloaded or deleted.
+/// downloaded, stripped or deleted, whether or not the row had begun (its marker stays).
 #[test]
 fn an_object_back_in_the_folder_is_left_to_the_examination() {
-    let w = World::new(&[("P", None, "p.txt", b"p")]);
-    let handle = w.move_out("p.txt", &w.base().join("outside/p.txt"));
-    w.examine(&[("", "p.txt")]);
-    std::fs::rename(w.base().join("outside/p.txt"), w.path("back.txt")).unwrap();
-    w.helper.at.lock().unwrap().insert(handle, w.path("back.txt"));
-    w.h.run();
-    assert_eq!(w.deletes(), 0);
-    assert_eq!(state(&w.path("back.txt")), Some(State::OnlineOnly));
-    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::BackInside.key()));
+    for begun in [false, true] {
+        let w = leaving(&[("P", None, "p.txt", b"p")]);
+        w.move_out("p.txt", &w.beside("outside/p.txt"));
+        w.examine(&[("", "p.txt")]);
+        let seq = w.rows()[0].seq;
+        if begun {
+            w.store.call_blocking(move |s| s.outbox_set_snapshot(seq, Some(CONTENT_LOCAL))).unwrap();
+        }
+        std::fs::rename(w.beside("outside/p.txt"), w.path("back.txt")).unwrap();
+        w.run();
+        assert_eq!((w.deletes(), w.downloads()), (0, 0), "begun: {begun}");
+        assert_eq!(state(&w.path("back.txt")), Some(State::OnlineOnly), "begun: {begun}");
+        assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::BackInside.key()), "begun: {begun}");
+        assert_eq!(w.rows()[0].snapshot(), begun.then_some(CONTENT_LOCAL), "begun: {begun}");
+    }
 }
 
 /// §4.6, §5: what left is marked again before anything else, whatever the rows' states — here a
@@ -1041,9 +959,9 @@ fn an_object_back_in_the_folder_is_left_to_the_examination() {
 /// comes back; and the router is told whose the ids are.
 #[test]
 fn what_left_is_marked_again_first_even_while_paused() {
-    let w = World::new(&[("D", None, "d/", b""), ("P", Some("D"), "p.txt", b"p"), ("Q", None, "q.txt", b"q")]);
-    let d = w.base().join("outside/d");
-    let q = w.base().join("outside/q.txt");
+    let w = leaving(&[("D", None, "d/", b""), ("P", Some("D"), "p.txt", b"p"), ("Q", None, "q.txt", b"q")]);
+    let d = w.beside("outside/d");
+    let q = w.beside("outside/q.txt");
     w.move_out("d", &d);
     w.move_out("q.txt", &q);
     w.examine(&[("", "d"), ("", "q.txt")]);
@@ -1054,7 +972,7 @@ fn what_left_is_marked_again_first_even_while_paused() {
         moved_out.as_mut().unwrap().route = Some(Arc::new(move |ids| routed.lock().unwrap().push(ids)));
     }
     let engine = w.h.engine();
-    super::pause(&engine);
+    pause(&engine);
     w.h.drain(&engine);
     assert_eq!(w.deletes(), 0, "paused");
     assert_eq!(w.helper.called("mark_file"), vec![q.clone()]);
@@ -1113,7 +1031,7 @@ struct SectionFill {
 
 #[async_trait]
 impl Filler for SectionFill {
-    async fn fill(&self, _file: File, _shown: &Path, _clearance: Option<&Clearance>) -> Result<(), crate::hydration::source::FillError> {
+    async fn fill(&self, _file: File, _shown: &Path, _clearance: Option<&Clearance>) -> Result<(), FillError> {
         let hold = crate::folder::locks::hold_in_force();
         let begun = self.begun.lock().unwrap().take().expect("one fill");
         let ended = Arc::clone(&self.ended);
@@ -1136,8 +1054,8 @@ impl Filler for SectionFill {
 /// of the worker at work, and the file's lock free.
 #[test]
 fn a_stop_waits_for_the_section_of_a_move_outs_fill() {
-    let w = World::new(&[("P", None, "p.txt", b"the content")]);
-    let to = w.base().join("outside/p.txt");
+    let w = leaving(&[("P", None, "p.txt", b"the content")]);
+    let to = w.beside("outside/p.txt");
     w.move_out("p.txt", &to);
     w.examine(&[("", "p.txt")]);
     let (begun, has_begun) = std::sync::mpsc::channel();

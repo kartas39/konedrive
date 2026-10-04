@@ -17,8 +17,9 @@ use konedrive_fs::placeholder::{self, State, XATTR_CTAG, XATTR_ITEM_ID, XATTR_RO
 use tokio_util::sync::CancellationToken;
 use wiremock::ResponseTemplate;
 
-use super::fake::{qx, Harness};
 use super::*;
+use crate::fake_onedrive::{self as fake, qx};
+use harness::Harness;
 use crate::folder::disk::Disk;
 use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
 use crate::remote::materialize::{Materializer, Scope};
@@ -54,9 +55,12 @@ fn file(id: &str, parent: &str, name: &str, content: &[u8]) -> Change {
 }
 
 /// A folder placed from a listing by the real materializer, a fake
-/// OneDrive holding the same, and a worker for it.
+/// OneDrive holding the same, and a worker for it. The folder is `OneDrive`
+/// in a temporary directory; what leaves it goes beside it, where the fake
+/// helper finds it (`move_out`).
 struct World {
-    _dir: tempfile::TempDir,
+    dir: tempfile::TempDir,
+    helper: Arc<move_out::FakeHelper>,
     root: SyncRoot,
     store: Store,
     liveness: FakeLiveness,
@@ -100,7 +104,8 @@ impl World {
         store.call_blocking(move |s| s.commit_staging("link-1")).unwrap();
         let locks = InodeLocks::new();
         let h = Harness::new(&root, &store, &locks);
-        World { _dir: dir, root, store, liveness: FakeLiveness::new(), locks, h }
+        let helper = Arc::new(move_out::FakeHelper::beneath(dir.path().canonicalize().unwrap()));
+        World { dir, helper, root, store, liveness: FakeLiveness::new(), locks, h }
     }
 
     fn path(&self, rel: &str) -> PathBuf {
@@ -1245,7 +1250,7 @@ fn a_file_replaced_while_its_create_goes_up_and_then_deleted_is_deleted_in_onedr
     assert_eq!(w.summary(), vec![(Create, "d/renamed-n.bin".into(), OutboxState::Ready)]);
 
     let upload = InFlight::start(&w, "PUT", "upload/");
-    let outside = w._dir.path().join("renamed-n.bin");
+    let outside = w.dir.path().join("renamed-n.bin");
     std::fs::copy(w.path("d/renamed-n.bin"), &outside).unwrap();
     std::fs::remove_file(w.path("d/renamed-n.bin")).unwrap();
     std::fs::copy(&outside, w.path("d/renamed-n.bin")).unwrap();
@@ -1324,6 +1329,7 @@ fn renames_moves_and_removals_reach_onedrive_as_the_disk_is() {
     }
 }
 
+pub(crate) mod harness;
 mod stops;
 
 /// A file or folder removed before its upload finished (issue #27).
@@ -1354,6 +1360,25 @@ fn an_answer_nothing_settles_waits_as_upload_error() {
     w.h.block_on(engine.retry_now()).unwrap();
     w.h.drain(&engine);
     assert_committed(&w, "a.txt", "a.txt");
+}
+
+/// An answer that says the request went through and names no item that can be kept (here: the
+/// new folder, as deleted) is OneDrive's failure, not the disk's: the row waits as
+/// `upload-error`, and goes again.
+#[test]
+fn an_answer_that_names_no_usable_item_waits_as_upload_error() {
+    let w = World::new(&[]);
+    std::fs::create_dir(w.path("d")).unwrap();
+    w.examine(&[("", "d")]);
+    let answer = serde_json::json!({ "id": "X", "name": "d", "folder": {}, "deleted": {} });
+    w.cloud(|c| c.script("POST", "children", ResponseTemplate::new(201).set_body_json(answer), 1));
+    let engine = w.h.engine();
+    w.h.drain(&engine);
+    assert_eq!(w.summary(), vec![(Mkdir, "d".into(), OutboxState::Retry)]);
+    assert_eq!(reason_of(&w, "d").as_deref(), Some(Reason::Failed.key()));
+    w.h.block_on(engine.retry_now()).unwrap();
+    w.h.drain(&engine);
+    assert_committed(&w, "d", "d");
 }
 
 /// The journal line of a failure carries no address.

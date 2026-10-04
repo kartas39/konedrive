@@ -42,29 +42,15 @@ pub mod move_out;
 pub mod space;
 mod steps;
 
-/// A fake OneDrive on wiremock: the worker's tests, and the VM suite's write
-/// scenarios (`fault-injection`).
-#[cfg(any(test, feature = "fault-injection"))]
-pub mod fake;
-#[cfg(test)]
-mod tests;
 pub mod kept_back;
+#[cfg(test)]
+pub(crate) mod tests;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
-
-
-/// Takes `user.konedrive.sync` off the files of `rows`, which were dropped
-/// (a switch to read-only). Best effort, by name.
-pub fn clear_marks(root: &SyncRoot, rows: &[konedrive_tree::outbox::OutboxRow]) {
-    let Ok(disk) = crate::folder::disk::Disk::open(root, false) else { return };
-    for row in rows {
-        local::mark(&disk, &row.rel, None);
-    }
-}
 
 use konedrive_graph::drive::DriveClient;
 use crate::folder::root::SyncRoot;
@@ -73,6 +59,22 @@ use konedrive_tree::outbox::{Reason, SessionUrl};
 use konedrive_tree::{ActivityRow, Store, TreeError};
 
 pub(crate) use engine::Engine;
+
+/// Takes `user.konedrive.sync` off the files of `rows`, which left the outbox with no
+/// worker to do it: the outbox was emptied (`sync::outbox`, `drop_outbox`). Best effort,
+/// by name.
+pub fn clear_marks(root: &SyncRoot, rows: &[konedrive_tree::outbox::OutboxRow]) {
+    let disk = match crate::folder::disk::Disk::open(root, false) {
+        Ok(disk) => disk,
+        Err(e) => {
+            tracing::debug!("the upload marks of {} dropped row(s) stay: the folder cannot be opened: {e}", rows.len());
+            return;
+        }
+    };
+    for row in rows {
+        local::mark(&disk, &row.rel, None);
+    }
+}
 
 /// A name the worker gives an item in OneDrive while the name it takes is
 /// still another item's (§4.4, F55 (7)); `.konedrive-*` names are never
@@ -182,17 +184,15 @@ pub async fn cancel_given_up(store: &Store, drive: &DriveClient, limit: usize) -
 }
 
 /// Runs `work` — the store's jobs and what follows them — as a task of the
-/// runtime it is asked on, without waiting for it; asked on a plain thread
-/// (tests), on a runtime of its own, to its end.
-fn detach(work: impl std::future::Future<Output = ()> + Send + 'static) {
+/// runtime it is asked on, without waiting for it. Every caller is on the
+/// daemon's runtime; asked anywhere else, the work is not done, and the
+/// journal says so.
+fn detach(what: &str, work: impl std::future::Future<Output = ()> + Send + 'static) {
     match tokio::runtime::Handle::try_current() {
         Ok(runtime) => {
             runtime.spawn(work);
         }
-        Err(_) => match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-            Ok(runtime) => runtime.block_on(work),
-            Err(e) => tracing::warn!("no runtime for the outbox's work: {e}"),
-        },
+        Err(_) => tracing::warn!("{what}, asked with no runtime to do it on, is ignored"),
     }
 }
 
@@ -328,10 +328,11 @@ pub fn outbox_counts(store: &konedrive_tree::TreeStore, full: bool) -> Result<Ou
     Ok(OutboxCounts::of(&store.outbox_groups()?, full))
 }
 
-/// A point where the worker can be made to stop as if the daemon had died
-/// there (§5), for tests and the VM suite. Each armed point fires once; the
-/// row stays `running` and the worker takes nothing new until it is built
-/// again on the same store.
+/// A point where the worker's tests make it stop as if the daemon had died
+/// there (§5). Each armed point fires once; the row stays `running` and the
+/// worker takes nothing new until it is built again on the same store. Only
+/// the names are compiled into the daemon: nothing can be armed outside the
+/// crate's tests, and a point costs nothing there (`Engine::fault`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fault {
     /// A request went out and was answered; the answer is lost.
@@ -431,7 +432,7 @@ impl OutboxWorker {
     /// A delta cycle went through.
     pub fn cycle_done(&self) {
         let engine = Arc::clone(&self.engine);
-        detach(async move { engine.cycle_done().await });
+        detach("a cycle that went through", async move { engine.cycle_done().await });
     }
 
     /// The quota was read elsewhere (`RefreshInfo`, `Refresh`), into the
@@ -439,20 +440,14 @@ impl OutboxWorker {
     /// waiting files that fit now go ([`space`]).
     pub fn quota_read(&self, quota: &konedrive_graph::drive::DriveQuota) {
         // Applied as a task of its own: it writes the rows it lets go.
-        match tokio::runtime::Handle::try_current() {
-            Ok(runtime) => {
-                let (engine, quota) = (Arc::clone(&self.engine), quota.clone());
-                runtime.spawn(async move { engine.decide_quota(&quota).await });
-            }
-            Err(_) => tracing::warn!("a quota read with no runtime to apply it on is ignored"),
-        }
+        let (engine, quota) = (Arc::clone(&self.engine), quota.clone());
+        detach("a quota read", async move { engine.decide_quota(&quota).await });
     }
-
 
     /// `Refresh()`: rows in backoff are tried now.
     pub fn retry_now(&self) {
         let engine = Arc::clone(&self.engine);
-        detach(async move {
+        detach("a retry of the outbox's waiting rows", async move {
             if let Err(e) = engine.retry_now().await {
                 tracing::warn!("cannot make the outbox's waiting rows due: {e}");
             }
@@ -465,8 +460,8 @@ impl OutboxWorker {
         self.engine.helper_back();
     }
 
-    /// Arms a fault point (tests and the VM suite only).
-    #[cfg(any(test, feature = "fault-injection"))]
+    /// Arms a fault point.
+    #[cfg(test)]
     pub fn arm(&self, fault: Fault) {
         self.engine.arm(fault);
     }
