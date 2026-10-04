@@ -341,7 +341,7 @@ impl Run<'_, '_> {
             // is not uploaded as new, and what was listed inside it gets no
             // row in this run (`unnamed`). In any other run, and at the
             // worker, the id it may still carry is no folder to go into
-            // (`upload::steps::dir_id`).
+            // (`upload::steps::shared::dir_id`).
             self.consumed.insert(i);
             self.unreadable.insert(e.rel.clone());
             return Ok(());

@@ -18,7 +18,7 @@ use konedrive_tree::{Store, Table, TreeError, TreeStore};
 
 use super::place::{beneath_a_root, parent_has, proc_path, reopen_parent, verified_path};
 use super::trash::{is_mount_point, real_trash, trash_of, TrashEntry};
-use super::walk::{dir_below, item_id_of, open_met, reopen_dir, strip, walk};
+use super::walk::{dir_below, item_id_of, open_met, reopen_dir, walk};
 use super::{MoveOuts, off, unmark};
 
 /// Removes the placeholder `file` at `path` in the Trash, and its entry's `.trashinfo` when it is
@@ -149,7 +149,7 @@ impl Tidy<'_> {
             if !object.metadata()?.is_dir() {
                 let Some(_inode) = locks.try_lock(InodeKey::of(&object)?) else { return Ok(None) };
                 match placeholder::read_state(&object) {
-                    Ok(Some(State::Hydrated)) => strip(&object)?,
+                    Ok(Some(State::Hydrated)) => placeholder::strip(&object)?,
                     Ok(Some(_)) if object.metadata()?.nlink() == 1 => {
                         remove(&object, &at, trash.as_ref())?;
                     }
@@ -163,7 +163,7 @@ impl Tidy<'_> {
                 let file = open_met(&top, m)?;
                 let Some(_inode) = locks.try_lock(InodeKey::of(&file)?) else { continue };
                 match placeholder::read_state(&file) {
-                    Ok(Some(State::Hydrated)) => strip(&file)?,
+                    Ok(Some(State::Hydrated)) => placeholder::strip(&file)?,
                     // Not whole: never filled, or a fill or a free-up cut short. OneDrive has it.
                     Ok(Some(_)) if file.metadata()?.nlink() == 1 => {
                         if let Some(name) = m.rel.file_name() {
@@ -185,7 +185,7 @@ impl Tidy<'_> {
             let name = m.rel.file_name().map(OsStr::to_os_string);
             off(move || {
                 let parent = dir_below(&below, &in_dir)?;
-                strip(&dir)?;
+                placeholder::strip(&dir)?;
                 if let Some(name) = name {
                     remove_empty_dir(&dir, &parent, &name);
                 }
@@ -196,7 +196,7 @@ impl Tidy<'_> {
         unmark(self.mo, disk, &top).await;
         let (at, trash) = (path.to_path_buf(), entry.cloned());
         off(move || {
-            strip(&top)?;
+            placeholder::strip(&top)?;
             if std::fs::read_dir(proc_path(&top))?.next().is_none() {
                 if let (Some(parent), Some(name)) = (at.parent().and_then(|p| reopen_parent(p).ok()), at.file_name()) {
                     remove_empty_dir(&top, &parent, name);

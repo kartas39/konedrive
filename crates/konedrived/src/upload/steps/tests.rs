@@ -60,3 +60,29 @@ async fn a_stop_waits_for_the_section_of_a_dropped_row() {
     end.send(()).unwrap();
     assert!(tokio::time::timeout(Duration::from_secs(10), stop).await.is_ok(), "the stop ends once the section has");
 }
+
+/// The `If-Match` a request carries: the eTag, the cTag where there is no
+/// eTag, and none with neither — except for an item just read, whose delete
+/// then goes out with an empty one (limitations log F235).
+#[test]
+fn a_guard_is_the_etag_then_the_ctag_and_empty_only_for_an_item_just_read() {
+    use super::Guard;
+    use konedrive_tree::outbox::Base;
+
+    let of = |etag: Option<&str>, ctag: Option<&str>| Guard::of(etag, ctag).map(|g| g.as_str().to_owned());
+    assert_eq!(of(Some("e"), Some("c")).as_deref(), Some("e"));
+    assert_eq!(of(None, Some("c")).as_deref(), Some("c"));
+    assert_eq!(of(None, None), None);
+    let base = Base { etag: None, ctag: Some("c".into()), parent: None, name: None };
+    assert_eq!(Guard::of_base(&base).unwrap().as_str(), "c");
+    assert!(Guard::of_base(&Base::default()).is_none());
+
+    let item = |json: &str| serde_json::from_str::<konedrive_graph::drive::DriveItem>(json).unwrap();
+    assert_eq!(Guard::of_item(&item(r#"{"id":"I","eTag":"e","cTag":"c"}"#)).as_str(), "e");
+    assert_eq!(Guard::of_item(&item(r#"{"id":"I","cTag":"c"}"#)).as_str(), "c");
+    assert_eq!(Guard::of_item(&item(r#"{"id":"I"}"#)).as_str(), "");
+
+    let guard = Guard::of(Some("e"), None).unwrap();
+    assert_eq!(guard.clone().renewed(None).as_str(), "e");
+    assert_eq!(guard.renewed(Some("e2".into())).as_str(), "e2");
+}

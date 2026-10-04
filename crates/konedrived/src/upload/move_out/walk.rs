@@ -5,7 +5,7 @@ use std::os::fd::AsFd;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use konedrive_fs::placeholder::{self, XATTR_ITEM_ID};
+use konedrive_fs::placeholder::XATTR_ITEM_ID;
 use nix::fcntl::{openat2, AtFlags, OFlag, OpenHow, ResolveFlag};
 use xattr::FileExt;
 
@@ -36,18 +36,6 @@ fn open_below(top: &File, rel: &Path, is_dir: bool) -> io::Result<File> {
 
 pub(super) fn item_id_of(file: &File) -> Option<String> {
     file.get_xattr(XATTR_ITEM_ID).ok().flatten().and_then(|v| String::from_utf8(v).ok())
-}
-
-/// Takes konedrive's attributes off `file`, the item id first: from then on it is an ordinary
-/// file (a state with no id is one), whatever a crash leaves of the rest.
-pub(super) fn strip(file: &File) -> io::Result<()> {
-    placeholder::with_owner_write(file, || match file.remove_xattr(XATTR_ITEM_ID) {
-        Err(e) if e.raw_os_error() != Some(libc::ENODATA) => Err(e),
-        _ => Ok(()),
-    })?;
-    file.sync_all()?;
-    placeholder::strip_konedrive_xattrs(file)?;
-    file.sync_all()
 }
 
 /// One regular file or directory met below a moved-out folder, by its place below it.

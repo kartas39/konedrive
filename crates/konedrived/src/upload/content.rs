@@ -20,7 +20,7 @@ use konedrive_fs::placeholder::{self, State};
 
 use super::engine::{now, Engine, Fail, Outcome};
 use super::local::{self, Found, Opened, Read, Snap};
-use super::steps::{answer_row, blocking, blocking_under, cancel_session, commit_row, copy, follow_cloud, held, local_name, locate, never_uploaded, parent_of, taken, temporary, tree, upload_as_new, wanted_name, Ours, Taken};
+use super::steps::{answer_row, blocking, blocking_under, cancel_session, commit_row, copy, follow_cloud, local_name, locate, name_taken, never_uploaded, parent_of, tree, upload_as_new, wanted_name, Guard, Named, Ours};
 use super::{kind, Fault};
 use konedrive_graph::drive::item::parse_graph_time;
 use konedrive_graph::drive::{ChunkOutcome, DriveError, DriveItem, ItemChange, UploadTarget, WriteError};
@@ -207,12 +207,12 @@ impl Job<'_> {
     ///   in OneDrive since (another device, the web): theirs now, not this
     ///   row's. It is left where it is and forgotten, and the name's holder
     ///   is decided as any other's, by the `409` the create then gets
-    ///   ([`taken`]).
+    ///   ([`name_taken`]).
     /// - With no tag remembered (a row an older version wrote, an answer
     ///   that carried none) it is deleted as that version deleted it: with
     ///   the tag just read, whatever happened to it meanwhile (F200).
     /// - It is adopted only while nothing here knows it (no outbox row of
-    ///   the item, no local object: the test of [`taken`]): one the delta
+    ///   the item, no local object: the test of `steps::shared::taken`): one the delta
     ///   feed listed and a cycle placed here is that local file's.
     /// - It is forgotten exactly when it is deleted, found gone, or left
     ///   as someone else's; adopted, it goes with the row. Anything else —
@@ -243,8 +243,7 @@ impl Job<'_> {
             left();
             return self.forget_bad_item().await.map(|()| None);
         }
-        let guard = item.e_tag.clone().or(item.c_tag.clone()).unwrap_or_default();
-        match self.e.cfg.drive.delete_item(&bad.id, &guard).await {
+        match self.e.cfg.drive.delete_item(&bad.id, Guard::of_item(&item).as_str()).await {
             Ok(()) | Err(WriteError::NotFound) => {}
             Err(WriteError::Changed) => left(),
             Err(err) => return Err(err.into()),
@@ -271,14 +270,11 @@ impl Job<'_> {
                     return Ok(outcome);
                 }
                 let hash = self.hash(sent.hash).await?;
-                match taken(self.e, self.row, self.parent, self.name, Ours::File(&hash)).await? {
-                    Taken::Free => Ok(Outcome::again()),
-                    Taken::Temporary(swap) => temporary(self.e, self.row, self.parent, &swap).await,
+                match name_taken(self.e, self.disk, self.row, Some(self.found), self.parent, self.name, Ours::File(&hash)).await? {
                     // The same content is there: its own earlier request, or
                     // create/create with equal files (§6). Nothing is sent.
-                    Taken::Adopt(item) => self.commit(*item).await,
-                    Taken::Held => Ok(held(self.row)),
-                    Taken::Copy => copy(self.e, self.disk, self.row, self.found, self.parent, None).await,
+                    Named::Adopt(item) => self.commit(*item).await,
+                    Named::Settled(outcome) => Ok(outcome),
                 }
             }
             Err(WriteError::NotFound) => {
@@ -295,7 +291,7 @@ impl Job<'_> {
     /// resumed by the next run (or cancelled there, if the content changed);
     /// one another row still sends waits for that row; any other — given up,
     /// its cancel not gone through — is cancelled now, and the create goes
-    /// again. `None`: no session of ours holds the name, and [`taken`]
+    /// again. `None`: no session of ours holds the name, and [`name_taken`]
     /// decides, as for any `409`.
     ///
     /// No listed session, but an opening recorded there whose URL never came
@@ -334,7 +330,7 @@ impl Job<'_> {
     /// OneDrive refuses leaves the row waiting (`upload-session-open`). Never
     /// a copy. Any other holder — with content, listed, outside every
     /// window, or its time unknown — is not taken for ours: `None`, and
-    /// [`taken`] decides.
+    /// [`name_taken`] decides.
     ///
     /// Once resolved — the placeholder deleted, the name found free, or the
     /// holder not ours (at most one placeholder of ours holds a name) — the
@@ -364,8 +360,7 @@ impl Job<'_> {
             self.resolved().await?;
             return Ok(None);
         }
-        let guard = holder.e_tag.clone().or(holder.c_tag.clone()).unwrap_or_default();
-        match self.e.cfg.drive.delete_item(&holder.id, &guard).await {
+        match self.e.cfg.drive.delete_item(&holder.id, Guard::of_item(&holder).as_str()).await {
             Ok(()) | Err(WriteError::NotFound) => {
                 self.resolved().await?;
                 tracing::info!("{} was held in OneDrive by the placeholder of an upload session this folder opened: deleted", self.found.rel.display());
@@ -395,32 +390,29 @@ impl Job<'_> {
         let base = row.base.clone().unwrap_or_default();
         // F55 (4): a row queued against another version than the base's
         // carries that version's cTag, and no eTag.
-        let Some(mut guard) = base.etag.clone().or_else(|| base.ctag.clone()) else { return Ok(Outcome::blocked(Reason::NoGuard)) };
+        let Some(mut guard) = Guard::of_base(&base) else { return Ok(Outcome::blocked(Reason::NoGuard)) };
         let new_name = (Some(self.name) != base.name.as_deref()).then_some(self.name);
         let new_parent = (Some(self.parent) != base.parent.as_deref()).then_some(self.parent);
         if new_name.is_some() || new_parent.is_some() {
             // Moved as well: the move first, then the content (§3.5).
             let change = ItemChange { name: new_name, parent_id: new_parent, modified: None };
-            match self.e.cfg.drive.update_item(id, &guard, &change).await {
-                Ok(item) => guard = item.e_tag.unwrap_or(guard),
-                Err(WriteError::NameExists) => match taken(self.e, row, self.parent, self.name, Ours::Item(id)).await? {
-                    Taken::Free => return Ok(Outcome::again()),
-                    Taken::Temporary(swap) => return temporary(self.e, row, self.parent, &swap).await,
-                    Taken::Adopt(item) => guard = item.e_tag.unwrap_or(guard),
-                    Taken::Held => return Ok(held(row)),
-                    Taken::Copy => return copy(self.e, self.disk, row, self.found, self.parent, None).await,
+            match self.e.cfg.drive.update_item(id, guard.as_str(), &change).await {
+                Ok(item) => guard = guard.renewed(item.e_tag),
+                Err(WriteError::NameExists) => match name_taken(self.e, self.disk, row, Some(self.found), self.parent, self.name, Ours::Item(id)).await? {
+                    Named::Adopt(item) => guard = guard.renewed(item.e_tag),
+                    Named::Settled(outcome) => return Ok(outcome),
                 },
                 Err(WriteError::Changed) => match self.landed(id, &base).await? {
                     // The move went through before (a replay: the temporary
                     // name of a swap, I1): the content follows it.
-                    Some(fresh) => guard = fresh,
+                    Some(fresh) => guard = guard.renewed(Some(fresh)),
                     None => return self.changed(None).await,
                 },
                 Err(WriteError::NotFound) => return self.gone_or_new(id).await,
                 Err(other) => return Err(other.into()),
             }
         }
-        let sent = self.send(UploadTarget::Existing { id, if_match: &guard }, Some((id, &guard))).await?;
+        let sent = self.send(UploadTarget::Existing { id, if_match: guard.as_str() }, Some((id, guard.as_str()))).await?;
         match sent.answer {
             Ok(item) => self.finish(item, sent.hash).await,
             Err(WriteError::Changed) => self.changed(sent.hash).await,
@@ -906,9 +898,8 @@ impl Job<'_> {
                 tracing::warn!("what OneDrive holds for {} with other content could not be recorded ({err})", self.found.rel.display());
             }
             // The answer's own tag: nothing came between. Neither tag in the
-            // answer: an empty guard, and what OneDrive makes of it (F200).
-            let tag = item.e_tag.clone().or(item.c_tag.clone());
-            match self.e.cfg.drive.delete_item(&item.id, tag.as_deref().unwrap_or_default()).await {
+            // answer: an empty guard, and what OneDrive makes of it (F200, F235).
+            match self.e.cfg.drive.delete_item(&item.id, Guard::of_item(&item).as_str()).await {
                 Ok(()) | Err(WriteError::NotFound) => {
                     if remembered.is_ok() {
                         self.forget_bad_item().await?;

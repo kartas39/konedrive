@@ -510,5 +510,23 @@ pub fn strip_konedrive_xattrs(file: &File) -> io::Result<()> {
     Ok(())
 }
 
+/// Takes konedrive's attributes off `file` for good: the item id first, then
+/// `fsync`, then the rest, then `fsync`. With the id gone the object is an
+/// ordinary one (a state with no id is), whatever a crash leaves of the
+/// rest; an id with no state, the one combination the helper refuses, is
+/// never on disk.
+///
+/// Only what is there is touched: an object with no item id gets neither
+/// the removal (and its change of mode) nor the first `fsync`, and one with
+/// no attribute of konedrive's at all only the last `fsync`.
+pub fn strip(file: &File) -> io::Result<()> {
+    if file.get_xattr(XATTR_ITEM_ID)?.is_some() {
+        remove_xattr(file, XATTR_ITEM_ID)?;
+        file.sync_all()?;
+    }
+    strip_konedrive_xattrs(file)?;
+    file.sync_all()
+}
+
 #[cfg(test)]
 mod tests;

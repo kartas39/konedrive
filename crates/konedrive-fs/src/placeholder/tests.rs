@@ -9,7 +9,7 @@ use super::{
     XATTR_PROGRESS, Progress, write_progress, read_progress, remove_progress, write_ctag,
     read_ctag, LOCKED_FILE_MODE,
     PlaceholderSpec, create_placeholder_with, create_dir_item, reopen_writable, punch_from,
-    strip_konedrive_xattrs, write_item_id, combine_op_and_restore_results,
+    strip, strip_konedrive_xattrs, write_item_id, combine_op_and_restore_results,
 };
 
 fn dir() -> (tempfile::TempDir, File) {
@@ -317,6 +317,41 @@ fn stripping_leaves_no_konedrive_attribute_and_keeps_the_others() {
         assert!(!name.as_encoded_bytes().starts_with(b"user.konedrive."), "konedrive attribute not stripped: {name:?}");
     }
     assert!(names.iter().any(|n| n == std::ffi::OsStr::new("user.other")), "user.other attribute was not preserved");
+}
+
+/// The strip of an object that becomes the user's own: every attribute of
+/// konedrive's goes, the item id among them, on a file locked `0444` too, and
+/// on a directory; what is not konedrive's stays, and so does the mode. An
+/// object with no attribute of konedrive's is left as it is: its mode is not
+/// touched even for a moment (its change time stays), so nothing fails on a
+/// file the daemon could not change the mode of.
+#[test]
+fn a_strip_takes_the_id_and_the_rest_and_keeps_the_mode() {
+    let (dir, handle) = dir();
+    let path = locked(dir.path(), "f.bin", b"x");
+    let file = File::open(&path).unwrap();
+    write_item_id(&file, "I").unwrap();
+    write_state(&file, State::Hydrated).unwrap();
+    write_ctag(&file, "c1").unwrap();
+    with_owner_write(&file, || xattr::FileExt::set_xattr(&file, "user.other", b"keep")).unwrap();
+    strip(&file).unwrap();
+    assert_eq!(read_item_id(&file).unwrap(), None);
+    let users = |of: &File| -> Vec<_> { xattr::FileExt::list_xattr(of).unwrap().filter(|name| name.as_encoded_bytes().starts_with(b"user.")).collect() };
+    assert_eq!(users(&file), [std::ffi::OsString::from("user.other")]);
+    assert_eq!(file.metadata().unwrap().mode() & 0o7777, LOCKED_FILE_MODE);
+    strip(&file).unwrap();
+
+    let plain = File::open(locked(dir.path(), "plain.bin", b"x")).unwrap();
+    let changed = |of: &File| of.metadata().map(|m| (m.ctime(), m.ctime_nsec())).unwrap();
+    let before = changed(&plain);
+    std::thread::sleep(Duration::from_millis(20));
+    strip(&plain).unwrap();
+    assert_eq!(changed(&plain), before, "no konedrive attribute: the mode is never lifted");
+    assert_eq!(plain.metadata().unwrap().mode() & 0o7777, LOCKED_FILE_MODE);
+
+    write_item_id(&handle, "D").unwrap();
+    strip(&handle).unwrap();
+    assert!(users(&handle).is_empty());
 }
 
 /// A time before 1970 is one a file can carry (`futimens` takes a negative
