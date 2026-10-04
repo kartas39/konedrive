@@ -108,7 +108,7 @@ pub(super) async fn blocking<T: Send + 'static>(f: impl FnOnce() -> io::Result<T
 pub(super) async fn blocking_under<H: Send + 'static, T: Send + 'static>(hold: H, f: impl FnOnce() -> io::Result<T> + Send + 'static) -> Result<T, Fail> {
     blocking(move || {
         let _hold = hold;
-        f()
+        local::under_lock(f)
     })
     .await
 }
@@ -392,47 +392,56 @@ pub(super) async fn temporary(e: &Engine, row: &OutboxRow, parent: &str, swap: &
 /// becomes the copy's create (or mkdir) — or, for a move, the move to the
 /// copy's name. `forget` is the item the copy was made from: its name is
 /// placed again from the cloud, never deleted there.
-pub(super) async fn copy(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow, found: &Found, parent: &str, forget: Option<&str>) -> Result<Outcome, Fail> {
+///
+/// The rename, the strip and the record of them (`outbox_copied`) are one
+/// section: a stop of the worker never leaves a copy the outbox does not
+/// know of, as it could not when they ran in one go on the row's task.
+pub(super) async fn copy(e: &Arc<Engine>, disk: &Arc<Disk>, row: &OutboxRow, found: &Found, parent: &str, forget: Option<&str>) -> Result<Outcome, Fail> {
     let (event, copy_rel) = {
         let tree = tree(e).await;
         let moving = row.kind == OutboxKind::Move;
-        let (on, object, machine) = (Arc::clone(disk), found.clone(), e.cfg.machine_name.clone());
-        let copy_name = blocking_under(Arc::clone(&tree), move || {
-            let copy_name = local::rename_to_copy(&on, &object, &machine)?;
+        let (engine, on, object) = (Arc::clone(e), Arc::clone(disk), found.clone());
+        let (seq, parent, forget) = (row.seq, parent.to_owned(), forget.map(str::to_owned));
+        #[cfg(test)]
+        let (_row_alive, row_dropped) = std::sync::mpsc::channel::<()>();
+        let (event, copy_rel) = blocking_under(Arc::clone(&tree), move || {
+            let copy_name = local::rename_to_copy(&on, &object, &engine.cfg.machine_name)?;
+            let copy_rel = object.rel.with_file_name(&copy_name);
             if !moving {
-                if let Some(copied) = local::find(&on, &object.rel.with_file_name(&copy_name))? {
+                if let Some(copied) = local::find(&on, &copy_rel)? {
                     local::strip_found(&copied)?;
                 }
             }
-            Ok(copy_name)
+            let original = engine.cfg.root.path.join(&object.rel).display().to_string();
+            let copy_path = engine.cfg.root.path.join(&copy_rel).display().to_string();
+            let event = engine.event(kind::CONFLICT, &object.rel, copy_path.clone());
+            let (inode, is_dir, rel, name) = (object.inode.clone(), object.is_dir, copy_rel.clone(), copy_name);
+            let amend = move |next: &mut OutboxRow| {
+                next.rel = rel;
+                next.inode = Some(inode);
+                next.target_parent = Some(parent);
+                next.target_name = Some(name);
+                next.state = OutboxState::Running;
+                next.reason = None;
+                next.attempts = 0;
+                next.next_try = None;
+                next.snapshot = None;
+                next.session_url = None;
+                next.session_expires = None;
+                next.session_next = None;
+                if !moving {
+                    next.kind = if is_dir { OutboxKind::Mkdir } else { OutboxKind::Create };
+                    next.item_id = None;
+                    next.base = None;
+                }
+            };
+            #[cfg(test)]
+            engine.before_record(row_dropped);
+            let stored = event.clone();
+            let recorded = engine.store().call_blocking(move |s| s.outbox_copied(seq, amend, forget.as_deref(), now(), &original, &copy_path, Some(&stored)));
+            Ok(recorded.map(|()| (event, copy_rel)))
         })
-        .await?;
-        let copy_rel = found.rel.with_file_name(&copy_name);
-        let original = e.cfg.root.path.join(&found.rel).display().to_string();
-        let copy_path = e.cfg.root.path.join(&copy_rel).display().to_string();
-        let event = e.event(kind::CONFLICT, &found.rel, copy_path.clone());
-        let (inode, is_dir, rel, parent, name) = (found.inode.clone(), found.is_dir, copy_rel.clone(), parent.to_owned(), copy_name.clone());
-        let amend = move |next: &mut OutboxRow| {
-            next.rel = rel;
-            next.inode = Some(inode);
-            next.target_parent = Some(parent);
-            next.target_name = Some(name);
-            next.state = OutboxState::Running;
-            next.reason = None;
-            next.attempts = 0;
-            next.next_try = None;
-            next.snapshot = None;
-            next.session_url = None;
-            next.session_expires = None;
-            next.session_next = None;
-            if !moving {
-                next.kind = if is_dir { OutboxKind::Mkdir } else { OutboxKind::Create };
-                next.item_id = None;
-                next.base = None;
-            }
-        };
-        let (seq, forget, stored) = (row.seq, forget.map(str::to_owned), event.clone());
-        e.store().call(move |s| s.outbox_copied(seq, amend, forget.as_deref(), now(), &original, &copy_path, Some(&stored))).await?;
+        .await??;
         if found.is_dir {
             let rebase = [OutboxOp::Rebase { from: found.rel.clone(), to: copy_rel.clone() }];
             e.store().call(move |s| s.outbox_apply(&rebase, now())).await?;
@@ -479,7 +488,11 @@ pub(super) async fn follow_cloud(e: &Engine, disk: &Arc<Disk>, tree: &Tree, foun
         return Ok(Some(to_rel));
     }
     let (on, object) = (Arc::clone(disk), found.clone());
-    let renamed = blocking_under(Arc::clone(tree), move || Ok(on.dir(&dir_rel).and_then(|to| on.rename(&object.dir, &object.name, &to, OsStr::new(&name))))).await?;
+    let renamed = blocking_under(Arc::clone(tree), move || {
+        local::assert_under_lock();
+        Ok(on.dir(&dir_rel).and_then(|to| on.rename(&object.dir, &object.name, &to, OsStr::new(&name))))
+    })
+    .await?;
     match renamed {
         Ok(()) => {
             if found.is_dir {
@@ -499,11 +512,11 @@ pub(super) async fn follow_cloud(e: &Engine, disk: &Arc<Disk>, tree: &Tree, foun
 /// Uploads the local object again as new (§6: edit/delete, move/delete —
 /// local wins): the base forgets the item, the file loses konedrive's
 /// attributes and becomes a `create` at its local place; the id changes.
-pub(super) async fn upload_as_new(e: &Engine, row: &OutboxRow, found: &Found, parent: &str, id: &str) -> Result<Outcome, Fail> {
+///
+/// The strip and its record (`outbox_orphan`) are one section, as in [`copy`].
+pub(super) async fn upload_as_new(e: &Arc<Engine>, row: &OutboxRow, found: &Found, parent: &str, id: &str) -> Result<Outcome, Fail> {
     let tree = tree(e).await;
     let is_dir = found.is_dir;
-    let object = found.clone();
-    blocking_under(Arc::clone(&tree), move || local::strip_found(&object)).await?;
     let (inode, rel, parent, name) = (found.inode.clone(), found.rel.clone(), parent.to_owned(), found.name.to_str().map(str::to_owned));
     let amend = move |next: &mut OutboxRow| {
         next.kind = if is_dir { OutboxKind::Mkdir } else { OutboxKind::Create };
@@ -523,7 +536,16 @@ pub(super) async fn upload_as_new(e: &Engine, row: &OutboxRow, found: &Found, pa
     };
     let event = e.event(kind::RESTORED, &found.rel, "deleted in OneDrive while it was changed here: uploaded again");
     let (seq, id, stored) = (row.seq, id.to_owned(), event.clone());
-    e.store().call(move |s| s.outbox_orphan(&id, seq, amend, Some(&stored))).await?;
+    let (engine, object) = (Arc::clone(e), found.clone());
+    #[cfg(test)]
+    let (_row_alive, row_dropped) = std::sync::mpsc::channel::<()>();
+    blocking_under(Arc::clone(&tree), move || {
+        local::strip_found(&object)?;
+        #[cfg(test)]
+        engine.before_record(row_dropped);
+        Ok(engine.store().call_blocking(move |s| s.outbox_orphan(&id, seq, amend, Some(&stored))))
+    })
+    .await??;
     e.cfg.host.activity(&event);
     e.cfg.host.cycle_wanted();
     Ok(Outcome::again())
@@ -688,7 +710,7 @@ async fn commit_move(e: &Engine, row: &OutboxRow, found: Option<&Found>, item: &
 /// Content decides: a downloaded file, or a folder, is uploaded again as
 /// new at its new place; a placeholder, which holds nothing here, follows
 /// the delete.
-async fn move_gone(e: &Engine, disk: &Arc<Disk>, row: &OutboxRow, found: Option<&Found>, id: &str, parent: &str) -> Result<Outcome, Fail> {
+async fn move_gone(e: &Arc<Engine>, disk: &Arc<Disk>, row: &OutboxRow, found: Option<&Found>, id: &str, parent: &str) -> Result<Outcome, Fail> {
     let Some(found) = found else {
         return gone(e, row, id, "deleted in OneDrive").await;
     };

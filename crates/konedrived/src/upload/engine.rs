@@ -110,6 +110,9 @@ pub(super) struct Shared {
     cancel_after: i64,
 }
 
+#[cfg(test)]
+pub(super) type RecordHook = Box<dyn FnOnce(std::sync::mpsc::Receiver<()>) + Send>;
+
 pub(crate) struct Engine {
     pub(super) cfg: WorkerConfig,
     shared: Mutex<Shared>,
@@ -122,6 +125,11 @@ pub(crate) struct Engine {
     /// The blocking sections the rows in flight have under way: a stop waits
     /// for them.
     pub(super) sections: super::steps::Sections,
+    /// Run once inside the next section that changes the folder and records
+    /// it, between the two, with a receiver that ends when the row's task is
+    /// dropped.
+    #[cfg(test)]
+    pub(super) record_hook: Mutex<Option<RecordHook>>,
     /// One quota read at a time: refusals of rows running together share it.
     pub(super) quota_lock: tokio::sync::Mutex<()>,
     /// The counts are wanted again though the outbox did not change (OneDrive
@@ -186,6 +194,8 @@ impl Engine {
             faults: Mutex::new(Vec::new()),
             protection: Mutex::new(super::move_out::Protection::default()),
             sections: super::steps::Sections::default(),
+            #[cfg(test)]
+            record_hook: Mutex::new(None),
             quota_lock: tokio::sync::Mutex::new(()),
             recount: Notify::new(),
             closing: CancellationToken::new(),
@@ -222,6 +232,14 @@ impl Engine {
 
     pub(super) fn store(&self) -> &Store {
         &self.cfg.store
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_record(&self, row_dropped: std::sync::mpsc::Receiver<()>) {
+        let hook = self.record_hook.lock().unwrap().take();
+        if let Some(hook) = hook {
+            hook(row_dropped);
+        }
     }
 
     pub(super) fn fault(&self, fault: Fault) -> Result<(), Fail> {

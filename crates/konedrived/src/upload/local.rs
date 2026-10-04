@@ -58,6 +58,28 @@ impl Snap {
     }
 }
 
+thread_local! {
+    /// Whether this thread runs a section that has a share in a lock.
+    static UNDER_LOCK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Runs `f` as a section that has a share in the lock it changes the folder
+/// under (`steps::blocking_under`).
+pub(super) fn under_lock<T>(f: impl FnOnce() -> T) -> T {
+    let before = UNDER_LOCK.replace(true);
+    let done = f();
+    UNDER_LOCK.set(before);
+    done
+}
+
+/// What changes the folder under the tree lock or a file under its inode
+/// lock runs in a section that keeps the lock to its end: a step that ran
+/// it in a plain section would let a stopped worker's row free the lock
+/// under it. Checked in debug builds, which is where the tests run.
+pub(super) fn assert_under_lock() {
+    debug_assert!(UNDER_LOCK.get(), "a change to the folder outside a section that keeps its lock");
+}
+
 /// A file or directory beneath the root, found by name. Cloned into the
 /// blocking sections that work on it: the directory's descriptor is shared.
 #[derive(Clone)]
@@ -193,6 +215,7 @@ pub(super) fn open_for_upload(found: &Found) -> io::Result<Opened> {
 /// still the same placeholder, holding nothing. `false`: someone has it
 /// open, and nothing was looked at.
 pub(super) fn remove_placeholder(disk: &Disk, found: &Found) -> io::Result<bool> {
+    assert_under_lock();
     let file = found.open()?;
     let Some(lease) = WriteLease::take(&file)? else { return Ok(false) };
     let again = find(disk, &found.rel)?;
@@ -280,6 +303,7 @@ pub(super) fn read(file: &File, offset: u64, len: usize, snap: Snap) -> io::Resu
 /// Commit step 1, first half (§3.5): the stamp from the snapshot, the cTag,
 /// `hydrated`, then `fsync`.
 pub(super) fn commit_attributes(file: &File, snap: Snap, ctag: Option<&str>) -> io::Result<()> {
+    assert_under_lock();
     placeholder::write_given_stamp(file, snap.stamp())?;
     if let Some(ctag) = ctag {
         placeholder::write_ctag(file, ctag)?;
@@ -292,6 +316,7 @@ pub(super) fn commit_attributes(file: &File, snap: Snap, ctag: Option<&str>) -> 
 /// the one combination the helper refuses — then `fsync`; and the file's
 /// row is no longer pending.
 pub(super) fn commit_id(file: &File, id: &str) -> io::Result<()> {
+    assert_under_lock();
     placeholder::write_item_id(file, id)?;
     file.sync_all()?;
     clear_sync_of(file);
@@ -301,6 +326,7 @@ pub(super) fn commit_id(file: &File, id: &str) -> io::Result<()> {
 /// A directory's commit step 1: its item id, then `fsync`. A directory
 /// removed meanwhile has nothing to mark: what fails on it is no failure.
 pub(super) fn commit_dir(dir: &File, id: &str) -> io::Result<()> {
+    assert_under_lock();
     match placeholder::write_item_id(dir, id).and_then(|()| dir.sync_all()) {
         Err(e) if dir.metadata().is_ok_and(|m| m.nlink() == 0) => {
             tracing::debug!("a folder removed before its commit keeps no item id: {e}");
@@ -319,6 +345,7 @@ pub(super) fn strip(file: &File) -> io::Result<()> {
 
 /// [`strip`] for what was found by name, opened for it.
 pub(super) fn strip_found(found: &Found) -> io::Result<()> {
+    assert_under_lock();
     if found.is_dir {
         strip(&found.open_dir()?)
     } else {
@@ -379,6 +406,7 @@ pub(super) fn mark(disk: &Disk, rel: &Path, value: Option<&str>) {
 /// Renames `found` in its directory to the first free [`copy_name`]:
 /// `RENAME_NOREPLACE`, so the copy can never land on anything. The new name.
 pub(super) fn rename_to_copy(disk: &Disk, found: &Found, machine: &str) -> io::Result<String> {
+    assert_under_lock();
     let name = found.name.to_str().ok_or_else(|| io::Error::other("a name that is not UTF-8 gets no copy"))?;
     for n in 1..=100 {
         let candidate = copy_name(name, machine, n);
