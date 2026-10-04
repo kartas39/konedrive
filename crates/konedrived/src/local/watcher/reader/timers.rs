@@ -4,7 +4,9 @@
 //! - **A walk as soon as the queue is drained** ([`Timers::lost`]): an event
 //!   was lost (an overflow), or the map is out of step with the disk.
 //! - **A walk for a directory the map does not know** ([`Timers::walk_soon`]):
-//!   at once the first time, then at most once every [`UNKNOWN_WALK`].
+//!   at most once every [`UNKNOWN_WALK`], counted from when the last walk of
+//!   the folder began, the bring-up's included; at once when the last one
+//!   began longer ago than that.
 //! - **A walk on the degraded beat** ([`Timers::degrade`]): every
 //!   [`Timing::degraded_scan`] while part of the folder cannot be watched, so
 //!   a directory made where no event is raised still gets its `MarkDir`.

@@ -354,7 +354,7 @@ fn past_the_mark_budget_the_folder_is_scanned_on_a_timer() {
     assert_eq!((status.directories, status.unwatched), (4, 2), "{status:?}");
     // Nothing happens in the folder; the scan comes anyway. The reader's walk on the same beat
     // hands over the directories it could not mark, before the scan or after it.
-    next_full(&rx);
+    assert_eq!(next_full(&rx).reason(), Some(ScanReason::Periodic), "the scan of the degraded beat");
 
     // Two of these three are made in directories nobody watches: no event,
     // but the periodic walk has them marked for interception all the same.

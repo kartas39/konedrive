@@ -228,11 +228,9 @@ impl Tree {
         self.deferred.push(pending);
     }
 
-    /// The directory events put off, whose parent the map still has.
+    /// The directory events put off.
     pub(super) fn take_deferred(&mut self) -> Vec<Pending> {
-        let mut deferred = std::mem::take(&mut self.deferred);
-        deferred.retain(|pending| self.map.contains(&pending.parent));
-        deferred
+        std::mem::take(&mut self.deferred)
     }
 
     /// A walk of the whole folder settles everything: nothing is put off.

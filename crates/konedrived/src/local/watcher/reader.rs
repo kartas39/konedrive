@@ -387,6 +387,10 @@ impl Reader {
 
     fn settle_deferred(&mut self) {
         for pending in self.tree.take_deferred() {
+            // Asked at each one: settling the one before may have forgotten its directory.
+            if !self.tree.map.contains(&pending.parent) {
+                continue;
+            }
             if !self.try_settle(&pending.parent, &pending.name, pending.how) {
                 tracing::debug!("a directory event the map cannot place; the map is walked again");
                 self.timers.lost();
