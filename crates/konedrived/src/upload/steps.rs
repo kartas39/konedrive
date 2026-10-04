@@ -62,6 +62,12 @@ impl Sections {
         SECTIONS.scope(self.clone(), row).await
     }
 
+    /// A share for one section, let go of when the section ends: [`ended`](Self::ended)
+    /// waits for it.
+    pub(super) async fn running(&self) -> tokio::sync::OwnedRwLockReadGuard<()> {
+        Arc::clone(&self.0).read_owned().await
+    }
+
     /// Done once no section is running. For after the rows' tasks ended: no
     /// new section starts then.
     pub(super) async fn ended(&self) {
@@ -73,8 +79,8 @@ impl Sections {
 /// work that starts blocking sections of its own (a fill): the worker's stop
 /// waits until it is let go of (`folder::locks::holding_with`).
 pub(super) async fn share() -> Option<crate::folder::locks::Carried> {
-    let sections = SECTIONS.try_with(|sections| Arc::clone(&sections.0)).ok()?;
-    Some(Arc::new(sections.read_owned().await))
+    let sections = SECTIONS.try_with(Sections::clone).ok()?;
+    Some(Arc::new(sections.running().await))
 }
 
 /// `f` on a blocking thread: a *section*, the file calls of a step that
@@ -84,8 +90,8 @@ pub(super) async fn share() -> Option<crate::folder::locks::Carried> {
 /// ([`Sections`]; limitations log F233). A failure to run it is an
 /// `io::Error`, like its own.
 pub(super) async fn off<T: Send + 'static>(f: impl FnOnce() -> io::Result<T> + Send + 'static) -> io::Result<T> {
-    let running = match SECTIONS.try_with(|sections| Arc::clone(&sections.0)) {
-        Ok(sections) => Some(sections.read_owned().await),
+    let running = match SECTIONS.try_with(Sections::clone) {
+        Ok(sections) => Some(sections.running().await),
         Err(_) => None,
     };
     tokio::task::spawn_blocking(move || {
