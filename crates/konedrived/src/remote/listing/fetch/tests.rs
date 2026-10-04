@@ -138,7 +138,7 @@ async fn a_refused_resume_link_lists_again_from_the_start_without_duplicates() {
         let report = within(s.listing().cycle(&CancellationToken::new())).await.unwrap();
 
         assert!(report.full, "{refusal}");
-        assert!(report.applied.rescued.is_empty(), "{refusal}: {:?}", report.applied.rescued);
+        assert!(report.applied.on_disk.rescued.is_empty(), "{refusal}: {:?}", report.applied.on_disk.rescued);
         assert!(konedrive_tree::off_runtime(|| s.report.activity.conflicts()).unwrap().is_empty(), "{refusal}");
         assert_eq!(tree_of(&s.root.path), ["docs", "docs/f.txt", "extra"], "{refusal}");
         assert_eq!(ino(&s.root.path.join("docs/f.txt")), placed, "{refusal}: the placeholder was found, not made again");
@@ -254,7 +254,7 @@ async fn a_page_stopped_while_it_was_being_placed_is_placed_again_without_duplic
     assert_eq!(tree_of(&s.root.path), ["docs", "g", "g/y.txt"]);
     assert_eq!(ino(&s.root.path.join("g")), g, "g was found by its id, not made again");
     assert_eq!(mode(&s.root.path.join("g")), placeholder::LOCKED_DIR_MODE);
-    assert!(report.applied.rescued.is_empty(), "{:?}", report.applied.rescued);
+    assert!(report.applied.on_disk.rescued.is_empty(), "{:?}", report.applied.on_disk.rescued);
 }
 
 /// A first page stopped while it was being placed has committed nothing,

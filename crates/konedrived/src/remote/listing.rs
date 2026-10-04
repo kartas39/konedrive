@@ -35,7 +35,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::status::activity::{self, Kind, Report};
 use crate::folder::disk::{rescue_base, rescue_stamp, Disk};
-use super::materialize::{Applied, ApplyError, Claimed, Materializer, Replacement, Scope};
+use super::materialize::{Applied, ApplyError, Claimed, Failed, Kept, Materializer, OnDisk, Replacement, Scope};
 use crate::hydration::pin::Pins;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::ContentSource;
@@ -282,43 +282,9 @@ struct Reconciled {
 
 impl Reconciled {
     /// What one page of a first listing did, added to what the pages before
-    /// it did. `changes` stays empty: a first listing is one `listed` event,
-    /// as a Full reconcile is.
+    /// it did.
     fn add(&mut self, page: Reconciled) {
-        // Every field named: one added to `Applied` does not compile here
-        // until it is handled.
-        let Applied {
-            created,
-            moved,
-            deleted,
-            updated,
-            deferred,
-            rescued,
-            replacements,
-            changes: _,
-            pinned,
-            unsettled,
-            content_waits,
-            copies,
-            examine,
-            recreated,
-            taken,
-        } = page.applied;
-        let all = &mut self.applied;
-        all.created += created;
-        all.moved += moved;
-        all.deleted += deleted;
-        all.updated += updated;
-        all.deferred += deferred;
-        all.rescued.extend(rescued);
-        all.replacements.extend(replacements);
-        all.pinned.extend(pinned);
-        all.unsettled.extend(unsettled);
-        all.content_waits.extend(content_waits);
-        all.copies.extend(copies);
-        all.examine.extend(examine);
-        all.recreated.extend(recreated);
-        all.taken.extend(taken);
+        self.applied.add_page(page.applied);
         self.full |= page.full;
     }
 }
@@ -507,7 +473,7 @@ impl Listing {
                 (reconciled, count)
             }
         };
-        if reconciled.applied.deferred > 0 {
+        if reconciled.applied.counts.deferred > 0 {
             // Files being filled or freed up right now: a Changed scope would
             // never look at them again.
             self.needs_full.store(true, Ordering::SeqCst);
@@ -541,7 +507,7 @@ impl Listing {
         // or a folder with one inside — may have moved or gone with it.
         // After any other, what it placed under a pin is queued.
         let resweep = self.ctx.pins.take_resweep();
-        let moved_pins = (applied.moved > 0 || applied.deleted > 0) && self.ctx.pins.count() > 0;
+        let moved_pins = (applied.counts.moved > 0 || applied.counts.deleted > 0) && self.ctx.pins.count() > 0;
         if full || resweep || moved_pins {
             self.ctx.pins.sweep(self.ctx.root.path.clone()).await;
         } else if !applied.pinned.is_empty() {
@@ -551,10 +517,10 @@ impl Listing {
         // Paused (`docs/design/writes.md` §11): no replacement starts; the next cycle after
         // the pause is Full, and finds them again.
         let paused = self.ctx.running.stopped(&self.ctx.store);
-        if paused && !applied.replacements.is_empty() {
+        if paused && !applied.pending.replacements.is_empty() {
             self.needs_full.store(true, Ordering::SeqCst);
         } else {
-            self.spawn_replacements(applied.replacements.clone());
+            self.spawn_replacements(applied.pending.replacements.clone());
         }
         if let Some(writes) = &self.ctx.writes {
             // The base caught up: the outbox sends (`docs/design/writes.md` §9).
@@ -684,22 +650,18 @@ impl Listing {
                 rw: None,
                 claimed,
             };
-            let changed = matches!(scope, Scope::Changed(_));
             // What a Changed pass rescued before it handed over is rescued
             // all the same: the Full pass finds nothing left to rescue there,
             // so these are the conflicts.
-            let mut first_pass = Vec::new();
-            let (mut applied, full) = match materializer.apply_keeping(scope, &mut first_pass) {
-                Err(ApplyError::NeedFull(why) | ApplyError::Io(why)) if changed => {
-                    tracing::info!("{why}; reconciling the whole folder");
-                    (materializer.apply(Scope::Full).map_err(applying)?, true)
+            let (applied, full) = match materializer.apply_with_handover(scope) {
+                Ok(applied) => applied,
+                Err(failed) => {
+                    // What it rescued is out of the folder all the same.
+                    let Failed { error, done } = *failed;
+                    record_failed(&report, &store, &root.path, done);
+                    return Err(applying(error));
                 }
-                other => (other.map_err(applying)?, !changed),
             };
-            if !first_pass.is_empty() {
-                first_pass.append(&mut applied.rescued);
-                applied.rescued = first_pass;
-            }
             // Where each rescued file went is a conflict: a row
             // in `Conflicts.List()`, `Conflicts.Count` and a `conflict` event, which
             // `record` below writes. It is not a problem, so `LastError` no
@@ -771,7 +733,7 @@ fn record_drive(record: &DriveRecord, id: &str) {
 /// item, at most [`activity::PER_KIND`] of each kind plus one "and N more",
 /// or nothing but the conflicts for a page of a first listing.
 fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Applied, said: Said) {
-    if said == Said::Nothing && applied.rescued.is_empty() && applied.copies.is_empty() {
+    if said == Said::Nothing && applied.on_disk.rescued.is_empty() && applied.on_disk.copies.is_empty() && applied.on_disk.kept.is_empty() {
         return;
     }
     let shown = |rel: &std::path::Path| root.join(rel).display().to_string();
@@ -800,14 +762,19 @@ fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Appl
         }
         Said::Nothing => Vec::new(),
     };
+    // What was removed in OneDrive and stays here in part, whatever is said
+    // of the rest: it is gone there, and what stays is the user's own.
+    let kept = applied.on_disk.kept.iter().map(|(rel, kept)| activity::event(Kind::Removed, shown(rel), kept_detail(*kept))).collect();
+    events.extend(activity::capped(kept, activity::PER_KIND, &folder));
     let at = activity::unix_now();
     let conflicts: Vec<ConflictRow> = applied
+        .on_disk
         .rescued
         .iter()
         .map(|r| ConflictRow { at, original: shown(&r.original), rescued: r.rescued.display().to_string(), kind: ConflictKind::Rescued })
         // Read-write mode's copies (`docs/design/writes.md` §7): conflicts of kind `copy`, both
         // versions in the folder.
-        .chain(applied.copies.iter().map(|c| ConflictRow { at, original: shown(&c.original), rescued: shown(&c.copy), kind: ConflictKind::Copy }))
+        .chain(applied.on_disk.copies.iter().map(|c| ConflictRow { at, original: shown(&c.original), rescued: shown(&c.copy), kind: ConflictKind::Copy }))
         .collect();
     // Capped like every other kind; every conflict is
     // still a row.
@@ -815,6 +782,31 @@ fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Appl
     events.extend(activity::capped(each, activity::PER_KIND, &folder));
     report.activity.add_conflicts(conflicts);
     report.activity.record_blocking(events);
+}
+
+/// What a reconcile that failed did on disk before it did, recorded all the
+/// same: its rescues and copies as conflicts, and what it kept of something
+/// removed in OneDrive — only where it took konedrive's attributes off now,
+/// so that a cycle failing again and again says it once.
+fn record_failed(report: &Report, store: &Store, root: &std::path::Path, mut done: OnDisk) {
+    done.kept.retain(|(_, kept)| kept.stripped > 0);
+    record(report, store, root, &Applied { on_disk: done, ..Applied::default() }, Said::Nothing);
+}
+
+/// The detail of a `removed` event for something that stays here in part:
+/// what goes up as new, and what stays on this computer only.
+fn kept_detail(kept: Kept) -> String {
+    let uploaded = match kept.uploaded {
+        0 => None,
+        1 => Some("1 file changed or new on this computer was kept and is uploaded as new".to_owned()),
+        n => Some(format!("{n} files changed or new on this computer were kept and are uploaded as new")),
+    };
+    let local = match kept.local {
+        0 => None,
+        1 => Some("1 item with an ignored or refused name was kept on this computer only".to_owned()),
+        n => Some(format!("{n} items with ignored or refused names were kept on this computer only")),
+    };
+    [uploaded, local].into_iter().flatten().collect::<Vec<_>>().join("; ")
 }
 
 #[cfg(test)]

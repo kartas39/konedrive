@@ -34,7 +34,7 @@ impl Materializer {
                     if self.update_placeholder(file, row, run)? {
                         run.note(EventKind::Updated, rel, None);
                     } else if self.rw.is_some() {
-                        run.out.content_waits.insert(row.id.clone());
+                        run.out.pending.content_waits.insert(row.id.clone());
                     }
                 } else if meta.mtime() != row.mtime {
                     self.put_time_back(file, row, run)?;
@@ -49,7 +49,7 @@ impl Materializer {
                     // An outbox row recorded since the cycle began: the
                     // worker's guard settles it (§3.7, excluded).
                     if !self.store.call_blocking({ let row_id = row.id.clone(); move |s| s.outbox_for_item(&row_id) })?.is_empty() {
-                        run.out.unsettled.insert(row.id.clone());
+                        run.out.pending.unsettled.insert(row.id.clone());
                         return Ok(());
                     }
                     // Edit × edit (§6), or a version OneDrive may have lost
@@ -69,20 +69,20 @@ impl Materializer {
                     return Ok(());
                 }
                 if let Some(ctag) = &row.ctag {
-                    run.out.replacements.push(Replacement { id: row.id.clone(), rel: rel.to_path_buf(), ctag: ctag.clone(), size: row.size });
+                    run.out.pending.replacements.push(Replacement { id: row.id.clone(), rel: rel.to_path_buf(), ctag: ctag.clone(), size: row.size });
                     // The base keeps the version on disk until the new one
                     // is in place (the read-write reconcile must, item 4); its place is the one the
                     // disk took.
                     if self.rw.is_some() {
-                        run.out.content_waits.insert(row.id.clone());
+                        run.out.pending.content_waits.insert(row.id.clone());
                     }
                 }
                 Ok(())
             }
             Ok(Some(State::Hydrating | State::Dehydrating)) => {
-                run.out.deferred += 1;
+                run.out.counts.deferred += 1;
                 if self.rw.is_some() {
-                    run.out.content_waits.insert(row.id.clone());
+                    run.out.pending.content_waits.insert(row.id.clone());
                 }
                 Ok(())
             }
@@ -112,14 +112,14 @@ impl Materializer {
     fn update_placeholder(&self, file: File, row: &Row, run: &mut Run) -> Result<bool, ApplyError> {
         let key = crate::folder::locks::InodeKey::of(&file)?;
         let Some(_guard) = self.locks.try_lock(key) else {
-            run.out.deferred += 1;
+            run.out.counts.deferred += 1;
             return Ok(false);
         };
         let writable = placeholder::reopen_writable(&file)?;
         drop(file);
         // Looked at again under the lock: a fill may have finished meanwhile.
         if !matches!(read_state(&writable), Ok(Some(State::OnlineOnly))) {
-            run.out.deferred += 1;
+            run.out.counts.deferred += 1;
             return Ok(false);
         }
         // A checkpoint of another version goes, with its bytes; one of this
@@ -142,7 +142,7 @@ impl Materializer {
             placeholder::write_state(&writable, State::Hydrated)?;
         }
         writable.sync_all()?;
-        run.out.updated += 1;
+        run.out.counts.updated += 1;
         Ok(true)
     }
 
@@ -157,11 +157,11 @@ impl Materializer {
     fn put_time_back(&self, file: File, row: &Row, run: &mut Run) -> Result<(), ApplyError> {
         let key = crate::folder::locks::InodeKey::of(&file)?;
         let Some(_guard) = self.locks.try_lock(key) else {
-            run.out.deferred += 1;
+            run.out.counts.deferred += 1;
             return Ok(());
         };
         if !matches!(read_state(&file), Ok(Some(State::OnlineOnly))) {
-            run.out.deferred += 1;
+            run.out.counts.deferred += 1;
             return Ok(());
         }
         placeholder::set_mtime(&file, cloud_time(row))?;

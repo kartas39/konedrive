@@ -190,14 +190,14 @@ async fn a_replacement_that_finds_its_file_moved_makes_the_next_cycle_full_and_i
     .await;
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
-    assert_eq!(report.applied.replacements.len(), 1);
+    assert_eq!(report.applied.pending.replacements.len(), 1);
     listing.join_replacements().await;
     assert_eq!(std::fs::read(s.root.path.join("papers/f.txt")).unwrap(), b"old conten", "nothing was swapped in");
 
     s.feed(Some("L2"), json!([]), "L3").await;
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
     assert!(report.full, "only a Full reconcile finds the replacement again");
-    assert_eq!(report.applied.replacements.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["F"]);
+    assert_eq!(report.applied.pending.replacements.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["F"]);
     listing.join_replacements().await;
     assert_eq!(std::fs::read(s.root.path.join("docs/f.txt")).unwrap(), new);
 }

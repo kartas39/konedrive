@@ -163,7 +163,7 @@ async fn c_an_item_back_on_disk_under_a_new_inode_is_never_deleted() {
 }
 
 /// (d) `docs` is removed in OneDrive while it holds a download open in a
-/// program, an ignored `*.tmp` and a symlink: all of it goes in the cycle,
+/// program, an empty ignored `*.tmp` and a symlink: all of it goes in the cycle,
 /// and a Full local scan after it deletes nothing. Reached by holding the
 /// file open across the cycle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -171,7 +171,7 @@ async fn d_a_folder_removed_in_onedrive_with_an_open_file_an_ignored_name_and_a_
     let w = Arc::new(world().await);
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
-    std::fs::write(w.path("docs/scratch.tmp"), b"tmp").unwrap();
+    std::fs::write(w.path("docs/scratch.tmp"), b"").unwrap();
     std::os::unix::fs::symlink("../top.txt", w.path("docs/link")).unwrap();
     let open = std::fs::File::open(w.path("docs/f.txt")).unwrap();
     w.graph.with(|c| c.trash("D"));

@@ -186,7 +186,7 @@ impl Listing {
             // Still Full until a page is placed at all: none is before the
             // drive's root has come.
             full &= !done.full;
-            shown += done.applied.created;
+            shown += done.applied.counts.created;
             placed.add(done);
             self.ctx.state.update(|s| {
                 s.items_listed = listed;

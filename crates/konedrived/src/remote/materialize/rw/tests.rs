@@ -126,12 +126,12 @@ impl Fx {
         let changed = self.store.call_blocking(move |s| s.changed_ids()).unwrap();
         let defer: Vec<String> = changed
             .iter()
-            .filter(|id| !plan.removing.contains(*id) && !applied.taken.contains(*id) && (plan.held.contains(*id) || applied.unsettled.contains(*id)))
+            .filter(|id| !plan.removing.contains(*id) && !applied.on_disk.taken.contains(*id) && (plan.held.contains(*id) || applied.pending.unsettled.contains(*id)))
             .cloned()
             .collect();
         let content: Vec<String> = changed
             .iter()
-            .filter(|id| !plan.removing.contains(*id) && !applied.taken.contains(*id) && !defer.contains(id) && applied.content_waits.contains(*id))
+            .filter(|id| !plan.removing.contains(*id) && !applied.on_disk.taken.contains(*id) && !defer.contains(id) && applied.pending.content_waits.contains(*id))
             .cloned()
             .collect();
         self.store.call_blocking(move |s| s.commit_staging_deferring("link-2", &konedrive_tree::reconcile::Deferrals { consumed: &[], whole: &defer, content: &content, fetched_at: 0 })).unwrap();
@@ -209,7 +209,7 @@ fn a_local_move_not_examined_yet_is_left_where_it_is_and_its_change_waits() {
     let applied = fx.cycle(&[file("F", "D", "f.txt", "c2")], true).unwrap();
     assert_eq!(id_at(&fx.path("docs/moved.txt")).as_deref(), Some("F"), "left where the user put it");
     assert!(!fx.path("docs/f.txt").exists(), "not made again at its old name");
-    assert!(applied.unsettled.contains("F"));
+    assert!(applied.pending.unsettled.contains("F"));
     assert_eq!(fx.base("F").unwrap().ctag.as_deref(), Some("c1"), "the base keeps what the file holds");
     assert_eq!(fx.deferred("F"), Some(file("F", "D", "f.txt", "c2")), "OneDrive's change waits");
 }
@@ -233,7 +233,7 @@ fn rows_keep_the_reconcile_off_their_items_and_a_changed_scope_does_not_turn_ful
     assert!(!fx.path("docs/deeper/n.txt").exists() && !fx.path("docs/deep").exists(), "nothing placed where a moving folder was");
     assert!(!fx.path("top.txt").exists(), "a delete row's item is not placed again by the reconcile");
     assert_eq!(fx.base("F").unwrap().name, "f.txt");
-    assert!(fx.deferred("F").is_some() && fx.deferred("N").is_some(), "{:?}", applied.unsettled);
+    assert!(fx.deferred("F").is_some() && fx.deferred("N").is_some(), "{:?}", applied.pending.unsettled);
     assert_eq!(fx.base("T").unwrap().ctag.as_deref(), Some("c2"), "below a removal the delta goes to the base");
     assert!(fx.deferred("T").is_none());
 }
@@ -252,8 +252,8 @@ fn a_missing_item_is_placed_again_only_with_something_to_place() {
     for full in [false, true] {
         let applied = fx.cycle(&[file("T", "R", "top.txt", "c2")], full).expect("never a hand-over for it");
         assert!(!fx.path("top.txt").exists(), "full={full}: not placed while its object may be alive");
-        assert!(applied.unsettled.contains("T") && fx.deferred("T").is_some(), "its change waits");
-        assert!(applied.examine.contains(&(PathBuf::from("top.txt"), false)), "the examination decides: {:?}", applied.examine);
+        assert!(applied.pending.unsettled.contains("T") && fx.deferred("T").is_some(), "its change waits");
+        assert!(applied.on_disk.examine.contains(&(PathBuf::from("top.txt"), false)), "the examination decides: {:?}", applied.on_disk.examine);
     }
     assert!(!fx.path("docs/f.txt").exists(), "a delete not examined yet is not undone");
 
@@ -283,14 +283,14 @@ fn a_local_file_in_the_way_is_kept_beside_the_clouds_but_a_pending_create_is_lef
     assert_eq!(std::fs::read(fx.path("docs/new-fedora.txt")).unwrap(), b"mine");
     assert_eq!(id_at(&fx.path("docs/new-fedora.txt")), None);
     assert_eq!(id_at(&fx.path("docs/new.txt")).as_deref(), Some("N"));
-    assert_eq!(applied.copies.len(), 1);
-    assert!(applied.examine.contains(&(PathBuf::from("docs/new-fedora.txt"), false)));
+    assert_eq!(applied.on_disk.copies.len(), 1);
+    assert!(applied.on_disk.examine.contains(&(PathBuf::from("docs/new-fedora.txt"), false)));
 
     std::fs::write(fx.path("docs/other.txt"), b"mine too").unwrap();
     fx.row(OutboxKind::Create, None, "docs/other.txt");
     let applied = fx.cycle(&[file("O", "D", "other.txt", "c1")], false).unwrap();
     assert_eq!(std::fs::read(fx.path("docs/other.txt")).unwrap(), b"mine too", "the outbox settles create/create");
-    assert!(applied.copies.is_empty() && applied.unsettled.contains("O"));
+    assert!(applied.on_disk.copies.is_empty() && applied.pending.unsettled.contains("O"));
     assert!(fx.base("O").is_none() && fx.deferred("O").is_some(), "the new item waits");
 
     // A save by rename (the placeholder replaced by a new file): OneDrive
@@ -299,14 +299,14 @@ fn a_local_file_in_the_way_is_kept_beside_the_clouds_but_a_pending_create_is_lef
     std::fs::write(fx.path("top.txt"), b"saved").unwrap();
     let applied = fx.cycle(&[], true).unwrap();
     assert_eq!(std::fs::read(fx.path("top.txt")).unwrap(), b"saved");
-    assert!(applied.copies.is_empty());
+    assert!(applied.on_disk.copies.is_empty());
 
     // M3: a folder made here where a new one arrives from OneDrive is left
     // for the two to merge (the `mkdir`'s `409`), never copied aside.
     std::fs::create_dir(fx.path("photos")).unwrap();
     std::fs::write(fx.path("photos/mine.jpg"), b"jpg").unwrap();
     let applied = fx.cycle(&[folder("P", "R", "photos"), file("Q", "P", "theirs.jpg", "c1")], false).unwrap();
-    assert!(applied.copies.is_empty() && !fx.path("photos-fedora").exists());
+    assert!(applied.on_disk.copies.is_empty() && !fx.path("photos-fedora").exists());
     assert_eq!(id_at(&fx.path("photos")), None);
     assert!(fx.path("photos/mine.jpg").exists() && !fx.path("photos/theirs.jpg").exists());
     assert!(fx.deferred("P").is_some() && fx.deferred("Q").is_some(), "they wait for the merge");
@@ -323,62 +323,111 @@ fn an_edit_here_and_in_onedrive_keeps_both() {
     assert_eq!(std::fs::read(fx.path("docs/f-fedora.txt")).unwrap(), b"one and mine");
     assert_eq!(id_at(&fx.path("docs/f-fedora.txt")), None, "the user's own file now");
     assert_eq!(placeholder::read_ctag(&File::open(fx.path("docs/f.txt")).unwrap()).unwrap().as_deref(), Some("c2"));
-    assert_eq!(applied.copies[0].copy, PathBuf::from("docs/f-fedora.txt"));
+    assert_eq!(applied.on_disk.copies[0].copy, PathBuf::from("docs/f-fedora.txt"));
     assert_eq!(fx.base("F").unwrap().ctag.as_deref(), Some("c2"));
 }
 
-/// Issue #104, decision 2: what OneDrive removed goes from the disk whole,
-/// in the cycle — a changed download, a new file, a file from elsewhere
-/// carrying an id the base does not know, an empty folder, placeholders.
-/// Nothing is kept, uploaded again or made again in OneDrive; the base takes
-/// the removal, and forgets the objects first.
+/// What OneDrive removed (the owner's ruling of 2026-10-04, which replaced
+/// decision 2 of issue #104): what OneDrive had and the daemon placed goes
+/// — files not downloaded, a download unchanged since, a folder with
+/// nothing left in it. What OneDrive never had stays as the user's own,
+/// its attributes off, with the folders above it: a file made here, a
+/// download changed here, emptied here, or open for writing, a file from
+/// elsewhere holding data, an ignored file with data. A symlink stays beside
+/// them. The base takes the removal, and nothing waits.
 #[test]
-fn what_onedrive_removed_goes_whole() {
+fn what_onedrive_removed_keeps_only_what_it_never_had() {
     let fx = Fx::new();
-    fx.cycle(&[folder("X", "D", "empty")], false).unwrap();
-    assert!(fx.path("docs/empty").is_dir());
+    fx.cycle(&[folder("X", "D", "empty"), file("H", "D", "h.txt", "c1"), file("O", "D", "open.txt", "c1"), file("Z", "D", "zero.txt", "c1")], false).unwrap();
     hydrate(&fx.path("docs/f.txt"), b"one", "c1");
     edit(&fx.path("docs/f.txt"), b" and mine");
+    hydrate(&fx.path("docs/h.txt"), b"one", "c1");
+    hydrate(&fx.path("docs/open.txt"), b"one", "c1");
+    let open = std::fs::OpenOptions::new().read(true).write(true).open(fx.path("docs/open.txt")).unwrap();
+    hydrate(&fx.path("docs/zero.txt"), b"one", "c1");
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    File::options().write(true).truncate(true).open(fx.path("docs/zero.txt")).unwrap();
     std::fs::write(fx.path("docs/deep/mine.txt"), b"new here").unwrap();
+    std::fs::write(fx.path("docs/.~lock.f.txt#"), b"lock").unwrap();
+    std::os::unix::fs::symlink("../top.txt", fx.path("docs/link")).unwrap();
     // A file from elsewhere — another account's, say — carrying an id the base does not know.
     std::fs::write(fx.path("docs/stranger.txt"), b"theirs").unwrap();
     xattr::set(fx.path("docs/stranger.txt"), XATTR_ITEM_ID, b"Y").unwrap();
+
     let applied = fx.cycle(&[Change::Delete("D".into())], false).unwrap();
-    assert!(!fx.path("docs").exists(), "removed whole");
-    assert!(fx.path("top.txt").exists());
-    assert!(applied.recreated.is_empty() && applied.examine.is_empty(), "{applied:?}");
-    assert!(applied.unsettled.is_empty(), "nothing waits: {:?}", applied.unsettled);
+    drop(open);
+    let mut left: Vec<String> = walk(&fx.path("docs")).into_iter().map(|p| p.strip_prefix(fx.path("docs")).unwrap().display().to_string()).collect();
+    left.sort();
+    assert_eq!(left, [".~lock.f.txt#", "deep", "deep/mine.txt", "f.txt", "link", "open.txt", "stranger.txt", "zero.txt"], "the rest went");
+    assert_eq!(std::fs::read(fx.path("docs/f.txt")).unwrap(), b"one and mine");
+    for kept in ["docs", "docs/deep", "docs/f.txt", "docs/open.txt", "docs/zero.txt", "docs/stranger.txt"] {
+        assert_eq!(id_at(&fx.path(kept)), None, "{kept} is the user's own now");
+    }
+    assert_eq!(kept(&applied), vec![(PathBuf::from("docs"), 5, 1)], "said once, for what OneDrive removed");
+    let mut recreated = applied.on_disk.recreated.clone();
+    recreated.sort();
+    assert_eq!(recreated, ["D", "E"], "the folders that stay are made again in OneDrive");
+    assert!(applied.on_disk.examine.contains(&(PathBuf::from("docs"), true)), "handed to the examination: {:?}", applied.on_disk.examine);
+    assert!(applied.pending.unsettled.is_empty(), "nothing waits: {:?}", applied.pending.unsettled);
     assert!(fx.base("D").is_none() && fx.base("F").is_none() && fx.base("X").is_none(), "gone from the base");
     assert!(fx.deferred("D").is_none() && fx.deferred("F").is_none());
+    assert!(fx.path("top.txt").exists());
 }
 
-/// Issue #104, decision 2: a folder removed in OneDrive goes in the cycle
-/// even while a download in it is open — for reading or writing — and with
-/// an ignored lock file beside it; the program keeps what it has open. An
-/// emptied download goes too. Nothing waits, nothing is made again.
+/// What only this computer has stays whatever its name: an ignored file
+/// with data, and a directory with an ignored name that holds anything,
+/// keep the folder OneDrive removed, and are not counted as uploaded. What
+/// holds nothing — an empty ignored file, a symlink — keeps no folder.
 #[test]
-fn a_folder_removed_in_onedrive_goes_whatever_is_open_or_ignored_in_it() {
-    for write in [false, true] {
-        let fx = Fx::new();
-        hydrate(&fx.path("docs/f.txt"), b"one", "c1");
-        std::fs::write(fx.path("docs/.~lock.f.txt#"), b"lock").unwrap();
-        let open = std::fs::OpenOptions::new().read(true).write(write).open(fx.path("docs/f.txt")).unwrap();
-        let applied = fx.cycle(&[Change::Delete("D".into())], false).unwrap();
-        assert!(!fx.path("docs").exists(), "write={write}: removed whole");
-        assert!(applied.recreated.is_empty() && applied.unsettled.is_empty(), "write={write}: {applied:?}");
-        assert!(fx.base("D").is_none() && fx.deferred("D").is_none() && fx.deferred("F").is_none());
-        let mut held = Vec::new();
-        std::io::Read::read_to_end(&mut &open, &mut held).unwrap();
-        assert_eq!(held, b"one", "write={write}: the program keeps what it had open");
-    }
+fn an_ignored_file_with_data_stays_and_keeps_its_folder() {
+    let fx = Fx::new();
+    std::fs::write(fx.path("docs/draft.swp"), b"unsaved").unwrap();
+    std::fs::create_dir(fx.path("docs/cache.tmp")).unwrap();
+    std::fs::write(fx.path("docs/cache.tmp/part"), b"data").unwrap();
+    std::fs::write(fx.path("docs/deep/.~lock.g.txt#"), b"").unwrap();
+    std::os::unix::fs::symlink("../../top.txt", fx.path("docs/deep/link")).unwrap();
+    let applied = fx.cycle(&[Change::Delete("D".into())], false).unwrap();
+    assert_eq!(std::fs::read(fx.path("docs/draft.swp")).unwrap(), b"unsaved");
+    assert_eq!(std::fs::read(fx.path("docs/cache.tmp/part")).unwrap(), b"data");
+    assert!(!fx.path("docs/f.txt").exists(), "what OneDrive had went");
+    assert!(!fx.path("docs/deep").exists(), "and a folder holding only an empty ignored file and a symlink");
+    assert_eq!(kept(&applied), vec![(PathBuf::from("docs"), 0, 2)], "kept, and not said to be uploaded");
+}
 
+/// A downloaded file carrying an id that is not of what OneDrive removed —
+/// moved in from another konedrive folder, not examined yet — is not a copy
+/// of anything this OneDrive had: it stays, though its stamp matches. The
+/// removed item's own unchanged download goes.
+#[test]
+fn a_download_that_is_not_of_what_was_removed_stays() {
     let fx = Fx::new();
     hydrate(&fx.path("docs/f.txt"), b"one", "c1");
-    std::thread::sleep(std::time::Duration::from_millis(10));
-    File::options().write(true).truncate(true).open(fx.path("docs/f.txt")).unwrap();
+    std::fs::write(fx.path("docs/foreign.txt"), b"").unwrap();
+    xattr::set(fx.path("docs/foreign.txt"), XATTR_ITEM_ID, b"Y").unwrap();
+    hydrate(&fx.path("docs/foreign.txt"), b"theirs", "c9");
     let applied = fx.cycle(&[Change::Delete("D".into())], false).unwrap();
-    assert!(applied.recreated.is_empty());
-    assert!(!fx.path("docs").exists(), "an emptied download goes too");
+    assert_eq!(std::fs::read(fx.path("docs/foreign.txt")).unwrap(), b"theirs");
+    assert_eq!(id_at(&fx.path("docs/foreign.txt")), None, "the user's own now");
+    assert!(!fx.path("docs/f.txt").exists(), "the item's own unchanged download went");
+    assert_eq!(kept(&applied), vec![(PathBuf::from("docs"), 1, 0)]);
+}
+
+/// What stays of what was removed: the place, how many files go up as new,
+/// how many items stay on this computer only.
+fn kept(applied: &Applied) -> Vec<(PathBuf, u64, u64)> {
+    applied.on_disk.kept.iter().map(|(rel, kept)| (rel.clone(), kept.uploaded, kept.local)).collect()
+}
+
+fn walk(dir: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            out.extend(walk(&entry.path()));
+        }
+        out.push(entry.path());
+    }
+    out
 }
 
 /// Issue #104, decision 5: before the reconcile takes anything off the disk,
@@ -451,6 +500,70 @@ fn a_removal_that_fails_after_stopping_a_download_leaves_a_placeholder() {
     assert!(left.iter().all(|&b| b == 0), "nothing of the stopped download left: {left:?}");
 }
 
+/// Issue #112: a file removed in OneDrive that has a second name here, a hard
+/// link the user made. Its name goes first and its item id is taken off
+/// afterwards: a removal that fails leaves the item at its place with its id,
+/// never an object without one there, which would be uploaded as new. Once
+/// the name is gone, the other name is the user's own file.
+#[test]
+fn a_file_with_another_name_loses_its_id_only_once_its_name_is_gone() {
+    use std::os::unix::fs::PermissionsExt;
+    let fx = Fx::new();
+    hydrate(&fx.path("docs/f.txt"), b"one", "c1");
+    std::fs::hard_link(fx.path("docs/f.txt"), fx.path("link.txt")).unwrap();
+    std::fs::set_permissions(fx.path("docs"), std::fs::Permissions::from_mode(0o555)).unwrap();
+    let failed = fx.cycle(&[Change::Delete("F".into())], false);
+    std::fs::set_permissions(fx.path("docs"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(failed.is_err(), "{failed:?}");
+    assert_eq!(id_at(&fx.path("docs/f.txt")).as_deref(), Some("F"), "what would not go is still the item");
+
+    fx.cycle(&[Change::Delete("F".into())], false).unwrap();
+    assert!(!fx.path("docs/f.txt").exists());
+    assert_eq!(std::fs::read(fx.path("link.txt")).unwrap(), b"one", "the other name stays");
+    assert_eq!(id_at(&fx.path("link.txt")), None, "as the user's own file");
+    assert!(fx.base("F").is_none());
+}
+
+/// Issue #112, the stop between the two steps: a file that is leaving has a
+/// second name, a hard link the user made; the daemon unlinks the leaving
+/// name and stops before it takes the item id off. The other name is then
+/// the user's own file whatever comes next: an examination records no move
+/// and no delete of the item for it, and no later cycle takes it for the
+/// leaving object and removes it.
+#[test]
+fn a_stop_after_the_unlink_leaves_the_other_name_to_the_user() {
+    use crate::remote::materialize::removal::testing::stop_after_unlink;
+    let fx = Fx::new();
+    hydrate(&fx.path("docs/f.txt"), b"one", "c1");
+    let leaving = Change::Upsert(Row { placement: Placement::Skipped(konedrive_tree::SkipReason::NameTooLong), ..row("F", "D", &"x".repeat(300), Kind::File, "c1") });
+    fx.cycle(std::slice::from_ref(&leaving), false).unwrap();
+    assert_eq!(fx.store.call_blocking(|s| s.leaving()).unwrap(), vec![("F".to_owned(), PathBuf::from("docs/f.txt"))]);
+    std::fs::hard_link(fx.path("docs/f.txt"), fx.path("link.txt")).unwrap();
+
+    stop_after_unlink(true);
+    let stopped = fx.cycle(&[], false);
+    stop_after_unlink(false);
+    assert!(stopped.is_err() && !fx.path("docs/f.txt").exists(), "stopped right after the unlink: {stopped:?}");
+    assert_eq!(id_at(&fx.path("link.txt")).as_deref(), Some("F"), "the id was not taken off");
+
+    let examine = || {
+        let disk = Disk::open(&fx.root, false).unwrap();
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        crate::local::Examiner { disk: &disk, store: &fx.store, liveness: &crate::local::NoLiveness, ignore: &IgnoreList::default(), locks: &fx.locks, now }
+            .examine(&crate::local::Batch::full())
+            .unwrap();
+        let rows = fx.store.call_blocking(|s| s.outbox_rows()).unwrap();
+        assert!(!rows.iter().any(|r| r.item_id.as_deref() == Some("F")), "nothing is sent for the item: {rows:?}");
+        assert_eq!(fx.store.call_blocking(|s| s.local_handle("F")).unwrap(), None, "and the other name is not recorded as the item's object");
+    };
+    examine();
+    for full in [true, false] {
+        fx.cycle(&[], full).unwrap();
+        examine();
+        assert_eq!(std::fs::read(fx.path("link.txt")).unwrap(), b"one", "full={full}: the other name is never removed");
+    }
+}
+
 /// F82 (5): an item OneDrive has under the outbox's temporary name (a store
 /// rebuilt before its final move) keeps its local object where it is: the
 /// examination moves it back.
@@ -477,11 +590,11 @@ fn a_new_folder_a_stop_left_under_its_temporary_name_is_finished_when_onedrive_r
             std::fs::write(fx.path("docs/.konedrive-new-N/mine.txt"), b"mine").unwrap();
         }
         let applied = fx.cycle(&[], true).unwrap();
-        assert!(!fx.path("N").exists() && !fx.path("docs/N").exists(), "with_a_file={with_a_file}: {:?}", applied.examine);
+        assert!(!fx.path("N").exists() && !fx.path("docs/N").exists(), "with_a_file={with_a_file}: {:?}", applied.on_disk.examine);
         assert!(!fx.path("docs/.konedrive-new-N").exists() && !fx.path(".konedrive-holding").exists());
-        assert!(applied.rescued.is_empty());
+        assert!(applied.on_disk.rescued.is_empty());
         assert_eq!(fx.path("docs/mine.txt").exists(), with_a_file, "what was in it is put back where it stood");
-        assert!(applied.examine.iter().all(|(rel, _)| rel == Path::new("docs/mine.txt")), "{:?}", applied.examine);
+        assert!(applied.on_disk.examine.iter().all(|(rel, _)| rel == Path::new("docs/mine.txt")), "{:?}", applied.on_disk.examine);
     }
 }
 

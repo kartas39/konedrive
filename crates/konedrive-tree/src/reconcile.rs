@@ -315,9 +315,9 @@ impl TreeStore {
     }
 
     /// Rows that were to go into one of `folders` — folders gone from
-    /// OneDrive, whose local directory is made again (a
-    /// `resyncChangesUploadDifferences` listing only, F116) — wait for
-    /// that directory's `mkdir` instead, and find its new id by their place.
+    /// OneDrive, whose local directory stays, holding local work, and is
+    /// made again there (F116) — wait for that directory's `mkdir`
+    /// instead, and find its new id by their place.
     pub fn outbox_detach_parents(&self, folders: &[String]) -> Result<usize, TreeError> {
         let mut n = 0;
         for id in folders {
@@ -426,6 +426,22 @@ impl TreeStore {
     /// editor's save by rename at its place (issue #104).
     pub fn leaving_set_handle(&self, id: &str, handle: &FileHandle) -> Result<(), TreeError> {
         self.conn.execute("UPDATE leaving SET handle = ?2 WHERE id = ?1", params![id, handle.encode()])?;
+        Ok(())
+    }
+
+    /// The inodes `handles` are no longer followed as leaving objects: a
+    /// file with other names that is about to lose the name it leaves
+    /// under, whose other names are the user's own and must never be taken
+    /// for it. Its row stays, followed by its path only.
+    pub fn leaving_forget_handles(&mut self, handles: &[FileHandle]) -> Result<(), TreeError> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut forget = tx.prepare_cached("UPDATE leaving SET handle = NULL WHERE handle = ?1")?;
+            for handle in handles {
+                forget.execute([handle.encode()])?;
+            }
+        }
+        tx.commit()?;
         Ok(())
     }
 

@@ -30,8 +30,10 @@ pub use rw::Rw;
 
 /// A file found where the tree wants it: left, updated, queued for replacement or rescued.
 mod file;
-/// The holding directory, and what is deleted, rescued or set aside from it.
+/// The holding directory, and what is rescued or set aside from it.
 mod holding;
+/// The one way a managed object is taken off the disk: forgotten first.
+mod removal;
 /// One downloaded file swapped for its new version.
 mod replace;
 use file::cloud_time;
@@ -59,26 +61,124 @@ pub struct Replacement {
     pub size: u64,
 }
 
-#[derive(Debug, Default)]
-pub struct Applied {
+/// What a pass did to the folder, in numbers.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Counts {
     pub created: u64,
     pub moved: u64,
     pub deleted: u64,
     pub updated: u64,
     /// Files being filled or freed right now; the next cycle looks again.
     pub deferred: u64,
-    /// Local versions moved out of the way, each a conflict
-    ///.
+}
+
+impl Counts {
+    fn add(&mut self, other: Counts) {
+        let Counts { created, moved, deleted, updated, deferred } = other;
+        self.created += created;
+        self.moved += moved;
+        self.deleted += deleted;
+        self.updated += updated;
+        self.deferred += deferred;
+    }
+}
+
+/// What a pass did on disk that stands whatever comes next: when the pass
+/// fails and a Full one follows, and from one page of a first listing to
+/// the next. The only merge of two passes is [`OnDisk::absorb`].
+#[derive(Debug, Default)]
+pub struct OnDisk {
+    /// Local versions moved out of the way, each a conflict.
     pub rescued: Vec<Rescued>,
-    pub replacements: Vec<Replacement>,
-    /// What a Changed scope did, item by item, for the activity log (spec
-    /// §16.1). A Full scope leaves it empty: it is one `listed` event, not
-    /// one per item.
-    pub changes: Vec<Changed>,
-    /// Files made, and files or folders moved, inside a folder a pin keeps
-    /// on this device, relative to the root: what the sync queues for
-    /// download once the reconcile is done.
-    pub pinned: Vec<PathBuf>,
+    /// Read-write mode: local versions kept beside the cloud's (§6).
+    pub copies: Vec<Copied>,
+    /// Read-write mode: places for the examination to look at, relative to
+    /// the root (`true`: with everything below) — files and folders this
+    /// reconcile kept, copied or took its attributes off, which no event the
+    /// watcher keeps says (the daemon's own changes are dropped by pid).
+    pub examine: Vec<(PathBuf, bool)>,
+    /// Read-write mode: folders gone from OneDrive whose directory stays
+    /// here, holding local work, to be made again there (F116).
+    pub recreated: Vec<String>,
+    /// Items whose change the base takes in this cycle whatever a local
+    /// change holds — removed in OneDrive and taken off the disk, or, in
+    /// read-write mode, no longer placed here (issue #104). Never deferred.
+    pub taken: HashSet<String>,
+    /// Read-write mode: what was removed in OneDrive and stays here in
+    /// part, relative to the root, with what stays. One entry for the
+    /// outermost thing removed ([`OnDisk::note_kept`]).
+    pub kept: Vec<(PathBuf, Kept)>,
+}
+
+/// What stays on this computer of something removed in OneDrive.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Kept {
+    /// Files changed or made here, which the examination records as new.
+    pub uploaded: u64,
+    /// Files and folders that stay on this computer only: their name is
+    /// ignored or refused by OneDrive, or a folder above them has such a
+    /// name, so nothing uploads them.
+    pub local: u64,
+    /// How many of them were the daemon's until this pass took konedrive's
+    /// attributes off them: a later pass finds them as the user's own.
+    pub stripped: u64,
+}
+
+impl Kept {
+    pub(super) fn since(self, before: Kept) -> Kept {
+        Kept { uploaded: self.uploaded - before.uploaded, local: self.local - before.local, stripped: self.stripped - before.stripped }
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.uploaded + self.local == 0
+    }
+}
+
+impl OnDisk {
+    /// Adds what a `later` pass did to what this one did, this one's first.
+    // Every field named: one added to `OnDisk` does not compile here until
+    // it is handled.
+    pub fn absorb(&mut self, later: OnDisk) {
+        let OnDisk { rescued, copies, examine, recreated, taken, kept } = later;
+        for (rel, kept) in kept {
+            self.note_kept(&rel, kept);
+        }
+        self.rescued.extend(rescued);
+        self.copies.extend(copies);
+        self.examine.extend(examine);
+        self.recreated.extend(recreated);
+        self.taken.extend(taken);
+    }
+}
+
+impl OnDisk {
+    /// `kept` stays of what was removed at `rel`. Said once, for the
+    /// outermost thing removed: an entry at or below `rel` is replaced, and
+    /// nothing is added below an entry there is.
+    pub(super) fn note_kept(&mut self, rel: &Path, kept: Kept) {
+        if self.kept.iter().any(|(above, _)| rel != above && rel.starts_with(above)) {
+            return;
+        }
+        // What an earlier pass took the attributes off is counted as that
+        // still, though this pass found it the user's own.
+        let stripped = self.kept.iter().filter(|(below, _)| below.starts_with(rel)).map(|(_, k)| k.stripped).sum::<u64>();
+        self.kept.retain(|(below, _)| !below.starts_with(rel));
+        self.kept.push((rel.to_path_buf(), Kept { stripped: kept.stripped + stripped, ..kept }));
+    }
+}
+
+/// A reconcile that failed, and what it did on disk before it did
+/// ([`OnDisk`]): that stands, and is still to be said and handed on.
+#[derive(Debug)]
+pub struct Failed {
+    pub error: ApplyError,
+    pub done: OnDisk,
+}
+
+/// What a pass left for later. A pass that fails hands none of it over: the
+/// pass after it decides that again.
+#[derive(Debug, Default)]
+pub struct Pending {
     /// Read-write mode: items this reconcile left as they are on disk — a
     /// local change holds them, or their new version is still to land — so
     /// the base keeps the version the disk holds, and the delta's change
@@ -89,21 +189,46 @@ pub struct Applied {
     /// a file being filled: the base takes the new place, and keeps the
     /// content the file holds.
     pub content_waits: HashSet<String>,
-    /// Read-write mode: local versions kept beside the cloud's (§6).
-    pub copies: Vec<Copied>,
-    /// Read-write mode: places for the examination to look at, relative to
-    /// the root (`true`: with everything below) — files and folders this
-    /// reconcile kept, copied or took its attributes off, which no event the
-    /// watcher keeps says (the daemon's own changes are dropped by pid).
-    pub examine: Vec<(PathBuf, bool)>,
-    /// Read-write mode: folders gone from OneDrive whose directory stays
-    /// here, holding local work, to be made again there: a
-    /// `resyncChangesUploadDifferences` listing only (F116).
-    pub recreated: Vec<String>,
-    /// Read-write mode: items whose change the base takes in this cycle
-    /// whatever a local change holds — removed in OneDrive and taken off the
-    /// disk, or no longer placed here (issue #104). Never deferred.
-    pub taken: HashSet<String>,
+    /// Downloaded files whose content changed in the cloud, to be replaced
+    /// once the cycle is done.
+    pub replacements: Vec<Replacement>,
+}
+
+impl Pending {
+    fn add(&mut self, other: Pending) {
+        let Pending { unsettled, content_waits, replacements } = other;
+        self.unsettled.extend(unsettled);
+        self.content_waits.extend(content_waits);
+        self.replacements.extend(replacements);
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct Applied {
+    pub counts: Counts,
+    pub on_disk: OnDisk,
+    pub pending: Pending,
+    /// What a Changed scope did, item by item, for the activity log (spec
+    /// §16.1). A Full scope leaves it empty: it is one `listed` event, not
+    /// one per item.
+    pub changes: Vec<Changed>,
+    /// Files made, and files or folders moved, inside a folder a pin keeps
+    /// on this device, relative to the root: what the sync queues for
+    /// download once the reconcile is done.
+    pub pinned: Vec<PathBuf>,
+}
+
+impl Applied {
+    /// Adds what one page of a first listing did to what the pages before
+    /// it did. `changes` stays empty: a first listing is one `listed`
+    /// event, as a Full reconcile is.
+    pub fn add_page(&mut self, page: Applied) {
+        let Applied { counts, on_disk, pending, changes: _, pinned } = page;
+        self.counts.add(counts);
+        self.on_disk.absorb(on_disk);
+        self.pending.add(pending);
+        self.pinned.extend(pinned);
+    }
 }
 
 /// A local version kept beside the cloud's under a new name (write design
@@ -180,6 +305,13 @@ pub struct Materializer {
     pub claimed: Option<Claimed>,
 }
 
+/// What a pass that failed hands to the Full pass after it.
+#[derive(Default)]
+struct Handover {
+    on_disk: OnDisk,
+    moved_from: HashMap<String, PathBuf>,
+}
+
 #[derive(Default)]
 struct Run {
     out: Applied,
@@ -206,15 +338,11 @@ struct Run {
     /// The inodes items were placed as, not recorded yet: written
     /// [`PLACED_BATCH`] at a time, and at the end of the run (issue #39).
     placed: Vec<(String, konedrive_fs::handle::FileHandle)>,
-    /// Files whose download the drain stopped (issue #104).
-    stopped: Vec<crate::folder::locks::InodeKey>,
+    /// What removals left in place so far, as the user's own.
+    kept: Kept,
     /// Read-write mode: items this run found no longer placed (issue #104):
     /// examined first, and removed by a later cycle at the earliest.
     unplaced: HashSet<String>,
-}
-
-fn survey_stopped(survey: &rw::Survey) -> Vec<crate::folder::locks::InodeKey> {
-    survey.stopped_keys().to_vec()
 }
 
 /// Placed items recorded in one transaction (issue #39; a guess).
@@ -231,41 +359,48 @@ impl Run {
 }
 
 impl Materializer {
+    /// One pass over `scope`.
     pub fn apply(&self, scope: Scope) -> Result<Applied, ApplyError> {
-        self.apply_keeping(scope, &mut Vec::new())
+        self.pass(scope, &mut Handover::default())
     }
 
-    /// [`apply`](Self::apply), which also hands over, when it fails, what it
-    /// had rescued by then (into `rescued`): those files are out of the way
-    /// whatever comes next, and a Full reconcile run after a Changed one
-    /// finds nothing left to rescue there.
-    pub fn apply_keeping(&self, scope: Scope, rescued: &mut Vec<Rescued>) -> Result<Applied, ApplyError> {
-        let mut run = Run::default();
-        let result = self.apply_run(scope, &mut run);
-        if result.is_err() {
-            rescued.append(&mut run.out.rescued);
-        }
-        result.map(|()| run.out)
-    }
-
-    /// [`apply_keeping`](Self::apply_keeping) for read-write mode: what is
-    /// done on disk whatever comes next — rescues, conflict copies, places
-    /// to examine, folders made local — is handed over too. What a failed
-    /// pass left unsettled is not: the pass after it decides that again.
+    /// A pass over `scope`, and, when a Changed one finds that the folder
+    /// does not match the stored tree, a Full one after it. What was
+    /// applied, and whether a Full pass ran.
     ///
-    /// `moved_from` carries across the hand-over where each item the failed
-    /// pass moved to the holding directory came from, so that the next pass
-    /// puts back there what it does not place.
-    pub fn apply_handing_over(&self, scope: Scope, done: &mut Applied, moved_from: &mut HashMap<String, PathBuf>) -> Result<Applied, ApplyError> {
-        let mut run = Run { moved_from: std::mem::take(moved_from), ..Run::default() };
+    /// What the failed pass did on disk stands whatever the Full one does
+    /// ([`OnDisk`]): its rescues, conflict copies, places to examine,
+    /// folders made local, and what it forgot and took off. What it left
+    /// unsettled is not carried: the Full pass decides that again.
+    pub fn apply_with_handover(&self, scope: Scope) -> Result<(Applied, bool), Box<Failed>> {
+        let changed = matches!(scope, Scope::Changed(_));
+        let mut over = Handover::default();
+        let passed = match self.pass(scope, &mut over) {
+            Err(ApplyError::NeedFull(why) | ApplyError::Io(why)) if changed => {
+                tracing::info!("{why}; reconciling the whole folder");
+                self.pass(Scope::Full, &mut over).map(|applied| (applied, true))
+            }
+            other => other.map(|applied| (applied, !changed)),
+        };
+        let (mut applied, full) = match passed {
+            Ok(passed) => passed,
+            Err(error) => return Err(Box::new(Failed { error, done: over.on_disk })),
+        };
+        let mut on_disk = over.on_disk;
+        on_disk.absorb(std::mem::take(&mut applied.on_disk));
+        applied.on_disk = on_disk;
+        Ok((applied, full))
+    }
+
+    /// One pass. When it fails, what it did on disk goes into `over`, with
+    /// where each item it moved to the holding directory came from, so that
+    /// the pass after it shows, or puts back, there what it does not place.
+    fn pass(&self, scope: Scope, over: &mut Handover) -> Result<Applied, ApplyError> {
+        let mut run = Run { moved_from: std::mem::take(&mut over.moved_from), ..Run::default() };
         let result = self.apply_run(scope, &mut run);
         if result.is_err() {
-            done.rescued.append(&mut run.out.rescued);
-            done.copies.append(&mut run.out.copies);
-            done.examine.append(&mut run.out.examine);
-            done.recreated.append(&mut run.out.recreated);
-            done.taken.extend(std::mem::take(&mut run.out.taken));
-            *moved_from = std::mem::take(&mut run.moved_from);
+            over.on_disk.absorb(std::mem::take(&mut run.out.on_disk));
+            over.moved_from = std::mem::take(&mut run.moved_from);
         }
         result.map(|()| run.out)
     }
@@ -526,7 +661,7 @@ impl Materializer {
             Probe::Managed { id, .. } => {
                 if let Some(rw) = &self.rw {
                     if self.holds_the_name(rw, &id, &rel, run)? {
-                        run.out.unsettled.insert(row.id.clone());
+                        run.out.pending.unsettled.insert(row.id.clone());
                         return Ok(None);
                     }
                 }
@@ -542,7 +677,7 @@ impl Materializer {
                 Some(rw) if rw.pending_at(&rel) || !rw.brings(&row.id) || (is_folder && is_dir) => {
                     // A local folder where OneDrive has a new one: the two
                     // merge, by the `mkdir`'s `409` (§6), never a copy.
-                    run.out.unsettled.insert(row.id.clone());
+                    run.out.pending.unsettled.insert(row.id.clone());
                     return Ok(None);
                 }
                 Some(rw) => self.copy_aside(rw, &dir, name, &rel, run)?,
@@ -565,7 +700,7 @@ impl Materializer {
                         self.store.call_blocking(move |s| s.leaving_rebase(&from, &to))?;
                     }
                     self.record_placed(run, &dir, name, &row.id)?;
-                    run.out.moved += 1;
+                    run.out.counts.moved += 1;
                     let from = run.moved_from.get(&row.id).cloned();
                     run.note(EventKind::Moved, &rel, from);
                     self.note_if_pinned(&rel, run);
@@ -578,7 +713,7 @@ impl Materializer {
         }
         if let Some(rw) = &self.rw {
             if !self.place_again(rw, row, &rel, run)? {
-                run.out.unsettled.insert(row.id.clone());
+                run.out.pending.unsettled.insert(row.id.clone());
                 return Ok(None);
             }
         }
@@ -610,7 +745,7 @@ impl Materializer {
                 self.note_if_pinned(rel, run);
             }
         }
-        run.out.created += 1;
+        run.out.counts.created += 1;
         Ok(())
     }
 

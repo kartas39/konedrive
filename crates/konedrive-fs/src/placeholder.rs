@@ -196,6 +196,12 @@ pub fn write_item_id(file: &File, item_id: &str) -> io::Result<()> {
     set_xattr(file, XATTR_ITEM_ID, item_id.as_bytes())
 }
 
+/// Takes the item id off `file`, which keeps its other attributes; one
+/// that carries none is left as it is.
+pub fn remove_item_id(file: &File) -> io::Result<()> {
+    remove_xattr(file, XATTR_ITEM_ID)
+}
+
 pub fn read_ctag(file: &impl AsFd) -> io::Result<Option<String>> {
     read_xattr(file, XATTR_CTAG)
 }

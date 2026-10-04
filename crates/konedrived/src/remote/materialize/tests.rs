@@ -210,7 +210,7 @@ fn a_stopped_download_set_aside_for_another_account_is_a_placeholder_again() {
     { fx.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[Change::Delete("D".into())]) }).unwrap(); }
     let applied = Materializer { locks: locks.clone(), claimed: Some(claimed), ..fx.materializer(false, None) }.apply(Scope::Changed(vec!["D".into()])).unwrap();
     rt.block_on(fill).unwrap();
-    let aside = applied.rescued.iter().find(|r| r.original.ends_with("theirs.bin")).expect("set aside").rescued.clone();
+    let aside = applied.on_disk.rescued.iter().find(|r| r.original.ends_with("theirs.bin")).expect("set aside").rescued.clone();
     let file = File::open(&aside).unwrap();
     assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly), "a placeholder again");
     assert_eq!(file.metadata().unwrap().blocks(), 0, "with nothing of the stopped download in it");
@@ -255,8 +255,8 @@ fn a_new_folders_temporary_directory_left_without_its_id_is_cleared() {
     std::fs::write(f.path("docs/.konedrive-new-E/mine.txt"), b"mine").unwrap();
     let applied = f.delta(&[folder("E", "D", "deep")], true).unwrap();
     assert_eq!(id_at(&f.path("docs/deep")).as_deref(), Some("E"));
-    assert_eq!(applied.rescued.len(), 1, "{:?}", applied.rescued);
-    assert_eq!(std::fs::read(applied.rescued[0].rescued.join("mine.txt")).unwrap(), b"mine");
+    assert_eq!(applied.on_disk.rescued.len(), 1, "{:?}", applied.on_disk.rescued);
+    assert_eq!(std::fs::read(applied.on_disk.rescued[0].rescued.join("mine.txt")).unwrap(), b"mine");
 }
 
 /// a directory of the user's own in the way,
@@ -274,7 +274,7 @@ fn a_rescued_directory_keeps_the_users_files_and_not_our_placeholders() {
 
     let applied = f.delta(&[folder("D", "R", "docs")], false).unwrap();
 
-    let rescued = &applied.rescued[0].rescued;
+    let rescued = &applied.on_disk.rescued[0].rescued;
     assert_eq!(std::fs::read(rescued.join("mine.txt")).unwrap(), b"mine");
     assert!(!rescued.join("cloud.bin").exists(), "a placeholder would read as zeros there");
     assert_eq!(id_at(&f.path("docs")).as_deref(), Some("D"));
@@ -287,7 +287,7 @@ fn a_placeholder_changed_in_the_cloud_is_updated_in_place() {
     let path = f.path("docs/f.txt");
     let before = ino(&path);
     let applied = f.delta(&[changed("F", "D", "f.txt", 8192, "c2")], true).unwrap();
-    assert_eq!(applied.updated, 1);
+    assert_eq!(applied.counts.updated, 1);
     let meta = std::fs::metadata(&path).unwrap();
     assert_eq!((meta.ino(), meta.len(), meta.mtime()), (before, 8192, 1_700_000_500));
     let file = File::open(&path).unwrap();
@@ -330,18 +330,8 @@ fn a_downloaded_file_of_the_same_version_is_left_alone() {
     let mut same = row("F", "D", "f.txt", Kind::File, 7);
     same.mtime = 1_700_000_900; // metadata changed, content did not
     let applied = f.delta(&[up(same)], false).unwrap();
-    assert!(applied.replacements.is_empty());
+    assert!(applied.pending.replacements.is_empty());
     assert_eq!(std::fs::read(f.path("docs/f.txt")).unwrap(), b"content");
-}
-
-#[test]
-fn a_downloaded_file_changed_in_the_cloud_is_queued_for_replacement() {
-    let f = fixture();
-    f.listed(&tree(), false);
-    hydrate_by_hand(&f.path("docs/f.txt"), b"content", "c-F");
-    let applied = f.delta(&[changed("F", "D", "f.txt", 9, "c2")], false).unwrap();
-    assert_eq!(applied.replacements, vec![Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: "c2".into(), size: 9 }]);
-    assert_eq!(std::fs::read(f.path("docs/f.txt")).unwrap(), b"content", "untouched until replaced");
 }
 
 #[test]
@@ -352,9 +342,9 @@ fn a_file_changed_here_and_in_the_cloud_is_rescued_and_shown_as_the_new_version(
     hydrate_by_hand(&path, b"content", "c-F");
     std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all_at(b" and mine", 7).unwrap();
     let applied = f.delta(&[changed("F", "D", "f.txt", 9, "c2")], false).unwrap();
-    assert_eq!(applied.rescued.len(), 1);
-    assert_eq!(applied.rescued[0].original, PathBuf::from("docs/f.txt"), "where it was, for the conflict");
-    assert_eq!(std::fs::read(&applied.rescued[0].rescued).unwrap(), b"content and mine");
+    assert_eq!(applied.on_disk.rescued.len(), 1);
+    assert_eq!(applied.on_disk.rescued[0].original, PathBuf::from("docs/f.txt"), "where it was, for the conflict");
+    assert_eq!(std::fs::read(&applied.on_disk.rescued[0].rescued).unwrap(), b"content and mine");
     let file = File::open(&path).unwrap();
     assert_eq!(read_state(&file).unwrap(), Some(State::OnlineOnly));
     assert_eq!(read_ctag(&file).unwrap().as_deref(), Some("c2"));
@@ -401,7 +391,7 @@ fn a_file_being_filled_is_left_for_the_next_cycle() {
     let _held = m.locks.try_lock(crate::folder::locks::InodeKey::of(&File::open(&path).unwrap()).unwrap()).unwrap();
     f.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Delta)?; s.stage(&[changed("F", "D", "f.txt", 8192, "c2")]) }).unwrap();
     let applied = m.apply(Scope::Changed(vec!["F".into()])).unwrap();
-    assert_eq!((applied.updated, applied.deferred), (0, 1));
+    assert_eq!((applied.counts.updated, applied.counts.deferred), (0, 1));
     assert_eq!(std::fs::metadata(&path).unwrap().len(), 4096);
 }
 
@@ -418,7 +408,7 @@ fn a_file_hydrating_right_now_is_left_for_the_next_cycle() {
         write_state(&file, State::Hydrating).unwrap();
     }
     let applied = f.delta(&[changed("F", "D", "f.txt", 8192, "c2")], false).unwrap();
-    assert_eq!((applied.updated, applied.deferred), (0, 1));
+    assert_eq!((applied.counts.updated, applied.counts.deferred), (0, 1));
     let file = File::open(&path).unwrap();
     assert_eq!(read_state(&file).unwrap(), Some(State::Hydrating));
     assert_eq!(std::fs::metadata(&path).unwrap().len(), 4096, "untouched");
@@ -428,7 +418,7 @@ fn a_file_hydrating_right_now_is_left_for_the_next_cycle() {
 fn a_full_reconcile_builds_the_tree_from_nothing() {
     let f = fixture();
     let applied = f.listed(&tree(), false);
-    assert_eq!(applied.created, 5);
+    assert_eq!(applied.counts.created, 5);
     for (rel, id) in [("docs", "D"), ("docs/f.txt", "F"), ("docs/deep", "E"), ("docs/deep/g.txt", "G"), ("top.bin", "T")] {
         assert_eq!(id_at(&f.path(rel)).as_deref(), Some(id), "{rel}");
     }
@@ -507,7 +497,7 @@ fn two_names_swapped_end_up_swapped() {
     let (a, b) = (ino(&f.path("a")), ino(&f.path("b")));
     let applied = f.delta(&[file("A", "R", "b"), file("B", "R", "a")], true).unwrap();
     assert_eq!((ino(&f.path("b")), ino(&f.path("a"))), (a, b));
-    assert!(applied.rescued.is_empty());
+    assert!(applied.on_disk.rescued.is_empty());
     assert!(!f.path(".konedrive-holding").exists());
 }
 
@@ -539,10 +529,10 @@ fn a_deleted_folder_goes_but_a_file_changed_here_is_rescued() {
     let applied = f.delta(&[Change::Delete("D".into())], true).unwrap();
     assert!(!f.path("docs").exists());
     assert_eq!(
-        applied.rescued,
+        applied.on_disk.rescued,
         vec![Rescued { original: "docs/f.txt".into(), rescued: f.rescue.path().join("now/docs/f.txt") }]
     );
-    let kept = &applied.rescued[0].rescued;
+    let kept = &applied.on_disk.rescued[0].rescued;
     assert!(std::fs::read(kept).unwrap().ends_with(b"local work"));
     assert_eq!(mode(kept), 0o644);
     let names: Vec<_> = xattr::list(kept).unwrap().collect();
@@ -595,7 +585,7 @@ fn a_stranger_folder_in_the_way_is_rescued_whole_under_the_lock() {
     std::fs::set_permissions(f.path("incoming"), std::fs::Permissions::from_mode(0o555)).unwrap();
     std::fs::set_permissions(&f.root.path, std::fs::Permissions::from_mode(0o555)).unwrap();
     let applied = f.delta(&[folder("N", "R", "incoming")], true).unwrap();
-    assert_eq!(applied.rescued, vec![Rescued { original: "incoming".into(), rescued: f.rescue.path().join("now/incoming") }]);
+    assert_eq!(applied.on_disk.rescued, vec![Rescued { original: "incoming".into(), rescued: f.rescue.path().join("now/incoming") }]);
     assert_eq!(std::fs::read(f.rescue.path().join("now/incoming/mine.txt")).unwrap(), b"mine");
     assert_eq!(mode(&f.rescue.path().join("now/incoming")), 0o755);
     assert_eq!(id_at(&f.path("incoming")).as_deref(), Some("N"));
@@ -649,10 +639,10 @@ fn a_full_reconcile_repairs_whatever_it_finds() {
     assert_eq!(id_at(&f.path("docs/deep")).as_deref(), Some("E"));
     assert_eq!(id_at(&f.path("docs/new.txt")).as_deref(), Some("N"));
     assert_eq!(
-        applied.rescued,
+        applied.on_disk.rescued,
         vec![Rescued { original: "docs/new.txt".into(), rescued: f.rescue.path().join("now/docs/new.txt") }]
     );
-    assert_eq!(std::fs::read(&applied.rescued[0].rescued).unwrap(), b"mine");
+    assert_eq!(std::fs::read(&applied.on_disk.rescued[0].rescued).unwrap(), b"mine");
     assert!(applied.changes.is_empty(), "a Full reconcile is one listed event, not one per item");
     assert!(!f.path("f-in-the-wrong-place").exists());
 }
@@ -683,16 +673,7 @@ fn a_replacement_link_left_by_a_crashed_swap_is_discarded_and_the_real_file_stil
     assert!(!f.path("docs/.konedrive-new-F").exists(), "the leftover is gone");
     assert_eq!(id_at(&f.path("docs/renamed.txt")).as_deref(), Some("F"));
     assert!(!f.path("docs/f.txt").exists());
-    assert!(applied.rescued.is_empty(), "nothing here held local work");
-}
-
-#[test]
-fn a_cancelled_reconcile_stops() {
-    let f = fixture();
-    f.store.call_blocking(move |s| { s.begin_staging(konedrive_tree::NewTree::Whole)?; s.stage(&tree()) }).unwrap();
-    let m = f.materializer(false, None);
-    m.cancel.cancel();
-    assert!(matches!(m.apply(Scope::Full), Err(ApplyError::Cancelled)));
+    assert!(applied.on_disk.rescued.is_empty(), "nothing here held local work");
 }
 
 /// Invariant M1: a new folder is marked before anything is created in it.
@@ -820,7 +801,7 @@ fn an_item_dated_before_1970_gets_a_placeholder_dated_1970() {
     let mut old = row("F", "R", "old.txt", Kind::File, 4096);
     old.mtime = -86_400;
     let applied = f.listed(&[root_row(), up(old)], false);
-    assert_eq!(applied.created, 1);
+    assert_eq!(applied.counts.created, 1);
     let path = f.path("old.txt");
     assert_eq!(id_at(&path).as_deref(), Some("F"));
     let meta = std::fs::metadata(&path).unwrap();

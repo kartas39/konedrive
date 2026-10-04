@@ -696,7 +696,7 @@ for an upload's placeholder, and the row waits (§6.2). Two new folders of one n
 unguarded — whatever it gained or changed there meanwhile, as on Windows: the recycle bin is the
 safety net ([decisions.md](decisions.md), "A folder delete is the whole folder, as on Windows").
 A folder deleted in OneDrive that holds local work here is kept, with the work, and made again in
-OneDrive (§9).
+OneDrive; what it held of OneDrive's goes (§9).
 
 Every copy and every `restored` goes into the activity log; copies are listed by `Conflicts()` and
 on the window's Conflicts page with "Show Both". Nothing here deletes a local byte, and nothing
@@ -851,13 +851,23 @@ again only with something to place: new in OneDrive, a file whose content change
 with no local object on record (and the folders above such an item); otherwise its absence is a
 delete or a move not examined yet (F114, F115).
 
-**What OneDrive removed** is removed here at once, whole, in place, not through the holding
-directory: everything on disk under the item goes in the same cycle — copies of OneDrive's content,
-files changed here, new files not uploaded yet, files open in a program, ignored names, symlinks,
-objects from elsewhere. Nothing is rescued, nothing
-is uploaded again, no folder is made again in OneDrive: deleted there means deleted. A download in
-progress inside it is stopped; the rows that would still upload or move something there go (F116,
-F187). Only `resyncChangesUploadDifferences` keeps what its listing left out (below).
+**What OneDrive removed** is removed here at once, in place, not through the holding directory,
+and what OneDrive never had is kept (§7; decided on 2026-10-04, in place of "deleted there means
+deleted, whole"). In the same cycle goes what OneDrive had and the daemon placed: a file not
+downloaded, a download unchanged since, a download in progress (stopped first), a folder once
+nothing is left in it. What stays is what only this computer has: a file made here, whatever its name, a
+download changed here — its stamp differs, it is open for writing, or an `update` waits for it — and
+a download that is not of the removed item at all (moved in from another folder), with the
+folders above them. Their konedrive attributes come off, so they are the user's own: the files go
+up as new, the folders are made again in OneDrive, and the rows that waited there are dropped, the
+examination recording new ones (an `update` of the removed item ends as a `create`, as it does when
+the upload meets the `404` first, §7). A symlink, a socket and an empty file or directory with an
+ignored name stay where their folder stays, and keep no folder by themselves. What is kept under an
+ignored or refused name stays on this computer only (F243). Nothing is rescued out of the folder.
+What is kept is handed to the examination, and said, also when the cycle then fails. The activity
+log has one `removed` entry for what OneDrive removed, saying how many files go up as new and how
+many items stay on this computer only (F116, F187). `resyncChangesUploadDifferences` keeps every download too, changed or not (below). Inside a
+folder that is leaving the older rule still holds: there such an item goes whole (F188).
 
 **What stops being placed** while OneDrive still has it (a name too long, a reserved name, the
 Personal Vault, shared, OneNote, unsupported) keeps its item id, so what waits to be uploaded from

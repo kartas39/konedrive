@@ -161,7 +161,7 @@ application must never read zeros where real content should be.
 - [F113](F113.md) — The stale-delta guard reads again, under the tree lock, what the outbox committed during a fetch
 - [F114](F114.md) — The reconcile's conflict copies go up through the examination
 - [F115](F115.md) — A missing item is placed again only with something to place
-- [F116](F116.md) — What OneDrive removed goes from the disk whole, in the cycle
+- [F116](F116.md) — What OneDrive removed goes from the disk in the cycle, but for what it never had
 - [F117](F117.md) — The order of a read-write folder's cycle, and what it cannot close
 - [F120](F120.md) — A placeholder moved out of the folder reads zeros until the daemon marks it again
 - [F121](F121.md) — Moves out of the folder: downloaded first, and only then deleted in OneDrive
@@ -245,8 +245,10 @@ application must never read zeros where real content should be.
 - [F235](F235.md) — A delete that follows a read of the item goes out with an empty `If-Match` when the answer carried neither tag
 - [F236](F236.md) — What the upload worker's waits leave: the throttle's rules are reasoned, its note is not said again after a closed gate, and two looks wait for a wake
 - [F237](F237.md) — What the one shape of the move out leaves: a file in the Trash whose free-up was cut short goes without a second look, and the Trash rule was not run against the real helper again
+- [F238](F238.md) — A file with other names that is taken off the disk: what a stop between its unlink and the removal of its id leaves
 - [F239](F239.md) — One path for every file's upload session: what a file of one fragment now does that was not measured against OneDrive
 - [F240](F240.md) — What the outbox worker is told without waiting is done only on the daemon's runtime, and its fault points are in the tests' build alone
+- [F243](F243.md) — What is kept of something removed in OneDrive under a name nothing uploads stays on this computer only
 
 ---
 
