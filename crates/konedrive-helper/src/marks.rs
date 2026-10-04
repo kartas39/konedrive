@@ -140,7 +140,7 @@ impl Marks {
     /// Stops asking about a file whose content is already there (invariant
     /// M3: only ever called on a file just read `hydrated`, and taken off
     /// again unless it still reads `hydrated` once the mark is in place —
-    /// `events.rs`, `mark_while_hydrated`).
+    /// `events/decision.rs`, `mark_while_hydrated`).
     ///
     /// # `FAN_MARK_IGNORED_SURV_MODIFY` is what makes this work at all
     ///
@@ -371,7 +371,7 @@ impl WalkReport {
 ///
 /// A mark placed *during* this walk, behind it, is placed by a helper that
 /// has just read the file `hydrated` and read it again after marking
-/// (`events.rs`, `mark_while_hydrated`): it is a correct mark, not a stale
+/// (`events/decision.rs`, `mark_while_hydrated`): it is a correct mark, not a stale
 /// one. The cost is one `fanotify_mark` per file — a lookup of its name —
 /// on top of one per directory; a fresh group, at startup, has nothing to
 /// clear, and every call then simply answers `ENOENT`.
@@ -394,7 +394,7 @@ pub fn walk_and_mark(marks: &Marks, root: BorrowedFd<'_>, label: &str) -> WalkRe
 ///
 /// A root that is unregistered but still marked is worse than one that was
 /// never registered: its opens are still intercepted, and the helper then has
-/// no daemon to ask — `wait_for_daemon` refuses at once for a uid with no
+/// no daemon to ask — `Daemons::wait_for` refuses at once for a uid with no
 /// registered root — so every placeholder in the tree is answered `EIO`.
 /// Unregistering must make a tree uninteresting, not unreadable.
 ///

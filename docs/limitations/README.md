@@ -88,7 +88,7 @@ application must never read zeros where real content should be.
 - [F7](F7.md) — Under descriptor exhaustion, a filled file can be denied `EIO`
 - [F8](F8.md) — The offline content source is held in memory
 - [F9](F9.md) — A download whose name is removed mid-flight
-- [F10](F10.md) — A degraded root
+- [F10](F10.md) — A degraded root is only logged
 - [F11](F11.md) — A helper that is running but unreachable blocks the no-interception folder
 - [F12](F12.md) — "Is a helper running" assumes the daemon sees the helper's `/run`
 - [F13](F13.md) — A file stuck mid-download or mid-free-up makes every sync cycle a Full reconcile

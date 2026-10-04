@@ -32,7 +32,7 @@ pub struct OpenEvent {
     pub open: PendingOpen,
     pub pid: i32,
     /// The helper's count of root unregistrations when the event was read
-    /// (`events.rs`, `mark_while_hydrated`).
+    /// (`events/decision.rs`, `mark_while_hydrated`).
     pub since: u64,
 }
 

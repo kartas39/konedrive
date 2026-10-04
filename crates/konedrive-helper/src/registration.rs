@@ -10,7 +10,7 @@ use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 
 use konedrive_helper::jobs::Owner;
 
-use crate::shared::{lock, Refusal, Shared, ROOTS_FILE};
+use crate::shared::{Refusal, Shared, ROOTS_FILE};
 
 /// How many of a walk's failures are written out, one line each. A tree can
 /// hold as many directories that cannot be covered as its owner likes; the
@@ -128,15 +128,15 @@ pub(crate) fn open_root(root: &roots::Root) -> io::Result<File> {
 
 /// One unreadable subdirectory must never abort a root's walk, and
 /// must never pass in silence either. Everything reachable is marked, every
-/// failure is named, and the root is flagged degraded.
-pub(crate) fn record_walk(shared: &Shared, root: &roots::Root, report: marks::WalkReport) {
+/// failure is named, and the root is said to be degraded in the log (the
+/// limitations log, F10: nothing else is told).
+pub(crate) fn record_walk(root: &roots::Root, report: marks::WalkReport) {
     if !report.degraded() {
         tracing::info!(
             "marked {} directories under {}",
             report.marked,
             roots::shown_path(&root.path)
         );
-        lock(&shared.degraded_roots).remove(&root.root_id);
         return;
     }
     tracing::error!(
@@ -148,7 +148,6 @@ pub(crate) fn record_walk(shared: &Shared, root: &roots::Root, report: marks::Wa
         report.failures.len()
     );
     log_failures(&report.failures);
-    lock(&shared.degraded_roots).insert(root.root_id.clone());
 }
 
 pub(crate) fn errno_of(e: &io::Error) -> i32 {
@@ -177,12 +176,11 @@ pub(crate) fn errno_of(e: &io::Error) -> i32 {
 /// — would leave a root that is registered, walked at every startup, and
 /// unmarked in between.
 ///
-/// The write is not made under the roots lock (see [`Shared::roots_saving`]).
+/// The write is not made under the roots lock (see `shared::Registrations`).
 pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> i32 {
     let root = {
-        let _saving = lock(&shared.roots_saving);
-        let removed = lock(&shared.roots).without(uid, root_id);
-        let Some((next, root)) = removed else {
+        let change = shared.roots.change();
+        let Some((next, root)) = change.without(uid, root_id) else {
             // Throttled, and the id not as it came: any local user can send
             // this as fast as it likes, with any 64 KiB it likes for an id.
             shared.refusals.report(Refusal::RootRefused, || {
@@ -193,10 +191,9 @@ pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> i32 {
             });
             return libc::EPERM;
         };
-        if let Err(e) = next.save(Path::new(ROOTS_FILE)) {
+        if let Err(e) = change.commit(next) {
             return not_saved(shared, &e);
         }
-        *lock(&shared.roots) = next;
         root
     };
 
@@ -204,7 +201,6 @@ pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> i32 {
     // tree, and every other thread that wants to know whether a uid has a root
     // would be waiting behind it.
     uncover_root(shared, &root, open_root(&root), "unregistered");
-    lock(&shared.degraded_roots).remove(&root.root_id);
     0
 }
 
@@ -331,10 +327,7 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     // And a uid that already holds every root it may is refused here, before
     // the directory is resolved and probed for it. Both are asked again by
     // the decision below, which is the one that counts.
-    let (previous_owner, held) = {
-        let roots = lock(&shared.roots);
-        (roots.owner_of(&root_id), roots.held_by(uid))
-    };
+    let (previous_owner, held) = shared.roots.owner_and_held(&root_id, uid);
     if previous_owner.is_some_and(|other| other != uid) {
         return refuse(shared, uid, &roots::Refused::AnotherUsers, &root_id, "");
     }
@@ -374,7 +367,7 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     let reregistration = previous_owner == Some(uid);
     let already_marked = reregistration
         || matches!(
-            lock(&shared.roots).nesting_conflict(&path, meta.dev(), meta.ino()),
+            shared.roots.nesting_conflict(&path, meta.dev(), meta.ino()),
             Some(roots::Nesting::SameDirectory(_)) | Some(roots::Nesting::Inside(_))
         );
     let outcome = if already_marked {
@@ -394,30 +387,30 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     // The id may be the user's already, on another directory. That directory
     // is found again here, by its stored path, with no lock held: every
     // component of the path is its owner's, who can put a mount that never
-    // answers over one of them, and an open made under `roots_saving` would
+    // answers over one of them, and an open made under the lock of a change would
     // then hold up every other user's registration for as long as the mount
     // liked. What is opened here is what is unmarked below; the decision,
     // under the lock, only checks that the entry is still the one this open
     // was made for.
-    let held = lock(&shared.roots)
+    let held = shared
+        .roots
         .get(&root.root_id)
-        .filter(|old| old.uid == uid && (old.dev, old.ino) != (root.dev, root.ino))
-        .cloned();
+        .filter(|old| old.uid == uid && (old.dev, old.ino) != (root.dev, root.ino));
     let mut opened = held.map(|old| {
         let dir = open_root(&old);
         (old, dir)
     });
 
     let displaced = {
-        let _saving = lock(&shared.roots_saving);
+        let change = shared.roots.change();
         // Decided on the registrations as they are now. The checks above ran
         // before `resolve_root_path` and the filesystem checks, all of which
         // do I/O no lock is held across — and in that gap another connection
         // could have claimed this id, or taken the user's last free place.
-        // Asking here, with `roots_saving` held so that nothing is registered
+        // Asking here, with the change begun so that nothing is registered
         // or unregistered until this is saved and in place, is what makes a
         // refusal airtight rather than merely likely.
-        let decided = lock(&shared.roots).with(root.clone());
+        let decided = change.with(root.clone());
         let roots::Accepted { roots: next, displaced } = match decided {
             Ok(accepted) => accepted,
             Err(refused) => return refuse(shared, uid, &refused, &root.root_id, &root.path),
@@ -471,10 +464,9 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
         // Saved before it is in place, and not under the roots lock: nobody
         // sees a registration that is not on disk, and a save that fails
         // leaves nothing to put back.
-        if let Err(e) = next.save(Path::new(ROOTS_FILE)) {
+        if let Err(e) = change.commit(next) {
             return not_saved(shared, &e);
         }
-        *lock(&shared.roots) = next;
         displaced
     };
 
@@ -494,7 +486,7 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     // may have been syncing with something else, or one restored from a
     // backup), and every directory in it needs its own mark or nothing inside
     // it is intercepted.
-    record_walk(shared, &root, marks::walk_and_mark(&shared.marks, dir.as_fd(), &root.path));
+    record_walk(&root, marks::walk_and_mark(&shared.marks, dir.as_fd(), &root.path));
     0
 }
 
