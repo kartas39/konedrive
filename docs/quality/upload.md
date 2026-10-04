@@ -123,6 +123,12 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   `settle` (`:271`) is unreachable.
 - **Fix:** `take_row`, `wait_for_event`, one `settle_*` per outcome; `Again` replaced by variants.
 - **Size:** M. **Risk:** the scheduling order is subtle.
+- **Fixed 2026-10-04** in `14aaf96` (#161): `drain` is `take_rows`/`take_row`, `wait_for_event` and one
+  settle for each outcome (`engine/settle.rs`); `Again`, `Wait`, `Later`, `Backoff` and `Blocked`
+  replace the one `Again { … }`; `NoSpace` is gone. The scheduling is stated on `drain` and
+  changed on purpose: a row that falls due no longer waits for another upload to end; a
+  throttle is never cut short and a time OneDrive names replaces a guessed one; the worker no
+  longer wakes each second while held (`docs/limitations/F236.md`).
 
 ## UP5. `content.rs` models control flow through error channels and duplicates the upload loop
 
@@ -186,6 +192,12 @@ Scores: `engine/drain.rs`, `move_out/cases.rs` 2; `mod.rs`, `engine.rs`, `steps.
   throttle text stays after the throttle ends. `gate_open` logs and mutates but reads as a
   predicate. `publish` computes the status outside the watch's lock.
 - **Fix:** sub-states with their own types; accessors instead of `cfg`. **Size:** M.
+- **Fixed 2026-10-04** in `14aaf96` (#161): `cfg` is private behind accessors; the state is
+  `Throttle`, `Trouble`, `Cycle`, `Flights` and `Marks`; `ask_gate` in place of `gate_open`; the
+  status is read, compared and handed over under one lock. The worker's `last_error` had no
+  reader and is gone with five other fields; what it said is said to the user instead: a
+  throttle of five seconds or more and a folder that cannot be opened are outbox notes in the
+  folder's `LastError`.
 
 ## UP11. Test machinery in production code
 
