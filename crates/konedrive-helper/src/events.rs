@@ -42,8 +42,8 @@ enum ReadFailure {
     /// The process, or the machine, is out of file descriptors.
     Exhausted,
     /// The kernel could not open one event's descriptor, answered that
-    /// event `FAN_DENY` itself, and handed its errno back instead of it
-    ///. Read on at once: the event is gone from the queue.
+    /// event `FAN_DENY` itself, and handed its errno back instead of it.
+    /// Read on at once: the event is gone from the queue.
     EventRefused,
     /// The group's own descriptor, or the buffer it is read into, is broken.
     Fatal,

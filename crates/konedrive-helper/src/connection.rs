@@ -36,7 +36,7 @@ pub(crate) fn serve(shared: Arc<Shared>, listener: OwnedFd) {
     // accepts them, in the order they were accepted — never on the
     // per-connection thread. Numbered there, two connections accepted a
     // moment apart could draw their numbers in either order, and "newer"
-    // would mean "whose thread the scheduler ran first". `Registry::register`
+    // would mean "whose thread the scheduler ran first". `Daemons::register`
     // relies on this order being the accept order. A local counter rather
     // than a shared one, so that nothing else can ever hand one out; it
     // outlives a panic of the loop below, so no number is given twice.
@@ -129,8 +129,7 @@ fn accept_connections(shared: &Arc<Shared>, listener: &OwnedFd, next_conn: &mut 
     }
 }
 
-/// Runs a connection's cleanup exactly once, however the connection ends
-///.
+/// Runs a connection's cleanup exactly once, however the connection ends.
 ///
 /// This used to be plain statements after an immediately-invoked closure, so
 /// a panic anywhere in the request loop unwound straight past them. The
@@ -283,7 +282,7 @@ fn another_version(message: &ToHelper) -> Option<u32> {
 /// a refusal, or, for a request that went through, the descriptor the `Ack`
 /// carries, if any (`OpenByHandle`).
 ///
-///: this never fails the connection. A `fanotify_mark` that returns
+/// This never fails the connection. A `fanotify_mark` that returns
 /// `ENOENT` because an evictable mark was already reclaimed is a routine
 /// outcome, and turning it into a teardown took every in-flight hydration down
 /// with it.

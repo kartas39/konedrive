@@ -85,7 +85,7 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
         errno: e.raw_os_error(),
     };
 
-    // `O_TMPFILE` is one "also used" feature, available on every
+    // `O_TMPFILE` is a feature every placeholder needs, available on every
     // local Linux filesystem and on all three supported ones; a filesystem
     // that genuinely lacks it says so with `EOPNOTSUPP` and is reported like
     // any other missing feature, while `EROFS`/`EACCES` here still mean what
@@ -103,8 +103,8 @@ pub fn probe_dir(dir: &Path) -> Result<(), ProbeError> {
 
 /// Exercises `F_SETLEASE` on the probe's own file.
 ///
-/// Both dehydration (`root::punch_clean_file`) and startup recovery
-/// (`root::reset_interrupted`) take a write lease before they punch a file's
+/// Both dehydration (`hydration::dehydrate::punch_clean_file`) and startup
+/// recovery (`hydration::recovery::reset_interrupted`) take a write lease before they punch a file's
 /// blocks away, and `interpret_setlease_failure` treats only `EAGAIN`
 /// (somebody else has the file open) as "try again later" — every other
 /// refusal, including one that means "this filesystem does not grant leases

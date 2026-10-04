@@ -107,11 +107,11 @@ impl Decision {
             // modification — would still be on the inode when the finished
             // `online-only` placeholder is linked in, and every open of it
             // would be let through to zeros. The owning daemon's own builds
-            // are normally allowed by the exemption above and never get this
-            // far; this rule covers a build by anyone it does not.
+            // are normally allowed by the exemption (`Decision::of`) and never
+            // get this far; this rule covers a build by anyone it does not.
             //
-            // And the state is read once more *after* the mark is placed
-            //: see `mark_while_hydrated`.
+            // And the state is read once more *after* the mark is placed:
+            // see `mark_while_hydrated`.
             Ok(Some(State::Hydrated)) => Decision::AllowMarked,
             // A file with no state attribute is not ours — unless it also
             // carries an item id, in which case it is one of ours with its
@@ -154,9 +154,9 @@ impl Facts for OpenFacts<'_> {
 
 /// Decides one intercepted open ([`Decision`]) and always answers it —
 /// allow, deny, or a move into a hydration job that guarantees a later
-/// answer from `finish` — before returning. `open` is consumed by whichever of the three it is; a
-/// path that took none, or a panic, drops it, and that denies `EIO`
-/// (`PendingOpen`).
+/// answer (`hydration::settle`) — before returning. `open` is consumed by
+/// whichever of the three it is; a path that took none, or a panic, drops
+/// it, and that denies `EIO` (`PendingOpen`).
 ///
 /// `since` is the count of root unregistrations when the event was read (see
 /// [`mark_while_hydrated`]).
@@ -257,7 +257,7 @@ pub(crate) fn handle_open(shared: &Shared, open: PendingOpen, opener_pid: i32, s
 ///
 /// "Read `hydrated`, then mark" is two steps, and a dehydration can fall
 /// between them: it makes `dehydrating` durable and then has the helper
-/// `ClearIgnore` (step 2). A mark placed after that `ClearIgnore`,
+/// `ClearIgnore`. A mark placed after that `ClearIgnore`,
 /// on the strength of a read made before the `dehydrating`, was outlived by
 /// the punch: measured with a 1.5 s stall injected between the two steps,
 /// the next reader got 65 536 zero bytes after no fetch, on Btrfs, ext4 and
@@ -273,8 +273,8 @@ pub(crate) fn handle_open(shared: &Shared, open: PendingOpen, opener_pid: i32, s
 /// passes, and a hydration still in flight then — or an open read off the
 /// queue before its directory was unmarked — used to mark its file after
 /// the walk had gone by. None of that can empty a marked file any more: the
-/// daemon's local rule has every punch clear the mark first, or not punch
-///. This guard, like the registration walk's clearing
+/// daemon's local rule has every punch clear the mark first, or not punch.
+/// This guard, like the registration walk's clearing
 /// (`marks::walk_and_mark`), is defence in depth: a mark it withholds is one
 /// nothing has to clear later. `unregistrations` is bumped
 /// before an unregistration's walk begins and again after it ends. Whatever
@@ -326,6 +326,7 @@ pub(super) fn mark_while_hydrated(
     }
     Err(now)
 }
+
 /// The owning daemon's own opens bypass everything
 /// else: it must be able to re-open files it left `hydrating` or
 /// `dehydrating` during startup recovery, and treating that open like any
@@ -364,7 +365,7 @@ fn daemon_is_exempt(shared: &Shared, opener_pid: i32, file_owner: u32) -> bool {
 fn place_ignore_mark(shared: &Shared, fd: BorrowedFd<'_>, dev: u64, ino: u64) {
     // Not verified by reading `/proc/self/fdinfo/<group>`: that is O(marks)
     // per hydration, and the helper holds one mark per directory in every
-    // sync tree on the machine. VM suite asserts on fdinfo instead,
+    // sync tree on the machine. The VM suite asserts on fdinfo instead,
     // where the cost does not matter and the assertion is worth making — the
     // syscall's return value is known to lie about this (M3).
     if let Err(e) = shared.marks.ignore_file(fd) {
@@ -375,6 +376,7 @@ fn place_ignore_mark(shared: &Shared, fd: BorrowedFd<'_>, dev: u64, ino: u64) {
         );
     }
 }
+
 /// What `fstat` says of the file behind an event fd.
 struct Seen {
     /// A regular file: the only kind that can be a placeholder.

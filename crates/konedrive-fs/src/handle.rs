@@ -1,7 +1,7 @@
 //! File handles: the kernel's name for an inode that survives renames.
 //!
 //! `name_to_handle_at(2)` needs no privilege, and its handle is byte-equal to
-//! the `FID`/`DFID` a fanotify notification group reports (measured, the kernel probe probe,
+//! the `FID`/`DFID` a fanotify notification group reports (measured by the kernel probe,
 //! `docs/kernel-behavior-7.2/notification.md` §14). The write phase keys an item's local
 //! object on it (`items.local_handle`): an event's object handle finds the item
 //! it touched, and a missing item's handle tells a delete from a move out of

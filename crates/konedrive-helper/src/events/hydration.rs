@@ -148,7 +148,8 @@ pub(crate) fn dispatch(shared: &Shared, outbox: &Outbox, owner: Owner, mut next:
         next = settle(shared, req_id, owner, Err(errno), Finish::Undeliverable);
     }
 }
-/// What brought us into [`finish`]. It changes nothing about what the function
+
+/// What brought us into [`settle`]. It changes nothing about what the function
 /// does and everything about what "there is no such job" means.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Finish {

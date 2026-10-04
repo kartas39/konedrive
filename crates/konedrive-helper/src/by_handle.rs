@@ -118,7 +118,8 @@ pub fn check_object(peer_uid: u32, anchor: &Seen, object: &Seen) -> Result<Kind,
     Ok(kind)
 }
 
-/// The flags of the real open (design §4.6, as measured in §15).
+/// The flags of the real open (`docs/design/writes.md` §8.2, as measured in
+/// `docs/kernel-behavior-7.2/open-by-handle.md` §15).
 pub fn open_flags(kind: Kind) -> libc::c_int {
     match kind {
         Kind::File => libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,

@@ -20,7 +20,7 @@
 //! controls is exactly that.
 //!
 //! So sending is moved off the worker threads entirely, mirroring the split
-//! client already has:
+//! the daemon's client already has (`konedrived/src/helper`):
 //!
 //! - callers hand a message to a **bounded queue** and return immediately —
 //!   [`Outbox::try_send`], never a blocking send, so no worker ever waits;
@@ -35,7 +35,7 @@
 //! - and even that thread is bounded: a peer that stops reading *and* stops
 //!   talking for [`LIVENESS_WINDOW`] ends the connection instead of holding a
 //!   thread — and every opener enrolled on it — for the lifetime of the
-//! process (see [`deliver`]).
+//!   process (see [`deliver`]).
 
 use std::collections::VecDeque;
 use std::fmt;
@@ -62,9 +62,9 @@ use crate::errno::Errno;
 /// early. Either way the refusal lands on that peer's own openers.
 ///
 /// It used to be one queue of 256 shared with `Ack`s, and that sharing is
-/// what removes: a burst of requests could fill it, and then the
-/// `Ack` for the daemon's next call did not fit and the connection was ended
-/// for it.
+/// what the two compartments remove: a burst of requests could fill it, and
+/// then the `Ack` for the daemon's next call did not fit and the connection
+/// was ended for it.
 pub const REQUEST_CAPACITY: usize = MAX_OUTSTANDING_HYDRATIONS + 1;
 
 /// How many `Ack`s may wait for one daemon before the connection's reader
@@ -79,7 +79,7 @@ pub const REQUEST_CAPACITY: usize = MAX_OUTSTANDING_HYDRATIONS + 1;
 /// bound the daemon promises; it is sized an order of magnitude above
 /// anything it does.
 ///
-/// And reaching it costs nothing but time: [`Outbox::send_ack`] **waits** for
+/// And reaching it costs nothing but time: [`Outbox::send_ack_with`] **waits** for
 /// room instead of failing, so the reader stops taking new requests from that
 /// peer until its replies drain — backpressure onto the peer, on the one
 /// thread that belongs to its connection. An `Ack` is never refused and never
@@ -93,7 +93,7 @@ pub const ACK_RESERVE: usize = 128;
 ///
 /// **Not** a limit on how long a daemon may take to read, and no longer a
 /// reason to end a connection by itself. It used to be both,
-/// and its doc comment said no healthy daemon could trip it; burst
+/// and its doc comment said no healthy daemon could trip it; the VM suite
 /// tripped it with an ordinary burst of opens, and 662 enrolled openers were
 /// denied `EIO` for it. What decides whether the connection ends is
 /// [`LIVENESS_WINDOW`]; this is only how often that is asked.
@@ -340,11 +340,11 @@ impl Outbox {
     /// helper exits.
     ///
     /// Not for `Ack`s, which have room of their own: see
-    /// [`send_ack`](Self::send_ack).
+    /// [`send_ack_with`](Self::send_ack_with).
     pub fn try_send(&self, outgoing: Outgoing) -> Result<(), Outgoing> {
         debug_assert!(
             !matches!(outgoing.message, ToDaemon::Ack { .. }),
-            "an Ack goes through send_ack, into the room reserved for it"
+            "an Ack goes through send_ack_with, into the room reserved for it"
         );
         {
             let mut queue = self.pending.lock();
@@ -358,9 +358,18 @@ impl Outbox {
         Ok(())
     }
 
+    /// [`send_ack_with`](Self::send_ack_with) for an answer that carries no
+    /// descriptor.
+    #[cfg(test)]
+    pub fn send_ack(&self, answer: Result<(), Errno>) -> Result<(), Closed> {
+        self.send_ack_with(answer.map(|()| None))
+    }
+
     /// Queues the `Ack` for one of the daemon's calls, into the room reserved
-    /// for `Ack`s. Nothing the helper starts can take that room,
-    /// so for any daemon that awaits its calls this returns at once.
+    /// for `Ack`s: the errno of a refusal, or, for a call that went through,
+    /// the descriptor its answer carries, if any (`OpenByHandle`). Nothing
+    /// the helper starts can take that room, so for any daemon that awaits
+    /// its calls this returns at once.
     ///
     /// A peer with more than [`ACK_RESERVE`] replies unread is made to
     /// **wait**: this blocks until the writer has sent one, so the caller —
@@ -369,12 +378,6 @@ impl Outbox {
     /// the connection is over, which is also what releases a caller waiting
     /// here: the writer thread closes the queue when it stops, including when
     /// [`LIVENESS_WINDOW`] ends a peer that neither reads nor talks.
-    pub fn send_ack(&self, answer: Result<(), Errno>) -> Result<(), Closed> {
-        self.send_ack_with(answer.map(|()| None))
-    }
-
-    /// [`send_ack`](Self::send_ack), with a descriptor attached to a success:
-    /// the answer to an `OpenByHandle`. A refusal carries none.
     pub fn send_ack_with(&self, answer: Result<Option<OwnedFd>, Errno>) -> Result<(), Closed> {
         let errno = Errno::to_wire(&answer);
         let fd = answer.ok().flatten();

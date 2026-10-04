@@ -51,8 +51,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// be waiting for one.
 ///
 /// Both numbers are **provisional**: they were chosen to be obviously enough
-/// for interactive use and obviously bounded, not measured. burst
-/// scenario (several thousand concurrent opens) is what should settle them —
+/// for interactive use and obviously bounded, not measured. The VM suite's
+/// burst scenario (several thousand concurrent opens) is what should settle them —
 /// it measures thread count, memory and whether any opener is lost, which is
 /// exactly the evidence these two constants need and which no unit test on the
 /// host can produce.
@@ -79,7 +79,7 @@ pub(crate) const ACCEPT_RESTART: Duration = Duration::from_secs(1);
 /// to hit by chance — compiled in **only** with the `fault-injection` cargo
 /// feature.
 ///
-/// is about what happens *after* a panic: a worker that panicked
+/// What they prove is what happens *after* a panic: a worker that panicked
 /// answers its opener `EIO` and the pool stays at strength, and a connection
 /// whose request loop panicked still runs its `Disconnect` guard, so its
 /// suspended openers are denied instead of being left in the kernel forever.
@@ -87,7 +87,7 @@ pub(crate) const ACCEPT_RESTART: Duration = Duration::from_secs(1);
 /// helper panics on any input any more. The VM scenario suite
 /// (`tests/vm/scenarios/faults.rs`) therefore restarts the helper with one of these
 /// armed and then asserts on what the *opener* got, which is the only
-/// evidence either ruling can have.
+/// evidence either claim can have.
 ///
 /// Armed from the environment, which no peer can set, and read at the point
 /// of use. They used to be in every build on that argument alone; they are

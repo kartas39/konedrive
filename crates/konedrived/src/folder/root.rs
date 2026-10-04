@@ -212,12 +212,12 @@ fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
 /// `link.register_root` triggers a full `openat2` walk of the whole tree
 /// inside the helper (bounded by `HelperLink`'s 120 s `register_root`
 /// timeout, not the ordinary 30 s call bound). A root that walk could not
-/// fully cover is tracked by the helper as "degraded"
-/// (`konedrive-helper/src/main.rs::record_walk`/`degraded_roots`), but that
-/// status is not yet surfaced anywhere: `RegisterRoot`'s ack carries only an
-/// errno, so a degraded root still acks success here. Nothing in
-/// this crate today has anywhere to put that signal — the natural home is a
-/// later helper→daemon query (or an addition to `RootState`/`LastError` on
+/// fully cover is logged by the helper as degraded
+/// (`konedrive-helper/src/registration.rs` `record_walk`) and kept track of
+/// nowhere: `RegisterRoot`'s ack carries only an errno, so a degraded root
+/// still acks success here (the limitations log, F10). Nothing in this crate
+/// today has anywhere to put that signal — the natural home is a later
+/// helper→daemon query (or an addition to `RootState`/`LastError` on
 /// `org.konedrive.Folder`), once one exists.
 pub async fn register_root(link: &HelperLink, path: &Path) -> Result<SyncRoot, RegisterError> {
     let (dir, root) = prepare(path).await?;
