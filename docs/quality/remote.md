@@ -46,7 +46,9 @@ the #104 test gaps filled first. `RE4` waits for these.
   open; `listing/rw/tests/stale.rs` is the net.
 - **Verified 2026-10-03 (only the `copy_aside` claim): refuted, by a passing test.**
   `remote::materialize::rw::tests::a_directory_kept_aside_takes_what_is_leaving_in_it_along`
-  (`remote/materialize/rw/tests.rs`, branch `verify-sync-remote`): `copy_aside` applies
+  (`remote/materialize/rw/tests.rs`, branch `verify-sync-remote`; since B4-2 the store's half is
+  `outbox::tests::a_directory_kept_aside_takes_what_is_leaving_in_it_along` in `konedrive-tree`,
+  until part 6 removes the leaving rows): `copy_aside` applies
   `OutboxOp::Rebase` (`rw.rs:669–670`), and the store's `rebase` ends in `rebase_leaving`
   (`konedrive-tree/src/outbox.rs:381–390`), which moves the `leaving` rows at and below the
   directory. The three hand-written sites are renames that apply no `Rebase` op. The rest of this
@@ -179,7 +181,7 @@ the #104 test gaps filled first. `RE4` waits for these.
 
 ## RE12. Test hooks and leftovers
 
-- `Writes::before_swap` (`listing/rw.rs:76–77, 222–223, 296–299`; F190). `Poller::live_up`
+- `Writes::before_swap` (`listing/rw.rs:76–77, 222–223, 296–299`; F190): gone with `RE2` (B4-2). `Poller::live_up`
   (`listing/poller.rs:89`) is public for one test. `Listing::writes()` panics on a read-only
   folder (`rw.rs:110`), guarded by convention. Stale doc paths in `status/totals.rs:9` and
   `status/snapshot.rs:117, 137, 142, 155, 175, 177`. Meta keys as literals

@@ -375,7 +375,7 @@ impl Materializer {
             self.disk.remove(dir, name, false)?;
             if let Some(file) = other_names {
                 #[cfg(test)]
-                if testing::stops_after_unlink() {
+                if self.disk.dir(Path::new("")).is_ok_and(|root| testing::stops_after_unlink(&root)) {
                     return Err(ApplyError::Io(format!("{}: stopped after the unlink (test)", rel.display())));
                 }
                 release_other_names(&file, rel);

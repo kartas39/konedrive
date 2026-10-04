@@ -243,6 +243,8 @@ What changed in OneDrive, brought into the folder. Design: `sync.md`, `writes.md
 reconcile in read-write mode).
 
 - `mod.rs` — the list of the modules.
+- `testing.rs` — the one fixture of this area's tests (`World`): a temporary folder, the store, the
+  fake OneDrive and a fake helper; a real cycle, or the cycle's reconcile in its two steps.
 - `live.rs` — changes from OneDrive at once: the notification socket's task. `[tests]`
 - `listing.rs` — `Listing`: one folder's cycle, from the delta feed to the reconcile.
   `[tests]`
@@ -250,8 +252,11 @@ reconcile in read-write mode).
   `[tests]`
 - `listing/lease.rs` — the folder's lease a cycle holds while it changes the folder; `sync/` hands it in.
 - `listing/poller.rs` — when a cycle runs. `[tests]`
+- `listing/reconcile.rs` — the reconcile of one cycle, in either mode: `apply_with_handover`,
+  `commit_cycle` (what waits), `after_commit`; what a failed cycle still hands over and records.
 - `listing/replacements.rs` — replacing changed files, several at once. `[tests]`
-- `listing/rw.rs` — a read-write folder's cycle. `[tests]`
+- `listing/rw.rs` — a read-write folder's cycle up to its reconcile: the tree lock, the
+  stale-delta guard, what is staged again. `[tests]`
 - `materialize.rs` — `Materializer`: makes the folder match the tree. `[tests]`
 - `materialize/file.rs` — a file already in place, and what its content needs.
 - `materialize/holding.rs` — the holding directory; rescues.

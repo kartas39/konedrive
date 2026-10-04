@@ -1,4 +1,3 @@
-use crate::helper::HelperLink;
 use std::fs::File;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,15 +11,17 @@ use xattr::FileExt;
 
 use super::*;
 use crate::remote::listing::tests::*;
+use crate::remote::testing::feed::{file, folder, root_item};
+use crate::remote::testing::*;
 use crate::remote::listing::*;
 #[tokio::test]
 async fn a_file_changed_in_the_cloud_is_replaced_after_the_cycle() {
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = listed(&s).await;
     let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
+    write_version(&f_txt, b"old conten", "c1");
     let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.new_version(&new)).await;
+    s.serve_new_version(&new, s.version("c2", &new)).await;
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
     listing.join_replacements().await;
@@ -31,14 +32,14 @@ async fn a_file_changed_in_the_cloud_is_replaced_after_the_cycle() {
 /// pinned.
 #[tokio::test]
 async fn a_replacement_keeps_the_files_own_pin() {
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = listed(&s).await;
     let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
+    write_version(&f_txt, b"old conten", "c1");
     pin_by_hand(&s.root.path, "docs/f.txt");
     let before = ino(&f_txt);
     let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.new_version(&new)).await;
+    s.serve_new_version(&new, s.version("c2", &new)).await;
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
 
     listing.cycle(&CancellationToken::new()).await.unwrap();
@@ -53,14 +54,14 @@ async fn a_replacement_keeps_the_files_own_pin() {
 /// status says why, and it is tried again.
 #[tokio::test]
 async fn a_replacement_that_fails_is_said_and_tried_again() {
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = listed(&s).await;
     let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
+    write_version(&f_txt, b"old conten", "c1");
     Mock::given(method("GET")).and(path("/me/drive/items/F"))
         .respond_with(ResponseTemplate::new(404))
         .up_to_n_times(1).with_priority(1)
-        .mount(&s.server).await;
+        .mount(&s.graph.server).await;
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
     listing.join_replacements().await;
@@ -68,7 +69,7 @@ async fn a_replacement_that_fails_is_said_and_tried_again() {
     assert!(s.state.get().replacement_note.contains("could not be updated"), "{:?}", s.state.get().replacement_note);
 
     let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.new_version(&new)).await;
+    s.serve_new_version(&new, s.version("c2", &new)).await;
     s.feed(Some("L2"), json!([]), "L3").await;
     let report = listing.cycle(&CancellationToken::new()).await.unwrap();
     assert!(!report.full, "a failed replacement is retried as it is, with no Full reconcile");
@@ -82,10 +83,10 @@ async fn a_replacement_that_fails_is_said_and_tried_again() {
 /// — the words the window's notifier turns into "disk full".
 #[tokio::test]
 async fn a_replacement_with_no_room_on_the_disk_says_exactly_that() {
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = listed(&s).await;
     let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
+    write_version(&f_txt, b"old conten", "c1");
     // A new version no disk here holds beside the old one.
     let huge = json!({"id": "F", "name": "f.txt", "size": 1u64 << 60, "cTag": "c2", "file": {},
                       "parentReference": {"id": "D"}, "fileSystemInfo": {"lastModifiedDateTime": "2024-05-01T10:00:00Z"}});
@@ -105,14 +106,14 @@ async fn a_replacement_with_no_room_on_the_disk_says_exactly_that() {
 /// which is a download's.
 #[tokio::test]
 async fn a_replacement_is_recorded_as_updated_or_failed() {
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = listed(&s).await;
     let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
+    write_version(&f_txt, b"old conten", "c1");
     Mock::given(method("GET")).and(path("/me/drive/items/F"))
         .respond_with(ResponseTemplate::new(404))
         .up_to_n_times(1).with_priority(1)
-        .mount(&s.server).await;
+        .mount(&s.graph.server).await;
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
     listing.join_replacements().await;
@@ -121,7 +122,7 @@ async fn a_replacement_is_recorded_as_updated_or_failed() {
     assert!(why.contains("could not be downloaded"), "{why}");
 
     let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.new_version(&new)).await;
+    s.serve_new_version(&new, s.version("c2", &new)).await;
     s.feed(Some("L2"), json!([]), "L3").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
     listing.join_replacements().await;
@@ -135,13 +136,13 @@ async fn a_replacement_is_recorded_as_updated_or_failed() {
 /// log and notified every minute.
 #[tokio::test]
 async fn a_replacement_that_keeps_failing_the_same_way_is_recorded_once() {
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = listed(&s).await;
-    hydrate_by_hand(&s.root.path.join("docs/f.txt"), b"old conten");
+    write_version(&s.root.path.join("docs/f.txt"), b"old conten", "c1");
     Mock::given(method("GET")).and(path("/me/drive/items/F"))
         .respond_with(ResponseTemplate::new(404))
         .with_priority(1)
-        .mount(&s.server).await;
+        .mount(&s.graph.server).await;
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
     listing.join_replacements().await;
@@ -149,7 +150,7 @@ async fn a_replacement_that_keeps_failing_the_same_way_is_recorded_once() {
     listing.cycle(&CancellationToken::new()).await.unwrap();
     listing.join_replacements().await;
 
-    let asked = s.server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/me/drive/items/F").count();
+    let asked = s.graph.server.received_requests().await.unwrap().iter().filter(|r| r.url.path() == "/me/drive/items/F").count();
     assert_eq!(asked, 2, "it was tried again");
     let recorded = s.activity().into_iter().filter(|(kind, _, _)| kind == "update-failed").count();
     assert_eq!(recorded, 1, "the same failure again is not news: {:?}", s.activity());
@@ -160,7 +161,7 @@ async fn a_replacement_that_keeps_failing_the_same_way_is_recorded_once() {
 /// when it is for a newer version, and when the file was replaced since.
 #[tokio::test]
 async fn a_failure_with_a_new_reason_or_version_is_recorded_again() {
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = s.listing();
     let r = |ctag: &str| Replacement { id: "F".into(), rel: "docs/f.txt".into(), ctag: ctag.into(), size: 10 };
     assert!(listing.record_replacement(&r("c2"), ReplaceOutcome::Failed("a".into())));
@@ -176,11 +177,11 @@ async fn a_failure_with_a_new_reason_or_version_is_recorded_again() {
 /// cycle finds the file again and issues its replacement anew.
 #[tokio::test]
 async fn a_replacement_that_finds_its_file_moved_makes_the_next_cycle_full_and_issues_it_again() {
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = listed(&s).await;
-    hydrate_by_hand(&s.root.path.join("docs/f.txt"), b"old conten");
+    write_version(&s.root.path.join("docs/f.txt"), b"old conten", "c1");
     let new = b"new content".to_vec();
-    let (root, moved, answer) = (s.root.path.clone(), AtomicBool::new(false), s.new_version(&new));
+    let (root, moved, answer) = (s.root.path.clone(), AtomicBool::new(false), s.version("c2", &new));
     s.serve_new_version(&new, move |_: &Request| {
         if !moved.swap(true, Ordering::SeqCst) {
             move_docs_away(&root);
@@ -206,17 +207,17 @@ async fn a_replacement_that_finds_its_file_moved_makes_the_next_cycle_full_and_i
 /// it asks for no Full reconcile and changes no note.
 #[tokio::test]
 async fn a_replacement_stopped_with_the_poller_asks_for_nothing() {
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = listed(&s).await;
     let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
+    write_version(&f_txt, b"old conten", "c1");
     let new = b"new content".to_vec();
-    s.serve_new_version(&new, s.new_version(&new).set_delay(Duration::from_secs(30))).await;
+    s.serve_new_version(&new, s.version("c2", &new).set_delay(Duration::from_secs(30))).await;
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     let poller = Poller::start(Arc::clone(&listing), Schedule::polled(Duration::from_secs(3600), vec![]));
     let mut asked = false;
     for _ in 0..100 {
-        asked = s.server.received_requests().await.unwrap().iter().any(|r| r.url.path() == "/me/drive/items/F");
+        asked = s.graph.server.received_requests().await.unwrap().iter().any(|r| r.url.path() == "/me/drive/items/F");
         if asked {
             break;
         }
@@ -238,10 +239,10 @@ async fn a_replacement_stopped_with_the_poller_asks_for_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_stop_waits_for_a_swap_under_way_and_the_swap_is_said() {
     use konedrive_fs::handle::FileHandle;
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = listed(&s).await;
     let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
+    write_version(&f_txt, b"old conten", "c1");
     let old = crate::folder::locks::InodeKey::of(&File::open(&f_txt).unwrap()).unwrap();
 
     // The download's answer waits until this thread has the write windows to itself.
@@ -256,8 +257,8 @@ async fn a_stop_waits_for_a_swap_under_way_and_the_swap_is_said() {
             ResponseTemplate::new(200).set_body_bytes(body.clone())
         })
         .with_priority(1)
-        .mount(&s.server).await;
-    s.serve_new_version(&new, s.new_version(&new)).await;
+        .mount(&s.graph.server).await;
+    s.serve_new_version(&new, s.version("c2", &new)).await;
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     let poller = Poller::start(Arc::clone(&listing), Schedule::polled(Duration::from_secs(3600), vec![]));
     is_fetching.recv_timeout(PATIENCE).expect("the replacement downloads");
@@ -266,12 +267,12 @@ async fn a_stop_waits_for_a_swap_under_way_and_the_swap_is_said() {
 
     // The file's lock taken: nothing stands between that and the swap's section.
     for _ in 0..500 {
-        if listing.ctx.locks.try_lock(old).is_none() {
+        if s.locks.try_lock(old).is_none() {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    assert!(listing.ctx.locks.try_lock(old).is_none(), "the swap is under way");
+    assert!(s.locks.try_lock(old).is_none(), "the swap is under way");
     assert_eq!(std::fs::read(&f_txt).unwrap(), b"old conten", "held before its rename");
 
     let released = Arc::new(AtomicBool::new(false));
@@ -304,17 +305,14 @@ async fn a_stop_waits_for_a_swap_under_way_and_the_swap_is_said() {
 /// replacement slots until the running cycle is stuck marking a folder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_replacement_that_ends_while_a_cycle_runs_still_makes_the_next_one_full() {
-    let s = setup().await;
-    let sockets = tempfile::tempdir().unwrap();
-    let socket_path = sockets.path().join("helper.sock");
-    let (reached, release) = stalling_helper(&socket_path, "/.konedrive-new-N");
-    let link = HelperLink::connect(&socket_path).await.unwrap().0;
-    let listing = Listing::new(ListingContext { intercepted: true, link: Arc::new(std::sync::Mutex::new(Some(link))), ..s.context() });
+    let s = World::read_only().await;
+    let (reached, release) = s.helper.stall_on("/.konedrive-new-N");
+    let listing = Listing::new(ListingContext { ..s.context() });
     s.feed(None, json!([root_item(), folder("D", "R", "docs"), file("F", "D", "f.txt", "c1")]), "L1").await;
     listing.cycle(&CancellationToken::new()).await.unwrap();
-    hydrate_by_hand(&s.root.path.join("docs/f.txt"), b"old conten");
+    write_version(&s.root.path.join("docs/f.txt"), b"old conten", "c1");
     let new = b"new content".to_vec();
-    let (root, moved, answer) = (s.root.path.clone(), AtomicBool::new(false), s.new_version(&new));
+    let (root, moved, answer) = (s.root.path.clone(), AtomicBool::new(false), s.version("c2", &new));
     s.serve_new_version(&new, move |_: &Request| {
         if !moved.swap(true, Ordering::SeqCst) {
             move_docs_away(&root);
@@ -354,20 +352,20 @@ async fn a_replacement_that_ends_while_a_cycle_runs_still_makes_the_next_one_ful
 /// would ever look at that file again.
 #[tokio::test]
 async fn a_newer_version_that_arrives_while_a_replacement_runs_is_fetched_after_it() {
-    let s = setup().await;
+    let s = World::read_only().await;
     let listing = listed(&s).await;
     let f_txt = s.root.path.join("docs/f.txt");
-    hydrate_by_hand(&f_txt, b"old conten");
+    write_version(&f_txt, b"old conten", "c1");
     let (two, three) = (b"version two".to_vec(), b"version three".to_vec());
     // Graph serves version two once, and version three from then on.
     Mock::given(method("GET")).and(path("/me/drive/items/F"))
         .respond_with(s.version("c2", &two))
         .up_to_n_times(1).with_priority(1)
-        .mount(&s.server).await;
+        .mount(&s.graph.server).await;
     Mock::given(method("GET")).and(path("/me/drive/items/F"))
         .respond_with(s.version("c3", &three))
         .with_priority(2)
-        .mount(&s.server).await;
+        .mount(&s.graph.server).await;
     s.serve_download("c2", &two).await;
     s.serve_download("c3", &three).await;
 

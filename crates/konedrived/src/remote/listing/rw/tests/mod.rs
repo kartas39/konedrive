@@ -8,326 +8,29 @@
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
-use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::MetadataExt;
-use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use konedrive_fs::handle::FileHandle;
-use konedrive_fs::placeholder::{self, State, XATTR_ITEM_ID, XATTR_ROOT};
-use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
-use nix::sys::socket::{accept, bind, listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr};
+use konedrive_fs::placeholder::{State, XATTR_ITEM_ID};
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
 use wiremock::ResponseTemplate;
 
-use super::super::{CycleReport, Listing, ListingContext, FULL_THRESHOLD};
+use super::super::{Listing, ListingContext};
 use super::Writes;
-use crate::status::activity::Report;
+use crate::folder::classify::classify;
+use crate::fake_onedrive::{FakeItem, ROOT};
 use crate::folder::disk::Disk;
 use crate::hydration::graph_source::GraphSource;
-use crate::helper::HelperLink;
-use crate::local::{Batch, Examined, Examiner, FakeLiveness, IgnoreList};
-use crate::hydration::pin::Pins;
-use crate::folder::root::SyncRoot;
-use crate::fake_onedrive::{FakeGraph, FakeItem, ROOT};
-use crate::upload::{Engine, Limits, NoHost, OutboxWorker, WorkerConfig};
-use crate::folder::locks::InodeLocks;
-use crate::status::snapshot::{SyncSnapshot, SyncStateHandle};
-use konedrive_tree::outbox::{Base, Committed, Detection, OutboxKind, OutboxState, Recorded};
-use crate::folder::classify::classify;
-use konedrive_tree::{Change, Store, Table, TreeStore};
-
-pub(super) struct World {
-    pub(super) graph: FakeGraph,
-    pub(super) _dir: tempfile::TempDir,
-    pub(super) root: SyncRoot,
-    pub(super) store: Store,
-    pub(super) state: SyncStateHandle,
-    pub(super) report: Report,
-    pub(super) pins: Arc<Pins>,
-    pub(super) link: HelperLink,
-    pub(super) _helper: tempfile::TempDir,
-    pub(super) rescue: tempfile::TempDir,
-    pub(super) tree_lock: Arc<tokio::sync::Mutex<()>>,
-    pub(super) locks: InodeLocks,
-    pub(super) liveness: Arc<FakeLiveness>,
-    /// What each cycle handed the watcher to examine.
-    pub(super) examined: Arc<Mutex<Vec<Batch>>>,
-    /// Cycles that went through, as the outbox worker hears of them.
-    pub(super) cycles: Arc<AtomicUsize>,
-    /// Rows `Writes::dropped_removed` heard were dropped: a held or pending
-    /// removal whose item was already gone from OneDrive.
-    pub(super) dropped: Arc<Mutex<Vec<konedrive_tree::outbox::OutboxRow>>>,
-}
-
-/// A helper that acknowledges everything.
-fn helper(socket_path: &Path) {
-    let listener = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None).unwrap();
-    bind(listener.as_raw_fd(), &UnixAddr::new(socket_path).unwrap()).unwrap();
-    listen(&listener, Backlog::new(4).unwrap()).unwrap();
-    std::thread::spawn(move || {
-        let accepted = accept(listener.as_raw_fd()).unwrap();
-        // SAFETY: a descriptor `accept` just returned, owned by nothing else.
-        let mut channel = Channel::new(unsafe { UnixStream::from_raw_fd(accepted) }).unwrap();
-        channel.send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None).unwrap();
-        let _ = channel.recv::<ToHelper>().unwrap();
-        channel.send(&ToDaemon::Ack { errno: 0 }, None).unwrap();
-        while channel.recv::<ToHelper>().is_ok() {
-            if channel.send(&ToDaemon::Ack { errno: 0 }, None).is_err() {
-                break;
-            }
-        }
-    });
-}
-
-/// OneDrive holds `docs/f.txt` ("one") and `top.txt` ("top").
-pub(super) async fn world() -> World {
-    world_in(None).await
-}
-
-/// [`world`], with its folder in a temporary directory under `base`.
-pub(super) async fn world_in(base: Option<&Path>) -> World {
-    let graph = FakeGraph::start().await;
-    graph.with(|c| {
-        c.add(FakeItem {
-            id: "D".into(),
-            parent: Some(ROOT.into()),
-            name: "docs".into(),
-            folder: true,
-            content: Vec::new(),
-            hash: None,
-            size: 0,
-            etag: "e-D".into(),
-            ctag: "c-D".into(),
-            mtime: 0,
-        });
-        c.add_file("F", "D", "f.txt", b"one");
-        c.add_file("T", ROOT, "top.txt", b"top");
-    });
-    let dir = match base {
-        Some(base) => tempfile::tempdir_in(base).unwrap(),
-        None => tempfile::tempdir().unwrap(),
-    };
-    let folder = dir.path().canonicalize().unwrap().join("OneDrive");
-    std::fs::create_dir(&folder).unwrap();
-    let root_id = "7e3a9c1d-2b4f-4a6e-8d0c-1f2e3d4c5b6a".to_owned();
-    xattr::set(&folder, XATTR_ROOT, root_id.as_bytes()).unwrap();
-    let store = Store::new(TreeStore::in_memory().unwrap());
-    let state = SyncStateHandle::new(SyncSnapshot { root_path: folder.display().to_string(), ..SyncSnapshot::default() });
-    let report = Report::new(state.clone());
-    konedrive_tree::off_runtime(|| report.activity.attach(store.clone(), &folder));
-    let pins = Pins::detached(state.clone());
-    let helper_dir = tempfile::tempdir().unwrap();
-    let socket_path = helper_dir.path().join("helper.sock");
-    helper(&socket_path);
-    let link = HelperLink::connect(&socket_path).await.unwrap().0;
-    World {
-        graph,
-        _dir: dir,
-        root: SyncRoot { path: folder, root_id },
-        store,
-        state,
-        report,
-        pins,
-        link,
-        _helper: helper_dir,
-        rescue: tempfile::tempdir().unwrap(),
-        tree_lock: Arc::new(tokio::sync::Mutex::new(())),
-        locks: InodeLocks::new(),
-        liveness: Arc::new(FakeLiveness::new()),
-        examined: Arc::default(),
-        cycles: Arc::default(),
-        dropped: Arc::default(),
-    }
-}
-
-pub(super) fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64
-}
-
-impl World {
-    pub(super) fn writes(&self, scanned: Option<tokio::sync::watch::Receiver<bool>>) -> Writes {
-        let (examined, cycles, dropped) = (Arc::clone(&self.examined), Arc::clone(&self.cycles), Arc::clone(&self.dropped));
-        Writes {
-            tree_lock: Arc::clone(&self.tree_lock),
-            machine_name: "fedora".into(),
-            ignore: crate::local::IgnoreList::default().shared(),
-            scanned,
-            examine: Arc::new(move |batch| examined.lock().unwrap().push(batch)),
-            cycled: Arc::new(move || {
-                cycles.fetch_add(1, Ordering::SeqCst);
-            }),
-            reopened: Arc::new(|| {}),
-            dropped_removed: Arc::new(move |rows| dropped.lock().unwrap().extend(rows)),
-            before_swap: None,
-        }
-    }
-
-    pub(super) fn listing_with(&self, scanned: Option<tokio::sync::watch::Receiver<bool>>) -> Arc<Listing> {
-        Listing::new(ListingContext { writes: Some(self.writes(scanned)), ..self.context_parts() })
-    }
-
-    /// A read-write folder's context, but for its `writes`.
-    pub(super) fn context_parts(&self) -> ListingContext {
-        let drive = self.graph.client();
-        ListingContext {
-            root: self.root.clone(),
-            intercepted: true,
-            store: self.store.clone(),
-            drive: drive.clone(),
-            drive_record: None,
-            source: Arc::new(GraphSource::new(drive)),
-            link: Arc::new(std::sync::Mutex::new(Some(self.link.clone()))),
-            locks: self.locks.clone(),
-            state: self.state.clone(),
-            lease: crate::remote::listing::Lease::on(&Arc::new(tokio::sync::RwLock::new(()))),
-            rescue_dir: self.rescue.path().to_path_buf(),
-            full_threshold: FULL_THRESHOLD,
-            after_cycle: None,
-            report: self.report.clone(),
-            pins: Arc::clone(&self.pins),
-            locked: false,
-            writes: None,
-            neighbours: None,
-            running: Arc::default(),
-        }
-    }
-
-    /// A read-write folder's listing, after its first cycle.
-    pub(super) async fn listed(&self) -> Arc<Listing> {
-        let listing = self.listing_with(None);
-        self.cycle(&listing).await;
-        listing
-    }
-
-    /// One cycle, with the replacements it started.
-    pub(super) async fn cycle(&self, listing: &Arc<Listing>) -> CycleReport {
-        let report = listing.cycle(&CancellationToken::new()).await.unwrap();
-        listing.join_replacements().await;
-        report
-    }
-
-    pub(super) fn path(&self, rel: &str) -> PathBuf {
-        self.root.path.join(rel)
-    }
-
-    /// Examines what the cycles handed to the watcher, and nothing else,
-    /// then lets the outbox worker run.
-    pub(super) async fn examine_handed_and_upload(&self) {
-        let handed = std::mem::take(&mut *self.examined.lock().unwrap());
-        for batch in handed {
-            self.examine(batch).await;
-        }
-        self.upload().await;
-    }
-
-    pub(super) fn config(&self) -> WorkerConfig {
-        WorkerConfig {
-            root: self.root.clone(),
-            store: self.store.clone(),
-            drive: self.graph.client(),
-            locks: self.locks.clone(),
-            machine_name: "fedora".into(),
-            tree_lock: Arc::clone(&self.tree_lock),
-            host: Arc::new(NoHost),
-            limits: Limits { chunk: 320 * 1024 },
-            moved_out: None,
-            quota: crate::account::quota::Quota::detached(),
-        }
-    }
-
-    /// The outbox worker, run until nothing more can run.
-    pub(super) async fn upload(&self) {
-        Arc::new(Engine::new(self.config())).drain(&CancellationToken::new()).await;
-    }
-
-    /// The examination of `batch`, as the watcher's sink runs it.
-    pub(super) async fn examine(&self, batch: Batch) -> Examined {
-        let (root, store, locks, liveness) = (self.root.clone(), self.store.clone(), self.locks.clone(), Arc::clone(&self.liveness));
-        tokio::task::spawn_blocking(move || {
-            let disk = Disk::open(&root, false).unwrap();
-            Examiner { disk: &disk, store: &store, liveness: &*liveness, ignore: &IgnoreList::default(), locks: &locks, now: now() }
-                .examine(&batch)
-                .unwrap()
-        })
-        .await
-        .unwrap()
-    }
-
-    pub(super) fn base(&self, id: &str) -> Option<konedrive_tree::Row> {
-        { let id = id.to_owned(); konedrive_tree::off_runtime(|| self.store.call_blocking(move |s| s.get(Table::Items, &id))).unwrap() }
-    }
-
-    pub(super) fn deferred(&self, id: &str) -> Option<Change> {
-        { let id = id.to_owned(); konedrive_tree::off_runtime(|| self.store.call_blocking(move |s| s.deferred(&id))).unwrap() }
-    }
-
-    pub(super) fn cloud_ctag(&self, id: &str) -> String {
-        self.graph.with(|c| c.item(id).unwrap().ctag.clone())
-    }
-
-    /// An outbox row of `kind` for item `id` at `rel`, as the examination
-    /// records one; its `seq`.
-    pub(super) fn row(&self, kind: OutboxKind, id: &str, rel: &str) -> i64 {
-        let base = self.base(id).map(|r| Base { etag: r.etag, ctag: r.ctag, parent: r.parent_id, name: Some(r.name) });
-        let rel = PathBuf::from(rel);
-        let detection = Detection {
-            kind,
-            item_id: Some(id.into()),
-            inode: None,
-            target_parent: base.as_ref().and_then(|b| b.parent.clone()),
-            target_name: rel.file_name().map(|n| n.to_string_lossy().into_owned()),
-            rel,
-            base,
-            same_content: false,
-            state: OutboxState::Ready,
-            reason: None,
-            next_try: None,
-            size: None,
-        };
-        match konedrive_tree::off_runtime(|| self.store.call_blocking(move |s| s.outbox_record(&detection))).unwrap() {
-            Recorded::Inserted(seq) | Recorded::Merged(seq) => seq,
-            other => panic!("{other:?}"),
-        }
-    }
-
-    /// The outbox uploads `content` as the new version of `id` at `rel` and
-    /// commits it as the worker does: OneDrive takes it, the file gets its
-    /// stamp and cTag, and the base Graph's answer, under the tree lock.
-    pub(super) async fn commit_upload(&self, id: &str, rel: &str, content: &[u8]) {
-        self.graph.with(|c| c.edit(id, content));
-        let item = self.graph.client().item(id).await.unwrap();
-        let Change::Upsert(answer) = classify(&item) else { panic!("an upsert") };
-        let _tree = self.tree_lock.lock().await;
-        write_version(&self.path(rel), content, answer.ctag.as_deref().unwrap());
-        let seq = self.row(OutboxKind::Update, id, rel);
-        let handle = FileHandle::of(&File::open(self.path(rel)).unwrap()).unwrap();
-        self.store.call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: Some(&handle) }, None)).await.unwrap();
-    }
-}
-
-pub(super) fn id_at(path: &Path) -> Option<String> {
-    xattr::get(path, XATTR_ITEM_ID).unwrap().map(|v| String::from_utf8(v).unwrap())
-}
-
-pub(super) fn state_at(path: &Path) -> Option<State> {
-    placeholder::read_state(&File::open(path).unwrap()).unwrap()
-}
-
-/// `content` in the file at `at`, downloaded (or uploaded) as version `ctag`.
-pub(super) fn write_version(at: &Path, content: &[u8], ctag: &str) {
-    use std::os::unix::fs::FileExt;
-    let file = placeholder::reopen_writable(&File::open(at).unwrap()).unwrap();
-    file.set_len(content.len() as u64).unwrap();
-    file.write_all_at(content, 0).unwrap();
-    placeholder::write_ctag(&file, ctag).unwrap();
-    placeholder::write_state(&file, State::Hydrated).unwrap();
-    placeholder::write_stamp(&file).unwrap();
-}
+use crate::local::{Batch, Examined, Examiner, IgnoreList};
+use crate::remote::testing::{id_at, now, state_at, write_version, World};
+use crate::upload::{Engine, OutboxWorker};
+use konedrive_tree::outbox::{Committed, OutboxKind, OutboxState};
+use konedrive_tree::Change;
 
 pub(super) fn names(batch: &Batch) -> String {
     format!("{batch:?}")
@@ -338,7 +41,7 @@ pub(super) fn names(batch: &Batch) -> String {
 /// reverted by the swap).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_cycle_holds_the_tree_lock_from_staging_to_the_swap() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     w.graph.with(|c| c.edit("F", b"two"));
     let held = Arc::clone(&w.tree_lock).lock_owned().await;
@@ -362,7 +65,7 @@ async fn the_cycle_holds_the_tree_lock_from_staging_to_the_swap() {
 /// the new one is in place, and its new inode recorded.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_delta_fetched_before_a_commit_does_not_undo_it() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
 
@@ -408,7 +111,7 @@ async fn a_delta_fetched_before_a_commit_does_not_undo_it() {
 /// nothing said.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_outbox_own_changes_coming_back_in_the_delta_change_nothing() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     let new = w.path("docs/new.txt");
     std::fs::write(&new, b"hello").unwrap();
@@ -459,7 +162,7 @@ async fn the_outbox_own_changes_coming_back_in_the_delta_change_nothing() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_two_resyncs_differ_in_what_the_listing_left_out() {
     for (code, upload) in [("resyncChangesUploadDifferences", true), ("resyncChangesApplyDifferences", false)] {
-        let w = world().await;
+        let w = World::read_write().await;
         let listing = w.listed().await;
         w.graph.with(|c| c.add_file("P", "D", "p.txt", b"p"));
         w.cycle(&listing).await;
@@ -496,7 +199,7 @@ async fn the_two_resyncs_differ_in_what_the_listing_left_out() {
 /// follows.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_replacement_waits_for_a_file_open_for_writing() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     let old = w.cloud_ctag("F");
     write_version(&w.path("docs/f.txt"), b"one", &old);
@@ -522,7 +225,7 @@ async fn a_replacement_waits_for_a_file_open_for_writing() {
 /// again by the next cycle, and the unchanged file is replaced.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_older_than_what_the_outbox_committed_is_replaced() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     w.cycle(&listing).await;
@@ -531,7 +234,7 @@ async fn a_file_older_than_what_the_outbox_committed_is_replaced() {
     let Change::Upsert(answer) = classify(&item) else { panic!("an upsert") };
     {
         let _tree = w.tree_lock.lock().await;
-        let seq = w.row(OutboxKind::Update, "F", "docs/f.txt");
+        let seq = w.row(OutboxKind::Update, Some("F"), "docs/f.txt");
         w.store.call(move |s| s.outbox_commit(seq, Committed::Item { row: &answer, handle: None }, None)).await.unwrap();
     }
     let report = w.cycle(&listing).await;
@@ -544,8 +247,8 @@ async fn a_file_older_than_what_the_outbox_committed_is_replaced() {
 /// move of it out of the folder is never taken for a delete.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_replacement_records_its_new_inode_in_a_read_only_folder_too() {
-    let w = world().await;
-    let read_only = || Listing::new(ListingContext { locked: true, writes: None, ..w.context_parts() });
+    let w = World::read_write().await;
+    let read_only = || Listing::new(ListingContext { locked: true, writes: None, ..w.context() });
     let listing = read_only();
     w.cycle(&listing).await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
@@ -561,9 +264,9 @@ async fn a_replacement_records_its_new_inode_in_a_read_only_folder_too() {
 /// scan, and the outbox for a cycle: nothing is sent before one went through.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_first_cycle_waits_for_the_scan_and_the_outbox_for_the_cycle() {
-    let w = world().await;
+    let w = World::read_write().await;
     let (scanned, first_scan) = tokio::sync::watch::channel(false);
-    let listing = w.listing_with(Some(first_scan));
+    let listing = Listing::new(ListingContext { writes: Some(w.writes(Some(first_scan))), ..w.context() });
     let cycle = {
         let listing = Arc::clone(&listing);
         tokio::spawn(async move { listing.cycle(&CancellationToken::new()).await })
@@ -597,9 +300,9 @@ async fn the_first_cycle_waits_for_the_scan_and_the_outbox_for_the_cycle() {
 /// cursor never sends it again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_change_that_waited_for_a_row_is_applied_once_the_row_is_gone() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
-    let seq = w.row(OutboxKind::Update, "F", "docs/f.txt");
+    let seq = w.row(OutboxKind::Update, Some("F"), "docs/f.txt");
     w.graph.with(|c| c.rename("F", "D", "renamed.txt"));
     w.cycle(&listing).await;
     assert!(w.path("docs/f.txt").exists() && !w.path("docs/renamed.txt").exists());
@@ -621,7 +324,7 @@ async fn a_change_that_waited_for_a_row_is_applied_once_the_row_is_gone() {
 /// deleted in OneDrive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_folder_removed_in_onedrive_keeps_what_was_made_or_changed_here_and_it_goes_up_as_new() {
-    let w = world().await;
+    let w = World::read_write().await;
     w.graph.with(|c| c.add_file("G", "D", "g.txt", b"theirs"));
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
@@ -658,7 +361,7 @@ async fn a_folder_removed_in_onedrive_keeps_what_was_made_or_changed_here_and_it
 /// is first; the upload first is `upload::tests` (`gone_or_new`).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_changed_here_and_removed_in_onedrive_is_kept_and_uploaded_as_new() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     std::thread::sleep(Duration::from_millis(10));
@@ -686,7 +389,7 @@ async fn a_file_changed_here_and_removed_in_onedrive_is_kept_and_uploaded_as_new
 /// OneDrive gets only the folder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_stays_under_an_ignored_name_is_said_to_stay_on_this_computer_only() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     std::fs::write(w.path("docs/notes.tmp"), b"mine").unwrap();
     w.graph.with(|c| c.trash("D"));
@@ -707,7 +410,7 @@ async fn what_stays_under_an_ignored_name_is_said_to_stay_on_this_computer_only(
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cycle_that_fails_still_hands_over_what_it_kept() {
     use std::os::unix::fs::PermissionsExt;
-    let w = world().await;
+    let w = World::read_write().await;
     w.graph.with(|c| {
         c.add(FakeItem { id: "E".into(), parent: Some("D".into()), name: "deep".into(), folder: true, content: Vec::new(), hash: None, size: 0, etag: "e-E".into(), ctag: "c-E".into(), mtime: 0 });
         c.add_file("G", "E", "g.txt", b"one");
@@ -742,7 +445,7 @@ async fn a_cycle_that_fails_still_hands_over_what_it_kept() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cycle_that_fails_says_what_it_kept_that_never_had_an_id() {
     use std::os::unix::fs::PermissionsExt;
-    let w = world().await;
+    let w = World::read_write().await;
     let folder = |id: &str, parent: &str, name: &str| FakeItem { id: id.into(), parent: Some(parent.into()), name: name.into(), folder: true, content: Vec::new(), hash: None, size: 0, etag: format!("e-{id}"), ctag: format!("c-{id}"), mtime: 0 };
     w.graph.with(|c| {
         c.add(folder("E", "D", "deep"));
@@ -837,7 +540,7 @@ impl World {
     /// Everywhere an object of the folder can be: the folder, beside it, and
     /// the rescue directory.
     pub(super) fn everywhere(&self) -> Vec<PathBuf> {
-        vec![self.root.path.parent().unwrap().to_path_buf(), self.rescue.path().canonicalize().unwrap()]
+        vec![self.root.path.parent().unwrap().to_path_buf(), self.rescue_dir.canonicalize().unwrap()]
     }
 
     /// the move-out step in the loop: a Full local scan whose "where is it now?" is
@@ -880,7 +583,7 @@ impl World {
 /// for a move out and delete it in OneDrive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_changed_pass_handing_over_with_something_in_holding_keeps_it_in_the_folder() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     std::fs::rename(w.path("docs"), w.path("papers")).unwrap();
     w.graph.with(|c| {
@@ -910,7 +613,7 @@ async fn a_changed_pass_handing_over_with_something_in_holding_keeps_it_in_the_f
 /// placed again in the folder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_placeholder_moved_out_and_changed_in_onedrive_is_downloaded_where_it_went() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     let outside = w.root.path.parent().unwrap().join("outside");
     std::fs::create_dir(&outside).unwrap();
@@ -939,14 +642,14 @@ async fn a_placeholder_moved_out_and_changed_in_onedrive_is_downloaded_where_it_
 /// folder, and nothing is deleted in OneDrive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn what_a_stop_left_in_the_holding_directory_goes_back_into_the_folder() {
-    let w = world().await;
+    let w = World::read_write().await;
     w.listed().await;
     std::fs::create_dir(w.path(".konedrive-holding")).unwrap();
     std::fs::rename(w.path("docs/f.txt"), w.path(".konedrive-holding/F")).unwrap();
     std::fs::rename(w.path("top.txt"), w.path(".konedrive-holding/T")).unwrap();
-    w.row(OutboxKind::Update, "T", "top.txt");
+    w.row(OutboxKind::Update, Some("T"), "top.txt");
     // A restart: the first cycle is Full.
-    let report = w.cycle(&w.listing_with(None)).await;
+    let report = w.cycle(&w.listing()).await;
     assert!(report.full);
     assert!(report.applied.on_disk.rescued.is_empty(), "moved out of the folder: {:?}", report.applied.on_disk.rescued);
     assert_eq!(id_at(&w.path("docs/f.txt")).as_deref(), Some("F"), "placed from the holding directory");
@@ -965,7 +668,7 @@ async fn what_a_stop_left_in_the_holding_directory_goes_back_into_the_folder() {
 /// once the file is closed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_change_read_again_survives_a_replacement_that_waits() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     w.cycle(&listing).await;
@@ -996,7 +699,7 @@ async fn a_change_read_again_survives_a_replacement_that_waits() {
 /// is and its move waits, and no row takes OneDrive's item back.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_item_moved_in_onedrive_into_a_folder_deleted_here_is_not_moved_back() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     std::fs::remove_dir_all(w.path("docs")).unwrap();
     let mut batch = Batch::new();
@@ -1023,7 +726,7 @@ async fn an_item_moved_in_onedrive_into_a_folder_deleted_here_is_not_moved_back(
 /// goes back to 0, and the worker is woken to say so.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     std::fs::remove_dir_all(w.path("docs")).unwrap();
     let mut batch = Batch::new();
@@ -1054,7 +757,7 @@ async fn a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped() {
 /// and the next cycle changes nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_delta_that_brings_an_upload_before_its_commit_changes_nothing() {
-    let w = world().await;
+    let w = World::read_write().await;
     let listing = w.listed().await;
     write_version(&w.path("docs/f.txt"), b"one", &w.cloud_ctag("F"));
     std::thread::sleep(Duration::from_millis(10));
@@ -1101,7 +804,7 @@ mod stale;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
     use crate::status::snapshot::SyncTrouble;
-    let w = world().await;
+    let w = World::read_write().await;
     let reopened = Arc::new(Mutex::new(Vec::new()));
     let writes = Writes {
         reopened: Arc::new({
@@ -1111,7 +814,7 @@ async fn the_cycle_that_clears_blocking_trouble_wakes_the_outbox() {
         }),
         ..w.writes(None)
     };
-    let listing = Listing::new(ListingContext { writes: Some(writes), ..w.context_parts() });
+    let listing = Listing::new(ListingContext { writes: Some(writes), ..w.context() });
     w.cycle(&listing).await;
     assert!(reopened.lock().unwrap().is_empty(), "nothing was stopped");
 

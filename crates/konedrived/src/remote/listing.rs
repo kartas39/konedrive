@@ -27,31 +27,32 @@ use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::SystemTime;
 
 use tokio::sync::{Notify, OwnedMutexGuard};
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use crate::status::activity::{self, Kind, Report};
-use crate::folder::disk::{rescue_base, rescue_stamp, Disk};
-use super::materialize::{Applied, ApplyError, Claimed, Failed, Kept, Materializer, OnDisk, Replacement, Scope};
+use crate::status::activity::{self, Report};
+use super::materialize::{Applied, ApplyError, Claimed, Replacement, Scope};
 use crate::hydration::pin::Pins;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::ContentSource;
 use crate::folder::locks::InodeLocks;
 use crate::status::snapshot::{SyncStateHandle, SyncTrouble};
 use konedrive_graph::drive::{DeltaFrom, DriveClient, DriveError};
-use konedrive_tree::{Change, ConflictKind, ConflictRow, Store, TreeError, TreeStore};
+use konedrive_tree::{Change, Store, TreeError, TreeStore};
 
+mod lease;
+pub use lease::Lease;
+/// The reconcile of one cycle, in either mode: the folder, the commit, what follows.
+pub(crate) mod reconcile;
 /// A read-write folder's cycle (`docs/design/writes.md` §9).
 mod rw;
 pub use rw::Writes;
+use reconcile::{Commit, Mode, Reconciled};
 
 /// What OneDrive lists: a whole listing, one placed page by page, a delta's changes.
 mod fetch;
-mod lease;
-pub use lease::Lease;
 /// The task that runs a cycle on a schedule, on a refresh and when the live socket says so.
 mod poller;
 /// Downloaded files that changed in OneDrive, replaced after the cycle.
@@ -226,7 +227,7 @@ pub struct CycleReport {
 /// A cycle's turn: while any clone of it lives — in the cycle, or in a
 /// blocking task the cycle started — no other cycle of the same `Listing`
 /// runs, even when this cycle's future has been dropped.
-type Turn = Arc<OwnedMutexGuard<()>>;
+pub(crate) type Turn = Arc<OwnedMutexGuard<()>>;
 
 pub struct Listing {
     ctx: ListingContext,
@@ -274,23 +275,6 @@ impl<F: FnOnce()> Drop for OnDrop<F> {
     }
 }
 
-/// What a reconcile did.
-#[derive(Default)]
-struct Reconciled {
-    applied: Applied,
-    /// A Full reconcile ran — asked for, or handed over to.
-    full: bool,
-}
-
-impl Reconciled {
-    /// What one page of a first listing did, added to what the pages before
-    /// it did.
-    fn add(&mut self, page: Reconciled) {
-        self.applied.add_page(page.applied);
-        self.full |= page.full;
-    }
-}
-
 /// What the feed said since the stored link.
 // Made once per cycle and taken apart at once: not worth a box.
 #[allow(clippy::large_enum_variant)]
@@ -308,30 +292,6 @@ enum Fetched {
     /// A first listing, placed page by page and committed with its link
     ///.
     Placed(Reconciled),
-}
-
-/// What a reconcile commits once the folder matches `staging`.
-enum Commit {
-    /// `staging` swapped in with the link to ask from next time.
-    /// `listing`: the last page of a first listing placed page by page,
-    /// which the one `listed` event stands for, however it was reconciled.
-    Swap { link: String, listing: bool },
-    /// One page of a first listing: its entries into `items`, with
-    /// `next`, the link to the page after it.
-    Page { changes: Vec<Change>, next: String },
-}
-
-/// What the activity log says of a reconcile, beside its conflicts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Said {
-    /// One `listed` event for the whole folder: a Full reconcile, or the end
-    /// of a first listing.
-    Listed,
-    /// What a Changed reconcile did, item by item.
-    EachChange,
-    /// Nothing: a page of a first listing, which the `listed` event at its
-    /// end stands for.
-    Nothing,
 }
 
 /// Whether Graph refused a link it handed out — expired (`410`), gone, or a
@@ -446,7 +406,7 @@ impl Listing {
                 self.revisit_from.store(seq, Ordering::SeqCst);
                 done
             }
-            (Fetched::Listed { link, .. }, None) => (self.reconcile(turn, Scope::Full, Commit::Swap { link, listing: false }, cancel).await?, 0),
+            (Fetched::Listed { link, .. }, None) => (self.reconcile(turn, Mode::ReadOnly, Scope::Full, Commit::Swap { link, listing: false }, cancel).await?, 0),
             (Fetched::Changes { changes, link }, None) => {
                 let count = changes.len();
                 if count > 0 || full_requested {
@@ -470,7 +430,7 @@ impl Listing {
                         self.on_store(turn, move |s| s.set_delta_link(&link)).await?;
                         Reconciled::default()
                     }
-                    Some(scope) => self.reconcile(turn, scope, Commit::Swap { link, listing: false }, cancel).await?,
+                    Some(scope) => self.reconcile(turn, Mode::ReadOnly, scope, Commit::Swap { link, listing: false }, cancel).await?,
                 };
                 (reconciled, count)
             }
@@ -587,110 +547,6 @@ impl Listing {
         Ok(())
     }
 
-    /// Makes the folder match `staging` and commits it: swaps
-    /// `staging` in with its link, or puts a first listing's page into
-    /// `items` with the link to the next one. Under the lifecycle
-    /// lock, on a blocking thread (part 1's). A Changed scope that
-    /// finds the folder not matching the stored tree hands over to a Full
-    /// reconcile in the same run. Everything before this wrote only
-    /// `staging` and `meta`, and needed no lock.
-    ///
-    /// The lock and the turn go into the blocking task: however this future
-    /// ends, they are held until the folder is no longer being changed. The
-    /// materializer sees `cancel` itself between steps; the commit follows
-    /// the change to the folder in the same task, so a page placed is a page
-    /// committed unless the daemon dies in between.
-    async fn reconcile(&self, turn: &Turn, scope: Scope, commit: Commit, cancel: &CancellationToken) -> Result<Reconciled, CycleError> {
-        let lifecycle = cancellable(cancel, self.ctx.lease.hold()).await?;
-        // The link as it is now. A helper's reconnect sets it before `resume`
-        // takes the lock to re-register the root, so this may be a new link
-        // whose helper has no marks yet: at worst a `MarkDir` fails, this
-        // cycle fails (the next is Full), and `resume` re-marks the tree.
-        let link = self.ctx.link.lock().unwrap().clone().filter(|_| self.ctx.intercepted);
-        if link.is_none() {
-            return Err(CycleError::NoHelper);
-        }
-        let held = (Arc::clone(turn), lifecycle);
-        let (root, preferred, store) = (self.ctx.root.clone(), self.ctx.rescue_dir.clone(), self.ctx.store.clone());
-        let (locks, cancel, locked) = (self.ctx.locks.clone(), cancel.clone(), self.ctx.locked);
-        let report = self.ctx.report.clone();
-        let claimed = self.ctx.neighbours.as_ref().map(|n| Arc::clone(&n.claimed));
-        let runtime = tokio::runtime::Handle::current();
-        let drive = self.pending_drive.lock().unwrap().take();
-        tokio::task::spawn_blocking(move || {
-            let _held = held;
-            if let Some((record, id)) = drive {
-                record_drive(&record, &id);
-                // The folder remembers its drive too (design §8.3).
-                if let Err(e) = crate::folder::root::mark_drive(&root, &id) {
-                    tracing::warn!("cannot record the drive on {}: {e}", root.path.display());
-                }
-            }
-            let Some(root_item_id) = store.call_blocking(move |s| s.root_item_id()).map_err(|e| applying(e.into()))? else {
-                return match commit {
-                    // Nothing on a page can be placed before the drive's
-                    // root has come: it waits in `items` like any entry
-                    // whose folder has not come yet.
-                    Commit::Page { changes, next } => {
-                        store.call_blocking(move |s| s.commit_page(&changes, &next))?;
-                        Ok(Reconciled::default())
-                    }
-                    Commit::Swap { .. } => Err(CycleError::Apply("the drive's listing has no root".into())),
-                };
-            };
-            let materializer = Materializer {
-                disk: Disk::open(&root, locked).map_err(|e| applying(e.into()))?,
-                store: store.clone(),
-                link,
-                runtime,
-                locks,
-                root_item_id,
-                // One directory for the whole cycle, on the folder's own
-                // filesystem: a rescue is one rename, never a copy.
-                rescue_into: rescue_base(&root.path, &preferred).join(rescue_stamp(SystemTime::now())),
-                cancel,
-                rw: None,
-                claimed,
-            };
-            // What a Changed pass rescued before it handed over is rescued
-            // all the same: the Full pass finds nothing left to rescue there,
-            // so these are the conflicts.
-            let (applied, full) = match materializer.apply_with_handover(scope) {
-                Ok(applied) => applied,
-                Err(failed) => {
-                    // What it rescued is out of the folder all the same.
-                    let Failed { error, done } = *failed;
-                    record_failed(&report, &store, &root.path, done);
-                    return Err(applying(error));
-                }
-            };
-            // Where each rescued file went is a conflict: a row
-            // in `Conflicts.List()`, `Conflicts.Count` and a `conflict` event, which
-            // `record` below writes. It is not a problem, so `LastError` no
-            // longer says it. A page's are written with the page, not at the
-            // end of the listing: a listing that never ends must still say
-            // where the files went.
-            let said = match commit {
-                Commit::Swap { link, listing } => {
-                    store.call_blocking(move |s| s.commit_staging(&link))?;
-                    if listing || full {
-                        Said::Listed
-                    } else {
-                        Said::EachChange
-                    }
-                }
-                Commit::Page { changes, next } => {
-                    store.call_blocking(move |s| s.commit_page(&changes, &next))?;
-                    Said::Nothing
-                }
-            };
-            record(&report, &store, &root.path, &applied, said);
-            Ok(Reconciled { applied, full })
-        })
-        .await
-        .map_err(|e| CycleError::Apply(format!("the reconcile task failed: {e}")))?
-    }
-
     async fn publish_counts(&self, turn: &Turn) -> Result<(), CycleError> {
         let counts = self.on_store(turn, |s| s.counts()).await?;
         self.ctx.state.update(|s| {
@@ -716,99 +572,6 @@ impl Listing {
             Err(e) => s.sync_trouble = Some(SyncTrouble { text: e.to_string(), blocking: e.blocking() }),
         });
     }
-}
-
-/// Writes the drive into `config.toml` as the account's (A-M5), if it records
-/// none yet. Called by a reconcile, on its blocking thread. A failure is
-/// logged; the store's `meta` still has the drive.
-fn record_drive(record: &DriveRecord, id: &str) {
-    if let Err(e) = record.store.record_drive(&record.account, id) {
-        tracing::warn!("cannot record the account's drive in config.toml: {e}");
-    }
-}
-
-/// What a reconcile that went through records, on its blocking
-/// thread, right after the tree it made the folder match is committed: each
-/// rescue as a conflict — the row first, so that whoever hears of it can
-/// already find it — and the activity `said`: one `listed` event for a Full
-/// reconcile or the end of a first listing, what a Changed one did item by
-/// item, at most [`activity::PER_KIND`] of each kind plus one "and N more",
-/// or nothing but the conflicts for a page of a first listing.
-fn record(report: &Report, store: &Store, root: &std::path::Path, applied: &Applied, said: Said) {
-    if said == Said::Nothing && applied.on_disk.rescued.is_empty() && applied.on_disk.copies.is_empty() && applied.on_disk.kept.is_empty() {
-        return;
-    }
-    let shown = |rel: &std::path::Path| root.join(rel).display().to_string();
-    let folder = root.display().to_string();
-    let mut events = match said {
-        Said::Listed => {
-            let listed = match store.call_blocking(move |s| s.listed_count()) {
-                Ok(listed) => listed,
-                Err(e) => {
-                    tracing::warn!("cannot count what was listed: {e}");
-                    0
-                }
-            };
-            vec![activity::event(Kind::Listed, folder.clone(), activity::items(listed))]
-        }
-        Said::EachChange => {
-            let each = applied
-                .changes
-                .iter()
-                .map(|c| {
-                    let from = c.from.as_deref().map(|from| format!("from {}", shown(from))).unwrap_or_default();
-                    activity::event(c.kind, shown(&c.rel), from)
-                })
-                .collect();
-            activity::capped(each, activity::PER_KIND, &folder)
-        }
-        Said::Nothing => Vec::new(),
-    };
-    // What was removed in OneDrive and stays here in part, whatever is said
-    // of the rest: it is gone there, and what stays is the user's own.
-    let kept = applied.on_disk.kept.iter().map(|(rel, kept)| activity::event(Kind::Removed, shown(rel), kept_detail(*kept))).collect();
-    events.extend(activity::capped(kept, activity::PER_KIND, &folder));
-    let at = activity::unix_now();
-    let conflicts: Vec<ConflictRow> = applied
-        .on_disk
-        .rescued
-        .iter()
-        .map(|r| ConflictRow { at, original: shown(&r.original), rescued: r.rescued.display().to_string(), kind: ConflictKind::Rescued })
-        // Read-write mode's copies (`docs/design/writes.md` §7): conflicts of kind `copy`, both
-        // versions in the folder.
-        .chain(applied.on_disk.copies.iter().map(|c| ConflictRow { at, original: shown(&c.original), rescued: shown(&c.copy), kind: ConflictKind::Copy }))
-        .collect();
-    // Capped like every other kind; every conflict is
-    // still a row.
-    let each = conflicts.iter().map(|c| activity::event(Kind::Conflict, c.original.clone(), c.rescued.clone())).collect();
-    events.extend(activity::capped(each, activity::PER_KIND, &folder));
-    report.activity.add_conflicts(conflicts);
-    report.activity.record_blocking(events);
-}
-
-/// What a reconcile that failed did on disk before it did, recorded all the
-/// same: its rescues and copies as conflicts, and what it kept of something
-/// removed in OneDrive — only where it took konedrive's attributes off now,
-/// so that a cycle failing again and again says it once.
-fn record_failed(report: &Report, store: &Store, root: &std::path::Path, mut done: OnDisk) {
-    done.kept.retain(|(_, kept)| kept.stripped > 0);
-    record(report, store, root, &Applied { on_disk: done, ..Applied::default() }, Said::Nothing);
-}
-
-/// The detail of a `removed` event for something that stays here in part:
-/// what goes up as new, and what stays on this computer only.
-fn kept_detail(kept: Kept) -> String {
-    let uploaded = match kept.uploaded {
-        0 => None,
-        1 => Some("1 file changed or new on this computer was kept and is uploaded as new".to_owned()),
-        n => Some(format!("{n} files changed or new on this computer were kept and are uploaded as new")),
-    };
-    let local = match kept.local {
-        0 => None,
-        1 => Some("1 item with an ignored or refused name was kept on this computer only".to_owned()),
-        n => Some(format!("{n} items with ignored or refused names were kept on this computer only")),
-    };
-    [uploaded, local].into_iter().flatten().collect::<Vec<_>>().join("; ")
 }
 
 #[cfg(test)]

@@ -2,18 +2,15 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::*;
 use crate::conditions::running::Conditions;
-use crate::fake_onedrive::{Early, FakeGraph, ROOT};
-use crate::status::snapshot::SyncSnapshot;
-use konedrive_tree::TreeStore;
+use crate::fake_onedrive::{Early, ROOT};
+use crate::remote::testing::World;
 
 const DEBOUNCE: Duration = Duration::from_millis(300);
 
-/// One account's live task against the fake OneDrive, and the cycles it asked for.
-struct World {
-    graph: FakeGraph,
-    store: Store,
+/// One account's live task against the fixture's fake OneDrive, and the cycles it asked for.
+struct Lived {
+    world: World,
     running: Arc<Running>,
-    state: SyncStateHandle,
     up: Arc<watch::Sender<bool>>,
     cycles: Arc<AtomicUsize>,
     cancel: CancellationToken,
@@ -21,20 +18,26 @@ struct World {
     files: usize,
 }
 
-async fn world() -> World {
+impl std::ops::Deref for Lived {
+    type Target = World;
+
+    fn deref(&self) -> &World {
+        &self.world
+    }
+}
+
+async fn world() -> Lived {
     world_with(|_| {}).await
 }
 
-async fn world_with(setup: impl FnOnce(&mut crate::fake_onedrive::Cloud)) -> World {
+async fn world_with(setup: impl FnOnce(&mut crate::fake_onedrive::Cloud)) -> Lived {
     world_timed(setup, |_| {}).await
 }
 
-async fn world_timed(setup: impl FnOnce(&mut crate::fake_onedrive::Cloud), adjust: impl FnOnce(&mut Timing)) -> World {
-    let graph = FakeGraph::start().await;
-    graph.with(setup);
-    let store = Store::new(TreeStore::in_memory().unwrap());
+async fn world_timed(setup: impl FnOnce(&mut crate::fake_onedrive::Cloud), adjust: impl FnOnce(&mut Timing)) -> Lived {
+    let world = World::read_only().await;
+    world.graph.with(setup);
     let running = Arc::new(Running::default());
-    let state = SyncStateHandle::new(SyncSnapshot::default());
     let refresh = Arc::new(Notify::new());
     let cycles = Arc::new(AtomicUsize::new(0));
     tokio::spawn({
@@ -49,10 +52,10 @@ async fn world_timed(setup: impl FnOnce(&mut crate::fake_onedrive::Cloud), adjus
     let up = Arc::new(watch::channel(false).0);
     let cancel = CancellationToken::new();
     let ctx = LiveContext {
-        drive: graph.client(),
-        store: store.clone(),
+        drive: world.drive(),
+        store: world.store.clone(),
         running: Arc::clone(&running),
-        state: state.clone(),
+        state: world.state.clone(),
         refresh,
         up: Arc::clone(&up),
     };
@@ -68,10 +71,10 @@ async fn world_timed(setup: impl FnOnce(&mut crate::fake_onedrive::Cloud), adjus
     };
     adjust(&mut timing);
     let live = Some(Live::start(ctx, timing, cancel.clone()));
-    World { graph, store, running, state, up, cycles, cancel, live, files: 0 }
+    Lived { world, running, up, cycles, cancel, live, files: 0 }
 }
 
-impl World {
+impl Lived {
     fn live(&self) -> LiveChanges {
         self.state.get().live_changes
     }

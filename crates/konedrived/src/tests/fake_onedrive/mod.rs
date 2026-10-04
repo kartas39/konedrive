@@ -813,7 +813,8 @@ impl FakeGraph {
             ctag: "c-R".into(),
             mtime: 0,
         });
-        Mock::given(any()).respond_with(Responder(Arc::clone(&cloud), Arc::clone(&sockets))).mount(&server).await;
+        // Behind anything a test mounts itself: an answer given by hand wins.
+        Mock::given(any()).respond_with(Responder(Arc::clone(&cloud), Arc::clone(&sockets))).with_priority(u8::MAX).mount(&server).await;
         Self { server, cloud, sockets }
     }
 

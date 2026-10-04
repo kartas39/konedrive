@@ -8,8 +8,8 @@ use crate::remote::materialize::Scope;
 use konedrive_graph::drive::{DeltaFrom, DeltaNext, DriveError};
 use crate::folder::classify::classify;
 use konedrive_tree::{Change, Table};
-use super::rw::RwCycle;
-use super::{applying, cancellable, drive_error, refused, Commit, CycleError, Fetched, Listing, OnDrop, Reconciled, Turn};
+use super::reconcile::{Commit, Mode, Reconciled, RwCycle, Waiting};
+use super::{applying, cancellable, drive_error, refused, CycleError, Fetched, Listing, OnDrop, Turn};
 
 impl Listing {
     /// A full listing into `staging`, page by page, publishing its progress.
@@ -167,17 +167,16 @@ impl Listing {
                 DeltaNext::Done(link) => (Commit::Swap { link, listing: true }, None),
             };
             let changed = !full;
-            let done = match tree {
-                None => self.reconcile(turn, scope, commit, cancel).await?,
+            let mode = match tree {
+                None => Mode::ReadOnly,
                 Some(tree) => {
                     let fetch_seq = self.on_store(turn, |s| s.outbox_seq()).await?;
                     // The last page ends a whole listing of the drive.
-                    let whole_listing = next.is_none();
-                    let brought = Vec::new();
-                    let rw = RwCycle { tree, fetch_seq, consumed: Vec::new(), upload_differences: false, whole_listing, brought };
-                    self.reconcile_rw(turn, scope, commit, rw, cancel).await?
+                    let waiting = Waiting { fetch_seq, consumed: Vec::new(), whole_listing: next.is_none(), brought: Vec::new() };
+                    Mode::ReadWrite(RwCycle { tree, upload_differences: false, waiting })
                 }
             };
+            let done = self.reconcile(turn, mode, scope, commit, cancel).await?;
             // A later page that had to hand over to Full found the folder
             // not matching `items` part-way — a name two pages give to two
             // items, say — and a later Changed page cannot see all it moved

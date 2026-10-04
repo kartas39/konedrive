@@ -209,6 +209,29 @@ fn rows_follow_a_directory_that_moved() {
     assert_eq!(rels, vec!["a", "b/a/f", "ab/g"], "the directory's own row is its detection's to move, and ab is not under a");
 }
 
+/// RE1: a directory kept aside under another name (the daemon's `copy_aside`, which applies
+/// this `Rebase`) takes what is leaving in it along, as it takes its outbox rows. What is
+/// leaving elsewhere stays where it is.
+#[test]
+fn a_directory_kept_aside_takes_what_is_leaving_in_it_along() {
+    let mut s = store(&[]);
+    s.leaving_add("G", Path::new("docs/deep/g.txt"), None).unwrap();
+    s.leaving_add("E", Path::new("docs/deep"), None).unwrap();
+    s.leaving_add("T", Path::new("top.txt"), None).unwrap();
+    s.outbox_record(&detect(OutboxKind::Create, None, Some(inode(1)), "docs/f.txt", None)).unwrap();
+    s.outbox_apply(&[OutboxOp::Rebase { from: "docs".into(), to: "docs-fedora".into() }], 0).unwrap();
+    assert_eq!(
+        s.leaving().unwrap(),
+        vec![
+            ("E".to_owned(), PathBuf::from("docs-fedora/deep")),
+            ("G".to_owned(), PathBuf::from("docs-fedora/deep/g.txt")),
+            ("T".to_owned(), PathBuf::from("top.txt")),
+        ]
+    );
+    let rows: Vec<PathBuf> = s.outbox_rows().unwrap().into_iter().map(|r| r.rel).collect();
+    assert_eq!(rows, vec![PathBuf::from("docs-fedora/f.txt")], "its rows follow it too");
+}
+
 /// The mass-delete guard's rows wait until confirmed; restoring drops them.
 #[test]
 fn held_deletes_wait_for_a_decision() {
