@@ -9,6 +9,7 @@ use std::os::fd::AsFd;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
+use konedrive_helper::errno;
 use konedrive_helper::marks::Marks;
 use konedrive_helper::pending::PendingOpen;
 use nix::errno::Errno;
@@ -299,7 +300,7 @@ fn hand_over(
                  already queued; denying an open with EAGAIN"
             )
         });
-        rejected.open.deny(libc::EAGAIN);
+        rejected.open.deny(errno::Errno::EAGAIN);
     }
 }
 
@@ -309,7 +310,7 @@ fn hand_over(
 /// the helper runs.
 fn deny_unhandled(shared: &Arc<Shared>, event: FanotifyEvent) {
     if let Some((open, _)) = owed(event, &shared.marks) {
-        open.deny(libc::EIO);
+        open.deny(errno::Errno::EIO);
     }
 }
 

@@ -10,6 +10,7 @@
 //! `/proc/self/fdinfo/<group>`.
 
 pub mod by_handle;
+pub mod errno;
 pub mod jobs;
 pub mod marks;
 pub mod outbox;

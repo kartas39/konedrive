@@ -370,6 +370,7 @@ Design: `hydration.md`; [`SECURITY.md`](../SECURITY.md). Its end-to-end tests ar
 - `outbox.rs` — everything sent to one daemon, and the thread that sends it. `[tests]`
 - `pool.rs` — a bounded pool of threads that answer permission events.
 - `by_handle.rs` — `OpenByHandle`: a descriptor for an object of the folder. `[tests]`
+- `errno.rs` — `Errno`: the errno of a refusal, and the integer a message carries for it. `[tests]`
 
 ## `crates/konedrivectl`: the command line
 

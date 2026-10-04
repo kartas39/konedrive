@@ -240,7 +240,7 @@ fn acknowledge(outbox: &Arc<Outbox>, count: usize) -> std::thread::JoinHandle<us
     let outbox = Arc::clone(outbox);
     std::thread::spawn(move || {
         for sent in 0..count {
-            if outbox.send_ack(sent as i32).is_err() {
+            if outbox.send_ack(Errno::from_wire(sent as i32)).is_err() {
                 return sent;
             }
         }
@@ -271,7 +271,7 @@ fn an_ack_fits_when_requests_have_filled_the_outbox() {
     let queued = fill(&outbox);
 
     let acking = Arc::clone(&outbox);
-    let acked = within(Duration::from_secs(2), move || acking.send_ack(0).is_ok());
+    let acked = within(Duration::from_secs(2), move || acking.send_ack(Ok(())).is_ok());
     assert_eq!(acked, Some(true), "an Ack must be queued at once, not refused or kept waiting");
     assert!(!hung_up(&theirs), "and the connection must stay");
 

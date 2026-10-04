@@ -6,6 +6,7 @@ use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
 
 use konedrive_fs::placeholder::{read_item_id, read_state, State, StateError};
+use konedrive_helper::errno::Errno;
 use konedrive_helper::pending::PendingOpen;
 
 use super::hydration::hydrate;
@@ -49,8 +50,8 @@ pub(super) enum Denied {
 
 impl Denied {
     /// The errno the opener gets.
-    pub(super) fn errno(&self) -> i32 {
-        libc::EIO
+    pub(super) fn errno(&self) -> Errno {
+        Errno::EIO
     }
 }
 
@@ -175,7 +176,7 @@ pub(crate) fn handle_open(shared: &Shared, open: PendingOpen, opener_pid: i32, s
         Ok(seen) => seen,
         Err(e) => {
             tracing::error!(target: LOG, "cannot stat an intercepted open: {e}");
-            open.deny(libc::EIO);
+            open.deny(Errno::EIO);
             return;
         }
     };

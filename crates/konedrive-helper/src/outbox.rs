@@ -38,6 +38,7 @@
 //! process (see [`deliver`]).
 
 use std::collections::VecDeque;
+use std::fmt;
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
@@ -46,6 +47,8 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use konedrive_proto::{Channel, ToDaemon, MAX_OUTSTANDING_HYDRATIONS};
+
+use crate::errno::Errno;
 
 /// How many messages the helper *starts* — `HydrateRequest`s, and the one
 /// `Welcome` — may wait for one daemon at once.
@@ -366,13 +369,15 @@ impl Outbox {
     /// the connection is over, which is also what releases a caller waiting
     /// here: the writer thread closes the queue when it stops, including when
     /// [`LIVENESS_WINDOW`] ends a peer that neither reads nor talks.
-    pub fn send_ack(&self, errno: i32) -> Result<(), Closed> {
-        self.send_ack_with(errno, None)
+    pub fn send_ack(&self, answer: Result<(), Errno>) -> Result<(), Closed> {
+        self.send_ack_with(answer.map(|()| None))
     }
 
-    /// [`send_ack`](Self::send_ack), with a descriptor attached: the answer to
-    /// an `OpenByHandle`.
-    pub fn send_ack_with(&self, errno: i32, fd: Option<OwnedFd>) -> Result<(), Closed> {
+    /// [`send_ack`](Self::send_ack), with a descriptor attached to a success:
+    /// the answer to an `OpenByHandle`. A refusal carries none.
+    pub fn send_ack_with(&self, answer: Result<Option<OwnedFd>, Errno>) -> Result<(), Closed> {
+        let errno = Errno::to_wire(&answer);
+        let fd = answer.ok().flatten();
         let mut queue = self.pending.lock();
         loop {
             if queue.closed {
@@ -434,7 +439,7 @@ fn deliver(
     outgoing: &Outgoing,
     liveness: &Liveness,
     timing: Timing,
-) -> Result<(), String> {
+) -> Result<(), Undelivered> {
     let fd = outgoing.fd.as_ref().map(AsFd::as_fd);
     let blocked_since = Instant::now();
     loop {
@@ -448,15 +453,38 @@ fn deliver(
                     // send has not been blocked for a whole window yet.
                     continue;
                 }
-                return Err(format!(
-                    "a send has been blocked for {:?} and the daemon has said nothing for \
-                     {silent_for:?}, longer than the {:?} liveness window; it is wedged or not \
-                     reading",
-                    blocked_since.elapsed(),
-                    timing.liveness_window
-                ));
+                return Err(Undelivered::Wedged {
+                    blocked_for: blocked_since.elapsed(),
+                    silent_for,
+                    window: timing.liveness_window,
+                });
             }
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(Undelivered::Failed(e)),
+        }
+    }
+}
+
+/// Why a message did not reach its daemon, which ends the connection. Shown
+/// in the writer thread's warning.
+#[derive(Debug)]
+enum Undelivered {
+    /// The send stayed blocked while the daemon said nothing for the whole
+    /// liveness window.
+    Wedged { blocked_for: Duration, silent_for: Duration, window: Duration },
+    /// The send failed outright.
+    Failed(io::Error),
+}
+
+impl fmt::Display for Undelivered {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Undelivered::Wedged { blocked_for, silent_for, window } => write!(
+                f,
+                "a send has been blocked for {blocked_for:?} and the daemon has said nothing for \
+                 {silent_for:?}, longer than the {window:?} liveness window; it is wedged or not \
+                 reading"
+            ),
+            Undelivered::Failed(e) => e.fmt(f),
         }
     }
 }

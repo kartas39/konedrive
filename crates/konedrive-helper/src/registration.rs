@@ -2,6 +2,7 @@ use std::fs::File;
 use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::MetadataExt;
+use konedrive_helper::errno::Errno;
 use konedrive_helper::{marks, roots};
 use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 
@@ -147,10 +148,6 @@ pub(crate) fn record_walk(root: &roots::Root, report: marks::WalkReport) {
     log_failures(&report.failures);
 }
 
-pub(crate) fn errno_of(e: &io::Error) -> i32 {
-    e.raw_os_error().unwrap_or(libc::EIO)
-}
-
 /// Removes a registration **and the marks it put on the tree**.
 ///
 /// Removing the entry alone was worse than doing nothing. Every directory in
@@ -174,7 +171,7 @@ pub(crate) fn errno_of(e: &io::Error) -> i32 {
 /// unmarked in between.
 ///
 /// The write is not made under the roots lock (see `shared::Registrations`).
-pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> i32 {
+pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> Result<(), Errno> {
     let root = {
         let change = shared.roots.change();
         let Some((next, root)) = change.without(uid, root_id) else {
@@ -186,10 +183,10 @@ pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> i32 {
                     roots::shown_id(root_id)
                 )
             });
-            return libc::EPERM;
+            return Err(Errno::EPERM);
         };
         if let Err(e) = change.commit(next) {
-            return not_saved(shared, &e);
+            return Err(not_saved(shared, &e));
         }
         root
     };
@@ -198,16 +195,16 @@ pub(crate) fn unregister_root(shared: &Shared, uid: u32, root_id: &str) -> i32 {
     // tree, and every other thread that wants to know whether a uid has a root
     // would be waiting behind it.
     uncover_root(shared, &root, open_root(&root), "unregistered");
-    0
+    Ok(())
 }
 
 /// Says that `roots.json` could not be written, and returns the errno the
 /// request is answered. Throttled, under a key of its own: the trouble is the
 /// helper's (a full or read-only `/var/lib`), but while it lasts every
 /// registration any peer sends repeats it.
-fn not_saved(shared: &Shared, e: &io::Error) -> i32 {
+fn not_saved(shared: &Shared, e: &io::Error) -> Errno {
     shared.refusals.report(Refusal::RootsNotSaved, || format!("cannot save {ROOTS_FILE}: {e}"));
-    errno_of(e)
+    Errno::of(e)
 }
 
 /// Takes the marks off a tree whose registration has just gone: `how` says
@@ -266,7 +263,7 @@ fn unmark_tree(shared: &Shared, root: &roots::Root, dir: io::Result<File>, how: 
 /// answered. Throttled: every refusal is a request any local user can send
 /// as fast as it likes. An id that is another user's has a throttle of its
 /// own ([`Refusal::RootIdTaken`]).
-fn refuse(shared: &Shared, uid: u32, refused: &roots::Refused, root_id: &str, path: &str) -> i32 {
+fn refuse(shared: &Shared, uid: u32, refused: &roots::Refused, root_id: &str, path: &str) -> Errno {
     let kind = match refused {
         roots::Refused::AnotherUsers => Refusal::RootIdTaken,
         _ => Refusal::RootRefused,
@@ -293,7 +290,7 @@ fn refuse(shared: &Shared, uid: u32, refused: &roots::Refused, root_id: &str, pa
 /// Refuses a `RegisterRoot` whose id is not a root id, before the id is
 /// stored, compared or written to the log as it came: it is whatever string
 /// the peer sent, up to a whole datagram of it.
-pub(crate) fn refuse_malformed_id(shared: &Shared, uid: u32, root_id: &str) -> i32 {
+pub(crate) fn refuse_malformed_id(shared: &Shared, uid: u32, root_id: &str) -> Errno {
     refuse(shared, uid, &roots::Refused::NotAnId, root_id, "")
 }
 
@@ -305,17 +302,22 @@ pub(crate) fn refuse_malformed_id(shared: &Shared, uid: u32, root_id: &str) -> i
 ///
 /// That the id is a root id is asked before this is called, of the message
 /// (`ToHelper::validate`): see [`refuse_malformed_id`].
-pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir: File) -> i32 {
+pub(crate) fn register_root(
+    shared: &Shared,
+    owner: Owner,
+    root_id: String,
+    dir: File,
+) -> Result<(), Errno> {
     let uid = owner.uid;
     let meta = match dir.metadata() {
         Ok(meta) => meta,
-        Err(e) => return errno_of(&e),
+        Err(e) => return Err(Errno::of(&e)),
     };
     if !meta.is_dir() || meta.uid() != uid {
         shared.refusals.report(Refusal::RootRefused, || {
             format!("uid {uid} offered a root it does not own, or that is not a directory")
         });
-        return libc::EPERM;
+        return Err(Errno::EPERM);
     }
 
     // `root_id` is a string the client picks, so it names an
@@ -330,16 +332,13 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     // the decision below, which is the one that counts.
     let (previous_owner, held) = shared.roots.owner_and_held(&root_id, uid);
     if previous_owner.is_some_and(|other| other != uid) {
-        return refuse(shared, uid, &roots::Refused::AnotherUsers, &root_id, "");
+        return Err(refuse(shared, uid, &roots::Refused::AnotherUsers, &root_id, ""));
     }
     if previous_owner.is_none() && held >= roots::MAX_ROOTS_PER_UID {
-        return refuse(shared, uid, &roots::Refused::TooMany, &root_id, "");
+        return Err(refuse(shared, uid, &roots::Refused::TooMany, &root_id, ""));
     }
 
-    let path = match resolve_root_path(shared, &dir, meta.dev(), meta.ino()) {
-        Ok(path) => path,
-        Err(errno) => return errno,
-    };
+    let path = resolve_root_path(shared, &dir, meta.dev(), meta.ino())?;
 
     // The type of the filesystem, from `fstatfs`: the half of the check that
     // writes nothing. The helper does not probe the filesystem's features
@@ -347,7 +346,7 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     // its user, before it registers it.
     if let Err(unusable) = check_filesystem_type(&dir, &path) {
         shared.refusals.report(Refusal::RootRefused, || unusable.why);
-        return unusable.errno;
+        return Err(unusable.errno);
     }
 
     let root = roots::Root { uid, dev: meta.dev(), ino: meta.ino(), path, root_id };
@@ -381,7 +380,7 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
         let decided = change.with(root.clone());
         let roots::Accepted { roots: next, displaced } = match decided {
             Ok(accepted) => accepted,
-            Err(refused) => return refuse(shared, uid, &refused, &root.root_id, &root.path),
+            Err(refused) => return Err(refuse(shared, uid, &refused, &root.root_id, &root.path)),
         };
         // The id was the user's already, on another directory. The same
         // directory announced again is not looked at: its marks are the ones
@@ -419,21 +418,21 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
                             root.root_id
                         )
                     });
-                    return libc::EAGAIN;
+                    return Err(Errno::EAGAIN);
                 }
             },
         };
         if let Some((old, Ok(_))) = &displaced {
             if let Some(conflict) = old.overlap_with(&root.path) {
                 let refused = roots::Refused::Overlap(conflict);
-                return refuse(shared, uid, &refused, &root.root_id, &root.path);
+                return Err(refuse(shared, uid, &refused, &root.root_id, &root.path));
             }
         }
         // Saved before it is in place, and not under the roots lock: nobody
         // sees a registration that is not on disk, and a save that fails
         // leaves nothing to put back.
         if let Err(e) = change.commit(next) {
-            return not_saved(shared, &e);
+            return Err(not_saved(shared, &e));
         }
         displaced
     };
@@ -455,7 +454,7 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
     // backup), and every directory in it needs its own mark or nothing inside
     // it is intercepted.
     record_walk(&root, marks::walk_and_mark(&shared.marks, dir.as_fd(), &root.path));
-    0
+    Ok(())
 }
 
 /// The absolute path of a directory we were handed as a descriptor, verified
@@ -472,14 +471,14 @@ pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir:
 /// Every refusal here is one a peer can have as often as it likes — it only
 /// has to offer an unlinked directory — so each is throttled, and the path
 /// in it escaped and cut.
-fn resolve_root_path(shared: &Shared, dir: &File, dev: u64, ino: u64) -> Result<String, i32> {
+fn resolve_root_path(shared: &Shared, dir: &File, dev: u64, ino: u64) -> Result<String, Errno> {
     let refused = |line: String| shared.refusals.report(Refusal::RootRefused, || line);
     let link = format!("/proc/self/fd/{}", dir.as_raw_fd());
     let target = match std::fs::read_link(&link) {
         Ok(target) => target,
         Err(e) => {
             refused(format!("cannot resolve the path of the offered root: {e}"));
-            return Err(libc::EINVAL);
+            return Err(Errno::EINVAL);
         }
     };
     let Some(path) = target.to_str() else {
@@ -487,14 +486,14 @@ fn resolve_root_path(shared: &Shared, dir: &File, dev: u64, ino: u64) -> Result<
             "the offered root has a path that is not valid UTF-8 ({}); refusing to register it",
             roots::shown_path(&target.to_string_lossy())
         ));
-        return Err(libc::EINVAL);
+        return Err(Errno::EINVAL);
     };
     if !path.starts_with('/') {
         refused(format!(
             "the offered root resolved to {}, which is not an absolute path",
             roots::shown_path(path)
         ));
-        return Err(libc::EINVAL);
+        return Err(Errno::EINVAL);
     }
 
     // The same revalidation the startup walk does. A `" (deleted)"` suffix, a
@@ -507,7 +506,7 @@ fn resolve_root_path(shared: &Shared, dir: &File, dev: u64, ino: u64) -> Result<
             "{} does not lead back to the directory that was offered: {e}",
             roots::shown_path(path)
         ));
-        return Err(libc::EINVAL);
+        return Err(Errno::EINVAL);
     }
     Ok(path.to_owned())
 }
@@ -535,7 +534,7 @@ pub(crate) fn check_filesystem_type(dir: &File, path: &str) -> Result<(), Unusab
     if unsafe { libc::fstatfs(dir.as_raw_fd(), &mut buf) } != 0 {
         let e = io::Error::last_os_error();
         return Err(Unusable {
-            errno: errno_of(&e),
+            errno: Errno::of(&e),
             why: format!("cannot identify the filesystem under {path}: {e}"),
         });
     }
@@ -543,7 +542,7 @@ pub(crate) fn check_filesystem_type(dir: &File, path: &str) -> Result<(), Unusab
         REFUSED_FILESYSTEMS.iter().find(|(magic, _)| *magic == buf.f_type as i64)
     {
         return Err(Unusable {
-            errno: libc::EOPNOTSUPP,
+            errno: Errno::EOPNOTSUPP,
             why: format!(
                 "{path} is on {name}, which konedrive cannot host placeholders on: its files can \
                  change without any open on this machine, so interception would miss them"
@@ -556,7 +555,7 @@ pub(crate) fn check_filesystem_type(dir: &File, path: &str) -> Result<(), Unusab
 /// A filesystem a root cannot live on: the errno a registration is answered,
 /// and the reason in words, the path in it escaped and cut.
 pub(crate) struct Unusable {
-    pub(crate) errno: i32,
+    pub(crate) errno: Errno,
     pub(crate) why: String,
 }
 

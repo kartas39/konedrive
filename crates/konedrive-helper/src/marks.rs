@@ -273,8 +273,8 @@ impl Marks {
     /// is refused, a plain `FAN_DENY` is written instead — measured to rescue
     /// exactly this case — because an opener that is never answered stays
     /// blocked until the helper exits.
-    pub fn deny(&self, fd: BorrowedFd<'_>, errno: i32) -> io::Result<()> {
-        let errno = clamp_deny_errno(errno);
+    pub fn deny(&self, fd: BorrowedFd<'_>, errno: crate::errno::Errno) -> io::Result<()> {
+        let errno = errno.deliverable().raw();
         let bits = Response::FAN_DENY.bits() | ((errno as u32 & 0xff) << 24);
         let response = Response::from_bits_retain(bits);
         match self.group.write_response(FanotifyResponse::new(fd, response)) {

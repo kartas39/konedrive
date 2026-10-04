@@ -5,8 +5,8 @@
 use std::os::fd::AsFd;
 
 use konedrive_fs::placeholder::{read_state, State};
+use konedrive_helper::errno::Errno;
 use konedrive_helper::jobs::{self, Enrolled, Owner, MAX_SUSPENDED_OPENS_PER_UID};
-use konedrive_helper::marks;
 use konedrive_helper::outbox::{Outbox, Outgoing};
 use konedrive_helper::pending::PendingOpen;
 use konedrive_proto::ToDaemon;
@@ -55,7 +55,7 @@ pub(super) fn hydrate(shared: &Shared, open: PendingOpen, owner_uid: u32, dev: u
                     )
                 }),
             }
-            open.deny(libc::EIO);
+            open.deny(Errno::EIO);
             return;
         }
     };
@@ -75,7 +75,7 @@ pub(super) fn hydrate(shared: &Shared, open: PendingOpen, owner_uid: u32, dev: u
                     target: LOG,
                     "the daemon connection went away while this open was being handled"
                 );
-                libc::EIO
+                Errno::EIO
             }
             Enrolled::TooMany => {
                 // Throttled: a daemon that answers nothing turns every open
@@ -87,7 +87,7 @@ pub(super) fn hydrate(shared: &Shared, open: PendingOpen, owner_uid: u32, dev: u
                         owner.uid
                     )
                 });
-                libc::EAGAIN
+                Errno::EAGAIN
             }
             _ => {
                 tracing::warn!(
@@ -95,7 +95,7 @@ pub(super) fn hydrate(shared: &Shared, open: PendingOpen, owner_uid: u32, dev: u
                     "a hydration of this file was in hand for another uid, which no longer owns \
                      it; denying its openers EIO"
                 );
-                libc::EIO
+                Errno::EIO
             }
         };
         stranded.deny(errno);
@@ -130,11 +130,11 @@ pub(crate) fn dispatch(shared: &Shared, outbox: &Outbox, owner: Owner, mut next:
                 let request = Outgoing { message: ToDaemon::HydrateRequest { req_id }, fd: Some(fd) };
                 match outbox.try_send(request) {
                     Ok(()) => return,
-                    Err(_) if outbox.is_closed() => (libc::EIO, "the connection is over".to_owned()),
-                    Err(_) => (libc::EAGAIN, "its request capacity is taken".to_owned()),
+                    Err(_) if outbox.is_closed() => (Errno::EIO, "the connection is over".to_owned()),
+                    Err(_) => (Errno::EAGAIN, "its request capacity is taken".to_owned()),
                 }
             }
-            Err(e) => (libc::EIO, format!("cannot duplicate an event fd for the daemon: {e}")),
+            Err(e) => (Errno::EIO, format!("cannot duplicate an event fd for the daemon: {e}")),
         };
         shared.refusals.report(Refusal::Undeliverable, || {
             format!(
@@ -145,7 +145,7 @@ pub(crate) fn dispatch(shared: &Shared, outbox: &Outbox, owner: Owner, mut next:
         });
         // Every opener that has joined this job is answered, not just the
         // first: they are all waiting on a request that was never delivered.
-        next = settle(shared, req_id, owner, errno, Finish::Undeliverable);
+        next = settle(shared, req_id, owner, Err(errno), Finish::Undeliverable);
     }
 }
 /// What brought us into [`finish`]. It changes nothing about what the function
@@ -167,7 +167,7 @@ pub(crate) fn settle(
     shared: &Shared,
     req_id: u64,
     owner: Owner,
-    errno: i32,
+    outcome: Result<(), Errno>,
     why: Finish,
 ) -> Option<jobs::Dispatch> {
     let Some(jobs::Finished { waiters, since, next }) = shared.jobs.finish(req_id, owner)
@@ -196,15 +196,21 @@ pub(crate) fn settle(
         }
         return None;
     };
-    answer(shared, req_id, waiters, errno, since);
+    answer(shared, req_id, waiters, outcome, since);
     next
 }
 
 /// Answers the openers of one hydration with its outcome. `since` is the
 /// count of root unregistrations when the open that started it was read.
-fn answer(shared: &Shared, req_id: u64, waiters: Vec<PendingOpen>, errno: i32, since: u64) {
-    if errno != 0 {
-        let delivered = marks::clamp_deny_errno(errno);
+fn answer(
+    shared: &Shared,
+    req_id: u64,
+    waiters: Vec<PendingOpen>,
+    outcome: Result<(), Errno>,
+    since: u64,
+) {
+    if let Err(errno) = outcome {
+        let delivered = errno.deliverable();
         if delivered != errno {
             tracing::warn!(
                 target: LOG,
@@ -258,7 +264,7 @@ fn answer(shared: &Shared, req_id: u64, waiters: Vec<PendingOpen>, errno: i32, s
                  hydrated ({other:?}); denying EIO rather than risk serving zeros"
             );
             for open in waiters {
-                open.deny(libc::EIO);
+                open.deny(Errno::EIO);
             }
         }
     }

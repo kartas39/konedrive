@@ -9,6 +9,8 @@ use std::path::Path;
 use konedrive_proto::is_root_id;
 use serde::{Deserialize, Serialize};
 
+use crate::errno::Errno;
+
 /// How many roots one uid may hold.
 ///
 /// Every root is an entry in `roots.json`, compared against at each
@@ -65,11 +67,11 @@ pub enum Refused {
 
 impl Refused {
     /// The errno the daemon is answered.
-    pub fn errno(&self) -> i32 {
+    pub fn errno(&self) -> Errno {
         match self {
-            Refused::NotAnId | Refused::Overlap(_) => libc::EINVAL,
-            Refused::AnotherUsers => libc::EPERM,
-            Refused::TooMany => libc::EDQUOT,
+            Refused::NotAnId | Refused::Overlap(_) => Errno::EINVAL,
+            Refused::AnotherUsers => Errno::EPERM,
+            Refused::TooMany => Errno::EDQUOT,
         }
     }
 }
