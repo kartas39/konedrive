@@ -21,7 +21,7 @@ use crate::local::ignore::{IgnoreList, SharedIgnore};
 use crate::upload::{self, OutboxHost, WorkerStatus};
 use super::{Persist, SyncError, SyncService};
 use crate::config::ConfigError;
-use konedrive_tree::outbox::{Inode, OutboxState};
+use konedrive_tree::outbox::{Inode, OutboxState, Reason};
 use konedrive_tree::{ActivityRow, Store};
 
 /// One row as `Changes()` lists it: (seq, kind, full path, state, bytes sent,
@@ -285,10 +285,7 @@ pub(crate) fn entries(rows: Vec<konedrive_tree::outbox::OutboxRow>, root: &std::
                 Some((_, sent, total)) => (*sent, *total),
                 None if row.kind.sends_content() => {
                     let size = row
-                        .snapshot
-                        .as_deref()
-                        .and_then(|s| s.split(' ').next())
-                        .and_then(|s| s.parse().ok())
+                        .snapshot_size()
                         .or_else(|| std::fs::symlink_metadata(root.join(&row.rel)).ok().filter(|m| m.is_file()).map(|m| m.len()));
                     (0, size.unwrap_or(0))
                 }
@@ -306,9 +303,9 @@ pub(crate) fn entries(rows: Vec<konedrive_tree::outbox::OutboxRow>, root: &std::
                 total,
                 match row.reason {
                     None if full && row.kind.sends_content() && !matches!(row.state, OutboxState::Blocked | OutboxState::Held) => {
-                        upload::space::WAITING.to_owned()
+                        Reason::WaitingForSpace.to_string()
                     }
-                    reason => reason.unwrap_or_default(),
+                    reason => reason.map(|r| r.to_string()).unwrap_or_default(),
                 },
                 row.next_try.unwrap_or(0),
             )
@@ -328,11 +325,11 @@ impl SyncService {
     pub async fn not_uploaded(&self) -> Result<Vec<(String, String)>, SyncError> {
         let (skipped, rows) = self.read_outbox(|s| Ok((s.local_skipped()?, s.outbox_blocked()?))).await?;
         let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
-        let mut out: Vec<(String, String)> = skipped.into_iter().map(|s| (root.join(&s.rel).display().to_string(), s.reason)).collect();
+        let mut out: Vec<(String, String)> = skipped.into_iter().map(|s| (root.join(&s.rel).display().to_string(), s.reason.to_string())).collect();
         out.extend(
             rows.into_iter()
                 .filter(|row| row.state == OutboxState::Blocked)
-                .map(|row| (root.join(&row.rel).display().to_string(), row.reason.unwrap_or_else(|| "blocked".into()))),
+                .map(|row| (root.join(&row.rel).display().to_string(), row.reason.unwrap_or(Reason::Blocked).to_string())),
         );
         out.sort();
         Ok(out)

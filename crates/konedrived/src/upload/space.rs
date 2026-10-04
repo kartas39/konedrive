@@ -31,7 +31,7 @@ use super::engine::{now, Engine, Outcome};
 use super::local;
 use konedrive_graph::drive::DriveQuota;
 use crate::folder::disk::Disk;
-use konedrive_tree::outbox::{OutboxRow, OutboxState};
+use konedrive_tree::outbox::{OutboxRow, OutboxState, Reason};
 use konedrive_tree::{Store, TreeError};
 
 /// Less free space than this is none (a guess: the smallest file still goes,
@@ -46,30 +46,10 @@ pub const QUOTA_RECHECK: Duration = Duration::from_secs(30 * 60);
 /// together cost one request.
 const REUSE: i64 = 10;
 
-/// The reason of a row refused while OneDrive is full.
-pub const WAITING: &str = "waiting-for-space";
-
-/// The reason of a row refused while space is left: it needs `needs` bytes
-/// and `free` are free.
-pub fn too_big(needs: u64, free: u64) -> String {
-    format!("{TOO_BIG}{needs}:{free}")
-}
-
-const TOO_BIG: &str = "too-big:";
-
-/// The key every *too big* reason is summed under (`NotUploadedSummary()`).
-pub const TOO_BIG_KEY: &str = "too-big";
-
-/// `(needs, free)` of a *too big* reason.
-pub fn parse_too_big(reason: &str) -> Option<(u64, u64)> {
-    let (needs, free) = reason.strip_prefix(TOO_BIG)?.split_once(':')?;
-    Some((needs.parse().ok()?, free.parse().ok()?))
-}
-
 /// Whether a row with `reason` waits for space: not taken until a quota
 /// read lets it go.
-pub fn waits(reason: Option<&str>) -> bool {
-    reason.is_some_and(|r| r == WAITING || r.starts_with(TOO_BIG))
+pub fn waits(reason: Option<&Reason>) -> bool {
+    reason.is_some_and(Reason::waits_for_space)
 }
 
 /// Whether `quota` says anything of the space: Graph gave `remaining` or
@@ -107,7 +87,7 @@ impl Space {
     /// full OneDrive become waiting rows, and the quota is read once before
     /// they go. Rows waiting for space keep the worker full until then.
     pub(super) async fn start(store: &Store) -> Self {
-        let converted = store.call(move |s| s.outbox_space_convert(super::reason::QUOTA, WAITING)).await.unwrap_or_else(|e| {
+        let converted = store.call(move |s| s.outbox_space_convert(&Reason::Quota, &Reason::WaitingForSpace)).await.unwrap_or_else(|e| {
             tracing::warn!("cannot convert the outbox's rows blocked on a full OneDrive: {e}");
             0
         });
@@ -115,8 +95,8 @@ impl Space {
             tracing::info!("{converted} change(s) blocked on a full OneDrive wait for space now");
         }
         let groups = store.call(move |s| s.outbox_groups()).await.unwrap_or_default();
-        let full = groups.iter().any(|g| g.reason().as_deref() == Some(WAITING));
-        let wanted = full || groups.iter().any(|g| waits(g.reason().as_deref()));
+        let full = groups.iter().any(|g| g.reason() == Some(Reason::WaitingForSpace));
+        let wanted = full || groups.iter().any(|g| waits(g.reason().as_ref()));
         Self { full, wanted, started: true, ..Self::default() }
     }
 }
@@ -128,7 +108,7 @@ impl Space {
 /// once (issue #27), full or not. Its run sends no content: it ends if the
 /// file is gone, and waits on if not ([`Engine::space_holds`]).
 pub(super) fn allows(row: &OutboxRow, full: bool, looked: &HashSet<i64>, removed: impl FnOnce() -> Result<bool, TreeError>) -> Result<bool, TreeError> {
-    if !waits(row.reason.as_deref()) && !(full && row.kind.sends_content()) {
+    if !waits(row.reason.as_ref()) && !(full && row.kind.sends_content()) {
         return Ok(true);
     }
     Ok(row.kind == konedrive_tree::outbox::OutboxKind::Create && !looked.contains(&row.seq) && removed()?)
@@ -136,10 +116,7 @@ pub(super) fn allows(row: &OutboxRow, full: bool, looked: &HashSet<i64>, removed
 
 /// The size a waiting row sends: its snapshot's, or the file's now.
 fn size_of(row: &OutboxRow, disk: Option<&Disk>) -> u64 {
-    row.snapshot
-        .as_deref()
-        .and_then(|s| s.split(' ').next())
-        .and_then(|s| s.parse().ok())
+    row.snapshot_size()
         .or(row.size)
         .or_else(|| disk.and_then(|d| local::size_at(d, &row.rel)))
         .unwrap_or(0)
@@ -168,10 +145,10 @@ impl Engine {
     /// `waiting-for-space` while OneDrive is full.
     /// Such a row is not taken again for its removal until the next quota
     /// read.
-    pub(super) fn space_holds(&self, row: &OutboxRow) -> Option<String> {
-        let why = match row.reason.as_deref() {
-            Some(r) if waits(Some(r)) => Some(r.to_owned()),
-            _ => (self.space_full() && row.kind.sends_content()).then(|| WAITING.to_owned()),
+    pub(super) fn space_holds(&self, row: &OutboxRow) -> Option<Reason> {
+        let why = match &row.reason {
+            Some(r) if r.waits_for_space() => Some(r.clone()),
+            _ => (self.space_full() && row.kind.sends_content()).then_some(Reason::WaitingForSpace),
         };
         if why.is_some() {
             self.shared().space.looked.insert(row.seq);
@@ -212,15 +189,15 @@ impl Engine {
                 }
                 if no_space(&quota) {
                     self.turn_full();
-                    Outcome::Space(WAITING.into())
+                    Outcome::Space(Reason::WaitingForSpace)
                 } else {
-                    Outcome::Space(too_big(size, quota.remaining.unwrap_or(0)))
+                    Outcome::Space(Reason::TooBig(Some((size, quota.remaining.unwrap_or(0)))))
                 }
             }
             None => {
                 self.turn_full();
                 self.shared().space.next_check = now() + QUOTA_RECHECK.as_secs() as i64;
-                Outcome::Space(WAITING.into())
+                Outcome::Space(Reason::WaitingForSpace)
             }
         }
     }
@@ -286,12 +263,12 @@ impl Engine {
     async fn release_fitting(&self, free: u64) -> Result<(), TreeError> {
         let rows = self.store().call(move |s| s.outbox_waiting_for_space()).await?;
         let disk = Disk::open(&self.cfg.root, false).ok();
-        for row in rows.iter().filter(|r| r.state == OutboxState::Ready && waits(r.reason.as_deref())) {
+        for row in rows.iter().filter(|r| r.state == OutboxState::Ready && waits(r.reason.as_ref())) {
             let size = size_of(row, disk.as_ref());
-            let reason = (size > free).then(|| too_big(size, free));
+            let reason = (size > free).then_some(Reason::TooBig(Some((size, free))));
             if reason != row.reason {
                 let seq = row.seq;
-                self.store().call(move |s| s.outbox_set_state(seq, OutboxState::Ready, reason.as_deref(), None)).await?;
+                self.store().call(move |s| s.outbox_set_state(seq, OutboxState::Ready, reason.as_ref(), None)).await?;
             }
         }
         Ok(())

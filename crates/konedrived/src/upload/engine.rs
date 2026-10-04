@@ -13,10 +13,10 @@ use tokio::sync::{watch, Notify};
 use tokio_util::sync::CancellationToken;
 
 use super::local::{self, SYNC_BLOCKED, SYNC_PENDING, SYNC_UPLOADING};
-use super::{reason, space, Fault, OutboxCounts, Upload, WorkerConfig, WorkerStatus, BACKOFF_FIRST, BACKOFF_MAX, THROTTLE_FIRST};
+use super::{space, Fault, OutboxCounts, Upload, WorkerConfig, WorkerStatus, BACKOFF_FIRST, BACKOFF_MAX, THROTTLE_FIRST};
 use konedrive_graph::pool::Class as PoolClass;
 use crate::folder::disk::Disk;
-use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState, Pick, Picked};
+use konedrive_tree::outbox::{OutboxKind, OutboxRow, OutboxState, Pick, Picked, Reason};
 use konedrive_tree::{ActivityRow, Store, TreeError, TreeStore};
 
 use outcome::GATE_CLOSED;
@@ -57,7 +57,7 @@ struct InFlight {
     rel: PathBuf,
     /// The row's reason when it was taken: an `upload-failed` event is
     /// written once per row and reason.
-    reason: Option<String>,
+    reason: Option<Reason>,
     upload: Option<(u64, u64)>,
 }
 
@@ -289,7 +289,7 @@ impl Engine {
         if self.shared().forbidden_released {
             return;
         }
-        match self.store().call(move |s| s.outbox_unblock(&[reason::FORBIDDEN])).await {
+        match self.store().call(move |s| s.outbox_unblock(&[Reason::Forbidden])).await {
             Ok(_) => self.shared().forbidden_released = true,
             Err(e) => tracing::warn!("cannot let the rows a 403 blocked go: {e}"),
         }

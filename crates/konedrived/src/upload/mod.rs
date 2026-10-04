@@ -69,6 +69,7 @@ pub fn clear_marks(root: &SyncRoot, rows: &[konedrive_tree::outbox::OutboxRow]) 
 use konedrive_graph::drive::DriveClient;
 use crate::folder::root::SyncRoot;
 use crate::folder::locks::InodeLocks;
+use konedrive_tree::outbox::Reason;
 use konedrive_tree::{ActivityRow, Store, TreeError};
 
 pub(crate) use engine::Engine;
@@ -85,124 +86,6 @@ pub const BACKOFF_MAX: Duration = Duration::from_secs(3600);
 /// Throttled without `Retry-After`: 10 s, doubling, at most an hour (§4.10;
 /// provisional).
 pub const THROTTLE_FIRST: Duration = Duration::from_secs(10);
-
-/// What a row's `reason` says when the worker set it (beside the
-/// examination's `open-for-writing` and the name pre-check's codes).
-pub mod reason {
-    /// OneDrive is full (`507`, `quotaLimitReached`): what earlier versions
-    /// blocked a row with. Such rows wait for space now, from the start
-    /// ([`space`](super::space)).
-    pub const QUOTA: &str = "quota-exceeded";
-    /// `403`: OneDrive does not allow this change. Blocked until a worker begins anew,
-    /// as it does after a sign-in.
-    pub const FORBIDDEN: &str = "forbidden";
-    /// `400`: `refused: <the service's message>`. Blocked.
-    pub const REFUSED: &str = "refused";
-    /// `423`: locked, most likely open for co-authoring.
-    pub const LOCKED: &str = "locked";
-    /// The local object is not where the row saw it: the examination
-    /// catches up.
-    pub const NOT_FOUND: &str = "not-found";
-    pub use konedrive_tree::outbox::LEAVING_NOT_FOUND;
-    /// The file is not downloaded (WR1).
-    pub const NOT_LOCAL: &str = "not-downloaded";
-    /// Its size or time moved while it was being sent (§4.3).
-    pub const CHANGED: &str = "changed-while-sending";
-    /// The folder it goes into is not in OneDrive (yet, or any more).
-    pub const PARENT: &str = "parent-not-in-onedrive";
-    /// OneDrive holds other content than was sent: sent again from zero.
-    pub const HASH: &str = "hash-mismatch";
-    /// A move out of the folder, with nothing to reach it by (a worker built
-    /// without [`MoveOuts`](super::move_out::MoveOuts)).
-    pub const MOVE_OUT: &str = "move-out-not-yet";
-    /// A moved-out object waits for the helper, which alone can reach it by
-    /// its handle (`OpenByHandle`).
-    pub const NO_HELPER: &str = "waiting-for-the-helper";
-    /// A moved-out object the helper will not hand over (`EPERM`: another
-    /// owner, another device, no item id), or whose place cannot be told:
-    /// kept, never taken for gone (F90).
-    pub const UNREACHABLE: &str = "moved-out-unreachable";
-    /// A moved-out object is back in the folder: the examination's.
-    pub const BACK_INSIDE: &str = "back-in-the-folder";
-    /// Where a moved-out object is cannot be proved (its path does not open
-    /// on it again): nothing is taken off or deleted until it can.
-    pub const PLACE_UNKNOWN: &str = "moved-out-place-unknown";
-    /// A moved-out placeholder cannot be opened for writing to download it
-    /// (leased, or not writable by its owner): `moved-out-not-opened: <the
-    /// error>`. Its item stays in OneDrive; in backoff.
-    pub const NOT_OPENED: &str = "moved-out-not-opened";
-    /// A moved-out placeholder's download failed: its item stays in OneDrive.
-    pub const DOWNLOAD: &str = "download-failed";
-    /// `ESTALE` once for a moved-out object: asked again before it is
-    /// believed.
-    pub const GONE_ONCE: &str = "gone-once";
-    /// `ESTALE` for a handle taken on another filesystem than the folder's
-    /// now (a home moved to a new disk): it says nothing, so nothing goes.
-    pub const STALE_HANDLE: &str = "handle-from-another-filesystem";
-    /// `ESTALE` twice, but where the object was last proved to be it may
-    /// still stand (an inode that cannot be read), or that place is not
-    /// known: not gone.
-    pub const GONE_UNPROVED: &str = "gone-unproved";
-    /// A read lease cannot be probed (leases off, or not supported): a writer
-    /// cannot be ruled out, so nothing is filled.
-    pub const NO_LEASE: &str = "lease-probe-failed";
-    /// The account is paused: an upload in fragments stopped after the
-    /// fragment it was sending, its session kept (`docs/design/writes.md` §11).
-    /// Waiting, never a failure.
-    pub const PAUSED: &str = "paused";
-    /// A new file's name is held in OneDrive by the empty placeholder of an
-    /// upload session of this folder (issue #47): one another row still
-    /// sends, or one given up whose cancel has not gone through yet. Tried
-    /// again later, never taken for someone else's file.
-    pub const SESSION_OPEN: &str = "upload-session-open";
-    /// The row's name in OneDrive is held by an empty file the delta feed
-    /// never listed: an upload session's placeholder — another device's, or
-    /// one abandoned (issue #89). Never copied around, never deleted; tried
-    /// again later, until the name is free or the holder has content.
-    pub const NAME_HELD: &str = "name-held-by-an-upload";
-    /// The item changed in OneDrive each time its removal was sent, though
-    /// its content stayed what was deleted here: in backoff.
-    pub const CHANGED_AGAIN: &str = "changed in OneDrive again and again";
-    /// A row rewritten and sent again at once more often than
-    /// `AGAIN_LIMIT` in a row: in backoff, like a failure.
-    pub const CHANGING_AGAIN: &str = "changing in OneDrive again and again";
-    /// The upload session ended under the upload twice in one run: in backoff.
-    pub const SESSION_ENDED: &str = "the upload session ended twice";
-    /// The write gate closed between two fragments: `not allowed now: <why>`.
-    /// Waiting until it opens; the session is kept.
-    pub const NOT_ALLOWED: &str = "not allowed now";
-    /// The file carries a `user.konedrive.state` no konedrive writes, or
-    /// one that cannot be read: `state-unreadable: <the error>`. Blocked.
-    pub const BAD_STATE: &str = "state-unreadable";
-    /// Blocked: the row's place has no name.
-    pub const NO_NAME: &str = "no-name";
-    /// Blocked: a change, move or removal whose row names no item, or no base.
-    pub const NO_ITEM: &str = "no-item";
-    /// Blocked: the row's base has neither an eTag nor a cTag to send with.
-    pub const NO_GUARD: &str = "no-guard";
-    /// Blocked: a moved-out object's row has no handle to find it by.
-    pub const NO_HANDLE: &str = "no-handle";
-    /// Blocked: the helper refuses the handle of a moved-out object (`EINVAL`).
-    pub const BAD_HANDLE: &str = "bad-handle";
-    /// Blocked: the object a `move-out` row's handle opens carries another item's id.
-    pub const ANOTHER_ITEM: &str = "another-item";
-    /// What a blocked row with no reason is listed under.
-    pub const BLOCKED: &str = "blocked";
-    /// OneDrive could not be reached: a network error, a `5xx`, an answer
-    /// that could not be read (issue #87). In backoff; the error's own text
-    /// is in the journal only.
-    pub const NETWORK: &str = "network";
-    /// The local file could not be read or written (an I/O error). In
-    /// backoff; the error's text is in the journal only.
-    pub const LOCAL_IO: &str = "local-error";
-    /// The daemon's own index (the store) failed. In backoff; the error's
-    /// text is in the journal only.
-    pub const STORE: &str = "index-error";
-    /// Any other failure of a step: an error OneDrive gave that no step
-    /// settled, or a step that stopped by itself. In backoff; the error's
-    /// text is in the journal only.
-    pub const FAILED: &str = "upload-error";
-}
 
 /// The activity kinds the worker writes (§9; the outbox on the bus adds them to the D-Bus
 /// surface's list).
@@ -424,7 +307,7 @@ impl OutboxCounts {
                 _ => {
                     counts.pending = counts.pending.saturating_add(n);
                     counts.pending_bytes = counts.pending_bytes.saturating_add(group.bytes);
-                    counts.add_space(group.kind(), group.reason().as_deref(), full, n, group.bytes);
+                    counts.add_space(group.kind(), group.reason().as_ref(), full, n, group.bytes);
                 }
             }
         }
@@ -432,11 +315,11 @@ impl OutboxCounts {
     }
 
     /// Counts `n` pending rows of `kind` and `reason`, of `bytes` in all, where they wait for space.
-    fn add_space(&mut self, kind: konedrive_tree::outbox::OutboxKind, reason: Option<&str>, full: bool, n: u32, bytes: u64) {
-        if reason.is_some_and(|r| space::parse_too_big(r).is_some()) {
+    fn add_space(&mut self, kind: konedrive_tree::outbox::OutboxKind, reason: Option<&Reason>, full: bool, n: u32, bytes: u64) {
+        if reason.is_some_and(|r| r.sizes().is_some()) {
             self.too_big = self.too_big.saturating_add(n);
             self.too_big_bytes = self.too_big_bytes.saturating_add(bytes);
-        } else if full && kind.sends_content() || reason == Some(space::WAITING) {
+        } else if full && kind.sends_content() || reason == Some(&Reason::WaitingForSpace) {
             self.space_waiting = self.space_waiting.saturating_add(n);
             self.space_waiting_bytes = self.space_waiting_bytes.saturating_add(bytes);
         }

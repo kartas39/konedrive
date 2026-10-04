@@ -302,8 +302,8 @@ impl Materializer {
             tracing::debug!("{} waits for {} upload(s) before it goes", rel.display(), rows.len());
             return Ok(true);
         }
-        use crate::local::examine::{MOUNTED_INSIDE, UNKNOWN_STATE};
-        if let Some(held) = skipped.iter().find(|k| k.rel.starts_with(rel) && (k.reason == MOUNTED_INSIDE || k.reason == UNKNOWN_STATE)) {
+        use konedrive_tree::outbox::LocalSkip;
+        if let Some(held) = skipped.iter().find(|k| k.rel.starts_with(rel) && matches!(k.reason, LocalSkip::MountedInside | LocalSkip::UnknownState)) {
             tracing::info!("{} stays on disk: {} ({})", rel.display(), held.rel.display(), held.reason);
             return Ok(true);
         }

@@ -1,3 +1,5 @@
+use konedrive_reason::{Group, LocalSkip, Reason};
+
 use super::formats::{human_bytes, local_time};
 
 /// `sync status`'s `Waiting to upload:` line: `3 files (1.5 MiB)`.
@@ -28,66 +30,104 @@ pub fn quota_text(state: &str, free: u64, full: bool) -> String {
     format!("OneDrive: {} free (quota {state}).\n", human_bytes(free))
 }
 
-/// What a row's reason, or a `NotUploaded()` reason, means to a person.
+/// What a row's reason, or a `NotUploaded()` reason, means to a person: a
+/// reason as stored, or the key a summary lists it under. One the daemon's
+/// tables do not know is shown as it is.
 pub fn upload_reason_text(reason: &str) -> String {
+    match Reason::parse(reason) {
+        // What an examination never uploads has its own table; `not-downloaded` is in both.
+        Reason::Other(_) => skip_text(&LocalSkip::parse(reason), reason),
+        known => reason_text(&known, reason),
+    }
+}
+
+/// The sentence of a row's reason; `stored` is how the daemon sent it, shown
+/// as it is where the reason has no sentence.
+fn reason_text(reason: &Reason, stored: &str) -> String {
     let rename = "rename it to upload it";
+    let incomplete = || format!("konedrive's record of this change is incomplete ({stored}): it stays here until the file is changed again");
+    // `<key>: <detail>`: the key's sentence, then what the daemon said.
+    let detailed = |sentence: &str, detail: &Option<String>| match detail {
+        Some(detail) => format!("{sentence} ({detail})"),
+        None => sentence.to_owned(),
+    };
     match reason {
-        "name-characters" => format!("a name OneDrive refuses (one of \" * : < > ? \\ |): {rename}"),
-        "name-spaces" => format!("a name that starts or ends with a space, which OneDrive refuses: {rename}"),
-        "name-reserved" => format!("a name OneDrive reserves: {rename}"),
-        "name-not-utf8" => format!("a name that is not valid UTF-8: {rename}"),
-        "too-large" => "larger than OneDrive takes (250 GB)".to_owned(),
-        "quota-exceeded" => "OneDrive is full: free some space in OneDrive".to_owned(),
-        "waiting-for-space" => "waiting for space: OneDrive is full".to_owned(),
-        "forbidden" => "this sign-in does not allow uploads: sign in again".to_owned(),
-        "open-for-writing" => "open for writing in another program: it goes up once closed".to_owned(),
-        "mass-delete" => "part of a large delete: confirm it (`sync deletes confirm`) or undo it (`sync deletes restore`)".to_owned(),
-        "symlink" => "a symbolic link: never uploaded".to_owned(),
-        "fifo" | "socket" | "device" => "not a file or a folder: never uploaded".to_owned(),
-        "reserved-name" => "a .konedrive- name, which the daemon keeps for itself: never uploaded".to_owned(),
-        "not-downloaded" => "a file from another OneDrive folder that is not downloaded here".to_owned(),
-        "other-device" => "on another filesystem mounted inside the folder: never uploaded".to_owned(),
-        "mounted-inside" => "another filesystem is mounted inside a folder no longer synced here: the folder stays until it is unmounted".to_owned(),
-        "leaving-not-found" => "not found in OneDrive, which still lists it, in a folder no longer synced here: kept until OneDrive's listing says it was removed, or it is changed again".to_owned(),
-        "unknown-state" => "a file whose konedrive state cannot be read, in a folder no longer synced here: the folder stays until it is fixed or removed".to_owned(),
-        "hard-link" => "a file with other hard links: not uploaded".to_owned(),
-        "locked" => "locked in OneDrive (open for co-authoring): tried again later".to_owned(),
-        "network" => "OneDrive could not be reached: tried again later".to_owned(),
-        "local-error" => "the local file could not be read: tried again later".to_owned(),
-        "index-error" => "konedrive's local index failed: tried again later".to_owned(),
-        "upload-error" => "the upload failed: tried again later".to_owned(),
-        "refused" => "refused by OneDrive".to_owned(),
-        "moved-out-not-opened" => "moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later".to_owned(),
-        "paused" => "paused with the account: it goes on when the pause ends".to_owned(),
-        "upload-session-open" => "its name in OneDrive is held by an upload of this folder that has not ended: tried again later".to_owned(),
-        "name-held-by-an-upload" => "its name in OneDrive is held by an unfinished upload (another device, or one abandoned): tried again later".to_owned(),
-        "changed in OneDrive again and again" | "changing in OneDrive again and again" => "it keeps changing in OneDrive: tried again later".to_owned(),
-        "the upload session ended twice" => "OneDrive ended the upload twice: tried again later".to_owned(),
-        "not allowed now" => "uploads are not allowed now: it goes on when they are".to_owned(),
-        "state-unreadable" => "the file's konedrive state cannot be read: it stays here until the file is replaced".to_owned(),
-        "no-name" | "no-item" | "no-guard" | "no-handle" | "bad-handle" | "another-item" | "blocked" => {
-            format!("konedrive's record of this change is incomplete ({reason}): it stays here until the file is changed again")
-        }
-        "too-big" => "too big for the space left in OneDrive: free up space there, then `sync refresh`".to_owned(),
-        other => match (other.strip_prefix("refused: "), too_big(other)) {
-            (Some(message), _) => format!("OneDrive refused it: {message}"),
-            (None, Some((needs, free))) => format!("too big: needs {}, {} free", human_bytes(needs), human_bytes(free)),
-            (None, None) => match other.split_once(": ") {
-                // `<key>: <detail>`: the key's sentence, then what the daemon said.
-                Some((key, detail)) if DETAILED.contains(&key) => format!("{} ({detail})", upload_reason_text(key)),
-                _ => other.to_owned(),
-            },
+        Reason::NameCharacters => format!("a name OneDrive refuses (one of \" * : < > ? \\ |): {rename}"),
+        Reason::NameSpaces => format!("a name that starts or ends with a space, which OneDrive refuses: {rename}"),
+        Reason::NameReserved => format!("a name OneDrive reserves: {rename}"),
+        Reason::NameNotUtf8 => format!("a name that is not valid UTF-8: {rename}"),
+        Reason::TooLarge => "larger than OneDrive takes (250 GB)".to_owned(),
+        Reason::Quota => "OneDrive is full: free some space in OneDrive".to_owned(),
+        Reason::WaitingForSpace => "waiting for space: OneDrive is full".to_owned(),
+        Reason::Forbidden => "this sign-in does not allow uploads: sign in again".to_owned(),
+        Reason::OpenForWriting => "open for writing in another program: it goes up once closed".to_owned(),
+        Reason::MassDelete => "part of a large delete: confirm it (`sync deletes confirm`) or undo it (`sync deletes restore`)".to_owned(),
+        Reason::NotLocal => "a file from another OneDrive folder that is not downloaded here".to_owned(),
+        Reason::LeavingNotFound => "not found in OneDrive, which still lists it, in a folder no longer synced here: kept until OneDrive's listing says it was removed, or it is changed again".to_owned(),
+        Reason::Locked => "locked in OneDrive (open for co-authoring): tried again later".to_owned(),
+        Reason::Network => "OneDrive could not be reached: tried again later".to_owned(),
+        Reason::LocalIo => "the local file could not be read: tried again later".to_owned(),
+        Reason::Store => "konedrive's local index failed: tried again later".to_owned(),
+        Reason::Failed => "the upload failed: tried again later".to_owned(),
+        Reason::Refused(None) => "refused by OneDrive".to_owned(),
+        Reason::Refused(Some(message)) => format!("OneDrive refused it: {message}"),
+        Reason::NotOpened(detail) => detailed(
+            "moved out of the folder before it was downloaded, and it cannot be opened for the download now: tried again later",
+            detail,
+        ),
+        Reason::Paused => "paused with the account: it goes on when the pause ends".to_owned(),
+        Reason::SessionOpen => "its name in OneDrive is held by an upload of this folder that has not ended: tried again later".to_owned(),
+        Reason::NameHeld => "its name in OneDrive is held by an unfinished upload (another device, or one abandoned): tried again later".to_owned(),
+        Reason::ChangedAgain | Reason::ChangingAgain => "it keeps changing in OneDrive: tried again later".to_owned(),
+        Reason::SessionEnded => "OneDrive ended the upload twice: tried again later".to_owned(),
+        Reason::NotAllowed(detail) => detailed("uploads are not allowed now: it goes on when they are", detail),
+        Reason::BadState(detail) => detailed("the file's konedrive state cannot be read: it stays here until the file is replaced", detail),
+        Reason::NoName | Reason::NoItem | Reason::NoGuard | Reason::NoHandle | Reason::BadHandle | Reason::AnotherItem | Reason::Blocked => incomplete(),
+        Reason::TooBig(None) => "too big for the space left in OneDrive: free up space there, then `sync refresh`".to_owned(),
+        Reason::TooBig(Some((needs, free))) => too_big_text(*needs, *free),
+        // No sentence yet: shown as stored, with whatever stands behind the key.
+        Reason::NotFound
+        | Reason::Changed
+        | Reason::Parent
+        | Reason::Hash
+        | Reason::MoveOut
+        | Reason::NoHelper
+        | Reason::Unreachable(_)
+        | Reason::BackInside
+        | Reason::PlaceUnknown
+        | Reason::Download(_)
+        | Reason::GoneOnce
+        | Reason::StaleHandle
+        | Reason::GoneUnproved
+        | Reason::NoLease(_) => stored.to_owned(),
+        Reason::Other(_) => match reason.sizes() {
+            Some((needs, free)) => too_big_text(needs, free),
+            None => stored.to_owned(),
         },
     }
 }
 
-/// The keys that come with a detail behind them, `<key>: <detail>`, beside `refused`.
-const DETAILED: [&str; 3] = ["not allowed now", "state-unreadable", "moved-out-not-opened"];
+/// The sentence of what an examination never uploads.
+fn skip_text(skip: &LocalSkip, stored: &str) -> String {
+    match skip {
+        LocalSkip::Symlink => "a symbolic link: never uploaded".to_owned(),
+        LocalSkip::Fifo | LocalSkip::Socket | LocalSkip::Device => "not a file or a folder: never uploaded".to_owned(),
+        LocalSkip::ReservedName => "a .konedrive- name, which the daemon keeps for itself: never uploaded".to_owned(),
+        // Spelled as a row's `not-downloaded`, which is read first.
+        LocalSkip::NotDownloaded => reason_text(&Reason::NotLocal, stored),
+        LocalSkip::OtherDevice => "on another filesystem mounted inside the folder: never uploaded".to_owned(),
+        LocalSkip::MountedInside => "another filesystem is mounted inside a folder no longer synced here: the folder stays until it is unmounted".to_owned(),
+        LocalSkip::UnknownState => "a file whose konedrive state cannot be read, in a folder no longer synced here: the folder stays until it is fixed or removed".to_owned(),
+        LocalSkip::HardLink => "a file with other hard links: not uploaded".to_owned(),
+        // No sentence: shown as stored.
+        LocalSkip::Ignored => stored.to_owned(),
+        LocalSkip::Other(_) => reason_text(&Reason::Other(stored.to_owned()), stored),
+    }
+}
 
-/// `too-big:<needs>:<free>`: a file too big for the space left in OneDrive.
-fn too_big(reason: &str) -> Option<(u64, u64)> {
-    let (needs, free) = reason.strip_prefix("too-big:")?.split_once(':')?;
-    Some((needs.parse().ok()?, free.parse().ok()?))
+/// A file too big for the space left in OneDrive.
+fn too_big_text(needs: u64, free: u64) -> String {
+    format!("too big: needs {}, {} free", human_bytes(needs), human_bytes(free))
 }
 
 /// One row of `UploadQueue.Changes()`: (seq, kind, full path, state, bytes sent, bytes
@@ -127,12 +167,12 @@ pub const PER_FILE_SHOWN: u32 = 20;
 
 /// A `NotUploadedSummary()` group's heading.
 fn kept_back_group_text(group: &str) -> &str {
-    match group {
-        "one-action" => "Needs you: one action fixes them all",
-        "per-file" => "Needs you: each file",
-        "never" => "Never uploaded",
-        "waiting" => "Waiting: these go up by themselves",
-        other => other,
+    match Group::parse(group) {
+        Some(Group::OneAction) => "Needs you: one action fixes them all",
+        Some(Group::PerFile) => "Needs you: each file",
+        Some(Group::Never) => "Never uploaded",
+        Some(Group::Waiting) => "Waiting: these go up by themselves",
+        None => group,
     }
 }
 

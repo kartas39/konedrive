@@ -3,7 +3,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use crate::local::entry::Type;
-use konedrive_tree::outbox::{is_under, Detection, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState};
+use konedrive_tree::outbox::{is_under, place_name, Detection, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState};
 use konedrive_tree::{Kind, Placement, Row, Table};
 
 use super::{base_of, ExamineError, Expect, object, Objects, Place, Run, Settle};
@@ -231,7 +231,7 @@ impl Run<'_, '_> {
             base: Some(base_of(base)),
             target_parent: None,
             // Where a move out went, proved: what a later `ESTALE` is checked against.
-            target_name: went_to.filter(|_| kind == OutboxKind::MoveOut).and_then(Path::to_str).map(str::to_owned),
+            target_name: went_to.filter(|_| kind == OutboxKind::MoveOut).and_then(place_name).map(str::to_owned),
             same_content: false,
             state: OutboxState::Ready,
             reason: None,

@@ -15,6 +15,7 @@ dev-tools = ["konedrived/dev-tools"]
 anyhow.workspace = true
 clap.workspace = true
 konedrive-dbus = { path = "../konedrive-dbus" }
+konedrive-reason = { path = "../konedrive-reason" }
 libc.workspace = true
 tokio = { workspace = true, features = ["signal"] }
 zbus.workspace = true

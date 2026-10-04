@@ -26,7 +26,7 @@ use crate::remote::materialize::{Materializer, Scope};
 use crate::folder::root::SyncRoot;
 use crate::upload::fake::Harness;
 use crate::folder::locks::InodeLocks;
-use konedrive_tree::outbox::{Committed, Detection, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState};
+use konedrive_tree::outbox::{Committed, Detection, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState, Reason};
 use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 const TIME: i64 = 1_700_000_000;
@@ -93,7 +93,7 @@ fn new_row(kind: OutboxKind, rel: &str, parent: Option<&str>, inode: Inode, stat
         target_parent: parent.map(str::to_owned),
         target_name: Path::new(rel).file_name().map(|n| n.to_string_lossy().into_owned()),
         state,
-        reason: reason.map(str::to_owned),
+        reason: reason.map(Reason::parse),
         attempts: 0,
         next_try: None,
         snapshot: None,
@@ -345,7 +345,7 @@ fn mixed_rows() -> Vec<OutboxRow> {
         .map(|i| {
             let (state, reason) = match i % 30 {
                 0 => (OutboxState::Blocked, Some("name-characters")),
-                1..=4 => (OutboxState::Ready, Some(crate::upload::space::WAITING)),
+                1..=4 => (OutboxState::Ready, Some(Reason::WaitingForSpace.key())),
                 _ => (OutboxState::Ready, None),
             };
             new_row(OutboxKind::Create, &format!("d/f{i:06}"), Some("R"), object(i), state, reason)

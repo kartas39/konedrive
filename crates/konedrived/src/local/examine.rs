@@ -57,24 +57,8 @@ use super::ignore::IgnoreList;
 use super::liveness::Liveness;
 use crate::folder::disk::{Disk, HOLDING, NEW_PREFIX};
 use crate::folder::locks::InodeLocks;
-use konedrive_tree::outbox::{Base, Detection, Inode, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState};
+use konedrive_tree::outbox::{Base, Detection, Inode, LocalSkip, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState};
 use konedrive_tree::{Located, Row, Store, TreeError};
-
-/// A row's reason while a writer has the file open (§4.3).
-pub const OPEN_FOR_WRITING: &str = "open-for-writing";
-/// A held removal's reason (§3.4, the mass-delete guard).
-pub const MASS_DELETE: &str = "mass-delete";
-/// `local_skipped`'s reason for what is on another device than the folder
-/// (a nested Btrfs subvolume, a mount): never uploaded (F72).
-pub const OTHER_DEVICE: &str = "other-device";
-/// `local_skipped`'s reason for a file of ours whose konedrive state cannot
-/// be read, inside a folder that is no longer placed (issue #104): the
-/// folder stays on disk until it can be read.
-pub const UNKNOWN_STATE: &str = "unknown-state";
-/// `local_skipped`'s reason for another filesystem mounted inside a folder
-/// that is no longer placed (issue #104): the folder stays on disk until it
-/// is unmounted.
-pub const MOUNTED_INSIDE: &str = "mounted-inside";
 
 /// How many of the places a run did not examine its one warning names.
 const UNREADABLE_NAMED: usize = 20;
@@ -352,7 +336,7 @@ struct Run<'e, 'a> {
     consumed: HashSet<usize>,
     /// Entries stripped of an id they had no right to: new objects now.
     fresh: Vec<usize>,
-    skipped: HashMap<PathBuf, String>,
+    skipped: HashMap<PathBuf, LocalSkip>,
     detections: Vec<Detection>,
     ops: Vec<OutboxOp>,
     out: Examined,

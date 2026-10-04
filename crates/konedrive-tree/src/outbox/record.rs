@@ -2,7 +2,7 @@
 
 use rusqlite::Connection;
 
-use super::{insert, rewrite, rows_for, Base, Detection, OutboxKind, OutboxRow, OutboxState, Recorded, SWAP_PREFIX};
+use super::{insert, rewrite, rows_for, Base, Detection, OutboxKind, OutboxRow, OutboxState, Recorded};
 use crate::TreeError;
 
 fn new_row(d: &Detection, kind: OutboxKind, base: Option<Base>) -> OutboxRow {
@@ -76,7 +76,7 @@ fn merge(existing: &OutboxRow, d: &Detection) -> Option<OutboxRow> {
     // On its way through a temporary name: the row keeps it while the
     // detection still sees the object where the row was taking it, so that
     // a replay looks for the item there (F55 (7) (b)).
-    let swapping = existing.target_name.as_deref().is_some_and(|n| n.starts_with(SWAP_PREFIX));
+    let swapping = existing.swap_name().is_some();
     if swapping && kind == existing.kind && d.rel == existing.rel && d.target_parent.as_ref().is_none_or(|p| existing.target_parent.as_ref() == Some(p)) {
         row.target_parent = existing.target_parent.clone();
         row.target_name = existing.target_name.clone();

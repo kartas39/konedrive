@@ -36,6 +36,8 @@ use super::{apply, forget_subtrees, row_from, upsert, ActivityRow, Change, Table
 use super::{Kind, Row};
 
 mod changes;
+/// What a row's `snapshot` and `target_name` hold.
+mod encoded;
 #[cfg(test)]
 mod dependencies;
 mod handles;
@@ -52,20 +54,15 @@ mod worker;
 pub use changes::OutboxChanges;
 pub(super) use changes::watch;
 pub use pick::{due, Pick, Picked, PORTION};
+pub use encoded::{place_name, Snapshot};
 use handles::set_local_handle;
+pub use konedrive_reason::{key_of, known_group, Group, LocalSkip, Reason};
 use record::record;
 pub use row::{BadItem, Base, Committed, Detection, Inode, LocalSkipped, OutboxApplied, OutboxKind, OutboxOp, OutboxRow, OutboxState, Recorded};
 pub use schema::OPENING_LEFT_KEEP;
 pub(super) use schema::{upgrade, SCHEMA};
 use schema::FREES;
 pub use sums::{OutboxGroup, SkippedGroup};
-
-/// The `reason` of a change inside a folder no longer synced here whose item OneDrive
-/// answers `404` for while its listing still has it (issue #104):
-/// blocked until the listing says it is gone (the row goes) or it is
-/// changed again. The one reason the store itself reads
-/// ([`TreeStore::outbox_settle_not_found`]); the others are the outbox worker's.
-pub const LEAVING_NOT_FOUND: &str = "leaving-not-found";
 
 /// A name the outbox worker gives an item in OneDrive while the name its
 /// row takes is still another item's (§4.4, F55 (7)).
@@ -229,8 +226,8 @@ fn outbox_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxRow> {
         target_name: row.get(11)?,
         state: if unreadable.is_some() { OutboxState::Blocked } else { known_state.unwrap_or(OutboxState::Blocked) },
         reason: match unreadable {
-            Some(why) => Some(why),
-            None => row.get(13)?,
+            Some(why) => Some(Reason::Other(why)),
+            None => row.get::<_, Option<String>>(13)?.map(Reason::from),
         },
         attempts: row.get::<_, i64>(14)? as u32,
         next_try: row.get(15)?,
@@ -324,7 +321,7 @@ fn insert(conn: &Connection, row: &OutboxRow) -> Result<i64, TreeError> {
             row.target_parent,
             row.target_name,
             row.state.as_str(),
-            row.reason,
+            row.reason_text(),
             row.attempts as i64,
             row.next_try,
             row.snapshot,
@@ -365,7 +362,7 @@ fn rewrite(conn: &Connection, row: &OutboxRow) -> Result<(), TreeError> {
             row.target_parent,
             row.target_name,
             row.state.as_str(),
-            row.reason,
+            row.reason_text(),
             row.attempts as i64,
             row.next_try,
             row.snapshot,
@@ -434,13 +431,13 @@ impl TreeStore {
                     tx.execute(
                         "INSERT INTO local_skipped (rel, reason, at, size) VALUES (?1, ?2, ?3, ?4)
                          ON CONFLICT(rel) DO UPDATE SET reason = excluded.reason, size = excluded.size",
-                        params![path_value(rel), reason, now, *size as i64],
+                        params![path_value(rel), reason.to_string(), now, *size as i64],
                     )?;
                 }
                 OutboxOp::Hold { seq, reason } => {
                     tx.execute(
                         "UPDATE outbox SET state = 'held', reason = ?2, next_try = NULL WHERE seq = ?1 AND state != 'running'",
-                        params![seq, reason],
+                        params![seq, reason.to_string()],
                     )?;
                 }
                 OutboxOp::Unskip(rel) => {
@@ -543,10 +540,9 @@ impl TreeStore {
     /// (`ids`), or, `whole`, a whole listing of the drive has it — is tried
     /// again. What went, and how many are tried again.
     pub fn outbox_settle_not_found(&mut self, ids: &[String], whole: bool) -> Result<(usize, usize), TreeError> {
-        let reason = LEAVING_NOT_FOUND;
         let blocked: Vec<(i64, String)> = all_rows(&self.conn)?
             .into_iter()
-            .filter(|r| r.state == OutboxState::Blocked && r.reason.as_deref() == Some(reason))
+            .filter(|r| r.state == OutboxState::Blocked && r.reason == Some(Reason::LeavingNotFound))
             .filter_map(|r| Some((r.seq, r.item_id?)))
             .collect();
         let brought: HashSet<&str> = ids.iter().map(String::as_str).collect();
@@ -585,10 +581,10 @@ impl TreeStore {
         Ok(rows)
     }
 
-    pub fn outbox_set_state(&self, seq: i64, state: OutboxState, reason: Option<&str>, next_try: Option<i64>) -> Result<(), TreeError> {
+    pub fn outbox_set_state(&self, seq: i64, state: OutboxState, reason: Option<&Reason>, next_try: Option<i64>) -> Result<(), TreeError> {
         self.conn.execute(
             "UPDATE outbox SET state = ?2, reason = ?3, next_try = ?4 WHERE seq = ?1",
-            params![seq, state.as_str(), reason, next_try],
+            params![seq, state.as_str(), reason.map(Reason::to_string), next_try],
         )?;
         Ok(())
     }
@@ -600,8 +596,8 @@ impl TreeStore {
         Ok(attempts.unwrap_or(0) as u32)
     }
 
-    pub fn outbox_set_snapshot(&self, seq: i64, snapshot: Option<&str>) -> Result<(), TreeError> {
-        self.conn.execute("UPDATE outbox SET snapshot = ?2 WHERE seq = ?1", params![seq, snapshot])?;
+    pub fn outbox_set_snapshot(&self, seq: i64, snapshot: Option<Snapshot>) -> Result<(), TreeError> {
+        self.conn.execute("UPDATE outbox SET snapshot = ?2 WHERE seq = ?1", params![seq, snapshot.map(|s| s.to_string())])?;
         Ok(())
     }
 
@@ -753,7 +749,7 @@ impl TreeStore {
     pub fn local_skipped(&self) -> Result<Vec<LocalSkipped>, TreeError> {
         let mut statement = self.conn.prepare("SELECT rel, reason, at FROM local_skipped ORDER BY rel")?;
         let rows = statement
-            .query_map([], |row| Ok(LocalSkipped { rel: path_from(row.get_ref(0)?), reason: row.get(1)?, at: row.get(2)? }))?
+            .query_map([], |row| Ok(LocalSkipped { rel: path_from(row.get_ref(0)?), reason: row.get::<_, String>(1)?.into(), at: row.get(2)? }))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(rows)
     }

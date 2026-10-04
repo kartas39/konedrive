@@ -37,7 +37,7 @@ fn a_new_folder_below_a_copy_of_a_folder_is_not_made_in_the_original() {
     w.run();
     assert!(writes(&w).is_empty(), "{:?}", writes(&w));
     assert_eq!(w.cloud(|c| c.paths()), vec!["d"]);
-    assert_eq!(reason_of(&w, "Copy/sub").as_deref(), Some(reason::PARENT));
+    assert_eq!(reason_of(&w, "Copy/sub").as_deref(), Some(Reason::Parent.key()));
     assert_eq!(w.rows().len(), 2, "both wait: {:?}", w.summary());
 
     // The copy examined and stripped, it is a new folder, and everything goes up under it
@@ -80,7 +80,7 @@ fn an_item_moved_into_a_copy_of_a_folder_is_not_moved_into_the_original() {
     w.run();
     assert!(writes(&w).is_empty(), "{:?}", writes(&w));
     assert_eq!(w.cloud(|c| c.paths()), vec!["a.txt", "d"]);
-    assert_eq!(reason_of(&w, "Copy/a.txt").as_deref(), Some(reason::PARENT));
+    assert_eq!(reason_of(&w, "Copy/a.txt").as_deref(), Some(Reason::Parent.key()));
 }
 
 /// A folder that is leaving and was placed again elsewhere meanwhile (issue

@@ -13,7 +13,7 @@ use konedrive_fs::placeholder::{Stamp, State, XATTR_CTAG, XATTR_ITEM_ID, XATTR_S
 use nix::errno::Errno;
 use nix::fcntl::AtFlags;
 
-use konedrive_tree::outbox::Inode;
+use konedrive_tree::outbox::{Inode, LocalSkip};
 use konedrive_tree::usable_id;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,13 +28,13 @@ pub(super) enum Type {
 
 impl Type {
     /// Why it is never uploaded, for anything but a file or a directory.
-    pub(super) fn skip_reason(self) -> Option<&'static str> {
+    pub(super) fn skip_reason(self) -> Option<LocalSkip> {
         match self {
             Type::File | Type::Dir => None,
-            Type::Symlink => Some("symlink"),
-            Type::Fifo => Some("fifo"),
-            Type::Socket => Some("socket"),
-            Type::Device => Some("device"),
+            Type::Symlink => Some(LocalSkip::Symlink),
+            Type::Fifo => Some(LocalSkip::Fifo),
+            Type::Socket => Some(LocalSkip::Socket),
+            Type::Device => Some(LocalSkip::Device),
         }
     }
 }

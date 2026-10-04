@@ -211,7 +211,7 @@ fn a_placeholder_onedrive_will_not_delete_makes_the_row_wait_not_a_copy() {
     w.cloud(|c| c.refuse_placeholder_delete = true);
     w.run();
     assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::SESSION_OPEN));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::SessionOpen.key()));
     assert_eq!(w.cloud(|c| c.placeholders()), vec!["a.txt"]);
     assert_eq!(conflicts(&w), 0);
     assert!(!w.path("a-fedora.txt").exists());
@@ -306,7 +306,7 @@ fn a_name_held_by_an_unknown_placeholder_waits_and_is_never_a_copy() {
             }
             w.run();
             assert_eq!(w.rows().len(), 1, "{at}: {:?}", w.summary());
-            assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD), "{at}");
+            assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::NameHeld.key()), "{at}");
             assert_eq!(w.cloud(|c| c.placeholders()), vec![name.to_owned()], "{at}: never deleted");
             assert_eq!(w.cloud(|c| c.open_sessions()), 1, "{at}: its session goes on");
             assert_eq!(conflicts(&w), 0, "{at}");
@@ -379,7 +379,7 @@ fn a_placeholder_opened_elsewhere_just_before_is_never_deleted() {
     w.examine(&[("", "a.txt")]);
     w.run();
     assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::NameHeld.key()));
     assert_eq!(opening_at(&w, "a.txt"), None, "a 409 to this opening clears its record");
     assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions())), (vec!["a.txt".to_owned()], 1));
     assert_eq!(w.cloud(|c| c.count("DELETE", "items/")), 0);
@@ -401,7 +401,7 @@ fn a_changed_and_renamed_file_waits_for_a_held_name() {
     let rows = w.rows();
     assert_eq!(rows.len(), 1, "{:?}", w.summary());
     assert_eq!(rows[0].kind, Update, "one update carrying the move");
-    assert_eq!(rows[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(rows[0].reason_text().as_deref(), Some(Reason::NameHeld.key()));
     assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions())), (vec!["b.txt".to_owned()], 1));
     assert_eq!(w.cloud(|c| c.count("DELETE", "items/")), 0);
     assert_eq!(conflicts(&w), 0);
@@ -436,7 +436,7 @@ fn a_move_or_mkdir_onto_our_own_sessions_name_waits() {
         let rows = w.rows();
         assert_eq!(rows.len(), 2, "{what}: {:?}", w.summary());
         let mine = rows.iter().find(|r| r.rel.to_str() == Some("A.TXT")).unwrap();
-        assert_eq!(mine.reason.as_deref(), Some(reason::NAME_HELD), "{what}");
+        assert_eq!(mine.reason_text().as_deref(), Some(Reason::NameHeld.key()), "{what}");
         let other = rows.iter().find(|r| r.rel.to_str() == Some("a.txt")).unwrap();
         assert_eq!(other.session_url.as_deref(), Some(session.as_str()), "{what}: its session untouched");
         assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions())), (vec!["a.txt".to_owned()], 1), "{what}");
@@ -523,7 +523,7 @@ fn a_carried_record_and_an_older_empty_holder_waits() {
     });
     w.run();
     assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::NameHeld.key()));
     assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions())), (vec!["a.txt".to_owned()], 1));
     assert_eq!(w.cloud(|c| c.count("DELETE", "items/")), 0);
     assert_eq!(opening_at(&w, "a.txt"), None);
@@ -547,7 +547,7 @@ fn a_resolved_record_never_deletes_a_later_placeholder() {
     due(&w);
     w.run();
     assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::NameHeld.key()));
     assert_eq!(w.cloud(|c| (c.placeholders(), c.open_sessions(), c.count("DELETE", "items/"))), (vec!["a.txt".to_owned()], 1, 1));
     assert_eq!(conflicts(&w), 0);
 }
@@ -605,7 +605,7 @@ fn a_carried_record_never_takes_a_later_placeholder_for_ours() {
     });
     w.run();
     assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::NameHeld.key()));
     assert_eq!(w.cloud(|c| (c.placeholders().len(), c.count("DELETE", "items/"))), (1, 0));
     assert_eq!(opening_at(&w, "a.txt"), None, "resolved");
 }
@@ -652,7 +652,7 @@ fn a_placeholder_between_two_records_windows_is_not_ours() {
     });
     w.run();
     assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::NameHeld.key()));
     assert_eq!(w.cloud(|c| (c.placeholders().len(), c.count("DELETE", "items/"))), (1, 0));
     assert_eq!(conflicts(&w), 0);
 }
@@ -671,7 +671,7 @@ fn a_certain_answer_keeps_a_carried_records_last_unknown_time() {
     w.cloud(|c| c.open_elsewhere(fake::ROOT, "a.txt", 1800));
     w.run();
     assert_eq!(w.rows().len(), 1, "{:?}", w.summary());
-    assert_eq!(w.rows()[0].reason.as_deref(), Some(reason::NAME_HELD));
+    assert_eq!(w.rows()[0].reason_text().as_deref(), Some(Reason::NameHeld.key()));
     assert_eq!(w.cloud(|c| (c.placeholders().len(), c.count("DELETE", "items/"))), (1, 0));
     assert_eq!(conflicts(&w), 0);
 }

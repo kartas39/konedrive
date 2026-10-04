@@ -25,7 +25,8 @@
 use std::collections::{HashMap, HashSet};
 use rusqlite::{params, Connection};
 
-use super::{circles, frees, path_value, rows_where, takes, OutboxKind, OutboxRow, OutboxState, FREES};
+use konedrive_reason::TOO_BIG_PREFIX;
+use super::{circles, frees, path_value, rows_where, takes, OutboxKind, OutboxRow, OutboxState, Reason, FREES};
 use crate::{Kind, TreeError, TreeStore, MAX_CHAIN};
 
 /// Due rows read at a time (a guess: large enough that a portion is one
@@ -516,7 +517,11 @@ impl TreeStore {
     /// The ready rows waiting for space in OneDrive (`waiting-for-space`,
     /// `too-big:…`): what a quota read may let go.
     pub fn outbox_waiting_for_space(&self) -> Result<Vec<OutboxRow>, TreeError> {
-        rows_where(&self.conn, "WHERE state = 'ready' AND (reason = 'waiting-for-space' OR substr(reason, 1, 8) = 'too-big:')", [])
+        rows_where(
+            &self.conn,
+            "WHERE state = 'ready' AND (reason = ?1 OR substr(reason, 1, length(?2)) = ?2)",
+            [Reason::WaitingForSpace.key(), TOO_BIG_PREFIX],
+        )
     }
 
     /// The blocked rows (`NotUploaded()`), through the due index.

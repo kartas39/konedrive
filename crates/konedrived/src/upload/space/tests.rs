@@ -11,7 +11,7 @@ fn full_is_exceeded_or_less_than_a_mebibyte_free() {
 
 #[test]
 fn a_too_big_reason_says_what_it_needs_and_what_is_free() {
-    assert_eq!(parse_too_big(&too_big(300, 20)), Some((300, 20)));
-    assert!(waits(Some(&too_big(1, 0))) && waits(Some(WAITING)));
-    assert!(!waits(Some("quota-exceeded")) && !waits(None));
+    assert_eq!(Reason::parse(&Reason::TooBig(Some((300, 20))).to_string()).sizes(), Some((300, 20)));
+    assert!(waits(Some(&Reason::TooBig(Some((1, 0))))) && waits(Some(&Reason::WaitingForSpace)));
+    assert!(!waits(Some(&"quota-exceeded".into())) && !waits(None));
 }

@@ -467,7 +467,7 @@ pub fn crash_mid_download_then_restart(ctx: &Ctx, checks: &mut Checks) -> Result
     let worker = base.worker(ctx, &url, false)?;
     let failed = wait_for("a failed download", WITHIN, || {
         base.store.call_blocking(move |s| s.outbox_rows()).is_ok_and(|rows| {
-            rows.iter().any(|r| r.state == OutboxState::Retry && r.reason.as_deref().is_some_and(|w| w.starts_with("download-failed")))
+            rows.iter().any(|r| r.state == OutboxState::Retry && r.reason_text().as_deref().is_some_and(|w| w.starts_with("download-failed")))
         })
     });
     base.stop(ctx, worker);

@@ -900,7 +900,7 @@ async fn a_held_delete_of_an_item_already_deleted_in_onedrive_is_dropped() {
     w.examine(batch).await;
     let seq = w.store.call(move |s| s.outbox_rows()).await.unwrap().into_iter().find(|r| r.item_id.as_deref() == Some("D")).unwrap().seq;
     // The mass-delete guard's decision, without tripping its threshold.
-    w.store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some("mass-delete"), None)).await.unwrap();
+    w.store.call(move |s| s.outbox_set_state(seq, OutboxState::Held, Some(&"mass-delete".into()), None)).await.unwrap();
     assert_eq!(w.store.call(move |s| crate::upload::outbox_counts(s, false)).await.unwrap().held, 1);
 
     // `docs` is deleted in OneDrive too, from another device.

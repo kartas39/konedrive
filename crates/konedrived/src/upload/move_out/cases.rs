@@ -8,13 +8,13 @@ use std::sync::Arc;
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{self, State};
 use crate::upload::engine::{Engine, Fail, Outcome};
-use crate::upload::{reason, Fault};
+use crate::upload::Fault;
 use crate::folder::disk::Disk;
 use crate::helper::HelperError;
 use crate::local::liveness::{absent_at, handles_current_async};
 use crate::local::RECHECK;
 use crate::folder::locks::InodeKey;
-use konedrive_tree::outbox::OutboxRow;
+use konedrive_tree::outbox::{OutboxRow, Reason};
 use konedrive_tree::{Kind, Placement, Table};
 
 use super::place::{in_another_folder, parent_has, Place, place_of, proc_path, reopen_parent, verified_path};
@@ -43,7 +43,7 @@ pub(super) async fn elsewhere_file(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow
 /// as a folder delete is: one unguarded `DELETE` of the folder itself, whatever it holds there by
 /// then (F82 (10)).
 pub(super) async fn elsewhere_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str, object: File, shown: &Path) -> Result<Outcome, Fail> {
-    let Some(top) = reopen_dir(shown, &object)? else { return Ok(Outcome::backoff(reason::PLACE_UNKNOWN)) };
+    let Some(top) = reopen_dir(shown, &object)? else { return Ok(Outcome::backoff(Reason::PlaceUnknown)) };
     if let Err(err) = e.moved_out().helper.mark_dir(&object).await {
         tracing::debug!("{} is not marked again yet: {err}", shown.display());
     }
@@ -110,9 +110,9 @@ pub(super) async fn elsewhere_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxR
 /// stays there as the user's own file; a placeholder, which holds nothing, is removed with its
 /// `.trashinfo`, and only once it has no link left does the item go to OneDrive's recycle bin.
 pub(super) async fn trashed_file(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str, object: File, entry: &TrashEntry) -> Result<Outcome, Fail> {
-    let Some(path) = verified_path(&object) else { return Ok(Outcome::backoff(reason::PLACE_UNKNOWN)) };
+    let Some(path) = verified_path(&object) else { return Ok(Outcome::backoff(Reason::PlaceUnknown)) };
     let key = InodeKey::of(&object)?;
-    let Some(_inode) = e.cfg.locks.try_lock(key) else { return Ok(Outcome::later(reason::NOT_LOCAL, RECHECK)) };
+    let Some(_inode) = e.cfg.locks.try_lock(key) else { return Ok(Outcome::later(Reason::NotLocal, RECHECK)) };
     if let Some(outcome) = before_marker(e, disk, row, id, &object).await? {
         return Ok(outcome);
     }
@@ -130,10 +130,10 @@ pub(super) async fn trashed_file(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, 
             // it is at the next run.
             if object.metadata()?.nlink() != 0 {
                 e.set_marker(row, None).await?;
-                return Ok(Outcome::backoff(reason::PLACE_UNKNOWN));
+                return Ok(Outcome::backoff(Reason::PlaceUnknown));
             }
         }
-        _ => return Ok(Outcome::later(reason::NOT_LOCAL, RECHECK)),
+        _ => return Ok(Outcome::later(Reason::NotLocal, RECHECK)),
     }
     e.fault(Fault::AfterStrip)?;
     tracing::info!("{} was moved to the Trash: it is in OneDrive's recycle bin", row.rel.display());
@@ -145,8 +145,8 @@ pub(super) async fn trashed_file(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, 
 /// the whole entry with its `.trashinfo` when nothing is left. A placeholder with another link is
 /// downloaded instead.
 pub(super) async fn trashed_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow, id: &str, object: File, entry: &TrashEntry) -> Result<Outcome, Fail> {
-    let Some(path) = verified_path(&object) else { return Ok(Outcome::backoff(reason::PLACE_UNKNOWN)) };
-    let Some(top) = reopen_dir(&path, &object)? else { return Ok(Outcome::backoff(reason::PLACE_UNKNOWN)) };
+    let Some(path) = verified_path(&object) else { return Ok(Outcome::backoff(Reason::PlaceUnknown)) };
+    let Some(top) = reopen_dir(&path, &object)? else { return Ok(Outcome::backoff(Reason::PlaceUnknown)) };
     let inside = inside_of(e, id).await?;
     let top2 = top.try_clone()?;
     let met = crate::upload::steps::blocking(move || walk(&top2)).await?;
@@ -163,11 +163,11 @@ pub(super) async fn trashed_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow
                 return Ok(outcome);
             }
         }
-        let Some(guard) = e.cfg.locks.try_lock(InodeKey::of(&file)?) else { return Ok(Outcome::later(reason::NOT_LOCAL, RECHECK)) };
+        let Some(guard) = e.cfg.locks.try_lock(InodeKey::of(&file)?) else { return Ok(Outcome::later(Reason::NotLocal, RECHECK)) };
         let stays = match placeholder::read_state(&file) {
             Ok(Some(State::Hydrated)) => true,
             Ok(Some(State::OnlineOnly | State::Hydrating)) => false,
-            _ => return Ok(Outcome::later(reason::NOT_LOCAL, RECHECK)),
+            _ => return Ok(Outcome::later(Reason::NotLocal, RECHECK)),
         };
         guards.push(guard);
         found.insert(item.clone());
@@ -201,7 +201,7 @@ pub(super) async fn trashed_folder(e: &Arc<Engine>, disk: &Disk, row: &OutboxRow
     if !removed_all {
         // A placeholder renamed or linked meanwhile: nothing goes until it is found again.
         e.set_marker(row, None).await?;
-        return Ok(Outcome::backoff(reason::PLACE_UNKNOWN));
+        return Ok(Outcome::backoff(Reason::PlaceUnknown));
     }
     {
         let top = top.try_clone()?;
@@ -289,12 +289,12 @@ async fn left_since(
         }
         let asked = item.clone();
         let Some(handle) = e.store().call(move |s| s.local_handle(&asked)).await? else {
-            return Ok(Err(Outcome::backoff(reason::UNREACHABLE)));
+            return Ok(Err(Outcome::backoff(Reason::Unreachable(None))));
         };
         let object = match mo.helper.open_by_handle(&root, &handle).await {
             Ok(object) => File::from(object),
             Err(HelperError::Refused(libc::ESTALE)) if !handles_current_async(e.store(), &root).await => {
-                return Ok(Err(Outcome::backoff(reason::STALE_HANDLE)));
+                return Ok(Err(Outcome::backoff(Reason::StaleHandle)));
             }
             // Gone with its evidence: nothing, or another object, at its place in the folder
             // where the folder is now.
@@ -308,17 +308,17 @@ async fn left_since(
                 if there.is_some_and(|p| absent_at(&p, &handle)) {
                     continue;
                 }
-                return Ok(Err(Outcome::backoff(reason::GONE_UNPROVED)));
+                return Ok(Err(Outcome::backoff(Reason::GoneUnproved)));
             }
             Err(HelperError::Refused(libc::EPERM)) if marker(row) => continue,
-            Err(HelperError::Refused(_)) => return Ok(Err(Outcome::backoff(reason::UNREACHABLE))),
-            Err(_) => return Ok(Err(Outcome::backoff(reason::NO_HELPER))),
+            Err(HelperError::Refused(_)) => return Ok(Err(Outcome::backoff(Reason::Unreachable(None)))),
+            Err(_) => return Ok(Err(Outcome::backoff(Reason::NoHelper))),
         };
         let shown = match place_of(e, disk, &object, &handle) {
             Place::Elsewhere(Some(path)) => path,
             Place::Trash(entry) => entry.top,
-            Place::Elsewhere(None) => return Ok(Err(Outcome::backoff(reason::PLACE_UNKNOWN))),
-            Place::Inside | Place::Unknown => return Ok(Err(Outcome::backoff(reason::BACK_INSIDE))),
+            Place::Elsewhere(None) => return Ok(Err(Outcome::backoff(Reason::PlaceUnknown))),
+            Place::Inside | Place::Unknown => return Ok(Err(Outcome::backoff(Reason::BackInside))),
         };
         if let Local::No(outcome) = e.make_local(&object, &shown).await? {
             return Ok(Err(outcome));

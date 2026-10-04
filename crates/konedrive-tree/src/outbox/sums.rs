@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use rusqlite::types::Value;
 
-use super::{path_from, OutboxKind, OutboxState};
+use super::{path_from, LocalSkip, OutboxKind, OutboxState, Reason};
 use crate::{TreeError, TreeStore};
 
 /// The bytes a row sends, in SQL: its snapshot's size (`<size> <mtime_ns>`),
@@ -44,11 +44,11 @@ impl OutboxGroup {
     }
 
     /// The reason as a row reads it.
-    pub fn reason(&self) -> Option<String> {
+    pub fn reason(&self) -> Option<Reason> {
         match (OutboxKind::parse(&self.kind), OutboxState::parse(&self.state)) {
-            (None, _) => Some(format!("unreadable kind {:?}", self.kind)),
-            (_, None) => Some(format!("unreadable state {:?}", self.state)),
-            _ => self.reason.clone(),
+            (None, _) => Some(Reason::Other(format!("unreadable kind {:?}", self.kind))),
+            (_, None) => Some(Reason::Other(format!("unreadable state {:?}", self.state))),
+            _ => self.reason.as_deref().map(Reason::parse),
         }
     }
 }
@@ -56,7 +56,7 @@ impl OutboxGroup {
 /// What is never uploaded, of one reason.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkippedGroup {
-    pub reason: String,
+    pub reason: LocalSkip,
     pub count: u64,
     pub bytes: u64,
 }
@@ -84,7 +84,7 @@ impl TreeStore {
     pub fn skipped_groups(&self) -> Result<Vec<SkippedGroup>, TreeError> {
         let mut statement = self.conn.prepare_cached("SELECT reason, count(*), COALESCE(SUM(size), 0) FROM local_skipped GROUP BY reason")?;
         let groups = statement
-            .query_map([], |r| Ok(SkippedGroup { reason: r.get(0)?, count: r.get::<_, i64>(1)?.max(0) as u64, bytes: r.get::<_, i64>(2)?.max(0) as u64 }))?
+            .query_map([], |r| Ok(SkippedGroup { reason: r.get::<_, String>(0)?.into(), count: r.get::<_, i64>(1)?.max(0) as u64, bytes: r.get::<_, i64>(2)?.max(0) as u64 }))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(groups)
     }
@@ -106,13 +106,13 @@ impl TreeStore {
 
     /// The places of what is never uploaded for one of `reasons`, by place, at
     /// most `limit` (0 for all), each with its reason.
-    pub fn skipped_places_of(&self, reasons: &[&str], limit: u32) -> Result<Vec<(PathBuf, String)>, TreeError> {
+    pub fn skipped_places_of(&self, reasons: &[&LocalSkip], limit: u32) -> Result<Vec<(PathBuf, LocalSkip)>, TreeError> {
         let mut out = Vec::new();
         for reason in reasons {
             let sql = format!("SELECT rel FROM local_skipped WHERE reason = ?1 ORDER BY rel{}", limited(limit));
             let mut statement = self.conn.prepare_cached(&sql)?;
-            let rels = statement.query_map([Value::Text((*reason).to_owned())], |r| Ok(path_from(r.get_ref(0)?)))?.collect::<Result<Vec<_>, _>>()?;
-            out.extend(rels.into_iter().map(|rel| (rel, (*reason).to_owned())));
+            let rels = statement.query_map([Value::Text(reason.to_string())], |r| Ok(path_from(r.get_ref(0)?)))?.collect::<Result<Vec<_>, _>>()?;
+            out.extend(rels.into_iter().map(|rel| (rel, (*reason).clone())));
         }
         Ok(out)
     }

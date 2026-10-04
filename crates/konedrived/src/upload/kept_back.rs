@@ -15,77 +15,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::upload::{reason, space};
-use konedrive_tree::outbox::{OutboxGroup, OutboxKind, OutboxState, SkippedGroup};
+pub use konedrive_tree::outbox::Group;
+use konedrive_tree::outbox::{key_of, known_group, OutboxGroup, OutboxKind, OutboxState, Reason, SkippedGroup};
 use konedrive_tree::{TreeError, TreeStore};
 
-/// What the user can do about a reason, in the order the window shows them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Group {
-    /// One action fixes every file of the reason: OneDrive full, a sign-in
-    /// that does not allow writes.
-    OneAction,
-    /// Each file needs the user: a name OneDrive refuses, a file too large,
-    /// refused by OneDrive with a message.
-    PerFile,
-    /// Never uploaded, and nothing to do: symbolic links, pipes, another device.
-    Never,
-    /// Goes up by itself.
-    Waiting,
-}
-
-impl Group {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::OneAction => "one-action",
-            Self::PerFile => "per-file",
-            Self::Never => "never",
-            Self::Waiting => "waiting",
-        }
-    }
-}
-
-/// The reason `refused: <the service's message>` is listed under, so that
-/// every `400` is one reason with the service's text kept per file.
-pub const REFUSED: &str = reason::REFUSED;
-
-/// The key a reason is summed under: its code; the key of a reason that
-/// carries a detail behind it, `<key>: <detail>` (`refused: <message>`,
-/// `download-failed: errno 5`), for every key of the table; and `too-big`
-/// for every `too-big:<needs>:<free>`.
+/// The key a reason as stored, a row's or a skip's, is summed under
+/// ([`key_of`]).
 pub fn reason_key(reason: &str) -> &str {
-    if space::parse_too_big(reason).is_some() {
-        return space::TOO_BIG_KEY;
-    }
-    match reason.split_once(": ") {
-        Some((key, _)) if known_group(key).is_some() => key,
-        _ => reason,
-    }
-}
-
-/// The group of a reason key ([`reason_key`]); `None` for one no code of
-/// the daemon writes, which [`group_of`] decides by the row's state alone.
-/// Every reason the worker writes is here.
-fn known_group(key: &str) -> Option<Group> {
-    use crate::local::examine::{MOUNTED_INSIDE, OPEN_FOR_WRITING, OTHER_DEVICE, UNKNOWN_STATE};
-    use reason::*;
-    Some(match key {
-        // `quota-exceeded` only until a start converts it to `waiting-for-space` (#2).
-        QUOTA | space::WAITING | space::TOO_BIG_KEY | FORBIDDEN => Group::OneAction,
-        "name-characters" | "name-spaces" | "name-reserved" | "name-not-utf8" | "too-large" | REFUSED => Group::PerFile,
-        // What keeps a folder no longer synced here on disk (issue #104):
-        // the user unmounts, or fixes or removes the file.
-        UNKNOWN_STATE | MOUNTED_INSIDE | LEAVING_NOT_FOUND => Group::PerFile,
-        // What the worker blocks a row with beside those: the row itself, or the
-        // file's state, is not what a step can work with. `BLOCKED`: no reason at all.
-        NO_NAME | NO_ITEM | NO_GUARD | NO_HANDLE | BAD_HANDLE | ANOTHER_ITEM | BAD_STATE | BLOCKED => Group::PerFile,
-        // `reserved-name` is a `.konedrive-` name, which the daemon keeps for itself.
-        "symlink" | "fifo" | "socket" | "device" | OTHER_DEVICE | "reserved-name" | "hard-link" | "ignored" => Group::Never,
-        OPEN_FOR_WRITING | LOCKED | NOT_FOUND | NOT_LOCAL | CHANGED | PARENT | HASH | MOVE_OUT | NO_HELPER | UNREACHABLE
-        | BACK_INSIDE | PLACE_UNKNOWN | DOWNLOAD | GONE_ONCE | STALE_HANDLE | GONE_UNPROVED | NO_LEASE | NETWORK | LOCAL_IO | STORE
-        | FAILED | NOT_OPENED | PAUSED | SESSION_OPEN | NAME_HELD | CHANGED_AGAIN | CHANGING_AGAIN | SESSION_ENDED | NOT_ALLOWED => Group::Waiting,
-        _ => return None,
-    })
+    key_of(reason)
 }
 
 /// How many unknown reasons are remembered as logged; past it, none is
@@ -120,22 +57,22 @@ pub fn group_of(key: &str, blocked: bool) -> Group {
 /// is `full`, a change that sends content and says nothing else waits for
 /// space, as `Changes()` shows it. Held removals have their own question (the
 /// mass-delete guard), and a row running is not kept back.
-pub fn kept_reason(kind: OutboxKind, state: OutboxState, reason: Option<&str>, full: bool) -> Option<String> {
-    let said = reason.filter(|r| !r.is_empty()).map(str::to_owned);
-    let for_space = || (full && kind.sends_content()).then(|| space::WAITING.to_owned());
+pub fn kept_reason(kind: OutboxKind, state: OutboxState, reason: Option<&Reason>, full: bool) -> Option<Reason> {
+    let said = reason.filter(|r| !r.is_empty()).cloned();
+    let for_space = || (full && kind.sends_content()).then_some(Reason::WaitingForSpace);
     match state {
-        OutboxState::Blocked => Some(said.unwrap_or_else(|| reason::BLOCKED.into())),
+        OutboxState::Blocked => Some(said.unwrap_or(Reason::Blocked)),
         OutboxState::Waiting | OutboxState::Retry => said.or_else(for_space),
         OutboxState::Ready => match said {
-            Some(r) => space::waits(Some(&r)).then_some(r),
+            Some(r) => r.waits_for_space().then_some(r),
             None => for_space(),
         },
         OutboxState::Running | OutboxState::Held => None,
     }
 }
 
-fn kept_group(group: &OutboxGroup, full: bool) -> Option<String> {
-    kept_reason(group.kind(), group.state(), group.reason().as_deref(), full)
+fn kept_group(group: &OutboxGroup, full: bool) -> Option<Reason> {
+    kept_reason(group.kind(), group.state(), group.reason().as_ref(), full)
 }
 
 /// One row of `NotUploadedSummary()`: (group, reason, count, bytes).
@@ -146,18 +83,18 @@ pub type SummaryRow = (String, String, u32, u64);
 /// sums: nothing read from the disk.
 pub fn summary(skipped: &[SkippedGroup], groups: &[OutboxGroup], full: bool) -> Vec<SummaryRow> {
     let mut by: BTreeMap<(Group, String), (u64, u64)> = BTreeMap::new();
-    let mut add = |reason: &str, blocked: bool, count: u64, bytes: u64| {
-        let key = reason_key(reason).to_owned();
+    let mut add = |key: &str, blocked: bool, count: u64, bytes: u64| {
+        let key = key.to_owned();
         let entry = by.entry((group_of(&key, blocked), key)).or_default();
         entry.0 = entry.0.saturating_add(count);
         entry.1 = entry.1.saturating_add(bytes);
     };
     for s in skipped {
-        add(&s.reason, false, s.count, s.bytes);
+        add(s.reason.key(), false, s.count, s.bytes);
     }
     for g in groups {
         if let Some(reason) = kept_group(g, full) {
-            add(&reason, g.state() == OutboxState::Blocked, g.count, g.bytes);
+            add(reason.key(), g.state() == OutboxState::Blocked, g.count, g.bytes);
         }
     }
     by.into_iter()
@@ -171,18 +108,18 @@ pub fn summary(skipped: &[SkippedGroup], groups: &[OutboxGroup], full: bool) -> 
 /// how many there are. Read with a `LIMIT` per group of rows.
 pub fn files(store: &TreeStore, root: &Path, full: bool, reason: &str, limit: u32) -> Result<(Vec<(String, String)>, u32), TreeError> {
     let groups = store.outbox_groups()?;
-    let kept: Vec<(&OutboxGroup, String)> =
-        groups.iter().filter_map(|g| kept_group(g, full).map(|why| (g, why))).filter(|(_, why)| reason_key(why) == reason).collect();
-    let skipped: Vec<SkippedGroup> = store.skipped_groups()?.into_iter().filter(|s| reason_key(&s.reason) == reason).collect();
+    let kept: Vec<(&OutboxGroup, Reason)> =
+        groups.iter().filter_map(|g| kept_group(g, full).map(|why| (g, why))).filter(|(_, why)| why.key() == reason).collect();
+    let skipped: Vec<SkippedGroup> = store.skipped_groups()?.into_iter().filter(|s| s.reason.key() == reason).collect();
     let total = kept.iter().map(|(g, _)| g.count).chain(skipped.iter().map(|s| s.count)).sum::<u64>();
     let of: Vec<&OutboxGroup> = kept.iter().map(|(g, _)| *g).collect();
     let mut all: Vec<(String, String)> = store
         .outbox_places_of(&of, limit)?
         .into_iter()
-        .map(|(rel, n)| (root.join(rel).display().to_string(), kept[n].1.clone()))
+        .map(|(rel, n)| (root.join(rel).display().to_string(), kept[n].1.to_string()))
         .collect();
-    let reasons: Vec<&str> = skipped.iter().map(|s| s.reason.as_str()).collect();
-    all.extend(store.skipped_places_of(&reasons, limit)?.into_iter().map(|(rel, why)| (root.join(rel).display().to_string(), why)));
+    let reasons: Vec<_> = skipped.iter().map(|s| &s.reason).collect();
+    all.extend(store.skipped_places_of(&reasons, limit)?.into_iter().map(|(rel, why)| (root.join(rel).display().to_string(), why.to_string())));
     all.sort();
     if limit > 0 {
         all.truncate(limit as usize);

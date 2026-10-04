@@ -78,7 +78,7 @@ jobs:
           restore-keys: runner-rust-${{ env.RUST_VERSION }}-
 
       - name: Test the daemon
-        run: cargo test --locked -p konedrived -p konedrive-graph -p konedrive-tree --lib --features konedrived/dev-tools
+        run: cargo test --locked -p konedrived -p konedrive-graph -p konedrive-reason -p konedrive-tree --lib --features konedrived/dev-tools
 
   build:
     needs: test

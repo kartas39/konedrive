@@ -263,7 +263,7 @@ pub fn other_device_not_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
             .call_blocking(move |s| s.local_skipped())
             .map_err(|e| e.to_string())?
             .into_iter()
-            .map(|s| (s.rel.display().to_string(), s.reason))
+            .map(|s| (s.rel.display().to_string(), s.reason.to_string()))
             .collect();
         if skipped != [("sub".to_owned(), "other-device".to_owned())] {
             return Err(format!("listed as not uploaded: {skipped:?}"));

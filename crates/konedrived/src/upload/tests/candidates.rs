@@ -15,7 +15,7 @@ fn a_row_blocked_by_403_goes_again_with_the_worker_a_sign_in_builds() {
     w.cloud(|c| c.script("POST", "createUploadSession", ResponseTemplate::new(403), 1));
     let engine = w.h.engine();
     w.h.drain(&engine);
-    assert_eq!(reason_of(&w, "a.txt").as_deref(), Some(reason::FORBIDDEN));
+    assert_eq!(reason_of(&w, "a.txt").as_deref(), Some(Reason::Forbidden.key()));
     assert_eq!(w.h.host.kinds().iter().filter(|k| *k == kind::UPLOAD_FAILED).count(), 1, "the refusal is said");
 
     // The same worker goes on with the other rows, and leaves the blocked one.
@@ -91,14 +91,14 @@ fn a_bad_upload_whose_delete_fails_twice_is_still_deleted_before_the_file_goes_a
         c.expire_sessions();
         c.add_file("BAD", "R", "a.txt", b"other");
     });
-    assert_eq!((reason_of(&w, "a.txt").as_deref(), bad_item_of(&w, "a.txt").as_deref()), (Some(reason::HASH), Some("BAD")), "the bad item is remembered");
+    assert_eq!((reason_of(&w, "a.txt").as_deref(), bad_item_of(&w, "a.txt").as_deref()), (Some(Reason::Hash.key()), Some("BAD")), "the bad item is remembered");
 
     // The delete fails once more.
     w.h.block_on(engine.retry_now()).unwrap();
     w.h.drain(&engine);
     assert_eq!(w.cloud(|c| c.count("DELETE", "items/BAD")), 2);
     assert_eq!(w.cloud(|c| c.paths()), vec!["a.txt"], "nothing else was sent meanwhile");
-    assert_eq!((reason_of(&w, "a.txt").as_deref(), bad_item_of(&w, "a.txt").as_deref()), (Some(reason::NETWORK), Some("BAD")), "and still is, under another reason");
+    assert_eq!((reason_of(&w, "a.txt").as_deref(), bad_item_of(&w, "a.txt").as_deref()), (Some(Reason::Network.key()), Some("BAD")), "and still is, under another reason");
 
     // OneDrive answers again.
     w.h.block_on(engine.retry_now()).unwrap();
