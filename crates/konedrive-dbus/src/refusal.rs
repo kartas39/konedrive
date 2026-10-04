@@ -13,7 +13,7 @@ use crate::error_name;
 
 /// Every name a call to the daemon is refused under.
 ///
-/// The first twenty-two are the daemon's own, under [`ERROR_PREFIX`](crate::ERROR_PREFIX);
+/// The first twenty-three are the daemon's own, under [`ERROR_PREFIX`](crate::ERROR_PREFIX);
 /// then the bus's names the daemon and its object server answer with; and a name this build
 /// does not know, kept as it came ([`Refusal::Other`]).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -24,7 +24,7 @@ pub enum Refusal {
     Unsupported,
     /// The file is open in another program.
     InUse,
-    /// No folder is registered, or its sync has no store yet.
+    /// No folder is registered.
     NoRoot,
     /// The helper is not connected, and the call needs it.
     NoHelper,
@@ -58,6 +58,8 @@ pub enum Refusal {
     PendingUploads,
     /// OneDrive did not answer a question that needs it now.
     Unreachable,
+    /// A folder is recorded and not up, or its sync is not running; the message says why.
+    NotUp,
     /// Everything with no name of its own.
     Failed,
     /// The development gate: the account's drive may not be read-write.
@@ -83,7 +85,7 @@ pub enum Refusal {
 
 impl Refusal {
     /// Every variant but [`Refusal::Other`].
-    pub const ALL: [Refusal; 28] = [
+    pub const ALL: [Refusal; 29] = [
         Self::NotEmpty,
         Self::Unsupported,
         Self::InUse,
@@ -103,6 +105,7 @@ impl Refusal {
         Self::NotUploaded,
         Self::PendingUploads,
         Self::Unreachable,
+        Self::NotUp,
         Self::Failed,
         Self::WritesNotAllowed,
         Self::ModeNotGranted,
@@ -136,6 +139,7 @@ impl Refusal {
             Self::NotUploaded => "org.konedrive.Error.NotUploaded",
             Self::PendingUploads => "org.konedrive.Error.PendingUploads",
             Self::Unreachable => "org.konedrive.Error.Unreachable",
+            Self::NotUp => "org.konedrive.Error.NotUp",
             Self::Failed => "org.konedrive.Error.Failed",
             Self::WritesNotAllowed => "org.konedrive.Error.WritesNotAllowed",
             Self::ModeNotGranted => "org.konedrive.Error.ModeNotGranted",

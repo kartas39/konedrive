@@ -13,7 +13,14 @@
     <!-- Refused Overlaps when the folder is, is inside, or contains another
          account's folder (the message names that account), and NotEmpty
          when the folder carries user.konedrive.drive naming another drive
-         than this account's; otherwise as before. -->
+         than this account's; otherwise as before. Refused
+         AlreadyRegistered while the account has a folder, up or not: one
+         config.toml records counts from the daemon's start. A registration
+         that fails at the helper is undone there and in config.toml; when
+         the helper cannot confirm it let go, the folder is kept instead,
+         with interception, and the refusal (Failed) says so: it is brought
+         up the next time the helper connects, unless Unregister takes it
+         away first. -->
     <method name="Register">
       <arg name="path" type="s" direction="in"/>
     </method>
@@ -29,7 +36,7 @@
     <method name="RegisterWithoutInterception">
       <arg name="path" type="s" direction="in"/>
     </method>
-    <!-- Forgets the folder; its files are left as they are. A folder
+    <!-- Forgets the folder, up or not; its files are left as they are. A folder
          registered with interception is forgotten through the helper or
          not at all: with no helper connected this is refused NoHelper.
          Refused PendingUploads while changes made here wait to be uploaded
@@ -47,7 +54,16 @@
          Reads the quota again (Account.QuotaRemaining, QuotaState, ...): with
          space again, a full OneDrive ends (UploadQueue.QuotaFull), and the
          files too big before go up once they fit.
-         Refused Unsupported for a folder that is not connected to OneDrive.
+         Refused NoHelper while the helper is not connected, and Unsupported
+         for a folder that is up and not connected to OneDrive. A folder that
+         is down after a failure (a bring-up that failed, the folder moved
+         away, a registration that was kept), connected to OneDrive or not,
+         is brought up first; a folder that is not connected to OneDrive has
+         nothing more to refresh then, and the call succeeds. Only the
+         folder that was registered is brought up: a directory at its path
+         that does not carry its root id is left alone. Refused NotUp, with
+         why, when the bring-up fails, for a folder that only waits (State
+         waiting), and for one whose sync cannot start.
          While paused, OneDrive is not asked. -->
     <method name="Refresh"/>
     <!-- Everything in OneDrive that is not in the folder, as (full path,
@@ -73,8 +89,9 @@
          `seconds` — or until Resume when 0. Opening a file still downloads
          it, Hydrate still works, and changes made here are still found and
          wait. The pause outlasts a restart of the daemon. Refused
-         Unsupported for a folder that is not connected to OneDrive, and
-         NoRoot before its sync has started; Resume refuses the same. -->
+         Unsupported for a folder that is not connected to OneDrive, NoRoot
+         with no folder, and NotUp, with why, for a folder that is not up or
+         whose sync has not started; Resume refuses the same. -->
     <method name="Pause">
       <arg name="seconds" type="u" direction="in"/>
     </method>
@@ -106,11 +123,16 @@
          lifted. Not kept across a restart. Refused Unsupported for a folder
          not connected to OneDrive. -->
     <method name="SyncAnyway"/>
-    <!-- The account's folder; empty when it has none. A folder config.toml
-         records has its path from the daemon's start, while State may still
-         be none: it is not brought up yet. -->
+    <!-- The account's folder, up or not; empty when it has none. A folder
+         config.toml records has its path from the daemon's start, while
+         State is still waiting: it is not brought up yet. -->
     <property name="Path" type="s" access="read"/>
-    <!-- none | listing | ready | no-interception | error -->
+    <!-- none | waiting | listing | ready | no-interception | error.
+         waiting: a folder is recorded and not up yet, and nothing is known
+         to be wrong: it is being brought up, or waits for the helper to
+         connect (the start of a session). It reads error instead once
+         Accounts.HelperState says the helper is not installed, stopped or
+         failed, or the bring-up failed. LastError is empty while waiting. -->
     <property name="State" type="s" access="read"/>
     <!-- Every current problem, joined with ". ". While a changed file cannot
          be replaced here, one part reads "N file(s) changed in OneDrive could

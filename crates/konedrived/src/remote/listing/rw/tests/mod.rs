@@ -184,7 +184,7 @@ impl World {
             link: Arc::new(std::sync::Mutex::new(Some(self.link.clone()))),
             locks: self.locks.clone(),
             state: self.state.clone(),
-            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            lease: crate::remote::listing::Lease::on(&Arc::new(tokio::sync::RwLock::new(()))),
             rescue_dir: self.rescue.path().to_path_buf(),
             full_threshold: FULL_THRESHOLD,
             after_cycle: None,

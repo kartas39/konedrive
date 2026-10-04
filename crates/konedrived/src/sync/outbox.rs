@@ -9,6 +9,7 @@ use std::sync::{Arc, Weak};
 use konedrive_tree::outbox::{OutboxState, Reason};
 use konedrive_tree::{ActivityRow, Store};
 
+use super::folder::Stopped;
 use super::{SyncError, SyncService};
 use crate::conditions::running::Running;
 use crate::config::Mode;
@@ -22,11 +23,15 @@ pub type OutboxEntry = (u64, String, String, String, u64, u64, String, i64);
 
 impl SyncService {
     /// The tree store of this account's OneDrive folder: refused as `Refresh`
-    /// is for a folder that is not connected to OneDrive, and `NoRoot`
+    /// is for a folder that is not connected to OneDrive, and `NotUp`, with why,
     /// before its sync has opened one.
     pub(super) fn outbox_store(&self) -> Result<Store, SyncError> {
         self.require_onedrive()?;
-        self.store.lock().unwrap().clone().ok_or(SyncError::NoRoot)
+        // The state first: the store of a folder that went down is still here.
+        if self.view().down.is_some() {
+            return Err(self.sync_not_running());
+        }
+        self.store.lock().unwrap().clone().ok_or_else(|| self.sync_not_running())
     }
 
     /// Runs `f` on the store's read-only connection, on a blocking thread:
@@ -35,7 +40,7 @@ impl SyncService {
         &self,
         f: impl FnOnce(&konedrive_tree::ReadStore<'_>) -> Result<T, konedrive_tree::TreeError> + Send + 'static,
     ) -> Result<T, SyncError> {
-        self.outbox_store()?.read(f).await.map_err(|e| SyncError::Io(e.to_string()))
+        self.outbox_store()?.read(f).await.map_err(|e| SyncError::Store(e.to_string()))
     }
 
     /// Runs `f` on the store on a blocking thread.
@@ -43,12 +48,12 @@ impl SyncService {
         &self,
         f: impl FnOnce(&mut konedrive_tree::TreeStore) -> Result<T, konedrive_tree::TreeError> + Send + 'static,
     ) -> Result<T, SyncError> {
-        self.outbox_store()?.call(f).await.map_err(|e| SyncError::Io(e.to_string()))
+        self.outbox_store()?.call(f).await.map_err(|e| SyncError::Store(e.to_string()))
     }
 
     /// Starts the outbox worker of the read-write folder at `root` (`docs/design/writes.md`
     /// §5): the sync starting it keeps it, beside the watcher, and stops it with the
-    /// watcher, without the lifecycle lock. Called in the critical section that publishes
+    /// watcher, without the state lock. Called in the critical section that publishes
     /// the sync: it spawns and returns, taking no lock. Rows a previous run left `running`
     /// are replayed first; the rest go as the watcher's examination records them.
     pub(super) fn start_outbox(&self, root: &SyncRoot, store: &Store, drive: &konedrive_graph::drive::DriveClient) -> Option<OutboxWorker> {
@@ -181,7 +186,7 @@ impl SyncService {
     /// in all, reason, next try).
     pub async fn outbox(&self, limit: u32) -> Result<Vec<OutboxEntry>, SyncError> {
         let rows = self.read_outbox(move |s| if limit == 0 { s.outbox_rows() } else { s.outbox_first(limit as usize) }).await?;
-        let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
+        let root = self.record().map(|record| record.root.path).unwrap_or_default();
         let state = self.state.get();
         let (paused, full) = (state.stopped(), state.quota_full);
         let uploads = state.uploads;
@@ -196,7 +201,7 @@ impl SyncService {
     /// (blocked: a name OneDrive refuses, OneDrive full).
     pub async fn not_uploaded(&self) -> Result<Vec<(String, String)>, SyncError> {
         let (skipped, rows) = self.read_outbox(|s| Ok((s.local_skipped()?, s.outbox_blocked()?))).await?;
-        let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
+        let root = self.record().map(|record| record.root.path).unwrap_or_default();
         let mut out: Vec<(String, String)> = skipped.into_iter().map(|s| (root.join(&s.rel).display().to_string(), s.reason.to_string())).collect();
         out.extend(
             rows.into_iter()
@@ -210,7 +215,7 @@ impl SyncService {
     /// `NotUploadedSummary()`: what is kept back, one row per reason:
     /// (group, reason, count, bytes) ([`kept_back`](super::kept_back)).
     pub async fn not_uploaded_summary(&self) -> Result<Vec<crate::upload::kept_back::SummaryRow>, SyncError> {
-        self.require_onedrive()?;
+        self.outbox_store()?;
         if let Some(kept) = self.kept_back.lock().unwrap().clone() {
             return Ok(kept);
         }
@@ -222,7 +227,7 @@ impl SyncService {
     /// `NotUploadedFiles(reason, limit)`: the files kept back for `reason`,
     /// at most `limit` (0 for all), and how many there are.
     pub async fn not_uploaded_files(&self, reason: String, limit: u32) -> Result<(Vec<(String, String)>, u32), SyncError> {
-        let root = self.registration().map(|reg| reg.root.path).unwrap_or_default();
+        let root = self.record().map(|record| record.root.path).unwrap_or_default();
         let full = self.state.get().quota_full;
         self.read_outbox(move |s| crate::upload::kept_back::files(s, &root, full, &reason, limit)).await
     }
@@ -251,8 +256,8 @@ impl SyncService {
         // What a dropped move out named outside the folder is tidied, before the
         // answer, whether or not a worker runs.
         let store = self.store.lock().unwrap().clone();
-        if let (Some(reg), Some(store)) = (self.registration(), store) {
-            self.tidy_dropped(&reg.root, &store, &dropped).await;
+        if let (Some(record), Some(store)) = (self.record(), store) {
+            self.tidy_dropped(&record.root, &store, &dropped).await;
         }
         self.wake_outbox();
         Ok(dropped.len() as u32)
@@ -264,17 +269,17 @@ impl SyncService {
     /// dropped, the item would stay under that name, and its local object
     /// would go.
     ///
-    /// The caller holds `lifecycle` for writing, with the folder's tasks stopped: this takes
+    /// Inside a change of the folder's state, with the folder's tasks stopped: this takes
     /// the tree lock, and only a cycle, which those stops end, holds the tree lock while it
-    /// waits for `lifecycle` (`docs/design/writes.md` §9).
-    pub(super) async fn drop_outbox(&self) {
+    /// waits for the state (`docs/design/writes.md` §9).
+    pub(super) async fn drop_outbox(&self, stopped: &Stopped<'_>) {
         let store = self.store.lock().unwrap().clone();
-        let root = self.registration().map(|reg| reg.root);
+        let root = stopped.folder().record().map(|record| record.root.clone());
         let (Some(store), Some(root)) = (store, root) else { return };
         let (dropping, marked) = (store.clone(), root.clone());
         // Under the tree lock: a cycle's swap must not give a moved-out item back the object
         // it forgets here.
-        let tree = self.tree_lock.lock().await;
+        let tree = stopped.tree().await;
         let dropped = tokio::task::spawn_blocking(move || {
             let rows = dropping.call_blocking(move |s| {
                 let mut rows = upload::move_out::drop_rows(s)?;
@@ -318,7 +323,7 @@ impl SyncService {
                 .call(|s| s.outbox_len())
                 .await
                 .map(|n| n as u64)
-                .map_err(|e| SyncError::Io(format!("cannot tell whether changes wait to be uploaded: {e}")));
+                .map_err(|e| SyncError::Store(format!("cannot tell whether changes wait to be uploaded: {e}")));
         }
         let Some(tree_db) = self.sync_paths().map(|p| p.tree_db.clone()) else { return Ok(0) };
         if !tree_db.exists() {
@@ -427,7 +432,7 @@ impl OutboxHost for Host {
     /// (`OutboxNote::after_worker`, in `LastError`).
     fn status(&self, status: &WorkerStatus) {
         let Some(service) = self.sync.upgrade() else { return };
-        let root = service.registration().map(|reg| reg.root.path).unwrap_or_default();
+        let root = service.record().map(|record| record.root.path).unwrap_or_default();
         let uploads: Vec<(String, u64, u64)> =
             status.uploads.iter().map(|u| (root.join(&u.rel).display().to_string(), u.sent, u.total)).collect();
         service.state.update(|s| {

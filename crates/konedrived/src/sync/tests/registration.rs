@@ -219,20 +219,23 @@ async fn a_folder_registered_without_the_helper_switches_to_interception_when_th
 }
 
 /// A daemon that has started and not brought its folders up yet (`restore` runs before the
-/// bus name is claimed, `resume` after): a folder registered without interception has no
-/// registration then, and it is published by its path all the same, so that a client can
-/// tell it from an account with no folder. An account with none has no path.
+/// bus name is claimed, `resume` after): a folder registered without interception is the
+/// daemon's already, down, and reads `waiting` under its path, so that a client can
+/// tell it from an account with no folder — and a first call that reaches the daemon then
+/// finds it. An account with none has no path.
 #[tokio::test]
-async fn a_folder_not_brought_up_yet_is_published_by_its_path() {
+async fn a_folder_not_brought_up_yet_reads_waiting_under_its_path() {
     let (service, _socket_path, config_file, dirs) = registered_before_the_helper().await;
     let folder = dirs[2].path().display().to_string();
     drop(service);
 
     let restarted = testing::service(None, None, Some(persist(&config_file)));
     restarted.restore().await;
-    assert!(restarted.root().is_none(), "not brought up yet");
-    assert_eq!(restarted.root_state(), "none");
+    assert_eq!((restarted.root_state().as_str(), restarted.last_error().as_str()), ("waiting", ""));
     assert_eq!(restarted.state().get().root_path, folder);
+    let elsewhere = tempfile::tempdir().unwrap();
+    let refused = restarted.register_root_without_interception(elsewhere.path()).await;
+    assert!(matches!(refused, Err(SyncError::AlreadyRegistered)), "{refused:?}");
 
     let other = tempfile::tempdir().unwrap();
     let empty = testing::service(None, None, Some(persist(&other.path().join("config.toml"))));
@@ -372,7 +375,7 @@ async fn a_failed_switch_the_helper_may_still_hold_is_kept_intercepted_and_broug
     // Held as intercepted: its Forget goes through the helper, which is
     // still refusing — a folder without interception would never ask.
     let error = service.unregister_root().await.unwrap_err();
-    assert!(matches!(error, SyncError::Io(_)), "{error:?}");
+    assert!(matches!(error, SyncError::Helper(_)), "{error:?}");
     assert!(service.root().is_some());
 
     service.hub().set_link(None);
@@ -478,12 +481,10 @@ async fn a_word_misspelt_while_the_folder_is_up_does_not_keep_it_from_the_helper
 }
 
 /// SY6, for a folder recorded without interception: it is not brought up as a local
-/// folder either, and `LastError` says why. A record put back after a registration that
-/// failed (`abandon`) is put back as it was typed, never as the guess.
+/// folder either, and `LastError` says why. It is held all the same: a second registration
+/// is refused, and a Forget takes it away, with no helper and nothing in it changed.
 #[tokio::test]
 async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
-    let sockets = tempfile::tempdir().unwrap();
-    let socket_path = sockets.path().join("helper.sock");
     let config_dir = tempfile::tempdir().unwrap();
     let config_file = config_dir.path().join("config.toml");
     let root_dir = tempfile::tempdir().unwrap();
@@ -501,26 +502,23 @@ async fn a_misspelt_source_is_refused_for_a_folder_without_interception_too() {
 
     assert_eq!(service.root_state(), "error");
     assert!(service.last_error().contains("source = \"one-drive\""), "{}", service.last_error());
-    assert!(service.root().is_none(), "not brought up");
-    // F211: there is nothing to forget.
-    assert!(matches!(service.unregister_root().await, Err(SyncError::NoRoot)));
     // Tried again at every connect and start, with the file as it is then: still misspelt.
     service.resume().await;
+    assert_eq!(service.root_state(), "error");
     assert!(service.last_error().contains("source = \"one-drive\""), "{}", service.last_error());
 
-    // A new registration is taken, and replaces the record; this one fails at the helper,
-    // which lets go, and the record is put back.
-    let helper = FakeHelper::start(socket_path.clone());
-    helper.refuse(Seen::RegisterRoot, libc::EIO);
-    let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    service.hub().set_link(Some(link));
-    service.register_root(root_dir.path()).await.unwrap_err();
-    assert!(helper.seen().contains(&Seen::UnregisterRoot), "{:?}", helper.seen());
-    let text = std::fs::read_to_string(&config_file).unwrap();
-    assert!(text.contains("source = \"one-drive\"") && text.contains("intercepted = false"), "{text}");
+    let refused = service.register_root_without_interception(root_dir.path()).await;
+    assert!(matches!(refused, Err(SyncError::AlreadyRegistered)), "{refused:?}");
+    let own = root_dir.path().join("mine.txt");
+    std::fs::write(&own, b"x").unwrap();
+    std::fs::set_permissions(&own, std::os::unix::fs::PermissionsExt::from_mode(0o600)).unwrap();
+    service.unregister_root().await.unwrap();
+    assert_eq!((service.root_state().as_str(), service.last_error().as_str()), ("none", ""));
+    assert!(!std::fs::read_to_string(&config_file).unwrap().contains("one-drive"), "the record is gone");
+    assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&own).unwrap().permissions()) & 0o777, 0o600, "a file of the user's own was changed");
 }
 
-/// SY6: a folder that is not held (recorded without interception) is tried again with
+/// SY6: a folder recorded without interception is tried again with
 /// `config.toml` as it is on disk, like a held one: a word corrected while the daemon runs
 /// counts at the next connect, with no write of the file in between.
 #[tokio::test]

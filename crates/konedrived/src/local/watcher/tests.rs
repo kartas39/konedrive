@@ -575,36 +575,6 @@ fn an_examiner_that_dies_says_the_watcher_stopped() {
     watcher.stop();
 }
 
-/// the mode switch's hook: a watcher only for a read-write folder, started without
-/// waiting for its walk; and when the folder is moved away it reads `error`
-/// with the reason.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_read_write_folder_gets_a_watcher_and_a_folder_moved_away_says_so() {
-    use crate::config::Mode;
-    use crate::status::snapshot::{published_error, published_state};
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().canonicalize().unwrap().join("OneDrive");
-    std::fs::create_dir(&path).unwrap();
-    let root = SyncRoot { path: path.clone(), root_id: "9d8c7b6a-5f4e-4d3c-8b2a-1f0e9d8c7b6a".into() };
-    xattr::set(&path, XATTR_ROOT, root.root_id.as_bytes()).unwrap();
-    let service = crate::sync::testing::service(None, None, None);
-    let store = Store::new(TreeStore::in_memory().unwrap());
-    assert!(service.start_watcher(&root, &store, None).is_none(), "a read-only folder is not watched");
-    service.start_in_mode(Mode::ReadWrite);
-    let watcher = service.start_watcher(&root, &store, None).expect("a watcher");
-    assert_eq!(*watcher.walked().wait_for(|state| *state != WalkState::Walking).await.unwrap(), WalkState::Done);
-
-    std::fs::rename(&path, dir.path().join("moved")).unwrap();
-    let deadline = Instant::now() + WAIT;
-    while published_state(&service.state().get()) != "error" && Instant::now() < deadline {
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    let snapshot = service.state().get();
-    assert_eq!(published_state(&snapshot), "error");
-    assert!(published_error(&snapshot).contains("moved or deleted"), "{}", published_error(&snapshot));
-    service.stop_watcher(watcher).await;
-}
-
 fn row(id: &str, parent: Option<&str>, name: &str, kind: Kind) -> Row {
     Row {
         id: id.into(),

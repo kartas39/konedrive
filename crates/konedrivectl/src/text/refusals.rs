@@ -138,7 +138,7 @@ fn read_error(error: &zbus::Error) -> (Option<Refusal>, String) {
 /// all there is.
 pub fn explain_sync_error(action: SyncAction<'_>, error: &zbus::Error, root: &str) -> String {
     let (refusal, detail) = read_error(error);
-    folder::text(&folder::Told { action, detail: &detail, root, no_folder: false, prefix: "konedrivectl" }, refusal.as_ref())
+    folder::text(&folder::Told { action, detail: &detail, root, prefix: "konedrivectl" }, refusal.as_ref())
 }
 
 /// What the CLI knows of the daemon besides a refusal, read after it: the
@@ -158,10 +158,6 @@ pub struct Context<'a> {
     /// (`user.konedrive.drive`, design §8.3), which the daemon refuses under
     /// `NotEmpty` too.
     pub foreign: bool,
-    /// The account has no folder: `Folder.Path` was read, and is empty. Not set when the
-    /// read failed, which says nothing either way. A folder `config.toml` records has its
-    /// path from the daemon's start, before it is brought up.
-    pub no_folder: bool,
     /// How a suggested command names the account ([`command_prefix`](crate::command_prefix)); empty
     /// for plain `konedrivectl`.
     pub prefix: &'a str,
@@ -197,7 +193,7 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
     use SyncAction::*;
     let path = action.path();
     let prefix = context.prefix();
-    let told = folder::Told { action, detail, root: context.root, no_folder: context.no_folder, prefix };
+    let told = folder::Told { action, detail, root: context.root, prefix };
     let path_command = matches!(action, Hydrate(_) | Dehydrate(_) | Pin(_) | Unpin(_) | Free(_) | Open(_));
     // An account removed while this command ran: its object is gone.
     if refusal.is_some_and(Refusal::is_gone) && !path_command {
@@ -208,7 +204,7 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
         // sees it; with no folder at all, that is `NoRoot`'s situation.
         (Some(Refusal::OutsideRoot), _) if path_command && context.root.is_empty() => {
             return match context.folders {
-                [] => folder::text(&folder::Told { root: "", no_folder: true, ..told }, Some(&Refusal::NoRoot)),
+                [] => folder::text(&folder::Told { root: "", ..told }, Some(&Refusal::NoRoot)),
                 [one] if matches!(action, Open(_)) => format!(
                     "{path} is not inside the sync folder ({one}). Only what is inside it, and the folder \
                      itself, has a page in OneDrive"
@@ -253,7 +249,7 @@ fn text_in(action: SyncAction<'_>, refusal: Option<&Refusal>, detail: &str, cont
 /// [`explain_sync_error`]'s decision, on the name and message alone — so it
 /// can be tested with a name and a message that disagree.
 pub fn refusal_text(action: SyncAction<'_>, name: Option<&str>, detail: &str, root: &str) -> String {
-    let told = folder::Told { action, detail, root, no_folder: false, prefix: "konedrivectl" };
+    let told = folder::Told { action, detail, root, prefix: "konedrivectl" };
     folder::text(&told, name.map(Refusal::parse).as_ref())
 }
 

@@ -20,7 +20,7 @@ async fn a_first_listing_shows_each_page_while_the_next_is_asked_for() {
     s.page(None, json!([root_item(), folder("D", "R", "docs"), file("F", "D", "f.txt", "c1"), folder("E", "R", "extra")]), "P2").await;
     let mut asked = s.held(Some("P2")).await;
     let lifecycle = Arc::new(tokio::sync::RwLock::new(()));
-    let listing = Listing::new(ListingContext { lifecycle: Arc::clone(&lifecycle), ..s.context() });
+    let listing = Listing::new(ListingContext { lease: crate::remote::listing::Lease::on(&lifecycle), ..s.context() });
     let cancel = CancellationToken::new();
     let running = spawn_cycle(&listing, &cancel);
     within(asked.recv()).await.unwrap();

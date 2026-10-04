@@ -300,6 +300,21 @@ private Q_SLOTS:
     }
 
     /// A conflict needs attention, and that outranks a download under way.
+    /// A folder that is not up yet, with nothing known to be wrong, is calm: no warning,
+    /// and it turns into one only when the daemon says "error".
+    void aFolderNotUpYetIsStartingNotAnError()
+    {
+        startSynced();
+        m_daemon->sync->folder->set({{QStringLiteral("State"), QStringLiteral("waiting")}, {QStringLiteral("LastError"), QString()}});
+        QTRY_COMPARE(m_status->text(), QStringLiteral("Starting…"));
+        QCOMPARE(m_status->state(), QStringLiteral("syncing"));
+        QVERIFY(m_status->attention().isEmpty());
+        m_daemon->sync->folder->set({{QStringLiteral("State"), QStringLiteral("error")},
+                                     {QStringLiteral("LastError"), QStringLiteral("the konedrive helper is not running")}});
+        QTRY_COMPARE(m_status->state(), QStringLiteral("warning"));
+        QCOMPARE(m_status->text(), QStringLiteral("the konedrive helper is not running"));
+    }
+
     void aConflictNeedsAttention()
     {
         startSynced();

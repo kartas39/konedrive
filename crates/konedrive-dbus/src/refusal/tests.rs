@@ -26,6 +26,7 @@ fn every_refusal_goes_out_under_its_name_and_is_read_back_from_it() {
         Refusal::NotUploaded => "org.konedrive.Error.NotUploaded",
         Refusal::PendingUploads => "org.konedrive.Error.PendingUploads",
         Refusal::Unreachable => "org.konedrive.Error.Unreachable",
+        Refusal::NotUp => "org.konedrive.Error.NotUp",
         Refusal::Failed => "org.konedrive.Error.Failed",
         Refusal::WritesNotAllowed => "org.konedrive.Error.WritesNotAllowed",
         Refusal::ModeNotGranted => "org.konedrive.Error.ModeNotGranted",
@@ -37,7 +38,7 @@ fn every_refusal_goes_out_under_its_name_and_is_read_back_from_it() {
         Refusal::Internal => "org.freedesktop.zbus.Error",
         Refusal::Other(name) => panic!("{name} is in the list of the known"),
     };
-    assert_eq!(Refusal::ALL.len(), 28);
+    assert_eq!(Refusal::ALL.len(), 29);
     for (at, refusal) in Refusal::ALL.iter().enumerate() {
         let name = spelled(refusal);
         assert_eq!(refusal.name(), name);
@@ -47,10 +48,10 @@ fn every_refusal_goes_out_under_its_name_and_is_read_back_from_it() {
         assert!(zbus::names::ErrorName::try_from(name).is_ok(), "{name} is a D-Bus error name");
         assert_eq!(Refusal::ALL.iter().position(|other| other == refusal), Some(at), "{name} is listed once");
     }
-    // The daemon's own names are the first twenty-two, and only they are under its prefix.
+    // The daemon's own names are the first twenty-three, and only they are under its prefix.
     for (at, refusal) in Refusal::ALL.iter().enumerate() {
         let ours = refusal.name().strip_prefix(ERROR_PREFIX).is_some_and(|rest| rest.starts_with('.'));
-        assert_eq!(ours, at < 22, "{refusal}");
+        assert_eq!(ours, at < 23, "{refusal}");
     }
 }
 

@@ -8,21 +8,27 @@ use crate::folder::root::SyncRoot;
 use crate::hydration::source::ContentSource;
 use crate::config::Mode;
 use crate::account::state::SignInState;
-use crate::sync::{SyncError, Syncing};
+use crate::local::ScanReason;
+use crate::sync::folder::{Down, Is, Standing, Stopped};
+use crate::sync::{RootSource, SyncError, Syncing};
 use crate::status::snapshot::SyncTrouble;
 use crate::desktop::thumbs;
 use crate::remote::listing;
 
 impl SyncService {
-    /// Starts — or, when it runs already, nudges — the sync of the OneDrive
-    /// folder that is registered now. Called with `lifecycle` held for
-    /// writing, so that no Forget can come in between.
-    pub(super) async fn start_sync(&self) {
-        if let Some(syncing) = self.syncing.lock().unwrap().as_ref() {
-            syncing.poller.refresh();
+    /// Starts the sync of the OneDrive folder that is up now. Inside a change of the
+    /// folder's state, so that no Forget can come in between, and none runs: the change
+    /// stopped it. `reason`: why the watcher of a read-write folder runs its Full local
+    /// scan (`LocalScan.Reason`).
+    pub(super) async fn start_sync(&self, stopped: &mut Stopped<'_>, reason: ScanReason) {
+        if !stopped.folder().syncs() {
             return;
         }
-        let Some(reg) = self.registration() else { return };
+        debug_assert!(self.syncing.lock().unwrap().is_none(), "a sync runs inside a change");
+        // What the parts started here read of the folder is what it is now.
+        stopped.publish();
+        let Some(reg) = stopped.folder().up().map(|up| up.record.clone()) else { return };
+        let wanted = stopped.folder().wanted;
         let Some(crate::sync::OneDrive { drive, paths }) = self.wiring.onedrive.clone() else {
             let text = format!("{} shows OneDrive, but no drive is configured; it is not kept in step", reg.root.path.display());
             return self.cannot_start(&reg.root, text).await;
@@ -32,8 +38,8 @@ impl SyncService {
         // is locked before anything else, never left writable until a Full reconcile, which
         // needs Graph. A read-write one is unlocked below, once its watcher has
         // marked every directory, and before this sync's first cycle can change the folder:
-        // the cycle takes `lifecycle`, which the caller holds (the watcher).
-        let mut writable = self.mode() == Mode::ReadWrite;
+        // the cycle takes the folder's lease, which the caller's change holds (the watcher).
+        let mut writable = wanted == Mode::ReadWrite;
         if !writable {
             self.ensure_locked(&reg.root).await;
         }
@@ -62,7 +68,7 @@ impl SyncService {
         }
         // The activity log and the conflicts are kept in this
         // store from now on, and `LastChecked` is where the last run left it.
-        // Every caller holds `lifecycle` for writing, so no other start can
+        // Every caller is inside a change of the folder's state, so no other start can
         // attach a store of its own meanwhile.
         let (report, attached, folder) = (self.report.clone(), store.clone(), reg.root.path.clone());
         let last_checked = tokio::task::spawn_blocking(move || {
@@ -84,7 +90,7 @@ impl SyncService {
         // Its first examination is the Full local scan, which the folder's first delta cycle
         // waits for (`docs/design/writes.md` §3).
         let (scanned, first_scan) = tokio::sync::watch::channel(false);
-        let watcher = if writable { self.start_watcher(&reg.root, &store, Some(scanned)) } else { None };
+        let watcher = if writable { self.start_watcher(&reg.root, &store, Some(scanned), reason) } else { None };
         if writable && watcher.is_none() {
             writable = false;
             self.ensure_locked(&reg.root).await;
@@ -104,7 +110,7 @@ impl SyncService {
         let writes = writable.then(|| self.cycle_writes(Some(first_scan)));
         let listing = listing::Listing::new(listing::ListingContext {
             root: reg.root.clone(),
-            intercepted: reg.intercepted,
+            intercepted: reg.intercepted(),
             store: store.clone(),
             drive: drive.clone(),
             drive_record,
@@ -112,7 +118,7 @@ impl SyncService {
             link: Arc::clone(&self.link),
             locks: self.locks.clone(),
             state: self.state.clone(),
-            lifecycle: Arc::clone(&self.lifecycle),
+            lease: listing::Lease::on(&self.folder),
             rescue_dir: paths.rescue_dir.clone(),
             full_threshold: listing::FULL_THRESHOLD,
             after_cycle: Some(Arc::clone(&kick)),
@@ -126,48 +132,34 @@ impl SyncService {
             running: Arc::clone(&self.running),
         });
         let schedule = self.wiring.schedule.clone();
-        // Checked again and kept in one critical section: a second start that
-        // passed the check at the top while the store opened must leave the
-        // first sync alone. Replacing it would drop a `Poller` that runs on
-        // with nothing left to stop it; the lifecycle lock every caller holds
-        // is what keeps two starts apart, not this.
-        let published = {
+        // Published in one critical section. No sync runs here: the change this start is
+        // inside stopped it, and nothing starts one outside a change.
+        let walked = {
             let mut syncing = self.syncing.lock().unwrap();
-            if syncing.is_some() {
-                Err(watcher)
-            } else {
-                *self.store.lock().unwrap() = Some(store.clone());
-                let poller = listing::Poller::start(listing, schedule);
-                let sign_in_watch = Some(tokio::spawn(nudge_on_sign_in(self.wiring.account.changes(), Arc::clone(&self.syncing))));
-                // The outbox worker: it sends the rows the watcher's
-                // examination records, and looks at those already there as it
-                // starts.
-                let outbox = if writable { self.start_outbox(&reg.root, &store, &drive) } else { None };
-                // Its own task, stopped with the poller: a slow thumbnail request
-                // never holds up the reconcile. None at all without a cache to fill.
-                let thumbnails = paths.thumbnails.clone().map(|cache| {
-                    let cancel = CancellationToken::new();
-                    let task = thumbs::ThumbnailFiller::new(drive, store, reg.root.clone(), cache, Arc::clone(&self.running))
-                        .spawn(kick, cancel.clone());
-                    (task, cancel)
-                });
-                let walked = watcher.as_ref().map(crate::local::watcher::Watcher::walked);
-                *syncing = Some(Syncing { poller, sign_in_watch, thumbnails, watcher, outbox });
-                Ok(walked)
-            }
+            *self.store.lock().unwrap() = Some(store.clone());
+            let poller = listing::Poller::start(listing, schedule);
+            let sign_in_watch = Some(tokio::spawn(nudge_on_sign_in(self.wiring.account.changes(), Arc::clone(&self.syncing))));
+            // The outbox worker: it sends the rows the watcher's
+            // examination records, and looks at those already there as it
+            // starts.
+            let outbox = if writable { self.start_outbox(&reg.root, &store, &drive) } else { None };
+            // Its own task, stopped with the poller: a slow thumbnail request
+            // never holds up the reconcile. None at all without a cache to fill.
+            let thumbnails = paths.thumbnails.clone().map(|cache| {
+                let cancel = CancellationToken::new();
+                let task = thumbs::ThumbnailFiller::new(drive, store, reg.root.clone(), cache, Arc::clone(&self.running))
+                    .spawn(kick, cancel.clone());
+                (task, cancel)
+            });
+            let walked = watcher.as_ref().map(crate::local::watcher::Watcher::walked);
+            *syncing = Some(Syncing { poller, sign_in_watch, thumbnails, watcher, outbox });
+            walked
         };
         // `Paused` as the store keeps it, and a timer for a pause that ends.
         self.show_pause();
-        match published {
-            // No directory is made in the folder before it is watched (write design Z2).
-            Ok(Some(walked)) => self.ensure_unlocked(&reg.root, walked).await,
-            Ok(None) => {}
-            // Another start won: this one's watcher goes.
-            Err(watcher) => {
-                if let Some(watcher) = watcher {
-                    self.stop_watcher(watcher).await;
-                }
-            }
+        // No directory is made in the folder before it is watched (write design Z2).
+        if let Some(walked) = walked {
+            self.ensure_unlocked(&reg.root, walked).await;
         }
     }
 
@@ -195,6 +187,7 @@ impl SyncService {
     /// [`close_outbox`]: Self::close_outbox
     /// Whether one was running. Once this returns, no clone of the tree store
     /// is left with the sync (see `store`).
+    #[cfg(any(test, feature = "fault-injection"))]
     pub async fn stop_sync(&self) -> bool {
         let stopped = self.stop_tasks().await;
         if stopped {
@@ -205,7 +198,7 @@ impl SyncService {
 
     /// The first half of [`stop_sync`](Self::stop_sync): the poller, the
     /// sign-in watch and the thumbnail filler, stopped and waited for.
-    /// Safe without the lifecycle lock (a Forget's first stop).
+    /// Safe without the state lock ([`change`](Self::change)'s first stop).
     pub(super) async fn stop_tasks(&self) -> bool {
         let syncing = self.syncing.lock().unwrap().take();
         let Some(syncing) = syncing else { return false };
@@ -215,7 +208,7 @@ impl SyncService {
             cancel.cancel();
         }
         // The poller first (the read-write reconcile): a cycle may hold the tree lock while it waits for
-        // `lifecycle`, which the caller may hold for writing, and the watcher's examination
+        // the folder's state, which the caller may hold for writing, and the watcher's examination
         // waits for that tree lock — stopping the poller ends that cycle, and its lock with it.
         syncing.poller.stop().await;
         // Its outbox worker next: a request under way is cut off, and its row replayed when
@@ -244,8 +237,8 @@ impl SyncService {
     /// The second half of [`stop_sync`](Self::stop_sync): the activity
     /// log's clone of the store goes too, once no write holds it (see
     /// `store`), and so does the walker measuring the folder — a kick starts
-    /// it again. Only where no sync can start meanwhile — with the lifecycle
-    /// lock held for writing, or where nothing else starts one: done without
+    /// it again. Only where no sync can start meanwhile — inside a change of the folder's
+    /// state, or where nothing else starts one: done outside
     /// it, a Forget's first stop let go of whatever was attached by then,
     /// the sync a reconnect had just started included.
     pub(super) async fn let_go_of_activity(&self) {
@@ -260,38 +253,96 @@ impl SyncService {
     ///
     /// A folder whose sync is not running — it could not start: its tree
     /// store could not be opened (F18) — has it started again here, the way
-    /// every start is made, with `lifecycle` held for writing. `Ok` means a
-    /// sync runs; when it still cannot, the refusal says why. A folder not
-    /// brought up yet — held until its helper is back, or kept after a
-    /// registration that failed — is refused: its sync starts when it is.
+    /// every start is made, inside a change of the folder's state. `Ok` means a
+    /// sync runs; when it still cannot, the refusal says why.
+    ///
+    /// A folder that is down because a bring-up failed, because the folder itself was moved
+    /// or deleted, or because a registration was kept, is brought up here: this is the way
+    /// back that does not wait for the helper's next connect. When that fails too, and for
+    /// a folder that only waits (for the helper, or for a `source` that can be read), the
+    /// refusal is `NotUp`, with why.
     ///
     /// Refused `NoHelper` whenever the folder has no helper to keep it in
     /// step with (HS2): no link, or no interception yet.
     pub async fn refresh(&self) -> Result<(), SyncError> {
-        self.require_helper_for(&self.require_onedrive()?)?;
-        // The outbox too (`docs/design/writes.md` §11): rows in backoff go now,
-        // and, while a sync runs, the quota is read again, which may end a
-        // full OneDrive (issue #2).
-        self.retry_outbox();
-        if self.nudge() {
-            self.refresh_quota().await;
+        if self.view().down.is_none() {
+            self.require_helper_for(&self.require_onedrive()?)?;
+            // The outbox too (`docs/design/writes.md` §11): rows in backoff go now,
+            // and, while a sync runs, the quota is read again, which may end a
+            // full OneDrive (issue #2).
+            self.retry_outbox();
+            if self.nudge() {
+                self.refresh_quota().await;
+                return Ok(());
+            }
+        }
+        let syncs = {
+            let mut stopped = self.change().await;
+            let refreshed = self.refresh_in(&mut stopped).await;
+            if refreshed.is_err() {
+                // A refusal leaves the folder as it was, its sync included.
+                self.start_again(&mut stopped).await;
+            }
+            refreshed?
+        };
+        if !syncs {
             return Ok(());
         }
-        let _lifecycle = self.lifecycle.write().await;
-        // Looked at again under the lock: a Forget may have come first.
-        let reg = self.require_onedrive()?;
-        self.require_helper_for(&reg)?;
-        if !reg.brought_up {
-            return Err(SyncError::Io(format!("the folder is not up: {}", self.last_error())));
-        }
-        self.start_sync().await;
         if self.syncing.lock().unwrap().is_some() {
-            drop(_lifecycle);
             self.refresh_quota().await;
             return Ok(());
         }
-        let why = self.state.get().sync_trouble.map(|t| t.text);
-        Err(SyncError::Io(why.unwrap_or_else(|| "the sync could not be started".into())))
+        Err(self.sync_not_running())
+    }
+
+    /// [`refresh`](Self::refresh), inside its change: the folder looked at again (a Forget
+    /// may have come first), brought up if it is down for a failure, and its sync started.
+    /// Whether the folder is one that syncs; a local folder brought up has nothing more to
+    /// refresh.
+    async fn refresh_in(&self, stopped: &mut Stopped<'_>) -> Result<bool, SyncError> {
+        if matches!(stopped.folder().standing, Standing::HeldBack(_)) {
+            return Err(SyncError::NoRoot);
+        }
+        let retry = match &stopped.folder().is {
+            Is::Absent => return Err(SyncError::NoRoot),
+            Is::Down(record, Down::Failed { .. } | Down::Kept { .. }) => {
+                if record.intercepted() && self.link().is_none() {
+                    return Err(SyncError::NoHelper);
+                }
+                true
+            }
+            Is::Down(..) | Is::Up(_) => false,
+        };
+        if retry {
+            self.bring_up(stopped).await;
+        }
+        let record = match &stopped.folder().is {
+            Is::Absent => return Err(SyncError::NoRoot),
+            Is::Down(record, down) => {
+                if !retry {
+                    if record.source != RootSource::OneDrive {
+                        return Err(SyncError::Unsupported("this folder is not connected to OneDrive".into()));
+                    }
+                    self.require_helper_for(record)?;
+                }
+                let why = down.waits_for().map_or_else(|| down.why(&record.root), str::to_owned);
+                return Err(if retry {
+                    SyncError::not_up(&format!("bringing it up was tried just now and failed: {why}"))
+                } else {
+                    SyncError::not_up(&why)
+                });
+            }
+            Is::Up(up) => up.record.clone(),
+        };
+        if record.source != RootSource::OneDrive {
+            return if retry { Ok(false) } else { Err(SyncError::Unsupported("this folder is not connected to OneDrive".into())) };
+        }
+        self.require_helper_for(&record)?;
+        // A bring-up has started it already.
+        if self.syncing.lock().unwrap().is_none() {
+            self.start_sync(stopped, ScanReason::Start).await;
+        }
+        Ok(true)
     }
 
     /// `Refresh()`'s part for the quota (issue #2): read now, one request, into the account's

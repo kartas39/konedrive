@@ -64,6 +64,7 @@ fn dev_text(refusal: Option<&Refusal>, detail: &str, prefix: &str) -> String {
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => other(),
     }
@@ -185,6 +186,7 @@ fn mode_text(label: &str, mode: &str, prefix: &str, refusal: Option<&Refusal>, d
         | Refusal::UnknownObject
         | Refusal::UnknownMethod
         | Refusal::UnknownInterface
+        | Refusal::NotUp
         | Refusal::Internal
         | Refusal::Other(_) => other(),
     }

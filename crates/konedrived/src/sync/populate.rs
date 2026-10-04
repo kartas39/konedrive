@@ -19,9 +19,9 @@ impl SyncService {
     /// somewhere to fetch bytes from afterwards.
     pub async fn populate_from_directory(&self, source_dir: &Path) -> Result<u64, SyncError> {
         // The mode decides what is asked of the helper below, so it must not
-        // change until this is done (see `lifecycle`).
-        let _lifecycle = self.lifecycle.read().await;
-        let reg = self.require_registration()?;
+        // change until this is done: the folder's state is held for reading.
+        let folder = self.folder.read().await;
+        let reg = folder.acted_on().cloned().ok_or(SyncError::NoRoot)?;
         if reg.source == RootSource::OneDrive {
             return Err(SyncError::Unsupported(
                 "this folder shows your OneDrive; filling it from a directory is for a folder \
@@ -61,7 +61,7 @@ impl SyncService {
         // it owns one, it landed: the directory was intercepted, and a folder
         // the user asked to leave alone was half intercepted. Both measured
         // in the VM suite.
-        let link = if reg.intercepted { self.link() } else { None };
+        let link = if reg.intercepted() { self.link() } else { None };
         let walk = Walk { link: link.as_ref(), root: &root };
         let created = populate_walk(walk, &source, &reg.root.path, Path::new(""))
             .await

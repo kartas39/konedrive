@@ -60,8 +60,8 @@ async fn an_empty_folder_that_carries_another_drive_is_taken_and_a_full_one_is_n
     assert_eq!(xattr::get(empty.path(), "user.konedrive.drive").unwrap(), None, "the stale drive is taken off");
 }
 
-/// Review M2: an account being removed is retired under its lifecycle
-/// lock, and registers nothing from then on — not even a call that was
+/// Review M2: an account being removed is retired in the change that forgets its
+/// folder, and registers nothing from then on — not even a call that was
 /// waiting for that lock.
 #[tokio::test]
 async fn a_retired_account_registers_nothing() {
@@ -69,7 +69,7 @@ async fn a_retired_account_registers_nothing() {
     service.retire().await.unwrap();
     let dir = tempfile::tempdir().unwrap();
     let refused = service.register_root_without_interception(dir.path()).await;
-    assert!(matches!(&refused, Err(SyncError::Io(why)) if why.contains("being removed")), "{refused:?}");
+    assert!(matches!(&refused, Err(SyncError::Removing)), "{refused:?}");
     assert_eq!(xattr::get(dir.path(), "user.konedrive.root").unwrap(), None, "the folder is not touched");
 }
 
@@ -79,11 +79,11 @@ async fn a_retired_account_registers_nothing() {
 async fn a_removal_taken_back_gives_the_account_its_standing_back() {
     let dir = tempfile::tempdir().unwrap();
     let held = testing::service(None, None, None);
-    held.hold_back("its label repeats");
+    held.hold_back("its label repeats").await;
     held.retire().await.unwrap();
     held.unretire().await;
     let refused = held.register_root_without_interception(dir.path()).await;
-    assert!(matches!(&refused, Err(SyncError::Io(why)) if why.contains("its label repeats")), "{refused:?}");
+    assert!(matches!(&refused, Err(SyncError::HeldBack(why)) if why.contains("its label repeats")), "{refused:?}");
     assert!(held.last_error().contains("its label repeats"), "{}", held.last_error());
 
     let free = testing::service(None, None, None);

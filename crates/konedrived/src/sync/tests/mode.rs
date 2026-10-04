@@ -41,6 +41,16 @@ async fn forgetting_an_intercepted_root_needs_the_helper() {
     assert_eq!(recorded_root(&config_file), "");
 }
 
+/// systemd's answer for a helper that is installed and not running.
+struct StoppedUnit;
+
+#[async_trait::async_trait]
+impl crate::helper::status::HelperUnit for StoppedUnit {
+    async fn states(&self) -> Option<(String, String)> {
+        Some(("loaded".into(), "inactive".into()))
+    }
+}
+
 /// A Forget the helper answers `EPERM` has nothing left to undo: the
 /// helper holds no root of this uid under that id — it lost it, or never
 /// kept it — so no mark of that registration can be left, and keeping
@@ -55,7 +65,7 @@ async fn a_forget_the_helper_answers_eperm_goes_through_and_any_other_refusal_do
 
     helper.refuse(Seen::UnregisterRoot, libc::EIO);
     let error = service.unregister_root().await.unwrap_err();
-    assert!(matches!(error, SyncError::Io(_)), "{error:?}");
+    assert!(matches!(error, SyncError::Helper(_)), "{error:?}");
     assert!(service.root().is_some(), "a helper that may still hold it was ignored");
 
     helper.refuse(Seen::UnregisterRoot, libc::EPERM);
@@ -315,9 +325,14 @@ async fn an_intercepted_root_restored_before_its_helper_is_back_is_held() {
     let held = restarted.root().expect("a restored root must be held before the helper");
     assert_eq!(held.path.display().to_string(), resolved(root_dir.path()));
     assert_eq!(held.root_id, root_id, "under the id the helper holds it by");
+    // Nothing is known to be wrong yet: it waits, calmly.
+    assert_eq!((restarted.root_state().as_str(), restarted.last_error().as_str()), ("waiting", ""));
+    // Once the helper is known not to run, that is an error, and it says what to do.
+    restarted.hub().set_unit(Arc::new(StoppedUnit));
+    restarted.hub().check().await;
     assert_eq!(restarted.root_state(), "error");
     assert!(
-        restarted.last_error().contains("not connected"),
+        restarted.last_error().contains("not running"),
         "the published error must say what is missing: {}",
         restarted.last_error()
     );
@@ -391,7 +406,7 @@ async fn a_restored_root_with_no_recorded_id_takes_it_from_the_folder() {
     restarted.resume().await;
 
     assert_eq!(restarted.root().map(|r| r.root_id), Some(root_id.to_owned()));
-    assert_eq!(restarted.root_state(), "error");
+    assert_eq!(restarted.root_state(), "waiting");
 }
 
 /// The id the helper holds a root by is what a restored root has to be
@@ -457,7 +472,7 @@ async fn an_unreadable_config_is_never_overwritten() {
     let root_dir = tempfile::tempdir().unwrap();
 
     let refused = service.register_root(root_dir.path()).await;
-    assert!(matches!(refused, Err(SyncError::Io(_))), "{refused:?}");
+    assert!(matches!(refused, Err(SyncError::Config(_))), "{refused:?}");
     assert!(helper.seen().is_empty(), "the helper was told: {:?}", helper.seen());
     assert_eq!(std::fs::read_to_string(&config_file).unwrap(), unreadable);
 
@@ -481,7 +496,7 @@ async fn a_root_that_cannot_be_written_down_is_not_registered() {
 
     let error = service.register_root(root_dir.path()).await.unwrap_err();
 
-    assert!(matches!(error, SyncError::Io(_)), "{error:?}");
+    assert!(matches!(error, SyncError::Config(_)), "{error:?}");
     assert!(service.root().is_none());
     assert!(helper.seen().is_empty(), "the helper was told: {:?}", helper.seen());
 }
@@ -513,7 +528,7 @@ async fn a_failed_registration_is_undone_at_the_helper_and_in_the_config() {
     assert!(service.root().is_none(), "a failed registration stored a root anyway");
     assert_eq!(helper.seen(), vec![Seen::RegisterRoot, Seen::UnregisterRoot]);
     assert_eq!(recorded_root(&config_file), "");
-    assert_eq!((service.state().get().root_path.as_str(), service.root_state().as_str()), ("", "error"), "nor published");
+    assert_eq!((service.state().get().root_path.as_str(), service.root_state().as_str(), service.last_error().as_str()), ("", "none", ""), "nor published");
     service.register_root(root_dir.path()).await.unwrap();
     assert_eq!(service.root_state(), "ready");
 }
@@ -539,14 +554,55 @@ async fn a_failed_registration_the_helper_may_still_hold_is_kept() {
     xattr::remove(root_dir.path(), "user.konedrive.root").unwrap();
     helper.release(Seen::RegisterRoot);
 
+    // The refusal says the folder is kept, and what to do about it.
     let error = registering.await.unwrap().unwrap_err();
-    assert!(matches!(error, SyncError::Io(_)), "{error:?}");
+    assert!(
+        matches!(&error, SyncError::Helper(why) if why.contains("brought up the next time the helper connects") && why.contains("forget it")),
+        "{error:?}"
+    );
     assert!(service.root().is_some(), "a root the helper may hold was let go");
     assert_eq!(service.root_state(), "error");
     assert_eq!(recorded_root(&config_file), resolved(root_dir.path()));
     let error =
         service.register_root_without_interception(root_dir.path()).await.unwrap_err();
     assert!(matches!(error, SyncError::AlreadyRegistered), "{error:?}");
+    assert!(service.last_error().contains("forget it if you do not want it"), "{}", service.last_error());
+
+    // The next connect brings it up, as the refusal said — the folder that was registered,
+    // by the id it carries: without it (this test took it off) the folder stays down.
+    helper.refuse(Seen::UnregisterRoot, 0);
+    service.resume().await;
+    assert_eq!(service.root_state(), "error");
+    assert!(service.last_error().contains("another folder stands in its place"), "{}", service.last_error());
+    xattr::set(root_dir.path(), "user.konedrive.root", service.root().unwrap().root_id.as_bytes()).unwrap();
+    service.resume().await;
+    assert_eq!(service.root_state(), "ready", "{}", service.last_error());
+}
+
+/// F241: an intercepted folder whose root id is recorded nowhere cannot be named to the
+/// helper. It is held, and says why; a Forget takes the daemon's record of it away with no
+/// helper, and touches nothing in the folder.
+#[tokio::test]
+async fn an_intercepted_folder_nobody_can_name_is_forgotten_on_the_daemons_side() {
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_file = config_dir.path().join("config.toml");
+    let root_dir = tempfile::tempdir().unwrap();
+    std::fs::write(root_dir.path().join("mine.txt"), b"x").unwrap();
+    write_config(&config_file, &format!("path = \"{}\"\n", resolved(root_dir.path())));
+
+    let restarted = testing::service(None, None, Some(persist(&config_file)));
+    restarted.resume().await;
+    assert_eq!(restarted.root_state(), "error");
+    assert!(restarted.last_error().contains("does not record its root id"), "{}", restarted.last_error());
+    let elsewhere = tempfile::tempdir().unwrap();
+    let refused = restarted.register_root_without_interception(elsewhere.path()).await;
+    assert!(matches!(refused, Err(SyncError::AlreadyRegistered)), "{refused:?}");
+
+    restarted.unregister_root().await.unwrap();
+    assert_eq!((restarted.root_state().as_str(), restarted.last_error().as_str()), ("none", ""));
+    assert_eq!(recorded_root(&config_file), "");
+    assert_eq!(std::fs::read(root_dir.path().join("mine.txt")).unwrap(), b"x");
+    restarted.register_root_without_interception(elsewhere.path()).await.unwrap();
 }
 
 /// The deterministic form of a D-Bus-activated first call: the bus name

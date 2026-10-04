@@ -1,4 +1,5 @@
 use super::*;
+use crate::config::Mode;
 
 /// Write design §3.9: the account turning read-write takes the read-only lock off
 /// its folder — files `0644`, directories `0755`, the folder itself last — and the
@@ -7,7 +8,6 @@ use super::*;
 /// switch cut short — loses it as it comes up.
 #[tokio::test]
 async fn the_lock_comes_off_and_goes_back_on_with_the_mode() {
-    use crate::config::Mode;
     let w = world().await;
     let modes = || {
         let folder = w.folder.path();
@@ -35,7 +35,7 @@ async fn the_lock_comes_off_and_goes_back_on_with_the_mode() {
 
     // Read-write in config.toml again, but the walk never ran: the next bring-up runs it.
     let restarted = connected(&w, true).await;
-    restarted.start_in_mode(Mode::ReadWrite);
+    restarted.follow_mode(Mode::ReadWrite).await;
     restarted.restore().await;
     restarted.resume().await;
     assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
@@ -63,7 +63,6 @@ async fn the_lock_comes_off_and_goes_back_on_with_the_mode() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_made_in_a_read_write_folder_waits_to_be_uploaded() {
     use crate::account::PendingUploads;
-    use crate::config::Mode;
     let w = world().await;
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
@@ -103,7 +102,6 @@ async fn a_file_made_in_a_read_write_folder_waits_to_be_uploaded() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_file_made_in_a_read_write_folder_is_uploaded() {
     use crate::account::PendingUploads;
-    use crate::config::Mode;
     use wiremock::matchers::path_regex;
     let w = world().await;
     let mut hasher = konedrive_graph::quickxor::QuickXor::new();
@@ -444,7 +442,6 @@ async fn an_ignored_directory_keeps_everything_in_it_local() {
 /// rename waiting beside it stands.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_missing_folder_asks_for_a_cycle_that_leaves_waiting_renames_alone() {
-    use crate::config::Mode;
     let w = world().await;
     // The rename cannot reach OneDrive yet; the new file's folder is
     // gone there (nothing mocked for it: 404).
@@ -565,7 +562,6 @@ async fn a_drive_taken_off_the_list_while_the_worker_runs_sends_nothing_more() {
 /// the time they go on; when the wait is over the change goes up and the note is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_throttle_is_said_in_last_error_until_it_ends() {
-    use crate::config::Mode;
     use crate::status::snapshot::published_error;
     use wiremock::matchers::path_regex;
     let w = world().await;
@@ -622,7 +618,6 @@ async fn a_throttle_is_said_in_last_error_until_it_ends() {
 /// (`invalid_grant`, as the token manager records it); otherwise a sign-out.
 async fn a_switch_nobody_forced_keeps_the_changes(expired: bool) {
     use crate::account::PendingUploads;
-    use crate::config::Mode;
     let w = world().await;
     // The rename cannot reach OneDrive yet.
     Mock::given(method("PATCH"))
@@ -635,7 +630,7 @@ async fn a_switch_nobody_forced_keeps_the_changes(expired: bool) {
     listed(&service).await;
     let_write(&service);
     let account = testing::parts(&service).account.state().clone();
-    let follower = tokio::spawn(crate::sync::write_mode::follow(account.subscribe(), Arc::downgrade(&service)));
+    let follower = tokio::spawn(crate::sync::mode::follow(account.subscribe(), Arc::downgrade(&service)));
     let docs = w.folder.path().join("docs");
     wait_until("the folder is read-write", || service.mode() == Mode::ReadWrite && mode(&docs) == 0o755).await;
     let made = std::process::Command::new("sh").args(["-c", "mv docs/f.txt docs/g.txt"]).current_dir(w.folder.path()).status().unwrap();
@@ -676,7 +671,6 @@ async fn a_sign_out_keeps_the_changes_waiting_to_upload() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_folder_whose_changes_wait_is_not_forgotten() {
     use crate::account::PendingUploads;
-    use crate::config::Mode;
     let w = world().await;
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
@@ -718,7 +712,6 @@ async fn a_forgotten_folder_is_not_paused() {
 /// and says why; nothing is ever made in it unwatched.
 #[tokio::test]
 async fn a_read_write_folder_whose_watcher_cannot_start_stays_locked() {
-    use crate::config::Mode;
     let w = world().await;
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
@@ -734,7 +727,6 @@ async fn a_read_write_folder_whose_watcher_cannot_start_stays_locked() {
 /// cannot start now, is locked again: no watcher looks at it.
 #[tokio::test]
 async fn a_read_write_folder_whose_sync_cannot_start_is_locked_again() {
-    use crate::config::Mode;
     let w = world().await;
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
@@ -751,12 +743,69 @@ async fn a_read_write_folder_whose_sync_cannot_start_is_locked_again() {
     }
     std::fs::create_dir(&tree).unwrap();
     let restarted = connected(&w, true).await;
-    restarted.start_in_mode(Mode::ReadWrite);
+    restarted.follow_mode(Mode::ReadWrite).await;
     restarted.restore().await;
     restarted.resume().await;
     assert!(restarted.last_error().contains("tree store"), "{}", restarted.last_error());
     assert_eq!((mode(w.folder.path()), mode(&w.folder.path().join("docs"))), (0o555, 0o555));
     restarted.stop_sync().await;
+}
+
+/// The folder itself moved away under a read-write sync (§3.3): the folder reads `error`
+/// and says so, its sync stops, what needs the sync is refused `NotUp`, and OneDrive is
+/// asked for nothing more — nothing is deleted there because the folder went. `Refresh()`
+/// tries to bring it up again: refused while it is gone, refused too while another directory
+/// stands at its path (an empty one made in its place is never adopted: nothing is stamped
+/// on it, the helper is not told, and no sync starts on it, at a `Refresh()` or at the
+/// helper's reconnect), and once the folder is back it is up and in step again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_folder_moved_away_stops_its_sync_and_says_so() {
+    let w = world().await;
+    let service = connected(&w, true).await;
+    service.register_root(w.folder.path()).await.unwrap();
+    listed(&service).await;
+    let before = deltas(&w).await;
+    service.follow_mode(Mode::ReadWrite).await;
+    wait_for_deltas(&w, before).await;
+
+    std::fs::rename(w.folder.path(), w.config.path().join("moved")).unwrap();
+    wait_until("the folder reads error", || service.root_state() == "error" && service.last_error().contains("moved or deleted")).await;
+    // Its store is still open, and no call is served from it.
+    let refused = service.pause_syncing(0).await.unwrap_err();
+    assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("moved or deleted")), "{refused:?}");
+    let refused = service.outbox(0).await.unwrap_err();
+    assert!(matches!(refused, SyncError::NotUp(_)), "{refused:?}");
+    let gone = |refused: &SyncError| matches!(refused, SyncError::NotUp(why) if why.contains("tried just now") && why.contains("another folder stands in its place"));
+    let refused = service.refresh().await.unwrap_err();
+    assert!(gone(&refused), "{refused:?}");
+    assert_eq!(service.root_state(), "error");
+    let asked = requests(&w).await;
+
+    // An empty directory where the folder was is not the folder.
+    std::fs::create_dir(w.folder.path()).unwrap();
+    w.helper.forget();
+    let refused = service.refresh().await.unwrap_err();
+    assert!(gone(&refused), "{refused:?}");
+    service.resume().await;
+    assert_eq!(service.root_state(), "error");
+    assert!(service.last_error().contains("another folder stands in its place"), "{}", service.last_error());
+    assert_eq!(xattr::get(w.folder.path(), "user.konedrive.root").unwrap(), None, "the directory was stamped");
+    assert!(!w.helper.seen().contains(&Seen::RegisterRoot), "the helper was told of it");
+    assert_eq!(std::fs::read_dir(w.folder.path()).unwrap().count(), 0, "something was placed in it");
+    std::fs::remove_dir(w.folder.path()).unwrap();
+    service.refresh_now();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(requests(&w).await, asked, "OneDrive was asked on behalf of a folder that is gone");
+    let received = w.server.received_requests().await.unwrap();
+    assert!(received.iter().all(|r| r.method.as_str() == "GET"), "something was changed in OneDrive");
+
+    // Put back, it comes up at a `Refresh()`, with no helper's reconnect to wait for.
+    std::fs::rename(w.config.path().join("moved"), w.folder.path()).unwrap();
+    let before = deltas(&w).await;
+    service.refresh().await.unwrap();
+    wait_for_deltas(&w, before).await;
+    assert_ne!(service.root_state(), "error", "{}", service.last_error());
+    service.stop_sync().await;
 }
 
 /// Whether the folder's cycle is queued for the tree lock, behind whoever holds it.
@@ -767,9 +816,9 @@ fn cycle_waits_for_tree(service: &SyncService) -> bool {
 /// SY1: a forced switch to read-only and a bring-up end, with a cycle under way. The set-up:
 /// the test holds the tree lock, as a commit of the outbox worker does; a cycle has fetched
 /// and waits for that lock; the forced switch stops the folder's tasks, which ends the cycle,
-/// takes `lifecycle` for writing and waits for the tree lock; a bring-up after the helper
-/// reconnects waits for `lifecycle` behind it. Then the test lets go, and both must end.
-/// When the switch took `lifecycle` for reading and left the cycle running, the cycle, the
+/// takes the folder's state for writing and waits for the tree lock; a bring-up after the helper
+/// reconnects waits for the state behind it. Then the test lets go, and both must end.
+/// When the switch took the state for reading and left the cycle running, the cycle, the
 /// switch and the bring-up waited for each other for good.
 ///
 /// Which cycle waits is not the test's to choose. The test takes the tree lock once the
@@ -782,7 +831,6 @@ fn cycle_waits_for_tree(service: &SyncService) -> bool {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cycle_a_forced_switch_and_a_bring_up_at_once_all_end() {
     use crate::account::PendingUploads;
-    use crate::config::Mode;
     let w = world().await;
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
@@ -797,18 +845,19 @@ async fn a_cycle_a_forced_switch_and_a_bring_up_at_once_all_end() {
     // A cycle that reconciles in full has fetched and is queued for the tree lock.
     assert!(service.nudge_full());
     wait_until("a cycle waits for the tree lock", || cycle_waits_for_tree(&service)).await;
-    // The forced switch: it holds `lifecycle`, and cannot end while the test holds the tree
-    // lock. Waited for however long a loaded machine takes to stop the folder's tasks.
+    // The forced switch: it holds the folder's state, and cannot end while the test holds
+    // the tree lock. Waited for however long a loaded machine takes to stop the folder's
+    // tasks; a reader of the state (`Skipped()`) stops being answered once it is held.
     let switching = Arc::clone(&service);
     let switch = tokio::spawn(async move { switching.drop_pending_uploads().await });
     let taken = tokio::time::timeout(Duration::from_secs(60), async {
-        while service.lifecycle.try_write().is_ok() {
+        while tokio::time::timeout(Duration::from_millis(200), service.skipped()).await.is_ok() {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await;
-    assert!(taken.is_ok(), "the switch never took `lifecycle`");
-    // The helper reconnected: the bring-up waits for `lifecycle` for writing.
+    assert!(taken.is_ok(), "the switch never took the folder's state");
+    // The helper reconnected: the bring-up waits for the state too.
     let resuming = Arc::clone(&service);
     let bring_up = tokio::spawn(async move { resuming.resume().await });
     tokio::time::sleep(Duration::from_millis(100)).await;
@@ -833,7 +882,6 @@ async fn a_cycle_a_forced_switch_and_a_bring_up_at_once_all_end() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_forced_drop_turns_the_folder_read_only_and_records_nothing_again() {
     use crate::account::PendingUploads;
-    use crate::config::Mode;
     let w = world().await;
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();

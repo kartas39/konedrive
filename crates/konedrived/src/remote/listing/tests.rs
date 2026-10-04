@@ -117,7 +117,7 @@ impl Setup {
             link: Arc::new(std::sync::Mutex::new(Some(self.link.clone()))),
             locks: InodeLocks::new(),
             state: self.state.clone(),
-            lifecycle: Arc::new(tokio::sync::RwLock::new(())),
+            lease: super::Lease::on(&Arc::new(tokio::sync::RwLock::new(()))),
             rescue_dir: self.rescue_dir.clone(),
             full_threshold: FULL_THRESHOLD,
             after_cycle: None,
@@ -627,7 +627,7 @@ async fn a_cycle_asking_graph_does_not_hold_the_lifecycle_lock() {
     let s = setup().await;
     s.feed_after(None, json!([root_item(), folder("D", "R", "docs")]), "L1", Duration::from_secs(30)).await;
     let lifecycle = Arc::new(tokio::sync::RwLock::new(()));
-    let listing = Listing::new(ListingContext { lifecycle: Arc::clone(&lifecycle), ..s.context() });
+    let listing = Listing::new(ListingContext { lease: crate::remote::listing::Lease::on(&lifecycle), ..s.context() });
     let cancel = CancellationToken::new();
     let running = tokio::spawn({
         let (listing, cancel) = (Arc::clone(&listing), cancel.clone());
@@ -970,7 +970,7 @@ async fn a_dropped_cycle_keeps_its_locks_until_its_reconcile_stops() {
     let listing = Listing::new(ListingContext {
         intercepted: true,
         link: Arc::new(std::sync::Mutex::new(Some(link))),
-        lifecycle: Arc::clone(&lifecycle),
+        lease: crate::remote::listing::Lease::on(&lifecycle),
         ..s.context()
     });
     s.feed(None, json!([root_item(), folder("D", "R", "docs")]), "L1").await;

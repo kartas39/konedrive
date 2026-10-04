@@ -68,7 +68,7 @@ impl SyncService {
     /// (`source::parts`, issue #28), the slot held for it being its first stream's; a file
     /// being opened, and `Hydrate`, keep one stream.
     pub(super) async fn fill_now(&self, path: &Path, class: Option<konedrive_graph::pool::Class>) -> Result<Answered, SyncError> {
-        let reg = self.require_registration()?;
+        let reg = self.require_record()?;
         let Some(source) = self.source.lock().unwrap().clone() else {
             return Err(SyncError::NoSource);
         };
@@ -111,7 +111,7 @@ impl SyncService {
         // its mark. A root registered without interception clears it the
         // same way when there is a link, and otherwise goes by whether a
         // helper is running at all (`Clearance`).
-        let clearance = if reg.intercepted { self.link().map(Clearance::Link) } else { Some(self.clearance()) };
+        let clearance = if reg.intercepted() { self.link().map(Clearance::Link) } else { Some(self.clearance()) };
 
         let fd: std::os::fd::OwnedFd = file.into();
         // Shown in `Transfers.Downloads` while it downloads; `Hydrate` (an open, for the pool)

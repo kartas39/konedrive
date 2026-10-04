@@ -2,7 +2,7 @@
 //! the mode its account runs in (`Account.Mode`). Read-only keeps it under the lock, as the
 //! read phase did; read-write lifts the lock, looks for local changes and uploads them.
 //!
-//! A switch stops the folder's sync, changes the mode under the lifecycle lock, walks the
+//! A switch stops the folder's sync, changes the mode inside a change of its state, walks the
 //! folder — the lock off, or back on — and starts the sync again, whose first cycle is a Full
 //! reconcile under the new mode.
 //!
@@ -12,12 +12,13 @@
 //! counts before a switch to read-only and drops when that switch is forced.
 
 use std::os::unix::fs::PermissionsExt;
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Weak};
 
 use tokio::sync::watch;
 
 use crate::folder::disk::Disk;
+use crate::local::ScanReason;
+use super::folder::Stopped;
 use crate::folder::root::SyncRoot;
 use crate::local::watcher::WalkState;
 use crate::folder::locks::InodeKey;
@@ -28,24 +29,15 @@ use crate::account::state::AccountSnapshot;
 use crate::status::snapshot::OutboxNote;
 
 impl SyncService {
-    /// The mode the folder follows now.
+    /// The mode the folder follows now, as last published.
     pub fn mode(&self) -> Mode {
-        *self.mode.lock().unwrap()
-    }
-
-    /// The mode the account runs in as the daemon starts, set before its folder is brought
-    /// up: no walk, and no hook. The bring-up itself lifts a lock a read-write folder still
-    /// has ([`ensure_unlocked`](Self::ensure_unlocked)) and starts the watcher and the Full
-    /// local scan.
-    pub fn start_in_mode(&self, mode: Mode) {
-        *self.mode.lock().unwrap() = mode;
-        self.state.update(|s| s.scan.follow(mode));
+        self.view().wanted
     }
 
     /// Follows the account to `mode` (`docs/design/writes.md` §2, §2.2). The folder's sync is stopped as
     /// a Forget stops it — which stops the watcher too ([`stop_watcher`](Self::stop_watcher))
-    /// — and the mode changed with `lifecycle` held for writing, so no reconcile, registration
-    /// or free-up runs meanwhile. Then, for a OneDrive folder that is brought up:
+    /// — and the mode changed inside one change of the folder's state, so no reconcile,
+    /// registration or free-up runs meanwhile. Then, for a OneDrive folder that is up:
     ///
     /// - to read-write, the lock comes off with the walk a Forget uses (files `0644`,
     ///   directories `0755`), and every placeholder is made `0644` from then on. When the
@@ -56,44 +48,48 @@ impl SyncService {
     /// The sync then starts again, if it ran: its first cycle is a Full reconcile, and in
     /// read-write mode it starts the watcher, whose walk ends in the Full local scan
     /// ([`start_watcher`](Self::start_watcher)).
-    /// A folder not brought up yet, and a walk the daemon did not finish, are walked when
+    /// A folder that is not up, and a walk the daemon did not finish, are walked when
     /// the folder's sync next starts, in either mode
     /// ([`ensure_unlocked`](Self::ensure_unlocked), [`ensure_locked`](Self::ensure_locked)).
     /// A local folder only takes the mode.
+    ///
+    /// The accounts manager calls this once before the folder is restored, with the mode
+    /// the account starts in: nothing is up then, so the folder only takes the mode, and
+    /// its bring-up lifts the lock and starts the watcher.
     pub async fn follow_mode(&self, mode: Mode) {
         if self.mode() == mode {
             return;
         }
-        let was_syncing = self.stop_tasks().await;
-        let _lifecycle = self.lifecycle.write().await;
-        let was_syncing = self.stop_tasks().await || was_syncing;
-        if was_syncing {
-            self.let_go_of_activity().await;
-        }
-        // Looked at again under the lock: a forced drop may have turned the folder already.
-        if self.mode() != mode {
+        let mut stopped = self.change().await;
+        // Looked at again inside the change: a forced drop may have turned the folder
+        // already.
+        let mut reason = ScanReason::Start;
+        if stopped.folder().wanted != mode {
             // Nothing is dropped: a sign-out, the gate, `config.toml`, a narrower grant keep
             // the changes waiting to upload — the folder is locked, and its sync holds its
             // cycles while they wait, so no read-only reconcile puts back what they describe
             // (`listing`'s poller). Only a forced switch drops them, and turns the folder
             // itself (`PendingUploads::drop_pending_uploads`).
-            self.turn(mode, false).await;
+            self.turn(&mut stopped, mode, false).await;
+            if mode == Mode::ReadWrite {
+                // The watcher that starts next says why its Full local scan runs.
+                reason = ScanReason::ReadWrite;
+            }
         }
-        if was_syncing {
-            self.start_sync().await;
+        if stopped.ran() && stopped.folder().syncs() {
+            self.start_sync(&mut stopped, reason).await;
         }
     }
 
-    /// The switch itself, to `mode`: the caller holds `lifecycle` for writing, has stopped the
-    /// folder's tasks, and starts the sync again. `dropping`: the changes waiting to upload
-    /// are dropped as the folder turns read-only, a forced switch's.
-    async fn turn(&self, mode: Mode, dropping: bool) {
-        *self.mode.lock().unwrap() = mode;
-        // The watcher that starts next says why its Full local scan runs.
-        self.switched_to_read_write.store(mode == Mode::ReadWrite, Ordering::SeqCst);
-        self.state.update(|s| s.scan.follow(mode));
+    /// The switch itself, to `mode`, inside a change; the caller starts the sync again.
+    /// `dropping`: the changes waiting to upload are dropped as the folder turns read-only,
+    /// a forced switch's.
+    async fn turn(&self, stopped: &mut Stopped<'_>, mode: Mode, dropping: bool) {
+        stopped.folder_mut().wanted = mode;
+        // What reads the mode from now on (the write gate) reads the new one.
+        stopped.publish();
         if dropping {
-            self.drop_outbox().await;
+            self.drop_outbox(stopped).await;
         }
         // What the folder said in the other mode goes with it: the watcher's
         // and the handles' notes of a read-write folder, and why the outbox waits in either;
@@ -105,14 +101,14 @@ impl SyncService {
             }
             s.outbox_note = None;
         });
-        let folder = self.registration().filter(|reg| reg.source == RootSource::OneDrive && reg.brought_up);
-        if let Some(reg) = &folder {
-            tracing::info!("{} is {} now", reg.root.path.display(), mode.as_str());
+        let root = stopped.folder().up().filter(|up| up.record.source == RootSource::OneDrive).map(|up| up.record.root.clone());
+        if let Some(root) = root {
+            tracing::info!("{} is {} now", root.path.display(), mode.as_str());
             match mode {
                 // `start_sync` lifts it once a watcher has walked the folder; a folder whose
                 // sync does not run stays locked until one does (the watcher).
                 Mode::ReadWrite => {}
-                Mode::ReadOnly => self.relock(&reg.root).await,
+                Mode::ReadOnly => self.relock(&root).await,
             }
         }
     }
@@ -150,21 +146,6 @@ impl SyncService {
         }
     }
 
-    /// The walk that takes the lock off (`docs/design/writes.md` §2.2), on a blocking thread.
-    async fn unlock(&self, root: &SyncRoot) {
-        let root = root.clone();
-        let unlocked = tokio::task::spawn_blocking(move || {
-            Disk::open(&root, false)
-                .and_then(|disk| disk.unlock_tree())
-                .map_err(|e| format!("cannot take the read-only lock off {}: {e}", root.path.display()))
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("the unlock task failed: {e}")));
-        if let Err(e) = unlocked {
-            tracing::warn!("{e}");
-        }
-    }
-
     /// The walk that puts the lock back (`docs/design/writes.md` §2.2), on a blocking thread. A file a
     /// fill or a free-up holds is left for the first Full reconcile, which locks it.
     async fn relock(&self, root: &SyncRoot) {
@@ -195,10 +176,10 @@ impl SyncService {
             // `HeldCount`/`PendingCount` count the drop at once, not at the
             // worker's own next wake (the outbox on the bus).
             service.wake_outbox();
-            let Some(reg) = service.registration() else { return };
+            let Some(record) = service.record() else { return };
             let store = service.store.lock().unwrap().clone();
             let Some(store) = store else { return };
-            runtime.spawn(async move { service.tidy_dropped(&reg.root, &store, &rows).await });
+            runtime.spawn(async move { service.tidy_dropped(&record.root, &store, &rows).await });
         });
         crate::remote::listing::Writes {
             tree_lock: Arc::clone(&self.tree_lock),
@@ -301,8 +282,9 @@ impl PendingUploads for SyncService {
     /// completed listing to examine it against, it cannot, and is not counted.
     async fn pending_uploads(&self) -> u64 {
         self.flush_watcher().await;
-        // Read with the lifecycle lock held, as every clone of the store outside the sync is.
-        let _lifecycle = self.lifecycle.read().await;
+        // Read with the folder's state held for reading, as every clone of the store
+        // outside the sync is.
+        let _folder = self.folder.read().await;
         let Some(store) = self.store.lock().unwrap().clone() else { return 0 };
         store.call(|s| s.outbox_len()).await.map_or(0, |n| n as u64)
     }
@@ -312,11 +294,10 @@ impl PendingUploads for SyncService {
     /// check and rescue. Called once `config.toml` says read-only. The worker stops first, so
     /// nothing more is sent.
     ///
-    /// The folder's sync stops for the drop and starts again after it: the rows go with
-    /// `lifecycle` held for writing and no task running, as at any switch, so nothing here
-    /// holds `lifecycle` or the tree lock while it waits for the other with a cycle under
-    /// way (`docs/design/writes.md` §9). The mode is read under that lock, which every change
-    /// of it holds.
+    /// The folder's sync stops for the drop and starts again after it: the rows go inside
+    /// a change of the folder's state, with no task running, as at any switch, so nothing
+    /// here holds the state or the tree lock while it waits for the other with a cycle
+    /// under way (`docs/design/writes.md` §9).
     ///
     /// A read-write folder turns read-only here, in the same step, rather than when it
     /// follows its account ([`SyncService::follow_mode`], which then finds it turned): its
@@ -328,28 +309,20 @@ impl PendingUploads for SyncService {
     /// deferred is the base's, and the first cycle is a Full reconcile.
     async fn drop_pending_uploads(&self) {
         self.stop_outbox().await;
-        let was_syncing = self.stop_tasks().await;
-        let _lifecycle = self.lifecycle.write().await;
-        let was_syncing = self.stop_tasks().await || was_syncing;
-        if was_syncing {
-            self.let_go_of_activity().await;
-        }
-        if self.mode() == Mode::ReadWrite {
-            self.turn(Mode::ReadOnly, true).await;
+        let mut stopped = self.change().await;
+        if stopped.folder().wanted == Mode::ReadWrite {
+            self.turn(&mut stopped, Mode::ReadOnly, true).await;
         } else {
-            self.drop_outbox().await;
+            self.drop_outbox(&stopped).await;
         }
-        if was_syncing {
-            self.start_sync().await;
-        }
+        self.start_again(&mut stopped).await;
     }
 }
-
 
 /// Makes `sync` follow its account's mode (`AccountSnapshot::mode`, which the account works
 /// out from `config.toml`, the gate and its token) for as long as both exist. The accounts
 /// manager starts one per account, once the folder has taken the mode the account started
-/// in ([`SyncService::start_in_mode`]).
+/// in.
 pub async fn follow(mut account: watch::Receiver<AccountSnapshot>, sync: Weak<SyncService>) {
     loop {
         let mode = account.borrow_and_update().mode;
