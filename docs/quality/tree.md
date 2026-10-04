@@ -116,6 +116,10 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
   `Debug` over `session_url` (`outbox/row.rs:108, 128`).
 - **Fix, in steps:** a `SessionUrl` newtype with a redacting `Debug` (S); typed meta accessors
   (S); a `ReadStore` type (M); facades by topic (L, after the #104 and #111 test gaps).
+- **Fixed 2026-10-04** in `b79a056` (#165), the three small steps: `SessionUrl` with a redacting `Debug`; typed
+  meta accessors (`meta.rs`); `ReadStore` for the read-only connection. The facades by topic
+  were not made: the same methods behind five names, with no call site simpler. Left:
+  `TreeError::Sql` is public; `OutboxRow` is all `pub` with the `outbox_amend` closure.
 
 ## TR6. `lib.rs` holds six things
 
@@ -133,6 +137,9 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
   `thumbnail_candidates`, the deferred reads, `placement_in_items`, `skipped`. Failing closed
   would leave the folder in error (`should_rebuild` does not cover it). Only a damaged store or
   one written by a newer version has such a row; not traced further.
+- **Fixed 2026-10-04** in `b79a056` (#165), the leftover: a placement word that cannot be read is placed in
+  every query as in the decoder (`model::placed()`, `skipped()`), schema 7. An unknown `kind`
+  still reads as a file, in the decoder only (`docs/limitations/D36.md`).
 
 ## TR7. The dependency on `konedrive-graph` is the wrong way round
 
@@ -150,6 +157,9 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
   `outbox/dependencies.rs`); public and used only by tests: `outbox_runnable`, `outbox_blockers`,
   `outbox_record`, `outbox_under`, `upload_opening_at`, `conflict_kind`, `in_memory`. D24 records
   four more.
+- **Fixed 2026-10-04** in `b79a056` (#165): the test-only API is behind `cfg(test)` or the `testing` feature;
+  the `assert_eq!` is out of `pick.rs`. A test reads the crate's sources for a delete of an
+  outbox row outside `remove`.
 
 ## TR12. Tuples and bare strings where a type is missing
 
@@ -158,3 +168,6 @@ Scores: `lib.rs`, `reconcile.rs`, `outbox/schema.rs` 2; `staging.rs`, `thumbs.rs
   parameters (`outbox/worker.rs:422`); `begin_staging(copy_items: bool)` whose `true` now means
   the opposite of its name (`staging.rs:11`). `thumbs.rs`: the `thumb_key` format is written in
   SQL (`:38`) and in the daemon (`desktop/thumbs.rs:67`).
+- **Fixed 2026-10-04** in `b79a056` (#165): `Deferrals`, `RwStaged`, `Leaving`, `ThumbnailBatch`, `ConflictCopy`,
+  `NewTree`; the thumbnail key format in one place. Left as tuples: `leaving` (it goes with
+  `B4`), `skipped`, `outbox_settle_not_found`, `upload_opening_windows`, `upload_sessions_at`.
