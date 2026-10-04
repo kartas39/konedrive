@@ -71,11 +71,11 @@ pub fn pinned_ancestors(root: &Path, path: &Path) -> Vec<PathBuf> {
 }
 
 /// Puts a pin on the file or folder `item`, or takes it off. A folder's
-/// write bit is lifted under [`super::disk::dir_modes`], so that no window
+/// write bit is lifted under the sync folder's `modes`, so that no window
 /// of the materializer's on the same folder interleaves with it; a file's
 /// caller holds its per-inode lock, for the same reason against a fill.
-pub fn set_pin(item: &std::fs::File, on: bool) -> std::io::Result<()> {
-    let _modes = item.metadata()?.is_dir().then(crate::folder::disk::dir_modes);
+pub fn set_pin(item: &std::fs::File, on: bool, modes: &crate::folder::disk::Modes) -> std::io::Result<()> {
+    let _held = item.metadata()?.is_dir().then(|| modes.hold());
     if on {
         konedrive_fs::placeholder::write_pin(item)
     } else {

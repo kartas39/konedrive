@@ -34,7 +34,7 @@ The daemon writes it through a descriptor opened beneath the registered root
 owner's write bit for the moment of the write, as it does for every other attribute on the
 read-only folder. A file's pin is written under its per-inode lock, since a fill lifts the same
 bit around its own attribute writes; a folder's under the lock every lift of a directory's write
-bit in the daemon takes (`disk::dir_modes`), the materializer's own included. Only a directory
+bit in the daemon takes (the folder's `disk::Modes`), the materializer's own included. Only a directory
 inside the root, the root itself, or a regular file that carries a konedrive state can be pinned;
 nothing named `.konedrive-*`, or inside such a directory, can.
 

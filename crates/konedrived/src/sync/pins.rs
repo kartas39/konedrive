@@ -1,6 +1,7 @@
 use std::fs::File;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use async_trait::async_trait;
 
@@ -19,7 +20,7 @@ impl SyncService {
     /// its write is done.
     pub(super) async fn set_pins(&self, targets: Vec<PinTarget>, on: bool) -> (Vec<PathBuf>, Option<SyncError>) {
         let mut done = Vec::new();
-        for PinTarget { item, shown, is_dir, .. } in targets {
+        for PinTarget { item, shown, is_dir, modes, .. } in targets {
             let guard = if is_dir {
                 None
             } else {
@@ -28,7 +29,7 @@ impl SyncService {
                     Err(e) => return (done, Some(SyncError::Io(format!("{}: {e}", shown.display())))),
                 }
             };
-            let written = tokio::task::spawn_blocking(move || pin::set_pin(&item, on)).await;
+            let written = tokio::task::spawn_blocking(move || pin::set_pin(&item, on, &modes)).await;
             drop(guard);
             match written {
                 Ok(Ok(())) => done.push(shown),
@@ -142,12 +143,15 @@ pub(super) struct PinTarget {
     pub(super) own: bool,
     /// The folders above it, up to the root, that carry a pin: nearest first.
     above: Vec<PathBuf>,
+    /// The folder's lock on its directories' modes, under which a folder's pin is written.
+    modes: Arc<crate::folder::disk::Modes>,
 }
 
 /// Opens and looks at each of `paths`; one that cannot be — outside the
 /// root, a `.konedrive-*` name, a file that is not ours — refuses them all.
 /// Blocking.
 pub(super) fn pin_targets(root: &SyncRoot, paths: &[PathBuf]) -> Result<Vec<PinTarget>, SyncError> {
+    let modes = crate::folder::disk::Modes::of_root(root).map_err(|e| SyncError::Io(format!("{}: {e}", root.path.display())))?;
     paths
         .iter()
         .map(|path| {
@@ -156,7 +160,7 @@ pub(super) fn pin_targets(root: &SyncRoot, paths: &[PathBuf]) -> Result<Vec<PinT
             let is_dir = item.metadata().map_err(io)?.is_dir();
             let own = konedrive_fs::placeholder::read_pin(&item).map_err(io)?;
             let above = pin::pinned_ancestors(&root.path, &shown);
-            Ok(PinTarget { item, shown, is_dir, own, above })
+            Ok(PinTarget { item, shown, is_dir, own, above, modes: Arc::clone(&modes) })
         })
         .collect()
 }

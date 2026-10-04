@@ -123,7 +123,7 @@ impl ExamineSink {
     /// one link, so an open through a name outside every marked directory is
     /// intercepted too. The daemon's own open is not intercepted.
     fn mark_files(&self, disk: &Disk, rels: &[PathBuf]) {
-        let Some(link) = self.link.lock().unwrap().clone() else { return };
+        let Some(link) = self.link.get() else { return };
         for rel in rels {
             let (Some(parent), Some(name)) = (rel.parent(), rel.file_name()) else { continue };
             let marked = disk

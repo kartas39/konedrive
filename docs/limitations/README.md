@@ -267,8 +267,12 @@ application must never read zeros where real content should be.
 - [F268](F268.md) — A roll-back that fails leaves the file `hydrating`, not `online-only`
 - [F269](F269.md) — What must hold before a file is emptied is the caller's word, for all but the lease
 - [F270](F270.md) — The two downloads share their checks, not their loop
+- [F271](F271.md) — A folder's lock on its directories' modes is found through a table, and two callers take it by hand
+- [F272](F272.md) — A directory of the folder that cannot be read stops the sync of the whole folder
 - [F273](F273.md) — The daemon exits when a task it needs is gone, and counts on systemd to start it again
 - [F274](F274.md) — The properties the daemon announces are one table; four properties are outside it, and the check is by name
+- [F276](F276.md) — A stale drive that cannot be taken off an empty folder stays, and the folder is registered all the same
+- [F277](F277.md) — A placeholder that is in the way is removed, not rescued, also when it is being filled
 
 ---
 
@@ -394,6 +398,7 @@ application must never read zeros where real content should be.
 - [D48](D48.md) — The watcher's tests borrow `remote/`'s fixture
 - [D49](D49.md) — Test support that is still in the code of `hydration/`
 - [D50](D50.md) — What `dbus/` and `daemon/` still share by hand
+- [D51](D51.md) — The helper's stand-in is one accept loop for `helper/`, `hydration/` and `folder/`, not for the daemon
 
 ---
 

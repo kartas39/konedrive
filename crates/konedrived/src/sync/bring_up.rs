@@ -247,8 +247,10 @@ impl SyncService {
         // empty — so it is refused unless the drive is this account's, or
         // the folder is empty: then there is nothing to adopt, and the stale
         // drive comes off (Remove, then Add, on the same folder).
-        if !root::drive_allows(path, self.account_drive()).await {
-            return Err(SyncError::ForeignFolder);
+        match root::drive_of(path, self.account_drive()).await {
+            root::DriveOf::Free => {}
+            root::DriveOf::Stale(_) => root::forget_drive(path).await,
+            root::DriveOf::Foreign(_) => return Err(SyncError::ForeignFolder),
         }
         let source = self.fresh_source(link.is_some());
         if source == RootSource::OneDrive {

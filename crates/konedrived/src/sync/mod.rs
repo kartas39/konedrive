@@ -35,7 +35,8 @@ use tokio::sync::watch;
 
 use crate::status::report::Report;
 use crate::helper::{Clearance, HelperLink};
-use crate::folder::root::DehydrateError;
+use crate::folder::root::OpenError;
+use crate::hydration::dehydrate::DehydrateError;
 use crate::folder::root::{RegisterError, SyncRoot};
 use crate::folder::locks::InodeLocks;
 use crate::status::snapshot::{FolderStatus, SyncSnapshot, SyncStateHandle, published_error, published_state};
@@ -188,8 +189,9 @@ impl From<RegisterError> for SyncError {
         match e {
             RegisterError::NotADirectory => SyncError::Unsupported("not a directory".into()),
             RegisterError::NotEmpty => SyncError::NotEmpty,
-            RegisterError::Unsupported(why) => SyncError::Unsupported(why),
-            RegisterError::Helper(why) => SyncError::Helper(why),
+            // One name on the bus for both, as before the two were told apart.
+            RegisterError::Unsupported(why) | RegisterError::Io(why) => SyncError::Unsupported(why),
+            RegisterError::Helper(why) => SyncError::Helper(why.to_string()),
         }
     }
 }
@@ -201,9 +203,19 @@ impl From<DehydrateError> for SyncError {
             DehydrateError::NotHydrated => SyncError::NotHydrated,
             DehydrateError::ModifiedLocally => SyncError::ModifiedLocally,
             DehydrateError::InUse => SyncError::InUse,
-            DehydrateError::OutsideRoot => SyncError::OutsideRoot,
             DehydrateError::HelperNotConnected => SyncError::NoHelper,
+            DehydrateError::Open(e) => e.into(),
             DehydrateError::Io(why) => SyncError::Io(why),
+        }
+    }
+}
+
+impl From<OpenError> for SyncError {
+    fn from(e: OpenError) -> Self {
+        match e {
+            OpenError::OutsideRoot => SyncError::OutsideRoot,
+            OpenError::NotManaged => SyncError::NotManaged,
+            OpenError::Io(why) => SyncError::Io(why),
         }
     }
 }
@@ -433,7 +445,7 @@ impl SyncService {
 
     /// The live helper link, if there is one right now.
     pub fn link(&self) -> Option<HelperLink> {
-        self.link.lock().unwrap().clone()
+        self.link.get()
     }
 
     /// The drive `config.toml` records for this account, if it records one.

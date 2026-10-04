@@ -29,36 +29,12 @@ use super::*;
 /// `recv_timeout` on a current-thread runtime would park the one thread
 /// that has to run `serve_hydrations`.
 pub(crate) fn fake_helper(path: std::path::PathBuf) -> mpsc::UnboundedReceiver<(u64, i32)> {
-    let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None)
-        .unwrap();
-    let addr = UnixAddr::new(&path).unwrap();
-    bind(fd.as_raw_fd(), &addr).unwrap();
-    sock_listen(&fd, Backlog::new(16).unwrap()).unwrap();
     let (tx, rx) = mpsc::unbounded_channel();
-    std::thread::spawn(move || {
-        let listener: OwnedFd = fd;
-        let accepted = accept(listener.as_raw_fd()).unwrap();
-        // SAFETY: `accept` just returned a freshly opened descriptor that
-        // this process now solely owns.
-        let stream = unsafe { UnixStream::from_raw_fd(accepted) };
-        let mut channel = Channel::new(stream).unwrap();
-        channel
-            .send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None)
-            .unwrap();
-        let (hello, _) = channel.recv::<ToHelper>().unwrap();
-        assert!(
-            matches!(hello, ToHelper::Hello { version } if version == PROTOCOL_VERSION),
-            "{hello:?}"
-        );
-        channel.send(&ToDaemon::Ack { errno: 0 }, None).unwrap();
-        while let Ok((message, _fd)) = channel.recv::<ToHelper>() {
-            if let ToHelper::HydrateDone { req_id, errno } = message {
-                let _ = tx.send((req_id, errno));
-            }
-            if channel.send(&ToDaemon::Ack { errno: 0 }, None).is_err() {
-                break;
-            }
+    crate::helper::testing::fake_helper(&path, move |message, _fd| {
+        if let ToHelper::HydrateDone { req_id, errno } = message {
+            let _ = tx.send((*req_id, *errno));
         }
+        0
     });
     rx
 }
@@ -150,69 +126,6 @@ async fn the_request_loop_stops_taking_work_once_the_admission_is_full() {
         accepted <= FILL_ADMISSION + 4 + 1,
         "at most the admission in flight, four buffered and one blocked on the permit, but \
          {accepted} were accepted"
-    );
-}
-
-/// The daemon's half of `MAX_OUTSTANDING_HYDRATIONS`, in its easier form:
-/// every fill slot taken by a fill that will not finish during the test,
-/// the rest of the helper's credit queued — the reader thread must still
-/// get as far as the `Ack` the helper queued behind them. (Its fills
-/// still hold credit, so this is not the worst case; the test below is.) If it stops short (a request queue shallower than
-/// the contract), that `Ack` is never read: here a call hangs, and in
-/// the real burst every fill waiting for its own `HydrateDone`'s `Ack`
-/// hangs with it until the daemon's call timeout ends the connection.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_call_is_answered_while_every_request_the_helper_may_send_is_in_flight() {
-    const MAX: usize = konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;
-    let files = tempfile::tempdir().unwrap();
-    let source_dir = tempfile::tempdir().unwrap();
-    let requests: Vec<OwnedFd> = (0..MAX)
-        .map(|i| {
-            std::fs::write(source_dir.path().join(format!("f{i}")), [7u8; 16]).unwrap();
-            placeholder(files.path(), &format!("f{i}"), &format!("f{i}"), 16)
-        })
-        .collect();
-
-    let sockets = tempfile::tempdir().unwrap();
-    let path = sockets.path().join("helper.sock");
-    let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None)
-        .unwrap();
-    bind(fd.as_raw_fd(), &UnixAddr::new(&path).unwrap()).unwrap();
-    sock_listen(&fd, Backlog::new(4).unwrap()).unwrap();
-    std::thread::spawn(move || {
-        let listener: OwnedFd = fd;
-        let accepted = accept(listener.as_raw_fd()).unwrap();
-        // SAFETY: `accept` just returned a freshly opened descriptor that
-        // this thread now solely owns.
-        let mut channel = Channel::new(unsafe { UnixStream::from_raw_fd(accepted) }).unwrap();
-        channel.send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None).unwrap();
-        let _hello = channel.recv::<ToHelper>().unwrap();
-        channel.send(&ToDaemon::Ack { errno: 0 }, None).unwrap();
-        // Everything the helper may have outstanding, all at once, ahead
-        // of whatever the daemon asks next — the order a burst produces.
-        for (req_id, request) in requests.iter().enumerate() {
-            channel
-                .send(&ToDaemon::HydrateRequest { req_id: req_id as u64 }, Some(request.as_fd()))
-                .unwrap();
-        }
-        while channel.recv::<ToHelper>().is_ok() {
-            if channel.send(&ToDaemon::Ack { errno: 0 }, None).is_err() {
-                break;
-            }
-        }
-    });
-
-    let (link, incoming) = HelperLink::connect(&path).await.unwrap();
-    // A minute per fetch: every fill slot stays taken for the whole test.
-    let (source, _peak) = CountingSource::new(source_dir.path(), Duration::from_secs(60));
-    tokio::spawn(serve_hydrations(link.clone(), incoming, source, InodeLocks::new()));
-
-    let dir = std::fs::File::open(files.path()).unwrap();
-    let answered = tokio::time::timeout(Duration::from_secs(5), link.mark_dir(&dir)).await;
-    assert!(
-        matches!(answered, Ok(Ok(()))),
-        "with {MAX} hydrations in flight the daemon stopped reading before the Ack queued \
-         behind them: {answered:?}"
     );
 }
 

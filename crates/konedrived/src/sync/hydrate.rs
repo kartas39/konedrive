@@ -6,7 +6,7 @@ use konedrive_fs::placeholder::{read_stamp, read_state, stamp_matches, State, St
 
 use crate::hydration::tracked::Tracked;
 use crate::helper::{Clearance, NotCleared};
-use crate::folder::root::DehydrateError;
+use crate::folder::root::OpenError;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::{Answered, FillError};
 use crate::folder::locks::{InodeKey, unless_removed};
@@ -155,7 +155,7 @@ impl SyncService {
 /// path as the activity log names it: inside the root as it was registered,
 /// however `path` spelled it (a link on the way, `..`) — events are kept
 /// only for paths inside the registered folder.
-pub(super) fn open_shown(root: &SyncRoot, path: &Path) -> Result<(File, String), DehydrateError> {
+pub(super) fn open_shown(root: &SyncRoot, path: &Path) -> Result<(File, String), OpenError> {
     let file = root.open_inside(path)?;
     let shown = root.relative(path).map(|rel| root.path.join(rel)).unwrap_or_else(|_| path.to_path_buf());
     Ok((file, shown.display().to_string()))

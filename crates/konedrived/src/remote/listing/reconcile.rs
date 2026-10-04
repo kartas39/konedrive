@@ -208,7 +208,7 @@ impl Listing {
         // takes the lock to re-register the root, so this may be a new link
         // whose helper has no marks yet: at worst a `MarkDir` fails, this
         // cycle fails (the next is Full), and `resume` re-marks the tree.
-        let link = self.ctx.link.lock().unwrap().clone().filter(|_| self.ctx.intercepted);
+        let link = self.ctx.link.get().filter(|_| self.ctx.intercepted);
         if link.is_none() {
             return Err(CycleError::NoHelper);
         }

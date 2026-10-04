@@ -27,7 +27,7 @@ pub struct Linked(pub LinkCell);
 
 impl Linked {
     fn link(&self) -> Result<HelperLink, HelperError> {
-        self.0.lock().unwrap().clone().ok_or(HelperError::NotRunning)
+        self.0.get().ok_or(HelperError::NotRunning)
     }
 }
 

@@ -65,7 +65,7 @@ impl HelperHub {
     pub fn new(link: Option<HelperLink>, served: Weak<dyn Served>) -> Arc<Self> {
         let state = if link.is_some() { HelperState::Connected } else { HelperState::Unknown };
         Arc::new(Self {
-            link: Arc::new(Mutex::new(link)),
+            link: LinkCell::holding(link),
             socket: Mutex::new(PathBuf::from(konedrive_proto::SOCKET_PATH)),
             unit: Mutex::new(Arc::new(NotAsked)),
             changed: Arc::new(Notify::new()),
@@ -77,12 +77,12 @@ impl HelperHub {
 
     /// The live helper link, if there is one right now.
     pub fn link(&self) -> Option<HelperLink> {
-        self.link.lock().unwrap().clone()
+        self.link.get()
     }
 
     /// The cell the link is kept in, for what reads it at every use.
     pub fn link_cell(&self) -> LinkCell {
-        Arc::clone(&self.link)
+        self.link.clone()
     }
 
     /// Where the helper's socket is. Defaults to `konedrive_proto::SOCKET_PATH`.
@@ -123,7 +123,7 @@ impl HelperHub {
     pub fn set_link(&self, link: Option<HelperLink>) {
         let now = if link.is_some() { HelperState::Connected } else { HelperState::Unknown };
         let _publishing = self.publishing.lock().unwrap();
-        *self.link.lock().unwrap() = link;
+        self.link.set(link);
         self.publish(now);
         drop(_publishing);
         self.changed.notify_one();
