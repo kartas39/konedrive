@@ -30,7 +30,7 @@ async fn the_one_folder_on_the_files_filesystem_is_the_answer() {
     let (Ok(here), Ok(there)) = (tempfile::tempdir(), tempfile::tempdir_in("/dev/shm")) else {
         return eprintln!("no /dev/shm: nothing to test");
     };
-    if device_of(here.path()) == device_of(there.path()) {
+    if device_of(here.path()).await == device_of(there.path()).await {
         return eprintln!("/dev/shm is on the temporary directory's filesystem: nothing to test");
     }
     let hub = HelperHub::new();

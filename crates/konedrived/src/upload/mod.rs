@@ -121,7 +121,8 @@ pub trait OutboxHost: Send + Sync {
     }
     /// Whether the account may change OneDrive now (`docs/design/writes.md` §2): asked
     /// before each row is taken, and between the fragments of an upload. `Err` says why not:
-    /// nothing more is sent then, and the rows wait.
+    /// nothing more is sent then, and the rows wait. The answer may take reading a file
+    /// (`config.toml`): the worker asks from a blocking thread (`Engine::may_write`).
     fn may_write(&self) -> Result<(), String> {
         Ok(())
     }

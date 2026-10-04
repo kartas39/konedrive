@@ -129,6 +129,11 @@ pub(crate) struct Engine {
     /// worker's run ends once the rows in flight have. For good: a worker
     /// closed is not started again.
     closing: CancellationToken,
+    /// Held, for reading, by every asking of the write gate while it runs on its blocking
+    /// thread ([`may_write`](Self::may_write)): a row cut off while it waits for the answer
+    /// leaves the asking running, and the drain that cut it waits here until it has ended
+    /// ([`gate_idle`](Self::gate_idle)).
+    gate_running: Arc<tokio::sync::RwLock<()>>,
 }
 
 /// The `user.konedrive.sync` value for a row's file (§9).
@@ -180,6 +185,7 @@ impl Engine {
             quota_lock: tokio::sync::Mutex::new(()),
             recount: Notify::new(),
             closing: CancellationToken::new(),
+            gate_running: Arc::new(tokio::sync::RwLock::new(())),
         }
     }
 
@@ -361,7 +367,7 @@ impl Engine {
         ActivityRow { at: now(), kind: kind.into(), path: self.cfg.root.path.join(rel).display().to_string(), detail: detail.into() }
     }
 
-    fn may_start(&self) -> bool {
+    async fn may_start(&self) -> bool {
         if self.closing() {
             return false;
         }
@@ -375,14 +381,38 @@ impl Engine {
                 && !shared.needs_sign_in
                 && shared.throttled_until.is_none_or(|at| at <= now)
         };
-        ready && self.gate_open()
+        ready && self.gate_open().await
+    }
+
+    /// The host's write gate ([`OutboxHost::may_write`](super::OutboxHost::may_write)), asked
+    /// on a blocking thread, as one section: the answer takes reading `config.toml` again.
+    /// The section is awaited here; where the asking task is cut off instead (a row between
+    /// two fragments, at a stop), [`gate_idle`](Self::gate_idle) waits for it.
+    pub(super) async fn may_write(&self) -> Result<(), String> {
+        let running = Arc::clone(&self.gate_running).read_owned().await;
+        let host = Arc::clone(&self.cfg.host);
+        let asked = tokio::task::spawn_blocking(move || {
+            let _running = running;
+            host.may_write()
+        });
+        match asked.await {
+            Ok(answer) => answer,
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(_) => Err("the daemon is stopping".into()),
+        }
+    }
+
+    /// Ends once no asking of the write gate is running: after the rows were cut off, so
+    /// that a stop does not return while one of them still writes the folder's note.
+    pub(super) async fn gate_idle(&self) {
+        drop(self.gate_running.write().await);
     }
 
     /// The write gate, asked again before every row (`docs/design/writes.md` §2.3): the
     /// host says whether the account may change OneDrive now. Closed, nothing more is taken,
     /// the rows wait, and the worker's `last_error` says why.
-    fn gate_open(&self) -> bool {
-        match self.cfg.host.may_write() {
+    async fn gate_open(&self) -> bool {
+        match self.may_write().await {
             Ok(()) => {
                 let mut shared = self.shared();
                 if shared.last_error.starts_with(GATE_CLOSED) {
@@ -613,7 +643,7 @@ impl Engine {
         }
         // While nothing can start, only the end of a pause or throttle
         // matters; rows already due wait for a wake.
-        if self.may_start() {
+        if self.may_start().await {
             if let Ok(Some(next)) = self.store().call(move |s| s.outbox_next_due(now)).await {
                 at = at.min(next);
             }

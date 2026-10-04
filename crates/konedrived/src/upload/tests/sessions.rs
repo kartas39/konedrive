@@ -675,3 +675,86 @@ fn a_certain_answer_keeps_a_carried_records_last_unknown_time() {
     assert_eq!(w.cloud(|c| (c.placeholders().len(), c.count("DELETE", "items/"))), (1, 0));
     assert_eq!(conflicts(&w), 0);
 }
+
+/// A host whose write gate, once a fragment of an upload has reached OneDrive, does not
+/// answer until it is let go: the row that asks between two fragments waits there.
+struct HeldGate {
+    cloud: Arc<Mutex<fake::Cloud>>,
+    asked: std::sync::atomic::AtomicBool,
+    let_go: Mutex<bool>,
+    told: std::sync::Condvar,
+    answered: std::sync::atomic::AtomicBool,
+}
+
+impl HeldGate {
+    fn let_go(&self) {
+        *self.let_go.lock().unwrap() = true;
+        self.told.notify_all();
+    }
+}
+
+impl crate::upload::OutboxHost for HeldGate {
+    fn may_write(&self) -> Result<(), String> {
+        use std::sync::atomic::Ordering;
+        if self.cloud.lock().unwrap().count("PUT", "upload/") == 0 {
+            return Ok(());
+        }
+        self.asked.store(true, Ordering::SeqCst);
+        let mut let_go = self.let_go.lock().unwrap();
+        while !*let_go {
+            let_go = self.told.wait(let_go).unwrap();
+        }
+        self.answered.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+/// Lets the gate go when the test ends, however it ends: the runtime waits for the gate.
+struct LetGo(Arc<HeldGate>);
+
+impl Drop for LetGo {
+    fn drop(&mut self) {
+        self.0.let_go();
+    }
+}
+
+/// A stop of the worker returns only when the write gate a row was asking has answered:
+/// what the gate writes (the folder's note, the account's mode) is never written after the
+/// stop. The row is cut off between two fragments of its upload, while it waits for the gate.
+#[test]
+fn a_stop_waits_for_the_gate_a_row_was_asking_between_fragments() {
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+    let w = World::new(&[]);
+    w.write("big.bin", &large());
+    w.examine(&[("", "big.bin")]);
+    let host = Arc::new(HeldGate {
+        cloud: Arc::clone(&w.h.graph.cloud),
+        asked: false.into(),
+        let_go: Mutex::new(false),
+        told: std::sync::Condvar::new(),
+        answered: false.into(),
+    });
+    let _let_go = LetGo(Arc::clone(&host));
+    let mut config = w.h.config();
+    config.host = host.clone();
+    let worker = Arc::new(crate::upload::OutboxWorker::new(config));
+    w.h.block_on(async {
+        worker.start();
+        let asked = tokio::time::timeout(Duration::from_secs(30), async {
+            while !host.asked.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        });
+        asked.await.expect("the gate is asked after the first fragment");
+        let mut stop = tokio::spawn({
+            let worker = Arc::clone(&worker);
+            async move { worker.stop().await }
+        });
+        let early = tokio::time::timeout(Duration::from_millis(300), &mut stop).await;
+        assert!(early.is_err(), "the stop returned while the gate was still being asked");
+        host.let_go();
+        tokio::time::timeout(Duration::from_secs(30), stop).await.expect("the stop ends once the gate has answered").unwrap();
+        assert!(host.answered.load(Ordering::SeqCst), "the gate answered before the stop returned");
+    });
+}

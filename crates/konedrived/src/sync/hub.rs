@@ -142,12 +142,11 @@ impl HelperHub {
 
     /// The account whose moved-out objects include the file behind `fd`, by
     /// the item id it carries. Nothing is read while no account has any.
-    fn by_moved_out(&self, fd: &OwnedFd) -> Option<Arc<SyncService>> {
+    async fn by_moved_out(&self, fd: &OwnedFd) -> Option<Arc<SyncService>> {
         if self.moved_out.lock().unwrap().is_empty() {
             return None;
         }
-        let file = File::from(fd.try_clone().ok()?);
-        let id = String::from_utf8(file.get_xattr(XATTR_ITEM_ID).ok()??).ok()?;
+        let id = item_id_of(fd).await?;
         self.moved_out.lock().unwrap().iter().find(|(_, ids)| ids.contains(&id)).and_then(|(a, _)| a.upgrade())
     }
 
@@ -313,11 +312,27 @@ impl HelperHub {
     /// resolved paths, and by `(st_dev, st_ino)` for the same directory
     /// reached another way. A folder counts whether it is registered, held,
     /// or only recorded in `config.toml`.
-    pub(super) fn overlapping(&self, me: &SyncService, path: &Path) -> Option<String> {
+    ///
+    /// The paths are looked at on a blocking thread, in one section. A section the runtime
+    /// gave up at its own end is an `Err`: the check was not made, and the registration is
+    /// refused.
+    pub(super) async fn overlapping(self: &Arc<Self>, me: &SyncService, path: &Path) -> Result<Option<String>, super::SyncError> {
+        // Only compared, never read: the caller holds `me` across the call.
+        let (hub, me, path) = (Arc::clone(self), std::ptr::from_ref(me) as usize, path.to_owned());
+        match tokio::task::spawn_blocking(move || hub.overlapping_blocking(me, &path)).await {
+            Ok(found) => Ok(found),
+            // As before the section was one: a panic in the check is the caller's.
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(_) => Err(super::SyncError::Io("the daemon is stopping".into())),
+        }
+    }
+
+    /// [`overlapping`](Self::overlapping)'s work; `me` is the asking account's address.
+    fn overlapping_blocking(&self, me: usize, path: &Path) -> Option<String> {
         let resolved = std::fs::canonicalize(path).ok()?;
         let identity = |path: &Path| std::fs::metadata(path).ok().map(|m| (m.dev(), m.ino()));
         let here = identity(&resolved);
-        self.accounts().into_iter().filter(|other| !std::ptr::eq(Arc::as_ptr(other), me)).find_map(|other| {
+        self.accounts().into_iter().filter(|other| Arc::as_ptr(other) as usize != me).find_map(|other| {
             let nests = other.folders().iter().any(|folder| {
                 resolved.starts_with(folder) || folder.starts_with(&resolved) || (here.is_some() && identity(folder) == here)
             });
@@ -338,7 +353,7 @@ impl HelperHub {
     pub(crate) async fn route(&self, fd: &OwnedFd) -> Option<Arc<SyncService>> {
         // An object that left an account's folder is that account's, by its
         // item id, whatever folder its path is in now (`docs/design/writes.md` §8, §8.3).
-        if let Some(account) = self.by_moved_out(fd) {
+        if let Some(account) = self.by_moved_out(fd).await {
             return Some(account);
         }
         let key = InodeKey::of_fd(fd).ok()?;
@@ -352,7 +367,7 @@ impl HelperHub {
         if candidates.is_empty() || (candidates.len() == 1 && !unplaced) {
             return candidates.pop();
         }
-        if let Some(found) = by_path(&candidates, fd, key) {
+        if let Some(found) = by_path(&candidates, fd, key).await {
             return Some(found);
         }
         by_item_id(candidates, fd).await
@@ -380,9 +395,25 @@ impl HelperHub {
     }
 }
 
+/// The item id the file behind `fd` carries, read on a blocking thread.
+async fn item_id_of(fd: &OwnedFd) -> Option<String> {
+    let file = File::from(fd.try_clone().ok()?);
+    tokio::task::spawn_blocking(move || file.get_xattr(XATTR_ITEM_ID).ok().flatten())
+        .await
+        .ok()
+        .flatten()
+        .and_then(|raw| String::from_utf8(raw).ok())
+}
+
 /// The candidate whose folder holds the name the kernel has for `fd` — proved by opening
-/// that name beneath the folder and finding the same inode.
-fn by_path(candidates: &[Arc<SyncService>], fd: &OwnedFd, key: InodeKey) -> Option<Arc<SyncService>> {
+/// that name beneath the folder and finding the same inode. One section on a blocking
+/// thread, over a descriptor of its own for the same open file.
+async fn by_path(candidates: &[Arc<SyncService>], fd: &OwnedFd, key: InodeKey) -> Option<Arc<SyncService>> {
+    let (candidates, fd) = (candidates.to_vec(), fd.try_clone().ok()?);
+    tokio::task::spawn_blocking(move || by_path_blocking(&candidates, &fd, key)).await.ok().flatten()
+}
+
+fn by_path_blocking(candidates: &[Arc<SyncService>], fd: &OwnedFd, key: InodeKey) -> Option<Arc<SyncService>> {
     let shown = std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd())).ok()?;
     candidates
         .iter()
@@ -405,12 +436,7 @@ fn by_path(candidates: &[Arc<SyncService>], fd: &OwnedFd, key: InodeKey) -> Opti
 /// `staging`; item ids are unique across drives. A store in use by a registration or a
 /// Forget right now is not waited for: that account is passed over.
 async fn by_item_id(candidates: Vec<Arc<SyncService>>, fd: &OwnedFd) -> Option<Arc<SyncService>> {
-    let file = File::from(fd.try_clone().ok()?);
-    let id = tokio::task::spawn_blocking(move || file.get_xattr(XATTR_ITEM_ID).ok().flatten())
-        .await
-        .ok()
-        .flatten()
-        .and_then(|raw| String::from_utf8(raw).ok())?;
+    let id = item_id_of(fd).await?;
     for account in candidates {
         let Ok(lifecycle) = Arc::clone(&account.lifecycle).try_read_owned() else { continue };
         let Some(store) = account.store.lock().unwrap().clone() else { continue };
@@ -522,9 +548,10 @@ pub async fn watch_every(hub: Arc<HelperHub>, every: Duration) {
 }
 
 /// The device a folder is on, read once when its registration is made (`Registration::dev`),
-/// for [`HelperHub::route`]; `None` when it cannot be looked at.
-pub(super) fn device_of(path: &Path) -> Option<u64> {
-    std::fs::metadata(path).ok().map(|m| m.dev())
+/// for [`HelperHub::route`]; `None` when it cannot be looked at. Read on a blocking thread.
+pub(super) async fn device_of(path: &Path) -> Option<u64> {
+    let path = path.to_owned();
+    tokio::task::spawn_blocking(move || std::fs::metadata(path).ok().map(|m| m.dev())).await.ok().flatten()
 }
 
 /// A content source is what an account is, to the fill loop.
