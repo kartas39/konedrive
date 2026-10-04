@@ -9,6 +9,7 @@ use std::io;
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::SystemTime;
 
 use konedrive_fs::placeholder::{self, LOCKED_DIR_MODE, LOCKED_FILE_MODE, OPEN_DIR_MODE, OPEN_FILE_MODE, XATTR_ITEM_ID};
@@ -52,40 +53,67 @@ pub struct Scanned {
 /// clones share the root's one descriptor.
 #[derive(Clone)]
 pub struct Disk {
-    root: std::sync::Arc<File>,
+    root: Arc<File>,
     locked: bool,
+    modes: Arc<Modes>,
 }
 
-/// Held by everything in this daemon that lifts a locked directory's write
-/// bit and puts it back: the materializer's windows ([`Disk::writable`]),
-/// its locking, and a pin written on a folder (`SyncService::pin`). Two
-/// such windows on one directory used to be able to interleave — one put
-/// the lock back while the other was still writing, which failed `EACCES`.
+/// One folder's lock on the modes of its directories, held by everything in this daemon
+/// that lifts a locked directory's write bit and puts it back: the materializer's windows
+/// ([`Disk::writable`]), its locking and unlocking walks, a pin written on a folder
+/// (`hydration::pin::set_pin`) and the drive written on the root. Two such windows on one
+/// directory used to be able to interleave — one put the lock back while the other was
+/// still writing, which failed `EACCES`.
 ///
-/// Re-entrant on one thread (windows nest: a rename opens three), and never
-/// held across an `.await`.
-static DIR_MODES: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// A folder has one, whoever asks ([`Modes::of`]): every [`Disk`] opened on the folder
+/// shares it, and another account's folder has its own. It is not re-entrant: what nests
+/// windows takes it once and passes the hold on ([`Disk::window`]). Never held across an
+/// `.await`.
+pub struct Modes(Mutex<()>);
 
-thread_local! {
-    static DIR_MODES_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+/// A hold on a folder's [`Modes`], released when dropped.
+pub struct ModesHeld<'a>(#[allow(dead_code)] MutexGuard<'a, ()>);
+
+/// The folders whose [`Modes`] somebody holds a share of, by the root directory's device
+/// and inode. An entry goes when nobody does.
+static FOLDERS: Mutex<Vec<(RootKey, Weak<Modes>)>> = Mutex::new(Vec::new());
+
+/// A root directory: its device and inode.
+type RootKey = (u64, u64);
+
+impl Modes {
+    /// The lock of the folder whose root directory `root` is open on.
+    pub fn of(root: &File) -> io::Result<Arc<Modes>> {
+        let meta = root.metadata()?;
+        let key = (meta.dev(), meta.ino());
+        let mut folders = FOLDERS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        folders.retain(|(_, modes)| modes.strong_count() > 0);
+        if let Some(modes) = folders.iter().find(|(k, _)| *k == key).and_then(|(_, modes)| modes.upgrade()) {
+            return Ok(modes);
+        }
+        let modes = Arc::new(Modes(Mutex::new(())));
+        folders.push((key, Arc::downgrade(&modes)));
+        Ok(modes)
+    }
+
+    /// [`Modes::of`] for a root named by its path: opened as [`Disk::open`] opens it, a
+    /// directory and never through a link, so that both find the same lock.
+    pub fn of_root(root: &SyncRoot) -> io::Result<Arc<Modes>> {
+        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+        Self::of(&File::from(nix::fcntl::open(&root.path, flags, Mode::empty())?))
+    }
+
+    pub fn hold(&self) -> ModesHeld<'_> {
+        // The lock guards no data a panic could leave half-written.
+        ModesHeld(self.0.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
 }
 
-/// This thread's hold on [`DIR_MODES`], released when dropped. The guard is
-/// never read: it only has to live as long as this does.
-pub struct DirModes(#[allow(dead_code)] Option<std::sync::MutexGuard<'static, ()>>);
-
-/// Takes [`DIR_MODES`], or joins this thread's hold on it.
-pub fn dir_modes() -> DirModes {
-    let outermost = DIR_MODES_HELD.with(|held| {
-        held.set(held.get() + 1);
-        held.get() == 1
-    });
-    DirModes(outermost.then(|| DIR_MODES.lock().unwrap_or_else(|poisoned| poisoned.into_inner())))
-}
-
-impl Drop for DirModes {
-    fn drop(&mut self) {
-        DIR_MODES_HELD.with(|held| held.set(held.get() - 1));
+/// How many entries a walk could not change, as its error.
+fn passed_over(failed: usize, what: &str) -> io::Result<()> {
+    match failed {
+        0 => Ok(()),
+        n => Err(io::Error::other(format!("{n} entries {what}"))),
     }
 }
 
@@ -125,7 +153,8 @@ impl Disk {
         let dir = root
             .open_registered()?
             .ok_or_else(|| io::Error::other(format!("{} no longer carries its root id", root.path.display())))?;
-        Ok(Self { root: std::sync::Arc::new(dir), locked })
+        let modes = Modes::of(&dir)?;
+        Ok(Self { root: Arc::new(dir), locked, modes })
     }
 
     pub fn locked(&self) -> bool {
@@ -190,7 +219,15 @@ impl Disk {
         if !self.locked {
             return op();
         }
-        let _modes = dir_modes();
+        self.window(&self.modes.hold(), dir, op)
+    }
+
+    /// [`writable`](Self::writable) under a hold the caller has: a window inside a window,
+    /// or one of a walk that holds the folder's modes throughout.
+    fn window<T>(&self, _held: &ModesHeld<'_>, dir: &File, op: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        if !self.locked {
+            return op();
+        }
         placeholder::set_mode(dir, OPEN_DIR_MODE)?;
         let result = op();
         let relocked = placeholder::set_mode(dir, LOCKED_DIR_MODE);
@@ -208,11 +245,12 @@ impl Disk {
         let rename = || {
             nix::fcntl::renameat2(from_dir.as_fd(), from, to_dir.as_fd(), to, RenameFlags::RENAME_NOREPLACE).map_err(io::Error::from)
         };
-        let in_windows = || self.writable(from_dir, || self.writable(to_dir, rename));
+        let held = self.modes.hold();
+        let in_windows = || self.window(&held, from_dir, || self.window(&held, to_dir, rename));
         let moved_dir = matches!(self.probe(from_dir, from)?, Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true });
         if self.locked && moved_dir {
             let moved = open_subdir(from_dir, from)?;
-            self.writable(&moved, in_windows)
+            self.window(&held, &moved, in_windows)
         } else {
             in_windows()
         }
@@ -267,7 +305,7 @@ impl Disk {
     /// Locks a directory made this cycle, now that everything is in it.
     pub fn lock_dir(&self, dir: &File) -> io::Result<()> {
         if self.locked {
-            let _modes = dir_modes();
+            let _held = self.modes.hold();
             placeholder::set_mode(dir, LOCKED_DIR_MODE)?;
         }
         Ok(())
@@ -283,6 +321,16 @@ impl Disk {
         if !self.locked {
             return Ok(());
         }
+        self.enforce_mode_held(&self.modes.hold(), dir, name, claim)
+    }
+
+    fn enforce_mode_held<G>(
+        &self,
+        _held: &ModesHeld<'_>,
+        dir: &File,
+        name: &OsStr,
+        claim: impl FnOnce(&File) -> io::Result<Option<G>>,
+    ) -> io::Result<()> {
         let stat = nix::sys::stat::fstatat(dir.as_fd(), name, AtFlags::AT_SYMLINK_NOFOLLOW)?;
         let (want, is_dir) = match stat.st_mode & libc::S_IFMT {
             libc::S_IFDIR => (LOCKED_DIR_MODE, true),
@@ -294,7 +342,6 @@ impl Disk {
         }
         let opened = if is_dir { open_subdir(dir, name)? } else { self.open_file(dir, name)? };
         let Some(_claimed) = claim(&opened)? else { return Ok(()) };
-        let _modes = is_dir.then(dir_modes);
         placeholder::set_mode(&opened, want)
     }
 
@@ -309,8 +356,16 @@ impl Disk {
 
     /// Every file and directory beneath the root with its item id, by name.
     /// One directory descriptor open at a time: the walk keeps paths, not
-    /// descriptors (part 1's).
+    /// descriptors.
+    ///
+    /// The scan is the reconcile's picture of the folder, so it is whole or it is an
+    /// error: a directory that cannot be opened or listed, or an entry that cannot be
+    /// looked at, fails it. Two things are not errors: a directory or an entry that went
+    /// away while the walk was on its way to it, and what lies deeper than
+    /// `konedrive_fs::MAX_DEPTH`, which the helper does not mark either.
     pub fn scan(&self, root_item_id: &str) -> io::Result<Vec<Scanned>> {
+        let gone = |e: &io::Error| e.raw_os_error() == Some(libc::ENOENT);
+        let at = |rel: &Path, e: io::Error| io::Error::new(e.kind(), format!("cannot scan {}: {e}", rel.display()));
         let mut out = Vec::new();
         let mut pending = vec![(PathBuf::new(), 0usize, Some(root_item_id.to_owned()))];
         while let Some((rel, depth, dir_id)) = pending.pop() {
@@ -318,15 +373,14 @@ impl Disk {
                 tracing::warn!("{} is deeper than {} levels; not scanned", rel.display(), konedrive_fs::MAX_DEPTH);
                 continue;
             }
-            let dir = match self.dir(&rel) {
-                Ok(dir) => dir,
-                Err(e) => {
-                    tracing::warn!("cannot scan {}: {e}", rel.display());
-                    continue;
-                }
+            let listed = self.dir(&rel).and_then(|dir| Ok((self.list(&dir)?, dir)));
+            let (names, dir) = match listed {
+                Ok(listed) => listed,
+                Err(e) if gone(&e) && depth > 0 => continue,
+                Err(e) => return Err(at(&rel, e)),
             };
-            for name in self.list(&dir)? {
-                let (id, is_dir) = match self.probe(&dir, &name)? {
+            for name in names {
+                let (id, is_dir) = match self.probe(&dir, &name).map_err(|e| at(&rel.join(&name), e))? {
                     Probe::Absent => continue,
                     Probe::Managed { id, is_dir } => (Some(id), is_dir),
                     Probe::Unmanaged { is_dir } => (None, is_dir),
@@ -343,7 +397,14 @@ impl Disk {
 
     /// Moves `name` out of the folder to `into/<shown>`, then
     /// makes it the user's own there: no konedrive attributes, ordinary modes.
-    /// A directory goes with everything in it.
+    /// A directory goes with everything in it. Where it is now.
+    ///
+    /// A file of ours that holds no content of its own — `online-only`, or cut off
+    /// mid-fill or mid-free-up — is not rescued, at any depth: there is nothing in it
+    /// anyone made here, the cloud still has it, and stripped of its state it would read
+    /// as a file of zeros among the rescued ones. Named itself it is removed where it is,
+    /// and the answer is `None`; inside a rescued directory it is removed there
+    /// ([`release`](Self::release)).
     ///
     /// Always one rename, never a copy: a copy followed by a delete could
     /// delete something other than what was copied. `into` must therefore be
@@ -355,14 +416,18 @@ impl Disk {
     /// (`RENAME_NOREPLACE`), and a name already taken — by a file rescued
     /// earlier, or by one that appeared a moment ago — sends it on to
     /// `<shown>.1`, `<shown>.2`, ...
-    pub fn rescue(&self, dir: &File, name: &OsStr, shown: &Path, into: &Path) -> io::Result<PathBuf> {
+    pub fn rescue(&self, dir: &File, name: &OsStr, shown: &Path, into: &Path) -> io::Result<Option<PathBuf>> {
+        if matches!(self.probe(dir, name)?, Probe::Managed { is_dir: false, .. }) && self.open_file(dir, name).is_ok_and(|file| holds_nothing(&file)) {
+            self.remove(dir, name, false)?;
+            return Ok(None);
+        }
         let (target_dir, target_name, dest) = self.move_to(dir, name, shown, into)?;
         // Out of the folder and safe; what is left is cosmetic, and the rescue must still be
         // reported.
-        if let Err(e) = self.release(&target_dir, &target_name, false) {
+        if let Err(e) = self.release(&target_dir, &target_name) {
             tracing::warn!("{} is rescued, but konedrive's marks could not all be taken off it: {e}", dest.display());
         }
-        Ok(dest)
+        Ok(Some(dest))
     }
 
     /// Moves `name` out of the folder to `into/<shown>` as [`rescue`](Self::rescue) does, but
@@ -390,21 +455,19 @@ impl Disk {
             Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true } => Some(open_subdir(dir, name)?),
             _ => None,
         };
+        let held = self.modes.hold();
         let mut n = 0u64;
         loop {
             let dest = if n == 0 { first.clone() } else { into.join(format!("{}.{n}", shown.display())) };
             let target_name = dest.file_name().expect("a rescue path has a name").to_owned();
             let rename = || {
-                self.writable(dir, || {
+                self.window(&held, dir, || {
                     nix::fcntl::renameat2(dir.as_fd(), name, target_dir.as_fd(), target_name.as_os_str(), RenameFlags::RENAME_NOREPLACE)
                         .map_err(io::Error::from)
                 })
             };
             let moved = match &moved_dir {
-                Some(moved) => {
-                    let _modes = dir_modes();
-                    placeholder::with_owner_write(moved, rename)
-                }
+                Some(moved) => placeholder::with_owner_write(moved, rename),
                 None => rename(),
             };
             match moved {
@@ -427,58 +490,63 @@ impl Disk {
     }
 
     /// Ordinary modes for `name` and, for a directory, everything in it;
-    /// nothing else is changed. Never through a symlink.
+    /// nothing else is changed. Never through a symlink. An entry that cannot be changed
+    /// is passed over; the error says how many were.
     fn open_modes(&self, dir: &File, name: &OsStr) -> io::Result<()> {
-        match self.probe(dir, name)? {
-            Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true } => {
-                let sub = open_subdir(dir, name)?;
-                placeholder::set_mode(&sub, OPEN_DIR_MODE)?;
-                for child in self.list(&sub)? {
-                    self.open_modes(&sub, &child)?;
-                }
-                Ok(())
-            }
-            Probe::Managed { is_dir: false, .. } | Probe::Unmanaged { is_dir: false } => match self.open_file(dir, name) {
-                Ok(file) => placeholder::set_mode(&file, OPEN_FILE_MODE),
-                Err(_) => Ok(()),
-            },
-            Probe::Absent => Ok(()),
-        }
+        let mut failed = 0;
+        self.outside(dir, name, false, &mut failed);
+        passed_over(failed, "keep a read-only mode")
     }
 
     /// Strips konedrive's attributes and gives ordinary modes to `name` and,
-    /// for a directory, to everything in it.
-    ///
-    /// A file of ours inside a rescued directory (`inside`) that holds no
-    /// content of its own — `online-only`, or cut off mid-fill or mid-free-up
-    /// — is removed instead: stripped of its state,
-    /// it read as a file of zeros in the rescue directory, and it is nothing
-    /// anyone made here; the cloud still has it.
-    fn release(&self, dir: &File, name: &OsStr, inside: bool) -> io::Result<()> {
-        match self.probe(dir, name)? {
-            Probe::Absent => Ok(()),
-            Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true } => {
-                let sub = open_subdir(dir, name)?;
+    /// for a directory, to everything in it. A file of ours in it that holds no content
+    /// of its own is removed instead ([`rescue`](Self::rescue) says why). An entry that
+    /// cannot be changed is passed over; the error says how many were.
+    fn release(&self, dir: &File, name: &OsStr) -> io::Result<()> {
+        let mut failed = 0;
+        self.outside(dir, name, true, &mut failed);
+        passed_over(failed, "keep a mark of konedrive's")
+    }
+
+    /// The walk of [`open_modes`](Self::open_modes) and [`release`](Self::release), over
+    /// what has left the folder: ordinary modes, and with `strip` no attributes of ours.
+    /// One policy for both: a failure is counted and the walk goes on, since what it
+    /// walks is already safe where it is.
+    fn outside(&self, dir: &File, name: &OsStr, strip: bool, failed: &mut usize) {
+        let changed = match self.probe(dir, name) {
+            Ok(Probe::Absent) => Ok(()),
+            Ok(Probe::Managed { is_dir: true, .. } | Probe::Unmanaged { is_dir: true }) => open_subdir(dir, name).and_then(|sub| {
                 placeholder::set_mode(&sub, OPEN_DIR_MODE)?;
-                placeholder::strip_konedrive_xattrs(&sub)?;
+                if strip {
+                    placeholder::strip_konedrive_xattrs(&sub)?;
+                }
                 for child in self.list(&sub)? {
-                    self.release(&sub, &child, true)?;
+                    self.outside(&sub, &child, strip, failed);
                 }
                 Ok(())
-            }
-            probe @ (Probe::Managed { is_dir: false, .. } | Probe::Unmanaged { is_dir: false }) => {
-                let Ok(file) = self.open_file(dir, name) else { return Ok(()) };
-                let empty = matches!(
-                    placeholder::read_state(&file),
-                    Ok(Some(placeholder::State::OnlineOnly | placeholder::State::Hydrating | placeholder::State::Dehydrating))
-                );
-                if inside && empty && matches!(probe, Probe::Managed { .. }) {
+            }),
+            Ok(probe) => match self.open_file(dir, name) {
+                // Not a regular file by now, or not to be opened: nothing of ours on it.
+                Err(_) => Ok(()),
+                // Inside a rescued directory; or the file `rescue` was asked for, become a
+                // placeholder since it looked.
+                Ok(file) if strip && matches!(probe, Probe::Managed { .. }) && holds_nothing(&file) => {
                     drop(file);
-                    return nix::unistd::unlinkat(dir.as_fd(), name, UnlinkatFlags::NoRemoveDir).map_err(io::Error::from);
+                    nix::unistd::unlinkat(dir.as_fd(), name, UnlinkatFlags::NoRemoveDir).map_err(io::Error::from)
                 }
-                placeholder::strip_konedrive_xattrs(&file)?;
-                placeholder::set_mode(&file, OPEN_FILE_MODE)
-            }
+                Ok(file) => {
+                    if strip {
+                        placeholder::strip_konedrive_xattrs(&file).and_then(|()| placeholder::set_mode(&file, OPEN_FILE_MODE))
+                    } else {
+                        placeholder::set_mode(&file, OPEN_FILE_MODE)
+                    }
+                }
+            },
+            Err(e) => Err(e),
+        };
+        if let Err(e) = changed {
+            tracing::warn!("{}: {e}", name.to_string_lossy());
+            *failed += 1;
         }
     }
 
@@ -489,7 +557,7 @@ impl Disk {
     /// means a walk that did not finish (`SyncService::ensure_unlocked`), and the walk then
     /// says how many entries it could not change.
     pub fn unlock_tree(&self) -> io::Result<()> {
-        let _modes = dir_modes();
+        let _held = self.modes.hold();
         let mut failed = 0usize;
         let mut pending = vec![PathBuf::new()];
         while let Some(rel) = pending.pop() {
@@ -528,9 +596,7 @@ impl Disk {
                 }
             }
         }
-        if failed > 0 {
-            return Err(io::Error::other(format!("{failed} entries could not be unlocked; the folder itself stays locked")));
-        }
+        passed_over(failed, "could not be unlocked; the folder itself stays locked")?;
         placeholder::set_mode(&self.root, OPEN_DIR_MODE)
     }
 
@@ -538,34 +604,51 @@ impl Disk {
     /// and directory that carries an item id gets the lock's mode, and the root last. What
     /// carries none is left as it is — the next Full reconcile rescues it, as the read phase
     /// does — and so is a file `claim` says is busy (a fill lifts its write bit around each
-    /// attribute write, [`enforce_mode`](Self::enforce_mode)); that reconcile locks it. One
-    /// entry that cannot be locked is logged and passed over. Only on a locked `Disk`.
+    /// attribute write, [`enforce_mode`](Self::enforce_mode)); that reconcile locks it. Only
+    /// on a locked `Disk`.
+    ///
+    /// A directory that cannot be opened or listed and an entry that cannot be looked at or
+    /// locked are each logged and passed over, never the end of the walk: the root is locked
+    /// whatever was missed, and the next Full reconcile locks the rest
+    /// ([`enforce_mode`](Self::enforce_mode)).
     pub fn lock_tree<G>(&self, claim: impl Fn(&File) -> io::Result<Option<G>>) -> io::Result<()> {
         if !self.locked {
             return Ok(());
         }
-        let _modes = dir_modes();
+        let held = self.modes.hold();
         let mut pending = vec![PathBuf::new()];
         while let Some(rel) = pending.pop() {
-            let dir = match self.dir(&rel) {
-                Ok(dir) => dir,
+            let (dir, names) = match self.dir(&rel).and_then(|dir| Ok((self.list(&dir)?, dir))) {
+                Ok((names, dir)) => (dir, names),
                 Err(e) => {
                     tracing::warn!("cannot lock {}: {e}", rel.display());
                     continue;
                 }
             };
-            for name in self.list(&dir)? {
-                let Ok(Probe::Managed { is_dir, .. }) = self.probe(&dir, &name) else { continue };
-                if is_dir {
-                    pending.push(rel.join(&name));
-                }
-                if let Err(e) = self.enforce_mode(&dir, &name, &claim) {
+            for name in names {
+                let locked = self.probe(&dir, &name).and_then(|probe| {
+                    let Probe::Managed { is_dir, .. } = probe else { return Ok(()) };
+                    if is_dir {
+                        pending.push(rel.join(&name));
+                    }
+                    self.enforce_mode_held(&held, &dir, &name, &claim)
+                });
+                if let Err(e) = locked {
                     tracing::warn!("cannot lock {}: {e}", rel.join(&name).display());
                 }
             }
         }
-        self.lock_dir(&self.root)
+        placeholder::set_mode(&self.root, LOCKED_DIR_MODE)
     }
+}
+
+/// Whether a file of ours holds no content of its own: `online-only`, or cut off mid-fill
+/// or mid-free-up. What it holds, if anything, is part of what the cloud has.
+fn holds_nothing(file: &File) -> bool {
+    matches!(
+        placeholder::read_state(file),
+        Ok(Some(placeholder::State::OnlineOnly | placeholder::State::Hydrating | placeholder::State::Dehydrating))
+    )
 }
 
 /// Where a folder's rescued files go. A rescue is always one

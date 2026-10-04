@@ -59,7 +59,7 @@ impl SyncService {
         let (registry, me) = (Arc::downgrade(&self.wiring.registry), self.id().clone());
         let every = Arc::downgrade(&self.wiring.registry);
         MoveOuts {
-            helper: Arc::new(Linked(Arc::clone(&self.link))),
+            helper: Arc::new(Linked(self.link.clone())),
             filler: Arc::new(AccountFill { source, report: self.report.clone() }),
             route: Some(Arc::new(move |ids| {
                 if let Some(registry) = registry.upgrade() {

@@ -374,7 +374,7 @@ impl Listing {
         // interception and a connected helper — nothing is placed or updated
         // otherwise, and Graph is not asked for what could not be placed.
         // Asked again under the lifecycle lock, where the answer counts.
-        if !self.ctx.intercepted || self.ctx.link.lock().unwrap().is_none() {
+        if !self.ctx.intercepted || !self.ctx.link.is_linked() {
             return Err(CycleError::NoHelper);
         }
         self.check_account(turn, cancel).await?;

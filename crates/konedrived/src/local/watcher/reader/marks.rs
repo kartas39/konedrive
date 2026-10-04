@@ -154,7 +154,7 @@ impl Marks {
     /// before content lands in it. With no helper, its own walk marks
     /// everything when it is back. A failure is asked again later.
     pub(super) fn intercept(&mut self, dir: &File, key: &Fid) {
-        let Some(link) = self.link.lock().unwrap().clone() else { return };
+        let Some(link) = self.link.get() else { return };
         if self.helper_stuck {
             self.unmarked.insert(key.clone());
             return;

@@ -234,7 +234,7 @@ impl SyncService {
             drive: drive.clone(),
             drive_record,
             source,
-            link: Arc::clone(&self.link),
+            link: self.link.clone(),
             locks: self.locks.clone(),
             state: self.state.clone(),
             lease: listing::Lease::on(&self.folder),

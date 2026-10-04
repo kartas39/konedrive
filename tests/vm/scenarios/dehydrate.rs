@@ -6,7 +6,7 @@ use konedrive_fs::placeholder::{
     create_placeholder, State,
 };
 use konedrived::helper::HelperLink;
-use konedrived::folder::root::DehydrateError;
+use konedrived::hydration::dehydrate::DehydrateError;
 use konedrived::sync::{testing, SyncError, SyncService};
 
 use crate::harness::{Checks, Ctx, Holder, dir_mark_present, ignore_mark_present};

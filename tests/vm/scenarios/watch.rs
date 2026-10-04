@@ -11,7 +11,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::path::Path;
 use std::process::Command;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use konedrive_fs::handle::FileHandle;
@@ -36,7 +36,7 @@ const QUIET: Duration = Duration::from_millis(300);
 /// receiver.
 fn start(ctx: &Ctx) -> Result<(Watcher, mpsc::Receiver<Batch>), String> {
     let link = ctx.link()?;
-    let mut config = WatchConfig::new(ctx.sync_root(), Arc::new(Mutex::new(Some(link))), ctx.runtime.handle().clone());
+    let mut config = WatchConfig::new(ctx.sync_root(), konedrived::helper::LinkCell::holding(Some(link)), ctx.runtime.handle().clone());
     config.timing = Timing {
         quiet: QUIET,
         ceiling: Duration::from_secs(5),
@@ -237,14 +237,14 @@ pub fn other_device_not_uploaded(ctx: &Ctx, checks: &mut Checks) -> Result<(), S
         locks: InodeLocks::new(),
         ignore: Arc::new(std::sync::RwLock::new(IgnoreList::default())),
         liveness: Box::new(NoLiveness),
-        link: Arc::new(Mutex::new(None)),
+        link: konedrived::helper::LinkCell::default(),
         runtime: ctx.runtime.handle().clone(),
         on_rows: None,
         on_handles: None,
         tree_lock: None,
         scan: None,
     };
-    let mut config = WatchConfig::new(root, Arc::new(Mutex::new(None)), ctx.runtime.handle().clone());
+    let mut config = WatchConfig::new(root, konedrived::helper::LinkCell::default(), ctx.runtime.handle().clone());
     config.timing = Timing { quiet: QUIET, ceiling: Duration::from_secs(5), retry: Duration::from_secs(1), ..Timing::default() };
     let watcher = Watcher::start(config, Box::new(sink)).map_err(|e| format!("the watcher did not start: {e}"))?;
     let rows = || -> Result<Vec<String>, String> {

@@ -28,7 +28,6 @@ use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::{State, XATTR_ITEM_ID};
 use konedrive_graph::drive::DriveClient;
 use konedrived::folder::disk::Disk;
-use konedrived::helper::HelperLink;
 use konedrived::local::{Batch, Examiner, HelperLiveness, IgnoreList};
 use konedrived::hydration::source::ContentSource;
 use konedrived::helper::linked::Linked;
@@ -147,7 +146,7 @@ type Item<'a> = (&'a str, Option<&'a str>, &'a str, Kind, u64);
 /// completed.
 struct Base {
     store: Store,
-    link: Arc<Mutex<Option<HelperLink>>>,
+    link: konedrived::helper::LinkCell,
 }
 
 impl Base {
@@ -179,7 +178,7 @@ impl Base {
             let handle = handle_of(&ctx.root.join(rel))?;
             store.call_blocking({ let id = id.to_owned(); move |s| s.set_local_handle(&id, Some(&handle)) }).map_err(|e| e.to_string())?;
         }
-        Ok(Self { store, link: Arc::new(Mutex::new(Some(ctx.link()?))) })
+        Ok(Self { store, link: konedrived::helper::LinkCell::holding(Some(ctx.link()?)) })
     }
 
     /// The examination of `names` (directory, name) with the helper's liveness: its rows.
@@ -189,7 +188,7 @@ impl Base {
             batch.name(Path::new(dir), std::ffi::OsStr::new(name));
         }
         let disk = Disk::open(&ctx.sync_root(), false).map_err(|e| e.to_string())?;
-        let liveness = HelperLiveness::new(Arc::new(Linked(Arc::clone(&self.link))), ctx.sync_root(), ctx.runtime.handle().clone());
+        let liveness = HelperLiveness::new(Arc::new(Linked(self.link.clone())), ctx.sync_root(), ctx.runtime.handle().clone());
         let ignore = IgnoreList::default();
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
         Examiner { disk: &disk, store: &self.store, liveness: &liveness, ignore: &ignore, locks: &ctx.locks, now }
@@ -214,7 +213,7 @@ impl Base {
             limits: Limits::default(),
             quota: konedrived::account::quota::Quota::detached(),
             moved_out: Some(MoveOuts {
-                helper: Arc::new(Linked(Arc::clone(&self.link))),
+                helper: Arc::new(Linked(self.link.clone())),
                 filler: Arc::new(SourceFill(Arc::clone(&ctx.source) as Arc<dyn ContentSource>)),
                 route: None,
                 home_trash: None,
@@ -489,7 +488,7 @@ pub fn crash_mid_download_then_restart(ctx: &Ctx, checks: &mut Checks) -> Result
 
     // The restart: a new helper, with no marks at all, and a new worker on the same store.
     ctx.restart_helper()?;
-    *base.link.lock().unwrap() = Some(ctx.link()?);
+    base.link.set(Some(ctx.link()?));
     if dir_mark_present(ctx.helper_pid(), ino) {
         return Err("the restarted helper still marks the file; the check proves nothing".into());
     }

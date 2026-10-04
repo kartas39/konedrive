@@ -11,41 +11,26 @@ use nix::fcntl::{openat2, OFlag, OpenHow, ResolveFlag};
 use nix::sys::stat::Mode;
 use xattr::FileExt;
 
-use crate::helper::{HelperLink, NotCleared};
+use crate::helper::{HelperError, HelperLink};
 
-/// Why a file of the folder was not opened, or not freed up (`hydration::dehydrate`).
+/// Why a file or a folder of the root was not opened ([`SyncRoot::open_inside`],
+/// [`SyncRoot::open_item`]).
 #[derive(Debug, thiserror::Error)]
-pub enum DehydrateError {
-    #[error("not a OneDrive file")]
-    NotManaged,
-    #[error("the file is not downloaded")]
-    NotHydrated,
-    #[error("the file was modified locally")]
-    ModifiedLocally,
-    #[error("the file is in use")]
-    InUse,
+pub enum OpenError {
+    /// The path leads out of the root, through a link, or to something that is neither a
+    /// file nor a folder; or the root no longer carries this root's id.
     #[error("not a plain file inside this sync root")]
     OutsideRoot,
-    /// A helper is running and this daemon has no link to it, so a mark its
-    /// group may hold on the file cannot be cleared. Nothing
-    /// was changed; try again once the link is up.
-    #[error("the konedrive helper is running but not connected to this daemon")]
-    HelperNotConnected,
+    /// Inside the root and not konedrive's: a file without a state, or one of the daemon's
+    /// own `.konedrive-*` names.
+    #[error("not a OneDrive file")]
+    NotManaged,
     #[error("{0}")]
     Io(String),
 }
 
-pub(crate) fn io_error(e: impl std::fmt::Display) -> DehydrateError {
-    DehydrateError::Io(e.to_string())
-}
-
-impl From<NotCleared> for DehydrateError {
-    fn from(e: NotCleared) -> Self {
-        match e {
-            NotCleared::Unlinked => DehydrateError::HelperNotConnected,
-            other => io_error(other),
-        }
-    }
+fn io_error(e: impl std::fmt::Display) -> OpenError {
+    OpenError::Io(e.to_string())
 }
 
 #[derive(Debug, Clone)]
@@ -60,10 +45,17 @@ pub enum RegisterError {
     NotADirectory,
     #[error("the folder must be empty")]
     NotEmpty,
+    /// The folder cannot be a sync root: its filesystem lacks something a placeholder
+    /// needs, or it is a symbolic link. The sentence names the folder and what is missing.
     #[error("{0}")]
     Unsupported(String),
+    /// The folder could not be looked at or labelled: an errno, with what was being done.
     #[error("{0}")]
-    Helper(String),
+    Io(String),
+    /// The helper did not register it. A [`HelperError::Timeout`] is the one answer after
+    /// which the helper may hold the registration all the same.
+    #[error("{0}")]
+    Helper(#[from] HelperError),
 }
 
 /// The path of an open descriptor, for the few APIs that still take one.
@@ -84,7 +76,7 @@ fn open_root_dir(path: &Path) -> Result<File, RegisterError> {
     match nix::fcntl::open(path, flags, Mode::empty()) {
         Ok(fd) => Ok(File::from(fd)),
         Err(Errno::ENOTDIR | Errno::ENOENT | Errno::ELOOP) => Err(not_a_directory(path)),
-        Err(e) => Err(RegisterError::Unsupported(format!("{}: {e}", path.display()))),
+        Err(e) => Err(RegisterError::Io(format!("{}: {e}", path.display()))),
     }
 }
 
@@ -179,7 +171,7 @@ fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
     })?;
     if read_root_id(dir)?.is_none() {
         let mut entries = std::fs::read_dir(&through_fd)
-            .map_err(|e| RegisterError::Unsupported(format!("{}: {e}", path.display())))?;
+            .map_err(|e| RegisterError::Io(format!("{}: {e}", path.display())))?;
         if entries.next().is_some() {
             return Err(RegisterError::NotEmpty);
         }
@@ -221,9 +213,7 @@ fn check_root_dir(dir: &File, path: &Path) -> Result<(), RegisterError> {
 /// `org.konedrive.Folder`), once one exists.
 pub async fn register_root(link: &HelperLink, path: &Path) -> Result<SyncRoot, RegisterError> {
     let (dir, root) = prepare(path).await?;
-    link.register_root(&dir, &root.root_id)
-        .await
-        .map_err(|e| RegisterError::Helper(e.to_string()))?;
+    link.register_root(&dir, &root.root_id).await?;
     Ok(root)
 }
 
@@ -242,7 +232,7 @@ pub(crate) async fn prepare(path: &Path) -> Result<(File, SyncRoot), RegisterErr
     let requested = path.to_path_buf();
     tokio::task::spawn_blocking(move || prepare_root(&requested))
         .await
-        .map_err(|e| RegisterError::Unsupported(format!("the registration task failed: {e}")))?
+        .map_err(|e| RegisterError::Io(format!("the registration task failed: {e}")))?
 }
 
 /// The root id `path` carries, if it is a directory carrying one of ours —
@@ -252,8 +242,7 @@ pub(crate) async fn prepare(path: &Path) -> Result<(File, SyncRoot), RegisterErr
 pub(crate) async fn recorded_root_id(path: &Path) -> Option<String> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || {
-        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-        let dir = nix::fcntl::open(&path, flags, Mode::empty()).map(File::from).ok()?;
+        let dir = open_dir_nofollow(&path).ok()?;
         read_root_id(&dir).ok().flatten()
     })
     .await
@@ -261,38 +250,67 @@ pub(crate) async fn recorded_root_id(path: &Path) -> Option<String> {
     .flatten()
 }
 
-/// Whether an account whose drive is `mine` may register `path` as far as
-/// the folder's drive goes (`user.konedrive.drive`, design §8.3): a folder
-/// that carries none, or `mine`, may be; one that carries another drive holds
-/// that account's files, and may not — unless it is empty, which holds
-/// nothing to adopt: its stale drive is taken off, and it may be. Read and
-/// written through a descriptor, never followed through a symlink; a folder
-/// that cannot be opened is left for the registration's own checks to refuse.
-pub(crate) async fn drive_allows(path: &Path, mine: Option<String>) -> bool {
+/// Whose files a folder holds, as far as the drive it remembers goes
+/// (`user.konedrive.drive`, design §8.3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DriveOf {
+    /// It carries no drive, or the asking account's: that account may register it.
+    Free,
+    /// It carries another drive, and holds that account's files: it may not be registered.
+    Foreign(String),
+    /// It carries another drive and is empty: there is nothing of that account's to adopt.
+    /// It may be registered once the stale drive is taken off ([`forget_drive`]).
+    Stale(String),
+}
+
+fn open_dir_nofollow(path: &Path) -> nix::Result<File> {
+    let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
+    nix::fcntl::open(path, flags, Mode::empty()).map(File::from)
+}
+
+/// What the folder at `path` says about its drive, for an account whose drive is `mine`.
+/// Read through a descriptor, never followed through a symlink, and nothing is changed. A
+/// folder that cannot be opened is [`DriveOf::Free`]: the registration's own checks refuse
+/// it.
+pub(crate) async fn drive_of(path: &Path, mine: Option<String>) -> DriveOf {
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let flags = OFlag::O_RDONLY | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC;
-        let Ok(dir) = nix::fcntl::open(&path, flags, Mode::empty()).map(File::from) else { return true };
+    let read = tokio::task::spawn_blocking(move || {
+        let Ok(dir) = open_dir_nofollow(&path) else { return DriveOf::Free };
         let theirs = dir.get_xattr(XATTR_DRIVE).ok().flatten().and_then(|raw| String::from_utf8(raw).ok());
         match theirs {
-            None => true,
-            Some(theirs) if theirs.is_empty() || Some(&theirs) == mine.as_ref() => true,
+            None => DriveOf::Free,
+            Some(theirs) if theirs.is_empty() || Some(&theirs) == mine.as_ref() => DriveOf::Free,
             Some(theirs) => {
                 let empty = std::fs::read_dir(proc_path(&dir)).is_ok_and(|mut entries| entries.next().is_none());
-                if empty {
-                    let _modes = super::disk::dir_modes();
-                    let removed = konedrive_fs::placeholder::with_owner_write(&dir, || dir.remove_xattr(XATTR_DRIVE));
-                    match removed {
-                        Ok(()) => tracing::info!("{} is empty: the drive {theirs} it carried is taken off", path.display()),
-                        Err(e) => tracing::warn!("cannot take the drive {theirs} off the empty {}: {e}", path.display()),
-                    }
-                }
-                empty
+                if empty { DriveOf::Stale(theirs) } else { DriveOf::Foreign(theirs) }
             }
         }
+    });
+    // A task that did not run says nothing for the folder: refused.
+    read.await.unwrap_or_else(|e| DriveOf::Foreign(format!("unknown ({e})")))
+}
+
+/// Takes the drive off the folder at `path`, which [`drive_of`] found [`DriveOf::Stale`]:
+/// only while it is still empty. A failure is logged and the folder is registered all the
+/// same, as it was: the drive it keeps is then replaced by nothing, and `mark_drive` leaves
+/// it (the limitations log, F276).
+pub(crate) async fn forget_drive(path: &Path) {
+    let path = path.to_path_buf();
+    let _ = tokio::task::spawn_blocking(move || {
+        let Ok(dir) = open_dir_nofollow(&path) else { return };
+        if !std::fs::read_dir(proc_path(&dir)).is_ok_and(|mut entries| entries.next().is_none()) {
+            return;
+        }
+        let removed = super::disk::Modes::of(&dir).and_then(|modes| {
+            let _held = modes.hold();
+            konedrive_fs::placeholder::with_owner_write(&dir, || dir.remove_xattr(XATTR_DRIVE))
+        });
+        match removed {
+            Ok(()) => tracing::info!("{} is empty: the drive it carried is taken off", path.display()),
+            Err(e) => tracing::warn!("cannot take the stale drive off the empty {}: {e}", path.display()),
+        }
     })
-    .await
-    .unwrap_or(false)
+    .await;
 }
 
 /// Writes `drive` on the registered root as the drive it shows
@@ -310,7 +328,8 @@ pub(crate) fn mark_drive(root: &SyncRoot, drive: &str) -> io::Result<bool> {
     if dir.get_xattr(XATTR_DRIVE)?.is_some() {
         return Ok(false);
     }
-    let _modes = super::disk::dir_modes();
+    let modes = super::disk::Modes::of(&dir)?;
+    let _held = modes.hold();
     konedrive_fs::placeholder::with_owner_write(&dir, || dir.set_xattr(XATTR_DRIVE, drive.as_bytes()))?;
     Ok(true)
 }
@@ -351,12 +370,12 @@ fn prepare_root(path: &Path) -> Result<(File, SyncRoot), RegisterError> {
 /// same inode. The resolved path is what every later `dehydrate` measures
 /// "inside this root" against, so it must be free of symlinks and `..`.
 fn resolved_path(dir: &File, path: &Path) -> Result<PathBuf, RegisterError> {
-    let unsupported = |e: io::Error| RegisterError::Unsupported(format!("{}: {e}", path.display()));
-    let resolved = std::fs::read_link(proc_path(dir)).map_err(unsupported)?;
-    let here = dir.metadata().map_err(unsupported)?;
-    let there = std::fs::metadata(&resolved).map_err(unsupported)?;
+    let failed = |e: io::Error| RegisterError::Io(format!("{}: {e}", path.display()));
+    let resolved = std::fs::read_link(proc_path(dir)).map_err(failed)?;
+    let here = dir.metadata().map_err(failed)?;
+    let there = std::fs::metadata(&resolved).map_err(failed)?;
     if (here.dev(), here.ino()) != (there.dev(), there.ino()) {
-        return Err(RegisterError::Unsupported(format!(
+        return Err(RegisterError::Io(format!(
             "{} moved while it was being registered",
             path.display()
         )));
@@ -371,10 +390,9 @@ fn root_id_of(dir: &File) -> Result<String, RegisterError> {
     if let Some(id) = read_root_id(dir)? {
         return Ok(id);
     }
-    let unsupported =
-        |e: io::Error| RegisterError::Unsupported(format!("cannot access {XATTR_ROOT}: {e}"));
     let root_id = uuid_v4();
-    dir.set_xattr(XATTR_ROOT, root_id.as_bytes()).map_err(unsupported)?;
+    dir.set_xattr(XATTR_ROOT, root_id.as_bytes())
+        .map_err(|e| RegisterError::Io(format!("cannot write {XATTR_ROOT}: {e}")))?;
     Ok(root_id)
 }
 
@@ -404,13 +422,14 @@ fn root_id_of(dir: &File) -> Result<String, RegisterError> {
 /// could ever have minted, so no helper registration can be named by it
 /// ("never overwrite" protects ids we *did* mint).
 fn read_root_id(dir: &File) -> Result<Option<String>, RegisterError> {
-    let unsupported =
-        |e: io::Error| RegisterError::Unsupported(format!("cannot access {XATTR_ROOT}: {e}"));
-    let Some(raw) = dir.get_xattr(XATTR_ROOT).map_err(unsupported)? else {
+    let read = dir.get_xattr(XATTR_ROOT).map_err(|e| RegisterError::Io(format!("cannot read {XATTR_ROOT}: {e}")))?;
+    let Some(raw) = read else {
         return Ok(None);
     };
-    let id = String::from_utf8(raw)
-        .map_err(|_| RegisterError::Unsupported(format!("{XATTR_ROOT} is not valid UTF-8")))?;
+    // Not text: no id of ours, like any other value we could not have minted.
+    let Ok(id) = String::from_utf8(raw) else {
+        return Ok(None);
+    };
     Ok(looks_like_a_root_id(&id).then_some(id))
 }
 
@@ -433,7 +452,7 @@ pub(crate) fn uuid_v4() -> String {
 }
 
 impl SyncRoot {
-    /// Opens `path` for dehydration: once, `O_RDWR`, and only if it really
+    /// Opens `path` to fill it or free it up: once, `O_RDWR`, and only if it really
     /// is a plain file inside this root. A file the read-only
     /// lock made `0444` refuses `O_RDWR`; it is opened read-only instead and
     /// reopened writable on the same inode, and only when it is one of ours
@@ -465,11 +484,11 @@ impl SyncRoot {
     /// unbounded lock — measured, a file outside the root overwritten with
     /// hydration content and `Hydrate` reporting success. An ordinary
     /// directory rename inside the root was enough; no attacker was required.
-    pub(crate) fn open_inside(&self, path: &Path) -> Result<File, DehydrateError> {
+    pub(crate) fn open_inside(&self, path: &Path) -> Result<File, OpenError> {
         let dir = self
             .open_registered()
-            .map_err(|e| DehydrateError::Io(format!("{}: {e}", self.path.display())))?
-            .ok_or(DehydrateError::OutsideRoot)?;
+            .map_err(|e| OpenError::Io(format!("{}: {e}", self.path.display())))?
+            .ok_or(OpenError::OutsideRoot)?;
 
         let relative = self.relative(path)?;
         let how = OpenHow::new()
@@ -482,8 +501,8 @@ impl SyncRoot {
         match openat2(dir.as_fd(), &relative, how) {
             Ok(fd) => Ok(File::from(fd)),
             Err(Errno::EACCES) => self.open_locked(&dir, &relative, path),
-            Err(Errno::EXDEV | Errno::ELOOP | Errno::EISDIR) => Err(DehydrateError::OutsideRoot),
-            Err(e) => Err(DehydrateError::Io(format!("{}: {e}", path.display()))),
+            Err(Errno::EXDEV | Errno::ELOOP | Errno::EISDIR) => Err(OpenError::OutsideRoot),
+            Err(e) => Err(OpenError::Io(format!("{}: {e}", path.display()))),
         }
     }
 
@@ -496,7 +515,7 @@ impl SyncRoot {
     /// `O_NONBLOCK`, because a read-only open of a FIFO waits for a writer,
     /// and a `0444` FIFO is refused `O_RDWR` and so reaches here; the `fstat`
     /// below then refuses it.
-    fn open_locked(&self, dir: &File, relative: &Path, shown: &Path) -> Result<File, DehydrateError> {
+    fn open_locked(&self, dir: &File, relative: &Path, shown: &Path) -> Result<File, OpenError> {
         let how = OpenHow::new()
             .flags(OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
             .resolve(
@@ -504,11 +523,11 @@ impl SyncRoot {
             );
         let read_only = match openat2(dir.as_fd(), relative, how) {
             Ok(fd) => File::from(fd),
-            Err(Errno::EXDEV | Errno::ELOOP | Errno::EISDIR) => return Err(DehydrateError::OutsideRoot),
-            Err(e) => return Err(DehydrateError::Io(format!("{}: {e}", shown.display()))),
+            Err(Errno::EXDEV | Errno::ELOOP | Errno::EISDIR) => return Err(OpenError::OutsideRoot),
+            Err(e) => return Err(OpenError::Io(format!("{}: {e}", shown.display()))),
         };
         if !read_only.metadata().map_err(io_error)?.is_file() {
-            return Err(DehydrateError::OutsideRoot);
+            return Err(OpenError::OutsideRoot);
         }
         match read_state(&read_only) {
             Ok(Some(_)) => {
@@ -531,11 +550,11 @@ impl SyncRoot {
     /// state); a folder need not carry an item id, since a folder filled with
     /// `PopulateFromDirectory` has none. A `.konedrive-*` name anywhere on
     /// the way is `NotManaged`; anything else is refused.
-    pub(crate) fn open_item(&self, path: &Path) -> Result<(File, PathBuf), DehydrateError> {
+    pub(crate) fn open_item(&self, path: &Path) -> Result<(File, PathBuf), OpenError> {
         let dir = self
             .open_registered()
-            .map_err(|e| DehydrateError::Io(format!("{}: {e}", self.path.display())))?
-            .ok_or(DehydrateError::OutsideRoot)?;
+            .map_err(|e| OpenError::Io(format!("{}: {e}", self.path.display())))?
+            .ok_or(OpenError::OutsideRoot)?;
         // The root itself, named by its own path: its parent resolved, its
         // name carried over, as `relative` does.
         let named = match (path.parent(), path.file_name()) {
@@ -554,7 +573,7 @@ impl SyncRoot {
         // nothing in or under it is anyone's to pin or free up.
         let reserved = konedrive_fs::RESERVED_PREFIX.as_bytes();
         if relative.components().any(|part| part.as_os_str().as_encoded_bytes().starts_with(reserved)) {
-            return Err(DehydrateError::NotManaged);
+            return Err(OpenError::NotManaged);
         }
         let how = OpenHow::new()
             .flags(OFlag::O_RDONLY | OFlag::O_NONBLOCK | OFlag::O_NOFOLLOW | OFlag::O_CLOEXEC)
@@ -563,16 +582,16 @@ impl SyncRoot {
             );
         let item = match openat2(dir.as_fd(), &relative, how) {
             Ok(fd) => File::from(fd),
-            Err(Errno::EXDEV | Errno::ELOOP) => return Err(DehydrateError::OutsideRoot),
-            Err(e) => return Err(DehydrateError::Io(format!("{}: {e}", path.display()))),
+            Err(Errno::EXDEV | Errno::ELOOP) => return Err(OpenError::OutsideRoot),
+            Err(e) => return Err(OpenError::Io(format!("{}: {e}", path.display()))),
         };
         let meta = item.metadata().map_err(io_error)?;
         if meta.is_file() {
             if read_state(&item).map_err(io_error)?.is_none() {
-                return Err(DehydrateError::NotManaged);
+                return Err(OpenError::NotManaged);
             }
         } else if !meta.is_dir() {
-            return Err(DehydrateError::OutsideRoot);
+            return Err(OpenError::OutsideRoot);
         }
         Ok((item, self.path.join(relative)))
     }
@@ -600,15 +619,15 @@ impl SyncRoot {
     /// The parent is resolved first and the final component is carried over
     /// untouched, so a symlinked file is refused by the open rather than
     /// silently followed here.
-    pub(crate) fn relative(&self, path: &Path) -> Result<PathBuf, DehydrateError> {
-        let name = path.file_name().ok_or(DehydrateError::OutsideRoot)?;
+    pub(crate) fn relative(&self, path: &Path) -> Result<PathBuf, OpenError> {
+        let name = path.file_name().ok_or(OpenError::OutsideRoot)?;
         let parent = match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
             _ => PathBuf::from("."),
         };
         let parent = std::fs::canonicalize(parent).map_err(io_error)?;
         let root = std::fs::canonicalize(&self.path).map_err(io_error)?;
-        let inside = parent.strip_prefix(&root).map_err(|_| DehydrateError::OutsideRoot)?;
+        let inside = parent.strip_prefix(&root).map_err(|_| OpenError::OutsideRoot)?;
         Ok(inside.join(name))
     }
 }

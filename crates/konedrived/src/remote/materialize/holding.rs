@@ -76,7 +76,12 @@ impl Materializer {
     }
 
     pub(super) fn rescue(&self, dir: &File, name: &OsStr, shown: &Path, run: &mut Run) -> Result<(), ApplyError> {
-        let dest = self.disk.rescue(dir, name, shown, &self.rescue_into)?;
+        let Some(dest) = self.disk.rescue(dir, name, shown, &self.rescue_into)? else {
+            // A placeholder: nothing of the user's in it, so nothing to keep.
+            tracing::info!("{} held nothing made here; it is removed, not rescued", shown.display());
+            run.out.counts.deleted += 1;
+            return Ok(());
+        };
         tracing::warn!(
             "{} held local work the cloud's change would have lost; it is kept at {}",
             shown.display(),

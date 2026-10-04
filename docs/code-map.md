@@ -113,7 +113,12 @@ One account: its sign-in, mode, state, quota, cached profile, stored secret. Des
 
 The daemon's end of the helper socket, and the helper's state. Design: `hydration.md`.
 
-- `mod.rs` — the link: a blocking thread that owns the socket; `LinkCell`. `[tests]`
+- `mod.rs` — the list of the modules; `HelperError`.
+- `link.rs` — `HelperLink`: the two blocking threads that own the socket, the calls and
+  their bounds; `LinkCell`, where an account keeps the link. `[tests]`
+- `clearance.rs` — `Clearance`: the rule every punch clears a file's ignore mark by.
+- `presence.rs` — whether a helper has its socket bound, told without connecting. `[tests]`
+- `testing.rs` — test support: the stand-in for the helper's end of the socket.
 - `hub.rs` — `HelperHub`: the one link every account shares, its supervisor and `HelperState`;
   `Served`, whom it tells as the link comes and goes.
 - `linked.rs` — `Helper` and `Linked`: what the daemon asks of the helper beyond the fills, as
@@ -126,10 +131,12 @@ The folder on disk: the root and its registration, descriptor-based changes, the
 locks, and which item of the drive has a place in it. Design: `hydration.md`, `sync.md`.
 
 - `mod.rs` — the list of the modules.
-- `root.rs` — `SyncRoot`: opening, checking and registering a root; `DehydrateError`. `[tests]`
+- `root.rs` — `SyncRoot`: opening, checking and registering a root; `OpenError`,
+  `RegisterError`; the drive a folder remembers. `[tests]`
 - `classify.rs` — what a Graph item becomes in the tree, and whether it has a place in the
   folder. `[tests]`
-- `disk.rs` — every change made to the folder, by descriptor. `[tests]`
+- `disk.rs` — every change made to the folder, by descriptor; `Modes`, a folder's lock on
+  its directories' modes. `[tests]`
 - `locks.rs` — `InodeLocks`: one fill or free-up per inode at a time. `[tests]`
 - `walk.rs` — a walk over the folder's files that opens none of them; the names konedrive keeps
   for itself.

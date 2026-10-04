@@ -50,7 +50,7 @@ impl SyncService {
     ) -> Result<Watcher, String> {
         let store = store.clone();
         let runtime = tokio::runtime::Handle::try_current().map_err(|e| e.to_string())?;
-        let mut config = WatchConfig::new(root.clone(), Arc::clone(&self.link), runtime.clone());
+        let mut config = WatchConfig::new(root.clone(), self.link.clone(), runtime.clone());
         config.on_status = Some(self.watch_hook(runtime.clone(), sync));
         config.first_scan = reason;
         let handles = self.state.clone();
@@ -61,11 +61,11 @@ impl SyncService {
             ignore: Arc::clone(&self.ignore),
             // The helper's `OpenByHandle`: gone, moved out, or undecided.
             liveness: Box::new(crate::local::HelperLiveness::new(
-                Arc::new(crate::helper::linked::Linked(Arc::clone(&self.link))),
+                Arc::new(crate::helper::linked::Linked(self.link.clone())),
                 root.clone(),
                 runtime.clone(),
             )),
-            link: Arc::clone(&self.link),
+            link: self.link.clone(),
             runtime,
             // Rows were recorded: the sync's own worker looks at the outbox.
             on_rows: Some(Arc::new(move || outbox.wake())),

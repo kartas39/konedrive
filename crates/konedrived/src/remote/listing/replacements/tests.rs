@@ -267,7 +267,8 @@ async fn a_stop_waits_for_a_swap_under_way_and_the_swap_is_said() {
     s.feed(Some("L1"), json!([file("F", "D", "f.txt", "c2")]), "L2").await;
     let poller = Poller::start(Arc::clone(&listing), Schedule::polled(Duration::from_secs(3600), vec![]));
     is_fetching.recv_timeout(PATIENCE).expect("the replacement downloads");
-    let windows = crate::folder::disk::dir_modes();
+    let modes = crate::folder::disk::Modes::of_root(&s.root).unwrap();
+    let windows = modes.hold();
     go_on.send(()).unwrap();
 
     // The file's lock taken: nothing stands between that and the swap's section.

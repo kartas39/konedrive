@@ -1,5 +1,3 @@
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
@@ -8,11 +6,9 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use konedrive_fs::placeholder::{read_state, write_stamp, State, write_state};
-use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
-use nix::sys::socket::{accept, bind, listen as sock_listen, socket, AddressFamily, Backlog, SockFlag, SockType, UnixAddr};
+use konedrive_proto::ToHelper;
 use xattr::FileExt;
 
-use crate::helper::HelperLink;
 use crate::folder::root::tests::test_root;
 use crate::folder::root::{SyncRoot, uuid_v4};
 use super::*;
@@ -340,90 +336,38 @@ pub(crate) fn fake_helper(
     clear_ignore_errno: i32,
     on_clear_ignore: impl FnOnce() + Send + 'static,
 ) -> std::sync::mpsc::Receiver<Seen> {
-    let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None)
-        .unwrap();
-    let addr = UnixAddr::new(&path).unwrap();
-    bind(fd.as_raw_fd(), &addr).unwrap();
-    sock_listen(&fd, Backlog::new(16).unwrap()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let listener = fd;
-        let accepted = accept(listener.as_raw_fd()).unwrap();
-        // SAFETY: `accept` just returned a freshly opened descriptor that
-        // this process now solely owns.
-        let stream = unsafe { UnixStream::from_raw_fd(accepted) };
-        let mut channel = Channel::new(stream).unwrap();
-        channel.send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None).unwrap();
-        let (hello, _) = channel.recv::<ToHelper>().unwrap();
-        assert!(
-            matches!(hello, ToHelper::Hello { version } if version == PROTOCOL_VERSION),
-            "{hello:?}"
-        );
-        channel.send(&ToDaemon::Ack { errno: 0 }, None).unwrap();
-
-        let mut hook = Some(on_clear_ignore);
-        while let Ok((message, fd)) = channel.recv::<ToHelper>() {
-            let clearing = matches!(message, ToHelper::ClearIgnore);
-            let (state, ino) = match fd {
-                Some(fd) => {
-                    let file = File::from(fd);
-                    (
-                        read_state(&file).ok().flatten(),
-                        file.metadata().map(|m| m.ino()).unwrap_or(0),
-                    )
-                }
-                None => (None, 0),
-            };
-            let _ = tx.send(Seen { message: format!("{message:?}"), state, ino });
-            if clearing {
-                if let Some(hook) = hook.take() {
-                    hook();
-                }
-            }
-            let errno = if clearing { clear_ignore_errno } else { 0 };
-            if channel.send(&ToDaemon::Ack { errno }, None).is_err() {
-                break;
-            }
+    let mut hook = Some(on_clear_ignore);
+    crate::helper::testing::fake_helper(&path, move |message, fd| {
+        let clearing = matches!(message, ToHelper::ClearIgnore);
+        let (state, ino) = match fd.map(File::from) {
+            Some(file) => (read_state(&file).ok().flatten(), file.metadata().map(|m| m.ino()).unwrap_or(0)),
+            None => (None, 0),
+        };
+        let _ = tx.send(Seen { message: format!("{message:?}"), state, ino });
+        if !clearing {
+            return 0;
         }
+        if let Some(hook) = hook.take() {
+            hook();
+        }
+        clear_ignore_errno
     });
     rx
 }
 
-/// The same, but every request after the handshake is refused. Used to
-/// fail a registration the way a real helper would.
+/// A stand-in helper that refuses every request after the handshake, as a real one fails a
+/// registration.
 pub(crate) fn fake_helper_refusing_everything(path: PathBuf) -> std::sync::mpsc::Receiver<Seen> {
-    fake_helper_with_errno(path, libc::EPERM)
-}
-
-fn fake_helper_with_errno(path: PathBuf, errno: i32) -> std::sync::mpsc::Receiver<Seen> {
-    let fd = socket(AddressFamily::Unix, SockType::SeqPacket, SockFlag::SOCK_CLOEXEC, None)
-        .unwrap();
-    let addr = UnixAddr::new(&path).unwrap();
-    bind(fd.as_raw_fd(), &addr).unwrap();
-    sock_listen(&fd, Backlog::new(16).unwrap()).unwrap();
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let listener = fd;
-        let accepted = accept(listener.as_raw_fd()).unwrap();
-        // SAFETY: as above — a descriptor `accept` just handed us.
-        let stream = unsafe { UnixStream::from_raw_fd(accepted) };
-        let mut channel = Channel::new(stream).unwrap();
-        channel.send(&ToDaemon::Welcome { version: PROTOCOL_VERSION }, None).unwrap();
-        let (_hello, _) = channel.recv::<ToHelper>().unwrap();
-        channel.send(&ToDaemon::Ack { errno: 0 }, None).unwrap();
-        while let Ok((message, _fd)) = channel.recv::<ToHelper>() {
-            let _ = tx.send(Seen { message: format!("{message:?}"), state: None, ino: 0 });
-            if channel.send(&ToDaemon::Ack { errno }, None).is_err() {
-                break;
-            }
-        }
+    crate::helper::testing::fake_helper(&path, move |message, _fd| {
+        let _ = tx.send(Seen { message: format!("{message:?}"), state: None, ino: 0 });
+        libc::EPERM
     });
     rx
 }
 
-pub(crate) async fn connected(socket_path: &Path) -> HelperLink {
-    HelperLink::connect(socket_path).await.unwrap().0
-}
+pub(crate) use crate::helper::testing::connected;
 
 /// The first request of a given kind the fake helper saw, or a failure
 /// if it never arrived. Bounded, so a mutation that stops calling the
@@ -595,19 +539,19 @@ async fn dehydrate_refuses_anything_that_is_not_a_file_inside_the_root() {
     let outside = hydrated_file(elsewhere.path(), "outside.bin", 4096);
 
     let error = dehydrate(&link, &root, &outside).await.unwrap_err();
-    assert!(matches!(error, DehydrateError::OutsideRoot), "{error:?}");
+    assert!(matches!(error, DehydrateError::Open(OpenError::OutsideRoot)), "{error:?}");
     assert!(blocks_of(&outside) > 0, "a file outside the root was punched");
 
     let pointer = root.path.join("pointer.bin");
     std::os::unix::fs::symlink(&outside, &pointer).unwrap();
     let error = dehydrate(&link, &root, &pointer).await.unwrap_err();
-    assert!(matches!(error, DehydrateError::OutsideRoot), "{error:?}");
+    assert!(matches!(error, DehydrateError::Open(OpenError::OutsideRoot)), "{error:?}");
     assert!(blocks_of(&outside) > 0, "a symlink walked out of the root");
 
     let inside = hydrated_file(&root.path, "f.bin", 4096);
     let unregistered = SyncRoot { path: root.path.clone(), root_id: uuid_v4() };
     let error = dehydrate(&link, &unregistered, &inside).await.unwrap_err();
-    assert!(matches!(error, DehydrateError::OutsideRoot), "{error:?}");
+    assert!(matches!(error, DehydrateError::Open(OpenError::OutsideRoot)), "{error:?}");
     assert!(blocks_of(&inside) > 0, "a root that is not registered punched a file");
 }
 

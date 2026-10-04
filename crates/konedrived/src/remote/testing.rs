@@ -249,7 +249,7 @@ impl World {
             drive: drive.clone(),
             drive_record: None,
             source: Arc::new(GraphSource::new(drive)),
-            link: Arc::new(Mutex::new(Some(self.link.clone()))),
+            link: crate::helper::LinkCell::holding(Some(self.link.clone())),
             locks: self.locks.clone(),
             state: self.state.clone(),
             lease: Lease::on(&self.lifecycle),

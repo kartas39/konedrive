@@ -151,12 +151,84 @@ fn a_rescue_never_replaces_what_is_already_there() {
     std::fs::write(into.path().join("docs/f.txt"), b"first").unwrap();
     std::fs::write(into.path().join("docs/f.txt.1"), b"second").unwrap();
     let docs = disk.dir(Path::new("docs")).unwrap();
-    let dest = disk.rescue(&docs, OsStr::new("f.txt"), Path::new("docs/f.txt"), into.path()).unwrap();
+    let dest = disk.rescue(&docs, OsStr::new("f.txt"), Path::new("docs/f.txt"), into.path()).unwrap().expect("local work is rescued");
     assert_eq!(dest, into.path().join("docs/f.txt.2"));
     assert_eq!(std::fs::read(into.path().join("docs/f.txt")).unwrap(), b"first");
     assert_eq!(std::fs::read(into.path().join("docs/f.txt.1")).unwrap(), b"second");
     assert_eq!(std::fs::read(&dest).unwrap(), b"third");
     assert!(!path.join("docs/f.txt").exists());
+}
+
+/// A file of ours.
+fn managed(path: &Path, content: &[u8], state: placeholder::State) {
+    std::fs::write(path, content).unwrap();
+    xattr::set(path, XATTR_ITEM_ID, b"F").unwrap();
+    placeholder::write_state(&File::open(path).unwrap(), state).unwrap();
+}
+
+/// A placeholder is never rescued, wherever it is: stripped of its state it would lie
+/// among the rescued files as a file of zeros. Named itself it is removed where it is;
+/// inside a rescued directory it is removed there. A downloaded file is rescued whole.
+#[test]
+fn a_placeholder_is_removed_not_rescued_at_any_depth() {
+    use placeholder::State;
+    let (_dir, path, disk) = unlocked_root();
+    let into = tempfile::tempdir().unwrap();
+    let root = disk.dir(Path::new("")).unwrap();
+
+    for (name, state) in [("a", State::OnlineOnly), ("b", State::Hydrating), ("c", State::Dehydrating)] {
+        managed(&path.join(name), &[0u8; 4096], state);
+        let rescued = disk.rescue(&root, OsStr::new(name), Path::new(name), into.path()).unwrap();
+        assert_eq!(rescued, None, "{state:?}");
+        assert!(!path.join(name).exists(), "{state:?}: removed from the folder");
+        assert!(!into.path().join(name).exists(), "{state:?}: and not left as zeros among the rescued");
+    }
+
+    std::fs::create_dir(path.join("docs")).unwrap();
+    managed(&path.join("docs/placeholder"), &[0u8; 4096], State::OnlineOnly);
+    managed(&path.join("docs/downloaded"), b"content", State::Hydrated);
+    std::fs::write(path.join("docs/mine"), b"made here").unwrap();
+    let rescued = disk.rescue(&root, OsStr::new("docs"), Path::new("docs"), into.path()).unwrap().unwrap();
+    assert!(!rescued.join("placeholder").exists());
+    assert_eq!(std::fs::read(rescued.join("downloaded")).unwrap(), b"content");
+    assert_eq!(xattr::get(rescued.join("downloaded"), XATTR_ITEM_ID).unwrap(), None, "the user's own now");
+    assert_eq!(std::fs::read(rescued.join("mine")).unwrap(), b"made here");
+}
+
+/// The scan is the reconcile's picture of the folder: a directory it cannot read fails
+/// it, rather than being left out as if it were empty.
+#[test]
+fn a_scan_that_cannot_read_a_directory_fails() {
+    let (_dir, path, disk) = unlocked_root();
+    std::fs::create_dir(path.join("open")).unwrap();
+    std::fs::write(path.join("open/f"), b"x").unwrap();
+    assert_eq!(disk.scan("ROOT").unwrap().len(), 2);
+
+    std::fs::create_dir(path.join("shut")).unwrap();
+    std::fs::set_permissions(path.join("shut"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let scanned = disk.scan("ROOT");
+    std::fs::set_permissions(path.join("shut"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    if nix::unistd::geteuid().is_root() {
+        return;
+    }
+    let message = scanned.unwrap_err().to_string();
+    assert!(message.contains("shut"), "{message}");
+}
+
+/// Two folders do not wait for each other's windows, and every `Disk` of one folder
+/// shares that folder's lock.
+#[test]
+fn the_modes_lock_is_one_for_a_folder_and_another_for_the_next() {
+    let (_a_dir, a_path, _a_disk) = unlocked_root();
+    let (_b_dir, b_path, _b_disk) = unlocked_root();
+    let a_root = SyncRoot { path: a_path, root_id: String::new() };
+    let b_root = SyncRoot { path: b_path, root_id: String::new() };
+    let (a_modes, b_modes) = (Modes::of_root(&a_root).unwrap(), Modes::of_root(&b_root).unwrap());
+    assert!(Arc::ptr_eq(&a_modes, &Modes::of_root(&a_root).unwrap()));
+    assert!(!Arc::ptr_eq(&a_modes, &b_modes));
+
+    let _a_held = a_modes.hold();
+    std::thread::spawn(move || drop(b_modes.hold())).join().unwrap();
 }
 
 #[test]

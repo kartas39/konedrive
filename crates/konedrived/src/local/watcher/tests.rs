@@ -76,7 +76,7 @@ impl Fx {
     /// The watcher of `root`, with no helper, the tests' clocks, and nothing
     /// dropped by pid.
     fn config_for(&self, root: &SyncRoot) -> WatchConfig {
-        let mut config = WatchConfig::new(root.clone(), Arc::new(Mutex::new(None)), self.runtime.handle().clone());
+        let mut config = WatchConfig::new(root.clone(), crate::helper::LinkCell::default(), self.runtime.handle().clone());
         config.own_pid = None;
         config.timing = timing();
         config
@@ -166,7 +166,7 @@ impl Fx {
     /// is asked to until the test tells it otherwise.
     fn with_helper(&self, mut config: WatchConfig) -> (WatchConfig, FakeHelper) {
         let helper = self.runtime.block_on(FakeHelper::start());
-        config.link = Arc::new(Mutex::new(Some(helper.link.clone())));
+        config.link = crate::helper::LinkCell::holding(Some(helper.link.clone()));
         (config, helper)
     }
 
@@ -578,7 +578,7 @@ fn sink(fx: &Fx, world: &World) -> ExamineSink {
         locks: world.locks.clone(),
         ignore: IgnoreList::default().shared(),
         liveness: Box::new(NoLiveness),
-        link: Arc::new(Mutex::new(None)),
+        link: crate::helper::LinkCell::default(),
         runtime: fx.runtime.handle().clone(),
         on_rows: None,
         on_handles: None,
