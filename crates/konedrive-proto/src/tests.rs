@@ -211,3 +211,45 @@ fn a_root_id_is_a_version_4_uuid_in_its_canonical_text() {
         assert!(!is_root_id(bad), "{bad:?}");
     }
 }
+
+/// The control buffer is aligned for the records read out of it, and holds
+/// exactly the room of `MAX_CONTROL_FDS` descriptors.
+#[test]
+fn the_control_buffer_is_aligned_as_a_cmsghdr() {
+    assert_eq!(mem::align_of::<ControlBuffer>(), mem::align_of::<libc::cmsghdr>());
+    let control = ControlBuffer::new();
+    assert_eq!(control.bytes.as_ptr() as usize % mem::align_of::<libc::cmsghdr>(), 0);
+    assert_eq!(control.bytes.len(), mem::size_of::<libc::cmsghdr>() + 8 * mem::size_of::<RawFd>());
+}
+
+/// What `validate` refuses, and that it refuses nothing else: the two
+/// fields with a form, at the edges of the form.
+#[test]
+fn validate_refuses_a_root_id_and_a_handle_out_of_form() {
+    let id = "1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d";
+    let register = |root_id: &str| ToHelper::RegisterRoot { root_id: root_id.to_owned() };
+    assert_eq!(register(id).validate(), Ok(()));
+    assert_eq!(register("some-root").validate(), Err(Malformed::RootId));
+    assert_eq!(register(&"x".repeat(60_000)).validate(), Err(Malformed::RootId));
+
+    let open = |handle_type, len| ToHelper::OpenByHandle { handle_type, handle: vec![0xab; len] };
+    assert_eq!(open(0, 1).validate(), Ok(()));
+    assert_eq!(open(0x4d, MAX_HANDLE_BYTES).validate(), Ok(()));
+    assert_eq!(open(-1, 8).validate(), Err(Malformed::Handle));
+    assert_eq!(open(1, 0).validate(), Err(Malformed::Handle));
+    assert_eq!(open(1, MAX_HANDLE_BYTES + 1).validate(), Err(Malformed::Handle));
+
+    // Left as they come: an id to unregister is only compared, an errno is
+    // clamped by the helper.
+    for unchecked in [
+        ToHelper::Hello { version: 0 },
+        ToHelper::UnregisterRoot { root_id: "some-root".into() },
+        ToHelper::HydrateDone { req_id: u64::MAX, errno: i32::MIN },
+        ToHelper::MarkDir,
+        ToHelper::UnmarkDir,
+        ToHelper::MarkFile,
+        ToHelper::ClearIgnore,
+    ] {
+        assert_eq!(unchecked.validate(), Ok(()), "{unchecked:?}");
+    }
+}

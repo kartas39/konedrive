@@ -293,19 +293,23 @@ fn refuse(shared: &Shared, uid: u32, refused: &roots::Refused, root_id: &str, pa
     refused.errno()
 }
 
+/// Refuses a `RegisterRoot` whose id is not a root id, before the id is
+/// stored, compared or written to the log as it came: it is whatever string
+/// the peer sent, up to a whole datagram of it.
+pub(crate) fn refuse_malformed_id(shared: &Shared, uid: u32, root_id: &str) -> i32 {
+    refuse(shared, uid, &roots::Refused::NotAnId, root_id, "")
+}
+
 /// The id must be a root id, and the directory must be owned by the peer,
 /// live on a filesystem that can host placeholders, and neither contain nor
 /// sit inside another registered root; and the peer must hold fewer than
 /// [`roots::MAX_ROOTS_PER_UID`] roots, or this one already. Only then is it
 /// stored, marked, and walked.
+///
+/// That the id is a root id is asked before this is called, of the message
+/// (`ToHelper::validate`): see [`refuse_malformed_id`].
 pub(crate) fn register_root(shared: &Shared, owner: Owner, root_id: String, dir: File) -> i32 {
     let uid = owner.uid;
-    // Before anything else, and before the id is stored, compared or written
-    // to the log: it is whatever string the peer sent, up to a whole
-    // datagram of it.
-    if !konedrive_proto::is_root_id(&root_id) {
-        return refuse(shared, uid, &roots::Refused::NotAnId, &root_id, "");
-    }
     let meta = match dir.metadata() {
         Ok(meta) => meta,
         Err(e) => return errno_of(&e),

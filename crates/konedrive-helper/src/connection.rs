@@ -15,13 +15,13 @@ use konedrive_helper::jobs::Owner;
 use konedrive_helper::outbox::{Outbox, Outgoing};
 
 use crate::events::{dispatch, settle, Finish};
-use crate::registration::{errno_of, register_root, unregister_root};
+use crate::registration::{errno_of, refuse_malformed_id, register_root, unregister_root};
 use crate::shared::{
     fault, Daemon, Refusal, Shared, Throttle, ACCEPT_BACKOFF, MAX_CONNECTIONS_PER_UID,
 };
 
+/// Accepts connections for as long as the helper runs.
 pub(crate) fn serve(shared: Arc<Shared>, listener: OwnedFd) {
-    let mut failing = Throttle::new();
     // Connections are numbered here, on the one thread that
     // accepts them, in the order they were accepted — never on the
     // per-connection thread. Numbered there, two connections accepted a
@@ -30,6 +30,11 @@ pub(crate) fn serve(shared: Arc<Shared>, listener: OwnedFd) {
     // relies on this order being the accept order. A local counter rather
     // than a shared one, so that nothing else can ever hand one out.
     let mut next_conn: u64 = 0;
+    accept_connections(&shared, &listener, &mut next_conn)
+}
+
+fn accept_connections(shared: &Arc<Shared>, listener: &OwnedFd, next_conn: &mut u64) -> ! {
+    let mut failing = Throttle::new();
     loop {
         let fd = match accept(listener.as_raw_fd()) {
             Ok(fd) => {
@@ -62,7 +67,7 @@ pub(crate) fn serve(shared: Arc<Shared>, listener: OwnedFd) {
         };
         // SAFETY: `accept` returned a freshly opened descriptor we now own.
         let stream = unsafe { UnixStream::from_raw_fd(fd) };
-        // a bounded number of connections per uid,
+        // A bounded number of connections per uid,
         // counted here, before a thread is spent on one. A peer whose
         // credentials cannot be read is not served at all — `serve_one`
         // would refuse it too.
@@ -85,9 +90,9 @@ pub(crate) fn serve(shared: Arc<Shared>, listener: OwnedFd) {
                 continue;
             }
         };
-        next_conn += 1;
-        let conn = next_conn;
-        let shared = Arc::clone(&shared);
+        *next_conn += 1;
+        let conn = *next_conn;
+        let shared = Arc::clone(shared);
         if let Err(e) = std::thread::Builder::new()
             .name("konedrive-daemon".into())
             .spawn(move || {
@@ -191,7 +196,7 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
     let _disconnect =
         Disconnect { shared, uid, conn, outbox: Arc::clone(&outbox) };
 
-    // The helper greets unprompted, before it reads anything. client
+    // The helper greets unprompted, before it reads anything. The client
     // relies on that, and requiring a `Hello` would buy nothing: `SO_PEERCRED`
     // already tells us who the peer is, and a `Hello` carries only a version
     // number the peer could lie about.
@@ -270,9 +275,18 @@ fn apply(
         }
     };
 
+    // The message's own fields, before anything is done with them. Asked
+    // here and answered in the arms below, which a malformed request reaches
+    // only with what a well-formed one needs attached: without it, it is
+    // refused as that one would be.
+    let malformed = message.validate().is_err();
+
     match (message, object) {
         (ToHelper::Hello { version }, _) if version == PROTOCOL_VERSION => 0,
         (ToHelper::Hello { .. }, _) => libc::EPROTO,
+        (ToHelper::RegisterRoot { root_id }, Some(_)) if malformed => {
+            refuse_malformed_id(shared, uid, &root_id)
+        }
         (ToHelper::RegisterRoot { root_id }, Some(dir)) => register_root(shared, owner, root_id, dir),
         (ToHelper::UnregisterRoot { root_id }, _) => unregister_root(shared, uid, &root_id),
         (ToHelper::MarkDir, Some(dir)) if allowed(&dir) => act(shared.marks.mark_dir(dir.as_fd())),
@@ -302,6 +316,7 @@ fn apply(
         // Authorised on the object it finds, not on the handle: see
         // `by_handle`. Refusals are not logged — they are the daemon's
         // answer, and any local user can ask.
+        (ToHelper::OpenByHandle { .. }, Some(_)) if malformed => libc::EINVAL,
         (ToHelper::OpenByHandle { handle_type, handle }, Some(dir)) => {
             let handle = FileHandle { kind: handle_type, bytes: handle };
             let on_a_root = |dev| shared.roots.may_act_on(uid, dev, uid);

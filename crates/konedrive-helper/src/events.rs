@@ -11,7 +11,7 @@ use std::sync::Arc;
 use konedrive_helper::pending::PendingOpen;
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
-use nix::sys::fanotify::MaskFlags;
+use nix::sys::fanotify::{FanotifyEvent, MaskFlags};
 
 pub(crate) use decision::handle_open;
 pub(crate) use hydration::{dispatch, settle, Finish};
@@ -202,56 +202,67 @@ pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Res
                 },
             };
             for event in events {
-                let mask = event.mask();
-                if mask.contains(MaskFlags::FAN_Q_OVERFLOW) {
-                    tracing::warn!("queue overflow: some opens were not seen");
-                    continue;
-                }
-                if !mask.contains(MaskFlags::FAN_OPEN_PERM) {
-                    // We only ever mark FAN_OPEN_PERM, so this should not
-                    // happen. The event simply drops: there is no permission
-                    // decision pending on an event of a kind we never asked for.
-                    continue;
-                }
-                let pid = event.pid();
-                let Some(open) = PendingOpen::take(event, &shared.marks) else {
-                    tracing::warn!("a permission event arrived with no descriptor");
-                    continue;
-                };
-                // The helper's own opens: an `OpenByHandle` object in a
-                // marked directory, or with a mark of its own, raises
-                // an event aimed at this very group, while the connection
-                // thread that opened it waits in `open_by_handle_at` and
-                // reads nothing more from its daemon — so a hydration asked
-                // of that daemon could never be reported back. Allowed here,
-                // on this thread, before the pool: no worker, no daemon, and
-                // not behind a full queue. The event's pid is the process's,
-                // whichever thread opened (no FAN_REPORT_TID; pinned by
-                // marks.rs's INIT_FLAGS and its test). The only files
-                // the helper opens are those objects, handed straight to
-                // their owner's daemon, and the feature probe's nameless
-                // file at registration (`docs/design/writes.md` §8.2; SECURITY.md); measured in
-                // docs/kernel-behavior-7.2/open-by-handle.md §15.
-                if pid == own_pid {
-                    open.allow();
-                    continue;
-                }
-                if let Err(rejected) = pool.submit(pool::OpenEvent { open, pid, since }) {
-                    // Saturation, not failure: EAGAIN tells the application to
-                    // try the open again, which is true and is an answer. The
-                    // alternative — spawning without bound — ends with the
-                    // process dying and the kernel allowing every suspended
-                    // open in the system.
-                    shared.refusals.report(Refusal::PoolFull, || {
-                        format!(
-                            "all {EVENT_WORKERS} workers busy and {EVENT_QUEUE_DEPTH} opens \
-                             already queued; denying an open with EAGAIN"
-                        )
-                    });
-                    rejected.open.deny(libc::EAGAIN);
-                }
+                hand_over(shared, pool, own_pid, since, event);
             }
         }
+    }
+}
+
+/// Hands one event of a batch to a worker, or answers it here.
+fn hand_over(
+    shared: &Arc<Shared>,
+    pool: &pool::Pool,
+    own_pid: i32,
+    since: u64,
+    event: FanotifyEvent,
+) {
+    let mask = event.mask();
+    if mask.contains(MaskFlags::FAN_Q_OVERFLOW) {
+        tracing::warn!("queue overflow: some opens were not seen");
+        return;
+    }
+    if !mask.contains(MaskFlags::FAN_OPEN_PERM) {
+        // We only ever mark FAN_OPEN_PERM, so this should not
+        // happen. The event simply drops: there is no permission
+        // decision pending on an event of a kind we never asked for.
+        return;
+    }
+    let pid = event.pid();
+    let Some(open) = PendingOpen::take(event, &shared.marks) else {
+        tracing::warn!("a permission event arrived with no descriptor");
+        return;
+    };
+    // The helper's own opens: an `OpenByHandle` object in a
+    // marked directory, or with a mark of its own, raises
+    // an event aimed at this very group, while the connection
+    // thread that opened it waits in `open_by_handle_at` and
+    // reads nothing more from its daemon — so a hydration asked
+    // of that daemon could never be reported back. Allowed here,
+    // on this thread, before the pool: no worker, no daemon, and
+    // not behind a full queue. The event's pid is the process's,
+    // whichever thread opened (no FAN_REPORT_TID; pinned by
+    // marks.rs's INIT_FLAGS and its test). The only files
+    // the helper opens are those objects, handed straight to
+    // their owner's daemon, and the feature probe's nameless
+    // file at registration (`docs/design/writes.md` §8.2; SECURITY.md); measured in
+    // docs/kernel-behavior-7.2/open-by-handle.md §15.
+    if pid == own_pid {
+        open.allow();
+        return;
+    }
+    if let Err(rejected) = pool.submit(pool::OpenEvent { open, pid, since }) {
+        // Saturation, not failure: EAGAIN tells the application to
+        // try the open again, which is true and is an answer. The
+        // alternative — spawning without bound — ends with the
+        // process dying and the kernel allowing every suspended
+        // open in the system.
+        shared.refusals.report(Refusal::PoolFull, || {
+            format!(
+                "all {EVENT_WORKERS} workers busy and {EVENT_QUEUE_DEPTH} opens \
+                 already queued; denying an open with EAGAIN"
+            )
+        });
+        rejected.open.deny(libc::EAGAIN);
     }
 }
 

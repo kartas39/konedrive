@@ -164,6 +164,10 @@ pub fn open(
     }
 }
 
+// The protocol's bound on a handle is the one `FileHandle::is_well_formed`
+// checks.
+const _: () = assert!(konedrive_proto::MAX_HANDLE_BYTES == konedrive_fs::handle::MAX_HANDLE_BYTES);
+
 fn errno_of(e: &std::io::Error) -> i32 {
     e.raw_os_error().unwrap_or(libc::EIO)
 }
