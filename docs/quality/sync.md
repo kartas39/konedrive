@@ -168,6 +168,14 @@ risky one.
   (`manager.rs:36`) is a test switch.
 - **Fix:** a wiring struct passed to the constructor; test helpers in a test-support module.
 - **Size:** M. **Risk:** low; touches every test fixture.
+- **Fixed 2026-10-04** in `865ceb4` (#166): `SyncService::new(Wiring)` is the only constructor
+  (`sync/wiring.rs`); the setters and the test-only methods are gone; the account is the trait
+  `account::FolderAccount`. `sync/testing.rs` (tests and the VM suite only) gives a helper that
+  holds an answer until released, a fake account, a clock moved by hand and a builder. One clock
+  for the pause (`conditions::running::Clock`). Left for parts 3 and 4 of `B5`: a dozen tests
+  still reach `lifecycle`, `syncing`, `store` or a private method, listed in the pull request;
+  the upload engine's retry and throttle times are still on the system clock
+  (`docs/limitations/F100.md`, `D37.md`).
 
 ## SY8. `HelperHub` has two jobs; the daemon keeps two account lists
 
