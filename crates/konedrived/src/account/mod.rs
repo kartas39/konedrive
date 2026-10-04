@@ -118,6 +118,46 @@ pub trait PendingUploads: Send + Sync {
     fn quota_read(&self, _quota: &konedrive_graph::drive::DriveQuota) {}
 }
 
+/// What an account's folder asks of its account (`crate::sync`): the one thing the folder
+/// is made with for all of it. The daemon's is the [`AccountService`].
+pub trait FolderAccount: Send + Sync {
+    /// The account's state as published: whether somebody is signed in, the mode it runs
+    /// in, what its sign-in grants, and the drive its token was last seen to reach.
+    fn snapshot(&self) -> state::AccountSnapshot;
+    /// The state as it changes: the folder asks OneDrive again at a sign-in.
+    fn changes(&self) -> tokio::sync::watch::Receiver<state::AccountSnapshot>;
+    /// The account's one quota, which the uploads' space check reads and adjusts.
+    fn quota(&self) -> Quota;
+    /// Works the account's mode out again: the write gate closed under the folder's outbox
+    /// worker, before anything on the account's side saw why.
+    fn recheck_mode(&self);
+    /// The folder's cycle saw the account's token reach `drive`, which is not the drive
+    /// the folder was listed from.
+    fn drive_seen(&self, drive: &str);
+}
+
+impl FolderAccount for AccountService {
+    fn snapshot(&self) -> state::AccountSnapshot {
+        self.state.get()
+    }
+
+    fn changes(&self) -> tokio::sync::watch::Receiver<state::AccountSnapshot> {
+        self.state.subscribe()
+    }
+
+    fn quota(&self) -> Quota {
+        self.quota.clone()
+    }
+
+    fn recheck_mode(&self) {
+        AccountService::recheck_mode(self);
+    }
+
+    fn drive_seen(&self, drive: &str) {
+        AccountService::drive_seen(self, drive);
+    }
+}
+
 /// Serializes sign-in commits, cancellation and sign-out against each other. `generation`
 /// identifies the current sign-in attempt (if any): a spawned attempt only writes state
 /// while holding this lock and only if the generation it was started with is still

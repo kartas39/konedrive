@@ -112,7 +112,7 @@ pub(crate) fn two_accounts_one_link(ctx: &Ctx, checks: &mut Checks) -> Result<()
         sign_in_timeout: Duration::from_secs(5),
         baloo: Baloo::disabled,
         thumbnails: None,
-        onedrive: false,
+        drive: konedrived::daemon::manager::no_drive(),
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     let daemon = runtime
@@ -161,7 +161,7 @@ fn two_accounts_steps(
     let mut trace: Vec<String> = Vec::new();
 
     // Two accounts, as `Accounts.Add` makes them, each signed in by hand: nothing here
-    // reaches Microsoft, and with no drive (`onedrive: false`) a folder registered while
+    // reaches Microsoft, and with no drive (`Options::drive` gives none) a folder registered while
     // signed in is a local one — intercepted, and filled from a directory.
     let mut sides = Vec::new();
     for (label, seed) in [("A", 0xA1), ("B", 0xB2)] {

@@ -117,7 +117,12 @@ pub trait OutboxHost: Send + Sync {
     /// kept in `store`, or what else the account's one place decides. Asked before each row
     /// is taken, and between the fragments of an upload.
     fn stopped(&self, store: &Store) -> bool {
-        crate::conditions::running::user_pause(store).is_some()
+        crate::conditions::running::user_pause(store, self.now()).is_some()
+    }
+    /// The time, in unix seconds, by the account's clock (`conditions::running::Clock`): a
+    /// timed pause is over for the worker when it is for everything else of the account.
+    fn now(&self) -> i64 {
+        crate::status::activity::unix_now()
     }
     /// Whether the account may change OneDrive now (`docs/design/writes.md` §2): asked
     /// before each row is taken, and between the fragments of an upload. `Err` says why not:

@@ -20,12 +20,6 @@ use crate::status::snapshot::RootState;
 /// How long the switch to read-only waits for the watcher to hand over what it holds.
 const FLUSH_WITHIN: Duration = Duration::from_secs(30);
 
-#[cfg(test)]
-thread_local! {
-    /// Makes [`SyncService::start_watcher`] fail on this thread (tests of the watcher).
-    pub(super) static FAIL_WATCHER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
 impl SyncService {
     /// Starts the watcher of the folder at `root`, if the folder is read-write, and answers
     /// it. Called as a read-write folder's sync starts — at bring-up, and after a switch to
@@ -44,11 +38,7 @@ impl SyncService {
         if self.mode() != Mode::ReadWrite {
             return None;
         }
-        #[cfg(test)]
-        let spawned = if FAIL_WATCHER.with(std::cell::Cell::get) { Err("failed on purpose".to_owned()) } else { self.spawn_watcher(root, store, scanned) };
-        #[cfg(not(test))]
-        let spawned = self.spawn_watcher(root, store, scanned);
-        match spawned {
+        match self.spawn_watcher(root, store, scanned) {
             Ok(watcher) => Some(watcher),
             Err(why) => {
                 tracing::warn!("{why}; the folder stays locked");
@@ -91,7 +81,7 @@ impl SyncService {
             tree_lock: Some(Arc::clone(&self.tree_lock)),
             scan: Some(ScanReport::new(self.state.clone())),
         };
-        let watcher = Watcher::start(config, Box::new(FirstScan { inner: sink, scanned }))
+        let watcher = (self.wiring.watchers)(config, Box::new(FirstScan { inner: sink, scanned }))
             .map_err(|e| format!("cannot watch {} for local changes: {e}", root.path.display()))?;
         tracing::info!("watching {} for local changes", root.path.display());
         Ok(watcher)

@@ -1,10 +1,11 @@
 use super::*;
+use crate::sync::testing;
 use konedrive_tree::{Change, Kind, Placement, Row, Store, TreeStore};
 
 /// An account on `hub` whose folder `dir` is registered without interception, with no
 /// helper anywhere.
 async fn account_at(hub: &Arc<HelperHub>, dir: &Path) -> Arc<SyncService> {
-    let account = SyncService::on_hub(hub, None, None);
+    let account = testing::wiring().hub(hub).build();
     hub.set_socket(dir.join("no-helper.sock"));
     std::fs::create_dir_all(dir).unwrap();
     account.register_root_without_interception(dir).await.unwrap();
@@ -171,7 +172,7 @@ async fn one_candidate_is_verified_while_another_folder_cannot_be_placed() {
         upgrade_when_helper: None,
     };
     store.set_root(&id, Some(folder)).unwrap();
-    let b = SyncService::on_hub(&hub, None, Some(super::super::Persist { store, account: id }));
+    let b = testing::wiring().hub(&hub).persist(super::super::Persist { store, account: id }).build();
     b.hold_back("a test");
 
     assert!(same(&hub.route(&opened(&dir.path().join("A"), "f", "2")).await, &a), "verified by path");

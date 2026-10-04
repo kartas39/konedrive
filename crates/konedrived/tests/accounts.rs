@@ -550,7 +550,7 @@ async fn a_second_daemon_on_the_same_configuration_is_refused() {
         sign_in_timeout: Duration::from_secs(5),
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
-        onedrive: false,
+        drive: konedrived::daemon::manager::no_drive(),
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     let second = konedrived::daemon::startup::start(other_bus.builder(), Paths::in_dir(d.config.path()), options).await;
@@ -652,7 +652,7 @@ async fn a_version_1_onedrive_folder_is_held_then_brought_up_at_the_first_connec
         sign_in_timeout: Duration::from_secs(5),
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
-        onedrive: true,
+        drive: konedrived::daemon::manager::own_drive(),
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     let daemon = start_daemon_with(&bus, config.path(), options).await;
@@ -726,7 +726,7 @@ async fn an_account_whose_removal_failed_half_way_still_takes_a_folder() {
         sign_in_timeout: Duration::from_secs(5),
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
-        onedrive: false,
+        drive: konedrived::daemon::manager::no_drive(),
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     let _daemon = start_daemon_with(&bus, config.path(), options).await;
@@ -827,7 +827,7 @@ async fn an_add_that_cannot_be_put_on_the_bus_leaves_nothing_behind() {
         sign_in_timeout: Duration::from_secs(5),
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
-        onedrive: false,
+        drive: konedrived::daemon::manager::no_drive(),
         bus: exports.clone(),
     };
     let _daemon = start_daemon_with(&bus, config.path(), options).await;
@@ -922,7 +922,7 @@ async fn a_call_that_reaches_the_daemon_before_its_objects_is_answered() {
         sign_in_timeout: Duration::from_secs(5),
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
-        onedrive: false,
+        drive: konedrived::daemon::manager::no_drive(),
         bus: held.clone(),
     };
     let client = bus.connect().await;

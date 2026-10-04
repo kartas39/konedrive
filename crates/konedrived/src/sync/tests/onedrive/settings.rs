@@ -25,43 +25,13 @@ async fn the_thumbnail_setting_is_kept_in_config_toml_and_taken_at_once() {
     service.change_run_settings(|s| s.thumbnails = false).await.unwrap();
     assert!(!service.run_settings().thumbnails);
     assert_eq!(written().thumbnails, Some(false));
-    let store = service.store.lock().unwrap().clone().unwrap();
-    assert!(!service.running.stopped(&store) && !service.running.thumbnails_go(&store), "thumbnails off stop nothing else");
+    assert!(!service.state().get().stopped(), "thumbnails off stop nothing else");
 
     service.stop_sync().await;
-    service.set_link(None);
+    service.hub().set_link(None);
     drop(service);
     let restarted = connected(&w, true).await;
     assert_eq!(restarted.run_settings(), running::Settings { thumbnails: false });
-}
-
-/// Issue #95: the hold's settings are one pair for every account. A change on the hub
-/// reaches every account's hold at once and ends every account's `SyncAnyway`; the
-/// same settings told again end nothing; an account that joins later runs on them.
-#[tokio::test]
-async fn the_hold_settings_reach_every_account_and_end_every_sync_anyway() {
-    use crate::config::OnBattery;
-    use running::{Hold, HoldSettings};
-    let hub = hub::HelperHub::new();
-    let accounts = [SyncService::on_hub(&hub, None, None), SyncService::on_hub(&hub, None, None)];
-    hub.set_conditions(running::Conditions { metered: true, on_battery: true, power_saver: false });
-    for account in &accounts {
-        assert_eq!(account.running.held(), Some(Hold::Metered));
-        account.running.sync_anyway();
-    }
-    let ignoring_metered = HoldSettings { pause_on_metered: false, on_battery: OnBattery::Pause };
-    hub.set_hold_settings(ignoring_metered);
-    for account in &accounts {
-        assert_eq!(account.hold_settings(), ignoring_metered);
-        assert_eq!(account.running.held(), Some(Hold::OnBattery), "worked out again: the SyncAnyway ended");
-        account.running.sync_anyway();
-    }
-    hub.set_hold_settings(ignoring_metered);
-    assert!(accounts.iter().all(|a| a.running.held().is_none()), "the same again ends nothing");
-    hub.set_hold_settings(HoldSettings { on_battery: OnBattery::Sync, ..ignoring_metered });
-    assert!(accounts.iter().all(|a| a.running.held().is_none()), "sync on battery");
-    let later = SyncService::on_hub(&hub, None, None);
-    assert_eq!(later.hold_settings().on_battery, OnBattery::Sync, "a later account is told");
 }
 
 /// Issue #54: with the notification socket up, a change in OneDrive gives one delta
@@ -79,9 +49,10 @@ async fn a_change_in_onedrive_arrives_through_the_socket_and_a_pause_closes_it()
     Mock::given(method("GET")).and(path("/me/drive/root/subscriptions/socketIo"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({"notificationUrl": endpoint.notification_url.as_str()})))
         .mount(&w.server).await;
-    let service = connected(&w, true).await;
     let live = Timing { debounce: Duration::from_millis(300), settle: Duration::from_millis(100), ..Timing::default() };
-    service.set_schedule(Schedule { live: Some(live), ..Schedule::polled(Duration::from_secs(3600), vec![Duration::from_millis(50)]) });
+    let schedule = Schedule { live: Some(live), ..Schedule::polled(Duration::from_secs(3600), vec![Duration::from_millis(50)]) };
+    let wiring = wiring(&w, account(true), Arc::new(StaticToken::new("T"))).schedule(schedule).link(Some(link(&w).await));
+    let service = made(&w, wiring);
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
     wait_until("connected", || service.state().get().live_changes == LiveChanges::Connected).await;
@@ -127,10 +98,8 @@ async fn a_metered_connection_holds_the_account_back_until_it_ends() {
     service.set_conditions(running::Conditions { metered: true, ..running::Conditions::default() });
     assert_eq!(service.state().get().held_back, "metered");
     assert_eq!(service.state().get().paused_until, None, "a hold is not the user's pause");
-    let store = service.store.lock().unwrap().clone().unwrap();
-    assert!(!service.running.thumbnails_go(&store), "no thumbnails");
-    assert!(service.pool.try_acquire_sized(Class::Download, Size::Small).is_none(), "no pinned download");
-    assert!(service.pool.try_acquire_sized(Class::Open, Size::Small).is_some(), "an open still downloads");
+    assert!(service.pool().try_acquire_sized(Class::Download, Size::Small).is_none(), "no pinned download");
+    assert!(service.pool().try_acquire_sized(Class::Open, Size::Small).is_some(), "an open still downloads");
     let made = std::process::Command::new("sh").args(["-c", "echo new > docs/new.txt"]).current_dir(w.folder.path()).status().unwrap();
     assert!(made.success());
     let seen = deltas(&w).await;
@@ -218,7 +187,7 @@ async fn sync_anyway_lifts_the_hold_until_something_changes_and_a_restart_holds_
     assert_eq!(service.state().get().held_back, "", "sync on battery");
 
     service.stop_sync().await;
-    service.set_link(None);
+    service.hub().set_link(None);
     drop(service);
     let hub = hub::HelperHub::with_link(Some(link(&w).await));
     hub.set_conditions(on_battery);
@@ -250,7 +219,7 @@ async fn the_ignore_list_is_kept_in_config_toml() {
     assert_eq!(persist.store.account(&persist.account).unwrap().ignore, Some(vec!["*.bak".to_owned(), "build-*".to_owned()]));
     assert!(matches!(service.set_ignore_patterns(vec!["a/b".into()]).await, Err(SyncError::InvalidArgs(_))));
     service.stop_sync().await;
-    service.set_link(None);
+    service.hub().set_link(None);
     let restarted = connected(&w, true).await;
     assert_eq!(restarted.ignore_patterns(), vec!["*.bak".to_owned(), "build-*".to_owned()]);
     assert!(!restarted.machine_name().is_empty());

@@ -4,11 +4,10 @@ use std::future::Future;
 use std::io;
 use std::path::Path;
 use std::pin::Pin;
-use std::sync::Arc;
 
 use crate::sync::SyncService;
 use crate::helper::HelperLink;
-use crate::hydration::source::{ContentSource, LocalDir};
+use crate::hydration::source::LocalDir;
 use crate::sync::{RootSource, SyncError};
 use crate::hydration::source;
 
@@ -72,8 +71,7 @@ impl SyncService {
             })?;
         // The source refuses, when the bytes are read, any file
         // that leads into the folder by then — a symlink swapped since.
-        *self.source.lock().unwrap() =
-            Some(Arc::new(LocalDir::new(source).refusing_files_of(root)) as Arc<dyn ContentSource>);
+        *self.source.lock().unwrap() = Some(self.wiring.sources.directory(LocalDir::new(source).refusing_files_of(root)));
         Ok(created)
     }
 }

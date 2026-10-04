@@ -13,12 +13,12 @@ use super::*;
 #[tokio::test]
 async fn forgetting_an_intercepted_root_needs_the_helper() {
     let (service, helper, config_file, _sockets, _config_dir) =
-        service_with_config(Duration::ZERO).await;
+        service_with_config().await;
     let link = service.link().unwrap();
     let root_dir = tempfile::tempdir().unwrap();
     service.register_root(root_dir.path()).await.unwrap();
     helper.forget();
-    service.set_link(None);
+    service.hub().set_link(None);
 
     let error = service.unregister_root().await.unwrap_err();
 
@@ -34,7 +34,7 @@ async fn forgetting_an_intercepted_root_needs_the_helper() {
     assert!(matches!(error, SyncError::AlreadyRegistered), "{error:?}");
 
     // With the helper back, the same Forget goes through — to the helper.
-    service.set_link(Some(link));
+    service.hub().set_link(Some(link));
     service.unregister_root().await.unwrap();
     assert_eq!(helper.seen(), vec![Seen::UnregisterRoot]);
     assert!(service.root().is_none());
@@ -49,7 +49,7 @@ async fn forgetting_an_intercepted_root_needs_the_helper() {
 #[tokio::test]
 async fn a_forget_the_helper_answers_eperm_goes_through_and_any_other_refusal_does_not() {
     let (service, helper, _config_file, _sockets, _config_dir) =
-        service_with_config(Duration::ZERO).await;
+        service_with_config().await;
     let root_dir = tempfile::tempdir().unwrap();
     service.register_root(root_dir.path()).await.unwrap();
 
@@ -167,11 +167,11 @@ async fn a_dehydration_without_interception_whose_mark_is_not_cleared_changes_no
 async fn with_no_link_a_running_helper_stops_a_dehydration_and_an_exited_one_does_not() {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let service = SyncService::new(None, None, None);
-    service.set_helper_socket(&socket_path);
+    let service = testing::service(None, None, None);
+    service.hub().set_socket(&socket_path);
     let (_root, file) = filled_without_interception(&service).await;
 
-    let running = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let running = FakeHelper::start(socket_path.clone());
     let refused = service.dehydrate(&file).await;
     assert!(matches!(refused, Err(SyncError::NoHelper)), "{refused:?}");
     assert_eq!(service.item_state(&file).await, "hydrated");
@@ -187,7 +187,7 @@ async fn with_no_link_a_running_helper_stops_a_dehydration_and_an_exited_one_doe
         })
         .unwrap());
     assert!(stale.exists());
-    service.set_helper_socket(&stale);
+    service.hub().set_socket(&stale);
     service.dehydrate(&file).await.unwrap();
     assert_eq!(service.item_state(&file).await, "online-only");
 }
@@ -238,7 +238,7 @@ fn root_with_a_stuck_file() -> (tempfile::TempDir, PathBuf) {
 async fn recovery_deferred_while_an_unlinked_helper_runs_finishes_once_linked() {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     let config_dir = tempfile::tempdir().unwrap();
     let config_file = config_dir.path().join("config.toml");
     let (root_dir, stuck) = root_with_a_stuck_file();
@@ -246,8 +246,8 @@ async fn recovery_deferred_while_an_unlinked_helper_runs_finishes_once_linked() 
         &config_file,
         &format!("path = \"{}\"\nintercepted = false\nupgrade_when_helper = false\n", resolved(root_dir.path())),
     );
-    let service = SyncService::new(None, None, Some(persist(&config_file)));
-    service.set_helper_socket(&socket_path);
+    let service = testing::service(None, None, Some(persist(&config_file)));
+    service.hub().set_socket(&socket_path);
 
     service.resume().await;
 
@@ -257,7 +257,7 @@ async fn recovery_deferred_while_an_unlinked_helper_runs_finishes_once_linked() 
     assert!(service.last_error().contains("not connected to it yet"), "{}", service.last_error());
 
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    service.set_link(Some(link));
+    service.hub().set_link(Some(link));
     service.resume().await;
 
     assert_eq!(state_of_path(&stuck), Some(State::OnlineOnly), "the deferred reset never ran");
@@ -273,16 +273,16 @@ async fn recovery_deferred_while_an_unlinked_helper_runs_finishes_once_linked() 
 async fn a_switch_to_interception_resets_what_recovery_deferred() {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
-    let service = SyncService::new(None, None, None);
-    service.set_helper_socket(&socket_path);
+    let helper = FakeHelper::start(socket_path.clone());
+    let service = testing::service(None, None, None);
+    service.hub().set_socket(&socket_path);
     let (root_dir, stuck) = root_with_a_stuck_file();
 
     service.register_root_without_interception(root_dir.path()).await.unwrap();
     assert_eq!(state_of_path(&stuck), Some(State::Dehydrating), "reset with a mark unclearable");
 
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    service.set_link(Some(link));
+    service.hub().set_link(Some(link));
     service.resume().await;
 
     assert_eq!(state_of_path(&stuck), Some(State::OnlineOnly), "the deferred reset never ran");
@@ -302,14 +302,14 @@ async fn a_switch_to_interception_resets_what_recovery_deferred() {
 #[tokio::test]
 async fn an_intercepted_root_restored_before_its_helper_is_back_is_held() {
     let (first, helper, config_file, sockets, _config_dir) =
-        service_with_config(Duration::ZERO).await;
+        service_with_config().await;
     let root_dir = tempfile::tempdir().unwrap();
     first.register_root(root_dir.path()).await.unwrap();
     let root_id = first.root().unwrap().root_id;
     drop(first);
     helper.forget();
 
-    let restarted = SyncService::new(None, None, Some(persist(&config_file)));
+    let restarted = testing::service(None, None, Some(persist(&config_file)));
     restarted.resume().await;
 
     let held = restarted.root().expect("a restored root must be held before the helper");
@@ -338,7 +338,7 @@ async fn an_intercepted_root_restored_before_its_helper_is_back_is_held() {
     // The helper comes back: the same root is brought up, not a new one.
     let (link, _requests) =
         HelperLink::connect(&sockets.path().join("helper.sock")).await.unwrap();
-    restarted.set_link(Some(link));
+    restarted.hub().set_link(Some(link));
     restarted.resume().await;
     assert_eq!(restarted.root_state(), "ready");
     assert_eq!(helper.seen(), vec![Seen::RegisterRoot]);
@@ -352,7 +352,7 @@ async fn an_intercepted_root_restored_before_its_helper_is_back_is_held() {
 #[tokio::test]
 async fn a_restored_root_that_cannot_be_brought_up_is_still_held() {
     let (first, helper, config_file, _sockets, _config_dir) =
-        service_with_config(Duration::ZERO).await;
+        service_with_config().await;
     let root_dir = tempfile::tempdir().unwrap();
     first.register_root(root_dir.path()).await.unwrap();
     let root_path = std::fs::canonicalize(root_dir.path()).unwrap();
@@ -361,7 +361,7 @@ async fn a_restored_root_that_cannot_be_brought_up_is_still_held() {
     drop(root_dir);
     helper.forget();
 
-    let restarted = SyncService::new(Some(link), None, Some(persist(&config_file)));
+    let restarted = testing::service(Some(link), None, Some(persist(&config_file)));
     restarted.resume().await;
 
     assert_eq!(restarted.root_state(), "error");
@@ -387,7 +387,7 @@ async fn a_restored_root_with_no_recorded_id_takes_it_from_the_folder() {
     xattr::set(root_dir.path(), "user.konedrive.root", root_id.as_bytes()).unwrap();
     write_config(&config_file, &format!("path = \"{}\"\n", resolved(root_dir.path())));
 
-    let restarted = SyncService::new(None, None, Some(persist(&config_file)));
+    let restarted = testing::service(None, None, Some(persist(&config_file)));
     restarted.resume().await;
 
     assert_eq!(restarted.root().map(|r| r.root_id), Some(root_id.to_owned()));
@@ -399,7 +399,7 @@ async fn a_restored_root_with_no_recorded_id_takes_it_from_the_folder() {
 #[tokio::test]
 async fn the_root_id_is_recorded_with_the_root() {
     let (service, _helper, config_file, _sockets, _config_dir) =
-        service_with_config(Duration::ZERO).await;
+        service_with_config().await;
     let root_dir = tempfile::tempdir().unwrap();
     service.register_root(root_dir.path()).await.unwrap();
 
@@ -419,7 +419,8 @@ async fn the_root_id_is_recorded_with_the_root() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_new_root_is_written_down_before_the_helper_hears_of_it() {
     let (service, helper, config_file, _sockets, _config_dir) =
-        service_with_config(Duration::from_millis(400)).await;
+        service_with_config().await;
+    helper.hold(Seen::RegisterRoot);
     let root_dir = tempfile::tempdir().unwrap();
 
     let registering = {
@@ -434,6 +435,7 @@ async fn a_new_root_is_written_down_before_the_helper_hears_of_it() {
         resolved(root_dir.path()),
         "the helper was told about a root config.toml does not name"
     );
+    helper.release(Seen::RegisterRoot);
     registering.await.unwrap().unwrap();
 }
 
@@ -449,7 +451,7 @@ async fn a_new_root_is_written_down_before_the_helper_hears_of_it() {
 #[tokio::test]
 async fn an_unreadable_config_is_never_overwritten() {
     let (service, helper, config_file, _sockets, _config_dir) =
-        service_with_config(Duration::ZERO).await;
+        service_with_config().await;
     let unreadable = "client_id = \"the account's own\"\nthis is not [toml\n";
     std::fs::write(&config_file, unreadable).unwrap();
     let root_dir = tempfile::tempdir().unwrap();
@@ -474,7 +476,7 @@ async fn a_root_that_cannot_be_written_down_is_not_registered() {
     let config_dir = tempfile::tempdir().unwrap();
     let blocker = config_dir.path().join("not-a-directory");
     std::fs::write(&blocker, b"").unwrap();
-    let service = SyncService::new(service.link(), None, Some(persist(&blocker.join("config.toml"))));
+    let service = testing::service(service.link(), None, Some(persist(&blocker.join("config.toml"))));
     let root_dir = tempfile::tempdir().unwrap();
 
     let error = service.register_root(root_dir.path()).await.unwrap_err();
@@ -486,11 +488,15 @@ async fn a_root_that_cannot_be_written_down_is_not_registered() {
 
 /// on both sides: a `RegisterRoot` that fails after the
 /// helper saved the root is undone at the helper, and in `config.toml`,
-/// so that neither is left holding a root the daemon does not.
+/// so that neither is left holding a root the daemon does not. Nothing of it
+/// is published either, and the retry a user would make next is taken. The
+/// folder's root id is taken away while the helper has not answered yet, so
+/// the recovery that follows fails.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_registration_is_undone_at_the_helper_and_in_the_config() {
     let (service, helper, config_file, _sockets, _config_dir) =
-        service_with_config(Duration::from_millis(400)).await;
+        service_with_config().await;
+    helper.hold(Seen::RegisterRoot);
     let root_dir = tempfile::tempdir().unwrap();
 
     let registering = {
@@ -500,12 +506,16 @@ async fn a_failed_registration_is_undone_at_the_helper_and_in_the_config() {
     };
     wait_until("the helper was asked", || helper.seen().contains(&Seen::RegisterRoot)).await;
     xattr::remove(root_dir.path(), "user.konedrive.root").unwrap();
+    helper.release(Seen::RegisterRoot);
 
     let error = registering.await.unwrap().unwrap_err();
     assert!(matches!(error, SyncError::Io(_)), "{error:?}");
     assert!(service.root().is_none(), "a failed registration stored a root anyway");
     assert_eq!(helper.seen(), vec![Seen::RegisterRoot, Seen::UnregisterRoot]);
     assert_eq!(recorded_root(&config_file), "");
+    assert_eq!((service.state().get().root_path.as_str(), service.root_state().as_str()), ("", "error"), "nor published");
+    service.register_root(root_dir.path()).await.unwrap();
+    assert_eq!(service.root_state(), "ready");
 }
 
 /// ...unless the helper cannot confirm it let go. Then the root is kept,
@@ -515,7 +525,8 @@ async fn a_failed_registration_is_undone_at_the_helper_and_in_the_config() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_failed_registration_the_helper_may_still_hold_is_kept() {
     let (service, helper, config_file, _sockets, _config_dir) =
-        service_with_config(Duration::from_millis(400)).await;
+        service_with_config().await;
+    helper.hold(Seen::RegisterRoot);
     helper.refuse(Seen::UnregisterRoot, libc::EIO);
     let root_dir = tempfile::tempdir().unwrap();
 
@@ -526,6 +537,7 @@ async fn a_failed_registration_the_helper_may_still_hold_is_kept() {
     };
     wait_until("the helper was asked", || helper.seen().contains(&Seen::RegisterRoot)).await;
     xattr::remove(root_dir.path(), "user.konedrive.root").unwrap();
+    helper.release(Seen::RegisterRoot);
 
     let error = registering.await.unwrap().unwrap_err();
     assert!(matches!(error, SyncError::Io(_)), "{error:?}");
@@ -544,13 +556,13 @@ async fn a_failed_registration_the_helper_may_still_hold_is_kept() {
 #[tokio::test]
 async fn a_registration_that_arrives_before_resume_still_finds_the_restored_root() {
     let (first, helper, config_file, _sockets, _config_dir) =
-        service_with_config(Duration::ZERO).await;
+        service_with_config().await;
     let root_dir = tempfile::tempdir().unwrap();
     first.register_root(root_dir.path()).await.unwrap();
     drop(first);
     helper.forget();
 
-    let restarted = SyncService::new(None, None, Some(persist(&config_file)));
+    let restarted = testing::service(None, None, Some(persist(&config_file)));
     let error =
         restarted.register_root_without_interception(root_dir.path()).await.unwrap_err();
 
@@ -568,14 +580,19 @@ async fn a_registration_that_arrives_before_resume_still_finds_the_restored_root
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_registrations_at_once_leave_one_root_at_the_helper() {
     let (service, helper, _config_file, _sockets, _config_dir) =
-        service_with_config(Duration::from_millis(300)).await;
+        service_with_config().await;
+    // The helper answers the first only once both are under way.
+    helper.hold(Seen::RegisterRoot);
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();
 
-    let (a, b) = tokio::join!(
-        service.register_root(first.path()),
-        service.register_root(second.path())
-    );
+    let both = {
+        let (service, first, second) = (Arc::clone(&service), first.path().to_path_buf(), second.path().to_path_buf());
+        tokio::spawn(async move { tokio::join!(service.register_root(&first), service.register_root(&second)) })
+    };
+    wait_until("the helper was asked", || helper.seen().contains(&Seen::RegisterRoot)).await;
+    helper.release(Seen::RegisterRoot);
+    let (a, b) = both.await.unwrap();
 
     assert!(
         a.is_ok() != b.is_ok(),

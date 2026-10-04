@@ -582,8 +582,8 @@ impl konedrived::helper::status::HelperUnit for FakeUnit {
 async fn helper_state_follows_the_link_and_then_what_systemd_says() {
     let f = setup().await;
     let unit = Arc::new(FakeUnit(std::sync::Mutex::new(("loaded".into(), "inactive".into()))));
-    f.sync.set_helper_unit(Arc::clone(&unit) as Arc<dyn konedrived::helper::status::HelperUnit>);
-    let watching = tokio::spawn(konedrived::sync::watch_helper_every(Arc::clone(&f.sync), Duration::from_millis(100)));
+    f.sync.hub().set_unit(Arc::clone(&unit) as Arc<dyn konedrived::helper::status::HelperUnit>);
+    let watching = tokio::spawn(konedrived::sync::hub::watch_every(Arc::clone(f.sync.hub()), Duration::from_millis(100)));
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
     f.folder.register(root.to_str().unwrap()).await.unwrap();
@@ -599,7 +599,7 @@ async fn helper_state_follows_the_link_and_then_what_systemd_says() {
         .unwrap();
     let mut changes = properties.receive_properties_changed().await.unwrap();
 
-    f.sync.set_link(None);
+    f.sync.hub().set_link(None);
     f.sync.report_helper_lost();
     assert!(changed_on(&mut changes, ACCOUNTS_INTERFACE_NAME, Duration::from_millis(600))
         .await

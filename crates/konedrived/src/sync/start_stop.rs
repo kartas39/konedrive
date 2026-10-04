@@ -11,7 +11,6 @@ use crate::account::state::SignInState;
 use crate::sync::{SyncError, Syncing};
 use crate::status::snapshot::SyncTrouble;
 use crate::desktop::thumbs;
-use crate::hydration::graph_source;
 use crate::remote::listing;
 
 impl SyncService {
@@ -24,8 +23,7 @@ impl SyncService {
             return;
         }
         let Some(reg) = self.registration() else { return };
-        let configured = (self.drive.lock().unwrap().clone(), self.sync_paths.lock().unwrap().clone());
-        let (Some(drive), Some(paths)) = configured else {
+        let Some(crate::sync::OneDrive { drive, paths }) = self.wiring.onedrive.clone() else {
             let text = format!("{} shows OneDrive, but no drive is configured; it is not kept in step", reg.root.path.display());
             return self.cannot_start(&reg.root, text).await;
         };
@@ -41,7 +39,7 @@ impl SyncService {
         }
         // Files are downloaded from the drive whether or not the folder can
         // be kept in step.
-        let source: Arc<dyn ContentSource> = Arc::new(graph_source::GraphSource::new(drive.clone()));
+        let source: Arc<dyn ContentSource> = self.wiring.sources.onedrive(&drive);
         *self.source.lock().unwrap() = Some(Arc::clone(&source));
         let tree_db = paths.tree_db.clone();
         let store = match tokio::task::spawn_blocking(move || konedrive_tree::TreeStore::open(&tree_db)).await {
@@ -93,10 +91,11 @@ impl SyncService {
         }
         // The account's drive, as `config.toml` keeps it (A-M5, design §8.1):
         // the same-account check then survives a tree store rebuilt empty.
-        let drive_record = self.persist.clone().map(|persist| {
+        let drive_record = {
+            let persist = self.wiring.persist.clone();
             let recorded = persist.store.account(&persist.account).map(|a| a.drive_id).filter(|d| !d.is_empty());
-            listing::DriveRecord { store: persist.store, account: persist.account, recorded }
-        });
+            Some(listing::DriveRecord { store: persist.store, account: persist.account, recorded })
+        };
         // Nudges the thumbnail filler right after a cycle, rather than making
         // it wait out its own idle timer.
         let kick = Arc::new(Notify::new());
@@ -126,7 +125,7 @@ impl SyncService {
             neighbours: Some(self.neighbours()),
             running: Arc::clone(&self.running),
         });
-        let schedule = self.schedule.lock().unwrap().clone();
+        let schedule = self.wiring.schedule.clone();
         // Checked again and kept in one critical section: a second start that
         // passed the check at the top while the store opened must leave the
         // first sync alone. Replacing it would drop a `Poller` that runs on
@@ -139,10 +138,7 @@ impl SyncService {
             } else {
                 *self.store.lock().unwrap() = Some(store.clone());
                 let poller = listing::Poller::start(listing, schedule);
-                let sign_in_watch = self
-                    .account
-                    .as_ref()
-                    .map(|account| tokio::spawn(nudge_on_sign_in(account.subscribe(), Arc::clone(&self.syncing))));
+                let sign_in_watch = Some(tokio::spawn(nudge_on_sign_in(self.wiring.account.changes(), Arc::clone(&self.syncing))));
                 // The outbox worker: it sends the rows the watcher's
                 // examination records, and looks at those already there as it
                 // starts.
@@ -303,8 +299,7 @@ impl SyncService {
     /// ends a full OneDrive and lets the files that fit now go. A quota that cannot be read
     /// changes nothing.
     async fn refresh_quota(&self) {
-        let drive = self.drive.lock().unwrap().clone();
-        let Some(drive) = drive else { return };
+        let Some(drive) = self.drive() else { return };
         match drive.quota().await {
             Ok(quota) if crate::upload::space::known(&quota) => {
                 self.quota().read(&quota);

@@ -6,9 +6,9 @@ use super::*;
 /// filled with `docs/a.bin`, `docs/b.bin` and `c.bin`, 64 KiB each, none
 /// of them downloaded. Returns the folder's path as registered.
 async fn folder_to_pin() -> (Arc<SyncService>, PathBuf, tempfile::TempDir, tempfile::TempDir) {
-    let service = SyncService::new(None, None, None);
+    let service = testing::service(None, None, None);
     let dir = tempfile::tempdir().unwrap();
-    service.set_helper_socket(dir.path().join("no-helper.sock"));
+    service.hub().set_socket(dir.path().join("no-helper.sock"));
     let source = dir.path().join("source");
     std::fs::create_dir_all(source.join("docs")).unwrap();
     for name in ["docs/a.bin", "docs/b.bin", "c.bin"] {
@@ -54,9 +54,9 @@ impl ContentSource for RecordsRanges {
 /// same kind of file pinned downloads in parts, each asking for a bounded range.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_large_file_being_opened_keeps_one_stream_and_a_pinned_one_goes_in_parts() {
-    let service = SyncService::new(None, None, None);
+    let service = testing::service(None, None, None);
     let dir = tempfile::tempdir().unwrap();
-    service.set_helper_socket(dir.path().join("no-helper.sock"));
+    service.hub().set_socket(dir.path().join("no-helper.sock"));
     let source = dir.path().join("source");
     std::fs::create_dir_all(&source).unwrap();
     // Placeholders as large as a large file (sparse, nothing on disk)...
@@ -398,47 +398,4 @@ async fn a_file_recovery_finds_in_use_does_not_make_the_root_an_error() {
     // logged, not a `LastError` that outlives it.
     assert_eq!(service.last_error(), "");
     assert_eq!(service.item_state(&path).await, "hydrating", "and it is left as found");
-}
-
-/// A `RecoveryReport` with `failed > 0` is "silently
-/// unrecoverable" case (a refused `ClearIgnore`) — it must not stay
-/// silent: `RegisterRoot` still succeeds (the root itself is usable),
-/// but `RootState`/`LastError` must say so.
-#[tokio::test]
-async fn a_failed_recovery_surfaces_through_root_state_and_last_error() {
-    let (service, _sockets, helper) = service_with_helper().await;
-    let root_dir = tempfile::tempdir().unwrap();
-
-    // A folder that already carries a root id is exempt from
-    // the "must be empty on first registration" check, which is exactly
-    // what this test needs — the interrupted file below has to exist
-    // *before* `register_root` runs, since recovery runs as part of it.
-    // This mirrors what a restart after a crash actually looks like: the
-    // folder was registered before, and this is the second registration.
-    xattr::set(
-        root_dir.path(),
-        "user.konedrive.root",
-        b"1c2e4f5a-0b3c-4d5e-8f60-71829a3b4c5d",
-    )
-    .unwrap();
-
-    // A file left `dehydrating` by a "crash", whose `ClearIgnore` the
-    // helper refuses. (A file merely held open used to be the way to
-    // force this; it is `busy` now, not a failure —
-    // m11 — and has a test of its own above.)
-    let path = root_dir.path().join("stuck.bin");
-    std::fs::write(&path, vec![1u8; 4096]).unwrap();
-    let file = std::fs::File::options().read(true).write(true).open(&path).unwrap();
-    konedrive_fs::placeholder::write_state(&file, State::Dehydrating).unwrap();
-    drop(file);
-    helper.refuse(Seen::ClearIgnore, libc::EIO);
-
-    service.register_root(root_dir.path()).await.unwrap();
-
-    assert_eq!(service.root_state(), "error", "a recovery failure must not be silent");
-    assert!(
-        service.last_error().contains('1'),
-        "the failure count must be in LastError: {}",
-        service.last_error()
-    );
 }

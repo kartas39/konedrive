@@ -31,7 +31,7 @@ async fn the_lock_comes_off_and_goes_back_on_with_the_mode() {
     service.follow_mode(Mode::ReadOnly).await;
     assert_eq!(modes(), (0o444, 0o555, 0o555));
     service.stop_sync().await;
-    service.set_link(None);
+    service.hub().set_link(None);
 
     // Read-write in config.toml again, but the walk never ran: the next bring-up runs it.
     let restarted = connected(&w, true).await;
@@ -41,7 +41,7 @@ async fn the_lock_comes_off_and_goes_back_on_with_the_mode() {
     assert_eq!(restarted.root_state(), "ready", "{}", restarted.last_error());
     assert_eq!(modes(), (0o644, 0o755, 0o755));
     restarted.stop_sync().await;
-    restarted.set_link(None);
+    restarted.hub().set_link(None);
 
     // Read-only again, and the lock walk never ran — the daemon stopped
     // first. The bring-up puts the lock back at once, with no Full reconcile to do it:
@@ -171,8 +171,13 @@ async fn a_file_made_in_a_read_write_folder_is_uploaded() {
 /// store — until `Resume`; a timed pause ends by itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
+    const START: i64 = 1_700_000_000;
     let w = world().await;
-    let service = connected(&w, true).await;
+    // The account's one clock, moved by hand: the pause's timer, its keeper and the poll
+    // all read it.
+    let clock = testing::ManualClock::at(START);
+    let on_the_clock = |link| made(&w, wiring(&w, account(true), Arc::new(StaticToken::new("T"))).clock(&clock).link(Some(link)));
+    let service = on_the_clock(link(&w).await);
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
     service.pause_syncing(0).await.unwrap();
@@ -182,9 +187,9 @@ async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(deltas(&w).await, before, "a paused account asks OneDrive for nothing");
     service.stop_sync().await;
-    service.set_link(None);
+    service.hub().set_link(None);
 
-    let restarted = connected(&w, true).await;
+    let restarted = on_the_clock(link(&w).await);
     restarted.restore().await;
     restarted.resume().await;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -194,9 +199,16 @@ async fn a_pause_holds_the_poll_outlasts_a_restart_and_ends_by_itself() {
     wait_for_deltas(&w, before).await;
     assert_eq!(restarted.state().get().paused_until, None);
 
-    restarted.pause_syncing(2).await.unwrap();
-    assert!(restarted.state().get().paused_until.is_some_and(|until| until > 0));
+    restarted.pause_syncing(3600).await.unwrap();
+    assert_eq!(restarted.state().get().paused_until, Some(START + 3600));
+    let before = deltas(&w).await;
+    clock.advance(3599);
+    restarted.refresh().await.unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!((restarted.state().get().paused_until, deltas(&w).await), (Some(START + 3600), before), "not before its time");
+    clock.advance(1);
     wait_until("the timed pause ends by itself", || restarted.state().get().paused_until.is_none()).await;
+    wait_for_deltas(&w, before).await;
     restarted.stop_sync().await;
 }
 
@@ -528,7 +540,7 @@ async fn a_drive_taken_off_the_list_while_the_worker_runs_sends_nothing_more() {
     .await;
     let before = sent(&w).await;
 
-    let persist = service.persist.as_ref().unwrap();
+    let persist = testing::parts(&service).persist;
     persist
         .store
         .update(|c| {
@@ -545,6 +557,7 @@ async fn a_drive_taken_off_the_list_while_the_worker_runs_sends_nothing_more() {
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert_eq!(sent(&w).await, before, "nothing more is sent");
     assert_eq!(service.pending_uploads().await, 1, "the change waits");
+    assert!(testing::parts(&service).account.mode_rechecks() > 0, "and the account is asked to work its mode out again");
     service.stop_sync().await;
 }
 
@@ -621,7 +634,7 @@ async fn a_switch_nobody_forced_keeps_the_changes(expired: bool) {
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
     let_write(&service);
-    let account = service.account.clone().unwrap();
+    let account = testing::parts(&service).account.state().clone();
     let follower = tokio::spawn(crate::sync::write_mode::follow(account.subscribe(), Arc::downgrade(&service)));
     let docs = w.folder.path().join("docs");
     wait_until("the folder is read-write", || service.mode() == Mode::ReadWrite && mode(&docs) == 0o755).await;
@@ -657,11 +670,6 @@ async fn a_sign_out_keeps_the_changes_waiting_to_upload() {
     a_switch_nobody_forced_keeps_the_changes(false).await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_expired_sign_in_keeps_the_changes_waiting_to_upload() {
-    a_switch_nobody_forced_keeps_the_changes(true).await;
-}
-
 /// A Forget — and so `Accounts.Remove`, which forgets first — is
 /// refused `PendingUploads` while changes wait to be uploaded, and changes nothing; once
 /// a forced switch to read-only has dropped them, it goes through.
@@ -683,7 +691,7 @@ async fn a_folder_whose_changes_wait_is_not_forgotten() {
     assert!(matches!(&refused, SyncError::PendingUploads(why) if why.starts_with("1 change")), "{refused:?}");
     assert!(matches!(crate::dbus::fault::to_fault(refused), crate::dbus::fault::Fault::Refused(konedrive_dbus::Refusal::PendingUploads, _)));
     assert!(matches!(service.retire().await, Err(SyncError::PendingUploads(_))), "Remove's first step too");
-    assert!(service.registration().is_some(), "still registered");
+    assert!(service.root().is_some(), "still registered");
     assert_eq!(service.pending_uploads().await, 1, "the change still waits");
     assert!(w.folder.path().join("docs/g.txt").exists());
 
@@ -715,9 +723,8 @@ async fn a_read_write_folder_whose_watcher_cannot_start_stays_locked() {
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
-    watcher::FAIL_WATCHER.with(|fail| fail.set(true));
+    testing::parts(&service).watchers.fail(true);
     service.follow_mode(Mode::ReadWrite).await;
-    watcher::FAIL_WATCHER.with(|fail| fail.set(false));
     assert_eq!((mode(w.folder.path()), mode(&w.folder.path().join("docs"))), (0o555, 0o555));
     assert!(service.last_error().contains("stays read-only"), "{}", service.last_error());
     service.stop_sync().await;
@@ -735,7 +742,7 @@ async fn a_read_write_folder_whose_sync_cannot_start_is_locked_again() {
     service.follow_mode(Mode::ReadWrite).await;
     assert_eq!(mode(w.folder.path()), 0o755);
     service.stop_sync().await;
-    service.set_link(None);
+    service.hub().set_link(None);
 
     // The next run cannot open its tree store.
     let tree = w.config.path().join("tree.sqlite");

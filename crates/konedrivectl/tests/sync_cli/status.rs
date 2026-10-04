@@ -180,18 +180,7 @@ async fn binary_skipped_of_a_onedrive_folder_still_listing_says_the_list_may_be_
         )
         .mount(&graph)
         .await;
-    let f = build_harness(true, true, false).await;
-    let drive = konedrive_graph::drive::DriveClient::new(
-        url::Url::parse(&format!("{}/", graph.uri())).unwrap(),
-        std::sync::Arc::new(konedrive_graph::token::StaticToken::new("T")),
-    )
-    .unwrap();
-    f.service.set_drive(drive);
-    f.service.set_sync_paths(konedrived::sync::SyncPaths {
-        tree_db: f.dir.path().join("tree.sqlite"),
-        rescue_dir: f.dir.path().join("rescued"),
-        thumbnails: Some(f.dir.path().join("thumbnails")),
-    });
+    let f = harness_showing(&graph).await;
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
     f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();

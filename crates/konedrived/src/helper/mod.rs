@@ -170,7 +170,7 @@ pub struct HelperLink {
     /// this one down unblocks them too.
     socket: Arc<ShutdownOnDrop>,
     /// Becomes `true` when the reader thread stops — the connection is over,
-    /// whoever ended it. What `supervise_helper` waits on,
+    /// whoever ended it. What the hub's supervisor waits on,
     /// rather than on `serve_hydrations`, which lets the fills already
     /// running finish before it returns.
     closed: watch::Receiver<bool>,

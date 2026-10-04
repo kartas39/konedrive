@@ -115,7 +115,7 @@ impl SyncService {
         .await
         .map_err(|e| SyncError::Io(format!("reading the item failed: {e}")))??;
         let Some(id) = id else { return Err(SyncError::NotInOneDrive(shown)) };
-        let drive = self.drive.lock().unwrap().clone().ok_or(SyncError::NotSignedIn)?;
+        let drive = self.drive().ok_or(SyncError::NotSignedIn)?;
         page_of(drive.item(&id).await, &shown)
     }
 
@@ -123,7 +123,7 @@ impl SyncService {
     /// of the drive's root. One GET, as [`web_url`](Self::web_url).
     pub async fn root_web_url(&self) -> Result<String, SyncError> {
         let reg = self.require_registration()?;
-        let drive = self.drive.lock().unwrap().clone().ok_or(SyncError::NotSignedIn)?;
+        let drive = self.drive().ok_or(SyncError::NotSignedIn)?;
         page_of(drive.root_item().await, &reg.root.path.display().to_string())
     }
 

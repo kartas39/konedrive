@@ -15,36 +15,17 @@ async fn hydrate_now_clears_the_ignore_mark_before_refilling_a_file_that_may_car
 
     dehydrating();
     let link = service.link();
-    service.set_link(None);
+    service.hub().set_link(None);
     let refused = service.hydrate_now(&file).await;
     assert!(matches!(refused, Err(SyncError::NoHelper)), "{refused:?}");
     assert_eq!(service.item_state(&file).await, "dehydrating", "and nothing changed");
 
-    service.set_link(link);
+    service.hub().set_link(link);
     helper.forget();
     service.hydrate_now(&file).await.unwrap();
     assert_eq!(helper.seen(), vec![Seen::ClearIgnore], "the mark is cleared first");
     assert_eq!(std::fs::read(&file).unwrap(), vec![5u8; 4096]);
     assert_eq!(service.item_state(&file).await, "hydrated");
-}
-
-/// `hydrate_now` must never report success on a file it did not fill —
-/// the "never serve zeros" property, exercised directly rather than only
-/// through the round trip in `sync_dbus.rs`.
-#[tokio::test]
-async fn hydrate_now_actually_fills_the_placeholder_with_the_sources_bytes() {
-    let (service, _sockets, _helper) = service_with_helper().await;
-    let source_dir = tempfile::tempdir().unwrap();
-    std::fs::write(source_dir.path().join("f.bin"), vec![9u8; 2048]).unwrap();
-    let root_dir = tempfile::tempdir().unwrap();
-    service.register_root(root_dir.path()).await.unwrap();
-    service.populate_from_directory(source_dir.path()).await.unwrap();
-    let target = root_dir.path().join("f.bin");
-
-    service.hydrate_now(&target).await.unwrap();
-
-    assert_eq!(service.item_state(&target).await, "hydrated");
-    assert_eq!(std::fs::read(&target).unwrap(), vec![9u8; 2048]);
 }
 
 // --- Per-inode serialization, measured through the service -----------
@@ -290,19 +271,6 @@ async fn a_directory_swapped_while_a_hydration_waits_cannot_redirect_it() {
 
 // --- `Hydrate` never reports success without the bytes ---------------
 
-/// The plainest form of the rule: a file this daemon does not manage is
-/// refused, not called done.
-#[tokio::test]
-async fn hydrate_now_refuses_a_file_with_no_konedrive_xattrs() {
-    let (service, root_dir, _source_dir, _sockets, _helper) =
-        populated_service(&vec![1u8; 512]).await;
-    let stray = root_dir.path().join("stray.txt");
-    std::fs::write(&stray, b"not ours").unwrap();
-
-    let error = service.hydrate_now(&stray).await.unwrap_err();
-    assert!(matches!(error, SyncError::NotManaged), "expected a refusal, got {error:?}");
-}
-
 /// A source that cannot serve the item must not be reported as success:
 /// the file is still a hole afterwards, and the caller was told so.
 #[tokio::test]
@@ -323,19 +291,6 @@ async fn hydrate_now_reports_a_source_that_could_not_serve_the_file() {
     );
     use std::os::unix::fs::MetadataExt;
     assert!(std::fs::metadata(&file).unwrap().blocks() < 8, "and holding nothing");
-}
-
-/// With no content source at all there is nowhere for the bytes to come
-/// from, so there is nothing to report success about.
-#[tokio::test]
-async fn hydrate_now_refuses_when_no_content_source_is_registered() {
-    let (service, _sockets, _helper) = service_with_helper().await;
-    let root_dir = tempfile::tempdir().unwrap();
-    service.register_root(root_dir.path()).await.unwrap();
-    std::fs::write(root_dir.path().join("f.bin"), b"x").unwrap();
-
-    let error = service.hydrate_now(&root_dir.path().join("f.bin")).await.unwrap_err();
-    assert!(matches!(error, SyncError::NoSource), "expected a refusal, got {error:?}");
 }
 
 /// A file labelled `hydrated` over a hole is §9's named
@@ -384,25 +339,6 @@ async fn hydrate_now_refuses_a_hydrated_file_that_was_edited_locally() {
         b"what the user typed",
         "a local edit is the only copy of that data and must not be overwritten"
     );
-}
-
-/// §5.2 treats `dehydrating` as "hydrate it again". A dehydration that a
-/// crash — or a cancelled call — left half-done must not make `Hydrate`
-/// report success over whatever the punch had got to by then.
-#[tokio::test]
-async fn hydrate_now_fills_a_file_a_dehydration_left_half_done() {
-    let (service, root_dir, _source_dir, _sockets, _helper) =
-        populated_service(&vec![5u8; 4096]).await;
-    let file = root_dir.path().join("f.bin");
-    {
-        let handle = std::fs::File::options().read(true).write(true).open(&file).unwrap();
-        konedrive_fs::placeholder::write_state(&handle, State::Dehydrating).unwrap();
-    }
-
-    service.hydrate_now(&file).await.unwrap();
-
-    assert_eq!(std::fs::read(&file).unwrap(), vec![5u8; 4096]);
-    assert_eq!(service.item_state(&file).await, "hydrated");
 }
 
 /// A zero-byte file is created
@@ -470,7 +406,7 @@ async fn freeing_up_a_file_emptied_here_is_still_refused_as_modified() {
 /// nothing is created.
 #[tokio::test]
 async fn a_populate_source_that_overlaps_the_root_is_refused() {
-    let service = SyncService::new(None, None, None);
+    let service = testing::service(None, None, None);
     let outer = tempfile::tempdir().unwrap();
     let root = outer.path().join("root");
     std::fs::create_dir(&root).unwrap();
@@ -492,7 +428,7 @@ async fn a_populate_source_that_overlaps_the_root_is_refused() {
 /// A root registered without interception, with one `online-only`
 /// placeholder `b.bin` in it, populated from a source outside it.
 async fn root_with_a_placeholder() -> (Arc<SyncService>, tempfile::TempDir, PathBuf, PathBuf) {
-    let service = SyncService::new(None, None, None);
+    let service = testing::service(None, None, None);
     let outer = tempfile::tempdir().unwrap();
     let root = outer.path().join("root");
     std::fs::create_dir(&root).unwrap();

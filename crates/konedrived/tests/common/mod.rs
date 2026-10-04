@@ -91,7 +91,7 @@ pub fn cache_of(dir: &Path, svc: &AccountService) -> PathBuf {
 
 /// The daemon as `main` starts it (`accounts::start`), on a private bus: its files in
 /// `dir`, Microsoft at `endpoints`, `wallet` for the Secret Service, neither Baloo nor
-/// thumbnails, and local folders only (`Options::onedrive`). No helper supervisor runs.
+/// thumbnails, and local folders only (`Options::drive` gives none). No helper supervisor runs.
 pub async fn start_daemon(
     bus: &konedrive_dbus::testing::TestBus,
     dir: &Path,
@@ -105,7 +105,7 @@ pub async fn start_daemon(
         sign_in_timeout,
         baloo: konedrived::desktop::baloo::Baloo::disabled,
         thumbnails: None,
-        onedrive: false,
+        drive: konedrived::daemon::manager::no_drive(),
         bus: Arc::new(konedrived::dbus::export::OnBus),
     };
     start_daemon_with(bus, dir, options).await

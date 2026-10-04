@@ -47,7 +47,7 @@ pub const FILL_ADMISSION: usize = konedrive_proto::MAX_OUTSTANDING_HYDRATIONS;
 /// are already running finish and answer, rather than cutting them mid-write
 /// and leaving `state=hydrating` behind on disk. That drain can take as long
 /// as a download, so nothing that must react to the connection ending may
-/// wait for this to return: [`supervise_helper`] runs it as a task of its
+/// wait for this to return: the hub's supervisor runs it as a task of its
 /// own and waits on [`HelperLink::closed`] instead.
 ///
 /// # Per-inode serialization

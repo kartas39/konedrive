@@ -113,7 +113,7 @@ async fn binary_dehydrate_without_the_helper_changes_nothing_and_says_why() {
     let addr = f._bus.address();
     let file = populated(&f).await;
     f.files.hydrate(file.to_str().unwrap()).await.unwrap();
-    f.service.set_link(None);
+    f.service.hub().set_link(None);
 
     let told = refused(addr, &["sync", "dehydrate", file.to_str().unwrap()]);
     assert!(told.contains("helper is not connected"), "{told}");
@@ -247,7 +247,7 @@ async fn binary_remove_without_the_helper_changes_nothing() {
     let root = f.dir.path().join("OneDrive");
     std::fs::create_dir(&root).unwrap();
     f.proxy.folder.register(root.to_str().unwrap()).await.unwrap();
-    f.service.set_link(None);
+    f.service.hub().set_link(None);
 
     let told = refused(f._bus.address(), &["account", "remove", "Personal"]);
     assert!(told.contains("the account Personal was not removed and nothing was changed"), "{told}");

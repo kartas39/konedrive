@@ -1,6 +1,5 @@
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use crate::sync::SyncService;
 use crate::helper::HelperError;
@@ -209,8 +208,7 @@ impl SyncService {
                     // from `config.toml` for a root that is brought back up,
                     // not freshly registered).
                     if reg.baloo_excluded {
-                        let baloo = Arc::clone(&self.baloo.lock().unwrap());
-                        baloo.include_again(&reg.root.path).await;
+                        self.wiring.baloo.include_again(&reg.root.path).await;
                     }
                 }
                 Err(_) if was_syncing => self.start_sync().await,
@@ -299,8 +297,8 @@ impl SyncService {
         *self.store.lock().unwrap() = None;
         // Its pause went with it (the outbox on the bus).
         self.forget_pause();
-        let Some(paths) = self.sync_paths.lock().unwrap().clone() else { return };
-        if let Err(e) = tokio::task::spawn_blocking(move || remove_tree_files(&paths.tree_db)).await {
+        let Some(tree_db) = self.sync_paths().map(|paths| paths.tree_db.clone()) else { return };
+        if let Err(e) = tokio::task::spawn_blocking(move || remove_tree_files(&tree_db)).await {
             tracing::warn!("the task removing the tree store failed: {e}");
         }
     }

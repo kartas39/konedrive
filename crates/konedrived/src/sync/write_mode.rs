@@ -238,10 +238,7 @@ impl SyncService {
             None => Ok(()),
             Some(why) => {
                 if changed {
-                    let check = self.mode_check.lock().unwrap().clone();
-                    if let Some(check) = check {
-                        check();
-                    }
+                    self.wiring.account.recheck_mode();
                 }
                 Err(why)
             }
@@ -253,10 +250,8 @@ impl SyncService {
         if self.mode() != Mode::ReadWrite {
             return Some("the folder is read-only".into());
         }
-        let (Some(account), Some(persist)) = (self.account.as_ref(), self.persist.as_ref()) else {
-            return Some("the folder belongs to no account".into());
-        };
-        let snapshot = account.get();
+        let persist = &self.wiring.persist;
+        let snapshot = self.wiring.account.snapshot();
         if snapshot.mode != Mode::ReadWrite {
             return Some("the account is read-only".into());
         }
@@ -279,12 +274,6 @@ impl SyncService {
             return Some(format!("the folder's sync is stopped ({})", trouble.text));
         }
         None
-    }
-
-    /// What works the account's mode out again (`AccountService::recheck_mode`), for when the
-    /// write gate closes under a running outbox worker ([`write_gate`](Self::write_gate)).
-    pub fn set_mode_check(&self, check: Arc<dyn Fn() + Send + Sync>) {
-        *self.mode_check.lock().unwrap() = Some(check);
     }
 }
 

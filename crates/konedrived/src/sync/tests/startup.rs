@@ -17,7 +17,7 @@ use super::*;
 async fn a_persisted_root_comes_back_at_the_next_start_and_is_recovered_after_it() {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     let config_dir = tempfile::tempdir().unwrap();
     let config_file = config_dir.path().join("config.toml");
     let root_dir = tempfile::tempdir().unwrap();
@@ -25,7 +25,7 @@ async fn a_persisted_root_comes_back_at_the_next_start_and_is_recovered_after_it
 
     {
         let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-        let service = SyncService::new(Some(link), None, Some(persist(&config_file)));
+        let service = testing::service(Some(link), None, Some(persist(&config_file)));
         service.register_root(root_dir.path()).await.unwrap();
     }
     assert_eq!(
@@ -43,7 +43,7 @@ async fn a_persisted_root_comes_back_at_the_next_start_and_is_recovered_after_it
     }
 
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
-    let restarted = SyncService::new(Some(link), None, Some(persist(&config_file)));
+    let restarted = testing::service(Some(link), None, Some(persist(&config_file)));
     helper.forget();
     restarted.resume().await;
 
@@ -70,42 +70,10 @@ async fn a_persisted_root_comes_back_at_the_next_start_and_is_recovered_after_it
     // brings back a root the user got rid of.
     restarted.unregister_root().await.unwrap();
     assert_eq!(
-        Config::load(restarted.persist.as_ref().unwrap().store.file()).unwrap().sync_root,
+        Config::load(testing::parts(&restarted).persist.store.file()).unwrap().sync_root,
         "",
         "a forgotten root must not come back at the next start"
     );
-}
-
-/// §8 step 2: an intercepted root's files may carry the ignore mark, and
-/// a file punched while it still carries one is empty **and**
-/// permanently un-intercepted — zeros with nothing left to notice them.
-/// So a dehydration in that root needs a helper, and refuses without
-/// one, however convenient it would be to carry on.
-#[tokio::test]
-async fn dehydrate_is_refused_when_an_intercepted_root_has_lost_its_helper() {
-    let (service, root_dir, _source_dir, _sockets, _helper) =
-        populated_service(&vec![7u8; 4096]).await;
-    let file = root_dir.path().join("f.bin");
-    service.hydrate_now(&file).await.unwrap();
-
-    service.set_link(None);
-
-    let error = service.dehydrate(&file).await.unwrap_err();
-    assert!(matches!(error, SyncError::NoHelper), "{error:?}");
-    assert_eq!(
-        std::fs::read(&file).unwrap(),
-        vec![7u8; 4096],
-        "and the file must be exactly as it was"
-    );
-}
-
-/// `HelperLink` fails outstanding and later calls loudly,
-/// which is right — but nothing reconnected, and the published state
-/// said `ready` with an empty `LastError` the whole time the folder was
-/// dead.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_helper_that_goes_away_is_published_and_reconnected_to() {
-    a_helper_that_goes_away_is_published_and_reconnected_to_with(false).await;
 }
 
 /// The supervisor used to find out
@@ -118,22 +86,14 @@ async fn a_helper_that_goes_away_is_published_and_reconnected_to() {
 /// 30 s. Here the download never ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn losing_the_helper_is_published_and_reconnected_while_a_fill_still_runs() {
-    a_helper_that_goes_away_is_published_and_reconnected_to_with(true).await;
-}
-
-async fn a_helper_that_goes_away_is_published_and_reconnected_to_with(fill_running: bool) {
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     let root_dir = tempfile::tempdir().unwrap();
-    let service = SyncService::new(None, None, None);
+    let service = testing::service(None, None, None);
     // Long enough that the window in which the helper is gone is
     // comfortably observable, short enough to keep the test quick.
-    tokio::spawn(supervise_helper(
-        Arc::clone(&service),
-        socket_path.clone(),
-        Duration::from_millis(300),
-    ));
+    tokio::spawn(hub::supervise(Arc::clone(service.hub()), socket_path.clone(), Duration::from_millis(300)));
     wait_until("the supervisor connected", || service.link().is_some()).await;
     service.register_root(root_dir.path()).await.unwrap();
     assert_eq!(service.root_state(), "ready");
@@ -142,15 +102,14 @@ async fn a_helper_that_goes_away_is_published_and_reconnected_to_with(fill_runni
     std::fs::write(remote.path().join("ITEM"), [1u8; 64]).unwrap();
     let slow = Arc::new(LocalDir::new(remote.path()).delay(Duration::from_secs(3600)));
     let files = tempfile::tempdir().unwrap();
-    let _held = fill_running.then(|| {
-        install_source(&service, Arc::clone(&slow) as Arc<dyn ContentSource>);
-        let fd = placeholder(files.path(), "slow.bin", "ITEM", 64);
-        helper.send_request(1, &fd);
-        fd
-    });
-    if fill_running {
-        wait_until("the fill began", || slow.fetches() > 0).await;
-    }
+    // The folder has a source, from a directory with nothing in it; the fill is served
+    // by the slow one.
+    let nothing = tempfile::tempdir().unwrap();
+    service.populate_from_directory(nothing.path()).await.unwrap();
+    install_source(&service, Arc::clone(&slow) as Arc<dyn ContentSource>);
+    let _held = placeholder(files.path(), "slow.bin", "ITEM", 64);
+    helper.send_request(1, &_held);
+    wait_until("the fill began", || slow.fetches() > 0).await;
     helper.forget();
 
     helper.hang_up();

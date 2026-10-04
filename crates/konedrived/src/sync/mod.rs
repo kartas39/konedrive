@@ -19,24 +19,23 @@ pub mod registration;
 pub mod resume;
 pub mod settings;
 pub mod start_stop;
+#[cfg(any(test, feature = "fault-injection"))]
+pub mod testing;
 pub mod watcher;
+pub mod wiring;
 pub mod write_mode;
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
 use tokio_util::sync::CancellationToken;
 
 use crate::status::activity::Report;
-use crate::desktop::baloo::Baloo;
 use crate::helper::{Clearance, HelperLink};
-use crate::helper::status::HelperUnit;
 use crate::folder::root::DehydrateError;
 use crate::folder::root::{RegisterError, SyncRoot};
 use crate::hydration::source::ContentSource;
-use crate::config::{ConfigStore, Mode};
-use crate::account::state::StateHandle;
+use crate::config::Mode;
 use crate::folder::locks::InodeLocks;
 use crate::status::snapshot::{SyncSnapshot, SyncStateHandle, published_error, published_state};
 use crate::conditions::running;
@@ -46,6 +45,8 @@ use crate::local;
 use crate::remote::listing;
 use crate::upload;
 use crate::upload::kept_back;
+
+pub use wiring::{OneDrive, Persist, SyncPaths, Transfers, Wiring};
 
 // --- the folder's interfaces' own half of the work ------------------------
 //
@@ -79,27 +80,6 @@ impl RootSource {
             _ => None,
         }
     }
-}
-
-/// Where a OneDrive folder's own files live.
-#[derive(Debug, Clone)]
-pub struct SyncPaths {
-    pub tree_db: PathBuf,
-    pub rescue_dir: PathBuf,
-    /// The freedesktop thumbnail cache. `None` runs no thumbnail
-    /// filler at all: the VM suite's real-account run, which must not fetch
-    /// a thumbnail of every image in the drive.
-    pub thumbnails: Option<PathBuf>,
-}
-
-/// Where a folder is recorded so that it survives a restart: its account's
-/// `[accounts.root]` in `config.toml`, written only through the daemon's one
-/// [`ConfigStore`].
-#[derive(Clone)]
-pub struct Persist {
-    pub store: Arc<ConfigStore>,
-    /// The account's id.
-    pub account: String,
 }
 
 /// Everything the folder can refuse, flattened from `RegisterError` and
@@ -222,26 +202,14 @@ impl From<DehydrateError> for SyncError {
 /// `serve_hydrations` can be started once at daemon startup, before any
 /// root exists, and pick up whatever gets registered later.
 pub struct SyncService {
-    /// The link to the helper, its state and the per-inode locks, shared by
-    /// every account of the daemon (design §2.1).
-    hub: Arc<hub::HelperHub>,
+    /// What the service was made with: the hub, the account, its entry in `config.toml`,
+    /// the drive, and the rest of [`Wiring`]. Never changed.
+    wiring: Wiring,
     /// The hub's link cell: replaceable, because the helper can go away and
     /// come back — [`hub::supervise`] swaps it for `None` the moment the
     /// connection drops and back to a live link when it reconnects. Shared
     /// with a OneDrive folder's sync, which reads it at every reconcile.
     link: crate::helper::LinkCell,
-    /// The account interface's own state, on the same object path. §3.1
-    /// refuses `RegisterRoot` when nobody is signed in, and
-    /// this is what it asks. `None` only where nothing wired it up.
-    account: Option<StateHandle>,
-    /// The account's one quota (`crate::account::quota`), which the outbox's space check reads and
-    /// adjusts ([`set_quota`](Self::set_quota)): until one is set, the quota kept in
-    /// `account`'s state, or one of its own without an account.
-    quota: Mutex<crate::account::quota::Quota>,
-    /// Where the registered root is persisted, so it survives a restart
-    /// (§3.1): the account's entry in `config.toml`. `None` disables
-    /// persistence entirely.
-    persist: Option<Persist>,
     state: SyncStateHandle,
     root: Mutex<Option<Registration>>,
     /// Taken for writing by everything that changes which root is registered
@@ -264,11 +232,6 @@ pub struct SyncService {
     source: Mutex<Option<Arc<dyn ContentSource>>>,
     /// The hub's lock table: one inode belongs to one account only.
     locks: InodeLocks,
-    /// A read-only Graph client, for a folder that shows OneDrive. `None`
-    /// until `main` sets it; without it every folder is local.
-    drive: Mutex<Option<konedrive_graph::drive::DriveClient>>,
-    sync_paths: Mutex<Option<SyncPaths>>,
-    schedule: Mutex<listing::Schedule>,
     /// The running sync of a OneDrive folder. Shared with the task that
     /// nudges it when the account signs in ([`nudge_on_sign_in`]). Started
     /// and stopped only under `lifecycle` held for writing — except the stop
@@ -284,12 +247,6 @@ pub struct SyncService {
     /// other clone is taken, and dropped, with `lifecycle` held for reading
     /// (`skipped`).
     store: Mutex<Option<konedrive_tree::Store>>,
-    /// Keeps KDE's Baloo indexer out of a fresh OneDrive folder, and lets a
-    /// forgotten one back in (`desktop::baloo`). Starts as
-    /// [`Baloo::disabled`], which runs no program at all — only `main`
-    /// installs the real `balooctl6`; a test that forgets `set_baloo` must
-    /// never reach the user's own indexer settings.
-    baloo: Mutex<Arc<Baloo>>,
     /// Why this account's folder is held back (design §3.1: `config.toml`
     /// gives it what an earlier account has), if it is: it is not brought
     /// up, and no registration is made.
@@ -333,15 +290,8 @@ pub struct SyncService {
     /// The account was switched to read-write, and the watcher that follows has not started
     /// yet: its Full local scan says so (`LocalScan.Reason`).
     switched_to_read_write: std::sync::atomic::AtomicBool,
-    /// Works the account's mode out again when the write gate closes under the outbox worker
-    /// ([`set_mode_check`](Self::set_mode_check)). None in tests.
-    mode_check: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
-    /// Told the drive the account's token reaches when a cycle finds it is not the folder's:
-    /// the account's own, set where the account is wired up.
-    drive_seen: Mutex<Option<listing::DriveSeen>>,
     /// The account's transfer pool (`konedrive_graph::pool`): every download, upload and change of
-    /// an item takes a slot of it. The drive set with [`set_drive`](Self::set_drive) reports
-    /// into it.
+    /// an item takes a slot of it. The drive of the wiring reports into it.
     pool: Arc<konedrive_graph::pool::TransferPool>,
     /// The large pinned files downloading in parts, and how many streams each has: who is
     /// due the next free large slot of `pool` (`source::parts`, issue #28).
@@ -489,44 +439,31 @@ pub const NO_INTERCEPTION_WARNING: &str =
      opened, so files in this folder read as zeros until they are explicitly hydrated";
 
 impl SyncService {
-    /// `account` gates `RegisterRoot` on somebody being signed in (§3.1);
-    /// `persist` is where the registered root is persisted so it survives a
-    /// restart. Both are `None` in tests that exercise neither. The service
-    /// has a hub of its own, holding `link`: the one account of a daemon.
-    pub fn new(
-        link: Option<HelperLink>,
-        account: Option<StateHandle>,
-        persist: Option<Persist>,
-    ) -> Arc<Self> {
-        Self::on_hub(&hub::HelperHub::with_link(link), account, persist)
-    }
-
-    /// One account's folder, on the daemon's `hub`, after every account the
-    /// hub has already.
-    pub fn on_hub(hub: &Arc<hub::HelperHub>, account: Option<StateHandle>, persist: Option<Persist>) -> Arc<Self> {
+    /// One account's folder, made with `wiring` and joined to its hub after every account
+    /// the hub has already.
+    pub fn new(mut wiring: Wiring) -> Arc<Self> {
+        let hub = Arc::clone(&wiring.hub);
         hub.join(|helper_state| {
             let state = SyncStateHandle::new(SyncSnapshot { helper_state, ..SyncSnapshot::default() });
             let pool = konedrive_graph::pool::TransferPool::new(konedrive_graph::pool::DEFAULT_CEILING);
             let shown = state.clone();
             pool.set_observer(Arc::new(move |throughput| shown.set_throughput(throughput)));
+            pool.set_limits(wiring.transfers.ceiling, wiring.transfers.large);
+            // The drive reports into the account's pool.
+            if let Some(onedrive) = wiring.onedrive.take() {
+                wiring.onedrive = Some(OneDrive { drive: onedrive.drive.with_pool(Arc::clone(&pool)), paths: onedrive.paths });
+            }
+            let settings = wiring.persist.store.account(&wiring.persist.account).map(|a| running::Settings::of(&a)).unwrap_or_default();
             // The pins' downloads go through this very service, which they must
             // not keep alive: a weak reference.
             Arc::new_cyclic(|me: &std::sync::Weak<Self>| Self {
                 pins: pin::Pins::new(state.clone(), me.clone(), Arc::clone(&pool)),
                 pool,
                 parts: source::Share::new(),
-                hub: Arc::clone(hub),
                 link: hub.link_cell(),
-                quota: Mutex::new(match &account {
-                    Some(account) => crate::account::quota::Quota::new(account.clone(), None),
-                    None => crate::account::quota::Quota::detached(),
-                }),
-                account,
-                ignore: settings::configured_ignore(persist.as_ref()),
-                running: Arc::new(running::Running::new(
-                    persist.as_ref().and_then(|p| p.store.account(&p.account)).map(|a| running::Settings::of(&a)).unwrap_or_default(),
-                )),
-                clock: pause::PauseClock::new(Arc::new(crate::status::activity::unix_now), {
+                ignore: settings::configured_ignore(&wiring.persist),
+                running: Arc::new(running::Running::new(settings, Arc::clone(&wiring.clock))),
+                clock: pause::PauseClock::new(Arc::clone(&wiring.clock), {
                     // The timed pause has run out: shown again, as the store has it now.
                     let me = me.clone();
                     move || {
@@ -537,65 +474,49 @@ impl SyncService {
                 }),
                 kept_back: Mutex::new(None),
                 switched_to_read_write: std::sync::atomic::AtomicBool::new(false),
-                mode_check: Mutex::new(None),
-                persist,
                 report: Report::new(state.clone()),
                 state,
                 root: Mutex::new(None),
                 lifecycle: Arc::new(tokio::sync::RwLock::new(())),
                 source: Mutex::new(None),
                 locks: hub.locks(),
-                drive: Mutex::new(None),
-                sync_paths: Mutex::new(None),
-                schedule: Mutex::new(listing::Schedule::default()),
                 syncing: Arc::new(Mutex::new(None)),
                 store: Mutex::new(None),
-                baloo: Mutex::new(Arc::new(Baloo::disabled())),
                 held: Mutex::new(None),
                 retiring: std::sync::atomic::AtomicBool::new(false),
                 mode: Mutex::new(Mode::ReadOnly),
                 me: me.clone(),
                 tree_lock: Arc::new(tokio::sync::Mutex::new(())),
-                drive_seen: Mutex::new(None),
+                wiring,
             })
         })
     }
 
     /// The account's quota, which the uploads' space check reads and adjusts: the one
-    /// `Account` serves (`AccountService::quota`).
-    pub fn set_quota(&self, quota: crate::account::quota::Quota) {
-        *self.quota.lock().unwrap() = quota;
-    }
-
-    /// The account's quota.
+    /// `Account` serves.
     pub fn quota(&self) -> crate::account::quota::Quota {
-        self.quota.lock().unwrap().clone()
+        self.wiring.account.quota()
     }
 
     /// The link to the helper this account shares with the daemon's others.
     pub fn hub(&self) -> &Arc<hub::HelperHub> {
-        &self.hub
-    }
-
-    /// What `HelperState` asks while there is no link (HS1), for the hub.
-    pub fn set_helper_unit(&self, unit: Arc<dyn HelperUnit>) {
-        self.hub.set_unit(unit);
+        &self.wiring.hub
     }
 
     /// `HelperState` (HS1), the hub's.
     pub fn helper_state(&self) -> String {
-        self.hub.state().as_str().to_owned()
+        self.wiring.hub.state().as_str().to_owned()
     }
 
-    /// Works the hub's `HelperState` out again ([`hub::HelperHub::check`]).
-    pub async fn check_helper(&self) {
-        self.hub.check().await;
+    /// The drive a folder registered while signed in shows; without one, every folder is
+    /// local.
+    fn drive(&self) -> Option<&konedrive_graph::drive::DriveClient> {
+        self.wiring.onedrive.as_ref().map(|onedrive| &onedrive.drive)
     }
 
-    /// The drive a folder registered while signed in shows.
-    /// Without one, every folder is local.
-    pub fn set_drive(&self, drive: konedrive_graph::drive::DriveClient) {
-        *self.drive.lock().unwrap() = Some(drive.with_pool(Arc::clone(&self.pool)));
+    /// Where a OneDrive folder's tree store, rescues and thumbnails go.
+    fn sync_paths(&self) -> Option<&SyncPaths> {
+        self.wiring.onedrive.as_ref().map(|onedrive| &onedrive.paths)
     }
 
     /// The account's transfer pool.
@@ -603,71 +524,19 @@ impl SyncService {
         &self.pool
     }
 
-    /// The emergency ceiling of the account's transfer pool (`[transfers] max`) and its
-    /// large-file limit (`[transfers] large`).
-    pub fn set_transfer_limits(&self, ceiling: usize, large: usize) {
-        self.pool.set_limits(ceiling, large);
-    }
-
-    /// What a cycle tells when the account's token reaches another drive than the folder's:
-    /// the account records it and works its mode out again.
-    pub fn set_drive_seen(&self, seen: listing::DriveSeen) {
-        *self.drive_seen.lock().unwrap() = Some(seen);
-    }
-
-    /// What this folder's cycles ask of, or tell, the rest of the daemon.
+    /// What this folder's cycles ask of, or tell, the rest of the daemon: a drive that is
+    /// not the folder's is told to the account, which records it and works its mode out
+    /// again.
     fn neighbours(&self) -> listing::Neighbours {
-        let me = self.me.clone();
-        listing::Neighbours {
-            claimed: self.claims(),
-            drive_seen: Arc::new(move |drive| {
-                let seen = me.upgrade().and_then(|service| service.drive_seen.lock().unwrap().clone());
-                if let Some(seen) = seen {
-                    seen(drive);
-                }
-            }),
-        }
-    }
-
-    /// What keeps a fresh OneDrive folder out of KDE's Baloo indexer.
-    /// Without this call it is [`Baloo::disabled`], which runs no
-    /// program at all: `main` installs [`Baloo::default`] (`balooctl6`);
-    /// tests point this at a fake so the real indexer settings are never
-    /// touched.
-    pub fn set_baloo(&self, baloo: Baloo) {
-        *self.baloo.lock().unwrap() = Arc::new(baloo);
-    }
-
-    /// Where a OneDrive folder's tree store, rescues and thumbnails go.
-    /// Without them, every folder is local.
-    pub fn set_sync_paths(&self, paths: SyncPaths) {
-        *self.sync_paths.lock().unwrap() = Some(paths);
-    }
-
-    /// Puts `source` in place of the folder's content source — the VM suite's
-    /// real-account scenarios wrap the Graph source to record and
-    /// break fetches. Nothing in the daemon calls it.
-    pub fn replace_content_source(&self, source: Arc<dyn ContentSource>) {
-        *self.source.lock().unwrap() = Some(source);
-    }
-
-    /// How often a OneDrive folder is synced; takes effect at the next start
-    /// of its sync.
-    pub fn set_schedule(&self, schedule: listing::Schedule) {
-        *self.schedule.lock().unwrap() = schedule;
-    }
-
-    /// Where the helper's socket is, for the hub. Defaults to
-    /// `konedrive_proto::SOCKET_PATH`.
-    pub fn set_helper_socket(&self, path: impl Into<PathBuf>) {
-        self.hub.set_socket(path);
+        let account = Arc::clone(&self.wiring.account);
+        listing::Neighbours { claimed: self.claims(), drive_seen: Arc::new(move |drive| account.drive_seen(drive)) }
     }
 
     /// What a punch goes by when nothing ties it to a link of its own
     /// (local rule, on [`Clearance`]): the live link if there
     /// is one, the helper's socket if not.
     fn clearance(&self) -> Clearance {
-        self.hub.clearance()
+        self.wiring.hub.clearance()
     }
 
     pub fn state(&self) -> &SyncStateHandle {
@@ -691,16 +560,9 @@ impl SyncService {
         self.link.lock().unwrap().clone()
     }
 
-    /// Publishes a new helper link, or its loss — and so
-    /// `HelperState` (HS1): `connected` at once, or, on a loss, `unknown`
-    /// until [`watch_helper`] has asked systemd.
-    pub fn set_link(&self, link: Option<HelperLink>) {
-        self.hub.set_link(link);
-    }
-
     /// The drive `config.toml` records for this account, if it records one.
     fn account_drive(&self) -> Option<String> {
-        let persist = self.persist.as_ref()?;
+        let persist = &self.wiring.persist;
         persist.store.account(&persist.account).map(|a| a.drive_id).filter(|drive| !drive.is_empty())
     }
 
@@ -772,29 +634,8 @@ impl SyncService {
     }
 }
 
-/// Keeps `service`'s helper link alive for the life of the daemon: its hub's
-/// [`hub::supervise`], which brings up every account on the hub.
-pub async fn supervise_helper(service: Arc<SyncService>, socket_path: PathBuf, backoff: Duration) {
-    let hub = Arc::clone(service.hub());
-    drop(service);
-    hub::supervise(hub, socket_path, backoff).await
-}
-
 /// The longest [`hub::supervise`] ever waits between attempts.
-pub const MAX_HELPER_BACKOFF: Duration = Duration::from_secs(30);
-
-/// Keeps the `HelperState` of `service`'s hub current ([`hub::watch`]).
-pub async fn watch_helper(service: Arc<SyncService>) {
-    watch_helper_every(service, crate::helper::status::RECHECK).await
-}
-
-/// [`watch_helper`], asking systemd again every `every` while there is no
-/// link (tests: well under a second).
-pub async fn watch_helper_every(service: Arc<SyncService>, every: Duration) {
-    let hub = Arc::clone(service.hub());
-    drop(service);
-    hub::watch_every(hub, every).await
-}
+pub const MAX_HELPER_BACKOFF: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[cfg(test)]
 pub(crate) mod tests;

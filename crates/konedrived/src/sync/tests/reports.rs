@@ -116,9 +116,9 @@ async fn a_download_shows_in_transfers_until_it_ends_however_it_ends() {
 /// helper anywhere, filled from `files` (name, size), each downloaded
 /// when `hydrated` says so.
 async fn local_folder(files: &[(&str, usize, bool)]) -> (Arc<SyncService>, tempfile::TempDir, tempfile::TempDir) {
-    let service = SyncService::new(None, None, None);
+    let service = testing::service(None, None, None);
     let dir = tempfile::tempdir().unwrap();
-    service.set_helper_socket(dir.path().join("no-helper.sock"));
+    service.hub().set_socket(dir.path().join("no-helper.sock"));
     let source_dir = dir.path().join("source");
     std::fs::create_dir(&source_dir).unwrap();
     for (name, size, _) in files {

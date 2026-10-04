@@ -79,7 +79,7 @@ impl SyncService {
                     self.bring_up(&reg.root.path, false).await;
                 }
             }
-            // Nothing to register with yet; `supervise_helper` calls back
+            // Nothing to register with yet; the hub's supervisor calls back
             // the moment there is.
             Some(_) if self.link().is_none() => {}
             Some(reg) => self.bring_up(&reg.root.path, true).await,

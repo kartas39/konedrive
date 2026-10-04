@@ -10,6 +10,7 @@ use konedrive_tree::outbox::{OutboxState, Reason};
 use konedrive_tree::{ActivityRow, Store};
 
 use super::{SyncError, SyncService};
+use crate::conditions::running::Running;
 use crate::config::Mode;
 use crate::folder::root::SyncRoot;
 use crate::status::snapshot::OutboxNote;
@@ -61,7 +62,7 @@ impl SyncService {
             locks: self.locks.clone(),
             machine_name: self.machine_name(),
             tree_lock: Arc::clone(&self.tree_lock),
-            host: Arc::new(Host::new(self.me.clone())),
+            host: Arc::new(Host::new(self.me.clone(), Arc::clone(&self.running))),
             limits: upload::Limits::default(),
             // Moves out of the folder: the helper over this account's link, fills
             // through its source, and the hub's router.
@@ -288,9 +289,8 @@ impl SyncService {
         // The upload sessions of the rows dropped are given up: cancelled now, so that no
         // empty placeholder keeps a name in OneDrive (issue #47). One that fails stays listed
         // for the worker of a later read-write start.
-        let drive = self.drive.lock().unwrap().clone();
-        if let Some(drive) = drive {
-            upload::cancel_given_up(&store, &drive, DROPPED_CANCELS).await;
+        if let Some(drive) = self.drive() {
+            upload::cancel_given_up(&store, drive, DROPPED_CANCELS).await;
         }
         self.clear_outbox_counts();
         // What moves out of the folder left outside it is tidied.
@@ -320,7 +320,7 @@ impl SyncService {
                 .map(|n| n as u64)
                 .map_err(|e| SyncError::Io(format!("cannot tell whether changes wait to be uploaded: {e}")));
         }
-        let Some(tree_db) = self.sync_paths.lock().unwrap().as_ref().map(|p| p.tree_db.clone()) else { return Ok(0) };
+        let Some(tree_db) = self.sync_paths().map(|p| p.tree_db.clone()) else { return Ok(0) };
         if !tree_db.exists() {
             return Ok(0);
         }
@@ -396,11 +396,13 @@ const DROPPED_CANCELS: usize = 256;
 /// row.
 pub(super) struct Host {
     sync: Weak<SyncService>,
+    /// The account's one place that decides what runs, and its clock.
+    running: Arc<Running>,
 }
 
 impl Host {
-    pub(super) fn new(sync: Weak<SyncService>) -> Self {
-        Self { sync }
+    pub(super) fn new(sync: Weak<SyncService>, running: Arc<Running>) -> Self {
+        Self { sync, running }
     }
 }
 
@@ -466,10 +468,12 @@ impl OutboxHost for Host {
 
     /// The one place that decides what runs (`running`).
     fn stopped(&self, store: &Store) -> bool {
-        match self.sync.upgrade() {
-            Some(service) => service.running.stopped(store),
-            None => crate::conditions::running::user_pause(store).is_some(),
-        }
+        self.running.stopped(store)
+    }
+
+    /// The account's clock: a pause is over for the worker when it is for the poll.
+    fn now(&self) -> i64 {
+        self.running.clock().now()
     }
 
     /// The write gate, asked again before each row.

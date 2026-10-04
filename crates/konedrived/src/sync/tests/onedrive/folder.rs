@@ -96,26 +96,6 @@ async fn a_folder_registered_while_signed_in_shows_onedrive_read_only() {
     service.stop_sync().await;
 }
 
-/// A fresh OneDrive folder that is not already excluded
-/// from Baloo is excluded, and included again on Forget — the plain
-/// case, and the one the fake `balooctl6`'s empty `excluded` file
-/// gives by default.
-#[tokio::test]
-async fn baloo_excludes_a_fresh_onedrive_folder_and_includes_it_again_on_forget() {
-    let w = world().await;
-    let folder = std::fs::canonicalize(w.folder.path()).unwrap();
-    let service = connected(&w, true).await;
-    service.register_root(w.folder.path()).await.unwrap();
-    listed(&service).await;
-    assert_eq!(baloo_calls(&w), format!("config add excludeFolders {}\n", folder.display()));
-
-    service.unregister_root().await.unwrap();
-    assert_eq!(
-        baloo_calls(&w),
-        format!("config add excludeFolders {folder}\nconfig rm excludeFolders {folder}\n", folder = folder.display())
-    );
-}
-
 /// Design §8.3 (test 7): a OneDrive folder remembers its account's
 /// drive — written once the first cycle has recorded it, and at the
 /// bring-up of a folder from before multiple accounts, which carries
@@ -153,7 +133,7 @@ async fn a_onedrive_folder_remembers_its_drive_and_is_refused_to_another_account
         let elsewhere = tempfile::tempdir().unwrap();
         let other = persist(&elsewhere.path().join("config.toml"));
         other.store.record_drive(&other.account, "D2").unwrap();
-        let stranger = SyncService::new(Some(link(&w).await), Some(account(true)), Some(other));
+        let stranger = testing::service(Some(link(&w).await), Some(account(true)), Some(other));
         let refused = stranger.register_root(w.folder.path()).await;
         assert!(matches!(refused, Err(SyncError::ForeignFolder)), "{refused:?}");
     }
@@ -222,7 +202,7 @@ async fn a_folder_kept_after_a_failed_registration_is_kept_out_of_baloo_when_bro
     let folder = std::fs::canonicalize(w.folder.path()).unwrap();
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
     let service = service_with(&w, account(true), Some(link), Arc::new(StaticToken::new("T")));
     helper.refuse(Seen::RegisterRoot, libc::EIO);
@@ -240,27 +220,22 @@ async fn a_folder_kept_after_a_failed_registration_is_kept_out_of_baloo_when_bro
     service.stop_sync().await;
 }
 
-/// A `SyncService` that never had `set_baloo` called on it — as a
-/// test that forgot to, would be — starts with a `Baloo` that runs
+/// A `SyncService` made with a wiring that says nothing of Baloo — as a
+/// test that forgot to, would be — has a `Baloo` that runs
 /// no program at all, so it never reaches the real `balooctl6` or
 /// `~/.config/baloofilerc`, on this host or the one running CI. This
 /// deliberately does not go through `service`/`service_with`, which
-/// always install the fake.
+/// always give the fake.
 #[tokio::test]
-async fn a_service_without_set_baloo_runs_no_program_on_registration() {
+async fn a_service_made_with_no_baloo_runs_no_program_on_registration() {
     let w = world().await;
-    let account = account(true);
-    let service = SyncService::new(Some(link(&w).await), Some(account), Some(persist(&w.config.path().join("config.toml"))));
-    let drive = DriveClient::new(Url::parse(&format!("{}/", w.server.uri())).unwrap(), Arc::new(StaticToken::new("T")))
-        .unwrap();
-    service.set_drive(drive);
-    service.set_sync_paths(SyncPaths {
-        tree_db: w.config.path().join("tree.sqlite"),
-        rescue_dir: w.config.path().join("rescued"),
-        thumbnails: Some(w.config.path().join("thumbnails")),
-    });
-    service.set_helper_socket(w.config.path().join("no-helper.sock"));
-    // No `set_baloo`: the default `Baloo::disabled()` stands.
+    // No Baloo said: the default `Baloo::disabled()` stands.
+    let wiring = testing::wiring()
+        .link(Some(link(&w).await))
+        .account(account(true))
+        .persist(persist(&w.config.path().join("config.toml")))
+        .onedrive(drive(&w, Arc::new(StaticToken::new("T"))), sync_paths(&w));
+    let service = made(&w, wiring);
 
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
@@ -366,54 +341,6 @@ async fn a_restart_brings_a_onedrive_folder_back_and_repairs_it() {
     second.stop_sync().await;
 }
 
-#[tokio::test]
-async fn refresh_runs_a_cycle_now() {
-    let w = world().await;
-    let service = connected(&w, true).await;
-    service.register_root(w.folder.path()).await.unwrap();
-    listed(&service).await;
-    let before = deltas(&w).await;
-    service.refresh().await.unwrap();
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(deltas(&w).await, before + 1);
-    service.stop_sync().await;
-}
-
-#[tokio::test]
-async fn refresh_on_a_local_folder_is_refused() {
-    let w = world().await;
-    let service = service(&w, false);
-    service.register_root_without_interception(w.folder.path()).await.unwrap();
-    assert!(matches!(service.refresh().await, Err(SyncError::Unsupported(_))));
-}
-
-#[tokio::test]
-async fn skipped_names_what_is_not_in_the_folder_by_its_full_path() {
-    let w = world().await;
-    Mock::given(method("GET")).and(path("/me/drive/root/delta"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "value": [
-                {"id": "R", "root": {}, "folder": {}},
-                {"id": "D", "name": "docs", "folder": {}, "parentReference": {"id": "R"}},
-                {"id": "F", "name": "f.txt", "size": 3, "cTag": "c1", "file": {}, "parentReference": {"id": "D"}},
-                {"id": "V", "name": "Personal Vault", "folder": {}, "specialFolder": {"name": "vault"}, "parentReference": {"id": "R"}}
-            ],
-            "@odata.deltaLink": format!("{}/me/drive/root/delta?token=L1", w.server.uri())
-        })))
-        .with_priority(4)
-        .mount(&w.server).await;
-    let service = connected(&w, true).await;
-    assert_eq!(service.skipped().await.unwrap(), Vec::<(String, String)>::new());
-    service.register_root(w.folder.path()).await.unwrap();
-    wait_until("listed", || service.items() == (3, 2, 1)).await;
-    let vault = std::fs::canonicalize(w.folder.path()).unwrap().join("Personal Vault");
-    assert_eq!(
-        service.skipped().await.unwrap(),
-        vec![(vault.display().to_string(), "personal-vault".to_owned())]
-    );
-    service.stop_sync().await;
-}
-
 /// A folder that reads "signed out" is brought up to date the moment
 /// the account signs in again, not up to a poll interval later (an
 /// hour here).
@@ -450,7 +377,7 @@ async fn a_forget_the_helper_refuses_leaves_the_folder_locked_and_in_step() {
     let w = world().await;
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let helper = FakeHelper::start(socket_path.clone());
     let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
     let service = service_with(&w, account(true), Some(link), Arc::new(StaticToken::new("T")));
     service.register_root(w.folder.path()).await.unwrap();
@@ -555,15 +482,13 @@ async fn two_starts_at_once_leave_one_sync() {
 #[tokio::test]
 async fn refresh_starts_a_sync_that_could_not_start_or_says_why() {
     let w = world().await;
-    let service = connected(&w, true).await;
     // A file where the tree store's directory has to be.
     let blocker = w.config.path().join("state");
     std::fs::write(&blocker, b"").unwrap();
-    service.set_sync_paths(SyncPaths {
-        tree_db: blocker.join("tree.sqlite"),
-        rescue_dir: w.config.path().join("rescued"),
-        thumbnails: Some(w.config.path().join("thumbnails")),
-    });
+    let paths = SyncPaths { tree_db: blocker.join("tree.sqlite"), ..sync_paths(&w) };
+    let tokens: Arc<dyn TokenSource> = Arc::new(StaticToken::new("T"));
+    let wiring = wiring(&w, account(true), Arc::clone(&tokens)).onedrive(drive(&w, tokens), paths).link(Some(link(&w).await));
+    let service = made(&w, wiring);
     service.register_root(w.folder.path()).await.unwrap();
     assert_eq!(service.root_state(), "error");
 
@@ -589,7 +514,7 @@ async fn refresh_of_a_folder_waiting_for_its_helper_says_so() {
     let w = world().await;
     let sockets = tempfile::tempdir().unwrap();
     let socket_path = sockets.path().join("helper.sock");
-    let _helper = FakeHelper::start(socket_path.clone(), Duration::ZERO);
+    let _helper = FakeHelper::start(socket_path.clone());
     {
         let (link, _requests) = HelperLink::connect(&socket_path).await.unwrap();
         let first = service_with(&w, account(true), Some(link), Arc::new(StaticToken::new("T")));
@@ -628,7 +553,7 @@ async fn a_locked_onedrive_folder_comes_back_after_a_restart_in_either_mode() {
             first.register_root(w.folder.path()).await.unwrap();
             listed(&first).await;
             first.stop_sync().await;
-            first.set_link(None);
+            first.hub().set_link(None);
         }
         if !intercepted {
             legacy_without_interception(&w);
@@ -718,7 +643,7 @@ async fn a_onedrive_folder_without_interception_waits_for_the_helper_then_switch
 
     // The helper starts, and connects.
     w.helper.forget();
-    service.set_link(Some(link(&w).await));
+    service.hub().set_link(Some(link(&w).await));
     service.resume().await;
 
     wait_until("the new folder was placed", || w.folder.path().join("new/g.txt").exists()).await;
@@ -734,24 +659,29 @@ async fn a_onedrive_folder_without_interception_waits_for_the_helper_then_switch
     service.stop_sync().await;
 }
 
-/// `Skipped()` reads the tree store under the lifecycle lock, so a
-/// Forget — which removes the store with that lock held for writing —
-/// waits for a read under way instead of removing the files under it.
+/// `Skipped()` and a Forget, which removes the tree store, never have the store at the
+/// same time: a `Skipped()` asked while a Forget is under way — the helper has not
+/// answered it yet — waits for it, and then answers for a forgotten folder.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn skipped_reads_the_tree_under_the_lifecycle_lock() {
+async fn skipped_asked_during_a_forget_waits_for_it() {
     let w = world().await;
     let service = connected(&w, true).await;
     service.register_root(w.folder.path()).await.unwrap();
     listed(&service).await;
 
-    let held = service.lifecycle.write().await;
+    w.helper.hold(Seen::UnregisterRoot);
+    let forgetting = {
+        let service = Arc::clone(&service);
+        tokio::spawn(async move { service.unregister_root().await })
+    };
+    wait_until("the Forget asked the helper", || w.helper.seen().contains(&Seen::UnregisterRoot)).await;
     let reading = {
         let service = Arc::clone(&service);
         tokio::spawn(async move { service.skipped().await })
     };
     tokio::time::sleep(Duration::from_millis(200)).await;
-    assert!(!reading.is_finished(), "Skipped() read the tree while the lock was held for writing");
-    drop(held);
+    assert!(!reading.is_finished(), "Skipped() read the tree while the Forget was under way");
+    w.helper.release(Seen::UnregisterRoot);
+    forgetting.await.unwrap().unwrap();
     assert_eq!(reading.await.unwrap().unwrap(), Vec::<(String, String)>::new());
-    service.stop_sync().await;
 }

@@ -274,6 +274,10 @@ Baloo and thumbnails. Design: `desktop.md`.
 `impl SyncService` is here. Design: `hydration.md`, `sync.md`, `accounts.md`.
 
 - `mod.rs` — `SyncService` and what it holds. `[tests]`
+- `wiring.rs` — `Wiring`: what a service is made with, given once to its constructor.
+- `testing.rs` — test support, also for the VM suite: a `Wiring` of fakes (the account, a
+  temporary `config.toml`, the content sources, the watcher, a clock moved by hand).
+- `testing/helper.rs` — the fake helper: it records, refuses, and holds an answer until released.
 - `hub.rs` — the one link to the helper, shared by every account. `[tests]`
 - `registration.rs` — binding a folder to the account.
 - `forget.rs` — forgetting a folder; retiring an account's folder.
