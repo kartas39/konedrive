@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use super::names::{cloud_changes, place_in_onedrive, senseless, Case, CHAIN};
+use super::names::{base_ahead_of_disk, cloud_changes, download_versioned, place_in_onedrive, senseless, Case, SUB_OUT};
 use super::*;
 use crate::remote::testing::Options;
 
@@ -39,6 +39,7 @@ async fn run(case: Case) -> Vec<String> {
         c.add(folder_item("L", ROOT, &"y".repeat(260)));
     });
     let listing = w.listed().await;
+    download_versioned(&w, case);
     let changed_here: &[u8] = b"changed here";
     if case.local == 2 {
         let at = w.path("docs/f.txt");
@@ -85,6 +86,8 @@ async fn run(case: Case) -> Vec<String> {
     if on_disk != ends {
         wrong.push(format!("a Full reconcile afterwards moved objects: {on_disk:?}"));
     }
+    // Every file holds the version the base has: the new one has landed.
+    wrong.extend(base_ahead_of_disk(&w).await);
     // Nothing is sent, and OneDrive is as the listing left it.
     if !w.sent().is_empty() {
         wrong.push(format!("sent to OneDrive: {:?}", w.sent()));
@@ -129,18 +132,20 @@ async fn run(case: Case) -> Vec<String> {
 
 /// The gate's listings in a read-only folder: every combination that makes
 /// sense of the item OneDrive takes out of what the folder can hold, how,
-/// and one more change in the same listing; with nothing done here, or
-/// `docs/f.txt` changed here; in a Changed and in a Full reconcile. Each
-/// must settle, send nothing, lose nothing, and end as OneDrive has it.
+/// and one more change in the same listing; with nothing done here,
+/// `docs/f.txt` changed here, or a downloaded file given a new version in
+/// OneDrive; in a Changed and in a Full reconcile. Each must settle, send
+/// nothing, lose nothing, end as OneDrive has it, and hold of every file
+/// the version the base has.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_small_combination_in_a_read_only_folder_ends_as_onedrive_has_it() {
     let mut cases = Vec::new();
     for item in [None, Some(0), Some(1), Some(2), Some(3)] {
         for reason in if item.is_none() { vec!['N'] } else { vec!['N', 'M', 'R'] } {
-            for other in 0..=CHAIN {
-                for local in [0, 2] {
+            for other in 0..=SUB_OUT {
+                for (local, version) in [(0, 0), (2, 0), (0, 1), (0, 2)] {
                     for full in [false, true] {
-                        let case = Case { item, reason, other, local, full };
+                        let case = Case { item, reason, other, local, version, full };
                         if !senseless(case) {
                             cases.push(case);
                         }

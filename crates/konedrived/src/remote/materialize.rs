@@ -366,7 +366,7 @@ impl Materializer {
                     Sorted::ToHolding => misplaced.push((entry, false)),
                     Sorted::Removed => misplaced.push((entry, true)),
                     Sorted::Leaves { stands } => unplaced.top(id, &entry.rel, stands),
-                    Sorted::Follows => unplaced.follows(id, &entry.rel),
+                    Sorted::Follows => unplaced.follows(id, &entry.rel, seen.new.is_some_and(|new| new.placement != Placement::Placed)),
                 }
             }
         }
@@ -439,7 +439,8 @@ impl Materializer {
                     }
                 }
                 Sorted::Leaves { stands } => unplaced.top(id, &old.rel, stands),
-                Sorted::Follows => unplaced.follows(id, &old.rel),
+                // Only what the new tree no longer places follows in this scope.
+                Sorted::Follows => unplaced.follows(id, &old.rel, true),
             }
         }
 

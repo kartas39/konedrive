@@ -20,9 +20,10 @@ use crate::remote::materialize::{ApplyError, Materializer, Run};
 #[derive(Default)]
 pub(in crate::remote::materialize) struct Unplaced {
     tops: Vec<Top>,
-    /// What is below a topmost item and follows it: the item, and where it
-    /// is (as the tops' `covers`).
-    follow: Vec<(String, PathBuf)>,
+    /// What is below a topmost item and follows it: the item, where it is
+    /// (as the tops' `covers`), and whether the new tree no longer places
+    /// it either.
+    follow: Vec<(String, PathBuf, bool)>,
 }
 
 /// The topmost item of a subtree that can no longer be placed.
@@ -40,8 +41,8 @@ impl Unplaced {
         self.tops.push(Top { id: id.to_owned(), covers: covers.to_path_buf(), stands });
     }
 
-    pub(in crate::remote::materialize) fn follows(&mut self, id: &str, at: &Path) {
-        self.follow.push((id.to_owned(), at.to_path_buf()));
+    pub(in crate::remote::materialize) fn follows(&mut self, id: &str, at: &Path, unplaced: bool) {
+        self.follow.push((id.to_owned(), at.to_path_buf(), unplaced));
     }
 }
 
@@ -50,8 +51,14 @@ impl Materializer {
     /// OneDrive moved out of it is placed — one still in the holding
     /// directory by then keeps its folder. Each topmost item goes whole or
     /// waits whole, deepest first ([`Self::take_off_or_wait`]). What
-    /// follows one goes its way: taken by the base with it, or left as it
-    /// is, its change waiting.
+    /// follows one that waits is left as it is, its change waiting.
+    ///
+    /// "Taken" ([`OnDisk::taken`](crate::remote::materialize::OnDisk::taken))
+    /// means one thing in both scopes: the item has no object in the folder
+    /// any more and the new tree places none, so the base takes its change
+    /// whatever would hold it. What follows a topmost item that was taken
+    /// is taken with it only then: never an item this pass moved out of it
+    /// to where the new tree places it, whose content may still be to land.
     pub(in crate::remote::materialize) fn after_placement(&self, unplaced: Unplaced, run: &mut Run) -> Result<(), ApplyError> {
         let Unplaced { mut tops, follow } = unplaced;
         tops.sort_by_key(|top| std::cmp::Reverse(top.covers.components().count()));
@@ -59,17 +66,15 @@ impl Materializer {
             self.check_cancel()?;
             let Some((stands, is_dir)) = &top.stands else { continue };
             if self.take_off_or_wait(&top.id, stands, *is_dir, run)? {
-                run.left.insert(top.id.clone());
                 run.out.pending.unsettled.insert(top.id.clone());
             }
         }
-        for (id, at) in follow {
+        for (id, at, unplaced) in follow {
             let top = tops.iter().find(|top| at.starts_with(&top.covers));
-            if top.is_some_and(|top| run.out.on_disk.taken.contains(&top.id)) {
-                run.out.on_disk.taken.insert(id);
-            } else {
-                run.left.insert(id.clone());
+            if !top.is_some_and(|top| run.out.on_disk.taken.contains(&top.id)) {
                 run.out.pending.unsettled.insert(id);
+            } else if unplaced && !run.moved_from.contains_key(&id) {
+                run.out.on_disk.taken.insert(id);
             }
         }
         Ok(())
