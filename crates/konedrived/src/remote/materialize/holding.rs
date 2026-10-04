@@ -79,7 +79,6 @@ impl Materializer {
         let Some(dest) = self.disk.rescue(dir, name, shown, &self.rescue_into)? else {
             // A placeholder: nothing of the user's in it, so nothing to keep.
             tracing::info!("{} held nothing made here; it is removed, not rescued", shown.display());
-            run.out.counts.deleted += 1;
             return Ok(());
         };
         tracing::warn!(

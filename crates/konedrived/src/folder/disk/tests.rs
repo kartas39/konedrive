@@ -195,10 +195,16 @@ fn a_placeholder_is_removed_not_rescued_at_any_depth() {
     assert_eq!(std::fs::read(rescued.join("mine")).unwrap(), b"made here");
 }
 
-/// The scan is the reconcile's picture of the folder: a directory it cannot read fails
-/// it, rather than being left out as if it were empty.
+/// The scan is the reconcile's picture of the folder: a directory it cannot look into
+/// fails it, with an error that names the directory, rather than being left out as if it
+/// were empty.
+///
+/// A directory set to mode `000` fails at the look its parent takes at it, as it did
+/// before the scan had one rule. What the rule adds — a directory that can be looked at
+/// and then not opened or listed (`EIO`, `EMFILE`, a swap mid-walk) — no unprivileged test
+/// can make happen (the limitations log, D51).
 #[test]
-fn a_scan_that_cannot_read_a_directory_fails() {
+fn a_scan_that_cannot_read_a_directory_fails_and_names_it() {
     let (_dir, path, disk) = unlocked_root();
     std::fs::create_dir(path.join("open")).unwrap();
     std::fs::write(path.join("open/f"), b"x").unwrap();
@@ -212,7 +218,37 @@ fn a_scan_that_cannot_read_a_directory_fails() {
         return;
     }
     let message = scanned.unwrap_err().to_string();
-    assert!(message.contains("shut"), "{message}");
+    assert!(message.contains("cannot scan shut"), "{message}");
+}
+
+/// Putting the lock back passes over a directory it cannot look into, and locks the rest
+/// and the folder itself.
+#[test]
+fn lock_tree_passes_over_what_it_cannot_enter_and_locks_the_rest() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().canonicalize().unwrap();
+    let root_id = "3a9d5c1e-7f20-4b6a-8e4d-2c1b0a9f8e7d".to_owned();
+    xattr::set(&path, XATTR_ROOT, root_id.as_bytes()).unwrap();
+    for name in ["docs", "shut"] {
+        std::fs::create_dir(path.join(name)).unwrap();
+        xattr::set(path.join(name), XATTR_ITEM_ID, name.as_bytes()).unwrap();
+    }
+    managed(&path.join("docs/f"), b"content", placeholder::State::Hydrated);
+    std::fs::set_permissions(path.join("shut"), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let mode = |name: &str| std::fs::metadata(path.join(name)).unwrap().permissions().mode() & 0o7777;
+
+    let disk = Disk::open(&SyncRoot { path: path.clone(), root_id }, true).unwrap();
+    let locked = disk.lock_tree(|_| Ok(Some(())));
+    let modes = (mode("docs"), mode(""), mode("shut"));
+    // So that the temporary directory can be removed.
+    for name in ["shut", "docs", ""] {
+        std::fs::set_permissions(path.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let file_mode = mode("docs/f");
+
+    locked.unwrap();
+    assert_eq!(modes, (LOCKED_DIR_MODE, LOCKED_DIR_MODE, 0o000));
+    assert_eq!(file_mode, LOCKED_FILE_MODE);
 }
 
 /// Two folders do not wait for each other's windows, and every `Disk` of one folder

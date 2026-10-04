@@ -20,6 +20,21 @@ pub(crate) fn test_root(dir: &Path) -> SyncRoot {
 
 // --- The local guard -------------------------------------------------
 
+/// A value on `user.konedrive.root` that is not text is no id of ours, like any other the
+/// daemon could not have minted: an empty folder that carries one is registered, and a
+/// fresh id is written over it.
+#[tokio::test]
+async fn an_empty_folder_with_a_root_attribute_that_is_not_text_gets_a_fresh_id() {
+    let dir = tempfile::tempdir().unwrap();
+    File::open(dir.path()).unwrap().set_xattr(XATTR_ROOT, &[0xff, 0xfe, 0x00]).unwrap();
+
+    let root = register_root_unprotected(dir.path()).await.unwrap();
+
+    assert!(looks_like_a_root_id(&root.root_id), "{}", root.root_id);
+    assert_eq!(xattr::get(dir.path(), XATTR_ROOT).unwrap().as_deref(), Some(root.root_id.as_bytes()));
+    assert!(root.open_registered().unwrap().is_some());
+}
+
 #[tokio::test]
 async fn refuses_a_non_empty_directory() {
     let dir = tempfile::tempdir().unwrap();

@@ -365,7 +365,10 @@ impl Disk {
     /// `konedrive_fs::MAX_DEPTH`, which the helper does not mark either.
     pub fn scan(&self, root_item_id: &str) -> io::Result<Vec<Scanned>> {
         let gone = |e: &io::Error| e.raw_os_error() == Some(libc::ENOENT);
-        let at = |rel: &Path, e: io::Error| io::Error::new(e.kind(), format!("cannot scan {}: {e}", rel.display()));
+        let at = |rel: &Path, e: io::Error| {
+            let shown = if rel.as_os_str().is_empty() { Path::new("the folder itself") } else { rel };
+            io::Error::new(e.kind(), format!("cannot scan {}: {e}", shown.display()))
+        };
         let mut out = Vec::new();
         let mut pending = vec![(PathBuf::new(), 0usize, Some(root_item_id.to_owned()))];
         while let Some((rel, depth, dir_id)) = pending.pop() {
