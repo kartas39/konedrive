@@ -1,5 +1,5 @@
 use std::collections::{HashSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use konedrive_fs::handle::FileHandle;
 use konedrive_tree::outbox::{is_under, place_name, Inode, OutboxKind, OutboxOp, OutboxRow, OutboxState};
@@ -10,6 +10,24 @@ use super::detect::leaves;
 use super::facts::Expect;
 use super::{base_of, object, ExamineError, Place, Run};
 use crate::local::entry::{Entry, Type};
+
+/// How an item leaves OneDrive.
+enum Leaves {
+    /// Its object is gone: a `delete`.
+    Deleted,
+    /// Its object is alive outside the folder, at `to`: a `move-out`.
+    MovedOut { object: Inode, to: PathBuf },
+}
+
+impl Leaves {
+    /// Where the object went, if it is still somewhere.
+    fn went_to(&self) -> Option<&Path> {
+        match self {
+            Leaves::Deleted => None,
+            Leaves::MovedOut { to, .. } => Some(to),
+        }
+    }
+}
 
 /// The objects of the entries listed, to tell whether a pending row's object
 /// was seen ([`Inode::same_object`]) without comparing it with every entry.
@@ -51,7 +69,7 @@ impl Run<'_, '_, '_> {
     pub(super) fn missing(&mut self) -> Result<(), ExamineError> {
         let objects = Objects::of(self.listing.entries());
         for (dir, _) in self.listing.places() {
-            let mut items: Vec<(String, std::path::PathBuf)> = Vec::new();
+            let mut items: Vec<(String, PathBuf)> = Vec::new();
             if let Some(parent) = self.dir_id(&dir) {
                 for child in self.facts.children(&parent)? {
                     if let Expect::At(rel) = self.facts.expected(&child.id)? {
@@ -77,9 +95,7 @@ impl Run<'_, '_, '_> {
                 }
             }
             for (id, rel) in items {
-                if self.decisions.open(&id) {
-                    self.missing_item(&id, &rel)?;
-                }
+                self.missing_item(&id, &rel)?;
             }
             for row in pending {
                 let seen = row.inode.as_ref().is_some_and(|inode| objects.seen(inode));
@@ -102,7 +118,7 @@ impl Run<'_, '_, '_> {
         for r in inside {
             match &r.item_id {
                 None => self.gone_pending(&r),
-                Some(id) if !r.kind.removes() && self.decisions.open(id) => {
+                Some(id) if !r.kind.removes() => {
                     let id = id.clone();
                     self.missing_item(&id, &r.rel)?;
                 }
@@ -123,8 +139,12 @@ impl Run<'_, '_, '_> {
         self.outcome.detections.push(leaves(OutboxKind::Delete, None, None, row.inode.clone(), &row.rel, None));
     }
 
-    /// Item `id`, expected at `rel`, is not in the batch.
+    /// Item `id`, expected at `rel`, is not in the batch. Nothing for one
+    /// already decided ([`Decisions::settle`](super::decisions::Decisions::settle)).
     fn missing_item(&mut self, id: &str, rel: &Path) -> Result<(), ExamineError> {
+        if !self.decisions.open(id) {
+            return Ok(());
+        }
         let Some(base) = self.facts.row(id)? else { return Ok(()) };
         // Save-by-rename: a new file now stands at its name — not one the
         // worker is creating right now.
@@ -139,61 +159,65 @@ impl Run<'_, '_, '_> {
         }
         let Some(handle) = self.facts.recorded(id)? else {
             // A rebuilt base cannot prove a delete (WR4).
-            self.hold_back(id, Settle::Unproven, true);
+            self.hold_back(id, Settle::Unproven);
             return Ok(());
         };
         match self.place_of(&handle) {
             // `ESTALE` is a delete only with its evidence: nothing, or another object, at its
             // place.
-            Place::Gone if self.absent(rel, &handle) => self.removal(OutboxKind::Delete, id, &base, rel, None, None).map(drop),
+            Place::Gone if self.absent(rel, &handle) => self.removal(id, &base, rel, Leaves::Deleted).map(drop),
             // Undecided: asked again at its place after [`RECHECK`], never
             // forgotten — nothing else would bring it back to an examination.
             Place::Gone | Place::Unknown => {
                 self.recheck_at(rel);
-                self.hold_back(id, Settle::Wait, true);
+                self.hold_back(id, Settle::Wait);
                 Ok(())
             }
-            Place::Outside(to) => self.removal(OutboxKind::MoveOut, id, &base, rel, Some(object(handle)), Some(to.as_path())).map(drop),
+            Place::Outside(to) => self.removal(id, &base, rel, Leaves::MovedOut { object: object(handle), to }).map(drop),
             // Moved within the folder, somewhere this batch did not look: found
             // there, or — gone by then — missing again from here.
             Place::Inside(now) => {
                 self.recheck_at(&now);
                 self.recheck_at(rel);
-                self.hold_back(id, Settle::Wait, false);
+                self.hold_back(id, Settle::Elsewhere);
                 Ok(())
             }
         }
     }
 
-    /// Item `id` leaves OneDrive (`delete`, or `move-out` to `went_to`). A
-    /// folder takes along what the base has inside it — except what left it
-    /// first, which leaves on its own and is ordered in front of it (rule
-    /// 3). Every item still with the folder is asked where it is (§3.4 rule
-    /// 7: by the object, not the events); while any cannot be placed, the
-    /// folder waits. Rows that already say an item left are kept. What never
-    /// reached the cloud goes; an item moved in from elsewhere, which the
-    /// cloud has elsewhere, leaves by its own object. Rows the worker is
-    /// running are never removed; a moved-in item's gets its follow-up.
-    /// Whether its row was written, or why not.
-    pub(super) fn removal(&mut self, kind: OutboxKind, id: &str, base: &Row, rel: &Path, inode: Option<Inode>, went_to: Option<&Path>) -> Result<Settle, ExamineError> {
-        if let Some(settled) = self.decisions.settled(id) {
-            return Ok(settled);
+    /// Item `id` leaves OneDrive; `how` says which way. A folder takes
+    /// along what the base has inside it — except what left it first, which
+    /// leaves on its own and is ordered in front of it (rule 3). Every item
+    /// still with the folder is asked where it is (§3.4 rule 7: by the
+    /// object, not the events); while any cannot be placed, the folder waits.
+    /// Rows that already say an item left are kept. What never reached the
+    /// cloud goes; an item moved in from elsewhere, which the cloud has
+    /// elsewhere, leaves by its own object. Rows the worker is running are
+    /// never removed; a moved-in item's gets its follow-up.
+    ///
+    /// Answers how `id` is settled: its row is written (`Done`), or why
+    /// not. For one already decided, how it was; it is settled here before
+    /// anything inside it is asked after
+    /// ([`Decisions::settle`](super::decisions::Decisions::settle)).
+    fn removal(&mut self, id: &str, base: &Row, rel: &Path, how: Leaves) -> Result<Settle, ExamineError> {
+        if !self.decisions.open(id) {
+            return Ok(self.decisions.standing(id));
         }
         self.decisions.settle(id, Settle::Done);
         if base.kind == Kind::Folder {
-            match self.left_before(id, rel, went_to)? {
+            match self.left_before(id, rel, how.went_to())? {
                 Settle::Done => {}
                 // Something inside is elsewhere in the folder, or cannot be
                 // placed: the folder is examined again, and removed then.
-                Settle::Wait => {
-                    self.hold_back(id, Settle::Wait, true);
+                Settle::Elsewhere | Settle::Wait => {
+                    self.hold_back(id, Settle::Wait);
                     self.recheck_at(rel);
                     return Ok(Settle::Wait);
                 }
                 // Something inside has no recorded handle: nothing can prove
                 // it gone until the reconcile places it again.
                 Settle::Unproven => {
-                    self.hold_back(id, Settle::Unproven, true);
+                    self.hold_back(id, Settle::Unproven);
                     return Ok(Settle::Unproven);
                 }
             }
@@ -211,9 +235,7 @@ impl Run<'_, '_, '_> {
                         None if is_under(&r.rel, rel) => self.gone_pending(&r),
                         // Moved in from elsewhere while being sent: it leaves
                         // by its own object, behind the running row.
-                        Some(item) if !inside.contains(&item) && self.decisions.open(&item) => {
-                            self.missing_item(&item, &r.rel)?;
-                        }
+                        Some(item) if !inside.contains(&item) => self.missing_item(&item, &r.rel)?,
                         // What the base has inside waits in front of the
                         // folder (rule 3).
                         _ => {}
@@ -237,33 +259,35 @@ impl Run<'_, '_, '_> {
                 }
             }
         }
-        // Where a move out went, proved: what a later `ESTALE` is checked against.
-        let went_to = went_to.filter(|_| kind == OutboxKind::MoveOut).and_then(place_name).map(str::to_owned);
+        let (kind, inode, went_to) = match how {
+            Leaves::Deleted => (OutboxKind::Delete, None, None),
+            // Where a move out went, proved: what a later `ESTALE` is checked against.
+            Leaves::MovedOut { object, to } => (OutboxKind::MoveOut, Some(object), place_name(&to).map(str::to_owned)),
+        };
         self.outcome.detections.push(leaves(kind, Some(id), Some(base_of(base)), inode, rel, went_to));
         Ok(Settle::Done)
     }
 
-    /// Items the base has inside `folder` (at `rel`), which is leaving: each
-    /// is asked where it is, top down, unless this batch decided it or a row
-    /// of its own already takes it elsewhere or out. One alive outside the
+    /// Items the base has inside `folder` (at `rel`), which is leaving and
+    /// was settled by its caller: each is asked where it is, top down,
+    /// unless this batch decided it (it counts as it was settled) or a row of
+    /// its own already takes it elsewhere or out. One alive outside the
     /// folder (and not where the folder went, `went_to`) left it first: its
     /// own `move-out`, which downloads it before anything is deleted (WR5).
     /// One gone went with the folder, and so did one under `went_to`; what is
-    /// inside those is asked too. How the folder may go: one alive elsewhere
-    /// in the folder or unplaceable keeps it waiting, one with no
-    /// recorded handle keeps it unproven, and so does an item held back
-    /// on its own — a subfolder that left and waits itself.
+    /// inside those is asked too. How the folder may go, as the least settled
+    /// of them: one alive elsewhere in the folder (`Elsewhere`) or
+    /// unplaceable keeps it waiting, one with no recorded handle keeps it
+    /// unproven, and so does an item held back on its own — a subfolder that
+    /// left and waits itself.
     fn left_before(&mut self, folder: &str, rel: &Path, went_to: Option<&Path>) -> Result<Settle, ExamineError> {
         let mut settled = Settle::Done;
         let mut queue: VecDeque<String> = VecDeque::from([folder.to_owned()]);
         while let Some(parent) = queue.pop_front() {
             for child in self.facts.children(&parent)? {
                 let id = child.id.clone();
-                if self.decisions.found(&id) {
-                    continue;
-                }
-                if let Some(settle) = self.decisions.settled(&id) {
-                    settled = settled.max(settle);
+                if !self.decisions.open(&id) {
+                    settled = settled.max(self.decisions.standing(&id));
                     continue;
                 }
                 let Expect::At(at) = self.facts.expected(&id)? else { continue };
@@ -277,7 +301,7 @@ impl Run<'_, '_, '_> {
                 };
                 match self.place_of(&handle) {
                     Place::Outside(to) if went_to.is_none_or(|went| !to.starts_with(went)) => {
-                        let left = self.removal(OutboxKind::MoveOut, &id, &child, &at, Some(object(handle)), Some(to.as_path()))?;
+                        let left = self.removal(&id, &child, &at, Leaves::MovedOut { object: object(handle), to })?;
                         settled = settled.max(left);
                     }
                     // Gone with the folder only with its evidence, where the folder is now.
@@ -289,7 +313,7 @@ impl Run<'_, '_, '_> {
                     }
                     Place::Inside(now) => {
                         self.recheck_at(&now);
-                        settled = settled.max(Settle::Wait);
+                        settled = settled.max(Settle::Elsewhere);
                     }
                     Place::Unknown => settled = settled.max(Settle::Wait),
                 }

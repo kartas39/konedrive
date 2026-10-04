@@ -13,6 +13,9 @@ use super::listing::{EntryIx, Listing};
 pub(super) enum Settle {
     /// Its row is written.
     Done,
+    /// It is in the folder, where this run did not look: found there by the
+    /// next one, so nothing is reported for it. A folder it was in waits.
+    Elsewhere,
     /// Held back until it can be placed: examined again (undecided).
     Wait,
     /// Held back until the reconcile places it again: no recorded handle,
@@ -58,9 +61,16 @@ impl Decisions {
         }
     }
 
-    /// Item `id` is decided without an entry. An id is settled before
-    /// anything is asked on its behalf, so that a question that comes back
-    /// to it finds it settled.
+    /// Item `id` is decided without an entry.
+    ///
+    /// The rule that ends the recursion of the removals (`missing_item`,
+    /// `removal` and `left_before` ask after one another's items): **an id
+    /// is settled before anything is asked on its behalf, and every nested
+    /// question is about another id.** `missing_item` and `removal` go on
+    /// only for an id that is [`open`](Self::open), and `left_before` asks
+    /// only after such ones; an id that stopped being open is never open
+    /// again. So a question that comes back to an id stops there, and at
+    /// most one question for each id goes on.
     pub(super) fn settle(&mut self, id: &str, how: Settle) {
         self.settled.insert(id.to_owned(), how);
     }
@@ -76,13 +86,15 @@ impl Decisions {
         self.item.get(id).copied()
     }
 
-    pub(super) fn found(&self, id: &str) -> bool {
-        self.item.contains_key(id)
-    }
-
     /// How item `id` was settled, if it was.
     pub(super) fn settled(&self, id: &str) -> Option<Settle> {
         self.settled.get(id).copied()
+    }
+
+    /// How item `id` stands when it is not [`open`](Self::open): as it was
+    /// settled, and `Done` for one an entry is (nothing waits for it).
+    pub(super) fn standing(&self, id: &str) -> Settle {
+        self.settled(id).unwrap_or(Settle::Done)
     }
 
     pub(super) fn taken(&self, ix: EntryIx) -> bool {

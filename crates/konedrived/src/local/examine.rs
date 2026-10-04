@@ -430,13 +430,14 @@ impl<'l> Run<'_, '_, 'l> {
     }
 
     /// Item `id` is decided without a row: remembered for a folder it is
-    /// in, and, when `report`, listed as undecided or unproven.
-    fn hold_back(&mut self, id: &str, settle: Settle, report: bool) {
+    /// in, and reported as undecided or unproven. One that is elsewhere in
+    /// the folder is neither: the next run finds it there.
+    fn hold_back(&mut self, id: &str, settle: Settle) {
         self.decisions.settle(id, settle);
-        match (settle, report) {
-            (Settle::Wait, true) => self.outcome.out.undecided.push(id.to_owned()),
-            (Settle::Unproven, true) => self.outcome.out.unproven.push(id.to_owned()),
-            _ => {}
+        match settle {
+            Settle::Wait => self.outcome.out.undecided.push(id.to_owned()),
+            Settle::Unproven => self.outcome.out.unproven.push(id.to_owned()),
+            Settle::Elsewhere | Settle::Done => {}
         }
     }
 }
