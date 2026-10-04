@@ -230,7 +230,7 @@ application must never read zeros where real content should be.
 - [F204](F204.md) — A sign-in whose account is reported signed out meanwhile ends in silence
 - [F205](F205.md) — A removal that fails half-way leaves the account without its folder, and a failed `Add` can leave its entry
 - [F208](F208.md) — What the helper's bounds per uid on waiting opens and on roots leave open
-- [F210](F210.md) — An entry the examination is refused to open, strip or read is passed over, and the user is not told which
+- [F210](F210.md) — An entry the examination is refused to open, strip or read is passed over; it is listed as not uploaded, by its name alone
 - [F211](F211.md) — A folder whose `source` in `config.toml` is neither word is held, not repaired
 - [F212](F212.md) — Some failures of the tree store inside a reconcile still do not stop the folder
 - [F220](F220.md) — A OneDrive item dated before 1970 shows 1970-01-01 locally
@@ -280,6 +280,8 @@ application must never read zeros where real content should be.
 - [F278](F278.md) — Where the one pass over the folder still differs by scope, and where the mode is still asked outside its questions
 - [F279](F279.md) — What an examination says in Activity is written after its rows, in a call of its own
 - [F281](F281.md) — A line of the "not uploaded" list inside a place that cannot be read stays until the place is read again
+- [F286](F286.md) — What cannot be read is one line in Not Uploaded with one sentence for every cause, and the line goes only when its place is looked at again
+- [F287](F287.md) — A file whose marks are damaged is listed in Not Uploaded and left as it is; nothing repairs it
 - [F290](F290.md) — After a panic under a lock, the next user of the lock goes on with the data as the panic left it
 - [F291](F291.md) — What a pin worker does when it ends by a panic rests on how tokio drops a task
 
@@ -412,6 +414,7 @@ application must never read zeros where real content should be.
 - [D51](D51.md) — The helper's stand-in is one accept loop for `helper/`, `hydration/` and `folder/`, not for the daemon
 - [D52](D52.md) — The fixture of `remote/`: a step is a cycle of a new `Listing`, and a read-only folder a test writes into is unlocked between steps
 - [D53](D53.md) — The enumeration of local acts is held to a small model of the rule, a second writing of it; what the examination's four parts left as it was
+- [D55](D55.md) — The enumeration of local acts has no act that makes something unreadable, and one act for damaged marks
 - [D56](D56.md) — The path of a descriptor, the resolve flags and "a name of ours" are written once for the daemon, but `local/` and the helper keep their own
 - [D58](D58.md) — The rule for locks is not asked of `local/`, of the helper or of test doubles, and the wall clock is still read in `local/` by itself
 

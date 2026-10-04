@@ -36,7 +36,8 @@ pub fn quota_text(state: &str, free: u64, full: bool) -> String {
 /// tables do not know is shown as it is.
 pub fn upload_reason_text(reason: &str) -> String {
     match Reason::parse(reason) {
-        // What an examination never uploads has its own table; `not-downloaded` is in both.
+        // What an examination never uploads has its own table; `not-downloaded` and
+        // `state-unreadable` are in both.
         Reason::Other(_) => skip_text(&LocalSkip::parse(reason), reason),
         known => reason_text(&known, reason),
     }
@@ -117,6 +118,9 @@ fn skip_text(skip: &LocalSkip, stored: &str) -> String {
         LocalSkip::NotDownloaded => reason_text(&Reason::NotLocal, stored),
         LocalSkip::OtherDevice => "on another filesystem mounted inside the folder: never uploaded".to_owned(),
         LocalSkip::HardLink => "a file with other hard links: not uploaded".to_owned(),
+        LocalSkip::Unreadable => "cannot be read: not uploaded, nor anything inside it, until konedrive may read it".to_owned(),
+        // Spelled as a row's `state-unreadable`, which is read first.
+        LocalSkip::BadState => reason_text(&Reason::BadState(None), stored),
         // No sentence: shown as stored.
         LocalSkip::Ignored => stored.to_owned(),
         LocalSkip::Other(_) => reason_text(&Reason::Other(stored.to_owned()), stored),

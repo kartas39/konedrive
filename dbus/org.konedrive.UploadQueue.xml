@@ -38,7 +38,9 @@
          symlink, fifo, socket, device, other-device (on another
          filesystem mounted inside the folder, or a nested Btrfs subvolume),
          reserved-name, not-downloaded (a
-         file from elsewhere that is not downloaded), hard-link; and every
+         file from elsewhere that is not downloaded), hard-link, unreadable
+         (the daemon may not read it, or reading it failed), state-unreadable
+         (a file with an item id and no state the daemon can read); and every
          blocked change with its reason: name-characters, name-spaces,
          name-reserved, name-not-utf8, too-large, forbidden,
          "refused: <OneDrive's message>". -->
@@ -52,7 +54,8 @@
          the mass-delete guard are not. Groups, in this order:
          one-action (one action fixes every file: quota-exceeded, forbidden),
          per-file (each file needs the user: name-characters, name-spaces,
-         name-reserved, name-not-utf8, too-large, refused — every
+         name-reserved, name-not-utf8, too-large, unreadable,
+         state-unreadable, refused — every
          "refused: <message>" is summed as refused, and so is every reason
          with a detail behind its key, "<key>: <detail>"; also every
          blocked change whose reason is none of another group's, whatever

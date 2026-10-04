@@ -6,7 +6,7 @@ use konedrive_tree::{ActivityKind, ActivityRow};
 
 use super::listing::EntryIx;
 use super::{lossy, ExamineError, Run};
-use crate::local::entry::{Entry, Type};
+use crate::local::entry::{Entry, StateAttr, Type};
 
 /// What is done with a copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,8 +17,10 @@ pub(super) enum Fate {
     /// A downloaded file with other names, whose other names stripping would
     /// change too: listed.
     HardLink,
-    /// A file that is not downloaded cannot be read here: listed — or, when
-    /// it is surely nobody's file and holds no data, removed.
+    /// A file that is not downloaded cannot be read here, and one whose
+    /// state cannot be read is not known to be downloaded: listed — or, when
+    /// it is marked as not downloaded, surely nobody's file and holds no
+    /// data, removed.
     NotDownloaded,
 }
 
@@ -57,7 +59,10 @@ impl Run<'_, '_, '_> {
                         detail: format!("removed an empty copy of {}: it held no content", lossy(&e.name)),
                     });
                 } else {
-                    self.list(ix, LocalSkip::NotDownloaded);
+                    // Marks that say nothing readable are said as that: the
+                    // file is not known to be one that is not downloaded.
+                    let damaged = e.ty == Type::File && matches!(e.state, StateAttr::Absent | StateAttr::Corrupt);
+                    self.list(ix, if damaged { LocalSkip::BadState } else { LocalSkip::NotDownloaded });
                 }
             }
             Fate::Stripped => {

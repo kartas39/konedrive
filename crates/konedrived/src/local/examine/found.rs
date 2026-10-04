@@ -6,7 +6,7 @@ use std::io::{self, Read};
 
 use konedrive_fs::lease;
 use konedrive_fs::placeholder::{self, State};
-use konedrive_tree::outbox::{OutboxKind, OutboxOp, OutboxState};
+use konedrive_tree::outbox::{LocalSkip, OutboxKind, OutboxOp, OutboxState};
 use konedrive_tree::Row;
 
 use super::facts::Expect;
@@ -37,7 +37,7 @@ pub(super) enum Verdict {
     /// Not downloaded: the cloud's content. `cut`: a `truncate(2)` changed
     /// its size, which is put back.
     NotDownloaded { cut: bool },
-    /// An item id and no state konedrive can read: left alone.
+    /// An item id and no state konedrive can read: left alone, and listed.
     Damaged,
     /// Being uploaded as it is now.
     BeingSent,
@@ -137,7 +137,10 @@ impl Run<'_, '_, '_> {
                 Ok(Content::Same)
             }
             Verdict::Damaged => {
-                tracing::warn!("{} carries an item id and no state konedrive can read; it is left alone", e.rel.display());
+                // Said in the list, each time it is looked at; the line goes
+                // when the file has a state again, is replaced, or is gone.
+                tracing::debug!("{} carries an item id and no state konedrive can read; it is left alone", e.rel.display());
+                self.skip(&e.rel, LocalSkip::BadState);
                 Ok(Content::Unknown)
             }
             Verdict::BeingSent => Ok(Content::Unknown),
