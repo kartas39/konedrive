@@ -1,44 +1,21 @@
-//! A read-write folder's cycle (`docs/design/writes.md` §9): the same
-//! fetch, stage, reconcile and swap as the read phase's, with three more
-//! rules around them.
-//!
-//! - **The tree lock.** The cycle holds the per-root tree lock — the one the
-//!   outbox worker holds across each commit — from before `staging` is begun
-//!   until after it is swapped in, with the reconcile's changes to the folder
-//!   in between (the read-write reconcile must, item 2). `commit_staging` replaces `items` with
-//!   `staging`, so a commit made in between would be reverted.
-//! - **The stale-delta guard.** The cycle notes the outbox's commit count
-//!   (`outbox_seq`) as its fetch starts. An entry for an item the outbox
-//!   committed after that — or deleted, by its tombstone — may be older than
-//!   the commit, or newer: it is read again from Graph, under the lock, and
-//!   that answer is staged instead, newer than both.
-//! - **What waits.** An item the reconcile leaves as it is on disk (see
-//!   `materialize::Rw`) keeps its base row; its staged change is deferred and
-//!   staged again at every cycle, until the disk takes it or an outbox commit
-//!   supersedes it. Items the outbox committed since the last cycle, and
-//!   items with no local object on record, are looked at again too, so the
-//!   disk follows the base (F82 (7), (8)).
-//!
-//! Its reconcile then records the conflict copies it made, hands the
-//! watcher what it kept or copied — the daemon's own changes raise no event
-//! the watcher keeps — lets rows wait for a folder made again, and says the
-//! cycle went through, so that the outbox worker sends (§4.9).
+//! A read-write folder's part in uploading, as its cycle sees it
+//! (`docs/design/writes.md` §9): what the cycle shares with the folder's
+//! outbox worker and watcher. The cycle is the same fetch, stage, reconcile
+//! and swap as a read-only folder's; what staging adds for it is in
+//! `stage.rs`, and what its reconcile adds in `reconcile.rs`: it records the
+//! conflict copies it made, hands the watcher what it kept or copied — the
+//! daemon's own changes raise no event the watcher keeps — lets rows wait
+//! for a folder made again, and says the cycle went through, so that the
+//! outbox worker sends (§4.9).
 
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use tokio::sync::OwnedMutexGuard;
 use tokio_util::sync::CancellationToken;
 
-use super::reconcile::{Commit, Mode, Reconciled, RwCycle, Waiting};
-use super::{cancellable, drive_error, CycleError, Fetched, Listing, Turn};
-use crate::folder::classify::classify;
+use super::{cancellable, CycleError, Listing};
 use crate::local::Batch;
-use crate::remote::materialize::Scope;
-use konedrive_graph::drive::DriveError;
 use konedrive_tree::outbox::OutboxRow;
-use konedrive_tree::reconcile::RwStaged;
-use konedrive_tree::Change;
 
 /// A read-write folder's cycle: what it shares with the folder's outbox
 /// worker and watcher.
@@ -88,97 +65,10 @@ impl Writes {
 }
 
 impl Listing {
-    /// A read-write folder's part in uploading; `None` for a read-only folder.
-    pub(crate) fn writes(&self) -> Option<&Writes> {
-        self.ctx.writes.as_ref()
-    }
-
     /// The tree lock of a read-write folder (`writes`), as the cycle waits for it.
     pub(super) async fn tree_lock(&self, writes: &Writes, cancel: &CancellationToken) -> Result<OwnedMutexGuard<()>, CycleError> {
         let lock = Arc::clone(&writes.tree_lock).lock_owned();
         cancellable(cancel, lock).await
-    }
-
-    /// What was fetched, staged and reconciled in read-write mode (the
-    /// folder's `writes`); with the number of entries the delta had.
-    pub(super) async fn reconcile_rw_fetched(
-        &self,
-        turn: &Turn,
-        writes: &Writes,
-        fetched: Fetched,
-        fetch_seq: i64,
-        full_requested: bool,
-        cancel: &CancellationToken,
-    ) -> Result<(Reconciled, usize), CycleError> {
-        match fetched {
-            Fetched::Placed(placed) => Ok((placed, 0)),
-            Fetched::Listed { link, upload_differences } => {
-                let tree = self.tree_lock(writes, cancel).await?;
-                // `staging` holds the whole new listing: what the outbox
-                // committed since the listing began is read again.
-                let since = self.on_store(turn, move |s| s.committed_since(fetch_seq)).await?;
-                let mut fresh = Vec::new();
-                for id in since.into_keys() {
-                    fresh.push(self.fresh(&id, cancel).await?);
-                }
-                // The listing is newer than anything deferred.
-                let consumed = self.on_store(turn, move |s| {
-                    s.stage_over(&fresh)?;
-                    s.deferred_ids()
-                })
-                .await?;
-                let rw = RwCycle { writes, tree, upload_differences, waiting: Waiting { fetch_seq, consumed } };
-                Ok((self.reconcile(turn, Mode::ReadWrite(rw), Scope::Full, Commit::Swap { link, listing: false }, cancel).await?, 0))
-            }
-            Fetched::Changes { changes, link } => {
-                let count = changes.len();
-                let tree = self.tree_lock(writes, cancel).await?;
-                let changes = self.guard_delta(turn, changes, fetch_seq, cancel).await?;
-                let since = self.revisit_from.load(Ordering::SeqCst);
-                let staged = self.on_store(turn, move |s| s.stage_rw(&changes, since, full_requested)).await?;
-                let Some(RwStaged { ids, consumed }) = staged else {
-                    self.on_store(turn, move |s| s.set_delta_link(&link)).await?;
-                    return Ok((Reconciled::default(), count));
-                };
-                let scope = if full_requested || count > self.ctx.full_threshold { Scope::Full } else { Scope::Changed(ids) };
-                let rw = RwCycle { writes, tree, upload_differences: false, waiting: Waiting { fetch_seq, consumed } };
-                Ok((self.reconcile(turn, Mode::ReadWrite(rw), scope, Commit::Swap { link, listing: false }, cancel).await?, count))
-            }
-        }
-    }
-
-    /// The stale-delta guard (§3.7): each entry for an item the outbox
-    /// committed after `fetch_seq` is read again from Graph, unless it is the
-    /// commit itself (the same eTag).
-    async fn guard_delta(&self, turn: &Turn, changes: Vec<Change>, fetch_seq: i64, cancel: &CancellationToken) -> Result<Vec<Change>, CycleError> {
-        let committed = self.on_store(turn, move |s| s.committed_since(fetch_seq)).await?;
-        if committed.is_empty() {
-            return Ok(changes);
-        }
-        let mut out = Vec::with_capacity(changes.len());
-        for change in changes {
-            let stale = match (committed.get(change.id()), &change) {
-                (None, _) => false,
-                (Some(commit), Change::Upsert(row)) => commit.gone || row.etag.is_none() || row.etag != commit.etag,
-                (Some(_), _) => true,
-            };
-            if stale {
-                tracing::debug!("{} was committed while the delta was fetched: it is read again", change.id());
-                out.push(self.fresh(change.id(), cancel).await?);
-            } else {
-                out.push(change);
-            }
-        }
-        Ok(out)
-    }
-
-    /// Item `id` as Graph has it now: an upsert, or a delete.
-    async fn fresh(&self, id: &str, cancel: &CancellationToken) -> Result<Change, CycleError> {
-        match cancellable(cancel, self.ctx.drive.item(id)).await? {
-            Ok(item) => Ok(classify(&item)),
-            Err(DriveError::NotFound) => Ok(Change::Delete(id.to_owned())),
-            Err(e) => Err(drive_error(e)),
-        }
     }
 }
 

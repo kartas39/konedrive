@@ -17,7 +17,9 @@ use crate::folder::locks::InodeKey;
 use crate::remote::listing::CycleError;
 use crate::remote::testing::{id_at, ino, mode, Options, Says, World};
 
-/// A read-only folder, kept under the lock or not.
+/// A read-only folder: left under its lock as the daemon keeps it, or with
+/// the lock taken off after every step, for a test that puts its own files
+/// into it.
 pub(super) async fn world(locked: bool) -> World {
     World::new(Options { locked, ..Options::default() }).await
 }
@@ -297,7 +299,6 @@ async fn a_full_reconcile_builds_the_tree_from_nothing() {
     let meta = std::fs::metadata(w.path("docs/f.txt")).unwrap();
     assert_eq!((meta.len(), meta.mtime()), (4096, 1_700_000_000));
     assert!(!w.path(".konedrive-holding").exists());
-    assert_eq!(mode(&w.path("docs/f.txt")), 0o644, "no lock on an unlocked folder");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -32,14 +32,14 @@ use tokio_util::sync::CancellationToken;
 
 use crate::status::activity;
 use crate::status::report::Report;
-use super::materialize::{Applied, ApplyError, Claimed, Scope};
+use super::materialize::{Applied, ApplyError, Claimed};
 use crate::hydration::pin::Pins;
 use crate::folder::root::SyncRoot;
 use crate::hydration::source::ContentSource;
 use crate::folder::locks::InodeLocks;
 use crate::status::snapshot::{SyncStateHandle, SyncTrouble};
-use konedrive_graph::drive::{DeltaFrom, DriveClient, DriveError};
-use konedrive_tree::{Change, Store, TreeError, TreeStore};
+use konedrive_graph::drive::{DriveClient, DriveError};
+use konedrive_tree::{Store, TreeError, TreeStore};
 
 mod lease;
 pub use lease::Lease;
@@ -48,7 +48,11 @@ pub(crate) mod reconcile;
 /// A read-write folder's cycle (`docs/design/writes.md` §9).
 mod rw;
 pub use rw::Writes;
-use reconcile::{Commit, Mode, Reconciled};
+use reconcile::Reconciled;
+/// What OneDrive said, staged: the reconcile it asks for.
+pub(crate) mod stage;
+use stage::Fetched;
+use crate::remote::mode::Mode;
 
 /// What OneDrive lists: a whole listing, one placed page by page, a delta's changes.
 mod fetch;
@@ -104,13 +108,12 @@ pub struct ListingContext {
     /// `SyncService`'s pins: a cycle queues what it placed under a pin, and
     /// a Full reconcile is followed by a sweep.
     pub pins: Arc<Pins>,
-    /// Whether the folder is kept under the read-only lock: the account is
-    /// read-only (`docs/design/writes.md` §2.2). A switch of mode stops the sync and
-    /// starts a new one, so this never changes under a running sync.
-    pub locked: bool,
-    /// A read-write folder's: its cycle's part in uploading. `None`
-    /// for a read-only folder, whose cycle is the read phase's.
-    pub writes: Option<Writes>,
+    /// The folder's mode (`docs/design/writes.md` §2.2). Read-only: the
+    /// account is, the folder is kept under the read-only lock, and its
+    /// cycle is the read phase's. Read-write: with the cycle's part in
+    /// uploading. A switch of mode stops the sync and starts a new one, so
+    /// this never changes under a running sync.
+    pub mode: Mode<Writes>,
     /// The daemon's other parts a cycle asks or tells; `None` in tests.
     pub neighbours: Option<Neighbours>,
     /// What background work runs now (`conditions::running`): the poll and the replacements it
@@ -279,25 +282,6 @@ impl<F: FnOnce()> Drop for OnDrop<F> {
     }
 }
 
-/// What the feed said since the stored link.
-// Made once per cycle and taken apart at once: not worth a box.
-#[allow(clippy::large_enum_variant)]
-enum Fetched {
-    /// A full listing is in `staging`: the first into a folder that shows
-    /// the drive already, one after `410`, or one after a first listing's
-    /// resume link was refused.
-    Listed {
-        link: String,
-        /// `410` with `resyncChangesUploadDifferences`: a read-write
-        /// folder uploads what the listing left out.
-        upload_differences: bool,
-    },
-    Changes { changes: Vec<Change>, link: String },
-    /// A first listing, placed page by page and committed with its link
-    ///.
-    Placed(Reconciled),
-}
-
 /// Whether Graph refused a link it handed out — expired (`410`), gone, or a
 /// token it no longer takes — rather than could not be reached or refused
 /// the account.
@@ -338,7 +322,7 @@ impl Listing {
         // word to the outbox (`Writes::cycled`): the worker is told again. Whatever the
         // cycle came to: one that failed with trouble that is only said opens the gate too.
         let is_stopped = self.ctx.state.get().cycle.sync_trouble.is_some_and(|t| t.blocking);
-        if let Some(writes) = self.ctx.writes.as_ref().filter(|_| was_stopped && !is_stopped) {
+        if let Some(writes) = self.ctx.mode.read_write().filter(|_| was_stopped && !is_stopped) {
             (writes.reopened)();
         }
         if result.is_ok() {
@@ -369,6 +353,10 @@ impl Listing {
         result
     }
 
+    /// One cycle, in three steps: what OneDrive says is fetched
+    /// ([`Self::fetch`]), staged and reconciled ([`Self::reconcile_fetched`]),
+    /// and what a cycle that went through leaves to do is done
+    /// ([`Self::after_cycle`]). The mode is told once, before the fetch.
     async fn sync_once(self: &Arc<Self>, turn: &Turn, full_requested: bool, cancel: &CancellationToken) -> Result<CycleReport, CycleError> {
         // HS2: a folder that shows OneDrive is kept in step only with
         // interception and a connected helper — nothing is placed or updated
@@ -378,75 +366,28 @@ impl Listing {
             return Err(CycleError::NoHelper);
         }
         self.check_account(turn, cancel).await?;
-        // Read-write mode: the first cycle waits for the watcher's Full local scan (write
-        // design §3.3), and the stale-delta guard starts from the outbox's commits so far.
-        let fetch_seq = match self.writes() {
-            Some(writes) => {
-                writes.scanned(cancel).await?;
-                Some((writes, self.on_store(turn, |s| s.outbox_seq()).await?))
-            }
-            None => None,
-        };
-        let (stored, resume_at) = self.on_store(turn, |s| Ok((s.delta_link()?, s.listing_next()?))).await?;
-        let fetched = match (stored, resume_at) {
-            (Some(link), _) => self.fetch_changes(turn, link, cancel).await?,
-            (None, Some(next)) if next.is_empty() => self.list_placing(turn, DeltaFrom::Start, cancel).await?,
-            (None, Some(next)) => self.list_placing(turn, DeltaFrom::Link(next), cancel).await?,
-            (None, None) if self.holds_nothing_yet(turn).await? => {
-                // Under way from here on, so that whatever of ours the
-                // folder holds from now on is this listing's, also after a
-                // stop before its first page is committed.
-                self.on_store(turn, |s| s.begin_placing()).await?;
-                self.list_placing(turn, DeltaFrom::Start, cancel).await?
-            }
-            (None, None) => self.list_all(turn, cancel).await?,
-        };
+        let mode = self.begin(turn, cancel).await?;
+        let fetched = self.fetch(turn, mode, cancel).await?;
         // Whether this cycle may have changed the tree: its counts are
         // published then, and not in an idle cycle (issue #39).
-        let listed = matches!(fetched, Fetched::Listed { .. } | Fetched::Placed(_));
-        let (reconciled, changes) = match (fetched, fetch_seq) {
-            (Fetched::Placed(placed), _) => (placed, 0),
-            (fetched, Some((writes, seq))) => {
-                let done = self.reconcile_rw_fetched(turn, writes, fetched, seq, full_requested, cancel).await?;
-                self.revisit_from.store(seq, Ordering::SeqCst);
-                done
-            }
-            (Fetched::Listed { link, .. }, None) => (self.reconcile(turn, Mode::ReadOnly, Scope::Full, Commit::Swap { link, listing: false }, cancel).await?, 0),
-            (Fetched::Changes { changes, link }, None) => {
-                let count = changes.len();
-                if count > 0 || full_requested {
-                    self.on_store(turn, move |s| {
-                        s.begin_staging(konedrive_tree::NewTree::Delta)?;
-                        s.stage(&changes)
-                    })
-                    .await?;
-                }
-                let scope = if full_requested || count > self.ctx.full_threshold {
-                    Some(Scope::Full)
-                } else if count == 0 {
-                    None
-                } else {
-                    // What `staging` now differs from `items` by: the delta
-                    // just staged, read back so the closure above could own it.
-                    Some(Scope::Changed(self.on_store(turn, |s| s.changed_ids()).await?))
-                };
-                let reconciled = match scope {
-                    None => {
-                        self.on_store(turn, move |s| s.set_delta_link(&link)).await?;
-                        Reconciled::default()
-                    }
-                    Some(scope) => self.reconcile(turn, Mode::ReadOnly, scope, Commit::Swap { link, listing: false }, cancel).await?,
-                };
-                (reconciled, count)
-            }
-        };
+        let listed = !matches!(fetched, Fetched::News(stage::News::Changes { .. }));
+        let (reconciled, changes) = self.reconcile_fetched(turn, mode, fetched, full_requested, cancel).await?;
+        self.after_cycle(turn, reconciled, changes, listed || full_requested).await
+    }
+
+    /// What a cycle that went through leaves to do: the next one asked to
+    /// be Full where this one left a file for later, the counts and the
+    /// time published, the conflicts looked over, what is pinned swept or
+    /// queued, the replacements started, and the outbox told. `changed`:
+    /// the cycle may have changed the tree whatever its delta held.
+    async fn after_cycle(self: &Arc<Self>, turn: &Turn, reconciled: Reconciled, changes: usize, changed: bool) -> Result<CycleReport, CycleError> {
         if reconciled.applied.counts.deferred > 0 {
             // Files being filled or freed up right now: a Changed scope would
             // never look at them again.
             self.request_full();
         }
         let Reconciled { applied, full } = reconciled;
-        if listed || full || full_requested || changes > 0 {
+        if changed || full || changes > 0 {
             self.publish_counts(turn).await?;
         }
         // `LastChecked`: this cycle succeeded. Kept in the store,
@@ -489,7 +430,7 @@ impl Listing {
         } else {
             self.spawn_replacements(applied.pending.replacements.clone());
         }
-        if let Some(writes) = &self.ctx.writes {
+        if let Some(writes) = self.ctx.mode.read_write() {
             // The base caught up: the outbox sends (`docs/design/writes.md` §9).
             (writes.cycled)();
         }

@@ -320,7 +320,7 @@ impl Listing {
         let mut slot = stop.run_until_cancelled(self.ctx.drive.pool().acquire_sized(konedrive_graph::pool::Class::Download, size)).await?;
         // Opening reads the root's attribute to prove it is still this root:
         // on a blocking thread, like every open (part 1's).
-        let (root, locked) = (self.ctx.root.clone(), self.ctx.locked);
+        let (root, locked) = (self.ctx.root.clone(), self.ctx.mode.is_read_only());
         let disk = match tokio::task::spawn_blocking(move || Disk::open(&root, locked)).await {
             Ok(Ok(disk)) => disk,
             Ok(Err(e)) => return Some(ReplaceOutcome::Failed(Failure { reason: FailureReason::Folder, text: e.to_string() })),
@@ -328,7 +328,7 @@ impl Listing {
         };
         // Read-write mode: the swap under a write lease and the tree lock, and the new
         // version's deferred change into the base as it lands.
-        let leased = self.ctx.writes.as_ref().map(|writes| Leased { tree_lock: &writes.tree_lock, store: &self.ctx.store });
+        let leased = self.ctx.mode.read_write().map(|writes| Leased { tree_lock: &writes.tree_lock, store: &self.ctx.store });
         let outcome = replace_until(&disk, &self.ctx.locks, source, replacement, leased.as_ref(), stop).await?;
         if matches!(outcome, ReplaceOutcome::Replaced) {
             // A new version is a new inode: the item's recorded one now. Recorded in a

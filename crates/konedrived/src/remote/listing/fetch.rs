@@ -7,12 +7,34 @@ use crate::remote::materialize::Scope;
 use konedrive_graph::drive::{DeltaFrom, DeltaNext, DriveError};
 use crate::folder::classify::classify;
 use konedrive_tree::{Change, Table};
-use super::reconcile::{Commit, Mode, Reconciled, RwCycle, Waiting};
-use super::{applying, cancellable, drive_error, refused, CycleError, Fetched, Listing, OnDrop, Turn};
+use super::reconcile::{Commit, Reconciled, RwCycle, Waiting};
+use super::stage::{Fetched, News, Since};
+use super::{applying, cancellable, drive_error, refused, CycleError, Listing, OnDrop, Turn};
+use crate::remote::mode::Mode;
 
 impl Listing {
+    /// What OneDrive says since the stored link: the changes of a delta, a
+    /// whole listing into `staging`, or — into a folder that holds nothing
+    /// of ours yet — a first listing placed page by page, begun or resumed.
+    pub(super) async fn fetch(&self, turn: &Turn, mode: Mode<Since<'_>>, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
+        let (stored, resume_at) = self.on_store(turn, |s| Ok((s.delta_link()?, s.listing_next()?))).await?;
+        match (stored, resume_at) {
+            (Some(link), _) => Ok(Fetched::News(self.fetch_changes(turn, link, cancel).await?)),
+            (None, Some(next)) if next.is_empty() => self.list_placing(turn, mode, DeltaFrom::Start, cancel).await,
+            (None, Some(next)) => self.list_placing(turn, mode, DeltaFrom::Link(next), cancel).await,
+            (None, None) if self.holds_nothing_yet(turn).await? => {
+                // Under way from here on, so that whatever of ours the
+                // folder holds from now on is this listing's, also after a
+                // stop before its first page is committed.
+                self.on_store(turn, |s| s.begin_placing()).await?;
+                self.list_placing(turn, mode, DeltaFrom::Start, cancel).await
+            }
+            (None, None) => Ok(Fetched::News(self.list_all(turn, cancel).await?)),
+        }
+    }
+
     /// A full listing into `staging`, page by page, publishing its progress.
-    pub(super) async fn list_all(&self, turn: &Turn, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
+    pub(super) async fn list_all(&self, turn: &Turn, cancel: &CancellationToken) -> Result<News, CycleError> {
         self.ctx.state.update(|s| {
             s.cycle.listing = true;
             s.cycle.items_listed = 0;
@@ -22,19 +44,29 @@ impl Listing {
         self.list_all_pages(turn, cancel).await
     }
 
-    async fn list_all_pages(&self, turn: &Turn, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
-        self.on_store(turn, |s| s.begin_staging(konedrive_tree::NewTree::Whole)).await?;
+    /// A whole listing begins: `staging` is emptied for it.
+    pub(crate) async fn begin_listing(&self, turn: &Turn) -> Result<(), CycleError> {
+        self.on_store(turn, |s| s.begin_staging(konedrive_tree::NewTree::Whole)).await
+    }
+
+    /// One page of a whole listing, into `staging`.
+    pub(crate) async fn stage_page(&self, turn: &Turn, changes: Vec<Change>) -> Result<(), CycleError> {
+        self.on_store(turn, move |s| s.stage(&changes)).await
+    }
+
+    async fn list_all_pages(&self, turn: &Turn, cancel: &CancellationToken) -> Result<News, CycleError> {
+        self.begin_listing(turn).await?;
         let mut from = DeltaFrom::Start;
         let mut listed = 0u64;
         loop {
             let page = cancellable(cancel, self.ctx.drive.delta(&from)).await?.map_err(drive_error)?;
             let changes: Vec<Change> = page.items.iter().map(classify).collect();
             listed += changes.iter().filter(|c| !matches!(c, Change::Root(_) | Change::Delete(_))).count() as u64;
-            self.on_store(turn, move |s| s.stage(&changes)).await?;
+            self.stage_page(turn, changes).await?;
             self.ctx.state.update(|s| s.cycle.items_listed = listed);
             match page.next {
                 DeltaNext::Page(next) => from = DeltaFrom::Link(next),
-                DeltaNext::Done(link) => return Ok(Fetched::Listed { link, upload_differences: false }),
+                DeltaNext::Done(link) => return Ok(News::Listed { link, upload_differences: false }),
             }
         }
     }
@@ -92,12 +124,12 @@ impl Listing {
     ///
     /// A resume link Graph refuses — the one a stopped listing left, asked
     /// for first in this cycle — lists the drive again from the start,
-    /// whole, and reconciles it once in full ([`Fetched::Listed`]), as after
+    /// whole, and reconciles it once in full ([`News::Listed`]), as after
     /// an expired feed: what is placed is found by its id, and
     /// what is gone goes. A next-page link handed out in this cycle that
     /// Graph turns down fails the cycle like any trouble with Graph; the
     /// next cycle resumes from it.
-    pub(super) async fn list_placing(&self, turn: &Turn, mut from: DeltaFrom, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
+    pub(super) async fn list_placing(&self, turn: &Turn, mode: Mode<Since<'_>>, mut from: DeltaFrom, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
         self.ctx.state.update(|s| s.cycle.listing = true);
         // However the listing ends — also when its future is dropped.
         let _said = OnDrop(Some(|| self.ctx.state.update(|s| s.cycle.listing = false)));
@@ -133,7 +165,7 @@ impl Listing {
                     tracing::info!("OneDrive would not go on with the listing ({e}); listing the drive again from the start");
                     self.on_store(turn, |s| s.forget_listing_next()).await?;
                     self.ctx.state.update(|s| s.cycle.items_listed = 0);
-                    return self.list_all_pages(turn, cancel).await;
+                    return Ok(Fetched::News(self.list_all_pages(turn, cancel).await?));
                 }
                 Err(e) => return Err(drive_error(e)),
             };
@@ -147,8 +179,8 @@ impl Listing {
             // and the swap would revert that commit. Only then: a copy per page
             // would grow with the square of a large listing. An examination
             // writes nothing before the listing is complete (`NoBase`).
-            let tree = match self.writes() {
-                Some(writes) => {
+            let tree = match mode {
+                Mode::ReadWrite(Since { writes, .. }) => {
                     let tree = self.tree_lock(writes, cancel).await?;
                     let seq = self.on_store(turn, |s| s.outbox_seq()).await?;
                     if staged_at.is_some_and(|at| at != seq) {
@@ -157,7 +189,7 @@ impl Listing {
                     staged_at = Some(seq);
                     Some((writes, tree))
                 }
-                None => None,
+                Mode::ReadOnly => None,
             };
             self.on_store(turn, move |s| s.stage(&staged)).await?;
             let scope = if full { Scope::Full } else { Scope::Changed(changes.iter().map(|c| c.id().to_owned()).collect()) };
@@ -206,7 +238,7 @@ impl Listing {
 
     /// The changes since `link`; an expired feed (`410`) becomes a full
     /// listing.
-    pub(super) async fn fetch_changes(&self, turn: &Turn, link: String, cancel: &CancellationToken) -> Result<Fetched, CycleError> {
+    pub(crate) async fn fetch_changes(&self, turn: &Turn, link: String, cancel: &CancellationToken) -> Result<News, CycleError> {
         let mut from = DeltaFrom::Link(link);
         let mut changes = Vec::new();
         loop {
@@ -215,7 +247,7 @@ impl Listing {
                     changes.extend(page.items.iter().map(classify));
                     match page.next {
                         DeltaNext::Page(next) => from = DeltaFrom::Link(next),
-                        DeltaNext::Done(link) => return Ok(Fetched::Changes { changes, link }),
+                        DeltaNext::Done(link) => return Ok(News::Changes { changes, link }),
                     }
                 }
                 Err(DriveError::ResyncRequired) => {
@@ -226,7 +258,7 @@ impl Listing {
                 Err(DriveError::ResyncUpload) => {
                     tracing::info!("the change feed has expired; listing the drive again, keeping what it no longer has");
                     return match self.list_all(turn, cancel).await? {
-                        Fetched::Listed { link, .. } => Ok(Fetched::Listed { link, upload_differences: true }),
+                        News::Listed { link, .. } => Ok(News::Listed { link, upload_differences: true }),
                         other => Ok(other),
                     };
                 }

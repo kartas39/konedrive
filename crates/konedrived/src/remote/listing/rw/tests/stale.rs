@@ -1352,3 +1352,5 @@ async fn a_stop_between_the_step_aside_and_its_record_is_repaired_and_sends_noth
 /// Names taken and given in one listing: the shapes a review ran, and the
 /// enumeration of the small ones.
 mod names;
+/// The same listings in a read-only folder, which ends as OneDrive has it.
+mod read_only;

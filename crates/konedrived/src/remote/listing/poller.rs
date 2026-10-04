@@ -174,7 +174,7 @@ impl Drop for Poller {
 /// and its `LastError` says why ([`run`]). A store that cannot be read holds them back too.
 /// What it said goes once none wait.
 async fn held_back(listing: &Listing) -> bool {
-    if !listing.ctx.locked {
+    if !listing.ctx.mode.is_read_only() {
         return false;
     }
     let store = listing.ctx.store.clone();

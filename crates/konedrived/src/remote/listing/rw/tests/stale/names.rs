@@ -159,30 +159,30 @@ async fn a_step_aside_below_a_folder_renamed_in_the_same_listing_sends_no_name()
 
 /// One combination of the enumeration.
 #[derive(Clone, Copy, Debug)]
-struct Case {
+pub(super) struct Case {
     /// Which item OneDrive takes out of what the folder can hold, if any.
-    item: Option<usize>,
+    pub(super) item: Option<usize>,
     /// How: a name too long (`N`), or a move into a folder that is not
     /// placed (`M`). In a chain also `R`: a rename the folder can hold.
-    reason: char,
+    pub(super) reason: char,
     /// What else the same listing does (see [`cloud_changes`]).
-    other: u8,
+    pub(super) other: u8,
     /// What was done on this computer before (see [`local_work`]).
-    local: u8,
-    full: bool,
+    pub(super) local: u8,
+    pub(super) full: bool,
 }
 
 /// The item, its folder in OneDrive, its name.
 const ITEMS: [(&str, &str, &str); 4] = [("D", ROOT, "docs"), ("S", "D", "sub"), ("F", "D", "f.txt"), ("T", ROOT, "top.txt")];
 /// A chain: the item leaves (or is renamed), `g.txt` takes its name, `top.txt` takes `g.txt`'s.
-const CHAIN: u8 = 8;
+pub(super) const CHAIN: u8 = 8;
 /// Two folders, `docs` and `papers`, exchange names.
 const FOLDERS: u8 = 7;
 /// Two files exchange names (or places).
 const FILES: u8 = 6;
 
 /// What OneDrive does in one listing.
-fn cloud_changes(c: &mut crate::fake_onedrive::Cloud, case: Case) {
+pub(super) fn cloud_changes(c: &mut crate::fake_onedrive::Cloud, case: Case) {
     let item = case.item.map(|n| ITEMS[n]);
     let id = item.map_or("", |i| i.0);
     if let Some((id, parent, name)) = item {
@@ -229,7 +229,7 @@ fn cloud_changes(c: &mut crate::fake_onedrive::Cloud, case: Case) {
 
 /// Whether the combination cannot be: a name freed by nothing, a folder
 /// above the root, a folder both gone and exchanged, a chain with no head.
-fn senseless(case: Case) -> bool {
+pub(super) fn senseless(case: Case) -> bool {
     let id = case.item.map_or("", |n| ITEMS[n].0);
     // A rename the folder can hold is the head of a chain only.
     if (case.reason == 'R') != (case.other == CHAIN && case.reason != 'N' && case.reason != 'M') {
@@ -295,7 +295,7 @@ async fn local_work(w: &World, case: Case) -> (Vec<(String, String)>, &'static s
 
 /// Where OneDrive has item `id`, as a path here; `None` where the folder
 /// cannot hold it.
-fn place_in_onedrive(c: &crate::fake_onedrive::Cloud, id: &str) -> Option<String> {
+pub(super) fn place_in_onedrive(c: &crate::fake_onedrive::Cloud, id: &str) -> Option<String> {
     let mut names = Vec::new();
     let mut at = id.to_owned();
     while at != ROOT {

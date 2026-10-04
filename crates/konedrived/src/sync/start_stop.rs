@@ -243,8 +243,10 @@ impl SyncService {
             after_cycle: Some(Arc::clone(&kick)),
             report: self.report.clone(),
             pins: Arc::clone(&self.pins),
-            locked: open.is_none(),
-            writes,
+            mode: match writes {
+                Some(writes) => crate::remote::mode::Mode::ReadWrite(writes),
+                None => crate::remote::mode::Mode::ReadOnly,
+            },
             // Another account's objects are never removed here, and the
             // account hears of a drive that is not the folder's (m2).
             neighbours: Some(self.neighbours()),
