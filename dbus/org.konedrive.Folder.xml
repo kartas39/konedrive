@@ -54,11 +54,15 @@
          Reads the quota again (Account.QuotaRemaining, QuotaState, ...): with
          space again, a full OneDrive ends (UploadQueue.QuotaFull), and the
          files too big before go up once they fit.
-         Refused Unsupported for a folder that is not connected to OneDrive,
-         and NoHelper while the helper is not connected. A folder that is
-         down after a failure (a bring-up that failed, the folder moved away,
-         a registration that was kept) is brought up first. Refused NotUp,
-         with why, when that fails, for a folder that only waits (State
+         Refused NoHelper while the helper is not connected, and Unsupported
+         for a folder that is up and not connected to OneDrive. A folder that
+         is down after a failure (a bring-up that failed, the folder moved
+         away, a registration that was kept), connected to OneDrive or not,
+         is brought up first; a folder that is not connected to OneDrive has
+         nothing more to refresh then, and the call succeeds. Only the
+         folder that was registered is brought up: a directory at its path
+         that does not carry its root id is left alone. Refused NotUp, with
+         why, when the bring-up fails, for a folder that only waits (State
          waiting), and for one whose sync cannot start.
          While paused, OneDrive is not asked. -->
     <method name="Refresh"/>

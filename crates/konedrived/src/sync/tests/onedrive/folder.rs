@@ -490,7 +490,10 @@ async fn a_registration_refused_after_a_bring_up_leaves_its_sync_running() {
         let (service, path) = (Arc::clone(&service), w.folder.path().to_path_buf());
         tokio::spawn(async move { service.register_root(&path).await })
     };
+    // Not the refusal made from the view: the call is inside `change()`, behind the
+    // bring-up, and ends only once that has.
     tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!registering.is_finished(), "the registration did not wait for the bring-up");
     w.helper.release(Seen::RegisterRoot);
     resuming.await.unwrap();
     let refused = registering.await.unwrap();

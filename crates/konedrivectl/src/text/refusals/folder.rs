@@ -230,9 +230,11 @@ fn shared(told: &Told<'_>, refusal: &Refusal) -> String {
         Refusal::NotUp if detail.is_empty() || detail.starts_with(ERROR_PREFIX) => {
             format!("the sync folder{folder} is not up, so nothing was done. `{prefix} sync status` shows what it waits for")
         }
+        // The daemon's message says why, and whether it tried to bring the folder up.
         Refusal::NotUp => format!(
-            "nothing was done for the sync folder{folder}: {detail}. `{prefix} sync status` shows its state; \
-             `{prefix} sync forget` takes the folder away, and leaves its files as they are"
+            "the sync folder{folder} is not up, so the command could not go ahead: {}. `{prefix} sync status` \
+             shows its state; `{prefix} sync forget` takes the folder away, and leaves its files as they are",
+            detail.strip_prefix("the folder is not up: ").unwrap_or(detail)
         ),
         Refusal::Failed
         | Refusal::WritesNotAllowed

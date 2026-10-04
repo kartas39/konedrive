@@ -754,8 +754,10 @@ async fn a_read_write_folder_whose_sync_cannot_start_is_locked_again() {
 /// The folder itself moved away under a read-write sync (§3.3): the folder reads `error`
 /// and says so, its sync stops, what needs the sync is refused `NotUp`, and OneDrive is
 /// asked for nothing more — nothing is deleted there because the folder went. `Refresh()`
-/// tries to bring it up again: refused while it is gone, and once it is back the folder is
-/// up and in step again.
+/// tries to bring it up again: refused while it is gone, refused too while another directory
+/// stands at its path (an empty one made in its place is never adopted: nothing is stamped
+/// on it, the helper is not told, and no sync starts on it, at a `Refresh()` or at the
+/// helper's reconnect), and once the folder is back it is up and in step again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_folder_moved_away_stops_its_sync_and_says_so() {
     let w = world().await;
@@ -773,10 +775,24 @@ async fn a_folder_moved_away_stops_its_sync_and_says_so() {
     assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("moved or deleted")), "{refused:?}");
     let refused = service.outbox(0).await.unwrap_err();
     assert!(matches!(refused, SyncError::NotUp(_)), "{refused:?}");
+    let gone = |refused: &SyncError| matches!(refused, SyncError::NotUp(why) if why.contains("tried just now") && why.contains("another folder stands in its place"));
     let refused = service.refresh().await.unwrap_err();
-    assert!(matches!(&refused, SyncError::NotUp(why) if why.contains("cannot bring up")), "{refused:?}");
+    assert!(gone(&refused), "{refused:?}");
     assert_eq!(service.root_state(), "error");
     let asked = requests(&w).await;
+
+    // An empty directory where the folder was is not the folder.
+    std::fs::create_dir(w.folder.path()).unwrap();
+    w.helper.forget();
+    let refused = service.refresh().await.unwrap_err();
+    assert!(gone(&refused), "{refused:?}");
+    service.resume().await;
+    assert_eq!(service.root_state(), "error");
+    assert!(service.last_error().contains("another folder stands in its place"), "{}", service.last_error());
+    assert_eq!(xattr::get(w.folder.path(), "user.konedrive.root").unwrap(), None, "the directory was stamped");
+    assert!(!w.helper.seen().contains(&Seen::RegisterRoot), "the helper was told of it");
+    assert_eq!(std::fs::read_dir(w.folder.path()).unwrap().count(), 0, "something was placed in it");
+    std::fs::remove_dir(w.folder.path()).unwrap();
     service.refresh_now();
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(requests(&w).await, asked, "OneDrive was asked on behalf of a folder that is gone");

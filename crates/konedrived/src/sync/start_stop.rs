@@ -24,6 +24,7 @@ impl SyncService {
         if !stopped.folder().syncs() {
             return;
         }
+        debug_assert!(self.syncing.lock().unwrap().is_none(), "a sync runs inside a change");
         // What the parts started here read of the folder is what it is now.
         stopped.publish();
         let Some(reg) = stopped.folder().up().map(|up| up.record.clone()) else { return };
@@ -324,7 +325,12 @@ impl SyncService {
                     }
                     self.require_helper_for(record)?;
                 }
-                return Err(SyncError::not_up(&down.waits_for().map_or_else(|| down.why(&record.root), str::to_owned)));
+                let why = down.waits_for().map_or_else(|| down.why(&record.root), str::to_owned);
+                return Err(if retry {
+                    SyncError::not_up(&format!("bringing it up was tried just now and failed: {why}"))
+                } else {
+                    SyncError::not_up(&why)
+                });
             }
             Is::Up(up) => up.record.clone(),
         };

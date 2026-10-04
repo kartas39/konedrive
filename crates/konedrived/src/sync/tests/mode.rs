@@ -568,8 +568,13 @@ async fn a_failed_registration_the_helper_may_still_hold_is_kept() {
     assert!(matches!(error, SyncError::AlreadyRegistered), "{error:?}");
     assert!(service.last_error().contains("forget it if you do not want it"), "{}", service.last_error());
 
-    // The next connect brings it up, as the refusal said.
+    // The next connect brings it up, as the refusal said — the folder that was registered,
+    // by the id it carries: without it (this test took it off) the folder stays down.
     helper.refuse(Seen::UnregisterRoot, 0);
+    service.resume().await;
+    assert_eq!(service.root_state(), "error");
+    assert!(service.last_error().contains("another folder stands in its place"), "{}", service.last_error());
+    xattr::set(root_dir.path(), "user.konedrive.root", service.root().unwrap().root_id.as_bytes()).unwrap();
     service.resume().await;
     assert_eq!(service.root_state(), "ready", "{}", service.last_error());
 }

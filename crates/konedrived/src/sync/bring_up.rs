@@ -10,7 +10,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use super::folder::{Down, Folder, Interception, Is, Record, Recovery, Standing, Stopped, Up};
-use super::persisted::Persisted;
+use super::persisted::{no_root_id, Persisted};
 use super::{hub, RootSource, SyncError, SyncService};
 use crate::account::state::SignInState;
 use crate::folder::root::{self, SyncRoot};
@@ -366,8 +366,8 @@ impl SyncService {
         }
         // `config.toml` names what is registered now: a fresh root without
         // interception is written down here (a fresh intercepted one already
-        // was, before the helper heard of it), and a root brought back up
-        // under an id other than the recorded one is corrected.
+        // was, before the helper heard of it), and a root recorded without its id
+        // (an old `config.toml`) gets the id its folder carries.
         self.remember(&Persisted::of(&root, interception, source, baloo));
         let dev = hub::device_of(&root.path).await;
         let record = Record { root, interception, source, baloo, dev };
@@ -519,7 +519,7 @@ impl SyncService {
     /// before the bus name is claimed, so that the first thing a client
     /// reads is the folder rather than `none`; quick, since nothing is asked
     /// of the helper and at most one xattr is read.
-    pub async fn restore(&self) {
+    pub(crate) async fn restore(&self) {
         let mut stopped = self.change().await;
         self.restore_in(&mut stopped).await;
     }
@@ -552,6 +552,30 @@ impl SyncService {
             }
         };
         let path = record.root.path.clone();
+        // The directory at the path must be the folder that is recorded, before anything
+        // is stamped on it or said to the helper: a bring-up never adopts whatever stands
+        // there now (an empty directory made where the folder was moved away from would be
+        // stamped, registered and synced against the old tree store, and a read-write
+        // folder's scan would then take every item for deleted here). It is the folder
+        // when it carries the id recorded; a record with no usable id takes the id the
+        // directory carries, and none is minted for it.
+        let carried = root::recorded_root_id(&path).await;
+        let stands = if root::looks_like_a_root_id(&record.root.root_id) {
+            (carried.as_deref() != Some(record.root.root_id.as_str())).then(|| {
+                format!(
+                    "the sync folder is not at {} any more: it was moved or deleted, or another folder stands in \
+                     its place; move the sync folder back, or forget it",
+                    path.display()
+                )
+            })
+        } else {
+            carried.is_none().then(|| no_root_id(&path))
+        };
+        if let Some(why) = stands {
+            tracing::error!("{why}");
+            stopped.folder_mut().is = Is::Down(Record { source, ..record }, Down::Failed { why });
+            return;
+        }
         let taken = match (record.interception, self.link()) {
             (Interception::Without { .. }, _) => match root::register_root_unprotected(&path).await {
                 Ok(root) => self.recover(&self.clearance(), &root).await.map(|report| (root, report)),

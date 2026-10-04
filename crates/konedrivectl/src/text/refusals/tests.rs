@@ -61,11 +61,14 @@ fn an_outbox_command_is_told_to_register_only_when_there_is_no_folder() {
         let waiting = told(action, "org.konedrive.Error.NotUp", "the folder is not up: it waits for the konedrive helper");
         assert_eq!(
             waiting,
-            "nothing was done for the sync folder (/home/u/OneDrive): the folder is not up: it waits for the konedrive \
+            "the sync folder (/home/u/OneDrive) is not up, so the command could not go ahead: it waits for the konedrive \
              helper. `konedrivectl --account Test sync status` shows its state; `konedrivectl --account Test sync forget` \
              takes the folder away, and leaves its files as they are"
         );
     }
+    // A `Refresh` that tried to bring the folder up says so.
+    let tried = told(SyncAction::Refresh, "org.konedrive.Error.NotUp", "the folder is not up: bringing it up was tried just now and failed: errno 5");
+    assert!(tried.contains("could not go ahead: bringing it up was tried just now and failed: errno 5."), "{tried}");
 }
 
 /// Being signed out gets its own sentence, distinct from a locked wallet

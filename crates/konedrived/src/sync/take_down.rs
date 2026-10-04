@@ -153,7 +153,14 @@ impl SyncService {
         }
         // An intercepted folder cannot be named to the helper without its id: only the
         // daemon's record of it goes, and nothing in the folder is touched (`F241`).
-        if !root::looks_like_a_root_id(&record.root.root_id) {
+        // The id as recorded, or else the one the folder carries now: it may have come
+        // back with its attribute, or been given one by a bring-up that then failed.
+        let root_id = if root::looks_like_a_root_id(&record.root.root_id) {
+            Some(record.root.root_id.clone())
+        } else {
+            root::recorded_root_id(&record.root.path).await
+        };
+        let Some(root_id) = root_id else {
             tracing::warn!(
                 "forgetting {} here only: config.toml does not record its root id and the folder carries none \
                  that can be read, so the konedrive helper could not be told to let go of it; restarting \
@@ -161,12 +168,12 @@ impl SyncService {
                 record.root.path.display()
             );
             return Ok(());
-        }
+        };
         let link = self.require_link()?;
-        match link.unregister_root(&record.root.root_id).await {
+        match link.unregister_root(&root_id).await {
             Ok(()) => Ok(()),
             Err(HelperError::Refused(libc::EPERM)) => {
-                tracing::warn!("the helper holds no root {} for {}; forgetting it here", record.root.root_id, record.root.path.display());
+                tracing::warn!("the helper holds no root {root_id} for {}; forgetting it here", record.root.path.display());
                 Ok(())
             }
             Err(e) => Err(SyncError::Helper(e.to_string())),

@@ -54,6 +54,15 @@ impl Persisted {
     }
 }
 
+/// What is said of a recorded folder that nothing gives a root id for.
+pub(super) fn no_root_id(path: &std::path::Path) -> String {
+    format!(
+        "cannot bring up the sync folder {}: config.toml does not record its root id, \
+         and the folder carries none that can be read",
+        path.display()
+    )
+}
+
 impl SyncService {
     /// The root is "persisted, so it survives a restart" — with its
     /// mode, and with the id the helper holds it by — as the account's
@@ -129,11 +138,7 @@ impl SyncService {
             // a Forget still reaches the helper (`SY6`).
             Down::UnreadSource { written }
         } else if intercepted && found.is_none() {
-            let why = format!(
-                "cannot bring up the sync folder {}: config.toml does not record its root id, \
-                 and the folder carries none that can be read",
-                persisted.path.display()
-            );
+            let why = no_root_id(&persisted.path);
             tracing::error!("{why}");
             Down::Failed { why }
         } else if intercepted {
