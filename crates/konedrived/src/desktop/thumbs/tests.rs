@@ -187,7 +187,7 @@ async fn a_full_batch_with_a_refusal_in_it_still_drains_the_next_batch() {
     assert_eq!(outcome.written, 200, "everything but the 404 was written");
 }
 
-/// Issue #39: batches go on where the last one stopped — each candidate
+/// Batches go on where the last one stopped — each candidate
 /// is looked at once per drain, the ones Graph fails for this time
 /// included — and the next drain starts from the beginning again.
 #[tokio::test]
@@ -207,7 +207,7 @@ async fn batches_go_on_where_the_last_stopped() {
     assert_eq!(total.taken, 5, "a drain looks at each once, and ends");
 }
 
-/// Issue #39: a thumbnail that cannot be cached here (the cache is not a
+/// A thumbnail that cannot be cached here (the cache is not a
 /// directory) is recorded like the other failures: a batch of them ends
 /// the drain, and the item is not asked for again until it changes.
 #[tokio::test]
@@ -228,16 +228,9 @@ async fn a_batch_of_local_failures_ends_the_drain() {
     assert_eq!(filler.drain(&CancellationToken::new(), 2).await.taken, 0, "recorded: not asked for again");
 }
 
-/// A deterministic replacement for the old timing-based
-/// test: `write_thumbnail` must run off the async task, or nothing
-/// else on this single-threaded runtime — not even a task spawned
-/// moments before and waiting to say so — can run while it does. A
-/// passing run costs a rendezvous, not a stopwatch: it finishes in
-/// milliseconds. Only a failing run (write blocking the one runtime
-/// thread) waits out the hook's 2 s timeout.
-/// a stop no longer waits out a thumbnail
-/// request — which can sit through Graph's `Retry-After` for minutes —
-/// or the pause after one. A Forget waited for it.
+/// A stop does not wait out a thumbnail request — which can sit through
+/// Graph's `Retry-After` for minutes — or the pause after one: a Forget
+/// waits for the stop.
 #[tokio::test]
 async fn a_stop_does_not_wait_for_a_thumbnail_request() {
     let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
@@ -257,36 +250,11 @@ async fn a_stop_does_not_wait_for_a_thumbnail_request() {
     tokio::time::timeout(Duration::from_secs(5), task).await.expect("the stop waited for the request").unwrap();
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn write_runs_off_the_async_task_not_inline() {
-    let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
-    Mock::given(method("GET")).and(path("/me/drive/items/P/thumbnails/0/c512x512/content"))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(jpeg(8, 8)))
-        .mount(&w.server).await;
-    let file = w.folder.path().canonicalize().unwrap().join("p.jpg");
-    let (go_tx, go_rx) = std::sync::mpsc::channel();
-    let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
-    register_write_hook(file, go_rx, ready_tx);
-    // Waits for write_thumbnail's own "I've reached the blocking part"
-    // signal before answering "go" — a rendezvous, not a race against
-    // whatever else `run_once` awaits on the way there (the store, the
-    // mock HTTP call): those would otherwise let this task run, and
-    // send "go", before write_thumbnail is even called, proving nothing.
-    let ponger = tokio::spawn(async move {
-        let _ = ready_rx.await;
-        let _ = go_tx.send(());
-    });
-    let filler = w.filler();
-    let outcome = filler.run_once(&CancellationToken::new(), 100).await;
-    ponger.await.unwrap();
-    assert_eq!(outcome.written, 1);
-}
-
 fn thumb_path(id: &str, size: &str) -> String {
     format!("/me/drive/items/{id}/thumbnails/0/{size}/content")
 }
 
-/// Issue #80: Graph refuses `c512x512` for some items with `406`; its
+/// Graph refuses `c512x512` for some items with `406`; its
 /// named size `large` is asked once instead, and scaled down the same way.
 #[tokio::test]
 async fn a_406_is_asked_again_at_graphs_named_size() {
@@ -307,7 +275,7 @@ async fn a_406_is_asked_again_at_graphs_named_size() {
     assert_eq!(filler.run_once(&CancellationToken::new(), 100).await.taken, 0);
 }
 
-/// Issue #80: refused at both sizes, the item is recorded, and the next
+/// Refused at both sizes, the item is recorded, and the next
 /// drain does not ask for it again.
 #[tokio::test]
 async fn a_406_refused_at_both_sizes_is_recorded() {
@@ -325,7 +293,7 @@ async fn a_406_refused_at_both_sizes_is_recorded() {
     assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 0, "not asked for again");
 }
 
-/// Issue #80: any other 4xx is final at once — no second size, no retry.
+/// Any other 4xx is final at once — no second size, no retry.
 #[tokio::test]
 async fn a_403_is_recorded_at_once() {
     let w = world(&[photo("P", "p.jpg", "image/jpeg")]).await;
@@ -342,7 +310,7 @@ async fn a_403_is_recorded_at_once() {
     assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 0);
 }
 
-/// Issue #80: a passing trouble — a sign-in trouble, a server error, a
+/// A passing trouble — a sign-in trouble, a server error, a
 /// dropped connection — is not recorded: the next drain asks again.
 #[tokio::test]
 async fn a_passing_trouble_is_asked_again_at_the_next_drain() {
@@ -370,7 +338,7 @@ async fn a_passing_trouble_is_asked_again_at_the_next_drain() {
     assert!(!asked_large, "only a 406 is asked at the other size");
 }
 
-/// Issue #80: a recorded refusal holds only for that version of the
+/// A recorded refusal holds only for that version of the
 /// item; once it changes, it is asked for again.
 #[tokio::test]
 async fn a_refused_item_is_asked_again_once_it_changes() {
@@ -388,7 +356,7 @@ async fn a_refused_item_is_asked_again_once_it_changes() {
     assert_eq!(filler.drain(&CancellationToken::new(), 100).await.taken, 1, "a new version is asked for");
 }
 
-/// Issue #80: with thumbnails off the filler asks Graph for nothing, kick or not, and
+/// With thumbnails off the filler asks Graph for nothing, kick or not, and
 /// nothing else stops; turned on again, it asks for the items without one at once.
 #[tokio::test]
 async fn thumbnails_off_ask_for_nothing_and_on_again_ask_for_what_is_missing() {

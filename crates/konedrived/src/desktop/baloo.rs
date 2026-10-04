@@ -13,10 +13,10 @@
 //!
 //! Whether *this* daemon is the one that added the exclusion is what decides
 //! whether Forget takes it off again (`config rm excludeFolders`) —
-//! persisted in `config.toml` (`sync_root_baloo_excluded`,
-//! [`SyncService`](super::SyncService)) so a daemon restart in between still
+//! persisted in `config.toml` (`baloo_excluded` of the folder's entry,
+//! `crate::config::RootConfig`) so a daemon restart in between still
 //! gets it right. Every bring-up of a folder that does not record it as
-//! excluded asks again (B-I1): an exclusion that failed, timed out or was
+//! excluded asks again: an exclusion that failed, timed out or was
 //! cut off by a kill, or a Baloo installed later, is caught up then. The
 //! cost, in the log: no Baloo file-name search inside the folder, so KRunner
 //! and Dolphin's own search do not find files there.
@@ -34,8 +34,9 @@ use std::time::Duration;
 /// How long a `balooctl6` call is allowed to run before it is treated as
 /// unavailable (real Baloo answers in milliseconds; this is only a backstop
 /// against a hung one — e.g. blocked on an unresponsive Baloo D-Bus service).
-/// Every call runs under `SyncService`'s lifecycle write lock, so a call that
-/// never returned would block every registration and every Forget forever.
+/// Every call runs with `SyncService`'s `folder` lock held for writing, so a
+/// call that never returned would block every registration and every Forget
+/// forever.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub struct Baloo {
@@ -76,7 +77,7 @@ impl Baloo {
     }
 
     /// Whether `folder`, or a directory above it, is already excluded — read
-    /// from Baloo's settings file (B-I1b), never written. A missing or
+    /// from Baloo's settings file, never written. A missing or
     /// unreadable file, or a disabled `Baloo`, answers "not excluded":
     /// nothing is assumed about settings that cannot be read, so the caller
     /// falls through to trying `exclude` — which is exactly as harmless to
