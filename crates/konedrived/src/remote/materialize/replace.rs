@@ -5,6 +5,8 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 use std::time::SystemTime;
 
+use tokio_util::sync::CancellationToken;
+
 use konedrive_fs::placeholder::{self, read_state, State, LOCKED_FILE_MODE, OPEN_FILE_MODE};
 
 use crate::folder::disk::{Disk, Probe, NEW_PREFIX};
@@ -108,23 +110,52 @@ pub async fn replace(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSource
 /// ([`ReplaceOutcome::Busy`]) — a writer would lose what it writes into the
 /// unlinked inode.
 pub async fn replace_leased(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSource, r: &Replacement, leased: Option<&Leased<'_>>) -> ReplaceOutcome {
-    match replace_inner(disk, locks, source, r, leased).await {
+    let never = CancellationToken::new();
+    replace_until(disk, locks, source, r, leased, &never).await.expect("nothing cancels this token")
+}
+
+/// [`replace_leased`], given up when `stop` is cancelled (the poller stops):
+/// `None`, with the old version in place. Only its waits are given up — the
+/// download and the waits for the two locks. A run of file calls that has
+/// begun (a section) is waited for, so nothing of a replacement is still at
+/// work when this returns, and a swap that began is `Replaced`.
+pub async fn replace_until(
+    disk: &Disk,
+    locks: &InodeLocks,
+    source: &dyn ContentSource,
+    r: &Replacement,
+    leased: Option<&Leased<'_>>,
+    stop: &CancellationToken,
+) -> Option<ReplaceOutcome> {
+    match replace_inner(disk, locks, source, r, leased, stop).await {
         Ok(outcome) => outcome,
-        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOSPC | libc::EDQUOT)) => ReplaceOutcome::NoSpace(format!(
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ENOSPC | libc::EDQUOT)) => Some(ReplaceOutcome::NoSpace(format!(
             "not enough space to finish the new version of {}; the old version stays",
             r.rel.display()
-        )),
-        Err(e) => ReplaceOutcome::Failed(e.to_string()),
+        ))),
+        Err(e) => Some(ReplaceOutcome::Failed(e.to_string())),
     }
 }
 
 /// A replacement's file calls wait on the disk (`fsync`, the rename, the
 /// attributes), so none is made on a runtime thread: each run of them is one
 /// *section* on a blocking thread, with the download between the first two.
-/// A section that has begun runs to its end even when the replacement is
-/// dropped (the poller stops), so the swap takes its locks with it
-/// (`docs/limitations/F232.md`).
-async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSource, r: &Replacement, leased: Option<&Leased<'_>>) -> std::io::Result<ReplaceOutcome> {
+///
+/// `stop` ends the replacement only where it waits, between sections: there
+/// it could be dropped before the sections were. A section is never left
+/// behind by a stop (`docs/limitations/F232.md`); `None` is a replacement
+/// stopped.
+async fn replace_inner(
+    disk: &Disk,
+    locks: &InodeLocks,
+    source: &dyn ContentSource,
+    r: &Replacement,
+    leased: Option<&Leased<'_>>,
+    stop: &CancellationToken,
+) -> std::io::Result<Option<ReplaceOutcome>> {
+    if stop.is_cancelled() {
+        return Ok(None);
+    }
     let work = Work { disk: disk.clone(), r: r.clone(), leased: leased.is_some() };
     let checked = section({
         let work = work.clone();
@@ -132,22 +163,25 @@ async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSour
     });
     let (new, old_identity, old_key) = match checked.await? {
         Ok(checked) => checked,
-        Err(done) => return Ok(done),
+        Err(done) => return Ok(Some(done)),
     };
-    let downloaded = match crate::hydration::source::download_into(&new, &r.id, source).await {
+    let Some(downloaded) = stop.run_until_cancelled(crate::hydration::source::download_into(&new, &r.id, source)).await else {
+        return Ok(None);
+    };
+    let downloaded = match downloaded {
         Ok(downloaded) => downloaded,
         Err(errno) if errno == libc::ENOSPC || errno == libc::EDQUOT => {
-            return Ok(ReplaceOutcome::NoSpace(format!(
+            return Ok(Some(ReplaceOutcome::NoSpace(format!(
                 "not enough space to download the new version of {}; the old version stays",
                 r.rel.display()
-            )))
+            ))))
         }
         Err(errno) => {
-            return Ok(ReplaceOutcome::Failed(format!(
+            return Ok(Some(ReplaceOutcome::Failed(format!(
                 "the new version of {} could not be downloaded ({}); the old version stays",
                 r.rel.display(),
                 std::io::Error::from_raw_os_error(errno)
-            )))
+            ))))
         }
     };
     let sealed = section({
@@ -160,17 +194,23 @@ async fn replace_inner(disk: &Disk, locks: &InodeLocks, source: &dyn ContentSour
     // space, a fill or a local edit may have happened while this downloaded.
     // Read-write mode takes the tree lock first, the worker's order.
     let tree = match leased {
-        Some(leased) => Some(std::sync::Arc::clone(leased.tree_lock).lock_owned().await),
+        Some(leased) => match stop.run_until_cancelled(std::sync::Arc::clone(leased.tree_lock).lock_owned()).await {
+            Some(tree) => Some(tree),
+            None => return Ok(None),
+        },
         None => None,
     };
-    let guard = locks.lock(old_key).await;
+    let Some(guard) = stop.run_until_cancelled(locks.lock(old_key)).await else { return Ok(None) };
     let store = leased.map(|leased| leased.store.clone());
+    // From here to the end no stop is heard: the swap is made and said.
     section(move || {
-        // Both locks until the section is over, not until the replacement is.
+        // Both locks until the section is over, whatever becomes of the task
+        // that waits for it.
         let (_tree, _guard) = (tree, guard);
         work.swap(new, old_identity, store)
     })
     .await
+    .map(Some)
 }
 
 /// Runs `work` on a blocking thread. A panic in it is the replacement's own,

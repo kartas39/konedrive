@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::status::activity::{self, Kind};
 use crate::hydration::tracked::Tracked;
 use crate::folder::disk::Disk;
-use crate::remote::materialize::{replace, replace_leased, Leased, ReplaceOutcome, Replacement};
+use crate::remote::materialize::{replace_until, Leased, ReplaceOutcome, Replacement};
 use super::Listing;
 
 /// Replacements at once (issue #39): the queue's workers. A guess; each
@@ -88,7 +88,10 @@ impl Listing {
 
     /// A replacement worker: takes the next file from the queue until it is
     /// empty. Cut short by `Poller::stop`: what is left in the queue goes
-    /// with no outcome.
+    /// with no outcome, and so does the replacement under way where it
+    /// waits (`replace_until`). The worker itself is never dropped: file
+    /// calls it has begun end, and are said, before it does, so nothing of
+    /// it is at work once `join_replacements` returns.
     async fn replace_queued(self: Arc<Self>) {
         loop {
             let replacement = {
@@ -107,7 +110,7 @@ impl Listing {
                     }
                 }
             };
-            let outcome = self.cancel_replacements.run_until_cancelled(self.replace_one(&replacement)).await;
+            let outcome = self.replace_one(&replacement).await;
             let stopped = outcome.is_none();
             if let Some((outcome, event)) = outcome {
                 // A failure retried after every cycle is said once, not a
@@ -137,11 +140,11 @@ impl Listing {
     /// Replaces one file, shown in `Transfers` while it downloads (spec
     /// §16.2), and what the activity log would say of it: `updated` or
     /// `update-failed`. Whether it says it is [`record_replacement`]'s to
-    /// decide.
-    async fn replace_one(&self, replacement: &Replacement) -> (ReplaceOutcome, Option<activity::Event>) {
+    /// decide. `None` when the poller stopped it.
+    async fn replace_one(&self, replacement: &Replacement) -> Option<(ReplaceOutcome, Option<activity::Event>)> {
         let shown = self.ctx.root.path.join(&replacement.rel).display().to_string();
         let tracked = Tracked::new(Arc::clone(&self.ctx.source), self.ctx.report.transfers.clone(), shown.clone());
-        let outcome = self.replace_through(&tracked, replacement).await;
+        let outcome = self.replace_through(&tracked, replacement).await?;
         let size = tracked.fetched().unwrap_or(replacement.size);
         drop(tracked);
         let event = match &outcome {
@@ -150,37 +153,33 @@ impl Listing {
             ReplaceOutcome::NoSpace(_) => Some(activity::event(Kind::UpdateFailed, shown, activity::NO_DISK_SPACE)),
             ReplaceOutcome::Current | ReplaceOutcome::Busy => None,
         };
-        (outcome, event)
+        Some((outcome, event))
     }
 
-    async fn replace_through(&self, source: &Tracked, replacement: &Replacement) -> ReplaceOutcome {
+    async fn replace_through(&self, source: &Tracked, replacement: &Replacement) -> Option<ReplaceOutcome> {
         // A background download in the account's transfer pool; a large one also waits for
         // the large-file limit.
         let size = konedrive_graph::pool::Size::of(replacement.size);
-        let mut slot = self.ctx.drive.pool().acquire_sized(konedrive_graph::pool::Class::Download, size).await;
+        let stop = &self.cancel_replacements;
+        let mut slot = stop.run_until_cancelled(self.ctx.drive.pool().acquire_sized(konedrive_graph::pool::Class::Download, size)).await?;
         // Opening reads the root's attribute to prove it is still this root:
         // on a blocking thread, like every open (part 1's).
         let (root, locked) = (self.ctx.root.clone(), self.ctx.locked);
         let disk = match tokio::task::spawn_blocking(move || Disk::open(&root, locked)).await {
             Ok(Ok(disk)) => disk,
-            Ok(Err(e)) => return ReplaceOutcome::Failed(e.to_string()),
-            Err(e) => return ReplaceOutcome::Failed(format!("the replacement task failed: {e}")),
+            Ok(Err(e)) => return Some(ReplaceOutcome::Failed(e.to_string())),
+            Err(e) => return Some(ReplaceOutcome::Failed(format!("the replacement task failed: {e}"))),
         };
         // Read-write mode: the swap under a write lease and the tree lock, and the new
         // version's deferred change into the base as it lands.
-        let outcome = match &self.ctx.writes {
-            None => replace(&disk, &self.ctx.locks, source, replacement).await,
-            Some(writes) => {
-                let leased = Leased { tree_lock: &writes.tree_lock, store: &self.ctx.store };
-                replace_leased(&disk, &self.ctx.locks, source, replacement, Some(&leased)).await
-            }
-        };
+        let leased = self.ctx.writes.as_ref().map(|writes| Leased { tree_lock: &writes.tree_lock, store: &self.ctx.store });
+        let outcome = replace_until(&disk, &self.ctx.locks, source, replacement, leased.as_ref(), stop).await?;
         if matches!(outcome, ReplaceOutcome::Replaced) {
             // A new version is a new inode: the item's recorded one now.
             crate::local::record_replaced_async(&disk, &self.ctx.store, &replacement.id, &replacement.rel).await;
             slot.succeeded();
         }
-        outcome
+        Some(outcome)
     }
 
     /// What a replacement came to. One that ended with nothing to do asks for
