@@ -264,7 +264,7 @@ application must never read zeros where real content should be.
 - [F259](F259.md) — A file changed here whose name OneDrive exchanged with another file's: one request nobody made, which OneDrive refuses, and then both versions are kept
 - [F260](F260.md) — A helper that does not answer holds the folder's tree lock for one timeout in every examination that asks it
 - [F261](F261.md) — After the folder's filesystem changed, a move out whose object is not found where it went is given up, and what is left outside is not tidied
-- [F262](F262.md) — Taking the marks off a copy waits for the disk twice, with the folder's tree lock held
+- [F262](F262.md) — Taking the marks off a copy waits for the disk, with the folder's tree lock held
 - [F265](F265.md) — While a folder is watched only in part, each periodic walk asks the helper again for every unwatched directory and hands their trees over
 - [F266](F266.md) — A walk asked for from inside a walk waits for the reader's next wake
 - [F267](F267.md) — A notification group that cannot be read is tried again without a pause

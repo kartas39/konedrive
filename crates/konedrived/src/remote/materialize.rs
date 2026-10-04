@@ -440,8 +440,9 @@ impl Materializer {
 
     /// Notes the inode item `id` was just placed as, `name` in `dir`, by
     /// name, opening nothing; recorded with the rest of its batch. A
-    /// filesystem that gives no handles leaves it unrecorded (see
-    /// `local::record_placed`).
+    /// filesystem that gives no handles leaves it unrecorded: such an
+    /// item is never deleted in OneDrive for being missing, since the
+    /// examination cannot prove it gone.
     fn record_placed(&self, run: &mut Run, dir: &File, name: &OsStr, id: &str) -> Result<(), ApplyError> {
         match konedrive_fs::handle::FileHandle::at(dir, name) {
             Ok(handle) => run.placed.push((id.to_owned(), handle)),

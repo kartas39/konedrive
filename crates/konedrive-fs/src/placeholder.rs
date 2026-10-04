@@ -517,21 +517,24 @@ pub fn strip_konedrive_xattrs(file: &File) -> io::Result<()> {
 }
 
 /// Takes konedrive's attributes off `file` for good: the item id first, then
-/// `fsync`, then the rest, then `fsync`. With the id gone the object is an
-/// ordinary one (a state with no id is), whatever a crash leaves of the
-/// rest; an id with no state, the one combination the helper refuses, is
-/// never on disk.
+/// `fsync`, then the rest. With the id gone the object is an ordinary one (a
+/// state with no id is), whatever a crash leaves of the rest; an id with no
+/// state, the one combination the helper refuses, is never on disk.
+///
+/// The rest is not waited for: a crash may leave some of it on an object
+/// that is the user's own by then, which nothing reads without an id. So
+/// this is only for an object whose content is there (a directory, or a
+/// downloaded file): a state that says "not downloaded" left behind with no
+/// id is not an ordinary file to the helper.
 ///
 /// Only what is there is touched: an object with no item id gets neither
-/// the removal (and its change of mode) nor the first `fsync`, and one with
-/// no attribute of konedrive's at all only the last `fsync`.
+/// the removal (and its change of mode) nor the `fsync`.
 pub fn strip(file: &File) -> io::Result<()> {
     if file.get_xattr(XATTR_ITEM_ID)?.is_some() {
         remove_xattr(file, XATTR_ITEM_ID)?;
         file.sync_all()?;
     }
-    strip_konedrive_xattrs(file)?;
-    file.sync_all()
+    strip_konedrive_xattrs(file)
 }
 
 #[cfg(test)]
