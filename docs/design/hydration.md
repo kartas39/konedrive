@@ -613,7 +613,7 @@ No handshake gates anything: `SO_PEERCRED` is the authority, and a greeting coul
 version the peer might lie about. The helper greets first; the daemon sends `Hello` as its first
 ordinary call, so the version check runs both ways: the daemon hangs up on a `Welcome` with
 another version, and the helper closes the connection, with no `Ack`, on a `Hello` with one. A
-peer that sends no `Hello` is served (limitations log F232).
+peer that sends no `Hello` is served (limitations log F234).
 
 Replies are paired by order — every daemon message gets exactly one `Ack`, and `HydrateRequest` is
 told apart by type — so a daemon call is bounded (30 s; 120 s for `RegisterRoot` and
@@ -809,7 +809,7 @@ At registration the daemon creates a nameless `O_TMPFILE` file in the folder and
 feature: size, hole punching, a `user.*` attribute, a write lease. A failure names the missing
 feature. A named probe file would outlive a crash and make the folder permanently "not empty", so
 the probe never has a name. The helper checks the filesystem type with `fstatfs` and probes
-nothing itself (limitations log F232). A symbolic link is refused as a root, and
+nothing itself (limitations log F234). A symbolic link is refused as a root, and
 `konedrivectl` resolves only the directory a path is in, never its last component, so a link given
 on the command line reaches the daemon as a link and is refused. A folder that already carries its
 root id is not probed again when it is brought back up: a OneDrive folder is locked read-only, so

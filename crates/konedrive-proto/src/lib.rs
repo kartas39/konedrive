@@ -315,7 +315,10 @@ impl Channel {
 
         // Owned from here on, so that every way out of this function closes
         // the ones it does not hand over.
-        let fds = attached_descriptors(&msg);
+        // SAFETY: `msg` was just filled in by a successful `recvmsg` and has
+        // not been walked yet; its control data is in `control`, which is
+        // alive and unmoved.
+        let fds = unsafe { attached_descriptors(&msg) };
 
         if msg.msg_flags & libc::MSG_CTRUNC != 0 {
             return Err(io::Error::new(
@@ -394,14 +397,17 @@ impl ControlBuffer {
 /// which is exactly what let those descriptors leak: this process learned
 /// nothing about fds the kernel had already installed, so it could never
 /// close them.
-fn attached_descriptors(msg: &libc::msghdr) -> Vec<OwnedFd> {
+///
+/// # Safety
+///
+/// `msg` must be a `msghdr` a successful `recvmsg` has just filled in, whose
+/// control data lies in a buffer that is alive, unmoved and aligned for a
+/// `cmsghdr` ([`ControlBuffer`]), and this must be the only walk of it: each
+/// descriptor number in an `SCM_RIGHTS` record is taken as owned, which is
+/// true once, straight after the kernel installed it.
+unsafe fn attached_descriptors(msg: &libc::msghdr) -> Vec<OwnedFd> {
     let mut fds = Vec::new();
-    // SAFETY: `msg` was just filled in by a successful `recvmsg`, so its
-    // cmsg chain, if any, lives inside the caller's `ControlBuffer`, which
-    // is alive, unmoved and aligned for a `cmsghdr`. Each descriptor number
-    // in an `SCM_RIGHTS` record came straight from the kernel for this call
-    // and has been given to nothing else, so the `OwnedFd` made of it is its
-    // sole owner.
+    // SAFETY: the caller's contract, above.
     unsafe {
         let mut cmsg = libc::CMSG_FIRSTHDR(msg);
         while !cmsg.is_null() {

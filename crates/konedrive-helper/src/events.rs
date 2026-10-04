@@ -9,6 +9,7 @@ use std::os::fd::AsFd;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
+use konedrive_helper::marks::Marks;
 use konedrive_helper::pending::PendingOpen;
 use nix::errno::Errno;
 use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
@@ -125,6 +126,7 @@ fn classify_read_failure(e: Errno) -> ReadFailure {
 /// system service.
 pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Result<()> {
     let mut exhaustion = Throttle::new();
+    let mut panics = Throttle::new();
     let own_pid = std::process::id() as i32;
     loop {
         let mut fds = [PollFd::new(shared.marks.group().as_fd(), PollFlags::POLLIN)];
@@ -209,11 +211,15 @@ pub(crate) fn event_loop(shared: &Arc<Shared>, pool: &pool::Pool) -> anyhow::Res
                 |event| deny_unhandled(shared, event),
             );
             if !handed_over {
-                tracing::error!(
-                    "the event loop panicked while handing over an intercepted open; that open \
-                     and what was left of the {read} event(s) read with it are denied EIO, and \
-                     the loop carries on"
-                );
+                // Throttled: whatever panicked may be something an opener
+                // can repeat, at the rate of its opens.
+                if let Some(occurrences) = panics.admit() {
+                    tracing::error!(
+                        "the event loop panicked while handing over an intercepted open \
+                         ({occurrences} time(s)); that open and what was left of the {read} \
+                         event(s) read with it are denied EIO, and the loop carries on"
+                    );
+                }
             }
         }
     }
@@ -258,20 +264,7 @@ fn hand_over(
     since: u64,
     event: FanotifyEvent,
 ) {
-    let mask = event.mask();
-    if mask.contains(MaskFlags::FAN_Q_OVERFLOW) {
-        tracing::warn!("queue overflow: some opens were not seen");
-        return;
-    }
-    if !mask.contains(MaskFlags::FAN_OPEN_PERM) {
-        // We only ever mark FAN_OPEN_PERM, so this should not
-        // happen. The event simply drops: there is no permission
-        // decision pending on an event of a kind we never asked for.
-        return;
-    }
-    let pid = event.pid();
-    let Some(open) = PendingOpen::take(event, &shared.marks) else {
-        tracing::warn!("a permission event arrived with no descriptor");
+    let Some((open, pid)) = owed(event, &shared.marks) else {
         return;
     };
     // `fault-injection` builds only.
@@ -315,12 +308,37 @@ fn hand_over(
 /// descriptor with no answer would leave its opener suspended for as long as
 /// the helper runs.
 fn deny_unhandled(shared: &Arc<Shared>, event: FanotifyEvent) {
-    if !event.mask().contains(MaskFlags::FAN_OPEN_PERM) {
-        return;
-    }
-    if let Some(open) = PendingOpen::take(event, &shared.marks) {
+    if let Some((open, _)) = owed(event, &shared.marks) {
         open.deny(libc::EIO);
     }
+}
+
+/// The open an event owes an answer to, with its opener's pid; `None` for an
+/// event that owes none, which is said here and dropped.
+///
+/// The first thing done with an event the loop has read. Its mask and pid
+/// are two plain reads, and a permission event is a [`PendingOpen`] before
+/// anything else runs: from there on, whatever happens to it, a panic
+/// included, it is answered by its drop. An event left as it was read would
+/// close its descriptor with no answer, and its opener would stay suspended
+/// for as long as the helper runs.
+fn owed(event: FanotifyEvent, marks: &Arc<Marks>) -> Option<(PendingOpen, i32)> {
+    let mask = event.mask();
+    let pid = event.pid();
+    if mask.contains(MaskFlags::FAN_OPEN_PERM) {
+        let open = PendingOpen::take(event, marks);
+        if open.is_none() {
+            tracing::warn!("a permission event arrived with no descriptor");
+        }
+        return open.map(|open| (open, pid));
+    }
+    if mask.contains(MaskFlags::FAN_Q_OVERFLOW) {
+        tracing::warn!("queue overflow: some opens were not seen");
+    }
+    // Anything else: we only ever mark FAN_OPEN_PERM, so this should not
+    // happen. The event simply drops: there is no permission decision
+    // pending on an event of a kind we never asked for.
+    None
 }
 
 #[cfg(test)]

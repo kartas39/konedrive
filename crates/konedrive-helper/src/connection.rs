@@ -272,7 +272,7 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
 /// The version a `Hello` names, when it is not the helper's.
 ///
 /// `Hello` itself stays optional: a peer that sends none is served (the
-/// limitations log, F232).
+/// limitations log, F234).
 fn another_version(message: &ToHelper) -> Option<u32> {
     match message {
         ToHelper::Hello { version } if *version != PROTOCOL_VERSION => Some(*version),

@@ -110,10 +110,10 @@ fn not_a_directory(path: &Path) -> RegisterError {
 /// The write probe (`probe_dir`, `konedrive_fs::probe`) runs *here* and
 /// nowhere else. The helper runs under `ProtectSystem=strict` and
 /// `ProtectHome=read-only` and without `CAP_DAC_OVERRIDE`, so a write of its
-/// own into a perfectly good directory in the user's home is refused
-/// (`EROFS`, `EACCES`): it checks the filesystem's type with `fstatfs`
+/// own into a perfectly good directory in the user's home is normally
+/// refused (`EROFS`, `EACCES`): it checks the filesystem's type with `fstatfs`
 /// (`check_filesystem_type` in `konedrive-helper/src/registration.rs`) and
-/// probes nothing (the limitations log, F232). The daemon runs unprivileged,
+/// probes nothing (the limitations log, F234). The daemon runs unprivileged,
 /// in the user's own home, with no such sandbox, so this is the one place in
 /// the system where a write probe's result means something.
 pub fn check_root_candidate(path: &Path) -> Result<(), RegisterError> {

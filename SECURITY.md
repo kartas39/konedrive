@@ -103,7 +103,7 @@ Whether the filesystem can hold placeholders is measured by the daemon, as you: 
 nameless temporary file (`O_TMPFILE`) in the folder, writes to it and punches a hole in it, sets
 a `user.*` attribute and takes a lease, then closes it. The helper used to run the same probe as
 root; under the unit that write was refused almost everywhere a sync folder can be
-(`ProtectSystem=strict`, `ProtectHome=read-only`), and it is gone (`docs/limitations/`, F232).
+(`ProtectSystem=strict`, `ProtectHome=read-only`), and it is gone (`docs/limitations/`, F234).
 
 ## What the unit's hardening prevents
 
