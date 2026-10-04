@@ -53,6 +53,8 @@ hour-sized.
   `recovery.rs:630–634`. The mtime set at `fill.rs:808` and `dehydrate.rs:99`.
 - **Fix:** one module with one function taking "keep a prefix or nothing" and "lease held or
   not". **Size:** M. **Risk:** medium: the order is the safety argument.
+- **Fixed 2026-10-04** in `cf2c622` (#181): `hydration/demote.rs` is the one way back to a placeholder:
+  punch, size, times, `fsync`, then `online-only`.
 
 ## HY3. The download guards are duplicated and have started to drift
 
@@ -61,6 +63,8 @@ hour-sized.
   and only the parts copy checks `progress.bytes <= fetched.size` (`parts.rs:292`); the break
   counter four times; start-over once as a macro (`fill.rs:555–566`), once as an enum.
 - **Fix:** shared `check_answer`, `Breaks`, `Resume::accept`. **Size:** M to extract, L to unify.
+- **Fixed 2026-10-04** in `cf2c622` (#181): `source/guards.rs` holds the checks both downloads share; the
+  read-and-write loop is still written twice (`F270`).
 
 ## HY4. Blocking file I/O on tokio workers in the fill
 
@@ -180,3 +184,6 @@ hour-sized.
   production source of `PopulateFromDirectory`, carrying fault knobs; 13 `cfg(test)` sites in
   `fill.rs`, with thread-local hooks that fire only on a single-threaded runtime
   (`:407–428, 757–806`); a stale `#[allow(dead_code)]` (`:476`).
+- **Fixed 2026-10-04** in `cf2c622` (#181): the fault knobs are `hydration::testing::Faulty`, the hooks a
+  `Tuning` value; one test hook is left (`D49`).
+
