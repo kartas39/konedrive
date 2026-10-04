@@ -42,7 +42,7 @@ pub(crate) const DAEMON_WAIT: Duration = Duration::from_secs(30);
 pub(crate) const MAX_DAEMON_WAITERS: usize = 8;
 
 /// The bound across **all** uids waiting at once, however it is spread
-/// across them (the follow-up to). Checked before the per-uid
+/// across them. Checked before the per-uid
 /// cap in [`UidSlots::take`], so a caller cannot get around it by
 /// spreading the same attack across several uids it happens to control,
 /// and a machine with many legitimate uids whose daemons are briefly down
@@ -50,7 +50,7 @@ pub(crate) const MAX_DAEMON_WAITERS: usize = 8;
 ///
 /// Provisional, like [`MAX_DAEMON_WAITERS`] and [`EVENT_WORKERS`]: chosen
 /// to be obviously bounded relative to the 64-worker pool, not measured.
-/// burst scenario is what should settle it.
+/// The VM suite's burst scenario is what should settle it.
 pub(crate) const GLOBAL_MAX_DAEMON_WAITERS: usize = 32;
 
 /// How many live connections one uid may hold.
@@ -105,8 +105,8 @@ pub(crate) struct Daemon {
 /// placeholders waited [`DAEMON_WAIT`] and was denied `EIO` until the daemon
 /// restarted. No race was needed; connect, disconnect.
 ///
-/// So every live connection is kept, in accept order ([`serve`] numbers them,
-///), and the **top** — the newest — is the one that matters: a
+/// So every live connection is kept, in accept order (`connection::serve`
+/// numbers them), and the **top** — the newest — is the one that matters: a
 /// uid's hydrations go to it and only its pid is exempt. Any
 /// connection leaving is removed wherever it sits, and whatever is newest
 /// among the rest is the top again. That serves both real cases: a daemon that
@@ -228,7 +228,7 @@ impl Daemons {
     /// polling. `has_root` says whether the uid has a registered root; it is
     /// asked only when no daemon is there, and with no lock held.
     ///
-    /// puts two limits on the waiting, because this is the only place
+    /// Two limits are put on the waiting, because this is the only place
     /// a worker sleeps for tens of seconds and therefore the only lever an
     /// unprivileged caller has on the pool:
     ///

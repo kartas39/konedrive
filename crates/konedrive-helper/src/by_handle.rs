@@ -53,6 +53,8 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use konedrive_fs::handle::FileHandle;
 use konedrive_fs::placeholder::read_item_id;
 
+use crate::errno::Errno;
+
 /// What the object is, once it has passed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -72,12 +74,12 @@ pub struct Seen {
 }
 
 impl Seen {
-    pub fn of(fd: BorrowedFd<'_>) -> Result<Self, i32> {
+    pub fn of(fd: BorrowedFd<'_>) -> Result<Self, Errno> {
         // SAFETY: `st` is a live, correctly sized `stat` that `fstat` fills;
         // `fstat` works on an `O_PATH` descriptor too.
         let mut st: libc::stat = unsafe { std::mem::zeroed() };
         if unsafe { libc::fstat(fd.as_raw_fd(), &mut st) } != 0 {
-            return Err(last_errno());
+            return Err(Errno::last());
         }
         Ok(Self { uid: st.st_uid, dev: st.st_dev, ino: st.st_ino, mode: st.st_mode, nlink: st.st_nlink })
     }
@@ -94,29 +96,30 @@ impl Seen {
 /// The directory the handle is opened relative to: the peer's own, on the
 /// device of one of its roots (`on_a_root`, which the caller works out from
 /// the registered roots for `anchor.dev`).
-pub fn check_anchor(peer_uid: u32, anchor: &Seen, on_a_root: bool) -> Result<(), i32> {
+pub fn check_anchor(peer_uid: u32, anchor: &Seen, on_a_root: bool) -> Result<(), Errno> {
     if anchor.kind() == Some(Kind::Directory) && anchor.uid == peer_uid && on_a_root {
         Ok(())
     } else {
-        Err(libc::EPERM)
+        Err(Errno::EPERM)
     }
 }
 
 /// The object the handle names, as `fstat` sees it. Ownership comes before
 /// the link count, so that of an object not the peer's nothing more is said
 /// than that it is not.
-pub fn check_object(peer_uid: u32, anchor: &Seen, object: &Seen) -> Result<Kind, i32> {
+pub fn check_object(peer_uid: u32, anchor: &Seen, object: &Seen) -> Result<Kind, Errno> {
     if object.dev != anchor.dev || object.uid != peer_uid {
-        return Err(libc::EPERM);
+        return Err(Errno::EPERM);
     }
-    let kind = object.kind().ok_or(libc::EPERM)?;
+    let kind = object.kind().ok_or(Errno::EPERM)?;
     if object.nlink == 0 {
-        return Err(libc::ESTALE);
+        return Err(Errno::ESTALE);
     }
     Ok(kind)
 }
 
-/// The flags of the real open (design §4.6, as measured in §15).
+/// The flags of the real open (`docs/design/writes.md` §8.2, as measured in
+/// `docs/kernel-behavior-7.2/open-by-handle.md` §15).
 pub fn open_flags(kind: Kind) -> libc::c_int {
     match kind {
         Kind::File => libc::O_RDONLY | libc::O_NONBLOCK | libc::O_NOFOLLOW | libc::O_CLOEXEC,
@@ -134,47 +137,39 @@ pub fn open(
     anchor: &File,
     handle: &FileHandle,
     on_a_root: impl FnOnce(u64) -> bool,
-) -> Result<OwnedFd, i32> {
+) -> Result<OwnedFd, Errno> {
     if !handle.is_well_formed() {
-        return Err(libc::EINVAL);
+        return Err(Errno::EINVAL);
     }
     let anchor_seen = Seen::of(anchor.as_fd())?;
     check_anchor(peer_uid, &anchor_seen, on_a_root(anchor_seen.dev))?;
 
     let found = handle
         .open(anchor.as_fd(), libc::O_PATH | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-        .map_err(|e| errno_of(&e))?;
+        .map_err(|e| Errno::of(&e))?;
     let first = Seen::of(found.as_fd())?;
     let kind = check_object(peer_uid, &anchor_seen, &first)?;
     drop(found);
 
-    let object = handle.open(anchor.as_fd(), open_flags(kind)).map_err(|e| errno_of(&e))?;
+    let object = handle.open(anchor.as_fd(), open_flags(kind)).map_err(|e| Errno::of(&e))?;
     let now = Seen::of(object.as_fd())?;
     // A handle names one inode, so this is the same object; checked again
     // anyway, and its link count may have gone to 0 in between.
     if (now.dev, now.ino) != (first.dev, first.ino) {
-        return Err(libc::EPERM);
+        return Err(Errno::EPERM);
     }
     check_object(peer_uid, &anchor_seen, &now)?;
     let object = File::from(object);
     match read_item_id(&object) {
         Ok(Some(_)) => Ok(object.into()),
-        Ok(None) => Err(libc::EPERM),
-        Err(e) => Err(errno_of(&e)),
+        Ok(None) => Err(Errno::EPERM),
+        Err(e) => Err(Errno::of(&e)),
     }
 }
 
 // The protocol's bound on a handle is the one `FileHandle::is_well_formed`
 // checks.
 const _: () = assert!(konedrive_proto::MAX_HANDLE_BYTES == konedrive_fs::handle::MAX_HANDLE_BYTES);
-
-fn errno_of(e: &std::io::Error) -> i32 {
-    e.raw_os_error().unwrap_or(libc::EIO)
-}
-
-fn last_errno() -> i32 {
-    errno_of(&std::io::Error::last_os_error())
-}
 
 #[cfg(test)]
 mod tests;

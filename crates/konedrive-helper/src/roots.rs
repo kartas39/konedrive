@@ -9,6 +9,8 @@ use std::path::Path;
 use konedrive_proto::is_root_id;
 use serde::{Deserialize, Serialize};
 
+use crate::errno::Errno;
+
 /// How many roots one uid may hold.
 ///
 /// Every root is an entry in `roots.json`, compared against at each
@@ -65,11 +67,11 @@ pub enum Refused {
 
 impl Refused {
     /// The errno the daemon is answered.
-    pub fn errno(&self) -> i32 {
+    pub fn errno(&self) -> Errno {
         match self {
-            Refused::NotAnId | Refused::Overlap(_) => libc::EINVAL,
-            Refused::AnotherUsers => libc::EPERM,
-            Refused::TooMany => libc::EDQUOT,
+            Refused::NotAnId | Refused::Overlap(_) => Errno::EINVAL,
+            Refused::AnotherUsers => Errno::EPERM,
+            Refused::TooMany => Errno::EDQUOT,
         }
     }
 }
@@ -237,8 +239,7 @@ impl Roots {
     /// The entry itself comes back, rather than a bare `bool`, because
     /// unregistering has to *undo* the registration: the caller needs the
     /// path, `(dev, ino)` and uid to find the tree again and take its marks
-    /// off, and needs the whole entry to put back if the state
-    /// file cannot be written.
+    /// off.
     ///
     /// Roots are filtered by uid rather than by connection: they outlive both
     /// the connection that created them and the helper itself (they are
@@ -263,8 +264,8 @@ impl Roots {
             && self.by_id.values().any(|root| root.uid == peer_uid && root.dev == object_dev)
     }
 
-    /// Whether this user has registered any root at all. uses it:
-    /// the daemon's pid is exempt from interception only for a connection that
+    /// Whether this user has registered any root at all. The exemption
+    /// uses it: the daemon's pid is exempt from interception only for a connection that
     /// owns a root, so merely connecting to the socket buys nothing.
     pub fn has_root_for(&self, uid: u32) -> bool {
         self.by_id.values().any(|root| root.uid == uid)

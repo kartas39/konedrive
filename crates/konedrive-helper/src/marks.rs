@@ -30,9 +30,11 @@ use nix::sys::fanotify::{
 /// in `konedrive-proto`, next to the `HydrateDone` message whose
 /// `errno` field they constrain, so that the daemon produces only deliverable
 /// values and this helper is not the only thing standing between an
-/// undeliverable one and an opener suspended forever. Re-exported here so
-/// every existing `marks::clamp_deny_errno` call site keeps working.
-pub use konedrive_proto::{clamp_deny_errno, ACCEPTED_DENY_ERRNOS};
+/// undeliverable one and an opener suspended forever. The helper clamps
+/// through `Errno::deliverable`; this module's tests of the set use them
+/// directly.
+#[cfg(test)]
+use konedrive_proto::{clamp_deny_errno, ACCEPTED_DENY_ERRNOS};
 
 /// `FAN_MARK_REMOVE` on an object that carries no mark returns `ENOENT`, and
 /// that is a **normal** outcome here rather than a failure: ignore marks are
@@ -56,8 +58,8 @@ pub struct Marks {
 ///
 /// FAN_NONBLOCK is load-bearing: without it `read_events()` blocks forever
 /// instead of returning EAGAIN once the queue is drained (kernel fact 3;
-/// confirmed by the proof of concept's own `group()` helper). main.rs's
-/// event_loop needs that: it waits for readability with `poll()` and then
+/// confirmed by the proof of concept's own `group()` helper). The event
+/// loop (`events.rs`) needs that: it waits for readability with `poll()` and then
 /// drains with `read_events()` until EAGAIN, which only works if EAGAIN is
 /// ever actually returned.
 ///
@@ -273,8 +275,8 @@ impl Marks {
     /// is refused, a plain `FAN_DENY` is written instead — measured to rescue
     /// exactly this case — because an opener that is never answered stays
     /// blocked until the helper exits.
-    pub fn deny(&self, fd: BorrowedFd<'_>, errno: i32) -> io::Result<()> {
-        let errno = clamp_deny_errno(errno);
+    pub fn deny(&self, fd: BorrowedFd<'_>, errno: crate::errno::Errno) -> io::Result<()> {
+        let errno = errno.deliverable().raw();
         let bits = Response::FAN_DENY.bits() | ((errno as u32 & 0xff) << 24);
         let response = Response::from_bits_retain(bits);
         match self.group.write_response(FanotifyResponse::new(fd, response)) {
@@ -293,10 +295,10 @@ impl Marks {
 
 /// What a startup, registration or unregistration walk managed to cover.
 ///
-///: a subdirectory the helper cannot open must never abort the
+/// A subdirectory the helper cannot open must never abort the
 /// walk. Partial marking is strictly more coverage than none; the defect
 /// worth fixing is the silence, so every failure is carried back here to be
-/// logged by name and the root flagged degraded.
+/// logged by name, and the root said to be degraded in the log.
 #[derive(Debug, Default)]
 pub struct WalkReport {
     /// How many directories the walk actually changed — marked by
@@ -451,7 +453,6 @@ impl Action {
             Action::Unmark => "unmark",
         }
     }
-
 }
 
 fn walk_tree(marks: &Marks, root: BorrowedFd<'_>, label: &str, action: Action) -> WalkReport {
@@ -579,7 +580,7 @@ fn walk_below(
 }
 
 /// Takes the ignore mark off one non-directory, in either direction of walk
-/// (for a registration, H132 for an unregistration).
+/// (a registration's and an unregistration's).
 fn clear_file(marks: &Marks, dir: BorrowedFd<'_>, name: &CStr, label: &str, report: &mut WalkReport) {
     if let Err(e) = marks.clear_ignore_at(dir, name) {
         report.fail(

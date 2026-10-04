@@ -15,6 +15,7 @@ use std::sync::Arc;
 
 use nix::sys::fanotify::FanotifyEvent;
 
+use crate::errno::Errno;
 use crate::marks::Marks;
 
 /// A suspended open: the event's descriptor and the group it is answered
@@ -66,12 +67,12 @@ impl PendingOpen {
 
     /// Fails the open with `errno`, clamped to what the kernel delivers
     /// ([`Marks::deny`]).
-    pub fn deny(mut self, errno: i32) {
+    pub fn deny(mut self, errno: Errno) {
         self.answered = true;
         self.write_denial(errno);
     }
 
-    fn write_denial(&self, errno: i32) {
+    fn write_denial(&self, errno: Errno) {
         if let Err(e) = self.marks.deny(self.fd.as_fd(), errno) {
             tracing::error!("cannot deny an intercepted open: {e}");
         }
@@ -99,6 +100,6 @@ impl Drop for PendingOpen {
         // Contained: this can run while a panic unwinds, where a second
         // panic let out of a destructor would end the process, and with it
         // release every suspended open as allowed.
-        let _ = catch_unwind(AssertUnwindSafe(|| self.write_denial(libc::EIO)));
+        let _ = catch_unwind(AssertUnwindSafe(|| self.write_denial(Errno::EIO)));
     }
 }

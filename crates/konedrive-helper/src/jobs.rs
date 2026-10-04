@@ -1,7 +1,7 @@
 //! Coalescing: many processes opening the same file wait on one hydration.
 //!
-//! This module also owns the suspended openers themselves. That is deliberate
-//!: while the job table and the list of descriptors to answer
+//! This module also owns the suspended openers themselves. That is
+//! deliberate: while the job table and the list of descriptors to answer
 //! lived in two separate maps behind two separate locks, "claim the job" and
 //! "register as a waiter" could not be made one atomic step, and a daemon
 //! that answered quickly could run `finish` in the gap — dropping a job whose
@@ -87,8 +87,8 @@ pub enum Enrolled {
     /// This caller created the hydration and it has credit: its request must
     /// be sent now — [`Enrollment::dispatch`].
     New { req_id: u64 },
-    /// This caller created the hydration beyond its connection's credit
-    ///. The opener is enrolled and stays suspended; the request
+    /// This caller created the hydration beyond its connection's credit.
+    /// The opener is enrolled and stays suspended; the request
     /// goes to the daemon when a credit returns, handed out by
     /// [`Jobs::finish`]. Nothing to send now.
     Queued { req_id: u64 },
@@ -308,6 +308,7 @@ impl<W: AsFd> Jobs<W> {
     }
 
     /// How many of `conn`'s hydrations are waiting for credit.
+    #[cfg(test)]
     pub fn queued_for(&self, conn: u64) -> usize {
         self.jobs.values().filter(|job| job.owner.conn == conn && !job.sent).count()
     }
@@ -440,8 +441,8 @@ impl<W: AsFd> Jobs<W> {
     /// Retires a connection and takes everything it was going to hydrate —
     /// sent and queued alike.
     ///
-    /// The retirement happens **before** the drain and under the same lock
-    ///, so there is no instant at which a worker can add a job
+    /// The retirement happens **before** the drain and under the same
+    /// lock, so there is no instant at which a worker can add a job
     /// to a connection whose jobs have already been collected. Only that
     /// connection's jobs are taken: another user's hydrations are none of its
     /// business, which is what stopped any local user failing every hydration

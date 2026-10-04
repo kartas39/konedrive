@@ -7,16 +7,16 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::Arc;
 
 use konedrive_fs::handle::FileHandle;
+use konedrive_helper::errno::Errno;
 use konedrive_helper::{by_handle, roots};
 use konedrive_proto::{Channel, ToDaemon, ToHelper, PROTOCOL_VERSION};
-use nix::errno::Errno;
 use nix::sys::socket::{accept, getsockopt, sockopt::PeerCredentials};
 
 use konedrive_helper::jobs::Owner;
 use konedrive_helper::outbox::{Outbox, Outgoing};
 
 use crate::events::{dispatch, settle, Finish};
-use crate::registration::{errno_of, refuse_malformed_id, register_root, unregister_root};
+use crate::registration::{refuse_malformed_id, register_root, unregister_root};
 use crate::shared::{
     fault, Daemon, Refusal, Shared, Throttle, ACCEPT_BACKOFF, ACCEPT_RESTART,
     MAX_CONNECTIONS_PER_UID,
@@ -36,7 +36,7 @@ pub(crate) fn serve(shared: Arc<Shared>, listener: OwnedFd) {
     // accepts them, in the order they were accepted — never on the
     // per-connection thread. Numbered there, two connections accepted a
     // moment apart could draw their numbers in either order, and "newer"
-    // would mean "whose thread the scheduler ran first". `Registry::register`
+    // would mean "whose thread the scheduler ran first". `Daemons::register`
     // relies on this order being the accept order. A local counter rather
     // than a shared one, so that nothing else can ever hand one out; it
     // outlives a panic of the loop below, so no number is given twice.
@@ -67,7 +67,7 @@ fn accept_connections(shared: &Arc<Shared>, listener: &OwnedFd, next_conn: &mut 
                 }
                 fd
             }
-            Err(Errno::EINTR) => continue,
+            Err(nix::errno::Errno::EINTR) => continue,
             Err(e) => {
                 // Retrying immediately is right for a transient
                 // error and catastrophic for a persistent one: on `EMFILE`
@@ -129,8 +129,7 @@ fn accept_connections(shared: &Arc<Shared>, listener: &OwnedFd, next_conn: &mut 
     }
 }
 
-/// Runs a connection's cleanup exactly once, however the connection ends
-///.
+/// Runs a connection's cleanup exactly once, however the connection ends.
 ///
 /// This used to be plain statements after an immediately-invoked closure, so
 /// a panic anywhere in the request loop unwound straight past them. The
@@ -177,7 +176,7 @@ impl Drop for Disconnect<'_> {
         }
         for waiters in stranded {
             for open in waiters {
-                open.deny(libc::EIO);
+                open.deny(Errno::EIO);
             }
         }
     }
@@ -254,8 +253,7 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
                 "the peer speaks protocol version {theirs}, not {PROTOCOL_VERSION}; closing"
             );
         }
-        let mut reply = None;
-        let errno = apply(shared, owner, &outbox, message, fd, &mut reply);
+        let answer = apply(shared, owner, &outbox, message, fd);
         // Into the room reserved for `Ack`s. This used to end
         // the connection when the outbox was full — tearing down, on
         // backpressure, a daemon that had just proved it was alive by sending
@@ -263,7 +261,7 @@ fn serve_one(shared: &Shared, stream: UnixStream, conn: u64) -> anyhow::Result<(
         // replies unread than any daemon has calls in flight is made to wait
         // here, and this thread reads nothing more from it until it catches
         // up. Only a connection that is already over refuses one.
-        if outbox.send_ack_with(errno, reply).is_err() {
+        if outbox.send_ack_with(answer).is_err() {
             anyhow::bail!("the connection ended while acknowledging a request");
         }
     }
@@ -280,10 +278,11 @@ fn another_version(message: &ToHelper) -> Option<u32> {
     }
 }
 
-/// Applies one request, returning the errno to acknowledge with (0 = fine),
-/// and in `reply` the descriptor the `Ack` carries, if any (`OpenByHandle`).
+/// Applies one request, returning what to acknowledge it with: the errno of
+/// a refusal, or, for a request that went through, the descriptor the `Ack`
+/// carries, if any (`OpenByHandle`).
 ///
-///: this never fails the connection. A `fanotify_mark` that returns
+/// This never fails the connection. A `fanotify_mark` that returns
 /// `ENOENT` because an evictable mark was already reclaimed is a routine
 /// outcome, and turning it into a teardown took every in-flight hydration down
 /// with it.
@@ -293,8 +292,7 @@ fn apply(
     outbox: &Outbox,
     message: ToHelper,
     fd: Option<OwnedFd>,
-    reply: &mut Option<OwnedFd>,
-) -> i32 {
+) -> Result<Option<OwnedFd>, Errno> {
     let uid = owner.uid;
     let object = fd.map(File::from);
     let allowed = |object: &File| -> bool {
@@ -323,22 +321,29 @@ fn apply(
     // refused as that one would be.
     let malformed = message.validate().is_err();
 
+    // Every request but `OpenByHandle` is acknowledged with no descriptor.
+    let done = |outcome: Result<(), Errno>| outcome.map(|()| None);
+
     match (message, object) {
         // Its version is ours: `serve_one` has closed on any other.
-        (ToHelper::Hello { .. }, _) => 0,
+        (ToHelper::Hello { .. }, _) => Ok(None),
         (ToHelper::RegisterRoot { root_id }, Some(_)) if malformed => {
-            refuse_malformed_id(shared, uid, &root_id)
+            Err(refuse_malformed_id(shared, uid, &root_id))
         }
-        (ToHelper::RegisterRoot { root_id }, Some(dir)) => register_root(shared, owner, root_id, dir),
-        (ToHelper::UnregisterRoot { root_id }, _) => unregister_root(shared, uid, &root_id),
-        (ToHelper::MarkDir, Some(dir)) if allowed(&dir) => act(shared.marks.mark_dir(dir.as_fd())),
+        (ToHelper::RegisterRoot { root_id }, Some(dir)) => {
+            done(register_root(shared, owner, root_id, dir))
+        }
+        (ToHelper::UnregisterRoot { root_id }, _) => done(unregister_root(shared, uid, &root_id)),
+        (ToHelper::MarkDir, Some(dir)) if allowed(&dir) => {
+            done(act(shared.marks.mark_dir(dir.as_fd())))
+        }
         (ToHelper::UnmarkDir, Some(dir)) if allowed(&dir) => {
-            act(shared.marks.unmark_dir(dir.as_fd()))
+            done(act(shared.marks.unmark_dir(dir.as_fd())))
         }
         (ToHelper::MarkFile, Some(file)) if allowed(&file) => {
             // `fault-injection` builds only.
             fault::panic_on_mark_file();
-            act(shared.marks.mark_file(file.as_fd()))
+            done(act(shared.marks.mark_file(file.as_fd())))
         }
         // On ownership of a regular file alone. Removing an
         // ignore mark can only cost an extra interception, never zeros, and
@@ -346,42 +351,33 @@ fn apply(
         // in a folder registered without interception too, where the uid may
         // hold no root at all.
         (ToHelper::ClearIgnore, Some(file)) if owns_regular_file(&file) => {
-            act(shared.marks.clear_ignore(file.as_fd()))
+            done(act(shared.marks.clear_ignore(file.as_fd())))
         }
         (ToHelper::HydrateDone { req_id, errno }, _) => {
             // Answers its openers, and sends the hydration its credit goes to
             // next.
-            let next = settle(shared, req_id, owner, errno, Finish::Reported);
+            let next = settle(shared, req_id, owner, Errno::from_wire(errno), Finish::Reported);
             dispatch(shared, outbox, owner, next);
-            0
+            Ok(None)
         }
         // Authorised on the object it finds, not on the handle: see
         // `by_handle`. Refusals are not logged — they are the daemon's
         // answer, and any local user can ask.
-        (ToHelper::OpenByHandle { .. }, Some(_)) if malformed => libc::EINVAL,
+        (ToHelper::OpenByHandle { .. }, Some(_)) if malformed => Err(Errno::EINVAL),
         (ToHelper::OpenByHandle { handle_type, handle }, Some(dir)) => {
             let handle = FileHandle { kind: handle_type, bytes: handle };
             let on_a_root = |dev| shared.roots.may_act_on(uid, dev, uid);
-            match by_handle::open(uid, &dir, &handle, on_a_root) {
-                Ok(opened) => {
-                    *reply = Some(opened);
-                    0
-                }
-                Err(errno) => errno,
-            }
+            by_handle::open(uid, &dir, &handle, on_a_root).map(Some)
         }
-        _ => libc::EPERM,
+        _ => Err(Errno::EPERM),
     }
 }
 
-fn act(result: io::Result<()>) -> i32 {
-    match result {
-        Ok(()) => 0,
-        Err(e) => {
-            tracing::warn!("a mark request failed: {e}");
-            errno_of(&e)
-        }
-    }
+fn act(result: io::Result<()>) -> Result<(), Errno> {
+    result.map_err(|e| {
+        tracing::warn!("a mark request failed: {e}");
+        Errno::of(&e)
+    })
 }
 
 #[cfg(test)]

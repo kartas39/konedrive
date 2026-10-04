@@ -63,10 +63,7 @@ pub fn open_for_writing(file: &File) -> io::Result<bool> {
     let error = io::Error::last_os_error();
     match error.raw_os_error() {
         Some(libc::EAGAIN) => Ok(true),
-        _ => {
-            interpret_setlease_failure(error)?;
-            Ok(true)
-        }
+        _ => Err(hard_setlease_error(error)),
     }
 }
 
@@ -82,7 +79,7 @@ pub fn open_for_writing(file: &File) -> io::Result<bool> {
 /// no error, no unwinding and no chance to release anything — measured: a
 /// lease holder with no handler exits `128+29`. For the daemon that would
 /// mean losing every in-flight hydration because a thumbnailer looked at one
-/// file being dehydrated (steps 3–5 hold the lease across a punch
+/// file being dehydrated (a dehydration holds the lease across a punch
 /// and an `fsync`).
 ///
 /// It is set to `SIG_IGN` rather than to a handler because there is nothing
@@ -125,11 +122,19 @@ fn silence_sigio() {
 fn interpret_setlease_failure(error: io::Error) -> io::Result<()> {
     match error.raw_os_error() {
         Some(libc::EAGAIN) => Ok(()),
-        Some(libc::EACCES) => Err(io::Error::new(
+        _ => Err(hard_setlease_error(error)),
+    }
+}
+
+/// The error of a failed `F_SETLEASE` that is not "busy": itself, or, for
+/// `EACCES`, one that says what it means.
+fn hard_setlease_error(error: io::Error) -> io::Error {
+    match error.raw_os_error() {
+        Some(libc::EACCES) => io::Error::new(
             io::ErrorKind::PermissionDenied,
             "cannot take a write lease: file is owned by another user",
-        )),
-        _ => Err(error),
+        ),
+        _ => error,
     }
 }
 

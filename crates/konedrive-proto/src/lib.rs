@@ -144,7 +144,7 @@ pub enum ToHelper {
     ClearIgnore,
     HydrateDone { req_id: u64, errno: i32 },
     /// A descriptor for the object this file handle names (writes design
-    /// §4.6): one of the peer's own, gone from its folder. The attached fd is
+    /// §8.2): one of the peer's own, gone from its folder. The attached fd is
     /// a directory of the peer's on the same filesystem, the one the handle
     /// is opened relative to. `handle_type` and `handle` are what
     /// `name_to_handle_at` gave: at most [`MAX_HANDLE_BYTES`]. The

@@ -13,11 +13,11 @@ fn dir() -> Seen {
 #[test]
 fn the_directory_must_be_the_peers_own_on_one_of_its_roots() {
     assert_eq!(check_anchor(PEER, &dir(), true), Ok(()));
-    assert_eq!(check_anchor(PEER, &dir(), false), Err(libc::EPERM), "no root on its device");
-    assert_eq!(check_anchor(PEER, &seen(1001, 42, libc::S_IFDIR | 0o755, 1), true), Err(libc::EPERM));
+    assert_eq!(check_anchor(PEER, &dir(), false), Err(Errno::EPERM), "no root on its device");
+    assert_eq!(check_anchor(PEER, &seen(1001, 42, libc::S_IFDIR | 0o755, 1), true), Err(Errno::EPERM));
     assert_eq!(
         check_anchor(PEER, &seen(PEER, 42, libc::S_IFREG | 0o644, 1), true),
-        Err(libc::EPERM),
+        Err(Errno::EPERM),
         "not a directory"
     );
 }
@@ -27,24 +27,24 @@ fn only_the_peers_own_file_or_directory_on_the_same_device_passes() {
     let file = seen(PEER, 42, libc::S_IFREG | 0o644, 1);
     assert_eq!(check_object(PEER, &dir(), &file), Ok(Kind::File));
     assert_eq!(check_object(PEER, &dir(), &dir()), Ok(Kind::Directory));
-    assert_eq!(check_object(PEER, &dir(), &seen(1001, 42, libc::S_IFREG | 0o644, 1)), Err(libc::EPERM));
+    assert_eq!(check_object(PEER, &dir(), &seen(1001, 42, libc::S_IFREG | 0o644, 1)), Err(Errno::EPERM));
     assert_eq!(
         check_object(PEER, &dir(), &seen(PEER, 43, libc::S_IFREG | 0o644, 1)),
-        Err(libc::EPERM),
+        Err(Errno::EPERM),
         "another device: another filesystem, or another Btrfs subvolume"
     );
     for other in [libc::S_IFLNK, libc::S_IFIFO, libc::S_IFSOCK, libc::S_IFCHR, libc::S_IFBLK] {
-        assert_eq!(check_object(PEER, &dir(), &seen(PEER, 42, other | 0o644, 1)), Err(libc::EPERM), "{other:o}");
+        assert_eq!(check_object(PEER, &dir(), &seen(PEER, 42, other | 0o644, 1)), Err(Errno::EPERM), "{other:o}");
     }
 }
 
 #[test]
 fn a_deleted_object_is_gone_but_only_the_peers_says_so() {
-    assert_eq!(check_object(PEER, &dir(), &seen(PEER, 42, libc::S_IFREG | 0o644, 0)), Err(libc::ESTALE));
-    assert_eq!(check_object(PEER, &dir(), &seen(PEER, 42, libc::S_IFDIR | 0o755, 0)), Err(libc::ESTALE));
+    assert_eq!(check_object(PEER, &dir(), &seen(PEER, 42, libc::S_IFREG | 0o644, 0)), Err(Errno::ESTALE));
+    assert_eq!(check_object(PEER, &dir(), &seen(PEER, 42, libc::S_IFDIR | 0o755, 0)), Err(Errno::ESTALE));
     assert_eq!(
         check_object(PEER, &dir(), &seen(1001, 42, libc::S_IFREG | 0o644, 0)),
-        Err(libc::EPERM),
+        Err(Errno::EPERM),
         "somebody else's deleted file is refused like any of theirs"
     );
 }
